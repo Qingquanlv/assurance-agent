@@ -48,7 +48,7 @@ assurance-agent/
 │   ├── eval/                   # AI Eval 框架（executor / scorer / judge / runner）
 │   └── retro/                  # 回顾聚合 + nightly driver
 ├── schemas/                    # workflow-schema.yaml + JSON schemas（规格源，随包分发）
-├── skills/                     # 33 个 aa-* skill（SKILL.md）
+├── skills/                     # 33 个 skill（SKILL.md，见第 8 节）
 ├── .opencode/                  # OpenCode 集成：agents/*.md + JS 插件 + tools（保留 JS）
 ├── tests/                      # pytest（unit / integration / eval）
 ├── examples/                   # 最小可运行示例
@@ -120,7 +120,7 @@ aa workflow ...
 
 ## 8. Skills 迁移（33 个）
 
-系统性改写而非照搬：
+33 个 skill 目录中 32 个为 `aws-*`，另有 1 个 `writing-skills` 元技能（无前缀，原名迁移）。系统性改写而非照搬：
 
 1. 前缀 `aws-*` → `aa-*`；CLI 调用 `aws ...` → `aa ...`；`.aws/` → `.aa/`。
 2. 涉及 npm build/link 的说明改为 uv 说明。
