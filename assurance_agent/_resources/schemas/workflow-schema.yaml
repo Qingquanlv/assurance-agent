@@ -1,0 +1,464 @@
+# =============================================================================
+# AA Workflow Schema
+# =============================================================================
+#
+# Canonical deterministic phase DAG consumed by `aa status` and
+# `aa gate check`. Project-local `.aa/workflow-schema.yaml` may override this
+# file, but a fresh project must work with this repo-shipped default.
+#
+# Paths are relative to `qa/changes/<change-id>/` unless prefixed with `qa/`
+# or `repo:`.
+# =============================================================================
+
+schema_version: "1"
+name: aa-full
+
+params:
+  run_mode: { type: enum, values: [full, case-only, api-only, e2e-only, plan-only, codegen-only, review-case, review-plan], default: full }
+  test_types: { type: list, values: [api, e2e, fuzz, performance], default: [api, e2e] }
+  run_tests: { type: bool, default: true }
+  max_case_fix_attempts: { type: int, default: 3 }
+  max_plan_fix_attempts: { type: int, default: 3 }
+  max_healing_attempts: { type: int, default: 3 }
+  auto_archive: { type: bool, default: false }
+  force_continue: { type: bool, default: false }
+
+phases:
+  - id: skill-registry-check
+    skill: null
+    requires: []
+    produces: [workflow-state.yaml]
+    owned_by: [full, intake, execute]
+    gate: registry-gate
+
+  - id: explore
+    skill: aa-explore
+    agent: aa-doc-author
+    requires: [skill-registry-check]
+    produces: [explore/advisory.json]
+    owned_by: [full, intake]
+    when: "params.run_mode in ['full', 'case-only']"
+
+  - id: case-design
+    skill: aa-case-design
+    agent: aa-doc-author
+    requires: [explore]
+    produces: [.qa.yaml, proposal.md, cases/]
+    owned_by: [full, intake]
+    gate: case-design-gate
+    when: "params.run_mode in ['full', 'case-only']"
+
+  - id: case-review
+    skill: aa-case-reviewer
+    agent: aa-reviewer
+    requires: [case-design]
+    produces: [review/case-review.json]
+    owned_by: [full, intake]
+    gate: case-review-gate
+
+  - id: case-fix
+    skill: aa-case-fixer
+    agent: aa-doc-author
+    requires: [case-review]
+    produces: [review/case-review-apply-summary.md]
+    owned_by: [full, intake]
+    when: "gate('case-review-gate').verdict == 'needs_fix'"
+    repair_of: case-review
+    max_attempts_param: max_case_fix_attempts
+
+  - id: fact-baseline
+    skill: aa-fact-baseline
+    agent: aa-doc-author
+    requires: [case-review]
+    produces: [facts/fact-baseline.json]
+    owned_by: [full, execute]
+    when: "params.run_mode in ['full', 'case-only', 'api-only', 'e2e-only', 'plan-only', 'review-plan']"
+
+  # ---- API branch -----------------------------------------------------------
+  - id: api-plan
+    skill: aa-api-plan
+    agent: aa-doc-author
+    requires: [fact-baseline]
+    produces: [plans/api-plan.md, plans/api-test-data-plan.md, plans/api-codegen-plan.md, plans/m3-review-summary.md]
+    owned_by: [full, execute]
+    when: "'api' in params.test_types and params.run_mode in ['full', 'api-only', 'plan-only', 'review-plan']"
+
+  - id: api-plan-review
+    skill: aa-api-plan-reviewer
+    agent: aa-reviewer
+    requires: [api-plan]
+    produces: [review/api-plan-review.json]
+    owned_by: [full, execute]
+    gate: api-plan-review-gate
+    when: "'api' in params.test_types and params.run_mode in ['full', 'api-only', 'plan-only', 'review-plan', 'codegen-only']"
+
+  - id: api-plan-fix
+    skill: aa-api-plan-fixer
+    agent: aa-doc-author
+    requires: [api-plan-review]
+    produces: [review/api-plan-review-apply-summary.md]
+    owned_by: [full, execute]
+    when: "'api' in params.test_types and gate('api-plan-review-gate').verdict == 'needs_fix'"
+    repair_of: api-plan-review
+    max_attempts_param: max_plan_fix_attempts
+
+  - id: api-codegen
+    skill: aa-api-codegen
+    agent: aa-test-author
+    requires: [api-plan-review]
+    produces: [codegen/api-codegen-summary.md]
+    owned_by: [full, execute]
+    gate: api-codegen-precondition-gate
+    when: "'api' in params.test_types and params.run_mode in ['full', 'api-only', 'codegen-only']"
+
+  # ---- E2E branch -----------------------------------------------------------
+  - id: e2e-plan
+    skill: aa-e2e-plan
+    agent: aa-doc-author
+    requires: [fact-baseline]
+    produces: [plans/e2e-plan.md, plans/e2e-test-data-plan.md, plans/e2e-codegen-plan.md, plans/m4-review-summary.md]
+    owned_by: [full, execute]
+    when: "'e2e' in params.test_types and params.run_mode in ['full', 'e2e-only', 'plan-only', 'review-plan']"
+
+  - id: e2e-plan-review
+    skill: aa-e2e-plan-reviewer
+    agent: aa-reviewer
+    requires: [e2e-plan]
+    produces: [review/plan-review.json]
+    owned_by: [full, execute]
+    gate: e2e-plan-review-gate
+    when: "'e2e' in params.test_types and params.run_mode in ['full', 'e2e-only', 'plan-only', 'review-plan', 'codegen-only']"
+
+  - id: e2e-plan-fix
+    skill: aa-e2e-plan-fixer
+    agent: aa-doc-author
+    requires: [e2e-plan-review]
+    produces: [review/plan-review-apply-summary.md]
+    owned_by: [full, execute]
+    when: "'e2e' in params.test_types and gate('e2e-plan-review-gate').verdict == 'needs_fix'"
+    repair_of: e2e-plan-review
+    max_attempts_param: max_plan_fix_attempts
+
+  - id: e2e-codegen
+    skill: aa-e2e-codegen
+    agent: aa-test-author
+    requires: [e2e-plan-review]
+    produces: [codegen/e2e-codegen-summary.md]
+    owned_by: [full, execute]
+    gate: e2e-codegen-precondition-gate
+    when: "'e2e' in params.test_types and params.run_mode in ['full', 'e2e-only', 'codegen-only']"
+
+  # ---- Optional fuzz branch -------------------------------------------------
+  - id: fuzz-plan
+    skill: aa-fuzz-plan
+    agent: aa-doc-author
+    requires: [fact-baseline]
+    produces: [plans/fuzz-plan.md, plans/fuzz-codegen-plan.md, plans/fuzz-review-summary.md]
+    owned_by: [full, execute]
+    when: "'fuzz' in params.test_types and params.run_mode in ['full', 'plan-only', 'review-plan']"
+
+  - id: fuzz-plan-review
+    skill: aa-fuzz-plan-reviewer
+    agent: aa-reviewer
+    requires: [fuzz-plan]
+    produces: [review/fuzz-plan-review.json]
+    owned_by: [full, execute]
+    gate: fuzz-plan-review-gate
+    when: "'fuzz' in params.test_types"
+
+  - id: fuzz-codegen
+    skill: aa-fuzz-codegen
+    agent: aa-test-author
+    requires: [fuzz-plan-review]
+    produces: [codegen/fuzz-codegen-summary.md]
+    owned_by: [full, execute]
+    gate: fuzz-codegen-precondition-gate
+    when: "'fuzz' in params.test_types and params.run_mode in ['full', 'codegen-only']"
+
+  # ---- Optional performance branch -----------------------------------------
+  - id: performance-plan
+    skill: aa-performance-plan
+    agent: aa-doc-author
+    requires: [fact-baseline]
+    produces: [plans/performance-plan.md, plans/performance-codegen-plan.md, plans/performance-review-summary.md]
+    owned_by: [full, execute]
+    when: "'performance' in params.test_types and params.run_mode in ['full', 'plan-only', 'review-plan']"
+
+  - id: performance-plan-review
+    skill: aa-performance-plan-reviewer
+    agent: aa-reviewer
+    requires: [performance-plan]
+    produces: [review/performance-plan-review.json]
+    owned_by: [full, execute]
+    gate: performance-plan-review-gate
+    when: "'performance' in params.test_types"
+
+  - id: performance-codegen
+    skill: aa-performance-codegen
+    agent: aa-test-author
+    requires: [performance-plan-review]
+    produces: [codegen/performance-codegen-summary.md]
+    owned_by: [full, execute]
+    gate: performance-codegen-precondition-gate
+    when: "'performance' in params.test_types and params.run_mode in ['full', 'codegen-only']"
+
+  # ---- Execution + inspect --------------------------------------------------
+  - id: execution
+    skill: null
+    requires: [api-codegen, e2e-codegen, fuzz-codegen, performance-codegen]
+    requires_mode: any_active
+    produces: [execution/execution-manifest.yaml]
+    owned_by: [full, execute]
+    when: "params.run_tests == true and params.run_mode in ['full', 'api-only', 'e2e-only', 'codegen-only']"
+
+  - id: inspect
+    skill: aa-inspect
+    agent: aa-reviewer
+    requires: [execution]
+    produces: [inspect/failure-analysis.json, inspect/quality-gate-result.json]
+    owned_by: [full, execute]
+
+  - id: report
+    skill: aa-report-generator
+    agent: aa-reporter
+    requires: [inspect]
+    # Runbook Phase 13 precondition, enforced at routing time: the healing
+    # decision must be recorded (via `aa state heal`) before report may run.
+    # Mirrors the HEAL-STATE-INCONSISTENT audit so router and audit agree.
+    ready_when: >
+      state.phases.healing.status in ['not_needed', 'skipped', 'resolved', 'exhausted', 'failed']
+    produces: [report/quality-report.json, report/quality-report.md, report/executive-summary.md]
+    owned_by: [full, execute]
+
+  # ---- Healing loop ---------------------------------------------------------
+  - id: fix-proposal
+    skill: aa-fix-proposal
+    agent: aa-doc-author
+    requires: [inspect]
+    produces: [healing/fix-proposal.json]
+    owned_by: [full, execute]
+    when: "gate('healing-entry-gate').verdict == 'enter'"
+    loop: healing
+
+  - id: api-codegen-fix
+    skill: aa-api-codegen-fixer
+    agent: aa-test-author
+    requires: [fix-proposal]
+    produces: [healing/api-apply-summary.json]
+    owned_by: [full, execute]
+    when: "any(fix_proposal.proposals, target == 'api' and eligible == true)"
+    loop: healing
+
+  - id: e2e-codegen-fix
+    skill: aa-e2e-codegen-fixer
+    agent: aa-test-author
+    requires: [fix-proposal]
+    produces: [healing/e2e-apply-summary.json]
+    owned_by: [full, execute]
+    when: "any(fix_proposal.proposals, target == 'e2e' and eligible == true)"
+    loop: healing
+
+  - id: healing-rerun
+    skill: null
+    requires: [api-codegen-fix, e2e-codegen-fix]
+    requires_mode: any_active
+    produces: [execution/execution-manifest.yaml]
+    owned_by: [full, execute]
+    gate: fixer-safety-gate
+    loop: healing
+
+  - id: healing-reinspect
+    skill: aa-inspect
+    agent: aa-reviewer
+    requires: [healing-rerun]
+    produces: [inspect/failure-analysis.json, inspect/quality-gate-result.json]
+    owned_by: [full, execute]
+    loop: healing
+
+  # ---- Archive eligibility/execution ---------------------------------------
+  - id: archive
+    skill: aa-archive
+    agent: aa-archiver
+    requires: [report]
+    produces: ["qa/archive/<change-id>/"]
+    owned_by: [full, execute]
+    gate: archive-gate
+    when: "params.auto_archive == true"
+
+loops:
+  healing:
+    members: [fix-proposal, api-codegen-fix, e2e-codegen-fix, healing-rerun, healing-reinspect]
+    counter: state.phases.healing.attempts
+    max_param: max_healing_attempts
+    allocate_on: "file_exists('healing/fix-proposal.json') and fix_proposal.summary.eligible_count > 0"
+    exit_gate: healing-loop-gate
+
+gates:
+  registry-gate:
+    reads: [workflow-state.yaml]
+    pass_when: "state.phases.skill_registry_check.status == 'pass'"
+    stop_when: "state.phases.skill_registry_check.status == 'fail'"
+
+  case-review-gate:
+    reads: [review/case-review.json]
+    invalid_json: stop
+    missing_field_is: stop
+    needs_fix_when: "decision == 'needs_fix' and auto_fix_allowed == true"
+    needs_human_review_when: >
+      decision == 'needs_human_review'
+      or (
+        human_review_required == true
+        and not (params.force_continue == true and decision == 'pass')
+      )
+    reject_when: "decision == 'reject'"
+    pass_when: "decision == 'pass'"
+
+  case-design-gate:
+    reads:
+      - workflow-state.yaml
+      - { path: .qa.yaml, as: qa }
+    invalid_json: stop
+    missing_field_is: stop
+    pass_when: >
+      state.run_context.interaction_mode == 'autonomous'
+      or (
+        state.run_context.orchestrator_skill == 'aa-intake'
+        and state.run_context.interaction_mode == 'interactive'
+        and qa.approval.approved_by == 'user'
+        and qa.approval.approved_approach != null
+        and qa.approval.approved_at != null
+      )
+
+  api-plan-review-gate: &plan-review-gate
+    reads: [review/api-plan-review.json]
+    invalid_json: stop
+    missing_field_is: stop
+    needs_fix_when: "decision == 'needs_fix' and auto_fix_allowed == true"
+    needs_human_review_when: >
+      decision == 'needs_human_review'
+      or (
+        (human_review_required == true or risk_level in ['high','critical'])
+        and not (
+          params.force_continue == true
+          and decision == 'pass'
+          and codegen_readiness in ['ready','ready_with_warnings']
+        )
+      )
+    reject_when: "decision == 'reject' or codegen_readiness == 'not_ready'"
+    pass_when: "decision == 'pass' and codegen_readiness in ['ready','ready_with_warnings']"
+
+  e2e-plan-review-gate:
+    <<: *plan-review-gate
+    reads: [review/plan-review.json]
+
+  fuzz-plan-review-gate:
+    reads: [review/fuzz-plan-review.json]
+    invalid_json: stop
+    missing_field_is: stop
+    needs_fix_when: "decision == 'needs_fix' and auto_fix_allowed == true"
+    needs_human_review_when: >
+      decision in ['needs_human_review','changes_requested']
+      or (
+        human_review_required == true
+        and not (params.force_continue == true and decision in ['pass','approved'])
+      )
+    reject_when: "decision == 'reject'"
+    pass_when: "decision in ['pass','approved']"
+
+  performance-plan-review-gate:
+    reads: [review/performance-plan-review.json]
+    invalid_json: stop
+    missing_field_is: stop
+    needs_fix_when: "decision == 'needs_fix' and auto_fix_allowed == true"
+    needs_human_review_when: >
+      decision in ['needs_human_review','changes_requested']
+      or (
+        human_review_required == true
+        and not (params.force_continue == true and decision in ['pass','approved'])
+      )
+    reject_when: "decision == 'reject'"
+    pass_when: "decision in ['pass','approved']"
+
+  api-codegen-precondition-gate:
+    reads: [workflow-state.yaml]
+    pass_when: "gate('api-plan-review-gate').verdict == 'pass' and file_exists('repo:.aa/data-knowledge.yaml')"
+    stop_when: "not file_exists('repo:.aa/data-knowledge.yaml')"
+
+  e2e-codegen-precondition-gate:
+    reads: [workflow-state.yaml]
+    pass_when: "gate('e2e-plan-review-gate').verdict == 'pass' and file_exists('repo:.aa/data-knowledge.yaml')"
+    stop_when: "not file_exists('repo:.aa/data-knowledge.yaml')"
+
+  fuzz-codegen-precondition-gate:
+    reads: [workflow-state.yaml]
+    pass_when: "gate('fuzz-plan-review-gate').verdict == 'pass'"
+    stop_when: "gate('fuzz-plan-review-gate').verdict == 'stop'"
+
+  performance-codegen-precondition-gate:
+    reads: [workflow-state.yaml]
+    pass_when: "gate('performance-plan-review-gate').verdict == 'pass'"
+    stop_when: "gate('performance-plan-review-gate').verdict == 'stop'"
+
+  fixer-safety-gate:
+    reads: [healing/fixer-safety-check.json]
+    missing_file_is: stop
+    pass_when: >
+      passed == true
+      and product_code_modified == false
+      and assertion_expected_value_changes_detected == false
+      and skip_or_xfail_added == false
+      and unrelated_tests_modified == false
+      and high_risk_proposal_applied == false
+    needs_human_review_when: "passed == false or needs_review == true"
+
+  healing-entry-gate:
+    reads:
+      - workflow-state.yaml
+      - { path: inspect/failure-analysis.json, as: failure_analysis }
+    enter_when: >
+      state.phases.execution.status == 'FAIL'
+      and any(failure_analysis.failures, fix_proposal_eligible == true)
+      and state.phases.inspect.inspect_mode == 'primary'
+      and state.gates.healing_available == true
+      and state.phases.healing.attempts_used < params.max_healing_attempts
+    stop_when: >
+      state.phases.execution.status == 'FAIL'
+      and any(failure_analysis.failures, fix_proposal_eligible == true)
+      and state.gates.healing_available == false
+    skip_when: >
+      state.phases.execution.status in ['PASS','PASS_WITH_WARNINGS']
+      or not any(failure_analysis.failures, fix_proposal_eligible == true)
+
+  healing-loop-gate:
+    reads:
+      - workflow-state.yaml
+      - { path: inspect/failure-analysis.json, as: failure_analysis }
+    exit_when: "state.phases.execution.status in ['PASS','PASS_WITH_WARNINGS']"
+    continue_when: >
+      state.phases.execution.status == 'FAIL'
+      and any(failure_analysis.failures, fix_proposal_eligible == true)
+      and state.phases.healing.attempts_used < params.max_healing_attempts
+    stop_when: >
+      state.phases.healing.attempts_used >= params.max_healing_attempts
+      or state.phases.healing.all_fixers_no_op == true
+
+  archive-gate:
+    reads:
+      - workflow-state.yaml
+      - { path: inspect/failure-analysis.json, as: failure_analysis }
+      - { path: review/case-review.json, as: case_review }
+      - { path: review/api-plan-review.json, as: api_plan_review }
+      - { path: review/plan-review.json, as: plan_review }
+    pass_when: >
+      (params.auto_archive == true or state.user_requested_archive == true)
+      and case_review.decision == 'pass'
+      and (not ('api' in params.test_types) or api_plan_review.decision == 'pass')
+      and (not ('e2e' in params.test_types) or plan_review.decision == 'pass')
+      and state.phases.execution.status in ['PASS','PASS_WITH_WARNINGS']
+      and state.phases.healing.status in ['not_needed','resolved','skipped']
+      and failure_analysis.source_batch_id == state.phases.execution.batch_id
+      and not any(failure_analysis.failures, fix_proposal_eligible == true)
+    stop_when: >
+      state.phases.execution.status == 'FAIL'
+      or state.phases.healing.status in ['applied','exhausted','failed']
+      or failure_analysis.source_batch_id != state.phases.execution.batch_id
