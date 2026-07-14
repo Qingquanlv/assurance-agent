@@ -1,4 +1,5 @@
 """Load and validate the target project's .aa/config.yaml."""
+
 from pathlib import Path
 
 import yaml

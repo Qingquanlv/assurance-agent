@@ -1,0 +1,12 @@
+[importlinter]
+root_package = assurance_agent
+
+[importlinter:contract:layers]
+name = commands depend on domain, never the reverse
+type = layers
+layers =
+    assurance_agent.cli
+    assurance_agent.commands
+    assurance_agent.workflow
+    assurance_agent.config
+    assurance_agent.resources

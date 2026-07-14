@@ -3,6 +3,7 @@
 Ported from the TS templates (config-yaml.ts, execution-policy.ts,
 module-map-yaml.ts, data-knowledge-yaml.ts) with .aws -> .aa renames.
 """
+
 from typing import Literal
 
 from pydantic import BaseModel

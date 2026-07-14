@@ -1,4 +1,5 @@
 """Deterministic environment checks behind `aa doctor`."""
+
 import shutil
 from pathlib import Path
 from typing import Literal
@@ -52,11 +53,16 @@ def _path_check(root: Path, rel: str, check_id: str, group: str, label: str) -> 
 
 def _framework_check(name: str) -> CheckResult:
     if shutil.which(name):
-        return CheckResult(id=f"framework.{name}", group="frameworks", status="ok",
-                            message=f"{name} available")
-    return CheckResult(id=f"framework.{name}", group="frameworks", status="warning",
-                        message=f"{name} not found on PATH",
-                        suggested_fix=f"Install {name} in the project environment")
+        return CheckResult(
+            id=f"framework.{name}", group="frameworks", status="ok", message=f"{name} available"
+        )
+    return CheckResult(
+        id=f"framework.{name}",
+        group="frameworks",
+        status="warning",
+        message=f"{name} not found on PATH",
+        suggested_fix=f"Install {name} in the project environment",
+    )
 
 
 def run_doctor_checks(root: Path) -> DoctorResult:
@@ -64,22 +70,27 @@ def run_doctor_checks(root: Path) -> DoctorResult:
     try:
         cfg = load_config(root)
     except ConfigNotFoundError:
-        checks.append(CheckResult(
-            id="config.exists", group="config", status="error",
-            message=f"{CONFIG_RELPATH} not found", suggested_fix="Run `aa init`",
-        ))
+        checks.append(
+            CheckResult(
+                id="config.exists",
+                group="config",
+                status="error",
+                message=f"{CONFIG_RELPATH} not found",
+                suggested_fix="Run `aa init`",
+            )
+        )
         return _build(checks)
     except ConfigInvalidError as err:
-        checks.append(CheckResult(id="config.exists", group="config", status="ok",
-                                   message=f"{CONFIG_RELPATH} found"))
-        checks.append(CheckResult(id="config.schema", group="config", status="error",
-                                   message=str(err)))
+        checks.append(
+            CheckResult(id="config.exists", group="config", status="ok", message=f"{CONFIG_RELPATH} found")
+        )
+        checks.append(CheckResult(id="config.schema", group="config", status="error", message=str(err)))
         return _build(checks)
 
-    checks.append(CheckResult(id="config.exists", group="config", status="ok",
-                               message=f"{CONFIG_RELPATH} found"))
-    checks.append(CheckResult(id="config.schema", group="config", status="ok",
-                               message="config schema valid"))
+    checks.append(
+        CheckResult(id="config.exists", group="config", status="ok", message=f"{CONFIG_RELPATH} found")
+    )
+    checks.append(CheckResult(id="config.schema", group="config", status="ok", message="config schema valid"))
     checks.extend(_config_value_checks(cfg))
     checks.extend(_source_and_dir_checks(root, cfg))
     checks.extend(_framework_checks(cfg))
@@ -88,15 +99,30 @@ def run_doctor_checks(root: Path) -> DoctorResult:
 
 def _config_value_checks(cfg: AaConfig) -> list[CheckResult]:
     return [
-        _value_check("config.prd_input_mode", cfg.generation.prd_input_mode == "prompt",
-                     "PRD input mode = prompt", 'generation.prd_input_mode must be "prompt"'),
-        _value_check("config.execution_entry", cfg.execution.entry == "cli",
-                     "execution entry = cli", 'execution.entry must be "cli"'),
-        _value_check("config.self_healing_mode", cfg.execution.self_healing.mode == "proposal-only",
-                     "self-healing mode = proposal-only",
-                     'execution.self_healing.mode must be "proposal-only"'),
-        _value_check("config.e2e_default_pom", cfg.generation.e2e.default_pom is False,
-                     "e2e.default_pom = false", "generation.e2e.default_pom must be false"),
+        _value_check(
+            "config.prd_input_mode",
+            cfg.generation.prd_input_mode == "prompt",
+            "PRD input mode = prompt",
+            'generation.prd_input_mode must be "prompt"',
+        ),
+        _value_check(
+            "config.execution_entry",
+            cfg.execution.entry == "cli",
+            "execution entry = cli",
+            'execution.entry must be "cli"',
+        ),
+        _value_check(
+            "config.self_healing_mode",
+            cfg.execution.self_healing.mode == "proposal-only",
+            "self-healing mode = proposal-only",
+            'execution.self_healing.mode must be "proposal-only"',
+        ),
+        _value_check(
+            "config.e2e_default_pom",
+            cfg.generation.e2e.default_pom is False,
+            "e2e.default_pom = false",
+            "generation.e2e.default_pom must be false",
+        ),
     ]
 
 

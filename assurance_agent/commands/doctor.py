@@ -1,4 +1,5 @@
 """`aa doctor` command: check environment and configuration health."""
+
 from pathlib import Path
 
 import click

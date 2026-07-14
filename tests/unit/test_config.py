@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from assurance_agent.config import AaConfig, ConfigInvalidError, ConfigNotFoundError, load_config
+from assurance_agent.config import ConfigInvalidError, ConfigNotFoundError, load_config
 from assurance_agent.workflow.core.templates import InitAnswers, build_config_yaml
 
 
@@ -36,6 +36,8 @@ def test_load_config_invalid_yaml_raises(tmp_path: Path) -> None:
 
 def test_load_config_schema_violation_raises(tmp_path: Path) -> None:
     (tmp_path / ".aa").mkdir()
-    (tmp_path / ".aa/config.yaml").write_text("version: 1\nsources: {frontend: 1, backend: ./b}\n", encoding="utf-8")
+    (tmp_path / ".aa/config.yaml").write_text(
+        "version: 1\nsources: {frontend: 1, backend: ./b}\n", encoding="utf-8"
+    )
     with pytest.raises(ConfigInvalidError):
         load_config(tmp_path)

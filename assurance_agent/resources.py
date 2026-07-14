@@ -3,6 +3,7 @@
 Never locate resources via __file__ arithmetic elsewhere in the codebase;
 importlib.resources keeps this working from wheels and editable installs alike.
 """
+
 from importlib.resources import files
 from importlib.abc import Traversable
 

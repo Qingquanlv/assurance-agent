@@ -1,4 +1,5 @@
 """Write the .aa/ + qa/ + tests/ scaffold into a target project."""
+
 import json
 from pathlib import Path
 

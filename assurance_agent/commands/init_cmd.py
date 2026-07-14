@@ -1,11 +1,16 @@
 """`aa init` command: scaffold or repair the .aa/ + qa/ + tests/ project layout."""
+
 from pathlib import Path
+from typing import Literal, cast
 
 import click
 
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.generator import GenerateResult, generate_project, repair_project
 from assurance_agent.workflow.core.templates import InitAnswers
+
+ApiFramework = Literal["pytest", "none"]
+E2eFramework = Literal["playwright", "none"]
 
 
 def _print_result(result: GenerateResult) -> None:
@@ -41,7 +46,10 @@ def init_command(
             click.secho("Repair complete.", fg="green", bold=True)
             return
 
-        answers = _collect_answers(yes, api_framework, e2e_framework, frontend, backend, enable_mcp)
+        # click.Choice already restricts these to the literal values at runtime.
+        api_choice = cast("ApiFramework | None", api_framework)
+        e2e_choice = cast("E2eFramework | None", e2e_framework)
+        answers = _collect_answers(yes, api_choice, e2e_choice, frontend, backend, enable_mcp)
         if answers is None:
             click.echo("Init cancelled.")
             return
@@ -57,8 +65,8 @@ def init_command(
 
 def _collect_answers(
     yes: bool,
-    api_framework: str | None,
-    e2e_framework: str | None,
+    api_framework: ApiFramework | None,
+    e2e_framework: E2eFramework | None,
     frontend: str | None,
     backend: str | None,
     enable_mcp: bool | None,
@@ -72,16 +80,21 @@ def _collect_answers(
             backend_path=backend,
         )
 
-    api = api_framework or click.prompt(
-        "API test framework", type=click.Choice(["pytest", "none"]), default="pytest"
+    api = api_framework or cast(
+        ApiFramework,
+        click.prompt("API test framework", type=click.Choice(["pytest", "none"]), default="pytest"),
     )
-    e2e = e2e_framework or click.prompt(
-        "E2E test framework", type=click.Choice(["playwright", "none"]), default="playwright"
+    e2e = e2e_framework or cast(
+        E2eFramework,
+        click.prompt("E2E test framework", type=click.Choice(["playwright", "none"]), default="playwright"),
     )
     mcp = enable_mcp if enable_mcp is not None else click.confirm("Enable MCP config?", default=False)
     if not click.confirm("Confirm and write files?", default=True):
         return None
     return InitAnswers(
-        api_framework=api, e2e_framework=e2e, enable_mcp=mcp,
-        frontend_path=frontend, backend_path=backend,
+        api_framework=api,
+        e2e_framework=e2e,
+        enable_mcp=mcp,
+        frontend_path=frontend,
+        backend_path=backend,
     )
