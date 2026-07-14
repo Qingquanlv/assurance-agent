@@ -22,7 +22,7 @@ cd "$WORK_DIR/project"
 test -f .aa/config.yaml
 test -f .aa/execution-policy.json
 "$WORK_DIR/venv/bin/aa" doctor --json > doctor.json
-python3 - <<'PY'
+"$WORK_DIR/venv/bin/python" - <<'PY'
 import json
 doc = json.load(open("doctor.json"))
 assert doc["status"] in ("ok", "warning"), doc["status"]
