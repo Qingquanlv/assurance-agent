@@ -49,10 +49,12 @@ assurance-agent/
 │   ├── risk/                   # Explore context 聚合 + advisory 校验
 │   ├── eval/                   # AI Eval 框架（executor / scorer / judge / runner）
 │   ├── retro/                  # 回顾聚合 + nightly driver
+│   ├── _resources/             # 运行时资源唯一源（见第 15 节）
+│   │   ├── schemas/            # workflow-schema.yaml + JSON schemas
+│   │   ├── skills/             # 33 个 skill（SKILL.md，见第 8 节）
+│   │   └── opencode/           # OpenCode agents/*.md + JS 插件 + tools（保留 JS）
 │   └── resources.py            # 运行时资源定位的唯一入口（importlib.resources，见第 15 节）
-├── schemas/                    # workflow-schema.yaml + JSON schemas（唯一源，构建时映射进包）
-├── skills/                     # 33 个 skill（SKILL.md，见第 8 节；唯一源，构建时映射进包）
-├── .opencode/                  # OpenCode 集成：agents/*.md + JS 插件 + tools（保留 JS；同上映射）
+├── .opencode/                  # 本仓库自身的 OpenCode 集成（由 _resources/opencode 经 aa skill refresh 派生）
 ├── tests/                      # pytest（unit / integration / eval）
 ├── examples/                   # 最小可运行示例
 ├── docker/ bin/ scripts/ benchmark/
@@ -219,7 +221,7 @@ eval 的 workflow executor 复用本模块驱动真实工作流，不另行实�
 
 `schemas/`、`skills/`、`.opencode/` 是运行时资源：全新安装后 `aa init` 要能加载默认 schema、复制 OpenCode assets，`aa skill refresh` 要能发现 33 个 skills。设计约束：
 
-- **唯一源在仓库顶层**（便于编辑与 review）；构建配置（hatchling `force-include`）在打 wheel/sdist 时把三个目录映射进 `assurance_agent/` 包内资源路径，editable 安装下同样生效——不存在需要人工同步的第二份副本。
+- **唯一源在包内**：`assurance_agent/_resources/{schemas,skills,opencode}/` 是运行时资源的唯一存放处，随 wheel/sdist 自然分发（hatchling 默认包含包内数据文件，配 `artifacts` 声明覆盖 .gitignore 类排除）。不用顶层目录 + `force-include` 映射的方案——那会在 editable 安装下产生一份会过期的副本。仓库自身的 `.opencode/` 由 `aa skill refresh` 从 `_resources/opencode/` 派生，与目标项目同一条路径。
 - **统一访问入口**：`assurance_agent/resources.py` 是包内读取运行时资源的唯一模块，基于 `importlib.resources` 实现；任何模块**禁止**用源码仓库相对路径（`__file__/../..`）定位资源。
 - **workflow schema 解析顺序**（对齐源版 docs/schemas.md）：项目 `.aa/workflow-schema.yaml` → 项目 `schemas/workflow-schema.yaml` → 包内默认。显式 `--schema` 覆盖是排他的：路径缺失即报错，不回退。
 - **打包冒烟测试**（CI 必跑）：构建 wheel → 在全新虚拟环境安装 → 切到源码目录之外的临时目录运行 `aa init` / `aa doctor` / `aa status`，验证资源解析不依赖源码仓库。
