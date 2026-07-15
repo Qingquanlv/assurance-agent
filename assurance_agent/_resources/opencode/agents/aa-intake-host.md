@@ -19,7 +19,6 @@ permission:
     "**tests/**": deny
   bash:
     "*": deny
-    "aa status *": allow
     "aa decide *": allow
     "aa state configure *": allow
     "aa risk *": allow

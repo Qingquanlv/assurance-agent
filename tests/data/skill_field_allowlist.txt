@@ -1,0 +1,3 @@
+# Field cross-check allowlist (spec 4a). One "root.field" per line; blank lines
+# and lines starting with '#' are ignored. Legit references to fields NOT present
+# in the M2 artifact model land here. Current migrated content needs no entries.
