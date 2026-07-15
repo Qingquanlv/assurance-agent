@@ -1,0 +1,910 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>Case Center</title>
+<style>
+/* ---- Reset & Base ---- */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+       background: #f0f2f5; font-size: 12px; color: #333; height: 100vh; overflow: hidden;
+       display: flex; flex-direction: column; }
+
+/* ---- Top Bar ---- */
+#topbar { background:#fff; border-bottom:1px solid #e8e8e8; padding:0 16px; height:48px;
+          display:flex; align-items:center; justify-content:space-between;
+          box-shadow:0 1px 4px rgba(0,0,0,.06); flex-shrink:0; }
+#topbar-logo { font-size:15px; font-weight:600; color:#1677ff; }
+#topbar-right { display:flex; align-items:center; gap:12px; }
+#change-selector { display:flex; align-items:center; gap:6px; background:#f5f5f5;
+                   border:1px solid #d9d9d9; border-radius:6px; padding:4px 10px;
+                   cursor:pointer; font-size:12px; position:relative; }
+#change-label { color:#999; font-size:11px; }
+#change-value { color:#1677ff; font-weight:500; min-width:60px; }
+#change-arrow { color:#999; }
+#change-dropdown { display:none; position:absolute; top:32px; right:0; background:#fff;
+                   border:1px solid #e8e8e8; border-radius:6px; box-shadow:0 4px 12px rgba(0,0,0,.12);
+                   min-width:200px; z-index:100; max-height:300px; overflow-y:auto; }
+#change-dropdown.open { display:block; }
+.change-option { padding:8px 12px; cursor:pointer; font-size:12px; color:#333; white-space:nowrap; }
+.change-option:hover { background:#f0f5ff; color:#1677ff; }
+.change-option.active { color:#1677ff; font-weight:500; }
+#btn-refresh { background:#1677ff; color:#fff; border:none; border-radius:6px;
+               padding:5px 12px; cursor:pointer; font-size:12px; }
+#btn-refresh:hover { background:#4096ff; }
+#last-sync { color:#999; font-size:11px; }
+
+/* ---- Stats Row ---- */
+#stats-row { display:flex; gap:1px; background:#e8e8e8; border-bottom:1px solid #e8e8e8; flex-shrink:0; }
+.stat-card { flex:1; background:#fff; padding:10px 14px; display:flex; flex-direction:column; gap:2px; }
+.stat-label { font-size:11px; color:#999; }
+.stat-value { font-size:20px; font-weight:700; }
+.stat-unit { font-size:11px; color:#999; margin-left:2px; }
+.c-blue{color:#1677ff} .c-red{color:#f5222d} .c-orange{color:#fa8c16}
+.c-purple{color:#722ed1} .c-green{color:#52c41a} .c-gray{color:#8c8c8c}
+
+/* ---- Main Layout ---- */
+#main { display:flex; flex:1; overflow:hidden; position:relative; min-height:0; }
+
+/* ---- Collapse Toggles ---- */
+.panel-toggle { position:absolute; top:50%; transform:translateY(-50%);
+                width:16px; height:48px; background:#fff; border:1px solid #e8e8e8;
+                display:flex; align-items:center; justify-content:center;
+                cursor:pointer; font-size:10px; color:#999;
+                border-radius:0 4px 4px 0; box-shadow:2px 0 4px rgba(0,0,0,.06);
+                z-index:10; transition:left .2s; user-select:none; }
+.panel-toggle:hover { background:#e6f4ff; color:#1677ff; }
+
+/* ---- Filter Panel ---- */
+#filter-panel { width:220px; min-width:220px; background:#fff; border-right:1px solid #e8e8e8;
+                overflow-y:auto; padding:10px; display:flex; flex-direction:column; gap:8px;
+                transition:width .2s, min-width .2s, padding .2s, opacity .15s; flex-shrink:0; }
+
+.filter-section-title { font-weight:600; font-size:12px; padding:2px 0 6px; border-bottom:1px solid #f0f0f0; }
+#search-input { border:1px solid #d9d9d9; border-radius:4px; padding:5px 8px; width:100%; font-size:11px; }
+.filter-row { display:flex; gap:6px; }
+.filter-item { flex:1; min-width:0; }
+.filter-item label { font-size:10px; color:#999; display:block; margin-bottom:2px; }
+.filter-select { width:100%; border:1px solid #d9d9d9; border-radius:4px;
+                 padding:4px 6px; font-size:11px; background:#fff; }
+#tag-area { display:flex; flex-wrap:wrap; gap:4px; min-height:26px; border:1px solid #d9d9d9;
+            border-radius:4px; padding:4px; cursor:pointer; }
+.tag-pill { background:#e6f4ff; color:#1677ff; border-radius:3px; padding:1px 6px; font-size:10px;
+            cursor:pointer; border:1px solid #91caff; }
+.tag-pill.selected { background:#1677ff; color:#fff; }
+.tag-placeholder { color:#ccc; font-size:10px; line-height:18px; }
+.status-group { display:flex; flex-direction:column; gap:4px; }
+.status-item { display:flex; align-items:center; gap:6px; font-size:11px; cursor:pointer; }
+.status-dot { width:8px; height:8px; border-radius:50%; display:inline-block; }
+.dot-added{background:#52c41a} .dot-modified{background:#fa8c16} .dot-removed{background:#f5222d}
+.status-count { color:#999; font-size:10px; margin-left:auto; }
+.status-item.inactive { opacity:0.4; }
+.filter-btns { display:flex; gap:6px; }
+.btn-query { flex:1; background:#1677ff; color:#fff; border:none; border-radius:4px;
+             padding:6px; font-size:12px; cursor:pointer; }
+.btn-reset { flex:1; background:#fff; color:#666; border:1px solid #d9d9d9;
+             border-radius:4px; padding:6px; font-size:12px; cursor:pointer; }
+
+/* ---- Case List Panel ---- */
+#list-panel { width:340px; min-width:340px; background:#fff; border-right:1px solid #e8e8e8;
+              display:flex; flex-direction:column; overflow:hidden;
+              transition:width .2s, min-width .2s, opacity .15s; flex-shrink:0; }
+
+#list-header { padding:8px 12px; border-bottom:1px solid #f0f0f0;
+               display:flex; align-items:center; justify-content:space-between; flex-shrink:0; }
+#list-count { font-size:12px; color:#666; }
+#sort-btn { color:#1677ff; font-size:11px; cursor:pointer; user-select:none; }
+#list-body { overflow-y:auto; flex:1; }
+
+.tree-module-hd { display:flex; align-items:center; gap:6px; padding:5px 12px; cursor:pointer;
+                  font-weight:600; font-size:11px; color:#555; background:#fafafa;
+                  border-bottom:1px solid #f5f5f5; user-select:none; }
+.tree-module-hd:hover { background:#f0f5ff; }
+.tree-sub-hd { display:flex; align-items:center; gap:6px; padding:4px 20px; cursor:pointer;
+               font-weight:500; font-size:11px; color:#666; user-select:none; }
+.tree-sub-hd:hover { background:#f0f5ff; }
+.tree-count { margin-left:auto; color:#999; font-size:10px; }
+.case-row { display:flex; align-items:center; gap:8px; padding:6px 12px 6px 32px;
+            border-bottom:1px solid #f9f9f9; cursor:pointer; }
+.case-row:hover { background:#f0f5ff; }
+.case-row.selected { background:#e6f4ff; }
+.case-id-cell { font-size:10px; color:#1677ff; flex-shrink:0; white-space:nowrap; }
+.case-title-cell { flex:1; font-size:11px; color:#333; white-space:nowrap;
+                   overflow:hidden; text-overflow:ellipsis; }
+.prio { font-size:10px; font-weight:600; flex-shrink:0; }
+.prio-P0{color:#f5222d} .prio-P1{color:#fa8c16} .prio-P2{color:#1677ff} .prio-P3{color:#52c41a}
+.delta-tag { font-size:9px; padding:1px 4px; border-radius:3px; flex-shrink:0; white-space:nowrap; }
+.delta-added{background:#f6ffed;color:#52c41a;border:1px solid #b7eb8f}
+.delta-modified{background:#fff7e6;color:#fa8c16;border:1px solid #ffd591}
+.delta-removed{background:#fff1f0;color:#f5222d;border:1px solid #ffa39e}
+#list-pagination { padding:8px 12px; border-top:1px solid #f0f0f0; display:flex;
+                   align-items:center; justify-content:space-between; flex-shrink:0; }
+.page-info { font-size:11px; color:#999; }
+.page-controls { display:flex; align-items:center; gap:6px; }
+.page-btns { display:flex; gap:4px; }
+.page-btn { width:22px; height:22px; border:1px solid #d9d9d9; border-radius:3px; background:#fff;
+            font-size:11px; display:flex; align-items:center; justify-content:center; cursor:pointer; }
+.page-btn.active { background:#1677ff; color:#fff; border-color:#1677ff; }
+.page-size { font-size:11px; color:#999; }
+
+/* ---- Detail Panel ---- */
+#detail-panel { flex:1; background:#fff; display:flex; flex-direction:column;
+                overflow:hidden; min-width:0; }
+#detail-header { padding:12px 16px 0; border-bottom:1px solid #f0f0f0; flex-shrink:0; }
+#detail-id-row { display:flex; align-items:center; gap:8px; margin-bottom:4px; flex-wrap:wrap; }
+#detail-case-id { font-size:13px; font-weight:700; color:#333; }
+#detail-title { font-size:16px; font-weight:600; margin-bottom:8px; color:#111; }
+.badge { font-size:10px; padding:1px 6px; border-radius:10px; border:1px solid; white-space:nowrap; }
+.badge-red{color:#f5222d;border-color:#ffa39e;background:#fff1f0}
+.badge-orange{color:#fa8c16;border-color:#ffd591;background:#fff7e6}
+.badge-blue{color:#1677ff;border-color:#91caff;background:#e6f4ff}
+.badge-purple{color:#722ed1;border-color:#d3adf7;background:#f9f0ff}
+.badge-green{color:#52c41a;border-color:#b7eb8f;background:#f6ffed}
+.badge-gray{color:#8c8c8c;border-color:#d9d9d9;background:#f5f5f5}
+#detail-tabs { display:flex; }
+.detail-tab { padding:6px 14px; font-size:12px; cursor:pointer; border-bottom:2px solid transparent; color:#666; }
+.detail-tab.active { color:#1677ff; border-bottom-color:#1677ff; font-weight:500; }
+#detail-body { flex:1; overflow-y:auto; padding:14px 16px; }
+.meta-grid { display:grid; grid-template-columns:repeat(2, 1fr); gap:12px;
+             margin-bottom:16px; padding-bottom:12px; border-bottom:1px solid #f0f0f0; }
+.meta-item label { font-size:10px; color:#999; display:block; margin-bottom:2px; }
+.meta-item .meta-val { font-size:12px; font-weight:500; display:flex; flex-wrap:wrap; gap:4px; }
+.field-row { display:flex; gap:8px; padding:6px 0; border-bottom:1px solid #f9f9f9; align-items:flex-start; }
+.field-icon { font-size:14px; width:20px; flex-shrink:0; }
+.field-label { font-size:11px; color:#999; width:88px; flex-shrink:0; padding-top:1px; }
+.field-value { flex:1; font-size:12px; color:#333; line-height:1.6; }
+.field-value ul { padding-left:14px; margin:0; }
+.field-value li { margin-bottom:2px; }
+.risk-metrics { display:flex; gap:16px; margin-top:6px; }
+.risk-metric { text-align:center; }
+.risk-metric .rm-label { font-size:10px; color:#999; }
+.risk-metric .rm-val { font-size:16px; font-weight:700; }
+.risk-level-badge { display:inline-block; font-size:11px; font-weight:600;
+                    padding:2px 8px; border-radius:4px; margin-left:8px; }
+.rl-high{background:#fff1f0;color:#f5222d}
+.rl-medium{background:#fff7e6;color:#fa8c16}
+.rl-low{background:#f6ffed;color:#52c41a}
+.rl-critical{background:#f9f0ff;color:#722ed1}
+#yaml-preview { display:none; flex:1; overflow-y:auto; padding:14px 16px; }
+#yaml-pre { font-family:monospace; font-size:11px; white-space:pre; color:#333;
+            background:#f9f9f9; padding:12px; border-radius:6px; border:1px solid #e8e8e8;
+            overflow-x:auto; }
+#detail-empty { display:flex; align-items:center; justify-content:center;
+                height:100%; color:#999; font-size:13px; }
+#loading-overlay { display:none; position:fixed; inset:0; background:rgba(255,255,255,.7);
+                   align-items:center; justify-content:center; z-index:200; font-size:14px; color:#666; }
+#loading-overlay.visible { display:flex; }
+#error-banner { display:none; background:#fff1f0; border:1px solid #ffa39e; color:#f5222d;
+                padding:10px 16px; font-size:12px; margin:8px 16px; border-radius:4px; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+</head>
+<body>
+
+<!-- Loading Overlay -->
+<div id="loading-overlay">加载中...</div>
+
+<!-- Top Bar -->
+<div id="topbar">
+  <span id="topbar-logo">⚡ Case Center</span>
+  <div id="topbar-right">
+    <div id="change-selector" onclick="toggleChangeDrop()">
+      <span id="change-label">Change:</span>
+      <span id="change-value">全部（qa/cases）</span>
+      <span id="change-arrow">▾</span>
+      <div id="change-dropdown"></div>
+    </div>
+    <button id="btn-refresh" onclick="refresh()">↻ 刷新</button>
+    <span id="last-sync">—</span>
+  </div>
+</div>
+
+<!-- Stats Row -->
+<div id="stats-row">
+  <div class="stat-card"><span class="stat-label">📋 总用例数</span><div><span class="stat-value c-blue" id="stat-total">—</span><span class="stat-unit">条</span></div></div>
+  <div class="stat-card"><span class="stat-label">🚫 P0（阻塞）</span><div><span class="stat-value c-red" id="stat-p0">—</span><span class="stat-unit">条</span></div></div>
+  <div class="stat-card"><span class="stat-label">⚠️ P1（严重）</span><div><span class="stat-value c-orange" id="stat-p1">—</span><span class="stat-unit">条</span></div></div>
+  <div class="stat-card"><span class="stat-label">💨 Smoke 用例</span><div><span class="stat-value c-purple" id="stat-smoke">—</span><span class="stat-unit">条</span></div></div>
+  <div class="stat-card"><span class="stat-label">📅 Planned</span><div><span class="stat-value c-blue" id="stat-planned">—</span><span class="stat-unit">条</span></div></div>
+  <div class="stat-card"><span class="stat-label">🤖 Automated</span><div><span class="stat-value c-green" id="stat-automated">—</span><span class="stat-unit">条</span></div></div>
+  <div class="stat-card"><span class="stat-label">✋ 未自动化</span><div><span class="stat-value c-gray" id="stat-unautomated">—</span><span class="stat-unit">条</span></div></div>
+</div>
+
+<!-- Main 3-panel -->
+<div id="main">
+
+  <!-- Filter Panel -->
+  <div id="filter-panel">
+    <div class="filter-section-title">🔽 筛选条件</div>
+    <input id="search-input" placeholder="搜索 Case ID / 标题 / 标签" oninput="applyFilters()" />
+    <div class="filter-row">
+      <div class="filter-item"><label>Requirement ID</label>
+        <select id="f-req" class="filter-select" onchange="applyFilters()"><option value="">全部</option></select></div>
+      <div class="filter-item"><label>Type</label>
+        <select id="f-type" class="filter-select" onchange="applyFilters()">
+          <option value="">全部</option><option>API</option><option>E2E</option>
+          <option>Unit</option><option>Visual</option><option>Mixed</option>
+        </select></div>
+    </div>
+    <div class="filter-row">
+      <div class="filter-item"><label>Priority</label>
+        <select id="f-priority" class="filter-select" onchange="applyFilters()">
+          <option value="">全部</option><option>P0</option><option>P1</option><option>P2</option><option>P3</option>
+        </select></div>
+      <div class="filter-item"><label>Severity</label>
+        <select id="f-severity" class="filter-select" onchange="applyFilters()">
+          <option value="">全部</option><option>blocker</option><option>critical</option>
+          <option>major</option><option>minor</option>
+        </select></div>
+    </div>
+    <div class="filter-row">
+      <div class="filter-item"><label>Regression Tier</label>
+        <select id="f-tier" class="filter-select" onchange="applyFilters()">
+          <option value="">全部</option><option>smoke</option><option>sanity</option>
+          <option>regression</option><option>full</option><option>none</option>
+        </select></div>
+      <div class="filter-item"><label>Auto Status</label>
+        <select id="f-auto" class="filter-select" onchange="applyFilters()">
+          <option value="">全部</option><option>not_automated</option><option>planned</option>
+          <option>automated</option><option>flaky</option><option>deprecated</option>
+        </select></div>
+    </div>
+    <div class="filter-row">
+      <div class="filter-item"><label>Environment</label>
+        <select id="f-env" class="filter-select" onchange="applyFilters()"><option value="">全部</option></select></div>
+      <div class="filter-item"><label>变更类型</label>
+        <select id="f-delta" class="filter-select" onchange="applyFilters()">
+          <option value="">全部</option><option>added</option><option>modified</option><option>removed</option>
+        </select></div>
+    </div>
+    <div style="font-size:10px;color:#999;margin-top:2px">状态：</div>
+    <div class="status-group" id="status-group">
+      <div class="status-item" id="si-added" onclick="toggleStatus('added')">
+        <span class="status-dot dot-added"></span> Added
+        <span class="status-count" id="sc-added">0</span>
+      </div>
+      <div class="status-item" id="si-modified" onclick="toggleStatus('modified')">
+        <span class="status-dot dot-modified"></span> Modified
+        <span class="status-count" id="sc-modified">0</span>
+      </div>
+      <div class="status-item" id="si-removed" onclick="toggleStatus('removed')">
+        <span class="status-dot dot-removed"></span> Removed
+        <span class="status-count" id="sc-removed">0</span>
+      </div>
+    </div>
+    <div style="font-size:10px;color:#999;margin-top:4px">Tag</div>
+    <div id="tag-area"><span class="tag-placeholder">选择标签</span></div>
+    <div class="filter-btns">
+      <button class="btn-query" onclick="applyFilters()">查询</button>
+      <button class="btn-reset" onclick="resetFilters()">重置</button>
+    </div>
+  </div>
+
+  <!-- Filter toggle -->
+  <div id="filter-toggle" class="panel-toggle" onclick="toggleFilterPanel()" title="收起/展开筛选">‹</div>
+
+  <!-- Case List Panel -->
+  <div id="list-panel">
+    <div id="list-header">
+      <span id="list-count">用例列表（0）</span>
+      <span id="sort-btn" onclick="toggleSort()">按 Priority 排序 ↑</span>
+    </div>
+    <div id="list-body"></div>
+    <div id="list-pagination">
+      <span class="page-info" id="page-info">共 0 条</span>
+      <div class="page-controls">
+        <div class="page-btns" id="page-btns"></div>
+        <span class="page-size">10 条/页</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- List toggle -->
+  <div id="list-toggle" class="panel-toggle" onclick="toggleListPanel()" title="收起/展开列表">‹</div>
+
+  <!-- Detail Panel -->
+  <div id="detail-panel">
+    <div id="detail-header">
+      <div id="detail-id-row">
+        <span id="detail-case-id"></span>
+        <span id="detail-badges"></span>
+      </div>
+      <div id="detail-title"></div>
+      <div id="detail-tabs">
+        <div class="detail-tab active" id="tab-detail" onclick="switchTab('detail')">Detail</div>
+        <div class="detail-tab" id="tab-yaml" onclick="switchTab('yaml')">YAML 预览</div>
+      </div>
+    </div>
+    <div id="error-banner"></div>
+    <div id="detail-body"></div>
+    <div id="yaml-preview"><pre id="yaml-pre"></pre></div>
+    <div id="detail-empty">← 从列表中选择一个用例</div>
+  </div>
+</div>
+
+<script>
+// ===== State =====
+let allCases = [];
+let filteredCases = [];
+let currentPage = 1;
+const PAGE_SIZE = 10;
+let sortAsc = true;
+let currentChangeId = null;
+let selectedCaseId = null;
+let activeStatuses = new Set(['added', 'modified', 'removed']);
+let selectedTags = new Set();
+let availableTags = new Set();
+let filterCollapsed = false;
+let listCollapsed = false;
+
+// ===== HTML Escaping =====
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ===== Init =====
+document.addEventListener('DOMContentLoaded', () => {
+  updateToggles();
+  loadData();
+});
+
+// ===== Data Loading =====
+async function loadData() {
+  showLoading(true);
+  hideError();
+  try {
+    const [casePaths, changesData] = await Promise.all([
+      fetch('/api/cases').then(r => r.json()),
+      fetch('/api/changes').then(r => r.json()),
+    ]);
+    populateChangeDropdown(changesData.changes || []);
+    await loadCasesFromPaths(casePaths.files || [], null);
+  } catch (e) {
+    showError('加载数据失败：' + e.message);
+  } finally {
+    showLoading(false);
+  }
+}
+
+async function loadChangeData(changeId) {
+  showLoading(true);
+  hideError();
+  try {
+    const data = await fetch('/api/changes/' + encodeURIComponent(changeId)).then(r => r.json());
+    await loadCasesFromPaths(data.files || [], changeId);
+  } catch (e) {
+    showError('加载 Change 数据失败：' + e.message);
+  } finally {
+    showLoading(false);
+  }
+}
+
+async function loadCasesFromPaths(paths, changeId) {
+  const results = await Promise.allSettled(
+    paths.map(p => fetch('/yaml?path=' + encodeURIComponent(p)).then(r => {
+      if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+      return r.text();
+    }))
+  );
+
+  const cases = [];
+  const errors = [];
+
+  results.forEach((result, i) => {
+    if (result.status === 'rejected') {
+      errors.push(paths[i] + ': ' + result.reason);
+      return;
+    }
+    try {
+      const doc = jsyaml.load(result.value);
+      if (!doc) return;
+      const ops = ['added', 'modified', 'removed'];
+      for (const op of ops) {
+        const list = doc[op] || [];
+        for (const c of list) {
+          cases.push({ ...c, _deltaOp: changeId ? op : null, _yamlRaw: result.value });
+        }
+      }
+    } catch (e) {
+      errors.push(paths[i] + ': YAML parse error - ' + e.message);
+    }
+  });
+
+  if (errors.length > 0) {
+    showError('部分文件解析失败：\n' + errors.slice(0, 3).join('\n') + (errors.length > 3 ? `\n...（共 ${errors.length} 个）` : ''));
+  }
+
+  allCases = cases;
+  currentChangeId = changeId;
+  availableTags = new Set(cases.flatMap(c => c.tags || []));
+  buildTagArea();
+  populateEnumFilter('f-req', cases.map(c => c.requirement_id).filter(Boolean));
+  populateEnumFilter('f-env', cases.map(c => c.environment).filter(Boolean));
+  updateStatusCounts();
+  applyFilters();
+  updateLastSync();
+}
+
+function populateEnumFilter(id, values) {
+  const sel = document.getElementById(id);
+  const current = sel.value;
+  const unique = [...new Set(values)].sort();
+  sel.innerHTML = '<option value="">全部</option>' + unique.map(v => `<option value="${escHtml(v)}">${escHtml(v)}</option>`).join('');
+  if (unique.includes(current)) sel.value = current;
+}
+
+function populateChangeDropdown(changes) {
+  const dd = document.getElementById('change-dropdown');
+  const items = [{ id: null, label: '全部（qa/cases）' }, ...changes.map(id => ({ id, label: id }))];
+  dd.innerHTML = items.map(({ id, label }) =>
+    `<div class="change-option ${id === currentChangeId ? 'active' : ''}"
+         data-change-id="${id === null ? '__null__' : escHtml(id)}">${escHtml(label)}</div>`
+  ).join('');
+  dd.onclick = e => {
+    const opt = e.target.closest('.change-option');
+    if (!opt) return;
+    const rawId = opt.dataset.changeId;
+    selectChange(rawId === '__null__' ? null : rawId);
+  };
+}
+
+function updateStatusCounts() {
+  const counts = { added: 0, modified: 0, removed: 0 };
+  allCases.forEach(c => { if (c._deltaOp) counts[c._deltaOp]++; });
+  document.getElementById('sc-added').textContent = counts.added;
+  document.getElementById('sc-modified').textContent = counts.modified;
+  document.getElementById('sc-removed').textContent = counts.removed;
+}
+
+// ===== Change Selector =====
+function toggleChangeDrop() {
+  document.getElementById('change-dropdown').classList.toggle('open');
+}
+
+function selectChange(changeId) {
+  document.getElementById('change-dropdown').classList.remove('open');
+  document.getElementById('change-value').textContent = changeId || '全部（qa/cases）';
+  if (changeId) {
+    loadChangeData(changeId);
+  } else {
+    loadData();
+  }
+}
+
+document.addEventListener('click', e => {
+  if (!document.getElementById('change-selector').contains(e.target)) {
+    document.getElementById('change-dropdown').classList.remove('open');
+  }
+});
+
+// ===== Refresh =====
+function refresh() {
+  selectedCaseId = null;
+  renderDetailEmpty();
+  if (currentChangeId) {
+    loadChangeData(currentChangeId);
+  } else {
+    loadData();
+  }
+}
+
+function updateLastSync() {
+  const now = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  document.getElementById('last-sync').textContent =
+    `最后同步: ${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+}
+
+// ===== UI Helpers =====
+function showLoading(v) {
+  document.getElementById('loading-overlay').classList.toggle('visible', v);
+}
+function showError(msg) {
+  const b = document.getElementById('error-banner');
+  b.textContent = msg; b.style.display = 'block';
+}
+function hideError() {
+  document.getElementById('error-banner').style.display = 'none';
+}
+
+// ===== Collapsible Panels =====
+function getFilterW() { return filterCollapsed ? 0 : 220; }
+function getListW() { return listCollapsed ? 0 : 340; }
+function updateToggles() {
+  const ft = document.getElementById('filter-toggle');
+  const lt = document.getElementById('list-toggle');
+  ft.style.left = getFilterW() + 'px';
+  ft.textContent = filterCollapsed ? '›' : '‹';
+  lt.style.left = (getFilterW() + getListW()) + 'px';
+  lt.textContent = listCollapsed ? '›' : '‹';
+}
+function toggleFilterPanel() {
+  filterCollapsed = !filterCollapsed;
+  const fp = document.getElementById('filter-panel');
+  fp.style.width = filterCollapsed ? '0' : '220px';
+  fp.style.minWidth = filterCollapsed ? '0' : '220px';
+  fp.style.padding = filterCollapsed ? '0' : '10px';
+  fp.style.overflow = filterCollapsed ? 'hidden' : 'auto';
+  fp.style.opacity = filterCollapsed ? '0' : '1';
+  setTimeout(updateToggles, 10);
+}
+function toggleListPanel() {
+  listCollapsed = !listCollapsed;
+  const lp = document.getElementById('list-panel');
+  lp.style.width = listCollapsed ? '0' : '340px';
+  lp.style.minWidth = listCollapsed ? '0' : '340px';
+  lp.style.opacity = listCollapsed ? '0' : '1';
+  setTimeout(updateToggles, 10);
+}
+
+// ===== Tag Area =====
+function buildTagArea() {
+  const area = document.getElementById('tag-area');
+  if (availableTags.size === 0) {
+    area.innerHTML = '<span class="tag-placeholder">无标签</span>';
+    return;
+  }
+  area.innerHTML = [...availableTags].sort().map(t =>
+    `<span class="tag-pill ${selectedTags.has(t) ? 'selected' : ''}" data-tag="${escHtml(t)}">${escHtml(t)}</span>`
+  ).join('');
+  area.onclick = e => {
+    const tag = e.target.dataset.tag;
+    if (tag !== undefined) toggleTag(tag);
+  };
+}
+function toggleTag(tag) {
+  if (selectedTags.has(tag)) selectedTags.delete(tag);
+  else selectedTags.add(tag);
+  buildTagArea();
+  applyFilters();
+}
+
+// ===== Status Filter =====
+function toggleStatus(op) {
+  if (activeStatuses.has(op)) activeStatuses.delete(op);
+  else activeStatuses.add(op);
+  document.getElementById('si-' + op).classList.toggle('inactive', !activeStatuses.has(op));
+  applyFilters();
+}
+
+// ===== Filter Logic =====
+function applyFilters() {
+  const search = document.getElementById('search-input').value.toLowerCase().trim();
+  const req = document.getElementById('f-req').value;
+  const type = document.getElementById('f-type').value;
+  const priority = document.getElementById('f-priority').value;
+  const severity = document.getElementById('f-severity').value;
+  const tier = document.getElementById('f-tier').value;
+  const autoStatus = document.getElementById('f-auto').value;
+  const env = document.getElementById('f-env').value;
+  const delta = document.getElementById('f-delta').value;
+
+  filteredCases = allCases.filter(c => {
+    if (search) {
+      const haystack = [c.case_id, c.title, ...(c.tags || [])].join(' ').toLowerCase();
+      if (!haystack.includes(search)) return false;
+    }
+    if (req && c.requirement_id !== req) return false;
+    if (type && c.type !== type) return false;
+    if (priority && c.priority !== priority) return false;
+    if (severity && c.severity !== severity) return false;
+    if (tier && (c.regression || {}).tier !== tier) return false;
+    if (autoStatus && (c.automation || {}).status !== autoStatus) return false;
+    if (env && c.environment !== env) return false;
+    if (delta && c._deltaOp !== delta) return false;
+    if (selectedTags.size > 0) {
+      const caseTags = new Set(c.tags || []);
+      if (![...selectedTags].every(t => caseTags.has(t))) return false;
+    }
+    if (currentChangeId && c._deltaOp && !activeStatuses.has(c._deltaOp)) return false;
+    return true;
+  });
+
+  currentPage = 1;
+  updateStats();
+  renderList();
+}
+
+function resetFilters() {
+  document.getElementById('search-input').value = '';
+  ['f-req','f-type','f-priority','f-severity','f-tier','f-auto','f-env','f-delta']
+    .forEach(id => { document.getElementById(id).value = ''; });
+  selectedTags.clear();
+  activeStatuses = new Set(['added', 'modified', 'removed']);
+  ['added','modified','removed'].forEach(op => {
+    document.getElementById('si-' + op).classList.remove('inactive');
+  });
+  buildTagArea();
+  applyFilters();
+}
+
+// ===== Stats Update =====
+function updateStats() {
+  const cs = filteredCases;
+  document.getElementById('stat-total').textContent = cs.length;
+  document.getElementById('stat-p0').textContent = cs.filter(c => c.priority === 'P0').length;
+  document.getElementById('stat-p1').textContent = cs.filter(c => c.priority === 'P1').length;
+  document.getElementById('stat-smoke').textContent = cs.filter(c => (c.regression||{}).tier === 'smoke').length;
+  document.getElementById('stat-planned').textContent = cs.filter(c => (c.automation||{}).status === 'planned').length;
+  document.getElementById('stat-automated').textContent = cs.filter(c => (c.automation||{}).status === 'automated').length;
+  document.getElementById('stat-unautomated').textContent =
+    cs.filter(c => (c.automation||{}).required === true && (c.automation||{}).status !== 'automated').length;
+}
+
+// ===== List Rendering =====
+function parseModule(mod) {
+  if (!mod) return ['(未分类)'];
+  return String(mod).split('.');
+}
+
+function buildTree(cases) {
+  const tree = {};
+  for (const c of cases) {
+    const parts = parseModule(c.module);
+    const top = parts[0];
+    const sub = parts.slice(1).join('.') || '—';
+    if (!tree[top]) tree[top] = {};
+    if (!tree[top][sub]) tree[top][sub] = [];
+    tree[top][sub].push(c);
+  }
+  return tree;
+}
+
+const PRIO_ORDER = { P0: 0, P1: 1, P2: 2, P3: 3 };
+function sortCases(cases) {
+  return [...cases].sort((a, b) => {
+    const pa = PRIO_ORDER[a.priority] ?? 9;
+    const pb = PRIO_ORDER[b.priority] ?? 9;
+    return sortAsc ? pa - pb : pb - pa;
+  });
+}
+
+function toggleSort() {
+  sortAsc = !sortAsc;
+  document.getElementById('sort-btn').textContent = '按 Priority 排序 ' + (sortAsc ? '↑' : '↓');
+  renderList();
+}
+
+function renderList() {
+  const sorted = sortCases(filteredCases);
+  const total = sorted.length;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  if (currentPage > totalPages) currentPage = totalPages;
+  const pageItems = sorted.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
+  document.getElementById('list-count').textContent = `用例列表（${total}）`;
+  document.getElementById('page-info').textContent = `共 ${total} 条`;
+  renderPagination(totalPages);
+
+  const tree = buildTree(pageItems);
+  const body = document.getElementById('list-body');
+  body.innerHTML = '';
+
+  for (const [topMod, subs] of Object.entries(tree)) {
+    const topCount = Object.values(subs).reduce((s, arr) => s + arr.length, 0);
+    const moduleDiv = document.createElement('div');
+    moduleDiv.className = 'tree-module';
+
+    const hd = document.createElement('div');
+    hd.className = 'tree-module-hd';
+    hd.innerHTML = `<span>▾</span><span>📁</span><span></span><span class="tree-count">${topCount}</span>`;
+    hd.children[2].textContent = topMod;
+    let open = true;
+    hd.onclick = () => {
+      open = !open;
+      hd.firstElementChild.textContent = open ? '▾' : '▸';
+      subContainer.style.display = open ? '' : 'none';
+    };
+    moduleDiv.appendChild(hd);
+
+    const subContainer = document.createElement('div');
+    for (const [subMod, cases] of Object.entries(subs)) {
+      const subHd = document.createElement('div');
+      subHd.className = 'tree-sub-hd';
+      subHd.innerHTML = `<span>▾</span><span>📂</span><span></span><span class="tree-count" style="margin-left:auto">${cases.length}</span>`;
+      subHd.children[2].textContent = subMod;
+      let subOpen = true;
+      const caseContainer = document.createElement('div');
+      subHd.onclick = () => {
+        subOpen = !subOpen;
+        subHd.firstElementChild.textContent = subOpen ? '▾' : '▸';
+        caseContainer.style.display = subOpen ? '' : 'none';
+      };
+      subContainer.appendChild(subHd);
+
+      for (const c of cases) {
+        const row = document.createElement('div');
+        row.className = 'case-row' + (c.case_id === selectedCaseId ? ' selected' : '');
+        row.dataset.caseId = c.case_id;
+
+        const deltaHtml = c._deltaOp
+          ? `<span class="delta-tag delta-${c._deltaOp}">${c._deltaOp}</span>`
+          : '';
+        const prioClass = 'prio prio-' + (c.priority || 'P3');
+        row.innerHTML = `
+          <span class="case-id-cell"></span>
+          <span class="case-title-cell" title="${escHtml(c.title||'')}"></span>
+          <span class="${prioClass}">${escHtml(c.priority || '—')}</span>
+          ${deltaHtml}`;
+        row.querySelector('.case-id-cell').textContent = c.case_id || '—';
+        row.querySelector('.case-title-cell').textContent = c.title || '—';
+        row.onclick = () => selectCase(c);
+        caseContainer.appendChild(row);
+      }
+      subContainer.appendChild(caseContainer);
+    }
+    moduleDiv.appendChild(subContainer);
+    body.appendChild(moduleDiv);
+  }
+
+  if (pageItems.length === 0) {
+    body.innerHTML = '<div style="padding:24px;text-align:center;color:#999">暂无匹配用例</div>';
+  }
+}
+
+function renderPagination(totalPages) {
+  const btns = document.getElementById('page-btns');
+  btns.innerHTML = '';
+
+  const prev = document.createElement('div');
+  prev.className = 'page-btn';
+  prev.textContent = '‹';
+  prev.onclick = () => { if (currentPage > 1) { currentPage--; renderList(); } };
+  btns.appendChild(prev);
+
+  const range = getPaginationRange(currentPage, totalPages);
+  for (const p of range) {
+    const btn = document.createElement('div');
+    btn.className = 'page-btn' + (p === currentPage ? ' active' : '');
+    btn.textContent = p;
+    btn.onclick = () => { currentPage = p; renderList(); };
+    btns.appendChild(btn);
+  }
+
+  const next = document.createElement('div');
+  next.className = 'page-btn';
+  next.textContent = '›';
+  next.onclick = () => { if (currentPage < totalPages) { currentPage++; renderList(); } };
+  btns.appendChild(next);
+}
+
+function getPaginationRange(current, total) {
+  if (total <= 5) return Array.from({ length: total }, (_, i) => i + 1);
+  const pages = new Set([1, total, current]);
+  if (current > 1) pages.add(current - 1);
+  if (current < total) pages.add(current + 1);
+  return [...pages].sort((a, b) => a - b);
+}
+
+// ===== Detail Panel =====
+function fieldRow(icon, label, value) {
+  if (!value || (Array.isArray(value) && value.length === 0)) return '';
+  let html;
+  if (Array.isArray(value)) {
+    html = '<ul>' + value.map(v => `<li>${escHtml(String(v))}</li>`).join('') + '</ul>';
+  } else {
+    html = escHtml(String(value));
+  }
+  return `<div class="field-row">
+    <span class="field-icon">${icon}</span>
+    <span class="field-label">${escHtml(label)}</span>
+    <span class="field-value">${html}</span>
+  </div>`;
+}
+function selectCase(c) {
+  selectedCaseId = c.case_id;
+  document.querySelectorAll('.case-row').forEach(r => {
+    r.classList.toggle('selected', r.dataset.caseId === c.case_id);
+  });
+  renderDetail(c);
+}
+
+function switchTab(tab) {
+  const isDetail = tab === 'detail';
+  document.getElementById('tab-detail').classList.toggle('active', isDetail);
+  document.getElementById('tab-yaml').classList.toggle('active', !isDetail);
+  document.getElementById('detail-body').style.display = isDetail ? 'block' : 'none';
+  document.getElementById('yaml-preview').style.display = isDetail ? 'none' : 'block';
+  document.getElementById('detail-empty').style.display = 'none';
+}
+
+function renderDetailEmpty() {
+  document.getElementById('detail-case-id').textContent = '';
+  document.getElementById('detail-badges').innerHTML = '';
+  document.getElementById('detail-title').textContent = '';
+  document.getElementById('detail-body').innerHTML = '';
+  document.getElementById('detail-body').style.display = 'none';
+  document.getElementById('yaml-preview').style.display = 'none';
+  document.getElementById('detail-empty').style.display = 'flex';
+  document.getElementById('tab-detail').classList.add('active');
+  document.getElementById('tab-yaml').classList.remove('active');
+}
+
+function badge(text, cls) {
+  return text ? `<span class="badge ${cls}">${text}</span>` : '';
+}
+
+function severityBadge(s) {
+  const map = { blocker:'badge-red', critical:'badge-red', major:'badge-orange', minor:'badge-gray' };
+  return badge(s, map[s] || 'badge-gray');
+}
+
+function priorityBadge(p) {
+  const map = { P0:'badge-red', P1:'badge-orange', P2:'badge-blue', P3:'badge-green' };
+  return badge(p, map[p] || 'badge-gray');
+}
+
+function renderDetail(c) {
+  document.getElementById('detail-empty').style.display = 'none';
+  document.getElementById('detail-body').style.display = 'block';
+  document.getElementById('yaml-preview').style.display = 'none';
+  document.getElementById('tab-detail').classList.add('active');
+  document.getElementById('tab-yaml').classList.remove('active');
+
+  document.getElementById('detail-case-id').textContent = '📄 ' + (c.case_id || '—');
+
+  const autoStatus = (c.automation || {}).status || '';
+  const tier = (c.regression || {}).tier || '';
+  document.getElementById('detail-badges').innerHTML = [
+    priorityBadge(c.priority),
+    severityBadge(c.severity),
+    badge(c.type, 'badge-blue'),
+    tier ? badge(tier, 'badge-purple') : '',
+    autoStatus ? badge(autoStatus, autoStatus === 'automated' ? 'badge-green' : 'badge-gray') : '',
+    c._deltaOp ? badge(c._deltaOp, c._deltaOp === 'added' ? 'badge-green' : c._deltaOp === 'modified' ? 'badge-orange' : 'badge-red') : '',
+  ].join(' ');
+
+  document.getElementById('detail-title').textContent = c.title || '—';
+
+  const tags = (c.tags || []).map(t => badge(t, 'badge-blue')).join(' ');
+  const metaHtml = `
+    <div class="meta-grid">
+      <div class="meta-item"><label>Module</label><div class="meta-val">${c.module || '—'}</div></div>
+      <div class="meta-item"><label>Tags</label><div class="meta-val">${tags || '—'}</div></div>
+    </div>`;
+
+  const risk = c.risk || {};
+  const riskHtml = (risk.likelihood || risk.impact || risk.level) ? `
+    <div class="field-row">
+      <span class="field-icon">⚠️</span>
+      <span class="field-label">Risk</span>
+      <span class="field-value">${escHtml(risk.rationale || '')}
+        <div class="risk-metrics">
+          ${risk.likelihood ? `<div class="risk-metric"><div class="rm-label">Likelihood</div><div class="rm-val">${escHtml(String(risk.likelihood))}</div></div>` : ''}
+          ${risk.impact ? `<div class="risk-metric"><div class="rm-label">Impact</div><div class="rm-val">${escHtml(String(risk.impact))}</div></div>` : ''}
+          ${risk.level ? `<div class="risk-metric"><div class="rm-label">Level</div><div><span class="risk-level-badge rl-${escHtml(String(risk.level))}">${escHtml(String(risk.level))}</span></div></div>` : ''}
+        </div>
+      </span>
+    </div>` : '';
+
+  const auto = c.automation || {};
+  const autoHtml = auto.target ? fieldRow('🤖', 'Automation',
+    `${auto.target} 自动化：${auto.status || ''}（framework: ${auto.framework || '—'}）` +
+    (auto.suggested_file ? `，建议文件：${auto.suggested_file}` : '')) : '';
+
+  const reg = c.regression || {};
+  const regHtml = reg.tier ? fieldRow('🔁', 'Regression',
+    `${reg.tier}（${reg.selection_reason ? reg.selection_reason.join('、') : ''}）`) : '';
+
+  const trace = c.trace || {};
+  const traceHtml = Object.keys(trace).length > 0
+    ? fieldRow('📎', 'Traceability', Object.entries(trace).map(([k,v]) => `${k}: ${v}`).join('；'))
+    : '';
+
+  document.getElementById('detail-body').innerHTML = metaHtml +
+    fieldRow('🎯', 'Objective', c.objective) +
+    fieldRow('📝', 'Summary', c.summary) +
+    fieldRow('🔒', 'Preconditions', c.preconditions) +
+    fieldRow('🧪', 'Test Data', c.test_data) +
+    fieldRow('📋', 'Steps', c.steps) +
+    fieldRow('✅', 'Assertions', c.assertions) +
+    fieldRow('🔄', 'Postconditions', c.postconditions) +
+    fieldRow('⚡', 'Edge Cases', c.edge_cases) +
+    fieldRow('🔗', 'Related Cases', c.related_cases) +
+    riskHtml + autoHtml + regHtml + traceHtml;
+
+  document.getElementById('yaml-pre').textContent = c._yamlRaw || '';
+}
+</script>
+</body>
+</html>
