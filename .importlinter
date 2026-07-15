@@ -28,3 +28,11 @@ source_modules =
     assurance_agent.artifacts
 forbidden_modules =
     assurance_agent.workflow
+
+[importlinter:contract:driver-layer]
+name = workflow.driver sits above orchestration and core
+type = layers
+layers =
+    assurance_agent.workflow.driver
+    assurance_agent.workflow.orchestration
+    assurance_agent.workflow.core
