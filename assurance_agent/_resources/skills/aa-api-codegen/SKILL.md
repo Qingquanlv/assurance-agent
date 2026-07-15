@@ -695,13 +695,3 @@ aa run --change <change-id>
 ```
 
 If tests fail, use `aa-inspect` to analyze; do not auto-modify assertions or merge fixes within this skill.
-
-
-Hi Mohit,
-
-I understand the two-pool system, but I’m struggling to reconcile $400 being fully consumed with my actual usage pattern. I don’t believe I’ve made enough named-model requests this cycle to burn through $400 worth of API credits.
-
-Could you provide a detailed breakdown or export of my API pool usage for this billing period (model, request count, estimated cost per call)? I’d like to verify the consumption before enabling on-demand.
-
-Thanks,
-Qingquan

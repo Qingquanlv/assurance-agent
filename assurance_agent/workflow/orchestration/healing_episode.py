@@ -14,6 +14,9 @@ from assurance_agent.workflow.orchestration.gates import build_evidence_scope, c
 from assurance_agent.workflow.orchestration.healing_state import HealingStateSnapshot
 from assurance_agent.workflow.orchestration.schema import ReadEntry, WorkflowSchema
 
+# Recorded healing judgments that satisfy report/archive `ready_when` routing.
+_HEALING_TERMINAL = {"resolved", "not_needed", "skipped", "exhausted", "failed"}
+
 
 class HealingAttemptIntent(BaseModel):
     episode_id: str = Field(min_length=1)
@@ -216,6 +219,22 @@ def project_healing_episode(
                     stage="entry",
                     terminal_kind="stopped",
                     reason="healing-entry-gate=stop",
+                )
+            if (
+                entry == "skip"
+                and gate_result.matched_rule is not None
+                and gate_result.matched_rule.startswith("skip_when:")
+                and healing.status not in _HEALING_TERMINAL
+            ):
+                # Healing is definitively not required (execution passed, or no
+                # eligible failures). Emit a single `complete(not_needed)` so the
+                # driver records the decision (`aa state heal`) and report's
+                # ready_when unblocks. Idempotent: once recorded, derive_healing_state
+                # reports `not_needed` and this branch is skipped.
+                return HealingEpisodeSnapshot(
+                    state="terminal",
+                    stage="entry",
+                    next_actions=[HealingEpisodeAction(kind="complete", outcome="not_needed")],
                 )
             return HealingEpisodeSnapshot(state="inactive", stage=None)
         proposal = _latest(events, "phase_outcome_committed", phase="fix-proposal", after=episode_floor)

@@ -36,7 +36,19 @@ def derive_healing_state(change_dir: Path) -> HealingStateSnapshot:
         None,
     )
     if baseline is None:
-        return HealingStateSnapshot()
+        # No episode pinned → attempts stay 0, but the orchestrator may already
+        # have recorded a terminal judgment (e.g. `not_needed` on the happy path)
+        # via `aa state heal`, which appends a heal_transition event. Honor the
+        # latest one so report/archive routing sees the recorded decision instead
+        # of a stale `pending` that would block the DAG forever.
+        latest_transition = max(
+            (e for e in events if e.get("type") == "heal_transition"),
+            key=_event_seq,
+            default=None,
+        )
+        if latest_transition is None:
+            return HealingStateSnapshot()
+        return HealingStateSnapshot(status=str(latest_transition["to"]))
     baseline_seq = _event_seq(baseline)
     ended = any(
         _event_seq(e) > baseline_seq

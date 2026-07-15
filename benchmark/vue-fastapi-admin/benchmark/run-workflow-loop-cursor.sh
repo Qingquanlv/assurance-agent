@@ -80,13 +80,15 @@ if [ -z "${CURSOR_NIGHTLY_AGENT:-}" ]; then
   [ -n "$CURSOR_MODEL" ] && CURSOR_NIGHTLY_AGENT="$CURSOR_NIGHTLY_AGENT --model $CURSOR_MODEL"
 fi
 
+# Default: one item only, so a first end-to-end smoke can finish before scaling up.
+# Override with e.g.:
+#   BENCHMARK_ITEMS=(
+#     "RET-dept-management:requirements/dept-management.md"
+#     "RET-user-management:requirements/user-management.md"
+#   ) ./benchmark/run-workflow-loop-cursor.sh
 if [ -z "${BENCHMARK_ITEMS+x}" ] || [ "${#BENCHMARK_ITEMS[@]}" -eq 0 ]; then
   BENCHMARK_ITEMS=(
     "RET-dept-management:requirements/dept-management.md"
-    "RET-user-management:requirements/user-management.md"
-    "RET-api-management:requirements/api-management.md"
-    "RET-role-management:requirements/role-management.md"
-    "RET-menu-management:requirements/menu-management.md"
   )
 fi
 
@@ -129,6 +131,31 @@ else:
 PY
 }
 
+# Resolve the checkpoint phase that needs a human decision, from either the
+# driver pause (break_at / healing await-human sets driver.paused_on) OR a
+# needs_human_review terminal, which the engine records in status.terminal.phase
+# (not driver.paused_on). Without the terminal fallback, review gates are never
+# auto-decided and the loop stalls.
+current_review_phase() {
+  local change_id="$1" phase kind
+  phase="$(paused_phase "$change_id")"
+  if [ -n "$phase" ]; then
+    printf '%s' "$phase"
+    return 0
+  fi
+  kind="$(terminal_kind "$change_id")"
+  [ "$kind" = "needs_human_review" ] || { printf ''; return 0; }
+  python3 - "$RUN_DIR/${change_id}.status.json" <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    print(""); raise SystemExit(0)
+terminal = data.get("terminal")
+print(terminal.get("phase") or "" if isinstance(terminal, dict) else "")
+PY
+}
+
 gate_for_phase() {
   case "$1" in
     api-plan-review) echo "api-plan-review-gate" ;;
@@ -144,7 +171,7 @@ maybe_auto_decide() {
   local change_id="$1"
   [ "$AUTO_DECIDE_BENCHMARK" = "true" ] || return 1
   local phase gate review_json decision reason
-  phase="$(paused_phase "$change_id")"
+  phase="$(current_review_phase "$change_id")"
   [ -n "$phase" ] || return 1
   gate="$(gate_for_phase "$phase")"
   [ -n "$gate" ] || return 1
@@ -166,7 +193,7 @@ maybe_auto_decide() {
 
 break_fixer_loop() {
   local change_id="$1"
-  python3 - <<PY || return 0
+  python3 - "$change_id" <<'PY' || return 0
 import json, os, subprocess, sys
 cid = sys.argv[1]
 try:
@@ -179,7 +206,7 @@ try:
     st = json.loads(proc.stdout)
 except Exception:
     raise SystemExit(0)
-nxt = [x.get("phase") for x in (st.get("next") or []) if isinstance(x, dict)]
+nxt = [x.get("phase_id") for x in (st.get("next_dispatch") or []) if isinstance(x, dict)]
 if not nxt or not set(nxt) <= {"api-plan-fix", "e2e-plan-fix"}:
     raise SystemExit(0)
 for gate, phase, summary in [
@@ -193,7 +220,6 @@ for gate, phase, summary in [
             "--reason", f"benchmark: break fixer loop after {summary}",
         ])
 PY
-  "$change_id"
 }
 
 recover_dead_end() {
@@ -340,8 +366,21 @@ YAML
     echo "generation_mode: autonomous"
   } >"$cdir/proposal.md"
 
-  # Pre-stamp registry pass so registry-gate does not stop before skill-registry-check runs.
-  cat >"$cdir/workflow-state.yaml" <<'YAML'
+  # Seed the canonical workflow-state so the deterministic Python engine can start:
+  #   - params: IDENTICAL to the driver's --params so `aa status` (which reads
+  #     state.params) computes the SAME phase DAG the driver dispatches; otherwise
+  #     terminal detection disagrees with the run.
+  #   - run_context.interaction_mode=autonomous so case-design-gate passes without
+  #     an interactive user approval (the benchmark is headless/autonomous).
+  #   - skill_registry_check=pass so registry-gate does not stop the run (the
+  #     packaged driver ships every workflow skill).
+  local params_json
+  params_json="$(driver_params_json)"
+  cat >"$cdir/workflow-state.yaml" <<YAML
+params: $params_json
+run_context:
+  interaction_mode: autonomous
+  orchestrator_skill: aa-workflow
 phases:
   skill_registry_check:
     status: pass
@@ -758,9 +797,7 @@ for item in "${BENCHMARK_ITEMS[@]}"; do
       break
     fi
 
-    if [ "$(paused_phase "$change_id")" != "" ]; then
-      maybe_auto_decide "$change_id" || true
-    fi
+    maybe_auto_decide "$change_id" || true
     break_fixer_loop "$change_id" || true
     recover_dead_end "$change_id" || true
 
