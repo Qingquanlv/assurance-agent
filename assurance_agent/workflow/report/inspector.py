@@ -16,7 +16,7 @@ from assurance_agent.artifacts.models import (
     QualityGateResult,
 )
 from assurance_agent.identifiers import assert_change_id_safe
-from assurance_agent.workflow.execution.evidence import ExecutionEvidence, load_execution_evidence
+from assurance_agent.workflow.execution.evidence import EvidenceError, ExecutionEvidence, load_execution_evidence
 from assurance_agent.workflow.execution.results import TargetResult
 from assurance_agent.workflow.report.failure_classifier import classify_failure
 
@@ -29,13 +29,43 @@ class InspectResult(BaseModel):
     quality_gate_path: str
 
 
-def inspect_change(project_root: Path, change_id: str) -> InspectResult:
+def _load_for_inspection(
+    execution_dir: Path, batch_id: str | None,
+) -> tuple[ExecutionEvidence, str, str | None]:
+    if batch_id is not None:
+        return load_execution_evidence(execution_dir, batch_id=batch_id), "primary", None
+    primary_error: str | None = None
+    try:
+        primary = load_execution_evidence(execution_dir)
+        if not primary.integrity_issues and primary.quality_gate is not None:
+            return primary, "primary", None
+        primary_error = "latest execution evidence is incomplete"
+    except EvidenceError as err:
+        primary_error = str(err)
+    runs = execution_dir / "runs"
+    candidates = (p.name for p in runs.iterdir() if p.is_dir()) if runs.is_dir() else ()
+    for candidate in sorted(candidates, reverse=True):
+        try:
+            evidence = load_execution_evidence(execution_dir, batch_id=candidate)
+        except EvidenceError:
+            continue
+        if not evidence.integrity_issues and evidence.quality_gate is not None:
+            return evidence, "compat_fallback", primary_error
+    raise EvidenceError(primary_error or "no readable execution evidence")
+
+
+def inspect_change(
+    project_root: Path,
+    change_id: str,
+    *,
+    batch_id: str | None = None,
+) -> InspectResult:
     assert_change_id_safe(change_id)
     change_base = project_root / "qa" / "changes" / change_id
     execution_dir = change_base / "execution"
     inspect_dir = change_base / "inspect"
 
-    evidence = load_execution_evidence(execution_dir)
+    evidence, inspect_mode, compat_reason = _load_for_inspection(execution_dir, batch_id)
     gate = evidence.quality_gate
     if gate is None:
         from assurance_agent.workflow.report.quality_gate import build_quality_gate
@@ -50,8 +80,11 @@ def inspect_change(project_root: Path, change_id: str) -> InspectResult:
     if evidence.integrity_issues:
         integrity = _integrity_failures(evidence)
         _complete(integrity)
-        analysis = _analysis(change_id, manifest_path, evidence.batch_id, "FAIL",
-                             "failed", "failed", integrity, integrity, [], [], [])
+        analysis = _analysis(
+            change_id, manifest_path, evidence.batch_id, "FAIL",
+            "failed", "failed", integrity, integrity, [], [], [],
+            inspect_mode, compat_reason,
+        )
         gate = gate.model_copy(update={"final_status": "FAIL"})
         _write(inspect_dir, change_id, analysis, gate)
         return _result(analysis, gate, inspect_dir)
@@ -69,8 +102,11 @@ def inspect_change(project_root: Path, change_id: str) -> InspectResult:
     review = [f for f in failures if f.needs_review]
     known = [f for f in failures if f.category == "known_product_issue"]
     status = "no_failures" if not failures else "analyzed"
-    analysis = _analysis(change_id, manifest_path, evidence.batch_id, gate.final_status,
-                         "completed", status, failures, hard, review, known, coverage_gaps)
+    analysis = _analysis(
+        change_id, manifest_path, evidence.batch_id, gate.final_status,
+        "completed", status, failures, hard, review, known, coverage_gaps,
+        inspect_mode, compat_reason,
+    )
     _write(inspect_dir, change_id, analysis, gate)
     return _result(analysis, gate, inspect_dir)
 
@@ -156,11 +192,15 @@ def _complete(failures: list[FailureEntry]) -> None:
 
 
 def _analysis(change_id, manifest_path, batch_id, final_status, inspection_status, status,  # noqa: ANN001
-              failures, hard, review, known, coverage_gaps) -> FailureAnalysis:
+              failures, hard, review, known, coverage_gaps,
+              inspect_mode: str = "primary", compat_fallback_reason: str | None = None) -> FailureAnalysis:
     return FailureAnalysis(
         schema_version="1.0", change_id=change_id, source_manifest=manifest_path,
         inspection_status=inspection_status, batch_id=batch_id, source_batch_id=batch_id,
-        final_status=final_status, inspect_mode="primary", classification_performed=status != "failed",
+        final_status=final_status,
+        inspect_mode=inspect_mode,  # type: ignore[arg-type]
+        compat_fallback_reason=compat_fallback_reason,
+        classification_performed=status != "failed",
         status=status, failures=failures, hard_fails=hard, needs_review=review,
         known_product_issues=known, coverage_gaps=coverage_gaps or None,
     )
