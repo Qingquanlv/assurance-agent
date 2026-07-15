@@ -18,6 +18,13 @@ from assurance_agent.artifacts.models.explore import (
     FactBaselineFull,
     FactBaselineUnavailable,
 )
+from assurance_agent.artifacts.models.healing import (
+    ApplySummary,
+    FixProposal,
+    FixProposalItem,
+    FixProposalSummary,
+    SafetyCheck,
+)
 from assurance_agent.artifacts.models.inspect import (
     CoverageGapEntry,
     FailureAnalysis,
@@ -50,6 +57,7 @@ from assurance_agent.artifacts.models.state import (
 
 __all__ = [
     "Advisory",
+    "ApplySummary",
     "CaseEntry",
     "CaseRemoval",
     "CaseYaml",
@@ -65,6 +73,9 @@ __all__ = [
     "FailureEntry",
     "FailureEvidence",
     "FailureSeverity",
+    "FixProposal",
+    "FixProposalItem",
+    "FixProposalSummary",
     "FunctionalCounts",
     "FunctionalDimension",
     "GateStatus",
@@ -85,6 +96,7 @@ __all__ = [
     "Review",
     "ReviewDecision",
     "RunContext",
+    "SafetyCheck",
     "SelectedTargets",
     "WorkflowGates",
     "WorkflowPhases",
