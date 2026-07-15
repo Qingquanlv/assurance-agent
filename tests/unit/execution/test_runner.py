@@ -1,0 +1,91 @@
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from assurance_agent.config import AaConfig
+from assurance_agent.workflow.execution import runner as runner_mod
+from assurance_agent.workflow.execution import runners as runners_mod
+from assurance_agent.workflow.execution.runner import run_change
+
+
+def make_config() -> AaConfig:
+    return AaConfig.model_validate({
+        "version": 1,
+        "sources": {"frontend": "./frontend", "backend": "./backend"},
+        "qa": {"cases": "./qa/cases", "changes": "./qa/changes"},
+        "tests": {"root": "./tests", "api": "./tests/api", "e2e": "./tests/e2e"},
+        "frameworks": {"api": {"enabled": True, "name": "pytest"},
+                       "e2e": {"enabled": True, "name": "playwright"}},
+        "generation": {"prd_input_mode": "prompt", "e2e": {"default_pom": False}},
+        "execution": {"entry": "cli", "self_healing": {"mode": "proposal-only"}},
+        "coverage": {"enabled": False, "gate_mode": "warn", "threshold": {"line": 70, "branch": 60}},
+        "performance": {"enabled": False},
+    })
+
+
+def stub_pytest_run(outcome_by_target: dict[str, str]):
+    """subprocess.run stub keyed by which target dir appears in argv."""
+    def fake_run(args, **kwargs):
+        report_file = next(a.split("=", 1)[1] for a in args if a.startswith("--json-report-file="))
+        target = "api" if "tests/api" in args else "e2e" if "tests/e2e" in args else "fuzz"
+        outcome = outcome_by_target.get(target, "passed")
+        tests = [{
+            "nodeid": f"tests/{target}/t.py::test_tc_{target}_001__x",
+            "outcome": outcome,
+            "call": {"outcome": outcome, "duration": 0.0,
+                     "longrepr": "" if outcome == "passed" else "AssertionError: boom"},
+        }]
+        Path(report_file).parent.mkdir(parents=True, exist_ok=True)
+        Path(report_file).write_text(json.dumps({"tests": tests}), encoding="utf-8")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+    return fake_run
+
+
+@pytest.fixture
+def change_dir(tmp_path: Path) -> Path:
+    (tmp_path / "tests" / "api").mkdir(parents=True)
+    (tmp_path / "tests" / "e2e").mkdir(parents=True)
+    change = tmp_path / "qa" / "changes" / "CH-1"
+    change.mkdir(parents=True)
+    (change / "workflow-state.yaml").write_text(
+        "selected_targets:\n  api: true\n  e2e: true\n  fuzz: false\n  performance: false\n",
+        encoding="utf-8",
+    )
+    return change
+
+
+def test_run_change_all_pass_final_status_pass(tmp_path: Path, change_dir: Path, monkeypatch) -> None:
+    monkeypatch.setattr(runner_mod, "generate_batch_id", lambda: "20260715-000000")
+    monkeypatch.setattr(runners_mod.subprocess, "run", stub_pytest_run({"api": "passed", "e2e": "passed"}))
+    manifest = run_change(tmp_path, change_dir, make_config())
+    assert manifest.batch_id == "20260715-000000"
+    assert manifest.final_status == "PASS"
+    assert manifest.selected_targets.api is True
+    assert (change_dir / "execution" / "runs" / "20260715-000000" / "api-result.json").is_file()
+    assert (change_dir / "execution" / "execution-manifest.yaml").is_file()
+
+
+def test_run_change_api_fail_final_status_fail(tmp_path: Path, change_dir: Path, monkeypatch) -> None:
+    monkeypatch.setattr(runner_mod, "generate_batch_id", lambda: "20260715-000001")
+    monkeypatch.setattr(runners_mod.subprocess, "run", stub_pytest_run({"api": "failed", "e2e": "passed"}))
+    manifest = run_change(tmp_path, change_dir, make_config())
+    assert manifest.final_status == "FAIL"
+
+
+def test_run_change_missing_test_dirs_all_skipped(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(runner_mod, "generate_batch_id", lambda: "20260715-000002")
+
+    def boom(*a, **k):
+        raise AssertionError("no subprocess when all layers skip")
+    monkeypatch.setattr(runners_mod.subprocess, "run", boom)
+
+    change = tmp_path / "qa" / "changes" / "CH-2"
+    change.mkdir(parents=True)
+    (change / "workflow-state.yaml").write_text(
+        "selected_targets:\n  api: true\n  e2e: false\n  fuzz: false\n  performance: false\n",
+        encoding="utf-8",
+    )
+    manifest = run_change(tmp_path, change, make_config())
+    assert manifest.final_status == "SKIPPED"
