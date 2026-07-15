@@ -18,6 +18,8 @@ from assurance_agent.workflow.execution.runners import (
     run_pytest_target,
 )
 from assurance_agent.workflow.execution.selection import resolve_selected_targets
+from assurance_agent.workflow.execution.tree_hash import hash_product_tree, hash_test_tree
+from assurance_agent.workflow.healing.safety import load_product_code_roots
 from assurance_agent.workflow.report.quality_gate import build_quality_gate
 
 
@@ -35,9 +37,15 @@ def _test_dir(config: AaConfig, attr: str, default: str) -> str:
     return _strip(value) if isinstance(value, str) else default
 
 
-def run_change(project_root: Path, change_dir: Path, config: AaConfig) -> ExecutionManifest:
+def run_change(
+    project_root: Path,
+    change_dir: Path,
+    config: AaConfig,
+    *,
+    batch_id: str | None = None,
+) -> ExecutionManifest:
     change_id = change_dir.name
-    batch_id = generate_batch_id()
+    batch_id = batch_id or generate_batch_id()
     execution_dir = change_dir / "execution"
     batch_dir = execution_dir / "runs" / batch_id
 
@@ -81,10 +89,16 @@ def run_change(project_root: Path, change_dir: Path, config: AaConfig) -> Execut
     )
     summary = _build_summary(change_id, batch_id, api, e2e, fuzz, coverage, performance, quality_gate)
 
+    test_tree = hash_test_tree(project_root)
+    product_tree = hash_product_tree(project_root, load_product_code_roots(project_root))
+
     return publish_execution_evidence(
         execution_dir=execution_dir, change_id=change_id, batch_id=batch_id,
         selected_targets=selected, api=api, e2e=e2e, fuzz=fuzz, coverage=coverage,
         performance=performance, quality_gate=quality_gate, summary=summary,
+        tests_tree_sha256=test_tree.aggregate,
+        test_files_sha256=test_tree.files,
+        product_tree_sha256=product_tree.aggregate,
     )
 
 

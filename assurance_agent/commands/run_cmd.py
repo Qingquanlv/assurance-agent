@@ -6,15 +6,30 @@ import click
 from assurance_agent.config import AaConfig, load_config
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import assert_change_id_safe
-from assurance_agent.workflow.core.events import append_event_best_effort
-from assurance_agent.workflow.execution.runner import run_change
+from assurance_agent.workflow.core.events import (
+    EventWriteError,
+    HumanDecisionEvent,
+    append_event_best_effort,
+    append_event_strict,
+)
+from assurance_agent.workflow.core.snapshot import capture_files, restore_files
+from assurance_agent.workflow.execution.runner import generate_batch_id, run_change
+from assurance_agent.workflow.execution.tree_hash import hash_test_tree
+from assurance_agent.workflow.healing.override_evidence import write_test_changes_override_evidence
+from assurance_agent.workflow.healing.safety import (
+    HealingGuardError,
+    assert_product_tree_unchanged_in_healing,
+    assert_test_tree_unchanged_or_healing,
+)
 
 
 @click.command("run")
 @click.option("--change", "change_id", required=True, help="Change ID (e.g. REQ-002-user-logout).")
 @click.option("--rerun-reason", "rerun_reason", default=None,
               help="Required when re-running after execution is already done.")
-def run_command(change_id: str, rerun_reason: str | None) -> None:
+@click.option("--allow-test-changes", "allow_test_changes", is_flag=True, default=False,
+              help="Allow test-tree changes with override evidence and audit reason.")
+def run_command(change_id: str, rerun_reason: str | None, allow_test_changes: bool) -> None:
     """Execute API/E2E/Fuzz/Performance tests for a change and write normalized results."""
     project_root = Path.cwd()
     try:
@@ -31,8 +46,10 @@ def run_command(change_id: str, rerun_reason: str | None) -> None:
     click.secho(f"\naa run — change: {change_id}\n", bold=True)
 
     try:
-        manifest = _execute(project_root, change_dir, config, change_id, rerun_reason)
-    except AaError as err:
+        manifest = _execute(
+            project_root, change_dir, config, change_id, rerun_reason, allow_test_changes,
+        )
+    except (AaError, HealingGuardError) as err:
         click.secho(f"Run failed: {err}", fg="red")
         raise SystemExit(1) from err
 
@@ -40,13 +57,58 @@ def run_command(change_id: str, rerun_reason: str | None) -> None:
     raise SystemExit(_exit_code(manifest))
 
 
-def _execute(project_root: Path, change_dir: Path, config: AaConfig, change_id: str,
-             rerun_reason: str | None):
+def _execute(
+    project_root: Path,
+    change_dir: Path,
+    config: AaConfig,
+    change_id: str,
+    rerun_reason: str | None,
+    allow_test_changes: bool,
+):
+    integrity = assert_test_tree_unchanged_or_healing(
+        project_root, change_id, allow_test_changes=allow_test_changes,
+    )
+    assert_product_tree_unchanged_in_healing(project_root, change_id)
+
+    batch_id = generate_batch_id()
+    batch_dir = change_dir / "execution" / "runs" / batch_id
+
+    if integrity.tests_changed and allow_test_changes:
+        if not rerun_reason:
+            raise HealingGuardError(
+                "--allow-test-changes requires --rerun-reason for audit trail"
+            )
+        current_tree = hash_test_tree(project_root)
+        override_json = batch_dir / "test-changes-override.json"
+        override_diff = batch_dir / "test-changes-override.diff"
+        events_path = change_dir / "events.jsonl"
+        snapshots = capture_files((override_json, override_diff, events_path))
+        try:
+            evidence = write_test_changes_override_evidence(
+                project_root=project_root,
+                change_id=change_id,
+                batch_id=batch_id,
+                batch_dir=batch_dir,
+                reason=rerun_reason,
+                integrity=current_tree,
+            )
+            append_event_strict(change_dir, HumanDecisionEvent(
+                checkpoint="test-tree-guard",
+                action="allow_test_changes",
+                reason=rerun_reason,
+                who="cli",
+                review_file=evidence.rel_path,
+                review_sha256=evidence.sha256,
+            ))
+        except EventWriteError:
+            restore_files(snapshots)
+            raise
+
     append_event_best_effort(change_dir, {
         "source": "run", "type": "execution_start",
         **({"rerun_reason": rerun_reason} if rerun_reason else {}),
     })
-    manifest = run_change(project_root, change_dir, config)
+    manifest = run_change(project_root, change_dir, config, batch_id=batch_id)
     append_event_best_effort(change_dir, {
         "source": "run", "type": "execution_manifest_written",
         "batch_id": manifest.batch_id, "final_status": manifest.final_status,

@@ -65,6 +65,9 @@ def publish_execution_evidence(
     performance: PerformanceResult | None,
     quality_gate: QualityGateResult,
     summary: str,
+    tests_tree_sha256: str | None = None,
+    test_files_sha256: dict[str, str] | None = None,
+    product_tree_sha256: str | None = None,
 ) -> ExecutionManifest:
     batch_dir = execution_dir / "runs" / batch_id
     batch_dir.mkdir(parents=True, exist_ok=True)
@@ -94,6 +97,9 @@ def publish_execution_evidence(
         batch_id=batch_id,
         selected_targets=selected_targets,
         result_files=result_files,
+        tests_tree_sha256=tests_tree_sha256,
+        test_files_sha256=test_files_sha256,
+        product_tree_sha256=product_tree_sha256,
         final_status=quality_gate.final_status,
     )
     (batch_dir / "execution-manifest.yaml").write_text(
