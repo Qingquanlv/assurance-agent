@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from assurance_agent.exceptions import AaError
@@ -212,3 +213,198 @@ def collect_gate_refs(expr: Expr) -> list[str]:
             if isinstance(val, str):
                 refs.append(val)
     return refs
+
+
+class _Missing:
+    _instance: _Missing | None = None
+
+    def __new__(cls) -> _Missing:
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "MISSING"
+
+
+MISSING = _Missing()
+
+FileExistsResolver = Callable[[str], bool]
+GateResolver = Callable[[str], str]
+
+
+class Scope:
+    def __init__(
+        self,
+        vars: dict[str, object],
+        *,
+        file_exists: FileExistsResolver | None = None,
+        gate_verdict: GateResolver | None = None,
+    ) -> None:
+        self._vars = vars
+        self.file_exists = file_exists
+        self.gate_verdict = gate_verdict
+
+    def lookup(self, name: str) -> object:
+        return self._vars[name] if name in self._vars else MISSING
+
+    def child(self, element: object) -> Scope:
+        base = dict(self._vars)
+        if isinstance(element, dict):
+            base.update(element)
+        return Scope(base, file_exists=self.file_exists, gate_verdict=self.gate_verdict)
+
+
+def _to_bool(v: object) -> bool | None:
+    if v is True:
+        return True
+    if v is False:
+        return False
+    return None  # MISSING/其它 → 三值 unknown
+
+
+def _typed_eq(a: object, b: object) -> bool:
+    if a is None or b is None:
+        return a is b
+    if isinstance(a, bool) or isinstance(b, bool):
+        return isinstance(a, bool) and isinstance(b, bool) and a == b
+    ta = "num" if isinstance(a, (int, float)) else type(a).__name__
+    tb = "num" if isinstance(b, (int, float)) else type(b).__name__
+    if ta != tb:
+        return False
+    return a == b
+
+
+def evaluate(expr: Expr, scope: Scope) -> object:  # noqa: C901 - 语言解释器
+    if isinstance(expr, Literal):
+        return expr.value
+    if isinstance(expr, ListLit):
+        return list(expr.elements)
+    if isinstance(expr, Ident):
+        return scope.lookup(expr.name)
+    if isinstance(expr, Member):
+        obj = evaluate(expr.obj, scope)
+        if not isinstance(obj, dict):
+            return MISSING
+        return obj[expr.prop] if expr.prop in obj else MISSING
+    if isinstance(expr, Subscript):
+        obj = evaluate(expr.obj, scope)
+        idx = expr.index
+        if isinstance(idx, str):
+            return obj[idx] if isinstance(obj, dict) and idx in obj else MISSING
+        # int 下标：list 越界/负数按缺失（fail-closed），不做 Python 负索引语义
+        if isinstance(idx, int) and isinstance(obj, list) and 0 <= idx < len(obj):
+            return obj[idx]
+        return MISSING
+    if isinstance(expr, Not):
+        b = _to_bool(evaluate(expr.operand, scope))
+        return MISSING if b is None else (not b)
+    if isinstance(expr, BoolOp):
+        return _eval_boolop(expr, scope)
+    if isinstance(expr, Compare):
+        return _eval_compare(expr, scope)
+    if isinstance(expr, Call):
+        return _eval_call(expr, scope)
+    raise DslError(f"cannot evaluate node: {expr!r}")
+
+
+def _eval_boolop(expr: BoolOp, scope: Scope) -> object:
+    a = _to_bool(evaluate(expr.left, scope))
+    if expr.op == "and":
+        if a is False:
+            return False
+        b = _to_bool(evaluate(expr.right, scope))
+        if a is True:
+            return MISSING if b is None else b
+        return False if b is False else MISSING  # a is None
+    # or
+    if a is True:
+        return True
+    b = _to_bool(evaluate(expr.right, scope))
+    if a is False:
+        return MISSING if b is None else b
+    return True if b is True else MISSING  # a is None
+
+
+def _eval_compare(expr: Compare, scope: Scope) -> object:
+    if expr.op in ("in", "not in"):
+        left = evaluate(expr.left, scope)
+        right = evaluate(expr.right, scope)
+        if left is MISSING or not isinstance(right, list):
+            return MISSING
+        found = any(_typed_eq(left, el) for el in right)
+        return found if expr.op == "in" else (not found)
+
+    left = evaluate(expr.left, scope)
+    right = evaluate(expr.right, scope)
+    if left is MISSING or right is MISSING:
+        return MISSING
+    if expr.op == "==":
+        return _typed_eq(left, right)
+    if expr.op == "!=":
+        return not _typed_eq(left, right)
+    both_num = isinstance(left, (int, float)) and not isinstance(left, bool) and \
+        isinstance(right, (int, float)) and not isinstance(right, bool)
+    both_str = isinstance(left, str) and isinstance(right, str)
+    if not both_num and not both_str:
+        return MISSING
+    if expr.op == "<":
+        return left < right  # type: ignore[operator]
+    if expr.op == "<=":
+        return left <= right  # type: ignore[operator]
+    if expr.op == ">":
+        return left > right  # type: ignore[operator]
+    return left >= right  # type: ignore[operator]
+
+
+def _eval_call(expr: Call, scope: Scope) -> object:
+    callee = expr.callee
+    if callee == "len":
+        v = evaluate(expr.args[0], scope)
+        if isinstance(v, (str, list, dict)):
+            return len(v)
+        return MISSING
+    if callee == "defined":
+        return evaluate(expr.args[0], scope) is not MISSING
+    if callee == "file_exists":
+        p = evaluate(expr.args[0], scope)
+        if not isinstance(p, str):
+            return MISSING
+        if scope.file_exists is None:
+            raise DslError("file_exists() called but no resolver was provided")
+        return scope.file_exists(p)
+    if callee == "gate":
+        gid = evaluate(expr.args[0], scope)
+        if not isinstance(gid, str):
+            return MISSING
+        if scope.gate_verdict is None:
+            raise DslError("gate() called but no resolver was provided")
+        return {"verdict": scope.gate_verdict(gid)}
+    # any / all / count
+    coll = evaluate(expr.args[0], scope)
+    pred = expr.args[1]
+    if not isinstance(coll, list):
+        return MISSING
+    if callee == "count":
+        return sum(1 for el in coll if _to_bool(evaluate(pred, scope.child(el))) is True)
+    saw_missing = False
+    if callee == "all":
+        for el in coll:
+            r = _to_bool(evaluate(pred, scope.child(el)))
+            if r is False:
+                return False
+            if r is None:
+                saw_missing = True
+        return MISSING if saw_missing else True
+    # any
+    for el in coll:
+        r = _to_bool(evaluate(pred, scope.child(el)))
+        if r is True:
+            return True
+        if r is None:
+            saw_missing = True
+    return MISSING if saw_missing else False
+
+
+def is_satisfied(expr: Expr, scope: Scope) -> bool:
+    return evaluate(expr, scope) is True
