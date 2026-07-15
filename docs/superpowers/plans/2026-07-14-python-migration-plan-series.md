@@ -325,6 +325,8 @@ aa retro nightly collect --sut <dir> --agent <cmd>  # 退出码 0 成功 / 10 no
 # 产物: qa/retro/<retro-id>/{context.json,proposals.json,retro-summary.md,review-queue.md}
 ```
 
+M8 落地补充：`context.json` 顶层增 `signal_count`；nightly phase B 进程内直调 `build_retro_context`（不 shell out `aa retro`）；run 产物在 `eval/out/runs/`。
+
 Eval 重复执行的每个 attempt 必须使用隔离的 SUT 副本；scorer 对 workflow-state / execution-manifest 使用 M2 typed model 校验。`calibrate` 必须实际调用 judge 并写 judge evidence。Retro archive 对注册产物按 M2 model fail-closed 解析，历史坏文件只能降为缺失，不能把 raw dict 注入聚合器。
 
 ### M9 文档 / CI / benchmark

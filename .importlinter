@@ -2,7 +2,7 @@
 root_package = assurance_agent
 
 [importlinter:contract:layers]
-name = commands depend on domain, never the reverse
+name = commands depend on eval domain, never the reverse
 type = layers
 layers =
     assurance_agent.cli
@@ -13,6 +13,21 @@ layers =
     assurance_agent.artifacts
     assurance_agent.config
     assurance_agent.resources
+
+[importlinter:contract:retro-layers]
+name = commands depend on retro domain, never the reverse
+type = layers
+layers =
+    assurance_agent.commands
+    assurance_agent.retro
+    assurance_agent.workflow
+
+[importlinter:contract:eval-retro-independence]
+name = eval and retro must not import each other
+type = independence
+modules =
+    assurance_agent.eval
+    assurance_agent.retro
 
 [importlinter:contract:core-below-orchestration]
 name = workflow.core must not import workflow.orchestration
