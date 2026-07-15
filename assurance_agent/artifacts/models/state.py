@@ -16,6 +16,7 @@ class PhaseState(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     status: str | None = None
+    attempt_id: str | None = None
     skill_loaded: bool | None = None
     skill_md_path: str | None = None
     skill_loaded_at: str | None = None

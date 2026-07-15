@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from tests.helpers_aa import write_aa_config
+
 import pytest
 import yaml
 
@@ -33,6 +35,7 @@ def _manifest(change_dir: Path, tests_sha: str, files: dict[str, str], product_s
 
 
 def test_tests_changed_without_healing_is_blocked(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
     _write(tmp_path / "tests" / "api" / "test_x.py", "def test_x():\n    assert 1\n")
     change_dir = tmp_path / "qa" / "changes" / "CH-1"
     prior = hash_test_tree(tmp_path)
@@ -43,6 +46,7 @@ def test_tests_changed_without_healing_is_blocked(tmp_path: Path) -> None:
 
 
 def test_allow_test_changes_override_permits(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
     _write(tmp_path / "tests" / "api" / "test_x.py", "def test_x():\n    assert 1\n")
     change_dir = tmp_path / "qa" / "changes" / "CH-1"
     prior = hash_test_tree(tmp_path)
@@ -54,12 +58,14 @@ def test_allow_test_changes_override_permits(tmp_path: Path) -> None:
 
 
 def test_no_prior_manifest_is_noop(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
     (tmp_path / "qa" / "changes" / "CH-1").mkdir(parents=True)
     result = assert_test_tree_unchanged_or_healing(tmp_path, "CH-1", allow_test_changes=False)
     assert result.tests_changed is False
 
 
 def test_product_changed_during_healing_is_blocked(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
     from assurance_agent.workflow.core.events import append_event_strict
 
     _write(tmp_path / "app" / "main.py", "v1\n")

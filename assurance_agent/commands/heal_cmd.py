@@ -11,8 +11,11 @@ import click
 from pydantic import ValidationError
 
 from assurance_agent.artifacts.models import FailureAnalysis, FixProposal, SafetyCheck
-from assurance_agent.identifiers import UnsafeIdentifierError, assert_change_id_safe
+from assurance_agent.change_location import ChangeNotFoundError, resolve_change
+from assurance_agent.exceptions import AaError
+from assurance_agent.identifiers import UnsafeIdentifierError
 from assurance_agent.workflow.core.exit_codes import EXIT_COMPLETED, EXIT_ERROR, EXIT_HUMAN_REVIEW
+from assurance_agent.workflow.core.progression import ProgressionError
 from assurance_agent.workflow.healing.safety import HealingGuardError, record_apply_summary
 
 
@@ -23,11 +26,10 @@ def heal_group() -> None:
 
 def _change_base(change_id: str) -> Path:
     try:
-        assert_change_id_safe(change_id)
-    except UnsafeIdentifierError as err:
+        return resolve_change(Path.cwd(), change_id).path
+    except (UnsafeIdentifierError, ChangeNotFoundError) as err:
         click.secho(str(err), fg="red")
         raise SystemExit(EXIT_ERROR) from err
-    return Path.cwd() / "qa" / "changes" / change_id
 
 
 def _load_json(path: Path) -> dict | None:
@@ -134,7 +136,10 @@ def record_apply(change_id: str, target: str, proposal_ids: tuple[str, ...]) -> 
         raise SystemExit(1)
     try:
         result = record_apply_summary(Path.cwd(), change_id, target, list(proposal_ids))
-    except (HealingGuardError, UnsafeIdentifierError) as err:
+    except ProgressionError as err:
+        click.secho(f"record-apply failed: {err}", fg="red")
+        raise SystemExit(EXIT_ERROR) from err
+    except (HealingGuardError, UnsafeIdentifierError, AaError) as err:
         click.secho(f"record-apply failed: {err}", fg="red")
         raise SystemExit(1) from err
 

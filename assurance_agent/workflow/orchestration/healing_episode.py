@@ -8,7 +8,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, Field, model_validator
 
 from assurance_agent.artifacts.models import WorkflowState
-from assurance_agent.workflow.core.events import read_events
+from assurance_agent.workflow.core.events import Ledger, event_seq
 from assurance_agent.workflow.orchestration.dsl import is_satisfied, parse_expression
 from assurance_agent.workflow.orchestration.gates import build_evidence_scope, check_gate
 from assurance_agent.workflow.orchestration.healing_state import HealingStateSnapshot
@@ -75,41 +75,20 @@ class HealingEpisodeSnapshot(BaseModel):
     reason: str | None = None
 
 
-def _seq(event: dict[str, object]) -> int:
-    seq = event.get("seq")
-    return seq if isinstance(seq, int) else 0
-
-
-def _latest(
-    events: list[dict[str, object]],
-    event_type: str,
-    *,
-    phase: str | None = None,
-    after: int = 0,
-):
-    matches = [
-        e
-        for e in events
-        if e.get("type") == event_type and (phase is None or e.get("phase") == phase) and _seq(e) > after
-    ]
-    return max(matches, key=_seq, default=None)
-
-
-def _episode_floor(events: list[dict[str, object]], healing: HealingStateSnapshot) -> int:
+def _episode_floor(ledger: Ledger, healing: HealingStateSnapshot) -> int:
     if healing.episode_id:
-        baselines = [
-            e
-            for e in events
-            if e.get("type") == "healing_entry_baseline_pinned" and e.get("episode_id") == healing.episode_id
-        ]
-        return _seq(max(baselines, key=_seq)) if baselines else 0
-    terminal = [
+        baseline = ledger.latest(
+            type="healing_entry_baseline_pinned", episode_id=healing.episode_id
+        )
+        return event_seq(baseline) if baseline else 0
+    transitions = [
         e
-        for e in events
-        if (e.get("type") == "heal_transition" and e.get("to") in {"resolved", "exhausted", "failed"})
-        or (e.get("type") == "human_decision" and e.get("action") == "stop")
+        for e in ledger.filter(type="heal_transition")
+        if e.get("to") in {"resolved", "exhausted", "failed"}
     ]
-    return _seq(max(terminal, key=_seq)) if terminal else 0
+    stops = ledger.filter(type="human_decision", action="stop")
+    terminal = transitions + stops
+    return event_seq(max(terminal, key=event_seq)) if terminal else 0
 
 
 def _dispatch(
@@ -194,16 +173,13 @@ def project_healing_episode(
     }
     data["phases"] = phases
     state = WorkflowState.model_validate(data)
-    events = read_events(change_dir)
-    episode_floor = _episode_floor(events, healing)
-    allocations = [
-        e
-        for e in events
-        if e.get("type") == "healing_attempt_allocated"
-        and healing.episode_id is not None
-        and e.get("episode_id") == healing.episode_id
-    ]
-    allocation = max(allocations, key=_seq, default=None)
+    ledger = Ledger(change_dir)
+    episode_floor = _episode_floor(ledger, healing)
+    allocation = (
+        ledger.latest(type="healing_attempt_allocated", episode_id=healing.episode_id)
+        if healing.episode_id is not None
+        else None
+    )
 
     if allocation is None:
         gate_result = check_gate(schema, "healing-entry-gate", change_dir, state, merged)
@@ -237,7 +213,9 @@ def project_healing_episode(
                     next_actions=[HealingEpisodeAction(kind="complete", outcome="not_needed")],
                 )
             return HealingEpisodeSnapshot(state="inactive", stage=None)
-        proposal = _latest(events, "phase_outcome_committed", phase="fix-proposal", after=episode_floor)
+        proposal = ledger.latest(
+            type="phase_outcome_committed", phase="fix-proposal", after_seq=episode_floor
+        )
         if proposal is None:
             return _dispatch("fix-proposal", "proposal", 0)
         reads = [ReadEntry(path=p, alias=a) for a, p in schema.produces_alias_map().items()]
@@ -257,7 +235,7 @@ def project_healing_episode(
             next_attempt=1,
         )
 
-    allocation_seq = _seq(allocation)
+    allocation_seq = event_seq(allocation)
     attempt = healing.attempts_used
     proposal_doc = json.loads((change_dir / "healing/fix-proposal.json").read_text())
     targets = {
@@ -267,10 +245,11 @@ def project_healing_episode(
     }
     applied = {
         str(e.get("target"))
-        for e in events
-        if e.get("type") == "heal_record_apply"
-        and _seq(e) > allocation_seq
-        and e.get("source_batch_id") == allocation.get("source_batch_id")
+        for e in ledger.filter(
+            type="heal_record_apply",
+            after_seq=allocation_seq,
+            source_batch_id=allocation.get("source_batch_id"),
+        )
     }
     missing = sorted(targets - applied)
     if missing:
@@ -294,10 +273,14 @@ def project_healing_episode(
             reason=f"fixer-safety-gate={safety}",
         )
 
-    rerun = _latest(events, "phase_outcome_committed", phase="healing-rerun", after=allocation_seq)
+    rerun = ledger.latest(
+        type="phase_outcome_committed", phase="healing-rerun", after_seq=allocation_seq
+    )
     if rerun is None:
         return _dispatch("healing-rerun", "rerun", attempt)
-    reinspect = _latest(events, "phase_outcome_committed", phase="healing-reinspect", after=_seq(rerun))
+    reinspect = ledger.latest(
+        type="phase_outcome_committed", phase="healing-reinspect", after_seq=event_seq(rerun)
+    )
     if reinspect is None:
         return _dispatch("healing-reinspect", "reinspect", attempt)
 
@@ -318,7 +301,9 @@ def project_healing_episode(
             terminal_kind="stopped",
             reason=f"healing attempts exhausted: {attempt}/{maximum}",
         )
-    proposal = _latest(events, "phase_outcome_committed", phase="fix-proposal", after=_seq(reinspect))
+    proposal = ledger.latest(
+        type="phase_outcome_committed", phase="fix-proposal", after_seq=event_seq(reinspect)
+    )
     if proposal is None:
         return _dispatch("fix-proposal", "proposal", attempt)
     return _allocate_snapshot(

@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from tests.helpers_aa import write_aa_config
+
 import yaml
 from click.testing import CliRunner
 
@@ -18,6 +20,7 @@ phases:
 
 
 def make_change(change_id: str = "CH-1") -> Path:
+    write_aa_config(Path.cwd())
     change_dir = Path("qa/changes") / change_id
     change_dir.mkdir(parents=True)
     (change_dir / "workflow-state.yaml").write_text(STATE, encoding="utf-8")
@@ -27,6 +30,7 @@ def make_change(change_id: str = "CH-1") -> Path:
 def test_decide_missing_change_exits_1() -> None:
     runner = CliRunner()
     with runner.isolated_filesystem():
+        write_aa_config(Path.cwd())
         result = runner.invoke(
             main,
             [
@@ -100,12 +104,20 @@ def test_decide_stop_marks_terminal() -> None:
         assert isinstance(state["decisions"][-1]["state_at_stop"]["next"], list)
 
 
-def test_decide_strict_event_failure_rolls_back_and_exits_40() -> None:
+def test_decide_strict_event_failure_rolls_back_and_exits_40(monkeypatch) -> None:
+    from assurance_agent.workflow.core.events import EventWriteError
+
+    def fail_append(*_a, **_k) -> None:
+        raise EventWriteError("simulated")
+
+    monkeypatch.setattr(
+        "assurance_agent.workflow.core.progression.append_event_strict",
+        fail_append,
+    )
     runner = CliRunner()
     with runner.isolated_filesystem():
         change_dir = make_change()
         before = (change_dir / "workflow-state.yaml").read_text()
-        (change_dir / "events.jsonl").mkdir()  # 不可写 -> EventWriteError
         result = runner.invoke(
             main,
             [
@@ -122,6 +134,7 @@ def test_decide_strict_event_failure_rolls_back_and_exits_40() -> None:
         )
         assert result.exit_code == 40
         assert (change_dir / "workflow-state.yaml").read_text() == before
+        assert not (change_dir / "events.jsonl").exists()
 
 
 def test_decide_empty_reason_rejected() -> None:

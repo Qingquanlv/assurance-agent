@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from tests.helpers_aa import write_aa_config
+
 from click.testing import CliRunner
 
 from assurance_agent.cli import main
@@ -12,6 +14,7 @@ def _write(path: Path, payload: dict) -> None:
 
 
 def _change(root: Path) -> Path:
+    write_aa_config(root)
     change = root / "qa" / "changes" / "CH-1"
     change.mkdir(parents=True)
     return change

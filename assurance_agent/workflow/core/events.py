@@ -115,6 +115,51 @@ def _events_file(change_dir: Path) -> Path:
     return change_dir / EVENTS_RELPATH
 
 
+def event_seq(event: Mapping[str, object]) -> int:
+    seq = event.get("seq")
+    return seq if isinstance(seq, int) else 0
+
+
+class Ledger:
+    """Sequence-aware query interface over a Change's events.jsonl."""
+
+    def __init__(self, change_dir: Path) -> None:
+        self._change_dir = change_dir
+
+    def all(self) -> list[dict[str, object]]:
+        return read_events(self._change_dir)
+
+    def filter(
+        self,
+        *,
+        type: str | None = None,
+        after_seq: int | None = None,
+        **attrs: object,
+    ) -> list[dict[str, object]]:
+        out: list[dict[str, object]] = []
+        for event in self.all():
+            if type is not None and event.get("type") != type:
+                continue
+            if after_seq is not None and event_seq(event) <= after_seq:
+                continue
+            if any(event.get(key) != value for key, value in attrs.items()):
+                continue
+            out.append(event)
+        return out
+
+    def latest(
+        self,
+        *,
+        type: str | None = None,
+        after_seq: int | None = None,
+        **attrs: object,
+    ) -> dict[str, object] | None:
+        matches = self.filter(type=type, after_seq=after_seq, **attrs)
+        if not matches:
+            return None
+        return max(matches, key=event_seq)
+
+
 def read_events(change_dir: Path) -> list[dict[str, object]]:
     file = _events_file(change_dir)
     if not file.exists():

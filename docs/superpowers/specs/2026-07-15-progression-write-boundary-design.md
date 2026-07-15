@@ -1,7 +1,7 @@
 # progression 深模块：state-commit 协议下沉设计
 
 日期：2026-07-15
-状态：已获用户批准（grilling 全树走完，Q1–Q8 决策见下表）；已纳入两轮架构评审修订（并发隔离、strict writer 收口、guard 校验、crash-prefix reconciliation、重放幂等、rollback 失败分类、write_file 约束、record_decision 收口、退出码冻结）；待实施
+状态：已实施（2026-07-15）；grilling Q1–Q8 决策见下表；两轮架构评审修订已纳入
 关联：修订 `2026-07-14-python-migration-design.md` 第 4 节「M6 driver 是唯一事务写边界」条款（见第 7 节）
 
 ## 1. 背景与问题

@@ -5,7 +5,8 @@ from pathlib import Path
 
 import click
 
-from assurance_agent.identifiers import UnsafeIdentifierError, assert_change_id_safe
+from assurance_agent.change_location import ChangeNotFoundError, resolve_change
+from assurance_agent.identifiers import UnsafeIdentifierError
 from assurance_agent.workflow.driver.adapter import DriverError
 from assurance_agent.workflow.driver.driver_state import read_driver_state
 from assurance_agent.workflow.driver.headless_adapter import HeadlessAdapter
@@ -158,11 +159,10 @@ def workflow_run(
 def workflow_status(change_id: str, as_json: bool) -> None:
     """Show driver progress from the driver-state file."""
     try:
-        assert_change_id_safe(change_id)
-    except UnsafeIdentifierError as err:
+        change_dir = resolve_change(Path.cwd(), change_id).path
+    except (UnsafeIdentifierError, ChangeNotFoundError) as err:
         click.secho(str(err), fg="red")
         raise SystemExit(EXIT_ERROR) from err
-    change_dir = Path.cwd() / "qa" / "changes" / change_id
     driver = read_driver_state(change_dir)
     if as_json:
         click.echo(json.dumps({"driver": driver.model_dump() if driver else None}, indent=2))

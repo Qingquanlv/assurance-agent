@@ -134,6 +134,7 @@ def _source_and_dir_checks(root: Path, cfg: AaConfig) -> list[CheckResult]:
     dirs = [
         ("dir.qa.cases", cfg.qa.cases, "qa/cases"),
         ("dir.qa.changes", cfg.qa.changes, "qa/changes"),
+        ("dir.qa.archive", cfg.qa.archive, "qa/archive"),
         ("dir.tests.api", cfg.tests.api, "tests/api"),
         ("dir.tests.e2e", cfg.tests.e2e, "tests/e2e"),
         ("dir.tests.helpers", cfg.tests.helpers, "tests/helpers"),

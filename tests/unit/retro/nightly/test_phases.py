@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tests.helpers_aa import write_aa_config
+
 from assurance_agent.retro.nightly.phase_a import enumerate_candidates, has_required_evidence
 from assurance_agent.retro.nightly.phase_d import (
     build_review_queue_markdown,
@@ -17,6 +19,7 @@ from tests.unit.retro.archive_fixtures import make_archived_change
 
 
 def test_has_required_evidence(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
     root = make_archived_change(tmp_path, "CH-1", failures=[])
     assert has_required_evidence(root) is True
     (root / "events.jsonl").unlink()
@@ -24,6 +27,7 @@ def test_has_required_evidence(tmp_path: Path) -> None:
 
 
 def test_enumerate_candidates_skips_consumed_and_non_terminal(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
     make_archived_change(tmp_path, "CH-A", failures=[])
     make_archived_change(tmp_path, "CH-B", failures=[])
     state = {"consumed_changes": {"CH-A": {"terminal": True}}}
@@ -37,6 +41,7 @@ def test_enumerate_candidates_skips_consumed_and_non_terminal(tmp_path: Path) ->
 
 
 def test_partition_forwards_for_review(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
     proposals = [
         RetroProposal(id="P-1", apply_kind="memory_append", body="x", eval_suite="s"),
         RetroProposal(id="P-2", apply_kind="memory_append", body="y", eval_suite="s"),

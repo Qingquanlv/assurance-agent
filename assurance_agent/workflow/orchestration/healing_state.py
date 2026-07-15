@@ -7,14 +7,9 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field
 
-from assurance_agent.workflow.core.events import read_events
+from assurance_agent.workflow.core.events import Ledger, event_seq
 
 _TERMINAL = {"resolved", "not_needed", "skipped", "exhausted", "failed"}
-
-
-def _event_seq(event: dict[str, object]) -> int:
-    seq = event.get("seq")
-    return seq if isinstance(seq, int) else 0
 
 
 class HealingStateSnapshot(BaseModel):
@@ -30,50 +25,33 @@ class HealingStateProvider(Protocol):
 
 
 def derive_healing_state(change_dir: Path) -> HealingStateSnapshot:
-    events = read_events(change_dir)
-    baseline = next(
-        (e for e in reversed(events) if e.get("type") == "healing_entry_baseline_pinned"),
-        None,
-    )
+    ledger = Ledger(change_dir)
+    baseline = ledger.latest(type="healing_entry_baseline_pinned")
     if baseline is None:
         # No episode pinned → attempts stay 0, but the orchestrator may already
         # have recorded a terminal judgment (e.g. `not_needed` on the happy path)
         # via `aa state heal`, which appends a heal_transition event. Honor the
         # latest one so report/archive routing sees the recorded decision instead
         # of a stale `pending` that would block the DAG forever.
-        latest_transition = max(
-            (e for e in events if e.get("type") == "heal_transition"),
-            key=_event_seq,
-            default=None,
-        )
+        latest_transition = ledger.latest(type="heal_transition")
         if latest_transition is None:
             return HealingStateSnapshot()
         return HealingStateSnapshot(status=str(latest_transition["to"]))
-    baseline_seq = _event_seq(baseline)
+    baseline_seq = event_seq(baseline)
     ended = any(
-        _event_seq(e) > baseline_seq
-        and (
-            (e.get("type") == "heal_transition" and e.get("to") in _TERMINAL)
-            or (e.get("type") == "human_decision" and e.get("action") == "stop")
-        )
-        for e in events
-    )
+        e.get("to") in _TERMINAL
+        for e in ledger.filter(type="heal_transition", after_seq=baseline_seq)
+    ) or bool(ledger.filter(type="human_decision", action="stop", after_seq=baseline_seq))
     if ended:
         return HealingStateSnapshot(status="not_needed")
 
     episode_id = str(baseline["episode_id"])
-    allocations = [
-        e
-        for e in events
-        if e.get("type") == "healing_attempt_allocated" and e.get("episode_id") == episode_id
-    ]
+    allocations = ledger.filter(type="healing_attempt_allocated", episode_id=episode_id)
     unique = {str(e["operation_id"]): e for e in allocations}
-    latest = max(unique.values(), key=_event_seq, default=None)
-    after_allocation = _event_seq(latest) if latest else baseline_seq
-    apply_events = [
-        e for e in events if e.get("type") == "heal_record_apply" and _event_seq(e) > after_allocation
-    ]
-    transitions = [e for e in events if e.get("type") == "heal_transition" and _event_seq(e) > baseline_seq]
+    latest = max(unique.values(), key=event_seq, default=None)
+    after_allocation = event_seq(latest) if latest else baseline_seq
+    apply_events = ledger.filter(type="heal_record_apply", after_seq=after_allocation)
+    transitions = ledger.filter(type="heal_transition", after_seq=baseline_seq)
     status = str(transitions[-1]["to"]) if transitions else "pending"
     return HealingStateSnapshot(
         status=status,

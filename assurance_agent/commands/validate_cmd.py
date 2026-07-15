@@ -7,8 +7,8 @@ from assurance_agent.artifacts.validate import (
     ValidationReport,
     validate_change,
 )
+from assurance_agent.change_location import resolve_change
 from assurance_agent.exceptions import AaError
-from assurance_agent.identifiers import assert_change_id_safe
 
 
 @click.command("validate")
@@ -19,9 +19,8 @@ from assurance_agent.identifiers import assert_change_id_safe
 def validate_command(change_id: str, phase: str | None, artifact: str | None, as_json: bool) -> None:
     """Validate per-change YAML/JSON artifacts against their schemas (deterministic, no LLM)."""
     try:
-        assert_change_id_safe(change_id)
-        change_dir = Path.cwd() / "qa" / "changes" / change_id
-        report = validate_change(change_dir, phase=phase, artifact=artifact)
+        loc = resolve_change(Path.cwd(), change_id)
+        report = validate_change(loc.path, phase=phase, artifact=artifact)
     except UnknownPhaseError as err:
         raise click.UsageError(str(err)) from err  # click exits 2
     except AaError as err:

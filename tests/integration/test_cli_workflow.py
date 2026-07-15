@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from tests.helpers_aa import write_aa_config
+
 from click.testing import CliRunner
 
 import assurance_agent.commands.workflow_cmd as wf
@@ -66,6 +68,7 @@ def test_workflow_run_opencode_requires_server_exit_40() -> None:
 
 def test_workflow_status_reads_driver_state_json() -> None:
     with CliRunner().isolated_filesystem():
+        write_aa_config(Path.cwd())
         change_dir = Path("qa/changes/CH-1")
         change_dir.mkdir(parents=True)
         state = create_initial_driver_state(directory=".")
@@ -80,6 +83,8 @@ def test_workflow_status_reads_driver_state_json() -> None:
 
 def test_workflow_status_no_driver_state_json_null() -> None:
     with CliRunner().isolated_filesystem():
+        write_aa_config(Path.cwd())
+        (Path("qa/changes/CH-1")).mkdir(parents=True)
         result = CliRunner().invoke(main, ["workflow", "status", "--change", "CH-1", "--json"])
         assert result.exit_code == 0
         assert json.loads(result.output)["driver"] is None

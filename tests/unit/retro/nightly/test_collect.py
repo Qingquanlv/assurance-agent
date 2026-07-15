@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from tests.helpers_aa import write_aa_config
+
 from assurance_agent.retro.nightly.driver import collect_nightly
 from assurance_agent.retro.nightly.exit_codes import (
     NIGHTLY_FAILURE,
@@ -44,6 +46,7 @@ def _write_proposals(sut: Path, retro_id: str) -> None:
 
 
 def test_collect_success_exit_0(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
     sut = tmp_path
     make_archived_change(sut, "CH-1", failures=[{"classification": "assertion"}], gate_pushbacks=1)
 
@@ -62,6 +65,7 @@ def test_collect_success_exit_0(tmp_path: Path) -> None:
 
 
 def test_collect_no_changes_exit_10(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
     (tmp_path / "qa" / "archive").mkdir(parents=True)
 
     def agent_runner(cmd: str, retro_dir: Path) -> int:
@@ -72,6 +76,7 @@ def test_collect_no_changes_exit_10(tmp_path: Path) -> None:
 
 
 def test_collect_zero_signals_exit_10(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
     sut = tmp_path
     make_archived_change(sut, "CH-1", failures=[], gate_pushbacks=0, apply_status="none")
     change_root = sut / "qa" / "archive" / "CH-1"
@@ -88,6 +93,7 @@ def test_collect_zero_signals_exit_10(tmp_path: Path) -> None:
 
 
 def test_collect_agent_failure_exit_40(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
     sut = tmp_path
     make_archived_change(sut, "CH-1", failures=[{"classification": "assertion"}])
 
@@ -99,6 +105,7 @@ def test_collect_agent_failure_exit_40(tmp_path: Path) -> None:
 
 
 def test_collect_dry_run_stops_before_agent_exit_0(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
     sut = tmp_path
     make_archived_change(sut, "CH-1", failures=[{"classification": "assertion"}])
 

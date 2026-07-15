@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from tests.helpers_aa import write_aa_config
+
 import pytest
 
 from assurance_agent.artifacts.models import CoverageThreshold, SelectedTargets
@@ -10,6 +12,8 @@ from assurance_agent.workflow.report.quality_gate import build_quality_gate
 
 
 def _publish(root: Path, batch_id: str, *, failed: bool) -> None:
+    write_aa_config(root)
+    (root / "qa" / "changes" / "CH-1").mkdir(parents=True, exist_ok=True)
     cases = [
         CaseResult(
             case_id="TC_API_001",

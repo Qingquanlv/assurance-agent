@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from tests.helpers_aa import write_aa_config
+
 import yaml
 
 from assurance_agent.eval import runner as runner_mod
@@ -53,10 +55,12 @@ def _seed_suite(project_root: Path) -> Path:
 
 
 def test_run_suite_end_to_end_pass_and_persists_calibration(tmp_path: Path, monkeypatch) -> None:
+    write_aa_config(tmp_path)
     project_root = tmp_path / "proj"
     project_root.mkdir()
     suite_file = _seed_suite(project_root)
     sut = tmp_path / "sut"
+    write_aa_config(sut)
     change_dir = sut / "qa" / "changes" / "eval-sample-001"
     change_dir.mkdir(parents=True)
     (change_dir / "workflow-state.yaml").write_text("phases: {}\n", encoding="utf-8")
@@ -132,10 +136,12 @@ def test_run_suite_end_to_end_pass_and_persists_calibration(tmp_path: Path, monk
 
 
 def test_run_suite_repeat_uses_isolated_workspaces_and_unique_score_keys(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
     project_root = tmp_path / "proj"
     project_root.mkdir()
     suite_file = _seed_suite(project_root)
     sut = tmp_path / "sut"
+    write_aa_config(sut)
     seed_change = sut / "qa/changes/eval-sample-001"
     seed_change.mkdir(parents=True)
     (seed_change / "workflow-state.yaml").write_text("phases: {}\n", encoding="utf-8")

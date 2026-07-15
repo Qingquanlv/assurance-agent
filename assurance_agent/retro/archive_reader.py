@@ -8,7 +8,8 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from assurance_agent.artifacts.models import ApplySummary, FailureAnalysis, Review, WorkflowState
-from assurance_agent.identifiers import assert_change_id_safe
+from assurance_agent.change_location import ChangeNotFoundError, resolve_change_any
+from assurance_agent.config import load_config
 from assurance_agent.retro.types import ArchivedChange, EvidenceSource
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -92,18 +93,20 @@ def read_archived_change(change_dir: Path, *, source: EvidenceSource) -> Archive
 
 
 def list_archived_changes(project_root: Path) -> list[str]:
-    archive = project_root / "qa" / "archive"
+    config = load_config(project_root)
+    rel = config.qa.archive
+    rel = rel[2:] if rel.startswith("./") else rel
+    archive = project_root / rel
     if not archive.is_dir():
         return []
     return sorted(p.name for p in archive.iterdir() if p.is_dir())
 
 
 def resolve_change_dir(project_root: Path, change_id: str) -> tuple[Path, EvidenceSource] | None:
-    assert_change_id_safe(change_id)
-    archived = project_root / "qa" / "archive" / change_id
-    if archived.is_dir():
-        return archived, "archive"
-    unarchived = project_root / "qa" / "changes" / change_id
-    if unarchived.is_dir():
-        return unarchived, "unarchived"
-    return None
+    """Thin adapter: map ChangeLocation.source to retro EvidenceSource vocabulary."""
+    try:
+        loc = resolve_change_any(project_root, change_id)
+    except ChangeNotFoundError:
+        return None
+    source: EvidenceSource = "unarchived" if loc.source == "changes" else "archive"
+    return loc.path, source

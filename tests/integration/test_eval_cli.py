@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from tests.helpers_aa import write_aa_config
+
 import yaml
 from click.testing import CliRunner
 
@@ -39,7 +41,9 @@ def _seed(project_root: Path) -> None:
         ),
         encoding="utf-8",
     )
-    change = project_root / "sut" / "qa" / "changes" / "eval-sample-001" / "review"
+    sut = project_root / "sut"
+    write_aa_config(sut)
+    change = sut / "qa" / "changes" / "eval-sample-001" / "review"
     change.mkdir(parents=True)
     (change / "case-review.json").write_text(json.dumps({"decision": "pass"}), encoding="utf-8")
 

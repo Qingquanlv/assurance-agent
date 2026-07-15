@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from tests.helpers_aa import write_aa_config
+
 from assurance_agent.workflow.core.events import read_events
 from assurance_agent.workflow.driver import loop as loop_mod
 from assurance_agent.workflow.driver.adapter import PhaseRequest, PhaseResult
@@ -75,6 +77,8 @@ def _skill(phase: str) -> DispatchEntry:
 
 
 def _run(tmp_path: Path, adapter: FakeAdapter, status_provider, **kw):
+    write_aa_config(tmp_path)
+    (tmp_path / "qa" / "changes" / "CH-1").mkdir(parents=True, exist_ok=True)
     return run_workflow_loop(
         project_root=tmp_path,
         change_id="CH-1",
@@ -264,12 +268,10 @@ def test_cli_kind_dispatched_to_executor(tmp_path: Path) -> None:
                 terminal=None,
             )
 
-    result = run_workflow_loop(
-        project_root=tmp_path,
-        change_id="CH-1",
-        scope="execute",
-        adapter=adapter,
-        status_provider=StatusForCli(),
+    result = _run(
+        tmp_path,
+        adapter,
+        StatusForCli(),
         cli_executor=RecordingCli(),
     )
     assert result.exit_code == EXIT_COMPLETED
@@ -298,19 +300,27 @@ def test_orchestrator_kind_is_noop(tmp_path: Path) -> None:
     assert adapter.requests == []
 
 
-def test_default_cli_executor_maps_run_and_state_apply() -> None:
+def test_default_cli_executor_maps_run_and_applies_in_process(
+    tmp_path: Path, monkeypatch
+) -> None:
     invocations: list[list[str]] = []
+    apply_calls: list[tuple[str, str]] = []
 
     class FakeRunner:
         def run(self, argv, cwd, *, timeout=None, stdin_text=None) -> ProcessResult:  # noqa: ANN001
             invocations.append(argv)
             return ProcessResult(exit_code=0, stdout="ok", stderr="")
 
+    def fake_apply(project_root, change_dir, schema, phase_id, *, attempt_id=None, **_kw):  # noqa: ANN001
+        apply_calls.append((phase_id, attempt_id or ""))
+        return None
+
+    monkeypatch.setattr(loop_mod, "apply_phase_outcome", fake_apply)
     executor = DefaultCliPhaseExecutor(runner=FakeRunner(), aa_command=["aa"])
     ctx = PhaseContext(
         change_id="CH-1",
-        change_dir=Path("/tmp/x"),
-        project_root=Path("/tmp"),
+        change_dir=tmp_path / "qa" / "changes" / "CH-1",
+        project_root=tmp_path,
         params={},
         parent_session_id=None,
     )
@@ -318,18 +328,8 @@ def test_default_cli_executor_maps_run_and_state_apply() -> None:
     result = executor.run_cli_phase(entry, ctx)
     applied = executor.apply_phase_state(entry, ctx, "execution:a1")
     assert result.ok is True and applied.ok is True
-    assert invocations[0] == ["aa", "run", "--change", "CH-1"]
-    assert invocations[1] == [
-        "aa",
-        "state",
-        "apply",
-        "--change",
-        "CH-1",
-        "--phase",
-        "execution",
-        "--attempt-id",
-        "execution:a1",
-    ]
+    assert invocations == [["aa", "run", "--change", "CH-1"]]
+    assert apply_calls == [("execution", "execution:a1")]
 
 
 def test_default_cli_executor_gate_fail_passthrough(tmp_path: Path) -> None:

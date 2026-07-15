@@ -18,6 +18,7 @@ GITKEEP_DIRS = [
     ".aa/cache",
     "qa/cases",
     "qa/changes",
+    "qa/archive",
     "tests/api",
     "tests/api/adapters",
     "tests/e2e",

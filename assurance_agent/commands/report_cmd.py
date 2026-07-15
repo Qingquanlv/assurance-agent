@@ -6,6 +6,7 @@ from pathlib import Path
 import click
 
 from assurance_agent.artifacts.models import FailureAnalysis, Reclassified
+from assurance_agent.change_location import resolve_change
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.events import append_event_best_effort
 from assurance_agent.workflow.execution.evidence import EvidenceError
@@ -98,7 +99,11 @@ def _load_prior_analysis(change_dir: Path, source_batch_id: str) -> FailureAnaly
 @click.option("--batch", "batch_id", default=None, help="Execution batch to reclassify.")
 def reclassify_cmd(change_id: str, batch_id: str | None) -> None:
     """Re-run deterministic failure classification for a batch without executing tests."""
-    change_dir = Path.cwd() / "qa" / "changes" / change_id
+    try:
+        change_dir = resolve_change(Path.cwd(), change_id).path
+    except AaError as err:
+        click.secho(f"Reclassify failed: {err}", fg="red")
+        raise SystemExit(1) from err
     prior = _load_prior_analysis(change_dir, batch_id) if batch_id else None
     try:
         result = inspect_change(Path.cwd(), change_id, batch_id=batch_id)

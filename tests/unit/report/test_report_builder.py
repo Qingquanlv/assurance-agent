@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from tests.helpers_aa import write_aa_config
+
 from assurance_agent.artifacts.models import CoverageThreshold, SelectedTargets
 from assurance_agent.workflow.execution.evidence import publish_execution_evidence
 from assurance_agent.workflow.execution.results import CaseResult, CoverageResult, ResultSource, TargetResult
@@ -61,6 +63,7 @@ def _cov() -> CoverageResult:
 
 
 def _seed_change(tmp_path: Path, api: TargetResult, cov: CoverageResult) -> str:
+    write_aa_config(tmp_path)
     change_dir = tmp_path / "qa" / "changes" / "CH-1"
     change_dir.mkdir(parents=True)
     gate = build_quality_gate(

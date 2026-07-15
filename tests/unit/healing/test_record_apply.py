@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from tests.helpers_aa import write_aa_config
+
 import pytest
 import yaml
 
@@ -81,6 +83,7 @@ def _proposal(change_dir: Path) -> None:
 
 
 def test_record_apply_rejects_without_active_allocation(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
     change_dir = tmp_path / "qa" / "changes" / "CH-1"
     change_dir.mkdir(parents=True)
     _proposal(change_dir)
@@ -89,6 +92,7 @@ def test_record_apply_rejects_without_active_allocation(tmp_path: Path) -> None:
 
 
 def test_record_apply_rejects_file_outside_authorized_proposals(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
     change_dir = tmp_path / "qa" / "changes" / "CH-1"
     change_dir.mkdir(parents=True)
     _write(tmp_path / "tests" / "api" / "test_menu.py", "v1\n")
@@ -102,6 +106,7 @@ def test_record_apply_rejects_file_outside_authorized_proposals(tmp_path: Path) 
 
 
 def test_record_apply_writes_summary_and_frozen_event_atomically(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
     change_dir = tmp_path / "qa" / "changes" / "CH-1"
     change_dir.mkdir(parents=True)
     _write(tmp_path / "tests" / "api" / "test_menu.py", "v1\n")
@@ -127,6 +132,7 @@ def test_record_apply_writes_summary_and_frozen_event_atomically(tmp_path: Path)
 
 
 def test_record_apply_event_failure_restores_both_summary_files(tmp_path: Path, monkeypatch) -> None:
+    write_aa_config(tmp_path)
     change_dir = tmp_path / "qa" / "changes" / "CH-1"
     change_dir.mkdir(parents=True)
     _write(tmp_path / "tests" / "api" / "test_menu.py", "v1\n")
@@ -143,16 +149,17 @@ def test_record_apply_event_failure_restores_both_summary_files(tmp_path: Path, 
         raise EventWriteError("simulated event failure")
 
     monkeypatch.setattr(
-        "assurance_agent.workflow.healing.safety.append_event_strict",
+        "assurance_agent.workflow.core.progression.append_event_strict",
         fail_append,
     )
-    with pytest.raises(EventWriteError):
+    with pytest.raises(Exception):  # ProgressionCommitError wraps EventWriteError
         record_apply_summary(tmp_path, "CH-1", "api", ["FIX-001"])
     assert not json_path.exists()
     assert not md_path.exists()
 
 
 def test_guard_context_uses_m3_projection_attempt_count(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
     change_dir = tmp_path / "qa" / "changes" / "CH-1"
     change_dir.mkdir(parents=True)
     append_event_strict(

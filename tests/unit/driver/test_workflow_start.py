@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from tests.helpers_aa import write_aa_config
+
 import pytest
 
 from assurance_agent.workflow.driver.adapter import DriverError
@@ -33,6 +35,8 @@ def test_resolve_server_url_from_arg_env_and_error() -> None:
 
 
 def test_detached_spawn_writes_driver_and_lock(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
+    (tmp_path / "qa" / "changes" / "CH-1").mkdir(parents=True)
     calls: list = []
     result = start_workflow_detached(
         project_root=tmp_path,
@@ -53,6 +57,8 @@ def test_detached_spawn_writes_driver_and_lock(tmp_path: Path) -> None:
 
 
 def test_detached_argv_for_opencode(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
+    (tmp_path / "qa" / "changes" / "CH-1").mkdir(parents=True, exist_ok=True)
     calls: list = []
     start_workflow_detached(
         project_root=tmp_path,
@@ -77,6 +83,8 @@ def test_detached_argv_for_opencode(tmp_path: Path) -> None:
 
 
 def test_detached_argv_for_headless(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
+    (tmp_path / "qa" / "changes" / "CH-1").mkdir(parents=True, exist_ok=True)
     calls: list = []
     start_workflow_detached(
         project_root=tmp_path,
@@ -93,6 +101,8 @@ def test_detached_argv_for_headless(tmp_path: Path) -> None:
 
 
 def test_spawn_failure_releases_lock(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
+    (tmp_path / "qa" / "changes" / "CH-1").mkdir(parents=True, exist_ok=True)
     def bad_spawn(argv: list[str], cwd: str, log_path: Path) -> int:
         raise OSError("no fork")
 
@@ -110,6 +120,8 @@ def test_spawn_failure_releases_lock(tmp_path: Path) -> None:
 
 
 def test_start_guard_refuses_when_running(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
+    (tmp_path / "qa" / "changes" / "CH-1").mkdir(parents=True, exist_ok=True)
     import os
 
     change_dir = tmp_path / "qa" / "changes" / "CH-1"
