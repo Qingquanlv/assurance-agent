@@ -1,0 +1,159 @@
+import json
+import subprocess
+from pathlib import Path
+
+from assurance_agent.artifacts.models import CoverageThreshold
+from assurance_agent.workflow.execution import runners
+from assurance_agent.workflow.execution.runners import (
+    build_scenario_verdicts,
+    parse_coverage_result,
+    parse_locust_stats,
+    run_pytest_target,
+)
+
+
+def _stub_pytest(report_tests: list[dict], coverage_totals: dict | None = None):
+    """Return a fake subprocess.run that writes the canned report/coverage files."""
+
+    def fake_run(args, **kwargs):
+        report_file = next(a.split("=", 1)[1] for a in args if a.startswith("--json-report-file="))
+        Path(report_file).parent.mkdir(parents=True, exist_ok=True)
+        Path(report_file).write_text(json.dumps({"tests": report_tests}), encoding="utf-8")
+        if coverage_totals is not None:
+            cov_arg = next((a for a in args if a.startswith("--cov-report=json:")), None)
+            if cov_arg:
+                cov_path = Path(cov_arg.split("json:", 1)[1])
+                cov_path.parent.mkdir(parents=True, exist_ok=True)
+                cov_path.write_text(json.dumps({"totals": coverage_totals}), encoding="utf-8")
+        return subprocess.CompletedProcess(args, 0, stdout="pytest output", stderr="")
+
+    return fake_run
+
+
+def test_run_pytest_target_parses_stubbed_report(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "tests" / "api").mkdir(parents=True)
+    monkeypatch.setattr(
+        runners.subprocess,
+        "run",
+        _stub_pytest(
+            [
+                {
+                    "nodeid": "tests/api/t.py::test_tc_api_001__ok",
+                    "outcome": "passed",
+                    "call": {"outcome": "passed", "duration": 0.01},
+                },
+            ]
+        ),
+    )
+    result = run_pytest_target(
+        project_root=tmp_path,
+        batch_dir=tmp_path / "batch",
+        change_id="CH-1",
+        batch_id="b1",
+        target="api",
+        test_dir="tests/api",
+    )
+    assert result.status == "passed"
+    assert result.total == 1
+    assert result.cases[0].case_id == "TC_API_001"
+    assert (tmp_path / "batch" / "raw" / "api.log").is_file()
+
+
+def test_run_pytest_target_missing_dir_is_skipped_no_subprocess(tmp_path: Path, monkeypatch) -> None:
+    def boom(*a, **k):
+        raise AssertionError("subprocess must not run when the test dir is absent")
+
+    monkeypatch.setattr(runners.subprocess, "run", boom)
+    result = run_pytest_target(
+        project_root=tmp_path,
+        batch_dir=tmp_path / "batch",
+        change_id="CH-1",
+        batch_id="b1",
+        target="fuzz",
+        test_dir="tests/fuzz",
+    )
+    assert result.status == "skipped"
+    assert result.total == 0
+    assert "SKIPPED" in result.unmapped_tests[0].message
+
+
+def test_run_pytest_target_collects_coverage(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "tests" / "api").mkdir(parents=True)
+    monkeypatch.setattr(
+        runners.subprocess,
+        "run",
+        _stub_pytest(
+            [
+                {
+                    "nodeid": "tests/api/t.py::test_tc_api_001__ok",
+                    "outcome": "passed",
+                    "call": {"outcome": "passed", "duration": 0.0},
+                }
+            ],
+            coverage_totals={"percent_covered": 88.0, "num_branches": 10, "covered_branches": 7},
+        ),
+    )
+    batch_dir = tmp_path / "batch"
+    run_pytest_target(
+        project_root=tmp_path,
+        batch_dir=batch_dir,
+        change_id="CH-1",
+        batch_id="b1",
+        target="api",
+        test_dir="tests/api",
+        cov_package="app",
+    )
+    cov = parse_coverage_result(
+        change_id="CH-1",
+        batch_id="b1",
+        batch_dir=batch_dir,
+        threshold=CoverageThreshold(line=70, branch=60),
+    )
+    assert cov.available is True
+    assert cov.line_coverage == 88.0
+    assert cov.branch_coverage == 70.0
+    assert cov.status == "PASS"
+
+
+def test_parse_coverage_missing_is_skipped(tmp_path: Path) -> None:
+    cov = parse_coverage_result(
+        change_id="CH-1",
+        batch_id="b1",
+        batch_dir=tmp_path,
+        threshold=CoverageThreshold(line=70, branch=60),
+    )
+    assert cov.available is False
+    assert cov.status == "SKIPPED"
+
+
+def test_parse_locust_stats_reads_p95_and_counts(tmp_path: Path) -> None:
+    csv = tmp_path / "locust_stats.csv"
+    csv.write_text(
+        "Type,Name,Request Count,Failure Count,Median Response Time,95%\n"
+        "GET,list_menus,100,2,120,450\n"
+        "Aggregated,Aggregated,100,2,120,450\n",
+        encoding="utf-8",
+    )
+    rows = parse_locust_stats(csv)
+    assert len(rows) == 1  # Aggregated excluded
+    assert rows[0]["name"] == "list_menus"
+    assert rows[0]["requests"] == 100
+    assert rows[0]["failures"] == 2
+    assert rows[0]["p95"] == 450
+
+
+def test_build_scenario_verdicts_pass_fail_skip() -> None:
+    scenarios = [
+        {"capability": "fast", "endpoint": "/f", "thresholds": {"p95_ms": 500, "error_rate_max": 0.01}},
+        {"capability": "slow", "endpoint": "/s", "thresholds": {"p95_ms": 500, "error_rate_max": 0.01}},
+        {"capability": "quiet", "endpoint": "/q", "thresholds": {"p95_ms": 500, "error_rate_max": 0.01}},
+    ]
+    stats: dict[str, dict[str, float]] = {
+        "fast": {"p95": 200.0, "requests": 50.0, "failures": 0.0},
+        "slow": {"p95": 900.0, "requests": 50.0, "failures": 0.0},
+    }
+    verdicts = build_scenario_verdicts(scenarios, stats)
+    by_cap = {v.capability: v.verdict for v in verdicts}
+    assert by_cap["fast"] == "PASS"
+    assert by_cap["slow"] == "FAIL"
+    assert by_cap["quiet"] == "SKIPPED"

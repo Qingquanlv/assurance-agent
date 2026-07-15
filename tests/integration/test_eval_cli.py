@@ -1,0 +1,151 @@
+# tests/integration/test_eval_cli.py
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import yaml
+from click.testing import CliRunner
+
+from assurance_agent.cli import main
+
+
+def _seed(project_root: Path) -> None:
+    suites = project_root / "eval" / "suites"
+    suites.mkdir(parents=True)
+    (suites / "workflow-case.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": "workflow-case",
+                "scorer": "workflow-case",
+                "executor": {"type": "workflow-run", "scope": "full"},
+                "thresholds": [
+                    {"metric": "case_review_gate_pass_rate", "gate": "hard", "op": "gte", "value": 0.99},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    ds = project_root / "eval" / "datasets" / "workflow-case"
+    ds.mkdir(parents=True)
+    (ds / "WC-001.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "id": "WC-001",
+                "suite": "workflow-case",
+                "input": {"change_id": "eval-sample-001"},
+                "expected": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    change = project_root / "sut" / "qa" / "changes" / "eval-sample-001" / "review"
+    change.mkdir(parents=True)
+    (change / "case-review.json").write_text(json.dumps({"decision": "pass"}), encoding="utf-8")
+
+
+def test_eval_run_json_shape(monkeypatch) -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem() as fs:
+        project_root = Path(fs)
+        _seed(project_root)
+        monkeypatch.setenv("AA_EVAL_FAKE_ADAPTER", "1")
+        result = runner.invoke(
+            main,
+            [
+                "eval",
+                "run",
+                "--suite",
+                "workflow-case",
+                "--sut-dir",
+                str(project_root / "sut"),
+                "--json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output.strip().splitlines()[-1])
+        assert payload["verdict"] == "pass"
+        assert payload["run_id"].startswith("eval-")
+
+
+def test_eval_run_output_id_prints_only_run_id(monkeypatch) -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem() as fs:
+        project_root = Path(fs)
+        _seed(project_root)
+        monkeypatch.setenv("AA_EVAL_FAKE_ADAPTER", "1")
+        result = runner.invoke(
+            main,
+            [
+                "eval",
+                "run",
+                "--suite",
+                "workflow-case",
+                "--sut-dir",
+                str(project_root / "sut"),
+                "--output",
+                "id",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert result.output.strip().startswith("eval-")
+
+
+def test_eval_run_requires_suite_or_plan() -> None:
+    result = CliRunner().invoke(main, ["eval", "run"])
+    assert result.exit_code == 1
+    assert "--suite" in result.output
+
+
+def test_eval_run_suite_and_plan_mutually_exclusive() -> None:
+    result = CliRunner().invoke(main, ["eval", "run", "--suite", "x", "--plan", "p.json"])
+    assert result.exit_code == 1
+    assert "mutually exclusive" in result.output
+
+
+def test_eval_plan_writes_json() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            main,
+            [
+                "eval",
+                "plan",
+                "--event",
+                "manual",
+                "--suite",
+                "workflow-case",
+                "--out",
+                "eval-plan.json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        plan = json.loads(Path("eval-plan.json").read_text())
+        assert plan["suites"] == ["workflow-case"]
+
+
+def test_eval_report_json(monkeypatch) -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem() as fs:
+        project_root = Path(fs)
+        _seed(project_root)
+        monkeypatch.setenv("AA_EVAL_FAKE_ADAPTER", "1")
+        run = runner.invoke(
+            main,
+            [
+                "eval",
+                "run",
+                "--suite",
+                "workflow-case",
+                "--sut-dir",
+                str(project_root / "sut"),
+                "--output",
+                "id",
+            ],
+        )
+        run_id = run.output.strip()
+        result = runner.invoke(main, ["eval", "report", "--run", run_id, "--json"])
+        assert result.exit_code == 0, result.output
+        report = json.loads(result.output)
+        assert report["run_id"] == run_id
+        assert report["verdict"] == "pass"

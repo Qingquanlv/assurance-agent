@@ -1,0 +1,108 @@
+from pathlib import Path
+
+from click.testing import CliRunner
+
+from assurance_agent.artifacts.models import CoverageThreshold, SelectedTargets
+from assurance_agent.cli import main
+from assurance_agent.workflow.execution.evidence import publish_execution_evidence
+from assurance_agent.workflow.execution.results import CaseResult, CoverageResult, ResultSource, TargetResult
+from assurance_agent.workflow.report.quality_gate import build_quality_gate
+
+
+def _seed(root: Path, failed: bool) -> None:
+    cases = [
+        CaseResult(
+            case_id="TC_API_001",
+            status="passed",
+            file="f.py",
+            test_name="test_tc_api_001__ok",
+            duration_ms=1,
+            message="",
+        )
+    ]
+    n_failed = 0
+    if failed:
+        n_failed = 1
+        cases.append(
+            CaseResult(
+                case_id="TC_API_002",
+                status="failed",
+                file="f.py",
+                test_name="test_tc_api_002__x",
+                duration_ms=1,
+                message="500 internal server error",
+            )
+        )
+    api = TargetResult(
+        change_id="CH-1",
+        batch_id="20260715-000000",
+        target="api",
+        status="failed" if failed else "passed",
+        command="cmd",
+        source=ResultSource(framework="pytest", raw_log="raw/api.log"),
+        total=len(cases),
+        passed=len(cases) - n_failed,
+        failed=n_failed,
+        skipped=0,
+        cases=cases,
+        unmapped_tests=[],
+    )
+    cov = CoverageResult(
+        change_id="CH-1",
+        batch_id="20260715-000000",
+        available=True,
+        line_coverage=90.0,
+        branch_coverage=80.0,
+        threshold=CoverageThreshold(line=70, branch=60),
+        status="PASS",
+    )
+    gate = build_quality_gate(
+        change_id="CH-1",
+        batch_id="20260715-000000",
+        api=api,
+        e2e=None,
+        coverage=cov,
+        coverage_gate_mode="warn",
+    )
+    publish_execution_evidence(
+        execution_dir=root / "qa" / "changes" / "CH-1" / "execution",
+        change_id="CH-1",
+        batch_id="20260715-000000",
+        selected_targets=SelectedTargets(api=True, e2e=False, fuzz=False, performance=False),
+        api=api,
+        e2e=None,
+        fuzz=None,
+        coverage=cov,
+        performance=None,
+        quality_gate=gate,
+        summary="# summary\n",
+    )
+
+
+def test_report_inspect_then_generate_pass(tmp_path: Path, monkeypatch) -> None:
+    _seed(tmp_path, failed=False)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    inspect = runner.invoke(main, ["report", "inspect", "--change", "CH-1"])
+    assert inspect.exit_code == 0
+    assert "PASS" in inspect.output
+    generate = runner.invoke(main, ["report", "generate", "--change", "CH-1"])
+    assert generate.exit_code == 0
+    assert "100" in generate.output
+    assert (tmp_path / "qa" / "changes" / "CH-1" / "report" / "quality-report.json").is_file()
+
+
+def test_report_inspect_fail_exit_one(tmp_path: Path, monkeypatch) -> None:
+    _seed(tmp_path, failed=True)
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(main, ["report", "inspect", "--change", "CH-1"])
+    assert result.exit_code == 1
+    assert "FAIL" in result.output
+
+
+def test_report_inspect_missing_evidence_exit_one(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "qa" / "changes" / "CH-2").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(main, ["report", "inspect", "--change", "CH-2"])
+    assert result.exit_code == 1
+    assert "run" in result.output.lower()

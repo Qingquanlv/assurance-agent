@@ -35,4 +35,22 @@ from assurance_agent import resources
 assert "aa-full" in resources.read_text("schemas", "workflow-schema.yaml")
 PY
 
+# Packaged skills + opencode assets must resolve from the wheel install.
+"$WORK_DIR/venv/bin/python" - <<'PY'
+from assurance_agent import resources
+skills = resources.iter_children("skills")
+assert len(skills) == 33, f"expected 33 skills, got {len(skills)}"
+assert "aa-workflow" in skills and "writing-skills" in skills, skills
+assert "aa-doc-author.md" in resources.iter_children("opencode", "agents")
+assert "aa.mjs" in resources.iter_children("opencode", "plugins")
+assert "workflow_start.ts" in resources.iter_children("opencode", "tools")
+PY
+
+# The one-off migration dev tool must NOT ship in the wheel.
+"$WORK_DIR/venv/bin/python" - <<'PY'
+import importlib.util
+assert importlib.util.find_spec("scripts") is None, "scripts package leaked into wheel"
+assert importlib.util.find_spec("migrate_skills") is None, "migrate_skills leaked into wheel"
+PY
+
 echo "packaging smoke test: OK"

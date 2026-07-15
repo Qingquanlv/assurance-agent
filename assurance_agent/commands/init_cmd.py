@@ -6,6 +6,7 @@ from typing import Literal, cast
 import click
 
 from assurance_agent.exceptions import AaError
+from assurance_agent.workflow.core.assets import OpenCodeInitResult, register_opencode
 from assurance_agent.workflow.core.generator import GenerateResult, generate_project, repair_project
 from assurance_agent.workflow.core.templates import InitAnswers
 
@@ -18,6 +19,18 @@ def _print_result(result: GenerateResult) -> None:
         click.secho(f"created: {rel}", fg="green")
     for rel in result.skipped:
         click.secho(f"skipped (exists): {rel}", fg="yellow")
+
+
+def _register_opencode(root: Path) -> None:
+    result: OpenCodeInitResult = register_opencode(root)
+    if result.opencode_json_created:
+        click.secho("created: opencode.json", fg="green")
+    else:
+        click.secho("updated: opencode.json (plugin entry ensured)", fg="green")
+    click.echo(
+        f"opencode assets: {len(result.skills.created)} skills, "
+        f"{len(result.opencode.created)} agents/tools/plugin files"
+    )
 
 
 @click.command("init")
@@ -54,8 +67,10 @@ def init_command(
             click.echo("Init cancelled.")
             return
         _print_result(generate_project(root, answers))
+        _register_opencode(root)
         click.secho("assurance-agent initialized successfully.", fg="green", bold=True)
         click.echo("Run 'aa doctor' to verify your environment.")
+        click.echo("Restart OpenCode, then: skill load aa-workflow")
     except AaError as err:
         # stdout (not stderr): click 8.2+'s CliRunner.output no longer merges
         # stderr, so errors go to stdout for consistent integration-test/manual output.

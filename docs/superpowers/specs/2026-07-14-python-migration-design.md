@@ -1,7 +1,7 @@
 # assurance-agent：assurance-workflow-skills 的 Python 净室重写设计
 
 日期：2026-07-14
-状态：已获用户批准；已纳入首轮评审 5 个 P1 修订（产物契约、DSL 语义、driver 归属、events 双模式、资源分发）
+状态：已获用户批准；已纳入首轮评审 5 个 P1 修订，并于 2026-07-15 冻结 M3 typed-state / event-derived healing 合同
 
 ## 1. 背景与目标
 
@@ -78,16 +78,17 @@ assurance-agent/
   - **对拍测试**：打包 schema 中每一条表达式都必须有单测覆盖（含 missing 路径），作为与源版语义对齐的验收标准。
 - **DAG 引擎**：纯函数——输入 schema + workflow-state + params，输出各阶段状态（`ready` / `done` / `blocked` / `skipped` 等）与下一批可调度阶段（Scheme E dispatch 条目）。`requires_mode: any_active`、`repair_of`、`ready_when` 语义照规格实现。
 - **Gate 裁决**：读取 gate 声明的 evidence 文件，按 `needs_fix_when` → `needs_human_review_when` → `reject_when` → `pass_when` 顺序求值；`invalid_json: stop`、`missing_field_is: stop`、`missing_file_is: stop` 容错语义照规格。四态裁决：pass / needs_fix / needs_human_review / reject（+ stop）。
-- **Healing loop**：按 `loops.healing` 声明实现——成员阶段、`counter`、`max_param`、`allocate_on`、entry gate（enter/skip/stop）与 exit gate（exit/continue/stop）。attempts 记在 workflow-state；`max_healing_attempts` 耗尽即 STOP 并报告原因。
+- **Healing loop**：按 `loops.healing` 声明实现——成员阶段、`counter`、`max_param`、`allocate_on`、entry gate（enter/skip/stop）与 exit gate（exit/continue/stop）。attempt budget 的唯一事实源是当前 episode 的 strict `healing_attempt_allocated` 事件（按 `operation_id` 去重）；`workflow-state.phases.healing` 只承载类型化投影视图，gate/engine 每次用 event-derived snapshot 覆盖其中的 attempts/status，禁止把手写 state 当成计数依据。`max_healing_attempts` 精确耗尽即 `Terminal(stopped)` 并报告 `attempts/max`。
 
 ## 4. 状态与审计（workflow/core/）
 
-- `workflow-state.yaml`：pydantic 模型 + 原子写（临时文件 + rename）+ state hash 校验（防 Subagent 篡改，沿用源版机制语义）。
+- `workflow-state.yaml`：全系列共用一个 canonical pydantic `WorkflowState`（显式建模 `phases.execution` / `inspect` / `healing`、`gates`、`run_context`，`extra="allow"` 仅作扩展兼容）+ 原子写（临时文件 + rename）+ state hash 校验（防 Subagent 篡改，沿用源版机制语义）。
 - `events.jsonl`：append-only，但**区分两种写入模式**（对齐源版 events.ts 的双模式）：
   - `append_event_best_effort()`——遥测型事件（status 查询、gate 查询、普通运行日志）：写入失败静默降级，不改变命令退出码；
   - `append_event_strict()`——审计型事件（人工 decision、override、dispatch 记录、状态推进证据、healing attempt 分配）：写入失败即命令失败，且**必须回滚同一操作中已做的关联状态修改**（如 decision 写入失败回滚 state 变更、healing attempt 分配采用事务式恢复）。
-  - 写入顺序约定：先落 strict 事件、后推进 workflow-state；两步之间失败时以事件为准回滚状态，保证「状态已推进但审计证据不存在」不可能出现。
+  - 写入顺序约定：progression 先捕获关联文件快照，再落 strict 事件、后推进 workflow-state；任一步失败即恢复快照，重放由 `attempt_id` / `operation_id` / `state_guard` 幂等标记吸收。M3 只提供 typed event、snapshot 和纯 projection 原语，M6 driver 是唯一事务写边界。
 - Case ID 规范：`TC_MODULE_001`（下划线大写）校验与规范化。
+- 外部 ID 路径安全：所有把外部 `change_id`、`retro_id`、run/baseline id 拼入 change/archive/eval 路径的入口先调用同一 `assert_path_segment_safe`（change 使用专用包装）；只允许一个路径段（首字符字母/数字，其余 `[A-Za-z0-9._-]`），拒绝空串、`.`、`..`、斜杠和绝对路径。
 - Skill Load Gate：阶段进入前记录 `skill_loaded` / `skill_md_path` / `skill_loaded_at`，未通过不得置 done。
 
 `qa/changes/<change-id>/` 产物目录结构与源版同构（proposal.md、explore/、cases/、facts/、plans/、review/、codegen/、execution/runs/<batch-id>/、inspect/、report/、healing/、archive/）。多级知识库（L1 `.aa/data-knowledge.yaml` → L4 qa/archive/）概念保留；codegen 阶段硬性要求 L1 存在。字段级的重设计自由度不是无边界的，由第 4a 节的产物契约注册表逐产物裁定。
@@ -99,12 +100,13 @@ assurance-agent/
 `assurance_agent/artifacts/` 是**全项目唯一的产物契约来源**：
 
 - 每种结构化产物一个 pydantic 模型（对应源版 14 个验证器逐一迁移）。
-- **路径 → 模型注册表**：change 相对路径 glob 映射到模型，`aa validate` 据此发现并校验产物；行为对齐源版 `aws validate`（`--phase` 按 produces 过滤、`--artifact` 单文件、`--json` 输出 `{ ok, results }`、退出码 0/1/2）。
+- **路径 → 模型注册表**：change 相对路径 glob 映射到模型，`aa validate` 据此发现并校验产物；`--phase` 按 produces 过滤、`--artifact` 单文件、`--json` 输出 `{ ok, results }`、退出码 0/1/2。显式请求未注册 artifact 或一次扫描零注册产物必须返回校验失败，禁止“成功的空校验”形成 CI 假绿。
 - **逐产物兼容性分级**，在注册表中显式标注：
   - `must_compat`——skills 的 SKILL.md 直接指导 Agent 读写的字段、gate 表达式引用的字段（如 review JSON 的 `decision` / `auto_fix_allowed` / `codegen_readiness`、failure-analysis 的 `fix_proposal_eligible`）：字段名与取值枚举必须与 SKILL.md / workflow-schema.yaml 中的引用一致；
   - `versioned`——结构可改但需带 `schema_version` 字段并提供显式升级说明（如 workflow-state.yaml、execution manifest）；
   - `free`——纯 CLI 内部产物，可自由重构（如报告 markdown 的排版、events 的扩展字段）。
 - **单一消费约束**：gate 求值、report 生成、eval scorer、`aa validate` 全部 import 同一模型，禁止在任何模块内私开字典结构解析同一产物。skills 改写时字段引用必须与模型对拍（第 8 节的交叉引用检查扩展为「skill 引用字段 ⊂ 模型字段」检查）。
+- **compat fallback 可追溯**：`FailureAnalysis` 带可选 `compat_fallback_reason`；只有未显式指定 batch 时允许 evidence loader 回退旧布局，显式 batch 缺失必须 fail closed。batch manifest 中的 result 路径始终相对 execution 根目录解析，必须拒绝绝对路径/`..` 逃逸，并校验 manifest、result、quality-gate 的 change/batch identity 一致。
 
 ## 5. CLI 命令面（commands/）
 
@@ -114,7 +116,7 @@ click group，与源版命令一一对应，仅改名：
 aa init [--repair]          aa doctor [--json]         aa config print
 aa status --change <id> [--next] [--json]
 aa gate check --change <id> --phase <phase>
-aa state apply --change <id> --phase <phase>           aa state heal ...
+aa state apply --change <id> --phase <phase> [--attempt-id <id>]    aa state heal ...
 aa run --change <id>        aa report inspect|generate --change <id>
 aa risk context|validate-advisory --change <id>
 aa skill refresh [--sync-agents]
@@ -125,19 +127,21 @@ aa workflow ...
 
 命令清单以源版 `src/commands/` 的 16 个命令模块为准，一一对应迁移（config、decide、doctor、eval、gate、heal、init、report、retro、risk、run、skill、state、status、validate、workflow），仅命令名前缀由 `aws` 改为 `aa`。
 
-`aa status` / `aa gate check` / `aa run` 按第 4 节双模式追加 events.jsonl（查询类遥测事件 best-effort；decision / dispatch / 状态推进等审计事件 strict）。统一退出码约定（0 成功 / 非 0 分级，具体码表实现时定义并写入 docs）。
+`aa status` / `aa gate check` / `aa run` 按第 4 节双模式追加 events.jsonl（查询与 run 生命周期遥测事件 best-effort；decision / dispatch / 状态推进等审计事件 strict）。status/driver 统一退出码：0=running/completed、20=stopped、30=needs_human_review、40=command/data error；不存在 `terminal.kind=exhausted`。M6 调用 `aa state apply` 时必须原样传入 dispatch 的 `attempt_id`；命令只检查 declared produces 存在性，不能在提交边界二次裁决 exit gate。人工调用可省略 attempt id，由命令生成 `manual:*` 标记。
 
 ## 5a. 工作流 Driver（workflow/driver/）
 
 源版 `aws workflow run` 不是 `status --next` 的别名，而是完整的确定性 driver。Python 版**全量迁移**该模块，职责归属明确为 `assurance_agent/workflow/driver/`：
 
-- **dispatch 主循环**（`loop.py`）：循环调用 DAG 引擎取下一批阶段 → 通过 adapter 委派执行 → gate 裁决 → 推进状态，直至完成 / STOP / needs_human_review。driver 专属退出码：`EXIT_COMPLETED` / `EXIT_STOPPED` / `EXIT_HUMAN_REVIEW` / `EXIT_ERROR`。
+- **dispatch 主循环**（`loop.py`）：循环调用 DAG 引擎取下一批阶段 → 通过 adapter 委派执行 → 提交 frozen outcome，直至完成 / STOP / needs_human_review。gate 已在 `compute_status` 内裁决，driver 边界不得二次调用。driver 专属退出码：`EXIT_COMPLETED` / `EXIT_STOPPED` / `EXIT_HUMAN_REVIEW` / `EXIT_ERROR`。
+- **Healing 写边界**：M3 纯 projection 返回完整 `HealingAttemptIntent`（episode/attempt/operation/source batch 及是否 pin baseline）；driver 只按 intent 在一个 snapshot 边界内写 baseline artifact + frozen baseline/allocation events，不在 driver 内重复实现预算或路由判断；await-human 返回 30，complete 经 `aa state heal` 提交。`compute_status` / `project_healing_episode` 始终无状态写入。
 - **Adapter 协议**（`adapter.py`）：抽象「把一个阶段交给某个 Agent 执行」。两个实现：
   - `headless_adapter`——subprocess 驱动任意 headless agent CLI（如 `cursor-agent --print`），与 OpenCode 无关；
   - `opencode_adapter`——经 OpenCode server API 派发（`--server`、可选 `--model provider/model`、parent session 复用、鉴权头从环境读取）。
 - **Detached 启动**（`workflow_start.py`）：供 OpenCode 插件 `workflow_start` tool 调用的后台启动路径；插件只负责收集参数并调用 `aa workflow run`，循环逻辑不驻留在 JS 侧。
 - **Driver 状态与锁**（`driver_state.py`）：driver lock 防同一 change 重复启动；driver 状态文件记录进度供 `aa workflow status` 读取；breakpoint/resume——可在指定阶段暂停，人工介入后续跑。
 - **Phase session 生命周期**（`phase_prompt.py` / `process_runner.py`）：每阶段的 prompt 组装、子进程管理与超时。
+- **投影优先级**：最新 `human_decision.action=stop` 覆盖 terminal 并清空 dispatch；后续非 stop decision 可恢复普通投影。driver 必须先处理 stopped/needs-human-review，再执行 healing allocation，避免人工停止后仍消耗 attempt。
 
 eval 的 workflow executor 复用本模块驱动真实工作流，不另行实现循环。
 
@@ -178,8 +182,8 @@ eval 的 workflow executor 复用本模块驱动真实工作流，不另行实�
 
 ## 10. Eval 与 Retro
 
-- **eval/**：净室重写——dataset loader、executor（复用第 5a 节 driver 驱动真实工作流，不另行实现循环）、scorer（workflow_case / codegen / full 等）、LLM judge（httpx 直调 API）、报告（JSON + HTML）。`docs/eval.md` 为权威规格，随迁移更新命令名。
-- **retro/**：归档读取、聚合、eval 趋势、nightly driver（phase A/D/F），按源版 README/docs 描述的行为重写。
+- **eval/**：净室重写——dataset loader、executor（复用第 5a 节 driver 驱动真实工作流，不另行实现循环）、scorer（workflow_case / codegen / full 等）、LLM judge（httpx 直调 API）、报告（JSON + HTML）。重复运行的每个 attempt 必须使用隔离 SUT 副本；scorer 的 workflow-state / execution-manifest 必须经 artifacts typed model 校验；calibrate 必须真实调用 judge 并保存 judge evidence。`docs/eval.md` 为权威规格，随迁移更新命令名。
+- **retro/**：归档读取、聚合、eval 趋势、nightly driver（phase A/D/F），按源版 README/docs 描述的行为重写。注册产物经 artifacts model 读取；坏历史产物只能作为缺失处理，不能把 raw dict 注入聚合器。
 
 ## 11. 测试策略
 

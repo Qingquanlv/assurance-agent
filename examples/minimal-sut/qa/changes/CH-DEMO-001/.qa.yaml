@@ -1,0 +1,15 @@
+schema_version: "1.0"
+schema: case-driven
+created_at: "2026-07-15T00:00:00.000Z"
+
+change:
+  change_id: CH-DEMO-001
+  requirement_id: DEMO-001
+  feature_name: greeting
+  status: draft
+
+approval:
+  mode: autonomous
+  approved_by: aa-workflow
+  approved_approach: API
+  approved_at: "2026-07-15T00:00:00.000Z"
