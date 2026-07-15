@@ -8,5 +8,6 @@ layers =
     assurance_agent.cli
     assurance_agent.commands
     assurance_agent.workflow
+    assurance_agent.artifacts
     assurance_agent.config
     assurance_agent.resources
