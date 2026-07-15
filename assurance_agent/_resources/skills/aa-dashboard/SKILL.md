@@ -47,7 +47,7 @@ The script outputs JSON with the URL. Tell the user to open it:
 
 ## Requirements
 
-- Node.js must be available
+- Python 3 must be available
 - `--project-dir` must point to a directory containing `qa/cases/` or `qa/changes/`
 - If neither directory exists, the page shows a friendly error — it won't crash
 
