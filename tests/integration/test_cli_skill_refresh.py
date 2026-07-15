@@ -45,7 +45,8 @@ def test_refresh_sync_agents_lays_down_opencode(tmp_path: Path) -> None:
 def test_refresh_dry_run_writes_nothing(tmp_path: Path) -> None:
     runner = CliRunner()
     with runner.isolated_filesystem(temp_dir=tmp_path):
-        _init(runner)
+        Path(".aa").mkdir()
+        Path(".aa/config.yaml").write_text("version: 1\n", encoding="utf-8")
         result = runner.invoke(main, ["skill", "refresh", "--dry-run"])
         assert result.exit_code == 0
         assert not Path("skills").exists()

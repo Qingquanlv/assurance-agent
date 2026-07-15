@@ -6,6 +6,7 @@ reports created / updated / unchanged so callers can print idempotent summaries.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -20,6 +21,12 @@ class SyncResult(BaseModel):
     created: list[str] = Field(default_factory=list)
     updated: list[str] = Field(default_factory=list)
     unchanged: list[str] = Field(default_factory=list)
+
+
+class OpenCodeInitResult(BaseModel):
+    opencode_json_created: bool
+    skills: SyncResult
+    opencode: SyncResult
 
 
 def find_project_root(start: Path) -> Path | None:
@@ -80,3 +87,29 @@ def sync_opencode(project_root: Path, dry_run: bool = False) -> SyncResult:
         if resources.exists("opencode", sub):
             _sync(("opencode", sub), project_root / ".opencode" / sub, f".opencode/{sub}", result, dry_run)
     return result
+
+
+def register_opencode(project_root: Path) -> OpenCodeInitResult:
+    opencode_json = project_root / "opencode.json"
+    created = not opencode_json.is_file()
+    config: dict = {}
+    if not created:
+        try:
+            config = json.loads(opencode_json.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            config = {}
+            created = True  # unreadable file is rewritten fresh
+
+    plugins = config.get("plugin")
+    if not isinstance(plugins, list):
+        plugins = []
+    if PLUGIN_ENTRY not in plugins:
+        plugins.append(PLUGIN_ENTRY)
+    config["plugin"] = plugins
+    opencode_json.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+
+    return OpenCodeInitResult(
+        opencode_json_created=created,
+        skills=sync_skills(project_root),
+        opencode=sync_opencode(project_root),
+    )
