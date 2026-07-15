@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from tests.helpers_aa import write_aa_config
+
 from click.testing import CliRunner
 
 from assurance_agent.cli import main
@@ -17,6 +19,7 @@ phases:
 
 
 def make_change(change_id: str = "CH-1", state_yaml: str = RUNNING_STATE) -> Path:
+    write_aa_config(Path.cwd())
     change_dir = Path("qa/changes") / change_id
     change_dir.mkdir(parents=True)
     (change_dir / "workflow-state.yaml").write_text(state_yaml, encoding="utf-8")
@@ -26,6 +29,7 @@ def make_change(change_id: str = "CH-1", state_yaml: str = RUNNING_STATE) -> Pat
 def test_status_missing_change_exits_1() -> None:
     runner = CliRunner()
     with runner.isolated_filesystem():
+        write_aa_config(Path.cwd())
         result = runner.invoke(main, ["status", "--change", "NOPE"])
         assert result.exit_code == 1
         assert "not found" in result.output

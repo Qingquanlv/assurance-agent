@@ -156,7 +156,10 @@ def test_override_event_failure_removes_evidence_and_does_not_run(guarded_projec
     def fail_strict(*_args, **_kwargs) -> None:
         raise EventWriteError("simulated")
 
-    monkeypatch.setattr(run_cmd_mod, "append_event_strict", fail_strict)
+    monkeypatch.setattr(
+        "assurance_agent.workflow.core.progression.append_event_strict",
+        fail_strict,
+    )
     (tmp_path / "tests" / "api" / "test_x.py").write_text("def test_x(): assert 2\n", encoding="utf-8")
     result = CliRunner().invoke(
         main,
@@ -169,7 +172,7 @@ def test_override_event_failure_removes_evidence_and_does_not_run(guarded_projec
             "manual fix",
         ],
     )
-    assert result.exit_code == 1
+    assert result.exit_code == 40
     assert calls == []
     override_files = list((change / "execution" / "runs").rglob("test-changes-override.json"))
     assert not override_files

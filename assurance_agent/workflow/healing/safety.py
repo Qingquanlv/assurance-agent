@@ -10,15 +10,11 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel
 
+from assurance_agent.change_location import resolve_change
 from assurance_agent.config import load_config
 from assurance_agent.exceptions import AaError
-from assurance_agent.workflow.core.events import (
-    EventWriteError,
-    HealRecordApplyEvent,
-    append_event_strict,
-    read_events,
-)
-from assurance_agent.workflow.core.snapshot import capture_files, restore_files
+from assurance_agent.workflow.core.events import HealRecordApplyEvent, Ledger
+from assurance_agent.workflow.core.progression import transaction
 from assurance_agent.workflow.execution.tree_hash import (
     diff_trees,
     hash_product_tree,
@@ -31,6 +27,10 @@ from assurance_agent.workflow.orchestration.healing_state import (
 )
 
 _DEFAULT_PRODUCT_ROOTS = ["app", "web/src", "src"]
+
+
+def _active_change_dir(project_root: Path, change_id: str) -> Path:
+    return resolve_change(project_root, change_id).path
 
 
 class HealingGuardError(AaError):
@@ -63,19 +63,15 @@ class RecordApplySummaryResult(BaseModel):
 
 
 def derive_guard_context(project_root: Path, change_id: str) -> HealingGuardContext:
-    change_dir = project_root / "qa" / "changes" / change_id
+    change_dir = _active_change_dir(project_root, change_id)
     snapshot = derive_healing_state(change_dir)
-    allocations = [
-        event
-        for event in read_events(change_dir)
-        if event.get("type") == "healing_attempt_allocated" and event.get("episode_id") == snapshot.episode_id
-    ]
-
-    def _event_seq(event: dict[str, object]) -> int:
-        seq = event.get("seq")
-        return seq if isinstance(seq, int) else 0
-
-    latest = max(allocations, key=_event_seq, default=None)
+    latest = (
+        Ledger(change_dir).latest(
+            type="healing_attempt_allocated", episode_id=snapshot.episode_id
+        )
+        if snapshot.episode_id is not None
+        else None
+    )
     proposal_path = change_dir / "healing" / "fix-proposal.json"
     proposal_sha = sha256_file(proposal_path)
     source_batch = str(latest["source_batch_id"]) if latest is not None else None
@@ -88,7 +84,7 @@ def derive_guard_context(project_root: Path, change_id: str) -> HealingGuardCont
 
 
 def is_healing_run_context(project_root: Path, change_id: str) -> bool:
-    snapshot = derive_healing_state(project_root / "qa" / "changes" / change_id)
+    snapshot = derive_healing_state(_active_change_dir(project_root, change_id))
     return snapshot.episode_id is not None and snapshot.status != "not_needed"
 
 
@@ -129,7 +125,7 @@ def assert_test_tree_unchanged_or_healing(
     *,
     allow_test_changes: bool = False,
 ) -> TestTreeIntegrity:
-    change_dir = project_root / "qa" / "changes" / change_id
+    change_dir = _active_change_dir(project_root, change_id)
     baseline_sha, baseline_files, _ = _load_manifest_hashes(change_dir)
     if baseline_sha is None:
         return TestTreeIntegrity(tests_changed=False, changed_files=[])
@@ -174,7 +170,7 @@ def assert_product_tree_unchanged_in_healing(
     if not is_healing_run_context(project_root, change_id):
         return ProductTreeIntegrity(product_changed=False, changed_files=[])
 
-    change_dir = project_root / "qa" / "changes" / change_id
+    change_dir = _active_change_dir(project_root, change_id)
     _, _, baseline_sha = _load_manifest_hashes(change_dir)
     if baseline_sha is None:
         return ProductTreeIntegrity(product_changed=False, changed_files=[])
@@ -188,7 +184,7 @@ def assert_product_tree_unchanged_in_healing(
 
 
 def pin_healing_applied_test_tree(project_root: Path, change_id: str) -> Path:
-    change_dir = project_root / "qa" / "changes" / change_id
+    change_dir = _active_change_dir(project_root, change_id)
     healing_dir = change_dir / "healing"
     healing_dir.mkdir(parents=True, exist_ok=True)
     current = hash_test_tree(project_root)
@@ -232,7 +228,7 @@ def record_apply_summary(
     if target not in ("api", "e2e"):
         raise HealingGuardError(f"unsupported heal target: {target}")
 
-    change_dir = project_root / "qa" / "changes" / change_id
+    change_dir = _active_change_dir(project_root, change_id)
     context = derive_guard_context(project_root, change_id)
     if context.source_batch_id is None or context.attempt_key is None or context.proposal_sha256 is None:
         raise HealingGuardError("no active healing allocation for record-apply")
@@ -256,10 +252,8 @@ def record_apply_summary(
     if unauthorized:
         raise HealingGuardError(f"modified files outside authorized proposals: {', '.join(unauthorized)}")
 
-    healing_dir = change_dir / "healing"
-    healing_dir.mkdir(parents=True, exist_ok=True)
-    json_path = healing_dir / f"{target}-apply-summary.json"
-    md_path = healing_dir / f"{target}-apply-summary.md"
+    json_rel = f"healing/{target}-apply-summary.json"
+    md_rel = f"healing/{target}-apply-summary.md"
     summary = {
         "schema_version": "1.0",
         "target": target,
@@ -280,14 +274,12 @@ def record_apply_summary(
             "",
         ]
     )
+    summary_sha = hashlib.sha256(summary_text.encode("utf-8")).hexdigest()
 
-    snapshots = capture_files((json_path, md_path, change_dir / "events.jsonl"))
-    try:
-        json_path.write_text(summary_text, encoding="utf-8")
-        md_path.write_text(md_text, encoding="utf-8")
-        summary_sha = hashlib.sha256(summary_text.encode("utf-8")).hexdigest()
-        append_event_strict(
-            change_dir,
+    with transaction(change_dir) as txn:
+        txn.write_file(json_rel, summary_text)
+        txn.write_file(md_rel, md_text)
+        txn.append_strict(
             HealRecordApplyEvent(
                 target=target,  # type: ignore[arg-type]
                 proposal_sha256=context.proposal_sha256,
@@ -295,15 +287,12 @@ def record_apply_summary(
                 attempt_key=context.attempt_key,
                 summary_sha256=summary_sha,
                 files_modified=modified,
-            ),
+            )
         )
-    except EventWriteError:
-        restore_files(snapshots)
-        raise
 
     return RecordApplySummaryResult(
-        json_path=str(json_path),
-        md_path=str(md_path),
+        json_path=str(change_dir / json_rel),
+        md_path=str(change_dir / md_rel),
         summary_sha256=summary_sha,
         files_modified=modified,
     )

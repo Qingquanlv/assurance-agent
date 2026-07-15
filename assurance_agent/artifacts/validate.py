@@ -21,11 +21,17 @@ from pydantic import BaseModel, ValidationError
 
 from assurance_agent import resources
 from assurance_agent.artifacts.registry import ArtifactSpec, match_artifact
+from assurance_agent.change_location import ChangeNotFoundError
 from assurance_agent.exceptions import AaError
 
-
-class ChangeNotFoundError(AaError):
-    pass
+# Re-export for callers that imported from artifacts.validate
+__all__ = [
+    "ChangeNotFoundError",
+    "UnknownPhaseError",
+    "ValidationReport",
+    "ArtifactResult",
+    "validate_change",
+]
 
 
 class UnknownPhaseError(AaError):

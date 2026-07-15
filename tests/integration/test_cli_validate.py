@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from tests.helpers_aa import write_aa_config
+
 from click.testing import CliRunner
 
 from assurance_agent.cli import main
@@ -10,6 +12,7 @@ INVALID_REVIEW = '{"schema_version": "1.0", "decision": "maybe", "findings": []}
 
 
 def make_change(change_id: str = "CH-1") -> Path:
+    write_aa_config(Path.cwd())
     change_dir = Path("qa/changes") / change_id
     (change_dir / "review").mkdir(parents=True)
     return change_dir

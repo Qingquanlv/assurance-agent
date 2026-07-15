@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from tests.helpers_aa import write_aa_config
+
 from assurance_agent.eval.executor import execute_attempt
 from assurance_agent.eval.types import DatasetSample
 from assurance_agent.workflow.core.events import append_event_strict
@@ -58,7 +60,9 @@ def _scripted_status(steps: list[WorkflowStatus]):
 
 
 def test_execute_attempt_runs_m6_loop_and_copies_raw_output(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
     sut = tmp_path / "sut"
+    write_aa_config(sut)
     change_dir = sut / "qa" / "changes" / "eval-sample-001"
     change_dir.mkdir(parents=True)
     (change_dir / "workflow-state.yaml").write_text("phases: {}\n", encoding="utf-8")
@@ -108,7 +112,9 @@ def test_execute_attempt_runs_m6_loop_and_copies_raw_output(tmp_path: Path) -> N
 
 
 def test_execute_attempt_error_exit_recorded(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
     sut = tmp_path / "sut"
+    write_aa_config(sut)
     (sut / "qa" / "changes" / "eval-sample-002").mkdir(parents=True)
     status = _scripted_status(
         [

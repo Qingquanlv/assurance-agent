@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 
+from tests.helpers_aa import write_aa_config
+
 from click.testing import CliRunner
 
 from assurance_agent.cli import main
@@ -83,6 +85,7 @@ def test_retro_nightly_collect_noop_exit_10(tmp_path: Path) -> None:
     runner = CliRunner()
     with runner.isolated_filesystem() as fs:
         root = Path(fs)
+        write_aa_config(root)
         (root / "qa" / "archive").mkdir(parents=True)
         result = runner.invoke(
             main, ["retro", "nightly", "collect", "--sut", str(root), "--retro-id", "retro-empty"]

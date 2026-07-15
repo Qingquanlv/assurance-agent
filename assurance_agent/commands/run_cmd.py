@@ -4,19 +4,15 @@ from pathlib import Path
 
 import click
 
+from assurance_agent.change_location import resolve_change
 from assurance_agent.config import AaConfig, load_config
 from assurance_agent.exceptions import AaError
-from assurance_agent.identifiers import assert_change_id_safe
-from assurance_agent.workflow.core.events import (
-    EventWriteError,
-    HumanDecisionEvent,
-    append_event_best_effort,
-    append_event_strict,
-)
-from assurance_agent.workflow.core.snapshot import capture_files, restore_files
+from assurance_agent.workflow.core.events import HumanDecisionEvent, append_event_best_effort
+from assurance_agent.workflow.core.exit_codes import EXIT_ERROR
+from assurance_agent.workflow.core.progression import ProgressionError, transaction
 from assurance_agent.workflow.execution.runner import generate_batch_id, run_change
 from assurance_agent.workflow.execution.tree_hash import hash_test_tree
-from assurance_agent.workflow.healing.override_evidence import write_test_changes_override_evidence
+from assurance_agent.workflow.healing.override_evidence import build_test_changes_override_evidence
 from assurance_agent.workflow.healing.safety import (
     HealingGuardError,
     assert_product_tree_unchanged_in_healing,
@@ -44,14 +40,10 @@ def run_command(change_id: str, rerun_reason: str | None, allow_test_changes: bo
     project_root = Path.cwd()
     try:
         config = load_config(project_root)
-        change_dir = _change_dir(project_root, config, change_id)
+        change_dir = resolve_change(project_root, change_id).path
     except AaError as err:
         click.secho(f"Run failed: {err}", fg="red")
         raise SystemExit(1) from err
-
-    if not change_dir.is_dir():
-        click.secho(f"Run failed: change directory not found: {change_dir}", fg="red")
-        raise SystemExit(1)
 
     click.secho(f"\naa run — change: {change_id}\n", bold=True)
 
@@ -64,6 +56,9 @@ def run_command(change_id: str, rerun_reason: str | None, allow_test_changes: bo
             rerun_reason,
             allow_test_changes,
         )
+    except ProgressionError as err:
+        click.secho(f"Run failed: {err}", fg="red")
+        raise SystemExit(EXIT_ERROR) from err
     except (AaError, HealingGuardError) as err:
         click.secho(f"Run failed: {err}", fg="red")
         raise SystemExit(1) from err
@@ -88,27 +83,43 @@ def _execute(
     assert_product_tree_unchanged_in_healing(project_root, change_id)
 
     batch_id = generate_batch_id()
-    batch_dir = change_dir / "execution" / "runs" / batch_id
 
     if integrity.tests_changed and allow_test_changes:
         if not rerun_reason:
             raise HealingGuardError("--allow-test-changes requires --rerun-reason for audit trail")
+        from datetime import datetime, timezone
+        import subprocess
+
         current_tree = hash_test_tree(project_root)
-        override_json = batch_dir / "test-changes-override.json"
-        override_diff = batch_dir / "test-changes-override.diff"
-        events_path = change_dir / "events.jsonl"
-        snapshots = capture_files((override_json, override_diff, events_path))
         try:
-            evidence = write_test_changes_override_evidence(
-                project_root=project_root,
-                change_id=change_id,
-                batch_id=batch_id,
-                batch_dir=batch_dir,
-                reason=rerun_reason,
-                integrity=current_tree,
+            diff_result = subprocess.run(
+                ["git", "diff", "--", "tests/"],
+                cwd=project_root,
+                capture_output=True,
+                text=True,
+                check=False,
             )
-            append_event_strict(
-                change_dir,
+            diff_text = diff_result.stdout or ""
+        except OSError:
+            diff_text = ""
+        evidence = build_test_changes_override_evidence(
+            change_id=change_id,
+            batch_id=batch_id,
+            reason=rerun_reason,
+            integrity=current_tree,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            diff_text=diff_text,
+        )
+        with transaction(change_dir) as txn:
+            txn.write_file(
+                f"execution/runs/{batch_id}/test-changes-override.json",
+                evidence.json_bytes,
+            )
+            txn.write_file(
+                f"execution/runs/{batch_id}/test-changes-override.diff",
+                evidence.diff_bytes,
+            )
+            txn.append_strict(
                 HumanDecisionEvent(
                     checkpoint="test-tree-guard",
                     action="allow_test_changes",
@@ -116,11 +127,8 @@ def _execute(
                     who="cli",
                     review_file=evidence.rel_path,
                     review_sha256=evidence.sha256,
-                ),
+                )
             )
-        except EventWriteError:
-            restore_files(snapshots)
-            raise
 
     append_event_best_effort(
         change_dir,
@@ -149,13 +157,6 @@ def _execute(
         },
     )
     return manifest
-
-
-def _change_dir(project_root: Path, config: AaConfig, change_id: str) -> Path:
-    assert_change_id_safe(change_id)
-    rel = config.qa.changes
-    rel = rel[2:] if rel.startswith("./") else rel
-    return project_root / rel / change_id
 
 
 def _print_manifest(manifest, change_dir: Path) -> None:  # noqa: ANN001

@@ -14,7 +14,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from assurance_agent.identifiers import UnsafeIdentifierError, assert_change_id_safe
+from assurance_agent.change_location import ChangeNotFoundError, resolve_change
+from assurance_agent.config import ConfigNotFoundError
+from assurance_agent.identifiers import UnsafeIdentifierError
 from assurance_agent.workflow.driver.adapter import DriverError
 from assurance_agent.workflow.driver.driver_state import (
     acquire_lock,
@@ -86,10 +88,9 @@ def start_workflow_detached(
 ) -> StartResult:
     params = params or {}
     try:
-        assert_change_id_safe(change_id)
-    except UnsafeIdentifierError as err:
+        change_dir = resolve_change(project_root, change_id).path
+    except (UnsafeIdentifierError, ChangeNotFoundError, ConfigNotFoundError) as err:
         return StartResult(ok=False, message=str(err))
-    change_dir = project_root / "qa" / "changes" / change_id
     directory = directory or str(project_root)
 
     guard = evaluate_start_guard(change_dir)

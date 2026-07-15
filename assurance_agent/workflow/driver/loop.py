@@ -5,8 +5,6 @@ terminal. Strict audit writes use only M3's frozen union; driver lifecycle is
 best-effort telemetry. Ordinary DAG completion remains produces/gate-derived.
 """
 
-import hashlib
-import json
 import os
 import time
 from collections.abc import Callable
@@ -15,16 +13,19 @@ from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
-from assurance_agent.identifiers import UnsafeIdentifierError, assert_change_id_safe
-from assurance_agent.workflow.core.events import append_event_best_effort, append_event_strict
+from assurance_agent.change_location import ChangeNotFoundError, resolve_change
+from assurance_agent.config import ConfigNotFoundError
+from assurance_agent.exceptions import AaError
+from assurance_agent.identifiers import UnsafeIdentifierError
+from assurance_agent.workflow.core.events import append_event_best_effort
 from assurance_agent.workflow.core.exit_codes import (
     EXIT_COMPLETED,
     EXIT_ERROR,
     EXIT_HUMAN_REVIEW,
     EXIT_STOPPED,
 )
-from assurance_agent.workflow.core.snapshot import capture_files, restore_files
-from assurance_agent.workflow.core.state import read_state, state_guard
+from assurance_agent.workflow.core.progression import ProgressionError, ProgressionRollbackError
+from assurance_agent.workflow.core.state import read_state
 from assurance_agent.workflow.driver.adapter import Adapter, DriverError, PhaseRequest, PhaseResult
 from assurance_agent.workflow.driver.driver_state import (
     DriverState,
@@ -49,6 +50,11 @@ from assurance_agent.workflow.orchestration.engine import (
     compute_status,
 )
 from assurance_agent.workflow.orchestration.healing_episode import HealingEpisodeAction
+from assurance_agent.workflow.orchestration.operations import (
+    allocate_healing_attempt,
+    apply_phase_outcome,
+    record_dispatch,
+)
 from assurance_agent.workflow.orchestration.schema import WorkflowSchema, load_workflow_schema
 
 __all__ = [
@@ -110,17 +116,16 @@ class CliPhaseExecutor(Protocol):
 
 
 class DefaultCliPhaseExecutor:
-    """Run cli-kind phases and persist phase completion through the pinned `aa` CLI.
+    """Run cli-kind phases via pinned `aa` CLI; commit outcomes in-process.
 
     Phase->command mapping is driver-local because DispatchEntry does not carry
     a per-phase executor command. `aa run` exiting non-zero while its execution
     manifest + quality-gate result exist is a gate FAIL (tests ran, some failed)
     and is routed onward, not treated as a driver-fatal error (TS parity).
 
-    State advancement (`apply_phase_state`) is intentionally NOT folded into
-    `run_cli_phase`: the loop calls `apply_phase_state` uniformly after every
-    successful dispatch (skill/cli/orchestrator), so there is exactly one state
-    write per phase regardless of kind.
+    State advancement (`apply_phase_state`) calls ``apply_phase_outcome`` in
+    process — CLI remains available for manual/agent use, but the driver no
+    longer shells out for the write.
     """
 
     def __init__(
@@ -128,10 +133,12 @@ class DefaultCliPhaseExecutor:
         runner: ProcessRunner | None = None,
         aa_command: list[str] | None = None,
         timeout: float | None = None,
+        schema: WorkflowSchema | None = None,
     ) -> None:
         self._runner = runner or SubprocessRunner()
         self._aa = aa_command or resolve_aa_command()
         self._timeout = timeout
+        self._schema = schema
 
     def apply_phase_state(
         self,
@@ -139,27 +146,27 @@ class DefaultCliPhaseExecutor:
         ctx: PhaseContext,
         attempt_id: str,
     ) -> PhaseResult:
-        args = [
-            "state",
-            "apply",
-            "--change",
-            ctx.change_id,
-            "--phase",
-            entry.phase_id,
-            "--attempt-id",
-            attempt_id,
-        ]
-        if entry.skill:
-            args += ["--skill", entry.skill]
-        apply = self._runner.run([*self._aa, *args], ctx.project_root, timeout=self._timeout)
-        if apply.exit_code != 0:
-            detail = (apply.stderr or apply.stdout)[:500]
+        schema = self._schema or load_workflow_schema(ctx.project_root)
+        try:
+            apply_phase_outcome(
+                ctx.project_root,
+                ctx.change_dir,
+                schema,
+                entry.phase_id,
+                attempt_id=attempt_id,
+                skill=entry.skill,
+            )
+        except ProgressionRollbackError as err:
             return PhaseResult(
                 ok=False,
-                output=apply.stdout,
-                error=f"aa state apply --phase {entry.phase_id} failed (exit {apply.exit_code}): {detail}",
+                error=f"phase {entry.phase_id} state apply partial-commit: {err}",
             )
-        return PhaseResult(ok=True, output=apply.stdout)
+        except (ProgressionError, AaError) as err:
+            return PhaseResult(
+                ok=False,
+                error=f"phase {entry.phase_id} state apply failed: {err}",
+            )
+        return PhaseResult(ok=True, output=f"applied {entry.phase_id}")
 
     def run_cli_phase(self, entry: DispatchEntry, ctx: PhaseContext) -> PhaseResult:
         args = self._phase_args(entry.phase_id, ctx.change_id)
@@ -231,47 +238,13 @@ class DefaultHealingActionExecutor:
     def _allocate(action: HealingEpisodeAction, ctx: PhaseContext) -> PhaseResult:
         allocation = action.allocation
         assert allocation is not None
-        baseline_path = ctx.change_dir / "healing" / "entry-baseline.json"
-        snapshots = capture_files((ctx.change_dir / "events.jsonl", baseline_path))
         try:
-            if allocation.pin_entry_baseline:
-                payload = {
-                    "schema_version": "1.0",
-                    "episode_id": allocation.episode_id,
-                    "entry_batch_id": allocation.source_batch_id,
-                }
-                data = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
-                baseline_path.parent.mkdir(parents=True, exist_ok=True)
-                tmp = baseline_path.with_suffix(".tmp")
-                tmp.write_bytes(data)
-                os.replace(tmp, baseline_path)
-                append_event_strict(
-                    ctx.change_dir,
-                    {
-                        "source": "heal",
-                        "type": "healing_entry_baseline_pinned",
-                        "artifact_file": "healing/entry-baseline.json",
-                        "artifact_sha256": hashlib.sha256(data).hexdigest(),
-                        "entry_batch_id": allocation.source_batch_id,
-                        "episode_id": allocation.episode_id,
-                    },
-                )
-            append_event_strict(
-                ctx.change_dir,
-                {
-                    "source": "progression",
-                    "type": "healing_attempt_allocated",
-                    "episode_id": allocation.episode_id,
-                    "attempt_id": allocation.attempt_id,
-                    "attempt_number": allocation.attempt_number,
-                    "operation_id": allocation.operation_id,
-                    "source_batch_id": allocation.source_batch_id,
-                },
-            )
-        except Exception as err:  # snapshot boundary converts to driver failure
-            restore_files(snapshots)
+            result = allocate_healing_attempt(ctx.change_dir, allocation)
+        except ProgressionRollbackError as err:
+            return PhaseResult(ok=False, error=f"healing allocation partial-commit: {err}")
+        except (ProgressionError, AaError) as err:
             return PhaseResult(ok=False, error=f"healing allocation failed: {err}")
-        return PhaseResult(ok=True, output=allocation.attempt_id)
+        return PhaseResult(ok=True, output=result.attempt_id)
 
 
 class _DefaultStatusProvider:
@@ -342,14 +315,15 @@ def run_workflow_loop(
 ) -> LoopResult:
     params = params or {}
     try:
-        assert_change_id_safe(change_id)
-    except UnsafeIdentifierError as err:
+        change_dir = resolve_change(project_root, change_id).path
+    except (UnsafeIdentifierError, ChangeNotFoundError, ConfigNotFoundError) as err:
         return LoopResult(EXIT_ERROR, str(err))
-    change_dir = project_root / "qa" / "changes" / change_id
     if status_provider is None:
         schema = schema or load_workflow_schema(project_root)
         status_provider = _DefaultStatusProvider(schema, change_dir, params, scope)
-    cli_executor = cli_executor or DefaultCliPhaseExecutor()
+    else:
+        schema = schema or load_workflow_schema(project_root)
+    cli_executor = cli_executor or DefaultCliPhaseExecutor(schema=schema)
     healing_executor = healing_executor or DefaultHealingActionExecutor()
 
     # ---- lock / driver-state setup ------------------------------------------
@@ -483,19 +457,16 @@ def run_workflow_loop(
                     driver.current_attempt_id = attempt_id
                     driver.updated_at = now_iso()
                     write_driver_state(change_dir, driver)
-                    append_event_strict(
-                        change_dir,
-                        {
-                            "source": "progression",
-                            "type": "dispatch_signed",
-                            "phase": entry.phase_id,
-                            "kind": "dispatch_phase",
-                            "target": None,
-                            "attempt_id": driver.current_attempt_id,
-                            "state_guard": state_guard(change_dir),
-                            "dispatched_at": int(time.time() * 1000),
-                        },
-                    )
+                    try:
+                        record_dispatch(
+                            change_dir,
+                            phase_id=entry.phase_id,
+                            kind="dispatch_phase",
+                            attempt_id=driver.current_attempt_id,
+                            dispatched_at=int(time.time() * 1000),
+                        )
+                    except (ProgressionError, AaError) as err:
+                        return finish(EXIT_ERROR, f"dispatch_signed failed: {err}", "failed")
                     result = _dispatch_entry(entry, ctx, adapter, cli_executor)
                     if result.ok:
                         successful_attempt_id = attempt_id

@@ -19,7 +19,7 @@ from assurance_agent.artifacts.models import (
     ReportRiskLevel,
     ReportScope,
 )
-from assurance_agent.identifiers import assert_change_id_safe
+from assurance_agent.change_location import resolve_change
 from assurance_agent.workflow.execution.evidence import load_execution_evidence
 from assurance_agent.workflow.report.quality_score import ScoreDimension, compute_quality_score
 
@@ -37,8 +37,7 @@ class GenerateReportResult(BaseModel):
 
 
 def generate_report(project_root: Path, change_id: str) -> GenerateReportResult:
-    assert_change_id_safe(change_id)
-    change_base = project_root / "qa" / "changes" / change_id
+    change_base = resolve_change(project_root, change_id).path
     inspect_dir = change_base / "inspect"
     report_dir = change_base / "report"
 

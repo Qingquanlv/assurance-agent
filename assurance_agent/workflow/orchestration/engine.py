@@ -9,7 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from assurance_agent.artifacts.models import WorkflowState
-from assurance_agent.workflow.core.events import read_events
+from assurance_agent.workflow.core.events import Ledger
 from assurance_agent.workflow.orchestration.dsl import Scope, is_satisfied, parse_expression
 from assurance_agent.workflow.orchestration.gates import (
     build_evidence_scope,
@@ -64,11 +64,6 @@ class WorkflowStatus(BaseModel):
     healing_episode: HealingEpisodeSnapshot = Field(
         default_factory=lambda: HealingEpisodeSnapshot(state="inactive", stage=None)
     )
-
-
-def _event_seq(event: dict[str, object]) -> int:
-    seq = event.get("seq")
-    return seq if isinstance(seq, int) else 0
 
 
 def _dispatch_kind(phase: PhaseDef) -> Literal["skill", "cli", "orchestrator"]:
@@ -214,11 +209,7 @@ def compute_status(
                     kind=_dispatch_kind(phase),
                 )
             )
-    latest_decision = max(
-        (e for e in read_events(change_dir) if e.get("type") == "human_decision"),
-        key=_event_seq,
-        default=None,
-    )
+    latest_decision = Ledger(change_dir).latest(type="human_decision")
     if latest_decision is not None and latest_decision.get("action") == "stop":
         terminal = Terminal(
             kind="stopped",

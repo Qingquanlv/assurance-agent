@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from tests.helpers_aa import write_aa_config
+
 from assurance_agent.artifacts.models import CoverageThreshold, SelectedTargets
 from assurance_agent.workflow.execution.evidence import publish_execution_evidence
 from assurance_agent.workflow.execution.results import CaseResult, CoverageResult, ResultSource, TargetResult
@@ -8,6 +10,7 @@ from assurance_agent.workflow.report.quality_gate import build_quality_gate
 
 
 def _seed_change(tmp_path: Path, api: TargetResult, cov: CoverageResult) -> str:
+    write_aa_config(tmp_path)
     change_dir = tmp_path / "qa" / "changes" / "CH-1"
     change_dir.mkdir(parents=True)
     gate = build_quality_gate(
@@ -106,6 +109,7 @@ def test_inspect_classifies_locator_failure_as_fixable(tmp_path: Path) -> None:
 
 
 def test_inspect_missing_manifest_raises(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
     (tmp_path / "qa" / "changes" / "CH-9").mkdir(parents=True)
     import pytest
 

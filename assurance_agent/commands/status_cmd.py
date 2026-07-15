@@ -8,8 +8,10 @@ from pathlib import Path
 
 import click
 
+from assurance_agent.change_location import ChangeNotFoundError, resolve_change
+from assurance_agent.config import ConfigNotFoundError
 from assurance_agent.exceptions import AaError
-from assurance_agent.identifiers import UnsafeIdentifierError, assert_change_id_safe
+from assurance_agent.identifiers import UnsafeIdentifierError
 from assurance_agent.workflow.core.events import append_event_best_effort
 from assurance_agent.workflow.core.exit_codes import exit_code_for_terminal
 from assurance_agent.workflow.core.state import read_state
@@ -25,14 +27,11 @@ def status_command(change_id: str, next_only: bool, as_json: bool) -> None:
     """Compute the state of every phase in the workflow graph (deterministic, no LLM)."""
     project_root = Path.cwd()
     try:
-        assert_change_id_safe(change_id)
-    except UnsafeIdentifierError as err:
+        loc = resolve_change(project_root, change_id)
+    except (UnsafeIdentifierError, ChangeNotFoundError, ConfigNotFoundError) as err:
         click.secho(str(err), fg="red")
         raise SystemExit(1) from err
-    change_dir = project_root / "qa" / "changes" / change_id
-    if not change_dir.is_dir():
-        click.secho(f"change '{change_id}' not found (expected: {change_dir}).", fg="red")
-        raise SystemExit(1)
+    change_dir = loc.path
 
     try:
         schema = load_workflow_schema(project_root)

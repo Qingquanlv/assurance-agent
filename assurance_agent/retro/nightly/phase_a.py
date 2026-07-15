@@ -4,7 +4,9 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 
-from assurance_agent.identifiers import assert_change_id_safe, assert_path_segment_safe
+from assurance_agent.change_location import resolve_change
+from assurance_agent.config import load_config
+from assurance_agent.identifiers import assert_path_segment_safe
 from assurance_agent.retro.archive_reader import list_archived_changes, resolve_change_dir
 from assurance_agent.retro.nightly.types import ChangeCandidate
 from assurance_agent.retro.nightly.utils import list_dir_names
@@ -40,7 +42,10 @@ def enumerate_candidates(
             continue
         candidates.append(ChangeCandidate(change_id=change_id, evidence_source=source, path=str(change_dir)))
 
-    changes_root = sut / "qa" / "changes"
+    config = load_config(sut)
+    rel = config.qa.changes
+    rel = rel[2:] if rel.startswith("./") else rel
+    changes_root = sut / rel
     for change_id in list_dir_names(changes_root):
         if change_id in consumed or any(c.change_id == change_id for c in candidates):
             continue
@@ -58,8 +63,7 @@ def enumerate_candidates(
 
 def snapshot_unarchived_evidence(sut: Path, retro_id: str, change_id: str) -> Path:
     assert_path_segment_safe(retro_id, label="retro id")
-    assert_change_id_safe(change_id)
-    src = sut / "qa" / "changes" / change_id
+    src = resolve_change(sut, change_id).path
     dest = sut / "qa" / "retro" / retro_id / "evidence" / change_id
     dest.mkdir(parents=True, exist_ok=True)
     for name in ("events.jsonl", "workflow-state.yaml"):

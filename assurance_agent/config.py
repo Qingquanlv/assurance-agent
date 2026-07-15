@@ -30,6 +30,7 @@ class SourcesCfg(_Model):
 class QaCfg(_Model):
     cases: str
     changes: str
+    archive: str = "./qa/archive"
 
 
 class TestsCfg(_Model):

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from tests.helpers_aa import write_aa_config
+
 import yaml
 
 
@@ -17,6 +19,7 @@ def make_archived_change(
 ) -> Path:
     root = project_root / "qa" / "archive" / change_id
     root.mkdir(parents=True)
+    write_aa_config(project_root)
     events: list[dict[str, object]] = [{"type": "workflow_started", "change_id": change_id}]
     for _ in range(gate_pushbacks):
         events.append({"type": "gate_pushback", "gate": "case-review"})

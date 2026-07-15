@@ -1,5 +1,7 @@
 import json
 from pathlib import Path
+
+from tests.helpers_aa import write_aa_config
 from unittest.mock import patch
 
 from click.testing import CliRunner
@@ -12,6 +14,8 @@ from assurance_agent.workflow.report.quality_gate import build_quality_gate
 
 
 def _publish_failed_batch(root: Path, batch_id: str = "20260715-000001") -> None:
+    write_aa_config(root)
+    (root / "qa" / "changes" / "CH-1").mkdir(parents=True, exist_ok=True)
     cases = [
         CaseResult(
             case_id="TC_API_001",

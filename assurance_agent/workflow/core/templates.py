@@ -37,6 +37,7 @@ sources:
 qa:
   cases: ./qa/cases
   changes: ./qa/changes
+  archive: ./qa/archive
 
 tests:
   root: ./tests

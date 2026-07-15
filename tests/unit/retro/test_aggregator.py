@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tests.helpers_aa import write_aa_config
+
 from assurance_agent.retro.aggregator import build_retro_context, count_signals
 from tests.unit.retro.archive_fixtures import make_archived_change
 
 
 def test_build_context_golden_signals(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
     make_archived_change(
         tmp_path,
         "CH-1",
@@ -44,6 +47,7 @@ def test_build_context_golden_signals(tmp_path: Path) -> None:
 
 
 def test_build_context_no_changes_zero_signals(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
     (tmp_path / "qa" / "archive").mkdir(parents=True)
     context = build_retro_context(tmp_path, changes=[], retro_id="retro-empty")
     assert context.window.change_count == 0
@@ -52,6 +56,7 @@ def test_build_context_no_changes_zero_signals(tmp_path: Path) -> None:
 
 
 def test_build_context_since_scans_archive(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
     make_archived_change(tmp_path, "CH-A", failures=[{"classification": "assertion"}])
     make_archived_change(tmp_path, "CH-B", failures=[])
     context = build_retro_context(tmp_path, since="2000-01-01T00:00:00Z", retro_id="retro-scan")

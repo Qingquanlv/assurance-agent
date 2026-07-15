@@ -16,7 +16,7 @@ from assurance_agent.artifacts.models import (
     FailureEvidence,
     QualityGateResult,
 )
-from assurance_agent.identifiers import assert_change_id_safe
+from assurance_agent.change_location import resolve_change
 from assurance_agent.workflow.execution.evidence import (
     EvidenceError,
     ExecutionEvidence,
@@ -66,8 +66,7 @@ def inspect_change(
     *,
     batch_id: str | None = None,
 ) -> InspectResult:
-    assert_change_id_safe(change_id)
-    change_base = project_root / "qa" / "changes" / change_id
+    change_base = resolve_change(project_root, change_id).path
     execution_dir = change_base / "execution"
     inspect_dir = change_base / "inspect"
 

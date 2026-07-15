@@ -86,7 +86,7 @@ assurance-agent/
 - `events.jsonl`：append-only，但**区分两种写入模式**（对齐源版 events.ts 的双模式）：
   - `append_event_best_effort()`——遥测型事件（status 查询、gate 查询、普通运行日志）：写入失败静默降级，不改变命令退出码；
   - `append_event_strict()`——审计型事件（人工 decision、override、dispatch 记录、状态推进证据、healing attempt 分配）：写入失败即命令失败，且**必须回滚同一操作中已做的关联状态修改**（如 decision 写入失败回滚 state 变更、healing attempt 分配采用事务式恢复）。
-  - 写入顺序约定：progression 先捕获关联文件快照，再落 strict 事件、后推进 workflow-state；任一步失败即恢复快照，重放由 `attempt_id` / `operation_id` / `state_guard` 幂等标记吸收。M3 只提供 typed event、snapshot 和纯 projection 原语，M6 driver 是唯一事务写边界。
+  - 写入顺序约定：`workflow.core.progression.transaction` 是唯一事务写边界实现；所有 strict runtime writer 经 `workflow.orchestration.operations`（或持有 txn 的领域 wrapper）进入。结构强制顺序为快照 → 文件 → strict 事件 → state，进程内失败则恢复快照；SIGKILL/断电只保证合法前缀，由领域操作重放补齐可恢复后缀。M3 只提供 typed event、snapshot 和纯 projection 原语。
 - Case ID 规范：`TC_MODULE_001`（下划线大写）校验与规范化。
 - 外部 ID 路径安全：所有把外部 `change_id`、`retro_id`、run/baseline id 拼入 change/archive/eval 路径的入口先调用同一 `assert_path_segment_safe`（change 使用专用包装）；只允许一个路径段（首字符字母/数字，其余 `[A-Za-z0-9._-]`），拒绝空串、`.`、`..`、斜杠和绝对路径。
 - Skill Load Gate：阶段进入前记录 `skill_loaded` / `skill_md_path` / `skill_loaded_at`，未通过不得置 done。
