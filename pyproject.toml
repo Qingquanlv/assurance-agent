@@ -29,9 +29,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["assurance_agent"]
-# _resources 含非 .py 文件，hatchling 默认包含包内数据文件；
-# artifacts 声明确保未来被 .gitignore 模式覆盖的资源也入包。
+# _resources 含非 .py 文件（schemas/skills/opencode），hatchling 默认包含包内数据文件；
+# artifacts 声明确保被 .gitignore 模式覆盖的资源也入包。
 artifacts = ["assurance_agent/_resources/**"]
+# scripts/ 是 dev 工具（migrate_skills.py 等），显式排除以防误入包。
+exclude = ["scripts", "/scripts/**"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
