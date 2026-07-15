@@ -14,7 +14,8 @@ EXIT_USAGE = 2
 
 
 class TerminalLike(Protocol):
-    kind: str
+    @property
+    def kind(self) -> str: ...
 
 
 def exit_code_for_gate_verdict(verdict: str) -> int:
