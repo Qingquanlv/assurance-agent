@@ -11,3 +11,19 @@ layers =
     assurance_agent.artifacts
     assurance_agent.config
     assurance_agent.resources
+
+[importlinter:contract:core-below-orchestration]
+name = workflow.core must not import workflow.orchestration
+type = forbidden
+source_modules =
+    assurance_agent.workflow.core
+forbidden_modules =
+    assurance_agent.workflow.orchestration
+
+[importlinter:contract:artifacts-below-workflow]
+name = artifacts must not import workflow
+type = forbidden
+source_modules =
+    assurance_agent.artifacts
+forbidden_modules =
+    assurance_agent.workflow

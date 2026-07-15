@@ -188,14 +188,19 @@ def project_healing_episode(
     allocation = max(allocations, key=_seq, default=None)
 
     if allocation is None:
-        entry = check_gate(schema, "healing-entry-gate", change_dir, state, merged).verdict.value
-        if entry == "skip":
+        gate_result = check_gate(schema, "healing-entry-gate", change_dir, state, merged)
+        entry = gate_result.verdict.value
+        if entry != "enter":
+            if (
+                entry == "stop"
+                and gate_result.matched_rule is not None
+                and gate_result.matched_rule.startswith("stop_when:")
+            ):
+                return HealingEpisodeSnapshot(
+                    state="terminal", stage="entry", terminal_kind="stopped",
+                    reason="healing-entry-gate=stop",
+                )
             return HealingEpisodeSnapshot(state="inactive", stage=None)
-        if entry == "stop":
-            return HealingEpisodeSnapshot(
-                state="terminal", stage="entry", terminal_kind="stopped",
-                reason="healing-entry-gate=stop",
-            )
         proposal = _latest(
             events, "phase_outcome_committed", phase="fix-proposal", after=episode_floor
         )
