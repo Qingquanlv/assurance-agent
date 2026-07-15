@@ -1,0 +1,260 @@
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+import click
+
+from assurance_agent.eval.baseline import (
+    compare_with_baseline,
+    read_baseline,
+    read_run_manifest,
+    update_baseline,
+)
+from assurance_agent.eval.gate import read_gate_result
+from assurance_agent.eval.paths import run_dir as run_dir_for
+from assurance_agent.eval.plan import generate_plan, load_suite, write_plan
+from assurance_agent.eval.report import generate_trend_report
+from assurance_agent.eval.runner import run_plan, run_suite
+from assurance_agent.exceptions import AaError
+from assurance_agent.workflow.driver.adapter import Adapter, PhaseRequest, PhaseResult
+
+_FAILING = {"fail", "inconclusive", "needs_human_review"}
+
+
+class _FakeAdapter:
+    """AA_EVAL_FAKE_ADAPTER: skip real agent; seed/fixture supplies artifacts."""
+
+    def run_phase(self, request: PhaseRequest) -> PhaseResult:
+        return PhaseResult(ok=True, output="fake")
+
+
+def _terminal_status_provider_factory(**_: object):
+    from assurance_agent.workflow.orchestration.engine import Terminal, WorkflowStatus
+
+    def provider() -> WorkflowStatus:
+        return WorkflowStatus(phases=[], next_dispatch=[],
+                              terminal=Terminal(kind="completed", reason="fake"))
+
+    return provider
+
+
+def _resolve_adapter_factory(*, use_fake: bool, sut: Path):
+    if use_fake:
+        def fake_factory(**_: object) -> Adapter:
+            return _FakeAdapter()
+        return fake_factory, _terminal_status_provider_factory
+
+    from assurance_agent.workflow.driver.headless_adapter import HeadlessAdapter
+
+    agent_cmd = os.environ.get("AA_EVAL_AGENT_CMD", "cursor-agent")
+
+    def real_factory(*, sut_dir: Path | None = None, **_: object) -> Adapter:
+        return HeadlessAdapter(agent_cmd=agent_cmd, cwd=sut_dir or sut)
+
+    return real_factory, None
+
+
+@click.group("eval")
+def eval_group() -> None:
+    """AI Eval Harness — evaluate AI tool quality."""
+
+
+@eval_group.command("run")
+@click.option("--suite", "suite_name", help="Suite name to run")
+@click.option("--plan", "plan_path", help="Path to eval-plan.json")
+@click.option("--sample", "sample_id", help="Run a single sample only")
+@click.option("--repeat", type=int, default=1, help="Repeat runs (stability)")
+@click.option("--output", "output_mode", help="Output mode: id")
+@click.option("--json", "as_json", is_flag=True, help="Output { run_id, verdict } JSON")
+@click.option("--fail-on-verdict", is_flag=True, help="Exit 1 when verdict is not pass")
+@click.option("--calibrate", is_flag=True, help="Run judge calibration (records only)")
+@click.option("--extra-memory-dir", help="Overlay .aa/memory files into SUT workspaces")
+@click.option("--sut-dir", help="Override SUT checkout directory")
+def eval_run(suite_name, plan_path, sample_id, repeat, output_mode, as_json,
+             fail_on_verdict, calibrate, extra_memory_dir, sut_dir) -> None:
+    project_root = Path.cwd()
+    if not suite_name and not plan_path:
+        click.echo("Error: --suite <name> or --plan <path> required", err=True)
+        raise SystemExit(1)
+    if suite_name and plan_path:
+        click.echo("Error: --suite and --plan are mutually exclusive", err=True)
+        raise SystemExit(1)
+
+    use_fake = bool(os.environ.get("AA_EVAL_FAKE_ADAPTER"))
+    sut = Path(sut_dir).resolve() if sut_dir else (
+        Path(os.environ.get("AA_EVAL_SUT_DIR", str(project_root))))
+    adapter_factory, status_factory = _resolve_adapter_factory(use_fake=use_fake, sut=sut)
+
+    try:
+        if suite_name:
+            _, suite_file = load_suite(project_root, suite_name)
+            run_id, gate = run_suite(
+                suite_file=suite_file, project_root=project_root, sut_dir=sut,
+                sample_id=sample_id, repeat=repeat, calibrate=calibrate,
+                adapter_factory=adapter_factory,
+                status_provider_factory=status_factory,
+            )
+            _print_run(output_mode, as_json, run_id, gate.verdict)
+            if fail_on_verdict and gate.verdict in _FAILING:
+                raise SystemExit(1)
+        else:
+            batch_id, gates = run_plan(
+                plan_path=Path(plan_path), project_root=project_root, sut_dir=sut,
+                adapter_factory=adapter_factory, status_provider_factory=status_factory,
+            )
+            worst = _worst_verdict([g.verdict for g in gates])
+            _print_run(output_mode, as_json, batch_id, worst, key="batch_id")
+            if fail_on_verdict and worst in _FAILING:
+                raise SystemExit(1)
+    except AaError as err:
+        click.echo(f"Error: {err}", err=True)
+        raise SystemExit(1) from err
+
+
+def _worst_verdict(verdicts: list[str]) -> str:
+    order = ["fail", "inconclusive", "needs_human_review", "pass_with_warnings", "pass"]
+    for candidate in order:
+        if candidate in verdicts:
+            return candidate
+    return "pass"
+
+
+def _print_run(output_mode, as_json, run_id, verdict, key="run_id") -> None:
+    if output_mode == "id":
+        click.echo(run_id)
+        return
+    if as_json:
+        click.echo(json.dumps({key: run_id, "verdict": verdict}))
+        return
+    click.echo(f"{key}: {run_id}")
+    click.echo(f"verdict: {verdict}")
+
+
+@eval_group.command("plan")
+@click.option("--event", required=True, help="pull_request | manual")
+@click.option("--changed-files", help="Path to changed files list")
+@click.option("--suite", "suite_name", help="Suite to include (manual)")
+@click.option("--out", default="eval-plan.json", help="Output path")
+def eval_plan(event, changed_files, suite_name, out) -> None:
+    changed = None
+    if changed_files:
+        changed = Path(changed_files).read_text(encoding="utf-8").split()
+    plan = generate_plan(event, changed, suite_name)
+    write_plan(plan, Path(out))
+    click.echo(f"plan: {out}")
+
+
+@eval_group.command("report")
+@click.option("--run", "run_id", help="Run id")
+@click.option("--trend", is_flag=True, help="Trend report")
+@click.option("--suite", "suite_name", help="Suite for --trend")
+@click.option("--from", "date_from", help="trend filter: started_at >= from")
+@click.option("--to", "date_to", help="trend filter: started_at <= to")
+@click.option("--html", "as_html", is_flag=True, help="Generate HTML")
+@click.option("--output", "output_path", help="Override HTML output path")
+@click.option("--json", "as_json", is_flag=True, help="Output JSON")
+def eval_report(run_id, trend, suite_name, date_from, date_to, as_html, output_path,
+                as_json) -> None:
+    project_root = Path.cwd()
+    if trend:
+        if not suite_name:
+            click.echo("Error: --trend requires --suite", err=True)
+            raise SystemExit(1)
+        out = generate_trend_report(
+            project_root, suite_name, date_from=date_from, date_to=date_to,
+            html_out=Path(output_path) if output_path else None,
+        )
+        click.echo(f"trend: {out}")
+        return
+    if not run_id:
+        click.echo("Error: --run <id> or --trend required", err=True)
+        raise SystemExit(1)
+    run_dir = run_dir_for(project_root, run_id)
+    report_path = run_dir / "report.json"
+    if not report_path.exists():
+        click.echo(f"Error: run not found: {run_id}", err=True)
+        raise SystemExit(1)
+    if as_json:
+        click.echo(report_path.read_text(encoding="utf-8"))
+        return
+    gate = read_gate_result(run_dir)
+    click.echo(f"run_id: {run_id}")
+    click.echo(f"verdict: {gate.verdict}")
+    if as_html:
+        click.echo(f"html: {run_dir / 'report.html'}")
+
+
+_VERDICT_EXIT = {"pass": 0, "pass_with_warnings": 0, "fail": 1,
+                 "inconclusive": 1, "needs_human_review": 30}
+
+
+@eval_group.command("gate")
+@click.option("--run", "run_id", required=True, help="Run id")
+def eval_gate(run_id: str) -> None:
+    """Read gate result (does NOT recompute)."""
+    project_root = Path.cwd()
+    run_dir = run_dir_for(project_root, run_id)
+    try:
+        gate = read_gate_result(run_dir)
+    except (FileNotFoundError, AaError) as err:
+        click.echo(f"eval gate failed: {err}", err=True)
+        raise SystemExit(1) from err
+    click.echo(f"suite:   {gate.suite}")
+    click.echo(f"verdict: {gate.verdict}")
+    if gate.hard_gate_failures:
+        click.echo(f"hard_gate_failures: {', '.join(gate.hard_gate_failures)}")
+    raise SystemExit(_VERDICT_EXIT.get(gate.verdict, 1))
+
+
+@eval_group.command("compare")
+@click.option("--baseline", "baseline_name", required=True,
+              help='Baseline name (currently only "main" supported)')
+@click.option("--run", "run_id", required=True, help="Run id")
+def eval_compare(baseline_name: str, run_id: str) -> None:
+    """Compare a run against the named baseline (read-only)."""
+    project_root = Path.cwd()
+    try:
+        baseline = read_baseline(project_root, baseline_name)
+        run_dir = run_dir_for(project_root, run_id)
+        manifest = read_run_manifest(run_dir)
+        entry = baseline.get(manifest.suite)
+        if entry is None:
+            click.echo(f"No baseline found for suite: {manifest.suite}")
+            raise SystemExit(0)
+        delta = compare_with_baseline(run_dir, entry.metrics)
+    except (FileNotFoundError, AaError) as err:
+        click.echo(f"eval compare failed: {err}", err=True)
+        raise SystemExit(1) from err
+    click.echo(f"Comparing {run_id} vs baseline ({entry.run_id})")
+    for metric, value in delta.items():
+        sign = f"+{value:.4f}" if value >= 0 else f"{value:.4f}"
+        click.echo(f"  {metric}: {sign}")
+
+
+@eval_group.group("baseline")
+def eval_baseline() -> None:
+    """Manage eval baselines."""
+
+
+@eval_baseline.command("update")
+@click.option("--suite", "suite_name", required=True, help="Suite name")
+@click.option("--run", "run_id", required=True, help="Run id to use as new baseline")
+@click.option("--approved-by", default="unknown", help="Approver initials")
+@click.option("--yes", is_flag=True, help="Skip interactive confirmation")
+def eval_baseline_update(suite_name: str, run_id: str, approved_by: str, yes: bool) -> None:
+    """Update baseline for a suite (requires human confirmation)."""
+    project_root = Path.cwd()
+    if not yes and not click.confirm(
+        f"Promote run {run_id} to baseline 'main' for suite {suite_name}?"
+    ):
+        click.echo("aborted", err=True)
+        raise SystemExit(1)
+    try:
+        update_baseline(project_root, suite_name=suite_name, run_id=run_id,
+                        approved_by=approved_by)
+    except (FileNotFoundError, AaError) as err:
+        click.echo(f"eval baseline update failed: {err}", err=True)
+        raise SystemExit(1) from err
+    click.echo(f"baseline updated: main.json [{suite_name}] <- {run_id}")
