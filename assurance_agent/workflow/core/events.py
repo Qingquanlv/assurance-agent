@@ -1,0 +1,166 @@
+"""events.jsonl append-only 写入：遥测型 best-effort + 审计型 strict（对齐源版 events.ts）。
+
+M3 只提供 append 原语 + 读取；事务性写边界（先事件后 state、失败回滚）在 M6 progression
+以文件快照 + 幂等标记实现。core 内不 import state，避免层内环。
+"""
+from __future__ import annotations
+
+import json
+import sys
+from collections.abc import Mapping
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+
+from assurance_agent.exceptions import AaError
+
+EVENTS_RELPATH = "events.jsonl"
+
+
+class _AuditEventBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class HumanDecisionEvent(_AuditEventBase):
+    source: Literal["decide"] = "decide"
+    type: Literal["human_decision"] = "human_decision"
+    checkpoint: str
+    action: Literal["fix_and_proceed", "accept_risk", "stop", "allow_test_changes", "skip_branch"]
+    reason: str
+    who: str
+    review_file: str | None = None
+    review_sha256: str | None = None
+
+
+class DispatchSignedEvent(_AuditEventBase):
+    source: Literal["progression"] = "progression"
+    type: Literal["dispatch_signed"] = "dispatch_signed"
+    phase: str
+    kind: Literal["dispatch_phase", "heal"]
+    target: Literal["api", "e2e"] | None = None
+    attempt_id: str
+    state_guard: str
+    dispatched_at: int
+
+
+class PhaseOutcomeCommittedEvent(_AuditEventBase):
+    source: Literal["progression"] = "progression"
+    type: Literal["phase_outcome_committed"] = "phase_outcome_committed"
+    phase: str
+    attempt_id: str
+    gate_report: dict[str, object] | None
+
+
+class HealingAttemptAllocatedEvent(_AuditEventBase):
+    source: Literal["progression"] = "progression"
+    type: Literal["healing_attempt_allocated"] = "healing_attempt_allocated"
+    episode_id: str
+    attempt_id: str
+    attempt_number: int = Field(ge=1)
+    operation_id: str = Field(min_length=1)
+    source_batch_id: str
+
+
+class HealRecordApplyEvent(_AuditEventBase):
+    source: Literal["heal"] = "heal"
+    type: Literal["heal_record_apply"] = "heal_record_apply"
+    target: Literal["api", "e2e"]
+    proposal_sha256: str
+    source_batch_id: str
+    attempt_key: str
+    summary_sha256: str | None
+    files_modified: list[str]
+
+
+class HealTransitionEvent(_AuditEventBase):
+    source: Literal["status"] = "status"
+    type: Literal["heal_transition"] = "heal_transition"
+    from_: str = Field(alias="from")
+    to: str
+    source_batch_id: str | None = None
+    proposal_sha256: str | None = None
+    attempt_key: str | None = None
+
+
+class HealingEntryBaselinePinnedEvent(_AuditEventBase):
+    source: Literal["heal"] = "heal"
+    type: Literal["healing_entry_baseline_pinned"] = "healing_entry_baseline_pinned"
+    artifact_file: Literal["healing/entry-baseline.json"]
+    artifact_sha256: str
+    entry_batch_id: str
+    episode_id: str
+
+
+AuditEvent = Annotated[
+    HumanDecisionEvent | DispatchSignedEvent | PhaseOutcomeCommittedEvent
+    | HealingAttemptAllocatedEvent | HealRecordApplyEvent | HealTransitionEvent
+    | HealingEntryBaselinePinnedEvent,
+    Field(discriminator="type"),
+]
+_AUDIT_ADAPTER = TypeAdapter(AuditEvent)
+
+
+class EventWriteError(AaError):
+    """strict 审计事件写入失败。"""
+
+
+def _events_file(change_dir: Path) -> Path:
+    return change_dir / EVENTS_RELPATH
+
+
+def read_events(change_dir: Path) -> list[dict[str, object]]:
+    file = _events_file(change_dir)
+    if not file.exists():
+        return []
+    out: list[dict[str, object]] = []
+    for line in file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue  # 容错：跳过坏行（对齐源版 readEvents）
+        if isinstance(value, dict):
+            out.append(value)
+    return out
+
+
+def next_seq(change_dir: Path) -> int:
+    seqs: list[int] = []
+    for e in read_events(change_dir):
+        seq = e.get("seq")
+        if isinstance(seq, int):
+            seqs.append(seq)
+    return (max(seqs) + 1) if seqs else 1
+
+
+def _append(change_dir: Path, event: Mapping[str, object]) -> None:
+    if not change_dir.exists():
+        raise EventWriteError(f"change directory does not exist: {change_dir}")
+    record = {
+        "seq": next_seq(change_dir),
+        "ts": datetime.now(timezone.utc).isoformat(),
+        **event,
+    }
+    with _events_file(change_dir).open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def append_event_strict(
+    change_dir: Path, event: AuditEvent | Mapping[str, object],
+) -> None:
+    try:
+        validated = _AUDIT_ADAPTER.validate_python(event)
+        _append(change_dir, validated.model_dump(mode="json", by_alias=True, exclude_none=True))
+    except (EventWriteError, OSError, TypeError, ValueError, ValidationError) as exc:
+        raise EventWriteError(str(exc)) from exc
+
+
+def append_event_best_effort(change_dir: Path, event: Mapping[str, object]) -> None:
+    try:
+        _append(change_dir, event)
+    except Exception as exc:  # telemetry 永不改变调用者结果；不捕获 BaseException
+        print(f"warning: events.jsonl skipped: {exc}", file=sys.stderr)
