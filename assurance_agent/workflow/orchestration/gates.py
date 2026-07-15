@@ -1,4 +1,5 @@
 """Gate 四态裁决：读取 evidence，按规则顺序求值，输出单一 verdict。"""
+
 from __future__ import annotations
 
 import json
@@ -43,7 +44,7 @@ def resolve_change_path(change_dir: Path, rel: str) -> Path:
     change_id = change_dir.name
     normalized = rel.replace("<change-id>", change_id)
     if normalized.startswith("repo:"):
-        return root / normalized[len("repo:"):]
+        return root / normalized[len("repo:") :]
     if normalized.startswith("qa/"):
         return root / normalized
     return change_dir / normalized

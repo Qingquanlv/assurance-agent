@@ -1,4 +1,5 @@
 """Small file snapshots used by the M6 progression write boundary."""
+
 from __future__ import annotations
 
 import os

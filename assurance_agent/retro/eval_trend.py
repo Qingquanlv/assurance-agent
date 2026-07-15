@@ -22,9 +22,12 @@ def read_eval_trend(project_root: Path, *, suites: list[str] | None = None) -> l
         suite = data.get("suite", "")
         if suites and suite not in suites:
             continue
-        signals.append(EvalTrendSignal(
-            suite=suite, run_id=data.get("run_id", run.name),
-            verdict=data.get("verdict", "unknown"),
-            started_at=data.get("started_at", ""),
-        ))
+        signals.append(
+            EvalTrendSignal(
+                suite=suite,
+                run_id=data.get("run_id", run.name),
+                verdict=data.get("verdict", "unknown"),
+                started_at=data.get("started_at", ""),
+            )
+        )
     return signals

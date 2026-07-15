@@ -4,6 +4,7 @@ Canonical form is TC_<MODULE>[_<LAYER>]_<NNN> (underscore, upper). Matching is
 case-insensitive and accepts the legacy hyphen form; the extracted id is
 canonicalized so it matches case_id values in case.yaml.
 """
+
 import re
 
 # Lookbehind (not \b) because `_` is a word char, so \b would not fire between

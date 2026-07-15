@@ -3,6 +3,7 @@
 Consumes the inspect artifacts + execution evidence, scores the run, buckets
 defects, and derives risk/recommendation. CLI is the only trusted scorer.
 """
+
 import re
 from pathlib import Path
 from typing import TypeVar
@@ -55,11 +56,19 @@ def generate_report(project_root: Path, change_id: str) -> GenerateReportResult:
     recommendation = _recommendation(gate.final_status, defects)
 
     report = QualityReport(
-        schema_version="1.0", change_id=change_id, batch_id=gate.batch_id or evidence.batch_id,
-        final_status=gate.final_status, quality_score=score, score_breakdown=breakdown,
-        scope=_scope(change_base), functional=gate.dimensions.functional,
-        coverage=gate.dimensions.coverage, defects=defects, risk_level=risk_level,
-        risk_rationale=risk_rationale, recommendation=recommendation,
+        schema_version="1.0",
+        change_id=change_id,
+        batch_id=gate.batch_id or evidence.batch_id,
+        final_status=gate.final_status,
+        quality_score=score,
+        score_breakdown=breakdown,
+        scope=_scope(change_base),
+        functional=gate.dimensions.functional,
+        coverage=gate.dimensions.coverage,
+        defects=defects,
+        risk_level=risk_level,
+        risk_rationale=risk_rationale,
+        recommendation=recommendation,
         non_functional=gate.dimensions.non_functional,
     )
 
@@ -71,7 +80,10 @@ def generate_report(project_root: Path, change_id: str) -> GenerateReportResult:
     md_path.write_text(_report_md(report), encoding="utf-8")
     exec_path.write_text(_exec_summary(report), encoding="utf-8")
     return GenerateReportResult(
-        report=report, json_path=str(json_path), md_path=str(md_path), exec_summary_path=str(exec_path),
+        report=report,
+        json_path=str(json_path),
+        md_path=str(md_path),
+        exec_summary_path=str(exec_path),
     )
 
 
@@ -91,12 +103,17 @@ def _dimensions(gate: QualityGateResult) -> dict[str, ScoreDimension]:
     perf_ratio = (sum(1 for s in ran if s.verdict == "PASS") / len(ran)) if perf_active else 0.0
 
     m3 = fuzz_active or perf_active
-    weights = ({"functional": 50, "coverage": 20, "fuzz": 15, "performance": 15}
-               if m3 else {"functional": 70, "coverage": 30, "fuzz": 0, "performance": 0})
+    weights = (
+        {"functional": 50, "coverage": 20, "fuzz": 15, "performance": 15}
+        if m3
+        else {"functional": 70, "coverage": 30, "fuzz": 0, "performance": 0}
+    )
     return {
-        "functional": ScoreDimension(active=func_total > 0,
-                                     ratio=(func_passed / func_total) if func_total > 0 else 0.0,
-                                     weight=weights["functional"]),
+        "functional": ScoreDimension(
+            active=func_total > 0,
+            ratio=(func_passed / func_total) if func_total > 0 else 0.0,
+            weight=weights["functional"],
+        ),
         "coverage": ScoreDimension(active=cov.available, ratio=cov_ratio, weight=weights["coverage"]),
         "fuzz": ScoreDimension(active=fuzz_active, ratio=fuzz_ratio, weight=weights["fuzz"]),
         "performance": ScoreDimension(active=perf_active, ratio=perf_ratio, weight=weights["performance"]),
@@ -107,7 +124,7 @@ def _bucket_defects(analysis: FailureAnalysis | None) -> ReportDefects:
     product: list[ReportDefect] = []
     test: list[ReportDefect] = []
     environment: list[ReportDefect] = []
-    for failure in (analysis.failures if analysis else []):
+    for failure in analysis.failures if analysis else []:
         defect = ReportDefect(case_id=failure.case_id, category=failure.category, diagnosis=failure.diagnosis)
         if failure.category in _PRODUCT:
             product.append(defect)
@@ -120,7 +137,10 @@ def _bucket_defects(analysis: FailureAnalysis | None) -> ReportDefects:
 
 def _risk(gate: QualityGateResult, defects: ReportDefects) -> tuple[ReportRiskLevel, str]:
     if defects.product:
-        return "HIGH", f"Detected {len(defects.product)} product-level defect(s); product behaviour is incorrect."
+        return (
+            "HIGH",
+            f"Detected {len(defects.product)} product-level defect(s); product behaviour is incorrect.",
+        )
     status = gate.final_status
     if status == "FAIL":
         return "HIGH", "Functional gate failed — one or more selected test targets did not pass."
@@ -189,38 +209,56 @@ def _fmt(value: float | str) -> str:
 def _report_md(r: QualityReport) -> str:
     cov = r.coverage
     lines = [
-        f"# Quality Report — {r.change_id}", "",
+        f"# Quality Report — {r.change_id}",
+        "",
         f"- **Batch**: {r.batch_id or '(unknown)'}",
         f"- **Final Status**: {r.final_status}",
         f"- **Quality Score**: {r.quality_score} / 100",
-        f"- **Risk Level**: {r.risk_level}", "",
-        "## Score Breakdown", "",
-        "| Dimension | Points |", "|-----------|--------|",
+        f"- **Risk Level**: {r.risk_level}",
+        "",
+        "## Score Breakdown",
+        "",
+        "| Dimension | Points |",
+        "|-----------|--------|",
         f"| Functional | {_fmt(r.score_breakdown.functional)} |",
         f"| Coverage | {_fmt(r.score_breakdown.coverage)} |",
         f"| Fuzz | {_fmt(r.score_breakdown.fuzz)} |",
-        f"| Performance | {_fmt(r.score_breakdown.performance)} |", "",
-        "## Scope", "",
+        f"| Performance | {_fmt(r.score_breakdown.performance)} |",
+        "",
+        "## Scope",
+        "",
         f"- Cases: {r.scope.cases}",
-        f"- Requirements: {', '.join(r.scope.requirements) or '(none detected)'}", "",
-        "## Functional", "",
+        f"- Requirements: {', '.join(r.scope.requirements) or '(none detected)'}",
+        "",
+        "## Functional",
+        "",
         f"- API: total={r.functional.api.total} passed={r.functional.api.passed} failed={r.functional.api.failed}",
         f"- E2E: total={r.functional.e2e.total} passed={r.functional.e2e.passed} failed={r.functional.e2e.failed}",
-        "", "## Coverage", "",
-        (f"- Line: {cov.line_coverage}% (threshold {cov.threshold.line}%)\n"
-         f"- Branch: {cov.branch_coverage}% (threshold {cov.threshold.branch}%)\n- Status: {cov.status}"
-         if cov.available else "- Not collected (treated as a warning, not a failure)."),
-        "", "## Defects", "",
+        "",
+        "## Coverage",
+        "",
+        (
+            f"- Line: {cov.line_coverage}% (threshold {cov.threshold.line}%)\n"
+            f"- Branch: {cov.branch_coverage}% (threshold {cov.threshold.branch}%)\n- Status: {cov.status}"
+            if cov.available
+            else "- Not collected (treated as a warning, not a failure)."
+        ),
+        "",
+        "## Defects",
+        "",
         f"- Product: {len(r.defects.product)}",
         f"- Test: {len(r.defects.test)}",
-        f"- Environment: {len(r.defects.environment)}", "",
+        f"- Environment: {len(r.defects.environment)}",
+        "",
         *_defect_section("Product Defects", r.defects.product),
         *_defect_section("Test Defects", r.defects.test),
         *_defect_section("Environment Defects", r.defects.environment),
-        "## Risk & Recommendation", "",
+        "## Risk & Recommendation",
+        "",
         f"- **Risk Level**: {r.risk_level}",
         f"- **Rationale**: {r.risk_rationale}",
-        f"- **Recommendation**: {r.recommendation}", "",
+        f"- **Recommendation**: {r.recommendation}",
+        "",
     ]
     return "\n".join(lines)
 
@@ -238,11 +276,22 @@ def _exec_summary(r: QualityReport) -> str:
     func = r.functional
     passed = func.api.passed + func.e2e.passed
     total = func.api.total + func.e2e.total
-    coverage = f" Coverage: {r.coverage.line_coverage}% line." if r.coverage.available else " Coverage: not collected."
-    return "\n".join([
-        f"# Executive Summary — {r.change_id}", "",
-        f"**Final Status**: {r.final_status}  |  **Quality Score**: {r.quality_score}/100  |  **Risk**: {r.risk_level}",
-        "", r.risk_rationale, "",
-        f"**Recommendation**: {r.recommendation}", "",
-        f"Functional: {passed}/{total} passed.{coverage}", "",
-    ])
+    coverage = (
+        f" Coverage: {r.coverage.line_coverage}% line."
+        if r.coverage.available
+        else " Coverage: not collected."
+    )
+    return "\n".join(
+        [
+            f"# Executive Summary — {r.change_id}",
+            "",
+            f"**Final Status**: {r.final_status}  |  **Quality Score**: {r.quality_score}/100  |  **Risk**: {r.risk_level}",
+            "",
+            r.risk_rationale,
+            "",
+            f"**Recommendation**: {r.recommendation}",
+            "",
+            f"Functional: {passed}/{total} passed.{coverage}",
+            "",
+        ]
+    )

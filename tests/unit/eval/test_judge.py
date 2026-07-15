@@ -53,9 +53,12 @@ def test_call_llm_http_error_raises() -> None:
 
 
 def test_build_judge_prompt_includes_prd_and_expected(tmp_path: Path) -> None:
-    sample = DatasetSample(id="J-1", suite="case-generation",
-                           input={"prd": "Build users CRUD"},
-                           expected={"atoms": ["list", "create"]})
+    sample = DatasetSample(
+        id="J-1",
+        suite="case-generation",
+        input={"prd": "Build users CRUD"},
+        expected={"atoms": ["list", "create"]},
+    )
     prompt = build_judge_prompt(sample, tmp_path)
     assert "Build users CRUD" in prompt
     assert "list" in prompt and "create" in prompt
@@ -63,8 +66,9 @@ def test_build_judge_prompt_includes_prd_and_expected(tmp_path: Path) -> None:
 
 def test_run_judge_mock_mode_uses_sample_label(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("AA_JUDGE_MOCK", "1")
-    sample = DatasetSample(id="J-1", suite="case-generation", input={}, expected={},
-                           mock_judge_label="covered")
+    sample = DatasetSample(
+        id="J-1", suite="case-generation", input={}, expected={}, mock_judge_label="covered"
+    )
     cfg = JudgeConfig(model="judge-x")
     out = run_judge(sample, tmp_path, cfg, target_model="target-y")
     assert out.label == "covered"
@@ -80,16 +84,13 @@ def test_run_judge_fail_closed_when_model_equals_target(tmp_path: Path) -> None:
 
 def test_run_judge_parses_real_response_and_flags_low_confidence(tmp_path: Path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        payload = {"label": "partial", "reason": "half", "evidence_refs": ["cases/x"],
-                   "confidence": 0.4}
-        return httpx.Response(200, json={"content": [{"type": "text",
-                                                      "text": json.dumps(payload)}]})
+        payload = {"label": "partial", "reason": "half", "evidence_refs": ["cases/x"], "confidence": 0.4}
+        return httpx.Response(200, json={"content": [{"type": "text", "text": json.dumps(payload)}]})
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    sample = DatasetSample(id="J-1", suite="case-generation",
-                           input={"prd": "x"}, expected={"atoms": ["a"]})
+    sample = DatasetSample(id="J-1", suite="case-generation", input={"prd": "x"}, expected={"atoms": ["a"]})
     cfg = JudgeConfig(model="judge-x", api_url="https://api.test", confidence_threshold=0.6)
     out = run_judge(sample, tmp_path, cfg, target_model="target-y", client=client)
     assert out.label == "partial"
     assert out.confidence == pytest.approx(0.4)
-    assert out.needs_human_review is True   # 0.4 < 0.6
+    assert out.needs_human_review is True  # 0.4 < 0.6

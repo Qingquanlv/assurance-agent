@@ -17,6 +17,7 @@ from the environment (never from CLI args). Only an *explicit* model is pinned;
 otherwise the field is omitted so the server resolves its own default (TS
 behavior — pinning a parent session's stale model breaks phases).
 """
+
 import base64
 import os
 import time
@@ -116,9 +117,7 @@ class OpenCodeAdapter:
             body["parentID"] = self._parent
         resp = self._request("POST", "/session", json=body)
         if not 200 <= resp.status_code < 300:
-            raise DriverError(
-                f"opencode create session failed ({resp.status_code}): {resp.text[:300]}"
-            )
+            raise DriverError(f"opencode create session failed ({resp.status_code}): {resp.text[:300]}")
         session_id = (resp.json() or {}).get("id")
         if not session_id:
             raise DriverError("opencode create session: missing id")
@@ -159,9 +158,7 @@ class OpenCodeAdapter:
                 if idle_streak >= need:
                     return
             self._sleep(self._poll_interval)
-        raise DriverError(
-            f"opencode phase timed out after {self._poll_max}s (session {session_id})"
-        )
+        raise DriverError(f"opencode phase timed out after {self._poll_max}s (session {session_id})")
 
     def run_phase(self, request: PhaseRequest) -> PhaseResult:
         try:

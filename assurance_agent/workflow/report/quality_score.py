@@ -3,6 +3,7 @@
 Inactive dimensions are dropped and remaining weights renormalised so active
 dimensions can still reach 100. Transcribed from TS quality_score.ts.
 """
+
 from pydantic import BaseModel
 
 from assurance_agent.artifacts.models import QualityScoreBreakdown

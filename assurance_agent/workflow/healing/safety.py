@@ -1,4 +1,5 @@
 """Healing safety boundary: tree-hash guards, override evidence, record-apply."""
+
 from __future__ import annotations
 
 import hashlib
@@ -65,10 +66,11 @@ def derive_guard_context(project_root: Path, change_id: str) -> HealingGuardCont
     change_dir = project_root / "qa" / "changes" / change_id
     snapshot = derive_healing_state(change_dir)
     allocations = [
-        event for event in read_events(change_dir)
-        if event.get("type") == "healing_attempt_allocated"
-        and event.get("episode_id") == snapshot.episode_id
+        event
+        for event in read_events(change_dir)
+        if event.get("type") == "healing_attempt_allocated" and event.get("episode_id") == snapshot.episode_id
     ]
+
     def _event_seq(event: dict[str, object]) -> int:
         seq = event.get("seq")
         return seq if isinstance(seq, int) else 0
@@ -182,9 +184,7 @@ def assert_product_tree_unchanged_in_healing(
     if current.aggregate == baseline_sha:
         return ProductTreeIntegrity(product_changed=False, changed_files=[])
 
-    raise HealingGuardError(
-        "PRODUCT-CHANGED-DURING-HEALING: product code tree changed during healing"
-    )
+    raise HealingGuardError("PRODUCT-CHANGED-DURING-HEALING: product code tree changed during healing")
 
 
 def pin_healing_applied_test_tree(project_root: Path, change_id: str) -> Path:
@@ -254,9 +254,7 @@ def record_apply_summary(
     modified = [f for f in diff_trees(baseline_files, current.files) if f in authorized]
     unauthorized = [f for f in diff_trees(baseline_files, current.files) if f not in authorized]
     if unauthorized:
-        raise HealingGuardError(
-            f"modified files outside authorized proposals: {', '.join(unauthorized)}"
-        )
+        raise HealingGuardError(f"modified files outside authorized proposals: {', '.join(unauthorized)}")
 
     healing_dir = change_dir / "healing"
     healing_dir.mkdir(parents=True, exist_ok=True)
@@ -272,28 +270,33 @@ def record_apply_summary(
         "attempt_key": context.attempt_key,
     }
     summary_text = json.dumps(summary, indent=2)
-    md_text = "\n".join([
-        f"# Apply Summary — {target}",
-        "",
-        f"- Applied: {summary['applied']}",
-        f"- Files modified: {len(modified)}",
-        *(f"- {f}" for f in modified),
-        "",
-    ])
+    md_text = "\n".join(
+        [
+            f"# Apply Summary — {target}",
+            "",
+            f"- Applied: {summary['applied']}",
+            f"- Files modified: {len(modified)}",
+            *(f"- {f}" for f in modified),
+            "",
+        ]
+    )
 
     snapshots = capture_files((json_path, md_path, change_dir / "events.jsonl"))
     try:
         json_path.write_text(summary_text, encoding="utf-8")
         md_path.write_text(md_text, encoding="utf-8")
         summary_sha = hashlib.sha256(summary_text.encode("utf-8")).hexdigest()
-        append_event_strict(change_dir, HealRecordApplyEvent(
-            target=target,  # type: ignore[arg-type]
-            proposal_sha256=context.proposal_sha256,
-            source_batch_id=context.source_batch_id,
-            attempt_key=context.attempt_key,
-            summary_sha256=summary_sha,
-            files_modified=modified,
-        ))
+        append_event_strict(
+            change_dir,
+            HealRecordApplyEvent(
+                target=target,  # type: ignore[arg-type]
+                proposal_sha256=context.proposal_sha256,
+                source_batch_id=context.source_batch_id,
+                attempt_key=context.attempt_key,
+                summary_sha256=summary_sha,
+                files_modified=modified,
+            ),
+        )
     except EventWriteError:
         restore_files(snapshots)
         raise

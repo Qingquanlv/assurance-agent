@@ -14,8 +14,11 @@ class ReviewPartition(BaseModel):
 
 
 def partition_proposals_for_review(
-    proposals: list[RetroProposal], promotions: list[RetroPromoteRecord], *,
-    min_evidence: int, rework_alert: int,
+    proposals: list[RetroProposal],
+    promotions: list[RetroPromoteRecord],
+    *,
+    min_evidence: int,
+    rework_alert: int,
 ) -> ReviewPartition:
     rework_counts: Counter[str] = Counter()
     for record in promotions:
@@ -37,8 +40,7 @@ def build_review_queue_markdown(retro_id: str, partition: ReviewPartition) -> st
     lines = [f"# Review Queue — {retro_id}", "", "## For review (memory_append)", ""]
     for proposal in partition.for_review:
         flag = " ⚠️ stuck" if proposal.id in partition.stuck_tags else ""
-        lines.append(f"- `{proposal.id}` (suite: {proposal.eval_suite or 'n/a'}){flag}: "
-                     f"{proposal.summary}")
+        lines.append(f"- `{proposal.id}` (suite: {proposal.eval_suite or 'n/a'}){flag}: {proposal.summary}")
     if partition.pr_only:
         lines += ["", "## PR-only (manual)", ""]
         lines += [f"- `{p.id}`: {p.summary}" for p in partition.pr_only]

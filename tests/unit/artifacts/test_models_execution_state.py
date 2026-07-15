@@ -71,14 +71,16 @@ def test_workflow_state_extra_fields_preserved() -> None:
 
 
 def test_workflow_state_known_core_fields_are_typed() -> None:
-    model = WorkflowState.model_validate({
-        "run_context": {"active_scope": "execute"},
-        "phases": {
-            "execution": {"status": "FAIL", "batch_id": "b1"},
-            "inspect": {"inspect_mode": "primary"},
-            "healing": {"status": "pending", "attempts_used": 2, "all_fixers_no_op": False},
-        },
-    })
+    model = WorkflowState.model_validate(
+        {
+            "run_context": {"active_scope": "execute"},
+            "phases": {
+                "execution": {"status": "FAIL", "batch_id": "b1"},
+                "inspect": {"inspect_mode": "primary"},
+                "healing": {"status": "pending", "attempts_used": 2, "all_fixers_no_op": False},
+            },
+        }
+    )
     assert model.run_context.active_scope == "execute"
     assert model.phases.execution is not None
     assert model.phases.execution.batch_id == "b1"

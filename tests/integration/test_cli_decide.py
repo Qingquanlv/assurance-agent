@@ -28,7 +28,18 @@ def test_decide_missing_change_exits_1() -> None:
     runner = CliRunner()
     with runner.isolated_filesystem():
         result = runner.invoke(
-            main, ["decide", "--change", "NOPE", "--at", "case-review", "--action", "fix_and_proceed", "--reason", "x"]
+            main,
+            [
+                "decide",
+                "--change",
+                "NOPE",
+                "--at",
+                "case-review",
+                "--action",
+                "fix_and_proceed",
+                "--reason",
+                "x",
+            ],
         )
         assert result.exit_code == 1
         assert "not found" in result.output
@@ -51,7 +62,17 @@ def test_decide_records_event_and_appends_state_decision() -> None:
         change_dir = make_change()
         result = runner.invoke(
             main,
-            ["decide", "--change", "CH-1", "--at", "case-review", "--action", "fix_and_proceed", "--reason", "looks good"],
+            [
+                "decide",
+                "--change",
+                "CH-1",
+                "--at",
+                "case-review",
+                "--action",
+                "fix_and_proceed",
+                "--reason",
+                "looks good",
+            ],
         )
         assert result.exit_code == 0, result.output
         events = [json.loads(line) for line in (change_dir / "events.jsonl").read_text().strip().splitlines()]
@@ -86,7 +107,18 @@ def test_decide_strict_event_failure_rolls_back_and_exits_40() -> None:
         before = (change_dir / "workflow-state.yaml").read_text()
         (change_dir / "events.jsonl").mkdir()  # 不可写 -> EventWriteError
         result = runner.invoke(
-            main, ["decide", "--change", "CH-1", "--at", "case-review", "--action", "fix_and_proceed", "--reason", "x"]
+            main,
+            [
+                "decide",
+                "--change",
+                "CH-1",
+                "--at",
+                "case-review",
+                "--action",
+                "fix_and_proceed",
+                "--reason",
+                "x",
+            ],
         )
         assert result.exit_code == 40
         assert (change_dir / "workflow-state.yaml").read_text() == before
@@ -97,7 +129,18 @@ def test_decide_empty_reason_rejected() -> None:
     with runner.isolated_filesystem():
         make_change()
         result = runner.invoke(
-            main, ["decide", "--change", "CH-1", "--at", "case-review", "--action", "fix_and_proceed", "--reason", "   "]
+            main,
+            [
+                "decide",
+                "--change",
+                "CH-1",
+                "--at",
+                "case-review",
+                "--action",
+                "fix_and_proceed",
+                "--reason",
+                "   ",
+            ],
         )
         assert result.exit_code == 1
         assert "reason" in result.output.lower()

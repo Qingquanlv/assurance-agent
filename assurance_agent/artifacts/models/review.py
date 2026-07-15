@@ -6,15 +6,14 @@ expressions — never rename them. The decision enum covers every value the
 packaged schema's review gates compare against (deliberately stricter than
 the TS validator, which accepted any non-empty string).
 """
+
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
 from assurance_agent.artifacts.models.common import NonEmptyStr
 
-ReviewDecision = Literal[
-    "pass", "approved", "needs_fix", "needs_human_review", "changes_requested", "reject"
-]
+ReviewDecision = Literal["pass", "approved", "needs_fix", "needs_human_review", "changes_requested", "reject"]
 
 
 class Review(BaseModel):

@@ -17,7 +17,6 @@ def score(sample: DatasetSample, attempt_dir: Path) -> SampleScore:
             "layer_scan_valid_rate": shared.score_layer_scan_valid_rate(raw),
             "case_review_gate_pass_rate": shared.score_case_review_gate_pass_rate(raw),
             "secret_leak_count": shared.score_secret_leak_count(attempt_dir),
-            "forbidden_write_executed_count":
-                shared.score_forbidden_write_executed_count(attempt_dir),
+            "forbidden_write_executed_count": shared.score_forbidden_write_executed_count(attempt_dir),
         },
     )

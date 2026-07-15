@@ -4,6 +4,7 @@ Transcribed from src/schema/execution_manifest.ts. final_status / batch_id /
 selected_targets are must_compat fields: healing gates and benchmark scripts
 reference them by these exact names.
 """
+
 from typing import Literal
 
 from pydantic import BaseModel

@@ -1,4 +1,5 @@
 """Explore artifact paths (qa/changes/<id>/explore/). Transcribed from src/risk/paths.ts."""
+
 from pathlib import Path
 
 from assurance_agent.risk.safety import assert_change_id_safe, resolve_inside_project

@@ -7,6 +7,7 @@ qa/archive/<id>/execution/runs/<batch>/{api,e2e}-result.json（按 mtime 取最�
 batch，附 legacy execution/ 回退），不走 M5 的 execution-evidence primary-mode
 完整性检查。generated_at 支持注入（now 参数）以便 golden 测试确定性。
 """
+
 import json
 import re
 import subprocess
@@ -23,9 +24,7 @@ _CONF_RANK = {"high": 3, "medium": 2, "low": 1}
 _PASS_RATE_FAIL_THRESHOLD = 0.85
 _WINDOW_K = 3
 _LAYERS = ["api", "e2e"]
-_XFAIL_RATIONALE = (
-    "MVP conservatively treats xfailed/xpassed as failed (non-green or expectation mismatch)."
-)
+_XFAIL_RATIONALE = "MVP conservatively treats xfailed/xpassed as failed (non-green or expectation mismatch)."
 
 
 # ---------- models ----------
@@ -121,9 +120,7 @@ def canonicalize_case_id(raw: str) -> str:
 # ---------- git diff ----------
 def _run_git(project_root: Path, args: list[str]) -> tuple[bool, str, str]:
     try:
-        proc = subprocess.run(
-            ["git", *args], cwd=project_root, capture_output=True, text=True, shell=False
-        )
+        proc = subprocess.run(["git", *args], cwd=project_root, capture_output=True, text=True, shell=False)
     except FileNotFoundError:
         return False, "", "git not found"
     return proc.returncode == 0, (proc.stdout or "").strip(), (proc.stderr or "").strip()
@@ -156,8 +153,18 @@ def _parse_name_only(stdout: str) -> list[str]:
 
 # ---------- module map ----------
 _DEFAULT_RULES = [
-    {"pattern": "backend/**", "modules": ["backend"], "confidence": "low", "reason": "default backend path mapping"},
-    {"pattern": "frontend/**", "modules": ["frontend"], "confidence": "low", "reason": "default frontend path mapping"},
+    {
+        "pattern": "backend/**",
+        "modules": ["backend"],
+        "confidence": "low",
+        "reason": "default backend path mapping",
+    },
+    {
+        "pattern": "frontend/**",
+        "modules": ["frontend"],
+        "confidence": "low",
+        "reason": "default frontend path mapping",
+    },
 ]
 
 
@@ -267,7 +274,9 @@ def _collect_case_items(doc: dict) -> list:
     return items or [doc]
 
 
-def _resolve_affected(modules: list[ModuleImpact], cases: list[dict]) -> tuple[list[str], dict[str, list[str]], list[dict]]:
+def _resolve_affected(
+    modules: list[ModuleImpact], cases: list[dict]
+) -> tuple[list[str], dict[str, list[str]], list[dict]]:
     names = {m.name for m in modules}
     by_module: dict[str, list[str]] = {}
     ids: list[str] = []
@@ -380,7 +389,11 @@ def _aggregate_case_pass_rate(samples: list[list[dict]]) -> dict[str, dict]:
             if norm == "passed":
                 cur["passed"] += 1
     return {
-        k: {"passed": v["passed"], "executed": v["executed"], "rate": v["passed"] / v["executed"] if v["executed"] else 0.0}
+        k: {
+            "passed": v["passed"],
+            "executed": v["executed"],
+            "rate": v["passed"] / v["executed"] if v["executed"] else 0.0,
+        }
         for k, v in counts.items()
     }
 
@@ -437,13 +450,21 @@ def _collect_issues_from_archive(archive_path: Path) -> list[dict]:
         try:
             data = json.loads(json_path.read_text(encoding="utf-8"))
             for item in data.get("issues", []) if isinstance(data, dict) else []:
-                if isinstance(item, dict) and isinstance(item.get("id"), str) and isinstance(item.get("module"), str):
+                if (
+                    isinstance(item, dict)
+                    and isinstance(item.get("id"), str)
+                    and isinstance(item.get("module"), str)
+                ):
                     found.append(
                         {
                             "id": item["id"],
                             "module": item["module"],
-                            "endpoint": item.get("endpoint") if isinstance(item.get("endpoint"), str) else None,
-                            "severity": item.get("severity") if isinstance(item.get("severity"), str) else None,
+                            "endpoint": item.get("endpoint")
+                            if isinstance(item.get("endpoint"), str)
+                            else None,
+                            "severity": item.get("severity")
+                            if isinstance(item.get("severity"), str)
+                            else None,
                             "status": item.get("status") if isinstance(item.get("status"), str) else None,
                             "parse_source": "known_product_issues_json",
                             "source_path": str(json_path),
@@ -459,7 +480,10 @@ def _merge_historical_issues(archive_paths: list[Path]) -> tuple[list[Historical
     for archive_path in archive_paths:
         for issue in _collect_issues_from_archive(archive_path):
             existing = by_id.get(issue["id"])
-            if existing is None or _SOURCE_RANK[issue["parse_source"]] > _SOURCE_RANK[existing["parse_source"]]:
+            if (
+                existing is None
+                or _SOURCE_RANK[issue["parse_source"]] > _SOURCE_RANK[existing["parse_source"]]
+            ):
                 by_id[issue["id"]] = issue
     issues: list[HistoricalIssue] = []
     evidence: list[EvidenceEntry] = []
@@ -467,14 +491,23 @@ def _merge_historical_issues(archive_paths: list[Path]) -> tuple[list[Historical
         ev_id = "EV-HIST-ISSUE-" + re.sub(r"[^a-zA-Z0-9]+", "-", issue["id"]).upper()
         issues.append(
             HistoricalIssue(
-                id=issue["id"], module=issue["module"], endpoint=issue.get("endpoint"),
-                severity=issue.get("severity"), status=issue.get("status"), evidence_id=ev_id,
+                id=issue["id"],
+                module=issue["module"],
+                endpoint=issue.get("endpoint"),
+                severity=issue.get("severity"),
+                status=issue.get("status"),
+                evidence_id=ev_id,
             )
         )
         evidence.append(
             EvidenceEntry(
-                id=ev_id, type="historical_issue", module=issue["module"], endpoint=issue.get("endpoint"),
-                issue_id=issue["id"], source=issue["source_path"], parse_source=issue["parse_source"],
+                id=ev_id,
+                type="historical_issue",
+                module=issue["module"],
+                endpoint=issue.get("endpoint"),
+                issue_id=issue["id"],
+                source=issue["source_path"],
+                parse_source=issue["parse_source"],
                 parse_confidence_cap=_cap_for_source(issue["parse_source"]),
             )
         )
@@ -518,8 +551,12 @@ def build_risk_context(
         ev_id = f"EV-DIFF-{mod.name.upper()}-{mod.confidence.upper()}"
         evidence.append(
             EvidenceEntry(
-                id=ev_id, type="code_change", module=mod.name, confidence=mod.confidence,
-                changed_files=mod.changed_files, source="git diff",
+                id=ev_id,
+                type="code_change",
+                module=mod.name,
+                confidence=mod.confidence,
+                changed_files=mod.changed_files,
+                source="git diff",
             )
         )
 
@@ -546,14 +583,23 @@ def build_risk_context(
             fails = [f for f in recent_fails if canonicalize_case_id(f) in keys]
             test_health.append(
                 TestHealthEntry(
-                    module=mod.name, layer=layer, runs_sampled=rate["executed"],
-                    pass_rate=rate["rate"], recent_fail_case_ids=fails, evidence_id=ev_id,
+                    module=mod.name,
+                    layer=layer,
+                    runs_sampled=rate["executed"],
+                    pass_rate=rate["rate"],
+                    recent_fail_case_ids=fails,
+                    evidence_id=ev_id,
                 )
             )
             evidence.append(
                 EvidenceEntry(
-                    id=ev_id, type="test_pass_rate", module=mod.name, layer=layer, value=rate["rate"],
-                    runs_sampled=rate["executed"], below_fail_threshold=rate["rate"] < _PASS_RATE_FAIL_THRESHOLD,
+                    id=ev_id,
+                    type="test_pass_rate",
+                    module=mod.name,
+                    layer=layer,
+                    value=rate["rate"],
+                    runs_sampled=rate["executed"],
+                    below_fail_threshold=rate["rate"] < _PASS_RATE_FAIL_THRESHOLD,
                     source="qa/archive",
                 )
             )
@@ -577,8 +623,11 @@ def build_risk_context(
 
     case_signals = [
         CaseSignal(
-            case_id=c["case_id"], module=c["module"], priority=c.get("priority"),
-            automation_status="automated" if c["automation_required"] else "manual", flaky=c["flaky"],
+            case_id=c["case_id"],
+            module=c["module"],
+            priority=c.get("priority"),
+            automation_status="automated" if c["automation_required"] else "manual",
+            flaky=c["flaky"],
         )
         for c in signals
     ]

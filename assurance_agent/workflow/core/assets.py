@@ -4,6 +4,7 @@ Reads packaged resources only via assurance_agent.resources (no __file__ paths),
 writes into <project>/skills/ and <project>/.opencode/. Content-hash based:
 reports created / updated / unchanged so callers can print idempotent summaries.
 """
+
 from __future__ import annotations
 
 import json
@@ -61,7 +62,7 @@ def _sync(
     dry_run: bool,
 ) -> None:
     for parts in _walk_resource_files(*resource_rel):
-        rel_under = Path(*parts[len(resource_rel):])
+        rel_under = Path(*parts[len(resource_rel) :])
         report = (Path(report_prefix) / rel_under).as_posix()
         content = resources.read_text(*parts)
         dest = dest_root / rel_under

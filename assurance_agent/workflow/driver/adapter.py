@@ -4,6 +4,7 @@ A phase adapter abstracts "hand one workflow phase to some Agent and get a
 result back". Two implementations follow: HeadlessAdapter (subprocess) and
 OpenCodeAdapter (HTTP). The deterministic loop only ever sees this Protocol.
 """
+
 from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel

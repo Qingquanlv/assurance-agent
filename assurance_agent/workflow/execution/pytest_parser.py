@@ -3,6 +3,7 @@
 Only reads what the real test runner wrote; a missing or corrupt report yields
 a SKIPPED result carrying the reason (never a fabricated pass).
 """
+
 import json
 from pathlib import Path
 from typing import Any
@@ -38,13 +39,20 @@ def parse_pytest_json(
     source = ResultSource(framework="pytest", raw_log=raw_log_path, report_json=str(report_path))
 
     if not report_path.is_file():
-        return _skipped(change_id, batch_id, target, command, source,
-                        "pytest json report not found — pytest may not have run.")
+        return _skipped(
+            change_id,
+            batch_id,
+            target,
+            command,
+            source,
+            "pytest json report not found — pytest may not have run.",
+        )
     try:
         report: dict[str, Any] = json.loads(report_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as err:
-        return _skipped(change_id, batch_id, target, command, source,
-                        f"failed to parse pytest json report: {err}")
+        return _skipped(
+            change_id, batch_id, target, command, source, f"failed to parse pytest json report: {err}"
+        )
 
     cases: list[CaseResult] = []
     unmapped: list[CaseResult] = []
@@ -128,11 +136,25 @@ def _skipped(
     reason: str,
 ) -> TargetResult:
     placeholder = CaseResult(
-        case_id="", status="skipped", file="", test_name=reason,
-        duration_ms=0, message=reason, raw_log_ref=source.raw_log,
+        case_id="",
+        status="skipped",
+        file="",
+        test_name=reason,
+        duration_ms=0,
+        message=reason,
+        raw_log_ref=source.raw_log,
     )
     return TargetResult(
-        change_id=change_id, batch_id=batch_id, target=target, status="skipped",
-        command=command, source=source, total=0, passed=0, failed=0, skipped=0,
-        cases=[], unmapped_tests=[placeholder],
+        change_id=change_id,
+        batch_id=batch_id,
+        target=target,
+        status="skipped",
+        command=command,
+        source=source,
+        total=0,
+        passed=0,
+        failed=0,
+        skipped=0,
+        cases=[],
+        unmapped_tests=[placeholder],
     )

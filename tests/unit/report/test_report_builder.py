@@ -9,26 +9,54 @@ from assurance_agent.workflow.report.report_builder import generate_report
 
 
 def _api(failed_message: str | None) -> TargetResult:
-    cases = [CaseResult(case_id="TC_API_001", status="passed", file="tests/api/t.py",
-                        test_name="test_tc_api_001__ok", duration_ms=1, message="")]
+    cases = [
+        CaseResult(
+            case_id="TC_API_001",
+            status="passed",
+            file="tests/api/t.py",
+            test_name="test_tc_api_001__ok",
+            duration_ms=1,
+            message="",
+        )
+    ]
     failed = 0
     if failed_message is not None:
         failed = 1
-        cases.append(CaseResult(case_id="TC_API_002", status="failed", file="tests/api/t.py",
-                                test_name="test_tc_api_002__x", duration_ms=1, message=failed_message))
+        cases.append(
+            CaseResult(
+                case_id="TC_API_002",
+                status="failed",
+                file="tests/api/t.py",
+                test_name="test_tc_api_002__x",
+                duration_ms=1,
+                message=failed_message,
+            )
+        )
     return TargetResult(
-        change_id="CH-1", batch_id="20260715-000000", target="api",
-        status="failed" if failed else "passed", command="cmd",
+        change_id="CH-1",
+        batch_id="20260715-000000",
+        target="api",
+        status="failed" if failed else "passed",
+        command="cmd",
         source=ResultSource(framework="pytest", raw_log="raw/api.log"),
-        total=len(cases), passed=len(cases) - failed, failed=failed, skipped=0,
-        cases=cases, unmapped_tests=[],
+        total=len(cases),
+        passed=len(cases) - failed,
+        failed=failed,
+        skipped=0,
+        cases=cases,
+        unmapped_tests=[],
     )
 
 
 def _cov() -> CoverageResult:
     return CoverageResult(
-        change_id="CH-1", batch_id="20260715-000000", available=True, line_coverage=90.0,
-        branch_coverage=80.0, threshold=CoverageThreshold(line=70, branch=60), status="PASS",
+        change_id="CH-1",
+        batch_id="20260715-000000",
+        available=True,
+        line_coverage=90.0,
+        branch_coverage=80.0,
+        threshold=CoverageThreshold(line=70, branch=60),
+        status="PASS",
     )
 
 
@@ -36,14 +64,25 @@ def _seed_change(tmp_path: Path, api: TargetResult, cov: CoverageResult) -> str:
     change_dir = tmp_path / "qa" / "changes" / "CH-1"
     change_dir.mkdir(parents=True)
     gate = build_quality_gate(
-        change_id="CH-1", batch_id="20260715-000000", api=api, e2e=None,
-        coverage=cov, coverage_gate_mode="warn",
+        change_id="CH-1",
+        batch_id="20260715-000000",
+        api=api,
+        e2e=None,
+        coverage=cov,
+        coverage_gate_mode="warn",
     )
     publish_execution_evidence(
-        execution_dir=change_dir / "execution", change_id="CH-1", batch_id="20260715-000000",
+        execution_dir=change_dir / "execution",
+        change_id="CH-1",
+        batch_id="20260715-000000",
         selected_targets=SelectedTargets(api=True, e2e=False, fuzz=False, performance=False),
-        api=api, e2e=None, fuzz=None, coverage=cov, performance=None,
-        quality_gate=gate, summary="# summary\n",
+        api=api,
+        e2e=None,
+        fuzz=None,
+        coverage=cov,
+        performance=None,
+        quality_gate=gate,
+        summary="# summary\n",
     )
     return "CH-1"
 

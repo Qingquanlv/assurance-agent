@@ -7,13 +7,22 @@ from pathlib import Path
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import assert_change_id_safe, assert_path_segment_safe
 from assurance_agent.retro.archive_reader import (
-    list_archived_changes, read_archived_change, resolve_change_dir,
+    list_archived_changes,
+    read_archived_change,
+    resolve_change_dir,
 )
 from assurance_agent.retro.eval_trend import read_eval_trend
 from assurance_agent.retro.types import (
-    ArchivedChange, ChangeSource, FailureDistributionSignal, GatePushbackSignal,
-    HealingEfficiencySignal, HumanDecisionSignal, RetroContext, RetroSignalSet,
-    RetroWindow, SkillExecutionSignal,
+    ArchivedChange,
+    ChangeSource,
+    FailureDistributionSignal,
+    GatePushbackSignal,
+    HealingEfficiencySignal,
+    HumanDecisionSignal,
+    RetroContext,
+    RetroSignalSet,
+    RetroWindow,
+    SkillExecutionSignal,
 )
 
 
@@ -25,8 +34,9 @@ def _default_retro_id() -> str:
     return "retro-" + datetime.now(timezone.utc).strftime("%Y%m%d")
 
 
-def _collect_changes(project_root: Path, since: str | None,
-                     changes: list[str] | None) -> list[ArchivedChange]:
+def _collect_changes(
+    project_root: Path, since: str | None, changes: list[str] | None
+) -> list[ArchivedChange]:
     cutoff: float | None = None
     if since is not None:
         try:
@@ -53,8 +63,7 @@ def _failure_distribution(changes: list[ArchivedChange]) -> list[FailureDistribu
             continue
         for failure in change.failure_analysis.failures:
             counter[str(failure.category)] += 1
-    return [FailureDistributionSignal(category=c, count=n)
-            for c, n in sorted(counter.items())]
+    return [FailureDistributionSignal(category=c, count=n) for c, n in sorted(counter.items())]
 
 
 def _gate_pushback(changes: list[ArchivedChange]) -> list[GatePushbackSignal]:
@@ -88,8 +97,11 @@ def _human_decisions(changes: list[ArchivedChange]) -> list[HumanDecisionSignal]
     for change in changes:
         for event in change.events:
             if event.get("type") == "human_decision":
-                decisions.append(HumanDecisionSignal(
-                    change_id=change.change_id, decision=str(event.get("action", "unknown"))))
+                decisions.append(
+                    HumanDecisionSignal(
+                        change_id=change.change_id, decision=str(event.get("action", "unknown"))
+                    )
+                )
     return decisions
 
 
@@ -126,9 +138,10 @@ def build_retro_context(
         since=since,
         change_count=len(collected),
         change_ids=[c.change_id for c in collected],
-        change_sources=[ChangeSource(change_id=c.change_id,
-                                     evidence_source=c.evidence_source, path=c.path)
-                        for c in collected],
+        change_sources=[
+            ChangeSource(change_id=c.change_id, evidence_source=c.evidence_source, path=c.path)
+            for c in collected
+        ],
     )
     context = RetroContext(
         retro_id=resolved_retro_id,

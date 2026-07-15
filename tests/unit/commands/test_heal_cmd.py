@@ -19,11 +19,14 @@ def _change(root: Path) -> Path:
 
 def test_validate_proposal_ok(tmp_path: Path, monkeypatch) -> None:
     change = _change(tmp_path)
-    _write(change / "healing" / "fix-proposal.json", {
-        "schema_version": "1.0",
-        "summary": {"eligible_count": 1},
-        "proposals": [{"target": "e2e", "eligible": True}],
-    })
+    _write(
+        change / "healing" / "fix-proposal.json",
+        {
+            "schema_version": "1.0",
+            "summary": {"eligible_count": 1},
+            "proposals": [{"target": "e2e", "eligible": True}],
+        },
+    )
     monkeypatch.chdir(tmp_path)
     result = CliRunner().invoke(main, ["heal", "validate-proposal", "--change", "CH-1"])
     assert result.exit_code == 0
@@ -63,8 +66,12 @@ def test_safety_check_failed_exit_40(tmp_path: Path, monkeypatch) -> None:
 
 def _safety(*, passed: bool, needs_review: bool) -> dict:
     return {
-        "schema_version": "1.0", "passed": passed, "needs_review": needs_review,
-        "product_code_modified": False, "skip_or_xfail_added": False,
-        "unrelated_tests_modified": False, "assertion_expected_value_changes_detected": False,
+        "schema_version": "1.0",
+        "passed": passed,
+        "needs_review": needs_review,
+        "product_code_modified": False,
+        "skip_or_xfail_added": False,
+        "unrelated_tests_modified": False,
+        "assertion_expected_value_changes_detected": False,
         "high_risk_proposal_applied": False,
     }

@@ -5,6 +5,7 @@
 语义校验（evidence_ids / case_id 引用、置信度门槛、open-question 生命周期、断言
 传播、模式一致性）在本模块实现。
 """
+
 from typing import Any
 
 from pydantic import ValidationError
@@ -85,7 +86,9 @@ def _collect_issue_refs(advisory: dict) -> list[str]:
 def _is_answered_oq(row: dict) -> bool:
     if row.get("status") == "answered":
         return True
-    return row.get("status") is None and row.get("answer") is not None and row.get("answered_via") == "explore"
+    return (
+        row.get("status") is None and row.get("answer") is not None and row.get("answered_via") == "explore"
+    )
 
 
 def _check_open_question_lifecycle(advisory: dict, errors: list[str]) -> None:
@@ -102,7 +105,9 @@ def _check_open_question_lifecycle(advisory: dict, errors: list[str]) -> None:
         if status is not None and str(status) not in _OQ_STATUSES:
             errors.append(f"{oq_id}: status must be one of unanswered, answered, deferred")
         if intent is not None and str(intent) not in _ASSERTION_INTENTS:
-            errors.append(f"{oq_id}: assertion_intent must be one of assert_ideal, assert_known_bug, ignore, undecided")
+            errors.append(
+                f"{oq_id}: assertion_intent must be one of assert_ideal, assert_known_bug, ignore, undecided"
+            )
         if via is not None and str(via) not in _ANSWERED_VIA:
             errors.append(f"{oq_id}: answered_via must be one of explore, auto_default, aa-intake")
         if status == "answered":
@@ -177,7 +182,9 @@ def _check_confidence_items(context: RiskContext, items: Any, label: str, errors
                     "(historical_issue source 1–2, test_health below threshold, or diff module confidence >= medium)"
                 )
             modules = [m for i in ev_ids if (m := evidence_by_id[i].module) is not None]
-            if modules and all(_cap_rank(module_conf.get(m, "medium")) < _cap_rank("medium") for m in modules):
+            if modules and all(
+                _cap_rank(module_conf.get(m, "medium")) < _cap_rank("medium") for m in modules
+            ):
                 errors.append(f"{label}: confidence high requires diff module confidence >= medium")
         if not ev_ids and conf != "low":
             errors.append(f"{label}: missing evidence_ids must use confidence low")
@@ -197,7 +204,10 @@ def validate_advisory(
         try:
             Advisory.model_validate(advisory)
         except ValidationError as err:
-            return (False, [f"{'.'.join(str(p) for p in e['loc']) or '(root)'}: {e['msg']}" for e in err.errors()])
+            return (
+                False,
+                [f"{'.'.join(str(p) for p in e['loc']) or '(root)'}: {e['msg']}" for e in err.errors()],
+            )
 
     evidence_by_id = {e.id: e for e in context.evidence}
     known_issue_ids = {h.id for h in context.historical_issues}
@@ -213,7 +223,9 @@ def validate_advisory(
 
     _check_confidence_items(context, advisory.get("watchlist"), "watchlist", errors)
     g = _guidance(advisory)
-    _check_confidence_items(context, g.get("priority_hints") if g else None, "case_design_guidance.priority_hints", errors)
+    _check_confidence_items(
+        context, g.get("priority_hints") if g else None, "case_design_guidance.priority_hints", errors
+    )
 
     _check_open_question_lifecycle(advisory, errors)
     _check_mode_consistency(advisory, interaction_mode, errors)

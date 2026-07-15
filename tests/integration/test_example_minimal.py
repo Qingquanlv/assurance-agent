@@ -6,6 +6,7 @@ parseable WorkflowStatus snapshot. Exit code is a terminal-state signal
 (0 running/completed, 20 stopped, 30 needs_human_review); exit 40 is a
 command/data error and fails this smoke test. We assert shape, not one terminal.
 """
+
 import json
 import shutil
 from pathlib import Path

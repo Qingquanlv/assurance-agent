@@ -16,18 +16,29 @@ from assurance_agent.workflow.report.quality_gate import build_quality_gate
 
 def make_api(passed: int = 2, failed: int = 0) -> TargetResult:
     return TargetResult(
-        change_id="CH-1", batch_id="20260715-000000", target="api",
-        status="failed" if failed else "passed", command="cmd",
+        change_id="CH-1",
+        batch_id="20260715-000000",
+        target="api",
+        status="failed" if failed else "passed",
+        command="cmd",
         source=ResultSource(framework="pytest", raw_log="raw/api.log"),
-        total=passed + failed, passed=passed, failed=failed, skipped=0,
-        cases=[], unmapped_tests=[],
+        total=passed + failed,
+        passed=passed,
+        failed=failed,
+        skipped=0,
+        cases=[],
+        unmapped_tests=[],
     )
 
 
 def make_cov(available: bool = True) -> CoverageResult:
     return CoverageResult(
-        change_id="CH-1", batch_id="20260715-000000", available=available,
-        line_coverage=90.0, branch_coverage=80.0, threshold=CoverageThreshold(line=70, branch=60),
+        change_id="CH-1",
+        batch_id="20260715-000000",
+        available=available,
+        line_coverage=90.0,
+        branch_coverage=80.0,
+        threshold=CoverageThreshold(line=70, branch=60),
         status="PASS" if available else "SKIPPED",
     )
 
@@ -36,14 +47,25 @@ def publish(tmp_path: Path, api: TargetResult, cov: CoverageResult):
     execution_dir = tmp_path / "execution"
     api_result = api
     gate = build_quality_gate(
-        change_id="CH-1", batch_id="20260715-000000", api=api_result, e2e=None,
-        coverage=cov, coverage_gate_mode="warn",
+        change_id="CH-1",
+        batch_id="20260715-000000",
+        api=api_result,
+        e2e=None,
+        coverage=cov,
+        coverage_gate_mode="warn",
     )
     manifest = publish_execution_evidence(
-        execution_dir=execution_dir, change_id="CH-1", batch_id="20260715-000000",
+        execution_dir=execution_dir,
+        change_id="CH-1",
+        batch_id="20260715-000000",
         selected_targets=SelectedTargets(api=True, e2e=False, fuzz=False, performance=False),
-        api=api_result, e2e=None, fuzz=None, coverage=cov, performance=None,
-        quality_gate=gate, summary="# summary\n",
+        api=api_result,
+        e2e=None,
+        fuzz=None,
+        coverage=cov,
+        performance=None,
+        quality_gate=gate,
+        summary="# summary\n",
     )
     return execution_dir, manifest
 

@@ -5,6 +5,7 @@ Cross-checks two directions:
 2. every registered subcommand is documented in README.md.
 Guards against the README drifting from the CLI surface.
 """
+
 from pathlib import Path
 
 from assurance_agent.cli import main

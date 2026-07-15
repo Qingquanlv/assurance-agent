@@ -60,7 +60,11 @@ def compare_with_baseline(run_dir: Path, baseline_metrics: dict[str, float]) -> 
 
 
 def update_baseline(
-    project_root: Path, *, suite_name: str, run_id: str, approved_by: str,
+    project_root: Path,
+    *,
+    suite_name: str,
+    run_id: str,
+    approved_by: str,
 ) -> Path:
     run_dir = run_dir_for(project_root, run_id)
     manifest = read_run_manifest(run_dir)
@@ -68,12 +72,16 @@ def update_baseline(
         raise AaError(f"run suite {manifest.suite!r} does not match {suite_name!r}")
     baseline = read_baseline(project_root)
     baseline[suite_name] = BaselineSuiteEntry(
-        run_id=run_id, approved_at=datetime.now(timezone.utc).isoformat(),
-        approved_by=approved_by, metrics=read_metrics(run_dir).metrics,
+        run_id=run_id,
+        approved_at=datetime.now(timezone.utc).isoformat(),
+        approved_by=approved_by,
+        metrics=read_metrics(run_dir).metrics,
     )
     path = project_root / "eval/baselines/main.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({k: v.model_dump(mode="json") for k, v in baseline.items()}, indent=2), encoding="utf-8")
+    tmp.write_text(
+        json.dumps({k: v.model_dump(mode="json") for k, v in baseline.items()}, indent=2), encoding="utf-8"
+    )
     os.replace(tmp, path)
     return path

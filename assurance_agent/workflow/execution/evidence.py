@@ -6,6 +6,7 @@ load reads the top-level manifest or an explicitly selected safe batch manifest,
 loads each selected target result, and flags selected-but-missing results as
 integrity issues.
 """
+
 import re
 from pathlib import Path
 
@@ -131,7 +132,9 @@ def _load_target(path: Path) -> TargetResult | None:
 
 
 def load_execution_evidence(
-    execution_dir: Path, *, batch_id: str | None = None,
+    execution_dir: Path,
+    *,
+    batch_id: str | None = None,
 ) -> ExecutionEvidence:
     if batch_id is not None and not _BATCH_ID_RE.fullmatch(batch_id):
         raise EvidenceError(f"unsafe execution batch id: {batch_id!r}")
@@ -141,13 +144,9 @@ def load_execution_evidence(
         else execution_dir / "runs" / batch_id / "execution-manifest.yaml"
     )
     if not manifest_path.is_file():
-        raise EvidenceError(
-            f"execution-manifest.yaml not found under {execution_dir}. Run `aa run` first."
-        )
+        raise EvidenceError(f"execution-manifest.yaml not found under {execution_dir}. Run `aa run` first.")
     try:
-        manifest = ExecutionManifest.model_validate(
-            yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-        )
+        manifest = ExecutionManifest.model_validate(yaml.safe_load(manifest_path.read_text(encoding="utf-8")))
     except (OSError, ValueError, yaml.YAMLError) as err:
         raise EvidenceError(f"execution-manifest.yaml invalid: {err}") from err
 
@@ -191,9 +190,7 @@ def load_execution_evidence(
         perf_path = abs_path("performance", "")
         if perf_path.is_file():
             try:
-                performance = PerformanceResult.model_validate_json(
-                    perf_path.read_text(encoding="utf-8")
-                )
+                performance = PerformanceResult.model_validate_json(perf_path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 performance = None
 
@@ -205,19 +202,23 @@ def load_execution_evidence(
         ("performance", manifest.selected_targets.performance, performance),
     ):
         if selected and result is None:
-            integrity.append(IntegrityIssue(
-                target=target,
-                path=result_paths.get(target, ""),
-                reason="selected target declared in manifest but result file is absent or unreadable",
-            ))
+            integrity.append(
+                IntegrityIssue(
+                    target=target,
+                    path=result_paths.get(target, ""),
+                    reason="selected target declared in manifest but result file is absent or unreadable",
+                )
+            )
         elif result is not None and (
             result.batch_id != manifest.batch_id or result.change_id != manifest.change_id
         ):
-            integrity.append(IntegrityIssue(
-                target=target,
-                path=result_paths.get(target, ""),
-                reason="result identity mismatch with execution manifest",
-            ))
+            integrity.append(
+                IntegrityIssue(
+                    target=target,
+                    path=result_paths.get(target, ""),
+                    reason="result identity mismatch with execution manifest",
+                )
+            )
 
     gate_path = execution_dir / "runs" / manifest.batch_id / "quality-gate-result.json"
     quality_gate: QualityGateResult | None = None
@@ -229,11 +230,13 @@ def load_execution_evidence(
     if quality_gate is not None and (
         quality_gate.batch_id != manifest.batch_id or quality_gate.change_id != manifest.change_id
     ):
-        integrity.append(IntegrityIssue(
-            target="quality_gate",
-            path=str(gate_path),
-            reason="quality gate identity mismatch with execution manifest",
-        ))
+        integrity.append(
+            IntegrityIssue(
+                target="quality_gate",
+                path=str(gate_path),
+                reason="quality gate identity mismatch with execution manifest",
+            )
+        )
 
     return ExecutionEvidence(
         manifest=manifest,

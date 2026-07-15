@@ -65,8 +65,14 @@ class InProcessAa:
 
     def apply_phase_state(self, entry, ctx, attempt_id):  # noqa: ANN001, ANN201
         args = [
-            "state", "apply", "--change", ctx.change_id, "--phase", entry.phase_id,
-            "--attempt-id", attempt_id,
+            "state",
+            "apply",
+            "--change",
+            ctx.change_id,
+            "--phase",
+            entry.phase_id,
+            "--attempt-id",
+            attempt_id,
         ]
         if entry.skill:
             args += ["--skill", entry.skill]
@@ -102,10 +108,7 @@ def test_real_provider_advances_skill_phases_to_completed(tmp_path: Path) -> Non
     assert [r.phase_id for r in adapter.requests] == ["p1", "p2"]
     events = read_events(change_dir)
     signed = [(e["phase"], e["attempt_id"]) for e in events if e.get("type") == "dispatch_signed"]
-    committed = [
-        (e["phase"], e["attempt_id"])
-        for e in events if e.get("type") == "phase_outcome_committed"
-    ]
+    committed = [(e["phase"], e["attempt_id"]) for e in events if e.get("type") == "phase_outcome_committed"]
     assert committed == signed
 
 

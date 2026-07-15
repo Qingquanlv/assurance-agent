@@ -7,7 +7,12 @@ import pytest
 from assurance_agent.eval.scorers import get_scorer
 from assurance_agent.eval.types import DatasetSample
 from tests.unit.eval.attempt_fixtures import (
-    make_attempt, write_case, write_layer_result, write_manifest, write_review, write_state,
+    make_attempt,
+    write_case,
+    write_layer_result,
+    write_manifest,
+    write_review,
+    write_state,
 )
 
 
@@ -28,7 +33,7 @@ def test_workflow_case_all_green(tmp_path: Path) -> None:
     score = get_scorer("workflow-case")(_sample("workflow-case"), attempt)
     m = score.metrics
     assert m["evidence_integrity"] == 1
-    assert m["schema_valid_rate"] == 1.0        # 1/1 case ok × review present(1)
+    assert m["schema_valid_rate"] == 1.0  # 1/1 case ok × review present(1)
     assert m["case_review_gate_pass_rate"] == 1.0
     assert m["layer_scan_valid_rate"] == 1.0
     assert m["secret_leak_count"] == 0
@@ -38,7 +43,7 @@ def test_workflow_case_all_green(tmp_path: Path) -> None:
 def test_workflow_case_review_reject_and_bad_schema(tmp_path: Path) -> None:
     attempt = make_attempt(tmp_path)
     write_case(attempt, "users", valid=True)
-    write_case(attempt, "roles", valid=False)   # 1 good / 1 bad → 0.5
+    write_case(attempt, "roles", valid=False)  # 1 good / 1 bad → 0.5
     write_review(attempt, "reject")
     write_state(attempt, "done")
     m = get_scorer("workflow-case")(_sample("workflow-case"), attempt).metrics
@@ -62,7 +67,7 @@ def test_workflow_run_e3_layer_rates(tmp_path: Path) -> None:
     assert m["evidence_integrity"] == 1
     assert m["execution_pass_rate"] == 1.0
     assert m["api_pass_rate"] == pytest.approx(24 / 26)
-    assert m["test_executable_rate"] == 1.0    # api in-scope & executable
+    assert m["test_executable_rate"] == 1.0  # api in-scope & executable
 
 
 def test_workflow_run_test_executable_rate_skipped(tmp_path: Path) -> None:
@@ -86,7 +91,7 @@ def test_codegen_scorer_py_syntax_and_summary(tmp_path: Path) -> None:
     codegen.mkdir(parents=True)
     (codegen / "api-codegen-summary.md").write_text("# summary\n", encoding="utf-8")
     m = get_scorer("workflow-api-codegen")(_sample("workflow-api-codegen", "WAC-001"), attempt).metrics
-    assert m["schema_valid_rate"] == pytest.approx(0.5)   # 1 of 2 py compiles
+    assert m["schema_valid_rate"] == pytest.approx(0.5)  # 1 of 2 py compiles
     assert m["codegen_summary_present_rate"] == 1.0
 
 

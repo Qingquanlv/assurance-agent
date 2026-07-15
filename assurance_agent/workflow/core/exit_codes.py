@@ -2,6 +2,7 @@
 
 completed/running=0 / stopped=20 / humanReview=30 / command-or-data-error=40。
 """
+
 from __future__ import annotations
 
 from typing import Protocol

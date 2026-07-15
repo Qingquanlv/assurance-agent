@@ -4,6 +4,7 @@ Each iteration asks compute_status for typed healing actions, dispatches and a
 terminal. Strict audit writes use only M3's frozen union; driver lifecycle is
 best-effort telemetry. Ordinary DAG completion remains produces/gate-derived.
 """
+
 import hashlib
 import json
 import os
@@ -91,11 +92,13 @@ def build_driver_telemetry(event_type: str, run_id: str, **extra: object) -> dic
 
 
 class CliPhaseExecutor(Protocol):
-    def run_cli_phase(self, entry: DispatchEntry, ctx: PhaseContext) -> PhaseResult:
-        ...
+    def run_cli_phase(self, entry: DispatchEntry, ctx: PhaseContext) -> PhaseResult: ...
 
     def apply_phase_state(
-        self, entry: DispatchEntry, ctx: PhaseContext, attempt_id: str,
+        self,
+        entry: DispatchEntry,
+        ctx: PhaseContext,
+        attempt_id: str,
     ) -> PhaseResult:
         """Commit the signed phase outcome and typed presentation state.
 
@@ -131,11 +134,20 @@ class DefaultCliPhaseExecutor:
         self._timeout = timeout
 
     def apply_phase_state(
-        self, entry: DispatchEntry, ctx: PhaseContext, attempt_id: str,
+        self,
+        entry: DispatchEntry,
+        ctx: PhaseContext,
+        attempt_id: str,
     ) -> PhaseResult:
         args = [
-            "state", "apply", "--change", ctx.change_id, "--phase", entry.phase_id,
-            "--attempt-id", attempt_id,
+            "state",
+            "apply",
+            "--change",
+            ctx.change_id,
+            "--phase",
+            entry.phase_id,
+            "--attempt-id",
+            attempt_id,
         ]
         if entry.skill:
             args += ["--skill", entry.skill]
@@ -193,7 +205,9 @@ class DefaultHealingActionExecutor:
     """Commit M3 healing control actions without recomputing their semantics."""
 
     def __init__(
-        self, runner: ProcessRunner | None = None, aa_command: list[str] | None = None,
+        self,
+        runner: ProcessRunner | None = None,
+        aa_command: list[str] | None = None,
     ) -> None:
         self._runner = runner or SubprocessRunner()
         self._aa = aa_command or resolve_aa_command()
@@ -203,12 +217,12 @@ class DefaultHealingActionExecutor:
             return self._allocate(action, ctx)
         if action.kind == "complete" and action.outcome:
             result = self._runner.run(
-                [*self._aa, "state", "heal", "--change", ctx.change_id,
-                 "--status", action.outcome],
+                [*self._aa, "state", "heal", "--change", ctx.change_id, "--status", action.outcome],
                 ctx.project_root,
             )
             return PhaseResult(
-                ok=result.exit_code == 0, output=result.stdout,
+                ok=result.exit_code == 0,
+                output=result.stdout,
                 error=None if result.exit_code == 0 else (result.stderr or result.stdout)[:500],
             )
         return PhaseResult(ok=False, error=f"unsupported healing action: {action.kind}")
@@ -222,7 +236,8 @@ class DefaultHealingActionExecutor:
         try:
             if allocation.pin_entry_baseline:
                 payload = {
-                    "schema_version": "1.0", "episode_id": allocation.episode_id,
+                    "schema_version": "1.0",
+                    "episode_id": allocation.episode_id,
                     "entry_batch_id": allocation.source_batch_id,
                 }
                 data = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
@@ -230,21 +245,29 @@ class DefaultHealingActionExecutor:
                 tmp = baseline_path.with_suffix(".tmp")
                 tmp.write_bytes(data)
                 os.replace(tmp, baseline_path)
-                append_event_strict(ctx.change_dir, {
-                    "source": "heal", "type": "healing_entry_baseline_pinned",
-                    "artifact_file": "healing/entry-baseline.json",
-                    "artifact_sha256": hashlib.sha256(data).hexdigest(),
-                    "entry_batch_id": allocation.source_batch_id,
+                append_event_strict(
+                    ctx.change_dir,
+                    {
+                        "source": "heal",
+                        "type": "healing_entry_baseline_pinned",
+                        "artifact_file": "healing/entry-baseline.json",
+                        "artifact_sha256": hashlib.sha256(data).hexdigest(),
+                        "entry_batch_id": allocation.source_batch_id,
+                        "episode_id": allocation.episode_id,
+                    },
+                )
+            append_event_strict(
+                ctx.change_dir,
+                {
+                    "source": "progression",
+                    "type": "healing_attempt_allocated",
                     "episode_id": allocation.episode_id,
-                })
-            append_event_strict(ctx.change_dir, {
-                "source": "progression", "type": "healing_attempt_allocated",
-                "episode_id": allocation.episode_id,
-                "attempt_id": allocation.attempt_id,
-                "attempt_number": allocation.attempt_number,
-                "operation_id": allocation.operation_id,
-                "source_batch_id": allocation.source_batch_id,
-            })
+                    "attempt_id": allocation.attempt_id,
+                    "attempt_number": allocation.attempt_number,
+                    "operation_id": allocation.operation_id,
+                    "source_batch_id": allocation.source_batch_id,
+                },
+            )
         except Exception as err:  # snapshot boundary converts to driver failure
             restore_files(snapshots)
             return PhaseResult(ok=False, error=f"healing allocation failed: {err}")
@@ -261,7 +284,11 @@ class _DefaultStatusProvider:
     def __call__(self) -> WorkflowStatus:
         state = read_state(self._change_dir)
         return compute_status(
-            self._schema, self._change_dir, state, self._params, scope=self._scope,
+            self._schema,
+            self._change_dir,
+            state,
+            self._params,
+            scope=self._scope,
         )
 
 
@@ -358,9 +385,7 @@ def run_workflow_loop(
         if owns_lock:
             release_lock(change_dir)
         return LoopResult(EXIT_ERROR, f"failed to persist initial driver state: {err}", driver)
-    append_event_best_effort(
-        change_dir, build_driver_telemetry("driver_started", driver.run_id, scope=scope)
-    )
+    append_event_best_effort(change_dir, build_driver_telemetry("driver_started", driver.run_id, scope=scope))
 
     def finish(exit_code: int, reason: str, status: str) -> LoopResult:
         driver.status = status  # type: ignore[assignment]
@@ -371,7 +396,10 @@ def run_workflow_loop(
             append_event_best_effort(
                 change_dir,
                 build_driver_telemetry(
-                    "driver_finished", driver.run_id, exit_code=exit_code, detail=reason,
+                    "driver_finished",
+                    driver.run_id,
+                    exit_code=exit_code,
+                    detail=reason,
                 ),
             )
         except Exception as err:  # persistence failure must not strand the lock
@@ -419,9 +447,7 @@ def run_workflow_loop(
             # so that one is committed before returning 0.
             if status.terminal is not None and status.terminal.kind != "completed":
                 terminal = status.terminal
-                return finish(
-                    _exit_for_terminal(terminal), terminal.reason or terminal.kind, "failed"
-                )
+                return finish(_exit_for_terminal(terminal), terminal.reason or terminal.kind, "failed")
             handled_control = False
             for action in status.healing_episode.next_actions:
                 if action.kind == "dispatch_phase":
@@ -430,9 +456,7 @@ def run_workflow_loop(
                     return pause("healing", "healing safety needs human review")
                 result = healing_executor.execute(action, ctx)
                 if not result.ok:
-                    return finish(
-                        EXIT_ERROR, result.error or f"healing {action.kind} failed", "failed"
-                    )
+                    return finish(EXIT_ERROR, result.error or f"healing {action.kind} failed", "failed")
                 handled_control = True
             if handled_control:
                 continue  # allocation/complete changes the ledger; re-project before dispatch
@@ -459,16 +483,19 @@ def run_workflow_loop(
                     driver.current_attempt_id = attempt_id
                     driver.updated_at = now_iso()
                     write_driver_state(change_dir, driver)
-                    append_event_strict(change_dir, {
-                        "source": "progression",
-                        "type": "dispatch_signed",
-                        "phase": entry.phase_id,
-                        "kind": "dispatch_phase",
-                        "target": None,
-                        "attempt_id": driver.current_attempt_id,
-                        "state_guard": state_guard(change_dir),
-                        "dispatched_at": int(time.time() * 1000),
-                    })
+                    append_event_strict(
+                        change_dir,
+                        {
+                            "source": "progression",
+                            "type": "dispatch_signed",
+                            "phase": entry.phase_id,
+                            "kind": "dispatch_phase",
+                            "target": None,
+                            "attempt_id": driver.current_attempt_id,
+                            "state_guard": state_guard(change_dir),
+                            "dispatched_at": int(time.time() * 1000),
+                        },
+                    )
                     result = _dispatch_entry(entry, ctx, adapter, cli_executor)
                     if result.ok:
                         successful_attempt_id = attempt_id
@@ -482,7 +509,9 @@ def run_workflow_loop(
                 # is mandatory audit/state evidence even though ordinary DAG
                 # completion is projected from produces + gate.
                 applied = cli_executor.apply_phase_state(
-                    entry, ctx, successful_attempt_id,
+                    entry,
+                    ctx,
+                    successful_attempt_id,
                 )
                 if not applied.ok:
                     return finish(

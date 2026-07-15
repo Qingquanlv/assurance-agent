@@ -3,6 +3,7 @@
 Enum values transcribed from the TS source `src/schema/contracts.ts`
 (GateStatus, FunctionalCounts, CoverageThreshold, dimensions).
 """
+
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field

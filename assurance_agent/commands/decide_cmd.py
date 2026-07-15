@@ -4,6 +4,7 @@
 审计型命令复用 state_cmd.commit_state_change 的 snapshot 边界：strict human_decision
 后写 canonical WorkflowState，失败恢复 event/state 两文件。
 """
+
 import hashlib
 import os
 from datetime import datetime, timezone
@@ -27,7 +28,9 @@ HUMAN_DECISION_ACTIONS = {"fix_and_proceed", "accept_risk", "stop", "allow_test_
 @click.option("--at", "checkpoint", required=True, help="Gate, phase, or supported workflow checkpoint.")
 @click.option("--action", "action", required=True, help="Supported action for the checkpoint.")
 @click.option("--reason", "reason", required=True, help="Human decision reason.")
-@click.option("--evidence", "evidence", default=None, help="Supporting evidence file within the project root.")
+@click.option(
+    "--evidence", "evidence", default=None, help="Supporting evidence file within the project root."
+)
 def decide_command(change_id: str, checkpoint: str, action: str, reason: str, evidence: str | None) -> None:
     """Record a supported human workflow decision."""
     project_root = Path.cwd()
@@ -92,7 +95,13 @@ def decide_command(change_id: str, checkpoint: str, action: str, reason: str, ev
 
 
 def _commit_decision(
-    change_dir: Path, event: dict, action: str, checkpoint: str, reason: str, who: str, stop_snapshot: dict | None
+    change_dir: Path,
+    event: dict,
+    action: str,
+    checkpoint: str,
+    reason: str,
+    who: str,
+    stop_snapshot: dict | None,
 ) -> None:
     try:
         state = read_state(change_dir)

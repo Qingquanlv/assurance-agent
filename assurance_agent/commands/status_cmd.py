@@ -3,6 +3,7 @@
 对齐 TS src/commands/status.ts 的 flag 面与退出码语义：
 查询类命令写 best-effort 遥测事件（失败静默，退出码不变）。
 """
+
 from pathlib import Path
 
 import click

@@ -2,6 +2,7 @@
 
 对齐 TS src/commands/gate.ts 的 flag 面与退出码：查询类命令写 best-effort 事件。
 """
+
 from pathlib import Path
 
 import click
@@ -55,7 +56,13 @@ def gate_check(change_id: str, phase_id: str, as_json: bool) -> None:
 
     append_event_best_effort(
         change_dir,
-        {"source": "gate", "type": "gate_verdict", "phase": phase_id, "gate": verdict.gate, "verdict": verdict.verdict},
+        {
+            "source": "gate",
+            "type": "gate_verdict",
+            "phase": phase_id,
+            "gate": verdict.gate,
+            "verdict": verdict.verdict,
+        },
     )
 
     if as_json:

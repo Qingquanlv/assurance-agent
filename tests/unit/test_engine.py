@@ -103,7 +103,7 @@ def test_initial_ready_is_reg_no_gate_adjudication(tmp_path: Path):
     st = compute_status(SCHEMA, tmp_path, WorkflowState(), {})
     assert _pv(st, "skill-registry-check").status == "ready"
     assert [d.phase_id for d in st.next_dispatch] == ["skill-registry-check"]
-    assert st.next_dispatch[0].kind == "orchestrator"   # _INTERNAL_PHASES
+    assert st.next_dispatch[0].kind == "orchestrator"  # _INTERNAL_PHASES
     assert st.terminal is None
 
 
@@ -115,23 +115,29 @@ def test_when_prunes_case(tmp_path: Path):
 def test_downstream_ready_after_produces_and_gate_pass(tmp_path: Path):
     """produces 存在（workflow-state.yaml）+ gate pass → done；下游 explore → ready。"""
     # write_state 落盘 workflow-state.yaml（= skill-registry-check 的 produces），并写入 gate 读取的 status
-    write_state(tmp_path, WorkflowState.model_validate({"phases": {"skill_registry_check": {"status": "pass"}}}))
+    write_state(
+        tmp_path, WorkflowState.model_validate({"phases": {"skill_registry_check": {"status": "pass"}}})
+    )
     st = compute_status(SCHEMA, tmp_path, read_state_or(tmp_path), {})
     assert _pv(st, "skill-registry-check").status == "done"
     assert _pv(st, "explore").status == "ready"
 
 
 def test_ran_phase_gate_stop_is_terminal(tmp_path: Path):
-    write_state(tmp_path, WorkflowState.model_validate({"phases": {"skill_registry_check": {"status": "fail"}}}))
+    write_state(
+        tmp_path, WorkflowState.model_validate({"phases": {"skill_registry_check": {"status": "fail"}}})
+    )
     st = compute_status(SCHEMA, tmp_path, read_state_or(tmp_path), {})
     assert st.terminal is not None and st.terminal.kind == "stopped"
     assert _pv(st, "skill-registry-check").status == "stopped"
 
 
 def test_completed_when_all_produces_present_and_gates_pass(tmp_path: Path):
-    write_state(tmp_path, WorkflowState.model_validate({"phases": {"skill_registry_check": {"status": "pass"}}}))
-    _touch(tmp_path, "explore/advisory.json")   # explore produces（无 gate → done）
-    _touch(tmp_path, ".qa.yaml")                # case produces（无 gate → done）
+    write_state(
+        tmp_path, WorkflowState.model_validate({"phases": {"skill_registry_check": {"status": "pass"}}})
+    )
+    _touch(tmp_path, "explore/advisory.json")  # explore produces（无 gate → done）
+    _touch(tmp_path, ".qa.yaml")  # case produces（无 gate → done）
     st = compute_status(SCHEMA, tmp_path, read_state_or(tmp_path), {})
     assert st.terminal is not None and st.terminal.kind == "completed"
 
@@ -147,8 +153,8 @@ def test_scope_execute_marks_full_only_phase_out_of_scope(tmp_path: Path):
 def test_needs_fix_routes_to_healing_not_terminal(tmp_path: Path):
     """P0: execution produces 已生成 + gate=needs_fix → awaiting_gate（不终止）；fix-proposal 经 gate() when → ready。"""
     _write_fa(tmp_path, eligible=True)
-    _touch(tmp_path, "execution/execution-manifest.yaml")   # execution 已运行（produces 存在）
-    _touch(tmp_path, "proposal.md")                          # intake 已完成（无 gate → done）
+    _touch(tmp_path, "execution/execution-manifest.yaml")  # execution 已运行（produces 存在）
+    _touch(tmp_path, "proposal.md")  # intake 已完成（无 gate → done）
     st = compute_status(HEAL_SCHEMA, tmp_path, WorkflowState(), {})
     assert st.terminal is None
     ev = _pv(st, "execution")

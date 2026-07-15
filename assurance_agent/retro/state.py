@@ -29,11 +29,14 @@ def write_state(project_root: Path, state: dict) -> None:
     path.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
-def mark_consumed_change(project_root: Path, *, change_id: str, source: EvidenceSource,
-                         consumed_at: str, retro_id: str) -> None:
+def mark_consumed_change(
+    project_root: Path, *, change_id: str, source: EvidenceSource, consumed_at: str, retro_id: str
+) -> None:
     state = read_state(project_root)
     state["consumed_changes"][change_id] = {
-        "source": source, "consumed_at": consumed_at, "retro_id": retro_id,
+        "source": source,
+        "consumed_at": consumed_at,
+        "retro_id": retro_id,
         "terminal": False,
     }
     write_state(project_root, state)

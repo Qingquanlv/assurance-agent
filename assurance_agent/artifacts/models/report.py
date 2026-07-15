@@ -2,6 +2,7 @@
 
 Transcribed from src/schema/quality_report.ts / src/schema/contracts.ts.
 """
+
 from typing import Any, Literal
 
 from pydantic import BaseModel

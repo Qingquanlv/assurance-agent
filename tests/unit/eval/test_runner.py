@@ -11,7 +11,10 @@ from assurance_agent.eval.types import JudgeOutput
 from assurance_agent.workflow.core.events import append_event_strict
 from assurance_agent.workflow.driver.adapter import PhaseRequest, PhaseResult
 from assurance_agent.workflow.orchestration.engine import (
-    DispatchEntry, PhaseView, Terminal, WorkflowStatus,
+    DispatchEntry,
+    PhaseView,
+    Terminal,
+    WorkflowStatus,
 )
 
 
@@ -19,21 +22,33 @@ def _seed_suite(project_root: Path) -> Path:
     suites = project_root / "eval" / "suites"
     suites.mkdir(parents=True)
     suite_file = suites / "workflow-case.yaml"
-    suite_file.write_text(yaml.safe_dump({
-        "name": "workflow-case",
-        "scorer": "workflow-case",
-        "executor": {"type": "workflow-run", "scope": "full"},
-        "thresholds": [
-            {"metric": "case_review_gate_pass_rate", "gate": "hard", "op": "gte", "value": 0.99},
-            {"metric": "secret_leak_count", "gate": "hard", "op": "eq", "value": 0.0},
-        ],
-    }), encoding="utf-8")
+    suite_file.write_text(
+        yaml.safe_dump(
+            {
+                "name": "workflow-case",
+                "scorer": "workflow-case",
+                "executor": {"type": "workflow-run", "scope": "full"},
+                "thresholds": [
+                    {"metric": "case_review_gate_pass_rate", "gate": "hard", "op": "gte", "value": 0.99},
+                    {"metric": "secret_leak_count", "gate": "hard", "op": "eq", "value": 0.0},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     ds = project_root / "eval" / "datasets" / "workflow-case"
     ds.mkdir(parents=True)
-    (ds / "WC-001.yaml").write_text(yaml.safe_dump({
-        "id": "WC-001", "suite": "workflow-case",
-        "input": {"change_id": "eval-sample-001", "run_mode": "case-only"}, "expected": {},
-    }), encoding="utf-8")
+    (ds / "WC-001.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "id": "WC-001",
+                "suite": "workflow-case",
+                "input": {"change_id": "eval-sample-001", "run_mode": "case-only"},
+                "expected": {},
+            }
+        ),
+        encoding="utf-8",
+    )
     return suite_file
 
 
@@ -63,10 +78,16 @@ def test_run_suite_end_to_end_pass_and_persists_calibration(tmp_path: Path, monk
             raise AssertionError("skill-only eval")
 
         def apply_phase_state(self, entry, ctx, attempt_id):  # noqa: ANN001, ANN201
-            append_event_strict(ctx.change_dir, {
-                "source": "progression", "type": "phase_outcome_committed",
-                "phase": entry.phase_id, "attempt_id": attempt_id, "gate_report": None,
-            })
+            append_event_strict(
+                ctx.change_dir,
+                {
+                    "source": "progression",
+                    "type": "phase_outcome_committed",
+                    "phase": entry.phase_id,
+                    "attempt_id": attempt_id,
+                    "gate_report": None,
+                },
+            )
             return PhaseResult(ok=True, output="committed")
 
     def status_provider() -> WorkflowStatus:
@@ -74,11 +95,16 @@ def test_run_suite_end_to_end_pass_and_persists_calibration(tmp_path: Path, monk
         if calls["n"] == 1:
             return WorkflowStatus(
                 phases=[PhaseView(id="case-design", status="ready")],
-                next_dispatch=[DispatchEntry(phase_id="case-design", skill="aa-case-design",
-                                             agent=None, kind="skill")],
-                terminal=None)
-        return WorkflowStatus(phases=[PhaseView(id="case-design", status="done")],
-                              next_dispatch=[], terminal=Terminal(kind="completed", reason="ok"))
+                next_dispatch=[
+                    DispatchEntry(phase_id="case-design", skill="aa-case-design", agent=None, kind="skill")
+                ],
+                terminal=None,
+            )
+        return WorkflowStatus(
+            phases=[PhaseView(id="case-design", status="done")],
+            next_dispatch=[],
+            terminal=Terminal(kind="completed", reason="ok"),
+        )
 
     monkeypatch.setenv("AA_JUDGE_MODEL", "judge-model")
     monkeypatch.setattr(
@@ -88,7 +114,9 @@ def test_run_suite_end_to_end_pass_and_persists_calibration(tmp_path: Path, monk
     )
 
     run_id, gate = run_suite(
-        suite_file=suite_file, project_root=project_root, sut_dir=sut,
+        suite_file=suite_file,
+        project_root=project_root,
+        sut_dir=sut,
         calibrate=True,
         adapter_factory=lambda sut_dir, **_: GreenAdapter(sut_dir),
         status_provider_factory=lambda **_: status_provider,
@@ -130,10 +158,16 @@ def test_run_suite_repeat_uses_isolated_workspaces_and_unique_score_keys(tmp_pat
             raise AssertionError("skill-only")
 
         def apply_phase_state(self, entry, ctx, attempt_id):  # noqa: ANN001, ANN201
-            append_event_strict(ctx.change_dir, {
-                "source": "progression", "type": "phase_outcome_committed",
-                "phase": entry.phase_id, "attempt_id": attempt_id, "gate_report": None,
-            })
+            append_event_strict(
+                ctx.change_dir,
+                {
+                    "source": "progression",
+                    "type": "phase_outcome_committed",
+                    "phase": entry.phase_id,
+                    "attempt_id": attempt_id,
+                    "gate_report": None,
+                },
+            )
             return PhaseResult(ok=True)
 
     def status_factory(**_):
@@ -144,19 +178,29 @@ def test_run_suite_repeat_uses_isolated_workspaces_and_unique_score_keys(tmp_pat
             if calls["n"] == 1:
                 return WorkflowStatus(
                     phases=[PhaseView(id="case-design", status="ready")],
-                    next_dispatch=[DispatchEntry(
-                        phase_id="case-design", skill="aa-case-design", agent=None, kind="skill",
-                    )], terminal=None,
+                    next_dispatch=[
+                        DispatchEntry(
+                            phase_id="case-design",
+                            skill="aa-case-design",
+                            agent=None,
+                            kind="skill",
+                        )
+                    ],
+                    terminal=None,
                 )
             return WorkflowStatus(
-                phases=[PhaseView(id="case-design", status="done")], next_dispatch=[],
+                phases=[PhaseView(id="case-design", status="done")],
+                next_dispatch=[],
                 terminal=Terminal(kind="completed"),
             )
 
         return status
 
     run_id, gate = run_suite(
-        suite_file=suite_file, project_root=project_root, sut_dir=sut, repeat=2,
+        suite_file=suite_file,
+        project_root=project_root,
+        sut_dir=sut,
+        repeat=2,
         adapter_factory=lambda sut_dir, attempt, **_: IsolatedAdapter(sut_dir, attempt),
         status_provider_factory=status_factory,
         cli_executor_factory=lambda **_: AuditOutcome(),

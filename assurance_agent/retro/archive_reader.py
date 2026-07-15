@@ -78,12 +78,15 @@ def read_archived_change(change_dir: Path, *, source: EvidenceSource) -> Archive
         path=str(change_dir),
         events=_read_events(change_dir / "events.jsonl"),
         failure_analysis=_read_model(
-            change_dir / "inspect" / "failure-analysis.json", FailureAnalysis,
+            change_dir / "inspect" / "failure-analysis.json",
+            FailureAnalysis,
         ),
         reviews=reviews,
         apply_summaries=apply_summaries,
         workflow_state=_read_model(
-            change_dir / "workflow-state.yaml", WorkflowState, yaml_input=True,
+            change_dir / "workflow-state.yaml",
+            WorkflowState,
+            yaml_input=True,
         ),
     )
 

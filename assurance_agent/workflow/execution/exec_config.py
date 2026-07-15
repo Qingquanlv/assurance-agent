@@ -4,6 +4,7 @@ AaConfig (M1) does not declare coverage/performance keys but preserves them in
 model_extra because of extra='allow'; these loaders read them with defaults so
 run_change never crashes on a minimal config.
 """
+
 from typing import Any, Literal
 
 from pydantic import BaseModel

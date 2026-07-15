@@ -19,43 +19,65 @@ def _write(path: Path, text: str) -> None:
 
 
 def _seed_healing_episode(change_dir: Path, *, source_batch: str = "20260101-000000") -> None:
-    append_event_strict(change_dir, {
-        "source": "heal", "type": "healing_entry_baseline_pinned",
-        "artifact_file": "healing/entry-baseline.json", "artifact_sha256": "x",
-        "entry_batch_id": source_batch, "episode_id": "e1",
-    })
-    append_event_strict(change_dir, {
-        "source": "progression", "type": "healing_attempt_allocated",
-        "episode_id": "e1", "attempt_id": "a1", "attempt_number": 1,
-        "operation_id": "op1", "source_batch_id": source_batch,
-    })
+    append_event_strict(
+        change_dir,
+        {
+            "source": "heal",
+            "type": "healing_entry_baseline_pinned",
+            "artifact_file": "healing/entry-baseline.json",
+            "artifact_sha256": "x",
+            "entry_batch_id": source_batch,
+            "episode_id": "e1",
+        },
+    )
+    append_event_strict(
+        change_dir,
+        {
+            "source": "progression",
+            "type": "healing_attempt_allocated",
+            "episode_id": "e1",
+            "attempt_id": "a1",
+            "attempt_number": 1,
+            "operation_id": "op1",
+            "source_batch_id": source_batch,
+        },
+    )
 
 
 def _manifest(change_dir: Path, files: dict[str, str], aggregate: str) -> None:
     _write(
         change_dir / "execution" / "execution-manifest.yaml",
-        yaml.safe_dump({
-            "batch_id": "20260101-000000",
-            "tests_tree_sha256": aggregate,
-            "test_files_sha256": files,
-            "product_tree_sha256": "p0",
-            "final_status": "PASS",
-            "result_files": {},
-        }),
+        yaml.safe_dump(
+            {
+                "batch_id": "20260101-000000",
+                "tests_tree_sha256": aggregate,
+                "test_files_sha256": files,
+                "product_tree_sha256": "p0",
+                "final_status": "PASS",
+                "result_files": {},
+            }
+        ),
     )
 
 
 def _proposal(change_dir: Path) -> None:
-    _write(change_dir / "healing" / "fix-proposal.json", json.dumps({
-        "schema_version": "1.0",
-        "summary": {"eligible_count": 1},
-        "proposals": [{
-            "proposal_id": "FIX-001",
-            "target": "api",
-            "eligible": True,
-            "files_to_modify": ["tests/api/test_menu.py"],
-        }],
-    }))
+    _write(
+        change_dir / "healing" / "fix-proposal.json",
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "summary": {"eligible_count": 1},
+                "proposals": [
+                    {
+                        "proposal_id": "FIX-001",
+                        "target": "api",
+                        "eligible": True,
+                        "files_to_modify": ["tests/api/test_menu.py"],
+                    }
+                ],
+            }
+        ),
+    )
 
 
 def test_record_apply_rejects_without_active_allocation(tmp_path: Path) -> None:
@@ -133,15 +155,25 @@ def test_record_apply_event_failure_restores_both_summary_files(tmp_path: Path, 
 def test_guard_context_uses_m3_projection_attempt_count(tmp_path: Path) -> None:
     change_dir = tmp_path / "qa" / "changes" / "CH-1"
     change_dir.mkdir(parents=True)
-    append_event_strict(change_dir, {
-        "source": "heal", "type": "healing_entry_baseline_pinned",
-        "artifact_file": "healing/entry-baseline.json", "artifact_sha256": "x",
-        "entry_batch_id": "b1", "episode_id": "e1",
-    })
+    append_event_strict(
+        change_dir,
+        {
+            "source": "heal",
+            "type": "healing_entry_baseline_pinned",
+            "artifact_file": "healing/entry-baseline.json",
+            "artifact_sha256": "x",
+            "entry_batch_id": "b1",
+            "episode_id": "e1",
+        },
+    )
     allocation = {
-        "source": "progression", "type": "healing_attempt_allocated",
-        "episode_id": "e1", "attempt_id": "a1", "attempt_number": 1,
-        "operation_id": "op1", "source_batch_id": "b1",
+        "source": "progression",
+        "type": "healing_attempt_allocated",
+        "episode_id": "e1",
+        "attempt_id": "a1",
+        "attempt_number": 1,
+        "operation_id": "op1",
+        "source_batch_id": "b1",
     }
     append_event_strict(change_dir, allocation)
     append_event_strict(change_dir, allocation)

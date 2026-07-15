@@ -4,6 +4,7 @@ Transcribed from src/schema/advisory.ts and src/schema/fact_baseline.ts.
 zod's z.any() fields accept absent keys, hence `Any = None` defaults here;
 z.array(...) fields are required, hence no default.
 """
+
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel
@@ -46,9 +47,7 @@ class FactBaselineFull(BaseModel):
     facts: Any = None
 
 
-FactBaselineVariant = Annotated[
-    FactBaselineUnavailable | FactBaselineFull, Field(discriminator="source")
-]
+FactBaselineVariant = Annotated[FactBaselineUnavailable | FactBaselineFull, Field(discriminator="source")]
 
 
 class FactBaseline(RootModel[FactBaselineVariant]):

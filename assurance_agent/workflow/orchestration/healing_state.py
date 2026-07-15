@@ -1,4 +1,5 @@
 """Typed projection of the durable healing allocation ledger."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -50,20 +51,17 @@ def derive_healing_state(change_dir: Path) -> HealingStateSnapshot:
 
     episode_id = str(baseline["episode_id"])
     allocations = [
-        e for e in events
+        e
+        for e in events
         if e.get("type") == "healing_attempt_allocated" and e.get("episode_id") == episode_id
     ]
     unique = {str(e["operation_id"]): e for e in allocations}
     latest = max(unique.values(), key=_event_seq, default=None)
     after_allocation = _event_seq(latest) if latest else baseline_seq
     apply_events = [
-        e for e in events
-        if e.get("type") == "heal_record_apply" and _event_seq(e) > after_allocation
+        e for e in events if e.get("type") == "heal_record_apply" and _event_seq(e) > after_allocation
     ]
-    transitions = [
-        e for e in events
-        if e.get("type") == "heal_transition" and _event_seq(e) > baseline_seq
-    ]
+    transitions = [e for e in events if e.get("type") == "heal_transition" and _event_seq(e) > baseline_seq]
     status = str(transitions[-1]["to"]) if transitions else "pending"
     return HealingStateSnapshot(
         status=status,

@@ -3,6 +3,7 @@
 Field names, optionality and enum values transcribed one-for-one from the TS
 validators src/schema/case_yaml.ts and src/schema/qa_yaml.ts.
 """
+
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field

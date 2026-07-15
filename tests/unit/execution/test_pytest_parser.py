@@ -27,14 +27,26 @@ def test_pass_fail_error_skip_matrix(tmp_path: Path) -> None:
     result = parse(
         tmp_path,
         [
-            {"nodeid": "tests/api/test_m.py::test_tc_m_001__ok", "outcome": "passed",
-             "call": {"outcome": "passed", "duration": 0.01}},
-            {"nodeid": "tests/api/test_m.py::test_tc_m_002__bad", "outcome": "failed",
-             "call": {"outcome": "failed", "duration": 0.02, "longrepr": "AssertionError: 200 != 500"}},
-            {"nodeid": "tests/api/test_m.py::test_tc_m_003__boom", "outcome": "error",
-             "setup": {"outcome": "error", "duration": 0.0, "longrepr": "ImportError: no module"}},
-            {"nodeid": "tests/api/test_m.py::test_tc_m_004__skip", "outcome": "skipped",
-             "setup": {"outcome": "skipped", "duration": 0.0, "longrepr": "Skipped: no data"}},
+            {
+                "nodeid": "tests/api/test_m.py::test_tc_m_001__ok",
+                "outcome": "passed",
+                "call": {"outcome": "passed", "duration": 0.01},
+            },
+            {
+                "nodeid": "tests/api/test_m.py::test_tc_m_002__bad",
+                "outcome": "failed",
+                "call": {"outcome": "failed", "duration": 0.02, "longrepr": "AssertionError: 200 != 500"},
+            },
+            {
+                "nodeid": "tests/api/test_m.py::test_tc_m_003__boom",
+                "outcome": "error",
+                "setup": {"outcome": "error", "duration": 0.0, "longrepr": "ImportError: no module"},
+            },
+            {
+                "nodeid": "tests/api/test_m.py::test_tc_m_004__skip",
+                "outcome": "skipped",
+                "setup": {"outcome": "skipped", "duration": 0.0, "longrepr": "Skipped: no data"},
+            },
         ],
     )
     assert result.total == 4
@@ -53,8 +65,11 @@ def test_unmapped_tests_have_no_case_id(tmp_path: Path) -> None:
     result = parse(
         tmp_path,
         [
-            {"nodeid": "tests/api/test_x.py::test_plain_smoke", "outcome": "passed",
-             "call": {"outcome": "passed", "duration": 0.0}},
+            {
+                "nodeid": "tests/api/test_x.py::test_plain_smoke",
+                "outcome": "passed",
+                "call": {"outcome": "passed", "duration": 0.0},
+            },
         ],
     )
     assert result.cases == []
@@ -68,8 +83,11 @@ def test_all_passed_status_passed(tmp_path: Path) -> None:
     result = parse(
         tmp_path,
         [
-            {"nodeid": "tests/api/test_m.py::test_tc_m_001__ok", "outcome": "passed",
-             "call": {"outcome": "passed", "duration": 0.0}},
+            {
+                "nodeid": "tests/api/test_m.py::test_tc_m_001__ok",
+                "outcome": "passed",
+                "call": {"outcome": "passed", "duration": 0.0},
+            },
         ],
     )
     assert result.status == "passed"
@@ -116,8 +134,13 @@ def test_corrupt_report_json_is_skipped(tmp_path: Path) -> None:
 def test_e2e_target_preserved(tmp_path: Path) -> None:
     result = parse(
         tmp_path,
-        [{"nodeid": "tests/e2e/test_login.py::test_tc_login_e2e_001__happy", "outcome": "passed",
-          "call": {"outcome": "passed", "duration": 0.5}}],
+        [
+            {
+                "nodeid": "tests/e2e/test_login.py::test_tc_login_e2e_001__happy",
+                "outcome": "passed",
+                "call": {"outcome": "passed", "duration": 0.5},
+            }
+        ],
         target="e2e",
     )
     assert result.target == "e2e"

@@ -34,13 +34,26 @@ def _stub_pytest(outcome: str):
         report_file = next(a.split("=", 1)[1] for a in args if a.startswith("--json-report-file="))
         target = "api" if "tests/api" in args else "e2e"
         Path(report_file).parent.mkdir(parents=True, exist_ok=True)
-        Path(report_file).write_text(json.dumps({"tests": [{
-            "nodeid": f"tests/{target}/t.py::test_tc_{target}_001__x",
-            "outcome": outcome,
-            "call": {"outcome": outcome, "duration": 0.0,
-                     "longrepr": "" if outcome == "passed" else "AssertionError: boom"},
-        }]}), encoding="utf-8")
+        Path(report_file).write_text(
+            json.dumps(
+                {
+                    "tests": [
+                        {
+                            "nodeid": f"tests/{target}/t.py::test_tc_{target}_001__x",
+                            "outcome": outcome,
+                            "call": {
+                                "outcome": outcome,
+                                "duration": 0.0,
+                                "longrepr": "" if outcome == "passed" else "AssertionError: boom",
+                            },
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
     return fake_run
 
 
@@ -48,14 +61,16 @@ def _write_manifest(change_dir: Path, tree) -> None:  # noqa: ANN001
     change_dir.mkdir(parents=True, exist_ok=True)
     (change_dir / "execution").mkdir(parents=True, exist_ok=True)
     (change_dir / "execution" / "execution-manifest.yaml").write_text(
-        yaml.safe_dump({
-            "batch_id": "20260101-000000",
-            "tests_tree_sha256": tree.aggregate,
-            "test_files_sha256": tree.files,
-            "product_tree_sha256": "p0",
-            "final_status": "PASS",
-            "result_files": {},
-        }),
+        yaml.safe_dump(
+            {
+                "batch_id": "20260101-000000",
+                "tests_tree_sha256": tree.aggregate,
+                "test_files_sha256": tree.files,
+                "product_tree_sha256": "p0",
+                "final_status": "PASS",
+                "result_files": {},
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -108,9 +123,17 @@ def test_override_writes_evidence_and_human_decision_before_runner(guarded_proje
     monkeypatch.setattr(runners_mod.subprocess, "run", _stub_pytest("passed"))
     monkeypatch.setattr(run_cmd_mod, "append_event_best_effort", lambda *a, **k: None)
     (tmp_path / "tests" / "api" / "test_x.py").write_text("def test_x(): assert 2\n", encoding="utf-8")
-    result = CliRunner().invoke(main, [
-        "run", "--change", "CH-1", "--allow-test-changes", "--rerun-reason", "manual fix",
-    ])
+    result = CliRunner().invoke(
+        main,
+        [
+            "run",
+            "--change",
+            "CH-1",
+            "--allow-test-changes",
+            "--rerun-reason",
+            "manual fix",
+        ],
+    )
     assert result.exit_code == 0
     events = read_events(change)
     decision = next(e for e in events if e.get("type") == "human_decision")
@@ -135,9 +158,17 @@ def test_override_event_failure_removes_evidence_and_does_not_run(guarded_projec
 
     monkeypatch.setattr(run_cmd_mod, "append_event_strict", fail_strict)
     (tmp_path / "tests" / "api" / "test_x.py").write_text("def test_x(): assert 2\n", encoding="utf-8")
-    result = CliRunner().invoke(main, [
-        "run", "--change", "CH-1", "--allow-test-changes", "--rerun-reason", "manual fix",
-    ])
+    result = CliRunner().invoke(
+        main,
+        [
+            "run",
+            "--change",
+            "CH-1",
+            "--allow-test-changes",
+            "--rerun-reason",
+            "manual fix",
+        ],
+    )
     assert result.exit_code == 1
     assert calls == []
     override_files = list((change / "execution" / "runs").rglob("test-changes-override.json"))

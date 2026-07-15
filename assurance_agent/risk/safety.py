@@ -3,6 +3,7 @@
 Change-id validation delegates to the M2-wide identifier contract; resolved
 risk paths additionally must stay inside the project root.
 """
+
 from pathlib import Path
 
 from assurance_agent.exceptions import AaError

@@ -1,4 +1,5 @@
 """aa risk — Explore 命令（Phase 0.5）。对齐 TS src/commands/risk.ts 的 flag 面。"""
+
 import json
 from pathlib import Path
 
@@ -27,7 +28,9 @@ def risk_group() -> None:
 @click.option("--project-dir", "project_dir", default=None, help="Project root (default: cwd).")
 @click.option("--diff-base", "diff_base", default="main", help="Git diff base ref.")
 @click.option("--archive-depth", "archive_depth", default=10, type=int, help="Recent archives to sample.")
-@click.option("--staleness-days", "staleness_days", default=30, type=int, help="Archive staleness threshold (days).")
+@click.option(
+    "--staleness-days", "staleness_days", default=30, type=int, help="Archive staleness threshold (days)."
+)
 @click.option("--requirement", "requirement", default=None, help="Requirement text file inside project root.")
 @click.option("--output-dir", "output_dir", default=None, help="Write context.json into this dir instead.")
 @click.option("--stdout", "to_stdout", is_flag=True, help="Print JSON to stdout and do NOT write to disk.")

@@ -14,6 +14,7 @@ from assurance_agent.workflow.execution.runners import (
 
 def _stub_pytest(report_tests: list[dict], coverage_totals: dict | None = None):
     """Return a fake subprocess.run that writes the canned report/coverage files."""
+
     def fake_run(args, **kwargs):
         report_file = next(a.split("=", 1)[1] for a in args if a.startswith("--json-report-file="))
         Path(report_file).parent.mkdir(parents=True, exist_ok=True)
@@ -25,21 +26,32 @@ def _stub_pytest(report_tests: list[dict], coverage_totals: dict | None = None):
                 cov_path.parent.mkdir(parents=True, exist_ok=True)
                 cov_path.write_text(json.dumps({"totals": coverage_totals}), encoding="utf-8")
         return subprocess.CompletedProcess(args, 0, stdout="pytest output", stderr="")
+
     return fake_run
 
 
 def test_run_pytest_target_parses_stubbed_report(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / "tests" / "api").mkdir(parents=True)
     monkeypatch.setattr(
-        runners.subprocess, "run",
-        _stub_pytest([
-            {"nodeid": "tests/api/t.py::test_tc_api_001__ok", "outcome": "passed",
-             "call": {"outcome": "passed", "duration": 0.01}},
-        ]),
+        runners.subprocess,
+        "run",
+        _stub_pytest(
+            [
+                {
+                    "nodeid": "tests/api/t.py::test_tc_api_001__ok",
+                    "outcome": "passed",
+                    "call": {"outcome": "passed", "duration": 0.01},
+                },
+            ]
+        ),
     )
     result = run_pytest_target(
-        project_root=tmp_path, batch_dir=tmp_path / "batch", change_id="CH-1",
-        batch_id="b1", target="api", test_dir="tests/api",
+        project_root=tmp_path,
+        batch_dir=tmp_path / "batch",
+        change_id="CH-1",
+        batch_id="b1",
+        target="api",
+        test_dir="tests/api",
     )
     assert result.status == "passed"
     assert result.total == 1
@@ -50,10 +62,15 @@ def test_run_pytest_target_parses_stubbed_report(tmp_path: Path, monkeypatch) ->
 def test_run_pytest_target_missing_dir_is_skipped_no_subprocess(tmp_path: Path, monkeypatch) -> None:
     def boom(*a, **k):
         raise AssertionError("subprocess must not run when the test dir is absent")
+
     monkeypatch.setattr(runners.subprocess, "run", boom)
     result = run_pytest_target(
-        project_root=tmp_path, batch_dir=tmp_path / "batch", change_id="CH-1",
-        batch_id="b1", target="fuzz", test_dir="tests/fuzz",
+        project_root=tmp_path,
+        batch_dir=tmp_path / "batch",
+        change_id="CH-1",
+        batch_id="b1",
+        target="fuzz",
+        test_dir="tests/fuzz",
     )
     assert result.status == "skipped"
     assert result.total == 0
@@ -63,20 +80,33 @@ def test_run_pytest_target_missing_dir_is_skipped_no_subprocess(tmp_path: Path, 
 def test_run_pytest_target_collects_coverage(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / "tests" / "api").mkdir(parents=True)
     monkeypatch.setattr(
-        runners.subprocess, "run",
+        runners.subprocess,
+        "run",
         _stub_pytest(
-            [{"nodeid": "tests/api/t.py::test_tc_api_001__ok", "outcome": "passed",
-              "call": {"outcome": "passed", "duration": 0.0}}],
+            [
+                {
+                    "nodeid": "tests/api/t.py::test_tc_api_001__ok",
+                    "outcome": "passed",
+                    "call": {"outcome": "passed", "duration": 0.0},
+                }
+            ],
             coverage_totals={"percent_covered": 88.0, "num_branches": 10, "covered_branches": 7},
         ),
     )
     batch_dir = tmp_path / "batch"
     run_pytest_target(
-        project_root=tmp_path, batch_dir=batch_dir, change_id="CH-1", batch_id="b1",
-        target="api", test_dir="tests/api", cov_package="app",
+        project_root=tmp_path,
+        batch_dir=batch_dir,
+        change_id="CH-1",
+        batch_id="b1",
+        target="api",
+        test_dir="tests/api",
+        cov_package="app",
     )
     cov = parse_coverage_result(
-        change_id="CH-1", batch_id="b1", batch_dir=batch_dir,
+        change_id="CH-1",
+        batch_id="b1",
+        batch_dir=batch_dir,
         threshold=CoverageThreshold(line=70, branch=60),
     )
     assert cov.available is True
@@ -87,7 +117,9 @@ def test_run_pytest_target_collects_coverage(tmp_path: Path, monkeypatch) -> Non
 
 def test_parse_coverage_missing_is_skipped(tmp_path: Path) -> None:
     cov = parse_coverage_result(
-        change_id="CH-1", batch_id="b1", batch_dir=tmp_path,
+        change_id="CH-1",
+        batch_id="b1",
+        batch_dir=tmp_path,
         threshold=CoverageThreshold(line=70, branch=60),
     )
     assert cov.available is False

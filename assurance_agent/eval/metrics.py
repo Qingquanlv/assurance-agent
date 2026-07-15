@@ -19,16 +19,17 @@ def aggregate_scores(run_id: str, suite: str, scores: list[SampleScore]) -> Suit
             counts[name] = counts.get(name, 0) + 1
     metrics = {name: sums[name] / counts[name] for name in sums if counts[name]}
     return SuiteMetrics(
-        run_id=run_id, suite=suite, sample_count=len(scores),
-        metrics=metrics, per_sample=per_sample,
+        run_id=run_id,
+        suite=suite,
+        sample_count=len(scores),
+        metrics=metrics,
+        per_sample=per_sample,
     )
 
 
 def write_metrics(run_dir: Path, metrics: SuiteMetrics) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "metrics.json").write_text(
-        json.dumps(metrics.model_dump(), indent=2), encoding="utf-8"
-    )
+    (run_dir / "metrics.json").write_text(json.dumps(metrics.model_dump(), indent=2), encoding="utf-8")
 
 
 def read_metrics(run_dir: Path) -> SuiteMetrics:

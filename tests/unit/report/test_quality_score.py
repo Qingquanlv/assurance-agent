@@ -13,19 +13,23 @@ def dims(**kw: ScoreDimension) -> dict:
 
 
 def test_m1_functional_only_full_pass_is_100() -> None:
-    score, bd = compute_quality_score(dims(
-        functional=ScoreDimension(active=True, ratio=1.0, weight=70),
-    ))
+    score, bd = compute_quality_score(
+        dims(
+            functional=ScoreDimension(active=True, ratio=1.0, weight=70),
+        )
+    )
     assert score == 100
     assert bd.functional == 100.0
     assert bd.coverage == "N/A"
 
 
 def test_m1_functional_and_coverage_hand_computed() -> None:
-    score, bd = compute_quality_score(dims(
-        functional=ScoreDimension(active=True, ratio=0.8, weight=70),
-        coverage=ScoreDimension(active=True, ratio=1.0, weight=30),
-    ))
+    score, bd = compute_quality_score(
+        dims(
+            functional=ScoreDimension(active=True, ratio=0.8, weight=70),
+            coverage=ScoreDimension(active=True, ratio=1.0, weight=30),
+        )
+    )
     assert score == 86
     assert bd.functional == 56.0
     assert bd.coverage == 30.0
@@ -33,12 +37,14 @@ def test_m1_functional_and_coverage_hand_computed() -> None:
 
 
 def test_m3_all_active_partial_functional() -> None:
-    score, bd = compute_quality_score(dims(
-        functional=ScoreDimension(active=True, ratio=0.5, weight=50),
-        coverage=ScoreDimension(active=True, ratio=1.0, weight=20),
-        fuzz=ScoreDimension(active=True, ratio=1.0, weight=15),
-        performance=ScoreDimension(active=True, ratio=1.0, weight=15),
-    ))
+    score, bd = compute_quality_score(
+        dims(
+            functional=ScoreDimension(active=True, ratio=0.5, weight=50),
+            coverage=ScoreDimension(active=True, ratio=1.0, weight=20),
+            fuzz=ScoreDimension(active=True, ratio=1.0, weight=15),
+            performance=ScoreDimension(active=True, ratio=1.0, weight=15),
+        )
+    )
     assert score == 75
     assert bd.functional == 25.0
     assert bd.performance == 15.0
@@ -51,7 +57,9 @@ def test_no_active_dimension_is_zero() -> None:
 
 
 def test_ratio_is_clamped() -> None:
-    score, _ = compute_quality_score(dims(
-        functional=ScoreDimension(active=True, ratio=5.0, weight=70),
-    ))
+    score, _ = compute_quality_score(
+        dims(
+            functional=ScoreDimension(active=True, ratio=5.0, weight=70),
+        )
+    )
     assert score == 100

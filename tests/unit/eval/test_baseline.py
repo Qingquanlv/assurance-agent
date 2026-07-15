@@ -10,9 +10,15 @@ def _run(root: Path, run_id: str, suite: str, metrics: dict[str, float]) -> Path
     run = root / "eval/out/runs" / run_id
     run.mkdir(parents=True)
     manifest = RunManifest(
-        run_id=run_id, suite=suite, scorer=suite, selected_sample_ids=["S-1"],
-        total_samples=1, executed_samples=1, target_model="m",
-        started_at="2026-07-15T00:00:00Z", completed_at="2026-07-15T00:01:00Z",
+        run_id=run_id,
+        suite=suite,
+        scorer=suite,
+        selected_sample_ids=["S-1"],
+        total_samples=1,
+        executed_samples=1,
+        target_model="m",
+        started_at="2026-07-15T00:00:00Z",
+        completed_at="2026-07-15T00:01:00Z",
     )
     (run / "manifest.json").write_text(manifest.model_dump_json(), encoding="utf-8")
     value = SuiteMetrics(run_id=run_id, suite=suite, sample_count=1, metrics=metrics)
@@ -22,9 +28,7 @@ def _run(root: Path, run_id: str, suite: str, metrics: dict[str, float]) -> Path
 
 def test_compare_only_shared_metrics(tmp_path: Path) -> None:
     run = _run(tmp_path, "r1", "s1", {"shared": 0.8, "new": 0.4})
-    assert compare_with_baseline(run, {"shared": 0.5, "old": 1.0}) == {
-        "shared": pytest.approx(0.3)
-    }
+    assert compare_with_baseline(run, {"shared": 0.5, "old": 1.0}) == {"shared": pytest.approx(0.3)}
 
 
 def test_read_baseline_missing_returns_empty(tmp_path: Path) -> None:

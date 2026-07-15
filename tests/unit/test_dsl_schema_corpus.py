@@ -1,4 +1,5 @@
 """对拍：打包 schema 的每条表达式都有真值 + missing 覆盖（位置 id 驱动，与 schema 一一对应）。"""
+
 from pathlib import Path
 
 import pytest
@@ -39,24 +40,39 @@ def gvfx(v, b):
 
 
 # run_mode/test_types/run_tests/auto_archive 全满足——覆盖所有「params.* when」的真值路径。
-P_FULL = {"params": {
-    "run_mode": "full",
-    "test_types": ["api", "e2e", "fuzz", "performance"],
-    "run_tests": True,
-    "auto_archive": True,
-    "max_healing_attempts": 3,
-    "force_continue": False,
-}}
+P_FULL = {
+    "params": {
+        "run_mode": "full",
+        "test_types": ["api", "e2e", "fuzz", "performance"],
+        "run_tests": True,
+        "auto_archive": True,
+        "max_healing_attempts": 3,
+        "force_continue": False,
+    }
+}
 
 # 每项：位置 id -> ((真值 vars, 真值 kw), (missing vars, missing kw, 期望))
 CORPUS: dict[str, tuple[tuple[dict, dict], tuple[dict, dict, object]]] = {}
 
 # --- 纯 params 的 phase when：P_FULL 全为真；空作用域全为 MISSING ---
 for _pid in [
-    "explore", "case-design", "fact-baseline", "api-plan", "api-plan-review",
-    "api-codegen", "e2e-plan", "e2e-plan-review", "e2e-codegen", "fuzz-plan",
-    "fuzz-plan-review", "fuzz-codegen", "performance-plan", "performance-plan-review",
-    "performance-codegen", "execution", "archive",
+    "explore",
+    "case-design",
+    "fact-baseline",
+    "api-plan",
+    "api-plan-review",
+    "api-codegen",
+    "e2e-plan",
+    "e2e-plan-review",
+    "e2e-codegen",
+    "fuzz-plan",
+    "fuzz-plan-review",
+    "fuzz-codegen",
+    "performance-plan",
+    "performance-plan-review",
+    "performance-codegen",
+    "execution",
+    "archive",
 ]:
     CORPUS[f"phase:{_pid}:when"] = ((P_FULL, {}), ({}, {}, MISS))
 
@@ -68,10 +84,12 @@ CORPUS["phase:fix-proposal:when"] = ((P_FULL, gv("enter")), ({}, gv(MISS), MISS)
 
 # --- any(...) 驱动的 phase when ---
 CORPUS["phase:api-codegen-fix:when"] = (
-    ({"fix_proposal": {"proposals": [{"target": "api", "eligible": True}]}}, {}), ({}, {}, MISS),
+    ({"fix_proposal": {"proposals": [{"target": "api", "eligible": True}]}}, {}),
+    ({}, {}, MISS),
 )
 CORPUS["phase:e2e-codegen-fix:when"] = (
-    ({"fix_proposal": {"proposals": [{"target": "e2e", "eligible": True}]}}, {}), ({}, {}, MISS),
+    ({"fix_proposal": {"proposals": [{"target": "e2e", "eligible": True}]}}, {}),
+    ({}, {}, MISS),
 )
 
 # --- phase ready_when（report）---
@@ -100,11 +118,17 @@ CORPUS["gate:registry-gate:stop_when"] = (
 _NF = ({"decision": "needs_fix", "auto_fix_allowed": True}, {})
 for _gid in ["case-review-gate", "api-plan-review-gate", "e2e-plan-review-gate"]:
     CORPUS[f"gate:{_gid}:needs_fix_when"] = (_NF, ({}, {}, MISS))
-    CORPUS[f"gate:{_gid}:needs_human_review_when"] = (({"decision": "needs_human_review"}, {}), ({}, {}, MISS))
+    CORPUS[f"gate:{_gid}:needs_human_review_when"] = (
+        ({"decision": "needs_human_review"}, {}),
+        ({}, {}, MISS),
+    )
     CORPUS[f"gate:{_gid}:reject_when"] = (({"decision": "reject"}, {}), ({}, {}, MISS))
 CORPUS["gate:case-review-gate:pass_when"] = (({"decision": "pass"}, {}), ({}, {}, MISS))
 for _gid in ["api-plan-review-gate", "e2e-plan-review-gate"]:
-    CORPUS[f"gate:{_gid}:pass_when"] = (({"decision": "pass", "codegen_readiness": "ready"}, {}), ({}, {}, MISS))
+    CORPUS[f"gate:{_gid}:pass_when"] = (
+        ({"decision": "pass", "codegen_readiness": "ready"}, {}),
+        ({}, {}, MISS),
+    )
 
 # --- fuzz|performance-plan-review-gate（decision in [...] 型）---
 for _gid in ["fuzz-plan-review-gate", "performance-plan-review-gate"]:
@@ -115,7 +139,8 @@ for _gid in ["fuzz-plan-review-gate", "performance-plan-review-gate"]:
 
 # --- case-design-gate ---
 CORPUS["gate:case-design-gate:pass_when"] = (
-    ({"state": {"run_context": {"interaction_mode": "autonomous"}}}, {}), ({}, {}, MISS),
+    ({"state": {"run_context": {"interaction_mode": "autonomous"}}}, {}),
+    ({}, {}, MISS),
 )
 
 # --- api|e2e-codegen-precondition-gate（gate() + file_exists）---
@@ -131,37 +156,69 @@ for _gid in ["fuzz-codegen-precondition-gate", "performance-codegen-precondition
 
 # --- fixer-safety-gate ---
 CORPUS["gate:fixer-safety-gate:pass_when"] = (
-    ({"passed": True, "product_code_modified": False, "assertion_expected_value_changes_detected": False,
-      "skip_or_xfail_added": False, "unrelated_tests_modified": False, "high_risk_proposal_applied": False}, {}),
+    (
+        {
+            "passed": True,
+            "product_code_modified": False,
+            "assertion_expected_value_changes_detected": False,
+            "skip_or_xfail_added": False,
+            "unrelated_tests_modified": False,
+            "high_risk_proposal_applied": False,
+        },
+        {},
+    ),
     ({}, {}, MISS),
 )
 CORPUS["gate:fixer-safety-gate:needs_human_review_when"] = (({"passed": False}, {}), ({}, {}, MISS))
 
 # --- healing-entry-gate ---
 CORPUS["gate:healing-entry-gate:enter_when"] = (
-    ({"state": {"phases": {"execution": {"status": "FAIL"}, "inspect": {"inspect_mode": "primary"},
-                           "healing": {"attempts_used": 0}}, "gates": {"healing_available": True}},
-      "failure_analysis": {"failures": [{"fix_proposal_eligible": True}]},
-      "params": {"max_healing_attempts": 3}}, {}),
+    (
+        {
+            "state": {
+                "phases": {
+                    "execution": {"status": "FAIL"},
+                    "inspect": {"inspect_mode": "primary"},
+                    "healing": {"attempts_used": 0},
+                },
+                "gates": {"healing_available": True},
+            },
+            "failure_analysis": {"failures": [{"fix_proposal_eligible": True}]},
+            "params": {"max_healing_attempts": 3},
+        },
+        {},
+    ),
     ({}, {}, MISS),
 )
 CORPUS["gate:healing-entry-gate:stop_when"] = (
-    ({"state": {"phases": {"execution": {"status": "FAIL"}}, "gates": {"healing_available": False}},
-      "failure_analysis": {"failures": [{"fix_proposal_eligible": True}]}}, {}),
+    (
+        {
+            "state": {"phases": {"execution": {"status": "FAIL"}}, "gates": {"healing_available": False}},
+            "failure_analysis": {"failures": [{"fix_proposal_eligible": True}]},
+        },
+        {},
+    ),
     ({}, {}, MISS),
 )
 CORPUS["gate:healing-entry-gate:skip_when"] = (
-    ({"state": {"phases": {"execution": {"status": "PASS"}}}}, {}), ({}, {}, MISS),
+    ({"state": {"phases": {"execution": {"status": "PASS"}}}}, {}),
+    ({}, {}, MISS),
 )
 
 # --- healing-loop-gate ---
 CORPUS["gate:healing-loop-gate:exit_when"] = (
-    ({"state": {"phases": {"execution": {"status": "PASS"}}}}, {}), ({"state": {"phases": {}}}, {}, MISS),
+    ({"state": {"phases": {"execution": {"status": "PASS"}}}}, {}),
+    ({"state": {"phases": {}}}, {}, MISS),
 )
 CORPUS["gate:healing-loop-gate:continue_when"] = (
-    ({"state": {"phases": {"execution": {"status": "FAIL"}, "healing": {"attempts_used": 0}}},
-      "failure_analysis": {"failures": [{"fix_proposal_eligible": True}]},
-      "params": {"max_healing_attempts": 3}}, {}),
+    (
+        {
+            "state": {"phases": {"execution": {"status": "FAIL"}, "healing": {"attempts_used": 0}}},
+            "failure_analysis": {"failures": [{"fix_proposal_eligible": True}]},
+            "params": {"max_healing_attempts": 3},
+        },
+        {},
+    ),
     ({}, {}, MISS),
 )
 CORPUS["gate:healing-loop-gate:stop_when"] = (
@@ -171,18 +228,28 @@ CORPUS["gate:healing-loop-gate:stop_when"] = (
 
 # --- archive-gate ---
 CORPUS["gate:archive-gate:pass_when"] = (
-    ({**P_FULL,
-      "state": {"user_requested_archive": False,
-                "phases": {"execution": {"status": "PASS", "batch_id": "b1"},
-                           "healing": {"status": "resolved"}}},
-      "case_review": {"decision": "pass"},
-      "api_plan_review": {"decision": "pass"},
-      "plan_review": {"decision": "pass"},
-      "failure_analysis": {"source_batch_id": "b1", "failures": []}}, {}),
+    (
+        {
+            **P_FULL,
+            "state": {
+                "user_requested_archive": False,
+                "phases": {
+                    "execution": {"status": "PASS", "batch_id": "b1"},
+                    "healing": {"status": "resolved"},
+                },
+            },
+            "case_review": {"decision": "pass"},
+            "api_plan_review": {"decision": "pass"},
+            "plan_review": {"decision": "pass"},
+            "failure_analysis": {"source_batch_id": "b1", "failures": []},
+        },
+        {},
+    ),
     ({}, {}, MISS),
 )
 CORPUS["gate:archive-gate:stop_when"] = (
-    ({"state": {"phases": {"execution": {"status": "FAIL"}}}}, {}), ({}, {}, MISS),
+    ({"state": {"phases": {"execution": {"status": "FAIL"}}}}, {}),
+    ({}, {}, MISS),
 )
 
 

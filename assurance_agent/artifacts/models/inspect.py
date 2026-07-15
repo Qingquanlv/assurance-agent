@@ -5,6 +5,7 @@ Transcribed from src/schema/failure_analysis.ts, src/schema/quality_gate_result.
 and the type definitions in src/schema/contracts.ts. Healing gates reference
 source_batch_id, failures[].fix_proposal_eligible and final_status verbatim.
 """
+
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field

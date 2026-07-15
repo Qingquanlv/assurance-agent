@@ -16,13 +16,21 @@ from assurance_agent.workflow.report.failure_classifier import classify_failure
         ("TypeError: object is not a function", "api", "test_code_error", True, False),
         ("Step not covered: precondition not met", "api", "case_semantic_failure", False, False),
         ("some totally opaque failure with no signal", "api", "unknown", False, True),
-        ("schemathesis: failed to load schema from openapi", "fuzz", "fuzz_configuration_error", False, False),
+        (
+            "schemathesis: failed to load schema from openapi",
+            "fuzz",
+            "fuzz_configuration_error",
+            False,
+            False,
+        ),
         ("stateful state machine transition failed", "fuzz", "fuzz_stateful_failure", False, True),
         ("Server error: 503 during generated sequence", "fuzz", "environment_failure", False, False),
         ("500 internal server error on generated input", "fuzz", "business_logic_failure", False, False),
     ],
 )
-def test_classification_golden(message, target, expected_category, expected_eligible, expected_review) -> None:
+def test_classification_golden(
+    message, target, expected_category, expected_eligible, expected_review
+) -> None:
     result = classify_failure(message=message, log_excerpt="", target=target)
     assert result.category == expected_category
     assert result.fix_proposal_eligible is expected_eligible

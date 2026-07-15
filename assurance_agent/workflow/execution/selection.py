@@ -3,6 +3,7 @@
 Precedence: explicit workflow-state (selected_targets or layers) → codegen plan
 presence → all four targets.
 """
+
 from pathlib import Path
 from typing import Any
 

@@ -1,4 +1,5 @@
 """Deterministic SHA-256 hashes over test and product file trees."""
+
 from __future__ import annotations
 
 import hashlib

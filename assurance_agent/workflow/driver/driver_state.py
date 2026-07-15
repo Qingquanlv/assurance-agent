@@ -6,6 +6,7 @@ an atomic driver.json holding progress for `aa workflow status`; and an
 idempotent start guard (running+alive → refuse duplicate; completed → refuse
 restart; paused/failed/running-with-dead-pid → allow resume).
 """
+
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -129,8 +130,7 @@ def acquire_lock(change_dir: Path, start_token: str) -> None:
         return
 
     raise DriverError(
-        f"driver.lock held by live pid {lock_pid} (token={lock_token or 'unknown'}); "
-        "refuse duplicate start"
+        f"driver.lock held by live pid {lock_pid} (token={lock_token or 'unknown'}); refuse duplicate start"
     )
 
 

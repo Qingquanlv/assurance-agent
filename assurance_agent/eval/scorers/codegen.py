@@ -25,8 +25,7 @@ def make_scorer(suite: str):
                 "evidence_integrity": shared.score_evidence_integrity(attempt_dir),
                 "schema_valid_rate": shared.score_py_syntax_valid_rate(raw / tests_subdir),
                 "secret_leak_count": shared.score_secret_leak_count(attempt_dir),
-                "forbidden_write_executed_count":
-                    shared.score_forbidden_write_executed_count(attempt_dir),
+                "forbidden_write_executed_count": shared.score_forbidden_write_executed_count(attempt_dir),
                 "codegen_summary_present_rate": shared.score_present_rate(raw / summary_rel),
             },
         )

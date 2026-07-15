@@ -6,6 +6,7 @@ ids and extension data not yet promoted to the canonical contract.  In
 particular `phases.healing.attempts_used` is never represented by an untyped
 mapping, so a misspelling cannot silently cross the M2/M3/M6 boundary.
 """
+
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field

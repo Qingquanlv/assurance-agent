@@ -82,8 +82,7 @@ def _mock_output(sample: DatasetSample) -> JudgeOutput:
         Literal["covered", "partial", "missing", "hallucinated"],
         raw if raw in allowed else "covered",
     )
-    return JudgeOutput(label=label, reason="mock", evidence_refs=[], confidence=1.0,
-                       needs_human_review=False)
+    return JudgeOutput(label=label, reason="mock", evidence_refs=[], confidence=1.0, needs_human_review=False)
 
 
 def run_judge(

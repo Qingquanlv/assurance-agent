@@ -8,6 +8,7 @@
 - fixer-safety-check.json: payload written by the TS core healing_state.ts;
   required fields are exactly those the fixer-safety-gate expressions read.
 """
+
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict

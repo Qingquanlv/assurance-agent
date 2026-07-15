@@ -1,4 +1,5 @@
 """Identifiers that are safe to use as one filesystem path segment."""
+
 import re
 
 from assurance_agent.exceptions import AaError

@@ -3,6 +3,7 @@
 Functional folds api + e2e + fuzz; coverage and performance are separate
 dimensions. final_status is the worst status across active dimensions.
 """
+
 from typing import Literal
 
 from assurance_agent.artifacts.models import (

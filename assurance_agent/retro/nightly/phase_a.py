@@ -13,15 +13,16 @@ IsTerminal = Callable[[Path, str], bool]
 
 
 def has_required_evidence(change_dir: Path) -> bool:
-    return (change_dir / "events.jsonl").exists() and \
-        (change_dir / "workflow-state.yaml").exists()
+    return (change_dir / "events.jsonl").exists() and (change_dir / "workflow-state.yaml").exists()
 
 
 def enumerate_candidates(
-    sut: Path, state: dict, *, is_terminal: IsTerminal,
+    sut: Path,
+    state: dict,
+    *,
+    is_terminal: IsTerminal,
 ) -> tuple[list[ChangeCandidate], list[str]]:
-    consumed = {cid for cid, rec in state.get("consumed_changes", {}).items()
-                if rec.get("terminal")}
+    consumed = {cid for cid, rec in state.get("consumed_changes", {}).items() if rec.get("terminal")}
     candidates: list[ChangeCandidate] = []
     incomplete: list[str] = []
 
@@ -37,8 +38,7 @@ def enumerate_candidates(
             continue
         if not is_terminal(change_dir, change_id):
             continue
-        candidates.append(ChangeCandidate(change_id=change_id, evidence_source=source,
-                                          path=str(change_dir)))
+        candidates.append(ChangeCandidate(change_id=change_id, evidence_source=source, path=str(change_dir)))
 
     changes_root = sut / "qa" / "changes"
     for change_id in list_dir_names(changes_root):
@@ -50,8 +50,9 @@ def enumerate_candidates(
             continue
         if not is_terminal(change_dir, change_id):
             continue
-        candidates.append(ChangeCandidate(change_id=change_id, evidence_source="unarchived",
-                                          path=str(change_dir)))
+        candidates.append(
+            ChangeCandidate(change_id=change_id, evidence_source="unarchived", path=str(change_dir))
+        )
     return candidates, incomplete
 
 

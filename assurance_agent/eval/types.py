@@ -6,9 +6,7 @@ from pydantic import BaseModel, Field
 
 Gate = Literal["hard", "advisory", "observe"]
 CmpOp = Literal["gte", "lte", "eq"]
-EvalVerdict = Literal[
-    "pass", "pass_with_warnings", "fail", "inconclusive", "needs_human_review"
-]
+EvalVerdict = Literal["pass", "pass_with_warnings", "fail", "inconclusive", "needs_human_review"]
 
 
 class DatasetSample(BaseModel):

@@ -5,6 +5,7 @@ acquire the lock, write driver.json, spawn a detached `aa workflow run ...
 --adopt-lock <token>`, repoint lock + driver.pid at the child, and return
 immediately so the caller (or the plugin) is not blocked for the whole run.
 """
+
 import json
 import os
 import subprocess

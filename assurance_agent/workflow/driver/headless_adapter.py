@@ -4,6 +4,7 @@ Clean-room port of the TS createHeadlessAdapter (src/workflow/driver/
 headless_adapter.ts). No session tree / streaming UI. The prompt is passed as
 the trailing argv item (TS behavior) or, optionally, on stdin.
 """
+
 import shlex
 from pathlib import Path
 from typing import Literal

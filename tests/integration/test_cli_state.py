@@ -44,8 +44,18 @@ def test_state_apply_advances_phase_and_records_skill_load_gate() -> None:
         write_inspect_produces(change_dir)
         result = runner.invoke(
             main,
-            ["state", "apply", "--change", "CH-1", "--phase", "inspect",
-             "--skill", "aa-inspect", "--skill-md-path", "skills/aa-inspect/SKILL.md"],
+            [
+                "state",
+                "apply",
+                "--change",
+                "CH-1",
+                "--phase",
+                "inspect",
+                "--skill",
+                "aa-inspect",
+                "--skill-md-path",
+                "skills/aa-inspect/SKILL.md",
+            ],
         )
         assert result.exit_code == 0, result.output
         state = yaml.safe_load((change_dir / "workflow-state.yaml").read_text())
@@ -54,7 +64,9 @@ def test_state_apply_advances_phase_and_records_skill_load_gate() -> None:
         assert state["phases"]["inspect"]["skill_md_path"] == "skills/aa-inspect/SKILL.md"
         assert "skill_loaded_at" in state["phases"]["inspect"]
         events = (change_dir / "events.jsonl").read_text().strip().splitlines()
-        event = next(json.loads(line) for line in events if json.loads(line)["type"] == "phase_outcome_committed")
+        event = next(
+            json.loads(line) for line in events if json.loads(line)["type"] == "phase_outcome_committed"
+        )
         assert event["phase"] == "inspect"
 
 
@@ -77,9 +89,7 @@ def test_state_apply_missing_declared_produces_exits_1_without_event() -> None:
     runner = CliRunner()
     with runner.isolated_filesystem():
         change_dir = make_change()
-        result = runner.invoke(
-            main, ["state", "apply", "--change", "CH-1", "--phase", "inspect"]
-        )
+        result = runner.invoke(main, ["state", "apply", "--change", "CH-1", "--phase", "inspect"])
         assert result.exit_code == 1
         assert "missing declared produces" in result.output
         assert not (change_dir / "events.jsonl").exists()

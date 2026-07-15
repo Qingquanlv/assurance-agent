@@ -2,6 +2,7 @@
 
 Every module that consumes structured artifacts imports from here.
 """
+
 from assurance_agent.artifacts.models.cases import CaseEntry, CaseRemoval, CaseYaml, QaYaml
 from assurance_agent.artifacts.models.common import (
     CoverageDimension,

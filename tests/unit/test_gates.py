@@ -71,9 +71,7 @@ def test_missing_file_default_stop(tmp_path: Path):
 
 def test_change_id_placeholder_resolves_for_archive_produce(tmp_path: Path):
     change = tmp_path / "qa" / "changes" / "C-42"
-    assert resolve_change_path(change, "qa/archive/<change-id>/") == (
-        tmp_path / "qa" / "archive" / "C-42"
-    )
+    assert resolve_change_path(change, "qa/archive/<change-id>/") == (tmp_path / "qa" / "archive" / "C-42")
 
 
 def test_safety_order_declaration_first_true_wins(tmp_path: Path):
@@ -82,7 +80,7 @@ def test_safety_order_declaration_first_true_wins(tmp_path: Path):
     fixture 里 needs_fix_when 与 pass_when 同时为真，needs_fix 声明在前 → 裁决 needs_fix。
     注意 skill!=null 的 phase 必须带白名单 agent（Task 4 校验），故 `r` 声明 agent。
     """
-    schema = parse_schema('''
+    schema = parse_schema("""
 schema_version: "1"
 name: t
 phases:
@@ -98,6 +96,6 @@ gates:
     needs_fix_when: "decision == 'pass'"
     reject_when: "decision == 'reject'"
     pass_when: "decision == 'pass'"
-''')
-    _write_review(tmp_path, {"decision": "pass"})   # satisfies BOTH needs_fix_when and pass_when
+""")
+    _write_review(tmp_path, {"decision": "pass"})  # satisfies BOTH needs_fix_when and pass_when
     assert check_gate(schema, "g", tmp_path, EMPTY, {}).verdict == "needs_fix"

@@ -11,6 +11,7 @@ WorkflowSchema loader must implement phase_produces(). Until then (and as the
 default fallback) the packaged workflow-schema.yaml is read with a thin YAML
 pass that only extracts phases[].id and phases[].produces — no M3 semantics.
 """
+
 import json
 from pathlib import Path
 from typing import Protocol
@@ -61,9 +62,7 @@ def validate_change(
     if artifact is not None:
         rel_paths = [artifact.replace("\\", "/")]
     elif phase is not None:
-        produces = (
-            schema.phase_produces(phase) if schema is not None else _packaged_phase_produces(phase)
-        )
+        produces = schema.phase_produces(phase) if schema is not None else _packaged_phase_produces(phase)
         if produces is None:
             raise UnknownPhaseError(f"unknown phase '{phase}'")
         rel_paths = [
@@ -79,31 +78,37 @@ def validate_change(
         abs_path = change_dir / rel
         spec = match_artifact(rel)
         if not abs_path.is_file():
-            results.append(ArtifactResult(
-                path=rel,
-                artifact_type=spec.artifact_type if spec else "unknown",
-                ok=False,
-                errors=["file not found"],
-            ))
+            results.append(
+                ArtifactResult(
+                    path=rel,
+                    artifact_type=spec.artifact_type if spec else "unknown",
+                    ok=False,
+                    errors=["file not found"],
+                )
+            )
             continue
         if spec is None:
             # Explicit --artifact must never become a successful no-op.
-            results.append(ArtifactResult(
-                path=rel,
-                artifact_type="unregistered",
-                ok=False,
-                errors=["no registered artifact contract"],
-            ))
+            results.append(
+                ArtifactResult(
+                    path=rel,
+                    artifact_type="unregistered",
+                    ok=False,
+                    errors=["no registered artifact contract"],
+                )
+            )
             continue
         results.append(_validate_file(spec, abs_path, rel))
 
     if not results:
-        results.append(ArtifactResult(
-            path=f"(phase: {phase})" if phase is not None else "(change)",
-            artifact_type="unregistered",
-            ok=False,
-            errors=["no registered artifacts found"],
-        ))
+        results.append(
+            ArtifactResult(
+                path=f"(phase: {phase})" if phase is not None else "(change)",
+                artifact_type="unregistered",
+                ok=False,
+                errors=["no registered artifacts found"],
+            )
+        )
 
     return ValidationReport(ok=all(r.ok for r in results), results=results)
 

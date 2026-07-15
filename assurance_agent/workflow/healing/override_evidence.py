@@ -1,4 +1,5 @@
 """Write override evidence when --allow-test-changes bypasses the test-tree guard."""
+
 from __future__ import annotations
 
 import hashlib

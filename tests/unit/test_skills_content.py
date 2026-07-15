@@ -1,4 +1,5 @@
 """Resident content checks for migrated skills + opencode assets (spec 8/9/4a)."""
+
 import re
 from pathlib import Path
 

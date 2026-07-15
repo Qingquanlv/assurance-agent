@@ -4,6 +4,7 @@ Used both by HeadlessAdapter (spawn an arbitrary agent CLI) and by the default
 CliPhaseExecutor (invoke pinned `aa` subcommands). Mirrors the TS ProcessRunner
 seam (src/workflow/driver/process_runner.ts) so callers can inject a fake.
 """
+
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -28,8 +29,7 @@ class ProcessRunner(Protocol):
         *,
         timeout: float | None = None,
         stdin_text: str | None = None,
-    ) -> ProcessResult:
-        ...
+    ) -> ProcessResult: ...
 
 
 def _as_text(value: str | bytes | None) -> str:

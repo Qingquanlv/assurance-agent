@@ -7,14 +7,24 @@ from tests.unit.retro.archive_fixtures import make_archived_change
 
 
 def test_build_context_golden_signals(tmp_path: Path) -> None:
-    make_archived_change(tmp_path, "CH-1",
-                         failures=[{"classification": "assertion"},
-                                   {"classification": "assertion"},
-                                   {"classification": "locator"}],
-                         review_decision="pass", gate_pushbacks=2)
-    make_archived_change(tmp_path, "CH-2",
-                         failures=[{"classification": "environment"}],
-                         review_decision="reject", gate_pushbacks=0)
+    make_archived_change(
+        tmp_path,
+        "CH-1",
+        failures=[
+            {"classification": "assertion"},
+            {"classification": "assertion"},
+            {"classification": "locator"},
+        ],
+        review_decision="pass",
+        gate_pushbacks=2,
+    )
+    make_archived_change(
+        tmp_path,
+        "CH-2",
+        failures=[{"classification": "environment"}],
+        review_decision="reject",
+        gate_pushbacks=0,
+    )
 
     context = build_retro_context(tmp_path, changes=["CH-1", "CH-2"], retro_id="retro-test")
 
@@ -23,7 +33,9 @@ def test_build_context_golden_signals(tmp_path: Path) -> None:
     assert sorted(context.window.change_ids) == ["CH-1", "CH-2"]
     dist = {s.category: s.count for s in context.signals.failure_distribution}
     assert dist == {
-        "assertion_failure": 2, "locator_failure": 1, "environment_failure": 1,
+        "assertion_failure": 2,
+        "locator_failure": 1,
+        "environment_failure": 1,
     }
     pushback = {s.gate: s.count for s in context.signals.gate_pushback}
     assert pushback.get("case-review") == 2

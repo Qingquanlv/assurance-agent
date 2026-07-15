@@ -34,16 +34,17 @@ def _terminal_status_provider_factory(**_: object):
     from assurance_agent.workflow.orchestration.engine import Terminal, WorkflowStatus
 
     def provider() -> WorkflowStatus:
-        return WorkflowStatus(phases=[], next_dispatch=[],
-                              terminal=Terminal(kind="completed", reason="fake"))
+        return WorkflowStatus(phases=[], next_dispatch=[], terminal=Terminal(kind="completed", reason="fake"))
 
     return provider
 
 
 def _resolve_adapter_factory(*, use_fake: bool, sut: Path):
     if use_fake:
+
         def fake_factory(**_: object) -> Adapter:
             return _FakeAdapter()
+
         return fake_factory, _terminal_status_provider_factory
 
     from assurance_agent.workflow.driver.headless_adapter import HeadlessAdapter
@@ -72,8 +73,18 @@ def eval_group() -> None:
 @click.option("--calibrate", is_flag=True, help="Run judge calibration (records only)")
 @click.option("--extra-memory-dir", help="Overlay .aa/memory files into SUT workspaces")
 @click.option("--sut-dir", help="Override SUT checkout directory")
-def eval_run(suite_name, plan_path, sample_id, repeat, output_mode, as_json,
-             fail_on_verdict, calibrate, extra_memory_dir, sut_dir) -> None:
+def eval_run(
+    suite_name,
+    plan_path,
+    sample_id,
+    repeat,
+    output_mode,
+    as_json,
+    fail_on_verdict,
+    calibrate,
+    extra_memory_dir,
+    sut_dir,
+) -> None:
     project_root = Path.cwd()
     if not suite_name and not plan_path:
         click.echo("Error: --suite <name> or --plan <path> required", err=True)
@@ -83,16 +94,19 @@ def eval_run(suite_name, plan_path, sample_id, repeat, output_mode, as_json,
         raise SystemExit(1)
 
     use_fake = bool(os.environ.get("AA_EVAL_FAKE_ADAPTER"))
-    sut = Path(sut_dir).resolve() if sut_dir else (
-        Path(os.environ.get("AA_EVAL_SUT_DIR", str(project_root))))
+    sut = Path(sut_dir).resolve() if sut_dir else (Path(os.environ.get("AA_EVAL_SUT_DIR", str(project_root))))
     adapter_factory, status_factory = _resolve_adapter_factory(use_fake=use_fake, sut=sut)
 
     try:
         if suite_name:
             _, suite_file = load_suite(project_root, suite_name)
             run_id, gate = run_suite(
-                suite_file=suite_file, project_root=project_root, sut_dir=sut,
-                sample_id=sample_id, repeat=repeat, calibrate=calibrate,
+                suite_file=suite_file,
+                project_root=project_root,
+                sut_dir=sut,
+                sample_id=sample_id,
+                repeat=repeat,
+                calibrate=calibrate,
                 adapter_factory=adapter_factory,
                 status_provider_factory=status_factory,
             )
@@ -101,8 +115,11 @@ def eval_run(suite_name, plan_path, sample_id, repeat, output_mode, as_json,
                 raise SystemExit(1)
         else:
             batch_id, gates = run_plan(
-                plan_path=Path(plan_path), project_root=project_root, sut_dir=sut,
-                adapter_factory=adapter_factory, status_provider_factory=status_factory,
+                plan_path=Path(plan_path),
+                project_root=project_root,
+                sut_dir=sut,
+                adapter_factory=adapter_factory,
+                status_provider_factory=status_factory,
             )
             worst = _worst_verdict([g.verdict for g in gates])
             _print_run(output_mode, as_json, batch_id, worst, key="batch_id")
@@ -155,15 +172,17 @@ def eval_plan(event, changed_files, suite_name, out) -> None:
 @click.option("--html", "as_html", is_flag=True, help="Generate HTML")
 @click.option("--output", "output_path", help="Override HTML output path")
 @click.option("--json", "as_json", is_flag=True, help="Output JSON")
-def eval_report(run_id, trend, suite_name, date_from, date_to, as_html, output_path,
-                as_json) -> None:
+def eval_report(run_id, trend, suite_name, date_from, date_to, as_html, output_path, as_json) -> None:
     project_root = Path.cwd()
     if trend:
         if not suite_name:
             click.echo("Error: --trend requires --suite", err=True)
             raise SystemExit(1)
         out = generate_trend_report(
-            project_root, suite_name, date_from=date_from, date_to=date_to,
+            project_root,
+            suite_name,
+            date_from=date_from,
+            date_to=date_to,
             html_out=Path(output_path) if output_path else None,
         )
         click.echo(f"trend: {out}")
@@ -186,8 +205,7 @@ def eval_report(run_id, trend, suite_name, date_from, date_to, as_html, output_p
         click.echo(f"html: {run_dir / 'report.html'}")
 
 
-_VERDICT_EXIT = {"pass": 0, "pass_with_warnings": 0, "fail": 1,
-                 "inconclusive": 1, "needs_human_review": 30}
+_VERDICT_EXIT = {"pass": 0, "pass_with_warnings": 0, "fail": 1, "inconclusive": 1, "needs_human_review": 30}
 
 
 @eval_group.command("gate")
@@ -209,8 +227,9 @@ def eval_gate(run_id: str) -> None:
 
 
 @eval_group.command("compare")
-@click.option("--baseline", "baseline_name", required=True,
-              help='Baseline name (currently only "main" supported)')
+@click.option(
+    "--baseline", "baseline_name", required=True, help='Baseline name (currently only "main" supported)'
+)
 @click.option("--run", "run_id", required=True, help="Run id")
 def eval_compare(baseline_name: str, run_id: str) -> None:
     """Compare a run against the named baseline (read-only)."""
@@ -246,14 +265,11 @@ def eval_baseline() -> None:
 def eval_baseline_update(suite_name: str, run_id: str, approved_by: str, yes: bool) -> None:
     """Update baseline for a suite (requires human confirmation)."""
     project_root = Path.cwd()
-    if not yes and not click.confirm(
-        f"Promote run {run_id} to baseline 'main' for suite {suite_name}?"
-    ):
+    if not yes and not click.confirm(f"Promote run {run_id} to baseline 'main' for suite {suite_name}?"):
         click.echo("aborted", err=True)
         raise SystemExit(1)
     try:
-        update_baseline(project_root, suite_name=suite_name, run_id=run_id,
-                        approved_by=approved_by)
+        update_baseline(project_root, suite_name=suite_name, run_id=run_id, approved_by=approved_by)
     except (FileNotFoundError, AaError) as err:
         click.echo(f"eval baseline update failed: {err}", err=True)
         raise SystemExit(1) from err

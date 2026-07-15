@@ -3,6 +3,7 @@
 All subcommands are deterministic read/validate over M2 healing artifacts; they
 never mutate product/test code. Fixer execution itself lives outside the CLI.
 """
+
 import json
 from pathlib import Path
 
@@ -57,7 +58,9 @@ def validate_proposal(change_id: str, file_path: str | None) -> None:
     click.secho(f"\naa heal validate-proposal — change: {change_id}\n", bold=True)
     click.echo(f"  eligible_count : {proposal.summary.eligible_count}")
     for index, item in enumerate(proposal.proposals, start=1):
-        flag = click.style("eligible", fg="green") if item.eligible else click.style("not-eligible", fg="yellow")
+        flag = (
+            click.style("eligible", fg="green") if item.eligible else click.style("not-eligible", fg="yellow")
+        )
         click.echo(f"  [{index}] target={item.target}  {flag}")
     raise SystemExit(EXIT_COMPLETED)
 
@@ -95,11 +98,7 @@ def safety_check(change_id: str, file_path: str | None) -> None:
     the `fixer-safety-gate` expression consumes. Reading a different filename would
     let the gate pass on an unvalidated (or absent) safety report.
     """
-    path = (
-        Path(file_path)
-        if file_path
-        else _change_base(change_id) / "healing" / "fixer-safety-check.json"
-    )
+    path = Path(file_path) if file_path else _change_base(change_id) / "healing" / "fixer-safety-check.json"
     raw = _load_json(path)
     if raw is None:
         click.secho(f"fixer-safety-check.json not found or unreadable: {path}", fg="red")
@@ -144,4 +143,3 @@ def record_apply(change_id: str, target: str, proposal_ids: tuple[str, ...]) -> 
     click.echo(f"  files_modified  : {len(result.files_modified)}")
     click.echo(f"  apply-summary   : {result.json_path}")
     raise SystemExit(EXIT_COMPLETED)
-

@@ -1,4 +1,5 @@
 """healing 两机制 golden：打包 gate 锚点 + event-derived 全链路推演。"""
+
 import json
 from pathlib import Path
 
@@ -42,53 +43,102 @@ def _event(change: Path, payload: dict) -> None:
 
 
 def _outcome(change: Path, phase: str, attempt_id: str) -> None:
-    _event(change, {"source": "progression", "type": "phase_outcome_committed",
-                    "phase": phase, "attempt_id": attempt_id, "gate_report": None})
+    _event(
+        change,
+        {
+            "source": "progression",
+            "type": "phase_outcome_committed",
+            "phase": phase,
+            "attempt_id": attempt_id,
+            "gate_report": None,
+        },
+    )
 
 
 def _allocate(change: Path, number: int, episode_id: str = "e1") -> None:
     if number == 1:
-        _event(change, {"source": "heal", "type": "healing_entry_baseline_pinned",
-                        "artifact_file": "healing/entry-baseline.json", "artifact_sha256": "x",
-                        "entry_batch_id": "b1", "episode_id": episode_id})
-    _event(change, {"source": "progression", "type": "healing_attempt_allocated",
-                    "episode_id": episode_id, "attempt_id": f"ha{number}",
-                    "attempt_number": number, "operation_id": f"op{number}",
-                    "source_batch_id": "b1"})
+        _event(
+            change,
+            {
+                "source": "heal",
+                "type": "healing_entry_baseline_pinned",
+                "artifact_file": "healing/entry-baseline.json",
+                "artifact_sha256": "x",
+                "entry_batch_id": "b1",
+                "episode_id": episode_id,
+            },
+        )
+    _event(
+        change,
+        {
+            "source": "progression",
+            "type": "healing_attempt_allocated",
+            "episode_id": episode_id,
+            "attempt_id": f"ha{number}",
+            "attempt_number": number,
+            "operation_id": f"op{number}",
+            "source_batch_id": "b1",
+        },
+    )
 
 
 def _commit_allocation_intent(change: Path, action: HealingEpisodeAction) -> None:
     intent = action.allocation
     assert intent is not None
     if intent.pin_entry_baseline:
-        _event(change, {"source": "heal", "type": "healing_entry_baseline_pinned",
-                        "artifact_file": "healing/entry-baseline.json", "artifact_sha256": "x",
-                        "entry_batch_id": intent.source_batch_id,
-                        "episode_id": intent.episode_id})
-    _event(change, {"source": "progression", "type": "healing_attempt_allocated",
-                    "episode_id": intent.episode_id, "attempt_id": intent.attempt_id,
-                    "attempt_number": intent.attempt_number,
-                    "operation_id": intent.operation_id,
-                    "source_batch_id": intent.source_batch_id})
+        _event(
+            change,
+            {
+                "source": "heal",
+                "type": "healing_entry_baseline_pinned",
+                "artifact_file": "healing/entry-baseline.json",
+                "artifact_sha256": "x",
+                "entry_batch_id": intent.source_batch_id,
+                "episode_id": intent.episode_id,
+            },
+        )
+    _event(
+        change,
+        {
+            "source": "progression",
+            "type": "healing_attempt_allocated",
+            "episode_id": intent.episode_id,
+            "attempt_id": intent.attempt_id,
+            "attempt_number": intent.attempt_number,
+            "operation_id": intent.operation_id,
+            "source_batch_id": intent.source_batch_id,
+        },
+    )
 
 
 def _apply(change: Path, number: int) -> None:
-    _event(change, {"source": "heal", "type": "heal_record_apply", "target": "api",
-                    "proposal_sha256": f"p{number}", "source_batch_id": "b1",
-                    "attempt_key": f"p{number}:b1", "summary_sha256": f"s{number}",
-                    "files_modified": ["tests/test_api.py"]})
+    _event(
+        change,
+        {
+            "source": "heal",
+            "type": "heal_record_apply",
+            "target": "api",
+            "proposal_sha256": f"p{number}",
+            "source_batch_id": "b1",
+            "attempt_key": f"p{number}:b1",
+            "summary_sha256": f"s{number}",
+            "files_modified": ["tests/test_api.py"],
+        },
+    )
 
 
 def _state(change: Path, execution_status: str = "FAIL") -> WorkflowState:
-    base = WorkflowState.model_validate({
-        "phases": {"execution": {"status": execution_status, "batch_id": "b1"},
-                   "inspect": {"inspect_mode": "primary"}},
-        "gates": {"healing_available": True},
-    })
-    data = base.model_dump(mode="python", exclude_none=True)
-    data["phases"]["healing"] = derive_healing_state(change).model_dump(
-        mode="python", exclude_none=True
+    base = WorkflowState.model_validate(
+        {
+            "phases": {
+                "execution": {"status": execution_status, "batch_id": "b1"},
+                "inspect": {"inspect_mode": "primary"},
+            },
+            "gates": {"healing_available": True},
+        }
     )
+    data = base.model_dump(mode="python", exclude_none=True)
+    data["phases"]["healing"] = derive_healing_state(change).model_dump(mode="python", exclude_none=True)
     return WorkflowState.model_validate(data)
 
 
@@ -98,7 +148,10 @@ def test_packaged_healing_entry_enters_on_eligible_failure(tmp_path: Path):
     change = _mk_change(tmp_path)
     _j(change, "inspect/failure-analysis.json", {"failures": [{"fix_proposal_eligible": True}]})
     state = _state(change)
-    assert check_gate(schema, "healing-entry-gate", change, state, {"max_healing_attempts": 3}).verdict == "enter"
+    assert (
+        check_gate(schema, "healing-entry-gate", change, state, {"max_healing_attempts": 3}).verdict
+        == "enter"
+    )
 
 
 def test_packaged_healing_loop_exits_on_pass(tmp_path: Path):
@@ -107,7 +160,9 @@ def test_packaged_healing_loop_exits_on_pass(tmp_path: Path):
     _j(change, "inspect/failure-analysis.json", {"failures": []})
     _allocate(change, 1)
     state = _state(change, execution_status="PASS")
-    assert check_gate(schema, "healing-loop-gate", change, state, {"max_healing_attempts": 3}).verdict == "exit"
+    assert (
+        check_gate(schema, "healing-loop-gate", change, state, {"max_healing_attempts": 3}).verdict == "exit"
+    )
 
 
 def test_packaged_healing_loop_stops_when_exhausted(tmp_path: Path):
@@ -118,7 +173,9 @@ def test_packaged_healing_loop_stops_when_exhausted(tmp_path: Path):
     _allocate(change, 2)
     _allocate(change, 3)
     state = _state(change)
-    assert check_gate(schema, "healing-loop-gate", change, state, {"max_healing_attempts": 3}).verdict == "stop"
+    assert (
+        check_gate(schema, "healing-loop-gate", change, state, {"max_healing_attempts": 3}).verdict == "stop"
+    )
 
 
 def test_compute_status_dispatches_registry_on_fresh_change(tmp_path: Path):
@@ -244,8 +301,11 @@ def test_golden_full_progression_enter_rerun_exit(tmp_path: Path):
     assert _ready(st) == ["fix-proposal"]
 
     # Step 4 — proposal outcome 只产生 allocate 写意图；driver 再严格追加 baseline/allocation。
-    _j(change, "healing/fix-proposal.json",
-       {"summary": {"eligible_count": 1}, "proposals": [{"target": "api", "eligible": True}]})
+    _j(
+        change,
+        "healing/fix-proposal.json",
+        {"summary": {"eligible_count": 1}, "proposals": [{"target": "api", "eligible": True}]},
+    )
     _outcome(change, "fix-proposal", "p1")
     st = compute_status(GOLDEN, change, _state(change), {})
     assert st.healing_episode.next_actions[0].kind == "allocate_attempt"
@@ -280,8 +340,11 @@ def test_golden_second_attempt_exhausts_exactly_from_events(tmp_path: Path):
     _touch(change, "execution/execution-manifest.yaml")
     _j(change, "inspect/failure-analysis.json", {"failures": [{"fix_proposal_eligible": True}]})
     _j(change, "inspect/quality-gate-result.json", {"decision": "fail"})
-    _j(change, "healing/fix-proposal.json",
-       {"summary": {"eligible_count": 1}, "proposals": [{"target": "api", "eligible": True}]})
+    _j(
+        change,
+        "healing/fix-proposal.json",
+        {"summary": {"eligible_count": 1}, "proposals": [{"target": "api", "eligible": True}]},
+    )
     _j(change, "healing/fixer-safety-check.json", {"passed": True, "needs_review": False})
     _touch(change, "healing/api-apply-summary.json")
 
@@ -315,10 +378,17 @@ def test_golden_second_attempt_exhausts_exactly_from_events(tmp_path: Path):
 
 def test_golden_latest_human_stop_overrides_dispatch(tmp_path: Path):
     change = _mk_change(tmp_path)
-    _event(change, {
-        "source": "decide", "type": "human_decision", "checkpoint": "workflow",
-        "action": "stop", "reason": "operator halt", "who": "reviewer",
-    })
+    _event(
+        change,
+        {
+            "source": "decide",
+            "type": "human_decision",
+            "checkpoint": "workflow",
+            "action": "stop",
+            "reason": "operator halt",
+            "who": "reviewer",
+        },
+    )
 
     status = compute_status(GOLDEN, change, _state(change), {})
 
@@ -331,14 +401,28 @@ def test_golden_latest_human_stop_overrides_dispatch(tmp_path: Path):
 
 def test_golden_later_non_stop_decision_resumes_projection(tmp_path: Path):
     change = _mk_change(tmp_path)
-    _event(change, {
-        "source": "decide", "type": "human_decision", "checkpoint": "workflow",
-        "action": "stop", "reason": "pause", "who": "reviewer",
-    })
-    _event(change, {
-        "source": "decide", "type": "human_decision", "checkpoint": "workflow",
-        "action": "fix_and_proceed", "reason": "resume", "who": "reviewer",
-    })
+    _event(
+        change,
+        {
+            "source": "decide",
+            "type": "human_decision",
+            "checkpoint": "workflow",
+            "action": "stop",
+            "reason": "pause",
+            "who": "reviewer",
+        },
+    )
+    _event(
+        change,
+        {
+            "source": "decide",
+            "type": "human_decision",
+            "checkpoint": "workflow",
+            "action": "fix_and_proceed",
+            "reason": "resume",
+            "who": "reviewer",
+        },
+    )
 
     status = compute_status(GOLDEN, change, _state(change), {})
 

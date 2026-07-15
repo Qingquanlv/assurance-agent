@@ -1,4 +1,5 @@
 """DAG 状态引擎（忠实转录 engine.ts）：produces-存在性 + gate 裁决 驱动进度；纯函数。"""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -117,7 +118,9 @@ def _topo_order(schema: WorkflowSchema) -> list[str]:
 
 
 def _overlay_healing(
-    state: WorkflowState, change_dir: Path, provider: HealingStateProvider | None,
+    state: WorkflowState,
+    change_dir: Path,
+    provider: HealingStateProvider | None,
 ) -> tuple[WorkflowState, HealingStateSnapshot]:
     """Overlay event-derived state on a copy; persisted attempts never win."""
     derived = (provider or derive_healing_state)(change_dir)
@@ -150,8 +153,13 @@ def compute_status(
 
     def predicate_scope():
         return build_evidence_scope(
-            schema, change_dir, state, merged_params, alias_reads,
-            hoist_primary=False, memo=memo,
+            schema,
+            change_dir,
+            state,
+            merged_params,
+            alias_reads,
+            hoist_primary=False,
+            memo=memo,
         )
 
     def gate_verdict(gate_id: str) -> Verdict:
@@ -170,13 +178,23 @@ def compute_status(
     for pid in _topo_order(schema):
         phase = by_id[pid]
         views[pid] = _phase_view(
-            by_id, change_dir, phase, pruned, views, active_scope, predicate_scope, gate_verdict,
+            by_id,
+            change_dir,
+            phase,
+            pruned,
+            views,
+            active_scope,
+            predicate_scope,
+            gate_verdict,
         )
 
     phases = [views[p.id] for p in schema.phases]  # 声明顺序输出
     ready = [
-        DispatchEntry(phase_id=p.id, skill=by_id[p.id].skill, agent=by_id[p.id].agent, kind=_dispatch_kind(by_id[p.id]))
-        for p in phases if p.status == "ready"
+        DispatchEntry(
+            phase_id=p.id, skill=by_id[p.id].skill, agent=by_id[p.id].agent, kind=_dispatch_kind(by_id[p.id])
+        )
+        for p in phases
+        if p.status == "ready"
     ]
     terminal = _terminal(phases, ready)
 
@@ -188,9 +206,14 @@ def compute_status(
         if action.kind == "dispatch_phase" and action.phase:
             phase = by_id[action.phase]
             views[action.phase] = views[action.phase].model_copy(update={"status": "ready"})
-            ready.append(DispatchEntry(
-                phase_id=phase.id, skill=phase.skill, agent=phase.agent, kind=_dispatch_kind(phase),
-            ))
+            ready.append(
+                DispatchEntry(
+                    phase_id=phase.id,
+                    skill=phase.skill,
+                    agent=phase.agent,
+                    kind=_dispatch_kind(phase),
+                )
+            )
     latest_decision = max(
         (e for e in read_events(change_dir) if e.get("type") == "human_decision"),
         key=_event_seq,
@@ -230,10 +253,7 @@ def _phase_view(
     if pruned[phase.id]:
         return PhaseView(id=phase.id, status="pruned", gate=gate)
 
-    active_deps = [
-        d for d in phase.requires
-        if views[d].status not in ("pruned", "out_of_scope")
-    ]
+    active_deps = [d for d in phase.requires if views[d].status not in ("pruned", "out_of_scope")]
     if phase.requires and all(views[d].status == "pruned" for d in phase.requires):
         return PhaseView(id=phase.id, status="pruned", gate=gate)
 
@@ -289,7 +309,8 @@ def _terminal(phases: list[PhaseView], ready: list[DispatchEntry]) -> Terminal |
     stopped = next((p for p in phases if p.status == "stopped"), None)
     if stopped is not None:
         return Terminal(
-            kind="stopped", phase=stopped.id,
+            kind="stopped",
+            phase=stopped.id,
             reason=f"gate '{stopped.gate}' verdict '{stopped.gate_verdict}'",
         )
     if ready:
@@ -300,7 +321,8 @@ def _terminal(phases: list[PhaseView], ready: list[DispatchEntry]) -> Terminal |
     )
     if pending is not None:
         return Terminal(
-            kind="needs_human_review", phase=pending.id,
+            kind="needs_human_review",
+            phase=pending.id,
             reason=f"gate '{pending.gate}' needs human review",
         )
     active = [p for p in phases if p.status not in ("pruned", "out_of_scope")]

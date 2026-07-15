@@ -11,35 +11,46 @@ from assurance_agent.workflow.execution.runner import run_change
 
 
 def make_config() -> AaConfig:
-    return AaConfig.model_validate({
-        "version": 1,
-        "sources": {"frontend": "./frontend", "backend": "./backend"},
-        "qa": {"cases": "./qa/cases", "changes": "./qa/changes"},
-        "tests": {"root": "./tests", "api": "./tests/api", "e2e": "./tests/e2e"},
-        "frameworks": {"api": {"enabled": True, "name": "pytest"},
-                       "e2e": {"enabled": True, "name": "playwright"}},
-        "generation": {"prd_input_mode": "prompt", "e2e": {"default_pom": False}},
-        "execution": {"entry": "cli", "self_healing": {"mode": "proposal-only"}},
-        "coverage": {"enabled": False, "gate_mode": "warn", "threshold": {"line": 70, "branch": 60}},
-        "performance": {"enabled": False},
-    })
+    return AaConfig.model_validate(
+        {
+            "version": 1,
+            "sources": {"frontend": "./frontend", "backend": "./backend"},
+            "qa": {"cases": "./qa/cases", "changes": "./qa/changes"},
+            "tests": {"root": "./tests", "api": "./tests/api", "e2e": "./tests/e2e"},
+            "frameworks": {
+                "api": {"enabled": True, "name": "pytest"},
+                "e2e": {"enabled": True, "name": "playwright"},
+            },
+            "generation": {"prd_input_mode": "prompt", "e2e": {"default_pom": False}},
+            "execution": {"entry": "cli", "self_healing": {"mode": "proposal-only"}},
+            "coverage": {"enabled": False, "gate_mode": "warn", "threshold": {"line": 70, "branch": 60}},
+            "performance": {"enabled": False},
+        }
+    )
 
 
 def stub_pytest_run(outcome_by_target: dict[str, str]):
     """subprocess.run stub keyed by which target dir appears in argv."""
+
     def fake_run(args, **kwargs):
         report_file = next(a.split("=", 1)[1] for a in args if a.startswith("--json-report-file="))
         target = "api" if "tests/api" in args else "e2e" if "tests/e2e" in args else "fuzz"
         outcome = outcome_by_target.get(target, "passed")
-        tests = [{
-            "nodeid": f"tests/{target}/t.py::test_tc_{target}_001__x",
-            "outcome": outcome,
-            "call": {"outcome": outcome, "duration": 0.0,
-                     "longrepr": "" if outcome == "passed" else "AssertionError: boom"},
-        }]
+        tests = [
+            {
+                "nodeid": f"tests/{target}/t.py::test_tc_{target}_001__x",
+                "outcome": outcome,
+                "call": {
+                    "outcome": outcome,
+                    "duration": 0.0,
+                    "longrepr": "" if outcome == "passed" else "AssertionError: boom",
+                },
+            }
+        ]
         Path(report_file).parent.mkdir(parents=True, exist_ok=True)
         Path(report_file).write_text(json.dumps({"tests": tests}), encoding="utf-8")
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
     return fake_run
 
 
@@ -79,6 +90,7 @@ def test_run_change_missing_test_dirs_all_skipped(tmp_path: Path, monkeypatch) -
 
     def boom(*a, **k):
         raise AssertionError("no subprocess when all layers skip")
+
     monkeypatch.setattr(runners_mod.subprocess, "run", boom)
 
     change = tmp_path / "qa" / "changes" / "CH-2"

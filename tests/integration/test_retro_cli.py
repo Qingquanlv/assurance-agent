@@ -14,10 +14,8 @@ def test_retro_json_stdout_shape(tmp_path: Path) -> None:
     runner = CliRunner()
     with runner.isolated_filesystem() as fs:
         root = Path(fs)
-        make_archived_change(root, "CH-1", failures=[{"classification": "assertion"}],
-                             gate_pushbacks=1)
-        result = runner.invoke(main, ["retro", "--retro-id", "retro-x",
-                                      "--change", "CH-1", "--json"])
+        make_archived_change(root, "CH-1", failures=[{"classification": "assertion"}], gate_pushbacks=1)
+        result = runner.invoke(main, ["retro", "--retro-id", "retro-x", "--change", "CH-1", "--json"])
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output.strip().splitlines()[-1])
         assert payload["retro_id"] == "retro-x"
@@ -49,8 +47,7 @@ def test_retro_nightly_collect_success_exit_0(tmp_path: Path) -> None:
     runner = CliRunner()
     with runner.isolated_filesystem() as fs:
         root = Path(fs)
-        make_archived_change(root, "CH-1", failures=[{"classification": "assertion"}],
-                             gate_pushbacks=1)
+        make_archived_change(root, "CH-1", failures=[{"classification": "assertion"}], gate_pushbacks=1)
         agent = root / "fake-agent.sh"
         retro_glob = "qa/retro"
         agent.write_text(
@@ -59,11 +56,25 @@ def test_retro_nightly_collect_success_exit_0(tmp_path: Path) -> None:
             'printf \'{"proposals":[{"id":"P-1","apply_kind":"memory_append",'
             '"body":"x","eval_suite":"s"}]}\' > "$d/proposals.json"\n'
             'printf "# summary\\n" > "$d/retro-summary.md"\n',
-            encoding="utf-8")
+            encoding="utf-8",
+        )
         os.chmod(agent, 0o755)
-        result = runner.invoke(main, ["retro", "nightly", "collect", "--sut", str(root),
-                                      "--retro-id", "retro-n", "--agent", f"bash {agent}",
-                                      "--min-evidence", "1"])
+        result = runner.invoke(
+            main,
+            [
+                "retro",
+                "nightly",
+                "collect",
+                "--sut",
+                str(root),
+                "--retro-id",
+                "retro-n",
+                "--agent",
+                f"bash {agent}",
+                "--min-evidence",
+                "1",
+            ],
+        )
         assert result.exit_code == 0, result.output
         assert (root / "qa" / "retro" / "retro-n" / "review-queue.md").exists()
 
@@ -73,8 +84,9 @@ def test_retro_nightly_collect_noop_exit_10(tmp_path: Path) -> None:
     with runner.isolated_filesystem() as fs:
         root = Path(fs)
         (root / "qa" / "archive").mkdir(parents=True)
-        result = runner.invoke(main, ["retro", "nightly", "collect", "--sut", str(root),
-                                      "--retro-id", "retro-empty"])
+        result = runner.invoke(
+            main, ["retro", "nightly", "collect", "--sut", str(root), "--retro-id", "retro-empty"]
+        )
         assert result.exit_code == 10
 
 
@@ -83,7 +95,8 @@ def test_retro_nightly_collect_dry_run_exit_0(tmp_path: Path) -> None:
     with runner.isolated_filesystem() as fs:
         root = Path(fs)
         make_archived_change(root, "CH-1", failures=[{"classification": "assertion"}])
-        result = runner.invoke(main, ["retro", "nightly", "collect", "--sut", str(root),
-                                      "--retro-id", "retro-dry", "--dry-run"])
+        result = runner.invoke(
+            main, ["retro", "nightly", "collect", "--sut", str(root), "--retro-id", "retro-dry", "--dry-run"]
+        )
         assert result.exit_code == 0
         assert (root / "qa" / "retro" / "retro-dry" / "context.json").exists()

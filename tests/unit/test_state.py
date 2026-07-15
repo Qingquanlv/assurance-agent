@@ -23,7 +23,7 @@ def test_roundtrip_returns_workflowstate(tmp_path: Path):
 
 
 def test_known_state_fields_are_typed_and_roundtrip(tmp_path: Path):
-    st = read_state(tmp_path)            # 空态
+    st = read_state(tmp_path)  # 空态
     st.phases.skill_registry_check = PhaseState(status="pass")
     st.phases.healing.status = "resolved"
     st.phases.healing.attempts_used = 1
@@ -47,7 +47,7 @@ def test_tamper_detected(tmp_path: Path):
     write_state(tmp_path, WorkflowState.model_validate({"phases": {"a": {"status": "done"}}}))
     f = tmp_path / "workflow-state.yaml"
     doc = yaml.safe_load(f.read_text())
-    doc["phases"]["a"]["status"] = "FORGED"   # 篡改但不更新哈希
+    doc["phases"]["a"]["status"] = "FORGED"  # 篡改但不更新哈希
     f.write_text(yaml.safe_dump(doc))
     with pytest.raises(StateIntegrityError):
         read_state(tmp_path)
@@ -66,4 +66,4 @@ def test_state_guard_changes_with_content(tmp_path: Path):
     g1 = state_guard(tmp_path)
     write_state(tmp_path, WorkflowState.model_validate({"phases": {"a": {"status": "PASS"}}}))
     g2 = state_guard(tmp_path)
-    assert g1 and g2 and g1 != g2   # H0 守卫：state 变化后 guard 必变
+    assert g1 and g2 and g1 != g2  # H0 守卫：state 变化后 guard 必变

@@ -143,7 +143,9 @@ def test_initial_state_persistence_failure_releases_lock(tmp_path: Path, monkeyp
 
 def test_stopped_path_exit_20(tmp_path: Path) -> None:
     adapter = FakeAdapter()
-    provider = ScriptedStatus(adapter, [_skill("explore")], final=Terminal(kind="stopped", reason="max healing"))
+    provider = ScriptedStatus(
+        adapter, [_skill("explore")], final=Terminal(kind="stopped", reason="max healing")
+    )
     result = _run(tmp_path, adapter, provider)
     assert result.exit_code == EXIT_STOPPED
     driver = read_driver_state(tmp_path / "qa" / "changes" / "CH-1")
@@ -253,7 +255,9 @@ def test_cli_kind_dispatched_to_executor(tmp_path: Path) -> None:
 
         def __call__(self) -> WorkflowStatus:
             if calls:
-                return WorkflowStatus(phases=[], next_dispatch=[], terminal=Terminal(kind="completed", reason="ok"))
+                return WorkflowStatus(
+                    phases=[], next_dispatch=[], terminal=Terminal(kind="completed", reason="ok")
+                )
             return WorkflowStatus(
                 phases=[],
                 next_dispatch=[DispatchEntry(phase_id="execution", skill=None, agent=None, kind="cli")],
@@ -279,7 +283,9 @@ def test_orchestrator_kind_is_noop(tmp_path: Path) -> None:
 
     def provider() -> WorkflowStatus:
         if seen:
-            return WorkflowStatus(phases=[], next_dispatch=[], terminal=Terminal(kind="completed", reason="ok"))
+            return WorkflowStatus(
+                phases=[], next_dispatch=[], terminal=Terminal(kind="completed", reason="ok")
+            )
         seen.append("x")
         return WorkflowStatus(
             phases=[],
@@ -302,7 +308,11 @@ def test_default_cli_executor_maps_run_and_state_apply() -> None:
 
     executor = DefaultCliPhaseExecutor(runner=FakeRunner(), aa_command=["aa"])
     ctx = PhaseContext(
-        change_id="CH-1", change_dir=Path("/tmp/x"), project_root=Path("/tmp"), params={}, parent_session_id=None
+        change_id="CH-1",
+        change_dir=Path("/tmp/x"),
+        project_root=Path("/tmp"),
+        params={},
+        parent_session_id=None,
     )
     entry = DispatchEntry(phase_id="execution", skill=None, agent=None, kind="cli")
     result = executor.run_cli_phase(entry, ctx)
@@ -310,8 +320,15 @@ def test_default_cli_executor_maps_run_and_state_apply() -> None:
     assert result.ok is True and applied.ok is True
     assert invocations[0] == ["aa", "run", "--change", "CH-1"]
     assert invocations[1] == [
-        "aa", "state", "apply", "--change", "CH-1", "--phase", "execution",
-        "--attempt-id", "execution:a1",
+        "aa",
+        "state",
+        "apply",
+        "--change",
+        "CH-1",
+        "--phase",
+        "execution",
+        "--attempt-id",
+        "execution:a1",
     ]
 
 
@@ -336,7 +353,9 @@ def test_default_cli_executor_gate_fail_passthrough(tmp_path: Path) -> None:
     ctx = PhaseContext(
         change_id="CH-1", change_dir=change_dir, project_root=tmp_path, params={}, parent_session_id=None
     )
-    result = executor.run_cli_phase(DispatchEntry(phase_id="execution", skill=None, agent=None, kind="cli"), ctx)
+    result = executor.run_cli_phase(
+        DispatchEntry(phase_id="execution", skill=None, agent=None, kind="cli"), ctx
+    )
     assert result.ok is True
 
 
@@ -345,9 +364,12 @@ def test_healing_await_human_exits_30(tmp_path: Path) -> None:
 
     def provider() -> WorkflowStatus:
         return WorkflowStatus(
-            phases=[], next_dispatch=[], terminal=None,
+            phases=[],
+            next_dispatch=[],
+            terminal=None,
             healing_episode=HealingEpisodeSnapshot(
-                state="awaiting_human", stage="safety",
+                state="awaiting_human",
+                stage="safety",
                 next_actions=[HealingEpisodeAction(kind="await_human")],
             ),
         )
@@ -362,16 +384,24 @@ def test_human_stop_preempts_pending_healing_allocation(tmp_path: Path) -> None:
     action = HealingEpisodeAction(
         kind="allocate_attempt",
         allocation=HealingAttemptIntent(
-            episode_id="ep1", attempt_id="ha1", attempt_number=1,
-            operation_id="op1", source_batch_id="b1", pin_entry_baseline=True,
+            episode_id="ep1",
+            attempt_id="ha1",
+            attempt_number=1,
+            operation_id="op1",
+            source_batch_id="b1",
+            pin_entry_baseline=True,
         ),
     )
 
     def provider() -> WorkflowStatus:
         return WorkflowStatus(
-            phases=[], next_dispatch=[], terminal=Terminal(kind="stopped", reason="human stop"),
+            phases=[],
+            next_dispatch=[],
+            terminal=Terminal(kind="stopped", reason="human stop"),
             healing_episode=HealingEpisodeSnapshot(
-                state="active", stage="allocate", next_actions=[action],
+                state="active",
+                stage="allocate",
+                next_actions=[action],
             ),
         )
 
@@ -392,15 +422,20 @@ def test_default_healing_executor_commits_baseline_then_allocation(tmp_path: Pat
     action = HealingEpisodeAction(
         kind="allocate_attempt",
         allocation=HealingAttemptIntent(
-            episode_id="ep1", attempt_id="ha1", attempt_number=1,
-            operation_id="op1", source_batch_id="b1", pin_entry_baseline=True,
+            episode_id="ep1",
+            attempt_id="ha1",
+            attempt_number=1,
+            operation_id="op1",
+            source_batch_id="b1",
+            pin_entry_baseline=True,
         ),
     )
     result = DefaultHealingActionExecutor().execute(action, ctx)
     assert result.ok is True
     events = read_events(change)
     assert [e["type"] for e in events] == [
-        "healing_entry_baseline_pinned", "healing_attempt_allocated",
+        "healing_entry_baseline_pinned",
+        "healing_attempt_allocated",
     ]
     assert events[1]["operation_id"] == "op1"
 
@@ -418,6 +453,8 @@ def test_default_status_provider_forwards_scope(tmp_path: Path, monkeypatch) -> 
         return WorkflowStatus(phases=[], next_dispatch=[], terminal=Terminal(kind="completed"))
 
     monkeypatch.setattr(loop_mod, "compute_status", fake_compute)
-    provider = loop_mod._DefaultStatusProvider(WorkflowSchema(schema_version="1", name="t"), tmp_path, {}, "execute")
+    provider = loop_mod._DefaultStatusProvider(
+        WorkflowSchema(schema_version="1", name="t"), tmp_path, {}, "execute"
+    )
     provider()
     assert captured["scope"] == "execute"

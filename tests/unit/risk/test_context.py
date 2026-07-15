@@ -37,7 +37,9 @@ def test_build_context_non_git_is_degraded(tmp_path: Path) -> None:
     assert ctx.generated_at == FIXED_NOW
 
 
-def test_build_context_aggregates_modules_and_evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_context_aggregates_modules_and_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     write(
         tmp_path,
         ".aa/module-map.yaml",

@@ -1,4 +1,5 @@
 """workflow-schema.yaml 加载器 + 静态校验 + 类型化模型。"""
+
 from __future__ import annotations
 
 import re
@@ -213,10 +214,7 @@ def parse_schema(yaml_text: str) -> WorkflowSchema:
             lid: LoopDef(id=lid, **{k: v for k, v in (lv or {}).items()})
             for lid, lv in (doc.get("loops") or {}).items()
         }
-        gates = {
-            gid: _normalize_gate(gid, gv or {})
-            for gid, gv in (doc.get("gates") or {}).items()
-        }
+        gates = {gid: _normalize_gate(gid, gv or {}) for gid, gv in (doc.get("gates") or {}).items()}
         schema = WorkflowSchema(
             schema_version=str(doc.get("schema_version", "")),
             name=str(doc.get("name", "")),
@@ -282,7 +280,7 @@ def _detect_gate_cycle(schema: WorkflowSchema) -> list[str]:
         stack.append(node)
         for nxt in edges.get(node, []):
             if color[nxt] == GREY:
-                cycle = stack[stack.index(nxt):] + [nxt]
+                cycle = stack[stack.index(nxt) :] + [nxt]
                 errors.append("gate reference cycle: " + " -> ".join(cycle))
                 return True
             if color[nxt] == WHITE and dfs(nxt):
@@ -311,7 +309,7 @@ def _detect_phase_cycle(schema: WorkflowSchema) -> list[str]:
             if dep not in color:
                 continue
             if color[dep] == grey:
-                cycle = stack[stack.index(dep):] + [dep]
+                cycle = stack[stack.index(dep) :] + [dep]
                 errors.append("phase dependency cycle: " + " -> ".join(cycle))
                 return True
             if color[dep] == white and dfs(dep):
@@ -385,8 +383,7 @@ def _validate(schema: WorkflowSchema) -> None:
                 continue  # directory-only archive produce is not evidence-addressable
             if alias in produced_aliases and produced_aliases[alias] != path:
                 errors.append(
-                    f"global produces alias collision '{alias}': "
-                    f"'{produced_aliases[alias]}' vs '{path}'"
+                    f"global produces alias collision '{alias}': '{produced_aliases[alias]}' vs '{path}'"
                 )
             produced_aliases[alias] = path
 
@@ -402,8 +399,7 @@ def _validate(schema: WorkflowSchema) -> None:
         declared = [r.verdict for r in g.rules if r.verdict in _SAFETY_ORDER]
         if declared != present:
             errors.append(
-                f"gate '{g.id}' safety verdicts must be declared in canonical order "
-                f"{present}, got {declared}"
+                f"gate '{g.id}' safety verdicts must be declared in canonical order {present}, got {declared}"
             )
 
     for loc, expr in _all_predicates(schema):

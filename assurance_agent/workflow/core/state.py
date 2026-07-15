@@ -3,6 +3,7 @@
 read_state/write_state 以 M2 canonical `WorkflowState`（extra='allow'）为交换类型，
 不返回裸 dict——这样 M4/M6 的属性读写与引擎的 model_dump() 作用域构造完全一致。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -52,9 +53,7 @@ def read_state(change_dir: Path) -> WorkflowState:
     integrity = doc.get(_INTEGRITY_KEY)
     if isinstance(integrity, dict) and isinstance(integrity.get("state_sha256"), str):
         if _canonical_hash(doc) != integrity["state_sha256"]:
-            raise StateIntegrityError(
-                f"workflow-state integrity check failed: {state_file(change_dir)}"
-            )
+            raise StateIntegrityError(f"workflow-state integrity check failed: {state_file(change_dir)}")
     # 剥离文件级元数据（pydantic v2 不接受下划线前缀键作 field/extra）。
     fields = {k: v for k, v in doc.items() if k != _INTEGRITY_KEY}
     return WorkflowState.model_validate(fields)

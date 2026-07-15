@@ -15,8 +15,11 @@ from assurance_agent.workflow.core.events import (
 
 def _allocation(operation_id: str = "op-1") -> HealingAttemptAllocatedEvent:
     return HealingAttemptAllocatedEvent(
-        episode_id="episode-1", attempt_id="attempt-1", attempt_number=1,
-        operation_id=operation_id, source_batch_id="batch-1",
+        episode_id="episode-1",
+        attempt_id="attempt-1",
+        attempt_number=1,
+        operation_id=operation_id,
+        source_batch_id="batch-1",
     )
 
 
@@ -37,11 +40,17 @@ def test_strict_fails_when_dir_missing(tmp_path: Path):
 
 def test_strict_rejects_missing_idempotency_key(tmp_path: Path):
     with pytest.raises(EventWriteError, match="operation_id"):
-        append_event_strict(tmp_path, {
-            "source": "progression", "type": "healing_attempt_allocated",
-            "episode_id": "e", "attempt_id": "a", "attempt_number": 1,
-            "source_batch_id": "b",
-        })
+        append_event_strict(
+            tmp_path,
+            {
+                "source": "progression",
+                "type": "healing_attempt_allocated",
+                "episode_id": "e",
+                "attempt_id": "a",
+                "attempt_number": 1,
+                "source_batch_id": "b",
+            },
+        )
 
 
 def test_best_effort_swallows_error(tmp_path: Path, capsys):
@@ -63,13 +72,58 @@ def test_read_skips_corrupt_and_non_object_lines(tmp_path: Path):
 
 
 AUDIT_FIXTURES = [
-    {"source": "decide", "type": "human_decision", "checkpoint": "g", "action": "stop", "reason": "r", "who": "u"},
-    {"source": "progression", "type": "dispatch_signed", "phase": "inspect", "kind": "dispatch_phase", "attempt_id": "a", "state_guard": "s", "dispatched_at": 1},
-    {"source": "progression", "type": "phase_outcome_committed", "phase": "inspect", "attempt_id": "a", "gate_report": None},
-    {"source": "progression", "type": "healing_attempt_allocated", "episode_id": "e", "attempt_id": "ha", "attempt_number": 1, "operation_id": "op", "source_batch_id": "b"},
-    {"source": "heal", "type": "heal_record_apply", "target": "api", "proposal_sha256": "p", "source_batch_id": "b", "attempt_key": "p:b", "summary_sha256": "s", "files_modified": []},
+    {
+        "source": "decide",
+        "type": "human_decision",
+        "checkpoint": "g",
+        "action": "stop",
+        "reason": "r",
+        "who": "u",
+    },
+    {
+        "source": "progression",
+        "type": "dispatch_signed",
+        "phase": "inspect",
+        "kind": "dispatch_phase",
+        "attempt_id": "a",
+        "state_guard": "s",
+        "dispatched_at": 1,
+    },
+    {
+        "source": "progression",
+        "type": "phase_outcome_committed",
+        "phase": "inspect",
+        "attempt_id": "a",
+        "gate_report": None,
+    },
+    {
+        "source": "progression",
+        "type": "healing_attempt_allocated",
+        "episode_id": "e",
+        "attempt_id": "ha",
+        "attempt_number": 1,
+        "operation_id": "op",
+        "source_batch_id": "b",
+    },
+    {
+        "source": "heal",
+        "type": "heal_record_apply",
+        "target": "api",
+        "proposal_sha256": "p",
+        "source_batch_id": "b",
+        "attempt_key": "p:b",
+        "summary_sha256": "s",
+        "files_modified": [],
+    },
     {"source": "status", "type": "heal_transition", "from": "pending", "to": "failed"},
-    {"source": "heal", "type": "healing_entry_baseline_pinned", "artifact_file": "healing/entry-baseline.json", "artifact_sha256": "x", "entry_batch_id": "b", "episode_id": "e"},
+    {
+        "source": "heal",
+        "type": "healing_entry_baseline_pinned",
+        "artifact_file": "healing/entry-baseline.json",
+        "artifact_sha256": "x",
+        "entry_batch_id": "b",
+        "episode_id": "e",
+    },
 ]
 
 

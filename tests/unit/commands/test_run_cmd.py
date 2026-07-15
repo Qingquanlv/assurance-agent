@@ -29,13 +29,26 @@ def _stub_pytest(outcome: str):
         report_file = next(a.split("=", 1)[1] for a in args if a.startswith("--json-report-file="))
         target = "api" if "tests/api" in args else "e2e"
         Path(report_file).parent.mkdir(parents=True, exist_ok=True)
-        Path(report_file).write_text(json.dumps({"tests": [{
-            "nodeid": f"tests/{target}/t.py::test_tc_{target}_001__x",
-            "outcome": outcome,
-            "call": {"outcome": outcome, "duration": 0.0,
-                     "longrepr": "" if outcome == "passed" else "AssertionError: boom"},
-        }]}), encoding="utf-8")
+        Path(report_file).write_text(
+            json.dumps(
+                {
+                    "tests": [
+                        {
+                            "nodeid": f"tests/{target}/t.py::test_tc_{target}_001__x",
+                            "outcome": outcome,
+                            "call": {
+                                "outcome": outcome,
+                                "duration": 0.0,
+                                "longrepr": "" if outcome == "passed" else "AssertionError: boom",
+                            },
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
     return fake_run
 
 

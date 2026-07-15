@@ -90,9 +90,7 @@ def test_workflow_start_success_exit_0(monkeypatch) -> None:
         wf, "start_workflow_detached", lambda **kwargs: StartResult(ok=True, message="started", pid=9)
     )
     with CliRunner().isolated_filesystem():
-        result = CliRunner().invoke(
-            main, ["workflow", "start", "--change", "CH-1", "--adapter", "headless"]
-        )
+        result = CliRunner().invoke(main, ["workflow", "start", "--change", "CH-1", "--adapter", "headless"])
         assert result.exit_code == EXIT_COMPLETED
         assert "started" in result.output
 
@@ -102,9 +100,7 @@ def test_workflow_start_failure_exit_40(monkeypatch) -> None:
         wf, "start_workflow_detached", lambda **kwargs: StartResult(ok=False, message="refused")
     )
     with CliRunner().isolated_filesystem():
-        result = CliRunner().invoke(
-            main, ["workflow", "start", "--change", "CH-1", "--adapter", "headless"]
-        )
+        result = CliRunner().invoke(main, ["workflow", "start", "--change", "CH-1", "--adapter", "headless"])
         assert result.exit_code == EXIT_ERROR
         assert "refused" in result.output
 

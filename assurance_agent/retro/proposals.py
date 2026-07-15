@@ -27,8 +27,7 @@ def read_proposals(retro_dir: Path) -> list[RetroProposal]:
     return proposals
 
 
-def validate_retro_proposals(context: RetroContext,
-                             proposals: list[RetroProposal]) -> list[str]:
+def validate_retro_proposals(context: RetroContext, proposals: list[RetroProposal]) -> list[str]:
     errors: list[str] = []
     seen: set[str] = set()
     for proposal in proposals:

@@ -68,13 +68,20 @@ def test_product_changed_during_healing_is_blocked(tmp_path: Path) -> None:
     change_dir.mkdir(parents=True)
     test_tree = hash_test_tree(tmp_path)
     from assurance_agent.workflow.execution.tree_hash import hash_product_tree
+
     product_tree = hash_product_tree(tmp_path, ["app"])
     _manifest(change_dir, test_tree.aggregate, test_tree.files, product_tree.aggregate)
-    append_event_strict(change_dir, {
-        "source": "heal", "type": "healing_entry_baseline_pinned",
-        "artifact_file": "healing/entry-baseline.json", "artifact_sha256": "x",
-        "entry_batch_id": "b1", "episode_id": "e1",
-    })
+    append_event_strict(
+        change_dir,
+        {
+            "source": "heal",
+            "type": "healing_entry_baseline_pinned",
+            "artifact_file": "healing/entry-baseline.json",
+            "artifact_sha256": "x",
+            "entry_batch_id": "b1",
+            "episode_id": "e1",
+        },
+    )
     _write(tmp_path / "app" / "main.py", "v2\n")
     with pytest.raises(HealingGuardError, match="PRODUCT-CHANGED-DURING-HEALING"):
         assert_product_tree_unchanged_in_healing(tmp_path, "CH-1", roots=["app"])

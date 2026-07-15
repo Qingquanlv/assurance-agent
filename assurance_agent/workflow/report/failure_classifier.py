@@ -4,6 +4,7 @@ Pipeline order and regexes are transcribed from TS failure_classifier.ts; the
 rule table lives in packaged YAML so classifications can evolve without code
 changes. The matcher is deterministic: first matching rule wins.
 """
+
 import re
 from functools import lru_cache
 from typing import Any, Literal

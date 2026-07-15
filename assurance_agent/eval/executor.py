@@ -68,18 +68,18 @@ def execute_attempt(
         "exit_code": loop.exit_code,
         "reason": loop.reason,
     }
-    (attempt_dir / "execution.json").write_text(json.dumps(execution, indent=2),
-                                                encoding="utf-8")
+    (attempt_dir / "execution.json").write_text(json.dumps(execution, indent=2), encoding="utf-8")
 
-    missing = [
-        rel for rel in (expected_outputs or [])
-        if not (attempt_dir / "raw-output" / rel).exists()
-    ]
+    missing = [rel for rel in (expected_outputs or []) if not (attempt_dir / "raw-output" / rel).exists()]
     if missing:
         status = "error"
 
     return ExecutionResult(
-        sample_id=sample.id, attempt=0, executor="workflow-run", status=status,
-        exit_code=loop.exit_code, error=None if status == "ok" else loop.reason,
+        sample_id=sample.id,
+        attempt=0,
+        executor="workflow-run",
+        status=status,
+        exit_code=loop.exit_code,
+        error=None if status == "ok" else loop.reason,
         extra={"missing_outputs": missing},
     )

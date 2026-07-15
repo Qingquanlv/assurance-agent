@@ -13,13 +13,25 @@ CONTEXT = {
     "archive_window": {},
     "staleness": {"max_age_days": 30, "stale": False},
     "impact": {
-        "diff_base": "main", "changed_files": [], "modules": [],
-        "affected_case_ids": ["TC_MENU_001"], "affected_cases_by_module": {}, "affected_test_files": [],
+        "diff_base": "main",
+        "changed_files": [],
+        "modules": [],
+        "affected_case_ids": ["TC_MENU_001"],
+        "affected_cases_by_module": {},
+        "affected_test_files": [],
     },
     "case_signals": [],
     "test_health": [],
     "historical_issues": [],
-    "evidence": [{"id": "EV-DIFF-MENUS-HIGH", "type": "code_change", "module": "menus", "confidence": "high", "source": "git diff"}],
+    "evidence": [
+        {
+            "id": "EV-DIFF-MENUS-HIGH",
+            "type": "code_change",
+            "module": "menus",
+            "confidence": "high",
+            "source": "git diff",
+        }
+    ],
     "degraded": False,
     "degraded_reasons": [],
 }

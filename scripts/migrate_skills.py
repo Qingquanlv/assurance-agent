@@ -8,6 +8,7 @@ applied on top and are the source of truth afterward. The default mode refuses
 to overwrite a non-empty skills destination; `--force` is an explicit destructive
 regeneration and requires the manual review pass to be repeated.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -91,7 +92,9 @@ def _migrate_agents(src_dir: Path, dst_dir: Path) -> int:
 def migrate(src_root: Path = DEFAULT_SRC_ROOT, dst_root: Path = DST_ROOT, *, force: bool = False) -> int:
     skills_dst = dst_root / "skills"
     if skills_dst.is_dir() and any(skills_dst.iterdir()) and not force:
-        raise RuntimeError(f"destination already contains reviewed skills: {skills_dst}; pass --force to replace")
+        raise RuntimeError(
+            f"destination already contains reviewed skills: {skills_dst}; pass --force to replace"
+        )
     if not src_root.is_dir():
         raise FileNotFoundError(f"reference source repo not found: {src_root}")
     skills = _migrate_tree(src_root / "skills", skills_dst, drop_prefix="")

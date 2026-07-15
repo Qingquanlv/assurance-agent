@@ -1,4 +1,5 @@
 """`aa workflow run|status|start` — the deterministic driver command surface."""
+
 import json
 from pathlib import Path
 
@@ -130,9 +131,7 @@ def workflow_run(
         )
         click.secho(started.message, fg="green" if started.ok else "red")
         raise SystemExit(EXIT_COMPLETED if started.ok else EXIT_ERROR)
-    adapter = _build_adapter(
-        adapter_name, project_root, server, directory, model, parent_session, agent_cmd
-    )
+    adapter = _build_adapter(adapter_name, project_root, server, directory, model, parent_session, agent_cmd)
     result = run_workflow_loop(
         project_root=project_root,
         change_id=change_id,

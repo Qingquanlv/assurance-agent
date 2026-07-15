@@ -1,4 +1,5 @@
 """aa state apply / aa state heal — typed audit event + state presentation update."""
+
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -58,13 +59,12 @@ def state_apply(
             click.secho(f"state apply failed: unknown phase '{phase_id}'", fg="red")
             raise SystemExit(1)
         missing = [
-            rel for rel in (schema.phase_produces(phase_id) or [])
+            rel
+            for rel in (schema.phase_produces(phase_id) or [])
             if not resolve_change_path(change_dir, rel).exists()
         ]
         if missing:
-            click.secho(
-                f"state apply failed: missing declared produces: {', '.join(missing)}", fg="red"
-            )
+            click.secho(f"state apply failed: missing declared produces: {', '.join(missing)}", fg="red")
             raise SystemExit(1)
     except AaError as err:
         click.secho(f"state apply failed: {err}", fg="red")

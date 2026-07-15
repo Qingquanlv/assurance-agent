@@ -10,3 +10,6 @@ dist/
 
 /skills/
 /.opencode/
+
+# macOS
+.DS_Store

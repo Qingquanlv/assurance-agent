@@ -4,6 +4,7 @@ Reads the primary execution evidence, classifies every failed case, and derives
 FailureAnalysis. Manifest integrity issues (a selected target with no result
 file) are treated as critical manifest_asset_missing failures, not silent skips.
 """
+
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -16,7 +17,11 @@ from assurance_agent.artifacts.models import (
     QualityGateResult,
 )
 from assurance_agent.identifiers import assert_change_id_safe
-from assurance_agent.workflow.execution.evidence import EvidenceError, ExecutionEvidence, load_execution_evidence
+from assurance_agent.workflow.execution.evidence import (
+    EvidenceError,
+    ExecutionEvidence,
+    load_execution_evidence,
+)
 from assurance_agent.workflow.execution.results import TargetResult
 from assurance_agent.workflow.report.failure_classifier import classify_failure
 
@@ -30,7 +35,8 @@ class InspectResult(BaseModel):
 
 
 def _load_for_inspection(
-    execution_dir: Path, batch_id: str | None,
+    execution_dir: Path,
+    batch_id: str | None,
 ) -> tuple[ExecutionEvidence, str, str | None]:
     if batch_id is not None:
         return load_execution_evidence(execution_dir, batch_id=batch_id), "primary", None
@@ -69,10 +75,16 @@ def inspect_change(
     gate = evidence.quality_gate
     if gate is None:
         from assurance_agent.workflow.report.quality_gate import build_quality_gate
+
         gate = build_quality_gate(
-            change_id=change_id, batch_id=evidence.batch_id, api=evidence.api, e2e=evidence.e2e,
-            coverage=evidence.coverage, coverage_gate_mode="warn",
-            fuzz=evidence.fuzz, performance=evidence.performance,
+            change_id=change_id,
+            batch_id=evidence.batch_id,
+            api=evidence.api,
+            e2e=evidence.e2e,
+            coverage=evidence.coverage,
+            coverage_gate_mode="warn",
+            fuzz=evidence.fuzz,
+            performance=evidence.performance,
         )
 
     manifest_path = str(execution_dir / "execution-manifest.yaml")
@@ -81,9 +93,19 @@ def inspect_change(
         integrity = _integrity_failures(evidence)
         _complete(integrity)
         analysis = _analysis(
-            change_id, manifest_path, evidence.batch_id, "FAIL",
-            "failed", "failed", integrity, integrity, [], [], [],
-            inspect_mode, compat_reason,
+            change_id,
+            manifest_path,
+            evidence.batch_id,
+            "FAIL",
+            "failed",
+            "failed",
+            integrity,
+            integrity,
+            [],
+            [],
+            [],
+            inspect_mode,
+            compat_reason,
         )
         gate = gate.model_copy(update={"final_status": "FAIL"})
         _write(inspect_dir, change_id, analysis, gate)
@@ -103,16 +125,29 @@ def inspect_change(
     known = [f for f in failures if f.category == "known_product_issue"]
     status = "no_failures" if not failures else "analyzed"
     analysis = _analysis(
-        change_id, manifest_path, evidence.batch_id, gate.final_status,
-        "completed", status, failures, hard, review, known, coverage_gaps,
-        inspect_mode, compat_reason,
+        change_id,
+        manifest_path,
+        evidence.batch_id,
+        gate.final_status,
+        "completed",
+        status,
+        failures,
+        hard,
+        review,
+        known,
+        coverage_gaps,
+        inspect_mode,
+        compat_reason,
     )
     _write(inspect_dir, change_id, analysis, gate)
     return _result(analysis, gate, inspect_dir)
 
 
 def _classify_target(
-    result: TargetResult | None, target: str, evidence: ExecutionEvidence, change_id: str,
+    result: TargetResult | None,
+    target: str,
+    evidence: ExecutionEvidence,
+    change_id: str,
 ) -> list[FailureEntry]:
     if result is None:
         return []
@@ -121,23 +156,31 @@ def _classify_target(
         if case.status != "failed":
             continue
         classification = classify_failure(
-            message=case.message, log_excerpt="", target=target,  # type: ignore[arg-type]
-        )
-        entries.append(FailureEntry(
-            case_id=case.case_id or case.test_name,
+            message=case.message,
+            log_excerpt="",
             target=target,  # type: ignore[arg-type]
-            category=classification.category,
-            fix_proposal_eligible=classification.fix_proposal_eligible,
-            severity=classification.severity,
-            needs_review=classification.needs_review,
-            evidence=FailureEvidence(
-                result_file=evidence.result_paths.get(target, ""),
-                test_file=case.file, trace=case.trace, screenshot=case.screenshot,
-                video=case.video, raw_log=case.raw_log_ref, log_excerpt=case.message[:400],
-            ),
-            diagnosis=_diagnosis(case.message, classification.category),
-            recommended_action=_recommended_action(classification.category, change_id),
-        ))
+        )
+        entries.append(
+            FailureEntry(
+                case_id=case.case_id or case.test_name,
+                target=target,  # type: ignore[arg-type]
+                category=classification.category,
+                fix_proposal_eligible=classification.fix_proposal_eligible,
+                severity=classification.severity,
+                needs_review=classification.needs_review,
+                evidence=FailureEvidence(
+                    result_file=evidence.result_paths.get(target, ""),
+                    test_file=case.file,
+                    trace=case.trace,
+                    screenshot=case.screenshot,
+                    video=case.video,
+                    raw_log=case.raw_log_ref,
+                    log_excerpt=case.message[:400],
+                ),
+                diagnosis=_diagnosis(case.message, classification.category),
+                recommended_action=_recommended_action(classification.category, change_id),
+            )
+        )
     return entries
 
 
@@ -146,8 +189,11 @@ def _coverage_gaps(evidence: ExecutionEvidence) -> list[CoverageGapEntry]:
     if not cov or not cov.available:
         return []
     return [
-        CoverageGapEntry(file=str(f.get("file", "")), line_coverage=float(f.get("line_coverage", 0.0)),
-                         threshold=cov.threshold.line)
+        CoverageGapEntry(
+            file=str(f.get("file", "")),
+            line_coverage=float(f.get("line_coverage", 0.0)),
+            threshold=cov.threshold.line,
+        )
         for f in cov.uncovered_critical_files
     ]
 
@@ -157,31 +203,53 @@ def _coverage_failures(evidence: ExecutionEvidence, gaps: list[CoverageGapEntry]
     line = cov.line_coverage if cov else 0.0
     threshold = cov.threshold.line if cov else 0.0
     resolved = gaps or [CoverageGapEntry(file="coverage", line_coverage=line, threshold=threshold)]
-    return [FailureEntry(
-        case_id=gap.file, target="coverage", category="coverage_gap",
-        fix_proposal_eligible=False, severity="high", needs_review=False,
-        evidence=FailureEvidence(
-            result_file=evidence.result_paths.get("coverage", ""), test_file=gap.file,
-            trace="", screenshot="", video="", raw_log="",
-            log_excerpt=f"line coverage {gap.line_coverage}% below threshold {gap.threshold}%",
-        ),
-        diagnosis=f"Coverage gate failed for {gap.file}: {gap.line_coverage}% below threshold {gap.threshold}%.",
-        recommended_action="Add or improve tests for the uncovered critical file. Coverage gaps are never auto-fixed.",
-    ) for gap in resolved]
+    return [
+        FailureEntry(
+            case_id=gap.file,
+            target="coverage",
+            category="coverage_gap",
+            fix_proposal_eligible=False,
+            severity="high",
+            needs_review=False,
+            evidence=FailureEvidence(
+                result_file=evidence.result_paths.get("coverage", ""),
+                test_file=gap.file,
+                trace="",
+                screenshot="",
+                video="",
+                raw_log="",
+                log_excerpt=f"line coverage {gap.line_coverage}% below threshold {gap.threshold}%",
+            ),
+            diagnosis=f"Coverage gate failed for {gap.file}: {gap.line_coverage}% below threshold {gap.threshold}%.",
+            recommended_action="Add or improve tests for the uncovered critical file. Coverage gaps are never auto-fixed.",
+        )
+        for gap in resolved
+    ]
 
 
 def _integrity_failures(evidence: ExecutionEvidence) -> list[FailureEntry]:
-    return [FailureEntry(
-        case_id=f"manifest:{issue.target}", target=issue.target,  # type: ignore[arg-type]
-        category="manifest_asset_missing", fix_proposal_eligible=False, severity="critical",
-        needs_review=False,
-        evidence=FailureEvidence(
-            result_file=issue.path, test_file="", trace="", screenshot="", video="",
-            raw_log="", log_excerpt=issue.reason,
-        ),
-        diagnosis=f"Execution asset missing for target '{issue.target}': {issue.path}",
-        recommended_action="Re-run `aa run` to regenerate the missing execution asset before archiving.",
-    ) for issue in evidence.integrity_issues]
+    return [
+        FailureEntry(
+            case_id=f"manifest:{issue.target}",
+            target=issue.target,  # type: ignore[arg-type]
+            category="manifest_asset_missing",
+            fix_proposal_eligible=False,
+            severity="critical",
+            needs_review=False,
+            evidence=FailureEvidence(
+                result_file=issue.path,
+                test_file="",
+                trace="",
+                screenshot="",
+                video="",
+                raw_log="",
+                log_excerpt=issue.reason,
+            ),
+            diagnosis=f"Execution asset missing for target '{issue.target}': {issue.path}",
+            recommended_action="Re-run `aa run` to regenerate the missing execution asset before archiving.",
+        )
+        for issue in evidence.integrity_issues
+    ]
 
 
 def _complete(failures: list[FailureEntry]) -> None:
@@ -191,18 +259,38 @@ def _complete(failures: list[FailureEntry]) -> None:
         failure.recommended_next_action = failure.recommended_next_action or failure.recommended_action
 
 
-def _analysis(change_id, manifest_path, batch_id, final_status, inspection_status, status,  # noqa: ANN001
-              failures, hard, review, known, coverage_gaps,
-              inspect_mode: str = "primary", compat_fallback_reason: str | None = None) -> FailureAnalysis:
+def _analysis(
+    change_id,
+    manifest_path,
+    batch_id,
+    final_status,
+    inspection_status,
+    status,  # noqa: ANN001
+    failures,
+    hard,
+    review,
+    known,
+    coverage_gaps,
+    inspect_mode: str = "primary",
+    compat_fallback_reason: str | None = None,
+) -> FailureAnalysis:
     return FailureAnalysis(
-        schema_version="1.0", change_id=change_id, source_manifest=manifest_path,
-        inspection_status=inspection_status, batch_id=batch_id, source_batch_id=batch_id,
+        schema_version="1.0",
+        change_id=change_id,
+        source_manifest=manifest_path,
+        inspection_status=inspection_status,
+        batch_id=batch_id,
+        source_batch_id=batch_id,
         final_status=final_status,
         inspect_mode=inspect_mode,  # type: ignore[arg-type]
         compat_fallback_reason=compat_fallback_reason,
         classification_performed=status != "failed",
-        status=status, failures=failures, hard_fails=hard, needs_review=review,
-        known_product_issues=known, coverage_gaps=coverage_gaps or None,
+        status=status,
+        failures=failures,
+        hard_fails=hard,
+        needs_review=review,
+        known_product_issues=known,
+        coverage_gaps=coverage_gaps or None,
     )
 
 
@@ -215,7 +303,8 @@ def _write(inspect_dir: Path, change_id: str, analysis: FailureAnalysis, gate: Q
 
 def _result(analysis: FailureAnalysis, gate: QualityGateResult, inspect_dir: Path) -> InspectResult:
     return InspectResult(
-        analysis=analysis, quality_gate=gate,
+        analysis=analysis,
+        quality_gate=gate,
         analysis_path=str(inspect_dir / "failure-analysis.json"),
         summary_path=str(inspect_dir / "failure-summary.md"),
         quality_gate_path=str(inspect_dir / "quality-gate-result.json"),
@@ -224,15 +313,22 @@ def _result(analysis: FailureAnalysis, gate: QualityGateResult, inspect_dir: Pat
 
 def _summary_md(change_id: str, analysis: FailureAnalysis) -> str:
     lines = [
-        f"# Failure Analysis — {change_id}", "",
+        f"# Failure Analysis — {change_id}",
+        "",
         f"- Final Status: {analysis.final_status}",
         f"- Batch: {analysis.batch_id}",
         f"- Failures: {len(analysis.failures)} (hard={len(analysis.hard_fails)}, review={len(analysis.needs_review)})",
         "",
     ]
     for failure in analysis.failures:
-        flag = "fix-allowed" if failure.fix_proposal_eligible else ("review" if failure.needs_review else "no-fix")
-        lines.append(f"- `{failure.case_id}` [{failure.target}] {failure.category} ({flag}): {failure.diagnosis}")
+        flag = (
+            "fix-allowed"
+            if failure.fix_proposal_eligible
+            else ("review" if failure.needs_review else "no-fix")
+        )
+        lines.append(
+            f"- `{failure.case_id}` [{failure.target}] {failure.category} ({flag}): {failure.diagnosis}"
+        )
     lines.append("")
     return "\n".join(lines)
 

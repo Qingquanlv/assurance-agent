@@ -4,7 +4,11 @@ import json
 from pathlib import Path
 
 from assurance_agent.eval.types import (
-    EvalGateResult, EvalSuite, RunManifest, SuiteMetrics, SuiteThreshold,
+    EvalGateResult,
+    EvalSuite,
+    RunManifest,
+    SuiteMetrics,
+    SuiteThreshold,
 )
 
 _OPS = {
@@ -26,9 +30,7 @@ def _evidence_ok(manifest: RunManifest, metrics: SuiteMetrics) -> bool:
     )
 
 
-def compute_gate_result(
-    suite: EvalSuite, manifest: RunManifest, metrics: SuiteMetrics
-) -> EvalGateResult:
+def compute_gate_result(suite: EvalSuite, manifest: RunManifest, metrics: SuiteMetrics) -> EvalGateResult:
     hard_failures: list[str] = []
     warnings: list[str] = []
     threshold_failures: list[str] = []
@@ -68,17 +70,20 @@ def compute_gate_result(
         verdict = "pass"
 
     return EvalGateResult(
-        run_id=manifest.run_id, suite=suite.name, verdict=verdict,
-        hard_gate_failures=hard_failures, threshold_failures=threshold_failures,
-        warnings=warnings, inconclusive_count=inconclusive, checked=checked,
+        run_id=manifest.run_id,
+        suite=suite.name,
+        verdict=verdict,
+        hard_gate_failures=hard_failures,
+        threshold_failures=threshold_failures,
+        warnings=warnings,
+        inconclusive_count=inconclusive,
+        checked=checked,
     )
 
 
 def write_gate_result(run_dir: Path, result: EvalGateResult) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "gate-result.json").write_text(
-        json.dumps(result.model_dump(), indent=2), encoding="utf-8"
-    )
+    (run_dir / "gate-result.json").write_text(json.dumps(result.model_dump(), indent=2), encoding="utf-8")
 
 
 def read_gate_result(run_dir: Path) -> EvalGateResult:

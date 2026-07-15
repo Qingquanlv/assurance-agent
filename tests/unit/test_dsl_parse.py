@@ -52,8 +52,8 @@ def test_gate_ref_collection():
 def test_subscript_constant_index():
     node = parse_expression("state.phases['skill-registry-check'].status == 'pass'")
     assert isinstance(node, Compare)
-    assert isinstance(node.left, Member)          # .status
-    assert isinstance(node.left.obj, Subscript)   # ['skill-registry-check']
+    assert isinstance(node.left, Member)  # .status
+    assert isinstance(node.left.obj, Subscript)  # ['skill-registry-check']
     assert node.left.obj.index == "skill-registry-check"
 
 
@@ -64,13 +64,13 @@ def test_rejects_non_constant_subscript():
 
 def test_rejects_disallowed_nodes():
     with pytest.raises(DslError):
-        parse_expression("__import__('os')")     # Call 到非白名单函数
+        parse_expression("__import__('os')")  # Call 到非白名单函数
     with pytest.raises(DslError):
-        parse_expression("a + b")                # 二元算术不在白名单
+        parse_expression("a + b")  # 二元算术不在白名单
     with pytest.raises(DslError):
-        parse_expression("lambda x: x")          # lambda 不允许
+        parse_expression("lambda x: x")  # lambda 不允许
 
 
 def test_rejects_bare_equals():
     with pytest.raises(DslError):
-        parse_expression("a = b")                # 语法错误（Python 赋值非表达式）
+        parse_expression("a = b")  # 语法错误（Python 赋值非表达式）

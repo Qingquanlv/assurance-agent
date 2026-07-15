@@ -4,6 +4,7 @@
   不抛异常；仅结构性错误（未知函数、arity 错误、缺失 gate/file 解析器）抛 DslError。
 - 语义严格对齐源版 dsl/evaluator.ts（三值真值表、typed 相等、any/all/count 隐式 lambda）。
 """
+
 from __future__ import annotations
 
 import ast
@@ -132,8 +133,10 @@ def _convert(node: ast.expr, depth: int) -> Expr:
 
     if isinstance(node, ast.Subscript):
         index_node = node.slice
-        if not isinstance(index_node, ast.Constant) or not isinstance(index_node.value, (str, int)) or isinstance(
-            index_node.value, bool
+        if (
+            not isinstance(index_node, ast.Constant)
+            or not isinstance(index_node.value, (str, int))
+            or isinstance(index_node.value, bool)
         ):
             raise DslError("subscript index must be a string or integer constant")
         return Subscript(_convert(node.value, d), index_node.value)
@@ -177,9 +180,7 @@ def _convert(node: ast.expr, depth: int) -> Expr:
             raise DslError(f"function '{callee}' does not accept keyword arguments")
         args = tuple(_convert(a, d) for a in node.args)
         if len(args) != BUILTIN_ARITY[callee]:
-            raise DslError(
-                f"function '{callee}' expects {BUILTIN_ARITY[callee]} arg(s), got {len(args)}"
-            )
+            raise DslError(f"function '{callee}' expects {BUILTIN_ARITY[callee]} arg(s), got {len(args)}")
         return Call(callee, args)
 
     raise DslError(f"expression node not allowed: {type(node).__name__}")
@@ -343,8 +344,12 @@ def _eval_compare(expr: Compare, scope: Scope) -> object:
         return _typed_eq(left, right)
     if expr.op == "!=":
         return not _typed_eq(left, right)
-    both_num = isinstance(left, (int, float)) and not isinstance(left, bool) and \
-        isinstance(right, (int, float)) and not isinstance(right, bool)
+    both_num = (
+        isinstance(left, (int, float))
+        and not isinstance(left, bool)
+        and isinstance(right, (int, float))
+        and not isinstance(right, bool)
+    )
     both_str = isinstance(left, str) and isinstance(right, str)
     if not both_num and not both_str:
         return MISSING

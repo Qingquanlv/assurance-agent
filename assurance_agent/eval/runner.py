@@ -19,7 +19,10 @@ from assurance_agent.eval.plan import load_suite, load_suite_file, read_plan
 from assurance_agent.eval.report import write_run_report
 from assurance_agent.eval.scorers import get_scorer
 from assurance_agent.eval.types import (
-    EvalGateResult, JudgeConfig, RunManifest, SampleScore,
+    EvalGateResult,
+    JudgeConfig,
+    RunManifest,
+    SampleScore,
 )
 from assurance_agent.workflow.driver.adapter import Adapter
 from assurance_agent.workflow.driver.loop import CliPhaseExecutor, run_workflow_loop
@@ -67,20 +70,20 @@ def run_suite(
     if repeat < 1:
         raise ValueError("repeat must be >= 1")
     suite = load_suite_file(suite_file)
-    dataset = datasets_dir(project_root, suite.name) if suite.dataset_dir is None \
-        else Path(suite.dataset_dir)
+    dataset = datasets_dir(project_root, suite.name) if suite.dataset_dir is None else Path(suite.dataset_dir)
     samples = load_for_run(dataset, sample_id=sample_id)
     run_id = run_id or _new_run_id(suite.name)
     run_dir = run_dir_for(project_root, run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
 
     manifest = RunManifest(
-        run_id=run_id, suite=suite.name, scorer=suite.scorer,
-        selected_sample_ids=[
-            f"{s.id}#attempt-{i}" for s in samples for i in range(repeat)
-        ],
+        run_id=run_id,
+        suite=suite.name,
+        scorer=suite.scorer,
+        selected_sample_ids=[f"{s.id}#attempt-{i}" for s in samples for i in range(repeat)],
         total_samples=len(samples) * repeat,
-        executed_samples=0, target_model=str(suite.executor.get("model", "unknown")),
+        executed_samples=0,
+        target_model=str(suite.executor.get("model", "unknown")),
         started_at=_now(),
     )
 
@@ -93,20 +96,24 @@ def run_suite(
             attempt.mkdir(parents=True, exist_ok=True)
             attempt_sut = _copy_attempt_workspace(sut_dir, attempt)
             factory_args = {
-                "sample": sample, "sut_dir": attempt_sut, "attempt": attempt_index,
+                "sample": sample,
+                "sut_dir": attempt_sut,
+                "attempt": attempt_index,
             }
             adapter = adapter_factory(**factory_args) if adapter_factory else None
-            status_provider = (
-                status_provider_factory(**factory_args) if status_provider_factory else None
-            )
-            cli_executor = (
-                cli_executor_factory(**factory_args) if cli_executor_factory else None
-            )
+            status_provider = status_provider_factory(**factory_args) if status_provider_factory else None
+            cli_executor = cli_executor_factory(**factory_args) if cli_executor_factory else None
             if adapter is None:
                 raise ValueError("adapter_factory required (real adapters wired by CLI)")
             result = execute_attempt(
-                sample, attempt, suite=suite.name, sut_dir=attempt_sut, adapter=adapter,
-                scope=scope, loop_runner=loop_runner, status_provider=status_provider,
+                sample,
+                attempt,
+                suite=suite.name,
+                sut_dir=attempt_sut,
+                adapter=adapter,
+                scope=scope,
+                loop_runner=loop_runner,
+                status_provider=status_provider,
                 cli_executor=cli_executor,
                 expected_outputs=suite.executor.get("expected_outputs"),
             )
@@ -121,17 +128,21 @@ def run_suite(
                 if not judge_model:
                     raise ValueError("--calibrate requires AA_JUDGE_MODEL")
                 judged = run_judge(
-                    sample, attempt, JudgeConfig(model=judge_model),
+                    sample,
+                    attempt,
+                    JudgeConfig(model=judge_model),
                     target_model=manifest.target_model,
                 )
                 (attempt / "judge.json").write_text(
                     json.dumps(judged.model_dump(mode="json"), indent=2), encoding="utf-8"
                 )
-                score.notes.update({
-                    "judge_label": judged.label,
-                    "judge_confidence": judged.confidence,
-                    "judge_needs_human_review": float(judged.needs_human_review),
-                })
+                score.notes.update(
+                    {
+                        "judge_label": judged.label,
+                        "judge_confidence": judged.confidence,
+                        "judge_needs_human_review": float(judged.needs_human_review),
+                    }
+                )
             scores.append(score)
 
     manifest.completed_at = _now()
@@ -146,7 +157,10 @@ def run_suite(
 
 
 def run_plan(
-    *, plan_path: Path, project_root: Path, sut_dir: Path,
+    *,
+    plan_path: Path,
+    project_root: Path,
+    sut_dir: Path,
     adapter_factory: Callable[..., Adapter] | None = None,
     status_provider_factory: Callable[..., Callable[[], object]] | None = None,
 ) -> tuple[str, list[EvalGateResult]]:
@@ -156,7 +170,9 @@ def run_plan(
     for suite_name in plan.get("suites", []):
         _, suite_file = load_suite(project_root, suite_name)
         _, gate = run_suite(
-            suite_file=suite_file, project_root=project_root, sut_dir=sut_dir,
+            suite_file=suite_file,
+            project_root=project_root,
+            sut_dir=sut_dir,
             adapter_factory=adapter_factory,
             status_provider_factory=status_provider_factory,
         )

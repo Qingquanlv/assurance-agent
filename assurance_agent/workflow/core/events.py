@@ -3,6 +3,7 @@
 M3 只提供 append 原语 + 读取；事务性写边界（先事件后 state、失败回滚）在 M6 progression
 以文件快照 + 幂等标记实现。core 内不 import state，避免层内环。
 """
+
 from __future__ import annotations
 
 import json
@@ -94,8 +95,12 @@ class HealingEntryBaselinePinnedEvent(_AuditEventBase):
 
 
 AuditEvent = Annotated[
-    HumanDecisionEvent | DispatchSignedEvent | PhaseOutcomeCommittedEvent
-    | HealingAttemptAllocatedEvent | HealRecordApplyEvent | HealTransitionEvent
+    HumanDecisionEvent
+    | DispatchSignedEvent
+    | PhaseOutcomeCommittedEvent
+    | HealingAttemptAllocatedEvent
+    | HealRecordApplyEvent
+    | HealTransitionEvent
     | HealingEntryBaselinePinnedEvent,
     Field(discriminator="type"),
 ]
@@ -150,7 +155,8 @@ def _append(change_dir: Path, event: Mapping[str, object]) -> None:
 
 
 def append_event_strict(
-    change_dir: Path, event: AuditEvent | Mapping[str, object],
+    change_dir: Path,
+    event: AuditEvent | Mapping[str, object],
 ) -> None:
     try:
         validated = _AUDIT_ADAPTER.validate_python(event)

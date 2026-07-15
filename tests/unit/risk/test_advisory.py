@@ -10,13 +10,25 @@ def make_context(**overrides: object) -> RiskContext:
         archive_window={},
         staleness={"max_age_days": 30, "stale": False},
         impact=ImpactBlock(
-            diff_base="main", changed_files=[], modules=[],
-            affected_case_ids=["TC_MENU_001"], affected_cases_by_module={}, affected_test_files=[],
+            diff_base="main",
+            changed_files=[],
+            modules=[],
+            affected_case_ids=["TC_MENU_001"],
+            affected_cases_by_module={},
+            affected_test_files=[],
         ),
         case_signals=[],
         test_health=[],
         historical_issues=[],
-        evidence=[EvidenceEntry(id="EV-DIFF-MENUS-HIGH", type="code_change", module="menus", confidence="high", source="git diff")],
+        evidence=[
+            EvidenceEntry(
+                id="EV-DIFF-MENUS-HIGH",
+                type="code_change",
+                module="menus",
+                confidence="high",
+                source="git diff",
+            )
+        ],
         degraded=False,
         degraded_reasons=[],
     )
@@ -97,7 +109,13 @@ def test_autonomous_mode_forbids_explore_answered_via() -> None:
         "schema_version": "1.0",
         "watchlist": [],
         "open_questions_for_case_design": [
-            {"id": "OQ-1", "status": "answered", "assertion_intent": "assert_ideal", "answered_via": "explore", "answer": "x"}
+            {
+                "id": "OQ-1",
+                "status": "answered",
+                "assertion_intent": "assert_ideal",
+                "answered_via": "explore",
+                "answer": "x",
+            }
         ],
     }
     ok, errors = validate_advisory(make_context(), advisory, known_case_ids=[], interaction_mode="autonomous")

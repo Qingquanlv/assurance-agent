@@ -9,7 +9,9 @@ import click
 from assurance_agent.retro.aggregator import build_retro_context, count_signals
 from assurance_agent.retro.nightly.agent import run_agent
 from assurance_agent.retro.nightly.driver import (
-    collect_nightly, report_nightly, resume_nightly,
+    collect_nightly,
+    report_nightly,
+    resume_nightly,
 )
 from assurance_agent.retro.nightly.types import NightlyOptions
 from assurance_agent.retro.nightly.utils import write_json
@@ -21,23 +23,29 @@ def _run_retro(since, changes, retro_id, out, as_json) -> None:
     if since and changes:
         click.echo("Error: --since and --change are mutually exclusive", err=True)
         raise SystemExit(2)
-    context = build_retro_context(project_root, since=since,
-                                  changes=list(changes) if changes else None,
-                                  retro_id=retro_id)
+    context = build_retro_context(
+        project_root, since=since, changes=list(changes) if changes else None, retro_id=retro_id
+    )
     retro_dir = project_root / "qa" / "retro" / context.retro_id
     out_path = Path(out).resolve() if out else (retro_dir / "context.json")
     inside = retro_dir in out_path.parents or out_path.parent == retro_dir
     if inside and (retro_dir / "promotions.json").exists():
-        click.echo(f"Error: retro dir already contains promotions.json and is "
-                   f"immutable: {context.retro_id}", err=True)
+        click.echo(
+            f"Error: retro dir already contains promotions.json and is immutable: {context.retro_id}",
+            err=True,
+        )
         raise SystemExit(1)
     write_json(out_path, context.model_dump())
 
     consumed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     for source in context.window.change_sources:
-        mark_consumed_change(project_root, change_id=source.change_id,
-                             source=source.evidence_source, consumed_at=consumed_at,
-                             retro_id=context.retro_id)
+        mark_consumed_change(
+            project_root,
+            change_id=source.change_id,
+            source=source.evidence_source,
+            consumed_at=consumed_at,
+            retro_id=context.retro_id,
+        )
 
     summary = {
         "retro_id": context.retro_id,
@@ -58,8 +66,7 @@ def register_retro(main_group: click.Group) -> None:
     @click.option("--change", "changes", multiple=True, help="Archived change id (repeatable)")
     @click.option("--retro-id", "retro_id", help="Retro id for output dir and context")
     @click.option("--out", help="Output path for context.json")
-    @click.option("--json", "as_json", is_flag=True,
-                  help="Output { retro_id, change_count, signal_count }")
+    @click.option("--json", "as_json", is_flag=True, help="Output { retro_id, change_count, signal_count }")
     @click.pass_context
     def retro(ctx, since, changes, retro_id, out, as_json) -> None:
         """Aggregate archived QA evidence into retro context."""
@@ -85,9 +92,15 @@ def _register_nightly(retro: click.Group) -> None:
     @click.option("--min-evidence", type=int, default=2)
     @click.option("--rework-alert", type=int, default=3)
     def collect(sut, retro_id, dry_run, agent, history, min_evidence, rework_alert) -> None:
-        options = NightlyOptions(sut=sut, retro_id=retro_id, dry_run=dry_run, agent=agent,
-                                 history=history, min_evidence=min_evidence,
-                                 rework_alert=rework_alert)
+        options = NightlyOptions(
+            sut=sut,
+            retro_id=retro_id,
+            dry_run=dry_run,
+            agent=agent,
+            history=history,
+            min_evidence=min_evidence,
+            rework_alert=rework_alert,
+        )
         code = collect_nightly(options, agent_runner=run_agent)
         raise SystemExit(code)
 

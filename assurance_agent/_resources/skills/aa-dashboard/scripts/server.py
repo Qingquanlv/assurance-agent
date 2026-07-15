@@ -10,6 +10,7 @@ Env (all optional):
   QA_DASHBOARD_PROJECT_DIR  project root containing qa/ (default cwd)
   QA_DASHBOARD_OWNER_PID    parent pid; server exits when it dies
 """
+
 from __future__ import annotations
 
 import json
@@ -97,9 +98,7 @@ class Handler(BaseHTTPRequestHandler):
         if pathname == "/api/changes":
             changes_dir = PROJECT_DIR / "qa" / "changes"
             changes = (
-                sorted(p.name for p in changes_dir.iterdir() if p.is_dir())
-                if changes_dir.exists()
-                else []
+                sorted(p.name for p in changes_dir.iterdir() if p.is_dir()) if changes_dir.exists() else []
             )
             self._json(200, {"changes": changes})
             return

@@ -4,6 +4,7 @@ pytest (api/e2e/fuzz) uses the --json-report protocol; performance uses Locust's
 --csv output. Never fabricates: a missing test dir / runner / traffic yields a
 SKIPPED result. subprocess.run is monkeypatched in unit tests.
 """
+
 import json
 import subprocess
 from pathlib import Path
@@ -46,9 +47,14 @@ def run_pytest_target(
 
     raw_dir.mkdir(parents=True, exist_ok=True)
     args = [
-        "uv", "run", "pytest", test_dir,
-        "-p", "no:cacheprovider",
-        "--json-report", f"--json-report-file={report_path}",
+        "uv",
+        "run",
+        "pytest",
+        test_dir,
+        "-p",
+        "no:cacheprovider",
+        "--json-report",
+        f"--json-report-file={report_path}",
     ]
     if cov_package:
         cov_json = raw_dir / "coverage.json"
@@ -59,35 +65,69 @@ def run_pytest_target(
     log_path.write_text(f"$ {command}\n\n{proc.stdout or ''}\n{proc.stderr or ''}", encoding="utf-8")
 
     return parse_pytest_json(
-        change_id=change_id, batch_id=batch_id, target=target,
-        report_path=report_path, raw_log_path=str(log_path), command=command,
+        change_id=change_id,
+        batch_id=batch_id,
+        target=target,
+        report_path=report_path,
+        raw_log_path=str(log_path),
+        command=command,
     )
 
 
 def _skipped_target(
-    change_id: str, batch_id: str, target: PytestTarget, command: str,
-    source: ResultSource, reason: str,
+    change_id: str,
+    batch_id: str,
+    target: PytestTarget,
+    command: str,
+    source: ResultSource,
+    reason: str,
 ) -> TargetResult:
     from assurance_agent.workflow.execution.results import CaseResult
+
     return TargetResult(
-        change_id=change_id, batch_id=batch_id, target=target, status="skipped",
-        command=command, source=source, total=0, passed=0, failed=0, skipped=0,
-        cases=[], unmapped_tests=[CaseResult(
-            case_id="", status="skipped", file="", test_name=reason,
-            duration_ms=0, message=reason, raw_log_ref=source.raw_log,
-        )],
+        change_id=change_id,
+        batch_id=batch_id,
+        target=target,
+        status="skipped",
+        command=command,
+        source=source,
+        total=0,
+        passed=0,
+        failed=0,
+        skipped=0,
+        cases=[],
+        unmapped_tests=[
+            CaseResult(
+                case_id="",
+                status="skipped",
+                file="",
+                test_name=reason,
+                duration_ms=0,
+                message=reason,
+                raw_log_ref=source.raw_log,
+            )
+        ],
     )
 
 
 def parse_coverage_result(
-    *, change_id: str, batch_id: str, batch_dir: Path, threshold: CoverageThreshold,
+    *,
+    change_id: str,
+    batch_id: str,
+    batch_dir: Path,
+    threshold: CoverageThreshold,
 ) -> CoverageResult:
     cov_json = batch_dir / _RAW / "coverage.json"
     if not cov_json.is_file():
         return CoverageResult(
-            change_id=change_id, batch_id=batch_id, available=False,
-            line_coverage=0.0, branch_coverage=0.0, threshold=threshold,
-            status="SKIPPED", skip_reason="coverage.json not produced (pytest-cov unavailable or disabled)",
+            change_id=change_id,
+            batch_id=batch_id,
+            available=False,
+            line_coverage=0.0,
+            branch_coverage=0.0,
+            threshold=threshold,
+            status="SKIPPED",
+            skip_reason="coverage.json not produced (pytest-cov unavailable or disabled)",
         )
     try:
         totals = json.loads(cov_json.read_text(encoding="utf-8")).get("totals", {})
@@ -97,7 +137,10 @@ def parse_coverage_result(
 
 
 def _coverage_from_totals(
-    change_id: str, batch_id: str, totals: dict[str, Any], threshold: CoverageThreshold,
+    change_id: str,
+    batch_id: str,
+    totals: dict[str, Any],
+    threshold: CoverageThreshold,
 ) -> CoverageResult:
     line = float(totals.get("percent_covered", 0.0) or 0.0)
     num_branches = float(totals.get("num_branches", 0) or 0)
@@ -105,13 +148,19 @@ def _coverage_from_totals(
     branch = round(covered_branches / num_branches * 100, 2) if num_branches > 0 else 100.0
     status = "PASS" if line >= threshold.line and branch >= threshold.branch else "PASS_WITH_WARNINGS"
     return CoverageResult(
-        change_id=change_id, batch_id=batch_id, available=True,
-        line_coverage=line, branch_coverage=branch, threshold=threshold, status=status,
+        change_id=change_id,
+        batch_id=batch_id,
+        available=True,
+        line_coverage=line,
+        branch_coverage=branch,
+        threshold=threshold,
+        status=status,
         source={"coverage_json": "raw/coverage.json"},
     )
 
 
 # ── Performance (Locust) ─────────────────────────────────────────────────────
+
 
 def run_performance_target(
     *,
@@ -129,8 +178,13 @@ def run_performance_target(
         raw_dir.mkdir(parents=True, exist_ok=True)
         log_path.write_text(reason, encoding="utf-8")
         return PerformanceResult(
-            change_id=change_id, batch_id=batch_id, available=False, status="SKIPPED",
-            scenarios=[], command="", source={"raw_log": str(log_path)},
+            change_id=change_id,
+            batch_id=batch_id,
+            available=False,
+            status="SKIPPED",
+            scenarios=[],
+            command="",
+            source={"raw_log": str(log_path)},
         )
 
     if not perf_config.enabled:
@@ -151,10 +205,23 @@ def run_performance_target(
     for locustfile in locustfiles:
         prefix = raw_dir / f"locust_{locustfile.stem}"
         args = [
-            "uv", "run", "locust", "-f", str(locustfile), "--headless",
-            "-u", str(load["users"]), "-r", str(load["spawn_rate"]),
-            "-t", f"{load['run_time_s']}s", "--host", perf_config.base_url,
-            "--csv", str(prefix), "--only-summary",
+            "uv",
+            "run",
+            "locust",
+            "-f",
+            str(locustfile),
+            "--headless",
+            "-u",
+            str(load["users"]),
+            "-r",
+            str(load["spawn_rate"]),
+            "-t",
+            f"{load['run_time_s']}s",
+            "--host",
+            perf_config.base_url,
+            "--csv",
+            str(prefix),
+            "--only-summary",
         ]
         commands.append(" ".join(args))
         proc = subprocess.run(args, cwd=str(project_root), capture_output=True, text=True)  # noqa: S603
@@ -168,7 +235,9 @@ def run_performance_target(
                 stats[row["name"]] = row
 
     if not any_traffic:
-        return skipped("Locust ran but recorded no successful traffic (environment likely unreachable) — SKIPPED.")
+        return skipped(
+            "Locust ran but recorded no successful traffic (environment likely unreachable) — SKIPPED."
+        )
 
     verdicts = build_scenario_verdicts(scenarios, stats)
     if any(v.verdict == "FAIL" for v in verdicts):
@@ -178,8 +247,13 @@ def run_performance_target(
     else:
         status = "SKIPPED"
     return PerformanceResult(
-        change_id=change_id, batch_id=batch_id, available=True, status=status,
-        scenarios=verdicts, command=" && ".join(commands), source={"raw_log": str(log_path)},
+        change_id=change_id,
+        batch_id=batch_id,
+        available=True,
+        status=status,
+        scenarios=verdicts,
+        command=" && ".join(commands),
+        source={"raw_log": str(log_path)},
     )
 
 
@@ -198,38 +272,51 @@ def parse_locust_stats(csv_path: Path) -> list[dict[str, Any]]:
         name = cols[idx_name].strip() if idx_name >= 0 and idx_name < len(cols) else ""
         if not name or name.lower() == "aggregated":
             continue
-        rows.append({
-            "name": name,
-            "requests": _to_num(cols, idx_req),
-            "failures": _to_num(cols, idx_fail),
-            "p95": _to_num(cols, idx_p95),
-        })
+        rows.append(
+            {
+                "name": name,
+                "requests": _to_num(cols, idx_req),
+                "failures": _to_num(cols, idx_fail),
+                "p95": _to_num(cols, idx_p95),
+            }
+        )
     return rows
 
 
 def build_scenario_verdicts(
-    scenarios: list[dict[str, Any]], stats_by_name: dict[str, dict[str, float]],
+    scenarios: list[dict[str, Any]],
+    stats_by_name: dict[str, dict[str, float]],
 ) -> list[PerformanceScenarioVerdict]:
     verdicts: list[PerformanceScenarioVerdict] = []
     for sc in scenarios:
         thr = sc["thresholds"]
         stat = stats_by_name.get(sc["capability"]) or stats_by_name.get(sc["endpoint"])
         if not stat or stat["requests"] == 0:
-            verdicts.append(PerformanceScenarioVerdict(
-                capability=sc["capability"], endpoint=sc["endpoint"],
-                measured_p95_ms=None, threshold_p95_ms=float(thr["p95_ms"]),
-                measured_error_rate=None, threshold_error_rate_max=float(thr["error_rate_max"]),
-                verdict="SKIPPED",
-            ))
+            verdicts.append(
+                PerformanceScenarioVerdict(
+                    capability=sc["capability"],
+                    endpoint=sc["endpoint"],
+                    measured_p95_ms=None,
+                    threshold_p95_ms=float(thr["p95_ms"]),
+                    measured_error_rate=None,
+                    threshold_error_rate_max=float(thr["error_rate_max"]),
+                    verdict="SKIPPED",
+                )
+            )
             continue
         error_rate = stat["failures"] / stat["requests"]
         passed = stat["p95"] <= thr["p95_ms"] and error_rate <= thr["error_rate_max"]
-        verdicts.append(PerformanceScenarioVerdict(
-            capability=sc["capability"], endpoint=sc["endpoint"],
-            measured_p95_ms=float(stat["p95"]), threshold_p95_ms=float(thr["p95_ms"]),
-            measured_error_rate=round(error_rate, 4), threshold_error_rate_max=float(thr["error_rate_max"]),
-            verdict="PASS" if passed else "FAIL",
-        ))
+        verdicts.append(
+            PerformanceScenarioVerdict(
+                capability=sc["capability"],
+                endpoint=sc["endpoint"],
+                measured_p95_ms=float(stat["p95"]),
+                threshold_p95_ms=float(thr["p95_ms"]),
+                measured_error_rate=round(error_rate, 4),
+                threshold_error_rate_max=float(thr["error_rate_max"]),
+                verdict="PASS" if passed else "FAIL",
+            )
+        )
     return verdicts
 
 

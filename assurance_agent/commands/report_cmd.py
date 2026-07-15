@@ -1,4 +1,5 @@
 """`aa report inspect|generate` commands."""
+
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,12 +33,20 @@ def inspect_cmd(change_id: str) -> None:
     analysis = result.analysis
     gate = result.quality_gate
     click.secho(f"\naa report inspect — change: {change_id}\n", bold=True)
-    click.echo("  Final Status : " + click.style(gate.final_status, fg=_GATE_COLOR[gate.final_status], bold=True))
+    click.echo(
+        "  Final Status : " + click.style(gate.final_status, fg=_GATE_COLOR[gate.final_status], bold=True)
+    )
     click.echo(f"  Batch ID     : {analysis.batch_id or '(unknown)'}")
-    click.echo(f"  Failures     : {len(analysis.failures)} "
-               f"(hard={len(analysis.hard_fails)}, review={len(analysis.needs_review)})")
+    click.echo(
+        f"  Failures     : {len(analysis.failures)} "
+        f"(hard={len(analysis.hard_fails)}, review={len(analysis.needs_review)})"
+    )
     for failure in analysis.failures:
-        flag = "fix-allowed" if failure.fix_proposal_eligible else ("review" if failure.needs_review else "no-fix")
+        flag = (
+            "fix-allowed"
+            if failure.fix_proposal_eligible
+            else ("review" if failure.needs_review else "no-fix")
+        )
         click.echo(f"    {failure.category:<28} {failure.case_id}  [{flag}]")
     click.echo(f"  failure-analysis.json    → {result.analysis_path}")
     click.echo(f"  quality-gate-result.json → {result.quality_gate_path}")
@@ -56,7 +65,10 @@ def generate_cmd(change_id: str) -> None:
 
     report = result.report
     click.secho(f"\naa report generate — change: {change_id}\n", bold=True)
-    click.echo("  Final Status  : " + click.style(report.final_status, fg=_GATE_COLOR[report.final_status], bold=True))
+    click.echo(
+        "  Final Status  : "
+        + click.style(report.final_status, fg=_GATE_COLOR[report.final_status], bold=True)
+    )
     click.echo(f"  Quality Score : {report.quality_score} / 100")
     click.echo(f"  Risk Level    : {report.risk_level}")
     click.echo(f"  Recommendation: {report.recommendation}")
@@ -101,26 +113,33 @@ def reclassify_cmd(change_id: str, batch_id: str | None) -> None:
             old = old_by_key.get(_failure_key(failure))
             if old is None or old.category == failure.category:
                 continue
-            failure.reclassified = Reclassified.model_validate({
-                "from": old.category,
-                "evidence": "deterministic rules re-run",
-                "at": now,
-            })
+            failure.reclassified = Reclassified.model_validate(
+                {
+                    "from": old.category,
+                    "evidence": "deterministic rules re-run",
+                    "at": now,
+                }
+            )
         inspect_dir = change_dir / "inspect"
         (inspect_dir / "failure-analysis.json").write_text(
-            result.analysis.model_dump_json(indent=2, by_alias=True), encoding="utf-8",
+            result.analysis.model_dump_json(indent=2, by_alias=True),
+            encoding="utf-8",
         )
 
     analysis = result.analysis
     gate = result.quality_gate
     click.secho(f"\naa report reclassify — change: {change_id}\n", bold=True)
-    click.echo("  Final Status : " + click.style(gate.final_status, fg=_GATE_COLOR[gate.final_status], bold=True))
+    click.echo(
+        "  Final Status : " + click.style(gate.final_status, fg=_GATE_COLOR[gate.final_status], bold=True)
+    )
     click.echo(f"  Source Batch : {analysis.source_batch_id}")
     click.echo(f"  Failures     : {len(analysis.failures)}")
-    append_event_best_effort(change_dir, {
-        "source": "report",
-        "type": "reclassified",
-        "batch_id": analysis.source_batch_id,
-    })
+    append_event_best_effort(
+        change_dir,
+        {
+            "source": "report",
+            "type": "reclassified",
+            "batch_id": analysis.source_batch_id,
+        },
+    )
     raise SystemExit(1 if gate.final_status == "FAIL" else 0)
-

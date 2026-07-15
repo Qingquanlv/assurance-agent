@@ -7,6 +7,7 @@ within one path segment, `**/` matches zero or more segments — same effective
 behavior micromatch gave the TS globs. `free`-grade artifacts (markdown
 reports, events extensions) are deliberately absent: they are not validated.
 """
+
 import re
 from functools import lru_cache
 from typing import Literal
@@ -40,32 +41,65 @@ class ArtifactSpec(BaseModel):
 
 
 REGISTRY: list[ArtifactSpec] = [
-    ArtifactSpec(artifact_type="case_yaml", pattern="cases/**/case.yaml",
-                 model=CaseYaml, compat="must_compat"),
-    ArtifactSpec(artifact_type="qa_yaml", pattern=".qa.yaml",
-                 model=QaYaml, compat="must_compat"),
-    ArtifactSpec(artifact_type="execution_manifest", pattern="execution/execution-manifest.yaml",
-                 model=ExecutionManifest, compat="versioned"),
-    ArtifactSpec(artifact_type="failure_analysis", pattern="inspect/failure-analysis.json",
-                 model=FailureAnalysis, compat="must_compat"),
-    ArtifactSpec(artifact_type="quality_gate_result", pattern="inspect/quality-gate-result.json",
-                 model=QualityGateResult, compat="versioned"),
-    ArtifactSpec(artifact_type="quality_report", pattern="report/quality-report.json",
-                 model=QualityReport, compat="versioned"),
-    ArtifactSpec(artifact_type="fix_proposal", pattern="healing/fix-proposal.json",
-                 model=FixProposal, compat="must_compat"),
-    ArtifactSpec(artifact_type="apply_summary", pattern="healing/*-apply-summary.json",
-                 model=ApplySummary, compat="must_compat"),
-    ArtifactSpec(artifact_type="safety_check", pattern="healing/fixer-safety-check.json",
-                 model=SafetyCheck, compat="must_compat"),
-    ArtifactSpec(artifact_type="review", pattern="review/*.json",
-                 model=Review, compat="must_compat"),
-    ArtifactSpec(artifact_type="fact_baseline", pattern="facts/fact-baseline.json",
-                 model=FactBaseline, compat="must_compat"),
-    ArtifactSpec(artifact_type="advisory", pattern="explore/advisory.json",
-                 model=Advisory, compat="must_compat"),
-    ArtifactSpec(artifact_type="workflow_state", pattern="workflow-state.yaml",
-                 model=WorkflowState, compat="versioned"),
+    ArtifactSpec(
+        artifact_type="case_yaml", pattern="cases/**/case.yaml", model=CaseYaml, compat="must_compat"
+    ),
+    ArtifactSpec(artifact_type="qa_yaml", pattern=".qa.yaml", model=QaYaml, compat="must_compat"),
+    ArtifactSpec(
+        artifact_type="execution_manifest",
+        pattern="execution/execution-manifest.yaml",
+        model=ExecutionManifest,
+        compat="versioned",
+    ),
+    ArtifactSpec(
+        artifact_type="failure_analysis",
+        pattern="inspect/failure-analysis.json",
+        model=FailureAnalysis,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="quality_gate_result",
+        pattern="inspect/quality-gate-result.json",
+        model=QualityGateResult,
+        compat="versioned",
+    ),
+    ArtifactSpec(
+        artifact_type="quality_report",
+        pattern="report/quality-report.json",
+        model=QualityReport,
+        compat="versioned",
+    ),
+    ArtifactSpec(
+        artifact_type="fix_proposal",
+        pattern="healing/fix-proposal.json",
+        model=FixProposal,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="apply_summary",
+        pattern="healing/*-apply-summary.json",
+        model=ApplySummary,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="safety_check",
+        pattern="healing/fixer-safety-check.json",
+        model=SafetyCheck,
+        compat="must_compat",
+    ),
+    ArtifactSpec(artifact_type="review", pattern="review/*.json", model=Review, compat="must_compat"),
+    ArtifactSpec(
+        artifact_type="fact_baseline",
+        pattern="facts/fact-baseline.json",
+        model=FactBaseline,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="advisory", pattern="explore/advisory.json", model=Advisory, compat="must_compat"
+    ),
+    ArtifactSpec(
+        artifact_type="workflow_state", pattern="workflow-state.yaml", model=WorkflowState, compat="versioned"
+    ),
 ]
 
 

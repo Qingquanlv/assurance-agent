@@ -5,6 +5,7 @@ latest pointers. They are NOT in the M2 artifact registry: the registry only
 owns cross-consumer contracts (manifest, failure-analysis, quality-gate, report).
 Reuses M2 shared types so coverage/performance shapes stay consistent.
 """
+
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
