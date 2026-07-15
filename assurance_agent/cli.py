@@ -7,6 +7,8 @@ from assurance_agent.commands.init_cmd import init_command
 from assurance_agent.commands.decide_cmd import decide_command
 from assurance_agent.commands.gate_cmd import gate_group
 from assurance_agent.commands.risk_cmd import risk_group
+from assurance_agent.commands.heal_cmd import heal_group
+from assurance_agent.commands.report_cmd import report_group
 from assurance_agent.commands.run_cmd import run_command
 from assurance_agent.commands.state_cmd import state_group
 from assurance_agent.commands.status_cmd import status_command
@@ -29,3 +31,5 @@ main.add_command(state_group)
 main.add_command(decide_command)
 main.add_command(risk_group)
 main.add_command(run_command)
+main.add_command(report_group)
+main.add_command(heal_group)
