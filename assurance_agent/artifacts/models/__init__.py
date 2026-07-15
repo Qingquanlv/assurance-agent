@@ -11,16 +11,29 @@ from assurance_agent.artifacts.models.common import (
     GateStatus,
     ReportRiskLevel,
 )
+from assurance_agent.artifacts.models.explore import (
+    Advisory,
+    FactBaseline,
+    FactBaselineFull,
+    FactBaselineUnavailable,
+)
+from assurance_agent.artifacts.models.review import Review, ReviewDecision
 
 __all__ = [
+    "Advisory",
     "CaseEntry",
     "CaseRemoval",
     "CaseYaml",
     "CoverageDimension",
     "CoverageThreshold",
+    "FactBaseline",
+    "FactBaselineFull",
+    "FactBaselineUnavailable",
     "FunctionalCounts",
     "FunctionalDimension",
     "GateStatus",
     "QaYaml",
     "ReportRiskLevel",
+    "Review",
+    "ReviewDecision",
 ]
