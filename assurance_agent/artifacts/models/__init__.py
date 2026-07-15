@@ -11,6 +11,7 @@ from assurance_agent.artifacts.models.common import (
     GateStatus,
     ReportRiskLevel,
 )
+from assurance_agent.artifacts.models.execution import ExecutionManifest, SelectedTargets
 from assurance_agent.artifacts.models.explore import (
     Advisory,
     FactBaseline,
@@ -18,6 +19,14 @@ from assurance_agent.artifacts.models.explore import (
     FactBaselineUnavailable,
 )
 from assurance_agent.artifacts.models.review import Review, ReviewDecision
+from assurance_agent.artifacts.models.state import (
+    HealingPhaseState,
+    PhaseState,
+    RunContext,
+    WorkflowGates,
+    WorkflowPhases,
+    WorkflowState,
+)
 
 __all__ = [
     "Advisory",
@@ -26,14 +35,22 @@ __all__ = [
     "CaseYaml",
     "CoverageDimension",
     "CoverageThreshold",
+    "ExecutionManifest",
     "FactBaseline",
     "FactBaselineFull",
     "FactBaselineUnavailable",
     "FunctionalCounts",
     "FunctionalDimension",
     "GateStatus",
+    "HealingPhaseState",
+    "PhaseState",
     "QaYaml",
     "ReportRiskLevel",
     "Review",
     "ReviewDecision",
+    "RunContext",
+    "SelectedTargets",
+    "WorkflowGates",
+    "WorkflowPhases",
+    "WorkflowState",
 ]
