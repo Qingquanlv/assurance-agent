@@ -7,6 +7,7 @@ type = layers
 layers =
     assurance_agent.cli
     assurance_agent.commands
+    assurance_agent.risk
     assurance_agent.workflow
     assurance_agent.artifacts
     assurance_agent.config

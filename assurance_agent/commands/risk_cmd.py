@@ -1,14 +1,19 @@
 """aa risk — Explore 命令（Phase 0.5）。对齐 TS src/commands/risk.ts 的 flag 面。"""
+import json
 from pathlib import Path
 
 import click
+import yaml
 
+from assurance_agent.risk.advisory import validate_advisory
 from assurance_agent.risk.context import (
+    RiskContext,
     build_risk_context,
     serialize_context,
     validate_context_shape,
     write_risk_context,
 )
+from assurance_agent.risk.paths import advisory_json_path, context_json_path
 from assurance_agent.risk.safety import RiskSafetyError, assert_change_id_safe, assert_inside_project
 
 
@@ -76,3 +81,61 @@ def risk_context(
     except RiskSafetyError as err:
         click.secho(str(err), fg="red")
         raise SystemExit(1) from err
+
+
+@risk_group.command("validate-advisory")
+@click.option("--change", "change_id", required=True, help="Change ID.")
+@click.option("--project-dir", "project_dir", default=None, help="Project root (default: cwd).")
+def risk_validate_advisory(change_id: str, project_dir: str | None) -> None:
+    """Validate explore/advisory.json against explore/context.json (§5.5)."""
+    try:
+        assert_change_id_safe(change_id)
+        project_root = Path(project_dir).resolve() if project_dir else Path.cwd()
+        ctx_path = context_json_path(project_root, change_id)
+        adv_path = advisory_json_path(project_root, change_id)
+        if not ctx_path.is_file():
+            click.secho(f"Missing {ctx_path}", fg="red")
+            raise SystemExit(1)
+        if not adv_path.is_file():
+            click.secho(f"Missing {adv_path}", fg="red")
+            raise SystemExit(1)
+
+        context = RiskContext.model_validate(json.loads(ctx_path.read_text(encoding="utf-8")))
+        advisory = json.loads(adv_path.read_text(encoding="utf-8"))
+        run_ctx = _read_run_context(project_root, change_id)
+        ok, errors = validate_advisory(
+            context,
+            advisory,
+            known_case_ids=[],
+            interaction_mode=run_ctx.get("interaction_mode"),
+            orchestrator_skill=run_ctx.get("orchestrator_skill"),
+        )
+        if ok:
+            click.secho("advisory.json validation passed", fg="green")
+            raise SystemExit(0)
+        click.secho("advisory.json validation failed:", fg="red")
+        for e in errors:
+            click.secho(f"  - {e}", fg="red")
+        raise SystemExit(1)
+    except RiskSafetyError as err:
+        click.secho(str(err), fg="red")
+        raise SystemExit(1) from err
+
+
+def _read_run_context(project_root: Path, change_id: str) -> dict:
+    state_file = project_root / "qa" / "changes" / change_id / "workflow-state.yaml"
+    if not state_file.is_file():
+        return {}
+    parsed = yaml.safe_load(state_file.read_text(encoding="utf-8"))
+    if not isinstance(parsed, dict):
+        return {}
+    run_context = parsed.get("run_context")
+    if not isinstance(run_context, dict):
+        return {}
+    mode = run_context.get("interaction_mode")
+    return {
+        "interaction_mode": mode if mode in ("interactive", "autonomous") else None,
+        "orchestrator_skill": run_context.get("orchestrator_skill")
+        if isinstance(run_context.get("orchestrator_skill"), str)
+        else None,
+    }

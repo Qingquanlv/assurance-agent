@@ -256,7 +256,7 @@ EXIT_HUMAN_REVIEW = 30
 EXIT_ERROR = 40          # command/data error；不是业务 terminal
 EXIT_USAGE = 2           # click 用法错误默认值
 def exit_code_for_gate_verdict(verdict: str) -> int: ...
-def exit_code_for_terminal(terminal: Terminal | None) -> int: ...
+def exit_code_for_terminal(terminal: TerminalLike | None) -> int: ...  # Protocol，不 import orchestration.Terminal
 ```
 
 ### M5 执行与报告
