@@ -4,10 +4,10 @@ from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from assurance_agent.artifacts.models import SelectedTargets
+from assurance_agent.artifacts.models import CoverageThreshold, SelectedTargets
 from assurance_agent.cli import main
 from assurance_agent.workflow.execution.evidence import publish_execution_evidence
-from assurance_agent.workflow.execution.results import CaseResult, CoverageResult, TargetResult
+from assurance_agent.workflow.execution.results import CaseResult, CoverageResult, ResultSource, TargetResult
 from assurance_agent.workflow.report.quality_gate import build_quality_gate
 
 
@@ -20,12 +20,12 @@ def _publish_failed_batch(root: Path, batch_id: str = "20260715-000001") -> None
     api = TargetResult(
         change_id="CH-1", batch_id=batch_id, target="api",
         status="failed", command="cmd",
-        source={"framework": "pytest", "raw_log": "raw/api.log"},
+        source=ResultSource(framework="pytest", raw_log="raw/api.log"),
         total=1, passed=0, failed=1, skipped=0, cases=cases, unmapped_tests=[],
     )
     cov = CoverageResult(change_id="CH-1", batch_id=batch_id, available=True,
                          line_coverage=90.0, branch_coverage=80.0,
-                         threshold={"line": 70, "branch": 60}, status="PASS")
+                         threshold=CoverageThreshold(line=70, branch=60), status="PASS")
     gate = build_quality_gate(change_id="CH-1", batch_id=batch_id, api=api, e2e=None,
                               coverage=cov, coverage_gate_mode="warn")
     publish_execution_evidence(

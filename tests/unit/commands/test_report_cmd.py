@@ -2,10 +2,10 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from assurance_agent.artifacts.models import SelectedTargets
+from assurance_agent.artifacts.models import CoverageThreshold, SelectedTargets
 from assurance_agent.cli import main
 from assurance_agent.workflow.execution.evidence import publish_execution_evidence
-from assurance_agent.workflow.execution.results import CaseResult, CoverageResult, TargetResult
+from assurance_agent.workflow.execution.results import CaseResult, CoverageResult, ResultSource, TargetResult
 from assurance_agent.workflow.report.quality_gate import build_quality_gate
 
 
@@ -21,13 +21,13 @@ def _seed(root: Path, failed: bool) -> None:
     api = TargetResult(
         change_id="CH-1", batch_id="20260715-000000", target="api",
         status="failed" if failed else "passed", command="cmd",
-        source={"framework": "pytest", "raw_log": "raw/api.log"},
+        source=ResultSource(framework="pytest", raw_log="raw/api.log"),
         total=len(cases), passed=len(cases) - n_failed, failed=n_failed, skipped=0,
         cases=cases, unmapped_tests=[],
     )
     cov = CoverageResult(change_id="CH-1", batch_id="20260715-000000", available=True,
                          line_coverage=90.0, branch_coverage=80.0,
-                         threshold={"line": 70, "branch": 60}, status="PASS")
+                         threshold=CoverageThreshold(line=70, branch=60), status="PASS")
     gate = build_quality_gate(change_id="CH-1", batch_id="20260715-000000", api=api, e2e=None,
                               coverage=cov, coverage_gate_mode="warn")
     publish_execution_evidence(

@@ -69,7 +69,11 @@ def derive_guard_context(project_root: Path, change_id: str) -> HealingGuardCont
         if event.get("type") == "healing_attempt_allocated"
         and event.get("episode_id") == snapshot.episode_id
     ]
-    latest = max(allocations, key=lambda e: int(e.get("seq", 0)), default=None)
+    def _event_seq(event: dict[str, object]) -> int:
+        seq = event.get("seq")
+        return seq if isinstance(seq, int) else 0
+
+    latest = max(allocations, key=_event_seq, default=None)
     proposal_path = change_dir / "healing" / "fix-proposal.json"
     proposal_sha = sha256_file(proposal_path)
     source_batch = str(latest["source_batch_id"]) if latest is not None else None

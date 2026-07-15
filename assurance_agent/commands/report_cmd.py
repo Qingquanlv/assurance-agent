@@ -101,11 +101,11 @@ def reclassify_cmd(change_id: str, batch_id: str | None) -> None:
             old = old_by_key.get(_failure_key(failure))
             if old is None or old.category == failure.category:
                 continue
-            failure.reclassified = Reclassified(
-                from_=old.category,
-                evidence="deterministic rules re-run",
-                at=now,
-            )
+            failure.reclassified = Reclassified.model_validate({
+                "from": old.category,
+                "evidence": "deterministic rules re-run",
+                "at": now,
+            })
         inspect_dir = change_dir / "inspect"
         (inspect_dir / "failure-analysis.json").write_text(
             result.analysis.model_dump_json(indent=2, by_alias=True), encoding="utf-8",

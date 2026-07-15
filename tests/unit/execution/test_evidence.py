@@ -4,13 +4,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from assurance_agent.artifacts.models import SelectedTargets
+from assurance_agent.artifacts.models import CoverageThreshold, SelectedTargets
 from assurance_agent.workflow.execution.evidence import (
     EvidenceError,
     load_execution_evidence,
     publish_execution_evidence,
 )
-from assurance_agent.workflow.execution.results import CoverageResult, TargetResult
+from assurance_agent.workflow.execution.results import CoverageResult, ResultSource, TargetResult
 from assurance_agent.workflow.report.quality_gate import build_quality_gate
 
 
@@ -18,7 +18,7 @@ def make_api(passed: int = 2, failed: int = 0) -> TargetResult:
     return TargetResult(
         change_id="CH-1", batch_id="20260715-000000", target="api",
         status="failed" if failed else "passed", command="cmd",
-        source={"framework": "pytest", "raw_log": "raw/api.log"},
+        source=ResultSource(framework="pytest", raw_log="raw/api.log"),
         total=passed + failed, passed=passed, failed=failed, skipped=0,
         cases=[], unmapped_tests=[],
     )
@@ -27,7 +27,7 @@ def make_api(passed: int = 2, failed: int = 0) -> TargetResult:
 def make_cov(available: bool = True) -> CoverageResult:
     return CoverageResult(
         change_id="CH-1", batch_id="20260715-000000", available=available,
-        line_coverage=90.0, branch_coverage=80.0, threshold={"line": 70, "branch": 60},
+        line_coverage=90.0, branch_coverage=80.0, threshold=CoverageThreshold(line=70, branch=60),
         status="PASS" if available else "SKIPPED",
     )
 

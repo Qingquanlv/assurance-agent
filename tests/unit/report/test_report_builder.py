@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from assurance_agent.artifacts.models import SelectedTargets
+from assurance_agent.artifacts.models import CoverageThreshold, SelectedTargets
 from assurance_agent.workflow.execution.evidence import publish_execution_evidence
-from assurance_agent.workflow.execution.results import CaseResult, CoverageResult, TargetResult
+from assurance_agent.workflow.execution.results import CaseResult, CoverageResult, ResultSource, TargetResult
 from assurance_agent.workflow.report.inspector import inspect_change
 from assurance_agent.workflow.report.quality_gate import build_quality_gate
 from assurance_agent.workflow.report.report_builder import generate_report
@@ -19,7 +19,7 @@ def _api(failed_message: str | None) -> TargetResult:
     return TargetResult(
         change_id="CH-1", batch_id="20260715-000000", target="api",
         status="failed" if failed else "passed", command="cmd",
-        source={"framework": "pytest", "raw_log": "raw/api.log"},
+        source=ResultSource(framework="pytest", raw_log="raw/api.log"),
         total=len(cases), passed=len(cases) - failed, failed=failed, skipped=0,
         cases=cases, unmapped_tests=[],
     )
@@ -28,7 +28,7 @@ def _api(failed_message: str | None) -> TargetResult:
 def _cov() -> CoverageResult:
     return CoverageResult(
         change_id="CH-1", batch_id="20260715-000000", available=True, line_coverage=90.0,
-        branch_coverage=80.0, threshold={"line": 70, "branch": 60}, status="PASS",
+        branch_coverage=80.0, threshold=CoverageThreshold(line=70, branch=60), status="PASS",
     )
 
 
