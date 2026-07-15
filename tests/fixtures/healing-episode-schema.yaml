@@ -1,0 +1,60 @@
+schema_version: "1"
+name: healing-episode-test
+params:
+  max_healing_attempts: { type: int, default: 2 }
+phases:
+  - id: execution
+    skill: null
+    requires: []
+    produces: [execution/execution-manifest.yaml]
+  - id: inspect
+    skill: aa-inspect
+    agent: aa-reviewer
+    requires: [execution]
+    produces: [inspect/failure-analysis.json, inspect/quality-gate-result.json]
+  - id: fix-proposal
+    skill: aa-fix-proposal
+    agent: aa-doc-author
+    requires: [inspect]
+    produces: [healing/fix-proposal.json]
+    loop: healing
+  - id: api-codegen-fix
+    skill: aa-api-codegen-fixer
+    agent: aa-test-author
+    requires: [fix-proposal]
+    produces: [healing/api-apply-summary.json]
+    loop: healing
+  - id: healing-rerun
+    skill: null
+    requires: [api-codegen-fix]
+    produces: [execution/execution-manifest.yaml]
+    gate: fixer-safety-gate
+    loop: healing
+  - id: healing-reinspect
+    skill: aa-inspect
+    agent: aa-reviewer
+    requires: [healing-rerun]
+    produces: [inspect/failure-analysis.json, inspect/quality-gate-result.json]
+    loop: healing
+gates:
+  healing-entry-gate:
+    reads: [{ path: inspect/failure-analysis.json, as: failure_analysis }]
+    enter_when: "any(failure_analysis.failures, fix_proposal_eligible == true) and state.phases.healing.attempts_used < params.max_healing_attempts"
+    skip_when: "not any(failure_analysis.failures, fix_proposal_eligible == true)"
+  fixer-safety-gate:
+    reads: [healing/fixer-safety-check.json]
+    missing_file_is: stop
+    needs_human_review_when: "needs_review == true"
+    pass_when: "passed == true"
+  healing-loop-gate:
+    reads: [{ path: inspect/failure-analysis.json, as: failure_analysis }]
+    exit_when: "not any(failure_analysis.failures, fix_proposal_eligible == true)"
+    continue_when: "any(failure_analysis.failures, fix_proposal_eligible == true) and state.phases.healing.attempts_used < params.max_healing_attempts"
+    stop_when: "state.phases.healing.attempts_used >= params.max_healing_attempts"
+loops:
+  healing:
+    members: [fix-proposal, api-codegen-fix, healing-rerun, healing-reinspect]
+    counter: state.phases.healing.attempts_used
+    max_param: max_healing_attempts
+    allocate_on: "file_exists('healing/fix-proposal.json') and fix_proposal.summary.eligible_count > 0"
+    exit_gate: healing-loop-gate

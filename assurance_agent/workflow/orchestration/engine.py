@@ -5,14 +5,19 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from assurance_agent.artifacts.models import WorkflowState
+from assurance_agent.workflow.core.events import read_events
 from assurance_agent.workflow.orchestration.dsl import Scope, is_satisfied, parse_expression
 from assurance_agent.workflow.orchestration.gates import (
     build_evidence_scope,
     resolve_change_path,
     resolve_gate_verdict,
+)
+from assurance_agent.workflow.orchestration.healing_episode import (
+    HealingEpisodeSnapshot,
+    project_healing_episode,
 )
 from assurance_agent.workflow.orchestration.healing_state import (
     HealingStateProvider,
@@ -55,6 +60,14 @@ class WorkflowStatus(BaseModel):
     phases: list[PhaseView]
     next_dispatch: list[DispatchEntry]
     terminal: Terminal | None = None
+    healing_episode: HealingEpisodeSnapshot = Field(
+        default_factory=lambda: HealingEpisodeSnapshot(state="inactive", stage=None)
+    )
+
+
+def _event_seq(event: dict[str, object]) -> int:
+    seq = event.get("seq")
+    return seq if isinstance(seq, int) else 0
 
 
 def _dispatch_kind(phase: PhaseDef) -> Literal["skill", "cli", "orchestrator"]:
@@ -128,7 +141,7 @@ def compute_status(
     healing_provider: HealingStateProvider | None = None,
 ) -> WorkflowStatus:
     merged_params = {**schema.default_param_values(), **params}
-    state, _derived_healing = _overlay_healing(state, change_dir, healing_provider)
+    state, derived_healing = _overlay_healing(state, change_dir, healing_provider)
     active_scope = None if scope == "full" else scope
     memo: dict[str, Verdict] = {}  # 单次 compute_status 内共享 gate 裁决 memo
 
@@ -166,8 +179,40 @@ def compute_status(
         for p in phases if p.status == "ready"
     ]
     terminal = _terminal(phases, ready)
-    next_dispatch = [] if terminal is not None else ready
-    return WorkflowStatus(phases=phases, next_dispatch=next_dispatch, terminal=terminal)
+
+    healing_loop = schema.loops.get("healing")
+    loop_members = set(healing_loop.members if healing_loop else [])
+    episode = project_healing_episode(schema, change_dir, state, merged_params, derived_healing)
+    ready = [d for d in ready if d.phase_id not in loop_members]
+    for action in episode.next_actions:
+        if action.kind == "dispatch_phase" and action.phase:
+            phase = by_id[action.phase]
+            views[action.phase] = views[action.phase].model_copy(update={"status": "ready"})
+            ready.append(DispatchEntry(
+                phase_id=phase.id, skill=phase.skill, agent=phase.agent, kind=_dispatch_kind(phase),
+            ))
+    latest_decision = max(
+        (e for e in read_events(change_dir) if e.get("type") == "human_decision"),
+        key=_event_seq,
+        default=None,
+    )
+    if latest_decision is not None and latest_decision.get("action") == "stop":
+        terminal = Terminal(
+            kind="stopped",
+            reason=str(latest_decision.get("reason") or "stopped by human decision"),
+            phase=str(latest_decision.get("checkpoint") or "workflow"),
+        )
+    elif episode.terminal_kind == "stopped":
+        terminal = Terminal(kind="stopped", reason=episode.reason, phase="healing")
+    elif episode.state in {"active", "awaiting_human"}:
+        terminal = None
+    next_dispatch = [] if terminal else ready
+    return WorkflowStatus(
+        phases=[views[p.id] for p in schema.phases],
+        next_dispatch=next_dispatch,
+        terminal=terminal,
+        healing_episode=episode,
+    )
 
 
 def _phase_view(
