@@ -5,6 +5,7 @@ from assurance_agent.commands.config_cmd import config_group
 from assurance_agent.commands.doctor import doctor_command
 from assurance_agent.commands.init_cmd import init_command
 from assurance_agent.commands.gate_cmd import gate_group
+from assurance_agent.commands.state_cmd import state_group
 from assurance_agent.commands.status_cmd import status_command
 from assurance_agent.commands.validate_cmd import validate_command
 
@@ -21,3 +22,4 @@ main.add_command(config_group)
 main.add_command(validate_command)
 main.add_command(status_command)
 main.add_command(gate_group)
+main.add_command(state_group)
