@@ -336,6 +336,8 @@ Eval 重复执行的每个 attempt 必须使用隔离的 SUT 副本；scorer 对
 - `benchmark/vue-fastapi-admin/benchmark/run-workflow-loop.sh` 与 `run-workflow-loop-cursor.sh`
   切换到 `aa`（`AWS_BIN`→`AA_BIN` 等），依赖 M4 status 退出码、M6 driver、M7 skills、M8 retro nightly
 
+M9 落地补充：README 命令表与 click group 双向对拍（`tests/integration/test_readme_commands.py`）；`docs/schemas.md` 与 `examples/minimal-sut/` 端到端冒烟（`tests/integration/test_example_minimal.py`）；`.github/workflows/ci.yml` 五 job（ruff、pyright、lint-imports、pytest、packaging smoke）。benchmark 脚本已切换：`AWS_BIN`→`AA_BIN`（默认 `aa`）、`AWS_SKILLS_ROOT`→`AA_SKILLS_ROOT`（指向 `$PROJECT_ROOT/skills`，由 `aa skill refresh` 物化）、`.aws/`→`.aa/`；npm bootstrap（实为 `command -v` 预检）替换为 uv 安装 + `aa skill refresh`。benchmark 使用侧修正：(1) `aa status` 为 0 running/completed、20 stopped、30 needs_human_review、40 error，并让 40 fail closed；(2) 删除 cursor 版自动 `state heal failed` / `kind=exhausted` 恢复，needs-human-review 只提示 `aa decide`。这些不改变 `aa` 契约。benchmark harness 已提交（`.gitignore` 忽略 vendored SUT 与 `runs/`/`resume-logs/` 生成物）。
+
 ---
 
 ## 生成记录与已登记的接口增补（2026-07-15）
