@@ -8,8 +8,7 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from assurance_agent.artifacts.models import ApplySummary, FailureAnalysis, Review, WorkflowState
-from assurance_agent.change_location import ChangeNotFoundError, resolve_change_any
-from assurance_agent.config import load_config
+from assurance_agent.change_location import ChangeNotFoundError, archive_root, resolve_change
 from assurance_agent.retro.types import ArchivedChange, EvidenceSource
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -93,34 +92,23 @@ def read_archived_change(change_dir: Path, *, source: EvidenceSource) -> Archive
 
 
 def list_archived_changes(project_root: Path) -> list[str]:
-    config = load_config(project_root)
-    rel = config.qa.archive
-    rel = rel[2:] if rel.startswith("./") else rel
-    archive = project_root / rel
+    archive = archive_root(project_root)
     if not archive.is_dir():
         return []
     return sorted(p.name for p in archive.iterdir() if p.is_dir())
 
 
 def resolve_change_dir(project_root: Path, change_id: str) -> tuple[Path, EvidenceSource] | None:
-    """Thin adapter: map ChangeLocation.source to retro EvidenceSource vocabulary.
+    """Thin adapter: map ``ChangeLocation.source`` to retro ``EvidenceSource``.
 
-    Checks `qa.archive` first. `aa-archive` never deletes `qa/changes/<id>/`
-    after archiving (it stays as a preserved reference per skill contract),
-    so a change existing under both roots is the normal steady state, not an
-    error — `resolve_change_any`'s `ChangeAmbiguousError` would otherwise
-    crash `aa retro nightly collect` on every already-archived change. Callers
-    of this function (`enumerate_candidates`) only invoke it for change ids
-    already known to be archived, so archive-first resolution is correct here.
+    Archive-first resolution (``prefer="archive"``): `aa-archive` copies (never
+    moves) and does not delete `qa/changes/<id>/`, so a Change under both roots
+    is the normal steady state, not an error (ADR-0002). The archived copy is
+    the canonical final snapshot, so it wins; an as-yet-unarchived Change falls
+    back to its active copy under `qa.changes` (retro vocabulary: ``unarchived``).
     """
-    config = load_config(project_root)
-    rel = config.qa.archive
-    rel = rel[2:] if rel.startswith("./") else rel
-    archive_path = project_root / rel / change_id
-    if archive_path.is_dir():
-        return archive_path, "archive"
     try:
-        loc = resolve_change_any(project_root, change_id)
+        loc = resolve_change(project_root, change_id, prefer="archive")
     except ChangeNotFoundError:
         return None
     source: EvidenceSource = "unarchived" if loc.source == "changes" else "archive"

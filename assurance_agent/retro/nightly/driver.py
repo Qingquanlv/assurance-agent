@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 
-from assurance_agent.config import load_config as load_aa_config
+from assurance_agent.change_location import archive_root, resolve_change
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import assert_path_segment_safe
 from assurance_agent.retro.aggregator import build_retro_context, count_signals
@@ -36,13 +37,11 @@ AgentRunner = Callable[[str, Path], int]
 ContextBuilder = Callable[..., RetroContext]
 
 
-def _default_is_terminal(change_dir: Path, change_id: str) -> bool:
-    project_root = change_dir.parents[2]
+def _default_is_terminal(project_root: Path, change_dir: Path, change_id: str) -> bool:
+    """Default terminality probe. ``project_root`` is bound by ``collect_nightly``
+    so no directory-depth reverse-derivation is needed (ADR-0002)."""
     try:
-        config = load_aa_config(project_root)
-        archive_rel = config.qa.archive
-        archive_rel = archive_rel[2:] if archive_rel.startswith("./") else archive_rel
-        if change_dir == project_root / archive_rel / change_id:
+        if change_dir == archive_root(project_root) / change_id:
             # `aa-archive` only ever archives a change after every archive-gate
             # condition (execution PASS/PASS_WITH_WARNINGS, healing resolved,
             # review gates pass) already held — archived is terminal by
@@ -53,11 +52,12 @@ def _default_is_terminal(change_dir: Path, change_id: str) -> bool:
             # process artifact), so produces-presence checks for case-design /
             # case-review phases spuriously fail against the archived copy.
             return True
+        loc = resolve_change(project_root, change_id, prefer="active")
         schema = load_workflow_schema(project_root)
-        state = read_workflow_state(change_dir)
+        state = read_workflow_state(loc.path)
         status = compute_status(
             schema,
-            change_dir,
+            loc,
             state,
             state.params,
             scope="full",
@@ -72,10 +72,13 @@ def collect_nightly(
     *,
     agent_runner: AgentRunner,
     context_builder: ContextBuilder = build_retro_context,
-    is_terminal: IsTerminal = _default_is_terminal,
+    is_terminal: IsTerminal | None = None,
     now: datetime | None = None,
 ) -> int:
     sut = Path(options.sut)
+    # Bind project_root into the default probe so it needs no path reverse-derivation.
+    if is_terminal is None:
+        is_terminal = partial(_default_is_terminal, sut)
     retro_id = options.retro_id or generate_retro_id(now)
     assert_path_segment_safe(retro_id, label="retro id")
     retro_dir = sut / "qa" / "retro" / retro_id

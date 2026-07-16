@@ -36,7 +36,13 @@ def _write_proposals(sut: Path, retro_id: str) -> None:
         json.dumps(
             {
                 "proposals": [
-                    {"id": "P-1", "apply_kind": "memory_append", "body": "append this", "eval_suite": "s"},
+                    {
+                        "id": "P-1",
+                        "apply_kind": "memory_append",
+                        "body": "append this",
+                        "eval_suite": "s",
+                        "evidence_ids": ["CH-1#F-1"],
+                    },
                 ]
             }
         ),
@@ -117,7 +123,7 @@ def test_default_is_terminal_treats_archived_change_as_terminal(tmp_path: Path) 
     write_aa_config(tmp_path)
     change_dir = make_archived_change(tmp_path, "CH-ARCHIVED", failures=[])
 
-    assert _default_is_terminal(change_dir, "CH-ARCHIVED") is True
+    assert _default_is_terminal(tmp_path, change_dir, "CH-ARCHIVED") is True
 
 
 def test_collect_dry_run_stops_before_agent_exit_0(tmp_path: Path) -> None:

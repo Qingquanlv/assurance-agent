@@ -41,10 +41,11 @@ def test_enumerate_candidates_skips_consumed_and_non_terminal(tmp_path: Path) ->
 
 
 def test_enumerate_candidates_handles_preserved_change_dir_after_archive(tmp_path: Path) -> None:
-    """Regression: `aa-archive` never deletes `qa/changes/<id>/` after archiving
-    (preserved as reference), so a change existing under both `qa/changes/`
-    and `qa/archive/` is the normal post-archive state, not an error. This
-    used to crash `enumerate_candidates` with `ChangeAmbiguousError`.
+    """Regression: `aa-archive` copies (never moves) and never deletes
+    `qa/changes/<id>/` after archiving (preserved as reference), so a change
+    existing under both `qa/changes/` and `qa/archive/` is the normal
+    post-archive steady state, not an error (ADR-0002). Archive-first
+    resolution (`prefer="archive"`) picks the archived copy.
     """
     write_aa_config(tmp_path)
     make_archived_change(tmp_path, "CH-ARCHIVED", failures=[])

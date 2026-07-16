@@ -37,7 +37,7 @@ def status_command(change_id: str, next_only: bool, as_json: bool) -> None:
         schema = load_workflow_schema(project_root)
         state = read_state(change_dir)
         params = getattr(state, "params", None) or {}
-        status = compute_status(schema, change_dir, state, params)
+        status = compute_status(schema, loc, state, params)
     except AaError as err:
         click.secho(f"status failed: {err}", fg="red")
         raise SystemExit(1) from err

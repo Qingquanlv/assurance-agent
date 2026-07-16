@@ -9,6 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from assurance_agent.artifacts.models import WorkflowState
+from assurance_agent.change_location import ChangeLocation
 from assurance_agent.workflow.core.events import Ledger
 from assurance_agent.workflow.orchestration.dsl import Scope, is_satisfied, parse_expression
 from assurance_agent.workflow.orchestration.gates import (
@@ -25,6 +26,7 @@ from assurance_agent.workflow.orchestration.healing_state import (
     HealingStateSnapshot,
     derive_healing_state,
 )
+from assurance_agent.workflow.orchestration.review_fix_episode import project_review_fix_loop
 from assurance_agent.workflow.orchestration.schema import PhaseDef, ReadEntry, Verdict, WorkflowSchema
 
 # 调度时视为「编排器内置」的 phase（对齐源版 resolveNextDispatch 的 internal 分支）。
@@ -79,15 +81,15 @@ def _in_active_scope(phase: PhaseDef, active_scope: str | None) -> bool:
     return active_scope in phase.owned_by
 
 
-def _file_exists(change_dir: Path, rel: str) -> bool:
-    p = resolve_change_path(change_dir, rel)
+def _file_exists(loc: ChangeLocation, rel: str) -> bool:
+    p = resolve_change_path(loc, rel)
     if rel.endswith("/"):  # 目录 produces：需存在且非空（对齐源版 fileExists 目录分支）
         return p.is_dir() and any(p.iterdir())
     return p.exists()
 
 
-def _produces_present(change_dir: Path, phase: PhaseDef) -> bool:
-    return bool(phase.produces) and all(_file_exists(change_dir, r) for r in phase.produces)
+def _produces_present(loc: ChangeLocation, phase: PhaseDef) -> bool:
+    return bool(phase.produces) and all(_file_exists(loc, r) for r in phase.produces)
 
 
 def _topo_order(schema: WorkflowSchema) -> list[str]:
@@ -131,7 +133,7 @@ def _overlay_healing(
 
 def compute_status(
     schema: WorkflowSchema,
-    change_dir: Path,
+    loc: ChangeLocation,
     state: WorkflowState,
     params: dict,
     *,
@@ -139,7 +141,7 @@ def compute_status(
     healing_provider: HealingStateProvider | None = None,
 ) -> WorkflowStatus:
     merged_params = {**schema.default_param_values(), **params}
-    state, derived_healing = _overlay_healing(state, change_dir, healing_provider)
+    state, derived_healing = _overlay_healing(state, loc.path, healing_provider)
     active_scope = None if scope == "full" else scope
     memo: dict[str, Verdict] = {}  # 单次 compute_status 内共享 gate 裁决 memo
 
@@ -149,7 +151,7 @@ def compute_status(
     def predicate_scope():
         return build_evidence_scope(
             schema,
-            change_dir,
+            loc,
             state,
             merged_params,
             alias_reads,
@@ -158,7 +160,7 @@ def compute_status(
         )
 
     def gate_verdict(gate_id: str) -> Verdict:
-        return resolve_gate_verdict(schema, gate_id, change_dir, state, merged_params, memo, ())
+        return resolve_gate_verdict(schema, gate_id, loc, state, merged_params, memo, ())
 
     by_id = {p.id: p for p in schema.phases}
 
@@ -174,7 +176,7 @@ def compute_status(
         phase = by_id[pid]
         views[pid] = _phase_view(
             by_id,
-            change_dir,
+            loc,
             phase,
             pruned,
             views,
@@ -193,14 +195,18 @@ def compute_status(
     ]
     terminal = _terminal(phases, ready)
 
-    healing_loop = schema.loops.get("healing")
-    loop_members = set(healing_loop.members if healing_loop else [])
-    episode = project_healing_episode(schema, change_dir, state, merged_params, derived_healing)
+    # Loop members (healing episode + bounded review_fix repair loops) are owned
+    # by their projections, not by ordinary DAG ready-routing. Drop them here and
+    # let each projection re-add exactly the phase it wants dispatched.
+    loop_members: set[str] = set()
+    for loop in schema.loops.values():
+        loop_members |= set(loop.members)
     ready = [d for d in ready if d.phase_id not in loop_members]
-    for action in episode.next_actions:
-        if action.kind == "dispatch_phase" and action.phase:
-            phase = by_id[action.phase]
-            views[action.phase] = views[action.phase].model_copy(update={"status": "ready"})
+
+    def _append_ready(phase_id: str) -> None:
+        phase = by_id[phase_id]
+        views[phase_id] = views[phase_id].model_copy(update={"status": "ready"})
+        if phase_id not in {d.phase_id for d in ready}:
             ready.append(
                 DispatchEntry(
                     phase_id=phase.id,
@@ -209,7 +215,34 @@ def compute_status(
                     kind=_dispatch_kind(phase),
                 )
             )
-    latest_decision = Ledger(change_dir).latest(type="human_decision")
+
+    episode = project_healing_episode(schema, loc, state, merged_params, derived_healing)
+    for action in episode.next_actions:
+        if action.kind == "dispatch_phase" and action.phase:
+            _append_ready(action.phase)
+
+    # Bounded review→fix→re-review loops (case / api-plan / e2e-plan). Any one
+    # exhausting its fixer budget stops the change (mirrors healing exhaustion).
+    review_fix_terminal: Terminal | None = None
+    for loop in schema.loops.values():
+        if loop.kind != "review_fix":
+            continue
+        review_view = views.get(loop.review_phase)
+        review_active = review_view is not None and review_view.status not in ("pruned", "out_of_scope")
+        snap = project_review_fix_loop(
+            schema, loc, state, merged_params, loop, review_active=review_active
+        )
+        if loop.fix_phase not in snap.dispatch and loop.fix_phase in views:
+            # Loop owns the fix phase; keep its view honest when not dispatching it
+            # (e.g. during a reviewer re-run or when the budget is exhausted).
+            if views[loop.fix_phase].status == "ready":
+                views[loop.fix_phase] = views[loop.fix_phase].model_copy(update={"status": "blocked"})
+        for phase_id in snap.dispatch:
+            _append_ready(phase_id)
+        if snap.terminal_kind == "stopped" and review_fix_terminal is None:
+            review_fix_terminal = Terminal(kind="stopped", reason=snap.reason, phase=loop.fix_phase)
+
+    latest_decision = Ledger(loc.path).latest(type="human_decision")
     if latest_decision is not None and latest_decision.get("action") == "stop":
         terminal = Terminal(
             kind="stopped",
@@ -218,6 +251,8 @@ def compute_status(
         )
     elif episode.terminal_kind == "stopped":
         terminal = Terminal(kind="stopped", reason=episode.reason, phase="healing")
+    elif review_fix_terminal is not None:
+        terminal = review_fix_terminal
     elif episode.state in {"active", "awaiting_human"}:
         terminal = None
     next_dispatch = [] if terminal else ready
@@ -231,7 +266,7 @@ def compute_status(
 
 def _phase_view(
     by_id: dict[str, PhaseDef],
-    change_dir: Path,
+    loc: ChangeLocation,
     phase: PhaseDef,
     pruned: dict[str, bool],
     views: dict[str, PhaseView],
@@ -248,7 +283,7 @@ def _phase_view(
     if phase.requires and all(views[d].status == "pruned" for d in phase.requires):
         return PhaseView(id=phase.id, status="pruned", gate=gate)
 
-    produces_present = _produces_present(change_dir, phase)
+    produces_present = _produces_present(loc, phase)
 
     if not produces_present and not _in_active_scope(phase, active_scope):
         return PhaseView(id=phase.id, status="out_of_scope", gate=gate)

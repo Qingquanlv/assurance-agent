@@ -17,6 +17,8 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel
 
+from assurance_agent.change_location import archive_root
+from assurance_agent.config import ConfigNotFoundError
 from assurance_agent.risk.safety import RiskSafetyError, resolve_requirement_path
 
 Confidence = str  # "high" | "medium" | "low"
@@ -336,7 +338,12 @@ def _latest_batch(archive_path: Path) -> dict | None:
 
 
 def _sample_archives(project_root: Path, depth: int) -> list[dict]:
-    root = project_root / "qa" / "archive"
+    # Honor a configured qa.archive root; degrade to the default layout when the
+    # project has no .aa/config.yaml (risk can run in a bare directory).
+    try:
+        root = archive_root(project_root)
+    except ConfigNotFoundError:
+        root = project_root / "qa" / "archive"
     if not root.is_dir():
         return []
     entries = [

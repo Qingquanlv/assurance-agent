@@ -4,6 +4,7 @@ from pathlib import Path
 from assurance_agent.artifacts.models import WorkflowState
 from assurance_agent.workflow.orchestration.gates import check_gate, resolve_change_path
 from assurance_agent.workflow.orchestration.schema import parse_schema
+from tests.helpers_aa import loc_for
 
 EMPTY = WorkflowState()  # gates 接收 WorkflowState，不接收裸 dict
 
@@ -39,39 +40,51 @@ def _write_review(change_dir: Path, payload: dict) -> None:
 
 def test_pass(tmp_path: Path):
     _write_review(tmp_path, {"decision": "pass", "auto_fix_allowed": False})
-    v = check_gate(SCHEMA, "case-review-gate", tmp_path, EMPTY, {})
+    v = check_gate(SCHEMA, "case-review-gate", loc_for(tmp_path), EMPTY, {})
     assert v.verdict == "pass"
 
 
 def test_needs_fix_order_wins(tmp_path: Path):
     _write_review(tmp_path, {"decision": "needs_fix", "auto_fix_allowed": True})
-    assert check_gate(SCHEMA, "case-review-gate", tmp_path, EMPTY, {}).verdict == "needs_fix"
+    assert check_gate(SCHEMA, "case-review-gate", loc_for(tmp_path), EMPTY, {}).verdict == "needs_fix"
 
 
 def test_reject(tmp_path: Path):
     _write_review(tmp_path, {"decision": "reject", "auto_fix_allowed": False})
-    assert check_gate(SCHEMA, "case-review-gate", tmp_path, EMPTY, {}).verdict == "reject"
+    assert check_gate(SCHEMA, "case-review-gate", loc_for(tmp_path), EMPTY, {}).verdict == "reject"
 
 
 def test_missing_field_is_stop(tmp_path: Path):
     _write_review(tmp_path, {"auto_fix_allowed": True})  # 无 decision
-    assert check_gate(SCHEMA, "case-review-gate", tmp_path, EMPTY, {}).verdict == "stop"
+    assert check_gate(SCHEMA, "case-review-gate", loc_for(tmp_path), EMPTY, {}).verdict == "stop"
 
 
 def test_invalid_json_stop(tmp_path: Path):
     d = tmp_path / "review"
     d.mkdir(parents=True)
     (d / "case-review.json").write_text("{not json")
-    assert check_gate(SCHEMA, "case-review-gate", tmp_path, EMPTY, {}).verdict == "stop"
+    assert check_gate(SCHEMA, "case-review-gate", loc_for(tmp_path), EMPTY, {}).verdict == "stop"
 
 
 def test_missing_file_default_stop(tmp_path: Path):
-    assert check_gate(SCHEMA, "case-review-gate", tmp_path, EMPTY, {}).verdict == "stop"
+    assert check_gate(SCHEMA, "case-review-gate", loc_for(tmp_path), EMPTY, {}).verdict == "stop"
 
 
 def test_change_id_placeholder_resolves_for_archive_produce(tmp_path: Path):
     change = tmp_path / "qa" / "changes" / "C-42"
-    assert resolve_change_path(change, "qa/archive/<change-id>/") == (tmp_path / "qa" / "archive" / "C-42")
+    loc = loc_for(change, project_root=tmp_path)
+    assert resolve_change_path(loc, "qa/archive/<change-id>/") == (tmp_path / "qa" / "archive" / "C-42")
+
+
+def test_resolve_change_path_uses_location_project_root_regardless_of_depth(tmp_path: Path):
+    # Non-default layout: change dir is NOT <root>/qa/changes/<id> at depth 3.
+    # The removed `parents[2]` would escape the project root; the ChangeLocation
+    # carries the real root, so `qa/` and `repo:` prefixes resolve correctly.
+    change = tmp_path / "custom" / "CH-1"
+    loc = loc_for(change, project_root=tmp_path)
+    assert resolve_change_path(loc, "qa/archive/<change-id>/") == tmp_path / "qa" / "archive" / "CH-1"
+    assert resolve_change_path(loc, "repo:src/x.py") == tmp_path / "src" / "x.py"
+    assert resolve_change_path(loc, "review/r.json") == change / "review" / "r.json"
 
 
 def test_safety_order_declaration_first_true_wins(tmp_path: Path):
@@ -98,4 +111,4 @@ gates:
     pass_when: "decision == 'pass'"
 """)
     _write_review(tmp_path, {"decision": "pass"})  # satisfies BOTH needs_fix_when and pass_when
-    assert check_gate(schema, "g", tmp_path, EMPTY, {}).verdict == "needs_fix"
+    assert check_gate(schema, "g", loc_for(tmp_path), EMPTY, {}).verdict == "needs_fix"

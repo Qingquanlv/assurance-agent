@@ -3,11 +3,11 @@ from pathlib import Path
 import pytest
 
 from assurance_agent.change_location import (
-    ChangeAmbiguousError,
     ChangeLocation,
     ChangeNotFoundError,
+    archive_root,
+    changes_root,
     resolve_change,
-    resolve_change_any,
 )
 from assurance_agent.config import ConfigNotFoundError
 from assurance_agent.identifiers import UnsafeIdentifierError
@@ -73,33 +73,73 @@ def test_resolve_change_archive_only_hints_archive(tmp_path: Path) -> None:
     assert "active change" in str(exc.value).lower() or "write" in str(exc.value).lower()
 
 
-def test_resolve_change_any_active(tmp_path: Path) -> None:
+# ---- prefer matrix: (only active | only archive | both) × (active | archive) ----
+def test_prefer_archive_returns_active_when_only_active(tmp_path: Path) -> None:
     _write_config(tmp_path)
     change = tmp_path / "qa" / "changes" / "CH-1"
     change.mkdir(parents=True)
 
-    loc = resolve_change_any(tmp_path, "CH-1")
+    loc = resolve_change(tmp_path, "CH-1", prefer="archive")
     assert loc.source == "changes"
     assert loc.path == change
 
 
-def test_resolve_change_any_archive(tmp_path: Path) -> None:
+def test_prefer_archive_returns_archive_when_only_archive(tmp_path: Path) -> None:
     _write_config(tmp_path)
     archived = tmp_path / "qa" / "archive" / "CH-1"
     archived.mkdir(parents=True)
 
-    loc = resolve_change_any(tmp_path, "CH-1")
+    loc = resolve_change(tmp_path, "CH-1", prefer="archive")
     assert loc.source == "archive"
     assert loc.path == archived
 
 
-def test_resolve_change_any_both_raises_ambiguous(tmp_path: Path) -> None:
+def test_prefer_active_missing_when_only_archive(tmp_path: Path) -> None:
     _write_config(tmp_path)
-    (tmp_path / "qa" / "changes" / "CH-1").mkdir(parents=True)
     (tmp_path / "qa" / "archive" / "CH-1").mkdir(parents=True)
 
-    with pytest.raises(ChangeAmbiguousError, match="CH-1"):
-        resolve_change_any(tmp_path, "CH-1")
+    with pytest.raises(ChangeNotFoundError, match="active change"):
+        resolve_change(tmp_path, "CH-1", prefer="active")
+
+
+def test_both_roots_coexist_is_not_ambiguous(tmp_path: Path) -> None:
+    # Post-archive steady state: aa-archive copies (never moves) and preserves
+    # qa/changes/<id>. Coexistence must resolve by preference, never raise (ADR-0002).
+    _write_config(tmp_path)
+    active = tmp_path / "qa" / "changes" / "CH-1"
+    archived = tmp_path / "qa" / "archive" / "CH-1"
+    active.mkdir(parents=True)
+    archived.mkdir(parents=True)
+
+    assert resolve_change(tmp_path, "CH-1", prefer="active").path == active
+    assert resolve_change(tmp_path, "CH-1", prefer="active").source == "changes"
+    assert resolve_change(tmp_path, "CH-1", prefer="archive").path == archived
+    assert resolve_change(tmp_path, "CH-1", prefer="archive").source == "archive"
+
+
+def test_prefer_archive_missing_both_raises(tmp_path: Path) -> None:
+    _write_config(tmp_path)
+    with pytest.raises(ChangeNotFoundError, match="not found"):
+        resolve_change(tmp_path, "CH-1", prefer="archive")
+
+
+def test_roots_honor_custom_qa_paths(tmp_path: Path) -> None:
+    (tmp_path / ".aa").mkdir()
+    (tmp_path / ".aa" / "config.yaml").write_text(
+        """version: 1
+sources: {frontend: ./frontend, backend: ./backend}
+qa: {cases: ./qa/cases, changes: ./work/changes, archive: ./work/archive}
+tests: {root: ./tests, api: ./tests/api, e2e: ./tests/e2e}
+frameworks:
+  api: {enabled: true, name: pytest}
+  e2e: {enabled: true, name: playwright}
+generation: {prd_input_mode: prompt, e2e: {default_pom: false}}
+execution: {entry: cli, self_healing: {mode: proposal-only}}
+""",
+        encoding="utf-8",
+    )
+    assert changes_root(tmp_path) == tmp_path / "work" / "changes"
+    assert archive_root(tmp_path) == tmp_path / "work" / "archive"
 
 
 def test_resolve_respects_custom_qa_paths(tmp_path: Path) -> None:
@@ -144,6 +184,6 @@ execution: {entry: cli, self_healing: {mode: proposal-only}}
     archived = tmp_path / "qa" / "archive" / "CH-1"
     archived.mkdir(parents=True)
 
-    loc = resolve_change_any(tmp_path, "CH-1")
+    loc = resolve_change(tmp_path, "CH-1", prefer="archive")
     assert loc.path == archived
     assert loc.source == "archive"

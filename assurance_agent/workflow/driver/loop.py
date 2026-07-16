@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
-from assurance_agent.change_location import ChangeNotFoundError, resolve_change
+from assurance_agent.change_location import ChangeLocation, ChangeNotFoundError, resolve_change
 from assurance_agent.config import ConfigNotFoundError
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import UnsafeIdentifierError
@@ -77,11 +77,21 @@ StatusProvider = Callable[[], WorkflowStatus]
 
 @dataclass
 class PhaseContext:
-    change_id: str
-    change_dir: Path
-    project_root: Path
+    loc: ChangeLocation
     params: dict
     parent_session_id: str | None = None
+
+    @property
+    def change_id(self) -> str:
+        return self.loc.change_id
+
+    @property
+    def change_dir(self) -> Path:
+        return self.loc.path
+
+    @property
+    def project_root(self) -> Path:
+        return self.loc.project_root
 
 
 @dataclass
@@ -248,17 +258,17 @@ class DefaultHealingActionExecutor:
 
 
 class _DefaultStatusProvider:
-    def __init__(self, schema: WorkflowSchema, change_dir: Path, params: dict, scope: str) -> None:
+    def __init__(self, schema: WorkflowSchema, loc: ChangeLocation, params: dict, scope: str) -> None:
         self._schema = schema
-        self._change_dir = change_dir
+        self._loc = loc
         self._params = params
         self._scope = scope
 
     def __call__(self) -> WorkflowStatus:
-        state = read_state(self._change_dir)
+        state = read_state(self._loc.path)
         return compute_status(
             self._schema,
-            self._change_dir,
+            self._loc,
             state,
             self._params,
             scope=self._scope,
@@ -315,12 +325,13 @@ def run_workflow_loop(
 ) -> LoopResult:
     params = params or {}
     try:
-        change_dir = resolve_change(project_root, change_id).path
+        loc = resolve_change(project_root, change_id)
     except (UnsafeIdentifierError, ChangeNotFoundError, ConfigNotFoundError) as err:
         return LoopResult(EXIT_ERROR, str(err))
+    change_dir = loc.path
     if status_provider is None:
         schema = schema or load_workflow_schema(project_root)
-        status_provider = _DefaultStatusProvider(schema, change_dir, params, scope)
+        status_provider = _DefaultStatusProvider(schema, loc, params, scope)
     else:
         schema = schema or load_workflow_schema(project_root)
     cli_executor = cli_executor or DefaultCliPhaseExecutor(schema=schema)
@@ -406,9 +417,7 @@ def run_workflow_loop(
         return LoopResult(exit_code, reason, driver)
 
     ctx = PhaseContext(
-        change_id=change_id,
-        change_dir=change_dir,
-        project_root=project_root,
+        loc=loc,
         params=params,
         parent_session_id=parent_session_id,
     )

@@ -10,12 +10,18 @@ from assurance_agent.workflow.orchestration.gates import check_gate
 from assurance_agent.workflow.orchestration.healing_episode import HealingEpisodeAction
 from assurance_agent.workflow.orchestration.healing_state import derive_healing_state
 from assurance_agent.workflow.orchestration.schema import load_workflow_schema, parse_schema
+from tests.helpers_aa import loc_for
 
 
 def _mk_change(tmp_path: Path) -> Path:
     change = tmp_path / "qa" / "changes" / "C1"
     (change / "inspect").mkdir(parents=True)
     return change
+
+
+def _loc(change: Path):
+    # change = <root>/qa/changes/C1 → project_root is <root>.
+    return loc_for(change, project_root=change.parents[2])
 
 
 def _j(change: Path, rel: str, payload) -> None:
@@ -149,7 +155,7 @@ def test_packaged_healing_entry_enters_on_eligible_failure(tmp_path: Path):
     _j(change, "inspect/failure-analysis.json", {"failures": [{"fix_proposal_eligible": True}]})
     state = _state(change)
     assert (
-        check_gate(schema, "healing-entry-gate", change, state, {"max_healing_attempts": 3}).verdict
+        check_gate(schema, "healing-entry-gate", _loc(change), state, {"max_healing_attempts": 3}).verdict
         == "enter"
     )
 
@@ -161,7 +167,8 @@ def test_packaged_healing_loop_exits_on_pass(tmp_path: Path):
     _allocate(change, 1)
     state = _state(change, execution_status="PASS")
     assert (
-        check_gate(schema, "healing-loop-gate", change, state, {"max_healing_attempts": 3}).verdict == "exit"
+        check_gate(schema, "healing-loop-gate", _loc(change), state, {"max_healing_attempts": 3}).verdict
+        == "exit"
     )
 
 
@@ -174,14 +181,15 @@ def test_packaged_healing_loop_stops_when_exhausted(tmp_path: Path):
     _allocate(change, 3)
     state = _state(change)
     assert (
-        check_gate(schema, "healing-loop-gate", change, state, {"max_healing_attempts": 3}).verdict == "stop"
+        check_gate(schema, "healing-loop-gate", _loc(change), state, {"max_healing_attempts": 3}).verdict
+        == "stop"
     )
 
 
 def test_compute_status_dispatches_registry_on_fresh_change(tmp_path: Path):
     schema = load_workflow_schema(tmp_path)
     change = _mk_change(tmp_path)
-    st = compute_status(schema, change, WorkflowState(), {})
+    st = compute_status(schema, _loc(change), WorkflowState(), {})
     assert "skill-registry-check" in _ready(st)
 
 
@@ -278,7 +286,7 @@ def test_golden_full_progression_enter_rerun_exit(tmp_path: Path):
 
     # Step 1 — case-review 判 needs_fix → case-fix 经 repair 路由变 ready（下游 execution 被阻塞）
     _j(change, "review/case-review.json", {"decision": "needs_fix", "auto_fix_allowed": True})
-    st = compute_status(GOLDEN, change, _state(change), {})
+    st = compute_status(GOLDEN, _loc(change), _state(change), {})
     assert _pv(st, "case-review").gate_verdict == "needs_fix"
     assert _pv(st, "case-fix").status == "ready"
     assert _ready(st) == ["case-fix"]
@@ -287,7 +295,7 @@ def test_golden_full_progression_enter_rerun_exit(tmp_path: Path):
     # Step 2 — driver apply 修复 + 复评 pass → case-review done、case-fix pruned、execution ready
     _touch(change, "review/case-review-apply-summary.md")
     _j(change, "review/case-review.json", {"decision": "pass"})
-    st = compute_status(GOLDEN, change, _state(change), {})
+    st = compute_status(GOLDEN, _loc(change), _state(change), {})
     assert _pv(st, "case-review").status == "done"
     assert _pv(st, "case-fix").status == "pruned"
     assert _pv(st, "execution").status == "ready"
@@ -296,7 +304,7 @@ def test_golden_full_progression_enter_rerun_exit(tmp_path: Path):
     _touch(change, "execution/execution-manifest.yaml")
     _j(change, "inspect/failure-analysis.json", {"failures": [{"fix_proposal_eligible": True}]})
     _j(change, "inspect/quality-gate-result.json", {"decision": "fail"})
-    st = compute_status(GOLDEN, change, _state(change), {})
+    st = compute_status(GOLDEN, _loc(change), _state(change), {})
     assert st.healing_episode.stage == "proposal"
     assert _ready(st) == ["fix-proposal"]
 
@@ -307,7 +315,7 @@ def test_golden_full_progression_enter_rerun_exit(tmp_path: Path):
         {"summary": {"eligible_count": 1}, "proposals": [{"target": "api", "eligible": True}]},
     )
     _outcome(change, "fix-proposal", "p1")
-    st = compute_status(GOLDEN, change, _state(change), {})
+    st = compute_status(GOLDEN, _loc(change), _state(change), {})
     assert st.healing_episode.next_actions[0].kind == "allocate_attempt"
     _commit_allocation_intent(change, st.healing_episode.next_actions[0])
 
@@ -315,13 +323,13 @@ def test_golden_full_progression_enter_rerun_exit(tmp_path: Path):
     _apply(change, 1)
     _touch(change, "healing/api-apply-summary.json")
     _j(change, "healing/fixer-safety-check.json", {"passed": True, "needs_review": False})
-    st = compute_status(GOLDEN, change, _state(change), {})
+    st = compute_status(GOLDEN, _loc(change), _state(change), {})
     assert st.healing_episode.stage == "rerun"
     assert _ready(st) == ["healing-rerun"]
 
     # Step 6 — rerun outcome 后，旧 inspect JSON 也不能跳过 reinspect。
     _outcome(change, "healing-rerun", "r1")
-    st = compute_status(GOLDEN, change, _state(change), {})
+    st = compute_status(GOLDEN, _loc(change), _state(change), {})
     assert st.healing_episode.stage == "reinspect"
     assert _ready(st) == ["healing-reinspect"]
 
@@ -329,7 +337,7 @@ def test_golden_full_progression_enter_rerun_exit(tmp_path: Path):
     _j(change, "inspect/failure-analysis.json", {"failures": []})
     _j(change, "inspect/quality-gate-result.json", {"decision": "pass"})
     _outcome(change, "healing-reinspect", "i1")
-    st = compute_status(GOLDEN, change, _state(change), {})
+    st = compute_status(GOLDEN, _loc(change), _state(change), {})
     assert st.healing_episode.next_actions[0].outcome == "resolved"
     assert st.terminal is not None and st.terminal.kind == "completed"
 
@@ -353,14 +361,14 @@ def test_golden_second_attempt_exhausts_exactly_from_events(tmp_path: Path):
     _apply(change, 1)
     _outcome(change, "healing-rerun", "r1")
     _outcome(change, "healing-reinspect", "i1")
-    st = compute_status(GOLDEN, change, _state(change), {})
+    st = compute_status(GOLDEN, _loc(change), _state(change), {})
     assert st.healing_episode.stage == "proposal"
 
     _outcome(change, "fix-proposal", "p2")
-    pending = compute_status(GOLDEN, change, _state(change), {})
+    pending = compute_status(GOLDEN, _loc(change), _state(change), {})
     action = pending.healing_episode.next_actions[0]
     assert action.allocation is not None
-    repeated = compute_status(GOLDEN, change, _state(change), {}).healing_episode.next_actions[0]
+    repeated = compute_status(GOLDEN, _loc(change), _state(change), {}).healing_episode.next_actions[0]
     assert repeated.allocation is not None
     assert action.allocation.operation_id == repeated.allocation.operation_id
     assert action.allocation.pin_entry_baseline is False
@@ -369,7 +377,7 @@ def test_golden_second_attempt_exhausts_exactly_from_events(tmp_path: Path):
     _outcome(change, "healing-rerun", "r2")
     _outcome(change, "healing-reinspect", "i2")
 
-    stopped = compute_status(GOLDEN, change, _state(change), {})
+    stopped = compute_status(GOLDEN, _loc(change), _state(change), {})
     assert derive_healing_state(change).attempts_used == 2
     assert stopped.healing_episode.terminal_kind == "stopped"
     assert "2/2" in (stopped.healing_episode.reason or "")
@@ -390,7 +398,7 @@ def test_golden_latest_human_stop_overrides_dispatch(tmp_path: Path):
         },
     )
 
-    status = compute_status(GOLDEN, change, _state(change), {})
+    status = compute_status(GOLDEN, _loc(change), _state(change), {})
 
     assert status.terminal is not None
     assert status.terminal.kind == "stopped"
@@ -424,7 +432,7 @@ def test_golden_later_non_stop_decision_resumes_projection(tmp_path: Path):
         },
     )
 
-    status = compute_status(GOLDEN, change, _state(change), {})
+    status = compute_status(GOLDEN, _loc(change), _state(change), {})
 
     assert status.terminal is None or status.terminal.kind != "stopped"
     assert status.next_dispatch

@@ -16,6 +16,7 @@ from typing import Literal
 from uuid import uuid4
 
 from assurance_agent.artifacts.models import WorkflowState
+from assurance_agent.change_location import ChangeLocation
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.events import event_seq
 from assurance_agent.workflow.core.progression import ProgressionTxn, transaction
@@ -87,10 +88,112 @@ def _with_healing_status(state: WorkflowState, status: str) -> WorkflowState:
     return WorkflowState.model_validate(data)
 
 
+def _with_gate(state: WorkflowState, name: str, value: object) -> WorkflowState:
+    data = state.model_dump(mode="python", exclude_none=True)
+    gates = dict(data.get("gates") or {})
+    gates[name] = value
+    data["gates"] = gates
+    return WorkflowState.model_validate(data)
+
+
 def _phase_entry_from_state(state: WorkflowState, phase_id: str) -> dict | None:
     phases = state.model_dump(mode="python", exclude_none=True).get("phases") or {}
     entry = phases.get(_phase_key(phase_id))
     return entry if isinstance(entry, dict) else None
+
+
+def _load_yaml(path: Path) -> dict[str, object] | None:
+    if not path.is_file():
+        return None
+    try:
+        import yaml
+
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _load_json(path: Path) -> dict[str, object] | None:
+    if not path.is_file():
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+_EXEC_RESULT_PHASES = frozenset({"execution", "healing-rerun"})
+_INSPECT_RESULT_PHASES = frozenset({"inspect", "healing-reinspect"})
+_EXEC_STATUSES = frozenset({"PASS", "PASS_WITH_WARNINGS", "FAIL", "SKIPPED"})
+
+
+def _enrich_phase_entry(
+    loc: ChangeLocation,
+    phase_id: str,
+    entry: dict[str, object],
+    state: WorkflowState,
+) -> tuple[dict[str, object], WorkflowState]:
+    """Stamp runbook-required fields from on-disk evidence (FALLBACK-RUNBOOK).
+
+    - execution / healing-rerun: ``status = final_status``, ``batch_id`` from
+      ``execution/execution-manifest.yaml`` (never invent PASS/FAIL).
+    - inspect / healing-reinspect: ``inspect_mode`` (+ status partial when not
+      primary) from ``inspect/failure-analysis.json``.
+    - skill-registry-check: ``gates.healing_available`` from params /
+      skill presence (true when healing is configured and skills are present).
+    """
+    change_dir = loc.path
+    if phase_id in _EXEC_RESULT_PHASES:
+        manifest = _load_yaml(change_dir / "execution" / "execution-manifest.yaml")
+        if manifest is not None:
+            final = manifest.get("final_status")
+            if isinstance(final, str) and final in _EXEC_STATUSES:
+                entry["status"] = final
+            batch = manifest.get("batch_id")
+            if isinstance(batch, str) and batch:
+                entry["batch_id"] = batch
+        state = _ensure_healing_available(loc, state)
+        return entry, state
+
+    if phase_id in _INSPECT_RESULT_PHASES:
+        analysis = _load_json(change_dir / "inspect" / "failure-analysis.json")
+        if analysis is not None:
+            mode = analysis.get("inspect_mode")
+            if isinstance(mode, str) and mode:
+                entry["inspect_mode"] = mode
+                if mode != "primary":
+                    entry["status"] = "partial"
+        state = _ensure_healing_available(loc, state)
+        return entry, state
+
+    if phase_id == "skill-registry-check":
+        state = _ensure_healing_available(loc, state, force=True)
+        return entry, state
+
+    return entry, state
+
+
+def _ensure_healing_available(
+    loc: ChangeLocation,
+    state: WorkflowState,
+    *,
+    force: bool = False,
+) -> WorkflowState:
+    """Stamp gates.healing_available from skills + params (runbook invariant)."""
+    if not force and state.gates.healing_available is not None:
+        return state
+    params = state.params if isinstance(state.params, dict) else {}
+    max_attempts = params.get("max_healing_attempts")
+    try:
+        attempts_ok = int(max_attempts) > 0 if max_attempts is not None else True
+    except (TypeError, ValueError):
+        attempts_ok = True
+    skills_root = loc.project_root / "skills"
+    required = ("aa-fix-proposal", "aa-api-codegen-fixer", "aa-e2e-codegen-fixer")
+    skills_ok = all((skills_root / name / "SKILL.md").is_file() for name in required)
+    return _with_gate(state, "healing_available", bool(attempts_ok and skills_ok))
 
 
 def record_dispatch(
@@ -153,10 +256,18 @@ def apply_phase_outcome(
 ) -> AppliedOutcome:
     if not schema.has_phase(phase_id):
         raise AaError(f"unknown phase '{phase_id}'")
+    # Write path operates on an active Change; source is definitionally "changes"
+    # and resolve_change_path only reads project_root + change_id from the handle.
+    loc = ChangeLocation(
+        project_root=project_root,
+        change_id=change_dir.name,
+        path=change_dir,
+        source="changes",
+    )
     missing = [
         rel
         for rel in (schema.phase_produces(phase_id) or [])
-        if not resolve_change_path(change_dir, rel).exists()
+        if not resolve_change_path(loc, rel).exists()
     ]
     if missing:
         raise AaError(f"missing declared produces: {', '.join(missing)}")
@@ -170,7 +281,15 @@ def apply_phase_outcome(
         outcomes = txn.ledger.filter(type="phase_outcome_committed", attempt_id=outcome_id)
         if outcomes:
             return _replay_or_reconcile_outcome(
-                txn, state, phase_id, outcome_id, applied_status, outcomes, skill, skill_md_path
+                txn,
+                loc,
+                state,
+                phase_id,
+                outcome_id,
+                applied_status,
+                outcomes,
+                skill,
+                skill_md_path,
             )
 
         if not manual:
@@ -193,6 +312,8 @@ def apply_phase_outcome(
         }
         if skill is not None:
             entry["skill"] = skill
+        entry, state = _enrich_phase_entry(loc, phase_id, entry, state)
+        applied_status = str(entry.get("status") or applied_status)
         txn.append_strict(
             {
                 "source": "progression",
@@ -213,6 +334,7 @@ def apply_phase_outcome(
 
 def _replay_or_reconcile_outcome(
     txn: ProgressionTxn,
+    loc: ChangeLocation,
     state: WorkflowState,
     phase_id: str,
     outcome_id: str,
@@ -260,6 +382,8 @@ def _replay_or_reconcile_outcome(
         }
         if skill is not None:
             new_entry["skill"] = skill
+        new_entry, state = _enrich_phase_entry(loc, phase_id, new_entry, state)
+        applied_status = str(new_entry.get("status") or applied_status)
         txn.set_state(_with_phase(state, phase_id, new_entry))
         return AppliedOutcome(
             phase_id=phase_id,
@@ -432,7 +556,13 @@ def record_decision(
             from assurance_agent.workflow.orchestration.schema import load_workflow_schema
 
             loaded = load_workflow_schema(project_root)
-            status = compute_status(loaded, change_dir, state, state.params)
+            loc = ChangeLocation(
+                project_root=project_root,
+                change_id=change_dir.name,
+                path=change_dir,
+                source="changes",
+            )
+            status = compute_status(loaded, loc, state, state.params)
             if status.terminal is not None:
                 raise AaError(f"workflow already terminal ({status.terminal.kind})")
             stop_snapshot = {

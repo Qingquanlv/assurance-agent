@@ -8,6 +8,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, Field, model_validator
 
 from assurance_agent.artifacts.models import WorkflowState
+from assurance_agent.change_location import ChangeLocation
 from assurance_agent.workflow.core.events import Ledger, event_seq
 from assurance_agent.workflow.orchestration.dsl import is_satisfied, parse_expression
 from assurance_agent.workflow.orchestration.gates import build_evidence_scope, check_gate
@@ -152,11 +153,12 @@ def _allocate_snapshot(
 
 def project_healing_episode(
     schema: WorkflowSchema,
-    change_dir: Path,
+    loc: ChangeLocation,
     state: WorkflowState,
     params: dict,
     healing: HealingStateSnapshot,
 ) -> HealingEpisodeSnapshot:
+    change_dir = loc.path
     loop = schema.loops.get("healing")
     if loop is None:
         return HealingEpisodeSnapshot(state="inactive", stage=None)
@@ -178,7 +180,7 @@ def project_healing_episode(
     )
 
     if allocation is None:
-        gate_result = check_gate(schema, "healing-entry-gate", change_dir, state, merged)
+        gate_result = check_gate(schema, "healing-entry-gate", loc, state, merged)
         entry = gate_result.verdict.value
         if entry != "enter":
             if (
@@ -215,7 +217,7 @@ def project_healing_episode(
         if proposal is None:
             return _dispatch("fix-proposal", "proposal", 0)
         reads = [ReadEntry(path=p, alias=a) for a, p in schema.produces_alias_map().items()]
-        scope = build_evidence_scope(schema, change_dir, state, merged, reads, hoist_primary=False)
+        scope = build_evidence_scope(schema, loc, state, merged, reads, hoist_primary=False)
         if not is_satisfied(parse_expression(loop.allocate_on), scope):
             return HealingEpisodeSnapshot(
                 state="terminal",
@@ -252,7 +254,7 @@ def project_healing_episode(
         phase = "api-codegen-fix" if missing[0] == "api" else "e2e-codegen-fix"
         return _dispatch(phase, "apply", attempt)
 
-    safety = check_gate(schema, "fixer-safety-gate", change_dir, state, merged).verdict.value
+    safety = check_gate(schema, "fixer-safety-gate", loc, state, merged).verdict.value
     if safety == "needs_human_review":
         return HealingEpisodeSnapshot(
             state="awaiting_human",
@@ -278,7 +280,7 @@ def project_healing_episode(
     if reinspect is None:
         return _dispatch("healing-reinspect", "reinspect", attempt)
 
-    loop_verdict = check_gate(schema, loop.exit_gate, change_dir, state, merged).verdict.value
+    loop_verdict = check_gate(schema, loop.exit_gate, loc, state, merged).verdict.value
     if loop_verdict == "exit":
         return HealingEpisodeSnapshot(
             state="terminal",

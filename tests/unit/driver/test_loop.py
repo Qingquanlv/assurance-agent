@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from tests.helpers_aa import write_aa_config
+from tests.helpers_aa import loc_for, write_aa_config
 
 from assurance_agent.workflow.core.events import read_events
 from assurance_agent.workflow.driver import loop as loop_mod
@@ -316,9 +316,7 @@ def test_default_cli_executor_maps_run_and_applies_in_process(tmp_path: Path, mo
     monkeypatch.setattr(loop_mod, "apply_phase_outcome", fake_apply)
     executor = DefaultCliPhaseExecutor(runner=FakeRunner(), aa_command=["aa"])
     ctx = PhaseContext(
-        change_id="CH-1",
-        change_dir=tmp_path / "qa" / "changes" / "CH-1",
-        project_root=tmp_path,
+        loc=loc_for(tmp_path / "qa" / "changes" / "CH-1", project_root=tmp_path),
         params={},
         parent_session_id=None,
     )
@@ -349,7 +347,7 @@ def test_default_cli_executor_gate_fail_passthrough(tmp_path: Path) -> None:
 
     executor = DefaultCliPhaseExecutor(runner=GateFailRunner(), aa_command=["aa"])
     ctx = PhaseContext(
-        change_id="CH-1", change_dir=change_dir, project_root=tmp_path, params={}, parent_session_id=None
+        loc=loc_for(change_dir, project_root=tmp_path), params={}, parent_session_id=None
     )
     result = executor.run_cli_phase(
         DispatchEntry(phase_id="execution", skill=None, agent=None, kind="cli"), ctx
@@ -416,7 +414,7 @@ def test_default_healing_executor_commits_baseline_then_allocation(tmp_path: Pat
 
     change = tmp_path / "qa/changes/CH-1"
     change.mkdir(parents=True)
-    ctx = PhaseContext("CH-1", change, tmp_path, {}, None)
+    ctx = PhaseContext(loc_for(change, project_root=tmp_path), {}, None)
     action = HealingEpisodeAction(
         kind="allocate_attempt",
         allocation=HealingAttemptIntent(
@@ -452,7 +450,7 @@ def test_default_status_provider_forwards_scope(tmp_path: Path, monkeypatch) -> 
 
     monkeypatch.setattr(loop_mod, "compute_status", fake_compute)
     provider = loop_mod._DefaultStatusProvider(
-        WorkflowSchema(schema_version="1", name="t"), tmp_path, {}, "execute"
+        WorkflowSchema(schema_version="1", name="t"), loc_for(tmp_path), {}, "execute"
     )
     provider()
     assert captured["scope"] == "execute"

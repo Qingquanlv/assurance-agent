@@ -48,7 +48,7 @@ def gate_check(change_id: str, phase_id: str, as_json: bool) -> None:
             raise SystemExit(1)
         state = read_state(change_dir)
         params = getattr(state, "params", None) or {}
-        verdict = check_gate(schema, gate_name, change_dir, state, params)
+        verdict = check_gate(schema, gate_name, loc, state, params)
     except AaError as err:
         click.secho(f"gate check failed: {err}", fg="red")
         raise SystemExit(1) from err

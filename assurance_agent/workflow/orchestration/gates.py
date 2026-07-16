@@ -9,6 +9,7 @@ import yaml
 from pydantic import BaseModel
 
 from assurance_agent.artifacts.models import WorkflowState
+from assurance_agent.change_location import ChangeLocation
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.orchestration.dsl import (
     MISSING,
@@ -30,33 +31,27 @@ class GateCycleError(AaError):
     """gate() 递归裁决出现环。"""
 
 
-def _project_root(change_dir: Path) -> Path:
-    # change_dir = <root>/qa/changes/<id>
-    return change_dir.parents[2] if len(change_dir.parents) >= 3 else change_dir
-
-
-def resolve_change_path(change_dir: Path, rel: str) -> Path:
+def resolve_change_path(loc: ChangeLocation, rel: str) -> Path:
     """schema 路径 → 绝对路径：`repo:` / `qa/` 前缀相对项目根，否则相对 change 目录。
 
-    对齐源版 `resolvePath`。供 gate reads 与引擎 produces-existence 共用。
+    对齐源版 `resolvePath`。供 gate reads 与引擎 produces-existence 共用。项目根来自
+    ``loc.project_root``（禁止 ``parents[2]`` 深度反推，见 ADR-0002）。
     """
-    root = _project_root(change_dir)
-    change_id = change_dir.name
-    normalized = rel.replace("<change-id>", change_id)
+    normalized = rel.replace("<change-id>", loc.change_id)
     if normalized.startswith("repo:"):
-        return root / normalized[len("repo:") :]
+        return loc.project_root / normalized[len("repo:") :]
     if normalized.startswith("qa/"):
-        return root / normalized
-    return change_dir / normalized
+        return loc.project_root / normalized
+    return loc.path / normalized
 
 
 # 向后兼容别名（内部沿用）。
 _resolve_path = resolve_change_path
 
 
-def _load_doc(change_dir: Path, rel: str) -> tuple[bool, bool, object]:
+def _load_doc(loc: ChangeLocation, rel: str) -> tuple[bool, bool, object]:
     """returns (present, parse_error, value)."""
-    path = _resolve_path(change_dir, rel)
+    path = _resolve_path(loc, rel)
     if not path.exists():
         return False, False, None
     try:
@@ -75,7 +70,7 @@ def _scope_state(state: WorkflowState) -> dict:
 
 def build_evidence_scope(
     schema: WorkflowSchema,
-    change_dir: Path,
+    loc: ChangeLocation,
     state: WorkflowState,
     params: dict,
     reads: list[ReadEntry] | None,
@@ -97,7 +92,7 @@ def build_evidence_scope(
     reads = reads or []
     alias_docs: dict[str, object] = {}
     for r in reads:
-        _, _, val = _load_doc(change_dir, r.path)
+        _, _, val = _load_doc(loc, r.path)
         alias_docs[r.alias] = val
     primary_val = alias_docs.get(reads[0].alias) if (reads and hoist_primary) else None
     hoisted = primary_val if isinstance(primary_val, dict) else {}
@@ -110,11 +105,11 @@ def build_evidence_scope(
     _memo = memo if memo is not None else {}
 
     def file_exists(rel: str) -> bool:
-        return _resolve_path(change_dir, rel).exists()
+        return _resolve_path(loc, rel).exists()
 
     def gate_verdict(gid: str) -> str:
         try:
-            return resolve_gate_verdict(schema, gid, change_dir, state, params, _memo, stack).value
+            return resolve_gate_verdict(schema, gid, loc, state, params, _memo, stack).value
         except GateCycleError:
             return Verdict.STOP.value
 
@@ -124,7 +119,7 @@ def build_evidence_scope(
 def resolve_gate_verdict(
     schema: WorkflowSchema,
     gate_name: str,
-    change_dir: Path,
+    loc: ChangeLocation,
     state: WorkflowState,
     params: dict,
     _memo: dict[str, Verdict] | None = None,
@@ -138,7 +133,7 @@ def resolve_gate_verdict(
     gate = schema.gates.get(gate_name)
     if gate is None:
         return Verdict.STOP
-    verdict = _adjudicate(schema, gate, change_dir, state, params, memo, (*_stack, gate_name))[0]
+    verdict = _adjudicate(schema, gate, loc, state, params, memo, (*_stack, gate_name))[0]
     memo[gate_name] = verdict
     return verdict
 
@@ -146,7 +141,7 @@ def resolve_gate_verdict(
 def _adjudicate(
     schema: WorkflowSchema,
     gate: GateDef,
-    change_dir: Path,
+    loc: ChangeLocation,
     state: WorkflowState,
     params: dict,
     memo: dict[str, Verdict],
@@ -155,12 +150,12 @@ def _adjudicate(
     # Step 1 — invalid_json: stop
     if gate.invalid_json == Verdict.STOP:
         for r in gate.reads:
-            present, parse_error, _ = _load_doc(change_dir, r.path)
+            present, parse_error, _ = _load_doc(loc, r.path)
             if present and parse_error:
                 return Verdict.STOP, "invalid_json"
 
     # Step 2 — build scope (gate: primary hoist + aliases; shared helper with engine)
-    scope = build_evidence_scope(schema, change_dir, state, params, gate.reads, memo=memo, stack=stack)
+    scope = build_evidence_scope(schema, loc, state, params, gate.reads, memo=memo, stack=stack)
 
     # Step 3 — rules in DECLARATION order, first-true-wins (对齐源版 adjudicate)。
     # 安全语义（needs_fix→needs_human_review→reject→pass）由 schema 加载期强制的
@@ -179,7 +174,7 @@ def _adjudicate(
         return gate.missing_field_is, "missing_field"
 
     # Step 5 — missing_file_is
-    any_missing = any(not _resolve_path(change_dir, r.path).exists() for r in gate.reads)
+    any_missing = any(not _resolve_path(loc, r.path).exists() for r in gate.reads)
     if any_missing and gate.missing_file_is:
         return gate.missing_file_is, "missing_file"
 
@@ -190,7 +185,7 @@ def _adjudicate(
 def check_gate(
     schema: WorkflowSchema,
     gate_name: str,
-    change_dir: Path,
+    loc: ChangeLocation,
     state: WorkflowState,
     params: dict,
 ) -> GateVerdict:
@@ -199,7 +194,7 @@ def check_gate(
         return GateVerdict(gate=gate_name, verdict=Verdict.STOP, reason="unknown gate")
     memo: dict[str, Verdict] = {}
     try:
-        verdict, matched = _adjudicate(schema, gate, change_dir, state, params, memo, (gate_name,))
+        verdict, matched = _adjudicate(schema, gate, loc, state, params, memo, (gate_name,))
     except GateCycleError as exc:
         return GateVerdict(gate=gate_name, verdict=Verdict.STOP, reason=str(exc))
     return GateVerdict(gate=gate_name, verdict=verdict, matched_rule=matched)

@@ -12,6 +12,7 @@ from assurance_agent.workflow.orchestration.healing_episode import (
 )
 from assurance_agent.workflow.orchestration.healing_state import derive_healing_state
 from assurance_agent.workflow.orchestration.schema import parse_schema
+from tests.helpers_aa import loc_for
 
 FIXTURE = Path(__file__).parents[1] / "fixtures/healing-episode-schema.yaml"
 SCHEMA = parse_schema(FIXTURE.read_text())
@@ -106,11 +107,11 @@ def test_shared_old_outputs_do_not_skip_rerun_or_reinspect(tmp_path: Path):
         }
     )
     healing = derive_healing_state(tmp_path)
-    episode = project_healing_episode(SCHEMA, tmp_path, state, {}, healing)
+    episode = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing)
     assert episode.next_actions[0].phase == "healing-rerun"
 
     _outcome(tmp_path, "healing-rerun", "r1")
-    episode = project_healing_episode(SCHEMA, tmp_path, state, {}, healing)
+    episode = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing)
     assert episode.next_actions[0].phase == "healing-reinspect"
 
 
@@ -131,8 +132,8 @@ def test_allocate_operation_id_is_stable_and_ignores_persisted_attempts(tmp_path
         }
     )
     healing = derive_healing_state(tmp_path)
-    first = project_healing_episode(SCHEMA, tmp_path, state, {}, healing)
-    second = project_healing_episode(SCHEMA, tmp_path, state, {}, healing)
+    first = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing)
+    second = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing)
     assert first.next_actions[0].kind == "allocate_attempt"
     assert first.next_actions[0].allocation is not None
     assert second.next_actions[0].allocation is not None
