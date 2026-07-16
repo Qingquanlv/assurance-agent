@@ -86,11 +86,11 @@ def test_apply_outcome_guard_stale_and_manual(tmp_path: Path) -> None:
     )
     assert state_guard(change) != receipt.state_guard
     with pytest.raises(StaleDispatchError):
-        apply_phase_outcome(tmp_path, change, _SCHEMA, "explore", attempt_id="a1")
+        apply_phase_outcome(tmp_path, change, _SCHEMA, "explore", attempt_id="a1", skill="aa-explore")
     assert not any(e["type"] == "phase_outcome_committed" for e in read_events(change))
 
     # Manual outcome skips guard / dispatch lookup.
-    applied = apply_phase_outcome(tmp_path, change, _SCHEMA, "explore", attempt_id=None)
+    applied = apply_phase_outcome(tmp_path, change, _SCHEMA, "explore", attempt_id=None, skill="aa-explore")
     assert applied.disposition == "committed"
     assert applied.attempt_id.startswith("manual:")
 
@@ -99,12 +99,12 @@ def test_apply_outcome_driver_happy_and_replay(tmp_path: Path) -> None:
     change = _change(tmp_path)
     _advisory(change)
     record_dispatch(change, phase_id="explore", kind="dispatch_phase", attempt_id="a1")
-    first = apply_phase_outcome(tmp_path, change, _SCHEMA, "explore", attempt_id="a1")
+    first = apply_phase_outcome(tmp_path, change, _SCHEMA, "explore", attempt_id="a1", skill="aa-explore")
     assert first.disposition == "committed"
     assert first.applied_status == "done"
     entry = _phase_entry(change, "explore")
     assert entry["attempt_id"] == "a1"
-    second = apply_phase_outcome(tmp_path, change, _SCHEMA, "explore", attempt_id="a1")
+    second = apply_phase_outcome(tmp_path, change, _SCHEMA, "explore", attempt_id="a1", skill="aa-explore")
     assert second.disposition == "replayed"
     assert len([e for e in read_events(change) if e["type"] == "phase_outcome_committed"]) == 1
 
@@ -123,7 +123,7 @@ def test_apply_outcome_reconcile_event_without_marker(tmp_path: Path) -> None:
         },
     )
     # State has no explore marker — legitimate kill-prefix.
-    result = apply_phase_outcome(tmp_path, change, _SCHEMA, "explore", attempt_id="a1")
+    result = apply_phase_outcome(tmp_path, change, _SCHEMA, "explore", attempt_id="a1", skill="aa-explore")
     assert result.disposition == "reconciled"
     assert _phase_entry(change, "explore")["attempt_id"] == "a1"
     assert len([e for e in read_events(change) if e["type"] == "phase_outcome_committed"]) == 1
@@ -156,7 +156,7 @@ def test_apply_outcome_superseded_keeps_newer_marker(tmp_path: Path) -> None:
         change,
         WorkflowState.model_validate({"phases": {"explore": {"status": "done", "attempt_id": "new"}}}),
     )
-    result = apply_phase_outcome(tmp_path, change, _SCHEMA, "explore", attempt_id="old")
+    result = apply_phase_outcome(tmp_path, change, _SCHEMA, "explore", attempt_id="old", skill="aa-explore")
     assert result.disposition == "superseded"
     assert _phase_entry(change, "explore")["attempt_id"] == "new"
 
@@ -165,7 +165,7 @@ def test_apply_outcome_missing_dispatch_fail_closed(tmp_path: Path) -> None:
     change = _change(tmp_path)
     _advisory(change)
     with pytest.raises(AaError, match="no matching dispatch"):
-        apply_phase_outcome(tmp_path, change, _SCHEMA, "explore", attempt_id="ghost")
+        apply_phase_outcome(tmp_path, change, _SCHEMA, "explore", attempt_id="ghost", skill="aa-explore")
 
 
 def test_apply_orchestrator_internal_status_pass(tmp_path: Path) -> None:
@@ -343,3 +343,53 @@ gates: {}
             reason="again",
             who="tester",
         )
+
+
+_GATED_SCHEMA = parse_schema(
+    """
+schema_version: "1"
+name: t
+phases:
+  - id: case-review
+    skill: aa-case-reviewer
+    agent: aa-reviewer
+    requires: []
+    produces: [review/case-review.json]
+    gate: case-review-gate
+gates:
+  case-review-gate:
+    reads: [review/case-review.json]
+    pass_when: "decision == 'pass'"
+"""
+)
+
+
+def test_apply_outcome_records_gate_verdict_with_reads_sha256(tmp_path: Path) -> None:
+    change = _change(tmp_path)
+    review = change / "review" / "case-review.json"
+    review.parent.mkdir(parents=True, exist_ok=True)
+    payload = b'{"decision":"pass"}'
+    review.write_bytes(payload)
+    expected = hashlib.sha256(payload).hexdigest()
+
+    applied = apply_phase_outcome(
+        tmp_path,
+        change,
+        _GATED_SCHEMA,
+        "case-review",
+        attempt_id=None,
+        skill="aa-case-reviewer",
+    )
+    assert applied.disposition == "committed"
+
+    events = read_events(change)
+    gate_events = [e for e in events if e["type"] == "gate_verdict"]
+    assert len(gate_events) == 1
+    assert gate_events[0]["gate"] == "case-review-gate"
+    assert gate_events[0]["verdict"] == "pass"
+    assert gate_events[0]["reads_sha256"] == {"review/case-review.json": expected}
+
+    committed = [e for e in events if e["type"] == "phase_outcome_committed"]
+    assert committed[-1]["gate_report"]["reads_sha256"] == {
+        "review/case-review.json": expected
+    }

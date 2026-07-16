@@ -83,7 +83,18 @@ def test_state_apply_commits_outcome_without_rechecking_exit_gate() -> None:
         record_dispatch(change_dir, phase_id="inspect", kind="dispatch_phase", attempt_id="a-7")
         result = runner.invoke(
             main,
-            ["state", "apply", "--change", "CH-1", "--phase", "inspect", "--attempt-id", "a-7"],
+            [
+                "state",
+                "apply",
+                "--change",
+                "CH-1",
+                "--phase",
+                "inspect",
+                "--attempt-id",
+                "a-7",
+                "--skill",
+                "aa-inspect",
+            ],
         )
         assert result.exit_code == 0, result.output
         events = [json.loads(line) for line in (change_dir / "events.jsonl").read_text().strip().splitlines()]
@@ -116,7 +127,19 @@ def test_state_apply_strict_event_failure_rolls_back_and_exits_40(monkeypatch) -
         change_dir = make_change()
         write_inspect_produces(change_dir)
         before = (change_dir / "workflow-state.yaml").read_text()
-        result = runner.invoke(main, ["state", "apply", "--change", "CH-1", "--phase", "inspect"])
+        result = runner.invoke(
+            main,
+            [
+                "state",
+                "apply",
+                "--change",
+                "CH-1",
+                "--phase",
+                "inspect",
+                "--skill",
+                "aa-inspect",
+            ],
+        )
         assert result.exit_code == 40
         assert (change_dir / "workflow-state.yaml").read_text() == before
         assert not (change_dir / "events.jsonl").exists()

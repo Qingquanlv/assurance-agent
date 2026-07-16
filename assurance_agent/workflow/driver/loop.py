@@ -265,13 +265,23 @@ class _DefaultStatusProvider:
         self._scope = scope
 
     def __call__(self) -> WorkflowStatus:
-        state = read_state(self._loc.path)
-        return compute_status(
+        from assurance_agent.workflow.core.audit import apply_audits_to_report, run_status_audits
+        from assurance_agent.workflow.core.state import StateIntegrityError, read_state_lenient
+
+        try:
+            state = read_state(self._loc.path)
+        except StateIntegrityError:
+            state = read_state_lenient(self._loc.path)
+        status = compute_status(
             self._schema,
             self._loc,
             state,
             self._params,
             scope=self._scope,
+        )
+        return apply_audits_to_report(
+            status,
+            run_status_audits(self._loc, status, self._schema),
         )
 
 

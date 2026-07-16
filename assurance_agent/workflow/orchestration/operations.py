@@ -18,10 +18,15 @@ from uuid import uuid4
 from assurance_agent.artifacts.models import WorkflowState
 from assurance_agent.change_location import ChangeLocation
 from assurance_agent.exceptions import AaError
+from assurance_agent.workflow.core.audit_evidence import build_gate_verdict_event
 from assurance_agent.workflow.core.events import event_seq
 from assurance_agent.workflow.core.progression import ProgressionTxn, transaction
+from assurance_agent.workflow.core.write_guards import (
+    assert_gate_verdict_transition,
+    assert_skill_attestation,
+)
 from assurance_agent.workflow.orchestration.engine import compute_status
-from assurance_agent.workflow.orchestration.gates import resolve_change_path
+from assurance_agent.workflow.orchestration.gates import check_gate, resolve_change_path
 from assurance_agent.workflow.orchestration.healing_episode import HealingAttemptIntent
 from assurance_agent.workflow.orchestration.schema import ORCHESTRATOR_INTERNAL, WorkflowSchema
 
@@ -272,6 +277,8 @@ def apply_phase_outcome(
     if missing:
         raise AaError(f"missing declared produces: {', '.join(missing)}")
 
+    assert_skill_attestation(schema, phase_id, skill=skill)
+
     applied_status = "pass" if phase_id in ORCHESTRATOR_INTERNAL else "done"
     manual = attempt_id is None
     outcome_id = attempt_id or f"manual:{phase_id}:{uuid4()}"
@@ -314,13 +321,53 @@ def apply_phase_outcome(
             entry["skill"] = skill
         entry, state = _enrich_phase_entry(loc, phase_id, entry, state)
         applied_status = str(entry.get("status") or applied_status)
+
+        gate_report: dict[str, object] | None = None
+        gate_name = schema.gate_for_phase(phase_id)
+        if gate_name is not None:
+            params = getattr(state, "params", None) or {}
+            if hasattr(params, "model_dump"):
+                params = params.model_dump(mode="json")
+            elif not isinstance(params, dict):
+                params = dict(params) if params else {}
+            verdict = check_gate(schema, gate_name, loc, state, params)
+            verdict_str = (
+                verdict.verdict.value
+                if hasattr(verdict.verdict, "value")
+                else str(verdict.verdict)
+            )
+            assert_gate_verdict_transition(
+                change_dir,
+                schema,
+                gate_id=verdict.gate,
+                new_verdict=verdict_str,
+                phase=phase_id,
+            )
+            gate_event = build_gate_verdict_event(
+                loc,
+                schema,
+                phase=phase_id,
+                gate=verdict.gate,
+                verdict=verdict_str,
+                matched_rule=verdict.matched_rule,
+                reason=verdict.reason,
+            )
+            txn.append_strict(gate_event)
+            gate_report = {
+                "gate": verdict.gate,
+                "verdict": verdict_str,
+                "matched_rule": verdict.matched_rule,
+                "reason": verdict.reason,
+                "reads_sha256": gate_event.get("reads_sha256"),
+            }
+
         txn.append_strict(
             {
                 "source": "progression",
                 "type": "phase_outcome_committed",
                 "phase": phase_id,
                 "attempt_id": outcome_id,
-                "gate_report": None,
+                "gate_report": gate_report,
             }
         )
         txn.set_state(_with_phase(state, phase_id, entry))

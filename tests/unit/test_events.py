@@ -124,6 +124,22 @@ AUDIT_FIXTURES = [
         "entry_batch_id": "b",
         "episode_id": "e",
     },
+    {
+        "source": "gate",
+        "type": "gate_verdict",
+        "phase": "case-review",
+        "gate": "case-review-gate",
+        "verdict": "pass",
+        "reads_sha256": {"review/case-review.json": "abc"},
+    },
+    {
+        "source": "report",
+        "type": "failure_reclassified",
+        "failure": "FAIL-001",
+        "from": "test_data_failure",
+        "to": "assertion_failure",
+        "evidence": "fixture seeded ok",
+    },
 ]
 
 

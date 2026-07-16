@@ -15,6 +15,7 @@ phases:
     status: pass
   explore:
     status: done
+    skill_loaded: true
 """
 
 

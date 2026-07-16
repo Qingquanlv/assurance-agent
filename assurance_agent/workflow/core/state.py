@@ -69,6 +69,34 @@ def write_state(change_dir: Path, state: WorkflowState) -> None:
     os.replace(tmp, file)  # 原子替换：磁盘 state 永不半写
 
 
+def verify_state_integrity(change_dir: Path) -> str | None:
+    """Return an error message when ``_integrity.state_sha256`` mismatches, else None."""
+    try:
+        doc = _load_doc(change_dir)
+    except StateIntegrityError as err:
+        return str(err)
+    if doc is None:
+        return None
+    integrity = doc.get(_INTEGRITY_KEY)
+    if not isinstance(integrity, dict) or not isinstance(integrity.get("state_sha256"), str):
+        return None
+    if _canonical_hash(doc) != integrity["state_sha256"]:
+        return f"workflow-state integrity check failed: {state_file(change_dir)}"
+    return None
+
+
+def read_state_lenient(change_dir: Path) -> WorkflowState:
+    """Load workflow-state without raising on integrity mismatch (for status audits)."""
+    try:
+        doc = _load_doc(change_dir)
+    except StateIntegrityError:
+        return WorkflowState()
+    if doc is None:
+        return WorkflowState()
+    fields = {k: v for k, v in doc.items() if k != _INTEGRITY_KEY}
+    return WorkflowState.model_validate(fields)
+
+
 def state_guard(change_dir: Path) -> str:
     """磁盘 state 文件 sha256（对齐源版 computeStateGuard）；文件缺失返回空串哨兵。"""
     file = state_file(change_dir)
