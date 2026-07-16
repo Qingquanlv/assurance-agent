@@ -5,7 +5,7 @@ executor:
   command: "aa case-design --prd {{sample.input.prd_ref}} --change-id {{sample.id}}"
   timeout_seconds: 600
   expected_outputs:
-    - raw-output/cases.yaml
+    - cases/system/api/case.yaml
 thresholds:
   - metric: hallucination_rate
     gate: hard

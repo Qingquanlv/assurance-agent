@@ -6,5 +6,5 @@ executor:
   run_tests: true
   timeout_seconds: 14400
   expected_outputs:
-    - raw-output/workflow-state.yaml
+    - workflow-state.yaml
 thresholds: []

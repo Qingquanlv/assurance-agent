@@ -4,7 +4,7 @@ executor:
   type: aws-run
   timeout_seconds: 900
   expected_outputs:
-    - raw-output/archive-manifest.json
+    - workflow-state.yaml
 thresholds:
   - metric: test_executable_rate
     gate: hard
