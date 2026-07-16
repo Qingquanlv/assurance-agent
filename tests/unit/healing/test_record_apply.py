@@ -131,6 +131,104 @@ def test_record_apply_writes_summary_and_frozen_event_atomically(tmp_path: Path)
     assert apply["files_modified"] == ["tests/api/test_menu.py"]
 
 
+def test_record_apply_writes_fixer_safety_check(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    change_dir.mkdir(parents=True)
+    _write(tmp_path / "tests" / "api" / "test_menu.py", "v1\n")
+    baseline = hash_test_tree(tmp_path)
+    _manifest(change_dir, baseline.files, baseline.aggregate)
+    _seed_healing_episode(change_dir, source_batch="20260101-000000")
+    _proposal(change_dir)
+    _write(tmp_path / "tests" / "api" / "test_menu.py", "v2\n")
+
+    record_apply_summary(tmp_path, "CH-1", "api", ["FIX-001"])
+
+    safety_path = change_dir / "healing" / "fixer-safety-check.json"
+    assert safety_path.is_file()
+    payload = json.loads(safety_path.read_text(encoding="utf-8"))
+    assert payload["passed"] is True
+    assert payload["needs_review"] is False
+    assert payload["product_code_modified"] is False
+    assert payload["unrelated_tests_modified"] is False
+    assert payload["high_risk_proposal_applied"] is False
+    assert payload["skip_or_xfail_added"] is False
+    assert payload["modified_files"] == ["tests/api/test_menu.py"]
+
+
+def test_record_apply_fixer_safety_check_flags_skip_marker_for_review(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    change_dir.mkdir(parents=True)
+    _write(tmp_path / "tests" / "api" / "test_menu.py", "v1\n")
+    baseline = hash_test_tree(tmp_path)
+    _manifest(change_dir, baseline.files, baseline.aggregate)
+    _seed_healing_episode(change_dir, source_batch="20260101-000000")
+    _proposal(change_dir)
+    _write(tmp_path / "tests" / "api" / "test_menu.py", "@pytest.mark.skip\ndef test_x(): ...\n")
+
+    record_apply_summary(tmp_path, "CH-1", "api", ["FIX-001"])
+
+    payload = json.loads(
+        (change_dir / "healing" / "fixer-safety-check.json").read_text(encoding="utf-8")
+    )
+    assert payload["skip_or_xfail_added"] == "undetermined"
+    assert payload["needs_review"] is True
+    assert payload["passed"] is False
+
+
+def test_fixer_safety_check_flags_high_risk_and_product_paths(tmp_path: Path) -> None:
+    """Exercises compute_and_write_fixer_safety_check directly: covers
+    high_risk_proposal_applied and product_code_modified from an
+    apply-summary shape record_apply_summary would produce (its own
+    diff scope is tests/-only, so this pins the derivation logic without
+    depending on that scope)."""
+    from assurance_agent.workflow.healing.safety import compute_and_write_fixer_safety_check
+
+    write_aa_config(tmp_path)
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    change_dir.mkdir(parents=True)
+    _write(
+        change_dir / "healing" / "fix-proposal.json",
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "summary": {"eligible_count": 1},
+                "proposals": [
+                    {
+                        "proposal_id": "FIX-001",
+                        "target": "api",
+                        "eligible": True,
+                        "risk_level": "high",
+                        "files_to_modify": ["tests/api/test_menu.py", "app/models.py"],
+                    }
+                ],
+            }
+        ),
+    )
+    _write(
+        change_dir / "healing" / "api-apply-summary.json",
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "target": "api",
+                "applied": True,
+                "proposal_ids": ["FIX-001"],
+                "files_modified": ["tests/api/test_menu.py", "app/models.py"],
+            }
+        ),
+    )
+
+    compute_and_write_fixer_safety_check(tmp_path, "CH-1")
+
+    payload = json.loads(
+        (change_dir / "healing" / "fixer-safety-check.json").read_text(encoding="utf-8")
+    )
+    assert payload["high_risk_proposal_applied"] is True
+    assert payload["product_code_modified"] is True
+    assert payload["passed"] is False
+
+
 def test_record_apply_event_failure_restores_both_summary_files(tmp_path: Path, monkeypatch) -> None:
     write_aa_config(tmp_path)
     change_dir = tmp_path / "qa" / "changes" / "CH-1"

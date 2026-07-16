@@ -10,6 +10,32 @@ def _state_path(project_root: Path) -> Path:
     return project_root / "qa" / "retro" / "_state.json"
 
 
+def _coerce_consumed_changes(raw: object) -> dict:
+    """Normalize `consumed_changes` to the dict-keyed-by-change_id schema.
+
+    Older schema_version (<=1.1) wrote `consumed_changes` as a flat list of
+    per-change records (no `terminal` flag, keyed implicitly by list order).
+    Downstream readers (`phase_a.enumerate_candidates`, `complete_retro_stage`)
+    require a dict keyed by `change_id` with a `terminal` flag. Coerce here so
+    stale on-disk state files from before the schema change don't crash
+    `aa retro nightly collect` with `'list' object has no attribute 'items'`.
+    """
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, list):
+        coerced: dict = {}
+        for record in raw:
+            if not isinstance(record, dict):
+                continue
+            change_id = record.get("change_id")
+            if not change_id:
+                continue
+            coerced[change_id] = {k: v for k, v in record.items() if k != "change_id"}
+            coerced[change_id].setdefault("terminal", True)
+        return coerced
+    return {}
+
+
 def read_state(project_root: Path) -> dict:
     path = _state_path(project_root)
     if not path.exists():
@@ -19,7 +45,7 @@ def read_state(project_root: Path) -> dict:
     except json.JSONDecodeError:
         return {"last_retro_id": None, "consumed_changes": {}}
     data.setdefault("last_retro_id", None)
-    data.setdefault("consumed_changes", {})
+    data["consumed_changes"] = _coerce_consumed_changes(data.get("consumed_changes"))
     return data
 
 
