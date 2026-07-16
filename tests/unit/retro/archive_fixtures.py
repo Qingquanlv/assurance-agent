@@ -16,6 +16,7 @@ def make_archived_change(
     review_decision: str = "pass",
     gate_pushbacks: int = 0,
     apply_status: str = "applied",
+    reclassifications: list[dict] | None = None,
 ) -> Path:
     root = project_root / "qa" / "archive" / change_id
     root.mkdir(parents=True)
@@ -23,6 +24,18 @@ def make_archived_change(
     events: list[dict[str, object]] = [{"type": "workflow_started", "change_id": change_id}]
     for _ in range(gate_pushbacks):
         events.append({"type": "gate_pushback", "gate": "case-review"})
+    for index, reclass in enumerate(reclassifications or [], start=1):
+        events.append(
+            {
+                "source": "report",
+                "type": "failure_reclassified",
+                "seq": index,
+                "failure": reclass.get("failure", f"F-{index}"),
+                "from": reclass["from"],
+                "to": reclass["to"],
+                "evidence": reclass.get("evidence", "manual review"),
+            }
+        )
     events.append(
         {
             "source": "progression",

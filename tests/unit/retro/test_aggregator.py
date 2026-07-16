@@ -57,6 +57,37 @@ def test_build_context_golden_signals(tmp_path: Path) -> None:
     assert env.changes == ["CH-2"]
 
 
+def test_build_context_reclassifications(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
+    make_archived_change(
+        tmp_path,
+        "CH-1",
+        failures=[{"classification": "assertion"}],
+        reclassifications=[
+            {"failure": "F-1", "from": "environment_failure", "to": "assertion_failure"},
+            {"failure": "F-2", "from": "locator_failure", "to": "assertion_failure"},
+        ],
+    )
+    make_archived_change(
+        tmp_path,
+        "CH-2",
+        failures=[{"classification": "environment"}],
+    )
+
+    context = build_retro_context(tmp_path, changes=["CH-1", "CH-2"], retro_id="retro-reclass")
+
+    signals = context.signals.reclassifications
+    assert len(signals) == 2
+    first = signals[0]
+    assert first.change_id == "CH-1"
+    assert first.from_category == "environment_failure"
+    assert first.to_category == "assertion_failure"
+    assert first.evidence_ids == ["CH-1#seq1"]
+    assert signals[1].evidence_ids == ["CH-1#seq2"]
+    # reclassifications feed the shared signal counter (regression: never wired).
+    assert context.signal_count == count_signals(context)
+
+
 def test_build_context_no_changes_zero_signals(tmp_path: Path) -> None:
     write_aa_config(tmp_path)
     (tmp_path / "qa" / "archive").mkdir(parents=True)

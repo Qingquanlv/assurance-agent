@@ -19,6 +19,7 @@ from assurance_agent.retro.types import (
     GatePushbackSignal,
     HealingEfficiencySignal,
     HumanDecisionSignal,
+    ReclassificationSignal,
     RetroContext,
     RetroSignalSet,
     RetroWindow,
@@ -167,6 +168,25 @@ def _human_decisions(changes: list[ArchivedChange]) -> list[HumanDecisionSignal]
     return decisions
 
 
+def _reclassifications(changes: list[ArchivedChange]) -> list[ReclassificationSignal]:
+    """One signal per `failure_reclassified` ledger event (from-side audit proof)."""
+    signals: list[ReclassificationSignal] = []
+    for change in changes:
+        for event in change.events:
+            if event.get("type") != "failure_reclassified":
+                continue
+            eid = _event_evidence_id(change.change_id, event)
+            signals.append(
+                ReclassificationSignal(
+                    change_id=change.change_id,
+                    from_category=str(event.get("from", "unknown")),
+                    to_category=str(event.get("to", "unknown")),
+                    evidence_ids=[eid] if eid is not None else [],
+                )
+            )
+    return signals
+
+
 def _skill_execution(changes: list[ArchivedChange]) -> list[SkillExecutionSignal]:
     counter: Counter[str] = Counter()
     evidence: dict[str, list[str]] = {}
@@ -201,6 +221,7 @@ def build_retro_context(
         gate_pushback=_gate_pushback(collected),
         healing_efficiency=_healing_efficiency(collected),
         human_decisions=_human_decisions(collected),
+        reclassifications=_reclassifications(collected),
         skill_execution=_skill_execution(collected),
         eval_trend=read_eval_trend(project_root),
     )
