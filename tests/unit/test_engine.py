@@ -162,3 +162,113 @@ def test_needs_fix_routes_to_healing_not_terminal(tmp_path: Path):
     assert ev.status == "awaiting_gate" and ev.gate_verdict == "needs_fix"
     assert _pv(st, "fix-proposal").status == "ready"
     assert [d.phase_id for d in st.next_dispatch] == ["fix-proposal"]
+
+
+# Regression: execution must wait for ALL active codegen suites, not fire on the
+# first one. A sibling codegen blocked behind a pending plan-review gate must
+# hold execution back; `any_active` let execution run early against a missing
+# test file (API SKIPPED, false `completed`, archive blocked).
+EXEC_ALL_SCHEMA = parse_schema("""
+schema_version: "1"
+name: exec-all
+params:
+  test_types: { type: list, default: [api, e2e] }
+phases:
+  - id: api-plan-review
+    skill: null
+    requires: []
+    produces: [review/api-plan-review.json]
+    gate: api-plan-review-gate
+    when: "'api' in params.test_types"
+  - id: api-codegen
+    skill: aa-api-codegen
+    agent: aa-test-author
+    requires: [api-plan-review]
+    produces: [codegen/api-codegen-summary.md]
+    when: "'api' in params.test_types"
+  - id: e2e-plan-review
+    skill: null
+    requires: []
+    produces: [review/plan-review.json]
+    gate: e2e-plan-review-gate
+    when: "'e2e' in params.test_types"
+  - id: e2e-codegen
+    skill: aa-e2e-codegen
+    agent: aa-test-author
+    requires: [e2e-plan-review]
+    produces: [codegen/e2e-codegen-summary.md]
+    when: "'e2e' in params.test_types"
+  - id: execution
+    skill: null
+    requires: [api-codegen, e2e-codegen]
+    requires_mode: all
+    produces: [execution/execution-manifest.yaml]
+gates:
+  api-plan-review-gate:
+    reads: [review/api-plan-review.json]
+    needs_human_review_when: "decision == 'needs_human_review'"
+    pass_when: "decision == 'pass'"
+  e2e-plan-review-gate:
+    reads: [review/plan-review.json]
+    pass_when: "decision == 'pass'"
+""")
+
+
+def test_execution_blocked_while_sibling_codegen_blocked(tmp_path: Path):
+    """`all` mode: e2e-codegen done but api-codegen blocked (plan-review pending
+    human review) → execution stays blocked, not ready."""
+    loc = loc_for(tmp_path)
+    # e2e branch fully done: review pass + codegen produced.
+    (tmp_path / "review").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "review" / "plan-review.json").write_text(json.dumps({"decision": "pass"}))
+    _touch(tmp_path, "codegen/e2e-codegen-summary.md")
+    # api branch stuck: review produced but gate needs human review → api-codegen blocked.
+    (tmp_path / "review" / "api-plan-review.json").write_text(
+        json.dumps({"decision": "needs_human_review"})
+    )
+    st = compute_status(EXEC_ALL_SCHEMA, loc, WorkflowState(), {})
+    assert _pv(st, "e2e-codegen").status == "done"
+    assert _pv(st, "api-codegen").status == "blocked"
+    assert _pv(st, "execution").status == "blocked"
+    assert "execution" not in [d.phase_id for d in st.next_dispatch]
+
+
+def test_execution_ready_once_all_active_codegen_done(tmp_path: Path):
+    """Once the api plan-review clears and api-codegen produces its summary,
+    execution becomes ready (both active suites done)."""
+    loc = loc_for(tmp_path)
+    (tmp_path / "review").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "review" / "plan-review.json").write_text(json.dumps({"decision": "pass"}))
+    (tmp_path / "review" / "api-plan-review.json").write_text(json.dumps({"decision": "pass"}))
+    _touch(tmp_path, "codegen/e2e-codegen-summary.md")
+    _touch(tmp_path, "codegen/api-codegen-summary.md")
+    st = compute_status(EXEC_ALL_SCHEMA, loc, WorkflowState(), {})
+    assert _pv(st, "api-codegen").status == "done"
+    assert _pv(st, "e2e-codegen").status == "done"
+    assert _pv(st, "execution").status == "ready"
+
+
+def test_execution_only_waits_for_active_suites(tmp_path: Path):
+    """`all` over ACTIVE deps: with test_types=[api] only, e2e-codegen is pruned
+    and does not block execution once api-codegen is done."""
+    loc = loc_for(tmp_path)
+    (tmp_path / "review").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "review" / "api-plan-review.json").write_text(json.dumps({"decision": "pass"}))
+    _touch(tmp_path, "codegen/api-codegen-summary.md")
+    st = compute_status(EXEC_ALL_SCHEMA, loc, WorkflowState(), {"test_types": ["api"]})
+    assert _pv(st, "e2e-codegen").status == "pruned"
+    assert _pv(st, "api-codegen").status == "done"
+    assert _pv(st, "execution").status == "ready"
+
+
+def test_packaged_execution_requires_all_active_codegen():
+    """Guard: the packaged schema must keep execution at requires_mode=all.
+    Reverting to any_active reintroduces the premature-execution / API-SKIPPED bug."""
+    from assurance_agent.workflow.orchestration.schema import load_workflow_schema
+
+    schema = load_workflow_schema(Path("/nonexistent-project-root"))
+    execution = next(p for p in schema.phases if p.id == "execution")
+    assert execution.requires_mode == "all", (
+        "execution must wait for ALL active codegen suites; any_active lets it fire "
+        "on the first sibling and run against a missing test file (API SKIPPED)."
+    )

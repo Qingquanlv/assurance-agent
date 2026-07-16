@@ -56,7 +56,7 @@ def test_retro_nightly_collect_success_exit_0(tmp_path: Path) -> None:
             "#!/usr/bin/env bash\n"
             f'd="$(ls -1d {retro_glob}/retro-* | tail -1)"\n'
             'printf \'{"proposals":[{"id":"P-1","apply_kind":"memory_append",'
-            '"body":"x","eval_suite":"s"}]}\' > "$d/proposals.json"\n'
+            '"body":"x","eval_suite":"s","evidence_ids":["CH-1#F-1"]}]}\' > "$d/proposals.json"\n'
             'printf "# summary\\n" > "$d/retro-summary.md"\n',
             encoding="utf-8",
         )

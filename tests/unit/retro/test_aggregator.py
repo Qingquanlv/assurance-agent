@@ -45,6 +45,17 @@ def test_build_context_golden_signals(tmp_path: Path) -> None:
     assert context.signal_count == count_signals(context)
     assert context.signal_count > 0
 
+    # Every failure signal must carry citable evidence_ids so aa-retro can file
+    # proposals (regression: the Python migration dropped this field, which
+    # structurally blocked all proposals).
+    by_cat = {s.category: s for s in context.signals.failure_distribution}
+    assertion = by_cat["assertion_failure"]
+    assert assertion.evidence_ids == ["CH-1#F-1", "CH-1#F-2"]
+    assert assertion.changes == ["CH-1"]
+    env = by_cat["environment_failure"]
+    assert env.evidence_ids == ["CH-2#F-1"]
+    assert env.changes == ["CH-2"]
+
 
 def test_build_context_no_changes_zero_signals(tmp_path: Path) -> None:
     write_aa_config(tmp_path)
