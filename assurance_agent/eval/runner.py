@@ -66,6 +66,7 @@ def run_suite(
     status_provider_factory: Callable[..., Callable[[], object]] | None = None,
     cli_executor_factory: Callable[..., CliPhaseExecutor] | None = None,
     loop_runner: LoopRunner = run_workflow_loop,
+    fixtures_root: Path | None = None,
 ) -> tuple[str, EvalGateResult]:
     if repeat < 1:
         raise ValueError("repeat must be >= 1")
@@ -87,6 +88,12 @@ def run_suite(
         target_model=str(suite.executor.get("model", "unknown")),
         started_at=_now(),
     )
+
+    resolved_fixtures = fixtures_root
+    if resolved_fixtures is None:
+        candidate = sut_dir / "eval-fixtures"
+        if candidate.is_dir():
+            resolved_fixtures = candidate
 
     scorer = get_scorer(suite.scorer)
     scores: list[SampleScore] = []
@@ -117,6 +124,7 @@ def run_suite(
                 status_provider=status_provider,
                 cli_executor=cli_executor,
                 expected_outputs=suite.executor.get("expected_outputs"),
+                fixtures_root=resolved_fixtures,
             )
             manifest.executed_samples += 1
             score_key = f"{sample.id}#attempt-{attempt_index}"

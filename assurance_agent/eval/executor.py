@@ -38,12 +38,27 @@ def execute_attempt(
     status_provider: Callable[[], object] | None = None,
     cli_executor: CliPhaseExecutor | None = None,
     expected_outputs: list[str] | None = None,
+    fixtures_root: Path | None = None,
 ) -> ExecutionResult:
     change_id = sample.input.get("change_id")
     if not change_id:
         raise AaError(f"sample {sample.id} missing input.change_id")
     assert_change_id_safe(change_id)
     attempt_dir.mkdir(parents=True, exist_ok=True)
+
+    fixture_tier = sample.input.get("fixture_tier")
+    if fixture_tier:
+        if fixtures_root is None:
+            raise AaError(f"sample {sample.id} has fixture_tier but fixtures_root was not provided")
+        from assurance_agent.eval.fixtures import seed_change
+
+        seed_change(
+            sut_sandbox=sut_dir,
+            change_id=str(change_id),
+            tier_name=str(fixture_tier),
+            fixtures_root=fixtures_root,
+            sample_id=sample.input.get("sample_id") or sample.input.get("change_id"),
+        )
 
     loop = loop_runner(
         project_root=sut_dir,
@@ -67,6 +82,7 @@ def execute_attempt(
         "scope": scope,
         "exit_code": loop.exit_code,
         "reason": loop.reason,
+        "fixture_tier": fixture_tier,
     }
     (attempt_dir / "execution.json").write_text(json.dumps(execution, indent=2), encoding="utf-8")
 
