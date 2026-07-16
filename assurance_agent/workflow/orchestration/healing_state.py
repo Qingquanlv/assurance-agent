@@ -39,8 +39,7 @@ def derive_healing_state(change_dir: Path) -> HealingStateSnapshot:
         return HealingStateSnapshot(status=str(latest_transition["to"]))
     baseline_seq = event_seq(baseline)
     ended = any(
-        e.get("to") in _TERMINAL
-        for e in ledger.filter(type="heal_transition", after_seq=baseline_seq)
+        e.get("to") in _TERMINAL for e in ledger.filter(type="heal_transition", after_seq=baseline_seq)
     ) or bool(ledger.filter(type="human_decision", action="stop", after_seq=baseline_seq))
     if ended:
         return HealingStateSnapshot(status="not_needed")

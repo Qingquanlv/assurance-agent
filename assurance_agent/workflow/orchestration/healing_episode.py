@@ -77,14 +77,10 @@ class HealingEpisodeSnapshot(BaseModel):
 
 def _episode_floor(ledger: Ledger, healing: HealingStateSnapshot) -> int:
     if healing.episode_id:
-        baseline = ledger.latest(
-            type="healing_entry_baseline_pinned", episode_id=healing.episode_id
-        )
+        baseline = ledger.latest(type="healing_entry_baseline_pinned", episode_id=healing.episode_id)
         return event_seq(baseline) if baseline else 0
     transitions = [
-        e
-        for e in ledger.filter(type="heal_transition")
-        if e.get("to") in {"resolved", "exhausted", "failed"}
+        e for e in ledger.filter(type="heal_transition") if e.get("to") in {"resolved", "exhausted", "failed"}
     ]
     stops = ledger.filter(type="human_decision", action="stop")
     terminal = transitions + stops
@@ -273,9 +269,7 @@ def project_healing_episode(
             reason=f"fixer-safety-gate={safety}",
         )
 
-    rerun = ledger.latest(
-        type="phase_outcome_committed", phase="healing-rerun", after_seq=allocation_seq
-    )
+    rerun = ledger.latest(type="phase_outcome_committed", phase="healing-rerun", after_seq=allocation_seq)
     if rerun is None:
         return _dispatch("healing-rerun", "rerun", attempt)
     reinspect = ledger.latest(

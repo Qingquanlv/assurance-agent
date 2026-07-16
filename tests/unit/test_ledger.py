@@ -43,7 +43,9 @@ def test_ledger_filter_attrs_and_after_seq(tmp_path: Path) -> None:
     append_event_strict(tmp_path, _allocation("op-3", episode_id="ep-a"))
 
     ledger = Ledger(tmp_path)
-    assert [e["operation_id"] for e in ledger.filter(type="healing_attempt_allocated", episode_id="ep-a")] == [
+    assert [
+        e["operation_id"] for e in ledger.filter(type="healing_attempt_allocated", episode_id="ep-a")
+    ] == [
         "op-1",
         "op-3",
     ]

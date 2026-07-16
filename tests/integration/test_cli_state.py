@@ -80,9 +80,7 @@ def test_state_apply_commits_outcome_without_rechecking_exit_gate() -> None:
     with runner.isolated_filesystem():
         change_dir = make_change()
         write_inspect_produces(change_dir)
-        record_dispatch(
-            change_dir, phase_id="inspect", kind="dispatch_phase", attempt_id="a-7"
-        )
+        record_dispatch(change_dir, phase_id="inspect", kind="dispatch_phase", attempt_id="a-7")
         result = runner.invoke(
             main,
             ["state", "apply", "--change", "CH-1", "--phase", "inspect", "--attempt-id", "a-7"],

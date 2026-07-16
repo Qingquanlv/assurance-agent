@@ -66,9 +66,7 @@ def derive_guard_context(project_root: Path, change_id: str) -> HealingGuardCont
     change_dir = _active_change_dir(project_root, change_id)
     snapshot = derive_healing_state(change_dir)
     latest = (
-        Ledger(change_dir).latest(
-            type="healing_attempt_allocated", episode_id=snapshot.episode_id
-        )
+        Ledger(change_dir).latest(type="healing_attempt_allocated", episode_id=snapshot.episode_id)
         if snapshot.episode_id is not None
         else None
     )

@@ -22,7 +22,9 @@ def _write_config(root: Path, *, changes: str = "./qa/changes", archive: str | N
         text = text.replace("  archive: ./qa/archive\n", f"  archive: {archive}\n")
         if "archive:" not in text:
             text = text.replace(
-                f"  changes: {changes}\n" if f"  changes: {changes}\n" in text else "  changes: ./qa/changes\n",
+                f"  changes: {changes}\n"
+                if f"  changes: {changes}\n" in text
+                else "  changes: ./qa/changes\n",
                 f"  changes: {changes}\n  archive: {archive}\n",
             )
     (root / ".aa" / "config.yaml").write_text(text, encoding="utf-8")

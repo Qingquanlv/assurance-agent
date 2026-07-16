@@ -169,9 +169,7 @@ def test_record_apply_fixer_safety_check_flags_skip_marker_for_review(tmp_path: 
 
     record_apply_summary(tmp_path, "CH-1", "api", ["FIX-001"])
 
-    payload = json.loads(
-        (change_dir / "healing" / "fixer-safety-check.json").read_text(encoding="utf-8")
-    )
+    payload = json.loads((change_dir / "healing" / "fixer-safety-check.json").read_text(encoding="utf-8"))
     assert payload["skip_or_xfail_added"] == "undetermined"
     assert payload["needs_review"] is True
     assert payload["passed"] is False
@@ -221,9 +219,7 @@ def test_fixer_safety_check_flags_high_risk_and_product_paths(tmp_path: Path) ->
 
     compute_and_write_fixer_safety_check(tmp_path, "CH-1")
 
-    payload = json.loads(
-        (change_dir / "healing" / "fixer-safety-check.json").read_text(encoding="utf-8")
-    )
+    payload = json.loads((change_dir / "healing" / "fixer-safety-check.json").read_text(encoding="utf-8"))
     assert payload["high_risk_proposal_applied"] is True
     assert payload["product_code_modified"] is True
     assert payload["passed"] is False

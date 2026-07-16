@@ -174,9 +174,7 @@ def apply_phase_outcome(
             )
 
         if not manual:
-            signed = txn.ledger.latest(
-                type="dispatch_signed", attempt_id=outcome_id, phase=phase_id
-            )
+            signed = txn.ledger.latest(type="dispatch_signed", attempt_id=outcome_id, phase=phase_id)
             if signed is None:
                 raise AaError(f"no matching dispatch_signed for attempt_id={outcome_id}")
             current_guard = txn.current_state_guard()
@@ -285,9 +283,7 @@ def allocate_healing_attempt(
     baseline_sha = hashlib.sha256(baseline_data).hexdigest()
 
     with transaction(change_dir) as txn:
-        prior = txn.ledger.latest(
-            type="healing_attempt_allocated", operation_id=allocation.operation_id
-        )
+        prior = txn.ledger.latest(type="healing_attempt_allocated", operation_id=allocation.operation_id)
         if prior is not None:
             raw_num = prior.get("attempt_number")
             prior_num = raw_num if isinstance(raw_num, int) else None
@@ -306,9 +302,7 @@ def allocate_healing_attempt(
 
         baseline_path = change_dir / BASELINE_REL
         baseline_exists = baseline_path.is_file()
-        pinned = txn.ledger.filter(
-            type="healing_entry_baseline_pinned", episode_id=allocation.episode_id
-        )
+        pinned = txn.ledger.filter(type="healing_entry_baseline_pinned", episode_id=allocation.episode_id)
 
         if allocation.pin_entry_baseline:
             if baseline_exists:
@@ -381,9 +375,7 @@ def record_heal_transition(change_dir: Path, status: str) -> HealTransition:
             )
 
         prior = ledger_to or state_status or "pending"
-        txn.append_strict(
-            {"source": "status", "type": "heal_transition", "from": prior, "to": status}
-        )
+        txn.append_strict({"source": "status", "type": "heal_transition", "from": prior, "to": status})
         txn.set_state(_with_healing_status(state, status))
         return HealTransition(from_status=prior, to_status=status, disposition="committed")
 
