@@ -1,0 +1,11 @@
+name: classification-unit
+scorer: classification-unit
+executor:
+  type: in_process
+  target_module: assurance_agent.eval.scorers.classification_unit
+  target_export: score
+thresholds:
+  - metric: category_match_rate
+    gate: hard
+    op: gte
+    value: 1.0

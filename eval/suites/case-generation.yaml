@@ -1,0 +1,29 @@
+name: case-generation
+scorer: case-generation
+executor:
+  type: subprocess
+  command: "aa case-design --prd {{sample.input.prd_ref}} --change-id {{sample.id}}"
+  timeout_seconds: 600
+  expected_outputs:
+    - raw-output/cases.yaml
+thresholds:
+  - metric: hallucination_rate
+    gate: hard
+    op: lte
+    value: 0.05
+  - metric: schema_valid_rate
+    gate: hard
+    op: gte
+    value: 0.99
+  - metric: path_coverage_rate
+    gate: advisory
+    op: gte
+    value: 0.90
+  - metric: risk_coverage_rate
+    gate: advisory
+    op: gte
+    value: 0.80
+  - metric: traceability_rate
+    gate: advisory
+    op: gte
+    value: 0.95

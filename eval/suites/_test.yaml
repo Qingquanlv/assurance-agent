@@ -1,0 +1,7 @@
+name: _test
+scorer: _test
+executor:
+  type: in_process
+  target_module: assurance_agent.eval.scorers._test
+  target_export: score
+thresholds: []

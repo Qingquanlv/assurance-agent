@@ -1,0 +1,9 @@
+id: FC-001
+annotation_source: human
+tags: [classification-unit]
+input:
+  message: "PlaywrightError: waiting for selector getByRole('button', { name: '保存' }) — element not found"
+  log_excerpt: "strict mode violation: locator resolved to 0 elements"
+  target: e2e
+expected:
+  category: locator_failure
