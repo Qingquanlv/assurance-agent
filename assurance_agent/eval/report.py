@@ -64,7 +64,7 @@ def write_run_report(
 
 
 def generate_trend_report(
-    project_root: Path,
+    sut_root: Path,
     suite: str,
     *,
     date_from: str | None = None,
@@ -72,7 +72,7 @@ def generate_trend_report(
     html_out: Path | None = None,
 ) -> Path:
     points: list[dict] = []
-    root = runs_dir(project_root)
+    root = runs_dir(sut_root)
     if root.is_dir():
         for run in sorted(root.iterdir()):
             report_path = run / "report.json"
@@ -87,7 +87,7 @@ def generate_trend_report(
             if date_to and started > date_to:
                 continue
             points.append(data)
-    out = html_out or (reports_dir(project_root) / f"trend-{suite}.html")
+    out = html_out or (reports_dir(sut_root) / f"trend-{suite}.html")
     out.parent.mkdir(parents=True, exist_ok=True)
     rows = "".join(
         f"<tr><td>{html.escape(p['run_id'])}</td><td>{html.escape(p['verdict'])}</td></tr>" for p in points

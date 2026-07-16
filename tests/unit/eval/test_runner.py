@@ -127,7 +127,7 @@ def test_run_suite_end_to_end_pass_and_persists_calibration(tmp_path: Path, monk
         cli_executor_factory=lambda **_: AuditOutcomeExecutor(),
     )
     assert gate.verdict == "pass"
-    run_dir = project_root / "eval" / "out" / "runs" / run_id
+    run_dir = sut / "eval" / "out" / "runs" / run_id
     assert (run_dir / "metrics.json").exists()
     assert (run_dir / "gate-result.json").exists()
     assert (run_dir / "report.json").exists()
@@ -212,5 +212,5 @@ def test_run_suite_repeat_uses_isolated_workspaces_and_unique_score_keys(tmp_pat
         cli_executor_factory=lambda **_: AuditOutcome(),
     )
     assert gate.verdict == "pass"
-    metrics = json.loads((project_root / "eval/out/runs" / run_id / "metrics.json").read_text())
+    metrics = json.loads((sut / "eval/out/runs" / run_id / "metrics.json").read_text())
     assert set(metrics["per_sample"]) == {"WC-001#attempt-0", "WC-001#attempt-1"}

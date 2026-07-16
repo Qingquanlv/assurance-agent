@@ -73,7 +73,8 @@ def run_suite(
     dataset = datasets_dir(project_root, suite.name) if suite.dataset_dir is None else Path(suite.dataset_dir)
     samples = load_for_run(dataset, sample_id=sample_id)
     run_id = run_id or _new_run_id(suite.name)
-    run_dir = run_dir_for(project_root, run_id)
+    # Artifacts land under the SUT so retro read_eval_trend(sut) can see them.
+    run_dir = run_dir_for(sut_dir, run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
 
     manifest = RunManifest(
@@ -92,7 +93,7 @@ def run_suite(
     scope = str(suite.executor.get("scope", "full"))
     for sample in samples:
         for attempt_index in range(repeat):
-            attempt = attempt_dir_for(project_root, run_id, sample.id, attempt_index)
+            attempt = attempt_dir_for(sut_dir, run_id, sample.id, attempt_index)
             attempt.mkdir(parents=True, exist_ok=True)
             attempt_sut = _copy_attempt_workspace(sut_dir, attempt)
             factory_args = {

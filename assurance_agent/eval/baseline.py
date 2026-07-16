@@ -60,24 +60,31 @@ def compare_with_baseline(run_dir: Path, baseline_metrics: dict[str, float]) -> 
 
 
 def update_baseline(
-    project_root: Path,
+    engine_root: Path,
     *,
     suite_name: str,
     run_id: str,
     approved_by: str,
+    sut_root: Path | None = None,
 ) -> Path:
-    run_dir = run_dir_for(project_root, run_id)
+    """Promote a run's metrics into engine-side ``eval/baselines/main.json``.
+
+    Run artifacts are read from ``sut_root`` (defaults to ``engine_root`` for
+    backward-compatible single-root layouts).
+    """
+    out_root = sut_root or engine_root
+    run_dir = run_dir_for(out_root, run_id)
     manifest = read_run_manifest(run_dir)
     if manifest.suite != suite_name:
         raise AaError(f"run suite {manifest.suite!r} does not match {suite_name!r}")
-    baseline = read_baseline(project_root)
+    baseline = read_baseline(engine_root)
     baseline[suite_name] = BaselineSuiteEntry(
         run_id=run_id,
         approved_at=datetime.now(timezone.utc).isoformat(),
         approved_by=approved_by,
         metrics=read_metrics(run_dir).metrics,
     )
-    path = project_root / "eval/baselines/main.json"
+    path = engine_root / "eval/baselines/main.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(
