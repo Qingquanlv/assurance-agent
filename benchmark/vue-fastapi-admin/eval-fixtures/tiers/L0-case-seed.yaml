@@ -1,0 +1,15 @@
+name: L0-case-seed
+description: Case design complete; ready for planning
+source_prefix: samples/eval-sample-001
+paths:
+- proposal.md
+- cases
+- facts
+- explore
+- workflow-state.yaml
+- .qa.yaml
+resets:
+  workflow_state:
+    phases.case-design.status: done
+    phases.case-review.status: done
+    phases.api-plan.status: pending

@@ -148,7 +148,18 @@ def test_eval_report_json(monkeypatch) -> None:
             ],
         )
         run_id = run.output.strip()
-        result = runner.invoke(main, ["eval", "report", "--run", run_id, "--json"])
+        result = runner.invoke(
+            main,
+            [
+                "eval",
+                "report",
+                "--run",
+                run_id,
+                "--json",
+                "--sut-dir",
+                str(project_root / "sut"),
+            ],
+        )
         assert result.exit_code == 0, result.output
         report = json.loads(result.output)
         assert report["run_id"] == run_id

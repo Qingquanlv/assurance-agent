@@ -1,0 +1,15 @@
+name: L2-api-codegen-seed
+extends: L1-plan-seed
+description: API codegen done; ready for execution
+paths:
+- codegen
+- tests/config.py
+- tests/conftest.py
+- tests/api
+resets:
+  workflow_state:
+    phases.api-codegen.status: done
+    phases.execution.status: pending
+  qa_yaml:
+    test_types:
+    - api

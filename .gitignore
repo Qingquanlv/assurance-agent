@@ -17,5 +17,8 @@ dist/
 # Benchmark: commit the harness, ignore generated artifacts and the vendored SUT app.
 benchmark/vue-fastapi-admin/*
 !benchmark/vue-fastapi-admin/benchmark/
+!benchmark/vue-fastapi-admin/eval-fixtures/
 benchmark/vue-fastapi-admin/benchmark/runs/
 benchmark/vue-fastapi-admin/benchmark/resume-logs/
+
+docs/

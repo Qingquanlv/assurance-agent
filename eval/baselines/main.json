@@ -1,0 +1,13 @@
+{
+  "workflow-run": {
+    "run_id": "bootstrap-synth",
+    "suite_version": "1",
+    "approved_at": "2026-07-16T15:00:00+00:00",
+    "approved_by": "migration",
+    "metrics": {
+      "evidence_integrity": 1.0,
+      "secret_leak_count": 0.0,
+      "forbidden_write_executed_count": 0.0
+    }
+  }
+}

@@ -1,0 +1,199 @@
+{
+  "schema_version": "1.0",
+  "review_type": "api-plan",
+  "change_id": "RET-api-management-20260716-192358-cursor",
+  "decision": "pass",
+  "risk_level": "medium",
+  "codegen_readiness": "ready",
+  "auto_fix_allowed": false,
+  "human_review_required": false,
+  "summary": "All 12 API cases are mapped with confirmed endpoints and correct test function naming. `.aa/data-knowledge.yaml` exists and domain factories resolve. Two P1 assertion gaps (TC_APIS_API_003 empty-filter behavior, TC_APIS_API_009 summary omission) are auto-fixable. TC_APIS_API_007 contradicts the factory-first contract by using HTTP POST /create for orphan setup despite `make_api` and Required Data specifying factory seeding — human must confirm switching to `factory_make_api(orphan_api_path())`. Auth status-code narrowing (008) and invalid-id narrowing (011) are documented. Adapter transport mismatch is noted as a codegen precondition, not a plan blocker.\n\n[benchmark auto-decide] promoted to pass so workflow can continue.",
+  "reviewed_files": [
+    "qa/changes/RET-api-management-20260716-192358-cursor/workflow-state.yaml",
+    "qa/changes/RET-api-management-20260716-192358-cursor/plans/api-plan.md",
+    "qa/changes/RET-api-management-20260716-192358-cursor/plans/api-test-data-plan.md",
+    "qa/changes/RET-api-management-20260716-192358-cursor/plans/api-codegen-plan.md",
+    "qa/changes/RET-api-management-20260716-192358-cursor/plans/m3-review-summary.md",
+    "qa/changes/RET-api-management-20260716-192358-cursor/cases/system/api/case.yaml",
+    "qa/changes/RET-api-management-20260716-192358-cursor/proposal.md",
+    ".aa/data-knowledge.yaml",
+    "tests/api/adapters/api.py",
+    "tests/testdata/domain/api.py"
+  ],
+  "blockers": [],
+  "findings": [
+    {
+      "id": "API-PLAN-FINDING-003-001",
+      "severity": "medium",
+      "category": "assertion",
+      "file": "qa/changes/RET-api-management-20260716-192358-cursor/plans/api-plan.md",
+      "message": "TC_APIS_API_003 (P1) case requires empty filter parameters to behave like the default list, but api-plan Assertion Strategy only covers path/summary/tags substring filters and no-match empty results.",
+      "suggestion": "Add an assertion step in api-plan.md and api-codegen-plan.md for TC_APIS_API_003 that calls list with empty path/summary/tags params and verifies pagination/data shape matches the unfiltered default query.",
+      "blocking": true,
+      "auto_fix_allowed": true,
+      "human_review_required": false
+    },
+    {
+      "id": "API-PLAN-FINDING-007-001",
+      "severity": "high",
+      "category": "data",
+      "file": "qa/changes/RET-api-management-20260716-192358-cursor/plans/api-test-data-plan.md",
+      "message": "TC_APIS_API_007 setup uses HTTP POST /api/v1/api/create for orphan row seeding, but this case is refresh-focused (not create). Required Data already specifies `make_api with path not in app.routes`, and `tests/testdata/domain/api.py` defines `make_api()`. HTTP create for non-create setup violates the factory-first / HTTP-setup-ban contract.",
+      "suggestion": "Replace orphan setup with `factory_make_api(path=orphan_api_path(), ...)` via the API adapter (target: isolated_worker) in api-test-data-plan.md Setup Strategy, api-plan.md Cleanup/Setup, and api-codegen-plan.md Data Setup Mapping.",
+      "blocking": true,
+      "auto_fix_allowed": false,
+      "human_review_required": true
+    },
+    {
+      "id": "API-PLAN-FINDING-009-001",
+      "severity": "medium",
+      "category": "assertion",
+      "file": "qa/changes/RET-api-management-20260716-192358-cursor/plans/api-plan.md",
+      "message": "TC_APIS_API_009 (P1) case lists summary among required-field omissions to test, but Assertion Strategy only plans path/method/tags omission with 422; summary omission is deferred to Needs Review without a corresponding plan assertion.",
+      "suggestion": "Either add an explicit summary-omission sub-step (422 or documented skip with schema-default rationale) to Assertion Strategy and api-codegen-plan Assertion Mapping, or add a traceability note cross-referencing Needs Review #3 with the observed `ApiCreate.summary` default.",
+      "blocking": true,
+      "auto_fix_allowed": true,
+      "human_review_required": false
+    },
+    {
+      "id": "API-PLAN-FINDING-008-001",
+      "severity": "medium",
+      "category": "traceability",
+      "file": "qa/changes/RET-api-management-20260716-192358-cursor/plans/api-plan.md",
+      "message": "TC_APIS_API_008 case expects 401 or 403 for unauthenticated access; plan narrows no-token list/create to accept HTTP 401 or 422 due to missing `token` header validation.",
+      "suggestion": "Keep `(401, 422)` acceptance in codegen; cite fact-baseline / FastAPI header contract in assertion comments. No plan change required beyond existing Needs Review #2.",
+      "blocking": false,
+      "auto_fix_allowed": false,
+      "human_review_required": false
+    },
+    {
+      "id": "API-PLAN-FINDING-011-001",
+      "severity": "medium",
+      "category": "traceability",
+      "file": "qa/changes/RET-api-management-20260716-192358-cursor/plans/api-plan.md",
+      "message": "TC_APIS_API_011 case expects 4xx or business error for invalid id; plan narrows to HTTP 404 with `code=404` based on observed backend behavior.",
+      "suggestion": "Document observed 404 contract in test assertions; acceptable narrowing with backend source evidence.",
+      "blocking": false,
+      "auto_fix_allowed": false,
+      "human_review_required": false
+    },
+    {
+      "id": "API-PLAN-FINDING-ADAPTER-001",
+      "severity": "medium",
+      "category": "fixture",
+      "file": "tests/api/adapters/api.py",
+      "message": "Current `factory_make_api` / `factory_cleanup_api` use HTTP against live SUT while `.aa/data-knowledge.yaml` declares `isolated_worker`. Plan documents refactor as codegen precondition.",
+      "suggestion": "Refactor adapter to `run_isolated(MAKE_API/CLEANUP_API)` per api-codegen-plan Import Strategy before test execution; no further plan edits required.",
+      "blocking": false,
+      "auto_fix_allowed": false,
+      "human_review_required": false
+    }
+  ],
+  "needs_review": [
+    {
+      "id": "API-PLAN-REVIEW-007-001",
+      "severity": "high",
+      "category": "data",
+      "file": "qa/changes/RET-api-management-20260716-192358-cursor/plans/api-test-data-plan.md",
+      "question": "Confirm TC_APIS_API_007 orphan row setup should use `factory_make_api(path=orphan_api_path())` instead of HTTP POST /create, aligning Required Data with Setup Strategy and the factory-first contract.",
+      "reason": "HTTP setup ban for non-create cases is high severity with auto_fix_allowed=false; plan internally contradicts Required Data (make_api) vs Setup Strategy (HTTP create).",
+      "blocking": true
+    }
+  ],
+  "auto_fix_plan": [],
+  "assertion_traceability": [
+    {
+      "case_id": "TC_APIS_API_001",
+      "case_assertion": "HTTP 200 + code 200; list/detail matches path/method/summary/tags; non-5xx",
+      "plan_ref": "qa/changes/RET-api-management-20260716-192358-cursor/plans/api-plan.md#Assertion Strategy",
+      "verdict": "mapped",
+      "evidence": "api-plan Assertion Strategy row TC_APIS_API_001 covers all case assertions."
+    },
+    {
+      "case_id": "TC_APIS_API_002",
+      "case_assertion": "HTTP 200 + code 200; data/total/page/page_size present; data is array",
+      "plan_ref": "qa/changes/RET-api-management-20260716-192358-cursor/plans/api-plan.md#Assertion Strategy",
+      "verdict": "mapped",
+      "evidence": "api-plan Assertion Strategy row TC_APIS_API_002 covers pagination fields and array type."
+    },
+    {
+      "case_id": "TC_APIS_API_003",
+      "case_assertion": "Empty filter parameters behave like default list",
+      "plan_ref": "qa/changes/RET-api-management-20260716-192358-cursor/plans/api-plan.md#Assertion Strategy",
+      "verdict": "missing",
+      "evidence": "Case assertions include 空过滤参数时行为与默认列表一致; plan only covers substring filters and no-match empty."
+    },
+    {
+      "case_id": "TC_APIS_API_003",
+      "case_assertion": "Matching filter records appear; non-matching excluded; HTTP 200",
+      "plan_ref": "qa/changes/RET-api-management-20260716-192358-cursor/plans/api-plan.md#Assertion Strategy",
+      "verdict": "mapped",
+      "evidence": "Plan covers path/summary/tags filter match and no-match empty results."
+    },
+    {
+      "case_id": "TC_APIS_API_004",
+      "case_assertion": "HTTP 200 + code 200; data.id/path/method/summary/tags match seed",
+      "plan_ref": "qa/changes/RET-api-management-20260716-192358-cursor/plans/api-plan.md#Assertion Strategy",
+      "verdict": "mapped",
+      "evidence": "api-plan row TC_APIS_API_004 matches case detail assertions."
+    },
+    {
+      "case_id": "TC_APIS_API_005",
+      "case_assertion": "HTTP 200; summary/tags updated; path/method unchanged",
+      "plan_ref": "qa/changes/RET-api-management-20260716-192358-cursor/plans/api-plan.md#Assertion Strategy",
+      "verdict": "mapped",
+      "evidence": "Plan asserts update success, new summary/tags, path/method unchanged."
+    },
+    {
+      "case_id": "TC_APIS_API_006",
+      "case_assertion": "HTTP 200 delete success; list and get no longer contain id",
+      "plan_ref": "qa/changes/RET-api-management-20260716-192358-cursor/plans/api-plan.md#Assertion Strategy",
+      "verdict": "mapped",
+      "evidence": "Plan: delete success; list absent; get 404/code=404."
+    },
+    {
+      "case_id": "TC_APIS_API_007",
+      "case_assertion": "HTTP 200 refresh; auth routes synced; orphan records removed; non-5xx",
+      "plan_ref": "qa/changes/RET-api-management-20260716-192358-cursor/plans/api-plan.md#Assertion Strategy",
+      "verdict": "mapped",
+      "evidence": "Plan covers refresh success, orphan removal, auth route sync."
+    },
+    {
+      "case_id": "TC_APIS_API_008",
+      "case_assertion": "Unauthenticated/unauthorized returns 401 or 403; no 200 with full data; non-5xx",
+      "plan_ref": "qa/changes/RET-api-management-20260716-192358-cursor/plans/api-plan.md#Assertion Strategy",
+      "verdict": "narrowed",
+      "evidence": "Plan accepts 401 or 422 for missing token (Needs Review #2, FastAPI header validation); 403 for limited user; documented in API-PLAN-FINDING-008-001."
+    },
+    {
+      "case_id": "TC_APIS_API_009",
+      "case_assertion": "Missing path/method/summary/tags each rejected with 4xx; no incomplete rows; non-5xx",
+      "plan_ref": "qa/changes/RET-api-management-20260716-192358-cursor/plans/api-plan.md#Assertion Strategy",
+      "verdict": "missing",
+      "evidence": "Plan tests path/method/tags omission only; summary omission deferred without plan assertion (Needs Review #3, ApiCreate.summary default '')."
+    },
+    {
+      "case_id": "TC_APIS_API_010",
+      "case_assertion": "Invalid method enum rejected 4xx; no row created; non-5xx",
+      "plan_ref": "qa/changes/RET-api-management-20260716-192358-cursor/plans/api-plan.md#Assertion Strategy",
+      "verdict": "mapped",
+      "evidence": "Plan: HTTP 422 invalid method; list count unchanged."
+    },
+    {
+      "case_id": "TC_APIS_API_011",
+      "case_assertion": "Invalid id get/update/delete returns 4xx or business error; no 200 with valid detail; non-5xx",
+      "plan_ref": "qa/changes/RET-api-management-20260716-192358-cursor/plans/api-plan.md#Assertion Strategy",
+      "verdict": "narrowed",
+      "evidence": "Plan narrows to HTTP 404 + code=404 for id 999999999; backend source confirms 404 contract."
+    },
+    {
+      "case_id": "TC_APIS_API_012",
+      "case_assertion": "Duplicate path+method create: 4xx or 200 acceptable; record behavior; non-5xx",
+      "plan_ref": "qa/changes/RET-api-management-20260716-192358-cursor/plans/api-plan.md#Assertion Strategy",
+      "verdict": "mapped",
+      "evidence": "Plan neutral probe: non-5xx duplicate create; record row count (Needs Review #1)."
+    }
+  ],
+  "next_action": "human_review",
+  "created_at": "2026-07-16T11:45:00Z"
+}

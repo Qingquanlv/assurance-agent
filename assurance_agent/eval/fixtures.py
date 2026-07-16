@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import assert_change_id_safe
-from assurance_agent.workflow.core.state import read_state, write_state
+from assurance_agent.workflow.core.state import read_state_lenient, write_state
 
 
 class FixtureResets(BaseModel):
@@ -127,8 +127,12 @@ def _copy_rel(src_root: Path, dest_root: Path, rel: str) -> None:
 
 def _apply_workflow_state_resets(change_dir: Path, resets: dict[str, Any]) -> None:
     if not resets:
+        # Still re-hash if a state file was copied from archive with stale integrity.
+        if (change_dir / "workflow-state.yaml").exists():
+            state = read_state_lenient(change_dir)
+            write_state(change_dir, state)
         return
-    state = read_state(change_dir)
+    state = read_state_lenient(change_dir)
     dumped = state.model_dump(mode="json")
     for key, value in resets.items():
         _set_dotted(dumped, key, value)

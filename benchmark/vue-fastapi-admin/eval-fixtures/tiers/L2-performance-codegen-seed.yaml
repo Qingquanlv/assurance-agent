@@ -1,0 +1,4 @@
+name: L2-performance-codegen-seed
+extends: L2-api-codegen-seed
+description: Alias of L2-api-codegen-seed for suite wiring
+paths: []
