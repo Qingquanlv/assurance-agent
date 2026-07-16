@@ -19,12 +19,14 @@ from assurance_agent.artifacts.models import WorkflowState
 from assurance_agent.change_location import ChangeLocation
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.audit_evidence import build_gate_verdict_event
+from assurance_agent.workflow.core.audit_scope import is_audited_gate_read
 from assurance_agent.workflow.core.events import event_seq
 from assurance_agent.workflow.core.progression import ProgressionTxn, transaction
 from assurance_agent.workflow.core.write_guards import (
     assert_gate_verdict_transition,
     assert_skill_attestation,
 )
+from assurance_agent.workflow.execution.tree_hash import sha256_file
 from assurance_agent.workflow.orchestration.engine import compute_status
 from assurance_agent.workflow.orchestration.gates import check_gate, resolve_change_path
 from assurance_agent.workflow.orchestration.healing_episode import HealingAttemptIntent
@@ -566,8 +568,8 @@ def record_decision(
     if not reason.strip():
         raise AaError("decision reason is required")
 
-    review_file: str | None = None
-    review_sha256: str | None = None
+    evidence_file: str | None = None
+    evidence_sha256: str | None = None
     if evidence is not None:
         evidence_path = (project_root / evidence).resolve()
         try:
@@ -576,8 +578,35 @@ def record_decision(
             raise AaError("evidence must stay under project root") from err
         if not evidence_path.is_file():
             raise AaError(f"evidence not found: {evidence}")
-        review_file = evidence_path.relative_to(project_root).as_posix()
-        review_sha256 = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+        evidence_file = evidence_path.relative_to(project_root).as_posix()
+        evidence_sha256 = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+
+    # Gate decisions auto-bind the current audited gate read as review evidence so
+    # the engine's applyGateDecision can upgrade a needs_human_review verdict and
+    # the read-side audit can later validate the anchor (mirror of TS
+    # ``bindCurrentAuditedRead``). Best-effort: skip when no audited artifact.
+    review_file: str | None = None
+    review_sha256: str | None = None
+    if action in {"accept_risk", "fix_and_proceed"}:
+        from assurance_agent.workflow.orchestration.schema import load_workflow_schema
+
+        loc = ChangeLocation(
+            project_root=project_root,
+            change_id=change_dir.name,
+            path=change_dir,
+            source="changes",
+        )
+        schema = load_workflow_schema(project_root)
+        gate_id = _gate_for_checkpoint(schema, checkpoint)
+        gate = schema.gates.get(gate_id) if gate_id is not None else None
+        for read in gate.reads if gate is not None else []:
+            if not is_audited_gate_read(read.path):
+                continue
+            digest = sha256_file(resolve_change_path(loc, read.path))
+            if digest:
+                review_file = read.path
+                review_sha256 = digest
+                break
 
     with transaction(change_dir) as txn:
         state = txn.read_state()
@@ -639,8 +668,21 @@ def record_decision(
             "reason": reason,
             "who": who,
         }
+        if evidence_file is not None:
+            event["evidence_file"] = evidence_file
+            event["evidence_sha256"] = evidence_sha256
         if review_file is not None:
             event["review_file"] = review_file
             event["review_sha256"] = review_sha256
         txn.append_strict(event)
         txn.set_state(WorkflowState.model_validate(data))
+
+
+def _gate_for_checkpoint(schema: WorkflowSchema, checkpoint: str) -> str | None:
+    """Resolve the gate a decision checkpoint targets (gate id or gated phase)."""
+    if checkpoint in schema.gates:
+        return checkpoint
+    phase = next((p for p in schema.phases if p.id == checkpoint), None)
+    if phase is not None and phase.gate:
+        return phase.gate
+    return None

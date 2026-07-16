@@ -11,6 +11,9 @@ from pydantic import BaseModel
 from assurance_agent.artifacts.models import WorkflowState
 from assurance_agent.change_location import ChangeLocation
 from assurance_agent.exceptions import AaError
+from assurance_agent.workflow.core.audit_scope import is_audited_gate_read
+from assurance_agent.workflow.core.events import read_events
+from assurance_agent.workflow.execution.tree_hash import sha256_file
 from assurance_agent.workflow.orchestration.dsl import (
     MISSING,
     Scope,
@@ -18,6 +21,12 @@ from assurance_agent.workflow.orchestration.dsl import (
     parse_expression,
 )
 from assurance_agent.workflow.orchestration.schema import GateDef, ReadEntry, Verdict, WorkflowSchema
+
+# Human decisions that can upgrade a `needs_human_review` gate verdict. Mirror of
+# TS ``applyGateDecision`` (engine.ts): ``accept_risk``→pass, ``fix_and_proceed``
+# →needs_fix. Both require the decision to carry ``review_file``/``review_sha256``
+# anchoring an audited gate read whose current hash still matches.
+_GATE_DECISION_ACTIONS = frozenset({"accept_risk", "fix_and_proceed"})
 
 
 class GateVerdict(BaseModel):
@@ -147,6 +156,23 @@ def _adjudicate(
     memo: dict[str, Verdict],
     stack: tuple[str, ...],
 ) -> tuple[Verdict, str | None]:
+    verdict, matched = _adjudicate_base(schema, gate, loc, state, params, memo, stack)
+    gate_name = stack[-1] if stack else ""
+    upgraded, action = _apply_gate_decision(schema, gate_name, loc, verdict)
+    if action is not None:
+        return upgraded, f"{matched or 'default'}; human_decision:{action}"
+    return verdict, matched
+
+
+def _adjudicate_base(
+    schema: WorkflowSchema,
+    gate: GateDef,
+    loc: ChangeLocation,
+    state: WorkflowState,
+    params: dict,
+    memo: dict[str, Verdict],
+    stack: tuple[str, ...],
+) -> tuple[Verdict, str | None]:
     # Step 1 — invalid_json: stop
     if gate.invalid_json == Verdict.STOP:
         for r in gate.reads:
@@ -180,6 +206,86 @@ def _adjudicate(
 
     # Step 6 — fail-closed default
     return gate.default, None
+
+
+def is_codegen_hard_gate(gate_id: str) -> bool:
+    """Codegen precondition gates cannot be overridden by human decision.
+
+    Mirror of TS ``isCodegenHardGate``.
+    """
+    return gate_id.endswith("-codegen-precondition-gate")
+
+
+def latest_valid_gate_decision(
+    schema: WorkflowSchema,
+    gate_id: str,
+    loc: ChangeLocation,
+) -> dict[str, object] | None:
+    """Return the latest human_decision that legitimately anchors ``gate_id``.
+
+    Mirror of TS ``latestValidGateDecision``: the decision must target this gate,
+    be an ``accept_risk``/``fix_and_proceed`` action with reason+who, and carry a
+    ``review_file``/``review_sha256`` pointing at an audited gate read whose
+    *current* hash still matches (the frozen evidence was not altered afterwards).
+    """
+    gate = schema.gates.get(gate_id)
+    if gate is None:
+        return None
+    audited = {r.path for r in gate.reads if is_audited_gate_read(r.path)}
+    if not audited:
+        return None
+    events = read_events(loc.path)
+    latest: dict[str, object] | None = None
+    for event in reversed(events):
+        if event.get("source") != "decide" or event.get("type") != "human_decision":
+            continue
+        checkpoint = event.get("checkpoint")
+        if checkpoint == gate_id:
+            latest = event
+            break
+        if isinstance(checkpoint, str):
+            phase = next((p for p in schema.phases if p.id == checkpoint), None)
+            if phase is not None and phase.gate == gate_id:
+                latest = event
+                break
+    if latest is None:
+        return None
+    if latest.get("action") not in _GATE_DECISION_ACTIONS:
+        return None
+    reason = latest.get("reason")
+    who = latest.get("who")
+    review_file = latest.get("review_file")
+    review_sha = latest.get("review_sha256")
+    if not (isinstance(reason, str) and reason.strip()):
+        return None
+    if not (isinstance(who, str) and who.strip()):
+        return None
+    if not (isinstance(review_file, str) and isinstance(review_sha, str)):
+        return None
+    if review_file not in audited:
+        return None
+    current = sha256_file(_resolve_path(loc, review_file))
+    return latest if current == review_sha else None
+
+
+def _apply_gate_decision(
+    schema: WorkflowSchema,
+    gate_id: str,
+    loc: ChangeLocation,
+    base_verdict: Verdict,
+) -> tuple[Verdict, str | None]:
+    """Apply a valid human decision to a ``needs_human_review`` gate verdict."""
+    if base_verdict != Verdict.NEEDS_HUMAN_REVIEW or is_codegen_hard_gate(gate_id):
+        return base_verdict, None
+    decision = latest_valid_gate_decision(schema, gate_id, loc)
+    if decision is None:
+        return base_verdict, None
+    action = decision.get("action")
+    if action == "accept_risk":
+        return Verdict.PASS, "accept_risk"
+    if action == "fix_and_proceed":
+        return Verdict.NEEDS_FIX, "fix_and_proceed"
+    return base_verdict, None
 
 
 def check_gate(

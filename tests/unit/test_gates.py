@@ -112,3 +112,92 @@ gates:
 """)
     _write_review(tmp_path, {"decision": "pass"})  # satisfies BOTH needs_fix_when and pass_when
     assert check_gate(schema, "g", loc_for(tmp_path), EMPTY, {}).verdict == "needs_fix"
+
+
+# ── applyGateDecision: human decisions upgrade needs_human_review ────────────
+
+import hashlib as _hashlib
+
+from assurance_agent.workflow.core.events import append_event_strict
+
+_NHR_SCHEMA = parse_schema("""
+schema_version: "1"
+name: t
+phases:
+  - id: api-plan-review
+    skill: aa-api-plan-reviewer
+    agent: aa-reviewer
+    requires: []
+    produces: [review/api-plan-review.json]
+    gate: api-plan-review-gate
+gates:
+  api-plan-review-gate:
+    reads: [review/api-plan-review.json]
+    invalid_json: stop
+    needs_human_review_when: "decision == 'needs_human_review'"
+    pass_when: "decision == 'pass'"
+""")
+
+
+def _write_nhr_review(change_dir: Path) -> str:
+    d = change_dir / "review"
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / "api-plan-review.json"
+    path.write_text(json.dumps({"decision": "needs_human_review"}))
+    return _hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _decide(change_dir: Path, action: str, *, review_file: str | None, review_sha256: str | None) -> None:
+    event: dict = {
+        "source": "decide",
+        "type": "human_decision",
+        "checkpoint": "api-plan-review-gate",
+        "action": action,
+        "reason": "benchmark accept",
+        "who": "tester",
+    }
+    if review_file is not None:
+        event["review_file"] = review_file
+        event["review_sha256"] = review_sha256
+    append_event_strict(change_dir, event)
+
+
+def test_gate_decision_needs_human_review_without_decision(tmp_path: Path):
+    _write_nhr_review(tmp_path)
+    assert check_gate(_NHR_SCHEMA, "api-plan-review-gate", loc_for(tmp_path), EMPTY, {}).verdict == (
+        "needs_human_review"
+    )
+
+
+def test_accept_risk_upgrades_to_pass(tmp_path: Path):
+    sha = _write_nhr_review(tmp_path)
+    _decide(tmp_path, "accept_risk", review_file="review/api-plan-review.json", review_sha256=sha)
+    verdict = check_gate(_NHR_SCHEMA, "api-plan-review-gate", loc_for(tmp_path), EMPTY, {})
+    assert verdict.verdict == "pass"
+    assert "human_decision:accept_risk" in (verdict.matched_rule or "")
+
+
+def test_fix_and_proceed_upgrades_to_needs_fix(tmp_path: Path):
+    sha = _write_nhr_review(tmp_path)
+    _decide(tmp_path, "fix_and_proceed", review_file="review/api-plan-review.json", review_sha256=sha)
+    verdict = check_gate(_NHR_SCHEMA, "api-plan-review-gate", loc_for(tmp_path), EMPTY, {})
+    assert verdict.verdict == "needs_fix"
+
+
+def test_decision_ignored_when_review_hash_mismatches(tmp_path: Path):
+    _write_nhr_review(tmp_path)
+    _decide(
+        tmp_path,
+        "accept_risk",
+        review_file="review/api-plan-review.json",
+        review_sha256="deadbeef" * 8,
+    )
+    verdict = check_gate(_NHR_SCHEMA, "api-plan-review-gate", loc_for(tmp_path), EMPTY, {})
+    assert verdict.verdict == "needs_human_review"
+
+
+def test_decision_ignored_without_review_evidence(tmp_path: Path):
+    _write_nhr_review(tmp_path)
+    _decide(tmp_path, "accept_risk", review_file=None, review_sha256=None)
+    verdict = check_gate(_NHR_SCHEMA, "api-plan-review-gate", loc_for(tmp_path), EMPTY, {})
+    assert verdict.verdict == "needs_human_review"

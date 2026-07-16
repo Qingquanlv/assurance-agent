@@ -285,6 +285,51 @@ def test_heal_transition_replay_and_reconcile(tmp_path: Path) -> None:
     assert len([e for e in read_events(change) if e["type"] == "heal_transition"]) == 1
 
 
+def test_record_decision_binds_current_audited_gate_read(tmp_path: Path) -> None:
+    """A gate accept_risk decision auto-binds the current audited review artifact."""
+    import hashlib
+    import json
+
+    schema_dir = tmp_path / ".aa"
+    schema_dir.mkdir()
+    schema_dir.joinpath("workflow-schema.yaml").write_text(
+        """
+schema_version: "1"
+name: t
+phases:
+  - id: api-plan-review
+    skill: aa-api-plan-reviewer
+    agent: aa-reviewer
+    requires: []
+    produces: [review/api-plan-review.json]
+    gate: api-plan-review-gate
+gates:
+  api-plan-review-gate:
+    reads: [review/api-plan-review.json]
+    needs_human_review_when: "decision == 'needs_human_review'"
+    pass_when: "decision == 'pass'"
+""",
+        encoding="utf-8",
+    )
+    change = _change(tmp_path)
+    review = change / "review" / "api-plan-review.json"
+    review.parent.mkdir(parents=True, exist_ok=True)
+    review.write_text(json.dumps({"decision": "needs_human_review"}), encoding="utf-8")
+    expected_sha = hashlib.sha256(review.read_bytes()).hexdigest()
+
+    record_decision(
+        tmp_path,
+        change,
+        checkpoint="api-plan-review-gate",
+        action="accept_risk",
+        reason="benchmark accept",
+        who="tester",
+    )
+    decision = [e for e in read_events(change) if e["type"] == "human_decision"][-1]
+    assert decision["review_file"] == "review/api-plan-review.json"
+    assert decision["review_sha256"] == expected_sha
+
+
 def test_record_decision_stop_and_repeat(tmp_path: Path) -> None:
     # Override packaged schema so registry-gate does not mark the DAG stopped.
     schema_dir = tmp_path / ".aa"
