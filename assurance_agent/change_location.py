@@ -57,9 +57,7 @@ def resolve_change(project_root: Path, change_id: str) -> ChangeLocation:
             f"(expected: {changes_path}); found under archive at {archive_path} — "
             f"write commands require an active change"
         )
-    raise ChangeNotFoundError(
-        f"change '{change_id}' not found (expected: {changes_path})"
-    )
+    raise ChangeNotFoundError(f"change '{change_id}' not found (expected: {changes_path})")
 
 
 def resolve_change_any(project_root: Path, change_id: str) -> ChangeLocation:
@@ -90,6 +88,5 @@ def resolve_change_any(project_root: Path, change_id: str) -> ChangeLocation:
             source="archive",
         )
     raise ChangeNotFoundError(
-        f"change '{change_id}' not found under changes ({changes_path}) "
-        f"or archive ({archive_path})"
+        f"change '{change_id}' not found under changes ({changes_path}) or archive ({archive_path})"
     )

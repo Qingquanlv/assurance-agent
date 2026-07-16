@@ -111,7 +111,11 @@ def test_run_change_scopes_to_codegen_plan_mapping(tmp_path: Path, change_dir: P
     monkeypatch.setattr(runners_mod.subprocess, "run", fake_run)
     run_change(tmp_path, change_dir, make_config())
 
-    api_call = next(args for args in captured_args if "test_dept_api.py" in " ".join(args) or "test_user_api.py" in " ".join(args))
+    api_call = next(
+        args
+        for args in captured_args
+        if "test_dept_api.py" in " ".join(args) or "test_user_api.py" in " ".join(args)
+    )
     assert "tests/api/test_dept_api.py" in api_call
     assert "tests/api/test_user_api.py" not in api_call
 

@@ -103,6 +103,7 @@ def test_detached_argv_for_headless(tmp_path: Path) -> None:
 def test_spawn_failure_releases_lock(tmp_path: Path) -> None:
     write_aa_config(tmp_path)
     (tmp_path / "qa" / "changes" / "CH-1").mkdir(parents=True, exist_ok=True)
+
     def bad_spawn(argv: list[str], cwd: str, log_path: Path) -> int:
         raise OSError("no fork")
 

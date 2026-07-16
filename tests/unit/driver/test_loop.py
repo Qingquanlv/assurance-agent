@@ -300,9 +300,7 @@ def test_orchestrator_kind_is_noop(tmp_path: Path) -> None:
     assert adapter.requests == []
 
 
-def test_default_cli_executor_maps_run_and_applies_in_process(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_default_cli_executor_maps_run_and_applies_in_process(tmp_path: Path, monkeypatch) -> None:
     invocations: list[list[str]] = []
     apply_calls: list[tuple[str, str]] = []
 

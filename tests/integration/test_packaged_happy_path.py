@@ -122,11 +122,7 @@ def _bootstrap(tmp_path: Path) -> Path:
     change_dir = tmp_path / "qa" / "changes" / "CH-1"
     change_dir.mkdir(parents=True)
     (change_dir / "workflow-state.yaml").write_text(
-        "run_context:\n"
-        "  interaction_mode: autonomous\n"
-        "phases:\n"
-        "  skill_registry_check:\n"
-        "    status: pass\n",
+        "run_context:\n  interaction_mode: autonomous\nphases:\n  skill_registry_check:\n    status: pass\n",
         encoding="utf-8",
     )
     return change_dir

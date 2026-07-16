@@ -66,13 +66,9 @@ def _phase_entry(change: Path, phase_id: str) -> dict:
 
 def test_record_dispatch_replay_and_conflict(tmp_path: Path) -> None:
     change = _change(tmp_path)
-    r1 = record_dispatch(
-        change, phase_id="explore", kind="dispatch_phase", attempt_id="a1"
-    )
+    r1 = record_dispatch(change, phase_id="explore", kind="dispatch_phase", attempt_id="a1")
     assert r1.disposition == "committed"
-    r2 = record_dispatch(
-        change, phase_id="explore", kind="dispatch_phase", attempt_id="a1"
-    )
+    r2 = record_dispatch(change, phase_id="explore", kind="dispatch_phase", attempt_id="a1")
     assert r2.disposition == "replayed"
     assert len([e for e in read_events(change) if e["type"] == "dispatch_signed"]) == 1
     with pytest.raises(AaError, match="conflict"):
@@ -82,9 +78,7 @@ def test_record_dispatch_replay_and_conflict(tmp_path: Path) -> None:
 def test_apply_outcome_guard_stale_and_manual(tmp_path: Path) -> None:
     change = _change(tmp_path)
     _advisory(change)
-    receipt = record_dispatch(
-        change, phase_id="explore", kind="dispatch_phase", attempt_id="a1"
-    )
+    receipt = record_dispatch(change, phase_id="explore", kind="dispatch_phase", attempt_id="a1")
     # Drift the signed guard by writing state outside the dispatch txn.
     write_state(
         change,
@@ -160,9 +154,7 @@ def test_apply_outcome_superseded_keeps_newer_marker(tmp_path: Path) -> None:
     )
     write_state(
         change,
-        WorkflowState.model_validate(
-            {"phases": {"explore": {"status": "done", "attempt_id": "new"}}}
-        ),
+        WorkflowState.model_validate({"phases": {"explore": {"status": "done", "attempt_id": "new"}}}),
     )
     result = apply_phase_outcome(tmp_path, change, _SCHEMA, "explore", attempt_id="old")
     assert result.disposition == "superseded"
@@ -178,9 +170,7 @@ def test_apply_outcome_missing_dispatch_fail_closed(tmp_path: Path) -> None:
 
 def test_apply_orchestrator_internal_status_pass(tmp_path: Path) -> None:
     change = _change(tmp_path)
-    result = apply_phase_outcome(
-        tmp_path, change, _SCHEMA, "skill-registry-check", attempt_id=None
-    )
+    result = apply_phase_outcome(tmp_path, change, _SCHEMA, "skill-registry-check", attempt_id=None)
     assert result.applied_status == "pass"
 
 
