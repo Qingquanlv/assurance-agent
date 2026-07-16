@@ -18,6 +18,7 @@ from assurance_agent.workflow.execution.runners import (
     run_performance_target,
     run_pytest_target,
 )
+from assurance_agent.workflow.execution.scope import resolve_test_paths
 from assurance_agent.workflow.execution.selection import resolve_selected_targets
 from assurance_agent.workflow.execution.tree_hash import hash_product_tree, hash_test_tree
 from assurance_agent.workflow.healing.safety import load_product_code_roots
@@ -63,6 +64,7 @@ def run_change(
             batch_id=batch_id,
             target="api",
             test_dir=_test_dir(config, "api", "tests/api"),
+            test_paths=resolve_test_paths(change_dir, "api"),
             cov_package=cov_package,
         )
         if selected.api
@@ -76,6 +78,7 @@ def run_change(
             batch_id=batch_id,
             target="e2e",
             test_dir=_test_dir(config, "e2e", "tests/e2e"),
+            test_paths=resolve_test_paths(change_dir, "e2e"),
         )
         if selected.e2e
         else None
@@ -88,6 +91,7 @@ def run_change(
             batch_id=batch_id,
             target="fuzz",
             test_dir=_test_dir(config, "fuzz", "tests/fuzz"),
+            test_paths=resolve_test_paths(change_dir, "fuzz"),
         )
         if selected.fuzz
         else None

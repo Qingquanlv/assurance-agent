@@ -85,6 +85,37 @@ def test_run_change_api_fail_final_status_fail(tmp_path: Path, change_dir: Path,
     assert manifest.final_status == "FAIL"
 
 
+def test_run_change_scopes_to_codegen_plan_mapping(tmp_path: Path, change_dir: Path, monkeypatch) -> None:
+    (tmp_path / "tests" / "api" / "test_dept_api.py").write_text("", encoding="utf-8")
+    (tmp_path / "tests" / "api" / "test_user_api.py").write_text("", encoding="utf-8")
+    plans = change_dir / "plans"
+    plans.mkdir()
+    (plans / "api-codegen-plan.md").write_text(
+        "## Test Function Mapping\n\n"
+        "| Case ID | Test Function | Target File |\n"
+        "|---|---|---|\n"
+        "| TC_DEPT_API_001 | `test_tc_dept_api_001__ok` | `tests/api/test_dept_api.py` |\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(runner_mod, "generate_batch_id", lambda: "20260716-000000")
+
+    captured_args: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        captured_args.append(args)
+        report_file = next(a.split("=", 1)[1] for a in args if a.startswith("--json-report-file="))
+        Path(report_file).parent.mkdir(parents=True, exist_ok=True)
+        Path(report_file).write_text(json.dumps({"tests": []}), encoding="utf-8")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(runners_mod.subprocess, "run", fake_run)
+    run_change(tmp_path, change_dir, make_config())
+
+    api_call = next(args for args in captured_args if "test_dept_api.py" in " ".join(args) or "test_user_api.py" in " ".join(args))
+    assert "tests/api/test_dept_api.py" in api_call
+    assert "tests/api/test_user_api.py" not in api_call
+
+
 def test_run_change_missing_test_dirs_all_skipped(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(runner_mod, "generate_batch_id", lambda: "20260715-000002")
 

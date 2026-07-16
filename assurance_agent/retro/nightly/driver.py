@@ -4,6 +4,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
+from assurance_agent.config import load_config as load_aa_config
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import assert_path_segment_safe
 from assurance_agent.retro.aggregator import build_retro_context, count_signals
@@ -38,6 +39,20 @@ ContextBuilder = Callable[..., RetroContext]
 def _default_is_terminal(change_dir: Path, change_id: str) -> bool:
     project_root = change_dir.parents[2]
     try:
+        config = load_aa_config(project_root)
+        archive_rel = config.qa.archive
+        archive_rel = archive_rel[2:] if archive_rel.startswith("./") else archive_rel
+        if change_dir == project_root / archive_rel / change_id:
+            # `aa-archive` only ever archives a change after every archive-gate
+            # condition (execution PASS/PASS_WITH_WARNINGS, healing resolved,
+            # review gates pass) already held — archived is terminal by
+            # construction. Recomputing terminality via `compute_status` against
+            # the archived directory is unreliable: the archive skill
+            # intentionally does not copy `cases/<module>/case.yaml` (merged
+            # into the stable `qa/cases/` file instead, not archived as a
+            # process artifact), so produces-presence checks for case-design /
+            # case-review phases spuriously fail against the archived copy.
+            return True
         schema = load_workflow_schema(project_root)
         state = read_workflow_state(change_dir)
         status = compute_status(

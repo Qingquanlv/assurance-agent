@@ -34,23 +34,36 @@ def run_pytest_target(
     batch_id: str,
     target: PytestTarget,
     test_dir: str,
+    test_paths: list[str] | None = None,
     cov_package: str | None = None,
 ) -> TargetResult:
     raw_dir = batch_dir / _RAW
     log_path = raw_dir / f"{target}.log"
     report_path = raw_dir / f"{target}-report.json"
 
-    if not (project_root / test_dir).exists():
-        source = ResultSource(framework="pytest", raw_log=str(log_path), report_json=str(report_path))
-        reason = f"No test targets found under {test_dir} — {target} SKIPPED."
-        return _skipped_target(change_id, batch_id, target, f"uv run pytest {test_dir}", source, reason)
+    if test_paths:
+        # Change-scoped run: only the files this change's codegen plan mapped,
+        # never the shared tests/<target>/ tree (which holds every other change's tests too).
+        existing = [p for p in test_paths if (project_root / p).is_file()]
+        if not existing:
+            source = ResultSource(framework="pytest", raw_log=str(log_path), report_json=str(report_path))
+            reason = f"Mapped test file(s) not found: {', '.join(test_paths)} — {target} SKIPPED."
+            command = f"uv run pytest {' '.join(test_paths)}"
+            return _skipped_target(change_id, batch_id, target, command, source, reason)
+        pytest_targets = existing
+    else:
+        if not (project_root / test_dir).exists():
+            source = ResultSource(framework="pytest", raw_log=str(log_path), report_json=str(report_path))
+            reason = f"No test targets found under {test_dir} — {target} SKIPPED."
+            return _skipped_target(change_id, batch_id, target, f"uv run pytest {test_dir}", source, reason)
+        pytest_targets = [test_dir]
 
     raw_dir.mkdir(parents=True, exist_ok=True)
     args = [
         "uv",
         "run",
         "pytest",
-        test_dir,
+        *pytest_targets,
         "-p",
         "no:cacheprovider",
         "--json-report",

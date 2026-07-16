@@ -59,6 +59,68 @@ def test_run_pytest_target_parses_stubbed_report(tmp_path: Path, monkeypatch) ->
     assert (tmp_path / "batch" / "raw" / "api.log").is_file()
 
 
+def test_run_pytest_target_scoped_to_test_paths(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "tests" / "api").mkdir(parents=True)
+    (tmp_path / "tests" / "api" / "test_dept_api.py").write_text("", encoding="utf-8")
+    (tmp_path / "tests" / "api" / "test_user_api.py").write_text("", encoding="utf-8")
+    captured_args: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        captured_args.append(args)
+        report_file = next(a.split("=", 1)[1] for a in args if a.startswith("--json-report-file="))
+        Path(report_file).parent.mkdir(parents=True, exist_ok=True)
+        Path(report_file).write_text(
+            json.dumps(
+                {
+                    "tests": [
+                        {
+                            "nodeid": "tests/api/test_dept_api.py::test_tc_dept_api_001__ok",
+                            "outcome": "passed",
+                            "call": {"outcome": "passed", "duration": 0.0},
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(runners.subprocess, "run", fake_run)
+    result = run_pytest_target(
+        project_root=tmp_path,
+        batch_dir=tmp_path / "batch",
+        change_id="CH-1",
+        batch_id="b1",
+        target="api",
+        test_dir="tests/api",
+        test_paths=["tests/api/test_dept_api.py"],
+    )
+    assert result.status == "passed"
+    assert "tests/api/test_dept_api.py" in captured_args[0]
+    assert "tests/api/test_user_api.py" not in captured_args[0]
+    assert "tests/api" not in captured_args[0]
+
+
+def test_run_pytest_target_missing_mapped_files_skipped_no_subprocess(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "tests" / "api").mkdir(parents=True)
+
+    def boom(*a, **k):
+        raise AssertionError("subprocess must not run when every mapped file is missing")
+
+    monkeypatch.setattr(runners.subprocess, "run", boom)
+    result = run_pytest_target(
+        project_root=tmp_path,
+        batch_dir=tmp_path / "batch",
+        change_id="CH-1",
+        batch_id="b1",
+        target="api",
+        test_dir="tests/api",
+        test_paths=["tests/api/test_missing.py"],
+    )
+    assert result.status == "skipped"
+    assert "test_missing.py" in result.unmapped_tests[0].message
+
+
 def test_run_pytest_target_missing_dir_is_skipped_no_subprocess(tmp_path: Path, monkeypatch) -> None:
     def boom(*a, **k):
         raise AssertionError("subprocess must not run when the test dir is absent")

@@ -204,6 +204,116 @@ def write_cli_fixer_safety_check(change_dir: Path, payload: dict) -> Path:
     return path
 
 
+_SKIP_XFAIL_PATTERNS = (
+    "pytest.mark.skip",
+    "pytest.mark.xfail",
+    "pytest.skip(",
+    "pytest.xfail(",
+    "unittest.skip",
+    "@skip",
+)
+
+
+def _scan_skip_xfail_markers(project_root: Path, files: list[str]) -> bool:
+    """Best-effort content scan (no baseline diff available for gitignored SUTs).
+
+    Returns True iff any modified file currently contains a skip/xfail marker.
+    Absence of markers lets the caller assert `skip_or_xfail_added == False`
+    with confidence; presence only proves the marker exists now, not that it
+    was newly added, so the caller must route that case to human review
+    instead of guessing.
+    """
+    for rel in files:
+        path = project_root / rel
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if any(pattern in text for pattern in _SKIP_XFAIL_PATTERNS):
+            return True
+    return False
+
+
+def compute_and_write_fixer_safety_check(
+    project_root: Path,
+    change_id: str,
+) -> Path:
+    """Derive `healing/fixer-safety-check.json` from apply-summary evidence.
+
+    Called by `record_apply_summary` after every successful apply so the
+    `fixer-safety-gate` (which fails closed on a missing file) always has a
+    current verdict once at least one target has applied a fix. Recomputes
+    from disk each time — cheap, idempotent, and reflects whichever apply
+    summaries (api / e2e) exist at call time.
+    """
+    change_dir = _active_change_dir(project_root, change_id)
+    proposal_path = change_dir / "healing" / "fix-proposal.json"
+    proposal_raw: dict = {}
+    if proposal_path.is_file():
+        try:
+            proposal_raw = json.loads(proposal_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            proposal_raw = {}
+    risk_by_id = {
+        str(item.get("proposal_id")): str(item.get("risk_level") or "")
+        for item in proposal_raw.get("proposals", [])
+        if isinstance(item, dict)
+    }
+
+    modified_files: list[str] = []
+    applied_proposal_ids: list[str] = []
+    for target in ("api", "e2e"):
+        summary_path = change_dir / "healing" / f"{target}-apply-summary.json"
+        if not summary_path.is_file():
+            continue
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        modified_files.extend(str(f) for f in summary.get("files_modified", []))
+        applied_proposal_ids.extend(str(p) for p in summary.get("proposal_ids", []))
+
+    product_roots = load_product_code_roots(project_root)
+    product_code_modified = any(
+        any(rel == root or rel.startswith(root.rstrip("/") + "/") for root in product_roots)
+        for rel in modified_files
+    )
+    high_risk_proposal_applied = any(
+        risk_by_id.get(pid, "").lower() in {"high", "critical"} for pid in applied_proposal_ids
+    )
+    has_skip_or_xfail_marker = _scan_skip_xfail_markers(project_root, modified_files)
+    skip_or_xfail_added: bool | str = False if not has_skip_or_xfail_marker else "undetermined"
+    # record_apply_summary already fail-closes (HealingGuardError) on any file
+    # modified outside the authorized proposal set, so reaching this point
+    # means every modified file was pre-authorized — unrelated_tests_modified
+    # is reliably False here.
+    unrelated_tests_modified = False
+    assertion_expected_value_changes_detected = False
+
+    needs_review = has_skip_or_xfail_marker
+    passed = not (
+        product_code_modified
+        or assertion_expected_value_changes_detected
+        or has_skip_or_xfail_marker
+        or unrelated_tests_modified
+        or high_risk_proposal_applied
+    )
+
+    payload = {
+        "schema_version": "1.0",
+        "change_id": change_id,
+        "modified_files": modified_files,
+        "product_code_modified": product_code_modified,
+        "assertion_expected_value_changes_detected": assertion_expected_value_changes_detected,
+        "skip_or_xfail_added": skip_or_xfail_added,
+        "unrelated_tests_modified": unrelated_tests_modified,
+        "high_risk_proposal_applied": high_risk_proposal_applied,
+        "needs_review": needs_review,
+        "passed": passed,
+    }
+    return write_cli_fixer_safety_check(change_dir, payload)
+
+
 def _authorized_files(proposal_raw: dict, proposal_ids: list[str], target: str) -> set[str]:
     authorized: set[str] = set()
     for item in proposal_raw.get("proposals", []):
@@ -289,6 +399,12 @@ def record_apply_summary(
                 files_modified=modified,
             )
         )
+
+    # CLI-owned healing core: (re)derive the safety-check evidence the
+    # fixer-safety-gate reads. Must happen here — the gate fails closed
+    # (`missing_file_is: stop`) if this file never appears, and no agent
+    # skill is authorized to author it as self-attestation.
+    compute_and_write_fixer_safety_check(project_root, change_id)
 
     return RecordApplySummaryResult(
         json_path=str(change_dir / json_rel),

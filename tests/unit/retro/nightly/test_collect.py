@@ -5,7 +5,7 @@ from pathlib import Path
 
 from tests.helpers_aa import write_aa_config
 
-from assurance_agent.retro.nightly.driver import collect_nightly
+from assurance_agent.retro.nightly.driver import _default_is_terminal, collect_nightly
 from assurance_agent.retro.nightly.exit_codes import (
     NIGHTLY_FAILURE,
     NIGHTLY_NOOP,
@@ -102,6 +102,22 @@ def test_collect_agent_failure_exit_40(tmp_path: Path) -> None:
 
     code = collect_nightly(_opts(sut), agent_runner=agent_runner, is_terminal=lambda root, cid: True)
     assert code == NIGHTLY_FAILURE
+
+
+def test_default_is_terminal_treats_archived_change_as_terminal(tmp_path: Path) -> None:
+    """Regression: `compute_status` against an archived directory spuriously
+    reported non-terminal, because `aa-archive` intentionally does not copy
+    `cases/<module>/case.yaml` (merged into the stable `qa/cases/` file, not
+    archived), so case-design/case-review produces-presence checks fail
+    against the archived copy. This silently dropped every already-archived
+    change from the retro window. Archived is terminal by construction — the
+    archive gate only lets a change through after execution/healing/review
+    already passed.
+    """
+    write_aa_config(tmp_path)
+    change_dir = make_archived_change(tmp_path, "CH-ARCHIVED", failures=[])
+
+    assert _default_is_terminal(change_dir, "CH-ARCHIVED") is True
 
 
 def test_collect_dry_run_stops_before_agent_exit_0(tmp_path: Path) -> None:
