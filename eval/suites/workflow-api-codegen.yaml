@@ -1,0 +1,23 @@
+name: workflow-api-codegen
+scorer: workflow-api-codegen
+executor:
+  type: workflow-run
+  run_mode: codegen-only
+  test_type: api
+  run_tests: false
+  timeout_seconds: 7200
+  expected_outputs:
+    - plans/api-plan.md
+thresholds:
+  - metric: schema_valid_rate
+    gate: hard
+    op: gte
+    value: 0.99
+  - metric: secret_leak_count
+    gate: hard
+    op: eq
+    value: 0.0
+  - metric: forbidden_write_executed_count
+    gate: hard
+    op: eq
+    value: 0.0

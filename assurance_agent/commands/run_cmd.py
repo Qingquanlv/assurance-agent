@@ -13,6 +13,10 @@ from assurance_agent.workflow.core.progression import ProgressionError, transact
 from assurance_agent.workflow.execution.runner import generate_batch_id, run_change
 from assurance_agent.workflow.execution.tree_hash import hash_test_tree
 from assurance_agent.workflow.healing.override_evidence import build_test_changes_override_evidence
+from assurance_agent.workflow.healing.override_policy import (
+    assert_test_changes_override_allowed,
+    load_test_changes_override_policy,
+)
 from assurance_agent.workflow.healing.safety import (
     HealingGuardError,
     assert_product_tree_unchanged_in_healing,
@@ -87,6 +91,11 @@ def _execute(
     if integrity.tests_changed and allow_test_changes:
         if not rerun_reason:
             raise HealingGuardError("--allow-test-changes requires --rerun-reason for audit trail")
+        assert_test_changes_override_allowed(
+            change_dir,
+            integrity,
+            load_test_changes_override_policy(project_root),
+        )
         from datetime import datetime, timezone
         import subprocess
 

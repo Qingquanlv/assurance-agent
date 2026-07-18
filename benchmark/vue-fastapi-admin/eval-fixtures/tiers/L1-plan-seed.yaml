@@ -1,0 +1,11 @@
+name: L1-plan-seed
+extends: L0-case-seed
+description: Plans reviewed; ready for codegen
+paths:
+- plans
+- review
+resets:
+  workflow_state:
+    phases.api-plan.status: done
+    phases.e2e-plan.status: done
+    phases.api-codegen.status: pending

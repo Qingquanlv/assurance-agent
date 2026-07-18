@@ -5,6 +5,7 @@ defects, and derives risk/recommendation. CLI is the only trusted scorer.
 """
 
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import TypeVar
 
@@ -20,8 +21,11 @@ from assurance_agent.artifacts.models import (
     ReportScope,
 )
 from assurance_agent.change_location import resolve_change
+from assurance_agent.workflow.core.events import Ledger
 from assurance_agent.workflow.execution.evidence import load_execution_evidence
 from assurance_agent.workflow.report.quality_score import ScoreDimension, compute_quality_score
+
+_NO_DATA = "No data"
 
 _PRODUCT = {"business_logic_failure", "fuzz_stateful_failure", "perf_threshold_exceeded"}
 _ENVIRONMENT = {"environment_failure", "perf_environment"}
@@ -53,6 +57,7 @@ def generate_report(project_root: Path, change_id: str) -> GenerateReportResult:
     defects = _bucket_defects(analysis)
     risk_level, risk_rationale = _risk(gate, defects)
     recommendation = _recommendation(gate.final_status, defects)
+    started_at, duration = _execution_timing(change_base)
 
     report = QualityReport(
         schema_version="1.0",
@@ -68,6 +73,8 @@ def generate_report(project_root: Path, change_id: str) -> GenerateReportResult:
         risk_level=risk_level,
         risk_rationale=risk_rationale,
         recommendation=recommendation,
+        started_at=started_at,
+        duration=duration,
         non_functional=gate.dimensions.non_functional,
     )
 
@@ -205,12 +212,64 @@ def _fmt(value: float | str) -> str:
     return "N/A" if value == "N/A" else str(value)
 
 
+def _execution_timing(change_base: Path) -> tuple[str | None, str | None]:
+    """Derive Start / Duration for the latest primary execution from the ledger.
+
+    Prefer ``dispatch_signed`` → ``phase_outcome_committed`` for phase
+    ``execution`` (not healing-rerun). Missing either side → None ("No data").
+    """
+    ledger = Ledger(change_base)
+    dispatch = ledger.latest(type="dispatch_signed", phase="execution")
+    if dispatch is None:
+        dispatch = ledger.latest(type="dispatch_phase", phase="execution")
+    outcome = ledger.latest(type="phase_outcome_committed", phase="execution")
+    start_raw = None
+    if dispatch is not None:
+        start_raw = dispatch.get("ts") or (
+            _ms_to_iso(dispatch.get("dispatched_at")) if dispatch.get("dispatched_at") is not None else None
+        )
+    end_raw = outcome.get("ts") if outcome is not None else None
+    if not isinstance(start_raw, str) or not start_raw.strip():
+        return None, None
+    started_at = start_raw.strip()
+    if not isinstance(end_raw, str) or not end_raw.strip():
+        return started_at, None
+    duration = _format_duration(started_at, end_raw.strip())
+    return started_at, duration
+
+
+def _ms_to_iso(value: object) -> str | None:
+    try:
+        ms = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return datetime.fromtimestamp(ms / 1000.0).astimezone().isoformat()
+
+
+def _format_duration(started: str, ended: str) -> str | None:
+    try:
+        a = datetime.fromisoformat(started.replace("Z", "+00:00"))
+        b = datetime.fromisoformat(ended.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    seconds = max(0, int((b - a).total_seconds()))
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h {minutes}m {secs}s"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
 def _report_md(r: QualityReport) -> str:
     cov = r.coverage
     lines = [
         f"# Quality Report — {r.change_id}",
         "",
         f"- **Batch**: {r.batch_id or '(unknown)'}",
+        f"- **Start**: {r.started_at or _NO_DATA}",
+        f"- **Duration**: {r.duration or _NO_DATA}",
         f"- **Final Status**: {r.final_status}",
         f"- **Quality Score**: {r.quality_score} / 100",
         f"- **Risk Level**: {r.risk_level}",
@@ -285,6 +344,8 @@ def _exec_summary(r: QualityReport) -> str:
             f"# Executive Summary — {r.change_id}",
             "",
             f"**Final Status**: {r.final_status}  |  **Quality Score**: {r.quality_score}/100  |  **Risk**: {r.risk_level}",
+            "",
+            f"**Start**: {r.started_at or _NO_DATA}  |  **Duration**: {r.duration or _NO_DATA}",
             "",
             r.risk_rationale,
             "",

@@ -111,6 +111,7 @@ def reclassify_cmd(change_id: str, batch_id: str | None) -> None:
         click.secho(f"Reclassify failed: {err}", fg="red")
         raise SystemExit(1) from err
 
+    reclassified_events: list[dict[str, object]] = []
     if prior is not None:
         old_by_key = {_failure_key(f): f for f in prior.failures}
         now = datetime.now(timezone.utc).isoformat()
@@ -118,11 +119,23 @@ def reclassify_cmd(change_id: str, batch_id: str | None) -> None:
             old = old_by_key.get(_failure_key(failure))
             if old is None or old.category == failure.category:
                 continue
+            evidence = "deterministic rules re-run"
             failure.reclassified = Reclassified.model_validate(
                 {
                     "from": old.category,
-                    "evidence": "deterministic rules re-run",
+                    "evidence": evidence,
                     "at": now,
+                }
+            )
+            failure_id = failure.id or failure.case_id or failure.test or "unknown"
+            reclassified_events.append(
+                {
+                    "source": "report",
+                    "type": "failure_reclassified",
+                    "failure": failure_id,
+                    "from": old.category,
+                    "to": failure.category,
+                    "evidence": evidence,
                 }
             )
         inspect_dir = change_dir / "inspect"
@@ -139,12 +152,6 @@ def reclassify_cmd(change_id: str, batch_id: str | None) -> None:
     )
     click.echo(f"  Source Batch : {analysis.source_batch_id}")
     click.echo(f"  Failures     : {len(analysis.failures)}")
-    append_event_best_effort(
-        change_dir,
-        {
-            "source": "report",
-            "type": "reclassified",
-            "batch_id": analysis.source_batch_id,
-        },
-    )
+    for event in reclassified_events:
+        append_event_best_effort(change_dir, event)
     raise SystemExit(1 if gate.final_status == "FAIL" else 0)

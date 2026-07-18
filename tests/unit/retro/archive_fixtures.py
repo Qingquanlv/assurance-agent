@@ -15,14 +15,48 @@ def make_archived_change(
     failures: list[dict] | None = None,
     review_decision: str = "pass",
     gate_pushbacks: int = 0,
+    gate_verdicts: list[dict] | None = None,
     apply_status: str = "applied",
+    reclassifications: list[dict] | None = None,
+    phases: dict | None = None,
 ) -> Path:
     root = project_root / "qa" / "archive" / change_id
     root.mkdir(parents=True)
     write_aa_config(project_root)
     events: list[dict[str, object]] = [{"type": "workflow_started", "change_id": change_id}]
     for _ in range(gate_pushbacks):
-        events.append({"type": "gate_pushback", "gate": "case-review"})
+        events.append(
+            {
+                "source": "gate",
+                "type": "gate_verdict",
+                "gate": "case-review",
+                "verdict": "needs_fix",
+                "evidence": {"reason": "review findings unresolved"},
+            }
+        )
+    for verdict in gate_verdicts or []:
+        events.append(
+            {
+                "source": "gate",
+                "type": "gate_verdict",
+                "phase": verdict.get("phase"),
+                "gate": verdict["gate"],
+                "verdict": verdict["verdict"],
+                "evidence": verdict.get("evidence", {}),
+                **({"reason": verdict["reason"]} if "reason" in verdict else {}),
+            }
+        )
+    for index, reclass in enumerate(reclassifications or [], start=1):
+        events.append(
+            {
+                "source": "report",
+                "type": "failure_reclassified",
+                "failure": reclass.get("failure", f"F-{index}"),
+                "from": reclass["from"],
+                "to": reclass["to"],
+                "evidence": reclass.get("evidence", "manual review"),
+            }
+        )
     events.append(
         {
             "source": "progression",
@@ -34,9 +68,12 @@ def make_archived_change(
             "source_batch_id": "b1",
         }
     )
+    # Real ledgers stamp a monotonically increasing seq on every event.
+    for seq, event in enumerate(events, start=1):
+        event.setdefault("seq", seq)
     (root / "events.jsonl").write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
     (root / "workflow-state.yaml").write_text(
-        yaml.safe_dump({"change_id": change_id, "phases": {}}), encoding="utf-8"
+        yaml.safe_dump({"change_id": change_id, "phases": phases or {}}), encoding="utf-8"
     )
     inspect = root / "inspect"
     inspect.mkdir()

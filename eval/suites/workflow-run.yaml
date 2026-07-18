@@ -1,0 +1,20 @@
+name: workflow-run
+scorer: workflow-run
+executor:
+  type: aws-run
+  timeout_seconds: 900
+  expected_outputs:
+    - workflow-state.yaml
+thresholds:
+  - metric: test_executable_rate
+    gate: hard
+    op: gte
+    value: 0.95
+  - metric: secret_leak_count
+    gate: hard
+    op: eq
+    value: 0.0
+  - metric: forbidden_write_executed_count
+    gate: hard
+    op: eq
+    value: 0.0

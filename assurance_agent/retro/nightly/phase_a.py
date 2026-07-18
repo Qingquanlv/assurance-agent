@@ -4,8 +4,7 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 
-from assurance_agent.change_location import resolve_change
-from assurance_agent.config import load_config
+from assurance_agent.change_location import changes_root, resolve_change
 from assurance_agent.identifiers import assert_path_segment_safe
 from assurance_agent.retro.archive_reader import list_archived_changes, resolve_change_dir
 from assurance_agent.retro.nightly.types import ChangeCandidate
@@ -42,14 +41,11 @@ def enumerate_candidates(
             continue
         candidates.append(ChangeCandidate(change_id=change_id, evidence_source=source, path=str(change_dir)))
 
-    config = load_config(sut)
-    rel = config.qa.changes
-    rel = rel[2:] if rel.startswith("./") else rel
-    changes_root = sut / rel
-    for change_id in list_dir_names(changes_root):
+    active_root = changes_root(sut)
+    for change_id in list_dir_names(active_root):
         if change_id in consumed or any(c.change_id == change_id for c in candidates):
             continue
-        change_dir = changes_root / change_id
+        change_dir = active_root / change_id
         if not has_required_evidence(change_dir):
             incomplete.append(change_id)
             continue

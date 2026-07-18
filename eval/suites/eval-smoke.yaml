@@ -1,0 +1,7 @@
+name: eval-smoke
+scorer: eval-smoke
+executor:
+  type: in_process
+  target_module: assurance_agent.eval.scorers.eval_smoke
+  target_export: score
+thresholds: []

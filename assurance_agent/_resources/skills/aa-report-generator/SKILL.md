@@ -39,6 +39,15 @@ This skill runs **after M5 execution + inspect** in `aa-workflow` (Phase 10: rep
 
 Produce a deterministic, research-and-dev-readable quality report for a change: a 0-100 Quality Score, dimension breakdown (Functional, Coverage, Fuzz, Performance), Minimum Required Coverage (MRC) coverage status when advisory data exists, defect buckets, and a risk/recommendation conclusion. When fuzz and/or performance ran, the report adds a **Fuzz** functional line and a **Non-Functional (Performance)** chapter with per-scenario p95 / error-rate verdicts.
 
+Header timing metrics (CLI-written; do not invent values):
+
+| Metric | Source | Missing display |
+|--------|--------|-----------------|
+| **Start** | `events.jsonl` — latest `dispatch_signed` / `dispatch_phase` for phase `execution` (`ts`) | `No data` |
+| **Duration** | wall-clock from that Start to matching `phase_outcome_committed` for `execution` | `No data` |
+
+These appear in `quality-report.json` (`started_at`, `duration`), `quality-report.md`, and `executive-summary.md`.
+
 ## Skill vs CLI Boundary
 
 The CLI (`aa report generate`) is the **only trusted layer** that computes `quality_score` and assembles the structured report. This skill:
@@ -112,9 +121,9 @@ quality_score = round(sum of active dimension points)
 
 ```
 qa/changes/<change-id>/report/
-├── quality-report.json     ← structured (CLI-written, deterministic; see src/schema/quality_report.ts)
-├── quality-report.md       ← full report (CLI-written)
-├── executive-summary.md    ← one-page conclusion (CLI-written)
+├── quality-report.json     ← structured (CLI-written, deterministic; includes started_at / duration)
+├── quality-report.md       ← full report (CLI-written; header shows Start / Duration, or "No data")
+├── executive-summary.md    ← one-page conclusion (CLI-written; Start / Duration line)
 └── minimum-coverage-result.json ← MRC mapped/executed/verified status when advisory MRC exists
 ```
 

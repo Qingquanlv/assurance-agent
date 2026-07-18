@@ -38,12 +38,6 @@ def derive_healing_state(change_dir: Path) -> HealingStateSnapshot:
             return HealingStateSnapshot()
         return HealingStateSnapshot(status=str(latest_transition["to"]))
     baseline_seq = event_seq(baseline)
-    ended = any(
-        e.get("to") in _TERMINAL for e in ledger.filter(type="heal_transition", after_seq=baseline_seq)
-    ) or bool(ledger.filter(type="human_decision", action="stop", after_seq=baseline_seq))
-    if ended:
-        return HealingStateSnapshot(status="not_needed")
-
     episode_id = str(baseline["episode_id"])
     allocations = ledger.filter(type="healing_attempt_allocated", episode_id=episode_id)
     unique = {str(e["operation_id"]): e for e in allocations}
@@ -51,7 +45,17 @@ def derive_healing_state(change_dir: Path) -> HealingStateSnapshot:
     after_allocation = event_seq(latest) if latest else baseline_seq
     apply_events = ledger.filter(type="heal_record_apply", after_seq=after_allocation)
     transitions = ledger.filter(type="heal_transition", after_seq=baseline_seq)
-    status = str(transitions[-1]["to"]) if transitions else "pending"
+    stopped = bool(ledger.filter(type="human_decision", action="stop", after_seq=baseline_seq))
+    terminal_transitions = [t for t in transitions if t.get("to") in _TERMINAL]
+    if terminal_transitions:
+        # Preserve the actual recorded verdict (resolved/exhausted/failed/...)
+        # instead of collapsing every terminal outcome into "not_needed" —
+        # report/archive gates and audits depend on the real value.
+        status = str(terminal_transitions[-1]["to"])
+    elif stopped:
+        status = "not_needed"
+    else:
+        status = str(transitions[-1]["to"]) if transitions else "pending"
     return HealingStateSnapshot(
         status=status,
         attempts_used=len(unique),

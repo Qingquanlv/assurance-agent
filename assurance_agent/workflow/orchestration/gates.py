@@ -9,7 +9,11 @@ import yaml
 from pydantic import BaseModel
 
 from assurance_agent.artifacts.models import WorkflowState
+from assurance_agent.change_location import ChangeLocation
 from assurance_agent.exceptions import AaError
+from assurance_agent.workflow.core.audit_scope import is_audited_gate_read
+from assurance_agent.workflow.core.events import read_events
+from assurance_agent.workflow.execution.tree_hash import sha256_file
 from assurance_agent.workflow.orchestration.dsl import (
     MISSING,
     Scope,
@@ -17,6 +21,12 @@ from assurance_agent.workflow.orchestration.dsl import (
     parse_expression,
 )
 from assurance_agent.workflow.orchestration.schema import GateDef, ReadEntry, Verdict, WorkflowSchema
+
+# Human decisions that can upgrade a `needs_human_review` gate verdict. Mirror of
+# TS ``applyGateDecision`` (engine.ts): ``accept_risk``→pass, ``fix_and_proceed``
+# →needs_fix. Both require the decision to carry ``review_file``/``review_sha256``
+# anchoring an audited gate read whose current hash still matches.
+_GATE_DECISION_ACTIONS = frozenset({"accept_risk", "fix_and_proceed"})
 
 
 class GateVerdict(BaseModel):
@@ -30,33 +40,27 @@ class GateCycleError(AaError):
     """gate() 递归裁决出现环。"""
 
 
-def _project_root(change_dir: Path) -> Path:
-    # change_dir = <root>/qa/changes/<id>
-    return change_dir.parents[2] if len(change_dir.parents) >= 3 else change_dir
-
-
-def resolve_change_path(change_dir: Path, rel: str) -> Path:
+def resolve_change_path(loc: ChangeLocation, rel: str) -> Path:
     """schema 路径 → 绝对路径：`repo:` / `qa/` 前缀相对项目根，否则相对 change 目录。
 
-    对齐源版 `resolvePath`。供 gate reads 与引擎 produces-existence 共用。
+    对齐源版 `resolvePath`。供 gate reads 与引擎 produces-existence 共用。项目根来自
+    ``loc.project_root``（禁止 ``parents[2]`` 深度反推，见 ADR-0002）。
     """
-    root = _project_root(change_dir)
-    change_id = change_dir.name
-    normalized = rel.replace("<change-id>", change_id)
+    normalized = rel.replace("<change-id>", loc.change_id)
     if normalized.startswith("repo:"):
-        return root / normalized[len("repo:") :]
+        return loc.project_root / normalized[len("repo:") :]
     if normalized.startswith("qa/"):
-        return root / normalized
-    return change_dir / normalized
+        return loc.project_root / normalized
+    return loc.path / normalized
 
 
 # 向后兼容别名（内部沿用）。
 _resolve_path = resolve_change_path
 
 
-def _load_doc(change_dir: Path, rel: str) -> tuple[bool, bool, object]:
+def _load_doc(loc: ChangeLocation, rel: str) -> tuple[bool, bool, object]:
     """returns (present, parse_error, value)."""
-    path = _resolve_path(change_dir, rel)
+    path = _resolve_path(loc, rel)
     if not path.exists():
         return False, False, None
     try:
@@ -75,7 +79,7 @@ def _scope_state(state: WorkflowState) -> dict:
 
 def build_evidence_scope(
     schema: WorkflowSchema,
-    change_dir: Path,
+    loc: ChangeLocation,
     state: WorkflowState,
     params: dict,
     reads: list[ReadEntry] | None,
@@ -97,7 +101,7 @@ def build_evidence_scope(
     reads = reads or []
     alias_docs: dict[str, object] = {}
     for r in reads:
-        _, _, val = _load_doc(change_dir, r.path)
+        _, _, val = _load_doc(loc, r.path)
         alias_docs[r.alias] = val
     primary_val = alias_docs.get(reads[0].alias) if (reads and hoist_primary) else None
     hoisted = primary_val if isinstance(primary_val, dict) else {}
@@ -110,11 +114,11 @@ def build_evidence_scope(
     _memo = memo if memo is not None else {}
 
     def file_exists(rel: str) -> bool:
-        return _resolve_path(change_dir, rel).exists()
+        return _resolve_path(loc, rel).exists()
 
     def gate_verdict(gid: str) -> str:
         try:
-            return resolve_gate_verdict(schema, gid, change_dir, state, params, _memo, stack).value
+            return resolve_gate_verdict(schema, gid, loc, state, params, _memo, stack).value
         except GateCycleError:
             return Verdict.STOP.value
 
@@ -124,7 +128,7 @@ def build_evidence_scope(
 def resolve_gate_verdict(
     schema: WorkflowSchema,
     gate_name: str,
-    change_dir: Path,
+    loc: ChangeLocation,
     state: WorkflowState,
     params: dict,
     _memo: dict[str, Verdict] | None = None,
@@ -138,7 +142,7 @@ def resolve_gate_verdict(
     gate = schema.gates.get(gate_name)
     if gate is None:
         return Verdict.STOP
-    verdict = _adjudicate(schema, gate, change_dir, state, params, memo, (*_stack, gate_name))[0]
+    verdict = _adjudicate(schema, gate, loc, state, params, memo, (*_stack, gate_name))[0]
     memo[gate_name] = verdict
     return verdict
 
@@ -146,7 +150,24 @@ def resolve_gate_verdict(
 def _adjudicate(
     schema: WorkflowSchema,
     gate: GateDef,
-    change_dir: Path,
+    loc: ChangeLocation,
+    state: WorkflowState,
+    params: dict,
+    memo: dict[str, Verdict],
+    stack: tuple[str, ...],
+) -> tuple[Verdict, str | None]:
+    verdict, matched = _adjudicate_base(schema, gate, loc, state, params, memo, stack)
+    gate_name = stack[-1] if stack else ""
+    upgraded, action = _apply_gate_decision(schema, gate_name, loc, verdict)
+    if action is not None:
+        return upgraded, f"{matched or 'default'}; human_decision:{action}"
+    return verdict, matched
+
+
+def _adjudicate_base(
+    schema: WorkflowSchema,
+    gate: GateDef,
+    loc: ChangeLocation,
     state: WorkflowState,
     params: dict,
     memo: dict[str, Verdict],
@@ -155,12 +176,12 @@ def _adjudicate(
     # Step 1 — invalid_json: stop
     if gate.invalid_json == Verdict.STOP:
         for r in gate.reads:
-            present, parse_error, _ = _load_doc(change_dir, r.path)
+            present, parse_error, _ = _load_doc(loc, r.path)
             if present and parse_error:
                 return Verdict.STOP, "invalid_json"
 
     # Step 2 — build scope (gate: primary hoist + aliases; shared helper with engine)
-    scope = build_evidence_scope(schema, change_dir, state, params, gate.reads, memo=memo, stack=stack)
+    scope = build_evidence_scope(schema, loc, state, params, gate.reads, memo=memo, stack=stack)
 
     # Step 3 — rules in DECLARATION order, first-true-wins (对齐源版 adjudicate)。
     # 安全语义（needs_fix→needs_human_review→reject→pass）由 schema 加载期强制的
@@ -179,7 +200,7 @@ def _adjudicate(
         return gate.missing_field_is, "missing_field"
 
     # Step 5 — missing_file_is
-    any_missing = any(not _resolve_path(change_dir, r.path).exists() for r in gate.reads)
+    any_missing = any(not _resolve_path(loc, r.path).exists() for r in gate.reads)
     if any_missing and gate.missing_file_is:
         return gate.missing_file_is, "missing_file"
 
@@ -187,10 +208,105 @@ def _adjudicate(
     return gate.default, None
 
 
+def is_codegen_hard_gate(gate_id: str) -> bool:
+    """Codegen precondition gates cannot be overridden by human decision.
+
+    Mirror of TS ``isCodegenHardGate``.
+    """
+    return gate_id.endswith("-codegen-precondition-gate")
+
+
+def latest_valid_gate_decision(
+    schema: WorkflowSchema,
+    gate_id: str,
+    loc: ChangeLocation,
+) -> dict[str, object] | None:
+    """Return the latest human_decision that legitimately anchors ``gate_id``.
+
+    Mirror of TS ``latestValidGateDecision``: the decision must target this gate
+    (for ``fixer-safety-gate``, a ``healing.safety`` accept_risk decision also
+    counts), be an ``accept_risk``/``fix_and_proceed`` action with reason+who, and
+    carry a ``review_file``/``review_sha256`` pointing at an audited gate read whose
+    *current* hash still matches (the frozen evidence was not altered afterwards).
+    """
+    gate = schema.gates.get(gate_id)
+    if gate is None:
+        return None
+    audited = {r.path for r in gate.reads if is_audited_gate_read(r.path)}
+    if not audited:
+        return None
+    events = read_events(loc.path)
+    latest: dict[str, object] | None = None
+    for event in reversed(events):
+        if event.get("source") != "decide" or event.get("type") != "human_decision":
+            continue
+        checkpoint = event.get("checkpoint")
+        if checkpoint == gate_id:
+            latest = event
+            break
+        if isinstance(checkpoint, str):
+            phase = next((p for p in schema.phases if p.id == checkpoint), None)
+            if phase is not None and phase.gate == gate_id:
+                latest = event
+                break
+            # Mirror of TS engine.ts ``latestValidGateDecision``: a decision at the
+            # special ``healing.safety`` checkpoint also anchors the fixer-safety-gate.
+            if gate_id == "fixer-safety-gate" and checkpoint == "healing.safety":
+                latest = event
+                break
+    if latest is None:
+        return None
+    if latest.get("action") not in _GATE_DECISION_ACTIONS:
+        return None
+    reason = latest.get("reason")
+    who = latest.get("who")
+    review_file = latest.get("review_file")
+    review_sha = latest.get("review_sha256")
+    if not (isinstance(reason, str) and reason.strip()):
+        return None
+    if not (isinstance(who, str) and who.strip()):
+        return None
+    if not (isinstance(review_file, str) and isinstance(review_sha, str)):
+        return None
+    if review_file not in audited:
+        return None
+    # Mirror of the TS ``resolveDecisionSupport`` guard: ``healing.safety`` only
+    # supports accept_risk (healing-safety consumer), so any other action recorded
+    # there can never anchor the fixer-safety-gate.
+    if (
+        gate_id == "fixer-safety-gate"
+        and latest.get("checkpoint") == "healing.safety"
+        and latest.get("action") != "accept_risk"
+    ):
+        return None
+    current = sha256_file(_resolve_path(loc, review_file))
+    return latest if current == review_sha else None
+
+
+def _apply_gate_decision(
+    schema: WorkflowSchema,
+    gate_id: str,
+    loc: ChangeLocation,
+    base_verdict: Verdict,
+) -> tuple[Verdict, str | None]:
+    """Apply a valid human decision to a ``needs_human_review`` gate verdict."""
+    if base_verdict != Verdict.NEEDS_HUMAN_REVIEW or is_codegen_hard_gate(gate_id):
+        return base_verdict, None
+    decision = latest_valid_gate_decision(schema, gate_id, loc)
+    if decision is None:
+        return base_verdict, None
+    action = decision.get("action")
+    if action == "accept_risk":
+        return Verdict.PASS, "accept_risk"
+    if action == "fix_and_proceed":
+        return Verdict.NEEDS_FIX, "fix_and_proceed"
+    return base_verdict, None
+
+
 def check_gate(
     schema: WorkflowSchema,
     gate_name: str,
-    change_dir: Path,
+    loc: ChangeLocation,
     state: WorkflowState,
     params: dict,
 ) -> GateVerdict:
@@ -199,7 +315,7 @@ def check_gate(
         return GateVerdict(gate=gate_name, verdict=Verdict.STOP, reason="unknown gate")
     memo: dict[str, Verdict] = {}
     try:
-        verdict, matched = _adjudicate(schema, gate, change_dir, state, params, memo, (gate_name,))
+        verdict, matched = _adjudicate(schema, gate, loc, state, params, memo, (gate_name,))
     except GateCycleError as exc:
         return GateVerdict(gate=gate_name, verdict=Verdict.STOP, reason=str(exc))
     return GateVerdict(gate=gate_name, verdict=verdict, matched_rule=matched)

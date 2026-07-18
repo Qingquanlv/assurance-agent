@@ -5,14 +5,14 @@ from assurance_agent.workflow.execution.pytest_parser import parse_pytest_json
 from assurance_agent.workflow.execution.results import PytestTarget
 
 
-def write_report(tmp_path: Path, tests: list[dict]) -> Path:
+def write_report(tmp_path: Path, tests: list[dict], **extra) -> Path:
     path = tmp_path / "api-report.json"
-    path.write_text(json.dumps({"tests": tests}), encoding="utf-8")
+    path.write_text(json.dumps({"tests": tests, **extra}), encoding="utf-8")
     return path
 
 
-def parse(tmp_path: Path, tests: list[dict], target: PytestTarget = "api"):
-    report = write_report(tmp_path, tests)
+def parse(tmp_path: Path, tests: list[dict], target: PytestTarget = "api", **extra):
+    report = write_report(tmp_path, tests, **extra)
     return parse_pytest_json(
         change_id="CH-1",
         batch_id="20260715-101500",
@@ -98,6 +98,39 @@ def test_empty_tests_list_is_skipped_status(tmp_path: Path) -> None:
     result = parse(tmp_path, [])
     assert result.status == "skipped"
     assert result.total == 0
+
+
+def test_no_tests_collected_exit5_is_skipped(tmp_path: Path) -> None:
+    """exitcode 5 (no tests collected) with an empty tests list → benign skip."""
+    result = parse(tmp_path, [], exitcode=5, summary={"total": 0, "collected": 0})
+    assert result.status == "skipped"
+    assert result.total == 0
+
+
+def test_aborted_session_with_collected_tests_is_failed(tmp_path: Path) -> None:
+    """Regression: a suite that COLLECTED tests but aborted before running any
+    (conftest `pytest.exit()` on an unready SUT → exitcode 2) must surface as
+    failed, not be masked as a benign skip. This is exactly the E2E 502 case
+    that silently zeroed out E2E coverage across the benchmark."""
+    result = parse(
+        tmp_path,
+        [],
+        target="e2e",
+        exitcode=2,
+        summary={"total": 0, "collected": 5},
+    )
+    assert result.status == "failed"
+    assert result.failed == 1
+    assert result.total == 1
+    msg = result.unmapped_tests[0].message.lower()
+    assert "aborted" in msg and "exitcode=2" in msg and "collected=5" in msg
+
+
+def test_internal_error_exit3_with_no_cases_is_failed(tmp_path: Path) -> None:
+    """A collection-time internal/usage error (exitcode 3/4) is a failure, not a skip."""
+    result = parse(tmp_path, [], exitcode=3)
+    assert result.status == "failed"
+    assert result.failed == 1
 
 
 def test_missing_report_file_is_skipped_not_fabricated(tmp_path: Path) -> None:

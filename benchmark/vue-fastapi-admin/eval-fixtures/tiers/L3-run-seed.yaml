@@ -1,0 +1,13 @@
+name: L3-run-seed
+extends: L2-api-codegen-seed
+description: Full codegen ready; execution pending
+paths:
+- tests/e2e
+resets:
+  workflow_state:
+    phases.e2e-codegen.status: done
+    phases.execution.status: pending
+  qa_yaml:
+    test_types:
+    - api
+    - e2e

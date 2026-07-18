@@ -327,6 +327,24 @@ def _authorized_files(proposal_raw: dict, proposal_ids: list[str], target: str) 
     return authorized
 
 
+def _prior_applied_files(change_dir: Path, *, exclude_target: str) -> set[str]:
+    applied: set[str] = set()
+    for other in ("api", "e2e"):
+        if other == exclude_target:
+            continue
+        summary_path = change_dir / "healing" / f"{other}-apply-summary.json"
+        if not summary_path.is_file():
+            continue
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not summary.get("applied", False):
+            continue
+        applied.update(str(f).replace("\\", "/") for f in summary.get("files_modified", []))
+    return applied
+
+
 def record_apply_summary(
     project_root: Path,
     change_id: str,
@@ -355,8 +373,10 @@ def record_apply_summary(
 
     _, baseline_files, _ = _load_manifest_hashes(change_dir)
     current = hash_test_tree(project_root)
-    modified = [f for f in diff_trees(baseline_files, current.files) if f in authorized]
-    unauthorized = [f for f in diff_trees(baseline_files, current.files) if f not in authorized]
+    changed = diff_trees(baseline_files, current.files)
+    prior_applied = _prior_applied_files(change_dir, exclude_target=target)
+    modified = [f for f in changed if f in authorized]
+    unauthorized = [f for f in changed if f not in authorized and f not in prior_applied]
     if unauthorized:
         raise HealingGuardError(f"modified files outside authorized proposals: {', '.join(unauthorized)}")
 

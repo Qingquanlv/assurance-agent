@@ -3,7 +3,16 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from assurance_agent.eval.scorers import codegen, workflow_case, workflow_full, workflow_run
+from assurance_agent.eval.scorers import (
+    case_generation,
+    classification_unit,
+    codegen,
+    eval_smoke,
+    safety_lite,
+    workflow_case,
+    workflow_full,
+    workflow_run,
+)
 from assurance_agent.eval.types import DatasetSample, SampleScore
 
 Scorer = Callable[[DatasetSample, Path], SampleScore]
@@ -16,6 +25,10 @@ _CODEGEN_SUITES = (
 )
 
 _REGISTRY: dict[str, Scorer] = {
+    "eval-smoke": eval_smoke.score,
+    "case-generation": case_generation.score,
+    "classification-unit": classification_unit.score,
+    "safety-lite": safety_lite.score,
     "workflow-case": workflow_case.score,
     "workflow-run": workflow_run.score,
     "workflow-full": workflow_full.score,

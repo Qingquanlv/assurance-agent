@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,30 @@ def _sample(suite: str, sid: str = "S-1") -> DatasetSample:
 def test_unknown_suite_raises() -> None:
     with pytest.raises(KeyError):
         get_scorer("no-such-suite")
+
+
+def test_case_generation_prf1_from_judge_result(tmp_path: Path) -> None:
+    """Regression (user-reported): judge-result.json drives requirement P/R/F1."""
+    attempt = make_attempt(tmp_path)
+    (attempt / "judge-result.json").write_text(
+        json.dumps(
+            {
+                "label": "covered",
+                "reason": "all atoms covered",
+                "evidence_refs": ["CG-001"],
+                "confidence": 0.95,
+                "needs_human_review": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    sample = DatasetSample(
+        id="CG-001", suite="case-generation", input={}, expected={"human_label": "covered"}
+    )
+    m = get_scorer("case-generation")(sample, attempt).metrics
+    assert m["requirement_precision"] == 1.0
+    assert m["requirement_recall"] == 1.0
+    assert m["requirement_f1"] == 1.0
 
 
 def test_workflow_case_all_green(tmp_path: Path) -> None:

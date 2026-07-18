@@ -1,0 +1,10 @@
+name: workflow-full
+scorer: workflow-full
+executor:
+  type: workflow-run
+  run_mode: full
+  run_tests: true
+  timeout_seconds: 14400
+  expected_outputs:
+    - workflow-state.yaml
+thresholds: []

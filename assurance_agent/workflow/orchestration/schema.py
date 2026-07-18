@@ -77,11 +77,16 @@ class PhaseDef(BaseModel):
 
 class LoopDef(BaseModel):
     id: str
+    kind: str = "healing"
     members: list[str] = Field(default_factory=list)
     counter: str = ""
     max_param: str = ""
     allocate_on: str = ""
     exit_gate: str = ""
+    # review_fix loops only: a bounded review -> fix -> re-review repair cycle.
+    review_phase: str = ""
+    fix_phase: str = ""
+    gate: str = ""
 
 
 class GateRule(BaseModel):
@@ -374,6 +379,24 @@ def _validate(schema: WorkflowSchema) -> None:
                 f"loop '{loop.id}' members disagree with phase.loop: "
                 f"loop={sorted(loop.members)} phases={sorted(declared_members)}"
             )
+        if loop.kind not in {"healing", "review_fix"}:
+            errors.append(f"loop '{loop.id}' unknown kind '{loop.kind}'")
+        if loop.kind == "review_fix":
+            if loop.review_phase not in phase_ids:
+                errors.append(f"loop '{loop.id}' review_phase unknown phase '{loop.review_phase}'")
+            if loop.fix_phase not in phase_ids:
+                errors.append(f"loop '{loop.id}' fix_phase unknown phase '{loop.fix_phase}'")
+            if loop.gate and loop.gate not in gate_ids:
+                errors.append(f"loop '{loop.id}' gate unknown gate '{loop.gate}'")
+            if not loop.gate:
+                errors.append(f"review_fix loop '{loop.id}' must declare a gate")
+            if not loop.max_param:
+                errors.append(f"review_fix loop '{loop.id}' must declare max_param")
+            if set(loop.members) != {loop.fix_phase}:
+                errors.append(
+                    f"review_fix loop '{loop.id}' members must be exactly its fix_phase "
+                    f"[{loop.fix_phase}], got {sorted(loop.members)}"
+                )
 
     produced_aliases: dict[str, str] = {}
     for phase in schema.phases:

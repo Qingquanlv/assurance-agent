@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0",
+  "review_type": "case",
+  "change_id": "RET-api-management-20260716-192358-cursor",
+  "decision": "pass",
+  "risk_level": "low",
+  "auto_fix_allowed": false,
+  "human_review_required": false,
+  "summary": "Case delta passes review after prior fixes: 18 added cases align with 18 test conditions, MRC mapping is complete (21 covered, 1 skipped_by_scope), layering is consistent (12 API + 6 E2E), required fields and automation blocks are present, and no forbidden execution details appear in case YAML. Artifacts are ready for API/E2E planning.",
+  "reviewed_files": [
+    "qa/changes/RET-api-management-20260716-192358-cursor/proposal.md",
+    "qa/changes/RET-api-management-20260716-192358-cursor/.qa.yaml",
+    "qa/changes/RET-api-management-20260716-192358-cursor/cases/system/api/case.yaml"
+  ],
+  "blockers": [],
+  "findings": [
+    {
+      "id": "CASE-WARN-NO-STABLE-BASE",
+      "severity": "low",
+      "category": "delta",
+      "file": "qa/cases/system/api/case.yaml",
+      "message": "Target stable case file qa/cases/system/api/case.yaml does not exist yet; all 18 cases are correctly placed under added.",
+      "suggestion": "No action required; expected for a new module baseline.",
+      "auto_fix_allowed": false,
+      "human_review_required": false
+    }
+  ],
+  "needs_review": [],
+  "minimum_coverage": {
+    "total_required": 21,
+    "covered": 21,
+    "skipped_by_scope": 1,
+    "missing": []
+  },
+  "auto_fix_plan": [],
+  "next_action": "continue",
+  "created_at": "2026-07-16T11:40:00Z"
+}

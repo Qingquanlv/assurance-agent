@@ -61,6 +61,28 @@ def parse_pytest_json(
         (cases if entry.case_id else unmapped).append(entry)
 
     all_cases = cases + unmapped
+
+    if not all_cases:
+        # No per-test results. Distinguish a benign "nothing ran" from a session
+        # that was ABORTED before producing results. pytest exit codes: 0 ok,
+        # 1 tests failed, 2 interrupted, 3 internal error, 4 usage error,
+        # 5 no tests collected. Only a clean / no-tests-collected exit (or a
+        # report without an exitcode, e.g. legacy fixtures) is a benign skip.
+        # A non-zero abort with tests COLLECTED — e.g. a conftest `pytest.exit()`
+        # against an unready SUT (HTTP 502), or a collection-time import error —
+        # must surface as FAILED, not be masked as a benign SKIPPED that hides
+        # that the suite never actually ran.
+        exitcode = report.get("exitcode")
+        if exitcode not in (None, 0, 5):
+            summary = report.get("summary") or {}
+            collected = int(summary.get("collected", 0) or 0)
+            reason = (
+                f"pytest session aborted before producing per-test results "
+                f"(exitcode={exitcode}, collected={collected}) — e.g. a conftest "
+                f"pytest.exit() on an unready SUT or a collection error; see raw log."
+            )
+            return _aborted(change_id, batch_id, target, command, source, reason)
+
     passed = sum(1 for c in all_cases if c.status == "passed")
     failed = sum(1 for c in all_cases if c.status == "failed")
     skipped = sum(1 for c in all_cases if c.status == "skipped")
@@ -154,6 +176,44 @@ def _skipped(
         total=0,
         passed=0,
         failed=0,
+        skipped=0,
+        cases=[],
+        unmapped_tests=[placeholder],
+    )
+
+
+def _aborted(
+    change_id: str,
+    batch_id: str,
+    target: PytestTarget,
+    command: str,
+    source: ResultSource,
+    reason: str,
+) -> TargetResult:
+    """Session collected tests but aborted before producing per-test results.
+
+    Reported as a single synthetic FAILED case so the failure surfaces through
+    inspect/report/archive rather than being hidden as a benign SKIPPED.
+    """
+    placeholder = CaseResult(
+        case_id="",
+        status="failed",
+        file="",
+        test_name=reason,
+        duration_ms=0,
+        message=reason,
+        raw_log_ref=source.raw_log,
+    )
+    return TargetResult(
+        change_id=change_id,
+        batch_id=batch_id,
+        target=target,
+        status="failed",
+        command=command,
+        source=source,
+        total=1,
+        passed=0,
+        failed=1,
         skipped=0,
         cases=[],
         unmapped_tests=[placeholder],

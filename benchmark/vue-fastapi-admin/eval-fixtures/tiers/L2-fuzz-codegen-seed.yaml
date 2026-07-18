@@ -1,0 +1,14 @@
+name: L2-fuzz-codegen-seed
+extends: L1-plan-seed
+description: Fuzz codegen stub (golden-sample wiring; real fuzz artifacts TBD)
+paths:
+- codegen
+- tests/config.py
+- tests/conftest.py
+- tests/fuzz
+resets:
+  workflow_state:
+    phases.execution.status: pending
+  qa_yaml:
+    test_types:
+    - fuzz

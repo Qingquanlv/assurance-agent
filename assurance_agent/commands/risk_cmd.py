@@ -10,6 +10,7 @@ from assurance_agent.risk.advisory import validate_advisory
 from assurance_agent.risk.context import (
     RiskContext,
     build_risk_context,
+    load_known_case_ids,
     serialize_context,
     validate_context_shape,
     write_risk_context,
@@ -109,7 +110,7 @@ def risk_validate_advisory(change_id: str, project_dir: str | None) -> None:
         ok, errors = validate_advisory(
             context,
             advisory,
-            known_case_ids=[],
+            known_case_ids=load_known_case_ids(project_root),
             interaction_mode=run_ctx.get("interaction_mode"),
             orchestrator_skill=run_ctx.get("orchestrator_skill"),
         )

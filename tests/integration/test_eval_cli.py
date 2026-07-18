@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 from tests.helpers_aa import write_aa_config
@@ -46,6 +47,9 @@ def _seed(project_root: Path) -> None:
     change = sut / "qa" / "changes" / "eval-sample-001" / "review"
     change.mkdir(parents=True)
     (change / "case-review.json").write_text(json.dumps({"decision": "pass"}), encoding="utf-8")
+    # Fresh throwaway repo in the isolated filesystem — write-scan requires the
+    # SUT workspace to be a git repo (same precondition as the TS executor).
+    subprocess.run(["git", "init"], cwd=sut, check=True, capture_output=True)
 
 
 def test_eval_run_json_shape(monkeypatch) -> None:
@@ -148,7 +152,18 @@ def test_eval_report_json(monkeypatch) -> None:
             ],
         )
         run_id = run.output.strip()
-        result = runner.invoke(main, ["eval", "report", "--run", run_id, "--json"])
+        result = runner.invoke(
+            main,
+            [
+                "eval",
+                "report",
+                "--run",
+                run_id,
+                "--json",
+                "--sut-dir",
+                str(project_root / "sut"),
+            ],
+        )
         assert result.exit_code == 0, result.output
         report = json.loads(result.output)
         assert report["run_id"] == run_id

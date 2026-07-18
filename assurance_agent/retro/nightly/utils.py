@@ -18,7 +18,7 @@ def read_json(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def write_json(path: Path, data: dict) -> None:
+def write_json(path: Path, data: dict | list) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 

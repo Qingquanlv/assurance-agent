@@ -2,6 +2,7 @@
 
 对齐 TS src/commands/status.ts 的 flag 面与退出码语义：
 查询类命令写 best-effort 遥测事件（失败静默，退出码不变）。
+每次 status 现算读侧审计（gate 篡改 / skill-load / 非法迁移 / 重分类 / state 完整性）。
 """
 
 from pathlib import Path
@@ -12,9 +13,10 @@ from assurance_agent.change_location import ChangeNotFoundError, resolve_change
 from assurance_agent.config import ConfigNotFoundError
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import UnsafeIdentifierError
+from assurance_agent.workflow.orchestration.audit import apply_audits_to_report, run_status_audits
 from assurance_agent.workflow.core.events import append_event_best_effort
 from assurance_agent.workflow.core.exit_codes import exit_code_for_terminal
-from assurance_agent.workflow.core.state import read_state
+from assurance_agent.workflow.core.state import StateIntegrityError, read_state, read_state_lenient
 from assurance_agent.workflow.orchestration.engine import WorkflowStatus, compute_status
 from assurance_agent.workflow.orchestration.schema import load_workflow_schema
 
@@ -35,9 +37,15 @@ def status_command(change_id: str, next_only: bool, as_json: bool) -> None:
 
     try:
         schema = load_workflow_schema(project_root)
-        state = read_state(change_dir)
+        try:
+            state = read_state(change_dir)
+        except StateIntegrityError:
+            # Fold integrity failure into audits instead of hard-crashing status.
+            state = read_state_lenient(change_dir)
         params = getattr(state, "params", None) or {}
-        status = compute_status(schema, change_dir, state, params)
+        status = compute_status(schema, loc, state, params)
+        audit = run_status_audits(loc, status, schema)
+        status = apply_audits_to_report(status, audit)
     except AaError as err:
         click.secho(f"status failed: {err}", fg="red")
         raise SystemExit(1) from err
@@ -47,9 +55,13 @@ def status_command(change_id: str, next_only: bool, as_json: bool) -> None:
     if next_only:
         _print_next(status, as_json)
     elif as_json:
-        click.echo(status.model_dump_json(indent=2))
+        payload = status.model_dump(mode="json")
+        payload["audit_issues"] = [
+            {"code": i.code, "message": i.message, "phase": i.phase} for i in audit.issues
+        ]
+        click.echo(_json_dumps(payload))
     else:
-        _print_table(change_id, status)
+        _print_table(change_id, status, audit.issues)
 
     raise SystemExit(exit_code_for_terminal(status.terminal))
 
@@ -84,7 +96,7 @@ def _print_next(status: WorkflowStatus, as_json: bool) -> None:
         click.echo("(none)")
 
 
-def _print_table(change_id: str, status: WorkflowStatus) -> None:
+def _print_table(change_id: str, status: WorkflowStatus, audit_issues: list | None = None) -> None:
     click.secho(f"aa status — change: {change_id}", bold=True)
     click.echo()
     for phase in status.phases:
@@ -96,6 +108,10 @@ def _print_table(change_id: str, status: WorkflowStatus) -> None:
         color = "green" if status.terminal.kind == "completed" else "red"
         reason = status.terminal.reason or ""
         click.echo("  Terminal : " + click.style(f"{status.terminal.kind} — {reason}", fg=color))
+    if audit_issues:
+        click.echo("  Audits   :")
+        for issue in audit_issues:
+            click.echo(f"    [{issue.code}] {issue.message}")
     click.echo()
 
 

@@ -118,7 +118,10 @@ def test_reclassify_updates_category_and_writes_telemetry(tmp_path: Path, monkey
     assert after["source_batch_id"] == "20260715-000001"
     assert after["failures"][0]["category"] == "assertion_failure"
     assert after["failures"][0]["reclassified"]["from"] == "environment_failure"
-    assert events and events[-1]["type"] == "reclassified"
+    assert events and events[-1]["type"] == "failure_reclassified"
+    assert events[-1]["from"] == "environment_failure"
+    assert events[-1]["to"] == "assertion_failure"
+    assert "failure" in events[-1]
 
 
 def test_reclassify_unsafe_batch_id_exit_one(tmp_path: Path, monkeypatch) -> None:

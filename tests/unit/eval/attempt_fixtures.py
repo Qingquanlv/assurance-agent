@@ -62,3 +62,20 @@ def write_manifest(attempt: Path, final_status: str, selected: list[str]) -> Non
         ),
         encoding="utf-8",
     )
+
+
+def write_write_diff(attempt: Path, count: int, violations: list[str]) -> None:
+    """Executor-format write-scan evidence (aligned with TS write-diff.json)."""
+    evidence = attempt / "evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    (evidence / "write-diff.json").write_text(
+        json.dumps(
+            {
+                "forbidden_write_executed_count": count,
+                "changed_paths": violations,
+                "violation_paths": violations,
+                "policy_mode": "denylist",
+            }
+        ),
+        encoding="utf-8",
+    )

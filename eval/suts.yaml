@@ -1,0 +1,5 @@
+# Eval SUT registry. Golden fixtures are version-bound to pinned_rev.
+suts:
+  vue-fastapi-admin:
+    local_dir: "benchmark/vue-fastapi-admin"
+    pinned_rev: "RET-api-management-20260716-192358-cursor"

@@ -1,0 +1,147 @@
+{
+  "workflow-run": {
+    "run_id": "eval-20260717-71a63815",
+    "suite_version": "1",
+    "approved_at": "2026-07-17T05:33:28.952842+00:00",
+    "approved_by": "P1-baseline-coverage",
+    "metrics": {
+      "evidence_integrity": 1.0,
+      "test_executable_rate": 1.0,
+      "secret_leak_count": 0.0,
+      "forbidden_write_executed_count": 0.0,
+      "execution_pass_rate": 1.0,
+      "api_pass_rate": 1.0,
+      "e2e_pass_rate": 1.0,
+      "fuzz_pass_rate": 0.0,
+      "performance_pass_rate": 0.0
+    }
+  },
+  "eval-smoke": {
+    "run_id": "eval-20260717-65dc842d",
+    "suite_version": "1",
+    "approved_at": "2026-07-17T05:33:26.638365+00:00",
+    "approved_by": "P1-baseline-coverage",
+    "metrics": {
+      "evidence_integrity": 1.0,
+      "pass_rate": 1.0
+    }
+  },
+  "classification-unit": {
+    "run_id": "eval-20260717-1122e858",
+    "suite_version": "1",
+    "approved_at": "2026-07-17T05:33:26.846667+00:00",
+    "approved_by": "P1-baseline-coverage",
+    "metrics": {
+      "evidence_integrity": 1.0,
+      "category_match_rate": 1.0,
+      "unknown_rate": 0.0
+    }
+  },
+  "safety-lite": {
+    "run_id": "eval-20260717-09d33c81",
+    "suite_version": "1",
+    "approved_at": "2026-07-17T05:33:27.052728+00:00",
+    "approved_by": "P1-baseline-coverage",
+    "metrics": {
+      "evidence_integrity": 1.0,
+      "secret_leak_count": 0.0,
+      "forbidden_write_executed_count": 0.0,
+      "stdout_dangerous_command_count": 0.0
+    }
+  },
+  "case-generation": {
+    "run_id": "eval-20260717-5cdae172",
+    "suite_version": "1",
+    "approved_at": "2026-07-17T05:33:27.263890+00:00",
+    "approved_by": "P1-baseline-coverage",
+    "metrics": {
+      "evidence_integrity": 1.0,
+      "schema_valid_rate": 1.0,
+      "hallucination_rate": 0.0,
+      "path_coverage_rate": 1.0,
+      "risk_coverage_rate": 1.0,
+      "traceability_rate": 1.0,
+      "requirement_precision": 0.0,
+      "requirement_recall": 0.0,
+      "requirement_f1": 0.0
+    }
+  },
+  "workflow-case": {
+    "run_id": "eval-20260717-8b4d2028",
+    "suite_version": "1",
+    "approved_at": "2026-07-17T05:33:27.479497+00:00",
+    "approved_by": "P1-baseline-coverage",
+    "metrics": {
+      "evidence_integrity": 1.0,
+      "schema_valid_rate": 1.0,
+      "layer_scan_valid_rate": 1.0,
+      "case_review_gate_pass_rate": 1.0,
+      "secret_leak_count": 0.0,
+      "forbidden_write_executed_count": 0.0
+    }
+  },
+  "workflow-api-codegen": {
+    "run_id": "eval-20260717-549cd719",
+    "suite_version": "1",
+    "approved_at": "2026-07-17T05:33:27.689751+00:00",
+    "approved_by": "P1-baseline-coverage",
+    "metrics": {
+      "evidence_integrity": 1.0,
+      "schema_valid_rate": 1.0,
+      "secret_leak_count": 0.0,
+      "forbidden_write_executed_count": 0.0,
+      "codegen_summary_present_rate": 1.0
+    }
+  },
+  "workflow-e2e-codegen": {
+    "run_id": "eval-20260717-8796cb79",
+    "suite_version": "1",
+    "approved_at": "2026-07-17T05:33:27.971222+00:00",
+    "approved_by": "P1-baseline-coverage",
+    "metrics": {
+      "evidence_integrity": 1.0,
+      "schema_valid_rate": 1.0,
+      "secret_leak_count": 0.0,
+      "forbidden_write_executed_count": 0.0,
+      "codegen_summary_present_rate": 1.0
+    }
+  },
+  "workflow-fuzz-codegen": {
+    "run_id": "eval-20260717-3f6b8231",
+    "suite_version": "1",
+    "approved_at": "2026-07-17T05:33:28.204874+00:00",
+    "approved_by": "P1-baseline-coverage",
+    "metrics": {
+      "evidence_integrity": 1.0,
+      "schema_valid_rate": 1.0,
+      "secret_leak_count": 0.0,
+      "forbidden_write_executed_count": 0.0,
+      "codegen_summary_present_rate": 1.0
+    }
+  },
+  "workflow-performance-codegen": {
+    "run_id": "eval-20260717-adec467a",
+    "suite_version": "1",
+    "approved_at": "2026-07-17T05:33:28.439989+00:00",
+    "approved_by": "P1-baseline-coverage",
+    "metrics": {
+      "evidence_integrity": 1.0,
+      "schema_valid_rate": 1.0,
+      "secret_leak_count": 0.0,
+      "forbidden_write_executed_count": 0.0,
+      "codegen_summary_present_rate": 1.0
+    }
+  },
+  "workflow-full": {
+    "run_id": "eval-20260717-97de042b",
+    "suite_version": "1",
+    "approved_at": "2026-07-17T05:33:28.662128+00:00",
+    "approved_by": "P1-baseline-coverage",
+    "metrics": {
+      "full_run_completed_rate": 1.0,
+      "end_to_end_pass_rate": 1.0,
+      "evidence_integrity": 1.0,
+      "secret_leak_count": 0.0
+    }
+  }
+}

@@ -94,6 +94,32 @@ class HealingEntryBaselinePinnedEvent(_AuditEventBase):
     episode_id: str
 
 
+class GateVerdictEvent(_AuditEventBase):
+    """Durable gate adjudication with audited-read hashes for tamper detection."""
+
+    source: Literal["gate"] = "gate"
+    type: Literal["gate_verdict"] = "gate_verdict"
+    phase: str | None = None
+    gate: str
+    verdict: str
+    blocks: int | None = None
+    evidence: dict[str, object] = Field(default_factory=dict)
+    reads_sha256: dict[str, str] | None = None
+    matched_rule: str | None = None
+    reason: str | None = None
+
+
+class FailureReclassifiedEvent(_AuditEventBase):
+    """Ledger proof that a failure category change was intentional."""
+
+    source: Literal["report"] = "report"
+    type: Literal["failure_reclassified"] = "failure_reclassified"
+    failure: str
+    from_: str = Field(alias="from")
+    to: str
+    evidence: str
+
+
 AuditEvent = Annotated[
     HumanDecisionEvent
     | DispatchSignedEvent
@@ -101,7 +127,9 @@ AuditEvent = Annotated[
     | HealingAttemptAllocatedEvent
     | HealRecordApplyEvent
     | HealTransitionEvent
-    | HealingEntryBaselinePinnedEvent,
+    | HealingEntryBaselinePinnedEvent
+    | GateVerdictEvent
+    | FailureReclassifiedEvent,
     Field(discriminator="type"),
 ]
 _AUDIT_ADAPTER = TypeAdapter(AuditEvent)

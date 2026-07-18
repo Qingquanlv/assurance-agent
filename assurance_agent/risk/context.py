@@ -17,6 +17,8 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel
 
+from assurance_agent.change_location import archive_root
+from assurance_agent.config import ConfigNotFoundError
 from assurance_agent.risk.safety import RiskSafetyError, resolve_requirement_path
 
 Confidence = str  # "high" | "medium" | "low"
@@ -261,6 +263,11 @@ def _load_cases(project_root: Path) -> list[dict]:
     return [by_id[k] for k in sorted(by_id)]
 
 
+def load_known_case_ids(project_root: Path) -> list[str]:
+    """All case ids declared under qa/cases (TS loadCasesFromQa(...).map(case_id))."""
+    return [c["case_id"] for c in _load_cases(project_root)]
+
+
 def _infer_module(path: Path, cases_root: Path) -> str:
     rel = path.parent.relative_to(cases_root).parts
     return rel[0] if rel else "unknown"
@@ -336,7 +343,12 @@ def _latest_batch(archive_path: Path) -> dict | None:
 
 
 def _sample_archives(project_root: Path, depth: int) -> list[dict]:
-    root = project_root / "qa" / "archive"
+    # Honor a configured qa.archive root; degrade to the default layout when the
+    # project has no .aa/config.yaml (risk can run in a bare directory).
+    try:
+        root = archive_root(project_root)
+    except ConfigNotFoundError:
+        root = project_root / "qa" / "archive"
     if not root.is_dir():
         return []
     entries = [

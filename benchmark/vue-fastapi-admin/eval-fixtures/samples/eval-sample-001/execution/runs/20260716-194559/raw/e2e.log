@@ -1,0 +1,72 @@
+$ uv run pytest tests/e2e/test_api_management_e2e.py -p no:cacheprovider --json-report --json-report-file=/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/qa/changes/RET-api-management-20260716-192358-cursor/execution/runs/20260716-194559/raw/e2e-report.json
+
+============================= test session starts ==============================
+platform darwin -- Python 3.11.14, pytest-9.1.0, pluggy-1.6.0
+rootdir: /Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin
+configfile: pyproject.toml
+plugins: hypothesis-6.155.2, json-report-1.5.0, asyncio-1.4.0, metadata-3.1.1, anyio-4.8.0, locust-2.44.4, schemathesis-4.21.6, base-url-2.1.0, playwright-0.8.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 6 items
+
+tests/e2e/test_api_management_e2e.py ......                              [100%]
+
+=============================== warnings summary ===============================
+.venv/lib/python3.11/site-packages/starlette/formparsers.py:12
+  /Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/.venv/lib/python3.11/site-packages/starlette/formparsers.py:12: PendingDeprecationWarning: Please use `import python_multipart` instead.
+    import multipart
+
+.venv/lib/python3.11/site-packages/pydantic/fields.py:1042: 27 warnings
+  /Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/.venv/lib/python3.11/site-packages/pydantic/fields.py:1042: PydanticDeprecatedSince20: Using extra keyword arguments on `Field` is deprecated and will be removed. Use `json_schema_extra` instead. (Extra keys: 'example'). Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.10/migration/
+    warn(
+
+.venv/lib/python3.11/site-packages/tortoise/fields/data.py:81: 12 warnings
+  /Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/.venv/lib/python3.11/site-packages/tortoise/fields/data.py:81: DeprecationWarning: `index` is deprecated, please use `db_index` instead
+    super().__init__(primary_key=primary_key, **kwargs)
+
+.venv/lib/python3.11/site-packages/tortoise/fields/data.py:81
+  /Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/.venv/lib/python3.11/site-packages/tortoise/fields/data.py:81: DeprecationWarning: `pk` is deprecated, please use `primary_key` instead
+    super().__init__(primary_key=primary_key, **kwargs)
+
+.venv/lib/python3.11/site-packages/tortoise/fields/data.py:639
+  /Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/.venv/lib/python3.11/site-packages/tortoise/fields/data.py:639: DeprecationWarning: `index` is deprecated, please use `db_index` instead
+    super().__init__(**kwargs)
+
+.venv/lib/python3.11/site-packages/tortoise/fields/data.py:639
+  /Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/.venv/lib/python3.11/site-packages/tortoise/fields/data.py:639: DeprecationWarning: `pk` is deprecated, please use `primary_key` instead
+    super().__init__(**kwargs)
+
+.venv/lib/python3.11/site-packages/tortoise/fields/data.py:343
+.venv/lib/python3.11/site-packages/tortoise/fields/data.py:343
+.venv/lib/python3.11/site-packages/tortoise/fields/data.py:343
+  /Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/.venv/lib/python3.11/site-packages/tortoise/fields/data.py:343: DeprecationWarning: `index` is deprecated, please use `db_index` instead
+    super().__init__(**kwargs)
+
+.venv/lib/python3.11/site-packages/tortoise/fields/data.py:183: 17 warnings
+  /Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/.venv/lib/python3.11/site-packages/tortoise/fields/data.py:183: DeprecationWarning: `index` is deprecated, please use `db_index` instead
+    super().__init__(**kwargs)
+
+app/models/admin.py:15
+  /Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/app/models/admin.py:15: DeprecationWarning: `index` is deprecated, please use `db_index` instead
+    is_active = fields.BooleanField(default=True, description="是否激活", index=True)
+
+app/models/admin.py:16
+  /Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/app/models/admin.py:16: DeprecationWarning: `index` is deprecated, please use `db_index` instead
+    is_superuser = fields.BooleanField(default=False, description="是否为超级管理员", index=True)
+
+app/models/admin.py:65
+  /Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/app/models/admin.py:65: DeprecationWarning: `index` is deprecated, please use `db_index` instead
+    is_deleted = fields.BooleanField(default=False, description="软删除标记", index=True)
+
+.venv/lib/python3.11/site-packages/passlib/pwd.py:16
+  /Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/.venv/lib/python3.11/site-packages/passlib/pwd.py:16: DeprecationWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html
+    import pkg_resources
+
+.venv/lib/python3.11/site-packages/passlib/utils/__init__.py:854
+  /Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/.venv/lib/python3.11/site-packages/passlib/utils/__init__.py:854: DeprecationWarning: 'crypt' is deprecated and slated for removal in Python 3.13
+    from crypt import crypt as _crypt
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+--------------------------------- JSON report ----------------------------------
+report saved to: /Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/qa/changes/RET-api-management-20260716-192358-cursor/execution/runs/20260716-194559/raw/e2e-report.json
+======================= 6 passed, 68 warnings in 18.40s ========================
+

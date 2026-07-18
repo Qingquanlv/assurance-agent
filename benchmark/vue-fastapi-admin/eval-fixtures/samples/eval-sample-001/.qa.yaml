@@ -1,0 +1,25 @@
+schema_version: "1.0"
+schema: case-driven
+created_at: "2026-07-16T11:23:58.000Z"
+
+change:
+  change_id: RET-api-management-20260716-192358-cursor
+  requirement_id: RET-api-management
+  feature_name: api-management
+  status: draft
+
+targets:
+  cases:
+    - module: system.api
+      change_case_file: qa/changes/RET-api-management-20260716-192358-cursor/cases/system/api/case.yaml
+      target_case_file: qa/cases/system/api/case.yaml
+
+approval:
+  mode: autonomous
+  approved_by: aa-workflow
+  approved_approach: API + E2E
+  approved_at: "2026-07-16T11:30:00.000Z"
+
+workflow:
+  current_step: aa-case-design
+  next_step: aa-case-reviewer

@@ -57,6 +57,20 @@ def _resolve_adapter_factory(*, use_fake: bool, sut: Path):
     return real_factory, None
 
 
+def _resolve_sut(project_root: Path, sut_dir: str | None) -> Path:
+    if sut_dir:
+        return Path(sut_dir).resolve()
+    env = os.environ.get("AA_EVAL_SUT_DIR")
+    if env:
+        return Path(env).resolve()
+    try:
+        from assurance_agent.eval.suts import resolve_sut_dir
+
+        return resolve_sut_dir(project_root)
+    except AaError:
+        return project_root
+
+
 @click.group("eval")
 def eval_group() -> None:
     """AI Eval Harness — evaluate AI tool quality."""
@@ -94,7 +108,7 @@ def eval_run(
         raise SystemExit(1)
 
     use_fake = bool(os.environ.get("AA_EVAL_FAKE_ADAPTER"))
-    sut = Path(sut_dir).resolve() if sut_dir else (Path(os.environ.get("AA_EVAL_SUT_DIR", str(project_root))))
+    sut = _resolve_sut(project_root, sut_dir)
     adapter_factory, status_factory = _resolve_adapter_factory(use_fake=use_fake, sut=sut)
 
     try:
@@ -172,14 +186,18 @@ def eval_plan(event, changed_files, suite_name, out) -> None:
 @click.option("--html", "as_html", is_flag=True, help="Generate HTML")
 @click.option("--output", "output_path", help="Override HTML output path")
 @click.option("--json", "as_json", is_flag=True, help="Output JSON")
-def eval_report(run_id, trend, suite_name, date_from, date_to, as_html, output_path, as_json) -> None:
+@click.option("--sut-dir", help="SUT root that holds eval/out")
+def eval_report(
+    run_id, trend, suite_name, date_from, date_to, as_html, output_path, as_json, sut_dir
+) -> None:
     project_root = Path.cwd()
+    sut = _resolve_sut(project_root, sut_dir)
     if trend:
         if not suite_name:
             click.echo("Error: --trend requires --suite", err=True)
             raise SystemExit(1)
         out = generate_trend_report(
-            project_root,
+            sut,
             suite_name,
             date_from=date_from,
             date_to=date_to,
@@ -190,7 +208,7 @@ def eval_report(run_id, trend, suite_name, date_from, date_to, as_html, output_p
     if not run_id:
         click.echo("Error: --run <id> or --trend required", err=True)
         raise SystemExit(1)
-    run_dir = run_dir_for(project_root, run_id)
+    run_dir = run_dir_for(sut, run_id)
     report_path = run_dir / "report.json"
     if not report_path.exists():
         click.echo(f"Error: run not found: {run_id}", err=True)
@@ -210,10 +228,12 @@ _VERDICT_EXIT = {"pass": 0, "pass_with_warnings": 0, "fail": 1, "inconclusive": 
 
 @eval_group.command("gate")
 @click.option("--run", "run_id", required=True, help="Run id")
-def eval_gate(run_id: str) -> None:
+@click.option("--sut-dir", help="SUT root that holds eval/out")
+def eval_gate(run_id: str, sut_dir: str | None) -> None:
     """Read gate result (does NOT recompute)."""
     project_root = Path.cwd()
-    run_dir = run_dir_for(project_root, run_id)
+    sut = _resolve_sut(project_root, sut_dir)
+    run_dir = run_dir_for(sut, run_id)
     try:
         gate = read_gate_result(run_dir)
     except (FileNotFoundError, AaError) as err:
@@ -231,12 +251,14 @@ def eval_gate(run_id: str) -> None:
     "--baseline", "baseline_name", required=True, help='Baseline name (currently only "main" supported)'
 )
 @click.option("--run", "run_id", required=True, help="Run id")
-def eval_compare(baseline_name: str, run_id: str) -> None:
+@click.option("--sut-dir", help="SUT root that holds eval/out")
+def eval_compare(baseline_name: str, run_id: str, sut_dir: str | None) -> None:
     """Compare a run against the named baseline (read-only)."""
     project_root = Path.cwd()
+    sut = _resolve_sut(project_root, sut_dir)
     try:
         baseline = read_baseline(project_root, baseline_name)
-        run_dir = run_dir_for(project_root, run_id)
+        run_dir = run_dir_for(sut, run_id)
         manifest = read_run_manifest(run_dir)
         entry = baseline.get(manifest.suite)
         if entry is None:
@@ -262,14 +284,24 @@ def eval_baseline() -> None:
 @click.option("--run", "run_id", required=True, help="Run id to use as new baseline")
 @click.option("--approved-by", default="unknown", help="Approver initials")
 @click.option("--yes", is_flag=True, help="Skip interactive confirmation")
-def eval_baseline_update(suite_name: str, run_id: str, approved_by: str, yes: bool) -> None:
+@click.option("--sut-dir", help="SUT root that holds eval/out")
+def eval_baseline_update(
+    suite_name: str, run_id: str, approved_by: str, yes: bool, sut_dir: str | None
+) -> None:
     """Update baseline for a suite (requires human confirmation)."""
     project_root = Path.cwd()
+    sut = _resolve_sut(project_root, sut_dir)
     if not yes and not click.confirm(f"Promote run {run_id} to baseline 'main' for suite {suite_name}?"):
         click.echo("aborted", err=True)
         raise SystemExit(1)
     try:
-        update_baseline(project_root, suite_name=suite_name, run_id=run_id, approved_by=approved_by)
+        update_baseline(
+            project_root,
+            suite_name=suite_name,
+            run_id=run_id,
+            approved_by=approved_by,
+            sut_root=sut,
+        )
     except (FileNotFoundError, AaError) as err:
         click.echo(f"eval baseline update failed: {err}", err=True)
         raise SystemExit(1) from err

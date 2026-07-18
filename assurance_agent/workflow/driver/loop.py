@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
-from assurance_agent.change_location import ChangeNotFoundError, resolve_change
+from assurance_agent.change_location import ChangeLocation, ChangeNotFoundError, resolve_change
 from assurance_agent.config import ConfigNotFoundError
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import UnsafeIdentifierError
@@ -25,7 +25,7 @@ from assurance_agent.workflow.core.exit_codes import (
     EXIT_STOPPED,
 )
 from assurance_agent.workflow.core.progression import ProgressionError, ProgressionRollbackError
-from assurance_agent.workflow.core.state import read_state
+from assurance_agent.workflow.core.state import configure_workflow_params, read_state
 from assurance_agent.workflow.driver.adapter import Adapter, DriverError, PhaseRequest, PhaseResult
 from assurance_agent.workflow.driver.driver_state import (
     DriverState,
@@ -77,11 +77,21 @@ StatusProvider = Callable[[], WorkflowStatus]
 
 @dataclass
 class PhaseContext:
-    change_id: str
-    change_dir: Path
-    project_root: Path
+    loc: ChangeLocation
     params: dict
     parent_session_id: str | None = None
+
+    @property
+    def change_id(self) -> str:
+        return self.loc.change_id
+
+    @property
+    def change_dir(self) -> Path:
+        return self.loc.path
+
+    @property
+    def project_root(self) -> Path:
+        return self.loc.project_root
 
 
 @dataclass
@@ -248,20 +258,30 @@ class DefaultHealingActionExecutor:
 
 
 class _DefaultStatusProvider:
-    def __init__(self, schema: WorkflowSchema, change_dir: Path, params: dict, scope: str) -> None:
+    def __init__(self, schema: WorkflowSchema, loc: ChangeLocation, params: dict, scope: str) -> None:
         self._schema = schema
-        self._change_dir = change_dir
+        self._loc = loc
         self._params = params
         self._scope = scope
 
     def __call__(self) -> WorkflowStatus:
-        state = read_state(self._change_dir)
-        return compute_status(
+        from assurance_agent.workflow.orchestration.audit import apply_audits_to_report, run_status_audits
+        from assurance_agent.workflow.core.state import StateIntegrityError, read_state_lenient
+
+        try:
+            state = read_state(self._loc.path)
+        except StateIntegrityError:
+            state = read_state_lenient(self._loc.path)
+        status = compute_status(
             self._schema,
-            self._change_dir,
+            self._loc,
             state,
             self._params,
             scope=self._scope,
+        )
+        return apply_audits_to_report(
+            status,
+            run_status_audits(self._loc, status, self._schema),
         )
 
 
@@ -315,14 +335,11 @@ def run_workflow_loop(
 ) -> LoopResult:
     params = params or {}
     try:
-        change_dir = resolve_change(project_root, change_id).path
+        loc = resolve_change(project_root, change_id)
     except (UnsafeIdentifierError, ChangeNotFoundError, ConfigNotFoundError) as err:
         return LoopResult(EXIT_ERROR, str(err))
-    if status_provider is None:
-        schema = schema or load_workflow_schema(project_root)
-        status_provider = _DefaultStatusProvider(schema, change_dir, params, scope)
-    else:
-        schema = schema or load_workflow_schema(project_root)
+    change_dir = loc.path
+    schema = schema or load_workflow_schema(project_root)
     cli_executor = cli_executor or DefaultCliPhaseExecutor(schema=schema)
     healing_executor = healing_executor or DefaultHealingActionExecutor()
 
@@ -406,14 +423,23 @@ def run_workflow_loop(
         return LoopResult(exit_code, reason, driver)
 
     ctx = PhaseContext(
-        change_id=change_id,
-        change_dir=change_dir,
-        project_root=project_root,
+        loc=loc,
         params=params,
         parent_session_id=parent_session_id,
     )
 
     try:
+        # configure (TS loop.ts parity): merge runtime params into
+        # workflow-state.yaml and stamp run_context before the first dispatch.
+        orchestrator = "aa-execute" if scope == "execute" else "aa-workflow"
+        try:
+            configure_workflow_params(change_dir, params, orchestrator)
+        except AaError as err:
+            return finish(EXIT_ERROR, f"configure failed: {err}", "failed")
+        if status_provider is None:
+            # Engine params come from state post-configure: TS progression reads
+            # state.params, which CLI --params reached via `state configure`.
+            status_provider = _DefaultStatusProvider(schema, loc, read_state(change_dir).params, scope)
         for _ in range(max_iterations):
             status = status_provider()
             # A human/gate stop always preempts pending control work. A completed

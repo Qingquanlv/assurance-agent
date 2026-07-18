@@ -16,13 +16,26 @@ from typing import Literal
 from uuid import uuid4
 
 from assurance_agent.artifacts.models import WorkflowState
+from assurance_agent.change_location import ChangeLocation
 from assurance_agent.exceptions import AaError
+from assurance_agent.workflow.core.audit_scope import is_audited_gate_read
 from assurance_agent.workflow.core.events import event_seq
 from assurance_agent.workflow.core.progression import ProgressionTxn, transaction
+from assurance_agent.workflow.orchestration.audit_evidence import build_gate_verdict_event
+from assurance_agent.workflow.orchestration.write_guards import (
+    assert_gate_verdict_transition,
+    assert_skill_attestation,
+)
+from assurance_agent.workflow.execution.tree_hash import sha256_file
+from assurance_agent.workflow.orchestration.decision_support import resolve_decision_support
 from assurance_agent.workflow.orchestration.engine import compute_status
-from assurance_agent.workflow.orchestration.gates import resolve_change_path
+from assurance_agent.workflow.orchestration.gates import check_gate, resolve_change_path
 from assurance_agent.workflow.orchestration.healing_episode import HealingAttemptIntent
-from assurance_agent.workflow.orchestration.schema import ORCHESTRATOR_INTERNAL, WorkflowSchema
+from assurance_agent.workflow.orchestration.schema import (
+    ORCHESTRATOR_INTERNAL,
+    WorkflowSchema,
+    load_workflow_schema,
+)
 
 HEAL_STATUSES = frozenset({"resolved", "exhausted", "not_needed", "failed", "skipped"})
 HUMAN_DECISION_ACTIONS = frozenset(
@@ -87,10 +100,112 @@ def _with_healing_status(state: WorkflowState, status: str) -> WorkflowState:
     return WorkflowState.model_validate(data)
 
 
+def _with_gate(state: WorkflowState, name: str, value: object) -> WorkflowState:
+    data = state.model_dump(mode="python", exclude_none=True)
+    gates = dict(data.get("gates") or {})
+    gates[name] = value
+    data["gates"] = gates
+    return WorkflowState.model_validate(data)
+
+
 def _phase_entry_from_state(state: WorkflowState, phase_id: str) -> dict | None:
     phases = state.model_dump(mode="python", exclude_none=True).get("phases") or {}
     entry = phases.get(_phase_key(phase_id))
     return entry if isinstance(entry, dict) else None
+
+
+def _load_yaml(path: Path) -> dict[str, object] | None:
+    if not path.is_file():
+        return None
+    try:
+        import yaml
+
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _load_json(path: Path) -> dict[str, object] | None:
+    if not path.is_file():
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+_EXEC_RESULT_PHASES = frozenset({"execution", "healing-rerun"})
+_INSPECT_RESULT_PHASES = frozenset({"inspect", "healing-reinspect"})
+_EXEC_STATUSES = frozenset({"PASS", "PASS_WITH_WARNINGS", "FAIL", "SKIPPED"})
+
+
+def _enrich_phase_entry(
+    loc: ChangeLocation,
+    phase_id: str,
+    entry: dict[str, object],
+    state: WorkflowState,
+) -> tuple[dict[str, object], WorkflowState]:
+    """Stamp runbook-required fields from on-disk evidence (FALLBACK-RUNBOOK).
+
+    - execution / healing-rerun: ``status = final_status``, ``batch_id`` from
+      ``execution/execution-manifest.yaml`` (never invent PASS/FAIL).
+    - inspect / healing-reinspect: ``inspect_mode`` (+ status partial when not
+      primary) from ``inspect/failure-analysis.json``.
+    - skill-registry-check: ``gates.healing_available`` from params /
+      skill presence (true when healing is configured and skills are present).
+    """
+    change_dir = loc.path
+    if phase_id in _EXEC_RESULT_PHASES:
+        manifest = _load_yaml(change_dir / "execution" / "execution-manifest.yaml")
+        if manifest is not None:
+            final = manifest.get("final_status")
+            if isinstance(final, str) and final in _EXEC_STATUSES:
+                entry["status"] = final
+            batch = manifest.get("batch_id")
+            if isinstance(batch, str) and batch:
+                entry["batch_id"] = batch
+        state = _ensure_healing_available(loc, state)
+        return entry, state
+
+    if phase_id in _INSPECT_RESULT_PHASES:
+        analysis = _load_json(change_dir / "inspect" / "failure-analysis.json")
+        if analysis is not None:
+            mode = analysis.get("inspect_mode")
+            if isinstance(mode, str) and mode:
+                entry["inspect_mode"] = mode
+                if mode != "primary":
+                    entry["status"] = "partial"
+        state = _ensure_healing_available(loc, state)
+        return entry, state
+
+    if phase_id == "skill-registry-check":
+        state = _ensure_healing_available(loc, state, force=True)
+        return entry, state
+
+    return entry, state
+
+
+def _ensure_healing_available(
+    loc: ChangeLocation,
+    state: WorkflowState,
+    *,
+    force: bool = False,
+) -> WorkflowState:
+    """Stamp gates.healing_available from skills + params (runbook invariant)."""
+    if not force and state.gates.healing_available is not None:
+        return state
+    params = state.params if isinstance(state.params, dict) else {}
+    max_attempts = params.get("max_healing_attempts")
+    try:
+        attempts_ok = int(max_attempts) > 0 if max_attempts is not None else True
+    except (TypeError, ValueError):
+        attempts_ok = True
+    skills_root = loc.project_root / "skills"
+    required = ("aa-fix-proposal", "aa-api-codegen-fixer", "aa-e2e-codegen-fixer")
+    skills_ok = all((skills_root / name / "SKILL.md").is_file() for name in required)
+    return _with_gate(state, "healing_available", bool(attempts_ok and skills_ok))
 
 
 def record_dispatch(
@@ -153,13 +268,21 @@ def apply_phase_outcome(
 ) -> AppliedOutcome:
     if not schema.has_phase(phase_id):
         raise AaError(f"unknown phase '{phase_id}'")
+    # Write path operates on an active Change; source is definitionally "changes"
+    # and resolve_change_path only reads project_root + change_id from the handle.
+    loc = ChangeLocation(
+        project_root=project_root,
+        change_id=change_dir.name,
+        path=change_dir,
+        source="changes",
+    )
     missing = [
-        rel
-        for rel in (schema.phase_produces(phase_id) or [])
-        if not resolve_change_path(change_dir, rel).exists()
+        rel for rel in (schema.phase_produces(phase_id) or []) if not resolve_change_path(loc, rel).exists()
     ]
     if missing:
         raise AaError(f"missing declared produces: {', '.join(missing)}")
+
+    assert_skill_attestation(schema, phase_id, skill=skill)
 
     applied_status = "pass" if phase_id in ORCHESTRATOR_INTERNAL else "done"
     manual = attempt_id is None
@@ -170,7 +293,15 @@ def apply_phase_outcome(
         outcomes = txn.ledger.filter(type="phase_outcome_committed", attempt_id=outcome_id)
         if outcomes:
             return _replay_or_reconcile_outcome(
-                txn, state, phase_id, outcome_id, applied_status, outcomes, skill, skill_md_path
+                txn,
+                loc,
+                state,
+                phase_id,
+                outcome_id,
+                applied_status,
+                outcomes,
+                skill,
+                skill_md_path,
             )
 
         if not manual:
@@ -193,13 +324,47 @@ def apply_phase_outcome(
         }
         if skill is not None:
             entry["skill"] = skill
+        entry, state = _enrich_phase_entry(loc, phase_id, entry, state)
+        applied_status = str(entry.get("status") or applied_status)
+
+        gate_report: dict[str, object] | None = None
+        gate_name = schema.gate_for_phase(phase_id)
+        if gate_name is not None:
+            params = dict(state.params) if state.params else {}
+            verdict = check_gate(schema, gate_name, loc, state, params)
+            verdict_str = verdict.verdict.value if hasattr(verdict.verdict, "value") else str(verdict.verdict)
+            assert_gate_verdict_transition(
+                change_dir,
+                schema,
+                gate_id=verdict.gate,
+                new_verdict=verdict_str,
+                phase=phase_id,
+            )
+            gate_event = build_gate_verdict_event(
+                loc,
+                schema,
+                phase=phase_id,
+                gate=verdict.gate,
+                verdict=verdict_str,
+                matched_rule=verdict.matched_rule,
+                reason=verdict.reason,
+            )
+            txn.append_strict(gate_event)
+            gate_report = {
+                "gate": verdict.gate,
+                "verdict": verdict_str,
+                "matched_rule": verdict.matched_rule,
+                "reason": verdict.reason,
+                "reads_sha256": gate_event.get("reads_sha256"),
+            }
+
         txn.append_strict(
             {
                 "source": "progression",
                 "type": "phase_outcome_committed",
                 "phase": phase_id,
                 "attempt_id": outcome_id,
-                "gate_report": None,
+                "gate_report": gate_report,
             }
         )
         txn.set_state(_with_phase(state, phase_id, entry))
@@ -211,8 +376,97 @@ def apply_phase_outcome(
         )
 
 
+ARCHIVE_STATUSES = frozenset({"archived", "archived_with_warnings", "skipped"})
+
+
+def commit_archive_outcome(
+    project_root: Path,
+    change_dir: Path,
+    schema: WorkflowSchema,
+    *,
+    status: str,
+    skill: str | None = "aa-archive",
+    skill_md_path: str | None = None,
+) -> AppliedOutcome:
+    """Guarded commit of the out-of-band archive outcome.
+
+    The archive phase runs post-terminal and out of band (``auto_archive`` is
+    false in the loop; ``aa-archive`` writes ``qa/archive/<id>/`` after the
+    driver already reached ``report``). Historically the skill hand-edited
+    ``phases.archive.status`` straight into ``workflow-state.yaml``, which left
+    ``_integrity.state_sha256`` stale and emitted no ledger event — the
+    read-side auditor then flagged ``STATE-INTEGRITY-TAMPERED``.
+
+    This routes that write through ``ProgressionTxn`` (same boundary as the
+    driver commit path) so ``_integrity`` is re-hashed and a
+    ``phase_outcome_committed`` event is recorded, and it enforces skill
+    attestation. The ``archive-gate`` is a *driver-dispatch* precondition
+    (``params.auto_archive``/``user_requested_archive``) and is intentionally
+    not re-evaluated here: eligibility was already enforced by the loop/skill
+    before the archive artifacts were written.
+    """
+    if status not in ARCHIVE_STATUSES:
+        raise AaError(f"invalid archive status {status!r}; expected one of {sorted(ARCHIVE_STATUSES)}")
+    if not schema.has_phase("archive"):
+        raise AaError("schema has no 'archive' phase")
+    loc = ChangeLocation(
+        project_root=project_root,
+        change_id=change_dir.name,
+        path=change_dir,
+        source="changes",
+    )
+    if status != "skipped":
+        missing = [
+            rel
+            for rel in (schema.phase_produces("archive") or [])
+            if not resolve_change_path(loc, rel).exists()
+        ]
+        if missing:
+            raise AaError(f"missing declared produces: {', '.join(missing)}")
+
+    assert_skill_attestation(schema, "archive", skill=skill)
+
+    outcome_id = f"manual:archive:{uuid4()}"
+    with transaction(change_dir) as txn:
+        state = txn.read_state()
+        outcomes = txn.ledger.filter(type="phase_outcome_committed", attempt_id=outcome_id)
+        if outcomes:  # uuid collision is effectively impossible; replay defensively
+            return AppliedOutcome(
+                phase_id="archive",
+                attempt_id=outcome_id,
+                applied_status=status,
+                disposition="replayed",
+            )
+        entry: dict[str, object] = {
+            "status": status,
+            "attempt_id": None,
+            "skill_loaded": skill is not None,
+            "skill_md_path": skill_md_path,
+            "skill_loaded_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if skill is not None:
+            entry["skill"] = skill
+        txn.append_strict(
+            {
+                "source": "progression",
+                "type": "phase_outcome_committed",
+                "phase": "archive",
+                "attempt_id": outcome_id,
+                "gate_report": None,
+            }
+        )
+        txn.set_state(_with_phase(state, "archive", entry))
+    return AppliedOutcome(
+        phase_id="archive",
+        attempt_id=outcome_id,
+        applied_status=status,
+        disposition="committed",
+    )
+
+
 def _replay_or_reconcile_outcome(
     txn: ProgressionTxn,
+    loc: ChangeLocation,
     state: WorkflowState,
     phase_id: str,
     outcome_id: str,
@@ -260,6 +514,8 @@ def _replay_or_reconcile_outcome(
         }
         if skill is not None:
             new_entry["skill"] = skill
+        new_entry, state = _enrich_phase_entry(loc, phase_id, new_entry, state)
+        applied_status = str(new_entry.get("status") or applied_status)
         txn.set_state(_with_phase(state, phase_id, new_entry))
         return AppliedOutcome(
             phase_id=phase_id,
@@ -395,8 +651,21 @@ def record_decision(
     if not reason.strip():
         raise AaError("decision reason is required")
 
-    review_file: str | None = None
-    review_sha256: str | None = None
+    # Mirror of TS decide.ts ordering: resolveDecisionSupport validates the
+    # (checkpoint, action) pair against the decision-support matrix BEFORE any
+    # artifact binding, so unknown checkpoints and unsupported combinations
+    # never produce an event.
+    schema = load_workflow_schema(project_root)
+    support = resolve_decision_support(schema, checkpoint, action)
+    loc = ChangeLocation(
+        project_root=project_root,
+        change_id=change_dir.name,
+        path=change_dir,
+        source="changes",
+    )
+
+    evidence_file: str | None = None
+    evidence_sha256: str | None = None
     if evidence is not None:
         evidence_path = (project_root / evidence).resolve()
         try:
@@ -405,8 +674,50 @@ def record_decision(
             raise AaError("evidence must stay under project root") from err
         if not evidence_path.is_file():
             raise AaError(f"evidence not found: {evidence}")
-        review_file = evidence_path.relative_to(project_root).as_posix()
-        review_sha256 = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+        evidence_file = evidence_path.relative_to(project_root).as_posix()
+        evidence_sha256 = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+
+    # Gate decisions auto-bind the current audited gate read as review evidence so
+    # the engine's applyGateDecision can upgrade a needs_human_review verdict and
+    # the read-side audit can later validate the anchor (mirror of TS
+    # ``bindCurrentAuditedRead``).
+    review_file: str | None = None
+    review_sha256: str | None = None
+    if checkpoint == "healing.safety" and action == "accept_risk":
+        # Mirror of TS decide.ts ``requireChangeArtifact``: ``healing.safety`` is a
+        # special checkpoint (neither a gate id nor a gated phase), so accept_risk
+        # binds the fixer safety artifact directly — required, not best-effort.
+        digest = sha256_file(change_dir / "healing" / "fixer-safety-check.json")
+        if not digest:
+            raise AaError("healing/fixer-safety-check.json is required for this decision")
+        review_file = "healing/fixer-safety-check.json"
+        review_sha256 = digest
+    elif support.gate_id is not None and action != "stop":
+        gate = schema.gates.get(support.gate_id)
+        for read in gate.reads if gate is not None else []:
+            if not is_audited_gate_read(read.path):
+                continue
+            digest = sha256_file(resolve_change_path(loc, read.path))
+            if digest:
+                review_file = read.path
+                review_sha256 = digest
+                break
+
+    # Mirror of TS decide.ts: a non-stop gate decision whose gate declares audited
+    # reads MUST bind one — without review_file/review_sha256 the engine can never
+    # consume the decision, so fail closed instead of recording a dead event.
+    if support.gate_id is not None and action != "stop":
+        gate = schema.gates.get(support.gate_id)
+        audited = (
+            next(
+                (r.path for r in gate.reads if is_audited_gate_read(r.path)),
+                None,
+            )
+            if gate is not None
+            else None
+        )
+        if audited is not None and review_file is None:
+            raise AaError(f"Audited artifact {audited} is required for this decision")
 
     with transaction(change_dir) as txn:
         state = txn.read_state()
@@ -429,10 +740,7 @@ def record_decision(
 
         stop_snapshot: dict | None = None
         if action == "stop":
-            from assurance_agent.workflow.orchestration.schema import load_workflow_schema
-
-            loaded = load_workflow_schema(project_root)
-            status = compute_status(loaded, change_dir, state, state.params)
+            status = compute_status(schema, loc, state, state.params)
             if status.terminal is not None:
                 raise AaError(f"workflow already terminal ({status.terminal.kind})")
             stop_snapshot = {
@@ -462,6 +770,9 @@ def record_decision(
             "reason": reason,
             "who": who,
         }
+        if evidence_file is not None:
+            event["evidence_file"] = evidence_file
+            event["evidence_sha256"] = evidence_sha256
         if review_file is not None:
             event["review_file"] = review_file
             event["review_sha256"] = review_sha256
