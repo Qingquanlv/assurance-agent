@@ -84,3 +84,60 @@ def test_validate_advisory_semantic_failure_exits_1() -> None:
         result = runner.invoke(main, ["risk", "validate-advisory", "--change", "CH-1"])
         assert result.exit_code == 1
         assert "unknown id" in result.output
+
+
+def test_validate_advisory_accepts_case_id_from_qa_cases() -> None:
+    """case_id 存在于 qa/cases（但不在 context.affected_case_ids）时不应误拒。"""
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        case_dir = Path("qa/cases/menus")
+        case_dir.mkdir(parents=True)
+        (case_dir / "case.yaml").write_text(
+            "cases:\n  - case_id: TC_LEGAL_001\n    module: menus\n", encoding="utf-8"
+        )
+        seed_explore(
+            "CH-1",
+            {
+                "schema_version": "1.0",
+                "watchlist": [{"id": "WL-1", "confidence": "high", "evidence_ids": ["EV-DIFF-MENUS-HIGH"]}],
+                "open_questions_for_case_design": [],
+                "case_design_guidance": {
+                    "priority_hints": [
+                        {
+                            "case_id": "TC_LEGAL_001",
+                            "confidence": "high",
+                            "evidence_ids": ["EV-DIFF-MENUS-HIGH"],
+                        }
+                    ]
+                },
+            },
+        )
+        result = runner.invoke(main, ["risk", "validate-advisory", "--change", "CH-1"])
+        assert result.exit_code == 0, result.output
+        assert "passed" in result.output
+
+
+def test_validate_advisory_rejects_unknown_case_id() -> None:
+    """qa/cases 与 affected_case_ids 都没有的 case_id 仍应被拒。"""
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        seed_explore(
+            "CH-1",
+            {
+                "schema_version": "1.0",
+                "watchlist": [{"id": "WL-1", "confidence": "high", "evidence_ids": ["EV-DIFF-MENUS-HIGH"]}],
+                "open_questions_for_case_design": [],
+                "case_design_guidance": {
+                    "priority_hints": [
+                        {
+                            "case_id": "TC_NOPE_999",
+                            "confidence": "high",
+                            "evidence_ids": ["EV-DIFF-MENUS-HIGH"],
+                        }
+                    ]
+                },
+            },
+        )
+        result = runner.invoke(main, ["risk", "validate-advisory", "--change", "CH-1"])
+        assert result.exit_code == 1
+        assert "not in context.affected_case_ids or qa/cases" in result.output

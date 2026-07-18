@@ -5,12 +5,12 @@ from pathlib import Path
 import pytest
 
 from assurance_agent.eval.dataset_loader import load_dataset
-from assurance_agent.eval.paths import datasets_dir, eval_root
+from assurance_agent.eval.paths import datasets_dir
 from assurance_agent.eval.plan import load_suite
 from assurance_agent.eval.scorers import get_scorer
 
 SUITE_NAMES = [
-    "_test",
+    "eval-smoke",
     "case-generation",
     "classification-unit",
     "safety-lite",
@@ -23,12 +23,11 @@ SUITE_NAMES = [
     "workflow-run",
 ]
 
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _dataset_path(suite_name: str) -> Path:
-    if suite_name == "_test":
-        return eval_root(REPO_ROOT) / "datasets" / "_test"
     return datasets_dir(REPO_ROOT, suite_name)
 
 

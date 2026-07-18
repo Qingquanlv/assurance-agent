@@ -4,10 +4,10 @@ from collections.abc import Callable
 from pathlib import Path
 
 from assurance_agent.eval.scorers import (
-    _test,
     case_generation,
     classification_unit,
     codegen,
+    eval_smoke,
     safety_lite,
     workflow_case,
     workflow_full,
@@ -25,7 +25,7 @@ _CODEGEN_SUITES = (
 )
 
 _REGISTRY: dict[str, Scorer] = {
-    "_test": _test.score,
+    "eval-smoke": eval_smoke.score,
     "case-generation": case_generation.score,
     "classification-unit": classification_unit.score,
     "safety-lite": safety_lite.score,

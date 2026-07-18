@@ -1,0 +1,8 @@
+name: L3-run-done
+extends: L3-run-seed
+description: Full run complete; execution PASS (frozen golden post-run snapshot)
+paths:
+- execution
+resets:
+  workflow_state:
+    phases.execution.status: PASS

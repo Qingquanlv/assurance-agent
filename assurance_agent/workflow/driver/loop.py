@@ -25,7 +25,7 @@ from assurance_agent.workflow.core.exit_codes import (
     EXIT_STOPPED,
 )
 from assurance_agent.workflow.core.progression import ProgressionError, ProgressionRollbackError
-from assurance_agent.workflow.core.state import read_state
+from assurance_agent.workflow.core.state import configure_workflow_params, read_state
 from assurance_agent.workflow.driver.adapter import Adapter, DriverError, PhaseRequest, PhaseResult
 from assurance_agent.workflow.driver.driver_state import (
     DriverState,
@@ -339,11 +339,7 @@ def run_workflow_loop(
     except (UnsafeIdentifierError, ChangeNotFoundError, ConfigNotFoundError) as err:
         return LoopResult(EXIT_ERROR, str(err))
     change_dir = loc.path
-    if status_provider is None:
-        schema = schema or load_workflow_schema(project_root)
-        status_provider = _DefaultStatusProvider(schema, loc, params, scope)
-    else:
-        schema = schema or load_workflow_schema(project_root)
+    schema = schema or load_workflow_schema(project_root)
     cli_executor = cli_executor or DefaultCliPhaseExecutor(schema=schema)
     healing_executor = healing_executor or DefaultHealingActionExecutor()
 
@@ -433,6 +429,17 @@ def run_workflow_loop(
     )
 
     try:
+        # configure (TS loop.ts parity): merge runtime params into
+        # workflow-state.yaml and stamp run_context before the first dispatch.
+        orchestrator = "aa-execute" if scope == "execute" else "aa-workflow"
+        try:
+            configure_workflow_params(change_dir, params, orchestrator)
+        except AaError as err:
+            return finish(EXIT_ERROR, f"configure failed: {err}", "failed")
+        if status_provider is None:
+            # Engine params come from state post-configure: TS progression reads
+            # state.params, which CLI --params reached via `state configure`.
+            status_provider = _DefaultStatusProvider(schema, loc, read_state(change_dir).params, scope)
         for _ in range(max_iterations):
             status = status_provider()
             # A human/gate stop always preempts pending control work. A completed

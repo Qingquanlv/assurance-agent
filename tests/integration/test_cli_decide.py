@@ -64,6 +64,11 @@ def test_decide_records_event_and_appends_state_decision() -> None:
     runner = CliRunner()
     with runner.isolated_filesystem():
         change_dir = make_change()
+        # case-review is a gated phase; case-review-gate reads an audited artifact
+        # that a non-stop decision must bind (TS decide.ts).
+        review = change_dir / "review" / "case-review.json"
+        review.parent.mkdir()
+        review.write_text(json.dumps({"decision": "needs_human_review"}), encoding="utf-8")
         result = runner.invoke(
             main,
             [
@@ -94,7 +99,7 @@ def test_decide_stop_marks_terminal() -> None:
     with runner.isolated_filesystem():
         change_dir = make_change()
         result = runner.invoke(
-            main, ["decide", "--change", "CH-1", "--at", "workflow", "--action", "stop", "--reason", "halt"]
+            main, ["decide", "--change", "CH-1", "--at", "explore", "--action", "stop", "--reason", "halt"]
         )
         assert result.exit_code == 0, result.output
         state = yaml.safe_load((change_dir / "workflow-state.yaml").read_text())
@@ -117,6 +122,9 @@ def test_decide_strict_event_failure_rolls_back_and_exits_40(monkeypatch) -> Non
     runner = CliRunner()
     with runner.isolated_filesystem():
         change_dir = make_change()
+        review = change_dir / "review" / "case-review.json"
+        review.parent.mkdir()
+        review.write_text(json.dumps({"decision": "needs_human_review"}), encoding="utf-8")
         before = (change_dir / "workflow-state.yaml").read_text()
         result = runner.invoke(
             main,

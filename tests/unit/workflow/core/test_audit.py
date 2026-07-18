@@ -8,7 +8,7 @@ from pathlib import Path
 
 from assurance_agent.artifacts.models import WorkflowState
 from assurance_agent.workflow.core.audit import apply_audits_to_report, run_status_audits
-from assurance_agent.workflow.core.events import append_event_best_effort, append_event_strict
+from assurance_agent.workflow.core.events import append_event_best_effort
 from assurance_agent.workflow.core.state import write_state
 from assurance_agent.workflow.orchestration.engine import PhaseView, Terminal, WorkflowStatus
 from assurance_agent.workflow.orchestration.schema import parse_schema
@@ -71,13 +71,39 @@ def test_skill_load_violation_when_terminal_without_skill(tmp_path: Path) -> Non
     )
     loc = loc_for(change, project_root=tmp_path)
     audit = run_status_audits(loc, report, SCHEMA)
-    assert any(
-        i.code == "SKILL_LOAD_GATE_VIOLATION" and i.phase == "explore" for i in audit.issues
-    )
+    assert any(i.code == "SKILL_LOAD_GATE_VIOLATION" and i.phase == "explore" for i in audit.issues)
     assert not any(i.phase == "execution" for i in audit.issues)
     adjusted = apply_audits_to_report(report, audit)
     assert adjusted.terminal is not None
     assert adjusted.terminal.kind == "stopped"
+
+
+def test_healing_orchestrator_terminals_exempt_from_skill_load(tmp_path: Path) -> None:
+    """aa state heal writes exhausted/failed/resolved without skill_loaded — must not stop report."""
+    change = tmp_path / "qa" / "changes" / "CH-1"
+    change.mkdir(parents=True)
+    for status in ("exhausted", "failed", "resolved", "not_needed", "skipped"):
+        write_state(
+            change,
+            WorkflowState.model_validate(
+                {
+                    "phases": {
+                        "healing": {"status": status, "skill_loaded": None},
+                        "explore": {"status": "done", "skill_loaded": True},
+                    }
+                }
+            ),
+        )
+        report = _status(
+            PhaseView(id="explore", status="done"),
+            PhaseView(id="report", status="ready"),
+        )
+        loc = loc_for(change, project_root=tmp_path)
+        audit = run_status_audits(loc, report, SCHEMA)
+        assert not any(i.code == "SKILL_LOAD_GATE_VIOLATION" for i in audit.issues), status
+        adjusted = apply_audits_to_report(report, audit)
+        assert adjusted.next_dispatch == report.next_dispatch
+        assert adjusted.terminal == report.terminal
 
 
 def test_artifact_tampered_when_settled_gate_read_hash_drifts(tmp_path: Path) -> None:

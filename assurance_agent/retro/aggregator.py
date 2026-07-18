@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -115,21 +116,74 @@ def _failure_distribution(changes: list[ArchivedChange]) -> list[FailureDistribu
     ]
 
 
+# Pushback verdicts per the source TS aggregator (`summarizeGatePushback`):
+# only these gate_verdict outcomes count as pushback.
+_PUSHBACK_VERDICTS = frozenset({"needs_fix", "fail", "blocked", "stop"})
+
+
+def _top_entries(counter: Counter[str], limit: int) -> list[str]:
+    """TS `topEntries`: count desc, then key asc (localeCompare), capped at ``limit``."""
+    ordered = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [key for key, _ in ordered[:limit]]
+
+
+def _pushback_reason(event: dict) -> str:
+    """Reason string for one pushback event (TS: evidence.reason → JSON(evidence) → fallback).
+
+    The Python GateVerdictEvent also carries a top-level ``reason`` field (the
+    migration lifted it out of ``evidence``), so it is honored with the same
+    priority as ``evidence.reason``.
+    """
+    evidence = event.get("evidence")
+    if not isinstance(evidence, dict):
+        evidence = {}
+    reason = evidence.get("reason")
+    if isinstance(reason, str):
+        return reason
+    top_level = event.get("reason")
+    if isinstance(top_level, str):
+        return top_level
+    if evidence:
+        return json.dumps(evidence, ensure_ascii=False, separators=(",", ":"))
+    return "(no evidence)"
+
+
 def _gate_pushback(changes: list[ArchivedChange]) -> list[GatePushbackSignal]:
-    counter: Counter[str] = Counter()
-    evidence: dict[str, list[str]] = {}
+    """One signal per (gate, verdict) over pushback `gate_verdict` events.
+
+    Mirrors TS `summarizeGatePushback`: pushback verdicts are
+    needs_fix/fail/blocked/stop; evidence ids are `<change_id>#seq<seq>`;
+    top_reasons holds the five most frequent reasons; sorted by count desc,
+    then gate asc.
+    """
+    counter: Counter[tuple[str, str]] = Counter()
+    reasons: dict[tuple[str, str], Counter[str]] = {}
+    evidence: dict[tuple[str, str], list[str]] = {}
     for change in changes:
         for event in change.events:
-            if event.get("type") == "gate_pushback":
-                gate = event.get("gate", "unknown")
-                counter[gate] += 1
-                eid = _event_evidence_id(change.change_id, event)
-                if eid is not None:
-                    evidence.setdefault(gate, []).append(eid)
-    return [
-        GatePushbackSignal(gate=g, count=n, evidence_ids=evidence.get(g, []))
-        for g, n in sorted(counter.items())
+            if event.get("type") != "gate_verdict":
+                continue
+            verdict = str(event.get("verdict", ""))
+            if verdict not in _PUSHBACK_VERDICTS:
+                continue
+            gate = str(event.get("gate", "unknown"))
+            key = (gate, verdict)
+            counter[key] += 1
+            reasons.setdefault(key, Counter())[_pushback_reason(event)] += 1
+            eid = _event_evidence_id(change.change_id, event)
+            if eid is not None:
+                evidence.setdefault(key, []).append(eid)
+    signals = [
+        GatePushbackSignal(
+            gate=gate,
+            verdict=verdict,
+            count=count,
+            top_reasons=_top_entries(reasons[(gate, verdict)], 5),
+            evidence_ids=evidence.get((gate, verdict), []),
+        )
+        for (gate, verdict), count in counter.items()
     ]
+    return sorted(signals, key=lambda s: (-s.count, s.gate))
 
 
 def _healing_efficiency(changes: list[ArchivedChange]) -> HealingEfficiencySignal:
@@ -188,20 +242,34 @@ def _reclassifications(changes: list[ArchivedChange]) -> list[ReclassificationSi
 
 
 def _skill_execution(changes: list[ArchivedChange]) -> list[SkillExecutionSignal]:
+    """One signal per phase that ran with ``skill_loaded: false`` (skill-execution drift).
+
+    Mirrors TS `summarizeSkillExecution`: only ``skill_loaded === false`` is
+    drift — ``true`` and ``n/a`` (CLI-driven phases) are fine. Evidence ids are
+    `<change_id>#workflow-state:<phase>`; sorted by count desc, then phase asc.
+    """
     counter: Counter[str] = Counter()
+    change_sets: dict[str, set[str]] = {}
     evidence: dict[str, list[str]] = {}
     for change in changes:
-        for event in change.events:
-            if event.get("type") == "skill_executed":
-                skill = event.get("skill", "unknown")
-                counter[skill] += 1
-                eid = _event_evidence_id(change.change_id, event)
-                if eid is not None:
-                    evidence.setdefault(skill, []).append(eid)
-    return [
-        SkillExecutionSignal(skill=s, count=n, evidence_ids=evidence.get(s, []))
-        for s, n in sorted(counter.items())
+        if change.workflow_state is None:
+            continue
+        for phase, state in change.workflow_state.phases.model_dump().items():
+            if not isinstance(state, dict) or state.get("skill_loaded") is not False:
+                continue
+            counter[phase] += 1
+            change_sets.setdefault(phase, set()).add(change.change_id)
+            evidence.setdefault(phase, []).append(f"{change.change_id}#workflow-state:{phase}")
+    signals = [
+        SkillExecutionSignal(
+            phase=phase,
+            count=count,
+            changes=sorted(change_sets[phase]),
+            evidence_ids=evidence.get(phase, []),
+        )
+        for phase, count in counter.items()
     ]
+    return sorted(signals, key=lambda s: (-s.count, s.phase))
 
 
 def build_retro_context(

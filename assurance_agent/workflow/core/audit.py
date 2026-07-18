@@ -241,7 +241,17 @@ def _phase_requires_skill_load(phase: str, state: dict[str, Any]) -> bool:
     status = state.get("status")
     if not isinstance(status, str):
         return False
-    if phase in {"healing"} and status in {"not_needed", "skipped", "pending"}:
+    # Healing aggregate judgments are recorded by `aa state heal` (orchestrator),
+    # not by a skill phase commit — they never set skill_loaded. All terminal
+    # healing statuses must be exempt or report/archive dispatch is blocked.
+    if phase in {"healing"} and status in {
+        "not_needed",
+        "skipped",
+        "pending",
+        "resolved",
+        "exhausted",
+        "failed",
+    }:
         return False
     if phase == "archive" and status in {"eligible", "not_eligible", "skipped"}:
         return False
@@ -265,8 +275,7 @@ def _audit_reclassification_events(change_dir: Path) -> list[AuditIssue]:
             continue
         failure_id = _first_string(failure.get("id"), failure.get("case_id"), failure.get("test"))
         has_event = any(
-            e.get("failure") in {failure_id, failure.get("case_id"), failure.get("test")}
-            for e in events
+            e.get("failure") in {failure_id, failure.get("case_id"), failure.get("test")} for e in events
         )
         if not has_event:
             issues.append(
@@ -304,9 +313,7 @@ def _audit_verdict_transitions(
             prev = verdicts[i - 1]
             nxt = verdicts[i]
             streak_start = i - 1
-            while streak_start > 0 and verdicts[streak_start - 1].get("verdict") == prev.get(
-                "verdict"
-            ):
+            while streak_start > 0 and verdicts[streak_start - 1].get("verdict") == prev.get("verdict"):
                 streak_start -= 1
             issue = _check_verdict_migration(
                 events,
@@ -340,28 +347,17 @@ def _check_verdict_migration(
             message=f"GATE-TRANSITION-ILLEGAL: {gate_id} reject→{to_v}",
         )
 
-    between_repair = [
-        e for e in events if repair_since_seq < event_seq(e) < event_seq(nxt)
-    ]
-    between_adjacent = [
-        e for e in events if event_seq(prev) < event_seq(e) < event_seq(nxt)
-    ]
+    between_repair = [e for e in events if repair_since_seq < event_seq(e) < event_seq(nxt)]
+    between_adjacent = [e for e in events if event_seq(prev) < event_seq(e) < event_seq(nxt)]
     review_phase = _find_review_phase_for_gate(schema, gate_id)
     repair_phase = repair_by_review.get(review_phase) if review_phase else None
     repair_done = False
     if repair_phase:
         repair_done = any(
-            (
-                e.get("type") == "phase_transition"
-                and e.get("phase") == repair_phase
-                and e.get("to") == "done"
-            )
+            (e.get("type") == "phase_transition" and e.get("phase") == repair_phase and e.get("to") == "done")
             or (e.get("type") == "dispatch_signed" and e.get("phase") == repair_phase)
             or (e.get("type") == "phase_dispatched" and e.get("phase") == repair_phase)
-            or (
-                e.get("type") == "phase_outcome_committed"
-                and e.get("phase") == repair_phase
-            )
+            or (e.get("type") == "phase_outcome_committed" and e.get("phase") == repair_phase)
             for e in between_repair
         )
 
@@ -383,9 +379,7 @@ def _check_verdict_migration(
     if from_v == "pass" and to_v == "pass":
         prev_hash = prev.get("reads_sha256") if isinstance(prev.get("reads_sha256"), dict) else {}
         next_hash = nxt.get("reads_sha256") if isinstance(nxt.get("reads_sha256"), dict) else {}
-        hash_changed = any(
-            k in prev_hash and prev_hash[k] != next_hash.get(k) for k in next_hash
-        )
+        hash_changed = any(k in prev_hash and prev_hash[k] != next_hash.get(k) for k in next_hash)
         repair_done_adjacent = False
         if repair_phase:
             repair_done_adjacent = any(
@@ -395,10 +389,7 @@ def _check_verdict_migration(
                 for e in between_adjacent
             )
         healing_refresh = _is_safety_gate(schema, gate_id) and any(
-            (
-                e.get("type") == "phase_transition"
-                and e.get("phase") in {"healing-rerun", "healing-reinspect"}
-            )
+            (e.get("type") == "phase_transition" and e.get("phase") in {"healing-rerun", "healing-reinspect"})
             or e.get("type") == "execution_start"
             for e in between_adjacent
         )
@@ -511,9 +502,7 @@ def check_verdict_migration(
     repair_by_review: dict[str, str],
     repair_since_seq: int,
 ) -> AuditIssue | None:
-    return _check_verdict_migration(
-        events, schema, gate_id, prev, nxt, repair_by_review, repair_since_seq
-    )
+    return _check_verdict_migration(events, schema, gate_id, prev, nxt, repair_by_review, repair_since_seq)
 
 
 def build_repair_map(schema: WorkflowSchema) -> dict[str, str]:

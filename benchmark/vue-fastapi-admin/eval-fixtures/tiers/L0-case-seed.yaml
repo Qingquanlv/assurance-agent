@@ -6,6 +6,7 @@ paths:
 - cases
 - facts
 - explore
+- review
 - workflow-state.yaml
 - .qa.yaml
 resets:

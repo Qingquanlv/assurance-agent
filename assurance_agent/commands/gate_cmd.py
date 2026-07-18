@@ -12,8 +12,6 @@ from assurance_agent.config import ConfigNotFoundError
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import UnsafeIdentifierError
 from assurance_agent.workflow.core.audit_evidence import build_gate_verdict_event
-from assurance_agent.workflow.core.audit_evidence import build_gate_verdict_event
-from assurance_agent.workflow.core.audit_evidence import build_gate_verdict_event
 from assurance_agent.workflow.core.events import append_event_best_effort
 from assurance_agent.workflow.core.exit_codes import exit_code_for_gate_verdict
 from assurance_agent.workflow.core.state import read_state
@@ -63,9 +61,7 @@ def gate_check(change_id: str, phase_id: str, as_json: bool) -> None:
             schema,
             phase=phase_id,
             gate=verdict.gate,
-            verdict=verdict.verdict.value
-            if hasattr(verdict.verdict, "value")
-            else str(verdict.verdict),
+            verdict=verdict.verdict.value if hasattr(verdict.verdict, "value") else str(verdict.verdict),
             matched_rule=verdict.matched_rule,
             reason=verdict.reason,
         ),

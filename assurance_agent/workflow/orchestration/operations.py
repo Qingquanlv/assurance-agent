@@ -27,10 +27,15 @@ from assurance_agent.workflow.core.write_guards import (
     assert_skill_attestation,
 )
 from assurance_agent.workflow.execution.tree_hash import sha256_file
+from assurance_agent.workflow.orchestration.decision_support import resolve_decision_support
 from assurance_agent.workflow.orchestration.engine import compute_status
 from assurance_agent.workflow.orchestration.gates import check_gate, resolve_change_path
 from assurance_agent.workflow.orchestration.healing_episode import HealingAttemptIntent
-from assurance_agent.workflow.orchestration.schema import ORCHESTRATOR_INTERNAL, WorkflowSchema
+from assurance_agent.workflow.orchestration.schema import (
+    ORCHESTRATOR_INTERNAL,
+    WorkflowSchema,
+    load_workflow_schema,
+)
 
 HEAL_STATUSES = frozenset({"resolved", "exhausted", "not_needed", "failed", "skipped"})
 HUMAN_DECISION_ACTIONS = frozenset(
@@ -272,9 +277,7 @@ def apply_phase_outcome(
         source="changes",
     )
     missing = [
-        rel
-        for rel in (schema.phase_produces(phase_id) or [])
-        if not resolve_change_path(loc, rel).exists()
+        rel for rel in (schema.phase_produces(phase_id) or []) if not resolve_change_path(loc, rel).exists()
     ]
     if missing:
         raise AaError(f"missing declared produces: {', '.join(missing)}")
@@ -333,11 +336,7 @@ def apply_phase_outcome(
             elif not isinstance(params, dict):
                 params = dict(params) if params else {}
             verdict = check_gate(schema, gate_name, loc, state, params)
-            verdict_str = (
-                verdict.verdict.value
-                if hasattr(verdict.verdict, "value")
-                else str(verdict.verdict)
-            )
+            verdict_str = verdict.verdict.value if hasattr(verdict.verdict, "value") else str(verdict.verdict)
             assert_gate_verdict_transition(
                 change_dir,
                 schema,
@@ -379,6 +378,94 @@ def apply_phase_outcome(
             applied_status=applied_status,
             disposition="committed",
         )
+
+
+ARCHIVE_STATUSES = frozenset({"archived", "archived_with_warnings", "skipped"})
+
+
+def commit_archive_outcome(
+    project_root: Path,
+    change_dir: Path,
+    schema: WorkflowSchema,
+    *,
+    status: str,
+    skill: str | None = "aa-archive",
+    skill_md_path: str | None = None,
+) -> AppliedOutcome:
+    """Guarded commit of the out-of-band archive outcome.
+
+    The archive phase runs post-terminal and out of band (``auto_archive`` is
+    false in the loop; ``aa-archive`` writes ``qa/archive/<id>/`` after the
+    driver already reached ``report``). Historically the skill hand-edited
+    ``phases.archive.status`` straight into ``workflow-state.yaml``, which left
+    ``_integrity.state_sha256`` stale and emitted no ledger event — the
+    read-side auditor then flagged ``STATE-INTEGRITY-TAMPERED``.
+
+    This routes that write through ``ProgressionTxn`` (same boundary as the
+    driver commit path) so ``_integrity`` is re-hashed and a
+    ``phase_outcome_committed`` event is recorded, and it enforces skill
+    attestation. The ``archive-gate`` is a *driver-dispatch* precondition
+    (``params.auto_archive``/``user_requested_archive``) and is intentionally
+    not re-evaluated here: eligibility was already enforced by the loop/skill
+    before the archive artifacts were written.
+    """
+    if status not in ARCHIVE_STATUSES:
+        raise AaError(f"invalid archive status {status!r}; expected one of {sorted(ARCHIVE_STATUSES)}")
+    if not schema.has_phase("archive"):
+        raise AaError("schema has no 'archive' phase")
+    loc = ChangeLocation(
+        project_root=project_root,
+        change_id=change_dir.name,
+        path=change_dir,
+        source="changes",
+    )
+    if status != "skipped":
+        missing = [
+            rel
+            for rel in (schema.phase_produces("archive") or [])
+            if not resolve_change_path(loc, rel).exists()
+        ]
+        if missing:
+            raise AaError(f"missing declared produces: {', '.join(missing)}")
+
+    assert_skill_attestation(schema, "archive", skill=skill)
+
+    outcome_id = f"manual:archive:{uuid4()}"
+    with transaction(change_dir) as txn:
+        state = txn.read_state()
+        outcomes = txn.ledger.filter(type="phase_outcome_committed", attempt_id=outcome_id)
+        if outcomes:  # uuid collision is effectively impossible; replay defensively
+            return AppliedOutcome(
+                phase_id="archive",
+                attempt_id=outcome_id,
+                applied_status=status,
+                disposition="replayed",
+            )
+        entry: dict[str, object] = {
+            "status": status,
+            "attempt_id": None,
+            "skill_loaded": skill is not None,
+            "skill_md_path": skill_md_path,
+            "skill_loaded_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if skill is not None:
+            entry["skill"] = skill
+        txn.append_strict(
+            {
+                "source": "progression",
+                "type": "phase_outcome_committed",
+                "phase": "archive",
+                "attempt_id": outcome_id,
+                "gate_report": None,
+            }
+        )
+        txn.set_state(_with_phase(state, "archive", entry))
+    return AppliedOutcome(
+        phase_id="archive",
+        attempt_id=outcome_id,
+        applied_status=status,
+        disposition="committed",
+    )
 
 
 def _replay_or_reconcile_outcome(
@@ -568,6 +655,19 @@ def record_decision(
     if not reason.strip():
         raise AaError("decision reason is required")
 
+    # Mirror of TS decide.ts ordering: resolveDecisionSupport validates the
+    # (checkpoint, action) pair against the decision-support matrix BEFORE any
+    # artifact binding, so unknown checkpoints and unsupported combinations
+    # never produce an event.
+    schema = load_workflow_schema(project_root)
+    support = resolve_decision_support(schema, checkpoint, action)
+    loc = ChangeLocation(
+        project_root=project_root,
+        change_id=change_dir.name,
+        path=change_dir,
+        source="changes",
+    )
+
     evidence_file: str | None = None
     evidence_sha256: str | None = None
     if evidence is not None:
@@ -584,21 +684,20 @@ def record_decision(
     # Gate decisions auto-bind the current audited gate read as review evidence so
     # the engine's applyGateDecision can upgrade a needs_human_review verdict and
     # the read-side audit can later validate the anchor (mirror of TS
-    # ``bindCurrentAuditedRead``). Best-effort: skip when no audited artifact.
+    # ``bindCurrentAuditedRead``).
     review_file: str | None = None
     review_sha256: str | None = None
-    if action in {"accept_risk", "fix_and_proceed"}:
-        from assurance_agent.workflow.orchestration.schema import load_workflow_schema
-
-        loc = ChangeLocation(
-            project_root=project_root,
-            change_id=change_dir.name,
-            path=change_dir,
-            source="changes",
-        )
-        schema = load_workflow_schema(project_root)
-        gate_id = _gate_for_checkpoint(schema, checkpoint)
-        gate = schema.gates.get(gate_id) if gate_id is not None else None
+    if checkpoint == "healing.safety" and action == "accept_risk":
+        # Mirror of TS decide.ts ``requireChangeArtifact``: ``healing.safety`` is a
+        # special checkpoint (neither a gate id nor a gated phase), so accept_risk
+        # binds the fixer safety artifact directly — required, not best-effort.
+        digest = sha256_file(change_dir / "healing" / "fixer-safety-check.json")
+        if not digest:
+            raise AaError("healing/fixer-safety-check.json is required for this decision")
+        review_file = "healing/fixer-safety-check.json"
+        review_sha256 = digest
+    elif support.gate_id is not None and action != "stop":
+        gate = schema.gates.get(support.gate_id)
         for read in gate.reads if gate is not None else []:
             if not is_audited_gate_read(read.path):
                 continue
@@ -607,6 +706,22 @@ def record_decision(
                 review_file = read.path
                 review_sha256 = digest
                 break
+
+    # Mirror of TS decide.ts: a non-stop gate decision whose gate declares audited
+    # reads MUST bind one — without review_file/review_sha256 the engine can never
+    # consume the decision, so fail closed instead of recording a dead event.
+    if support.gate_id is not None and action != "stop":
+        gate = schema.gates.get(support.gate_id)
+        audited = (
+            next(
+                (r.path for r in gate.reads if is_audited_gate_read(r.path)),
+                None,
+            )
+            if gate is not None
+            else None
+        )
+        if audited is not None and review_file is None:
+            raise AaError(f"Audited artifact {audited} is required for this decision")
 
     with transaction(change_dir) as txn:
         state = txn.read_state()
@@ -629,16 +744,7 @@ def record_decision(
 
         stop_snapshot: dict | None = None
         if action == "stop":
-            from assurance_agent.workflow.orchestration.schema import load_workflow_schema
-
-            loaded = load_workflow_schema(project_root)
-            loc = ChangeLocation(
-                project_root=project_root,
-                change_id=change_dir.name,
-                path=change_dir,
-                source="changes",
-            )
-            status = compute_status(loaded, loc, state, state.params)
+            status = compute_status(schema, loc, state, state.params)
             if status.terminal is not None:
                 raise AaError(f"workflow already terminal ({status.terminal.kind})")
             stop_snapshot = {
@@ -676,13 +782,3 @@ def record_decision(
             event["review_sha256"] = review_sha256
         txn.append_strict(event)
         txn.set_state(WorkflowState.model_validate(data))
-
-
-def _gate_for_checkpoint(schema: WorkflowSchema, checkpoint: str) -> str | None:
-    """Resolve the gate a decision checkpoint targets (gate id or gated phase)."""
-    if checkpoint in schema.gates:
-        return checkpoint
-    phase = next((p for p in schema.phases if p.id == checkpoint), None)
-    if phase is not None and phase.gate:
-        return phase.gate
-    return None

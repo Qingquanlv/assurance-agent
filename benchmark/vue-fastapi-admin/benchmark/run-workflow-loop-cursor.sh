@@ -54,8 +54,13 @@ DO_ARCHIVE="${DO_ARCHIVE:-true}"
 DO_RETRO="${DO_RETRO:-false}"
 DO_RETRO_PROPOSALS="${DO_RETRO_PROPOSALS:-true}"
 DO_NIGHTLY_COLLECT="${DO_NIGHTLY_COLLECT:-true}"
+# Deterministic eval regression gate (golden-sample replay; catches engine
+# regressions that break scoring/evidence integrity on a known-good run).
+DO_EVAL_REGRESSION="${DO_EVAL_REGRESSION:-true}"
+EVAL_REGRESSION_SUITES="${EVAL_REGRESSION_SUITES:-workflow-run,classification-unit,safety-lite,eval-smoke,case-generation,workflow-case,workflow-api-codegen,workflow-e2e-codegen,workflow-fuzz-codegen,workflow-performance-codegen,workflow-full}"
+EVAL_ENGINE_ROOT="${EVAL_ENGINE_ROOT:-$AA_REPO_ROOT}"   # holds eval/suites + eval/baselines
 RETRO_SINCE_DAYS="${RETRO_SINCE_DAYS:-7}"
-STEP_TIMEOUT="${STEP_TIMEOUT:-2700}"
+STEP_TIMEOUT="${STEP_TIMEOUT:-5400}"
 STATUS_POLL_INTERVAL="${STATUS_POLL_INTERVAL:-120}"
 
 CLEAN_ARTIFACTS="${CLEAN_ARTIFACTS:-true}"
@@ -188,6 +193,8 @@ maybe_auto_decide() {
     api-plan-review) review_json="qa/changes/$change_id/review/api-plan-review.json" ;;
     e2e-plan-review) review_json="qa/changes/$change_id/review/plan-review.json" ;;
     case-review) review_json="qa/changes/$change_id/review/case-review.json" ;;
+    fuzz-plan-review) review_json="qa/changes/$change_id/review/fuzz-plan-review.json" ;;
+    performance-plan-review) review_json="qa/changes/$change_id/review/performance-plan-review.json" ;;
     *) return 1 ;;
   esac
   [ -f "$review_json" ] || return 1
@@ -397,7 +404,7 @@ change:
 approval:
   mode: autonomous
   approved_by: aa-workflow
-  approved_approach: API + E2E
+  approved_approach: API + E2E + Fuzz + Performance
   approved_at: "$now"
 YAML
 
@@ -415,11 +422,11 @@ YAML
     echo "## Test Types Considered"
     echo "- API: selected"
     echo "- E2E: selected"
-    echo "- Fuzz: declined (benchmark scope)"
-    echo "- Performance: declined (benchmark scope)"
+    echo "- Fuzz: selected"
+    echo "- Performance: selected"
     echo
     echo "## Layer Rationale"
-    echo "Benchmark autonomous run — API + E2E coverage for $feature."
+    echo "Benchmark autonomous run — API + E2E + Fuzz + Performance coverage for $feature."
     echo
     echo "generation_mode: autonomous"
   } >"$cdir/proposal.md"
@@ -727,6 +734,50 @@ run_nightly_collect() {
   return "$collect_exit"
 }
 
+# Deterministic eval regression gate. Runs golden-sample suites via the fake
+# adapter (no cursor-agent, no live SUT) and compares to the approved baseline.
+# Suites resolve from EVAL_ENGINE_ROOT/eval; the SUT under test is $PROJECT_ROOT.
+# Populates EVAL_ROWS / EVAL_WORST for the summary.
+declare -a EVAL_ROWS=()
+EVAL_WORST="pass"
+run_eval_regression() {
+  local eval_log="$RUN_DIR/eval-regression.log"
+  : >"$eval_log"
+  if [ ! -d "$EVAL_ENGINE_ROOT/eval/suites" ]; then
+    log "eval regression: no eval/suites under $EVAL_ENGINE_ROOT — skipped"
+    return 0
+  fi
+  log "stage: eval regression suites=[$EVAL_REGRESSION_SUITES] engine=$EVAL_ENGINE_ROOT sut=$PROJECT_ROOT"
+  local worst="pass"
+  local -a suites=()
+  IFS=',' read -ra suites <<<"$EVAL_REGRESSION_SUITES"
+  local suite out rid verdict
+  for suite in "${suites[@]}"; do
+    suite="$(echo "$suite" | xargs)"
+    [ -n "$suite" ] || continue
+    set +e
+    out="$(cd "$EVAL_ENGINE_ROOT" && AA_EVAL_FAKE_ADAPTER=1 "$AA_BIN" eval run \
+      --suite "$suite" --sut-dir "$PROJECT_ROOT" --json 2>>"$eval_log")"
+    set -e
+    printf '%s\n' "$out" >>"$eval_log"
+    rid="$(printf '%s' "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("run_id",""))' 2>/dev/null || true)"
+    verdict="$(printf '%s' "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("verdict",""))' 2>/dev/null || true)"
+    [ -n "$verdict" ] || verdict="error"
+    log "eval[$suite]: verdict=$verdict run_id=${rid:-n/a}"
+    if [ -n "$rid" ]; then
+      ( cd "$EVAL_ENGINE_ROOT" && "$AA_BIN" eval compare --baseline main \
+        --run "$rid" --sut-dir "$PROJECT_ROOT" >>"$eval_log" 2>&1 ) || true
+    fi
+    case "$verdict" in
+      pass | pass_with_warnings) ;;
+      *) worst="$verdict" ;;
+    esac
+    EVAL_ROWS+=("$suite|$verdict|${rid:-n/a}")
+  done
+  EVAL_WORST="$worst"
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
@@ -958,6 +1009,10 @@ elif [ "$DO_RETRO" = "true" ]; then
   fi
 fi
 
+if [ "$DO_EVAL_REGRESSION" = "true" ]; then
+  run_eval_regression
+fi
+
 {
   echo "# Cursor benchmark loop - $RUNSTAMP"
   echo
@@ -992,6 +1047,22 @@ fi
   fi
   if [ "$DO_NIGHTLY_COLLECT" = "true" ] && [ -n "$nightly_collect_exit" ] && [ "$nightly_collect_exit" != "0" ] && [ "$nightly_collect_exit" != "10" ]; then
     echo "- nightly collect log: \`benchmark/runs/$RUNSTAMP-cursor/nightly-collect.log\`"
+  fi
+  if [ "$DO_EVAL_REGRESSION" = "true" ]; then
+    echo
+    echo "## Eval regression (deterministic golden-sample gate)"
+    echo
+    echo "- worst verdict: \`$EVAL_WORST\`"
+    if [ "${#EVAL_ROWS[@]}" -gt 0 ]; then
+      echo
+      echo "| suite | verdict | run_id |"
+      echo "|---|---|---|"
+      for row in "${EVAL_ROWS[@]}"; do
+        IFS='|' read -r es ev er <<<"$row"
+        echo "| \`$es\` | $ev | \`$er\` |"
+      done
+    fi
+    echo "- log: \`benchmark/runs/$RUNSTAMP-cursor/eval-regression.log\`"
   fi
   echo
   echo "## Artifacts"

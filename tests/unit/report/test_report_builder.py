@@ -101,6 +101,59 @@ def test_generate_report_all_pass(tmp_path: Path) -> None:
     assert (report_dir / "quality-report.json").is_file()
     assert (report_dir / "quality-report.md").is_file()
     assert (report_dir / "executive-summary.md").is_file()
+    # No execution ledger → Start / Duration render as "No data"
+    assert result.report.started_at is None and result.report.duration is None
+    md = (report_dir / "quality-report.md").read_text()
+    assert "**Start**: No data" in md
+    assert "**Duration**: No data" in md
+
+
+def test_generate_report_includes_execution_start_and_duration(tmp_path: Path) -> None:
+    import json
+
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    change = tmp_path / "qa" / "changes" / "CH-1"
+    # Write ledger lines directly so `ts` is under our control (append_event_strict
+    # stamps ts itself and forbids overriding it via the event model).
+    (change / "events.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "seq": 1,
+                        "ts": "2026-07-18T01:00:00+00:00",
+                        "source": "progression",
+                        "type": "dispatch_signed",
+                        "phase": "execution",
+                        "kind": "dispatch_phase",
+                        "attempt_id": "execution:t1",
+                        "state_guard": "g",
+                        "dispatched_at": 0,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "seq": 2,
+                        "ts": "2026-07-18T01:02:05+00:00",
+                        "source": "progression",
+                        "type": "phase_outcome_committed",
+                        "phase": "execution",
+                        "attempt_id": "execution:t1",
+                        "gate_report": None,
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    inspect_change(tmp_path, change_id)
+    result = generate_report(tmp_path, change_id)
+    assert result.report.started_at == "2026-07-18T01:00:00+00:00"
+    assert result.report.duration == "2m 5s"
+    md = (tmp_path / "qa" / "changes" / "CH-1" / "report" / "quality-report.md").read_text()
+    assert "**Start**: 2026-07-18T01:00:00+00:00" in md
+    assert "**Duration**: 2m 5s" in md
 
 
 def test_generate_report_business_defect_is_high_risk(tmp_path: Path) -> None:

@@ -1,6 +1,6 @@
 id: TEST-001
 annotation_source: human
-tags: [_test]
+tags: [eval-smoke]
 input:
   value: alpha
 expected:

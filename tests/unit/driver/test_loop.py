@@ -346,9 +346,7 @@ def test_default_cli_executor_gate_fail_passthrough(tmp_path: Path) -> None:
             return ProcessResult(exit_code=1 if self.calls == 1 else 0, stdout="", stderr="")
 
     executor = DefaultCliPhaseExecutor(runner=GateFailRunner(), aa_command=["aa"])
-    ctx = PhaseContext(
-        loc=loc_for(change_dir, project_root=tmp_path), params={}, parent_session_id=None
-    )
+    ctx = PhaseContext(loc=loc_for(change_dir, project_root=tmp_path), params={}, parent_session_id=None)
     result = executor.run_cli_phase(
         DispatchEntry(phase_id="execution", skill=None, agent=None, kind="cli"), ctx
     )
@@ -454,3 +452,47 @@ def test_default_status_provider_forwards_scope(tmp_path: Path, monkeypatch) -> 
     )
     provider()
     assert captured["scope"] == "execute"
+
+
+def test_loop_stamps_run_context_before_dispatch(tmp_path: Path) -> None:
+    from assurance_agent.workflow.core.state import read_state
+
+    adapter = FakeAdapter()
+    provider = ScriptedStatus(adapter, [_skill("explore")])
+    result = _run(tmp_path, adapter, provider)
+    assert result.exit_code == EXIT_COMPLETED
+    ctx = read_state(tmp_path / "qa" / "changes" / "CH-1").run_context
+    assert ctx.orchestrator_skill == "aa-execute"
+    assert ctx.interaction_mode == "autonomous"
+    assert ctx.active_scope == "execute"
+    assert ctx.stamped_at
+
+
+def test_loop_scope_full_stamps_workflow_context(tmp_path: Path) -> None:
+    from assurance_agent.workflow.core.state import read_state
+
+    adapter = FakeAdapter()
+    provider = ScriptedStatus(adapter, [])
+    write_aa_config(tmp_path)
+    (tmp_path / "qa" / "changes" / "CH-1").mkdir(parents=True, exist_ok=True)
+    result = run_workflow_loop(
+        project_root=tmp_path,
+        change_id="CH-1",
+        scope="full",
+        adapter=adapter,
+        status_provider=provider,
+        cli_executor=_NoCli(),
+    )
+    assert result.exit_code == EXIT_COMPLETED
+    ctx = read_state(tmp_path / "qa" / "changes" / "CH-1").run_context
+    assert ctx.orchestrator_skill == "aa-workflow"
+    assert ctx.active_scope == "full"
+
+
+def test_loop_configure_failure_is_driver_fatal(tmp_path: Path) -> None:
+    adapter = FakeAdapter()
+    provider = ScriptedStatus(adapter, [_skill("explore")])
+    result = _run(tmp_path, adapter, provider, params={"bogus": 1})
+    assert result.exit_code == EXIT_ERROR
+    assert "configure failed" in result.reason
+    assert adapter.requests == []  # 进循环前即失败，未派发任何相位

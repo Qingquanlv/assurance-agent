@@ -36,7 +36,9 @@ class FailureDistributionSignal(BaseModel):
 
 class GatePushbackSignal(BaseModel):
     gate: str
+    verdict: str
     count: int
+    top_reasons: list[str] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
 
 
@@ -61,8 +63,9 @@ class HumanDecisionSignal(BaseModel):
 
 
 class SkillExecutionSignal(BaseModel):
-    skill: str
+    phase: str
     count: int
+    changes: list[str] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
 
 

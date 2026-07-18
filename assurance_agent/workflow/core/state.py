@@ -9,11 +9,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import yaml
 
-from assurance_agent.artifacts.models import WorkflowState
+from assurance_agent.artifacts.models import RunContext, WorkflowState
 from assurance_agent.exceptions import AaError
 
 WORKFLOW_STATE_RELPATH = "workflow-state.yaml"
@@ -103,3 +105,89 @@ def state_guard(change_dir: Path) -> str:
     if not file.exists():
         return ""
     return hashlib.sha256(file.read_bytes()).hexdigest()
+
+
+# ---- state configure（TS workflow_state.ts configureWorkflowParams/stampRunContext 移植）----
+
+# Params keys the configure command may write (schema-aligned allowlist).
+CONFIGURE_PARAM_KEYS = frozenset(
+    {
+        "run_mode",
+        "test_types",
+        "run_tests",
+        "max_case_fix_attempts",
+        "max_plan_fix_attempts",
+        "max_healing_attempts",
+        "auto_archive",
+        "force_continue",
+        "e2e_framework",
+    }
+)
+
+CONFIGURE_ORCHESTRATORS = frozenset({"aa-workflow", "aa-intake", "aa-execute"})
+
+# orchestrator -> (interaction_mode, active_scope)
+_RUN_CONTEXT_BY_ORCHESTRATOR = {
+    "aa-intake": ("interactive", "intake"),
+    "aa-execute": ("autonomous", "execute"),
+    "aa-workflow": ("autonomous", "full"),
+}
+
+# run_mode x orchestrator allowlist (TS assertRunModeAllowed 矩阵).
+_RUN_MODE_ALLOWLIST = {
+    "aa-workflow": frozenset(
+        {
+            "full",
+            "case-only",
+            "api-only",
+            "e2e-only",
+            "plan-only",
+            "codegen-only",
+            "review-case",
+            "review-plan",
+        }
+    ),
+    "aa-intake": frozenset({"full", "case-only", "review-case"}),
+    "aa-execute": frozenset({"full", "api-only", "e2e-only", "plan-only", "codegen-only", "review-plan"}),
+}
+
+
+def configure_workflow_params(
+    change_dir: Path,
+    params: dict[str, Any],
+    orchestrator_skill: str,
+    *,
+    stamped_at: str | None = None,
+) -> WorkflowState:
+    """Merge allowlisted runtime params into workflow-state.yaml, then stamp run_context.
+
+    语义对齐 TS ``configureWorkflowParams`` + ``stampRunContext``：phases 等其它
+    顶层键原样保留；run_mode 校验读取合并后的 params（既存 run_mode 同样受限）。
+    与 TS 的差异：校验全部通过后才单次落盘（TS 先写 params 再盖章，run_mode 非法时
+    params 已残留），此处保持 all-or-nothing。
+    """
+    if orchestrator_skill not in CONFIGURE_ORCHESTRATORS:
+        expected = ", ".join(sorted(CONFIGURE_ORCHESTRATORS))
+        raise AaError(f'unsupported orchestrator "{orchestrator_skill}". Expected {expected}')
+
+    state = read_state(change_dir)
+    merged = dict(state.params)
+    for key, value in params.items():
+        if key not in CONFIGURE_PARAM_KEYS:
+            raise AaError(f'configure: unknown param "{key}" (not in allowlist)')
+        merged[key] = value
+
+    run_mode = merged.get("run_mode")
+    if isinstance(run_mode, str) and run_mode and run_mode not in _RUN_MODE_ALLOWLIST[orchestrator_skill]:
+        raise AaError(f"{orchestrator_skill} cannot run with run_mode {run_mode}")
+
+    interaction_mode, active_scope = _RUN_CONTEXT_BY_ORCHESTRATOR[orchestrator_skill]
+    state.params = merged
+    state.run_context = RunContext(
+        orchestrator_skill=orchestrator_skill,
+        interaction_mode=interaction_mode,
+        active_scope=active_scope,
+        stamped_at=stamped_at or datetime.now(timezone.utc).isoformat(),
+    )
+    write_state(change_dir, state)
+    return state

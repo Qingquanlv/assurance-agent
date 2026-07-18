@@ -17,7 +17,8 @@ class PhaseState(BaseModel):
 
     status: str | None = None
     attempt_id: str | None = None
-    skill_loaded: bool | None = None
+    # bool | str: the documented `n/a` marker for CLI-driven phases (TS: `boolean | string`).
+    skill_loaded: bool | str | None = None
     skill_md_path: str | None = None
     skill_loaded_at: str | None = None
     batch_id: str | None = None

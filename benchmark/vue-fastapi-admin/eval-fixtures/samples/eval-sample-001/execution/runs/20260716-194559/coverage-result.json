@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "change_id": "RET-api-management-20260716-192358-cursor",
+  "batch_id": "20260716-194559",
+  "kind": "coverage",
+  "available": false,
+  "line_coverage": 0.0,
+  "branch_coverage": 0.0,
+  "threshold": {
+    "line": 70.0,
+    "branch": 60.0,
+    "module_line": null,
+    "diff_line": null
+  },
+  "status": "SKIPPED",
+  "skip_reason": "coverage.json not produced (pytest-cov unavailable or disabled)",
+  "uncovered_critical_files": [],
+  "source": {}
+}

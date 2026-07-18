@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 from tests.helpers_aa import write_aa_config
@@ -15,6 +16,12 @@ from assurance_agent.workflow.orchestration.engine import (
     Terminal,
     WorkflowStatus,
 )
+
+
+def _git_init(repo: Path) -> None:
+    # Fresh throwaway repo inside the pytest tmp dir — write-scan requires the
+    # SUT workspace to be a git repo (same precondition as the TS executor).
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
 
 
 class FakeAdapter:
@@ -59,6 +66,71 @@ def _scripted_status(steps: list[WorkflowStatus]):
     return provider
 
 
+def test_execute_in_process_writes_evidence_without_change_id(tmp_path: Path) -> None:
+    sample = DatasetSample(
+        id="FC-001",
+        suite="classification-unit",
+        input={"message": "x", "log_excerpt": "y", "target": "e2e"},
+        expected={"category": "locator_failure"},
+    )
+    attempt = tmp_path / "attempt-0"
+    result = execute_attempt(
+        sample,
+        attempt,
+        suite="classification-unit",
+        sut_dir=tmp_path / "sut",
+        adapter=object(),  # type: ignore[arg-type]
+        executor_type="in_process",
+    )
+    assert result.status == "ok"
+    assert result.executor == "in_process"
+    assert (attempt / "stdout.log").is_file()
+    assert (attempt / "stderr.log").is_file()
+    assert (attempt / "execution.json").is_file()
+    assert (attempt / "raw-output" / ".in-process").is_file()
+
+
+def test_execute_attempt_copies_sut_tests_into_raw_output(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
+    sut = tmp_path / "sut"
+    write_aa_config(sut)
+    change_dir = sut / "qa" / "changes" / "eval-sample-001"
+    change_dir.mkdir(parents=True)
+    (change_dir / "workflow-state.yaml").write_text("phases: {}\n", encoding="utf-8")
+    tests = sut / "tests" / "api"
+    tests.mkdir(parents=True)
+    (tests / "test_a.py").write_text("def test_a():\n    assert True\n", encoding="utf-8")
+    _git_init(sut)
+
+    status = _scripted_status(
+        [
+            WorkflowStatus(phases=[], next_dispatch=[], terminal=Terminal(kind="completed", reason="ok")),
+        ]
+    )
+    sample = DatasetSample(
+        id="WAC-001",
+        suite="workflow-api-codegen",
+        input={"change_id": "eval-sample-001"},
+        expected={},
+    )
+    attempt = tmp_path / "run" / "WAC-001" / "attempt-0"
+
+    class NoopAdapter:
+        def run_phase(self, request: PhaseRequest) -> PhaseResult:
+            return PhaseResult(ok=True, output="")
+
+    result = execute_attempt(
+        sample,
+        attempt,
+        suite="workflow-api-codegen",
+        sut_dir=sut,
+        adapter=NoopAdapter(),
+        status_provider=status,
+    )
+    assert result.status == "ok"
+    assert (attempt / "raw-output" / "tests" / "api" / "test_a.py").is_file()
+
+
 def test_execute_attempt_runs_m6_loop_and_copies_raw_output(tmp_path: Path) -> None:
     write_aa_config(tmp_path)
     sut = tmp_path / "sut"
@@ -67,6 +139,7 @@ def test_execute_attempt_runs_m6_loop_and_copies_raw_output(tmp_path: Path) -> N
     change_dir.mkdir(parents=True)
     (change_dir / "workflow-state.yaml").write_text("phases: {}\n", encoding="utf-8")
     adapter = FakeAdapter(change_dir)
+    _git_init(sut)
     status = _scripted_status(
         [
             WorkflowStatus(
@@ -116,6 +189,7 @@ def test_execute_attempt_error_exit_recorded(tmp_path: Path) -> None:
     sut = tmp_path / "sut"
     write_aa_config(sut)
     (sut / "qa" / "changes" / "eval-sample-002").mkdir(parents=True)
+    _git_init(sut)
     status = _scripted_status(
         [
             WorkflowStatus(

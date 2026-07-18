@@ -39,7 +39,13 @@ phases:
 gates:
   healing-entry-gate:
     reads: [{ path: inspect/failure-analysis.json, as: failure_analysis }]
-    enter_when: "any(failure_analysis.failures, fix_proposal_eligible == true) and state.phases.healing.attempts_used < params.max_healing_attempts"
+    # Mirror packaged schema: enter requires healing_available; stop fires when
+    # it flips false so tests can assert complete(failed) finalization.
+    enter_when: >
+      any(failure_analysis.failures, fix_proposal_eligible == true)
+      and state.phases.healing.attempts_used < params.max_healing_attempts
+      and state.gates.healing_available == true
+    stop_when: "state.gates.healing_available == false"
     skip_when: "not any(failure_analysis.failures, fix_proposal_eligible == true)"
   fixer-safety-gate:
     reads: [healing/fixer-safety-check.json]

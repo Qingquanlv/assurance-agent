@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 from tests.helpers_aa import write_aa_config
@@ -18,6 +19,12 @@ from assurance_agent.workflow.orchestration.engine import (
     Terminal,
     WorkflowStatus,
 )
+
+
+def _git_init(repo: Path) -> None:
+    # Fresh throwaway repo inside the pytest tmp dir — write-scan requires the
+    # SUT workspace to be a git repo (same precondition as the TS executor).
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
 
 
 def _seed_suite(project_root: Path) -> Path:
@@ -61,6 +68,7 @@ def test_run_suite_end_to_end_pass_and_persists_calibration(tmp_path: Path, monk
     suite_file = _seed_suite(project_root)
     sut = tmp_path / "sut"
     write_aa_config(sut)
+    _git_init(sut)
     change_dir = sut / "qa" / "changes" / "eval-sample-001"
     change_dir.mkdir(parents=True)
     (change_dir / "workflow-state.yaml").write_text("phases: {}\n", encoding="utf-8")
@@ -131,8 +139,94 @@ def test_run_suite_end_to_end_pass_and_persists_calibration(tmp_path: Path, monk
     assert (run_dir / "metrics.json").exists()
     assert (run_dir / "gate-result.json").exists()
     assert (run_dir / "report.json").exists()
-    judge = run_dir / "samples/WC-001/attempt-0/judge.json"
+    judge = run_dir / "samples/WC-001/attempt-0/judge-result.json"
     assert json.loads(judge.read_text())["label"] == "covered"
+
+
+def test_run_suite_overlays_extra_memory_into_attempt_sandbox(tmp_path: Path) -> None:
+    """extra_memory_dir is merged into the sandbox .aa/memory the agent loads."""
+    write_aa_config(tmp_path)
+    project_root = tmp_path / "proj"
+    project_root.mkdir()
+    suite_file = _seed_suite(project_root)
+    sut = tmp_path / "sut"
+    write_aa_config(sut)
+    _git_init(sut)
+    seed_change = sut / "qa/changes/eval-sample-001"
+    seed_change.mkdir(parents=True)
+    (seed_change / "workflow-state.yaml").write_text("phases: {}\n", encoding="utf-8")
+
+    overlay = tmp_path / "overlay"
+    (overlay / ".aa" / "memory").mkdir(parents=True)
+    (overlay / ".aa" / "memory" / "RETRO-001.md").write_text("# candidate memory\n", encoding="utf-8")
+
+    seen = {"memory_present": False}
+
+    class MemoryProbeAdapter:
+        def __init__(self, workspace: Path) -> None:
+            self.workspace = workspace
+            self.change = workspace / "qa/changes/eval-sample-001"
+
+        def run_phase(self, request: PhaseRequest) -> PhaseResult:
+            seen["memory_present"] = (self.workspace / ".aa" / "memory" / "RETRO-001.md").is_file()
+            review = self.change / "review"
+            review.mkdir(parents=True, exist_ok=True)
+            (review / "case-review.json").write_text('{"decision":"pass"}', encoding="utf-8")
+            return PhaseResult(ok=True)
+
+    class AuditOutcome:
+        def run_cli_phase(self, entry, ctx):  # noqa: ANN001, ANN201
+            raise AssertionError("skill-only")
+
+        def apply_phase_state(self, entry, ctx, attempt_id):  # noqa: ANN001, ANN201
+            append_event_strict(
+                ctx.change_dir,
+                {
+                    "source": "progression",
+                    "type": "phase_outcome_committed",
+                    "phase": entry.phase_id,
+                    "attempt_id": attempt_id,
+                    "gate_report": None,
+                },
+            )
+            return PhaseResult(ok=True)
+
+    def status_factory(**_):
+        calls = {"n": 0}
+
+        def status() -> WorkflowStatus:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return WorkflowStatus(
+                    phases=[PhaseView(id="case-design", status="ready")],
+                    next_dispatch=[
+                        DispatchEntry(
+                            phase_id="case-design", skill="aa-case-design", agent=None, kind="skill"
+                        )
+                    ],
+                    terminal=None,
+                )
+            return WorkflowStatus(
+                phases=[PhaseView(id="case-design", status="done")],
+                next_dispatch=[],
+                terminal=Terminal(kind="completed"),
+            )
+
+        return status
+
+    run_id, gate = run_suite(
+        suite_file=suite_file,
+        project_root=project_root,
+        sut_dir=sut,
+        adapter_factory=lambda sut_dir, **_: MemoryProbeAdapter(sut_dir),
+        status_provider_factory=status_factory,
+        cli_executor_factory=lambda **_: AuditOutcome(),
+        extra_memory_dir=overlay,
+    )
+    assert gate.verdict == "pass"
+    assert seen["memory_present"] is True
+    attempt_mem = sut / "eval/out/runs" / run_id / "samples/WC-001/attempt-0/sut/.aa/memory/RETRO-001.md"
+    assert attempt_mem.is_file()
 
 
 def test_run_suite_repeat_uses_isolated_workspaces_and_unique_score_keys(tmp_path: Path) -> None:
@@ -142,6 +236,7 @@ def test_run_suite_repeat_uses_isolated_workspaces_and_unique_score_keys(tmp_pat
     suite_file = _seed_suite(project_root)
     sut = tmp_path / "sut"
     write_aa_config(sut)
+    _git_init(sut)
     seed_change = sut / "qa/changes/eval-sample-001"
     seed_change.mkdir(parents=True)
     (seed_change / "workflow-state.yaml").write_text("phases: {}\n", encoding="utf-8")
@@ -214,3 +309,96 @@ def test_run_suite_repeat_uses_isolated_workspaces_and_unique_score_keys(tmp_pat
     assert gate.verdict == "pass"
     metrics = json.loads((sut / "eval/out/runs" / run_id / "metrics.json").read_text())
     assert set(metrics["per_sample"]) == {"WC-001#attempt-0", "WC-001#attempt-1"}
+
+
+def _seed_case_generation_suite(project_root: Path, *, judge: dict | None) -> Path:
+    suites = project_root / "eval" / "suites"
+    suites.mkdir(parents=True)
+    suite_file = suites / "case-generation.yaml"
+    suite_def: dict = {
+        "name": "case-generation",
+        "scorer": "case-generation",
+        "executor": {"type": "in_process"},
+        "thresholds": [
+            {"metric": "requirement_f1", "gate": "advisory", "op": "gte", "value": 0.85},
+        ],
+    }
+    if judge is not None:
+        suite_def["judge"] = judge
+    suite_file.write_text(yaml.safe_dump(suite_def), encoding="utf-8")
+    ds = project_root / "eval" / "datasets" / "case-generation"
+    ds.mkdir(parents=True)
+    (ds / "CG-001.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "id": "CG-001",
+                "suite": "case-generation",
+                "input": {},
+                "expected": {"human_label": "covered"},
+                "mock_judge_label": "covered",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return suite_file
+
+
+def test_run_suite_with_judge_config_writes_judge_result_before_scoring(tmp_path: Path, monkeypatch) -> None:
+    """Regression (user-reported): judge runs before scoring, so the scorer's P/R/F1 is non-zero."""
+    project_root = tmp_path / "proj"
+    project_root.mkdir()
+    suite_file = _seed_case_generation_suite(
+        project_root,
+        judge={"model": "judge-x", "temperature": 0.0, "confidence_threshold": 0.8},
+    )
+    sut = tmp_path / "sut"
+    sut.mkdir()
+    monkeypatch.setenv("AA_JUDGE_MOCK", "1")
+
+    run_id, gate = run_suite(suite_file=suite_file, project_root=project_root, sut_dir=sut)
+
+    assert gate.verdict == "pass"
+    run_dir = sut / "eval" / "out" / "runs" / run_id
+    judge_path = run_dir / "samples/CG-001/attempt-0/judge-result.json"
+    assert json.loads(judge_path.read_text())["label"] == "covered"
+    metrics = json.loads((run_dir / "metrics.json").read_text())
+    per_sample = metrics["per_sample"]["CG-001#attempt-0"]
+    assert per_sample["requirement_precision"] == 1.0
+    assert per_sample["requirement_recall"] == 1.0
+    assert per_sample["requirement_f1"] == 1.0
+
+
+def test_run_suite_without_judge_config_skips_judge(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "proj"
+    project_root.mkdir()
+    suite_file = _seed_case_generation_suite(project_root, judge=None)
+    sut = tmp_path / "sut"
+    sut.mkdir()
+    monkeypatch.setenv("AA_JUDGE_MOCK", "1")
+
+    run_id, _ = run_suite(suite_file=suite_file, project_root=project_root, sut_dir=sut)
+
+    run_dir = sut / "eval" / "out" / "runs" / run_id
+    assert not (run_dir / "samples/CG-001/attempt-0/judge-result.json").exists()
+    metrics = json.loads((run_dir / "metrics.json").read_text())
+    assert metrics["per_sample"]["CG-001#attempt-0"]["requirement_f1"] == 0.0
+
+
+def test_run_suite_judge_failure_fails_closed(tmp_path: Path, monkeypatch) -> None:
+    """Judge errors (here: no API url configured) become per-sample error scores, not crashes."""
+    project_root = tmp_path / "proj"
+    project_root.mkdir()
+    suite_file = _seed_case_generation_suite(project_root, judge={"model": "judge-x"})
+    sut = tmp_path / "sut"
+    sut.mkdir()
+    monkeypatch.delenv("AA_JUDGE_MOCK", raising=False)
+    monkeypatch.delenv("AA_JUDGE_API_URL", raising=False)
+
+    run_id, gate = run_suite(suite_file=suite_file, project_root=project_root, sut_dir=sut)
+
+    run_dir = sut / "eval" / "out" / "runs" / run_id
+    assert not (run_dir / "samples/CG-001/attempt-0/judge-result.json").exists()
+    metrics = json.loads((run_dir / "metrics.json").read_text())
+    assert metrics["sample_count"] == 1
+    assert metrics["per_sample"]["CG-001#attempt-0"] == {}
+    assert gate.verdict == "inconclusive"

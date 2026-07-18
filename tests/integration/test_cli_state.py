@@ -186,3 +186,140 @@ def test_state_heal_strict_event_failure_rolls_back_and_exits_40(monkeypatch) ->
         assert result.exit_code == 40
         assert (change_dir / "workflow-state.yaml").read_text() == before
         assert not (change_dir / "events.jsonl").exists()
+
+
+def test_state_configure_merges_params_and_stamps_run_context() -> None:
+    import yaml
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        change_dir = make_change()
+        result = runner.invoke(
+            main,
+            [
+                "state",
+                "configure",
+                "--change",
+                "CH-1",
+                "--params-json",
+                '{"run_mode": "api-only", "max_healing_attempts": 2}',
+                "--orchestrator",
+                "aa-execute",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        state = yaml.safe_load((change_dir / "workflow-state.yaml").read_text())
+        assert state["params"] == {"run_mode": "api-only", "max_healing_attempts": 2}
+        assert state["run_context"]["orchestrator_skill"] == "aa-execute"
+        assert state["run_context"]["interaction_mode"] == "autonomous"
+        assert state["run_context"]["active_scope"] == "execute"
+        assert state["run_context"]["stamped_at"]
+        # 既有 phases 保留；写入后读取方（aa status）不报错
+        assert state["phases"]["healing"]["status"] == "in_progress"
+        status = runner.invoke(main, ["status", "--change", "CH-1"])
+        assert "status failed" not in status.output
+
+
+def test_state_configure_intake_stamps_interactive_context() -> None:
+    import yaml
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        change_dir = make_change()
+        result = runner.invoke(
+            main,
+            [
+                "state",
+                "configure",
+                "--change",
+                "CH-1",
+                "--params-json",
+                '{"run_mode": "review-case"}',
+                "--orchestrator",
+                "aa-intake",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        state = yaml.safe_load((change_dir / "workflow-state.yaml").read_text())
+        assert state["run_context"]["interaction_mode"] == "interactive"
+        assert state["run_context"]["active_scope"] == "intake"
+
+
+def test_state_configure_unknown_param_key_exits_1_without_write() -> None:
+    import yaml
+
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        change_dir = make_change()
+        result = runner.invoke(
+            main,
+            [
+                "state",
+                "configure",
+                "--change",
+                "CH-1",
+                "--params-json",
+                '{"bogus": 1}',
+                "--orchestrator",
+                "aa-workflow",
+            ],
+        )
+        assert result.exit_code == 1
+        assert 'unknown param "bogus"' in result.output
+        state = yaml.safe_load((change_dir / "workflow-state.yaml").read_text())
+        assert state["params"] == {}
+        assert "run_context" not in state
+
+
+def test_state_configure_invalid_orchestrator_exits_1() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        make_change()
+        result = runner.invoke(
+            main, ["state", "configure", "--change", "CH-1", "--orchestrator", "aws-workflow"]
+        )
+        assert result.exit_code == 1
+        assert 'unsupported orchestrator "aws-workflow"' in result.output
+
+
+def test_state_configure_invalid_params_json_exits_1() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        make_change()
+        for bad in ("not json", "[1, 2]"):
+            result = runner.invoke(
+                main,
+                [
+                    "state",
+                    "configure",
+                    "--change",
+                    "CH-1",
+                    "--params-json",
+                    bad,
+                    "--orchestrator",
+                    "aa-workflow",
+                ],
+            )
+            assert result.exit_code == 1
+            assert "Invalid --params-json" in result.output
+
+
+def test_state_configure_run_mode_not_allowed_for_orchestrator_exits_1() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        make_change()
+        result = runner.invoke(
+            main,
+            [
+                "state",
+                "configure",
+                "--change",
+                "CH-1",
+                "--params-json",
+                '{"run_mode": "api-only"}',
+                "--orchestrator",
+                "aa-intake",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "aa-intake cannot run with run_mode api-only" in result.output

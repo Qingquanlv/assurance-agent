@@ -3,4 +3,5 @@ annotation_source: human
 tags: [case-generation]
 input:
   change_id: eval-sample-001
+  fixture_tier: L0-case-seed
 expected: {}

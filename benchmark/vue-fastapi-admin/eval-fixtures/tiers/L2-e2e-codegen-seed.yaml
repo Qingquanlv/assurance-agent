@@ -1,4 +1,15 @@
 name: L2-e2e-codegen-seed
-extends: L2-api-codegen-seed
-description: Alias of L2-api-codegen-seed for suite wiring
-paths: []
+extends: L1-plan-seed
+description: E2E codegen done; ready for execution
+paths:
+- codegen
+- tests/config.py
+- tests/conftest.py
+- tests/e2e
+resets:
+  workflow_state:
+    phases.e2e-codegen.status: done
+    phases.execution.status: pending
+  qa_yaml:
+    test_types:
+    - e2e

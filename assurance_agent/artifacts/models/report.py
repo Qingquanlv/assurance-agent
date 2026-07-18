@@ -55,6 +55,9 @@ class QualityReport(BaseModel):
     risk_level: ReportRiskLevel
     risk_rationale: str
     recommendation: str
+    # Execution timing for the scored batch (from events.jsonl). Absent → "No data".
+    started_at: str | None = None
+    duration: str | None = None
     human_decisions: list[Any] | None = None
     minimum_required_coverage: Any = None
     non_functional: Any = None

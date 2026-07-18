@@ -26,12 +26,22 @@ class SuiteThreshold(BaseModel):
     value: float
 
 
+class JudgeConfig(BaseModel):
+    model: str
+    prompt_ref: str | None = None
+    api_url: str | None = None
+    api_key_env: str = "AA_JUDGE_API_KEY"
+    temperature: float = 0.0
+    confidence_threshold: float = 0.6
+
+
 class EvalSuite(BaseModel):
     name: str
     executor: dict = Field(default_factory=dict)
     scorer: str
     thresholds: list[SuiteThreshold] = Field(default_factory=list)
     dataset_dir: str | None = None
+    judge: JudgeConfig | None = None
 
 
 class SampleScore(BaseModel):
@@ -71,14 +81,6 @@ class RunManifest(BaseModel):
     target_model: str = "unknown"
     started_at: str
     completed_at: str | None = None
-
-
-class JudgeConfig(BaseModel):
-    model: str
-    api_url: str | None = None
-    api_key_env: str = "AA_JUDGE_API_KEY"
-    temperature: float = 0.0
-    confidence_threshold: float = 0.6
 
 
 class JudgeOutput(BaseModel):

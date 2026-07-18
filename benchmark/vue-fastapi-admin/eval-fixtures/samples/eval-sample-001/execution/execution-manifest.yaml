@@ -1,0 +1,62 @@
+schema_version: '1.0'
+change_id: RET-api-management-20260716-192358-cursor
+batch_id: 20260716-194559
+selected_targets:
+  api: true
+  e2e: true
+  fuzz: false
+  performance: false
+result_files:
+  api: runs/20260716-194559/api-result.json
+  e2e: runs/20260716-194559/e2e-result.json
+  coverage: runs/20260716-194559/coverage-result.json
+  summary: runs/20260716-194559/summary.md
+tests_tree_sha256: c27e78e057f7603ffa0c74852ffaf114486ca121cdc6a4977458c25e84996439
+test_files_sha256:
+  tests/api/__init__.py: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+  tests/api/adapters/__init__.py: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+  tests/api/adapters/_worker_main.py: 947971e6cda64cc81f43a0a224066ca0b9b5c1ef827888bf913306db10c2381e
+  tests/api/adapters/api.py: 418566f1394a0b8b85d360cce4c55ae93b0ebfe47598226c319fadbc598c1cee
+  tests/api/adapters/dept.py: 20c6d1004377bad10550df7b3914d88cfe3f3e64281675619800ba70181ecb0e
+  tests/api/adapters/isolated_worker.py: db3e6257d4c7be39201b5e51e4902cd49e3d400f05a22828365a4984293e171c
+  tests/api/adapters/menu.py: fb2f4bb5f68a4ca1f22e3c4324bafa6717c76f1a7e3e5bdee1344059a7553f6a
+  tests/api/adapters/role.py: 41a1cd7ba8242bfb330142ac84fe08fe57a45284edb111b0865aa4f608824668
+  tests/api/adapters/user.py: 3276656ec5360a49c1bc63e34db06c1508e241db1a7477e8f7cb30731f119a91
+  tests/api/conftest.py: 8509cbafc3c38692473cbd1e351af0fd7d70370661340b2255b190db52a2a52a
+  tests/api/test_api_api.py: a077e73885285b23af8ab32de5989889172b48dabfe7cd57c5ce7adcdb284b9a
+  tests/api/test_api_management_api.py: a48853ecb8c746ea546a48ff0d14e75bb6e359166637463ef6a3409ca087cc7b
+  tests/api/test_dept_api.py: 8677bf0d835908a9da2981a762534b0d889dca6e091d79c5fa7747b2fb948a7d
+  tests/api/test_menu_api.py: d99978928908658ebed1a9017ca645dd1d7446043753f960d7a2369f9f444a23
+  tests/api/test_role_api.py: 235948061cffb2dfd2ccc94cd07838182b8841ac9016ed1342f39d3099017d70
+  tests/api/test_user_api.py: 76ea30626b16bd5c1bc4e220faf270a0eb40bac2997c7391289fe20c0b2e19a2
+  tests/config.py: abdd887b06a4cd10673877d44d25b4692c1e431969d95faa33e35d86fa52eb51
+  tests/conftest.py: 20ef61268a5fb337c2025ed55878aa2ef3dcd358c9fa8cacc4ffbbba1cdf476b
+  tests/e2e/adapters/api.py: df13eeabc07648ef9896db434895a1d85739a9ceb90fa7948d9fbc1c194c2604
+  tests/e2e/adapters/auth.py: 599b022e9664cc53d12578a0c8ff4f3c94135dd1c96dbaf41b2de8f0a7f05723
+  tests/e2e/adapters/dept.py: cae1dcfbf93bb9a94b478fe63d1f7b05f0a9bfb090fb3e32e167000069bc7530
+  tests/e2e/adapters/menu.py: b1f41cd7bd793fb07195e4af3052fb15c7ef1941dbbbe1235d0a5cdb18e4b988
+  tests/e2e/adapters/role.py: 239fd558bc230ea82e4e2bece1d1443f9fd0ff40932b55e48c7560b22ce1daed
+  tests/e2e/adapters/user.py: c0bfe8287be83db883727acd756f276603e084d11242134b0f2883e3a33ce516
+  tests/e2e/conftest.py: 95f0c5cb5a1ae539a72207319b40245ea5333fecb3e3a370dfeee712a3e8a9d3
+  tests/e2e/test_api_e2e.py: fd6531eb0e85dc190d937de71e41c33fdee017e6df1573cb897c0698cb4d332c
+  tests/e2e/test_api_management_e2e.py: 591a5a990d5553329daae69cbc384a4f171cc9af0415a22ccd8b194b1a42ab6c
+  tests/e2e/test_dept_e2e.py: f52040397df2c8d0acfa4e1d9e9733d17d367773a88f20dfe54171713ad019a0
+  tests/e2e/test_menu_e2e.py: 6578197f41658285275d8e20ea7b8659f80855e808ecebb21902605cc4cf9bb2
+  tests/e2e/test_role_e2e.py: 95e3cf29e2185057e3531b6dff2e7b3812b04002f78d8578aaf1a976281b0249
+  tests/e2e/test_user_e2e.py: d61d729bee2c532d3126441a014875ac05e40d34d71a006ce076b7e6e79c5471
+  tests/helpers/__init__.py: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+  tests/helpers/api_assertions.py: 3daca109106e05094ce746f2253a07be5386482bf6c075c5444d132a14db23fd
+  tests/helpers/dept_assertions.py: f35805a22c23aea0bb160ab8203be5440a8c0c184bb1c402de3d4e5b52592964
+  tests/helpers/menu_assertions.py: 328448590519da4d8c232442c2c4e3ae4a0f353acafae9cdef84259b3534a2e9
+  tests/helpers/role_assertions.py: 70937706fac567aae27d599247181641a85946914852e43cb63afecd7ab9003a
+  tests/helpers/user_assertions.py: 3c5adb1f2050246156908eab9c89c14a65846f23459aedc1163733574a48b00f
+  tests/schema_validation.py: 577964af7be16aeb8e00eecf6b539cfc2cfd29630cbef1beea12d47fdcaf4be1
+  tests/testdata/__init__.py: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+  tests/testdata/domain/__init__.py: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+  tests/testdata/domain/api.py: 978db7013a3c09a0a68212a5f4a311eb4b29770c56ab9db3473cf7d7edbb2a60
+  tests/testdata/domain/dept.py: 1e742894c67d27fc12e6365fe71b1497be3c0545772c95e0f20ca7379d0b8cdc
+  tests/testdata/domain/menu.py: cf9128f219304bcd784c65b6040d4215b5373a47f3a18c2a61db82505c6d3ee5
+  tests/testdata/domain/role.py: 8ed0f21fa314b1e6c66afbadd47ef80b888b50e81e9535e35d7d539de1e710ce
+  tests/testdata/domain/user.py: f860cb2622da59e35dbd46a97a560ddd0e3ecc3e2cdd581fe5c0c80a7342c330
+product_tree_sha256: 037862330f93db0461429c747c97082f2450dd120565b7c8f3e75588abef9637
+final_status: PASS

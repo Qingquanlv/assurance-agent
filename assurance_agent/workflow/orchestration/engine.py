@@ -229,9 +229,7 @@ def compute_status(
             continue
         review_view = views.get(loop.review_phase)
         review_active = review_view is not None and review_view.status not in ("pruned", "out_of_scope")
-        snap = project_review_fix_loop(
-            schema, loc, state, merged_params, loop, review_active=review_active
-        )
+        snap = project_review_fix_loop(schema, loc, state, merged_params, loop, review_active=review_active)
         if loop.fix_phase not in snap.dispatch and loop.fix_phase in views:
             # Loop owns the fix phase; keep its view honest when not dispatching it
             # (e.g. during a reviewer re-run or when the budget is exhausted).
@@ -249,8 +247,6 @@ def compute_status(
             reason=str(latest_decision.get("reason") or "stopped by human decision"),
             phase=str(latest_decision.get("checkpoint") or "workflow"),
         )
-    elif episode.terminal_kind == "stopped":
-        terminal = Terminal(kind="stopped", reason=episode.reason, phase="healing")
     elif review_fix_terminal is not None:
         terminal = review_fix_terminal
     elif episode.state in {"active", "awaiting_human"}:

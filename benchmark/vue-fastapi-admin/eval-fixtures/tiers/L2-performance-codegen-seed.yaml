@@ -1,4 +1,14 @@
 name: L2-performance-codegen-seed
-extends: L2-api-codegen-seed
-description: Alias of L2-api-codegen-seed for suite wiring
-paths: []
+extends: L1-plan-seed
+description: Performance codegen stub (golden-sample wiring; real perf artifacts TBD)
+paths:
+- codegen
+- tests/config.py
+- tests/conftest.py
+- tests/perf
+resets:
+  workflow_state:
+    phases.execution.status: pending
+  qa_yaml:
+    test_types:
+    - performance

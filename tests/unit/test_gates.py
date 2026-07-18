@@ -1,7 +1,9 @@
+import hashlib as _hashlib
 import json
 from pathlib import Path
 
 from assurance_agent.artifacts.models import WorkflowState
+from assurance_agent.workflow.core.events import append_event_strict
 from assurance_agent.workflow.orchestration.gates import check_gate, resolve_change_path
 from assurance_agent.workflow.orchestration.schema import parse_schema
 from tests.helpers_aa import loc_for
@@ -116,10 +118,6 @@ gates:
 
 # ── applyGateDecision: human decisions upgrade needs_human_review ────────────
 
-import hashlib as _hashlib
-
-from assurance_agent.workflow.core.events import append_event_strict
-
 _NHR_SCHEMA = parse_schema("""
 schema_version: "1"
 name: t
@@ -200,4 +198,91 @@ def test_decision_ignored_without_review_evidence(tmp_path: Path):
     _write_nhr_review(tmp_path)
     _decide(tmp_path, "accept_risk", review_file=None, review_sha256=None)
     verdict = check_gate(_NHR_SCHEMA, "api-plan-review-gate", loc_for(tmp_path), EMPTY, {})
+    assert verdict.verdict == "needs_human_review"
+
+
+# ── fixer-safety-gate: healing.safety decisions anchor the gate (TS engine.ts) ─
+
+_FIXER_SAFETY_SCHEMA = parse_schema("""
+schema_version: "1"
+name: t
+phases:
+  - id: healing-rerun
+    skill: null
+    requires: []
+    produces: [execution/execution-manifest.yaml]
+    gate: fixer-safety-gate
+gates:
+  fixer-safety-gate:
+    reads: [healing/fixer-safety-check.json]
+    missing_file_is: stop
+    needs_human_review_when: "passed == false or needs_review == true"
+    pass_when: "passed == true"
+""")
+
+
+def _write_safety_check(change_dir: Path) -> str:
+    d = change_dir / "healing"
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / "fixer-safety-check.json"
+    path.write_text(json.dumps({"passed": False, "needs_review": True}))
+    return _hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _decide_healing_safety(
+    change_dir: Path,
+    action: str,
+    *,
+    review_file: str | None = None,
+    review_sha256: str | None = None,
+) -> None:
+    event: dict = {
+        "source": "decide",
+        "type": "human_decision",
+        "checkpoint": "healing.safety",
+        "action": action,
+        "reason": "safety risk reviewed",
+        "who": "tester",
+    }
+    if review_file is not None:
+        event["review_file"] = review_file
+        event["review_sha256"] = review_sha256
+    append_event_strict(change_dir, event)
+
+
+def test_healing_safety_accept_risk_upgrades_fixer_safety_gate(tmp_path: Path):
+    sha = _write_safety_check(tmp_path)
+    loc = loc_for(tmp_path)
+    assert check_gate(_FIXER_SAFETY_SCHEMA, "fixer-safety-gate", loc, EMPTY, {}).verdict == (
+        "needs_human_review"
+    )
+    _decide_healing_safety(
+        tmp_path,
+        "accept_risk",
+        review_file="healing/fixer-safety-check.json",
+        review_sha256=sha,
+    )
+    verdict = check_gate(_FIXER_SAFETY_SCHEMA, "fixer-safety-gate", loc, EMPTY, {})
+    assert verdict.verdict == "pass"
+    assert "human_decision:accept_risk" in (verdict.matched_rule or "")
+
+
+def test_healing_safety_fix_and_proceed_does_not_anchor(tmp_path: Path):
+    # Mirror of TS resolveDecisionSupport: healing.safety supports only accept_risk,
+    # so a fix_and_proceed recorded there can never anchor the fixer-safety-gate.
+    sha = _write_safety_check(tmp_path)
+    _decide_healing_safety(
+        tmp_path,
+        "fix_and_proceed",
+        review_file="healing/fixer-safety-check.json",
+        review_sha256=sha,
+    )
+    verdict = check_gate(_FIXER_SAFETY_SCHEMA, "fixer-safety-gate", loc_for(tmp_path), EMPTY, {})
+    assert verdict.verdict == "needs_human_review"
+
+
+def test_healing_safety_decision_ignored_without_review_evidence(tmp_path: Path):
+    _write_safety_check(tmp_path)
+    _decide_healing_safety(tmp_path, "accept_risk")
+    verdict = check_gate(_FIXER_SAFETY_SCHEMA, "fixer-safety-gate", loc_for(tmp_path), EMPTY, {})
     assert verdict.verdict == "needs_human_review"

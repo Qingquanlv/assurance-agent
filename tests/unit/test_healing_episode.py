@@ -68,9 +68,138 @@ def _allocate(change: Path, number: int) -> None:
     )
 
 
+def _fail_state(*, healing_available: bool = True) -> WorkflowState:
+    return WorkflowState.model_validate(
+        {
+            "phases": {
+                "execution": {"status": "FAIL", "batch_id": "b1"},
+                "inspect": {"inspect_mode": "primary"},
+            },
+            "gates": {"healing_available": healing_available},
+        }
+    )
+
+
 def test_allocate_action_requires_complete_typed_intent():
     with pytest.raises(ValidationError):
         HealingEpisodeAction(kind="allocate_attempt")
+
+
+def test_entry_gate_stop_emits_complete_failed(tmp_path: Path):
+    """healing_available=false → entry stop_when → complete(failed), not bare stop."""
+    _j(tmp_path, "inspect/failure-analysis.json", {"failures": [{"fix_proposal_eligible": True}]})
+    state = _fail_state(healing_available=False)
+    healing = derive_healing_state(tmp_path)
+    episode = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing)
+    assert episode.state == "terminal"
+    assert episode.stage == "entry"
+    assert episode.next_actions == [HealingEpisodeAction(kind="complete", outcome="failed")]
+
+
+def test_allocate_on_false_emits_complete_failed(tmp_path: Path):
+    """Proposal committed but eligible_count=0 → complete(failed) instead of stranding status."""
+    _j(tmp_path, "execution/execution-manifest.yaml", {})
+    _j(tmp_path, "inspect/failure-analysis.json", {"failures": [{"fix_proposal_eligible": True}]})
+    _j(
+        tmp_path,
+        "healing/fix-proposal.json",
+        {"summary": {"eligible_count": 0}, "proposals": []},
+    )
+    _outcome(tmp_path, "fix-proposal", "p1")
+    state = _fail_state()
+    healing = derive_healing_state(tmp_path)
+    episode = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing)
+    assert episode.state == "terminal"
+    assert episode.stage == "allocate"
+    assert episode.next_actions == [HealingEpisodeAction(kind="complete", outcome="failed")]
+
+
+def test_safety_gate_stop_emits_complete_failed(tmp_path: Path):
+    """fixer-safety-gate stop (passed=false) → complete(failed) so report can unblock."""
+    _j(tmp_path, "execution/execution-manifest.yaml", {})
+    _j(tmp_path, "inspect/failure-analysis.json", {"failures": [{"fix_proposal_eligible": True}]})
+    _j(
+        tmp_path,
+        "healing/fix-proposal.json",
+        {"summary": {"eligible_count": 1}, "proposals": [{"target": "api", "eligible": True}]},
+    )
+    _j(tmp_path, "healing/fixer-safety-check.json", {"passed": False, "needs_review": False})
+    _allocate(tmp_path, 1)
+    _event(
+        tmp_path,
+        {
+            "source": "heal",
+            "type": "heal_record_apply",
+            "target": "api",
+            "proposal_sha256": "p",
+            "source_batch_id": "b1",
+            "attempt_key": "p:b1",
+            "summary_sha256": "s",
+            "files_modified": ["tests/x.py"],
+        },
+    )
+    state = _fail_state()
+    healing = derive_healing_state(tmp_path)
+    episode = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing)
+    assert episode.state == "terminal"
+    assert episode.stage == "safety"
+    assert episode.next_actions == [HealingEpisodeAction(kind="complete", outcome="failed")]
+
+
+def test_loop_exhausted_emits_complete_exhausted(tmp_path: Path):
+    """Max attempts reached with still-eligible failures → complete(exhausted)."""
+    _j(tmp_path, "execution/execution-manifest.yaml", {})
+    _j(tmp_path, "inspect/failure-analysis.json", {"failures": [{"fix_proposal_eligible": True}]})
+    _j(
+        tmp_path,
+        "healing/fix-proposal.json",
+        {"summary": {"eligible_count": 1}, "proposals": [{"target": "api", "eligible": True}]},
+    )
+    _j(tmp_path, "healing/fixer-safety-check.json", {"passed": True, "needs_review": False})
+    for n in (1, 2):
+        _allocate(tmp_path, n)
+        _event(
+            tmp_path,
+            {
+                "source": "heal",
+                "type": "heal_record_apply",
+                "target": "api",
+                "proposal_sha256": f"p{n}",
+                "source_batch_id": "b1",
+                "attempt_key": f"p{n}:b1",
+                "summary_sha256": f"s{n}",
+                "files_modified": ["tests/x.py"],
+            },
+        )
+        _outcome(tmp_path, "healing-rerun", f"r{n}")
+        _outcome(tmp_path, "healing-reinspect", f"i{n}")
+    state = _fail_state()
+    healing = derive_healing_state(tmp_path)
+    assert healing.attempts_used == 2
+    episode = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing)
+    assert episode.state == "terminal"
+    assert episode.stage == "decide"
+    assert episode.next_actions == [HealingEpisodeAction(kind="complete", outcome="exhausted")]
+
+
+def test_terminal_status_short_circuits_episode(tmp_path: Path):
+    """Once heal_transition is recorded, episode is inactive — no repeat complete."""
+    _j(tmp_path, "inspect/failure-analysis.json", {"failures": [{"fix_proposal_eligible": True}]})
+    _event(
+        tmp_path,
+        {
+            "source": "status",
+            "type": "heal_transition",
+            "from": "pending",
+            "to": "failed",
+        },
+    )
+    state = _fail_state(healing_available=False)
+    healing = derive_healing_state(tmp_path)
+    assert healing.status == "failed"
+    episode = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing)
+    assert episode.state == "inactive"
+    assert episode.next_actions == []
 
 
 def test_shared_old_outputs_do_not_skip_rerun_or_reinspect(tmp_path: Path):

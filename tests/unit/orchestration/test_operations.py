@@ -12,6 +12,7 @@ from assurance_agent.artifacts.models import WorkflowState
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.events import append_event_strict, read_events
 from assurance_agent.workflow.core.state import read_state, state_guard, write_state
+from assurance_agent.workflow.orchestration.gates import check_gate
 from assurance_agent.workflow.orchestration.healing_episode import HealingAttemptIntent
 from assurance_agent.workflow.orchestration.operations import (
     StaleDispatchError,
@@ -22,6 +23,7 @@ from assurance_agent.workflow.orchestration.operations import (
     record_heal_transition,
 )
 from assurance_agent.workflow.orchestration.schema import parse_schema
+from tests.helpers_aa import loc_for
 
 _SCHEMA = parse_schema(
     """
@@ -346,7 +348,10 @@ phases:
     agent: aa-doc-author
     requires: []
     produces: [explore/advisory.json]
-gates: {}
+gates:
+  gate:
+    reads: [workflow-state.yaml]
+    pass_when: "file_exists('workflow-state.yaml')"
 """,
         encoding="utf-8",
     )
@@ -435,6 +440,333 @@ def test_apply_outcome_records_gate_verdict_with_reads_sha256(tmp_path: Path) ->
     assert gate_events[0]["reads_sha256"] == {"review/case-review.json": expected}
 
     committed = [e for e in events if e["type"] == "phase_outcome_committed"]
-    assert committed[-1]["gate_report"]["reads_sha256"] == {
-        "review/case-review.json": expected
+    assert committed[-1]["gate_report"]["reads_sha256"] == {"review/case-review.json": expected}
+
+
+# ── healing.safety decisions bind the fixer safety artifact (TS decide.ts) ────
+
+
+def _fixer_safety_artifact(change: Path) -> str:
+    path = change / "healing" / "fixer-safety-check.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": "1.0",
+        "change_id": change.name,
+        "modified_files": ["tests/api/test_cases_api.py"],
+        "product_code_modified": False,
+        "assertion_expected_value_changes_detected": False,
+        "skip_or_xfail_added": "undetermined",
+        "unrelated_tests_modified": False,
+        "high_risk_proposal_applied": False,
+        "needs_review": True,
+        "passed": False,
     }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_record_decision_healing_safety_binds_fixer_safety_check(tmp_path: Path) -> None:
+    """accept_risk at healing.safety binds the safety artifact (TS requireChangeArtifact)."""
+    change = _change(tmp_path)
+    expected_sha = _fixer_safety_artifact(change)
+
+    record_decision(
+        tmp_path,
+        change,
+        checkpoint="healing.safety",
+        action="accept_risk",
+        reason="accept documented skip marker",
+        who="tester",
+    )
+    decision = [e for e in read_events(change) if e["type"] == "human_decision"][-1]
+    assert decision["review_file"] == "healing/fixer-safety-check.json"
+    assert decision["review_sha256"] == expected_sha
+
+
+def test_record_decision_healing_safety_requires_artifact(tmp_path: Path) -> None:
+    """Missing safety artifact fails closed before any event is recorded."""
+    change = _change(tmp_path)
+    with pytest.raises(AaError, match=r"healing/fixer-safety-check\.json is required"):
+        record_decision(
+            tmp_path,
+            change,
+            checkpoint="healing.safety",
+            action="accept_risk",
+            reason="no artifact yet",
+            who="tester",
+        )
+    assert not [e for e in read_events(change) if e["type"] == "human_decision"]
+
+
+def test_record_decision_healing_safety_rejects_fix_and_proceed(tmp_path: Path) -> None:
+    """healing.safety only supports accept_risk/stop (TS SPECIAL_DECISION_SUPPORT)."""
+    change = _change(tmp_path)
+    _fixer_safety_artifact(change)
+    with pytest.raises(AaError, match="does not support action 'fix_and_proceed'"):
+        record_decision(
+            tmp_path,
+            change,
+            checkpoint="healing.safety",
+            action="fix_and_proceed",
+            reason="not a safety acceptance",
+            who="tester",
+        )
+    assert not [e for e in read_events(change) if e["type"] == "human_decision"]
+
+
+_FIXER_SAFETY_SCHEMA = parse_schema(
+    """
+schema_version: "1"
+name: t
+phases:
+  - id: healing-rerun
+    skill: null
+    requires: []
+    produces: [execution/execution-manifest.yaml]
+    gate: fixer-safety-gate
+gates:
+  fixer-safety-gate:
+    reads: [healing/fixer-safety-check.json]
+    missing_file_is: stop
+    needs_human_review_when: "passed == false or needs_review == true"
+    pass_when: "passed == true"
+"""
+)
+
+
+def test_healing_safety_accept_risk_unblocks_fixer_safety_gate(tmp_path: Path) -> None:
+    """Minimal end-to-end: decide at healing.safety turns the gate verdict to pass."""
+    change = _change(tmp_path)
+    _fixer_safety_artifact(change)
+    loc = loc_for(change)
+
+    before = check_gate(_FIXER_SAFETY_SCHEMA, "fixer-safety-gate", loc, WorkflowState(), {})
+    assert before.verdict == "needs_human_review"
+
+    record_decision(
+        tmp_path,
+        change,
+        checkpoint="healing.safety",
+        action="accept_risk",
+        reason="accept documented skip marker",
+        who="tester",
+    )
+    after = check_gate(_FIXER_SAFETY_SCHEMA, "fixer-safety-gate", loc, WorkflowState(), {})
+    assert after.verdict == "pass"
+    assert "human_decision:accept_risk" in (after.matched_rule or "")
+
+
+# ── decision-support matrix (TS decision_support.ts / decide.ts) ────────────
+
+_MATRIX_SCHEMA_YAML = """
+schema_version: "1"
+name: t
+phases:
+  - id: explore
+    skill: aa-explore
+    agent: aa-doc-author
+    requires: []
+    produces: [explore/advisory.json]
+  - id: case-review
+    skill: aa-case-reviewer
+    agent: aa-reviewer
+    requires: []
+    produces: [review/case-review.json]
+    gate: case-review-gate
+  - id: lint
+    skill: null
+    requires: []
+    produces: []
+    gate: lint-gate
+gates:
+  case-review-gate:
+    reads: [review/case-review.json]
+    needs_human_review_when: "decision == 'needs_human_review'"
+    pass_when: "decision == 'pass'"
+  lint-gate:
+    reads: [workflow-state.yaml]
+    pass_when: "file_exists('workflow-state.yaml')"
+"""
+
+
+def _matrix_change(tmp_path: Path) -> Path:
+    schema_dir = tmp_path / ".aa"
+    schema_dir.mkdir()
+    schema_dir.joinpath("workflow-schema.yaml").write_text(_MATRIX_SCHEMA_YAML, encoding="utf-8")
+    return _change(tmp_path)
+
+
+def _case_review_artifact(change: Path, decision: str = "needs_human_review") -> str:
+    path = change / "review" / "case-review.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"decision": decision}), encoding="utf-8")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _human_decisions(change: Path) -> list[dict]:
+    return [e for e in read_events(change) if e["type"] == "human_decision"]
+
+
+def test_record_decision_unknown_checkpoint_rejected(tmp_path: Path) -> None:
+    change = _matrix_change(tmp_path)
+    with pytest.raises(AaError, match="Unknown checkpoint 'nope'"):
+        record_decision(
+            tmp_path,
+            change,
+            checkpoint="nope",
+            action="stop",
+            reason="halt",
+            who="tester",
+        )
+    assert not _human_decisions(change)
+
+
+def test_record_decision_bare_phase_rejects_gate_actions(tmp_path: Path) -> None:
+    change = _matrix_change(tmp_path)
+    for action in ("accept_risk", "fix_and_proceed"):
+        with pytest.raises(
+            AaError,
+            match=f"Unsupported decision: checkpoint 'explore' does not support action '{action}'",
+        ):
+            record_decision(
+                tmp_path,
+                change,
+                checkpoint="explore",
+                action=action,
+                reason="not gated",
+                who="tester",
+            )
+    assert not _human_decisions(change)
+
+
+def test_record_decision_bare_phase_stop_allowed(tmp_path: Path) -> None:
+    change = _matrix_change(tmp_path)
+    _case_review_artifact(change, decision="pass")  # keep gates non-terminal
+    record_decision(
+        tmp_path,
+        change,
+        checkpoint="explore",
+        action="stop",
+        reason="halt",
+        who="tester",
+    )
+    assert len(_human_decisions(change)) == 1
+    assert read_state(change).model_dump().get("terminal") is not None
+
+
+def test_record_decision_gated_phase_binds_audited_read(tmp_path: Path) -> None:
+    """fix_and_proceed at a gated phase resolves its gate and binds the artifact."""
+    change = _matrix_change(tmp_path)
+    expected_sha = _case_review_artifact(change)
+    record_decision(
+        tmp_path,
+        change,
+        checkpoint="case-review",
+        action="fix_and_proceed",
+        reason="fix forward",
+        who="tester",
+    )
+    decision = _human_decisions(change)[-1]
+    assert decision["review_file"] == "review/case-review.json"
+    assert decision["review_sha256"] == expected_sha
+
+
+def test_record_decision_execution_test_changes_matrix(tmp_path: Path) -> None:
+    change = _matrix_change(tmp_path)
+    record_decision(
+        tmp_path,
+        change,
+        checkpoint="execution.test-changes",
+        action="allow_test_changes",
+        reason="authorize current tree",
+        who="tester",
+    )
+    assert len(_human_decisions(change)) == 1
+    for action in ("accept_risk", "fix_and_proceed"):
+        with pytest.raises(AaError, match="does not support action"):
+            record_decision(
+                tmp_path,
+                change,
+                checkpoint="execution.test-changes",
+                action=action,
+                reason="not supported here",
+                who="tester",
+            )
+    assert len(_human_decisions(change)) == 1
+
+
+def test_record_decision_bootstrap_matrix(tmp_path: Path) -> None:
+    change = _matrix_change(tmp_path)
+    record_decision(
+        tmp_path,
+        change,
+        checkpoint="bootstrap",
+        action="skip_branch",
+        reason="skip optional branch",
+        who="tester",
+    )
+    assert len(_human_decisions(change)) == 1
+    for action in ("accept_risk", "fix_and_proceed"):
+        with pytest.raises(AaError, match="does not support action"):
+            record_decision(
+                tmp_path,
+                change,
+                checkpoint="bootstrap",
+                action=action,
+                reason="not supported here",
+                who="tester",
+            )
+    assert len(_human_decisions(change)) == 1
+
+
+# ── audited gate decisions must bind the audited artifact (TS decide.ts) ────
+
+
+def test_record_decision_audited_gate_requires_artifact(tmp_path: Path) -> None:
+    """Non-stop gate decision without the audited artifact fails closed, no event."""
+    change = _matrix_change(tmp_path)
+    for action in ("accept_risk", "fix_and_proceed"):
+        with pytest.raises(
+            AaError,
+            match=r"Audited artifact review/case-review\.json is required for this decision",
+        ):
+            record_decision(
+                tmp_path,
+                change,
+                checkpoint="case-review-gate",
+                action=action,
+                reason="no artifact yet",
+                who="tester",
+            )
+    assert not _human_decisions(change)
+
+
+def test_record_decision_stop_at_audited_gate_needs_no_artifact(tmp_path: Path) -> None:
+    """stop is a terminal-status decision: no audited binding required."""
+    change = _matrix_change(tmp_path)
+    record_decision(
+        tmp_path,
+        change,
+        checkpoint="case-review-gate",
+        action="stop",
+        reason="halt",
+        who="tester",
+    )
+    decision = _human_decisions(change)[-1]
+    assert decision["action"] == "stop"
+    assert "review_file" not in decision
+
+
+def test_record_decision_non_audited_gate_needs_no_artifact(tmp_path: Path) -> None:
+    """Gates without audited reads accept decisions without binding (TS parity)."""
+    change = _matrix_change(tmp_path)
+    record_decision(
+        tmp_path,
+        change,
+        checkpoint="lint-gate",
+        action="accept_risk",
+        reason="lint gate has no audited reads",
+        who="tester",
+    )
+    decision = _human_decisions(change)[-1]
+    assert "review_file" not in decision

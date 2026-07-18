@@ -223,9 +223,10 @@ def latest_valid_gate_decision(
 ) -> dict[str, object] | None:
     """Return the latest human_decision that legitimately anchors ``gate_id``.
 
-    Mirror of TS ``latestValidGateDecision``: the decision must target this gate,
-    be an ``accept_risk``/``fix_and_proceed`` action with reason+who, and carry a
-    ``review_file``/``review_sha256`` pointing at an audited gate read whose
+    Mirror of TS ``latestValidGateDecision``: the decision must target this gate
+    (for ``fixer-safety-gate``, a ``healing.safety`` accept_risk decision also
+    counts), be an ``accept_risk``/``fix_and_proceed`` action with reason+who, and
+    carry a ``review_file``/``review_sha256`` pointing at an audited gate read whose
     *current* hash still matches (the frozen evidence was not altered afterwards).
     """
     gate = schema.gates.get(gate_id)
@@ -248,6 +249,11 @@ def latest_valid_gate_decision(
             if phase is not None and phase.gate == gate_id:
                 latest = event
                 break
+            # Mirror of TS engine.ts ``latestValidGateDecision``: a decision at the
+            # special ``healing.safety`` checkpoint also anchors the fixer-safety-gate.
+            if gate_id == "fixer-safety-gate" and checkpoint == "healing.safety":
+                latest = event
+                break
     if latest is None:
         return None
     if latest.get("action") not in _GATE_DECISION_ACTIONS:
@@ -263,6 +269,15 @@ def latest_valid_gate_decision(
     if not (isinstance(review_file, str) and isinstance(review_sha, str)):
         return None
     if review_file not in audited:
+        return None
+    # Mirror of the TS ``resolveDecisionSupport`` guard: ``healing.safety`` only
+    # supports accept_risk (healing-safety consumer), so any other action recorded
+    # there can never anchor the fixer-safety-gate.
+    if (
+        gate_id == "fixer-safety-gate"
+        and latest.get("checkpoint") == "healing.safety"
+        and latest.get("action") != "accept_risk"
+    ):
         return None
     current = sha256_file(_resolve_path(loc, review_file))
     return latest if current == review_sha else None

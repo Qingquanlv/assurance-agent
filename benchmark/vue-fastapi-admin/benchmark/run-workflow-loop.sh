@@ -69,7 +69,7 @@ DO_RETRO="${DO_RETRO:-false}"
 DO_RETRO_PROPOSALS="${DO_RETRO_PROPOSALS:-true}"
 DO_NIGHTLY_COLLECT="${DO_NIGHTLY_COLLECT:-true}"
 RETRO_SINCE_DAYS="${RETRO_SINCE_DAYS:-7}"
-STEP_TIMEOUT="${STEP_TIMEOUT:-2700}"
+STEP_TIMEOUT="${STEP_TIMEOUT:-5400}"
 
 # Clean case/change artifacts before the loop starts so each benchmark run is a
 # fresh slate. Only qa/cases + qa/changes by default (preserve qa/archive,
@@ -193,7 +193,7 @@ change:
 approval:
   mode: autonomous
   approved_by: aa-workflow
-  approved_approach: API + E2E
+  approved_approach: API + E2E + Fuzz + Performance
   approved_at: "$now"
 YAML
 
@@ -211,11 +211,11 @@ YAML
     echo "## Test Types Considered"
     echo "- API: selected"
     echo "- E2E: selected"
-    echo "- Fuzz: declined (benchmark scope)"
-    echo "- Performance: declined (benchmark scope)"
+    echo "- Fuzz: selected"
+    echo "- Performance: selected"
     echo
     echo "## Layer Rationale"
-    echo "Benchmark autonomous run — API + E2E coverage for $feature."
+    echo "Benchmark autonomous run — API + E2E + Fuzz + Performance coverage for $feature."
     echo
     echo "generation_mode: autonomous"
   } >"$cdir/proposal.md"

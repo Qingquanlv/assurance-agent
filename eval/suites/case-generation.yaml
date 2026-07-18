@@ -1,11 +1,16 @@
 name: case-generation
 scorer: case-generation
 executor:
-  type: subprocess
-  command: "aa case-design --prd {{sample.input.prd_ref}} --change-id {{sample.id}}"
+  type: workflow-run
+  run_mode: case-only
   timeout_seconds: 600
   expected_outputs:
     - cases/system/api/case.yaml
+judge:
+  model: "gpt-4o"
+  prompt_ref: "eval/judge/case-generation-judge.md"
+  temperature: 0.0
+  confidence_threshold: 0.80
 thresholds:
   - metric: hallucination_rate
     gate: hard

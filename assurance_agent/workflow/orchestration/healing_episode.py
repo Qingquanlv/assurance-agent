@@ -72,8 +72,6 @@ class HealingEpisodeSnapshot(BaseModel):
     stage: Literal["entry", "proposal", "allocate", "apply", "safety", "rerun", "reinspect", "decide"] | None
     attempt_number: int = 0
     next_actions: list[HealingEpisodeAction] = Field(default_factory=list)
-    terminal_kind: Literal["stopped"] | None = None
-    reason: str | None = None
 
 
 def _episode_floor(ledger: Ledger, healing: HealingStateSnapshot) -> int:
@@ -140,8 +138,7 @@ def _allocate_snapshot(
             state="terminal",
             stage="allocate",
             attempt_number=current_attempt,
-            terminal_kind="stopped",
-            reason="missing execution source_batch_id",
+            next_actions=[HealingEpisodeAction(kind="complete", outcome="failed")],
         )
     return HealingEpisodeSnapshot(
         state="active",
@@ -161,6 +158,11 @@ def project_healing_episode(
     change_dir = loc.path
     loop = schema.loops.get("healing")
     if loop is None:
+        return HealingEpisodeSnapshot(state="inactive", stage=None)
+    if healing.status in _HEALING_TERMINAL:
+        # Episode already finalized (a heal_transition was committed on a prior
+        # tick). report/archive `ready_when` reads phases.healing.status
+        # directly from workflow-state — nothing left for the episode to do.
         return HealingEpisodeSnapshot(state="inactive", stage=None)
     merged = {**schema.default_param_values(), **params}
     data = state.model_dump(mode="python", exclude_none=True)
@@ -188,23 +190,25 @@ def project_healing_episode(
                 and gate_result.matched_rule is not None
                 and gate_result.matched_rule.startswith("stop_when:")
             ):
+                # healing_available flipped false (e.g. change withdrawn) before
+                # any attempt was allocated. Finalize via `complete` — mirrors
+                # the not_needed path below — so phases.healing.status lands on
+                # a terminal value instead of staying None and blocking report.
                 return HealingEpisodeSnapshot(
                     state="terminal",
                     stage="entry",
-                    terminal_kind="stopped",
-                    reason="healing-entry-gate=stop",
+                    next_actions=[HealingEpisodeAction(kind="complete", outcome="failed")],
                 )
             if (
                 entry == "skip"
                 and gate_result.matched_rule is not None
                 and gate_result.matched_rule.startswith("skip_when:")
-                and healing.status not in _HEALING_TERMINAL
             ):
                 # Healing is definitively not required (execution passed, or no
                 # eligible failures). Emit a single `complete(not_needed)` so the
                 # driver records the decision (`aa state heal`) and report's
-                # ready_when unblocks. Idempotent: once recorded, derive_healing_state
-                # reports `not_needed` and this branch is skipped.
+                # ready_when unblocks. Idempotent: once recorded, the top-level
+                # `healing.status in _HEALING_TERMINAL` guard short-circuits here.
                 return HealingEpisodeSnapshot(
                     state="terminal",
                     stage="entry",
@@ -219,11 +223,14 @@ def project_healing_episode(
         reads = [ReadEntry(path=p, alias=a) for a, p in schema.produces_alias_map().items()]
         scope = build_evidence_scope(schema, loc, state, merged, reads, hoist_primary=False)
         if not is_satisfied(parse_expression(loop.allocate_on), scope):
+            # Proposal exists but nothing is eligible to apply — no attempt is
+            # ever allocated, so finalize directly via `complete` instead of a
+            # bare stop, which would strand phases.healing.status at None and
+            # block report/archive.
             return HealingEpisodeSnapshot(
                 state="terminal",
                 stage="allocate",
-                terminal_kind="stopped",
-                reason="healing allocate_on false after committed proposal",
+                next_actions=[HealingEpisodeAction(kind="complete", outcome="failed")],
             )
         return _allocate_snapshot(
             change_dir,
@@ -267,8 +274,7 @@ def project_healing_episode(
             state="terminal",
             stage="safety",
             attempt_number=attempt,
-            terminal_kind="stopped",
-            reason=f"fixer-safety-gate={safety}",
+            next_actions=[HealingEpisodeAction(kind="complete", outcome="failed")],
         )
 
     rerun = ledger.latest(type="phase_outcome_committed", phase="healing-rerun", after_seq=allocation_seq)
@@ -289,13 +295,11 @@ def project_healing_episode(
             next_actions=[HealingEpisodeAction(kind="complete", outcome="resolved")],
         )
     if loop_verdict == "stop":
-        maximum = int(merged[loop.max_param])
         return HealingEpisodeSnapshot(
             state="terminal",
             stage="decide",
             attempt_number=attempt,
-            terminal_kind="stopped",
-            reason=f"healing attempts exhausted: {attempt}/{maximum}",
+            next_actions=[HealingEpisodeAction(kind="complete", outcome="exhausted")],
         )
     proposal = ledger.latest(
         type="phase_outcome_committed", phase="fix-proposal", after_seq=event_seq(reinspect)

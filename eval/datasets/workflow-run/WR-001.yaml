@@ -3,5 +3,5 @@ annotation_source: human
 tags: [workflow-run]
 input:
   change_id: eval-sample-001
-  fixture_tier: L3-run-seed
+  fixture_tier: L3-run-done
 expected: {}

@@ -263,6 +263,11 @@ def _load_cases(project_root: Path) -> list[dict]:
     return [by_id[k] for k in sorted(by_id)]
 
 
+def load_known_case_ids(project_root: Path) -> list[str]:
+    """All case ids declared under qa/cases (TS loadCasesFromQa(...).map(case_id))."""
+    return [c["case_id"] for c in _load_cases(project_root)]
+
+
 def _infer_module(path: Path, cases_root: Path) -> str:
     rel = path.parent.relative_to(cases_root).parts
     return rel[0] if rel else "unknown"

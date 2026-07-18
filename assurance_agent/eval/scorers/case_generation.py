@@ -10,17 +10,63 @@ from assurance_agent.eval.types import DatasetSample, SampleScore
 
 
 def _load_cases(attempt_dir: Path) -> list[dict] | None:
-    cases_path = attempt_dir / "raw-output" / "cases.yaml"
-    if not cases_path.is_file():
+    """Load cases from flat ``cases.yaml`` or the tree under ``cases/**/*.yaml``."""
+    raw = attempt_dir / "raw-output"
+    flat = raw / "cases.yaml"
+    if flat.is_file():
+        try:
+            data = yaml.safe_load(flat.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        cases = data.get("cases")
+        return cases if isinstance(cases, list) else None
+
+    cases_dir = raw / "cases"
+    if not cases_dir.is_dir():
         return None
-    try:
-        data = yaml.safe_load(cases_path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    cases = data.get("cases")
-    return cases if isinstance(cases, list) else None
+    collected: list[dict] = []
+    for path in sorted(cases_dir.rglob("*.yaml")) + sorted(cases_dir.rglob("*.yml")):
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        # Semantic case delta: {added: [...], modified: [...], ...}
+        for key in ("added", "modified", "cases"):
+            items = data.get(key)
+            if isinstance(items, list):
+                collected.extend(c for c in items if isinstance(c, dict))
+        # Single-case document with an id/title.
+        if "id" in data or "title" in data:
+            collected.append(data)
+    return collected or None
+
+
+def _cases_schema_valid(attempt_dir: Path) -> float:
+    """1.0 when at least one cases YAML under raw-output parses cleanly."""
+    raw = attempt_dir / "raw-output"
+    candidates = [raw / "cases.yaml"]
+    cases_dir = raw / "cases"
+    if cases_dir.is_dir():
+        candidates.extend(cases_dir.rglob("*.yaml"))
+        candidates.extend(cases_dir.rglob("*.yml"))
+    parsed = 0
+    total = 0
+    for path in candidates:
+        if not path.is_file():
+            continue
+        total += 1
+        try:
+            yaml.safe_load(path.read_text(encoding="utf-8"))
+            parsed += 1
+        except (OSError, yaml.YAMLError):
+            pass
+    if total == 0:
+        return 0.0
+    return parsed / total
 
 
 def _load_judge(attempt_dir: Path) -> dict | None:
@@ -39,7 +85,7 @@ def score(sample: DatasetSample, attempt_dir: Path) -> SampleScore:
     cases = _load_cases(attempt_dir)
     judge = _load_judge(attempt_dir)
 
-    schema_valid_rate = 1.0 if cases is not None else 0.0
+    schema_valid_rate = _cases_schema_valid(attempt_dir)
     hallucination_rate = 0.0
     path_coverage_rate = 1.0
     risk_coverage_rate = 1.0
@@ -80,7 +126,13 @@ def score(sample: DatasetSample, attempt_dir: Path) -> SampleScore:
         with_trace = sum(
             1
             for case in cases
-            if isinstance(case, dict) and str(case.get("traceability", "")).strip()
+            if isinstance(case, dict)
+            and (
+                str(case.get("traceability", "")).strip()
+                or case.get("trace")
+                or str(case.get("requirement_id", "")).strip()
+                or str(case.get("test_condition_id", "")).strip()
+            )
         )
         traceability_rate = with_trace / len(cases) if cases else 0.0
     elif expected.get("risk_ids"):

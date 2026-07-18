@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+import hashlib
 import shutil
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -9,11 +9,19 @@ from pathlib import Path
 from tempfile import mkdtemp
 
 from assurance_agent.change_location import archive_root, resolve_change
-from assurance_agent.eval.baseline import compare_with_baseline, read_baseline
+from assurance_agent.eval.baseline import read_baseline
+from assurance_agent.eval.gate import read_gate_result
+from assurance_agent.eval.metrics import read_metrics
+from assurance_agent.eval.paths import run_dir as eval_run_dir
+from assurance_agent.eval.plan import load_suite
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import assert_path_segment_safe
 from assurance_agent.retro.aggregator import build_retro_context, count_signals
-from assurance_agent.retro.apply import apply_proposal_to_stage
+from assurance_agent.retro.apply import (
+    apply_memory_proposal,
+    apply_proposal_to_stage,
+    resolve_memory_target,
+)
 from assurance_agent.retro.nightly.exit_codes import (
     NIGHTLY_FAILURE,
     NIGHTLY_NOOP,
@@ -29,11 +37,23 @@ from assurance_agent.retro.nightly.phase_d import (
     build_review_queue_markdown,
     partition_proposals_for_review,
 )
+from assurance_agent.retro.nightly.phase_f import (
+    classify_eval_gate,
+    compare_suite_regression,
+    should_auto_apply,
+)
 from assurance_agent.retro.nightly.types import NightlyOptions
 from assurance_agent.retro.nightly.utils import generate_retro_id, write_json
+from assurance_agent.retro.promotions import (
+    application_event,
+    append_promotion_events,
+    eval_completed_event,
+    proposal_states,
+    read_promotion_events,
+)
 from assurance_agent.retro.proposals import read_proposals, validate_retro_proposals
 from assurance_agent.retro.state import complete_retro_stage, mark_consumed_change, read_state
-from assurance_agent.retro.types import RetroContext, RetroPromoteRecord
+from assurance_agent.retro.types import RetroContext
 from assurance_agent.workflow.core.state import read_state as read_workflow_state
 from assurance_agent.workflow.orchestration.engine import compute_status
 from assurance_agent.workflow.orchestration.schema import load_workflow_schema
@@ -142,6 +162,166 @@ def collect_nightly(
     return NIGHTLY_OK
 
 
+# spec §6.4: resume (re-)runs proposals in these states; applied/rejected are
+# terminal, rolled_back/needs_rework wait for a fresh human review decision.
+RETRYABLE_EVAL_STATES = frozenset({"promoted_pending_eval", "awaiting_baseline", "eval_error"})
+
+
+def _candidate_metrics(result: dict, sut: Path, run_id: str) -> dict[str, float]:
+    """Candidate aggregate metrics: runner dict first, run artifacts as fallback."""
+    metrics = result.get("metrics")
+    if metrics:
+        return {str(name): float(value) for name, value in dict(metrics).items()}
+    if not run_id:
+        return {}
+    try:
+        return read_metrics(eval_run_dir(sut, run_id)).metrics
+    except Exception:  # noqa: BLE001 - missing artifacts degrade to empty evidence
+        return {}
+
+
+def _hard_gate_failures(result: dict, sut: Path, run_id: str) -> list[str]:
+    """Hard gate failures: runner dict first, gate-result.json as fallback."""
+    failures = result.get("hard_gate_failures")
+    if failures is not None:
+        return [str(failure) for failure in failures]
+    if not run_id:
+        return []
+    try:
+        return list(read_gate_result(eval_run_dir(sut, run_id)).hard_gate_failures)
+    except Exception:  # noqa: BLE001 - the normalized verdict still guards this path
+        return []
+
+
+def _eval_suite_group(
+    *,
+    sut: Path,
+    engine_root: Path,
+    retro_id: str,
+    suite_name: str,
+    suite_proposals: list,
+    stage_dir: Path,
+    eval_runner: Callable[..., dict],
+    at: str,
+) -> tuple[list[dict], dict]:
+    """Stage one suite group, run the eval gate and classify per spec §6.
+
+    Fixed decision order: no approved baseline -> inconclusive (never applied);
+    candidate gate fail/inconclusive/needs_human_review or hard gate failures
+    -> regression; hard-threshold satisfaction flip vs the baseline ->
+    regression (approximates the direction-aware policy until the suite
+    ``regression:`` block lands); otherwise pass. A pass lands real memory only
+    when the suite declares hard gates (``should_auto_apply``). Returns the
+    promotion events plus the eval-results entry; raises on infrastructure
+    failure so the caller can record ``eval_error`` for the whole group.
+    """
+    for proposal in suite_proposals:
+        apply_proposal_to_stage(
+            sut_root=sut,
+            retro_id=retro_id,
+            proposal_id=proposal.id,
+            stage_dir=stage_dir / proposal.id,
+        )
+    overlay = stage_dir / "overlay"
+    memory = overlay / ".aa" / "memory"
+    memory.mkdir(parents=True)
+    for proposal in suite_proposals:
+        src = stage_dir / proposal.id / ".aa" / "memory" / f"{proposal.id}.md"
+        if src.exists():
+            shutil.copy2(src, memory / src.name)
+
+    suite, _suite_file = load_suite(engine_root, suite_name)
+    suite_contract = suite.model_dump()
+    baseline_entry = read_baseline(engine_root).get(suite_name)
+
+    result = eval_runner(
+        suite=suite_name,
+        sut_dir=sut,
+        engine_root=engine_root,
+        extra_memory_dir=overlay,
+    )
+    run_id = str(result.get("run_id", ""))
+    gate_verdict = classify_eval_gate(result)
+    hard_failures = _hard_gate_failures(result, sut, run_id)
+    run_ids = [run_id] if run_id else []
+    outcome = {
+        "suite": suite_name,
+        "eval_run_id": run_id,
+        "proposal_ids": [p.id for p in suite_proposals],
+        "auto_apply": False,
+    }
+
+    def gate_events(eval_result: str, note: str | None) -> list[dict]:
+        return [
+            eval_completed_event(
+                proposal.id,
+                result=eval_result,
+                actor="eval-gate",
+                at=at,
+                run_ids=run_ids,
+                gate=gate_verdict,
+                note=note,
+            )
+            for proposal in suite_proposals
+        ]
+
+    if baseline_entry is None:
+        note = (
+            f"no approved baseline for suite {suite_name!r}; approve one with: "
+            f"aa eval baseline update --suite {suite_name} "
+            f"--run {run_id or '<run-id>'} --approved-by <actor>"
+        )
+        outcome.update(verdict="inconclusive", note=note)
+        return gate_events("inconclusive", note), outcome
+
+    regression_note: str | None = None
+    if gate_verdict in {"fail", "inconclusive", "needs_human_review"} or hard_failures:
+        regression_note = f"eval gate={gate_verdict}"
+        if hard_failures:
+            regression_note += f" hard_gate_failures={','.join(hard_failures)}"
+    else:
+        candidate_metrics = _candidate_metrics(result, sut, run_id)
+        comparison = compare_suite_regression(baseline_entry.metrics, candidate_metrics, suite_contract)
+        if comparison.regressed:
+            regression_note = f"baseline regression: {'; '.join(comparison.details)}"
+        elif not should_auto_apply(comparison, suite_contract):
+            note = f"suite {suite_name!r} has no hard gates; manual review required before apply"
+            outcome.update(verdict="pass", note=note)
+            return gate_events("pass", note), outcome
+
+    if regression_note is not None:
+        outcome.update(verdict="regression", note=regression_note)
+        events = gate_events("regression", regression_note)
+        events.extend(
+            application_event(
+                proposal.id,
+                result="rolled_back",
+                actor="eval-gate",
+                at=at,
+                note=regression_note,
+            )
+            for proposal in suite_proposals
+        )
+        return events, outcome
+
+    outcome.update(verdict="pass", auto_apply=True)
+    events = gate_events("pass", None)
+    for proposal in suite_proposals:
+        apply_memory_proposal(sut, retro_id, proposal)
+        target = resolve_memory_target(sut, proposal.target)
+        events.append(
+            application_event(
+                proposal.id,
+                result="applied",
+                actor="eval-gate",
+                at=at,
+                target=proposal.target,
+                content_sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
+            )
+        )
+    return events, outcome
+
+
 def resume_nightly(options: NightlyOptions, *, eval_runner: Callable[..., dict] | None = None) -> int:
     """Resume after human review: stage promoted proposals, eval, promote or roll back.
 
@@ -149,7 +329,8 @@ def resume_nightly(options: NightlyOptions, *, eval_runner: Callable[..., dict] 
 
         eval_runner(*, suite: str, sut_dir: Path, engine_root: Path,
                     extra_memory_dir: Path | None = None) -> dict
-        # returns {"run_id": str, "verdict": str, "metrics": dict}
+        # returns {"run_id": str, "verdict": str, "metrics": dict,
+        #          "hard_gate_failures": list[str] | None}
     """
     sut = Path(options.sut)
     retro_id = options.retro_id
@@ -163,22 +344,14 @@ def resume_nightly(options: NightlyOptions, *, eval_runner: Callable[..., dict] 
         return NIGHTLY_PENDING_REVIEW
 
     proposals = read_proposals(retro_dir)
-    promotions_path = retro_dir / "promotions.json"
-    existing: list[dict] = []
-    if promotions_path.exists():
-        raw = json.loads(promotions_path.read_text(encoding="utf-8"))
-        existing = raw if isinstance(raw, list) else raw.get("promotions", [])
-
-    promoted_ids = {
-        str(item.get("proposal_id"))
-        for item in existing
-        if item.get("decision") == "promoted"
-    }
+    # promotions.json is an append-only event stream (schema_version "2");
+    # legacy list / {"promotions": [...]} formats are coerced on read.
+    states = proposal_states(read_promotion_events(retro_dir))
     candidates = [
         p
         for p in proposals
         if p.apply_kind == "memory_append"
-        and (p.status == "promoted" or p.id in promoted_ids)
+        and (states.get(p.id) in RETRYABLE_EVAL_STATES or (p.id not in states and p.status == "promoted"))
     ]
     if not candidates:
         return NIGHTLY_PENDING_REVIEW
@@ -190,85 +363,47 @@ def resume_nightly(options: NightlyOptions, *, eval_runner: Callable[..., dict] 
 
     engine_root = Path.cwd()
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    new_records: list[dict] = []
+    new_events: list[dict] = []
     eval_results: list[dict] = []
 
     for suite_name, suite_proposals in by_suite.items():
         stage_dir = Path(mkdtemp(prefix=f"retro-stage-{retro_id}-{suite_name}-"))
         try:
-            for proposal in suite_proposals:
-                apply_proposal_to_stage(
-                    sut_root=sut,
-                    retro_id=retro_id,
-                    proposal_id=proposal.id,
-                    stage_dir=stage_dir / proposal.id,
-                )
-            overlay = stage_dir / "overlay"
-            memory = overlay / ".aa" / "memory"
-            memory.mkdir(parents=True)
-            for proposal in suite_proposals:
-                src = stage_dir / proposal.id / ".aa" / "memory" / f"{proposal.id}.md"
-                if src.exists():
-                    shutil.copy2(src, memory / src.name)
-
-            baseline = read_baseline(engine_root)
-            baseline_entry = baseline.get(suite_name)
-            result = eval_runner(
-                suite=suite_name,
-                sut_dir=sut,
+            group_events, outcome = _eval_suite_group(
+                sut=sut,
                 engine_root=engine_root,
-                extra_memory_dir=overlay,
+                retro_id=retro_id,
+                suite_name=suite_name,
+                suite_proposals=suite_proposals,
+                stage_dir=stage_dir,
+                eval_runner=eval_runner,
+                at=now,
             )
-            verdict = str(result.get("verdict", "inconclusive"))
-            run_id = str(result.get("run_id", ""))
-
-            if baseline_entry is None:
-                gate_verdict = "inconclusive"
-            else:
-                run_path = sut / "eval" / "out" / "runs" / run_id
-                gate_verdict = "pass"
-                if run_path.is_dir():
-                    delta = compare_with_baseline(run_path, baseline_entry.metrics)
-                    for value in delta.values():
-                        if value < -0.05:
-                            gate_verdict = "fail"
-                            break
-                if verdict in {"fail", "inconclusive", "needs_human_review"}:
-                    gate_verdict = "fail" if verdict == "fail" else verdict
-
-            eval_results.append(
-                {
-                    "suite": suite_name,
-                    "verdict": gate_verdict,
-                    "eval_run_id": run_id,
-                    "proposal_ids": [p.id for p in suite_proposals],
-                }
+            new_events.extend(group_events)
+        except Exception as err:  # noqa: BLE001 - infrastructure failure: eval_error, retryable
+            note = f"eval infrastructure error: {err}"
+            new_events.extend(
+                eval_completed_event(proposal.id, result="error", actor="eval-gate", at=now, note=note)
+                for proposal in suite_proposals
             )
-            decision = "promoted" if gate_verdict == "pass" else "needs_rework"
-            for proposal in suite_proposals:
-                record = RetroPromoteRecord(
-                    proposal_id=proposal.id,
-                    decision=decision,  # type: ignore[arg-type]
-                    decided_by="eval-gate",
-                    decided_at=now,
-                    rework_note=None if decision == "promoted" else f"eval gate={gate_verdict}",
-                    eval_run_id=run_id or None,
-                )
-                new_records.append(record.model_dump(mode="json"))
-                if decision == "promoted":
-                    dest_dir = sut / ".aa" / "memory"
-                    dest_dir.mkdir(parents=True, exist_ok=True)
-                    src = memory / f"{proposal.id}.md"
-                    if src.exists():
-                        shutil.copy2(src, dest_dir / src.name)
+            outcome = {
+                "suite": suite_name,
+                "verdict": "error",
+                "eval_run_id": "",
+                "proposal_ids": [p.id for p in suite_proposals],
+                "auto_apply": False,
+                "note": note,
+            }
         finally:
             shutil.rmtree(stage_dir, ignore_errors=True)
+        eval_results.append(outcome)
 
-    write_json(promotions_path, existing + new_records)
+    if new_events:
+        append_promotion_events(retro_dir, new_events)
     write_json(retro_dir / "eval-results.json", {"results": eval_results})
-    if any(r.get("verdict") == "inconclusive" for r in eval_results):
-        return NIGHTLY_PENDING_REVIEW
-    if any(r.get("decision") == "needs_rework" for r in new_records):
+    if any(result.get("verdict") == "error" for result in eval_results):
+        return NIGHTLY_FAILURE
+    if any(result.get("verdict") != "pass" or not result.get("auto_apply") for result in eval_results):
         return NIGHTLY_PENDING_REVIEW
     return NIGHTLY_OK
 

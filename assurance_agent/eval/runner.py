@@ -38,12 +38,16 @@ def _new_run_id(suite: str) -> str:
 
 
 def _copy_attempt_workspace(source: Path, attempt: Path) -> Path:
-    """Create an isolated SUT snapshot; never recurse into eval/out or VCS/env data."""
+    """Create an isolated SUT snapshot; never recurse into eval/out or env data.
+
+    ``.git`` is intentionally kept: the eval write-scan diffs before/after
+    ``git status --porcelain`` snapshots of this workspace.
+    """
     target = attempt / "sut"
 
     def ignore(directory: str, names: list[str]) -> set[str]:
         rel = Path(directory).resolve().relative_to(source.resolve())
-        ignored = {name for name in names if name in {".git", ".venv", "__pycache__"}}
+        ignored = {name for name in names if name in {".venv", "__pycache__"}}
         ignored.update(name for name in names if (Path(directory) / name).is_symlink())
         if rel == Path("eval"):
             ignored.add("out")
@@ -51,6 +55,24 @@ def _copy_attempt_workspace(source: Path, attempt: Path) -> Path:
 
     shutil.copytree(source, target, ignore=ignore)
     return target
+
+
+def _overlay_memory(extra_memory_dir: Path, attempt_sut: Path) -> None:
+    """Merge a promotion-candidate memory overlay into the attempt sandbox.
+
+    ``extra_memory_dir`` mirrors the SUT layout (contains ``.aa/memory/*.md``).
+    Files are copied into the isolated sandbox so the agent under eval actually
+    loads the candidate memory — this is what makes the promotion gate a real
+    validation of the memory's effect rather than a no-op replay.
+    """
+    src = extra_memory_dir / ".aa" / "memory"
+    if not src.is_dir():
+        return
+    dest = attempt_sut / ".aa" / "memory"
+    dest.mkdir(parents=True, exist_ok=True)
+    for entry in src.iterdir():
+        if entry.is_file():
+            shutil.copy2(entry, dest / entry.name)
 
 
 def run_suite(
@@ -67,6 +89,7 @@ def run_suite(
     cli_executor_factory: Callable[..., CliPhaseExecutor] | None = None,
     loop_runner: LoopRunner = run_workflow_loop,
     fixtures_root: Path | None = None,
+    extra_memory_dir: Path | None = None,
 ) -> tuple[str, EvalGateResult]:
     if repeat < 1:
         raise ValueError("repeat must be >= 1")
@@ -98,11 +121,17 @@ def run_suite(
     scorer = get_scorer(suite.scorer)
     scores: list[SampleScore] = []
     scope = str(suite.executor.get("scope", "full"))
+    executor_type = str(suite.executor.get("type", "workflow-run"))
+    run_mode = suite.executor.get("run_mode")
+    test_types = suite.executor.get("test_type")
+    in_process = executor_type in {"in_process", "score-only"}
     for sample in samples:
         for attempt_index in range(repeat):
             attempt = attempt_dir_for(sut_dir, run_id, sample.id, attempt_index)
             attempt.mkdir(parents=True, exist_ok=True)
             attempt_sut = _copy_attempt_workspace(sut_dir, attempt)
+            if extra_memory_dir is not None:
+                _overlay_memory(extra_memory_dir, attempt_sut)
             factory_args = {
                 "sample": sample,
                 "sut_dir": attempt_sut,
@@ -111,8 +140,17 @@ def run_suite(
             adapter = adapter_factory(**factory_args) if adapter_factory else None
             status_provider = status_provider_factory(**factory_args) if status_provider_factory else None
             cli_executor = cli_executor_factory(**factory_args) if cli_executor_factory else None
-            if adapter is None:
+            if not in_process and adapter is None:
                 raise ValueError("adapter_factory required (real adapters wired by CLI)")
+            # in_process suites never call the adapter; pass a noop when unset.
+            if adapter is None:
+                from assurance_agent.workflow.driver.adapter import PhaseRequest, PhaseResult
+
+                class _NoopAdapter:
+                    def run_phase(self, request: PhaseRequest) -> PhaseResult:
+                        return PhaseResult(ok=True, output="noop")
+
+                adapter = _NoopAdapter()  # type: ignore[assignment]
             result = execute_attempt(
                 sample,
                 attempt,
@@ -125,12 +163,27 @@ def run_suite(
                 cli_executor=cli_executor,
                 expected_outputs=suite.executor.get("expected_outputs"),
                 fixtures_root=resolved_fixtures,
+                executor_type=executor_type,
+                run_mode=str(run_mode) if run_mode is not None else None,
+                test_types=str(test_types) if test_types is not None else None,
             )
             manifest.executed_samples += 1
             score_key = f"{sample.id}#attempt-{attempt_index}"
             if result.status == "error":
                 scores.append(SampleScore(sample_id=score_key, status="error", error=result.error))
                 continue
+            # Judge runs before scoring (aligned with TS runner.ts:139): the scorer
+            # reads judge-result.json from the attempt dir to compute P/R/F1.
+            if suite.judge is not None:
+                try:
+                    judged = run_judge(sample, attempt, suite.judge, target_model=manifest.target_model)
+                    (attempt / "judge-result.json").write_text(
+                        json.dumps(judged.model_dump(mode="json"), indent=2), encoding="utf-8"
+                    )
+                except Exception as err:
+                    # Fail-closed (TS runner catch-all): judge errors become error scores.
+                    scores.append(SampleScore(sample_id=score_key, status="error", error=str(err)))
+                    continue
             score = scorer(sample, attempt).model_copy(update={"sample_id": score_key})
             if calibrate:
                 judge_model = os.environ.get("AA_JUDGE_MODEL")
@@ -142,7 +195,7 @@ def run_suite(
                     JudgeConfig(model=judge_model),
                     target_model=manifest.target_model,
                 )
-                (attempt / "judge.json").write_text(
+                (attempt / "judge-result.json").write_text(
                     json.dumps(judged.model_dump(mode="json"), indent=2), encoding="utf-8"
                 )
                 score.notes.update(

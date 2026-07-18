@@ -379,9 +379,11 @@ def test_golden_second_attempt_exhausts_exactly_from_events(tmp_path: Path):
 
     stopped = compute_status(GOLDEN, _loc(change), _state(change), {})
     assert derive_healing_state(change).attempts_used == 2
-    assert stopped.healing_episode.terminal_kind == "stopped"
-    assert "2/2" in (stopped.healing_episode.reason or "")
-    assert stopped.terminal is not None and stopped.terminal.kind == "stopped"
+    # Exhaustion finalizes via a `complete(exhausted)` action (like `resolved`
+    # below) instead of a bare stop, so phases.healing.status lands on
+    # "exhausted" — not None — and report/archive `ready_when` can unblock.
+    assert stopped.healing_episode.next_actions[0].outcome == "exhausted"
+    assert stopped.healing_episode.state == "terminal"
 
 
 def test_golden_latest_human_stop_overrides_dispatch(tmp_path: Path):
