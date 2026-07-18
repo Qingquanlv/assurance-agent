@@ -23,7 +23,7 @@ from assurance_agent.workflow.orchestration.operations import (
     record_heal_transition,
 )
 from assurance_agent.workflow.orchestration.schema import parse_schema
-from tests.helpers_aa import loc_for
+from tests.helpers_aa import loc_for, write_aa_config
 
 _SCHEMA = parse_schema(
     """
@@ -88,11 +88,15 @@ def test_apply_outcome_guard_stale_and_manual(tmp_path: Path) -> None:
     )
     assert state_guard(change) != receipt.state_guard
     with pytest.raises(StaleDispatchError):
-        apply_phase_outcome(tmp_path, change, _SCHEMA, "explore", attempt_id="a1", skill="aa-explore")
+        apply_phase_outcome(
+            loc_for(change, project_root=tmp_path), _SCHEMA, "explore", attempt_id="a1", skill="aa-explore"
+        )
     assert not any(e["type"] == "phase_outcome_committed" for e in read_events(change))
 
     # Manual outcome skips guard / dispatch lookup.
-    applied = apply_phase_outcome(tmp_path, change, _SCHEMA, "explore", attempt_id=None, skill="aa-explore")
+    applied = apply_phase_outcome(
+        loc_for(change, project_root=tmp_path), _SCHEMA, "explore", attempt_id=None, skill="aa-explore"
+    )
     assert applied.disposition == "committed"
     assert applied.attempt_id.startswith("manual:")
 
@@ -101,12 +105,16 @@ def test_apply_outcome_driver_happy_and_replay(tmp_path: Path) -> None:
     change = _change(tmp_path)
     _advisory(change)
     record_dispatch(change, phase_id="explore", kind="dispatch_phase", attempt_id="a1")
-    first = apply_phase_outcome(tmp_path, change, _SCHEMA, "explore", attempt_id="a1", skill="aa-explore")
+    first = apply_phase_outcome(
+        loc_for(change, project_root=tmp_path), _SCHEMA, "explore", attempt_id="a1", skill="aa-explore"
+    )
     assert first.disposition == "committed"
     assert first.applied_status == "done"
     entry = _phase_entry(change, "explore")
     assert entry["attempt_id"] == "a1"
-    second = apply_phase_outcome(tmp_path, change, _SCHEMA, "explore", attempt_id="a1", skill="aa-explore")
+    second = apply_phase_outcome(
+        loc_for(change, project_root=tmp_path), _SCHEMA, "explore", attempt_id="a1", skill="aa-explore"
+    )
     assert second.disposition == "replayed"
     assert len([e for e in read_events(change) if e["type"] == "phase_outcome_committed"]) == 1
 
@@ -125,7 +133,9 @@ def test_apply_outcome_reconcile_event_without_marker(tmp_path: Path) -> None:
         },
     )
     # State has no explore marker — legitimate kill-prefix.
-    result = apply_phase_outcome(tmp_path, change, _SCHEMA, "explore", attempt_id="a1", skill="aa-explore")
+    result = apply_phase_outcome(
+        loc_for(change, project_root=tmp_path), _SCHEMA, "explore", attempt_id="a1", skill="aa-explore"
+    )
     assert result.disposition == "reconciled"
     assert _phase_entry(change, "explore")["attempt_id"] == "a1"
     assert len([e for e in read_events(change) if e["type"] == "phase_outcome_committed"]) == 1
@@ -158,7 +168,9 @@ def test_apply_outcome_superseded_keeps_newer_marker(tmp_path: Path) -> None:
         change,
         WorkflowState.model_validate({"phases": {"explore": {"status": "done", "attempt_id": "new"}}}),
     )
-    result = apply_phase_outcome(tmp_path, change, _SCHEMA, "explore", attempt_id="old", skill="aa-explore")
+    result = apply_phase_outcome(
+        loc_for(change, project_root=tmp_path), _SCHEMA, "explore", attempt_id="old", skill="aa-explore"
+    )
     assert result.disposition == "superseded"
     assert _phase_entry(change, "explore")["attempt_id"] == "new"
 
@@ -167,12 +179,16 @@ def test_apply_outcome_missing_dispatch_fail_closed(tmp_path: Path) -> None:
     change = _change(tmp_path)
     _advisory(change)
     with pytest.raises(AaError, match="no matching dispatch"):
-        apply_phase_outcome(tmp_path, change, _SCHEMA, "explore", attempt_id="ghost", skill="aa-explore")
+        apply_phase_outcome(
+            loc_for(change, project_root=tmp_path), _SCHEMA, "explore", attempt_id="ghost", skill="aa-explore"
+        )
 
 
 def test_apply_orchestrator_internal_status_pass(tmp_path: Path) -> None:
     change = _change(tmp_path)
-    result = apply_phase_outcome(tmp_path, change, _SCHEMA, "skill-registry-check", attempt_id=None)
+    result = apply_phase_outcome(
+        loc_for(change, project_root=tmp_path), _SCHEMA, "skill-registry-check", attempt_id=None
+    )
     assert result.applied_status == "pass"
 
 
@@ -287,6 +303,43 @@ def test_heal_transition_replay_and_reconcile(tmp_path: Path) -> None:
     assert len([e for e in read_events(change) if e["type"] == "heal_transition"]) == 1
 
 
+def test_heal_transition_persists_attempts_used_from_ledger(tmp_path: Path) -> None:
+    """Terminal heal must copy attempts_used out of the ledger into workflow-state."""
+    from assurance_agent.workflow.core.events import append_event_strict
+
+    change = _change(tmp_path)
+    append_event_strict(
+        change,
+        {
+            "source": "heal",
+            "type": "healing_entry_baseline_pinned",
+            "artifact_file": "healing/entry-baseline.json",
+            "artifact_sha256": "x",
+            "entry_batch_id": "b1",
+            "episode_id": "e1",
+        },
+    )
+    for n in (1, 2):
+        append_event_strict(
+            change,
+            {
+                "source": "progression",
+                "type": "healing_attempt_allocated",
+                "episode_id": "e1",
+                "attempt_id": f"ha{n}",
+                "attempt_number": n,
+                "operation_id": f"op{n}",
+                "source_batch_id": "b1",
+            },
+        )
+    result = record_heal_transition(change, "exhausted")
+    assert result.disposition == "committed"
+    healing = read_state(change).phases.healing
+    assert healing.status == "exhausted"
+    assert healing.attempts_used == 2
+    assert healing.episode_id == "e1"
+
+
 def test_record_decision_binds_current_audited_gate_read(tmp_path: Path) -> None:
     """A gate accept_risk decision auto-binds the current audited review artifact."""
     import hashlib
@@ -320,8 +373,7 @@ gates:
     expected_sha = hashlib.sha256(review.read_bytes()).hexdigest()
 
     record_decision(
-        tmp_path,
-        change,
+        loc_for(change, project_root=tmp_path),
         checkpoint="api-plan-review-gate",
         action="accept_risk",
         reason="benchmark accept",
@@ -357,8 +409,7 @@ gates:
     )
     change = _change(tmp_path)
     record_decision(
-        tmp_path,
-        change,
+        loc_for(change, project_root=tmp_path),
         checkpoint="gate",
         action="accept_risk",
         reason="ok",
@@ -366,8 +417,7 @@ gates:
     )
     assert len(read_events(change)) == 1
     record_decision(
-        tmp_path,
-        change,
+        loc_for(change, project_root=tmp_path),
         checkpoint="gate",
         action="accept_risk",
         reason="again",
@@ -376,8 +426,7 @@ gates:
     assert len([e for e in read_events(change) if e["type"] == "human_decision"]) == 2
 
     record_decision(
-        tmp_path,
-        change,
+        loc_for(change, project_root=tmp_path),
         checkpoint="gate",
         action="stop",
         reason="halt",
@@ -386,8 +435,7 @@ gates:
     assert read_state(change).model_dump().get("terminal") is not None
     with pytest.raises(AaError, match="already terminal"):
         record_decision(
-            tmp_path,
-            change,
+            loc_for(change, project_root=tmp_path),
             checkpoint="gate",
             action="stop",
             reason="again",
@@ -423,8 +471,7 @@ def test_apply_outcome_records_gate_verdict_with_reads_sha256(tmp_path: Path) ->
     expected = hashlib.sha256(payload).hexdigest()
 
     applied = apply_phase_outcome(
-        tmp_path,
-        change,
+        loc_for(change, project_root=tmp_path),
         _GATED_SCHEMA,
         "case-review",
         attempt_id=None,
@@ -473,8 +520,7 @@ def test_record_decision_healing_safety_binds_fixer_safety_check(tmp_path: Path)
     expected_sha = _fixer_safety_artifact(change)
 
     record_decision(
-        tmp_path,
-        change,
+        loc_for(change, project_root=tmp_path),
         checkpoint="healing.safety",
         action="accept_risk",
         reason="accept documented skip marker",
@@ -490,8 +536,7 @@ def test_record_decision_healing_safety_requires_artifact(tmp_path: Path) -> Non
     change = _change(tmp_path)
     with pytest.raises(AaError, match=r"healing/fixer-safety-check\.json is required"):
         record_decision(
-            tmp_path,
-            change,
+            loc_for(change, project_root=tmp_path),
             checkpoint="healing.safety",
             action="accept_risk",
             reason="no artifact yet",
@@ -506,8 +551,7 @@ def test_record_decision_healing_safety_rejects_fix_and_proceed(tmp_path: Path) 
     _fixer_safety_artifact(change)
     with pytest.raises(AaError, match="does not support action 'fix_and_proceed'"):
         record_decision(
-            tmp_path,
-            change,
+            loc_for(change, project_root=tmp_path),
             checkpoint="healing.safety",
             action="fix_and_proceed",
             reason="not a safety acceptance",
@@ -546,8 +590,7 @@ def test_healing_safety_accept_risk_unblocks_fixer_safety_gate(tmp_path: Path) -
     assert before.verdict == "needs_human_review"
 
     record_decision(
-        tmp_path,
-        change,
+        loc_for(change, project_root=tmp_path),
         checkpoint="healing.safety",
         action="accept_risk",
         reason="accept documented skip marker",
@@ -592,8 +635,9 @@ gates:
 
 
 def _matrix_change(tmp_path: Path) -> Path:
+    write_aa_config(tmp_path)
     schema_dir = tmp_path / ".aa"
-    schema_dir.mkdir()
+    schema_dir.mkdir(exist_ok=True)
     schema_dir.joinpath("workflow-schema.yaml").write_text(_MATRIX_SCHEMA_YAML, encoding="utf-8")
     return _change(tmp_path)
 
@@ -613,8 +657,7 @@ def test_record_decision_unknown_checkpoint_rejected(tmp_path: Path) -> None:
     change = _matrix_change(tmp_path)
     with pytest.raises(AaError, match="Unknown checkpoint 'nope'"):
         record_decision(
-            tmp_path,
-            change,
+            loc_for(change, project_root=tmp_path),
             checkpoint="nope",
             action="stop",
             reason="halt",
@@ -631,8 +674,7 @@ def test_record_decision_bare_phase_rejects_gate_actions(tmp_path: Path) -> None
             match=f"Unsupported decision: checkpoint 'explore' does not support action '{action}'",
         ):
             record_decision(
-                tmp_path,
-                change,
+                loc_for(change, project_root=tmp_path),
                 checkpoint="explore",
                 action=action,
                 reason="not gated",
@@ -645,8 +687,7 @@ def test_record_decision_bare_phase_stop_allowed(tmp_path: Path) -> None:
     change = _matrix_change(tmp_path)
     _case_review_artifact(change, decision="pass")  # keep gates non-terminal
     record_decision(
-        tmp_path,
-        change,
+        loc_for(change, project_root=tmp_path),
         checkpoint="explore",
         action="stop",
         reason="halt",
@@ -661,8 +702,7 @@ def test_record_decision_gated_phase_binds_audited_read(tmp_path: Path) -> None:
     change = _matrix_change(tmp_path)
     expected_sha = _case_review_artifact(change)
     record_decision(
-        tmp_path,
-        change,
+        loc_for(change, project_root=tmp_path),
         checkpoint="case-review",
         action="fix_and_proceed",
         reason="fix forward",
@@ -676,8 +716,7 @@ def test_record_decision_gated_phase_binds_audited_read(tmp_path: Path) -> None:
 def test_record_decision_execution_test_changes_matrix(tmp_path: Path) -> None:
     change = _matrix_change(tmp_path)
     record_decision(
-        tmp_path,
-        change,
+        loc_for(change, project_root=tmp_path),
         checkpoint="execution.test-changes",
         action="allow_test_changes",
         reason="authorize current tree",
@@ -687,8 +726,7 @@ def test_record_decision_execution_test_changes_matrix(tmp_path: Path) -> None:
     for action in ("accept_risk", "fix_and_proceed"):
         with pytest.raises(AaError, match="does not support action"):
             record_decision(
-                tmp_path,
-                change,
+                loc_for(change, project_root=tmp_path),
                 checkpoint="execution.test-changes",
                 action=action,
                 reason="not supported here",
@@ -700,8 +738,7 @@ def test_record_decision_execution_test_changes_matrix(tmp_path: Path) -> None:
 def test_record_decision_bootstrap_matrix(tmp_path: Path) -> None:
     change = _matrix_change(tmp_path)
     record_decision(
-        tmp_path,
-        change,
+        loc_for(change, project_root=tmp_path),
         checkpoint="bootstrap",
         action="skip_branch",
         reason="skip optional branch",
@@ -711,8 +748,7 @@ def test_record_decision_bootstrap_matrix(tmp_path: Path) -> None:
     for action in ("accept_risk", "fix_and_proceed"):
         with pytest.raises(AaError, match="does not support action"):
             record_decision(
-                tmp_path,
-                change,
+                loc_for(change, project_root=tmp_path),
                 checkpoint="bootstrap",
                 action=action,
                 reason="not supported here",
@@ -733,8 +769,7 @@ def test_record_decision_audited_gate_requires_artifact(tmp_path: Path) -> None:
             match=r"Audited artifact review/case-review\.json is required for this decision",
         ):
             record_decision(
-                tmp_path,
-                change,
+                loc_for(change, project_root=tmp_path),
                 checkpoint="case-review-gate",
                 action=action,
                 reason="no artifact yet",
@@ -747,8 +782,7 @@ def test_record_decision_stop_at_audited_gate_needs_no_artifact(tmp_path: Path) 
     """stop is a terminal-status decision: no audited binding required."""
     change = _matrix_change(tmp_path)
     record_decision(
-        tmp_path,
-        change,
+        loc_for(change, project_root=tmp_path),
         checkpoint="case-review-gate",
         action="stop",
         reason="halt",
@@ -763,8 +797,7 @@ def test_record_decision_non_audited_gate_needs_no_artifact(tmp_path: Path) -> N
     """Gates without audited reads accept decisions without binding (TS parity)."""
     change = _matrix_change(tmp_path)
     record_decision(
-        tmp_path,
-        change,
+        loc_for(change, project_root=tmp_path),
         checkpoint="lint-gate",
         action="accept_risk",
         reason="lint gate has no audited reads",

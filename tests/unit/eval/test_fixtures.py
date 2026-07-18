@@ -3,8 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
+import pytest
 
-from assurance_agent.eval.fixtures import load_tier, seed_change
+from assurance_agent.eval.fixtures import load_tier, seed_change, write_fixture_lock
+from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.state import verify_state_integrity, write_state
 from assurance_agent.artifacts.models import WorkflowState
 
@@ -60,6 +62,7 @@ def _write_synth_fixtures(root: Path) -> Path:
     (sample / "tests" / "api" / "test_synth.py").write_text(
         "def test_ok():\n    assert True\n", encoding="utf-8"
     )
+    write_fixture_lock(fixtures, {"fixture-001": "samples/eval-sample-001"})
     return fixtures
 
 
@@ -81,8 +84,23 @@ def test_seed_change_preserves_state_integrity(tmp_path: Path) -> None:
         change_id="eval-sample-001",
         tier_name="L3-run-seed",
         fixtures_root=fixtures,
+        fixture_id="fixture-001",
     )
     change = sut / "qa" / "changes" / "eval-sample-001"
     assert (change / "proposal.md").exists()
     assert (sut / "tests" / "api" / "test_synth.py").exists()
     assert verify_state_integrity(change) is None
+
+
+def test_seed_change_rejects_fixture_drift(tmp_path: Path) -> None:
+    fixtures = _write_synth_fixtures(tmp_path)
+    (fixtures / "samples" / "eval-sample-001" / "proposal.md").write_text("tampered\n", encoding="utf-8")
+
+    with pytest.raises(AaError, match="fixture lock mismatch"):
+        seed_change(
+            sut_sandbox=tmp_path / "sut",
+            change_id="eval-sample-001",
+            tier_name="L3-run-seed",
+            fixtures_root=fixtures,
+            fixture_id="fixture-001",
+        )

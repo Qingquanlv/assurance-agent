@@ -14,7 +14,9 @@
       "e2e_pass_rate": 1.0,
       "fuzz_pass_rate": 0.0,
       "performance_pass_rate": 0.0
-    }
+    },
+    "repeat": 1,
+    "regression_policy_sha256": "8a6ad8262c3b38865a6116db54212858e3363f7aba7ec9b6f89d74be377eed74"
   },
   "eval-smoke": {
     "run_id": "eval-20260717-65dc842d",
@@ -24,7 +26,9 @@
     "metrics": {
       "evidence_integrity": 1.0,
       "pass_rate": 1.0
-    }
+    },
+    "repeat": 1,
+    "regression_policy_sha256": "0b34a7a0d44860b111ae633b8c770d09b79d96a0f18f191f3e952eae9c0b9833"
   },
   "classification-unit": {
     "run_id": "eval-20260717-1122e858",
@@ -35,7 +39,9 @@
       "evidence_integrity": 1.0,
       "category_match_rate": 1.0,
       "unknown_rate": 0.0
-    }
+    },
+    "repeat": 1,
+    "regression_policy_sha256": "c579c059b66b44385aaaeac82cf48d035464c94d362c3edbd90d8781b0842313"
   },
   "safety-lite": {
     "run_id": "eval-20260717-09d33c81",
@@ -47,7 +53,9 @@
       "secret_leak_count": 0.0,
       "forbidden_write_executed_count": 0.0,
       "stdout_dangerous_command_count": 0.0
-    }
+    },
+    "repeat": 1,
+    "regression_policy_sha256": "5784e881f34601cc0993a4afce2038cd880cbc4076d9b43e6755dbddf6262e21"
   },
   "case-generation": {
     "run_id": "eval-20260717-5cdae172",
@@ -64,7 +72,9 @@
       "requirement_precision": 0.0,
       "requirement_recall": 0.0,
       "requirement_f1": 0.0
-    }
+    },
+    "repeat": 1,
+    "regression_policy_sha256": "50295363d4a06dcbe9a773f91dfe715014a417da144c1b67c90aec050860b04d"
   },
   "workflow-case": {
     "run_id": "eval-20260717-8b4d2028",
@@ -78,7 +88,9 @@
       "case_review_gate_pass_rate": 1.0,
       "secret_leak_count": 0.0,
       "forbidden_write_executed_count": 0.0
-    }
+    },
+    "repeat": 1,
+    "regression_policy_sha256": "99bf5c63be2500d659541e80ad15bb84cc236d9ebde37913e8752880e1264d0c"
   },
   "workflow-api-codegen": {
     "run_id": "eval-20260717-549cd719",
@@ -91,7 +103,9 @@
       "secret_leak_count": 0.0,
       "forbidden_write_executed_count": 0.0,
       "codegen_summary_present_rate": 1.0
-    }
+    },
+    "repeat": 1,
+    "regression_policy_sha256": "867ea5c6dc4135d1d7328e34c594467d36857b353404a9b2213c28dc4bedef72"
   },
   "workflow-e2e-codegen": {
     "run_id": "eval-20260717-8796cb79",
@@ -104,7 +118,9 @@
       "secret_leak_count": 0.0,
       "forbidden_write_executed_count": 0.0,
       "codegen_summary_present_rate": 1.0
-    }
+    },
+    "repeat": 1,
+    "regression_policy_sha256": "867ea5c6dc4135d1d7328e34c594467d36857b353404a9b2213c28dc4bedef72"
   },
   "workflow-fuzz-codegen": {
     "run_id": "eval-20260717-3f6b8231",
@@ -117,7 +133,9 @@
       "secret_leak_count": 0.0,
       "forbidden_write_executed_count": 0.0,
       "codegen_summary_present_rate": 1.0
-    }
+    },
+    "repeat": 1,
+    "regression_policy_sha256": "867ea5c6dc4135d1d7328e34c594467d36857b353404a9b2213c28dc4bedef72"
   },
   "workflow-performance-codegen": {
     "run_id": "eval-20260717-adec467a",
@@ -130,7 +148,9 @@
       "secret_leak_count": 0.0,
       "forbidden_write_executed_count": 0.0,
       "codegen_summary_present_rate": 1.0
-    }
+    },
+    "repeat": 1,
+    "regression_policy_sha256": "867ea5c6dc4135d1d7328e34c594467d36857b353404a9b2213c28dc4bedef72"
   },
   "workflow-full": {
     "run_id": "eval-20260717-97de042b",
@@ -142,6 +162,8 @@
       "end_to_end_pass_rate": 1.0,
       "evidence_integrity": 1.0,
       "secret_leak_count": 0.0
-    }
+    },
+    "repeat": 1,
+    "regression_policy_sha256": "00478500af35ca894b8074d79da47452997da4c91034fcc86a1847fb40ea8f15"
   }
 }

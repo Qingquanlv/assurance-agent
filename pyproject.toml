@@ -45,4 +45,5 @@ extend-exclude = ["benchmark", ".worktrees"]
 
 [tool.pyright]
 include = ["assurance_agent", "tests"]
+pythonVersion = "3.11"
 typeCheckingMode = "standard"

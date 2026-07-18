@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import subprocess
 from pathlib import Path
 
 from tests.helpers_aa import write_aa_config
 
 import yaml
+import pytest
 
 from assurance_agent.eval import runner as runner_mod
 from assurance_agent.eval.runner import run_suite
 from assurance_agent.eval.types import JudgeOutput
+from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.events import append_event_strict
 from assurance_agent.workflow.driver.adapter import PhaseRequest, PhaseResult
 from assurance_agent.workflow.orchestration.engine import (
@@ -36,7 +39,7 @@ def _seed_suite(project_root: Path) -> Path:
             {
                 "name": "workflow-case",
                 "scorer": "workflow-case",
-                "executor": {"type": "workflow-run", "scope": "full"},
+                "executor": {"type": "workflow-run", "scope": "case"},
                 "thresholds": [
                     {"metric": "case_review_gate_pass_rate", "gate": "hard", "op": "gte", "value": 0.99},
                     {"metric": "secret_leak_count", "gate": "hard", "op": "eq", "value": 0.0},
@@ -227,6 +230,32 @@ def test_run_suite_overlays_extra_memory_into_attempt_sandbox(tmp_path: Path) ->
     assert seen["memory_present"] is True
     attempt_mem = sut / "eval/out/runs" / run_id / "samples/WC-001/attempt-0/sut/.aa/memory/RETRO-001.md"
     assert attempt_mem.is_file()
+    manifest = json.loads((sut / "eval/out/runs" / run_id / "manifest.json").read_text())
+    file_hash = hashlib.sha256(b"# candidate memory\n").hexdigest()
+    canonical = f".aa/memory/RETRO-001.md:{file_hash}"
+    assert manifest["memory_overlay_sha256"] == hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def test_run_suite_rejects_symlinked_memory_overlay(tmp_path: Path) -> None:
+    project_root = tmp_path / "proj"
+    project_root.mkdir()
+    suite_file = _seed_case_generation_suite(project_root, judge=None)
+    sut = tmp_path / "sut"
+    sut.mkdir()
+    overlay = tmp_path / "overlay"
+    memory = overlay / ".aa" / "memory"
+    memory.mkdir(parents=True)
+    secret = tmp_path / "secret.md"
+    secret.write_text("secret\n", encoding="utf-8")
+    (memory / "escape.md").symlink_to(secret)
+
+    with pytest.raises(AaError, match="symlink"):
+        run_suite(
+            suite_file=suite_file,
+            project_root=project_root,
+            sut_dir=sut,
+            extra_memory_dir=overlay,
+        )
 
 
 def test_run_suite_repeat_uses_isolated_workspaces_and_unique_score_keys(tmp_path: Path) -> None:
@@ -309,6 +338,8 @@ def test_run_suite_repeat_uses_isolated_workspaces_and_unique_score_keys(tmp_pat
     assert gate.verdict == "pass"
     metrics = json.loads((sut / "eval/out/runs" / run_id / "metrics.json").read_text())
     assert set(metrics["per_sample"]) == {"WC-001#attempt-0", "WC-001#attempt-1"}
+    manifest = json.loads((sut / "eval/out/runs" / run_id / "manifest.json").read_text())
+    assert manifest["repeat"] == 2
 
 
 def _seed_case_generation_suite(project_root: Path, *, judge: dict | None) -> Path:

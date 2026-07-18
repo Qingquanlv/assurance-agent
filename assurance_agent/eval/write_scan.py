@@ -4,8 +4,9 @@
 逐条对齐该文件；唯一有意偏差是 denylist 中 `.aws/memory/**` 按本仓库迁移约定改
 为 `.aa/memory/**`（Python 版工具状态目录是 `.aa/`）。
 
-非 git 工作目录的行为对齐旧版：`capture_git_porcelain` 直接抛错，由 executor
-记为 attempt 级 infrastructure error（fail-closed），而不是静默跳过。
+Eval attempts without a copied ``.git`` directory are initialized as disposable
+snapshot repositories immediately before the first scan. This keeps the default
+embedded SUT executable while preserving a clean, content-complete baseline.
 """
 
 from __future__ import annotations
@@ -223,7 +224,7 @@ def scan_forbidden_writes_from_snapshots(
 
 def capture_git_porcelain(project_dir: Path) -> str:
     if not (project_dir / ".git").exists():
-        raise AaError(f"forbidden_write_executed_count requires git repo at projectDir: {project_dir}")
+        _initialize_snapshot_repo(project_dir)
     try:
         proc = subprocess.run(
             ["git", "status", "--porcelain", "-uall"],
@@ -237,6 +238,41 @@ def capture_git_porcelain(project_dir: Path) -> str:
     if proc.returncode != 0:
         raise AaError(f"git status --porcelain failed in {project_dir}: {(proc.stderr or '').strip()}")
     return proc.stdout or ""
+
+
+def _initialize_snapshot_repo(project_dir: Path) -> None:
+    """Create a local baseline commit for an isolated, non-git eval attempt."""
+    commands = [
+        ["git", "init", "-q"],
+        ["git", "add", "-A"],
+        [
+            "git",
+            "-c",
+            "user.name=assurance-agent-eval",
+            "-c",
+            "user.email=eval@localhost",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "eval snapshot",
+        ],
+    ]
+    try:
+        for command in commands:
+            proc = subprocess.run(
+                command,
+                cwd=project_dir,
+                capture_output=True,
+                text=True,
+                shell=False,
+            )
+            if proc.returncode != 0:
+                raise AaError(
+                    f"failed to initialize eval git snapshot in {project_dir}: {(proc.stderr or '').strip()}"
+                )
+    except FileNotFoundError as exc:
+        raise AaError("forbidden_write_executed_count requires the git binary on PATH") from exc
 
 
 def _evidence_dir(attempt_dir: Path) -> Path:

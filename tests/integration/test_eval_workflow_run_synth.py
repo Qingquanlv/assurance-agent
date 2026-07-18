@@ -7,6 +7,7 @@ import yaml
 
 from tests.helpers_aa import write_aa_config
 
+from assurance_agent.eval.fixtures import write_fixture_lock
 from assurance_agent.eval.runner import run_suite
 from assurance_agent.workflow.driver.adapter import PhaseRequest, PhaseResult
 from assurance_agent.workflow.orchestration.engine import Terminal, WorkflowStatus
@@ -42,6 +43,7 @@ def test_synth_workflow_run_writes_under_sut_out(tmp_path: Path) -> None:
                 "suite": "workflow-run",
                 "input": {
                     "change_id": "eval-sample-001",
+                    "fixture_id": "eval-sample-001",
                     "fixture_tier": "L3-run-seed",
                 },
                 "expected": {},
@@ -55,17 +57,27 @@ def test_synth_workflow_run_writes_under_sut_out(tmp_path: Path) -> None:
     sample.mkdir(parents=True)
     (sample / "proposal.md").write_text("# p\n", encoding="utf-8")
     (sample / "workflow-state.yaml").write_text("phases: {}\n", encoding="utf-8")
+    (sample / "tests").mkdir()
+    for required in ("config.py", "conftest.py", "schema_validation.py"):
+        (sample / "tests" / required).write_text("# fixture\n", encoding="utf-8")
     (fixtures / "tiers").mkdir()
     (fixtures / "tiers" / "L3-run-seed.yaml").write_text(
         yaml.safe_dump(
             {
                 "name": "L3-run-seed",
-                "paths": ["proposal.md", "workflow-state.yaml"],
+                "paths": [
+                    "proposal.md",
+                    "workflow-state.yaml",
+                    "tests/config.py",
+                    "tests/conftest.py",
+                    "tests/schema_validation.py",
+                ],
                 "resets": {"workflow_state": {"phases.execution.status": "pending"}},
             }
         ),
         encoding="utf-8",
     )
+    write_fixture_lock(fixtures, {"eval-sample-001": "samples/eval-sample-001"})
 
     class FakeAdapter:
         def run_phase(self, request: PhaseRequest) -> PhaseResult:

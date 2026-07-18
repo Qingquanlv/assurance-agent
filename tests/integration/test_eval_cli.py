@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 from tests.helpers_aa import write_aa_config
 
@@ -21,7 +22,7 @@ def _seed(project_root: Path) -> None:
             {
                 "name": "workflow-case",
                 "scorer": "workflow-case",
-                "executor": {"type": "workflow-run", "scope": "full"},
+                "executor": {"type": "workflow-run", "scope": "case"},
                 "thresholds": [
                     {"metric": "case_review_gate_pass_rate", "gate": "hard", "op": "gte", "value": 0.99},
                 ],
@@ -109,6 +110,38 @@ def test_eval_run_suite_and_plan_mutually_exclusive() -> None:
     result = CliRunner().invoke(main, ["eval", "run", "--suite", "x", "--plan", "p.json"])
     assert result.exit_code == 1
     assert "mutually exclusive" in result.output
+
+
+def test_eval_run_passes_resolved_extra_memory_dir(monkeypatch) -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem() as fs:
+        project_root = Path(fs)
+        _seed(project_root)
+        overlay = project_root / "overlay"
+        (overlay / ".aa" / "memory").mkdir(parents=True)
+        seen: dict = {}
+
+        def fake_run_suite(**kwargs):  # noqa: ANN003, ANN202
+            seen.update(kwargs)
+            return "eval-1", SimpleNamespace(verdict="pass")
+
+        monkeypatch.setattr("assurance_agent.commands.eval_cmd.run_suite", fake_run_suite)
+        result = runner.invoke(
+            main,
+            [
+                "eval",
+                "run",
+                "--suite",
+                "workflow-case",
+                "--sut-dir",
+                str(project_root / "sut"),
+                "--extra-memory-dir",
+                str(overlay),
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert seen["extra_memory_dir"] == overlay.resolve()
 
 
 def test_eval_plan_writes_json() -> None:

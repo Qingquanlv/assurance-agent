@@ -30,7 +30,6 @@ def decide_command(change_id: str, checkpoint: str, action: str, reason: str, ev
     except (UnsafeIdentifierError, ChangeNotFoundError, ConfigNotFoundError) as err:
         click.secho(str(err), fg="red")
         raise SystemExit(1) from err
-    change_dir = loc.path
     if action not in HUMAN_DECISION_ACTIONS:
         click.secho(f"decide failed: unsupported action '{action}'", fg="red")
         raise SystemExit(1)
@@ -41,8 +40,7 @@ def decide_command(change_id: str, checkpoint: str, action: str, reason: str, ev
     who = (os.environ.get("USER") or "unknown").strip() or "unknown"
     try:
         record_decision(
-            project_root,
-            change_dir,
+            loc,
             checkpoint=checkpoint,
             action=action,
             reason=reason,

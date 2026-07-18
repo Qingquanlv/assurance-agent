@@ -92,6 +92,23 @@ def _invoke_run() -> Result:
     )
 
 
+def _authorize_current_tree() -> Result:
+    return CliRunner().invoke(
+        main,
+        [
+            "decide",
+            "--change",
+            "CH-1",
+            "--at",
+            "execution.test-changes",
+            "--action",
+            "allow_test_changes",
+            "--reason",
+            "manual approval",
+        ],
+    )
+
+
 @pytest.fixture
 def guarded_project(tmp_path: Path, monkeypatch):
     (tmp_path / ".aa").mkdir()
@@ -122,7 +139,7 @@ def test_forbidden_policy_rejects_allow_test_changes(guarded_project, monkeypatc
     monkeypatch.setattr(run_cmd_mod, "run_change", track_run)
     _write_policy(tmp_path, "forbidden")
     _tamper_test(tmp_path)
-    result = _invoke_run()
+    result = _authorize_current_tree()
     assert result.exit_code == 1
     assert calls == []
     assert "ALLOW-TEST-CHANGES-FORBIDDEN" in result.output
@@ -130,15 +147,60 @@ def test_forbidden_policy_rejects_allow_test_changes(guarded_project, monkeypatc
     assert not override_files
 
 
+def test_allow_flag_without_human_decision_is_rejected(guarded_project, monkeypatch) -> None:
+    tmp_path, change = guarded_project
+    monkeypatch.setattr(runners_mod.subprocess, "run", _stub_pytest("passed"))
+    _tamper_test(tmp_path)
+    result = _invoke_run()
+    assert result.exit_code == 1
+    assert "TESTS-CHANGED-WITHOUT-HEALING" in result.output
+    assert not (change / "execution" / "test-changes-override-token.json").exists()
+
+
+def test_human_decision_requires_explicit_allow_flag_to_consume(guarded_project, monkeypatch) -> None:
+    tmp_path, change = guarded_project
+    monkeypatch.setattr(runners_mod.subprocess, "run", _stub_pytest("passed"))
+    _tamper_test(tmp_path)
+    decision = _authorize_current_tree()
+    assert decision.exit_code == 0, decision.output
+
+    result = CliRunner().invoke(main, ["run", "--change", "CH-1", "--rerun-reason", "manual fix"])
+
+    assert result.exit_code == 1
+    assert "TESTS-CHANGED-WITHOUT-HEALING" in result.output
+    token = json.loads((change / "execution" / "test-changes-override-token.json").read_text())
+    assert token["consumed"] is False
+
+
 def test_missing_policy_file_defaults_to_allow_with_evidence(guarded_project, monkeypatch) -> None:
     tmp_path, change = guarded_project
     monkeypatch.setattr(runners_mod.subprocess, "run", _stub_pytest("passed"))
     monkeypatch.setattr(run_cmd_mod, "append_event_best_effort", lambda *a, **k: None)
     _tamper_test(tmp_path)
+    decision = _authorize_current_tree()
+    assert decision.exit_code == 0, decision.output
     result = _invoke_run()
     assert result.exit_code == 0
     override_files = list((change / "execution" / "runs").rglob("test-changes-override.json"))
     assert override_files
+    token = json.loads((change / "execution" / "test-changes-override-token.json").read_text())
+    assert token["consumed"] is True
+    manifest = yaml.safe_load((change / "execution" / "execution-manifest.yaml").read_text())
+    assert token["consumed_by_batch_id"] == manifest["batch_id"]
+
+
+def test_test_change_authorization_rejects_stale_tree(guarded_project, monkeypatch) -> None:
+    tmp_path, change = guarded_project
+    monkeypatch.setattr(runners_mod.subprocess, "run", _stub_pytest("passed"))
+    _tamper_test(tmp_path)
+    decision = _authorize_current_tree()
+    assert decision.exit_code == 0, decision.output
+    (tmp_path / "tests" / "api" / "test_x.py").write_text("def test_x(): assert 3\n", encoding="utf-8")
+    result = _invoke_run()
+    assert result.exit_code == 1
+    assert "TEST-CHANGES-OVERRIDE-TOKEN-MISMATCH" in result.output
+    token = json.loads((change / "execution" / "test-changes-override-token.json").read_text())
+    assert token["consumed"] is False
 
 
 def test_conditional_policy_allows_within_allowed_path_globs(guarded_project, monkeypatch) -> None:
@@ -147,6 +209,8 @@ def test_conditional_policy_allows_within_allowed_path_globs(guarded_project, mo
     monkeypatch.setattr(run_cmd_mod, "append_event_best_effort", lambda *a, **k: None)
     _write_policy(tmp_path, {"mode": "conditional", "allowedPathGlobs": ["tests/**"]})
     _tamper_test(tmp_path)
+    decision = _authorize_current_tree()
+    assert decision.exit_code == 0, decision.output
     result = _invoke_run()
     assert result.exit_code == 0
     override_files = list((change / "execution" / "runs").rglob("test-changes-override.json"))
@@ -164,7 +228,7 @@ def test_conditional_policy_denies_outside_allowed_path_globs(guarded_project, m
     monkeypatch.setattr(run_cmd_mod, "run_change", track_run)
     _write_policy(tmp_path, {"mode": "conditional", "allowedPathGlobs": ["tests/e2e/**"]})
     _tamper_test(tmp_path)
-    result = _invoke_run()
+    result = _authorize_current_tree()
     assert result.exit_code == 1
     assert calls == []
     assert "TEST-CHANGES-OVERRIDE-PATH-DENIED" in result.output

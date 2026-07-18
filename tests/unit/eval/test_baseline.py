@@ -17,6 +17,9 @@ def _run(root: Path, run_id: str, suite: str, metrics: dict[str, float]) -> Path
         total_samples=1,
         executed_samples=1,
         target_model="m",
+        suite_version="7",
+        repeat=3,
+        regression_policy_sha256="a" * 64,
         started_at="2026-07-15T00:00:00Z",
         completed_at="2026-07-15T00:01:00Z",
     )
@@ -43,3 +46,6 @@ def test_update_preserves_other_suites(tmp_path: Path) -> None:
     baseline = read_baseline(tmp_path)
     assert set(baseline) == {"s1", "s2"}
     assert baseline["s1"].run_id == "r1"
+    assert baseline["s1"].suite_version == "7"
+    assert baseline["s1"].repeat == 3
+    assert baseline["s1"].regression_policy_sha256 == "a" * 64

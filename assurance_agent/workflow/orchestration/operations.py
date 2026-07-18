@@ -27,6 +27,16 @@ from assurance_agent.workflow.orchestration.write_guards import (
     assert_skill_attestation,
 )
 from assurance_agent.workflow.execution.tree_hash import sha256_file
+from assurance_agent.workflow.execution.tree_hash import hash_test_tree
+from assurance_agent.workflow.healing.override_policy import (
+    DECISION_REL_PATH,
+    TOKEN_REL_PATH,
+    assert_test_changes_override_allowed,
+    build_test_changes_override_token,
+    load_test_changes_override_policy,
+    token_json_bytes,
+)
+from assurance_agent.workflow.healing.safety import assert_test_tree_unchanged_or_healing
 from assurance_agent.workflow.orchestration.decision_support import resolve_decision_support
 from assurance_agent.workflow.orchestration.engine import compute_status
 from assurance_agent.workflow.orchestration.gates import check_gate, resolve_change_path
@@ -90,11 +100,32 @@ def _with_phase(state: WorkflowState, phase_id: str, entry: dict) -> WorkflowSta
     return WorkflowState.model_validate(data)
 
 
-def _with_healing_status(state: WorkflowState, status: str) -> WorkflowState:
+def _with_healing_status(
+    state: WorkflowState,
+    status: str,
+    *,
+    change_dir: Path | None = None,
+) -> WorkflowState:
+    """Write healing judgment and sync ledger-derived counters into workflow-state.
+
+    ``aa state heal`` only commits the terminal status; without copying
+    ``attempts_used`` from the event ledger, state stays at 0 and diverges
+    from ``derive_healing_state`` (report/dashboard drift).
+    """
     data = state.model_dump(mode="python", exclude_none=True)
     phases = dict(data.get("phases") or {})
     healing = dict(phases.get("healing") or {})
     healing["status"] = status
+    if change_dir is not None:
+        from assurance_agent.workflow.orchestration.healing_state import derive_healing_state
+
+        snap = derive_healing_state(change_dir)
+        healing["attempts_used"] = snap.attempts_used
+        healing["all_fixers_no_op"] = snap.all_fixers_no_op
+        if snap.episode_id is not None:
+            healing["episode_id"] = snap.episode_id
+        if snap.attempt_id is not None:
+            healing["attempt_id"] = snap.attempt_id
     phases["healing"] = healing
     data["phases"] = phases
     return WorkflowState.model_validate(data)
@@ -257,8 +288,7 @@ def record_dispatch(
 
 
 def apply_phase_outcome(
-    project_root: Path,
-    change_dir: Path,
+    loc: ChangeLocation,
     schema: WorkflowSchema,
     phase_id: str,
     *,
@@ -266,16 +296,9 @@ def apply_phase_outcome(
     skill: str | None = None,
     skill_md_path: str | None = None,
 ) -> AppliedOutcome:
+    change_dir = loc.path
     if not schema.has_phase(phase_id):
         raise AaError(f"unknown phase '{phase_id}'")
-    # Write path operates on an active Change; source is definitionally "changes"
-    # and resolve_change_path only reads project_root + change_id from the handle.
-    loc = ChangeLocation(
-        project_root=project_root,
-        change_id=change_dir.name,
-        path=change_dir,
-        source="changes",
-    )
     missing = [
         rel for rel in (schema.phase_produces(phase_id) or []) if not resolve_change_path(loc, rel).exists()
     ]
@@ -380,8 +403,7 @@ ARCHIVE_STATUSES = frozenset({"archived", "archived_with_warnings", "skipped"})
 
 
 def commit_archive_outcome(
-    project_root: Path,
-    change_dir: Path,
+    loc: ChangeLocation,
     schema: WorkflowSchema,
     *,
     status: str,
@@ -405,16 +427,11 @@ def commit_archive_outcome(
     not re-evaluated here: eligibility was already enforced by the loop/skill
     before the archive artifacts were written.
     """
+    change_dir = loc.path
     if status not in ARCHIVE_STATUSES:
         raise AaError(f"invalid archive status {status!r}; expected one of {sorted(ARCHIVE_STATUSES)}")
     if not schema.has_phase("archive"):
         raise AaError("schema has no 'archive' phase")
-    loc = ChangeLocation(
-        project_root=project_root,
-        change_id=change_dir.name,
-        path=change_dir,
-        source="changes",
-    )
     if status != "skipped":
         missing = [
             rel
@@ -623,7 +640,7 @@ def record_heal_transition(change_dir: Path, status: str) -> HealTransition:
 
         if ledger_to == status and state_status != status:
             assert latest is not None
-            txn.set_state(_with_healing_status(state, status))
+            txn.set_state(_with_healing_status(state, status, change_dir=change_dir))
             return HealTransition(
                 from_status=str(latest.get("from") or "pending"),
                 to_status=status,
@@ -632,13 +649,12 @@ def record_heal_transition(change_dir: Path, status: str) -> HealTransition:
 
         prior = ledger_to or state_status or "pending"
         txn.append_strict({"source": "status", "type": "heal_transition", "from": prior, "to": status})
-        txn.set_state(_with_healing_status(state, status))
+        txn.set_state(_with_healing_status(state, status, change_dir=change_dir))
         return HealTransition(from_status=prior, to_status=status, disposition="committed")
 
 
 def record_decision(
-    project_root: Path,
-    change_dir: Path,
+    loc: ChangeLocation,
     *,
     checkpoint: str,
     action: str,
@@ -646,6 +662,8 @@ def record_decision(
     who: str,
     evidence: str | None = None,
 ) -> None:
+    project_root = loc.project_root
+    change_dir = loc.path
     if action not in HUMAN_DECISION_ACTIONS:
         raise AaError(f"unsupported action '{action}'")
     if not reason.strip():
@@ -657,12 +675,6 @@ def record_decision(
     # never produce an event.
     schema = load_workflow_schema(project_root)
     support = resolve_decision_support(schema, checkpoint, action)
-    loc = ChangeLocation(
-        project_root=project_root,
-        change_id=change_dir.name,
-        path=change_dir,
-        source="changes",
-    )
 
     evidence_file: str | None = None
     evidence_sha256: str | None = None
@@ -676,6 +688,28 @@ def record_decision(
             raise AaError(f"evidence not found: {evidence}")
         evidence_file = evidence_path.relative_to(project_root).as_posix()
         evidence_sha256 = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+
+    override_token_bytes: bytes | None = None
+    if support.consumer == "execution-test-changes":
+        integrity = assert_test_tree_unchanged_or_healing(
+            project_root,
+            loc.change_id,
+            allow_test_changes=True,
+        )
+        assert_test_changes_override_allowed(
+            change_dir,
+            integrity,
+            load_test_changes_override_policy(project_root),
+        )
+        token = build_test_changes_override_token(
+            change_dir,
+            change_id=loc.change_id,
+            reason=reason,
+            tests_tree_sha256=hash_test_tree(project_root).aggregate,
+        )
+        override_token_bytes = token_json_bytes(token)
+        evidence_file = DECISION_REL_PATH.as_posix()
+        evidence_sha256 = hashlib.sha256(override_token_bytes).hexdigest()
 
     # Gate decisions auto-bind the current audited gate read as review evidence so
     # the engine's applyGateDecision can upgrade a needs_human_review verdict and
@@ -761,6 +795,10 @@ def record_decision(
         data["decisions"] = decisions
         if action == "stop":
             data["terminal"] = {"kind": "stopped", "reason": reason}
+
+        if override_token_bytes is not None:
+            txn.write_file(TOKEN_REL_PATH.as_posix(), override_token_bytes)
+            txn.write_file(DECISION_REL_PATH.as_posix(), override_token_bytes)
 
         event: dict[str, object] = {
             "source": "decide",

@@ -43,6 +43,10 @@ from assurance_agent.workflow.driver.process_runner import (
     SubprocessRunner,
     resolve_aa_command,
 )
+from assurance_agent.workflow.driver.test_infra_bootstrap import (
+    evaluate_test_infra_bootstrap,
+    mark_test_infra_bootstrap_done,
+)
 from assurance_agent.workflow.orchestration.engine import (
     DispatchEntry,
     Terminal,
@@ -159,8 +163,7 @@ class DefaultCliPhaseExecutor:
         schema = self._schema or load_workflow_schema(ctx.project_root)
         try:
             apply_phase_outcome(
-                ctx.project_root,
-                ctx.change_dir,
+                ctx.loc,
                 schema,
                 entry.phase_id,
                 attempt_id=attempt_id,
@@ -436,6 +439,11 @@ def run_workflow_loop(
             configure_workflow_params(change_dir, params, orchestrator)
         except AaError as err:
             return finish(EXIT_ERROR, f"configure failed: {err}", "failed")
+        if scope == "full":
+            bootstrap = evaluate_test_infra_bootstrap(project_root, change_dir)
+            if bootstrap.kind == "needs_human":
+                return pause("test-infra-bootstrap", bootstrap.reason or "test infra not ready")
+            mark_test_infra_bootstrap_done(change_dir, bootstrap)
         if status_provider is None:
             # Engine params come from state post-configure: TS progression reads
             # state.params, which CLI --params reached via `state configure`.

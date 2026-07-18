@@ -186,6 +186,35 @@ def test_packaged_healing_loop_stops_when_exhausted(tmp_path: Path):
     )
 
 
+def test_packaged_healing_loop_rejects_unhealable_fail(tmp_path: Path):
+    """FAIL with no eligible failures must reject (→ failed), not default-stop (→ exhausted)."""
+    from assurance_agent.workflow.orchestration.healing_episode import project_healing_episode
+
+    schema = load_workflow_schema(tmp_path)
+    change = _mk_change(tmp_path)
+    _j(
+        change,
+        "inspect/failure-analysis.json",
+        {"failures": [{"fix_proposal_eligible": False, "category": "fuzz_configuration_error"}]},
+    )
+    _j(change, "healing/fixer-safety-check.json", {"passed": True, "needs_review": False})
+    _j(
+        change,
+        "healing/fix-proposal.json",
+        {"summary": {"eligible_count": 0}, "proposals": []},
+    )
+    _allocate(change, 1)
+    _apply(change, 1)
+    _outcome(change, "healing-rerun", "r1")
+    _outcome(change, "healing-reinspect", "i1")
+    state = _state(change)
+    gate = check_gate(schema, "healing-loop-gate", _loc(change), state, {"max_healing_attempts": 3})
+    assert gate.verdict == "reject"
+    assert gate.matched_rule is not None and gate.matched_rule.startswith("reject_when:")
+    episode = project_healing_episode(schema, _loc(change), state, {"max_healing_attempts": 3}, derive_healing_state(change))
+    assert episode.next_actions[0].outcome == "failed"
+
+
 def test_compute_status_dispatches_registry_on_fresh_change(tmp_path: Path):
     schema = load_workflow_schema(tmp_path)
     change = _mk_change(tmp_path)

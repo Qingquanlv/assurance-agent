@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import secrets
 import shutil
@@ -23,7 +24,9 @@ from assurance_agent.eval.types import (
     JudgeConfig,
     RunManifest,
     SampleScore,
+    regression_policy_sha256,
 )
+from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.driver.adapter import Adapter
 from assurance_agent.workflow.driver.loop import CliPhaseExecutor, run_workflow_loop
 
@@ -47,7 +50,12 @@ def _copy_attempt_workspace(source: Path, attempt: Path) -> Path:
 
     def ignore(directory: str, names: list[str]) -> set[str]:
         rel = Path(directory).resolve().relative_to(source.resolve())
-        ignored = {name for name in names if name in {".venv", "__pycache__"}}
+        ignored = {
+            name
+            for name in names
+            if name in {".venv", "__pycache__", "node_modules", "dist", ".pytest_cache", ".ruff_cache"}
+            or name.startswith("db.sqlite3")
+        }
         ignored.update(name for name in names if (Path(directory) / name).is_symlink())
         if rel == Path("eval"):
             ignored.add("out")
@@ -57,7 +65,26 @@ def _copy_attempt_workspace(source: Path, attempt: Path) -> Path:
     return target
 
 
-def _overlay_memory(extra_memory_dir: Path, attempt_sut: Path) -> None:
+def _inspect_memory_overlay(extra_memory_dir: Path) -> tuple[list[Path], str]:
+    src = extra_memory_dir / ".aa" / "memory"
+    if extra_memory_dir.is_symlink() or (extra_memory_dir / ".aa").is_symlink() or src.is_symlink():
+        raise AaError(f"memory overlay contains symlinked directory: {src}")
+    if not src.is_dir():
+        raise AaError(f"memory overlay directory not found: {src}")
+    entries: list[Path] = []
+    hashes: list[str] = []
+    for entry in sorted(src.iterdir(), key=lambda path: path.name):
+        if entry.is_symlink():
+            raise AaError(f"memory overlay contains symlink: {entry}")
+        if not entry.is_file() or entry.suffix != ".md":
+            raise AaError(f"memory overlay only accepts regular .md files: {entry}")
+        digest = hashlib.sha256(entry.read_bytes()).hexdigest()
+        hashes.append(f".aa/memory/{entry.name}:{digest}")
+        entries.append(entry)
+    return entries, hashlib.sha256("\n".join(hashes).encode()).hexdigest()
+
+
+def _overlay_memory(entries: list[Path], attempt_sut: Path) -> None:
     """Merge a promotion-candidate memory overlay into the attempt sandbox.
 
     ``extra_memory_dir`` mirrors the SUT layout (contains ``.aa/memory/*.md``).
@@ -65,14 +92,10 @@ def _overlay_memory(extra_memory_dir: Path, attempt_sut: Path) -> None:
     loads the candidate memory — this is what makes the promotion gate a real
     validation of the memory's effect rather than a no-op replay.
     """
-    src = extra_memory_dir / ".aa" / "memory"
-    if not src.is_dir():
-        return
     dest = attempt_sut / ".aa" / "memory"
     dest.mkdir(parents=True, exist_ok=True)
-    for entry in src.iterdir():
-        if entry.is_file():
-            shutil.copy2(entry, dest / entry.name)
+    for entry in entries:
+        shutil.copy2(entry, dest / entry.name)
 
 
 def run_suite(
@@ -101,6 +124,11 @@ def run_suite(
     run_dir = run_dir_for(sut_dir, run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    overlay_entries: list[Path] = []
+    overlay_sha256: str | None = None
+    if extra_memory_dir is not None:
+        overlay_entries, overlay_sha256 = _inspect_memory_overlay(extra_memory_dir)
+
     manifest = RunManifest(
         run_id=run_id,
         suite=suite.name,
@@ -109,6 +137,10 @@ def run_suite(
         total_samples=len(samples) * repeat,
         executed_samples=0,
         target_model=str(suite.executor.get("model", "unknown")),
+        suite_version=suite.version,
+        repeat=repeat,
+        regression_policy_sha256=regression_policy_sha256(suite.regression),
+        memory_overlay_sha256=overlay_sha256,
         started_at=_now(),
     )
 
@@ -131,7 +163,7 @@ def run_suite(
             attempt.mkdir(parents=True, exist_ok=True)
             attempt_sut = _copy_attempt_workspace(sut_dir, attempt)
             if extra_memory_dir is not None:
-                _overlay_memory(extra_memory_dir, attempt_sut)
+                _overlay_memory(overlay_entries, attempt_sut)
             factory_args = {
                 "sample": sample,
                 "sut_dir": attempt_sut,
@@ -176,7 +208,13 @@ def run_suite(
             # reads judge-result.json from the attempt dir to compute P/R/F1.
             if suite.judge is not None:
                 try:
-                    judged = run_judge(sample, attempt, suite.judge, target_model=manifest.target_model)
+                    judged = run_judge(
+                        sample,
+                        attempt,
+                        suite.judge,
+                        target_model=manifest.target_model,
+                        project_root=project_root,
+                    )
                     (attempt / "judge-result.json").write_text(
                         json.dumps(judged.model_dump(mode="json"), indent=2), encoding="utf-8"
                     )
@@ -194,6 +232,7 @@ def run_suite(
                     attempt,
                     JudgeConfig(model=judge_model),
                     target_model=manifest.target_model,
+                    project_root=project_root,
                 )
                 (attempt / "judge-result.json").write_text(
                     json.dumps(judged.model_dump(mode="json"), indent=2), encoding="utf-8"
@@ -225,6 +264,7 @@ def run_plan(
     sut_dir: Path,
     adapter_factory: Callable[..., Adapter] | None = None,
     status_provider_factory: Callable[..., Callable[[], object]] | None = None,
+    extra_memory_dir: Path | None = None,
 ) -> tuple[str, list[EvalGateResult]]:
     plan = read_plan(plan_path)
     batch_id = _new_run_id("batch")
@@ -237,6 +277,7 @@ def run_plan(
             sut_dir=sut_dir,
             adapter_factory=adapter_factory,
             status_provider_factory=status_provider_factory,
+            extra_memory_dir=extra_memory_dir,
         )
         results.append(gate)
     return batch_id, results

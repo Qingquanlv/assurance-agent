@@ -54,11 +54,11 @@ def _build_eval_runner(data_root: Path, sut_root: Path):
         import os
 
         from assurance_agent.commands.eval_cmd import _resolve_adapter_factory
-        from assurance_agent.eval.baseline import read_baseline
-        from assurance_agent.eval.plan import load_suite
-        from assurance_agent.eval.runner import run_suite
+        from assurance_agent.eval.baseline import read_baseline, read_run_manifest
         from assurance_agent.eval.metrics import read_metrics
         from assurance_agent.eval.paths import run_dir as run_dir_for
+        from assurance_agent.eval.plan import load_suite
+        from assurance_agent.eval.runner import run_suite
 
         sut_dir = Path(sut_dir) if sut_dir is not None else sut_root
         engine_root = Path(engine_root) if engine_root is not None else data_root
@@ -80,7 +80,9 @@ def _build_eval_runner(data_root: Path, sut_root: Path):
             status_provider_factory=status_factory,
             fixtures_root=sut_dir / "eval-fixtures",
             extra_memory_dir=extra_memory_dir,
+            repeat=suite_obj.regression.repeat if suite_obj.regression is not None else 1,
         )
+        manifest = read_run_manifest(run_dir_for(sut_dir, run_id))
         metrics = {}
         try:
             metrics = read_metrics(run_dir_for(sut_dir, run_id)).metrics
@@ -93,6 +95,14 @@ def _build_eval_runner(data_root: Path, sut_root: Path):
             "hard_gate_failures": list(gate.hard_gate_failures),
             "suite_contract": suite_obj.model_dump(mode="json"),
             "baseline_metrics": baseline_entry.metrics if baseline_entry is not None else None,
+            "suite_version": manifest.suite_version,
+            "repeat": manifest.repeat,
+            "regression_policy_sha256": manifest.regression_policy_sha256,
+            "baseline_suite_version": (baseline_entry.suite_version if baseline_entry is not None else None),
+            "baseline_repeat": baseline_entry.repeat if baseline_entry is not None else None,
+            "baseline_regression_policy_sha256": (
+                baseline_entry.regression_policy_sha256 if baseline_entry is not None else None
+            ),
         }
 
     return eval_runner
@@ -262,7 +272,11 @@ def _register_promotion_commands(retro: click.Group) -> None:
         if decision == "promoted":
             runner = _build_eval_runner(engine, project_root)
             code = resume_nightly(
-                NightlyOptions(sut=str(project_root), retro_id=retro_id),
+                NightlyOptions(
+                    sut=str(project_root),
+                    retro_id=retro_id,
+                    engine_root=str(engine),
+                ),
                 eval_runner=runner,
             )
             raise SystemExit(code)
@@ -303,15 +317,32 @@ def _register_promotion_commands(retro: click.Group) -> None:
         if proposal_id and not any(p.id == proposal_id for p in proposals):
             click.echo(f"Error: proposal not found: {proposal_id}", err=True)
             raise SystemExit(1)
+        requested = next((p for p in proposals if p.id == proposal_id), None)
+        if requested is not None and requested.apply_kind == "memory_append":
+            try:
+                resolve_memory_target(project_root, requested.target)
+            except AaError as err:
+                click.echo(f"Error: {err}", err=True)
+                raise SystemExit(1) from err
 
-        decisions = effective_review_decisions(read_promotion_events(retro_dir))
+        promotion_events = read_promotion_events(retro_dir)
+        decisions = effective_review_decisions(promotion_events)
+        states = proposal_states(promotion_events)
         selected = [
             p
             for p in proposals
             if (proposal_id is None or p.id == proposal_id)
             and p.apply_kind == "memory_append"
             and decisions.get(p.id, {}).get("decision") == "promoted"
+            and (stage_dir is not None or states.get(p.id) == "applied")
         ]
+        if stage_dir is None and proposal_id is not None and not selected:
+            if requested is not None and decisions.get(proposal_id, {}).get("decision") == "promoted":
+                click.echo(
+                    "Error: live memory apply requires a passing eval application state",
+                    err=True,
+                )
+                raise SystemExit(1)
         # Validate only the proposals being applied; a malformed unrelated
         # proposal must not block the valid ones.
         errors = validate_retro_proposals(context, selected)
@@ -420,8 +451,13 @@ def _register_nightly(retro: click.Group) -> None:
         if not retro_id:
             click.echo("error: required option --retro-id <id> not specified", err=True)
             raise SystemExit(2)
-        options = NightlyOptions(sut=sut, retro_id=retro_id, skip_eval=skip_eval)
         root = Path(engine_root).resolve() if engine_root else Path.cwd()
+        options = NightlyOptions(
+            sut=sut,
+            retro_id=retro_id,
+            skip_eval=skip_eval,
+            engine_root=str(root),
+        )
         runner = None if skip_eval else _build_eval_runner(root, Path(sut))
         raise SystemExit(resume_nightly(options, eval_runner=runner))
 

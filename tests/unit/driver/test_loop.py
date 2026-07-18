@@ -2,7 +2,7 @@ from pathlib import Path
 
 from tests.helpers_aa import loc_for, write_aa_config
 
-from assurance_agent.workflow.core.events import read_events
+from assurance_agent.workflow.core.events import HumanDecisionEvent, append_event_strict, read_events
 from assurance_agent.workflow.driver import loop as loop_mod
 from assurance_agent.workflow.driver.adapter import PhaseRequest, PhaseResult
 from assurance_agent.workflow.driver.driver_state import read_driver_state
@@ -309,7 +309,7 @@ def test_default_cli_executor_maps_run_and_applies_in_process(tmp_path: Path, mo
             invocations.append(argv)
             return ProcessResult(exit_code=0, stdout="ok", stderr="")
 
-    def fake_apply(project_root, change_dir, schema, phase_id, *, attempt_id=None, **_kw):  # noqa: ANN001
+    def fake_apply(loc, schema, phase_id, *, attempt_id=None, **_kw):  # noqa: ANN001
         apply_calls.append((phase_id, attempt_id or ""))
         return None
 
@@ -475,6 +475,10 @@ def test_loop_scope_full_stamps_workflow_context(tmp_path: Path) -> None:
     provider = ScriptedStatus(adapter, [])
     write_aa_config(tmp_path)
     (tmp_path / "qa" / "changes" / "CH-1").mkdir(parents=True, exist_ok=True)
+    for rel in ("tests/config.py", "tests/conftest.py", "tests/schema_validation.py"):
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# scaffold\n", encoding="utf-8")
     result = run_workflow_loop(
         project_root=tmp_path,
         change_id="CH-1",
@@ -487,6 +491,46 @@ def test_loop_scope_full_stamps_workflow_context(tmp_path: Path) -> None:
     ctx = read_state(tmp_path / "qa" / "changes" / "CH-1").run_context
     assert ctx.orchestrator_skill == "aa-workflow"
     assert ctx.active_scope == "full"
+
+
+def test_full_scope_bootstrap_pause_is_released_by_skip_branch_decision(tmp_path: Path) -> None:
+    adapter = FakeAdapter()
+    provider = ScriptedStatus(adapter, [])
+    write_aa_config(tmp_path)
+    change = tmp_path / "qa" / "changes" / "CH-1"
+    change.mkdir(parents=True)
+
+    blocked = run_workflow_loop(
+        project_root=tmp_path,
+        change_id="CH-1",
+        scope="full",
+        adapter=adapter,
+        status_provider=provider,
+        cli_executor=_NoCli(),
+        skip_lock=True,
+    )
+    assert blocked.exit_code == EXIT_HUMAN_REVIEW
+    assert "Test infra not ready" in blocked.reason
+
+    append_event_strict(
+        change,
+        HumanDecisionEvent(
+            checkpoint="bootstrap",
+            action="skip_branch",
+            reason="not needed for this SUT",
+            who="tester",
+        ),
+    )
+    resumed = run_workflow_loop(
+        project_root=tmp_path,
+        change_id="CH-1",
+        scope="full",
+        adapter=adapter,
+        status_provider=provider,
+        cli_executor=_NoCli(),
+        skip_lock=True,
+    )
+    assert resumed.exit_code == EXIT_COMPLETED
 
 
 def test_loop_configure_failure_is_driver_fatal(tmp_path: Path) -> None:

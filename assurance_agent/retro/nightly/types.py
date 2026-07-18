@@ -7,6 +7,7 @@ from assurance_agent.retro.types import EvidenceSource
 
 class NightlyOptions(BaseModel):
     sut: str
+    engine_root: str | None = None
     retro_id: str | None = None
     dry_run: bool = False
     agent: str = "cursor-agent"

@@ -193,12 +193,11 @@ def _eval_suite_group(
 
     Fixed decision order: no approved baseline -> inconclusive (never applied);
     candidate gate fail/inconclusive/needs_human_review or hard gate failures
-    -> regression; hard-threshold satisfaction flip vs the baseline ->
-    regression (approximates the direction-aware policy until the suite
-    ``regression:`` block lands); otherwise pass. A pass lands real memory only
-    when the suite declares hard gates (``should_auto_apply``). Returns the
-    promotion events plus the eval-results entry; raises on infrastructure
-    failure so the caller can record ``eval_error`` for the whole group.
+    -> regression; provenance mismatch/missing evidence -> inconclusive;
+    direction-aware metric regression -> rollback; otherwise pass. A pass lands
+    real memory only when the suite declares hard gates. Returns the promotion
+    events plus the eval-results entry; raises on infrastructure failure so the
+    caller can record ``eval_error`` for the whole group.
     """
     for proposal in suite_proposals:
         apply_proposal_to_stage(
@@ -270,7 +269,25 @@ def _eval_suite_group(
             regression_note += f" hard_gate_failures={','.join(hard_failures)}"
     else:
         candidate_metrics = _candidate_metrics(result)
-        comparison = compare_suite_regression(baseline_metrics, candidate_metrics, suite_contract)
+        comparison = compare_suite_regression(
+            baseline_metrics,
+            candidate_metrics,
+            suite_contract,
+            baseline_provenance={
+                "suite_version": result.get("baseline_suite_version"),
+                "repeat": result.get("baseline_repeat"),
+                "regression_policy_sha256": result.get("baseline_regression_policy_sha256"),
+            },
+            candidate_provenance={
+                "suite_version": result.get("suite_version"),
+                "repeat": result.get("repeat"),
+                "regression_policy_sha256": result.get("regression_policy_sha256"),
+            },
+        )
+        if comparison.inconclusive:
+            note = f"regression comparison inconclusive: {'; '.join(comparison.details)}"
+            outcome.update(verdict="inconclusive", note=note)
+            return gate_events("inconclusive", note), outcome
         if comparison.regressed:
             regression_note = f"baseline regression: {'; '.join(comparison.details)}"
         elif not should_auto_apply(comparison, suite_contract):
@@ -353,7 +370,7 @@ def resume_nightly(options: NightlyOptions, *, eval_runner: Callable[..., dict] 
         suite = proposal.eval_suite or "workflow-run"
         by_suite.setdefault(suite, []).append(proposal)
 
-    engine_root = Path.cwd()
+    engine_root = Path(options.engine_root).resolve() if options.engine_root else Path.cwd()
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     new_events: list[dict] = []
     eval_results: list[dict] = []

@@ -1,7 +1,18 @@
 name: workflow-case
+version: "1"
 scorer: workflow-case
+regression:
+  repeat: 1
+  metrics:
+    evidence_integrity: {direction: higher_is_better, max_regression: 0.0}
+    schema_valid_rate: {direction: higher_is_better, max_regression: 0.0}
+    layer_scan_valid_rate: {direction: higher_is_better, max_regression: 0.0}
+    case_review_gate_pass_rate: {direction: higher_is_better, max_regression: 0.0}
+    secret_leak_count: {direction: lower_is_better, max_regression: 0.0}
+    forbidden_write_executed_count: {direction: lower_is_better, max_regression: 0.0}
 executor:
   type: workflow-run
+  scope: case
   run_mode: "{{sample.input.run_mode}}"
   timeout_seconds: 7200
   expected_outputs:

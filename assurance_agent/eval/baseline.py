@@ -15,6 +15,8 @@ from assurance_agent.exceptions import AaError
 class BaselineSuiteEntry(BaseModel):
     run_id: str
     suite_version: str = "1"
+    repeat: int | None = None
+    regression_policy_sha256: str | None = None
     approved_at: str
     approved_by: str
     metrics: dict[str, float]
@@ -80,6 +82,9 @@ def update_baseline(
     baseline = read_baseline(engine_root)
     baseline[suite_name] = BaselineSuiteEntry(
         run_id=run_id,
+        suite_version=manifest.suite_version,
+        repeat=manifest.repeat,
+        regression_policy_sha256=manifest.regression_policy_sha256,
         approved_at=datetime.now(timezone.utc).isoformat(),
         approved_by=approved_by,
         metrics=read_metrics(run_dir).metrics,

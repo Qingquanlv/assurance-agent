@@ -100,6 +100,8 @@ def test_execute_attempt_copies_sut_tests_into_raw_output(tmp_path: Path) -> Non
     tests = sut / "tests" / "api"
     tests.mkdir(parents=True)
     (tests / "test_a.py").write_text("def test_a():\n    assert True\n", encoding="utf-8")
+    for required in ("config.py", "conftest.py", "schema_validation.py"):
+        (sut / "tests" / required).write_text("# bootstrap\n", encoding="utf-8")
     _git_init(sut)
 
     status = _scripted_status(
@@ -170,7 +172,7 @@ def test_execute_attempt_runs_m6_loop_and_copies_raw_output(tmp_path: Path) -> N
         suite="workflow-case",
         sut_dir=sut,
         adapter=adapter,
-        scope="full",
+        scope="case",
         status_provider=status,
         cli_executor=AuditOutcomeExecutor(),
     )
@@ -207,7 +209,13 @@ def test_execute_attempt_error_exit_recorded(tmp_path: Path) -> None:
             return PhaseResult(ok=True, output="")
 
     result = execute_attempt(
-        sample, attempt, suite="workflow-case", sut_dir=sut, adapter=NoopAdapter(), status_provider=status
+        sample,
+        attempt,
+        suite="workflow-case",
+        sut_dir=sut,
+        adapter=NoopAdapter(),
+        scope="case",
+        status_provider=status,
     )
     assert result.status == "error"
     assert result.exit_code == 20  # EXIT_STOPPED

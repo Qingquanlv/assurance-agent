@@ -286,7 +286,8 @@ def project_healing_episode(
     if reinspect is None:
         return _dispatch("healing-reinspect", "reinspect", attempt)
 
-    loop_verdict = check_gate(schema, loop.exit_gate, loc, state, merged).verdict.value
+    loop_gate = check_gate(schema, loop.exit_gate, loc, state, merged)
+    loop_verdict = loop_gate.verdict.value
     if loop_verdict == "exit":
         return HealingEpisodeSnapshot(
             state="terminal",
@@ -295,11 +296,33 @@ def project_healing_episode(
             next_actions=[HealingEpisodeAction(kind="complete", outcome="resolved")],
         )
     if loop_verdict == "stop":
+        # Budget exhausted / all fixers no-op — only when stop_when matched.
+        # A bare default stop (no matched rule) is treated as failed, not exhausted.
+        outcome = (
+            "exhausted"
+            if loop_gate.matched_rule is not None and loop_gate.matched_rule.startswith("stop_when:")
+            else "failed"
+        )
         return HealingEpisodeSnapshot(
             state="terminal",
             stage="decide",
             attempt_number=attempt,
-            next_actions=[HealingEpisodeAction(kind="complete", outcome="exhausted")],
+            next_actions=[HealingEpisodeAction(kind="complete", outcome=outcome)],
+        )
+    if loop_verdict == "reject":
+        # Execution still FAIL but nothing left that healing can fix.
+        return HealingEpisodeSnapshot(
+            state="terminal",
+            stage="decide",
+            attempt_number=attempt,
+            next_actions=[HealingEpisodeAction(kind="complete", outcome="failed")],
+        )
+    if loop_verdict != "continue":
+        return HealingEpisodeSnapshot(
+            state="terminal",
+            stage="decide",
+            attempt_number=attempt,
+            next_actions=[HealingEpisodeAction(kind="complete", outcome="failed")],
         )
     proposal = ledger.latest(
         type="phase_outcome_committed", phase="fix-proposal", after_seq=event_seq(reinspect)

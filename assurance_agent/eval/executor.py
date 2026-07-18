@@ -129,6 +129,9 @@ def execute_attempt(
     if fixture_tier:
         if fixtures_root is None:
             raise AaError(f"sample {sample.id} has fixture_tier but fixtures_root was not provided")
+        fixture_id = sample.input.get("fixture_id")
+        if not fixture_id:
+            raise AaError(f"sample {sample.id} has fixture_tier but no explicit fixture_id")
         from assurance_agent.eval.fixtures import seed_change
 
         seed_change(
@@ -136,7 +139,7 @@ def execute_attempt(
             change_id=str(change_id),
             tier_name=str(fixture_tier),
             fixtures_root=fixtures_root,
-            sample_id=sample.input.get("sample_id") or sample.input.get("change_id"),
+            fixture_id=str(fixture_id),
         )
 
     # Write-scan (P0 forbidden_write_executed_count): snapshot the SUT worktree

@@ -225,6 +225,23 @@ CORPUS["gate:healing-loop-gate:stop_when"] = (
     ({"state": {"phases": {"healing": {"attempts_used": 3}}}, "params": {"max_healing_attempts": 3}}, {}),
     ({"state": {"phases": {"healing": {}}}}, {}, MISS),
 )
+CORPUS["gate:healing-loop-gate:reject_when"] = (
+    (
+        {
+            "state": {"phases": {"execution": {"status": "FAIL"}}},
+            "failure_analysis": {"failures": [{"fix_proposal_eligible": False}]},
+        },
+        {},
+    ),
+    (
+        {
+            "state": {"phases": {"execution": {"status": "FAIL"}}},
+            "failure_analysis": {"failures": [{"fix_proposal_eligible": True}]},
+        },
+        {},
+        False,
+    ),
+)
 
 # --- archive-gate ---
 CORPUS["gate:archive-gate:pass_when"] = (

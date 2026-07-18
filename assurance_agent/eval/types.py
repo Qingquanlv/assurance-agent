@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -7,6 +9,28 @@ from pydantic import BaseModel, Field
 Gate = Literal["hard", "advisory", "observe"]
 CmpOp = Literal["gte", "lte", "eq"]
 EvalVerdict = Literal["pass", "pass_with_warnings", "fail", "inconclusive", "needs_human_review"]
+RegressionDirection = Literal["higher_is_better", "lower_is_better"]
+
+
+class RegressionMetricPolicy(BaseModel):
+    direction: RegressionDirection
+    max_regression: float = Field(ge=0.0)
+
+
+class RegressionPolicy(BaseModel):
+    repeat: int = Field(default=1, ge=1)
+    metrics: dict[str, RegressionMetricPolicy] = Field(default_factory=dict)
+
+
+def regression_policy_sha256(policy: RegressionPolicy | None) -> str | None:
+    if policy is None:
+        return None
+    payload = json.dumps(
+        policy.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(payload).hexdigest()
 
 
 class DatasetSample(BaseModel):
@@ -37,11 +61,13 @@ class JudgeConfig(BaseModel):
 
 class EvalSuite(BaseModel):
     name: str
+    version: str = "1"
     executor: dict = Field(default_factory=dict)
     scorer: str
     thresholds: list[SuiteThreshold] = Field(default_factory=list)
     dataset_dir: str | None = None
     judge: JudgeConfig | None = None
+    regression: RegressionPolicy | None = None
 
 
 class SampleScore(BaseModel):
@@ -79,6 +105,10 @@ class RunManifest(BaseModel):
     total_samples: int = 0
     executed_samples: int = 0
     target_model: str = "unknown"
+    suite_version: str = "1"
+    repeat: int = 1
+    regression_policy_sha256: str | None = None
+    memory_overlay_sha256: str | None = None
     started_at: str
     completed_at: str | None = None
 

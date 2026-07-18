@@ -3,3 +3,9 @@ suts:
   vue-fastapi-admin:
     local_dir: "benchmark/vue-fastapi-admin"
     pinned_rev: "RET-api-management-20260716-192358-cursor"
+    source_archive_id: "RET-api-management-20260716-192358-cursor"
+    tests_tree_sha256: "ae6e6e51016991b00030d4c45eb4373dfcb2d9224d758d34ead147fd179753b8"
+    product_tree_sha256: "037862330f93db0461429c747c97082f2450dd120565b7c8f3e75588abef9637"
+    product_roots:
+      - app
+      - web/src
