@@ -13,7 +13,7 @@ from assurance_agent.change_location import ChangeNotFoundError, resolve_change
 from assurance_agent.config import ConfigNotFoundError
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import UnsafeIdentifierError
-from assurance_agent.workflow.core.audit import apply_audits_to_report, run_status_audits
+from assurance_agent.workflow.orchestration.audit import apply_audits_to_report, run_status_audits
 from assurance_agent.workflow.core.events import append_event_best_effort
 from assurance_agent.workflow.core.exit_codes import exit_code_for_terminal
 from assurance_agent.workflow.core.state import StateIntegrityError, read_state, read_state_lenient

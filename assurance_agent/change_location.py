@@ -83,8 +83,7 @@ def resolve_change(
         if in_changes:
             return ChangeLocation(project_root, change_id, changes_path, "changes")
         raise ChangeNotFoundError(
-            f"change '{change_id}' not found under archive ({archive_path}) "
-            f"or changes ({changes_path})"
+            f"change '{change_id}' not found under archive ({archive_path}) or changes ({changes_path})"
         )
 
     if in_changes:

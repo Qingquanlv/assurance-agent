@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from click.testing import CliRunner
+from click.testing import CliRunner, Result
 
 from assurance_agent.cli import main
 from assurance_agent.commands import run_cmd as run_cmd_mod
@@ -85,7 +85,7 @@ def _tamper_test(tmp_path: Path) -> None:
     (tmp_path / "tests" / "api" / "test_x.py").write_text("def test_x(): assert 2\n", encoding="utf-8")
 
 
-def _invoke_run() -> "object":  # noqa: ANN001
+def _invoke_run() -> Result:
     return CliRunner().invoke(
         main,
         ["run", "--change", "CH-1", "--allow-test-changes", "--rerun-reason", "manual fix"],

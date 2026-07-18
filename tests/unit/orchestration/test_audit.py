@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from assurance_agent.artifacts.models import WorkflowState
-from assurance_agent.workflow.core.audit import apply_audits_to_report, run_status_audits
+from assurance_agent.workflow.orchestration.audit import apply_audits_to_report, run_status_audits
 from assurance_agent.workflow.core.events import append_event_best_effort
 from assurance_agent.workflow.core.state import write_state
 from assurance_agent.workflow.orchestration.engine import PhaseView, Terminal, WorkflowStatus

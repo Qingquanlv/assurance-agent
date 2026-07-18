@@ -187,7 +187,9 @@ def eval_plan(event, changed_files, suite_name, out) -> None:
 @click.option("--output", "output_path", help="Override HTML output path")
 @click.option("--json", "as_json", is_flag=True, help="Output JSON")
 @click.option("--sut-dir", help="SUT root that holds eval/out")
-def eval_report(run_id, trend, suite_name, date_from, date_to, as_html, output_path, as_json, sut_dir) -> None:
+def eval_report(
+    run_id, trend, suite_name, date_from, date_to, as_html, output_path, as_json, sut_dir
+) -> None:
     project_root = Path.cwd()
     sut = _resolve_sut(project_root, sut_dir)
     if trend:

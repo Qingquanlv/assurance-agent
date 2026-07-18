@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from assurance_agent.exceptions import AaError
-from assurance_agent.workflow.core.audit import (
+from assurance_agent.workflow.orchestration.audit import (
     SKILL_LOAD_EXEMPT_PHASES,
     check_verdict_migration,
     build_repair_map,

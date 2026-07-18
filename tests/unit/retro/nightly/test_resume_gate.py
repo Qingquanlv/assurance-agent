@@ -14,6 +14,8 @@ import json
 import os
 from pathlib import Path
 
+import yaml
+
 from assurance_agent.retro.nightly.driver import resume_nightly
 from assurance_agent.retro.nightly.exit_codes import (
     NIGHTLY_FAILURE,
@@ -23,6 +25,23 @@ from assurance_agent.retro.nightly.exit_codes import (
 from assurance_agent.retro.nightly.types import NightlyOptions
 from assurance_agent.retro.nightly.utils import write_json
 from assurance_agent.retro.promotions import proposal_states, read_promotion_events
+
+
+def _eval_support_from_disk(engine: Path, suite: str) -> dict:
+    suite_contract: dict = {}
+    suite_path = engine / "eval" / "suites" / f"{suite}.yaml"
+    if suite_path.is_file():
+        data = yaml.safe_load(suite_path.read_text(encoding="utf-8")) or {}
+        if isinstance(data, dict):
+            suite_contract = data
+    baseline_metrics = None
+    baseline_path = engine / "eval" / "baselines" / "main.json"
+    if baseline_path.is_file():
+        raw = json.loads(baseline_path.read_text(encoding="utf-8"))
+        entry = raw.get(suite) if isinstance(raw, dict) else None
+        if isinstance(entry, dict) and isinstance(entry.get("metrics"), dict):
+            baseline_metrics = entry["metrics"]
+    return {"suite_contract": suite_contract, "baseline_metrics": baseline_metrics}
 
 
 def _proposal(pid: str, suite: str) -> dict:
@@ -125,10 +144,9 @@ def _runner(
             "run_id": run_id,
             "verdict": (verdicts or {}).get(suite, "pass"),
             "metrics": {"evidence_integrity": metric},
+            "hard_gate_failures": (hard_gate_failures or {}).get(suite) or [],
+            **_eval_support_from_disk(Path(engine_root), suite),
         }
-        failures = (hard_gate_failures or {}).get(suite)
-        if failures is not None:
-            result["hard_gate_failures"] = failures
         return result
 
     return eval_runner

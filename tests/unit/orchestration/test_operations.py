@@ -440,7 +440,9 @@ def test_apply_outcome_records_gate_verdict_with_reads_sha256(tmp_path: Path) ->
     assert gate_events[0]["reads_sha256"] == {"review/case-review.json": expected}
 
     committed = [e for e in events if e["type"] == "phase_outcome_committed"]
-    assert committed[-1]["gate_report"]["reads_sha256"] == {"review/case-review.json": expected}
+    gate_report = committed[-1]["gate_report"]
+    assert isinstance(gate_report, dict)
+    assert gate_report["reads_sha256"] == {"review/case-review.json": expected}
 
 
 # ── healing.safety decisions bind the fixer safety artifact (TS decide.ts) ────

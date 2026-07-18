@@ -6,7 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from assurance_agent.workflow.core.audit_evidence import (
+from assurance_agent.workflow.orchestration.audit_evidence import (
     build_gate_verdict_event,
     compute_reads_sha256,
 )

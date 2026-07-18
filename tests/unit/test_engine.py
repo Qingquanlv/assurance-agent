@@ -223,9 +223,7 @@ def test_execution_blocked_while_sibling_codegen_blocked(tmp_path: Path):
     (tmp_path / "review" / "plan-review.json").write_text(json.dumps({"decision": "pass"}))
     _touch(tmp_path, "codegen/e2e-codegen-summary.md")
     # api branch stuck: review produced but gate needs human review → api-codegen blocked.
-    (tmp_path / "review" / "api-plan-review.json").write_text(
-        json.dumps({"decision": "needs_human_review"})
-    )
+    (tmp_path / "review" / "api-plan-review.json").write_text(json.dumps({"decision": "needs_human_review"}))
     st = compute_status(EXEC_ALL_SCHEMA, loc, WorkflowState(), {})
     assert _pv(st, "e2e-codegen").status == "done"
     assert _pv(st, "api-codegen").status == "blocked"

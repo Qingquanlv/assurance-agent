@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tests.helpers_aa import write_aa_config
 
@@ -12,6 +13,24 @@ from click.testing import CliRunner
 
 from assurance_agent.cli import main
 from tests.unit.retro.archive_fixtures import make_archived_change
+
+
+def _eval_support_from_disk(engine: Path, suite: str) -> dict:
+    """Mirror commands-layer suite/baseline enrichment without importing eval."""
+    suite_contract: dict = {}
+    suite_path = engine / "eval" / "suites" / f"{suite}.yaml"
+    if suite_path.is_file():
+        data = yaml.safe_load(suite_path.read_text(encoding="utf-8")) or {}
+        if isinstance(data, dict):
+            suite_contract = data
+    baseline_metrics = None
+    baseline_path = engine / "eval" / "baselines" / "main.json"
+    if baseline_path.is_file():
+        raw = json.loads(baseline_path.read_text(encoding="utf-8"))
+        entry = raw.get(suite) if isinstance(raw, dict) else None
+        if isinstance(entry, dict) and isinstance(entry.get("metrics"), dict):
+            baseline_metrics = entry["metrics"]
+    return {"suite_contract": suite_contract, "baseline_metrics": baseline_metrics}
 
 
 def test_retro_json_stdout_shape(tmp_path: Path) -> None:
@@ -191,7 +210,9 @@ def _fake_eval_factory(calls: list):  # noqa: ANN202
         def runner(*, suite, sut_dir=None, engine_root=None, extra_memory_dir=None):  # noqa: ANN001
             calls.append(suite)
             run_id = f"eval-promote-{len(calls)}"
-            run = Path(sut_dir) / "eval" / "out" / "runs" / run_id
+            root = Path(sut_dir or sut_root)
+            engine = Path(engine_root or data_root)
+            run = root / "eval" / "out" / "runs" / run_id
             run.mkdir(parents=True, exist_ok=True)
             (run / "metrics.json").write_text(
                 json.dumps(
@@ -204,7 +225,13 @@ def _fake_eval_factory(calls: list):  # noqa: ANN202
                 ),
                 encoding="utf-8",
             )
-            return {"run_id": run_id, "verdict": "pass", "metrics": {"evidence_integrity": 1.0}}
+            return {
+                "run_id": run_id,
+                "verdict": "pass",
+                "metrics": {"evidence_integrity": 1.0},
+                "hard_gate_failures": [],
+                **_eval_support_from_disk(engine, suite),
+            }
 
         return runner
 

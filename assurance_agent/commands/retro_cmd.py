@@ -54,6 +54,7 @@ def _build_eval_runner(data_root: Path, sut_root: Path):
         import os
 
         from assurance_agent.commands.eval_cmd import _resolve_adapter_factory
+        from assurance_agent.eval.baseline import read_baseline
         from assurance_agent.eval.plan import load_suite
         from assurance_agent.eval.runner import run_suite
         from assurance_agent.eval.metrics import read_metrics
@@ -61,7 +62,8 @@ def _build_eval_runner(data_root: Path, sut_root: Path):
 
         sut_dir = Path(sut_dir) if sut_dir is not None else sut_root
         engine_root = Path(engine_root) if engine_root is not None else data_root
-        _, suite_file = load_suite(engine_root, suite)
+        suite_obj, suite_file = load_suite(engine_root, suite)
+        baseline_entry = read_baseline(engine_root).get(suite)
 
         # Real validation: use the real agent adapter (cursor-agent) so the
         # candidate memory overlay actually influences generation. Fake stays
@@ -89,6 +91,8 @@ def _build_eval_runner(data_root: Path, sut_root: Path):
             "verdict": gate.verdict,
             "metrics": metrics,
             "hard_gate_failures": list(gate.hard_gate_failures),
+            "suite_contract": suite_obj.model_dump(mode="json"),
+            "baseline_metrics": baseline_entry.metrics if baseline_entry is not None else None,
         }
 
     return eval_runner

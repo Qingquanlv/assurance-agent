@@ -3,12 +3,31 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import yaml
+
 from assurance_agent.retro.apply import apply_proposal_to_stage
 from assurance_agent.retro.nightly.driver import resume_nightly
 from assurance_agent.retro.nightly.exit_codes import NIGHTLY_OK, NIGHTLY_PENDING_REVIEW
 from assurance_agent.retro.nightly.types import NightlyOptions
 from assurance_agent.retro.nightly.utils import write_json
 from assurance_agent.retro.promotions import read_promotion_events
+
+
+def _eval_support_from_disk(engine: Path, suite: str) -> dict:
+    suite_contract: dict = {}
+    suite_path = engine / "eval" / "suites" / f"{suite}.yaml"
+    if suite_path.is_file():
+        data = yaml.safe_load(suite_path.read_text(encoding="utf-8")) or {}
+        if isinstance(data, dict):
+            suite_contract = data
+    baseline_metrics = None
+    baseline_path = engine / "eval" / "baselines" / "main.json"
+    if baseline_path.is_file():
+        raw = json.loads(baseline_path.read_text(encoding="utf-8"))
+        entry = raw.get(suite) if isinstance(raw, dict) else None
+        if isinstance(entry, dict) and isinstance(entry.get("metrics"), dict):
+            baseline_metrics = entry["metrics"]
+    return {"suite_contract": suite_contract, "baseline_metrics": baseline_metrics}
 
 
 def _retro_with_proposal(sut: Path, retro_id: str, *, status: str = "promoted") -> Path:
@@ -65,7 +84,13 @@ def test_resume_gate_pass_promotes(tmp_path: Path) -> None:
             ),
             encoding="utf-8",
         )
-        return {"run_id": run_id, "verdict": "pass", "metrics": {"evidence_integrity": 1.0}}
+        return {
+            "run_id": run_id,
+            "verdict": "pass",
+            "metrics": {"evidence_integrity": 1.0},
+            "hard_gate_failures": [],
+            **_eval_support_from_disk(Path(engine_root), suite),
+        }
 
     # resume uses Path.cwd() as engine_root — monkey via chdir in test by writing baseline under cwd
     # Instead patch by placing baseline where cwd is: use monkeypatch in pytest
@@ -114,7 +139,13 @@ def test_resume_gate_fail_needs_rework(tmp_path: Path) -> None:
             ),
             encoding="utf-8",
         )
-        return {"run_id": run_id, "verdict": "pass", "metrics": {"evidence_integrity": 0.5}}
+        return {
+            "run_id": run_id,
+            "verdict": "pass",
+            "metrics": {"evidence_integrity": 0.5},
+            "hard_gate_failures": [],
+            **_eval_support_from_disk(Path(engine_root), suite),
+        }
 
     import os
 
@@ -183,7 +214,13 @@ def _passing_runner(calls: list):  # noqa: ANN001, ANN202
             ),
             encoding="utf-8",
         )
-        return {"run_id": run_id, "verdict": "pass", "metrics": {"evidence_integrity": 1.0}}
+        return {
+            "run_id": run_id,
+            "verdict": "pass",
+            "metrics": {"evidence_integrity": 1.0},
+            "hard_gate_failures": [],
+            **_eval_support_from_disk(Path(engine_root), suite),
+        }
 
     return eval_runner
 

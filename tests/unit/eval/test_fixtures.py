@@ -57,7 +57,9 @@ def _write_synth_fixtures(root: Path) -> Path:
         encoding="utf-8",
     )
     (sample / "tests" / "api").mkdir(parents=True)
-    (sample / "tests" / "api" / "test_synth.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    (sample / "tests" / "api" / "test_synth.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
     return fixtures
 
 

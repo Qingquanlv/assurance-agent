@@ -9,11 +9,6 @@ from pathlib import Path
 from tempfile import mkdtemp
 
 from assurance_agent.change_location import archive_root, resolve_change
-from assurance_agent.eval.baseline import read_baseline
-from assurance_agent.eval.gate import read_gate_result
-from assurance_agent.eval.metrics import read_metrics
-from assurance_agent.eval.paths import run_dir as eval_run_dir
-from assurance_agent.eval.plan import load_suite
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import assert_path_segment_safe
 from assurance_agent.retro.aggregator import build_retro_context, count_signals
@@ -167,30 +162,20 @@ def collect_nightly(
 RETRYABLE_EVAL_STATES = frozenset({"promoted_pending_eval", "awaiting_baseline", "eval_error"})
 
 
-def _candidate_metrics(result: dict, sut: Path, run_id: str) -> dict[str, float]:
-    """Candidate aggregate metrics: runner dict first, run artifacts as fallback."""
+def _candidate_metrics(result: dict) -> dict[str, float]:
+    """Candidate aggregate metrics from the injected eval_runner result."""
     metrics = result.get("metrics")
-    if metrics:
-        return {str(name): float(value) for name, value in dict(metrics).items()}
-    if not run_id:
+    if not metrics:
         return {}
-    try:
-        return read_metrics(eval_run_dir(sut, run_id)).metrics
-    except Exception:  # noqa: BLE001 - missing artifacts degrade to empty evidence
-        return {}
+    return {str(name): float(value) for name, value in dict(metrics).items()}
 
 
-def _hard_gate_failures(result: dict, sut: Path, run_id: str) -> list[str]:
-    """Hard gate failures: runner dict first, gate-result.json as fallback."""
+def _hard_gate_failures(result: dict) -> list[str]:
+    """Hard gate failures from the injected eval_runner result."""
     failures = result.get("hard_gate_failures")
-    if failures is not None:
-        return [str(failure) for failure in failures]
-    if not run_id:
+    if failures is None:
         return []
-    try:
-        return list(read_gate_result(eval_run_dir(sut, run_id)).hard_gate_failures)
-    except Exception:  # noqa: BLE001 - the normalized verdict still guards this path
-        return []
+    return [str(failure) for failure in failures]
 
 
 def _eval_suite_group(
@@ -230,10 +215,6 @@ def _eval_suite_group(
         if src.exists():
             shutil.copy2(src, memory / src.name)
 
-    suite, _suite_file = load_suite(engine_root, suite_name)
-    suite_contract = suite.model_dump()
-    baseline_entry = read_baseline(engine_root).get(suite_name)
-
     result = eval_runner(
         suite=suite_name,
         sut_dir=sut,
@@ -242,7 +223,15 @@ def _eval_suite_group(
     )
     run_id = str(result.get("run_id", ""))
     gate_verdict = classify_eval_gate(result)
-    hard_failures = _hard_gate_failures(result, sut, run_id)
+    hard_failures = _hard_gate_failures(result)
+    suite_raw = result.get("suite_contract")
+    suite_contract = dict(suite_raw) if isinstance(suite_raw, dict) else {}
+    baseline_raw = result.get("baseline_metrics")
+    baseline_metrics = (
+        {str(name): float(value) for name, value in dict(baseline_raw).items()}
+        if isinstance(baseline_raw, dict)
+        else None
+    )
     run_ids = [run_id] if run_id else []
     outcome = {
         "suite": suite_name,
@@ -265,7 +254,7 @@ def _eval_suite_group(
             for proposal in suite_proposals
         ]
 
-    if baseline_entry is None:
+    if baseline_metrics is None:
         note = (
             f"no approved baseline for suite {suite_name!r}; approve one with: "
             f"aa eval baseline update --suite {suite_name} "
@@ -280,8 +269,8 @@ def _eval_suite_group(
         if hard_failures:
             regression_note += f" hard_gate_failures={','.join(hard_failures)}"
     else:
-        candidate_metrics = _candidate_metrics(result, sut, run_id)
-        comparison = compare_suite_regression(baseline_entry.metrics, candidate_metrics, suite_contract)
+        candidate_metrics = _candidate_metrics(result)
+        comparison = compare_suite_regression(baseline_metrics, candidate_metrics, suite_contract)
         if comparison.regressed:
             regression_note = f"baseline regression: {'; '.join(comparison.details)}"
         elif not should_auto_apply(comparison, suite_contract):
@@ -330,7 +319,10 @@ def resume_nightly(options: NightlyOptions, *, eval_runner: Callable[..., dict] 
         eval_runner(*, suite: str, sut_dir: Path, engine_root: Path,
                     extra_memory_dir: Path | None = None) -> dict
         # returns {"run_id": str, "verdict": str, "metrics": dict,
-        #          "hard_gate_failures": list[str] | None}
+        #          "hard_gate_failures": list[str],
+        #          "suite_contract": dict, "baseline_metrics": dict | None}
+        # suite_contract / baseline_metrics are supplied by the commands-layer
+        # factory so retro never imports the eval package.
     """
     sut = Path(options.sut)
     retro_id = options.retro_id

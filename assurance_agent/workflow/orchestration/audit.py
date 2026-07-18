@@ -377,8 +377,10 @@ def _check_verdict_migration(
         )
 
     if from_v == "pass" and to_v == "pass":
-        prev_hash = prev.get("reads_sha256") if isinstance(prev.get("reads_sha256"), dict) else {}
-        next_hash = nxt.get("reads_sha256") if isinstance(nxt.get("reads_sha256"), dict) else {}
+        prev_raw = prev.get("reads_sha256")
+        next_raw = nxt.get("reads_sha256")
+        prev_hash: dict[str, Any] = prev_raw if isinstance(prev_raw, dict) else {}
+        next_hash: dict[str, Any] = next_raw if isinstance(next_raw, dict) else {}
         hash_changed = any(k in prev_hash and prev_hash[k] != next_hash.get(k) for k in next_hash)
         repair_done_adjacent = False
         if repair_phase:

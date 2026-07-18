@@ -18,11 +18,11 @@ from uuid import uuid4
 from assurance_agent.artifacts.models import WorkflowState
 from assurance_agent.change_location import ChangeLocation
 from assurance_agent.exceptions import AaError
-from assurance_agent.workflow.core.audit_evidence import build_gate_verdict_event
 from assurance_agent.workflow.core.audit_scope import is_audited_gate_read
 from assurance_agent.workflow.core.events import event_seq
 from assurance_agent.workflow.core.progression import ProgressionTxn, transaction
-from assurance_agent.workflow.core.write_guards import (
+from assurance_agent.workflow.orchestration.audit_evidence import build_gate_verdict_event
+from assurance_agent.workflow.orchestration.write_guards import (
     assert_gate_verdict_transition,
     assert_skill_attestation,
 )
@@ -330,11 +330,7 @@ def apply_phase_outcome(
         gate_report: dict[str, object] | None = None
         gate_name = schema.gate_for_phase(phase_id)
         if gate_name is not None:
-            params = getattr(state, "params", None) or {}
-            if hasattr(params, "model_dump"):
-                params = params.model_dump(mode="json")
-            elif not isinstance(params, dict):
-                params = dict(params) if params else {}
+            params = dict(state.params) if state.params else {}
             verdict = check_gate(schema, gate_name, loc, state, params)
             verdict_str = verdict.verdict.value if hasattr(verdict.verdict, "value") else str(verdict.verdict)
             assert_gate_verdict_transition(

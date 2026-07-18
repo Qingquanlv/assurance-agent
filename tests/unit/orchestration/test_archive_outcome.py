@@ -86,6 +86,7 @@ def test_commit_archive_outcome_with_warnings(tmp_path: Path) -> None:
     result = commit_archive_outcome(tmp_path, change, _SCHEMA, status="archived_with_warnings")
     assert result.applied_status == "archived_with_warnings"
     entry = (read_state(change).phases.model_extra or {}).get("archive")
+    assert isinstance(entry, dict)
     assert entry["status"] == "archived_with_warnings"
 
 

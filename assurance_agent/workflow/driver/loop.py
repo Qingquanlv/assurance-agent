@@ -265,7 +265,7 @@ class _DefaultStatusProvider:
         self._scope = scope
 
     def __call__(self) -> WorkflowStatus:
-        from assurance_agent.workflow.core.audit import apply_audits_to_report, run_status_audits
+        from assurance_agent.workflow.orchestration.audit import apply_audits_to_report, run_status_audits
         from assurance_agent.workflow.core.state import StateIntegrityError, read_state_lenient
 
         try:
