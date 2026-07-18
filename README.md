@@ -78,6 +78,8 @@ aa workflow run --change <id> --scope full --adapter opencode --server http://12
 
 `aa workflow run` 是完整的确定性 driver（主循环 + gate + 状态推进），不是 `status --next` 的别名。
 
+编排 schema 支持三个可选增强词汇（默认打包 schema 未使用，语义见 `docs/schemas.md`「编排扩展词汇」）：phase 级 `retry` 重试策略、`fan_out` 动态子相位展开（map/join）、可注册 loop kind。恢复语义：主循环每个迭代边界即 checkpoint，重跑 `aa workflow run` 自动从最近边界继续（`aa workflow status` 可见 checkpoint 段）。
+
 ---
 
 ## 命令参考
@@ -102,8 +104,8 @@ aa workflow run --change <id> --scope full --adapter opencode --server http://12
 | `aa report generate --change <id>` | Quality Score → `report/` 三件套 |
 | `aa heal ...` | Healing 支持命令（fix-proposal 校验等） |
 | `aa workflow run --change <id> --scope full\|execute --adapter opencode\|headless [...]` | 确定性 driver 主循环；退出码 0 completed / 20 stopped / 30 needs_human_review / 40 error |
+| `aa workflow run --detach ...` | detached 后台启动（OpenCode `workflow_start` tool 走这条；立刻返回启动成败） |
 | `aa workflow status --change <id>` | 读 driver 状态文件 |
-| `aa workflow start ...` | detached 启动（供 OpenCode 插件 `workflow_start` tool 调用） |
 | `aa skill refresh [--sync-agents] [--dry-run]` | 同步 skills 到 `skills/`（始终）；`--sync-agents` 追加 `.opencode/{agents,tools,plugins}` |
 | `aa eval run\|plan\|report ...` | AI Eval 框架（权威文档 `docs/eval.md`） |
 | `aa retro --retro-id <id> --change <id>... [--json]` | 回顾聚合；`--json` stdout 含 `retro_id`/`signal_count`/`change_count` |
@@ -210,7 +212,7 @@ bash scripts/packaging_smoke_test.sh   # 构建 wheel + 全新环境安装 + 源
 |---|---|
 | `assurance_agent/commands/` | 每个子命令一个模块（只做参数解析与输出） |
 | `assurance_agent/artifacts/` | 产物 pydantic 契约 + 路径注册表 + `aa validate` |
-| `assurance_agent/workflow/orchestration/` | schema 加载、DSL 解释器、DAG 引擎、gate 路由、healing loop |
+| `assurance_agent/workflow/orchestration/` | schema 加载、DSL 解释器、DAG 引擎（含 fan-out 展开）、gate 路由、loop registry（healing / review_fix 投影器） |
 | `assurance_agent/workflow/core/` | workflow-state、events、case ID、技能同步 |
 | `assurance_agent/workflow/driver/` | `aa workflow run` 主循环、headless/opencode adapter、detached、lock、resume |
 | `assurance_agent/workflow/execution/` | pytest / playwright / schemathesis / locust runner |

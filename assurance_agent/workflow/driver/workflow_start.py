@@ -1,9 +1,9 @@
-"""Detached background launch for the OpenCode plugin `workflow_start` tool.
+"""Detached background launch for `aa workflow run --detach`.
 
-The plugin only collects args and calls this; the loop never lives in JS. We
-acquire the lock, write driver.json, spawn a detached `aa workflow run ...
+Used by the OpenCode `workflow_start` tool (and any CLI caller of ``--detach``).
+We acquire the lock, write driver.json, spawn a detached `aa workflow run ...
 --adopt-lock <token>`, repoint lock + driver.pid at the child, and return
-immediately so the caller (or the plugin) is not blocked for the whole run.
+immediately so the caller is not blocked for the whole run.
 """
 
 import json

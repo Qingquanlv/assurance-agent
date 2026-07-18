@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -89,7 +90,10 @@ class HealTransition:
 
 
 def _phase_key(phase_id: str) -> str:
-    return phase_id.replace("-", "_")
+    # State keys are restricted to [A-Za-z0-9_]; ordinary ids ("case-design")
+    # are unaffected, fan-out child ids ("case-gen[menu]") collapse to a
+    # deterministic underscore form ("case_gen_menu").
+    return re.sub(r"[^A-Za-z0-9]+", "_", phase_id).strip("_")
 
 
 def _with_phase(state: WorkflowState, phase_id: str, entry: dict) -> WorkflowState:

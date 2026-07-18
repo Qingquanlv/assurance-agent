@@ -313,7 +313,7 @@ def _dispatch_entry(
         phase_id=entry.phase_id,
         skill=entry.skill,
         agent=entry.agent,
-        prompt=build_phase_prompt(entry.skill, entry.phase_id, ctx.change_id),
+        prompt=build_phase_prompt(entry.skill, entry.phase_id, ctx.change_id, item=entry.item),
     )
     return adapter.run_phase(request)
 
@@ -335,6 +335,7 @@ def run_workflow_loop(
     break_at: str | None = None,
     skip_lock: bool = False,
     adopt_lock_token: str | None = None,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> LoopResult:
     params = params or {}
     try:
@@ -366,6 +367,11 @@ def run_workflow_loop(
             parent_session_id=parent_session_id,
             existing_run_id=guard.existing.run_id if guard.existing else None,
         )
+        if guard.existing is not None:
+            # Resume: checkpoint counters belong to the change (the "thread"),
+            # not to this particular run — carry them over.
+            driver.iteration = guard.existing.iteration
+            driver.last_checkpoint_at = guard.existing.last_checkpoint_at
         owns_lock = not skip_lock
         if not skip_lock:
             try:
@@ -431,6 +437,15 @@ def run_workflow_loop(
         parent_session_id=parent_session_id,
     )
 
+    def commit_checkpoint() -> None:
+        """Iteration-boundary checkpoint. Recovery never reads a snapshot back:
+        compute_status is a pure projection over (schema, artifacts, state,
+        events), so re-running the driver re-projects from the last committed
+        boundary. driver.json only points at how far this run got."""
+        driver.iteration += 1
+        driver.last_checkpoint_at = now_iso()
+        write_driver_state(change_dir, driver)
+
     try:
         # configure (TS loop.ts parity): merge runtime params into
         # workflow-state.yaml and stamp run_context before the first dispatch.
@@ -467,6 +482,7 @@ def run_workflow_loop(
                     return finish(EXIT_ERROR, result.error or f"healing {action.kind} failed", "failed")
                 handled_control = True
             if handled_control:
+                commit_checkpoint()
                 continue  # allocation/complete changes the ledger; re-project before dispatch
             if status.terminal is not None:
                 terminal = status.terminal
@@ -480,10 +496,26 @@ def run_workflow_loop(
                 if break_at is not None and entry.phase_id == break_at:
                     return pause(entry.phase_id, f"breakpoint before {entry.phase_id}")
 
-                attempt_limit = max(1, max_phase_attempts) if entry.kind == "skill" else 1
+                # Schema per-phase retry policy (carried on DispatchEntry) takes
+                # priority; the global max_phase_attempts remains a floor for
+                # skill phases only. Only the dispatch invocation is retried —
+                # outcome-commit failures below never enter this loop.
+                attempt_limit = max(entry.max_attempts, max_phase_attempts if entry.kind == "skill" else 1, 1)
                 result = PhaseResult(ok=False, output="", error="not attempted")
                 successful_attempt_id: str | None = None
-                for _attempt_number in range(attempt_limit):
+                for attempt_number in range(attempt_limit):
+                    if attempt_number > 0:
+                        append_event_best_effort(
+                            change_dir,
+                            build_driver_telemetry(
+                                "phase_retry",
+                                driver.run_id,
+                                phase=entry.phase_id,
+                                attempt=attempt_number + 1,
+                            ),
+                        )
+                        if entry.backoff_seconds > 0:
+                            sleep(entry.backoff_seconds)
                     # Every physical adapter invocation gets its own signed id.
                     # Only the successful invocation's id crosses the outcome boundary.
                     driver.current_phase = entry.phase_id
@@ -529,7 +561,7 @@ def run_workflow_loop(
                 # for this exact attempt id. No second driver-specific strict event.
                 driver.current_attempt_id = None
                 driver.updated_at = now_iso()
-                write_driver_state(change_dir, driver)
+                commit_checkpoint()
 
         return finish(EXIT_ERROR, f"max iterations ({max_iterations}) exceeded", "failed")
     except Exception as err:  # noqa: BLE001 — driver must never leak; surface as EXIT_ERROR

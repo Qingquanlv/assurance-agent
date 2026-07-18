@@ -211,7 +211,14 @@ def test_packaged_healing_loop_rejects_unhealable_fail(tmp_path: Path):
     gate = check_gate(schema, "healing-loop-gate", _loc(change), state, {"max_healing_attempts": 3})
     assert gate.verdict == "reject"
     assert gate.matched_rule is not None and gate.matched_rule.startswith("reject_when:")
-    episode = project_healing_episode(schema, _loc(change), state, {"max_healing_attempts": 3}, derive_healing_state(change))
+    episode = project_healing_episode(
+        schema,
+        _loc(change),
+        state,
+        {"max_healing_attempts": 3},
+        derive_healing_state(change),
+        schema.loops["healing"],
+    )
     assert episode.next_actions[0].outcome == "failed"
 
 

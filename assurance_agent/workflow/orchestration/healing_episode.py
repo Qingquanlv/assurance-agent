@@ -3,9 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Literal, Self
+from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from assurance_agent.artifacts.models import WorkflowState
 from assurance_agent.change_location import ChangeLocation
@@ -13,58 +13,27 @@ from assurance_agent.workflow.core.events import Ledger, event_seq
 from assurance_agent.workflow.orchestration.dsl import is_satisfied, parse_expression
 from assurance_agent.workflow.orchestration.gates import build_evidence_scope, check_gate
 from assurance_agent.workflow.orchestration.healing_state import HealingStateSnapshot
-from assurance_agent.workflow.orchestration.schema import ReadEntry, WorkflowSchema
+from assurance_agent.workflow.orchestration.loop_registry import (
+    HealingAttemptIntent,
+    HealingEpisodeAction,
+    LoopContext,
+    LoopRegistryError,
+    LoopSnapshot,
+    register,
+)
+from assurance_agent.workflow.orchestration.schema import LoopDef, ReadEntry, WorkflowSchema
+
+# Backward-compatible re-exports: the control-action vocabulary now lives in
+# loop_registry (the engine ↔ loop protocol boundary).
+__all__ = [
+    "HealingAttemptIntent",
+    "HealingEpisodeAction",
+    "HealingEpisodeSnapshot",
+    "project_healing_episode",
+]
 
 # Recorded healing judgments that satisfy report/archive `ready_when` routing.
 _HEALING_TERMINAL = {"resolved", "not_needed", "skipped", "exhausted", "failed"}
-
-
-class HealingAttemptIntent(BaseModel):
-    episode_id: str = Field(min_length=1)
-    attempt_id: str = Field(min_length=1)
-    attempt_number: int = Field(ge=1)
-    operation_id: str = Field(min_length=1)
-    source_batch_id: str = Field(min_length=1)
-    pin_entry_baseline: bool
-
-
-class HealingEpisodeAction(BaseModel):
-    kind: Literal["dispatch_phase", "allocate_attempt", "await_human", "complete"]
-    phase: str | None = None
-    allocation: HealingAttemptIntent | None = None
-    outcome: str | None = None
-
-    @model_validator(mode="after")
-    def validate_shape(self) -> Self:
-        valid = (
-            (
-                self.kind == "dispatch_phase"
-                and self.phase is not None
-                and self.allocation is None
-                and self.outcome is None
-            )
-            or (
-                self.kind == "allocate_attempt"
-                and self.phase is None
-                and self.allocation is not None
-                and self.outcome is None
-            )
-            or (
-                self.kind == "await_human"
-                and self.phase is None
-                and self.allocation is None
-                and self.outcome is None
-            )
-            or (
-                self.kind == "complete"
-                and self.phase is None
-                and self.allocation is None
-                and self.outcome is not None
-            )
-        )
-        if not valid:
-            raise ValueError(f"invalid healing action shape for kind={self.kind}")
-        return self
 
 
 class HealingEpisodeSnapshot(BaseModel):
@@ -154,11 +123,9 @@ def project_healing_episode(
     state: WorkflowState,
     params: dict,
     healing: HealingStateSnapshot,
+    loop: LoopDef,
 ) -> HealingEpisodeSnapshot:
     change_dir = loc.path
-    loop = schema.loops.get("healing")
-    if loop is None:
-        return HealingEpisodeSnapshot(state="inactive", stage=None)
     if healing.status in _HEALING_TERMINAL:
         # Episode already finalized (a heal_transition was committed on a prior
         # tick). report/archive `ready_when` reads phases.healing.status
@@ -336,3 +303,27 @@ def project_healing_episode(
         current_attempt=attempt,
         next_attempt=attempt + 1,
     )
+
+
+def _project(ctx: LoopContext, loop: LoopDef) -> LoopSnapshot:
+    """Registry adapter: healing episode → unified LoopSnapshot.
+
+    Healing terminal judgments never travel via ``terminal_kind``: the
+    ``complete`` control action is committed by the driver (`aa state heal`)
+    and flips ``state.phases.healing.status`` to a recorded terminal value.
+    """
+    if ctx.derived_healing is None:
+        raise LoopRegistryError("healing loop requires LoopContext.derived_healing")
+    episode = project_healing_episode(ctx.schema, ctx.loc, ctx.state, ctx.params, ctx.derived_healing, loop)
+    return LoopSnapshot(
+        loop_id=loop.id,
+        state=episode.state,
+        dispatch=[
+            a.phase for a in episode.next_actions if a.kind == "dispatch_phase" and a.phase is not None
+        ],
+        control_actions=[a for a in episode.next_actions if a.kind != "dispatch_phase"],
+        episode=episode,
+    )
+
+
+register("healing", _project)

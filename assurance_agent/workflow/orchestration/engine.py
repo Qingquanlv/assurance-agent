@@ -10,24 +10,30 @@ from pydantic import BaseModel, Field
 
 from assurance_agent.artifacts.models import WorkflowState
 from assurance_agent.change_location import ChangeLocation
+from assurance_agent.identifiers import UnsafeIdentifierError, assert_path_segment_safe
 from assurance_agent.workflow.core.events import Ledger
-from assurance_agent.workflow.orchestration.dsl import Scope, is_satisfied, parse_expression
+from assurance_agent.workflow.orchestration import loop_registry
+from assurance_agent.workflow.orchestration import review_fix_episode as _review_fix_episode  # noqa: F401
+from assurance_agent.workflow.orchestration.dsl import Scope, evaluate, is_satisfied, parse_expression
 from assurance_agent.workflow.orchestration.gates import (
     build_evidence_scope,
     resolve_change_path,
     resolve_gate_verdict,
 )
-from assurance_agent.workflow.orchestration.healing_episode import (
-    HealingEpisodeSnapshot,
-    project_healing_episode,
-)
+from assurance_agent.workflow.orchestration.healing_episode import HealingEpisodeSnapshot
 from assurance_agent.workflow.orchestration.healing_state import (
     HealingStateProvider,
     HealingStateSnapshot,
     derive_healing_state,
 )
-from assurance_agent.workflow.orchestration.review_fix_episode import project_review_fix_loop
-from assurance_agent.workflow.orchestration.schema import PhaseDef, ReadEntry, Verdict, WorkflowSchema
+from assurance_agent.workflow.orchestration.loop_registry import LoopContext
+from assurance_agent.workflow.orchestration.schema import (
+    PhaseDef,
+    ReadEntry,
+    Verdict,
+    WorkflowSchema,
+    split_fanout_child,
+)
 
 # 调度时视为「编排器内置」的 phase（对齐源版 resolveNextDispatch 的 internal 分支）。
 # 注意：这与 schema.py 的 ORCHESTRATOR_INTERNAL（agent 豁免校验，仅 skill-registry-check）是
@@ -42,6 +48,10 @@ class DispatchEntry(BaseModel):
     skill: str | None = None
     agent: str | None = None
     kind: Literal["skill", "cli", "orchestrator"]
+    max_attempts: int = 1
+    backoff_seconds: float = 0
+    # Fan-out child identity (`<base>[<item>]`); None for ordinary phases.
+    item: str | None = None
 
 
 class PhaseView(BaseModel):
@@ -72,6 +82,20 @@ def _dispatch_kind(phase: PhaseDef) -> Literal["skill", "cli", "orchestrator"]:
     if phase.id in _INTERNAL_PHASES:
         return "orchestrator"
     return "cli" if phase.skill is None else "skill"
+
+
+def _to_dispatch(phase: PhaseDef) -> DispatchEntry:
+    retry = phase.retry
+    child = split_fanout_child(phase.id)
+    return DispatchEntry(
+        phase_id=phase.id,
+        skill=phase.skill,
+        agent=phase.agent,
+        kind=_dispatch_kind(phase),
+        max_attempts=retry.max_attempts if retry else 1,
+        backoff_seconds=retry.backoff_seconds if retry else 0,
+        item=child[1] if child else None,
+    )
 
 
 def _in_active_scope(phase: PhaseDef, active_scope: str | None) -> bool:
@@ -131,6 +155,117 @@ def _overlay_healing(
     return WorkflowState.model_validate(data), derived
 
 
+_FAN_OUT_ERROR = "fan_out_error"
+
+
+def _fanout_stub(base: PhaseDef) -> PhaseDef:
+    # Non-dispatchable placeholder keeping the base id in the DAG so downstream
+    # requires keep resolving while expansion is impossible / empty / pruned.
+    return base.model_copy(
+        update={
+            "skill": None,
+            "agent": None,
+            "produces": [],
+            "when": None,
+            "ready_when": None,
+            "fan_out": None,
+        }
+    )
+
+
+def _fanout_child(base: PhaseDef, item: str) -> PhaseDef:
+    return base.model_copy(
+        update={
+            "id": f"{base.id}[{item}]",
+            "produces": [t.replace("{item}", item) for t in base.produces],
+            "when": None,  # activation is decided once, at the base
+            "fan_out": None,
+        }
+    )
+
+
+def _fanout_items(value: object, max_items: int) -> list[str] | None:
+    """Validate the `each` result: list[str] of path-safe items, deduped; None = invalid."""
+    if not isinstance(value, list) or len(value) > max_items:
+        return None
+    out: list[str] = []
+    for el in value:
+        if not isinstance(el, str):
+            return None
+        try:
+            assert_path_segment_safe(el, label="fan-out item")
+        except UnsafeIdentifierError:
+            return None
+        out.append(el)
+    return list(dict.fromkeys(out))
+
+
+def _expand_fanout(
+    schema: WorkflowSchema, predicate_scope: Callable[[], Scope]
+) -> tuple[WorkflowSchema, dict[str, str]]:
+    """Expand ``fan_out`` phases into per-item children for this projection.
+
+    Returns the expanded schema plus stub markers for bases that must stand in
+    as a non-dispatchable placeholder right now:
+      pruned  — base `when` is false → stub presents as pruned (transitive)
+      pending — `each` did not yield list[str] yet → stub blocks; once its deps
+                are all done this is a produces-contract violation (stopped)
+      empty   — `each` == [] → stub turns done once its deps are done (no work)
+    """
+    if not any(p.fan_out is not None for p in schema.phases):
+        return schema, {}
+    scope = predicate_scope()
+    stub_status: dict[str, str] = {}
+    children_of: dict[str, list[str]] = {}
+    expanded: list[PhaseDef] = []
+    for p in schema.phases:
+        fo = p.fan_out
+        if fo is None:
+            expanded.append(p)
+            continue
+        if p.when and not is_satisfied(parse_expression(p.when), scope):
+            stub_status[p.id] = "pruned"
+            expanded.append(_fanout_stub(p))
+            continue
+        items = _fanout_items(evaluate(parse_expression(fo.each), scope), fo.max_items)
+        if items is None:
+            stub_status[p.id] = "pending"
+            expanded.append(_fanout_stub(p))
+            continue
+        if not items:
+            stub_status[p.id] = "empty"
+            expanded.append(_fanout_stub(p))
+            continue
+        children_of[p.id] = [f"{p.id}[{item}]" for item in items]
+        expanded.extend(_fanout_child(p, item) for item in items)
+    final: list[PhaseDef] = []
+    for p in expanded:
+        if p.id in stub_status or not any(d in children_of for d in p.requires):
+            final.append(p)
+            continue
+        reqs: list[str] = []
+        for d in p.requires:
+            reqs.extend(children_of.get(d, [d]))
+        final.append(p.model_copy(update={"requires": reqs}))
+    return schema.model_copy(update={"phases": final}), stub_status
+
+
+def _stub_view(pid: str, stub_kind: str | None, view: PhaseView) -> PhaseView | None:
+    """Post-process a fan-out stub's ordinary view, in topo order (so the
+    override is visible to downstream phases computed later)."""
+    if stub_kind == "pruned":
+        return PhaseView(id=pid, status="pruned", gate=view.gate)
+    if view.status != "ready":
+        return None  # deps not done yet / out of scope → ordinary view is honest
+    if stub_kind == "empty":
+        return PhaseView(id=pid, status="done")
+    if stub_kind == "pending":
+        # Upstream deps are all done yet `each` still is not list[str]: the
+        # producing phase broke its artifact contract — fail closed.
+        return PhaseView(id=pid, status="stopped", gate_verdict=_FAN_OUT_ERROR)
+    return None
+
+
 def compute_status(
     schema: WorkflowSchema,
     loc: ChangeLocation,
@@ -162,6 +297,7 @@ def compute_status(
     def gate_verdict(gate_id: str) -> Verdict:
         return resolve_gate_verdict(schema, gate_id, loc, state, merged_params, memo, ())
 
+    schema, stub_status = _expand_fanout(schema, predicate_scope)
     by_id = {p.id: p for p in schema.phases}
 
     # 1) 剪枝：when 非 True（含传递剪枝）
@@ -184,15 +320,12 @@ def compute_status(
             predicate_scope,
             gate_verdict,
         )
+        override = _stub_view(pid, stub_status.get(pid), views[pid])
+        if override is not None:
+            views[pid] = override
 
     phases = [views[p.id] for p in schema.phases]  # 声明顺序输出
-    ready = [
-        DispatchEntry(
-            phase_id=p.id, skill=by_id[p.id].skill, agent=by_id[p.id].agent, kind=_dispatch_kind(by_id[p.id])
-        )
-        for p in phases
-        if p.status == "ready"
-    ]
+    ready = [_to_dispatch(by_id[p.id]) for p in phases if p.status == "ready"]
     terminal = _terminal(phases, ready)
 
     # Loop members (healing episode + bounded review_fix repair loops) are owned
@@ -207,38 +340,40 @@ def compute_status(
         phase = by_id[phase_id]
         views[phase_id] = views[phase_id].model_copy(update={"status": "ready"})
         if phase_id not in {d.phase_id for d in ready}:
-            ready.append(
-                DispatchEntry(
-                    phase_id=phase.id,
-                    skill=phase.skill,
-                    agent=phase.agent,
-                    kind=_dispatch_kind(phase),
-                )
-            )
+            ready.append(_to_dispatch(phase))
 
-    episode = project_healing_episode(schema, loc, state, merged_params, derived_healing)
-    for action in episode.next_actions:
-        if action.kind == "dispatch_phase" and action.phase:
-            _append_ready(action.phase)
-
-    # Bounded review→fix→re-review loops (case / api-plan / e2e-plan). Any one
-    # exhausting its fixer budget stops the change (mirrors healing exhaustion).
-    review_fix_terminal: Terminal | None = None
+    # Loops are self-describing nested execution units (subgraph protocol): the
+    # engine only merges LoopSnapshots — dispatch lists, owned-member blocking,
+    # control-action passthrough (via the episode payload) and terminal verdicts.
+    # Kind-specific logic lives in the registered projectors; adding a loop kind
+    # never changes this function.
+    episode = HealingEpisodeSnapshot(state="inactive", stage=None)
+    loop_terminal: Terminal | None = None
     for loop in schema.loops.values():
-        if loop.kind != "review_fix":
-            continue
-        review_view = views.get(loop.review_phase)
-        review_active = review_view is not None and review_view.status not in ("pruned", "out_of_scope")
-        snap = project_review_fix_loop(schema, loc, state, merged_params, loop, review_active=review_active)
-        if loop.fix_phase not in snap.dispatch and loop.fix_phase in views:
-            # Loop owns the fix phase; keep its view honest when not dispatching it
-            # (e.g. during a reviewer re-run or when the budget is exhausted).
-            if views[loop.fix_phase].status == "ready":
-                views[loop.fix_phase] = views[loop.fix_phase].model_copy(update={"status": "blocked"})
+        snap = loop_registry.project(
+            LoopContext(
+                schema=schema,
+                loc=loc,
+                state=state,
+                params=merged_params,
+                derived_healing=derived_healing,
+                phase_active=lambda pid: pid in views and views[pid].status not in ("pruned", "out_of_scope"),
+            ),
+            loop,
+        )
+        for member in snap.block_members:
+            # Loop owns the member phase; keep its view honest when not
+            # dispatching it (e.g. during a reviewer re-run or budget exhausted).
+            if member in views and views[member].status == "ready":
+                views[member] = views[member].model_copy(update={"status": "blocked"})
         for phase_id in snap.dispatch:
             _append_ready(phase_id)
-        if snap.terminal_kind == "stopped" and review_fix_terminal is None:
-            review_fix_terminal = Terminal(kind="stopped", reason=snap.reason, phase=loop.fix_phase)
+        if snap.terminal_kind == "stopped" and loop_terminal is None:
+            # Any bounded repair loop exhausting its budget stops the change
+            # (mirrors healing exhaustion).
+            loop_terminal = Terminal(kind="stopped", reason=snap.terminal_reason, phase=snap.terminal_phase)
+        if isinstance(snap.episode, HealingEpisodeSnapshot):
+            episode = snap.episode
 
     latest_decision = Ledger(loc.path).latest(type="human_decision")
     if latest_decision is not None and latest_decision.get("action") == "stop":
@@ -247,8 +382,8 @@ def compute_status(
             reason=str(latest_decision.get("reason") or "stopped by human decision"),
             phase=str(latest_decision.get("checkpoint") or "workflow"),
         )
-    elif review_fix_terminal is not None:
-        terminal = review_fix_terminal
+    elif loop_terminal is not None:
+        terminal = loop_terminal
     elif episode.state in {"active", "awaiting_human"}:
         terminal = None
     next_dispatch = [] if terminal else ready
@@ -330,11 +465,14 @@ def _phase_view(
 def _terminal(phases: list[PhaseView], ready: list[DispatchEntry]) -> Terminal | None:
     stopped = next((p for p in phases if p.status == "stopped"), None)
     if stopped is not None:
-        return Terminal(
-            kind="stopped",
-            phase=stopped.id,
-            reason=f"gate '{stopped.gate}' verdict '{stopped.gate_verdict}'",
-        )
+        if stopped.gate_verdict == _FAN_OUT_ERROR:
+            reason = (
+                f"fan_out.each for phase '{stopped.id}' did not evaluate to list[str] of safe items "
+                "after its upstream completed (produces-contract violation)"
+            )
+        else:
+            reason = f"gate '{stopped.gate}' verdict '{stopped.gate_verdict}'"
+        return Terminal(kind="stopped", phase=stopped.id, reason=reason)
     if ready:
         return None  # 还有可推进项，优先推进（needs_human_review 分支不阻断并行 ready）
     pending = next(

@@ -540,3 +540,69 @@ def test_loop_configure_failure_is_driver_fatal(tmp_path: Path) -> None:
     assert result.exit_code == EXIT_ERROR
     assert "configure failed" in result.reason
     assert adapter.requests == []  # 进循环前即失败，未派发任何相位
+
+
+def _skill_retry(phase: str, max_attempts: int, backoff: float = 0) -> DispatchEntry:
+    return DispatchEntry(
+        phase_id=phase,
+        skill=f"aa-{phase}",
+        agent="aa-doc-author",
+        kind="skill",
+        max_attempts=max_attempts,
+        backoff_seconds=backoff,
+    )
+
+
+def test_skill_phase_retries_until_success(tmp_path: Path) -> None:
+    adapter = FakeAdapter(
+        scripts={
+            "explore": [
+                PhaseResult(ok=False, error="boom"),
+                PhaseResult(ok=False, error="boom"),
+                PhaseResult(ok=True, output="ok"),
+            ]
+        }
+    )
+    provider = ScriptedStatus(adapter, [_skill_retry("explore", max_attempts=3)])
+    result = _run(tmp_path, adapter, provider)
+    assert result.exit_code == EXIT_COMPLETED
+    assert len(adapter.requests) == 3  # 两次瞬时失败 + 第三次成功
+    retries = [e for e in read_events(tmp_path / "qa" / "changes" / "CH-1") if e.get("type") == "phase_retry"]
+    assert [e.get("attempt") for e in retries] == [2, 3]
+
+
+def test_skill_phase_retry_exhausted_is_driver_error(tmp_path: Path) -> None:
+    adapter = FakeAdapter(scripts={"explore": [PhaseResult(ok=False, error="boom")]})
+    provider = ScriptedStatus(adapter, [_skill_retry("explore", max_attempts=2)])
+    result = _run(tmp_path, adapter, provider)
+    assert result.exit_code == EXIT_ERROR
+    assert "phase explore failed" in result.reason
+    assert len(adapter.requests) == 2  # 不超过 schema 声明的上限
+
+
+def test_retry_backoff_sleeps_between_attempts(tmp_path: Path) -> None:
+    adapter = FakeAdapter(
+        scripts={"explore": [PhaseResult(ok=False, error="boom"), PhaseResult(ok=True, output="ok")]}
+    )
+    provider = ScriptedStatus(adapter, [_skill_retry("explore", max_attempts=2, backoff=7)])
+    sleeps: list[float] = []
+    result = _run(tmp_path, adapter, provider, sleep=sleeps.append)
+    assert result.exit_code == EXIT_COMPLETED
+    assert sleeps == [7]  # 仅在第二次尝试前退避一次
+
+
+def test_global_floor_applies_without_schema_retry(tmp_path: Path) -> None:
+    adapter = FakeAdapter(
+        scripts={
+            "explore": [
+                PhaseResult(ok=False, error="boom"),
+                PhaseResult(ok=False, error="boom"),
+                PhaseResult(ok=True, output="ok"),
+            ]
+        }
+    )
+    provider = ScriptedStatus(adapter, [_skill("explore")])
+    # 全局下限 3，但 DispatchEntry 未声明 retry（max_attempts=1）→ 全局对 skill 生效
+    result = _run(tmp_path, adapter, provider, max_phase_attempts=3)
+    assert result.exit_code == EXIT_COMPLETED
+    assert len(adapter.requests) == 3

@@ -83,3 +83,48 @@ phases:
         doc = json.loads(result.output)
         assert doc["terminal"]["kind"] == "stopped"
         assert result.exit_code == 20
+
+
+FANOUT_SCHEMA_YAML = """schema_version: "1"
+name: t
+phases:
+  - id: explore
+    skill: aa-explore
+    agent: aa-doc-author
+    requires: []
+    produces: [explore/advisory.json]
+  - id: case-gen
+    skill: aa-case-gen
+    agent: aa-doc-author
+    requires: [explore]
+    fan_out: { each: "advisory.modules" }
+    produces: ["cases/{item}/case.yaml"]
+  - id: review
+    skill: aa-case-reviewer
+    agent: aa-reviewer
+    requires: [case-gen]
+    produces: [review/review.json]
+"""
+
+FANOUT_STATE = """schema_version: "1"
+params:
+  run_mode: full
+phases: {}
+"""
+
+
+def test_status_next_json_renders_fanout_children() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        change_dir = make_change("CH-1", state_yaml=FANOUT_STATE)
+        Path(".aa/workflow-schema.yaml").write_text(FANOUT_SCHEMA_YAML, encoding="utf-8")
+        advisory = change_dir / "explore"
+        advisory.mkdir(parents=True, exist_ok=True)
+        (advisory / "advisory.json").write_text(json.dumps({"modules": ["menu", "order"]}), encoding="utf-8")
+        result = runner.invoke(main, ["status", "--change", "CH-1", "--next", "--json"])
+        assert result.exit_code == 0, result.output
+        doc = json.loads(result.output)
+        by_phase = {d["phase_id"]: d for d in doc["next_dispatch"]}
+        assert by_phase["case-gen[menu]"]["item"] == "menu"
+        assert by_phase["case-gen[order]"]["item"] == "order"
+        assert by_phase["case-gen[menu]"]["skill"] == "aa-case-gen"

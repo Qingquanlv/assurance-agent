@@ -3,8 +3,9 @@
  * OpenCode custom tool: start the AA workflow driver detached from chat.
  * Synced into a project's .opencode/tools/ by `aa init` / `aa skill refresh --sync-agents`.
  *
- * This tool ONLY collects params and delegates to `aa workflow start` (M6 detached
- * entry). The dispatch loop lives in the Python driver, never in JS.
+ * This tool ONLY collects params and delegates to
+ * `aa workflow run --detach --adapter opencode` (M6 detached entry).
+ * The dispatch loop lives in the Python driver, never in JS.
  *
  * Fail-closed server URL: requires AA_OPENCODE_SERVER_URL (or OPENCODE_SERVER_URL),
  * or explicit --hostname/--port on the opencode process argv (no implicit port).
@@ -66,7 +67,9 @@ export default {
     }
 
     const cliArgs = [
-      'workflow', 'start',
+      'workflow', 'run',
+      '--detach',
+      '--adapter', 'opencode',
       '--change', args.change_id,
       '--scope', scope,
       '--server', serverUrl,

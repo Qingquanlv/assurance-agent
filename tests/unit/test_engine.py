@@ -270,3 +270,125 @@ def test_packaged_execution_requires_all_active_codegen():
         "execution must wait for ALL active codegen suites; any_active lets it fire "
         "on the first sibling and run against a missing test file (API SKIPPED)."
     )
+
+
+RETRY_SCHEMA = parse_schema("""
+schema_version: "1"
+name: t
+phases:
+  - id: codegen
+    skill: aa-codegen
+    agent: aa-test-author
+    requires: []
+    produces: [codegen/out.md]
+    retry: { max_attempts: 4, backoff_seconds: 12 }
+  - id: plain
+    skill: null
+    requires: []
+    produces: [plain.json]
+""")
+
+
+def test_retry_policy_flows_into_dispatch(tmp_path: Path):
+    st = compute_status(RETRY_SCHEMA, loc_for(tmp_path), WorkflowState(), {})
+    by_phase = {d.phase_id: d for d in st.next_dispatch}
+    assert by_phase["codegen"].max_attempts == 4
+    assert by_phase["codegen"].backoff_seconds == 12
+    assert by_phase["plain"].max_attempts == 1  # 未声明 retry → 单次
+    assert by_phase["plain"].backoff_seconds == 0
+
+
+FANOUT_YAML = """
+schema_version: "1"
+name: t
+params:
+  run_mode: { type: enum, values: [full, case-only], default: full }
+phases:
+  - id: explore
+    skill: aa-explore
+    agent: aa-doc-author
+    requires: []
+    produces: [explore/advisory.json]
+  - id: case-gen
+    skill: aa-case-gen
+    agent: aa-doc-author
+    requires: [explore]
+    fan_out: { each: "advisory.modules" }
+    produces: ["cases/{item}/case.yaml"]
+  - id: review
+    skill: aa-case-reviewer
+    agent: aa-reviewer
+    requires: [case-gen]
+    produces: [review/review.json]
+"""
+FANOUT_SCHEMA = parse_schema(FANOUT_YAML)
+
+
+def _write_advisory(change_dir: Path, modules: list[str]) -> None:
+    d = change_dir / "explore"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "advisory.json").write_text(json.dumps({"modules": modules}))
+
+
+def test_fanout_expands_children_and_dispatches(tmp_path: Path):
+    _write_advisory(tmp_path, ["menu", "order"])
+    st = compute_status(FANOUT_SCHEMA, loc_for(tmp_path), WorkflowState(), {})
+    assert _pv(st, "case-gen[menu]").status == "ready"
+    assert _pv(st, "case-gen[order]").status == "ready"
+    assert _pv(st, "review").status == "blocked"  # join：等全部子相位
+    dispatched = {d.phase_id: d for d in st.next_dispatch}
+    assert dispatched["case-gen[menu]"].item == "menu"
+    assert dispatched["case-gen[order]"].item == "order"
+    assert dispatched["case-gen[menu]"].skill == "aa-case-gen"
+
+
+def test_fanout_join_waits_for_all_children(tmp_path: Path):
+    _write_advisory(tmp_path, ["menu", "order"])
+    _touch(tmp_path, "cases/menu/case.yaml")
+    st = compute_status(FANOUT_SCHEMA, loc_for(tmp_path), WorkflowState(), {})
+    assert _pv(st, "case-gen[menu]").status == "done"
+    assert _pv(st, "review").status == "blocked"
+    _touch(tmp_path, "cases/order/case.yaml")
+    st = compute_status(FANOUT_SCHEMA, loc_for(tmp_path), WorkflowState(), {})
+    assert _pv(st, "review").status == "ready"
+
+
+def test_fanout_pending_blocks_while_upstream_not_done(tmp_path: Path):
+    st = compute_status(FANOUT_SCHEMA, loc_for(tmp_path), WorkflowState(), {})
+    assert _pv(st, "case-gen").status == "blocked"  # each 还不可求值 → stub 阻塞
+    assert _pv(st, "review").status == "blocked"
+    assert st.terminal is None
+
+
+def test_fanout_missing_each_after_upstream_done_fails_closed(tmp_path: Path):
+    _touch(tmp_path, "explore/advisory.json")  # 产物存在但缺 modules 字段 → 契约违反
+    st = compute_status(FANOUT_SCHEMA, loc_for(tmp_path), WorkflowState(), {})
+    assert _pv(st, "case-gen").status == "stopped"
+    assert st.terminal is not None and st.terminal.kind == "stopped"
+    assert "fan_out" in (st.terminal.reason or "")
+
+
+def test_fanout_unsafe_item_fails_closed(tmp_path: Path):
+    _write_advisory(tmp_path, ["../evil"])
+    st = compute_status(FANOUT_SCHEMA, loc_for(tmp_path), WorkflowState(), {})
+    assert _pv(st, "case-gen").status == "stopped"
+    assert st.terminal is not None and st.terminal.kind == "stopped"
+
+
+def test_fanout_empty_each_is_done_without_work(tmp_path: Path):
+    _write_advisory(tmp_path, [])
+    st = compute_status(FANOUT_SCHEMA, loc_for(tmp_path), WorkflowState(), {})
+    assert _pv(st, "case-gen").status == "done"  # 零子相位 = 无工作
+    assert _pv(st, "review").status == "ready"
+
+
+def test_fanout_base_when_prunes_whole_family(tmp_path: Path):
+    schema = parse_schema(
+        FANOUT_YAML.replace(
+            "    fan_out:",
+            "    when: \"params.run_mode == 'full'\"\n    fan_out:",
+        )
+    )
+    st = compute_status(schema, loc_for(tmp_path), WorkflowState(), {"run_mode": "case-only"})
+    assert _pv(st, "case-gen").status == "pruned"
+    assert _pv(st, "review").status == "pruned"  # 传递剪枝

@@ -1,4 +1,4 @@
-"""`aa workflow run|status|start` — the deterministic driver command surface."""
+"""`aa workflow run|status` — the deterministic driver command surface."""
 
 import json
 from pathlib import Path
@@ -23,7 +23,7 @@ from assurance_agent.workflow.driver.workflow_start import start_workflow_detach
 
 @click.group("workflow")
 def workflow_group() -> None:
-    """Deterministic workflow driver (run / status / start)."""
+    """Deterministic workflow driver (run / status)."""
 
 
 def _parse_params(raw: str | None) -> dict:
@@ -109,9 +109,10 @@ def workflow_run(
 ) -> None:
     """Run or resume the deterministic workflow driver.
 
-    `--detach` forks the loop into a background process (identical path to
-    `aa workflow start`) and returns immediately; without it the loop runs in
-    the foreground and its four-state exit code (0/20/30/40) is the process code.
+    Without ``--detach`` the loop runs in the foreground and its four-state
+    exit code (0/20/30/40) is the process code. With ``--detach``, lock
+    acquisition + child spawn happen via ``start_workflow_detached`` and this
+    process returns immediately (startup success/failure only).
     """
     project_root = Path.cwd()
     parsed_params = _parse_params(params)
@@ -130,8 +131,11 @@ def workflow_run(
             server=server,
             directory=directory,
         )
-        click.secho(started.message, fg="green" if started.ok else "red")
-        raise SystemExit(EXIT_COMPLETED if started.ok else EXIT_ERROR)
+        if not started.ok:
+            click.secho(started.message, fg="red")
+            raise SystemExit(EXIT_ERROR)
+        click.secho(started.message, fg="green")
+        raise SystemExit(EXIT_COMPLETED)
     adapter = _build_adapter(adapter_name, project_root, server, directory, model, parent_session, agent_cmd)
     result = run_workflow_loop(
         project_root=project_root,
@@ -169,50 +173,15 @@ def workflow_status(change_id: str, as_json: bool) -> None:
     elif driver is None:
         click.echo("no driver state found (workflow not started)")
     else:
-        click.echo(f"run_id:        {driver.run_id}")
-        click.echo(f"status:        {driver.status}")
-        click.echo(f"current_phase: {driver.current_phase}")
-        click.echo(f"paused_on:     {driver.paused_on}")
+        click.echo(f"run_id:            {driver.run_id}")
+        click.echo(f"status:            {driver.status}")
+        click.echo(f"current_phase:     {driver.current_phase}")
+        click.echo(f"paused_on:         {driver.paused_on}")
+        click.echo(f"checkpoint(iter):  {driver.iteration}")
+        click.echo(f"last_checkpoint:   {driver.last_checkpoint_at}")
+        if driver.status in {"paused", "failed"}:
+            click.echo(
+                f"resume:            re-run `aa workflow run --change {change_id}` to resume "
+                "from the last iteration boundary"
+            )
     raise SystemExit(0)
-
-
-@workflow_group.command("start")
-@click.option("--change", "change_id", required=True, help="Change ID under qa/changes/.")
-@click.option("--scope", type=_SCOPE_CHOICE, default="execute", show_default=True)
-@click.option("--adapter", "adapter_name", type=_ADAPTER_CHOICE, default="opencode", show_default=True)
-@click.option("--params", default=None, help="Runtime params JSON override.")
-@click.option("--server", default=None, help="OpenCode server URL (opencode adapter).")
-@click.option("--directory", default=None, help="SUT directory for OpenCode ?directory=.")
-@click.option("--model", default=None, help='Explicit phase model "provider/model" (opencode).')
-@click.option("--parent-session", "parent_session", default=None, help="Parent session id.")
-@click.option("--agent-cmd", "agent_cmd", default="cursor-agent --print", show_default=True)
-def workflow_start_cmd(
-    change_id: str,
-    scope: str,
-    adapter_name: str,
-    params: str | None,
-    server: str | None,
-    directory: str | None,
-    model: str | None,
-    parent_session: str | None,
-    agent_cmd: str,
-) -> None:
-    """Launch the driver in a detached background process (returns immediately)."""
-    parsed_params = _parse_params(params)
-    result = start_workflow_detached(
-        project_root=Path.cwd(),
-        change_id=change_id,
-        scope=scope,
-        adapter=adapter_name,
-        params=parsed_params,
-        agent_cmd=agent_cmd,
-        model=model,
-        parent_session=parent_session,
-        server=server,
-        directory=directory,
-    )
-    if not result.ok:
-        click.secho(result.message, fg="red")
-        raise SystemExit(EXIT_ERROR)
-    click.secho(result.message, fg="green")
-    raise SystemExit(EXIT_COMPLETED)

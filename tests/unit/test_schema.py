@@ -138,3 +138,107 @@ def test_packaged_healing_contract_is_canonical(tmp_path: Path):
     assert schema.loops["healing"].counter == "state.phases.healing.attempts_used"
     rules = [r.verdict.value for r in schema.gates["fixer-safety-gate"].rules]
     assert rules == ["needs_human_review", "pass"]
+
+
+def test_retry_policy_parses_on_agent_phase():
+    s = parse_schema(
+        GOOD.replace(
+            "    when: \"params.run_mode == 'full'\"", "    retry: { max_attempts: 3, backoff_seconds: 5 }"
+        )
+    )
+    phase_b = s._phase("b")
+    assert phase_b is not None and phase_b.retry is not None
+    assert phase_b.retry.max_attempts == 3
+    assert phase_b.retry.backoff_seconds == 5
+    phase_a = s._phase("a")
+    assert phase_a is not None and phase_a.retry is None
+
+
+def test_rejects_retry_on_orchestrator_internal_phase():
+    bad = GOOD.replace(
+        "  - id: a\n    skill: null",
+        "  - id: skill-registry-check\n    skill: null",
+    ).replace("requires: [a]", "requires: []")
+    bad = bad.replace("produces: [x.json]", "produces: [x.json]\n    retry: { max_attempts: 2 }", 1)
+    with pytest.raises(SchemaError, match="must not declare retry"):
+        parse_schema(bad)
+
+
+def test_rejects_out_of_range_retry():
+    bad = GOOD.replace(
+        "    when: \"params.run_mode == 'full'\"",
+        "    retry: { max_attempts: 99 }",
+    )
+    with pytest.raises(SchemaError):
+        parse_schema(bad)
+
+
+FANOUT_GOOD = """
+schema_version: "1"
+name: t
+phases:
+  - id: explore
+    skill: aa-explore
+    agent: aa-doc-author
+    requires: []
+    produces: [explore/advisory.json]
+  - id: case-gen
+    skill: aa-case-gen
+    agent: aa-doc-author
+    requires: [explore]
+    fan_out: { each: "advisory.modules" }
+    produces: ["cases/{item}/case.yaml"]
+  - id: review
+    skill: aa-case-reviewer
+    agent: aa-reviewer
+    requires: [case-gen]
+    produces: [review/review.json]
+"""
+
+
+def test_fanout_parses_and_child_accessors():
+    s = parse_schema(FANOUT_GOOD)
+    assert s.has_phase("case-gen") is True
+    assert s.has_phase("case-gen[menu]") is True
+    assert s.has_phase("review[menu]") is False  # review 不是 fan-out phase
+    assert s.has_phase("ghost[menu]") is False
+    assert s.phase_produces("case-gen[menu]") == ["cases/menu/case.yaml"]
+    assert s.gate_for_phase("case-gen[menu]") is None
+    base = s._phase("case-gen")
+    assert base is not None and base.fan_out is not None
+    assert base.fan_out.each == "advisory.modules"
+    assert base.fan_out.max_items == 32
+
+
+def test_rejects_fanout_with_gate():
+    bad = (
+        FANOUT_GOOD.replace(
+            '    fan_out: { each: "advisory.modules" }',
+            '    fan_out: { each: "advisory.modules" }\n    gate: g',
+        )
+        + '\ngates:\n  g:\n    reads: [x.json]\n    pass_when: "true"\n'
+    )
+    with pytest.raises(SchemaError, match="must not declare a gate"):
+        parse_schema(bad)
+
+
+def test_rejects_fanout_produces_without_item_template():
+    bad = FANOUT_GOOD.replace("cases/{item}/case.yaml", "cases/all/case.yaml")
+    with pytest.raises(SchemaError, match="must contain"):
+        parse_schema(bad)
+
+
+def test_rejects_chained_fanout():
+    bad = FANOUT_GOOD.replace(
+        "    requires: [case-gen]\n    produces: [review/review.json]",
+        '    requires: [case-gen]\n    fan_out: { each: "advisory.modules" }\n'
+        '    produces: ["review/{item}/review.json"]',
+    )
+    with pytest.raises(SchemaError, match="must not require fan-out phase"):
+        parse_schema(bad)
+
+
+def test_rejects_fanout_bad_each_expression():
+    bad = FANOUT_GOOD.replace("advisory.modules", "bogus_fn(1)")
+    with pytest.raises(SchemaError):
+        parse_schema(bad)

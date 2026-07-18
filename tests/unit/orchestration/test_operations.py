@@ -805,3 +805,58 @@ def test_record_decision_non_audited_gate_needs_no_artifact(tmp_path: Path) -> N
     )
     decision = _human_decisions(change)[-1]
     assert "review_file" not in decision
+
+
+_FANOUT_SCHEMA = parse_schema(
+    """
+schema_version: "1"
+name: t
+phases:
+  - id: case-gen
+    skill: aa-case-gen
+    agent: aa-doc-author
+    requires: []
+    fan_out: { each: "explore_advisory.modules" }
+    produces: ["cases/{item}/case.yaml"]
+"""
+)
+
+
+def test_apply_outcome_fanout_child_commits_and_replays(tmp_path: Path) -> None:
+    change = _change(tmp_path)
+    out = change / "cases" / "menu"
+    out.mkdir(parents=True)
+    (out / "case.yaml").write_text("id: TC_MENU_001\n", encoding="utf-8")
+    record_dispatch(change, phase_id="case-gen[menu]", kind="dispatch_phase", attempt_id="a1")
+    first = apply_phase_outcome(
+        loc_for(change, project_root=tmp_path),
+        _FANOUT_SCHEMA,
+        "case-gen[menu]",
+        attempt_id="a1",
+        skill="aa-case-gen",
+    )
+    assert first.disposition == "committed"
+    assert first.applied_status == "done"
+    entry = _phase_entry(change, "case_gen_menu")  # 子 id 折叠为下划线 state key
+    assert entry["attempt_id"] == "a1"
+    second = apply_phase_outcome(
+        loc_for(change, project_root=tmp_path),
+        _FANOUT_SCHEMA,
+        "case-gen[menu]",
+        attempt_id="a1",
+        skill="aa-case-gen",
+    )
+    assert second.disposition == "replayed"
+    assert len([e for e in read_events(change) if e["type"] == "phase_outcome_committed"]) == 1
+
+
+def test_apply_outcome_unknown_fanout_base_fails_closed(tmp_path: Path) -> None:
+    change = _change(tmp_path)
+    with pytest.raises(AaError, match="unknown phase"):
+        apply_phase_outcome(
+            loc_for(change, project_root=tmp_path),
+            _FANOUT_SCHEMA,
+            "ghost[menu]",
+            attempt_id=None,
+            skill="aa-case-gen",
+        )
