@@ -28,6 +28,8 @@ class PhaseState(BaseModel):
 class HealingPhaseState(PhaseState):
     attempts_used: int = Field(default=0, ge=0)
     all_fixers_no_op: bool = False
+    # Synced from derive_healing_state on heal_transition; ledger remains source of truth.
+    episode_id: str | None = None
 
 
 class WorkflowPhases(BaseModel):
