@@ -2,7 +2,7 @@ from pathlib import Path
 
 from tests.helpers_aa import loc_for, write_aa_config
 
-from assurance_agent.workflow.core.events import read_events
+from assurance_agent.workflow.core.events import HumanDecisionEvent, append_event_strict, read_events
 from assurance_agent.workflow.driver import loop as loop_mod
 from assurance_agent.workflow.driver.adapter import PhaseRequest, PhaseResult
 from assurance_agent.workflow.driver.driver_state import read_driver_state
@@ -309,7 +309,7 @@ def test_default_cli_executor_maps_run_and_applies_in_process(tmp_path: Path, mo
             invocations.append(argv)
             return ProcessResult(exit_code=0, stdout="ok", stderr="")
 
-    def fake_apply(project_root, change_dir, schema, phase_id, *, attempt_id=None, **_kw):  # noqa: ANN001
+    def fake_apply(loc, schema, phase_id, *, attempt_id=None, **_kw):  # noqa: ANN001
         apply_calls.append((phase_id, attempt_id or ""))
         return None
 
@@ -475,6 +475,10 @@ def test_loop_scope_full_stamps_workflow_context(tmp_path: Path) -> None:
     provider = ScriptedStatus(adapter, [])
     write_aa_config(tmp_path)
     (tmp_path / "qa" / "changes" / "CH-1").mkdir(parents=True, exist_ok=True)
+    for rel in ("tests/config.py", "tests/conftest.py", "tests/schema_validation.py"):
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# scaffold\n", encoding="utf-8")
     result = run_workflow_loop(
         project_root=tmp_path,
         change_id="CH-1",
@@ -489,6 +493,46 @@ def test_loop_scope_full_stamps_workflow_context(tmp_path: Path) -> None:
     assert ctx.active_scope == "full"
 
 
+def test_full_scope_bootstrap_pause_is_released_by_skip_branch_decision(tmp_path: Path) -> None:
+    adapter = FakeAdapter()
+    provider = ScriptedStatus(adapter, [])
+    write_aa_config(tmp_path)
+    change = tmp_path / "qa" / "changes" / "CH-1"
+    change.mkdir(parents=True)
+
+    blocked = run_workflow_loop(
+        project_root=tmp_path,
+        change_id="CH-1",
+        scope="full",
+        adapter=adapter,
+        status_provider=provider,
+        cli_executor=_NoCli(),
+        skip_lock=True,
+    )
+    assert blocked.exit_code == EXIT_HUMAN_REVIEW
+    assert "Test infra not ready" in blocked.reason
+
+    append_event_strict(
+        change,
+        HumanDecisionEvent(
+            checkpoint="bootstrap",
+            action="skip_branch",
+            reason="not needed for this SUT",
+            who="tester",
+        ),
+    )
+    resumed = run_workflow_loop(
+        project_root=tmp_path,
+        change_id="CH-1",
+        scope="full",
+        adapter=adapter,
+        status_provider=provider,
+        cli_executor=_NoCli(),
+        skip_lock=True,
+    )
+    assert resumed.exit_code == EXIT_COMPLETED
+
+
 def test_loop_configure_failure_is_driver_fatal(tmp_path: Path) -> None:
     adapter = FakeAdapter()
     provider = ScriptedStatus(adapter, [_skill("explore")])
@@ -496,3 +540,69 @@ def test_loop_configure_failure_is_driver_fatal(tmp_path: Path) -> None:
     assert result.exit_code == EXIT_ERROR
     assert "configure failed" in result.reason
     assert adapter.requests == []  # 进循环前即失败，未派发任何相位
+
+
+def _skill_retry(phase: str, max_attempts: int, backoff: float = 0) -> DispatchEntry:
+    return DispatchEntry(
+        phase_id=phase,
+        skill=f"aa-{phase}",
+        agent="aa-doc-author",
+        kind="skill",
+        max_attempts=max_attempts,
+        backoff_seconds=backoff,
+    )
+
+
+def test_skill_phase_retries_until_success(tmp_path: Path) -> None:
+    adapter = FakeAdapter(
+        scripts={
+            "explore": [
+                PhaseResult(ok=False, error="boom"),
+                PhaseResult(ok=False, error="boom"),
+                PhaseResult(ok=True, output="ok"),
+            ]
+        }
+    )
+    provider = ScriptedStatus(adapter, [_skill_retry("explore", max_attempts=3)])
+    result = _run(tmp_path, adapter, provider)
+    assert result.exit_code == EXIT_COMPLETED
+    assert len(adapter.requests) == 3  # 两次瞬时失败 + 第三次成功
+    retries = [e for e in read_events(tmp_path / "qa" / "changes" / "CH-1") if e.get("type") == "phase_retry"]
+    assert [e.get("attempt") for e in retries] == [2, 3]
+
+
+def test_skill_phase_retry_exhausted_is_driver_error(tmp_path: Path) -> None:
+    adapter = FakeAdapter(scripts={"explore": [PhaseResult(ok=False, error="boom")]})
+    provider = ScriptedStatus(adapter, [_skill_retry("explore", max_attempts=2)])
+    result = _run(tmp_path, adapter, provider)
+    assert result.exit_code == EXIT_ERROR
+    assert "phase explore failed" in result.reason
+    assert len(adapter.requests) == 2  # 不超过 schema 声明的上限
+
+
+def test_retry_backoff_sleeps_between_attempts(tmp_path: Path) -> None:
+    adapter = FakeAdapter(
+        scripts={"explore": [PhaseResult(ok=False, error="boom"), PhaseResult(ok=True, output="ok")]}
+    )
+    provider = ScriptedStatus(adapter, [_skill_retry("explore", max_attempts=2, backoff=7)])
+    sleeps: list[float] = []
+    result = _run(tmp_path, adapter, provider, sleep=sleeps.append)
+    assert result.exit_code == EXIT_COMPLETED
+    assert sleeps == [7]  # 仅在第二次尝试前退避一次
+
+
+def test_global_floor_applies_without_schema_retry(tmp_path: Path) -> None:
+    adapter = FakeAdapter(
+        scripts={
+            "explore": [
+                PhaseResult(ok=False, error="boom"),
+                PhaseResult(ok=False, error="boom"),
+                PhaseResult(ok=True, output="ok"),
+            ]
+        }
+    )
+    provider = ScriptedStatus(adapter, [_skill("explore")])
+    # 全局下限 3，但 DispatchEntry 未声明 retry（max_attempts=1）→ 全局对 skill 生效
+    result = _run(tmp_path, adapter, provider, max_phase_attempts=3)
+    assert result.exit_code == EXIT_COMPLETED
+    assert len(adapter.requests) == 3

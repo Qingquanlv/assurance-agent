@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.helpers_aa import loc_for
+
 from assurance_agent.artifacts.models import WorkflowState
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.events import append_event_best_effort, read_events
@@ -56,7 +58,9 @@ def test_refuse_terminal_outcome_without_skill_attestation(tmp_path: Path) -> No
     (change / "explore" / "advisory.json").write_text("{}")
 
     with pytest.raises(AaError, match="SKILL_LOAD_GATE_VIOLATION"):
-        apply_phase_outcome(tmp_path, change, SCHEMA, "explore", attempt_id=None, skill=None)
+        apply_phase_outcome(
+            loc_for(change, project_root=tmp_path), SCHEMA, "explore", attempt_id=None, skill=None
+        )
 
     assert not any(e["type"] == "phase_outcome_committed" for e in read_events(change))
 
@@ -67,8 +71,7 @@ def test_allow_terminal_outcome_with_skill_attestation(tmp_path: Path) -> None:
     (change / "explore" / "advisory.json").write_text("{}")
 
     applied = apply_phase_outcome(
-        tmp_path,
-        change,
+        loc_for(change, project_root=tmp_path),
         SCHEMA,
         "explore",
         attempt_id=None,
@@ -96,8 +99,7 @@ def test_refuse_needs_fix_to_pass_gate_verdict_without_repair(tmp_path: Path) ->
 
     with pytest.raises(AaError, match="GATE-TRANSITION-ILLEGAL"):
         apply_phase_outcome(
-            tmp_path,
-            change,
+            loc_for(change, project_root=tmp_path),
             SCHEMA,
             "case-review",
             attempt_id=None,

@@ -90,7 +90,7 @@ def test_entry_gate_stop_emits_complete_failed(tmp_path: Path):
     _j(tmp_path, "inspect/failure-analysis.json", {"failures": [{"fix_proposal_eligible": True}]})
     state = _fail_state(healing_available=False)
     healing = derive_healing_state(tmp_path)
-    episode = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing)
+    episode = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing, SCHEMA.loops["healing"])
     assert episode.state == "terminal"
     assert episode.stage == "entry"
     assert episode.next_actions == [HealingEpisodeAction(kind="complete", outcome="failed")]
@@ -108,7 +108,7 @@ def test_allocate_on_false_emits_complete_failed(tmp_path: Path):
     _outcome(tmp_path, "fix-proposal", "p1")
     state = _fail_state()
     healing = derive_healing_state(tmp_path)
-    episode = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing)
+    episode = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing, SCHEMA.loops["healing"])
     assert episode.state == "terminal"
     assert episode.stage == "allocate"
     assert episode.next_actions == [HealingEpisodeAction(kind="complete", outcome="failed")]
@@ -140,7 +140,7 @@ def test_safety_gate_stop_emits_complete_failed(tmp_path: Path):
     )
     state = _fail_state()
     healing = derive_healing_state(tmp_path)
-    episode = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing)
+    episode = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing, SCHEMA.loops["healing"])
     assert episode.state == "terminal"
     assert episode.stage == "safety"
     assert episode.next_actions == [HealingEpisodeAction(kind="complete", outcome="failed")]
@@ -176,7 +176,7 @@ def test_loop_exhausted_emits_complete_exhausted(tmp_path: Path):
     state = _fail_state()
     healing = derive_healing_state(tmp_path)
     assert healing.attempts_used == 2
-    episode = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing)
+    episode = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing, SCHEMA.loops["healing"])
     assert episode.state == "terminal"
     assert episode.stage == "decide"
     assert episode.next_actions == [HealingEpisodeAction(kind="complete", outcome="exhausted")]
@@ -197,7 +197,7 @@ def test_terminal_status_short_circuits_episode(tmp_path: Path):
     state = _fail_state(healing_available=False)
     healing = derive_healing_state(tmp_path)
     assert healing.status == "failed"
-    episode = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing)
+    episode = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing, SCHEMA.loops["healing"])
     assert episode.state == "inactive"
     assert episode.next_actions == []
 
@@ -236,11 +236,11 @@ def test_shared_old_outputs_do_not_skip_rerun_or_reinspect(tmp_path: Path):
         }
     )
     healing = derive_healing_state(tmp_path)
-    episode = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing)
+    episode = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing, SCHEMA.loops["healing"])
     assert episode.next_actions[0].phase == "healing-rerun"
 
     _outcome(tmp_path, "healing-rerun", "r1")
-    episode = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing)
+    episode = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing, SCHEMA.loops["healing"])
     assert episode.next_actions[0].phase == "healing-reinspect"
 
 
@@ -261,8 +261,8 @@ def test_allocate_operation_id_is_stable_and_ignores_persisted_attempts(tmp_path
         }
     )
     healing = derive_healing_state(tmp_path)
-    first = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing)
-    second = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing)
+    first = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing, SCHEMA.loops["healing"])
+    second = project_healing_episode(SCHEMA, loc_for(tmp_path), state, {}, healing, SCHEMA.loops["healing"])
     assert first.next_actions[0].kind == "allocate_attempt"
     assert first.next_actions[0].allocation is not None
     assert second.next_actions[0].allocation is not None

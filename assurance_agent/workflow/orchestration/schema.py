@@ -59,6 +59,31 @@ class ParamSpec(BaseModel):
     default: object = None
 
 
+class RetryPolicy(BaseModel):
+    """Per-phase dispatch retry policy for transient adapter/CLI failures.
+
+    Only the dispatch invocation is retried (a fresh signed attempt id per
+    retry); outcome-commit failures are never retried.
+    """
+
+    max_attempts: int = Field(default=1, ge=1, le=10)
+    backoff_seconds: float = Field(default=0, ge=0, le=300)
+
+
+class FanOutDef(BaseModel):
+    """Dynamic fan-out declaration (Send-API 式 map 语义).
+
+    ``each`` is a DSL expression evaluated against the global evidence scope;
+    it must yield a list of safe path-segment strings. The engine expands the
+    base phase into one child phase ``<base>[<item>]`` per element at
+    ``compute_status`` time; downstream phases join over the children via the
+    ordinary ``requires``/``requires_mode`` machinery.
+    """
+
+    each: str
+    max_items: int = Field(default=32, ge=1, le=128)
+
+
 class PhaseDef(BaseModel):
     id: str
     skill: str | None = None
@@ -73,6 +98,8 @@ class PhaseDef(BaseModel):
     repair_of: str | None = None
     max_attempts_param: str | None = None
     agent: str | None = None
+    retry: RetryPolicy | None = None
+    fan_out: FanOutDef | None = None
 
 
 class LoopDef(BaseModel):
@@ -110,6 +137,16 @@ class GateDef(BaseModel):
     default: Verdict = Verdict.STOP
 
 
+def split_fanout_child(phase_id: str) -> tuple[str, str] | None:
+    """``<base>[<item>]`` → (base, item); anything else → None."""
+    if "[" not in phase_id or not phase_id.endswith("]"):
+        return None
+    base, _, item = phase_id[:-1].partition("[")
+    if not base or not item:
+        return None
+    return base, item
+
+
 class WorkflowSchema(BaseModel):
     schema_version: str = ""
     name: str = ""
@@ -122,12 +159,24 @@ class WorkflowSchema(BaseModel):
         for p in self.phases:
             if p.id == phase_id:
                 return p
+        child = split_fanout_child(phase_id)
+        if child is None:
+            return None
+        base = self._phase(child[0])
+        if base is not None and base.fan_out is not None:
+            return base
         return None
 
     def has_phase(self, phase_id: str) -> bool:
         return self._phase(phase_id) is not None
 
     def phase_produces(self, phase_id: str) -> list[str] | None:
+        child = split_fanout_child(phase_id)
+        if child is not None:
+            base = self._phase(child[0])
+            if base is None or base.fan_out is None:
+                return None
+            return [t.replace("{item}", child[1]) for t in base.produces]
         p = self._phase(phase_id)
         return list(p.produces) if p else None
 
@@ -256,6 +305,8 @@ def _all_predicates(schema: WorkflowSchema) -> list[tuple[str, str]]:
             out.append((f"phase '{p.id}'.when", p.when))
         if p.ready_when:
             out.append((f"phase '{p.id}'.ready_when", p.ready_when))
+        if p.fan_out is not None:
+            out.append((f"phase '{p.id}'.fan_out.each", p.fan_out.each))
     for loop in schema.loops.values():
         if loop.allocate_on:
             out.append((f"loop '{loop.id}'.allocate_on", loop.allocate_on))
@@ -339,6 +390,25 @@ def _validate(schema: WorkflowSchema) -> None:
     duplicates = sorted(pid for pid in phase_ids if phase_id_list.count(pid) > 1)
     errors.extend(f"duplicate phase id '{pid}'" for pid in duplicates)
 
+    fanout_ids = {p.id for p in schema.phases if p.fan_out is not None}
+    for p in schema.phases:
+        if p.fan_out is None:
+            continue
+        if p.gate:
+            errors.append(f"fan-out phase '{p.id}' must not declare a gate (adjudicate at the join phase)")
+        if p.loop:
+            errors.append(f"fan-out phase '{p.id}' must not be a loop member")
+        if p.repair_of:
+            errors.append(f"fan-out phase '{p.id}' must not declare repair_of")
+        for dep in p.requires:
+            if dep in fanout_ids:
+                errors.append(
+                    f"fan-out phase '{p.id}' must not require fan-out phase '{dep}' (chained fan-out)"
+                )
+        for produced in p.produces:
+            if "{item}" not in produced:
+                errors.append(f"fan-out phase '{p.id}' produces entry '{produced}' must contain '{{item}}'")
+
     for p in schema.phases:
         if p.requires_mode not in {"all", "any_active"}:
             errors.append(f"phase '{p.id}' invalid requires_mode '{p.requires_mode}'")
@@ -353,6 +423,8 @@ def _validate(schema: WorkflowSchema) -> None:
             errors.append(f"phase '{p.id}' max_attempts_param unknown param '{p.max_attempts_param}'")
         if p.loop and p.loop not in schema.loops:
             errors.append(f"phase '{p.id}' references unknown loop '{p.loop}'")
+        if p.retry is not None and p.id in ORCHESTRATOR_INTERNAL:
+            errors.append(f"orchestrator-internal phase '{p.id}' must not declare retry")
         for scope in p.owned_by or []:
             if scope not in ALLOWED_OWNED_BY:
                 errors.append(f"phase '{p.id}' owned_by scope '{scope}' not allowed")
@@ -397,6 +469,11 @@ def _validate(schema: WorkflowSchema) -> None:
                     f"review_fix loop '{loop.id}' members must be exactly its fix_phase "
                     f"[{loop.fix_phase}], got {sorted(loop.members)}"
                 )
+            phase_by_id = {p.id: p for p in schema.phases}
+            for role, pid in (("review_phase", loop.review_phase), ("fix_phase", loop.fix_phase)):
+                target = phase_by_id.get(pid)
+                if target is not None and target.fan_out is not None:
+                    errors.append(f"review_fix loop '{loop.id}' {role} must not be a fan-out phase")
 
     produced_aliases: dict[str, str] = {}
     for phase in schema.phases:

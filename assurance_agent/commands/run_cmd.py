@@ -7,15 +7,19 @@ import click
 from assurance_agent.change_location import resolve_change
 from assurance_agent.config import AaConfig, load_config
 from assurance_agent.exceptions import AaError
-from assurance_agent.workflow.core.events import HumanDecisionEvent, append_event_best_effort
+from assurance_agent.workflow.core.events import append_event_best_effort
 from assurance_agent.workflow.core.exit_codes import EXIT_ERROR
 from assurance_agent.workflow.core.progression import ProgressionError, transaction
 from assurance_agent.workflow.execution.runner import generate_batch_id, run_change
 from assurance_agent.workflow.execution.tree_hash import hash_test_tree
 from assurance_agent.workflow.healing.override_evidence import build_test_changes_override_evidence
 from assurance_agent.workflow.healing.override_policy import (
+    TOKEN_REL_PATH,
     assert_test_changes_override_allowed,
+    consume_test_changes_override_token,
     load_test_changes_override_policy,
+    read_test_changes_override_token,
+    token_json_bytes,
 )
 from assurance_agent.workflow.healing.safety import (
     HealingGuardError,
@@ -37,7 +41,7 @@ from assurance_agent.workflow.healing.safety import (
     "allow_test_changes",
     is_flag=True,
     default=False,
-    help="Allow test-tree changes with override evidence and audit reason.",
+    help="Consume a prior aa decide allow_test_changes authorization for the current test tree.",
 )
 def run_command(change_id: str, rerun_reason: str | None, allow_test_changes: bool) -> None:
     """Execute API/E2E/Fuzz/Performance tests for a change and write normalized results."""
@@ -79,18 +83,38 @@ def _execute(
     rerun_reason: str | None,
     allow_test_changes: bool,
 ):
-    integrity = assert_test_tree_unchanged_or_healing(
-        project_root,
-        change_id,
-        allow_test_changes=allow_test_changes,
-    )
+    if allow_test_changes and not (rerun_reason or "").strip():
+        raise AaError("--rerun-reason is required with --allow-test-changes")
+    token = None
+    try:
+        integrity = assert_test_tree_unchanged_or_healing(
+            project_root,
+            change_id,
+            allow_test_changes=False,
+        )
+    except HealingGuardError as err:
+        if "TESTS-CHANGED-WITHOUT-HEALING" not in str(err):
+            raise
+        if not allow_test_changes:
+            raise
+        current_tree = hash_test_tree(project_root)
+        token = read_test_changes_override_token(
+            change_dir,
+            change_id=change_id,
+            current_tests_tree_sha256=current_tree.aggregate,
+        )
+        if token is None:
+            raise
+        integrity = assert_test_tree_unchanged_or_healing(
+            project_root,
+            change_id,
+            allow_test_changes=True,
+        )
     assert_product_tree_unchanged_in_healing(project_root, change_id)
 
     batch_id = generate_batch_id()
 
-    if integrity.tests_changed and allow_test_changes:
-        if not rerun_reason:
-            raise HealingGuardError("--allow-test-changes requires --rerun-reason for audit trail")
+    if integrity.tests_changed and token is not None:
         assert_test_changes_override_allowed(
             change_dir,
             integrity,
@@ -114,7 +138,7 @@ def _execute(
         evidence = build_test_changes_override_evidence(
             change_id=change_id,
             batch_id=batch_id,
-            reason=rerun_reason,
+            reason=token.reason,
             integrity=current_tree,
             created_at=datetime.now(timezone.utc).isoformat(),
             diff_text=diff_text,
@@ -128,15 +152,9 @@ def _execute(
                 f"execution/runs/{batch_id}/test-changes-override.diff",
                 evidence.diff_bytes,
             )
-            txn.append_strict(
-                HumanDecisionEvent(
-                    checkpoint="test-tree-guard",
-                    action="allow_test_changes",
-                    reason=rerun_reason,
-                    who="cli",
-                    review_file=evidence.rel_path,
-                    review_sha256=evidence.sha256,
-                )
+            txn.write_file(
+                TOKEN_REL_PATH.as_posix(),
+                token_json_bytes(consume_test_changes_override_token(token, batch_id=batch_id)),
             )
 
     append_event_best_effort(

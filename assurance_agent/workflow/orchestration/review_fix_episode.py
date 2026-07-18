@@ -25,6 +25,7 @@ from assurance_agent.artifacts.models import WorkflowState
 from assurance_agent.change_location import ChangeLocation
 from assurance_agent.workflow.core.events import Ledger, event_seq
 from assurance_agent.workflow.orchestration.gates import check_gate, resolve_change_path
+from assurance_agent.workflow.orchestration.loop_registry import LoopContext, LoopSnapshot, register
 from assurance_agent.workflow.orchestration.schema import LoopDef, WorkflowSchema
 
 _COMMIT = "phase_outcome_committed"
@@ -107,3 +108,33 @@ def project_review_fix_loop(
         dispatch=[loop.fix_phase],
         attempts_used=attempts,
     )
+
+
+def _project(ctx: LoopContext, loop: LoopDef) -> LoopSnapshot:
+    """Registry adapter: bounded review→fix loop → unified LoopSnapshot."""
+    if ctx.phase_active is None:
+        from assurance_agent.workflow.orchestration.loop_registry import LoopRegistryError
+
+        raise LoopRegistryError("review_fix loop requires LoopContext.phase_active")
+    snap = project_review_fix_loop(
+        ctx.schema,
+        ctx.loc,
+        ctx.state,
+        ctx.params,
+        loop,
+        review_active=ctx.phase_active(loop.review_phase),
+    )
+    return LoopSnapshot(
+        loop_id=loop.id,
+        state=snap.state,
+        dispatch=list(snap.dispatch),
+        # The loop owns its fix phase even when not dispatching it (reviewer
+        # re-run in flight or budget exhausted): keep a `ready` view honest.
+        block_members=[] if loop.fix_phase in snap.dispatch else [loop.fix_phase],
+        terminal_kind=snap.terminal_kind,
+        terminal_reason=snap.reason,
+        terminal_phase=loop.fix_phase if snap.terminal_kind else None,
+    )
+
+
+register("review_fix", _project)

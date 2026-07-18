@@ -63,12 +63,11 @@ def _resolve_sut(project_root: Path, sut_dir: str | None) -> Path:
     env = os.environ.get("AA_EVAL_SUT_DIR")
     if env:
         return Path(env).resolve()
-    try:
-        from assurance_agent.eval.suts import resolve_sut_dir
+    from assurance_agent.eval.suts import load_sut_registry, resolve_sut_dir
 
-        return resolve_sut_dir(project_root)
-    except AaError:
+    if not load_sut_registry(project_root).suts:
         return project_root
+    return resolve_sut_dir(project_root)
 
 
 @click.group("eval")
@@ -110,6 +109,7 @@ def eval_run(
     use_fake = bool(os.environ.get("AA_EVAL_FAKE_ADAPTER"))
     sut = _resolve_sut(project_root, sut_dir)
     adapter_factory, status_factory = _resolve_adapter_factory(use_fake=use_fake, sut=sut)
+    overlay = Path(extra_memory_dir).resolve() if extra_memory_dir else None
 
     try:
         if suite_name:
@@ -123,6 +123,7 @@ def eval_run(
                 calibrate=calibrate,
                 adapter_factory=adapter_factory,
                 status_provider_factory=status_factory,
+                extra_memory_dir=overlay,
             )
             _print_run(output_mode, as_json, run_id, gate.verdict)
             if fail_on_verdict and gate.verdict in _FAILING:
@@ -134,6 +135,7 @@ def eval_run(
                 sut_dir=sut,
                 adapter_factory=adapter_factory,
                 status_provider_factory=status_factory,
+                extra_memory_dir=overlay,
             )
             worst = _worst_verdict([g.verdict for g in gates])
             _print_run(output_mode, as_json, batch_id, worst, key="batch_id")

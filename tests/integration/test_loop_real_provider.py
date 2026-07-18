@@ -95,3 +95,61 @@ def test_outcome_commit_failure_is_driver_fatal(tmp_path: Path) -> None:
     assert result.exit_code == EXIT_ERROR
     assert "strict outcome commit failed" in result.reason
     assert [r.phase_id for r in adapter.requests] == ["p1"]
+
+
+class CrashingAdapter(WritingAdapter):
+    """Raises (hard crash) on a chosen phase; artifacts of earlier phases persist."""
+
+    def __init__(self, change_dir: Path, crash_on: str) -> None:
+        super().__init__(change_dir)
+        self._crash_on = crash_on
+
+    def run_phase(self, request: PhaseRequest) -> PhaseResult:
+        if request.phase_id == self._crash_on:
+            raise RuntimeError("simulated driver crash")
+        return super().run_phase(request)
+
+
+def test_crash_resume_reprojects_from_last_checkpoint(tmp_path: Path) -> None:
+    """恢复不变量：迭代边界即 checkpoint——driver 在 p2 崩溃后重跑，
+    p1 不重派发、不重复提交，终局与无崩溃运行一致。"""
+    change_dir = _bootstrap(tmp_path)
+    schema = load_workflow_schema(tmp_path)
+
+    crashed = run_workflow_loop(
+        project_root=tmp_path,
+        change_id="CH-1",
+        scope="execute",
+        adapter=CrashingAdapter(change_dir, crash_on="p2"),
+        schema=schema,
+        cli_executor=DefaultCliPhaseExecutor(schema=schema),
+        max_iterations=10,
+    )
+    assert crashed.exit_code == EXIT_ERROR
+    from assurance_agent.workflow.driver.driver_state import read_driver_state
+
+    driver_after_crash = read_driver_state(change_dir)
+    assert driver_after_crash is not None
+    assert driver_after_crash.status == "failed"
+    assert driver_after_crash.iteration == 1  # p1 提交后过了 1 个迭代边界
+    assert driver_after_crash.last_checkpoint_at is not None
+
+    resumed_adapter = WritingAdapter(change_dir)
+    resumed = run_workflow_loop(
+        project_root=tmp_path,
+        change_id="CH-1",
+        scope="execute",
+        adapter=resumed_adapter,
+        schema=schema,
+        cli_executor=DefaultCliPhaseExecutor(schema=schema),
+        max_iterations=10,
+    )
+    assert resumed.exit_code == EXIT_COMPLETED
+    assert [r.phase_id for r in resumed_adapter.requests] == ["p2"]  # p1 已 done，不重跑
+
+    driver_after_resume = read_driver_state(change_dir)
+    assert driver_after_resume is not None and driver_after_resume.iteration == 2
+
+    events = read_events(change_dir)
+    committed = [e["phase"] for e in events if e.get("type") == "phase_outcome_committed"]
+    assert committed == ["p1", "p2"]  # 无重复提交（幂等重放不变量）

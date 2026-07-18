@@ -64,6 +64,30 @@ def test_build_judge_prompt_includes_prd_and_expected(tmp_path: Path) -> None:
     assert "list" in prompt and "create" in prompt
 
 
+def test_build_judge_prompt_resolves_template_prd_and_case_contents(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    (project / "eval" / "judge").mkdir(parents=True)
+    (project / "eval" / "judge" / "case.md").write_text("CUSTOM JUDGE CONTRACT\n", encoding="utf-8")
+    (project / "eval" / "prd").mkdir()
+    (project / "eval" / "prd" / "api.md").write_text("Refresh registered routes\n", encoding="utf-8")
+    cases = tmp_path / "attempt" / "raw-output" / "cases"
+    cases.mkdir(parents=True)
+    (cases / "case.yaml").write_text("title: refresh coverage\n", encoding="utf-8")
+    sample = DatasetSample(
+        id="J-1",
+        suite="case-generation",
+        input={"prd_ref": "eval/prd/api.md"},
+        expected={"atoms": ["refresh"]},
+    )
+    config = JudgeConfig(model="judge-x", prompt_ref="eval/judge/case.md")
+
+    prompt = build_judge_prompt(sample, tmp_path / "attempt", config=config, project_root=project)
+
+    assert "CUSTOM JUDGE CONTRACT" in prompt
+    assert "Refresh registered routes" in prompt
+    assert "title: refresh coverage" in prompt
+
+
 def test_run_judge_mock_mode_uses_sample_label(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("AA_JUDGE_MOCK", "1")
     sample = DatasetSample(

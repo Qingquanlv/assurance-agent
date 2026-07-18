@@ -8,12 +8,13 @@ an isolated SUT sandbox, then reset ``workflow-state.yaml`` via
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import assert_change_id_safe
@@ -32,6 +33,74 @@ class TierManifest(BaseModel):
     paths: list[str] = Field(default_factory=list)
     resets: FixtureResets = Field(default_factory=FixtureResets)
     source_prefix: str | None = None
+
+
+class FixtureLockEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sample_dir: str
+    aggregate_sha256: str
+    files: dict[str, str]
+
+
+class FixtureLock(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["1"] = "1"
+    fixtures: dict[str, FixtureLockEntry]
+
+
+def _fixture_entry(fixtures_root: Path, sample_dir: str) -> FixtureLockEntry:
+    relative = Path(sample_dir)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise AaError(f"unsafe fixture sample_dir: {sample_dir!r}")
+    sample_root = fixtures_root / relative
+    if not sample_root.is_dir():
+        raise AaError(f"golden sample not found: {sample_root}")
+    files: dict[str, str] = {}
+    for path in sorted(sample_root.rglob("*")):
+        if path.is_symlink():
+            raise AaError(f"fixture contains symlink: {path}")
+        if path.is_file():
+            rel = path.relative_to(sample_root).as_posix()
+            files[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+    canonical = "\n".join(f"{name}:{digest}" for name, digest in sorted(files.items()))
+    return FixtureLockEntry(
+        sample_dir=relative.as_posix(),
+        aggregate_sha256=hashlib.sha256(canonical.encode()).hexdigest(),
+        files=files,
+    )
+
+
+def write_fixture_lock(fixtures_root: Path, fixtures: dict[str, str]) -> Path:
+    """Capture explicit fixture identities for trusted fixture maintenance."""
+    lock = FixtureLock(
+        fixtures={
+            fixture_id: _fixture_entry(fixtures_root, sample_dir)
+            for fixture_id, sample_dir in sorted(fixtures.items())
+        }
+    )
+    path = fixtures_root / "fixture-lock.json"
+    path.write_text(lock.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def resolve_locked_fixture(fixtures_root: Path, fixture_id: str) -> Path:
+    lock_path = fixtures_root / "fixture-lock.json"
+    try:
+        lock = FixtureLock.model_validate_json(lock_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, ValidationError) as err:
+        raise AaError(f"invalid fixture lock {lock_path}: {err}") from err
+    expected = lock.fixtures.get(fixture_id)
+    if expected is None:
+        raise AaError(f"fixture_id not found in fixture lock: {fixture_id}")
+    current = _fixture_entry(fixtures_root, expected.sample_dir)
+    if current != expected:
+        changed = sorted(set(current.files) | set(expected.files))
+        changed = [name for name in changed if current.files.get(name) != expected.files.get(name)]
+        suffix = f" ({', '.join(changed[:5])})" if changed else ""
+        raise AaError(f"fixture lock mismatch for {fixture_id}{suffix}")
+    return fixtures_root / expected.sample_dir
 
 
 def _deep_merge_resets(parent: FixtureResets, child: FixtureResets) -> FixtureResets:
@@ -87,17 +156,6 @@ def _set_dotted(target: dict[str, Any], dotted: str, value: Any) -> None:
             cursor[part] = nxt
         cursor = nxt
     cursor[parts[-1]] = value
-
-
-def _resolve_sample_root(fixtures_root: Path, tier: TierManifest, sample_id: str | None) -> Path:
-    if sample_id:
-        return fixtures_root / "samples" / sample_id
-    if tier.source_prefix:
-        return fixtures_root / "samples" / Path(tier.source_prefix).name
-    default = fixtures_root / "samples" / "eval-sample-001"
-    if default.is_dir():
-        return default
-    raise AaError(f"cannot resolve golden sample root under {fixtures_root / 'samples'}")
 
 
 def _split_paths(paths: list[str]) -> tuple[list[str], list[str]]:
@@ -161,14 +219,12 @@ def seed_change(
     change_id: str,
     tier_name: str,
     fixtures_root: Path,
-    sample_id: str | None = None,
+    fixture_id: str,
 ) -> None:
     """Reset a sandbox change directory from a golden fixture tier."""
     assert_change_id_safe(change_id)
     tier = load_tier(fixtures_root, tier_name)
-    sample_root = _resolve_sample_root(fixtures_root, tier, sample_id)
-    if not sample_root.is_dir():
-        raise AaError(f"golden sample not found: {sample_root}")
+    sample_root = resolve_locked_fixture(fixtures_root, fixture_id)
 
     change_dir = sut_sandbox / "qa" / "changes" / change_id
     staging = sut_sandbox / "qa" / "changes" / f".seed-staging-{change_id}"

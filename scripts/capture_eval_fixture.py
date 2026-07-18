@@ -18,6 +18,8 @@ from pathlib import Path
 
 import yaml
 
+from assurance_agent.eval.fixtures import write_fixture_lock
+
 
 CHANGE_RELS = (
     "proposal.md",
@@ -37,6 +39,7 @@ TEST_GLOBS = (
     "tests/conftest.py",
     "tests/__init__.py",
     "tests/config.py",
+    "tests/schema_validation.py",
 )
 
 
@@ -142,6 +145,7 @@ def capture(
                 "codegen",
                 "tests/config.py",
                 "tests/conftest.py",
+                "tests/schema_validation.py",
                 "tests/api",
             ],
             "resets": {
@@ -184,6 +188,8 @@ def capture(
             },
         },
     )
+    fixture_dirs = sorted(path for path in (out / "samples").iterdir() if path.is_dir())
+    write_fixture_lock(out, {path.name: f"samples/{path.name}" for path in fixture_dirs})
     print(f"captured sample={sample}")
     print(f"tiers={tiers}")
 

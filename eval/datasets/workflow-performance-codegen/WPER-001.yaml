@@ -3,5 +3,6 @@ annotation_source: human
 tags: [workflow-performance-codegen]
 input:
   change_id: eval-sample-001
+  fixture_id: eval-sample-001
   fixture_tier: L2-performance-codegen-seed
 expected: {}

@@ -1,5 +1,13 @@
 name: workflow-full
+version: "1"
 scorer: workflow-full
+regression:
+  repeat: 1
+  metrics:
+    full_run_completed_rate: {direction: higher_is_better, max_regression: 0.0}
+    end_to_end_pass_rate: {direction: higher_is_better, max_regression: 0.0}
+    evidence_integrity: {direction: higher_is_better, max_regression: 0.0}
+    secret_leak_count: {direction: lower_is_better, max_regression: 0.0}
 executor:
   type: workflow-run
   run_mode: full

@@ -32,6 +32,11 @@ class DriverState(BaseModel):
     current_phase: str | None = None
     current_attempt_id: str | None = None
     paused_on: str | None = None
+    # Checkpoint 语义：主循环每提交一个控制动作或相位结果即过一个迭代边界，
+    # iteration 随之递增；checkpoint 实体 = workflow-state.yaml + events.jsonl
+    # （纯投影可据此恢复），driver.json 只是 checkpoint 指针。
+    iteration: int = 0
+    last_checkpoint_at: str | None = None
 
 
 class StartGuard(BaseModel):

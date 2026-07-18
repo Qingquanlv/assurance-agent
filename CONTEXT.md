@@ -23,3 +23,15 @@ _Avoid_: completed change (completion is a workflow status, not a directory role
 **Ledger**:
 The append-only event log for a Change (`events.jsonl`), queried through one interface for sequence-aware lookups (filter / latest by type and attributes).
 _Avoid_: event store, event bus, audit log (when meaning the query seam over `events.jsonl`)
+
+**Fan-out item**:
+One element of a phase-level `fan_out.each` list; the engine expands the base phase into a child phase `<base>[<item>]` per item at projection time, with `{item}` templating in `produces`.
+_Avoid_: shard, batch (a run batch is an execution concept)
+
+**Loop kind**:
+A registered projector for a `loops:` entry (`healing`, `review_fix`), consumed by the engine only through the unified `LoopSnapshot` protocol.
+_Avoid_: hardcoded loop, special-case loop
+
+**Checkpoint**:
+A driver main-loop iteration boundary (one committed phase outcome or control action); the checkpoint payload is `workflow-state.yaml` + `events.jsonl`, `driver.json` is only the pointer (`iteration` accumulates across runs of the same change).
+_Avoid_: snapshot, savepoint (recovery is re-projection, not snapshot restore)

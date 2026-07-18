@@ -482,6 +482,11 @@ gates:
     stop_when: >
       state.phases.healing.attempts_used >= params.max_healing_attempts
       or state.phases.healing.all_fixers_no_op == true
+    # Remaining FAIL with nothing healable must not fall through to default
+    # stop (that was mis-recorded as "exhausted"). reject → complete(failed).
+    reject_when: >
+      state.phases.execution.status == 'FAIL'
+      and not any(failure_analysis.failures, fix_proposal_eligible == true)
 
   archive-gate:
     reads:

@@ -165,3 +165,31 @@ def test_decide_empty_reason_rejected() -> None:
         )
         assert result.exit_code == 1
         assert "reason" in result.output.lower()
+
+
+def test_decide_evidence_is_committed_to_strict_event() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        change_dir = make_change()
+        evidence = Path("decision-note.md")
+        evidence.write_text("approved after manual review\n", encoding="utf-8")
+        result = runner.invoke(
+            main,
+            [
+                "decide",
+                "--change",
+                "CH-1",
+                "--at",
+                "explore",
+                "--action",
+                "stop",
+                "--reason",
+                "halt",
+                "--evidence",
+                str(evidence),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        event = json.loads((change_dir / "events.jsonl").read_text(encoding="utf-8").strip())
+        assert event["evidence_file"] == "decision-note.md"
+        assert len(event["evidence_sha256"]) == 64

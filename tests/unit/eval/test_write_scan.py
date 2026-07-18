@@ -120,6 +120,7 @@ def _run_attempt(
         attempt,
         suite="workflow-case",
         sut_dir=sut,
+        scope="case",
         adapter=adapter,
         status_provider=_scripted_status(),
         cli_executor=AuditOutcomeExecutor(),
@@ -196,7 +197,7 @@ def test_execute_attempt_expands_sample_run_mode_template(tmp_path: Path) -> Non
     assert policy == {"mode": "allowlist", "patterns": write_scan.DEFAULT_ALLOWLISTS["workflow_case"]}
 
 
-def test_execute_attempt_non_git_sut_fails_closed(tmp_path: Path) -> None:
+def test_execute_attempt_non_git_sut_gets_disposable_snapshot(tmp_path: Path) -> None:
     write_aa_config(tmp_path)
     sut = tmp_path / "sut"
     write_aa_config(sut)
@@ -212,19 +213,17 @@ def test_execute_attempt_non_git_sut_fails_closed(tmp_path: Path) -> None:
         attempt,
         suite="workflow-case",
         sut_dir=sut,
+        scope="case",
         adapter=adapter,
         status_provider=_scripted_status(),
         cli_executor=AuditOutcomeExecutor(),
     )
 
-    assert result.status == "error"
-    assert "requires git repo" in (result.error or "")
-    assert adapter.requests == []  # loop never runs — same as the TS executor
-    execution = json.loads((attempt / "execution.json").read_text(encoding="utf-8"))
-    assert execution["infrastructure_error"] is True
-    # evidence trio still present so evidence_integrity can score the attempt
-    assert (attempt / "stdout.log").is_file()
-    assert (attempt / "stderr.log").is_file()
+    assert result.status == "ok"
+    assert len(adapter.requests) == 1
+    assert (sut / ".git").is_dir()
+    diff = _read_write_diff(attempt)
+    assert diff["forbidden_write_executed_count"] == 0
 
 
 # ── write_scan module semantics (ported from write_scan.ts) ────────────────────

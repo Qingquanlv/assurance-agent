@@ -1,5 +1,16 @@
 name: workflow-run
+version: "1"
 scorer: workflow-run
+regression:
+  repeat: 1
+  metrics:
+    evidence_integrity: {direction: higher_is_better, max_regression: 0.0}
+    test_executable_rate: {direction: higher_is_better, max_regression: 0.0}
+    execution_pass_rate: {direction: higher_is_better, max_regression: 0.0}
+    api_pass_rate: {direction: higher_is_better, max_regression: 0.0}
+    e2e_pass_rate: {direction: higher_is_better, max_regression: 0.0}
+    secret_leak_count: {direction: lower_is_better, max_regression: 0.0}
+    forbidden_write_executed_count: {direction: lower_is_better, max_regression: 0.0}
 executor:
   type: aws-run
   timeout_seconds: 900

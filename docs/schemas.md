@@ -22,6 +22,20 @@ JSON Schema 文件是给非 Python 消费者的参考。运行期产物校验由
 
 显式 `--schema` 覆盖是**排他**的：路径缺失即报错，不回退到隐式候选。
 
+## 编排扩展词汇（retry / fan_out / loop kind）
+
+以下词汇为可选增强，默认打包 schema 未使用；语义由 `assurance_agent/workflow/orchestration/` 实现，此处只描述用户可见行为。
+
+**phase `retry`**——声明式重试策略（`max_attempts` / `backoff_seconds`）。只对**派发调用**（adapter / CLI 执行）的瞬时失败重试，每次重试用全新签名 attempt id；结果提交（state apply）失败永不重试。schema 的 per-phase 策略优先，driver 全局 `max_phase_attempts` 仅作 skill 相位的下限。编排器内置相位禁止声明。
+
+**phase `fan_out`**——动态 fan-out（map/join 语义）。`each` 是对全局 evidence 作用域求值的 DSL 表达式，必须产出 `list[str]`（元素须为文件系统安全的路径段，数量受 `max_items` 约束，默认 32 / 上限 128）。引擎在每次 `compute_status` 投影时把 base 相位展开为 `<base>[<item>]` 子相位（`produces` 中的 `{item}` 模板逐项替换）；下游相位以 base id `requires` 即自动获得对全部子相位的 join（`requires_mode` 语义不变）。契约失败均 fail closed：上游完成后 `each` 仍非 `list[str]`（或元素不安全）→ 相位 `stopped`；`each` 为空列表 → base 视为 done（无工作）。v1 限制：fan-out 相位不得挂 gate / loop / repair_of，不得 require 另一个 fan-out 相位（map 由子相位承担，裁决留给下游汇聚相位）。driver 对子相位串行派发，prompt 中绑定 item。
+
+**loop kind registry**——`loops:` 的 `kind` 不再由引擎特判：每种 kind 是注册到 `loop_registry` 的投影器（内置 `healing` / `review_fix`），引擎只消费统一的 `LoopSnapshot` 协议（dispatch / block_members / control_actions / terminal）。新增 loop kind = 注册一个投影器，无需改引擎。
+
+## Checkpoint 与恢复语义
+
+主循环每个**迭代边界即 checkpoint**：每提交一个相位结果或控制动作，`driver.json` 的 `iteration` 递增并落盘（`last_checkpoint_at` 记录时间）。checkpoint 实体是 `workflow-state.yaml` + `events.jsonl`（状态与审计流），`driver.json` 只是 checkpoint 指针。恢复不需要快照回读——`compute_status` 是对（schema、产物、state、events）的纯投影，重跑 `aa workflow run --change <id>` 即从最近迭代边界重投影继续；`iteration` 计数跨 run 累积（属于 change，而非单次运行）。`aa workflow status` 展示 checkpoint 段与恢复提示。
+
 ## 校验 change 产物
 
 `aa validate` 不调用 LLM，确定性校验结构化 change 产物：

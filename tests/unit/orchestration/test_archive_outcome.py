@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.helpers_aa import loc_for
+
 from assurance_agent.artifacts.models import WorkflowState
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.events import read_events
@@ -55,8 +57,7 @@ def test_commit_archive_outcome_sets_status_and_rehashes(tmp_path: Path) -> None
     _make_archive_dir(tmp_path)
 
     result = commit_archive_outcome(
-        tmp_path,
-        change,
+        loc_for(change, project_root=tmp_path),
         _SCHEMA,
         status="archived",
         skill="aa-archive",
@@ -83,7 +84,9 @@ def test_commit_archive_outcome_sets_status_and_rehashes(tmp_path: Path) -> None
 def test_commit_archive_outcome_with_warnings(tmp_path: Path) -> None:
     change = _change(tmp_path)
     _make_archive_dir(tmp_path)
-    result = commit_archive_outcome(tmp_path, change, _SCHEMA, status="archived_with_warnings")
+    result = commit_archive_outcome(
+        loc_for(change, project_root=tmp_path), _SCHEMA, status="archived_with_warnings"
+    )
     assert result.applied_status == "archived_with_warnings"
     entry = (read_state(change).phases.model_extra or {}).get("archive")
     assert isinstance(entry, dict)
@@ -94,19 +97,19 @@ def test_commit_archive_outcome_rejects_invalid_status(tmp_path: Path) -> None:
     change = _change(tmp_path)
     _make_archive_dir(tmp_path)
     with pytest.raises(AaError, match="invalid archive status"):
-        commit_archive_outcome(tmp_path, change, _SCHEMA, status="done")
+        commit_archive_outcome(loc_for(change, project_root=tmp_path), _SCHEMA, status="done")
 
 
 def test_commit_archive_outcome_requires_produces(tmp_path: Path) -> None:
     change = _change(tmp_path)
     # qa/archive/CH-1 does NOT exist → produces missing for a non-skipped status.
     with pytest.raises(AaError, match="missing declared produces"):
-        commit_archive_outcome(tmp_path, change, _SCHEMA, status="archived")
+        commit_archive_outcome(loc_for(change, project_root=tmp_path), _SCHEMA, status="archived")
 
 
 def test_commit_archive_outcome_skipped_allows_missing_produces(tmp_path: Path) -> None:
     change = _change(tmp_path)
-    result = commit_archive_outcome(tmp_path, change, _SCHEMA, status="skipped")
+    result = commit_archive_outcome(loc_for(change, project_root=tmp_path), _SCHEMA, status="skipped")
     assert result.applied_status == "skipped"
 
 
@@ -114,14 +117,14 @@ def test_commit_archive_outcome_enforces_skill_attestation(tmp_path: Path) -> No
     change = _change(tmp_path)
     _make_archive_dir(tmp_path)
     with pytest.raises(AaError, match="SKILL_LOAD_GATE_VIOLATION"):
-        commit_archive_outcome(tmp_path, change, _SCHEMA, status="archived", skill=None)
+        commit_archive_outcome(loc_for(change, project_root=tmp_path), _SCHEMA, status="archived", skill=None)
 
 
 def test_commit_archive_outcome_fails_closed_on_prior_drift(tmp_path: Path) -> None:
     """Guarded commit refuses to write on top of hand-edited (stale-hash) state."""
     change = _change(tmp_path)
     _make_archive_dir(tmp_path)
-    commit_archive_outcome(tmp_path, change, _SCHEMA, status="archived")
+    commit_archive_outcome(loc_for(change, project_root=tmp_path), _SCHEMA, status="archived")
 
     # Simulate a hand-edit that appends a field without re-hashing.
     state_file = change / "workflow-state.yaml"
@@ -132,4 +135,6 @@ def test_commit_archive_outcome_fails_closed_on_prior_drift(tmp_path: Path) -> N
     # The txn read entry point fails closed on drift → raises rather than
     # silently committing on top of tampered state.
     with pytest.raises(Exception):
-        commit_archive_outcome(tmp_path, change, _SCHEMA, status="archived_with_warnings")
+        commit_archive_outcome(
+            loc_for(change, project_root=tmp_path), _SCHEMA, status="archived_with_warnings"
+        )

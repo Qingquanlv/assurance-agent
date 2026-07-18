@@ -5,6 +5,7 @@ paths:
 - codegen
 - tests/config.py
 - tests/conftest.py
+- tests/schema_validation.py
 - tests/e2e
 resets:
   workflow_state:

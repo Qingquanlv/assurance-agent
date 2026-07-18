@@ -31,6 +31,8 @@ class HumanDecisionEvent(_AuditEventBase):
     action: Literal["fix_and_proceed", "accept_risk", "stop", "allow_test_changes", "skip_branch"]
     reason: str
     who: str
+    evidence_file: str | None = None
+    evidence_sha256: str | None = None
     review_file: str | None = None
     review_sha256: str | None = None
 

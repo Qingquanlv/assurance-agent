@@ -3,5 +3,6 @@ annotation_source: human
 tags: [workflow-e2e-codegen]
 input:
   change_id: eval-sample-001
+  fixture_id: eval-sample-001
   fixture_tier: L2-e2e-codegen-seed
 expected: {}

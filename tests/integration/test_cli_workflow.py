@@ -90,22 +90,26 @@ def test_workflow_status_no_driver_state_json_null() -> None:
         assert json.loads(result.output)["driver"] is None
 
 
-def test_workflow_start_success_exit_0(monkeypatch) -> None:
+def test_workflow_run_detach_success_exit_0(monkeypatch) -> None:
     monkeypatch.setattr(
         wf, "start_workflow_detached", lambda **kwargs: StartResult(ok=True, message="started", pid=9)
     )
     with CliRunner().isolated_filesystem():
-        result = CliRunner().invoke(main, ["workflow", "start", "--change", "CH-1", "--adapter", "headless"])
+        result = CliRunner().invoke(
+            main, ["workflow", "run", "--change", "CH-1", "--adapter", "headless", "--detach"]
+        )
         assert result.exit_code == EXIT_COMPLETED
         assert "started" in result.output
 
 
-def test_workflow_start_failure_exit_40(monkeypatch) -> None:
+def test_workflow_run_detach_failure_exit_40(monkeypatch) -> None:
     monkeypatch.setattr(
         wf, "start_workflow_detached", lambda **kwargs: StartResult(ok=False, message="refused")
     )
     with CliRunner().isolated_filesystem():
-        result = CliRunner().invoke(main, ["workflow", "start", "--change", "CH-1", "--adapter", "headless"])
+        result = CliRunner().invoke(
+            main, ["workflow", "run", "--change", "CH-1", "--adapter", "headless", "--detach"]
+        )
         assert result.exit_code == EXIT_ERROR
         assert "refused" in result.output
 

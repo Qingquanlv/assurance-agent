@@ -11,7 +11,7 @@ other suite groups.
 from __future__ import annotations
 
 import json
-import os
+import hashlib
 from pathlib import Path
 
 import yaml
@@ -23,6 +23,7 @@ from assurance_agent.retro.nightly.exit_codes import (
     NIGHTLY_PENDING_REVIEW,
 )
 from assurance_agent.retro.nightly.types import NightlyOptions
+from assurance_agent.retro.nightly.phase_f import compare_suite_regression
 from assurance_agent.retro.nightly.utils import write_json
 from assurance_agent.retro.promotions import proposal_states, read_promotion_events
 
@@ -35,13 +36,23 @@ def _eval_support_from_disk(engine: Path, suite: str) -> dict:
         if isinstance(data, dict):
             suite_contract = data
     baseline_metrics = None
+    baseline_provenance: dict = {}
     baseline_path = engine / "eval" / "baselines" / "main.json"
     if baseline_path.is_file():
         raw = json.loads(baseline_path.read_text(encoding="utf-8"))
         entry = raw.get(suite) if isinstance(raw, dict) else None
         if isinstance(entry, dict) and isinstance(entry.get("metrics"), dict):
             baseline_metrics = entry["metrics"]
-    return {"suite_contract": suite_contract, "baseline_metrics": baseline_metrics}
+            baseline_provenance = {
+                "baseline_suite_version": entry.get("suite_version"),
+                "baseline_repeat": entry.get("repeat"),
+                "baseline_regression_policy_sha256": entry.get("regression_policy_sha256"),
+            }
+    return {
+        "suite_contract": suite_contract,
+        "baseline_metrics": baseline_metrics,
+        **baseline_provenance,
+    }
 
 
 def _proposal(pid: str, suite: str) -> dict:
@@ -89,7 +100,29 @@ def _seed_suite(engine: Path, suite: str, *, hard_gate: bool = True) -> None:
         if hard_gate
         else "thresholds: []\n"
     )
-    (suites / f"{suite}.yaml").write_text(f"name: {suite}\nscorer: s\n{thresholds}", encoding="utf-8")
+    regression = (
+        "regression:\n"
+        "  repeat: 1\n"
+        "  metrics:\n"
+        "    evidence_integrity:\n"
+        "      direction: higher_is_better\n"
+        "      max_regression: 0.0\n"
+        if hard_gate
+        else ""
+    )
+    (suites / f"{suite}.yaml").write_text(
+        f'name: {suite}\nversion: "1"\nscorer: s\n{regression}{thresholds}',
+        encoding="utf-8",
+    )
+
+
+def _policy_hash(engine: Path, suite: str) -> str | None:
+    raw = yaml.safe_load((engine / "eval" / "suites" / f"{suite}.yaml").read_text())
+    policy = raw.get("regression") if isinstance(raw, dict) else None
+    if not isinstance(policy, dict):
+        return None
+    canonical = json.dumps(policy, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def _seed_baselines(engine: Path, entries: dict[str, float]) -> None:
@@ -100,6 +133,9 @@ def _seed_baselines(engine: Path, entries: dict[str, float]) -> None:
             {
                 suite: {
                     "run_id": "base",
+                    "suite_version": "1",
+                    "repeat": 1,
+                    "regression_policy_sha256": _policy_hash(engine, suite),
                     "approved_at": "2026-07-16T00:00:00Z",
                     "approved_by": "test",
                     "metrics": {"evidence_integrity": value},
@@ -145,6 +181,9 @@ def _runner(
             "verdict": (verdicts or {}).get(suite, "pass"),
             "metrics": {"evidence_integrity": metric},
             "hard_gate_failures": (hard_gate_failures or {}).get(suite) or [],
+            "suite_version": "1",
+            "repeat": 1,
+            "regression_policy_sha256": _policy_hash(Path(engine_root), suite),
             **_eval_support_from_disk(Path(engine_root), suite),
         }
         return result
@@ -153,12 +192,10 @@ def _runner(
 
 
 def _resume(engine: Path, sut: Path, retro_id: str, runner) -> int:  # noqa: ANN001, ANN202
-    old = os.getcwd()
-    os.chdir(engine)
-    try:
-        return resume_nightly(NightlyOptions(sut=str(sut), retro_id=retro_id), eval_runner=runner)
-    finally:
-        os.chdir(old)
+    return resume_nightly(
+        NightlyOptions(sut=str(sut), retro_id=retro_id, engine_root=str(engine)),
+        eval_runner=runner,
+    )
 
 
 def _states(retro: Path) -> dict[str, str]:
@@ -241,6 +278,80 @@ def test_hard_gate_satisfaction_flip_rolls_back(tmp_path: Path) -> None:
     # rolled_back is treated as needs_rework: resume does not re-run the eval.
     assert _resume(engine, sut, "retro-flip", runner) == NIGHTLY_PENDING_REVIEW
     assert calls == ["workflow-run"]
+
+
+def test_directional_regression_rolls_back_before_hard_threshold_flip(tmp_path: Path) -> None:
+    sut = tmp_path / "sut"
+    retro = _seed_promoted(sut, "retro-delta", [_proposal("P-1", "workflow-run")])
+    engine = tmp_path / "engine"
+    _seed_suite(engine, "workflow-run")
+    _seed_baselines(engine, {"workflow-run": 1.0})
+
+    calls: list = []
+    code = _resume(
+        engine,
+        sut,
+        "retro-delta",
+        _runner(calls, metrics={"workflow-run": 0.96}),
+    )
+
+    assert code == NIGHTLY_PENDING_REVIEW
+    events = read_promotion_events(retro)
+    completed = [e for e in events if e["type"] == "eval_completed"]
+    assert completed[-1]["result"] == "regression"
+    assert "evidence_integrity: 1.0 → 0.96" in completed[-1]["note"]
+    assert not (sut / ".aa" / "memory" / "P-1.md").exists()
+
+
+def test_lower_is_better_and_provenance_fail_closed() -> None:
+    policy = {
+        "version": "3",
+        "thresholds": [{"metric": "violations", "gate": "hard", "op": "lte", "value": 10}],
+        "regression": {
+            "repeat": 2,
+            "metrics": {
+                "violations": {"direction": "lower_is_better", "max_regression": 0.0},
+            },
+        },
+    }
+    policy_hash = hashlib.sha256(
+        json.dumps(policy["regression"], sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    provenance = {
+        "suite_version": "3",
+        "repeat": 2,
+        "regression_policy_sha256": policy_hash,
+    }
+
+    comparison = compare_suite_regression(
+        {"violations": 1.0},
+        {"violations": 2.0},
+        policy,
+        baseline_provenance=provenance,
+        candidate_provenance=provenance,
+    )
+    assert comparison.regressed is True
+    assert comparison.inconclusive is False
+
+    mismatch = compare_suite_regression(
+        {"violations": 1.0},
+        {"violations": 1.0},
+        policy,
+        baseline_provenance={**provenance, "repeat": 1},
+        candidate_provenance=provenance,
+    )
+    assert mismatch.inconclusive is True
+    assert "repeat" in mismatch.details[0]
+
+    missing = compare_suite_regression(
+        {"violations": 1.0},
+        {},
+        policy,
+        baseline_provenance=provenance,
+        candidate_provenance=provenance,
+    )
+    assert missing.inconclusive is True
+    assert "missing baseline or candidate evidence" in missing.details[0]
 
 
 def test_candidate_gate_fail_is_regression(tmp_path: Path) -> None:

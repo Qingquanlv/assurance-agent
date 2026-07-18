@@ -12,6 +12,8 @@ from tests.helpers_aa import write_aa_config
 from click.testing import CliRunner
 
 from assurance_agent.cli import main
+from assurance_agent.retro.apply import apply_memory_proposal
+from assurance_agent.retro.proposals import read_proposals
 from tests.unit.retro.archive_fixtures import make_archived_change
 
 
@@ -498,7 +500,7 @@ def test_retro_complete_marks_consumed_terminal() -> None:
         assert state["consumed_changes"]["CH-1"]["terminal"] is True
 
 
-def test_retro_apply_live_marker_idempotent_legacy_promotions() -> None:
+def test_retro_apply_live_rejects_promoted_pending_eval() -> None:
     runner = CliRunner()
     with runner.isolated_filesystem() as fs:
         root = Path(fs)
@@ -517,21 +519,11 @@ def test_retro_apply_live_marker_idempotent_legacy_promotions() -> None:
             ),
             encoding="utf-8",
         )
-        args = ["retro", "apply", "--retro", "retro-a", "--proposal", "P-1"]
-        first = runner.invoke(main, args)
-        assert first.exit_code == 0, first.output
-        payload = json.loads(first.output.strip().splitlines()[-1])
-        assert payload["applied"] == ["P-1"]
-        assert payload["stage_dir"] is None
+        result = runner.invoke(main, ["retro", "apply", "--retro", "retro-a", "--proposal", "P-1"])
+        assert result.exit_code == 1
+        assert "passing eval application" in result.output
         target = root / ".aa" / "memory" / "aa-run.md"
-        content = target.read_text(encoding="utf-8")
-        assert "<!-- retro:retro-a#P-1 evidence:CH-1#F-1 -->" in content
-        assert "- remember to check fixtures" in content
-
-        second = runner.invoke(main, args)
-        assert second.exit_code == 0, second.output
-        assert target.read_text(encoding="utf-8") == content
-        assert content.count("retro:retro-a#P-1") == 1
+        assert not target.exists()
 
 
 def test_retro_apply_stage_dir_does_not_touch_live() -> None:
@@ -608,16 +600,30 @@ def test_retro_rollback_deprecates_block_and_is_idempotent() -> None:
     with runner.isolated_filesystem() as fs:
         root = Path(fs)
         retro_dir = _seed_retro_dir(root, "retro-r")
+        proposal = read_proposals(retro_dir)[0]
+        apply_memory_proposal(root, "retro-r", proposal)
         (retro_dir / "promotions.json").write_text(
             json.dumps(
-                [
-                    {
-                        "proposal_id": "P-1",
-                        "decision": "promoted",
-                        "decided_by": "LQ",
-                        "decided_at": "2026-07-16T00:00:00Z",
-                    }
-                ]
+                {
+                    "schema_version": "2",
+                    "events": [
+                        {
+                            "proposal_id": "P-1",
+                            "type": "review_decision",
+                            "decision": "promoted",
+                            "actor": "LQ",
+                            "at": "2026-07-16T00:00:00Z",
+                        },
+                        {
+                            "proposal_id": "P-1",
+                            "type": "application",
+                            "result": "applied",
+                            "actor": "eval-gate",
+                            "at": "2026-07-16T00:01:00Z",
+                            "target": ".aa/memory/aa-run.md",
+                        },
+                    ],
+                }
             ),
             encoding="utf-8",
         )
@@ -646,7 +652,10 @@ def test_retro_rollback_deprecates_block_and_is_idempotent() -> None:
         assert payload["rolled_back"] is False
         # no duplicate rollback event, file unchanged
         raw = _read_promotions(retro_dir)
-        assert len([e for e in raw["events"] if e["type"] == "application"]) == 1
+        assert (
+            len([e for e in raw["events"] if e["type"] == "application" and e["result"] == "rolled_back"])
+            == 1
+        )
 
 
 def test_retro_rollback_without_applied_block_errors() -> None:

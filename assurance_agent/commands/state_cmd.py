@@ -5,7 +5,7 @@ from pathlib import Path
 
 import click
 
-from assurance_agent.change_location import ChangeNotFoundError, resolve_change
+from assurance_agent.change_location import ChangeLocation, ChangeNotFoundError, resolve_change
 from assurance_agent.config import ConfigNotFoundError
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import UnsafeIdentifierError
@@ -27,14 +27,14 @@ def state_group() -> None:
     """Workflow-state maintenance commands for the orchestrator."""
 
 
-def _validated_change_dir(change_id: str) -> tuple[Path, Path]:
+def _validated_change(change_id: str) -> ChangeLocation:
     project_root = Path.cwd()
     try:
         loc = resolve_change(project_root, change_id)
     except (UnsafeIdentifierError, ChangeNotFoundError, ConfigNotFoundError) as err:
         click.secho(str(err), fg="red")
         raise SystemExit(1) from err
-    return loc.project_root, loc.path
+    return loc
 
 
 def _cli_fail(err: Exception) -> None:
@@ -69,18 +69,17 @@ def state_apply(
     status: str | None,
 ) -> None:
     """Commit one completed phase outcome; gate routing happens in compute_status."""
-    project_root, change_dir = _validated_change_dir(change_id)
+    loc = _validated_change(change_id)
 
     if status is not None and phase_id != "archive":
         click.secho("--status is only supported for --phase archive", fg="red")
         raise SystemExit(1)
 
     try:
-        schema = load_workflow_schema(project_root)
+        schema = load_workflow_schema(loc.project_root)
         if phase_id == "archive" and status is not None:
             commit_archive_outcome(
-                project_root,
-                change_dir,
+                loc,
                 schema,
                 status=status,
                 skill=skill,
@@ -88,8 +87,7 @@ def state_apply(
             )
         else:
             apply_phase_outcome(
-                project_root,
-                change_dir,
+                loc,
                 schema,
                 phase_id,
                 attempt_id=attempt_id,
@@ -116,7 +114,7 @@ def state_apply(
 )
 def state_configure(change_id: str, params_json: str, orchestrator: str) -> None:
     """Merge runtime params into workflow-state.yaml and stamp run_context."""
-    _project_root, change_dir = _validated_change_dir(change_id)
+    loc = _validated_change(change_id)
 
     if orchestrator not in CONFIGURE_ORCHESTRATORS:
         expected = ", ".join(sorted(CONFIGURE_ORCHESTRATORS))
@@ -132,7 +130,7 @@ def state_configure(change_id: str, params_json: str, orchestrator: str) -> None
         raise SystemExit(1) from err
 
     try:
-        configure_workflow_params(change_dir, params, orchestrator)
+        configure_workflow_params(loc.path, params, orchestrator)
     except AaError as err:
         _cli_fail(err)
     click.secho(f'params merged and run_context stamped for "{orchestrator}"', fg="green")
@@ -143,14 +141,14 @@ def state_configure(change_id: str, params_json: str, orchestrator: str) -> None
 @click.option("--status", "status", required=True, help="Healing judgment.")
 def state_heal(change_id: str, status: str) -> None:
     """Record an orchestrator healing judgment."""
-    _project_root, change_dir = _validated_change_dir(change_id)
+    loc = _validated_change(change_id)
     if status not in HEAL_STATUSES:
         allowed = ", ".join(sorted(HEAL_STATUSES))
         click.secho(f'unsupported healing status "{status}". Expected one of: {allowed}', fg="red")
         raise SystemExit(1)
 
     try:
-        result = record_heal_transition(change_dir, status)
+        result = record_heal_transition(loc.path, status)
     except ProgressionError as err:
         _cli_fail(err)
     except AaError as err:

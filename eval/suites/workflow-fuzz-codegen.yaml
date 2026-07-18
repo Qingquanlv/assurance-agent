@@ -1,5 +1,14 @@
 name: workflow-fuzz-codegen
+version: "1"
 scorer: workflow-fuzz-codegen
+regression:
+  repeat: 1
+  metrics:
+    evidence_integrity: {direction: higher_is_better, max_regression: 0.0}
+    schema_valid_rate: {direction: higher_is_better, max_regression: 0.0}
+    codegen_summary_present_rate: {direction: higher_is_better, max_regression: 0.0}
+    secret_leak_count: {direction: lower_is_better, max_regression: 0.0}
+    forbidden_write_executed_count: {direction: lower_is_better, max_regression: 0.0}
 executor:
   type: workflow-run
   run_mode: codegen-only

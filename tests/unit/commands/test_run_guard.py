@@ -123,6 +123,21 @@ def test_override_writes_evidence_and_human_decision_before_runner(guarded_proje
     monkeypatch.setattr(runners_mod.subprocess, "run", _stub_pytest("passed"))
     monkeypatch.setattr(run_cmd_mod, "append_event_best_effort", lambda *a, **k: None)
     (tmp_path / "tests" / "api" / "test_x.py").write_text("def test_x(): assert 2\n", encoding="utf-8")
+    authorized = CliRunner().invoke(
+        main,
+        [
+            "decide",
+            "--change",
+            "CH-1",
+            "--at",
+            "execution.test-changes",
+            "--action",
+            "allow_test_changes",
+            "--reason",
+            "manual approval",
+        ],
+    )
+    assert authorized.exit_code == 0, authorized.output
     result = CliRunner().invoke(
         main,
         [
@@ -138,7 +153,7 @@ def test_override_writes_evidence_and_human_decision_before_runner(guarded_proje
     events = read_events(change)
     decision = next(e for e in events if e.get("type") == "human_decision")
     assert decision["action"] == "allow_test_changes"
-    assert decision["checkpoint"] == "test-tree-guard"
+    assert decision["checkpoint"] == "execution.test-changes"
     override_files = list((change / "execution" / "runs").rglob("test-changes-override.json"))
     assert override_files
 
@@ -164,15 +179,19 @@ def test_override_event_failure_removes_evidence_and_does_not_run(guarded_projec
     result = CliRunner().invoke(
         main,
         [
-            "run",
+            "decide",
             "--change",
             "CH-1",
-            "--allow-test-changes",
-            "--rerun-reason",
-            "manual fix",
+            "--at",
+            "execution.test-changes",
+            "--action",
+            "allow_test_changes",
+            "--reason",
+            "manual approval",
         ],
     )
     assert result.exit_code == 40
     assert calls == []
     override_files = list((change / "execution" / "runs").rglob("test-changes-override.json"))
     assert not override_files
+    assert not (change / "execution" / "test-changes-override-token.json").exists()

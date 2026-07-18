@@ -59,3 +59,11 @@ def test_build_phase_prompt_has_no_legacy_aws_reference() -> None:
     prompt = build_phase_prompt("aa-api-codegen", "api-codegen", "CH-1")
     assert "aws" not in prompt.lower()
     assert "aa gate/status" in prompt
+
+
+def test_phase_prompt_binds_fanout_item() -> None:
+    prompt = build_phase_prompt("aa-case-gen", "case-gen[menu]", "CH-1", item="menu")
+    assert "item 'menu'" in prompt
+    assert "case-gen[menu]" in prompt
+    plain = build_phase_prompt("aa-explore", "explore", "CH-1")
+    assert "fanned-out" not in plain

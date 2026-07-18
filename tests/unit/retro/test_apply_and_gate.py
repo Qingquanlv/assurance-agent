@@ -92,19 +92,10 @@ def test_resume_gate_pass_promotes(tmp_path: Path) -> None:
             **_eval_support_from_disk(Path(engine_root), suite),
         }
 
-    # resume uses Path.cwd() as engine_root — monkey via chdir in test by writing baseline under cwd
-    # Instead patch by placing baseline where cwd is: use monkeypatch in pytest
-    import os
-
-    old = os.getcwd()
-    os.chdir(engine)
-    try:
-        code = resume_nightly(
-            NightlyOptions(sut=str(sut), retro_id="retro-pass"),
-            eval_runner=eval_runner,
-        )
-    finally:
-        os.chdir(old)
+    code = resume_nightly(
+        NightlyOptions(sut=str(sut), retro_id="retro-pass", engine_root=str(engine)),
+        eval_runner=eval_runner,
+    )
     assert code == NIGHTLY_OK
     events = read_promotion_events(sut / "qa/retro/retro-pass")
     assert any(e["type"] == "eval_completed" and e["result"] == "pass" for e in events)

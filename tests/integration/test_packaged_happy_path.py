@@ -119,6 +119,10 @@ def _bootstrap(tmp_path: Path) -> Path:
     (tmp_path / ".aa").mkdir()
     (tmp_path / ".aa" / "data-knowledge.yaml").write_text("tables: []\n", encoding="utf-8")
     write_aa_config(tmp_path)
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    for required in ("config.py", "conftest.py", "schema_validation.py"):
+        (tests / required).write_text("# bootstrap\n", encoding="utf-8")
     change_dir = tmp_path / "qa" / "changes" / "CH-1"
     change_dir.mkdir(parents=True)
     (change_dir / "workflow-state.yaml").write_text(

@@ -1,25 +1,23 @@
-"""testChangesOverride 执行策略：读取 `.aa/execution-policy.json` 并强制执行。
-
-移植自 TS 版 `test_changes_override.ts` 的 policy 层（loadTestChangesOverridePolicy /
-assertTestChangesOverridePolicyAllows）。TS 版的一次性 override token 机制在 m5 P1
-修订中被有意再设计为 `aa run --allow-test-changes --rerun-reason` + override
-evidence，因此这里只移植策略读取与授权执行层，不移植 token。
-"""
+"""Test-change override policy and one-use, tree-bound authorization tokens."""
 
 from __future__ import annotations
 
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
 import yaml
+from pydantic import BaseModel, ConfigDict
 
 from assurance_agent.workflow.core.events import read_events
 from assurance_agent.workflow.healing.safety import HealingGuardError, TestTreeIntegrity
 
 POLICY_REL_PATH = Path(".aa") / "execution-policy.json"
+TOKEN_REL_PATH = Path("execution") / "test-changes-override-token.json"
+DECISION_REL_PATH = Path("execution") / "test-changes-decision.json"
 
 TestChangesOverrideMode = Literal["forbidden", "with-evidence", "free", "conditional"]
 
@@ -36,6 +34,87 @@ class TestChangesOverridePolicy:
     forbid_after_fail: bool = False
     max_overrides_per_change: int | None = None
     allowed_path_globs: tuple[str, ...] = ()
+
+
+class ExecutionTestChangesOverrideToken(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["1.0"] = "1.0"
+    change_id: str
+    action: Literal["allow_test_changes"] = "allow_test_changes"
+    reason: str
+    created_at: str
+    tests_tree_sha256: str
+    baseline_batch_id: str | None = None
+    consumed: bool = False
+    consumed_at: str | None = None
+    consumed_by_batch_id: str | None = None
+
+
+def build_test_changes_override_token(
+    change_dir: Path,
+    *,
+    change_id: str,
+    reason: str,
+    tests_tree_sha256: str,
+    created_at: str | None = None,
+) -> ExecutionTestChangesOverrideToken:
+    return ExecutionTestChangesOverrideToken(
+        change_id=change_id,
+        reason=reason,
+        created_at=created_at or datetime.now(timezone.utc).isoformat(),
+        tests_tree_sha256=tests_tree_sha256,
+        baseline_batch_id=_latest_batch_id(change_dir),
+    )
+
+
+def token_json_bytes(token: ExecutionTestChangesOverrideToken) -> bytes:
+    return (token.model_dump_json(indent=2) + "\n").encode("utf-8")
+
+
+def read_test_changes_override_token(
+    change_dir: Path,
+    *,
+    change_id: str,
+    current_tests_tree_sha256: str,
+) -> ExecutionTestChangesOverrideToken | None:
+    path = change_dir / TOKEN_REL_PATH
+    if not path.is_file():
+        return None
+    try:
+        token = ExecutionTestChangesOverrideToken.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as err:
+        raise HealingGuardError(
+            "TEST-CHANGES-OVERRIDE-TOKEN-INVALID: execution override token is malformed"
+        ) from err
+    if token.change_id != change_id:
+        raise HealingGuardError(
+            "TEST-CHANGES-OVERRIDE-TOKEN-INVALID: execution override token change_id does not match"
+        )
+    if token.consumed:
+        raise HealingGuardError(
+            "TEST-CHANGES-OVERRIDE-TOKEN-CONSUMED: execution override token was already consumed"
+        )
+    if token.tests_tree_sha256 != current_tests_tree_sha256:
+        raise HealingGuardError(
+            "TEST-CHANGES-OVERRIDE-TOKEN-MISMATCH: approved tests_tree_sha256 does not match current tests tree"
+        )
+    return token
+
+
+def consume_test_changes_override_token(
+    token: ExecutionTestChangesOverrideToken,
+    *,
+    batch_id: str,
+    consumed_at: str | None = None,
+) -> ExecutionTestChangesOverrideToken:
+    return token.model_copy(
+        update={
+            "consumed": True,
+            "consumed_at": consumed_at or datetime.now(timezone.utc).isoformat(),
+            "consumed_by_batch_id": batch_id,
+        }
+    )
 
 
 def load_test_changes_override_policy(project_root: Path) -> TestChangesOverridePolicy:
@@ -129,6 +208,18 @@ def _latest_final_status(change_dir: Path) -> str | None:
         return None
     status = raw.get("final_status")
     return status if status in ("PASS", "PASS_WITH_WARNINGS", "FAIL", "SKIPPED") else None
+
+
+def _latest_batch_id(change_dir: Path) -> str | None:
+    manifest_path = change_dir / "execution" / "execution-manifest.yaml"
+    if not manifest_path.is_file():
+        return None
+    try:
+        raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return None
+    batch_id = raw.get("batch_id") if isinstance(raw, dict) else None
+    return str(batch_id) if batch_id else None
 
 
 def _count_test_change_overrides(change_dir: Path) -> int:

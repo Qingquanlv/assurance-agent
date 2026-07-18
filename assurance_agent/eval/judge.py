@@ -57,15 +57,49 @@ def call_llm(
     return _parse_content(response.json())
 
 
-def build_judge_prompt(sample: DatasetSample, attempt_dir: Path) -> str:
-    prd = str(sample.input.get("prd", ""))
+def _read_project_ref(project_root: Path | None, ref: object, *, label: str) -> str:
+    if not isinstance(ref, str) or not ref:
+        return ""
+    if project_root is None:
+        raise AaError(f"{label} requires project_root: {ref}")
+    root = project_root.resolve()
+    candidate = (root / ref).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as err:
+        raise AaError(f"{label} escapes project root: {ref}") from err
+    if not candidate.is_file():
+        raise AaError(f"{label} not found: {candidate}")
+    return candidate.read_text(encoding="utf-8")
+
+
+def build_judge_prompt(
+    sample: DatasetSample,
+    attempt_dir: Path,
+    *,
+    config: JudgeConfig | None = None,
+    project_root: Path | None = None,
+) -> str:
+    prd_ref = sample.input.get("prd_ref")
+    prd = _read_project_ref(project_root, prd_ref, label="judge PRD reference") if prd_ref else ""
+    if not prd:
+        prd = str(sample.input.get("prd", ""))
+    contract = (
+        _read_project_ref(project_root, config.prompt_ref, label="judge prompt reference")
+        if config is not None and config.prompt_ref
+        else "You are grading whether the generated QA cases cover the PRD."
+    )
     atoms = sample.expected.get("atoms", [])
-    produced = ""
+    produced_parts: list[str] = []
     cases_dir = attempt_dir / "raw-output" / "cases"
     if cases_dir.is_dir():
-        produced = "\n".join(sorted(p.name for p in cases_dir.rglob("*.y*ml")))
+        case_files = sorted(cases_dir.rglob("*.yaml")) + sorted(cases_dir.rglob("*.yml"))
+        for path in case_files:
+            rel = path.relative_to(attempt_dir / "raw-output").as_posix()
+            produced_parts.append(f"### {rel}\n{path.read_text(encoding='utf-8')}")
+    produced = "\n\n".join(produced_parts)
     return (
-        "You are grading whether the generated QA cases cover the PRD.\n\n"
+        f"{contract.strip()}\n\n"
         f"## PRD\n{prd}\n\n"
         f"## Expected coverage atoms\n{json.dumps(atoms, ensure_ascii=False)}\n\n"
         f"## Produced case files\n{produced}\n\n"
@@ -91,17 +125,18 @@ def run_judge(
     config: JudgeConfig,
     *,
     target_model: str,
+    project_root: Path | None = None,
     client: httpx.Client | None = None,
 ) -> JudgeOutput:
-    if os.environ.get("AA_JUDGE_MOCK"):
-        return _mock_output(sample)
     if config.model == target_model:
         raise AaError(f"judge model must differ from target model: {config.model}")
+    prompt = build_judge_prompt(sample, attempt_dir, config=config, project_root=project_root)
+    if os.environ.get("AA_JUDGE_MOCK"):
+        return _mock_output(sample)
     api_url = config.api_url or os.environ.get("AA_JUDGE_API_URL")
     if not api_url:
         raise AaError("judge API url not configured (AA_JUDGE_API_URL or JudgeConfig.api_url)")
     api_key = os.environ.get(config.api_key_env)
-    prompt = build_judge_prompt(sample, attempt_dir)
     request = LlmRequest(
         model=config.model,
         messages=[{"role": "user", "content": prompt}],
