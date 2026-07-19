@@ -139,6 +139,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                 outputs_sha256=prev.outputs_sha256 if prev else {},
                 gate_report=prev.gate_report if prev else None,
                 state_updates=prev.state_updates if prev else {},
+                lease_expires_at=event.lease_expires_at,
             )
         elif isinstance(event, TaskAttemptSucceededEvent):
             prev = _require_task(tasks, event)
