@@ -38,6 +38,7 @@ from assurance_agent.workflow.core.graph_events import (
 )
 from assurance_agent.workflow.core.progression import transaction
 from assurance_agent.workflow.graph.models import (
+    FanOutExpansion,
     GraphProjection,
     InterruptProjection,
     TaskProjection,
@@ -62,17 +63,12 @@ def _require_task(tasks: dict[str, TaskProjection], event: _AttemptOutcomeEvent)
     return prev
 
 
-def _imported_task_id(event: TaskImportedEvent, fan_outs: dict[str, dict[str, object]]) -> str:
+def _imported_task_id(event: TaskImportedEvent, fan_outs: dict[str, FanOutExpansion]) -> str:
     """导入事件的 task ID：fan-out child 复用 expansion 冻结的 ID，否则按 structural path 派生。"""
     if event.task_key is not None:
         expansion = fan_outs.get(event.node_id)
-        if expansion is not None:
-            keys = expansion.get("task_keys")
-            ids = expansion.get("task_ids")
-            if isinstance(keys, list) and isinstance(ids, list) and event.task_key in keys:
-                mapped = ids[keys.index(event.task_key)]
-                if isinstance(mapped, str):
-                    return mapped
+        if expansion is not None and event.task_key in expansion.task_keys:
+            return expansion.task_ids[expansion.task_keys.index(event.task_key)]
         return f"{event.structural_path}:{event.node_id}:{event.task_key}"
     return f"{event.structural_path}:{event.node_id}"
 
@@ -94,7 +90,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
     tasks: dict[str, TaskProjection] = {}
     budgets: dict[str, int] = {}
     seen_consumptions: set[tuple[str, str]] = set()
-    fan_outs: dict[str, dict[str, object]] = {}
+    fan_outs: dict[str, FanOutExpansion] = {}
     interrupts: dict[str, InterruptProjection] = {}
     terminal: Literal["completed", "stopped", "failed"] | None = None
     terminal_reason: str | None = None
@@ -123,11 +119,12 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
         elif isinstance(event, (NodeActivatedEvent, NodeSkippedEvent)):
             pass  # node 级摘要由 task 投影派生；activation 不进入持久投影
         elif isinstance(event, FanOutExpandedEvent):
-            fan_outs[event.node_id] = {
-                "items": list(event.items),
-                "task_keys": list(event.task_keys),
-                "task_ids": list(event.task_ids),
-            }
+            fan_outs[event.node_id] = FanOutExpansion(
+                items=tuple(event.items),
+                task_keys=tuple(event.task_keys),
+                task_ids=tuple(event.task_ids),
+                source_reads_sha256=dict(event.source_reads_sha256),
+            )
         elif isinstance(event, SuperstepPlannedEvent):
             supersteps += 1
         elif isinstance(event, TaskAttemptStartedEvent):
@@ -153,6 +150,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                     "outputs_sha256": dict(event.outputs_sha256),
                     "gate_report": event.gate_report,
                     "state_updates": dict(event.state_updates),
+                    "value": event.value,
                     "error_kind": None,
                     "next_retry_at": None,
                 }

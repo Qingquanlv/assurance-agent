@@ -99,6 +99,18 @@ class ArtifactReader(Protocol):
         raise NotImplementedError
 
 
+class BudgetConsumption(BaseModel):
+    """planner 给 budget consumer task 的标记：scheduler 据此原子 staging 预算事件。
+
+    ``consumption_id`` 按 ``(invocation_id, checkpoint_ns, budget_id, task_id)``
+    经 canonical SHA-256 派生——retry 重计划同一 task，同一成功只消耗一个单位。
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    budget_id: str
+    consumption_id: str
+
+
 class ExecutableTask(BaseModel):
     """一次逻辑 node invocation 的可执行单元；retry 时 task_id 不变。"""
 
@@ -118,6 +130,7 @@ class ExecutableTask(BaseModel):
     target: str
     resources: ResourceClaims
     task_key: str | None = None
+    budget: BudgetConsumption | None = None
 
 
 class PlanResult(BaseModel):
@@ -149,8 +162,24 @@ class TaskProjection(BaseModel):
     outputs_sha256: dict[str, str] = Field(default_factory=dict)
     gate_report: dict[str, object] | None = None
     state_updates: dict[str, object] = Field(default_factory=dict)
+    value: object = None
     error_kind: ErrorKind | None = None
     next_retry_at: str | None = None
+
+
+class FanOutExpansion(BaseModel):
+    """一次冻结的 fan-out 展开：items、display keys、structural child IDs 与 source hashes。
+
+    展开只在零 child 进入 ledger 时可重放；重放前对 ``source_reads_sha256``
+    做 drift 检查，任何漂移 fail closed（``fan_out_source_drift``），绝不重算
+    不同的 item 列表。display key 只用于展示/prompt，永不成为 state key。
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    items: tuple[object, ...]
+    task_keys: tuple[str, ...]
+    task_ids: tuple[str, ...]
+    source_reads_sha256: dict[str, str]
 
 
 class InterruptProjection(BaseModel):
@@ -184,7 +213,7 @@ class GraphProjection(BaseModel):
     state_values: dict[str, object] = Field(default_factory=dict)
     tasks: dict[str, TaskProjection] = Field(default_factory=dict)
     budgets: dict[str, int] = Field(default_factory=dict)
-    fan_out_expansions: dict[str, dict[str, object]] = Field(default_factory=dict)
+    fan_out_expansions: dict[str, FanOutExpansion] = Field(default_factory=dict)
     interrupts: dict[str, InterruptProjection] = Field(default_factory=dict)
     terminal: Literal["completed", "stopped", "failed"] | None = None
     terminal_reason: str | None = None
