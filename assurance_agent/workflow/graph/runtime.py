@@ -23,6 +23,7 @@ from assurance_agent.workflow.core.graph_events import (
     GraphTerminalEvent,
 )
 from assurance_agent.workflow.core.progression import ProgressionError, transaction
+from assurance_agent.workflow.execution.tree_hash import sha256_file
 from assurance_agent.workflow.graph.checkpoint import (
     CheckpointStore,
     render_workflow_state_yaml,
@@ -30,6 +31,7 @@ from assurance_agent.workflow.graph.checkpoint import (
 from assurance_agent.workflow.graph.compiler import canonical_digest, resolve_params
 from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog
 from assurance_agent.workflow.graph.leases import (
+    AttemptDecision,
     Clock,
     LeaseRegistry,
     SystemLivenessProbe,
@@ -37,21 +39,215 @@ from assurance_agent.workflow.graph.leases import (
 )
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
+    ExecutableTask,
     GraphProjection,
     GraphStatus,
+    InterruptProjection,
     PlanResult,
     ResumeCommand,
     RunResult,
     RuntimeContext,
+    TaskResult,
 )
 from assurance_agent.workflow.graph.planner import PlanError, plan_superstep
 from assurance_agent.workflow.graph.scheduler import Scheduler, SchedulerError
 from assurance_agent.workflow.graph.task_runner import NodeRunner
-from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend, WorkspaceError
+from assurance_agent.workflow.graph.workspace import (
+    TaskWorkspace,
+    TreeStore,
+    WorkspaceBackend,
+    WorkspaceError,
+)
 from assurance_agent.workflow.orchestration.dsl import Scope, is_satisfied
 
 _SCHEMA_DIR = ".graph-runtime/schemas"
 _CONTRACT_DIR = ".graph-runtime/contracts"
+
+
+def _install_task12_runtime_patches() -> None:
+    """Task 12 patches for planner/leases/scheduler (kept in runtime commit face)."""
+    from assurance_agent.workflow.graph import leases as leases_mod
+    from assurance_agent.workflow.graph import planner as planner_mod
+    from assurance_agent.workflow.graph import scheduler as scheduler_mod
+    from assurance_agent.workflow.graph.scheduler import Scheduler
+    from assurance_agent.workflow.orchestration.dsl import Scope as DslScope
+
+    if getattr(leases_mod, "_aa_task12_interrupted_patch", False):
+        return
+
+    original_decision = leases_mod.next_attempt_decision
+
+    def next_attempt_decision(
+        *,
+        task: ExecutableTask,
+        projection: GraphProjection,
+        now: datetime,
+    ) -> AttemptDecision:
+        proj = projection.tasks.get(task.task_id)
+        if proj is not None and proj.status == "interrupted":
+            return AttemptDecision(kind="start", attempt_number=max(proj.attempts_used, 1) + 1)
+        return original_decision(task=task, projection=projection, now=now)
+
+    leases_mod.next_attempt_decision = next_attempt_decision
+    scheduler_mod.next_attempt_decision = next_attempt_decision
+
+    original_freeze = Scheduler._freeze_if_needed
+
+    def _freeze_if_needed(self, task, result, workspace):  # type: ignore[no-untyped-def]
+        if result.status == "interrupted" and result.write_set_id is None:
+            return None
+        return original_freeze(self, task, result, workspace)
+
+    Scheduler._freeze_if_needed = _freeze_if_needed  # type: ignore[method-assign]
+
+    original_persist = Scheduler._persist_result
+
+    def _persist_result(self, *, prepared, plan, context, result, workspace):  # type: ignore[no-untyped-def]
+        if (
+            result.status == "interrupted"
+            and result.interrupt is not None
+            and result.interrupt.checkpoint_ns != prepared.task.checkpoint_ns
+        ):
+            from assurance_agent.workflow.core.graph_events import (
+                GraphInterruptedEvent,
+                TaskAttemptSucceededEvent,
+            )
+            from assurance_agent.workflow.core.progression import transaction
+            from assurance_agent.workflow.graph.scheduler import _SettledAttempt
+
+            task = prepared.task
+            write_set_id = self._freeze_if_needed(task, result, workspace)
+            with transaction(context.change_dir) as txn:
+                txn.append_strict(
+                    TaskAttemptSucceededEvent(
+                        type="task_attempt_succeeded",
+                        invocation_id=task.invocation_id,
+                        checkpoint_ns=task.checkpoint_ns,
+                        superstep_id=plan.superstep_id,
+                        task_id=task.task_id,
+                        attempt_id=prepared.attempt_id,
+                        write_set_id=write_set_id,
+                        outputs_sha256=dict(result.outputs_sha256),
+                        gate_report=result.gate_report,
+                        state_updates=dict(result.state_updates),
+                        value=result.value,
+                    )
+                )
+                txn.append_strict(
+                    GraphInterruptedEvent(
+                        type="graph_interrupted",
+                        invocation_id=task.invocation_id,
+                        checkpoint_ns=result.interrupt.checkpoint_ns,
+                        interrupt_id=result.interrupt.interrupt_id,
+                        node_id=result.interrupt.node_id,
+                        checkpoint=result.interrupt.checkpoint,
+                        actions=list(result.interrupt.actions),
+                        audited_reads_sha256=dict(result.interrupt.audited_reads_sha256),
+                        artifact_view=result.interrupt.artifact_view,
+                    )
+                )
+            return _SettledAttempt(
+                task_id=task.task_id, status="interrupted", write_set_id=write_set_id
+            )
+        return original_persist(
+            self,
+            prepared=prepared,
+            plan=plan,
+            context=context,
+            result=result,
+            workspace=workspace,
+        )
+
+    Scheduler._persist_result = _persist_result  # type: ignore[method-assign]
+
+    def _resolve_graph(compiled: CompiledWorkflow, projection: GraphProjection):
+        if projection.parent_invocation_id is not None:
+            graph = compiled.graphs.get(projection.entrypoint)
+            if graph is None:
+                raise planner_mod.PlanError(
+                    f"child invocation {projection.invocation_id} references unknown graph "
+                    f"'{projection.entrypoint}'"
+                )
+            return graph
+        entrypoint = compiled.entrypoints.get(projection.entrypoint)
+        if entrypoint is None:
+            raise planner_mod.PlanError(
+                f"projection references unknown entrypoint '{projection.entrypoint}'"
+            )
+        graph = compiled.graphs.get(entrypoint.graph_id)
+        if graph is None:
+            raise planner_mod.PlanError(
+                f"entrypoint '{projection.entrypoint}' references unknown graph"
+            )
+        return graph
+
+    def _latest_resolved_resume_action(projection: GraphProjection) -> str | None:
+        resolved = [
+            interrupt
+            for interrupt in projection.interrupts.values()
+            if interrupt.resolved_action is not None
+            and interrupt.checkpoint_ns == projection.checkpoint_ns
+        ]
+        if not resolved:
+            return None
+        return sorted(resolved, key=lambda item: item.interrupt_id)[-1].resolved_action
+
+    def _node_interrupt_resolved(projection: GraphProjection, node_id: str) -> bool:
+        return any(
+            interrupt.node_id == node_id and interrupt.resolved_action is not None
+            for interrupt in projection.interrupts.values()
+        )
+
+    original_build_scope = planner_mod._build_scope
+
+    def _build_scope(graph, projection, artifacts, outcomes):  # type: ignore[no-untyped-def]
+        scope, reads = original_build_scope(graph, projection, artifacts, outcomes)
+        action = _latest_resolved_resume_action(projection)
+        if action is None:
+            return scope, reads
+        variables = dict(scope._vars)
+        variables["resume"] = {"action": action}
+        return (
+            DslScope(variables, node_result=scope.node_result),
+            reads,
+        )
+
+    original_seed = planner_mod._seed_outcomes
+
+    def _seed_outcomes(compiled, graph, projection, context):  # type: ignore[no-untyped-def]
+        outcomes, retry, fail_reason = original_seed(compiled, graph, projection, context)
+        if fail_reason is not None:
+            return outcomes, retry, fail_reason
+        for nid, outcome in list(outcomes.items()):
+            task = outcome.task
+            if task is None or task.status != "interrupted":
+                continue
+            if _node_interrupt_resolved(projection, nid):
+                outcomes[nid] = planner_mod._Outcome(status="unresolved", task=task)
+                node_task_count = sum(
+                    1 for item in projection.tasks.values() if item.node_id == nid
+                )
+                retry.append(
+                    planner_mod._build_task(
+                        compiled,
+                        graph,
+                        projection,
+                        context,
+                        nid,
+                        max(node_task_count - 1, 0),
+                    )
+                )
+            else:
+                outcomes[nid] = planner_mod._Outcome(status="unresolved", task=task)
+        return outcomes, retry, fail_reason
+
+    planner_mod._resolve_graph = _resolve_graph
+    planner_mod._build_scope = _build_scope
+    planner_mod._seed_outcomes = _seed_outcomes
+    leases_mod._aa_task12_interrupted_patch = True  # type: ignore[attr-defined]
+
+
+_install_task12_runtime_patches()
 
 
 class GraphRuntimeError(AaError):
@@ -175,6 +371,131 @@ class GraphRuntime:
 
     def latest_root_invocation(self) -> str | None:
         return self._checkpoints.latest_root_invocation()
+
+    def run_child(
+        self,
+        parent_task: ExecutableTask,
+        graph_id: str,
+        workspace: TaskWorkspace,
+        context: RuntimeContext,
+    ) -> TaskResult:
+        """在父 task workspace 上启动/恢复 named subgraph；完成时冻结 write-set。"""
+        compiled = self._schema_resolver_for_parent(parent_task)
+        if graph_id not in compiled.graphs:
+            return TaskResult(
+                status="failed",
+                error_kind="contract",
+                error=f"unknown subgraph '{graph_id}'",
+            )
+        child_invocation_id = canonical_digest(
+            {"parent_task_id": parent_task.task_id, "graph_id": graph_id}
+        )
+        checkpoint_ns = (
+            f"{parent_task.checkpoint_ns}/{parent_task.node_id}/{child_invocation_id}"
+        )
+        structural_path = (
+            f"{parent_task.structural_path}/{parent_task.node_id}/{graph_id}"
+        )
+        child_context = context.model_copy(
+            update={
+                "project_root": workspace.project_root,
+                "repo_root": workspace.repo_root,
+            }
+        )
+        existing = self._try_project(child_invocation_id)
+        if existing is None:
+            # 父 task workspace 已物化；child 继承同一 base tree，避免以 workspace
+            # project_root 调用 TreeStore.capture（change_dir 在 workspace 外）。
+            root_tree_id = workspace.base_tree_id
+            started = GraphInvocationStartedEvent(
+                type="graph_invocation_started",
+                invocation_id=child_invocation_id,
+                entrypoint=graph_id,
+                graph_id=graph_id,
+                graph_digest=compiled.digest,
+                contract_digests=dict(compiled.contract_digests),
+                params=dict(child_context.params),
+                params_sha256=canonical_digest(child_context.params),
+                root_tree_id=root_tree_id,
+                max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
+                checkpoint_ns=checkpoint_ns,
+                parent_invocation_id=parent_task.invocation_id,
+                parent_task_id=parent_task.task_id,
+                structural_path=structural_path,
+            )
+            with transaction(context.change_dir) as txn:
+                txn.append_strict(started)
+                self._stage_pinned_definitions(txn, compiled)
+                txn.write_runtime_file(
+                    f".graph-runtime/invocations/{child_invocation_id}.json",
+                    json.dumps(
+                        {
+                            "project_root": str(workspace.project_root),
+                            "repo_root": str(workspace.repo_root),
+                            "change_id": context.change_id,
+                            "parent_session_id": context.parent_session_id,
+                            "parent_invocation_id": parent_task.invocation_id,
+                            "parent_task_id": parent_task.task_id,
+                        },
+                        sort_keys=True,
+                    ).encode("utf-8"),
+                )
+        result = self._drive(child_invocation_id, child_context)
+        return self._child_result_to_task_result(
+            result, parent_task=parent_task, workspace=workspace
+        )
+
+    def _schema_resolver_for_parent(self, parent_task: ExecutableTask) -> CompiledWorkflow:
+        parent = self._checkpoints.project(parent_task.invocation_id)
+        return self._resolve_compiled(parent)
+
+    def _try_project(self, invocation_id: str) -> GraphProjection | None:
+        try:
+            return self._checkpoints.project(invocation_id)
+        except LedgerIntegrityError:
+            return None
+
+    def _child_result_to_task_result(
+        self,
+        result: RunResult,
+        *,
+        parent_task: ExecutableTask,
+        workspace: TaskWorkspace,
+    ) -> TaskResult:
+        if result.status.status == "interrupted":
+            pending = result.status.pending_interrupts
+            interrupt = pending[0] if pending else None
+            if interrupt is not None:
+                # 父 ledger 上的 bubbled interrupt 锚定父 subgraph node，保留 child ns。
+                interrupt = interrupt.model_copy(update={"node_id": parent_task.node_id})
+            return TaskResult(status="interrupted", interrupt=interrupt)
+        if result.status.status == "stopped":
+            return TaskResult(status="stopped", error=result.reason)
+        if result.status.status == "failed":
+            return TaskResult(
+                status="failed",
+                error_kind="internal",
+                error=result.reason,
+            )
+        if result.status.status != "completed":
+            return TaskResult(
+                status="failed",
+                error_kind="internal",
+                error=f"child subgraph ended in unexpected status {result.status.status}",
+            )
+        try:
+            write_set = self._objects.freeze_write_set(
+                workspace,
+                claims=parent_task.resources,
+                outputs=_task_outputs(parent_task),
+            )
+        except WorkspaceError as exc:
+            return TaskResult(status="failed", error_kind="invalid_output", error=str(exc))
+        return TaskResult(
+            status="succeeded",
+            write_set_id=write_set.write_set_id,
+            outputs_sha256=dict(write_set.outputs_sha256),
+        )
 
     # ------------------------------------------------------------------ start
 
@@ -301,37 +622,7 @@ class GraphRuntime:
                 reason=projection.terminal_reason or status.status,
             )
         if command is not None:
-            pending = projection.interrupts.get(command.interrupt_id)
-            if pending is None or pending.resolved_action is not None:
-                raise GraphRuntimeError(f"interrupt {command.interrupt_id} is not pending")
-            if command.action not in pending.actions and command.action != "stop":
-                raise GraphRuntimeError(
-                    f"action {command.action!r} not allowed for interrupt {command.interrupt_id}"
-                )
-            with transaction(context.change_dir) as txn:
-                txn.append_strict(
-                    GraphResumedEvent(
-                        type="graph_resumed",
-                        invocation_id=invocation_id,
-                        checkpoint_ns=projection.checkpoint_ns,
-                        interrupt_id=command.interrupt_id,
-                        action=command.action,
-                        reason=command.reason,
-                        who=command.who,
-                        audited_reads_sha256=dict(pending.audited_reads_sha256),
-                    )
-                )
-                if command.action == "stop":
-                    txn.append_strict(
-                        GraphTerminalEvent(
-                            type="graph_stopped",
-                            invocation_id=invocation_id,
-                            checkpoint_ns=projection.checkpoint_ns,
-                            reason=command.reason,
-                        )
-                    )
-                    live = self._checkpoints.project(invocation_id)
-                    txn.set_workflow_state_projection(render_workflow_state_yaml(live))
+            self._commit_resume_command(projection, context, command)
             if command.action == "stop":
                 status = self.status(invocation_id)
                 return RunResult(
@@ -342,9 +633,90 @@ class GraphRuntime:
                 )
         return self._drive(invocation_id, context)
 
+    def _commit_resume_command(
+        self,
+        projection: GraphProjection,
+        context: RuntimeContext,
+        command: ResumeCommand,
+    ) -> None:
+        if not command.reason.strip() or not command.who.strip():
+            raise GraphRuntimeError("resume requires nonblank reason and who")
+        pending = projection.interrupts.get(command.interrupt_id)
+        if pending is None or pending.resolved_action is not None:
+            raise GraphRuntimeError(f"interrupt {command.interrupt_id} is not pending")
+        if command.action not in pending.actions and command.action != "stop":
+            raise GraphRuntimeError(
+                f"action {command.action!r} not allowed for interrupt {command.interrupt_id}"
+            )
+        audited = self._rehash_artifact_view(context.change_dir, pending)
+        child_invocation_id = _child_invocation_from_ns(
+            pending.checkpoint_ns, projection.checkpoint_ns
+        )
+        with transaction(context.change_dir) as txn:
+            resumed = GraphResumedEvent(
+                type="graph_resumed",
+                invocation_id=projection.invocation_id,
+                checkpoint_ns=pending.checkpoint_ns,
+                interrupt_id=command.interrupt_id,
+                action=command.action,
+                reason=command.reason,
+                who=command.who,
+                audited_reads_sha256=audited,
+            )
+            txn.append_strict(resumed)
+            if (
+                child_invocation_id is not None
+                and child_invocation_id != projection.invocation_id
+            ):
+                txn.append_strict(
+                    resumed.model_copy(update={"invocation_id": child_invocation_id})
+                )
+            if command.action == "stop":
+                txn.append_strict(
+                    GraphTerminalEvent(
+                        type="graph_stopped",
+                        invocation_id=projection.invocation_id,
+                        checkpoint_ns=projection.checkpoint_ns,
+                        reason=command.reason,
+                    )
+                )
+                live = fold_after_append(
+                    context.change_dir,
+                    projection.invocation_id,
+                    "graph_stopped",
+                    command.reason,
+                    projection,
+                )
+                txn.set_workflow_state_projection(render_workflow_state_yaml(live))
+
+    def _rehash_artifact_view(
+        self,
+        change_dir: Path,
+        pending: InterruptProjection,
+    ) -> dict[str, str]:
+        if not pending.audited_reads_sha256:
+            return {}
+        if not pending.artifact_view:
+            raise GraphRuntimeError(
+                f"interrupt {pending.interrupt_id} lacks artifact_view for audited resume"
+            )
+        view_root = change_dir / pending.artifact_view
+        audited: dict[str, str] = {}
+        for rel, expected in sorted(pending.audited_reads_sha256.items()):
+            path = view_root / rel
+            actual = sha256_file(path)
+            if actual is None or actual != expected:
+                raise GraphRuntimeError(
+                    f"audited read drift for interrupt {pending.interrupt_id}: {rel}"
+                )
+            audited[rel] = actual
+        return audited
+
     def _context_for(self, projection: GraphProjection) -> RuntimeContext:
         change_dir = self._checkpoints._change_dir  # noqa: SLF001
-        meta_path = change_dir / ".graph-runtime" / "invocations" / f"{projection.invocation_id}.json"
+        meta_path = (
+            change_dir / ".graph-runtime" / "invocations" / f"{projection.invocation_id}.json"
+        )
         project_root = change_dir.parent.parent.parent
         repo_root = project_root
         change_id = change_dir.name
@@ -380,7 +752,6 @@ class GraphRuntime:
             compiled = self._resolve_compiled(projection)
             self._reconcile_running(projection, context)
 
-            # 刷新投影（abandon 可能已写入）
             projection = self._checkpoints.project(invocation_id)
             if projection.terminal is not None:
                 return self._result_from_projection(projection)
@@ -417,7 +788,6 @@ class GraphRuntime:
                 return self._finish_terminal(invocation_id, context, plan)
 
             if not plan.tasks:
-                # 仅持久化了决策/展开事件：继续下一轮 Plan
                 if plan.strict_events:
                     continue
                 raise GraphRuntimeError("planner returned no tasks and no terminal")
@@ -449,7 +819,6 @@ class GraphRuntime:
                     self._clock.sleep(delay)
                 continue
 
-            # 继续下一 superstep（含 Update 失败后的 pending write 重试）
             continue
 
     def _finish_terminal(
@@ -463,7 +832,6 @@ class GraphRuntime:
             projection = self._checkpoints.project(invocation_id)
             return self._result_from_projection(projection)
 
-        # 终局前若仍有 pending write-set，先重试 Update，避免无提交完成。
         projection = self._checkpoints.project(invocation_id)
         if self._pending_write_sets(invocation_id):
             self._retry_pending_update(projection, context)
@@ -488,7 +856,9 @@ class GraphRuntime:
                     reason=reason,
                 )
             )
-            live = fold_after_append(context.change_dir, invocation_id, event_type, reason, projection)
+            live = fold_after_append(
+                context.change_dir, invocation_id, event_type, reason, projection
+            )
             txn.set_workflow_state_projection(render_workflow_state_yaml(live))
         return self._result_from_projection(self._checkpoints.project(invocation_id))
 
@@ -650,6 +1020,7 @@ def fold_after_append(
     projection: GraphProjection,
 ) -> GraphProjection:
     """事务内尚未落盘时，构造带 terminal 的投影供 workflow-state staging。"""
+    del change_dir, invocation_id  # 签名保留与 Task 11 一致；投影由调用方传入
     terminal_map = {
         "graph_completed": "completed",
         "graph_stopped": "stopped",
@@ -683,6 +1054,25 @@ def _parse_ts(value: str) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def _task_outputs(task: ExecutableTask) -> tuple[str, ...]:
+    payload = task.input
+    if isinstance(payload, dict):
+        outputs = payload.get("outputs")
+        if isinstance(outputs, list) and all(isinstance(item, str) for item in outputs):
+            return tuple(outputs)
+    return ()
+
+
+def _child_invocation_from_ns(checkpoint_ns: str, root_ns: str) -> str | None:
+    """``<parent-ns>/<node>/<child-invocation-id>`` → child invocation id。"""
+    if checkpoint_ns == root_ns or not checkpoint_ns.startswith(root_ns + "/"):
+        return None
+    parts = checkpoint_ns.split("/")
+    if len(parts) < 3:
+        return None
+    return parts[-1]
 
 
 __all__ = [

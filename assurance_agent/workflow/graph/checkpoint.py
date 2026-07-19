@@ -191,6 +191,13 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                 audited_reads_sha256=dict(event.audited_reads_sha256),
                 artifact_view=event.artifact_view,
             )
+            # 嵌套 child 上抛的 interrupt：父 task 不能算成功完成，否则 resume
+            # 不会重进 SubgraphHandler。同 namespace 的 builtin:interrupt 节点保持
+            # succeeded，以便 resolved 后按 resume.action 路由。
+            if started is not None and event.checkpoint_ns != started.checkpoint_ns:
+                for task_id, task in list(tasks.items()):
+                    if task.node_id == event.node_id and task.status == "succeeded":
+                        tasks[task_id] = task.model_copy(update={"status": "interrupted"})
         elif isinstance(event, GraphResumedEvent):
             pending = interrupts.get(event.interrupt_id)
             if pending is None:

@@ -172,9 +172,14 @@ def _build_runtime(
     checkpoints = CheckpointStore(change)
     workspaces = WorkspaceBackend(change)
     clock = clock or SystemClock()
+    holder: dict[str, GraphRuntime] = {}
+
+    def run_child(task, graph_id, workspace, context):  # type: ignore[no-untyped-def]
+        return holder["rt"].run_child(task, graph_id, workspace, context)
+
     if node_runner is None:
         node_runner = build_default_node_runner(
-            NeverCalledInvoker(), store, contracts, compiled=compiled
+            NeverCalledInvoker(), store, contracts, compiled=compiled, run_child=run_child
         )
     graph_id = compiled.entrypoints["full"].graph_id
     state_defs = dict(compiled.schema.graphs[graph_id].state)
@@ -189,7 +194,7 @@ def _build_runtime(
         state_defs=state_defs,
     )
     schemas = {compiled.digest: compiled}
-    return GraphRuntime(
+    runtime = GraphRuntime(
         checkpoint_store=checkpoints,
         object_store=store,
         workspace_backend=workspaces,
@@ -199,6 +204,8 @@ def _build_runtime(
         schema_resolver=lambda digest: schemas[digest],
         clock=clock,
     )
+    holder["rt"] = runtime
+    return runtime
 
 
 def test_minimal_graph_run_and_fresh_status(tmp_path: Path) -> None:

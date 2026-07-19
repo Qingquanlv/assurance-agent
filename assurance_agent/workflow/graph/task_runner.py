@@ -1,8 +1,8 @@
 """handler registry 与内部 NodeRunner seam（设计 §5.2）。
 
 ``NodeRunner.execute(task, workspace, context)`` 按 target 精确分发到注册的
-``TaskHandler``；``skill:`` namespace 注册一个 namespace 级默认 handler（任意
-skill 名都经 agent adapter 执行）。分发语义：
+``TaskHandler``；``skill:`` / ``graph:`` namespace 注册 namespace 级默认 handler。
+分发语义：
 
 - 未注册且无 namespace 默认的 target → ``contract`` 失败（不执行任何 handler）；
 - handler 抛出的任何异常归一化为 ``internal`` 失败，绝不逃出 runner；
@@ -12,7 +12,7 @@ skill 名都经 agent adapter 执行）。分发语义：
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Protocol
 
 from assurance_agent.workflow.core.graph_types import ErrorKind
@@ -97,11 +97,16 @@ def build_default_node_runner(
     contracts: ExecutionContractCatalog,
     *,
     compiled: CompiledWorkflow,
+    run_child: Callable[
+        [ExecutableTask, str, TaskWorkspace, RuntimeContext], TaskResult
+    ]
+    | None = None,
 ) -> NodeRunner:
-    """注册 canonical target handler：agent 桥、domain operation 与 builtin。
+    """注册 canonical target handler：agent 桥、domain operation、builtin 与 subgraph。
 
     ``compiled`` 提供 node 定义（per-node contract claim 收窄、interrupt 配置）
     与 gate 定义；``contracts`` 提供 execution contract 默认 claim。
+    ``run_child`` 注入后注册 ``graph:`` namespace handler。
     """
     from assurance_agent.workflow.graph.handlers.agent import AgentHandler
     from assurance_agent.workflow.graph.handlers.gate import GateHandler
@@ -111,6 +116,7 @@ def build_default_node_runner(
         OperationHandler,
         default_operations,
     )
+    from assurance_agent.workflow.graph.handlers.subgraph import SubgraphHandler
 
     agent = AgentHandler(adapter, object_store, contracts=contracts, compiled=compiled)
     operation = OperationHandler(default_operations())
@@ -120,7 +126,10 @@ def build_default_node_runner(
         "builtin:interrupt": InterruptHandler(compiled),
         **{target: operation for target in default_operations()},
     }
-    return HandlerNodeRunner(handlers, namespace_handlers={"skill": agent})
+    namespace_handlers: dict[str, TaskHandler] = {"skill": agent}
+    if run_child is not None:
+        namespace_handlers["graph"] = SubgraphHandler(run_child)
+    return HandlerNodeRunner(handlers, namespace_handlers=namespace_handlers)
 
 
 __all__ = [
