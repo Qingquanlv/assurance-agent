@@ -280,3 +280,46 @@ class WorkflowStateProjection(BaseModel):
     tasks: dict[str, TaskProjection] = Field(default_factory=dict)
     pending_interrupts: tuple[InterruptProjection, ...] = ()
     budgets: dict[str, int] = Field(default_factory=dict)
+
+
+# ---- GraphRuntime 公开命令/结果模型（Task 11）----
+
+
+class ResumeCommand(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    interrupt_id: str
+    action: Literal["fix_and_proceed", "accept_risk", "stop"]
+    reason: str
+    who: str
+
+
+class GraphStatus(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    invocation_id: str
+    entrypoint: str
+    status: Literal["running", "interrupted", "completed", "stopped", "failed"]
+    checkpoint_id: str | None
+    event_seq: int
+    superstep: int
+    running_tasks: tuple[str, ...]
+    pending_tasks: tuple[str, ...]
+    pending_write_sets: tuple[str, ...]
+    pending_interrupts: tuple[InterruptProjection, ...]
+    next_retry_at: str | None
+    budgets: dict[str, int]
+    terminal_reason: str | None
+
+
+class RunResult(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    invocation_id: str
+    status: GraphStatus
+    exit_code: Literal[0, 20, 30, 40]
+    reason: str
+
+
+class ImportResult(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    invocation_id: str
+    checkpoint_id: str
+    imported_tasks: tuple[str, ...]

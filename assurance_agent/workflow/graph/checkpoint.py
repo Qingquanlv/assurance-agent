@@ -321,6 +321,40 @@ class CheckpointStore:
             self.write(projection)
         return projection
 
+    def project(self, invocation_id: str) -> GraphProjection:
+        """ledger 权威投影，并修复落后/损坏的 checkpoint 与 workflow-state 缓存。"""
+        projection = project_invocation(self._change_dir, invocation_id)
+        if not self._snapshot_matches(projection):
+            self.write(projection)
+        self._repair_workflow_state(projection)
+        return projection
+
+    def latest_root_invocation(self) -> str | None:
+        """严格 ledger 中最近一次无 parent 的 root ``graph_invocation_started``。"""
+        latest: str | None = None
+        for raw in read_events_strict(self._change_dir):
+            if raw.get("source") != "graph" or raw.get("type") != "graph_invocation_started":
+                continue
+            if raw.get("parent_invocation_id") is not None:
+                continue
+            invocation_id = raw.get("invocation_id")
+            if isinstance(invocation_id, str):
+                latest = invocation_id
+        return latest
+
+    def _repair_workflow_state(self, projection: GraphProjection) -> None:
+        """缺失或损坏的 ``workflow-state.yaml`` 只能从 ledger 投影重建，绝不反向推断。"""
+        path = self._change_dir / "workflow-state.yaml"
+        expected = render_workflow_state_yaml(projection)
+        try:
+            current = path.read_bytes()
+        except OSError:
+            current = b""
+        if current == expected:
+            return
+        with transaction(self._change_dir) as txn:
+            txn.set_workflow_state_projection(expected)
+
     def _snapshot_matches(self, projection: GraphProjection) -> bool:
         """仅当 snapshot 的 event_seq 与 digest 三元组和 ledger 投影一致时接受。"""
         path = self._change_dir / checkpoint_snapshot_relpath(projection)
