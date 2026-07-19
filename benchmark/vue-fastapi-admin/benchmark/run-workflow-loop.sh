@@ -55,6 +55,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 AA_SKILLS_ROOT="${AA_SKILLS_ROOT:-$PROJECT_ROOT/skills}"
 AA_REPO_ROOT="${AA_REPO_ROOT:-/Users/lvqingquan/agent/assurance-agent}"   # for uv-based aa install
 NIGHTLY_CLI="${NIGHTLY_CLI:-aa retro nightly}"
+AUTO_DECIDE_BENCHMARK="${AUTO_DECIDE_BENCHMARK:-true}"
 cd "$PROJECT_ROOT"
 
 CONFIG_FILE="${BENCHMARK_ENV:-$SCRIPT_DIR/benchmark.env}"
@@ -116,6 +117,20 @@ SUMMARY="$RUN_DIR/loop-summary.md"
 # Helpers
 # ---------------------------------------------------------------------------
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$LOOP_LOG"; }
+
+maybe_auto_decide() {
+  local change_id="$1"
+  [ "$AUTO_DECIDE_BENCHMARK" = "true" ] || return 1
+  local status_json interrupt_id action reason
+  status_json="$("$AA_BIN" workflow status --change "$change_id" --json 2>/dev/null || true)"
+  [ -n "$status_json" ] || return 1
+  interrupt_id="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); ints=d.get("pending_interrupts") or []; print((ints[0].get("interrupt_id") or ints[0].get("id") or "") if ints else "")' "$status_json")"
+  [ -n "$interrupt_id" ] || return 1
+  action="accept_risk"
+  reason="benchmark auto resume interrupt $interrupt_id so workflow can complete"
+  log "[$change_id] auto resume interrupt=$interrupt_id action=$action"
+  "$AA_BIN" workflow resume --change "$change_id" --interrupt "$interrupt_id" --action "$action" --reason "$reason"
+}
 
 if command -v gtimeout >/dev/null 2>&1; then
   TIMEOUT_CMD=(gtimeout "$STEP_TIMEOUT")
@@ -488,6 +503,7 @@ log "project_root=$PROJECT_ROOT run_mode=$RUN_MODE run_tests=$RUN_TESTS test_typ
 log "driver: adapter=$DRIVER_ADAPTER entrypoint=$DRIVER_ENTRYPOINT max_healing=$MAX_HEALING_ATTEMPTS server=${OPENCODE_SERVER}"
 log "opencode=$OPENCODE_BIN model=${OPENCODE_MODEL:-default} max_attempts=$OPENCODE_MAX_WORKFLOW_ATTEMPTS"
 log "do_archive=$DO_ARCHIVE do_nightly_collect=$DO_NIGHTLY_COLLECT do_retro=$DO_RETRO"
+log "auto_decide=$AUTO_DECIDE_BENCHMARK"
 
 clean_generated_artifacts
 
@@ -529,8 +545,31 @@ for item in "${BENCHMARK_ITEMS[@]}"; do
     log "[$change_id] aa status terminal=$workflow_kind${workflow_reason:+ reason=$workflow_reason}"
 
     if [ "$workflow_kind" = "completed" ] || [ "$workflow_kind" = "stopped" ]; then
+      python3 - "$change_id" <<'PYASSERT' || true
+import json, sys
+from pathlib import Path
+cid = sys.argv[1]
+events = Path(f"qa/changes/{cid}/events.jsonl")
+if not events.is_file():
+    raise SystemExit(0)
+success = {}
+for line in events.read_text().splitlines():
+    if not line.strip():
+        continue
+    ev = json.loads(line)
+    if ev.get("type") == "task_attempt_succeeded":
+        tid = ev.get("task_id")
+        if tid:
+            success[tid] = success.get(tid, 0) + 1
+dupes = [t for t, n in success.items() if n > 1]
+if dupes:
+    print(f"WARNING: duplicate successful task ids across restarts: {dupes[:5]}", file=sys.stderr)
+    raise SystemExit(1)
+PYASSERT
       break
     fi
+
+    maybe_auto_decide "$change_id" || true
 
     attempt=$((attempt + 1))
   done

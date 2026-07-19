@@ -193,10 +193,10 @@ Read `final_status` from result JSON when present; otherwise derive from `workfl
 
 ### Step 4: Archive Process Artifacts
 
-> **Order matters:** run the `aa workflow status --phase archive --status …` command
-> (see "After completing work" step 3) **before** copying `workflow-state.yaml`,
-> so the archived copy carries the finalized `phases.archive.status` and a valid
-> `_integrity.state_sha256`.
+> **Order matters:** produce archive artifacts first; the **archive graph node**
+> commits archive status to the ledger. Never run
+> `aa workflow status --phase archive` (removed) and never hand-edit
+> `workflow-state.yaml` to mark archive done before copying evidence.
 
 Copy (do not move) the following to `qa/archive/<change-id>/`:
 
