@@ -1,11 +1,12 @@
-"""Driver lock + driver.json state file + start/resume guard (spec 5a).
+"""Driver lock + driver.json process pointer (non-authoritative).
 
-Clean-room port of the TS driver_state.ts semantics: an O_EXCL lock whose stale
-copies (dead pid, or start_token diverged from driver.json) are auto-reclaimed;
-an atomic driver.json holding progress for `aa workflow status`; and an
-idempotent start guard (running+alive → refuse duplicate; completed → refuse
-restart; paused/failed/running-with-dead-pid → allow resume).
+``driver.json`` records the live OS process and the latest known graph pointer
+(``invocation_id`` / ``checkpoint_id`` / ``event_seq``). Ledger projection via
+``CheckpointStore`` is authoritative for task completion; a stale or absent
+driver file never causes succeeded tasks to re-run.
 """
+
+from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
@@ -16,6 +17,7 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from assurance_agent.workflow.driver.adapter import DriverError
+from assurance_agent.workflow.graph.checkpoint import CheckpointStore
 
 DriverStatus = Literal["running", "paused", "completed", "failed"]
 
@@ -29,14 +31,9 @@ class DriverState(BaseModel):
     updated_at: str
     parent_session_id: str | None = None
     directory: str
-    current_phase: str | None = None
-    current_attempt_id: str | None = None
-    paused_on: str | None = None
-    # Checkpoint 语义：主循环每提交一个控制动作或相位结果即过一个迭代边界，
-    # iteration 随之递增；checkpoint 实体 = workflow-state.yaml + events.jsonl
-    # （纯投影可据此恢复），driver.json 只是 checkpoint 指针。
-    iteration: int = 0
-    last_checkpoint_at: str | None = None
+    invocation_id: str | None = None
+    checkpoint_id: str | None = None
+    event_seq: int = 0
 
 
 class StartGuard(BaseModel):
@@ -102,6 +99,25 @@ def create_initial_driver_state(
     )
 
 
+def project_graph_pointer(
+    state: DriverState,
+    *,
+    invocation_id: str | None,
+    checkpoint_id: str | None,
+    event_seq: int,
+    status: DriverStatus,
+) -> DriverState:
+    return state.model_copy(
+        update={
+            "invocation_id": invocation_id,
+            "checkpoint_id": checkpoint_id,
+            "event_seq": event_seq,
+            "status": status,
+            "updated_at": now_iso(),
+        }
+    )
+
+
 def _write_lock(lock: Path, start_token: str) -> None:
     with open(lock, "x", encoding="utf-8") as handle:
         handle.write(f"{os.getpid()}\n{start_token}\n")
@@ -147,20 +163,41 @@ def rewrite_lock_pid(change_dir: Path, pid: int, start_token: str) -> None:
     driver_lock_path(change_dir).write_text(f"{pid}\n{start_token}\n", encoding="utf-8")
 
 
+def _latest_graph_terminal(change_dir: Path) -> tuple[str | None, str | None]:
+    """Return ``(invocation_id, terminal)`` for the latest root invocation, if any."""
+    try:
+        store = CheckpointStore(change_dir)
+        invocation_id = store.latest_root_invocation()
+        if invocation_id is None:
+            return None, None
+        projection = store.project(invocation_id)
+        return invocation_id, projection.terminal
+    except Exception:
+        return None, None
+
+
 def evaluate_start_guard(change_dir: Path) -> StartGuard:
+    """Refuse duplicate live processes and completed graphs; resume otherwise.
+
+    Graph terminal from the ledger is authoritative. A stale/absent ``driver.json``
+    never blocks resume of incomplete work and never forces completed tasks to re-run.
+    """
     existing = read_driver_state(change_dir)
-    if existing is None:
-        return StartGuard(allowed=True)
-    if existing.status == "running" and is_pid_alive(existing.pid):
+    invocation_id, terminal = _latest_graph_terminal(change_dir)
+    if terminal == "completed":
+        return StartGuard(
+            allowed=False,
+            reason=(
+                f"graph already completed (invocation {invocation_id}); refuse restart"
+            ),
+            existing=existing,
+        )
+    if existing is not None and existing.status == "running" and is_pid_alive(existing.pid):
         return StartGuard(
             allowed=False,
             reason=f"driver already running (pid {existing.pid}, run_id {existing.run_id})",
             existing=existing,
         )
-    if existing.status == "completed":
-        return StartGuard(
-            allowed=False,
-            reason=f"driver already completed (run_id {existing.run_id}); refuse restart",
-            existing=existing,
-        )
+    if existing is None:
+        return StartGuard(allowed=True)
     return StartGuard(allowed=True, existing=existing)

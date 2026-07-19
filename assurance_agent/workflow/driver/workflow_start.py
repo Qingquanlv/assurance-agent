@@ -1,10 +1,12 @@
-"""Detached background launch for `aa workflow run --detach`.
+"""Detached background launch for `aa workflow run --detach` / `aa workflow start`.
 
-Used by the OpenCode `workflow_start` tool (and any CLI caller of ``--detach``).
-We acquire the lock, write driver.json, spawn a detached `aa workflow run ...
+Acquire the lock, write driver.json, spawn a detached `aa workflow run ...
 --adopt-lock <token>`, repoint lock + driver.pid at the child, and return
-immediately so the caller is not blocked for the whole run.
+immediately so the caller is not blocked for the whole run. The child projects
+the graph invocation ID into driver.json after start.
 """
+
+from __future__ import annotations
 
 import json
 import os
@@ -75,7 +77,7 @@ def start_workflow_detached(
     *,
     project_root: Path,
     change_id: str,
-    scope: str,
+    entrypoint: str,
     adapter: str = "opencode",
     params: dict | None = None,
     agent_cmd: str | None = None,
@@ -109,6 +111,10 @@ def start_workflow_detached(
         parent_session_id=parent_session,
         existing_run_id=guard.existing.run_id if guard.existing else None,
     )
+    if guard.existing is not None:
+        driver.invocation_id = guard.existing.invocation_id
+        driver.checkpoint_id = guard.existing.checkpoint_id
+        driver.event_seq = guard.existing.event_seq
     try:
         acquire_lock(change_dir, driver.start_token)
     except DriverError as err:
@@ -122,8 +128,8 @@ def start_workflow_detached(
         "run",
         "--change",
         change_id,
-        "--scope",
-        scope,
+        "--entrypoint",
+        entrypoint,
         "--adapter",
         adapter,
         "--directory",
@@ -161,7 +167,7 @@ def start_workflow_detached(
         run_id=driver.run_id,
         pid=pid,
         message=(
-            f"workflow started (run_id={driver.run_id}, scope={scope}); "
+            f"workflow started (run_id={driver.run_id}, entrypoint={entrypoint}); "
             f"log: qa/changes/{change_id}/driver.log"
         ),
     )

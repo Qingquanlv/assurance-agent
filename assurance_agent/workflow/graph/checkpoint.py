@@ -20,9 +20,8 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
-from assurance_agent.eval.fixtures import FixtureLock
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
 from assurance_agent.workflow.core.graph_events import (
@@ -233,8 +232,17 @@ def validate_import(
 
 def _verify_fixture_digest(context: RuntimeContext, fixture_id: str, fixture_digest: str) -> None:
     lock_path = context.project_root / "eval-fixtures" / "fixture-lock.json"
+
+    class _FixtureLockEntry(BaseModel):
+        model_config = ConfigDict(extra="ignore")
+        aggregate_sha256: str
+
+    class _FixtureLock(BaseModel):
+        model_config = ConfigDict(extra="ignore")
+        fixtures: dict[str, _FixtureLockEntry]
+
     try:
-        lock = FixtureLock.model_validate_json(lock_path.read_text(encoding="utf-8"))
+        lock = _FixtureLock.model_validate_json(lock_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, ValidationError) as exc:
         raise CheckpointImportError(f"fixture lock missing or invalid: {exc}") from exc
     entry = lock.fixtures.get(fixture_id)

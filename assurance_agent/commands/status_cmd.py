@@ -1,121 +1,123 @@
-"""aa status — 计算工作流图中每个相位的状态（确定性, 无 LLM）。
+"""aa status — project GraphStatus from the ledger (no v1 compute_status)."""
 
-对齐 TS src/commands/status.ts 的 flag 面与退出码语义：
-查询类命令写 best-effort 遥测事件（失败静默，退出码不变）。
-每次 status 现算读侧审计（gate 篡改 / skill-load / 非法迁移 / 重分类 / state 完整性）。
-"""
+from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import click
 
 from assurance_agent.change_location import ChangeNotFoundError, resolve_change
 from assurance_agent.config import ConfigNotFoundError
-from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import UnsafeIdentifierError
-from assurance_agent.workflow.orchestration.audit import apply_audits_to_report, run_status_audits
-from assurance_agent.workflow.core.events import append_event_best_effort
-from assurance_agent.workflow.core.exit_codes import exit_code_for_terminal
-from assurance_agent.workflow.core.state import StateIntegrityError, read_state, read_state_lenient
-from assurance_agent.workflow.orchestration.engine import WorkflowStatus, compute_status
-from assurance_agent.workflow.orchestration.schema import load_workflow_schema
+from assurance_agent.workflow.core.exit_codes import (
+    EXIT_COMPLETED,
+    EXIT_ERROR,
+    EXIT_HUMAN_REVIEW,
+    EXIT_STOPPED,
+)
+from assurance_agent.workflow.driver.headless_adapter import HeadlessAdapter
+from assurance_agent.workflow.driver.runtime_factory import build_graph_runtime
+from assurance_agent.workflow.graph.models import GraphStatus
+from assurance_agent.workflow.graph.runtime import GraphRuntimeError
+
+
+def _exit_for_graph_status(status: GraphStatus) -> int:
+    if status.status == "completed":
+        return EXIT_COMPLETED
+    if status.status == "stopped":
+        return EXIT_STOPPED
+    if status.status == "interrupted":
+        return EXIT_HUMAN_REVIEW
+    if status.status == "failed":
+        return EXIT_ERROR
+    return EXIT_COMPLETED
 
 
 @click.command("status")
 @click.option("--change", "change_id", required=True, help="Change ID under qa/changes/.")
-@click.option("--next", "next_only", is_flag=True, help="Print only the next dispatch batch.")
+@click.option("--next", "next_only", is_flag=True, help="Print only pending work.")
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable JSON output.")
 def status_command(change_id: str, next_only: bool, as_json: bool) -> None:
-    """Compute the state of every phase in the workflow graph (deterministic, no LLM)."""
+    """Print GraphStatus for the latest root invocation."""
     project_root = Path.cwd()
     try:
-        loc = resolve_change(project_root, change_id)
+        resolve_change(project_root, change_id)
     except (UnsafeIdentifierError, ChangeNotFoundError, ConfigNotFoundError) as err:
         click.secho(str(err), fg="red")
         raise SystemExit(1) from err
-    change_dir = loc.path
 
+    adapter = HeadlessAdapter(agent_cmd="true", cwd=project_root)
     try:
-        schema = load_workflow_schema(project_root)
-        try:
-            state = read_state(change_dir)
-        except StateIntegrityError:
-            # Fold integrity failure into audits instead of hard-crashing status.
-            state = read_state_lenient(change_dir)
-        params = getattr(state, "params", None) or {}
-        status = compute_status(schema, loc, state, params)
-        audit = run_status_audits(loc, status, schema)
-        status = apply_audits_to_report(status, audit)
-    except AaError as err:
+        bundle = build_graph_runtime(
+            project_root=project_root,
+            change_id=change_id,
+            adapter=adapter,
+        )
+        latest = bundle.runtime.latest_root_invocation()
+        if latest is None:
+            if as_json:
+                click.echo(json.dumps({"status": None}, indent=2, ensure_ascii=False))
+            else:
+                click.echo("no graph invocation found (workflow not started)")
+            raise SystemExit(EXIT_COMPLETED)
+        status = bundle.runtime.status(latest)
+    except GraphRuntimeError as err:
         click.secho(f"status failed: {err}", fg="red")
         raise SystemExit(1) from err
 
-    _emit_telemetry(change_dir, status)
-
     if next_only:
-        _print_next(status, as_json)
-    elif as_json:
-        payload = status.model_dump(mode="json")
-        payload["audit_issues"] = [
-            {"code": i.code, "message": i.message, "phase": i.phase} for i in audit.issues
-        ]
-        click.echo(_json_dumps(payload))
-    else:
-        _print_table(change_id, status, audit.issues)
-
-    raise SystemExit(exit_code_for_terminal(status.terminal))
-
-
-def _emit_telemetry(change_dir: Path, status: WorkflowStatus) -> None:
-    append_event_best_effort(
-        change_dir,
-        {
-            "source": "status",
-            "type": "status_query",
-            "terminal": status.terminal.kind if status.terminal else None,
-            "next": [d.phase_id for d in status.next_dispatch],
-        },
-    )
-
-
-def _print_next(status: WorkflowStatus, as_json: bool) -> None:
-    if as_json:
-        click.echo(
-            _json_dumps(
-                {
-                    "next_dispatch": [d.model_dump() for d in status.next_dispatch],
-                    "terminal": status.terminal.model_dump() if status.terminal else None,
-                }
+        if as_json:
+            click.echo(
+                json.dumps(
+                    {
+                        "pending_tasks": list(status.pending_tasks),
+                        "pending_interrupts": [
+                            i.model_dump(mode="json") for i in status.pending_interrupts
+                        ],
+                        "status": status.status,
+                        "terminal_reason": status.terminal_reason,
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
             )
-        )
-        return
-    if status.next_dispatch:
-        for entry in status.next_dispatch:
-            click.echo(entry.phase_id)
+        else:
+            if status.pending_tasks:
+                for task_id in status.pending_tasks:
+                    click.echo(task_id)
+            elif status.pending_interrupts:
+                for interrupt in status.pending_interrupts:
+                    click.echo(interrupt.interrupt_id)
+            else:
+                click.echo("(none)")
+        raise SystemExit(_exit_for_graph_status(status))
+
+    if as_json:
+        click.echo(json.dumps(status.model_dump(mode="json"), indent=2, ensure_ascii=False))
     else:
-        click.echo("(none)")
+        click.secho(f"aa status — change: {change_id}", bold=True)
+        click.echo()
+        click.echo(f"  invocation : {status.invocation_id}")
+        click.echo(f"  entrypoint : {status.entrypoint}")
+        click.echo(f"  status     : {status.status}")
+        click.echo(f"  checkpoint : {status.checkpoint_id}")
+        click.echo(f"  event_seq  : {status.event_seq}")
+        pending = ", ".join(status.pending_tasks) or "(none)"
+        click.echo(f"  pending    : {pending}")
+        if status.pending_interrupts:
+            click.echo("  interrupts :")
+            for interrupt in status.pending_interrupts:
+                click.echo(
+                    f"    {interrupt.interrupt_id} @ {interrupt.node_id} "
+                    f"actions={list(interrupt.actions)}"
+                )
+        if status.terminal_reason:
+            color = "green" if status.status == "completed" else "red"
+            click.echo(
+                "  terminal   : "
+                + click.style(f"{status.status} — {status.terminal_reason}", fg=color)
+            )
+        click.echo()
 
-
-def _print_table(change_id: str, status: WorkflowStatus, audit_issues: list | None = None) -> None:
-    click.secho(f"aa status — change: {change_id}", bold=True)
-    click.echo()
-    for phase in status.phases:
-        click.echo(f"  {phase.status.ljust(14)} {phase.id}")
-    click.echo()
-    next_ids = ", ".join(d.phase_id for d in status.next_dispatch) or "(none)"
-    click.echo(f"  Next     : {next_ids}")
-    if status.terminal:
-        color = "green" if status.terminal.kind == "completed" else "red"
-        reason = status.terminal.reason or ""
-        click.echo("  Terminal : " + click.style(f"{status.terminal.kind} — {reason}", fg=color))
-    if audit_issues:
-        click.echo("  Audits   :")
-        for issue in audit_issues:
-            click.echo(f"    [{issue.code}] {issue.message}")
-    click.echo()
-
-
-def _json_dumps(obj: object) -> str:
-    import json
-
-    return json.dumps(obj, indent=2, ensure_ascii=False)
+    raise SystemExit(_exit_for_graph_status(status))

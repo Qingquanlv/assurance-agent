@@ -1,9 +1,14 @@
+"""Unit tests for non-authoritative driver.json + start guard."""
+
+from __future__ import annotations
+
 import os
 from pathlib import Path
 
 import pytest
 
 from assurance_agent.workflow.driver.adapter import DriverError
+from assurance_agent.workflow.driver import driver_state as ds
 from assurance_agent.workflow.driver.driver_state import (
     DriverState,
     acquire_lock,
@@ -11,6 +16,7 @@ from assurance_agent.workflow.driver.driver_state import (
     driver_lock_path,
     evaluate_start_guard,
     is_pid_alive,
+    project_graph_pointer,
     read_driver_state,
     release_lock,
     write_driver_state,
@@ -26,12 +32,29 @@ def _write_state(change_dir: Path, **overrides: object) -> DriverState:
 
 
 def test_write_then_read_roundtrip(tmp_path: Path) -> None:
-    written = _write_state(tmp_path, current_phase="explore")
+    written = _write_state(tmp_path, invocation_id="inv-abc", checkpoint_id="cp-1", event_seq=3)
     read = read_driver_state(tmp_path)
     assert read is not None
     assert read.run_id == written.run_id
-    assert read.current_phase == "explore"
+    assert read.invocation_id == "inv-abc"
+    assert read.checkpoint_id == "cp-1"
+    assert read.event_seq == 3
     assert read.status == "running"
+
+
+def test_project_graph_pointer_updates_fields(tmp_path: Path) -> None:
+    state = _write_state(tmp_path)
+    updated = project_graph_pointer(
+        state,
+        invocation_id="inv-9",
+        checkpoint_id="cp-9",
+        event_seq=9,
+        status="paused",
+    )
+    assert updated.invocation_id == "inv-9"
+    assert updated.checkpoint_id == "cp-9"
+    assert updated.event_seq == 9
+    assert updated.status == "paused"
 
 
 def test_read_missing_returns_none(tmp_path: Path) -> None:
@@ -47,7 +70,6 @@ def test_is_pid_alive_self_true_and_bogus_false() -> None:
 def test_acquire_lock_then_second_fails_while_pid_alive(tmp_path: Path) -> None:
     state = _write_state(tmp_path)
     acquire_lock(tmp_path, state.start_token)
-    # driver.json pid == this live process → live holder, refuse duplicate.
     with pytest.raises(DriverError):
         acquire_lock(tmp_path, "other-token")
 
@@ -55,15 +77,13 @@ def test_acquire_lock_then_second_fails_while_pid_alive(tmp_path: Path) -> None:
 def test_stale_lock_dead_pid_reclaimed(tmp_path: Path) -> None:
     change_dir = tmp_path
     change_dir.mkdir(exist_ok=True)
-    # Lock left by a dead pid.
     driver_lock_path(change_dir).write_text("2000000000\nold-token\n", encoding="utf-8")
     _write_state(change_dir, pid=2_000_000_000, start_token="old-token")
-    acquire_lock(change_dir, "new-token")  # must reclaim, not raise
+    acquire_lock(change_dir, "new-token")
     assert driver_lock_path(change_dir).read_text().splitlines()[1] == "new-token"
 
 
 def test_stale_lock_token_mismatch_reclaimed(tmp_path: Path) -> None:
-    # Live pid in the lock, but driver.json start_token no longer matches → stale.
     driver_lock_path(tmp_path).write_text(f"{os.getpid()}\norphan-token\n", encoding="utf-8")
     _write_state(tmp_path, pid=os.getpid(), start_token="current-token")
     acquire_lock(tmp_path, "fresh-token")
@@ -75,7 +95,7 @@ def test_release_lock_idempotent(tmp_path: Path) -> None:
     acquire_lock(tmp_path, state.start_token)
     release_lock(tmp_path)
     assert not driver_lock_path(tmp_path).exists()
-    release_lock(tmp_path)  # no error on missing lock
+    release_lock(tmp_path)
 
 
 def test_start_guard_fresh_allowed(tmp_path: Path) -> None:
@@ -89,13 +109,22 @@ def test_start_guard_running_alive_refused(tmp_path: Path) -> None:
     assert guard.reason is not None and "already running" in guard.reason
 
 
-def test_start_guard_completed_refused(tmp_path: Path) -> None:
+def test_start_guard_graph_completed_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ds, "_latest_graph_terminal", lambda _change_dir: ("inv-1", "completed"))
     _write_state(tmp_path, status="completed")
-    assert evaluate_start_guard(tmp_path).allowed is False
+    guard = evaluate_start_guard(tmp_path)
+    assert guard.allowed is False
+    assert guard.reason is not None and "already completed" in guard.reason
+
+
+def test_stale_driver_completed_without_graph_allows_start(tmp_path: Path) -> None:
+    """Absent/stale driver.json is not authoritative — no ledger means start is allowed."""
+    _write_state(tmp_path, status="completed")
+    assert evaluate_start_guard(tmp_path).allowed is True
 
 
 def test_start_guard_paused_allows_resume(tmp_path: Path) -> None:
-    saved = _write_state(tmp_path, status="paused", paused_on="case-review")
+    saved = _write_state(tmp_path, status="paused", invocation_id="inv-x")
     guard = evaluate_start_guard(tmp_path)
     assert guard.allowed is True
     assert guard.existing is not None and guard.existing.run_id == saved.run_id

@@ -274,6 +274,11 @@ def parse_schema(yaml_text: str) -> WorkflowSchema:
         doc = yaml.safe_load(yaml_text)
         if not isinstance(doc, dict):
             raise SchemaError("schema root is not a mapping")
+        version = str(doc.get("schema_version", ""))
+        if version == "2":
+            raise SchemaError(
+                "schema_version 2 is incompatible with v1 parse_schema; use load_workflow_v2"
+            )
 
         params = {k: ParamSpec(**v) for k, v in (doc.get("params") or {}).items()}
         phases = [PhaseDef.model_validate(_coerce_phase(p)) for p in (doc.get("phases") or [])]
@@ -283,7 +288,7 @@ def parse_schema(yaml_text: str) -> WorkflowSchema:
         }
         gates = normalize_gates(doc.get("gates"))
         schema = WorkflowSchema(
-            schema_version=str(doc.get("schema_version", "")),
+            schema_version=version,
             name=str(doc.get("name", "")),
             params=params,
             phases=phases,

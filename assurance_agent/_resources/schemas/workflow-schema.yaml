@@ -1,338 +1,843 @@
 # =============================================================================
-# AA Workflow Schema
+# AA Workflow Schema v2 (canonical graph runtime)
 # =============================================================================
 #
-# Canonical deterministic phase DAG consumed by `aa status` and
-# `aa gate check`. Project-local `.aa/workflow-schema.yaml` may override this
-# file, but a fresh project must work with this repo-shipped default.
-#
-# Paths are relative to `qa/changes/<change-id>/` unless prefixed with `qa/`
-# or `repo:`.
+# Packaged beside v1 until Task 15 cutover. schema_version must be exactly "2".
 # =============================================================================
 
-schema_version: "1"
+schema_version: "2"
 name: aa-full
 
 params:
-  run_mode: { type: enum, values: [full, case-only, api-only, e2e-only, plan-only, codegen-only, review-case, review-plan], default: full }
-  test_types: { type: list, values: [api, e2e, fuzz, performance], default: [api, e2e] }
-  run_tests: { type: bool, default: true }
-  max_case_fix_attempts: { type: int, default: 3 }
-  max_plan_fix_attempts: { type: int, default: 3 }
-  max_healing_attempts: { type: int, default: 3 }
-  auto_archive: { type: bool, default: false }
-  force_continue: { type: bool, default: false }
+  run_mode:
+    type: enum
+    values:
+      - full
+      - case-only
+      - api-only
+      - e2e-only
+      - plan-only
+      - codegen-only
+      - review-case
+      - review-plan
+    default: full
+  test_types:
+    type: list
+    values: [api, e2e, fuzz, performance]
+    min_items: 1
+    unique: true
+    default: [api, e2e]
+  run_tests: {type: bool, default: true}
+  max_case_fix_attempts: {type: int, default: 3}
+  max_plan_fix_attempts: {type: int, default: 3}
+  max_healing_attempts: {type: int, default: 3}
+  auto_archive: {type: bool, default: false}
+  force_continue: {type: bool, default: false}
 
-phases:
-  - id: skill-registry-check
-    skill: null
-    requires: []
-    produces: [workflow-state.yaml]
-    owned_by: [full, intake, execute]
-    gate: registry-gate
+entrypoints:
+  full:
+    graph: workflow
+    allow: "params.run_mode == 'full'"
+  intake:
+    graph: intake-workflow
+    allow: "params.run_mode in ['full', 'case-only', 'review-case']"
+  execute:
+    graph: execute-workflow
+    allow: >
+      params.run_mode in
+      ['full','api-only','e2e-only','plan-only','codegen-only','review-plan']
+  case:
+    graph: intake-workflow
+    with:
+      run_mode: case-only
 
-  - id: explore
-    skill: aa-explore
-    agent: aa-doc-author
-    requires: [skill-registry-check]
-    produces: [explore/advisory.json]
-    owned_by: [full, intake]
-    when: "params.run_mode in ['full', 'case-only']"
+policies:
+  retry:
+    agent-transient:
+      max_attempts: 3
+      retry_on: [timeout, transport, rate_limit]
+      backoff:
+        initial_seconds: 2
+        multiplier: 2
+        max_seconds: 30
+        jitter: true
+    cli-transient:
+      max_attempts: 2
+      retry_on: [timeout, transport]
+      backoff:
+        initial_seconds: 1
+        multiplier: 2
+        max_seconds: 10
+        jitter: true
+    never:
+      max_attempts: 1
+      retry_on: []
 
-  - id: case-design
-    skill: aa-case-design
-    agent: aa-doc-author
-    requires: [explore]
-    produces: [.qa.yaml, proposal.md, cases/]
-    owned_by: [full, intake]
-    gate: case-design-gate
-    when: "params.run_mode in ['full', 'case-only']"
+  timeout:
+    agent:
+      run_seconds: 5400
+      heartbeat_seconds: 120
+    cli:
+      run_seconds: 900
+      heartbeat_seconds: 30
+    local-operation:
+      run_seconds: 60
+      heartbeat_seconds: 10
 
-  - id: case-review
-    skill: aa-case-reviewer
-    agent: aa-reviewer
-    requires: [case-design]
-    produces: [review/case-review.json]
-    owned_by: [full, intake]
-    gate: case-review-gate
+  scheduler:
+    max_parallel_tasks: 4
+    conflict_order: [topology, declaration, task_id]
 
-  - id: case-fix
-    skill: aa-case-fixer
-    agent: aa-doc-author
-    requires: [case-review]
-    produces: [review/case-review-apply-summary.md]
-    owned_by: [full, intake]
-    when: "gate('case-review-gate').verdict == 'needs_fix'"
-    repair_of: case-review
-    max_attempts_param: max_case_fix_attempts
-    loop: case-repair
+graphs:
+  bootstrap:
+    max_supersteps: 5
+    nodes:
+      registry:
+        uses: operation:skill-registry-check
+        outputs: [change:workflow-state.yaml]
+        gate: registry-gate
+        retry: never
+        timeout: local-operation
+    edges:
+      - {from: START, to: registry}
+    routes:
+      - from: registry
+        select: "node('registry').gate.verdict"
+        cases: {pass: END, stop: STOP}
+        default: STOP
 
-  - id: fact-baseline
-    skill: aa-fact-baseline
-    agent: aa-doc-author
-    requires: [case-review]
-    produces: [facts/fact-baseline.json]
-    owned_by: [full, execute]
-    when: "params.run_mode in ['full', 'case-only', 'api-only', 'e2e-only', 'plan-only', 'review-plan']"
+  workflow:
+    max_supersteps: 100
+    nodes:
+      bootstrap:
+        uses: graph:bootstrap
+      intake:
+        uses: graph:intake
+      assurance:
+        uses: graph:assurance
+      archive:
+        uses: skill:aa-archive
+        agent: aa-archiver
+        when: "params.auto_archive == true"
+        outputs: ["project:qa/archive/${context.change_id}/"]
+        gate: archive-gate
+        retry: agent-transient
+        timeout: agent
+    edges:
+      - {from: START, to: bootstrap}
+      - {from: bootstrap, to: intake}
+      - {from: intake, to: assurance}
+      - {from: assurance, to: archive, when: "params.auto_archive == true"}
+      - {from: assurance, to: END, when: "params.auto_archive == false"}
+      - {from: archive, to: END}
 
-  # ---- API branch -----------------------------------------------------------
-  - id: api-plan
-    skill: aa-api-plan
-    agent: aa-doc-author
-    requires: [fact-baseline]
-    produces: [plans/api-plan.md, plans/api-test-data-plan.md, plans/api-codegen-plan.md, plans/m3-review-summary.md]
-    owned_by: [full, execute]
-    when: "'api' in params.test_types and params.run_mode in ['full', 'api-only', 'plan-only', 'review-plan']"
+  intake-workflow:
+    max_supersteps: 50
+    nodes:
+      bootstrap: {uses: graph:bootstrap}
+      intake: {uses: graph:intake}
+    edges:
+      - {from: START, to: bootstrap}
+      - {from: bootstrap, to: intake}
+      - {from: intake, to: END}
 
-  - id: api-plan-review
-    skill: aa-api-plan-reviewer
-    agent: aa-reviewer
-    requires: [api-plan]
-    produces: [review/api-plan-review.json]
-    owned_by: [full, execute]
-    gate: api-plan-review-gate
-    when: "'api' in params.test_types and params.run_mode in ['full', 'api-only', 'plan-only', 'review-plan', 'codegen-only']"
+  execute-workflow:
+    max_supersteps: 150
+    nodes:
+      bootstrap: {uses: graph:bootstrap}
+      assurance: {uses: graph:assurance}
+    edges:
+      - {from: START, to: bootstrap}
+      - {from: bootstrap, to: assurance}
+      - {from: assurance, to: END}
 
-  - id: api-plan-fix
-    skill: aa-api-plan-fixer
-    agent: aa-doc-author
-    requires: [api-plan-review]
-    produces: [review/api-plan-review-apply-summary.md]
-    owned_by: [full, execute]
-    when: "'api' in params.test_types and gate('api-plan-review-gate').verdict == 'needs_fix'"
-    repair_of: api-plan-review
-    max_attempts_param: max_plan_fix_attempts
-    loop: api-plan-repair
+  intake:
+    max_supersteps: 30
+    nodes:
+      explore:
+        uses: skill:aa-explore
+        agent: aa-doc-author
+        when: "params.run_mode in ['full', 'case-only']"
+        outputs: [change:explore/advisory.json]
+        retry: agent-transient
+        timeout: agent
 
-  - id: api-codegen
-    skill: aa-api-codegen
-    agent: aa-test-author
-    requires: [api-plan-review]
-    produces: [codegen/api-codegen-summary.md]
-    owned_by: [full, execute]
-    gate: api-codegen-precondition-gate
-    when: "'api' in params.test_types and params.run_mode in ['full', 'api-only', 'codegen-only']"
+      case-design:
+        uses: skill:aa-case-design
+        agent: aa-doc-author
+        when: "params.run_mode in ['full', 'case-only']"
+        outputs: [change:.qa.yaml, change:proposal.md, change:cases/]
+        gate: case-design-gate
+        retry: agent-transient
+        timeout: agent
 
-  # ---- E2E branch -----------------------------------------------------------
-  - id: e2e-plan
-    skill: aa-e2e-plan
-    agent: aa-doc-author
-    requires: [fact-baseline]
-    produces: [plans/e2e-plan.md, plans/e2e-test-data-plan.md, plans/e2e-codegen-plan.md, plans/m4-review-summary.md]
-    owned_by: [full, execute]
-    when: "'e2e' in params.test_types and params.run_mode in ['full', 'e2e-only', 'plan-only', 'review-plan']"
+      case-review-cycle:
+        uses: graph:case-review-cycle
 
-  - id: e2e-plan-review
-    skill: aa-e2e-plan-reviewer
-    agent: aa-reviewer
-    requires: [e2e-plan]
-    produces: [review/plan-review.json]
-    owned_by: [full, execute]
-    gate: e2e-plan-review-gate
-    when: "'e2e' in params.test_types and params.run_mode in ['full', 'e2e-only', 'plan-only', 'review-plan', 'codegen-only']"
+    edges:
+      - {from: START, to: explore, when: "params.run_mode in ['full', 'case-only']"}
+      - {from: START, to: case-review-cycle, when: "params.run_mode == 'review-case'"}
+      - {from: explore, to: case-design}
+      - {from: case-review-cycle, to: END}
 
-  - id: e2e-plan-fix
-    skill: aa-e2e-plan-fixer
-    agent: aa-doc-author
-    requires: [e2e-plan-review]
-    produces: [review/plan-review-apply-summary.md]
-    owned_by: [full, execute]
-    when: "'e2e' in params.test_types and gate('e2e-plan-review-gate').verdict == 'needs_fix'"
-    repair_of: e2e-plan-review
-    max_attempts_param: max_plan_fix_attempts
-    loop: e2e-plan-repair
+    routes:
+      - from: case-design
+        select: "node('case-design').gate.verdict"
+        cases: {pass: case-review-cycle, stop: STOP}
+        default: STOP
 
-  - id: e2e-codegen
-    skill: aa-e2e-codegen
-    agent: aa-test-author
-    requires: [e2e-plan-review]
-    produces: [codegen/e2e-codegen-summary.md]
-    owned_by: [full, execute]
-    gate: e2e-codegen-precondition-gate
-    when: "'e2e' in params.test_types and params.run_mode in ['full', 'e2e-only', 'codegen-only']"
+  case-review-cycle:
+    max_supersteps: 20
+    budgets:
+      fix_attempts:
+        limit: "params.max_case_fix_attempts"
+    nodes:
+      review:
+        uses: skill:aa-case-reviewer
+        agent: aa-reviewer
+        outputs: [change:review/case-review.json]
+        gate: case-review-gate
+        retry: agent-transient
+        timeout: agent
 
-  # ---- Optional fuzz branch -------------------------------------------------
-  - id: fuzz-plan
-    skill: aa-fuzz-plan
-    agent: aa-doc-author
-    requires: [fact-baseline]
-    produces: [plans/fuzz-plan.md, plans/fuzz-codegen-plan.md, plans/fuzz-review-summary.md]
-    owned_by: [full, execute]
-    when: "'fuzz' in params.test_types and params.run_mode in ['full', 'plan-only', 'review-plan']"
+      fix:
+        uses: skill:aa-case-fixer
+        agent: aa-doc-author
+        outputs: [change:review/case-review-apply-summary.md]
+        retry: agent-transient
+        timeout: agent
+        budget:
+          consume: fix_attempts
+          "on": committed
+          exhausted_to: exhausted
 
-  - id: fuzz-plan-review
-    skill: aa-fuzz-plan-reviewer
-    agent: aa-reviewer
-    requires: [fuzz-plan]
-    produces: [review/fuzz-plan-review.json]
-    owned_by: [full, execute]
-    gate: fuzz-plan-review-gate
-    when: "'fuzz' in params.test_types"
+      human-review:
+        uses: builtin:interrupt
+        interrupt:
+          reason: "case review requires human review"
+          checkpoint: case-review-gate
+          bind: audited_gate_read
+          actions: [fix_and_proceed, accept_risk, stop]
 
-  - id: fuzz-codegen
-    skill: aa-fuzz-codegen
-    agent: aa-test-author
-    requires: [fuzz-plan-review]
-    produces: [codegen/fuzz-codegen-summary.md]
-    owned_by: [full, execute]
-    gate: fuzz-codegen-precondition-gate
-    when: "'fuzz' in params.test_types and params.run_mode in ['full', 'codegen-only']"
+      exhausted:
+        uses: operation:stop
+        with: {reason: "case fix attempts exhausted"}
 
-  # ---- Optional performance branch -----------------------------------------
-  - id: performance-plan
-    skill: aa-performance-plan
-    agent: aa-doc-author
-    requires: [fact-baseline]
-    produces: [plans/performance-plan.md, plans/performance-codegen-plan.md, plans/performance-review-summary.md]
-    owned_by: [full, execute]
-    when: "'performance' in params.test_types and params.run_mode in ['full', 'plan-only', 'review-plan']"
+    edges:
+      - {from: START, to: review}
+      - {from: fix, to: review}
+      - {from: exhausted, to: STOP}
 
-  - id: performance-plan-review
-    skill: aa-performance-plan-reviewer
-    agent: aa-reviewer
-    requires: [performance-plan]
-    produces: [review/performance-plan-review.json]
-    owned_by: [full, execute]
-    gate: performance-plan-review-gate
-    when: "'performance' in params.test_types"
+    routes:
+      - from: review
+        select: "node('review').gate.verdict"
+        cases:
+          pass: END
+          needs_fix: fix
+          needs_human_review: human-review
+          reject: STOP
+          stop: STOP
+        default: STOP
+      - from: human-review
+        select: "resume.action"
+        cases:
+          fix_and_proceed: fix
+          accept_risk: END
+          stop: STOP
+        default: STOP
 
-  - id: performance-codegen
-    skill: aa-performance-codegen
-    agent: aa-test-author
-    requires: [performance-plan-review]
-    produces: [codegen/performance-codegen-summary.md]
-    owned_by: [full, execute]
-    gate: performance-codegen-precondition-gate
-    when: "'performance' in params.test_types and params.run_mode in ['full', 'codegen-only']"
+  assurance:
+    max_supersteps: 100
+    nodes:
+      fact-baseline:
+        uses: skill:aa-fact-baseline
+        agent: aa-doc-author
+        when: >
+          params.run_mode in
+          ['full','api-only','e2e-only','plan-only','review-plan']
+        outputs: [change:facts/fact-baseline.json]
+        retry: agent-transient
+        timeout: agent
 
-  # ---- Execution + inspect --------------------------------------------------
-  - id: execution
-    skill: null
-    requires: [api-codegen, e2e-codegen, fuzz-codegen, performance-codegen]
-    # MUST be `all` (over the ACTIVE, non-pruned codegen phases), NOT any_active.
-    # execution runs one batch over every generated suite, so it must wait for
-    # all in-scope codegen to finish. Inactive test types are pruned and drop
-    # out of active_deps, so `all` never deadlocks on an out-of-scope suite.
-    # With `any_active`, if one active codegen (e.g. api-codegen) is still
-    # blocked (its plan-review gate pending human review) while a sibling
-    # (e2e-codegen) is done, execution fired early against a missing test file
-    # → API SKIPPED, a false `completed`, and archive blocked. `all` makes
-    # execution wait until the blocked sibling is unblocked and run.
-    requires_mode: all
-    produces: [execution/execution-manifest.yaml]
-    owned_by: [full, execute]
-    when: "params.run_tests == true and params.run_mode in ['full', 'api-only', 'e2e-only', 'codegen-only']"
+      api:
+        uses: graph:api-branch
+        when: >
+          'api' in params.test_types and params.run_mode in
+          ['full','api-only','plan-only','review-plan','codegen-only']
 
-  - id: inspect
-    skill: aa-inspect
-    agent: aa-reviewer
-    requires: [execution]
-    produces: [inspect/failure-analysis.json, inspect/quality-gate-result.json]
-    owned_by: [full, execute]
+      e2e:
+        uses: graph:e2e-branch
+        when: >
+          'e2e' in params.test_types and params.run_mode in
+          ['full','e2e-only','plan-only','review-plan','codegen-only']
 
-  - id: report
-    skill: aa-report-generator
-    agent: aa-reporter
-    requires: [inspect]
-    # Runbook Phase 13 precondition, enforced at routing time: the healing
-    # decision must be recorded (via `aa state heal`) before report may run.
-    # Mirrors the HEAL-STATE-INCONSISTENT audit so router and audit agree.
-    ready_when: >
-      state.phases.healing.status in ['not_needed', 'skipped', 'resolved', 'exhausted', 'failed']
-    produces: [report/quality-report.json, report/executive-summary.md]
-    owned_by: [full, execute]
+      fuzz:
+        uses: graph:fuzz-branch
+        when: >
+          'fuzz' in params.test_types and params.run_mode in
+          ['full','plan-only','review-plan','codegen-only']
 
-  # ---- Healing loop ---------------------------------------------------------
-  - id: fix-proposal
-    skill: aa-fix-proposal
-    agent: aa-doc-author
-    requires: [inspect]
-    produces: [healing/fix-proposal.json]
-    owned_by: [full, execute]
-    when: "gate('healing-entry-gate').verdict == 'enter'"
-    loop: healing
+      performance:
+        uses: graph:performance-branch
+        when: >
+          'performance' in params.test_types and params.run_mode in
+          ['full','plan-only','review-plan','codegen-only']
 
-  - id: api-codegen-fix
-    skill: aa-api-codegen-fixer
-    agent: aa-test-author
-    requires: [fix-proposal]
-    produces: [healing/api-apply-summary.json]
-    owned_by: [full, execute]
-    when: "any(fix_proposal.proposals, target == 'api' and eligible == true)"
-    loop: healing
+      generation-join:
+        uses: builtin:join
+        join:
+          sources: [api, e2e, fuzz, performance]
+          mode: all_active
 
-  - id: e2e-codegen-fix
-    skill: aa-e2e-codegen-fixer
-    agent: aa-test-author
-    requires: [fix-proposal]
-    produces: [healing/e2e-apply-summary.json]
-    owned_by: [full, execute]
-    when: "any(fix_proposal.proposals, target == 'e2e' and eligible == true)"
-    loop: healing
+      execution:
+        uses: operation:run-tests
+        when: >
+          params.run_tests == true and
+          params.run_mode in ['full','api-only','e2e-only','codegen-only']
+        outputs: [change:execution/execution-manifest.yaml]
+        retry: cli-transient
+        timeout: cli
 
-  - id: healing-rerun
-    skill: null
-    requires: [api-codegen-fix, e2e-codegen-fix]
-    requires_mode: any_active
-    produces: [execution/execution-manifest.yaml]
-    owned_by: [full, execute]
-    gate: fixer-safety-gate
-    loop: healing
+      inspect:
+        uses: skill:aa-inspect
+        agent: aa-reviewer
+        outputs:
+          - change:inspect/failure-analysis.json
+          - change:inspect/quality-gate-result.json
+        retry: agent-transient
+        timeout: agent
 
-  - id: healing-reinspect
-    skill: aa-inspect
-    agent: aa-reviewer
-    requires: [healing-rerun]
-    produces: [inspect/failure-analysis.json, inspect/quality-gate-result.json]
-    owned_by: [full, execute]
-    loop: healing
+      healing:
+        uses: graph:healing
 
-  # ---- Archive eligibility/execution ---------------------------------------
-  - id: archive
-    skill: aa-archive
-    agent: aa-archiver
-    requires: [report]
-    produces: ["qa/archive/<change-id>/"]
-    owned_by: [full, execute]
-    gate: archive-gate
-    when: "params.auto_archive == true"
+      report:
+        uses: skill:aa-report-generator
+        agent: aa-reporter
+        outputs:
+          - change:report/quality-report.json
+          - change:report/executive-summary.md
+        retry: agent-transient
+        timeout: agent
 
-loops:
+    edges:
+      - {from: START, to: fact-baseline, when: "params.run_mode != 'codegen-only'"}
+      - {from: START, to: api, when: "params.run_mode == 'codegen-only'"}
+      - {from: START, to: e2e, when: "params.run_mode == 'codegen-only'"}
+      - {from: START, to: fuzz, when: "params.run_mode == 'codegen-only'"}
+      - {from: START, to: performance, when: "params.run_mode == 'codegen-only'"}
+      - {from: fact-baseline, to: api}
+      - {from: fact-baseline, to: e2e}
+      - {from: fact-baseline, to: fuzz}
+      - {from: fact-baseline, to: performance}
+      - {from: api, to: generation-join}
+      - {from: e2e, to: generation-join}
+      - {from: fuzz, to: generation-join}
+      - {from: performance, to: generation-join}
+      - {from: generation-join, to: execution, when: "params.run_tests == true"}
+      - {from: generation-join, to: END, when: "params.run_tests == false"}
+      - {from: execution, to: inspect}
+      - {from: inspect, to: healing}
+      - {from: healing, to: report}
+      - {from: report, to: END}
+
+  api-branch:
+    max_supersteps: 30
+    nodes:
+      plan:
+        uses: skill:aa-api-plan
+        agent: aa-doc-author
+        when: "params.run_mode in ['full','api-only','plan-only','review-plan']"
+        outputs:
+          - change:plans/api-plan.md
+          - change:plans/api-test-data-plan.md
+          - change:plans/api-codegen-plan.md
+          - change:plans/m3-review-summary.md
+        retry: agent-transient
+        timeout: agent
+
+      review-cycle:
+        uses: graph:api-plan-cycle
+
+      codegen:
+        uses: skill:aa-api-codegen
+        agent: aa-test-author
+        when: "params.run_mode in ['full','api-only','codegen-only']"
+        outputs: [change:codegen/api-codegen-summary.md]
+        gate: api-codegen-precondition-gate
+        retry: agent-transient
+        timeout: agent
+
+    edges:
+      - {from: START, to: plan, when: "params.run_mode != 'codegen-only'"}
+      - {from: START, to: review-cycle, when: "params.run_mode == 'codegen-only'"}
+      - {from: plan, to: review-cycle}
+      - {from: review-cycle, to: codegen, when: "params.run_mode in ['full','api-only','codegen-only']"}
+      - {from: review-cycle, to: END, when: "params.run_mode in ['plan-only','review-plan']"}
+      - {from: codegen, to: END}
+
+  api-plan-cycle:
+    max_supersteps: 20
+    budgets:
+      fix_attempts:
+        limit: "params.max_plan_fix_attempts"
+    nodes:
+      review:
+        uses: skill:aa-api-plan-reviewer
+        agent: aa-reviewer
+        outputs: [change:review/api-plan-review.json]
+        gate: api-plan-review-gate
+        retry: agent-transient
+        timeout: agent
+
+      fix:
+        uses: skill:aa-api-plan-fixer
+        agent: aa-doc-author
+        outputs: [change:review/api-plan-review-apply-summary.md]
+        retry: agent-transient
+        timeout: agent
+        budget:
+          consume: fix_attempts
+          "on": committed
+          exhausted_to: exhausted
+
+      human-review:
+        uses: builtin:interrupt
+        interrupt:
+          reason: "api plan review requires human review"
+          checkpoint: api-plan-review-gate
+          bind: audited_gate_read
+          actions: [fix_and_proceed, accept_risk, stop]
+
+      exhausted:
+        uses: operation:stop
+        with: {reason: "api plan fix attempts exhausted"}
+
+    edges:
+      - {from: START, to: review}
+      - {from: fix, to: review}
+      - {from: exhausted, to: STOP}
+
+    routes:
+      - from: review
+        select: "node('review').gate.verdict"
+        cases:
+          pass: END
+          needs_fix: fix
+          needs_human_review: human-review
+          reject: STOP
+          stop: STOP
+        default: STOP
+      - from: human-review
+        select: "resume.action"
+        cases:
+          fix_and_proceed: fix
+          accept_risk: END
+          stop: STOP
+        default: STOP
+
+  e2e-branch:
+    max_supersteps: 30
+    nodes:
+      plan:
+        uses: skill:aa-e2e-plan
+        agent: aa-doc-author
+        when: "params.run_mode in ['full','e2e-only','plan-only','review-plan']"
+        outputs:
+          - change:plans/e2e-plan.md
+          - change:plans/e2e-test-data-plan.md
+          - change:plans/e2e-codegen-plan.md
+          - change:plans/m4-review-summary.md
+        retry: agent-transient
+        timeout: agent
+
+      review-cycle:
+        uses: graph:e2e-plan-cycle
+
+      codegen:
+        uses: skill:aa-e2e-codegen
+        agent: aa-test-author
+        when: "params.run_mode in ['full','e2e-only','codegen-only']"
+        outputs: [change:codegen/e2e-codegen-summary.md]
+        gate: e2e-codegen-precondition-gate
+        retry: agent-transient
+        timeout: agent
+
+    edges:
+      - {from: START, to: plan, when: "params.run_mode != 'codegen-only'"}
+      - {from: START, to: review-cycle, when: "params.run_mode == 'codegen-only'"}
+      - {from: plan, to: review-cycle}
+      - {from: review-cycle, to: codegen, when: "params.run_mode in ['full','e2e-only','codegen-only']"}
+      - {from: review-cycle, to: END, when: "params.run_mode in ['plan-only','review-plan']"}
+      - {from: codegen, to: END}
+
+  e2e-plan-cycle:
+    max_supersteps: 20
+    budgets:
+      fix_attempts:
+        limit: "params.max_plan_fix_attempts"
+    nodes:
+      review:
+        uses: skill:aa-e2e-plan-reviewer
+        agent: aa-reviewer
+        outputs: [change:review/plan-review.json]
+        gate: e2e-plan-review-gate
+        retry: agent-transient
+        timeout: agent
+
+      fix:
+        uses: skill:aa-e2e-plan-fixer
+        agent: aa-doc-author
+        outputs: [change:review/plan-review-apply-summary.md]
+        retry: agent-transient
+        timeout: agent
+        budget:
+          consume: fix_attempts
+          "on": committed
+          exhausted_to: exhausted
+
+      human-review:
+        uses: builtin:interrupt
+        interrupt:
+          reason: "e2e plan review requires human review"
+          checkpoint: e2e-plan-review-gate
+          bind: audited_gate_read
+          actions: [fix_and_proceed, accept_risk, stop]
+
+      exhausted:
+        uses: operation:stop
+        with: {reason: "e2e plan fix attempts exhausted"}
+
+    edges:
+      - {from: START, to: review}
+      - {from: fix, to: review}
+      - {from: exhausted, to: STOP}
+
+    routes:
+      - from: review
+        select: "node('review').gate.verdict"
+        cases:
+          pass: END
+          needs_fix: fix
+          needs_human_review: human-review
+          reject: STOP
+          stop: STOP
+        default: STOP
+      - from: human-review
+        select: "resume.action"
+        cases:
+          fix_and_proceed: fix
+          accept_risk: END
+          stop: STOP
+        default: STOP
+
+  fuzz-branch:
+    max_supersteps: 30
+    nodes:
+      plan:
+        uses: skill:aa-fuzz-plan
+        agent: aa-doc-author
+        when: "params.run_mode in ['full','plan-only','review-plan']"
+        outputs:
+          - change:plans/fuzz-plan.md
+          - change:plans/fuzz-codegen-plan.md
+          - change:plans/fuzz-review-summary.md
+        retry: agent-transient
+        timeout: agent
+
+      review-cycle:
+        uses: graph:fuzz-plan-review-cycle
+
+      codegen:
+        uses: skill:aa-fuzz-codegen
+        agent: aa-test-author
+        when: "params.run_mode in ['full','codegen-only']"
+        outputs: [change:codegen/fuzz-codegen-summary.md]
+        gate: fuzz-codegen-precondition-gate
+        retry: agent-transient
+        timeout: agent
+
+    edges:
+      - {from: START, to: plan, when: "params.run_mode != 'codegen-only'"}
+      - {from: START, to: review-cycle, when: "params.run_mode == 'codegen-only'"}
+      - {from: plan, to: review-cycle}
+      - {from: review-cycle, to: codegen, when: "params.run_mode in ['full','codegen-only']"}
+      - {from: review-cycle, to: END, when: "params.run_mode in ['plan-only','review-plan']"}
+      - {from: codegen, to: END}
+
+  fuzz-plan-review-cycle:
+    max_supersteps: 10
+    nodes:
+      review:
+        uses: skill:aa-fuzz-plan-reviewer
+        agent: aa-reviewer
+        outputs: [change:review/fuzz-plan-review.json]
+        gate: fuzz-plan-review-gate
+        retry: agent-transient
+        timeout: agent
+
+      human-review:
+        uses: builtin:interrupt
+        interrupt:
+          reason: "fuzz plan review requires human review"
+          checkpoint: fuzz-plan-review-gate
+          bind: audited_gate_read
+          actions: [fix_and_proceed, accept_risk, stop]
+
+    edges:
+      - {from: START, to: review}
+
+    routes:
+      - from: review
+        select: "node('review').gate.verdict"
+        cases:
+          pass: END
+          needs_fix: human-review
+          needs_human_review: human-review
+          reject: STOP
+          stop: STOP
+        default: STOP
+      - from: human-review
+        select: "resume.action"
+        cases:
+          fix_and_proceed: END
+          accept_risk: END
+          stop: STOP
+        default: STOP
+
+  performance-branch:
+    max_supersteps: 30
+    nodes:
+      plan:
+        uses: skill:aa-performance-plan
+        agent: aa-doc-author
+        when: "params.run_mode in ['full','plan-only','review-plan']"
+        outputs:
+          - change:plans/performance-plan.md
+          - change:plans/performance-codegen-plan.md
+          - change:plans/performance-review-summary.md
+        retry: agent-transient
+        timeout: agent
+
+      review-cycle:
+        uses: graph:performance-plan-review-cycle
+
+      codegen:
+        uses: skill:aa-performance-codegen
+        agent: aa-test-author
+        when: "params.run_mode in ['full','codegen-only']"
+        outputs: [change:codegen/performance-codegen-summary.md]
+        gate: performance-codegen-precondition-gate
+        retry: agent-transient
+        timeout: agent
+
+    edges:
+      - {from: START, to: plan, when: "params.run_mode != 'codegen-only'"}
+      - {from: START, to: review-cycle, when: "params.run_mode == 'codegen-only'"}
+      - {from: plan, to: review-cycle}
+      - {from: review-cycle, to: codegen, when: "params.run_mode in ['full','codegen-only']"}
+      - {from: review-cycle, to: END, when: "params.run_mode in ['plan-only','review-plan']"}
+      - {from: codegen, to: END}
+
+  performance-plan-review-cycle:
+    max_supersteps: 10
+    nodes:
+      review:
+        uses: skill:aa-performance-plan-reviewer
+        agent: aa-reviewer
+        outputs: [change:review/performance-plan-review.json]
+        gate: performance-plan-review-gate
+        retry: agent-transient
+        timeout: agent
+
+      human-review:
+        uses: builtin:interrupt
+        interrupt:
+          reason: "performance plan review requires human review"
+          checkpoint: performance-plan-review-gate
+          bind: audited_gate_read
+          actions: [fix_and_proceed, accept_risk, stop]
+
+    edges:
+      - {from: START, to: review}
+
+    routes:
+      - from: review
+        select: "node('review').gate.verdict"
+        cases:
+          pass: END
+          needs_fix: human-review
+          needs_human_review: human-review
+          reject: STOP
+          stop: STOP
+        default: STOP
+      - from: human-review
+        select: "resume.action"
+        cases:
+          fix_and_proceed: END
+          accept_risk: END
+          stop: STOP
+        default: STOP
+
   healing:
-    kind: healing
-    members: [fix-proposal, api-codegen-fix, e2e-codegen-fix, healing-rerun, healing-reinspect]
-    counter: state.phases.healing.attempts_used
-    max_param: max_healing_attempts
-    allocate_on: "file_exists('healing/fix-proposal.json') and fix_proposal.summary.eligible_count > 0"
-    exit_gate: healing-loop-gate
+    max_supersteps: 50
+    budgets:
+      healing_attempts:
+        limit: "params.max_healing_attempts"
 
-  # Bounded review -> fix -> re-review repair loops. The engine projects these
-  # (project_review_fix_loop): after the fixer commits, the reviewer is re-run so
-  # the gate re-adjudicates; the loop terminates `stopped` once the fixer budget
-  # (max_*_fix_attempts) is exhausted without reaching `pass`.
-  case-repair:
-    kind: review_fix
-    members: [case-fix]
-    review_phase: case-review
-    fix_phase: case-fix
-    gate: case-review-gate
-    max_param: max_case_fix_attempts
+    nodes:
+      entry:
+        uses: builtin:gate
+        with: {gate: healing-entry-gate}
 
-  api-plan-repair:
-    kind: review_fix
-    members: [api-plan-fix]
-    review_phase: api-plan-review
-    fix_phase: api-plan-fix
-    gate: api-plan-review-gate
-    max_param: max_plan_fix_attempts
+      proposal:
+        uses: skill:aa-fix-proposal
+        agent: aa-doc-author
+        outputs: [change:healing/fix-proposal.json]
+        retry: agent-transient
+        timeout: agent
 
-  e2e-plan-repair:
-    kind: review_fix
-    members: [e2e-plan-fix]
-    review_phase: e2e-plan-review
-    fix_phase: e2e-plan-fix
-    gate: e2e-plan-review-gate
-    max_param: max_plan_fix_attempts
+      proposal-eligible:
+        uses: builtin:gate
+        with:
+          expression: >
+            file_exists('healing/fix-proposal.json') and
+            any(fix_proposal.proposals,
+                eligible == true and target in ['api', 'e2e'])
+
+      allocate:
+        uses: operation:allocate-healing-attempt
+        retry: never
+        timeout: local-operation
+        budget:
+          consume: healing_attempts
+          "on": committed
+          exhausted_to: complete-exhausted
+
+      fix-api:
+        uses: skill:aa-api-codegen-fixer
+        agent: aa-test-author
+        when: "any(fix_proposal.proposals, target == 'api' and eligible == true)"
+        outputs: [change:healing/api-apply-summary.json]
+        retry: agent-transient
+        timeout: agent
+
+      fix-e2e:
+        uses: skill:aa-e2e-codegen-fixer
+        agent: aa-test-author
+        when: "any(fix_proposal.proposals, target == 'e2e' and eligible == true)"
+        outputs: [change:healing/e2e-apply-summary.json]
+        retry: agent-transient
+        timeout: agent
+
+      fixer-join:
+        uses: builtin:join
+        join:
+          sources: [fix-api, fix-e2e]
+          mode: all_active
+
+      safety:
+        uses: builtin:gate
+        with: {gate: fixer-safety-gate}
+
+      safety-interrupt:
+        uses: builtin:interrupt
+        interrupt:
+          reason: "fixer safety requires human review"
+          checkpoint: healing.safety
+          bind: audited_gate_read
+          actions: [fix_and_proceed, accept_risk, stop]
+
+      rerun:
+        uses: operation:run-tests
+        outputs: [change:execution/execution-manifest.yaml]
+        retry: cli-transient
+        timeout: cli
+
+      reinspect:
+        uses: skill:aa-inspect
+        agent: aa-reviewer
+        outputs:
+          - change:inspect/failure-analysis.json
+          - change:inspect/quality-gate-result.json
+        retry: agent-transient
+        timeout: agent
+
+      decide:
+        uses: builtin:gate
+        with: {gate: healing-loop-gate}
+
+      complete-not-needed:
+        uses: operation:record-healing-status
+        with: {status: not_needed}
+        retry: never
+
+      complete-resolved:
+        uses: operation:record-healing-status
+        with: {status: resolved}
+        retry: never
+
+      complete-exhausted:
+        uses: operation:record-healing-status
+        with: {status: exhausted}
+        retry: never
+
+      complete-failed:
+        uses: operation:record-healing-status
+        with: {status: failed}
+        retry: never
+
+    edges:
+      - {from: START, to: entry}
+      - {from: proposal, to: proposal-eligible}
+      - {from: proposal-eligible, to: allocate, when: "node('proposal-eligible').value == true"}
+      - {from: proposal-eligible, to: complete-failed, when: "node('proposal-eligible').value == false"}
+      - {from: allocate, to: fix-api}
+      - {from: allocate, to: fix-e2e}
+      - {from: fix-api, to: fixer-join}
+      - {from: fix-e2e, to: fixer-join}
+      - {from: fixer-join, to: safety}
+      - {from: rerun, to: reinspect}
+      - {from: reinspect, to: decide}
+      - {from: complete-not-needed, to: END}
+      - {from: complete-resolved, to: END}
+      - {from: complete-exhausted, to: END}
+      - {from: complete-failed, to: END}
+
+    routes:
+      - from: entry
+        select: "node('entry').gate.verdict"
+        cases:
+          enter: proposal
+          skip: complete-not-needed
+          stop: complete-failed
+          reject: complete-failed
+        default: complete-failed
+
+      - from: safety
+        select: "node('safety').gate.verdict"
+        cases:
+          pass: rerun
+          needs_human_review: safety-interrupt
+          stop: complete-failed
+          reject: complete-failed
+        default: complete-failed
+
+      - from: safety-interrupt
+        select: "resume.action"
+        cases:
+          accept_risk: rerun
+          fix_and_proceed: proposal
+          stop: complete-failed
+        default: complete-failed
+
+      - from: decide
+        select: "node('decide').gate.verdict"
+        cases:
+          exit: complete-resolved
+          continue: proposal
+          stop: complete-exhausted
+          reject: complete-failed
+        default: complete-failed
 
 gates:
   registry-gate:
@@ -344,15 +849,15 @@ gates:
     reads: [review/case-review.json]
     invalid_json: stop
     missing_field_is: stop
-    needs_fix_when: "decision == 'needs_fix' and auto_fix_allowed == true"
+    needs_fix_when: "case_review.decision == 'needs_fix' and case_review.auto_fix_allowed == true"
     needs_human_review_when: >
-      decision == 'needs_human_review'
+      case_review.decision == 'needs_human_review'
       or (
-        human_review_required == true
-        and not (params.force_continue == true and decision == 'pass')
+        case_review.human_review_required == true
+        and not (params.force_continue == true and case_review.decision == 'pass')
       )
-    reject_when: "decision == 'reject'"
-    pass_when: "decision == 'pass'"
+    reject_when: "case_review.decision == 'reject'"
+    pass_when: "case_review.decision == 'pass'"
 
   case-design-gate:
     reads:
@@ -374,51 +879,65 @@ gates:
     reads: [review/api-plan-review.json]
     invalid_json: stop
     missing_field_is: stop
-    needs_fix_when: "decision == 'needs_fix' and auto_fix_allowed == true"
+    needs_fix_when: "api_plan_review.decision == 'needs_fix' and api_plan_review.auto_fix_allowed == true"
     needs_human_review_when: >
-      decision == 'needs_human_review'
+      api_plan_review.decision == 'needs_human_review'
       or (
-        (human_review_required == true or risk_level in ['high','critical'])
+        (api_plan_review.human_review_required == true or api_plan_review.risk_level in ['high','critical'])
         and not (
           params.force_continue == true
-          and decision == 'pass'
-          and codegen_readiness in ['ready','ready_with_warnings']
+          and api_plan_review.decision == 'pass'
+          and api_plan_review.codegen_readiness in ['ready','ready_with_warnings']
         )
       )
-    reject_when: "decision == 'reject' or codegen_readiness == 'not_ready'"
-    pass_when: "decision == 'pass' and codegen_readiness in ['ready','ready_with_warnings']"
+    reject_when: "api_plan_review.decision == 'reject' or api_plan_review.codegen_readiness == 'not_ready'"
+    pass_when: "api_plan_review.decision == 'pass' and api_plan_review.codegen_readiness in ['ready','ready_with_warnings']"
 
   e2e-plan-review-gate:
-    <<: *plan-review-gate
     reads: [review/plan-review.json]
+    invalid_json: stop
+    missing_field_is: stop
+    needs_fix_when: "plan_review.decision == 'needs_fix' and plan_review.auto_fix_allowed == true"
+    needs_human_review_when: >
+      plan_review.decision == 'needs_human_review'
+      or (
+        (plan_review.human_review_required == true or plan_review.risk_level in ['high','critical'])
+        and not (
+          params.force_continue == true
+          and plan_review.decision == 'pass'
+          and plan_review.codegen_readiness in ['ready','ready_with_warnings']
+        )
+      )
+    reject_when: "plan_review.decision == 'reject' or plan_review.codegen_readiness == 'not_ready'"
+    pass_when: "plan_review.decision == 'pass' and plan_review.codegen_readiness in ['ready','ready_with_warnings']"
 
   fuzz-plan-review-gate:
     reads: [review/fuzz-plan-review.json]
     invalid_json: stop
     missing_field_is: stop
-    needs_fix_when: "decision == 'needs_fix' and auto_fix_allowed == true"
+    needs_fix_when: "fuzz_plan_review.decision == 'needs_fix' and fuzz_plan_review.auto_fix_allowed == true"
     needs_human_review_when: >
-      decision in ['needs_human_review','changes_requested']
+      fuzz_plan_review.decision in ['needs_human_review','changes_requested']
       or (
-        human_review_required == true
-        and not (params.force_continue == true and decision in ['pass','approved'])
+        fuzz_plan_review.human_review_required == true
+        and not (params.force_continue == true and fuzz_plan_review.decision in ['pass','approved'])
       )
-    reject_when: "decision == 'reject'"
-    pass_when: "decision in ['pass','approved']"
+    reject_when: "fuzz_plan_review.decision == 'reject'"
+    pass_when: "fuzz_plan_review.decision in ['pass','approved']"
 
   performance-plan-review-gate:
     reads: [review/performance-plan-review.json]
     invalid_json: stop
     missing_field_is: stop
-    needs_fix_when: "decision == 'needs_fix' and auto_fix_allowed == true"
+    needs_fix_when: "performance_plan_review.decision == 'needs_fix' and performance_plan_review.auto_fix_allowed == true"
     needs_human_review_when: >
-      decision in ['needs_human_review','changes_requested']
+      performance_plan_review.decision in ['needs_human_review','changes_requested']
       or (
-        human_review_required == true
-        and not (params.force_continue == true and decision in ['pass','approved'])
+        performance_plan_review.human_review_required == true
+        and not (params.force_continue == true and performance_plan_review.decision in ['pass','approved'])
       )
-    reject_when: "decision == 'reject'"
-    pass_when: "decision in ['pass','approved']"
+    reject_when: "performance_plan_review.decision == 'reject'"
+    pass_when: "performance_plan_review.decision in ['pass','approved']"
 
   api-codegen-precondition-gate:
     reads: [workflow-state.yaml]
@@ -443,14 +962,14 @@ gates:
   fixer-safety-gate:
     reads: [healing/fixer-safety-check.json]
     missing_file_is: stop
-    needs_human_review_when: "passed == false or needs_review == true"
+    needs_human_review_when: "fixer_safety_check.passed == false or fixer_safety_check.needs_review == true"
     pass_when: >
-      passed == true
-      and product_code_modified == false
-      and assertion_expected_value_changes_detected == false
-      and skip_or_xfail_added == false
-      and unrelated_tests_modified == false
-      and high_risk_proposal_applied == false
+      fixer_safety_check.passed == true
+      and fixer_safety_check.product_code_modified == false
+      and fixer_safety_check.assertion_expected_value_changes_detected == false
+      and fixer_safety_check.skip_or_xfail_added == false
+      and fixer_safety_check.unrelated_tests_modified == false
+      and fixer_safety_check.high_risk_proposal_applied == false
 
   healing-entry-gate:
     reads:
@@ -482,8 +1001,6 @@ gates:
     stop_when: >
       state.phases.healing.attempts_used >= params.max_healing_attempts
       or state.phases.healing.all_fixers_no_op == true
-    # Remaining FAIL with nothing healable must not fall through to default
-    # stop (that was mis-recorded as "exhausted"). reject → complete(failed).
     reject_when: >
       state.phases.execution.status == 'FAIL'
       and not any(failure_analysis.failures, fix_proposal_eligible == true)

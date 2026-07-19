@@ -80,7 +80,7 @@ EXPECTED_CONTRACTS = {
     "builtin:interrupt",
 }
 
-SCHEMA_REL = Path("assurance_agent/_resources/schemas/workflow-schema-v2.yaml")
+SCHEMA_REL = Path("assurance_agent/_resources/schemas/workflow-schema.yaml")
 BRANCH_NODES = ("api", "e2e", "fuzz", "performance")
 
 

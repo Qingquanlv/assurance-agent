@@ -1,22 +1,24 @@
-"""aa gate check — 把单个相位 gate 裁决为一个 verdict（确定性, 无 LLM）。
+"""aa gate check — return the latest frozen gate report for a node path.
 
-对齐 TS src/commands/gate.ts 的 flag 面与退出码：查询类命令写 best-effort 事件。
+Refuses to re-adjudicate mutable files; only ledger-frozen ``gate_report`` values
+are returned.
 """
 
+from __future__ import annotations
+
+import json
 from pathlib import Path
 
 import click
 
 from assurance_agent.change_location import ChangeNotFoundError, resolve_change
 from assurance_agent.config import ConfigNotFoundError
-from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import UnsafeIdentifierError
-from assurance_agent.workflow.orchestration.audit_evidence import build_gate_verdict_event
-from assurance_agent.workflow.core.events import append_event_best_effort
-from assurance_agent.workflow.core.exit_codes import exit_code_for_gate_verdict
-from assurance_agent.workflow.core.state import read_state
-from assurance_agent.workflow.orchestration.gates import check_gate
-from assurance_agent.workflow.orchestration.schema import load_workflow_schema
+from assurance_agent.workflow.core.exit_codes import EXIT_ERROR, exit_code_for_gate_verdict
+from assurance_agent.workflow.driver.headless_adapter import HeadlessAdapter
+from assurance_agent.workflow.driver.runtime_factory import build_graph_runtime
+from assurance_agent.workflow.graph.checkpoint import CheckpointStore
+from assurance_agent.workflow.graph.runtime import GraphRuntimeError
 
 
 @click.group("gate")
@@ -26,55 +28,86 @@ def gate_group() -> None:
 
 @gate_group.command("check")
 @click.option("--change", "change_id", required=True, help="Change ID under qa/changes/.")
-@click.option("--phase", "phase_id", required=True, help="Phase whose gate to check.")
+@click.option(
+    "--node-path",
+    "node_path",
+    required=True,
+    help="Structural task id / node path whose frozen gate report to return.",
+)
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable JSON output.")
-def gate_check(change_id: str, phase_id: str, as_json: bool) -> None:
-    """Adjudicate a single phase gate to one verdict (deterministic, no LLM)."""
+def gate_check(change_id: str, node_path: str, as_json: bool) -> None:
+    """Return the latest frozen gate report for a node task (no live re-adjudication)."""
     project_root = Path.cwd()
     try:
         loc = resolve_change(project_root, change_id)
     except (UnsafeIdentifierError, ChangeNotFoundError, ConfigNotFoundError) as err:
         click.secho(str(err), fg="red")
         raise SystemExit(1) from err
-    change_dir = loc.path
 
+    adapter = HeadlessAdapter(agent_cmd="true", cwd=project_root)
     try:
-        schema = load_workflow_schema(project_root)
-        if not schema.has_phase(phase_id):
-            click.secho(f"gate check failed: unknown phase '{phase_id}'", fg="red")
-            raise SystemExit(1)
-        gate_name = schema.gate_for_phase(phase_id)
-        if gate_name is None:
-            click.secho(f"gate check failed: phase '{phase_id}' has no gate", fg="red")
-            raise SystemExit(1)
-        state = read_state(change_dir)
-        params = getattr(state, "params", None) or {}
-        verdict = check_gate(schema, gate_name, loc, state, params)
-    except AaError as err:
+        bundle = build_graph_runtime(
+            project_root=project_root,
+            change_id=change_id,
+            adapter=adapter,
+        )
+        latest = bundle.runtime.latest_root_invocation()
+        if latest is None:
+            click.secho("gate check failed: no graph invocation found", fg="red")
+            raise SystemExit(EXIT_ERROR)
+        projection = CheckpointStore(loc.path).project(latest)
+    except GraphRuntimeError as err:
+        click.secho(f"gate check failed: {err}", fg="red")
+        raise SystemExit(1) from err
+    except Exception as err:
         click.secho(f"gate check failed: {err}", fg="red")
         raise SystemExit(1) from err
 
-    append_event_best_effort(
-        change_dir,
-        build_gate_verdict_event(
-            loc,
-            schema,
-            phase=phase_id,
-            gate=verdict.gate,
-            verdict=verdict.verdict.value if hasattr(verdict.verdict, "value") else str(verdict.verdict),
-            matched_rule=verdict.matched_rule,
-            reason=verdict.reason,
-        ),
-    )
+    task = projection.tasks.get(node_path)
+    if task is None:
+        # Allow matching by node_id suffix when a single candidate exists.
+        matches = [
+            t
+            for t in projection.tasks.values()
+            if t.node_id == node_path or t.task_id.endswith(f":{node_path}")
+        ]
+        if len(matches) == 1:
+            task = matches[0]
+        else:
+            click.secho(
+                f"gate check failed: no task matched node-path '{node_path}'",
+                fg="red",
+            )
+            raise SystemExit(EXIT_ERROR)
 
+    report = task.gate_report
+    if report is None:
+        click.secho(
+            f"gate check failed: task '{task.task_id}' has no frozen gate_report "
+            "(refusing to re-adjudicate mutable files)",
+            fg="red",
+        )
+        raise SystemExit(EXIT_ERROR)
+
+    verdict = str(report.get("verdict") or report.get("value") or "")
     if as_json:
-        click.echo(verdict.model_dump_json(indent=2))
+        click.echo(
+            json.dumps(
+                {
+                    "node_path": node_path,
+                    "task_id": task.task_id,
+                    "gate_report": report,
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
     else:
-        click.secho(f"aa gate check — {phase_id} → {verdict.gate}", bold=True)
+        click.secho(f"aa gate check — {task.task_id}", bold=True)
         click.echo()
-        click.echo(f"  Verdict : {verdict.verdict}")
-        if verdict.reason:
-            click.echo(f"  Reason  : {verdict.reason}")
+        click.echo(f"  Verdict : {verdict}")
+        if report.get("reason"):
+            click.echo(f"  Reason  : {report['reason']}")
         click.echo()
 
-    raise SystemExit(exit_code_for_gate_verdict(verdict.verdict))
+    raise SystemExit(exit_code_for_gate_verdict(verdict))
