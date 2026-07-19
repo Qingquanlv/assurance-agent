@@ -176,9 +176,7 @@ def execute_attempt(
 
     resolved_run_mode = _expand_sample_input_vars(run_mode, sample) if run_mode else "full"
     resolved_test_types = (
-        [t.strip() for t in str(test_types).split(",") if t.strip()]
-        if test_types
-        else ["api", "e2e"]
+        [t.strip() for t in str(test_types).split(",") if t.strip()] if test_types else ["api", "e2e"]
     )
     resolved_run_tests = True if run_tests is None else bool(run_tests)
 

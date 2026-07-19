@@ -83,18 +83,18 @@ def test_workflow_run_bad_params_exit_40() -> None:
 
 def test_workflow_run_rejects_scope() -> None:
     with CliRunner().isolated_filesystem():
-        result = CliRunner().invoke(
-            main, ["workflow", "run", "--change", "CH-1", "--scope", "execute"]
-        )
+        result = CliRunner().invoke(main, ["workflow", "run", "--change", "CH-1", "--scope", "execute"])
         assert result.exit_code != EXIT_COMPLETED
-        assert "no such option" in result.output.lower() or "no such option" in str(result.exception).lower() or result.exit_code == 2
+        assert (
+            "no such option" in result.output.lower()
+            or "no such option" in str(result.exception).lower()
+            or result.exit_code == 2
+        )
 
 
 def test_workflow_run_opencode_requires_server_exit_40() -> None:
     with CliRunner().isolated_filesystem():
-        result = CliRunner().invoke(
-            main, ["workflow", "run", "--change", "CH-1", "--adapter", "opencode"]
-        )
+        result = CliRunner().invoke(main, ["workflow", "run", "--change", "CH-1", "--adapter", "opencode"])
         assert result.exit_code == EXIT_ERROR
         assert "--server is required" in result.output
 

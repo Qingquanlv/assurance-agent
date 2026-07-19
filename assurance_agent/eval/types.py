@@ -12,6 +12,7 @@ class SeedResult(BaseModel):
     change_dir: Path
     import_manifest_path: Path | None = None
 
+
 Gate = Literal["hard", "advisory", "observe"]
 CmpOp = Literal["gte", "lte", "eq"]
 EvalVerdict = Literal["pass", "pass_with_warnings", "fail", "inconclusive", "needs_human_review"]

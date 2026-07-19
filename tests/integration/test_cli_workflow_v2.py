@@ -31,7 +31,6 @@ from assurance_agent.workflow.graph.models import (
     RunResult,
 )
 from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
-from assurance_agent.workflow.orchestration.schema import SchemaError, parse_schema
 
 _MINIMAL_SCHEMA = textwrap.dedent(
     """\
@@ -104,8 +103,8 @@ def test_packaged_default_is_schema_v2() -> None:
     schema = load_workflow_v2(Path.cwd())
     assert schema.schema_version == "2"
     packaged = resources.read_text("schemas", "workflow-schema.yaml")
-    with pytest.raises(SchemaError, match="incompatible with v1"):
-        parse_schema(packaged)
+    assert 'schema_version: "2"' in packaged or "schema_version: '2'" in packaged
+    assert "phases:" not in packaged.split("gates:")[0]
 
 
 def test_workflow_run_entrypoint_params_completed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -151,17 +150,13 @@ def test_workflow_run_exit_codes(monkeypatch: pytest.MonkeyPatch) -> None:
 
         monkeypatch.setattr(wf, "run_workflow_loop", _loop)
         with CliRunner().isolated_filesystem():
-            result = CliRunner().invoke(
-                main, ["workflow", "run", "--change", "CH-1", "--entrypoint", "full"]
-            )
+            result = CliRunner().invoke(main, ["workflow", "run", "--change", "CH-1", "--entrypoint", "full"])
             assert result.exit_code == code
 
 
 def test_rejects_scope_flag() -> None:
     with CliRunner().isolated_filesystem():
-        result = CliRunner().invoke(
-            main, ["workflow", "run", "--change", "CH-1", "--scope", "full"]
-        )
+        result = CliRunner().invoke(main, ["workflow", "run", "--change", "CH-1", "--scope", "full"])
         assert result.exit_code == 2
 
 
@@ -169,9 +164,7 @@ def test_workflow_status_json(monkeypatch: pytest.MonkeyPatch) -> None:
     runtime = MagicMock()
     runtime.latest_root_invocation.return_value = "inv-1"
     runtime.status.return_value = _status("interrupted", pending_tasks=("main:first",))
-    monkeypatch.setattr(
-        wf, "build_graph_runtime", lambda **_k: MagicMock(runtime=runtime, compiled=None)
-    )
+    monkeypatch.setattr(wf, "build_graph_runtime", lambda **_k: MagicMock(runtime=runtime, compiled=None))
     with CliRunner().isolated_filesystem():
         write_aa_config(Path.cwd())
         (Path("qa/changes/CH-1")).mkdir(parents=True)
@@ -186,9 +179,7 @@ def test_workflow_resume_plain(monkeypatch: pytest.MonkeyPatch) -> None:
     runtime = MagicMock()
     runtime.latest_root_invocation.return_value = "inv-1"
     runtime.resume.return_value = _run_result(EXIT_COMPLETED, "completed", "resumed")
-    monkeypatch.setattr(
-        wf, "build_graph_runtime", lambda **_k: MagicMock(runtime=runtime, compiled=None)
-    )
+    monkeypatch.setattr(wf, "build_graph_runtime", lambda **_k: MagicMock(runtime=runtime, compiled=None))
     monkeypatch.setattr(wf, "evaluate_start_guard", lambda _p: MagicMock(allowed=True))
     with CliRunner().isolated_filesystem():
         write_aa_config(Path.cwd())
@@ -202,9 +193,7 @@ def test_workflow_resume_interrupt_command(monkeypatch: pytest.MonkeyPatch) -> N
     runtime = MagicMock()
     runtime.latest_root_invocation.return_value = "inv-1"
     runtime.resume.return_value = _run_result(EXIT_COMPLETED, "completed", "accepted")
-    monkeypatch.setattr(
-        wf, "build_graph_runtime", lambda **_k: MagicMock(runtime=runtime, compiled=None)
-    )
+    monkeypatch.setattr(wf, "build_graph_runtime", lambda **_k: MagicMock(runtime=runtime, compiled=None))
     monkeypatch.setattr(wf, "evaluate_start_guard", lambda _p: MagicMock(allowed=True))
     with CliRunner().isolated_filesystem():
         write_aa_config(Path.cwd())
@@ -310,9 +299,7 @@ def test_workflow_start_detached_alias(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(wf, "start_workflow_detached", fake_start)
     with CliRunner().isolated_filesystem():
-        result = CliRunner().invoke(
-            main, ["workflow", "start", "--change", "CH-1", "--entrypoint", "full"]
-        )
+        result = CliRunner().invoke(main, ["workflow", "start", "--change", "CH-1", "--entrypoint", "full"])
         assert result.exit_code == EXIT_COMPLETED
         assert seen["entrypoint"] == "full"
 

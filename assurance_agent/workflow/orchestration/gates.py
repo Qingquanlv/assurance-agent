@@ -22,7 +22,14 @@ from assurance_agent.workflow.orchestration.dsl import (
     evaluate,
     parse_expression,
 )
-from assurance_agent.workflow.orchestration.schema import GateDef, ReadEntry, Verdict, WorkflowSchema
+from typing import Protocol
+
+from assurance_agent.workflow.orchestration.schema import GateDef, ReadEntry, Verdict
+
+
+class _SchemaWithGates(Protocol):
+    gates: dict[str, GateDef]
+
 
 # Human decisions that can upgrade a `needs_human_review` gate verdict. Mirror of
 # TS ``applyGateDecision`` (engine.ts): ``accept_risk``→pass, ``fix_and_proceed``
@@ -80,7 +87,7 @@ def _scope_state(state: WorkflowState) -> dict:
 
 
 def build_evidence_scope(
-    schema: WorkflowSchema,
+    schema: _SchemaWithGates,
     loc: ChangeLocation,
     state: WorkflowState,
     params: dict,
@@ -128,7 +135,7 @@ def build_evidence_scope(
 
 
 def resolve_gate_verdict(
-    schema: WorkflowSchema,
+    schema: _SchemaWithGates,
     gate_name: str,
     loc: ChangeLocation,
     state: WorkflowState,
@@ -150,7 +157,7 @@ def resolve_gate_verdict(
 
 
 def _adjudicate(
-    schema: WorkflowSchema,
+    schema: _SchemaWithGates,
     gate: GateDef,
     loc: ChangeLocation,
     state: WorkflowState,
@@ -167,7 +174,7 @@ def _adjudicate(
 
 
 def _adjudicate_base(
-    schema: WorkflowSchema,
+    schema: _SchemaWithGates,
     gate: GateDef,
     loc: ChangeLocation,
     state: WorkflowState,
@@ -219,7 +226,7 @@ def is_codegen_hard_gate(gate_id: str) -> bool:
 
 
 def latest_valid_gate_decision(
-    schema: WorkflowSchema,
+    schema: _SchemaWithGates,
     gate_id: str,
     loc: ChangeLocation,
 ) -> dict[str, object] | None:
@@ -247,12 +254,7 @@ def latest_valid_gate_decision(
             latest = event
             break
         if isinstance(checkpoint, str):
-            phase = next((p for p in schema.phases if p.id == checkpoint), None)
-            if phase is not None and phase.gate == gate_id:
-                latest = event
-                break
-            # Mirror of TS engine.ts ``latestValidGateDecision``: a decision at the
-            # special ``healing.safety`` checkpoint also anchors the fixer-safety-gate.
+            # Special ``healing.safety`` checkpoint also anchors the fixer-safety-gate.
             if gate_id == "fixer-safety-gate" and checkpoint == "healing.safety":
                 latest = event
                 break
@@ -286,7 +288,7 @@ def latest_valid_gate_decision(
 
 
 def _apply_gate_decision(
-    schema: WorkflowSchema,
+    schema: _SchemaWithGates,
     gate_id: str,
     loc: ChangeLocation,
     base_verdict: Verdict,
@@ -306,7 +308,7 @@ def _apply_gate_decision(
 
 
 def check_gate(
-    schema: WorkflowSchema,
+    schema: _SchemaWithGates,
     gate_name: str,
     loc: ChangeLocation,
     state: WorkflowState,

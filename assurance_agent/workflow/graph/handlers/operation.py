@@ -100,7 +100,9 @@ def operation_allocate_healing_attempt(
     proposal_sha = hashlib.sha256(proposal_path.read_bytes()).hexdigest()
     raw_number = task_with(task).get("attempt_number")
     attempt_number = (
-        raw_number if isinstance(raw_number, int) and not isinstance(raw_number, bool) and raw_number >= 1 else 1
+        raw_number
+        if isinstance(raw_number, int) and not isinstance(raw_number, bool) and raw_number >= 1
+        else 1
     )
     # 与 v1 _allocation_intent 相同的派生规则：episode/operation/attempt id 确定性。
     episode_id = hashlib.sha256(f"{context.change_id}:{batch_id}:{proposal_sha}".encode()).hexdigest()
@@ -138,7 +140,9 @@ def operation_record_healing_status(
     return TaskResult(status="succeeded", value={"healing_status": status})
 
 
-def stop_operation(task: ExecutableTask, workspace: TaskWorkspace, context: RuntimeContext) -> OperationResult:
+def stop_operation(
+    task: ExecutableTask, workspace: TaskWorkspace, context: RuntimeContext
+) -> OperationResult:
     reason = task_with(task).get("reason")
     if not isinstance(reason, str) or not reason.strip():
         return task_failure("invalid_input", "operation:stop requires a non-empty with.reason")

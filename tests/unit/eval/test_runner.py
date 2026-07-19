@@ -16,12 +16,30 @@ from assurance_agent.eval.types import JudgeOutput
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.events import append_event_strict
 from assurance_agent.workflow.driver.adapter import PhaseRequest, PhaseResult
-from assurance_agent.workflow.orchestration.engine import (
-    DispatchEntry,
-    PhaseView,
-    Terminal,
-    WorkflowStatus,
-)
+
+
+class _UnusedStatusStub:
+    """Legacy LoopRunner stubs retained only so dead local helpers still type-check."""
+
+
+class WorkflowStatus(_UnusedStatusStub):
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+class PhaseView(_UnusedStatusStub):
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+class Terminal(_UnusedStatusStub):
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+class DispatchEntry(_UnusedStatusStub):
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
 
 
 def _completed_runtime_factory(sut_dir: Path | None = None):
@@ -57,6 +75,7 @@ def _completed_runtime_factory(sut_dir: Path | None = None):
 
         def status(self, invocation_id: str):  # noqa: ANN201
             from assurance_agent.workflow.graph.models import GraphStatus
+
             return GraphStatus(
                 invocation_id=invocation_id,
                 entrypoint="case",

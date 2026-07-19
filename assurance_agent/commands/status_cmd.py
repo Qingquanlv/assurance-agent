@@ -72,9 +72,7 @@ def status_command(change_id: str, next_only: bool, as_json: bool) -> None:
                 json.dumps(
                     {
                         "pending_tasks": list(status.pending_tasks),
-                        "pending_interrupts": [
-                            i.model_dump(mode="json") for i in status.pending_interrupts
-                        ],
+                        "pending_interrupts": [i.model_dump(mode="json") for i in status.pending_interrupts],
                         "status": status.status,
                         "terminal_reason": status.terminal_reason,
                     },
@@ -109,14 +107,12 @@ def status_command(change_id: str, next_only: bool, as_json: bool) -> None:
             click.echo("  interrupts :")
             for interrupt in status.pending_interrupts:
                 click.echo(
-                    f"    {interrupt.interrupt_id} @ {interrupt.node_id} "
-                    f"actions={list(interrupt.actions)}"
+                    f"    {interrupt.interrupt_id} @ {interrupt.node_id} actions={list(interrupt.actions)}"
                 )
         if status.terminal_reason:
             color = "green" if status.status == "completed" else "red"
             click.echo(
-                "  terminal   : "
-                + click.style(f"{status.status} — {status.terminal_reason}", fg=color)
+                "  terminal   : " + click.style(f"{status.status} — {status.terminal_reason}", fg=color)
             )
         click.echo()
 

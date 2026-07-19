@@ -83,9 +83,7 @@ class InterruptHandler:
             if digest is not None:
                 reads_sha256[rel] = digest
                 sources[rel] = src
-        artifact_view = self._materialize_view(
-            context.change_dir, interrupt_id, sources
-        )
+        artifact_view = self._materialize_view(context.change_dir, interrupt_id, sources)
         projection = InterruptProjection(
             interrupt_id=interrupt_id,
             checkpoint_ns=task.checkpoint_ns,
@@ -115,6 +113,12 @@ class InterruptHandler:
         rel = f".graph-runtime/views/{interrupt_id}"
         dest_root = change_dir / rel
         if dest_root.exists():
+            # Prior materialization may be mode 0555 / files 0444; make writable before replace.
+            for path in [dest_root, *dest_root.rglob("*")]:
+                try:
+                    os.chmod(path, 0o755 if path.is_dir() else 0o644)
+                except OSError:
+                    pass
             shutil.rmtree(dest_root)
         dest_root.mkdir(parents=True, exist_ok=True)
         for path, src in sorted(sources.items()):

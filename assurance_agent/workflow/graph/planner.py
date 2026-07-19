@@ -459,15 +459,23 @@ def _seed_outcomes(
                 and latest.attempts_used < policy.max_attempts
             )
             if not retryable:
-                return outcomes, retry, (
-                    f"task {latest.task_id} (node '{nid}') failed with "
-                    f"{latest.error_kind}; attempts {latest.attempts_used}/"
-                    f"{policy.max_attempts}"
+                return (
+                    outcomes,
+                    retry,
+                    (
+                        f"task {latest.task_id} (node '{nid}') failed with "
+                        f"{latest.error_kind}; attempts {latest.attempts_used}/"
+                        f"{policy.max_attempts}"
+                    ),
                 )
         elif latest.attempts_used >= policy.max_attempts:  # abandoned
-            return outcomes, retry, (
-                f"task {latest.task_id} (node '{nid}') abandoned; retry budget "
-                f"exhausted ({latest.attempts_used}/{policy.max_attempts})"
+            return (
+                outcomes,
+                retry,
+                (
+                    f"task {latest.task_id} (node '{nid}') abandoned; retry budget "
+                    f"exhausted ({latest.attempts_used}/{policy.max_attempts})"
+                ),
             )
         # failed-retryable 或 abandoned 且预算未耗尽：同一 task_id 进入下一 wave。
         outcomes[nid] = _Outcome(status="unresolved", task=latest)
@@ -575,8 +583,16 @@ def _decide_nodes(
             continue  # 已有当前代结局，或 task 在飞行/重试中：不重放决策
         if definition.join is not None:
             _decide_join(
-                compiled, graph, projection, context, scope, source_reads,
-                outcomes, events, ready, nid,
+                compiled,
+                graph,
+                projection,
+                context,
+                scope,
+                source_reads,
+                outcomes,
+                events,
+                ready,
+                nid,
             )
             continue
 
@@ -602,17 +618,23 @@ def _decide_nodes(
             continue
         if definition.fan_out is not None:
             _decide_fan_out(
-                compiled, graph, projection, context, scope, source_reads,
-                outcomes, events, ready, nid,
+                compiled,
+                graph,
+                projection,
+                context,
+                scope,
+                source_reads,
+                outcomes,
+                events,
+                ready,
+                nid,
             )
             continue
         if definition.when is not None and not _satisfied(definition.when, scope, nid):
             _emit_skip(graph, projection, source_reads, events, nid, definition.when)
             outcomes[nid] = _Outcome(status="skipped")
             continue
-        ready.append(
-            _activate(compiled, graph, projection, context, source_reads, events, nid, tokens)
-        )
+        ready.append(_activate(compiled, graph, projection, context, source_reads, events, nid, tokens))
         # 激活的 task 本 superstep 才分发：下游看到的是未解决状态，须等下一代。
 
 
@@ -658,9 +680,7 @@ def _decide_join(
         outcomes[nid] = _Outcome(status="skipped")
         return
     descriptor = f"join:{join.mode}:{','.join(join.sources)}"
-    ready.append(
-        _activate(compiled, graph, projection, context, source_reads, events, nid, [descriptor])
-    )
+    ready.append(_activate(compiled, graph, projection, context, source_reads, events, nid, [descriptor]))
 
 
 # ---------------------------------------------------------------------------
@@ -730,14 +750,22 @@ def _seed_fan_out(
                 and child.attempts_used < policy.max_attempts
             )
             if not retryable:
-                return _Outcome(status="unresolved"), [], (
-                    f"fan-out child {child.task_id} (node '{nid}') failed with "
-                    f"{child.error_kind}; attempts {child.attempts_used}/{policy.max_attempts}"
+                return (
+                    _Outcome(status="unresolved"),
+                    [],
+                    (
+                        f"fan-out child {child.task_id} (node '{nid}') failed with "
+                        f"{child.error_kind}; attempts {child.attempts_used}/{policy.max_attempts}"
+                    ),
                 )
         elif child.attempts_used >= policy.max_attempts:  # abandoned
-            return _Outcome(status="unresolved"), [], (
-                f"fan-out child {child.task_id} (node '{nid}') abandoned; retry "
-                f"budget exhausted ({child.attempts_used}/{policy.max_attempts})"
+            return (
+                _Outcome(status="unresolved"),
+                [],
+                (
+                    f"fan-out child {child.task_id} (node '{nid}') abandoned; retry "
+                    f"budget exhausted ({child.attempts_used}/{policy.max_attempts})"
+                ),
             )
         # failed-retryable 或 abandoned 且预算未耗尽：同一 task_id 进入下一 wave。
         retry.append(_build_fan_out_task(compiled, graph, projection, context, nid, expansion, index))
@@ -830,13 +858,10 @@ def _expand_fan_out(
     except DslError as exc:
         raise PlanError(f"node '{nid}' fan_out items failed to evaluate: {exc}") from exc
     if not isinstance(value, list):
-        raise PlanError(
-            f"node '{nid}' fan_out items must resolve to a list, got {type(value).__name__}"
-        )
+        raise PlanError(f"node '{nid}' fan_out items must resolve to a list, got {type(value).__name__}")
     if len(value) > fan_out.max_items:
         raise PlanError(
-            f"node '{nid}' fan_out expanded {len(value)} items, more than "
-            f"max_items {fan_out.max_items}"
+            f"node '{nid}' fan_out expanded {len(value)} items, more than max_items {fan_out.max_items}"
         )
     items = list(value)
     for item in items:
@@ -849,9 +874,7 @@ def _expand_fan_out(
         resolved_key = _resolve_key(fan_out, item, context, nid)
         canonical_key = _canonical_json(resolved_key, what=f"node '{nid}' fan_out key")
         if canonical_key in seen:
-            raise PlanError(
-                f"node '{nid}' fan_out duplicate key {canonical_key}; keys must be unique"
-            )
+            raise PlanError(f"node '{nid}' fan_out duplicate key {canonical_key}; keys must be unique")
         seen.add(canonical_key)
         # display key 只用于展示/prompt；structural ID 用 canonical key hash。
         keys.append(resolved_key if isinstance(resolved_key, str) else canonical_key)
@@ -889,8 +912,7 @@ def _resolve_template(
         var = match.group(1)
         if var not in (item_as, "context.change_id"):
             raise PlanError(
-                f"node '{nid}' template '${{{var}}}' is not '${{{item_as}}}' "
-                "or '${context.change_id}'"
+                f"node '{nid}' template '${{{var}}}' is not '${{{item_as}}}' or '${{context.change_id}}'"
             )
     if not matches:
         return template
@@ -931,16 +953,13 @@ def _display(value: object, nid: str) -> str:
 
 def _assert_safe_segment(display: str, nid: str) -> None:
     if display in ("", ".", "..") or "/" in display or "\\" in display:
-        raise PlanError(
-            f"node '{nid}' fan_out expansion has unsafe path segment {display!r}"
-        )
+        raise PlanError(f"node '{nid}' fan_out expansion has unsafe path segment {display!r}")
 
 
 def _assert_safe_path(path: str, nid: str) -> None:
     if not path.startswith(("change:", "project:", "repo:")):
         raise PlanError(
-            f"node '{nid}' fan_out expansion path '{path}' must stay rooted "
-            "in change:/project:/repo:"
+            f"node '{nid}' fan_out expansion path '{path}' must stay rooted in change:/project:/repo:"
         )
     rest = path.partition(":")[2]
     segments = rest.split("/")
@@ -1156,17 +1175,15 @@ def _budget_limit(
     """解析 budget limit：非负 int 字面量或 ``params.<int>`` 引用（fail closed）。"""
     budget_def = compiled.schema.graphs[graph.graph_id].budgets.get(budget.consume)
     if budget_def is None:  # compiler 已拒绝；防御性 fail closed
-        raise PlanError(
-            f"graph '{graph.graph_id}' node '{nid}' consumes unknown budget '{budget.consume}'"
-        )
+        raise PlanError(f"graph '{graph.graph_id}' node '{nid}' consumes unknown budget '{budget.consume}'")
     limit = budget_def.limit
     if isinstance(limit, bool):
-        raise PlanError(f"graph '{graph.graph_id}' budget '{budget.consume}' limit must be a non-negative int")
+        raise PlanError(
+            f"graph '{graph.graph_id}' budget '{budget.consume}' limit must be a non-negative int"
+        )
     if isinstance(limit, int):
         if limit < 0:
-            raise PlanError(
-                f"graph '{graph.graph_id}' budget '{budget.consume}' limit must be non-negative"
-            )
+            raise PlanError(f"graph '{graph.graph_id}' budget '{budget.consume}' limit must be non-negative")
         return limit
     try:
         expr = parse_expression(limit)
@@ -1210,9 +1227,7 @@ def _budget_reroute(
             if projection.budgets.get(budget.consume, 0) >= limit:
                 exhausted = True
                 if current in seen:
-                    raise PlanError(
-                        f"graph '{graph.graph_id}' budget exhausted_to cycle at node '{current}'"
-                    )
+                    raise PlanError(f"graph '{graph.graph_id}' budget exhausted_to cycle at node '{current}'")
                 seen.add(current)
                 target = budget.exhausted_to
                 if target not in graph.nodes:
@@ -1275,9 +1290,7 @@ def _activate(
                     "ordinal": ordinal,
                 }
             ),
-            input_sha256=canonical_digest(
-                {"tokens": sorted(tokens), "task_input_sha256": task.input_sha256}
-            ),
+            input_sha256=canonical_digest({"tokens": sorted(tokens), "task_input_sha256": task.input_sha256}),
             source_reads_sha256=dict(sorted(source_reads.items())),
         )
     )
@@ -1363,15 +1376,13 @@ def _build_fan_out_task(
     task_id = _task_id(projection, graph.graph_id, nid, index, canonical_key)
     if task_id != expansion.task_ids[index]:
         raise PlanError(
-            f"node '{nid}' fan_out child {index} task ID drifted from the frozen "
-            "expansion (ledger integrity)"
+            f"node '{nid}' fan_out child {index} task ID drifted from the frozen expansion (ledger integrity)"
         )
     input_payload: dict[str, object] = {
         "with": _expand_templates(dict(definition.with_), fan_out.item_as, item, context, nid),
         "context": {"change_id": context.change_id},
         "outputs": [
-            _expand_output(output, fan_out.item_as, item, context, nid)
-            for output in definition.outputs
+            _expand_output(output, fan_out.item_as, item, context, nid) for output in definition.outputs
         ],
         "fan_out": {"item_as": fan_out.item_as, "item": item, "task_key": display_key},
     }

@@ -296,7 +296,9 @@ def _fanout_projection(
     return projection, artifacts
 
 
-def _expanded_event(compiled: CompiledWorkflow, tmp_path: Path) -> tuple[FanOutExpandedEvent, list[ExecutableTask]]:
+def _expanded_event(
+    compiled: CompiledWorkflow, tmp_path: Path
+) -> tuple[FanOutExpandedEvent, list[ExecutableTask]]:
     projection, artifacts = _fanout_projection(compiled, tmp_path, ["menu", "order"])
     plan = _plan(compiled, projection, tmp_path, artifacts)
     event = next(e for e in plan.strict_events if isinstance(e, FanOutExpandedEvent))
@@ -364,7 +366,9 @@ def test_fan_out_source_drift_fails_closed(tmp_path: Path) -> None:
     )
 
     # advisory 在展开事件之后被改写：fail closed，绝不重算不同的 item 列表。
-    drifted = _FakeArtifacts({("tree-1", "change:explore/advisory.json"): {"modules": ["menu", "order", "extra"]}})
+    drifted = _FakeArtifacts(
+        {("tree-1", "change:explore/advisory.json"): {"modules": ["menu", "order", "extra"]}}
+    )
     with pytest.raises(PlanError, match="fan_out_source_drift"):
         _plan(compiled, resumed, tmp_path, drifted)
 
@@ -600,9 +604,7 @@ def test_fan_out_empty_items_resolves_without_children(tmp_path: Path) -> None:
     )
     followup = _plan(compiled, resumed, tmp_path, artifacts)
     assert [task.node_id for task in followup.tasks] == ["report"]
-    assert fan_out_state_updates(compiled, resumed) == [
-        ("reduce:main:per-module", {"generated_cases": []})
-    ]
+    assert fan_out_state_updates(compiled, resumed) == [("reduce:main:per-module", {"generated_cases": []})]
 
 
 # ---------------------------------------------------------------------------

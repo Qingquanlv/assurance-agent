@@ -207,8 +207,7 @@ def test_rejects_non_exhaustive_interrupt_action_route() -> None:
     ],
 )
 def test_rejects_bad_policy_refs(field: str, message: str) -> None:
-    body = (
-        """
+    body = """
         main:
           max_supersteps: 5
           nodes:
@@ -219,7 +218,6 @@ def test_rejects_bad_policy_refs(field: str, message: str) -> None:
             - {from: START, to: a}
             - {from: a, to: END}
         """.replace("FIELD", field)
-    )
     with pytest.raises(CompileError, match=message):
         compile_text(_wf(body))
 

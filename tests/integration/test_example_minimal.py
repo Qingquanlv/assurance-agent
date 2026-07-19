@@ -35,6 +35,10 @@ def test_example_minimal_runs_end_to_end(tmp_path: Path, monkeypatch: pytest.Mon
     status_result = runner.invoke(main, ["status", "--change", "CH-DEMO-001", "--json"])
     assert status_result.exit_code in (0, 20, 30), status_result.output
     doc = json.loads(status_result.output)
-    assert "phases" in doc
-    assert "next_dispatch" in doc
-    assert "terminal" in doc
+    # No graph invocation yet → null status; after a run the payload is GraphStatus.
+    if doc.get("status") is None:
+        assert doc == {"status": None}
+    else:
+        assert "invocation_id" in doc
+        assert "pending_tasks" in doc
+        assert "pending_interrupts" in doc

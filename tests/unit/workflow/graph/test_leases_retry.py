@@ -38,8 +38,15 @@ from assurance_agent.workflow.graph.schema_v2 import BackoffDef, RetryPolicyDef,
 
 T0 = datetime(2026, 7, 19, 12, 0, 0, tzinfo=timezone.utc)
 _ALL_KINDS: list[ErrorKind] = [
-    "timeout", "transport", "rate_limit", "auth", "invalid_input",
-    "invalid_output", "forbidden_write", "contract", "internal",
+    "timeout",
+    "transport",
+    "rate_limit",
+    "auth",
+    "invalid_input",
+    "invalid_output",
+    "forbidden_write",
+    "contract",
+    "internal",
 ]
 
 
@@ -272,7 +279,9 @@ def test_error_retries_only_when_in_policy_and_contract(tmp_path: Path) -> None:
     policy_only = _task("task-policy-only", retry_on=["transport", "auth"], retryable_errors=("transport",))
     assert next_attempt_decision(task=policy_only, projection=projection, now=past).kind == "failed"
     # 在 contract.retryable_errors 但不在 policy.retry_on → 立即失败。
-    contract_only = _task("task-contract-only", retry_on=["transport"], retryable_errors=("transport", "rate_limit"))
+    contract_only = _task(
+        "task-contract-only", retry_on=["transport"], retryable_errors=("transport", "rate_limit")
+    )
     assert next_attempt_decision(task=contract_only, projection=projection, now=past).kind == "failed"
     # 两边同时出现才可重试。
     both = _task("task-both", retry_on=["transport"], retryable_errors=("transport",))
@@ -368,9 +377,7 @@ def test_resume_never_resets_attempts(tmp_path: Path) -> None:
     assert second.tasks["task-a"].attempts_used == 2
 
     task = _task(max_attempts=3)
-    decision = next_attempt_decision(
-        task=task, projection=second, now=T0 + timedelta(seconds=5)
-    )
+    decision = next_attempt_decision(task=task, projection=second, now=T0 + timedelta(seconds=5))
     assert decision.kind == "start"
     assert decision.attempt_number == 3
     exhausted = _task(max_attempts=2)
@@ -468,7 +475,9 @@ def test_heartbeat_only_advances_the_matching_attempt(tmp_path: Path) -> None:
 
     at = T0 + timedelta(seconds=10)
     expires = T0 + timedelta(seconds=70)
-    updated = registry.heartbeat("task-a", "task-a-a1", at=at.isoformat(), lease_expires_at=expires.isoformat())
+    updated = registry.heartbeat(
+        "task-a", "task-a-a1", at=at.isoformat(), lease_expires_at=expires.isoformat()
+    )
     assert updated is not None
     assert updated.last_heartbeat_at == at.isoformat()
     assert updated.lease_expires_at == expires.isoformat()
@@ -481,7 +490,9 @@ def test_heartbeat_only_advances_the_matching_attempt(tmp_path: Path) -> None:
 
     stale = registry.heartbeat("task-a", "task-a-a0", at=at.isoformat(), lease_expires_at=expires.isoformat())
     assert stale is None
-    missing = registry.heartbeat("task-missing", "task-missing-a1", at=at.isoformat(), lease_expires_at=expires.isoformat())
+    missing = registry.heartbeat(
+        "task-missing", "task-missing-a1", at=at.isoformat(), lease_expires_at=expires.isoformat()
+    )
     assert missing is None
     assert registry.read_all()["task-a"].lease_expires_at == expires.isoformat()
 
@@ -500,7 +511,8 @@ def test_stale_attempt_cannot_overwrite_newer_attempt(tmp_path: Path) -> None:
 
     # 同一 attempt 的幂等刷新仍然允许。
     refreshed = _lease(
-        "task-a", "task-a-a2",
+        "task-a",
+        "task-a-a2",
         started_at=T0 + timedelta(seconds=30),
         last_heartbeat_at=T0 + timedelta(seconds=40),
     )
@@ -515,7 +527,9 @@ def test_truncated_temp_file_never_replaces_prior_valid_file(tmp_path: Path) -> 
     registry.upsert(_lease("task-a"))
     before = registry.path.read_bytes()
 
-    (change / "running-tasks.json.tmp.99999").write_text('{"leases": [{"task_id": "task-a", "att', encoding="utf-8")
+    (change / "running-tasks.json.tmp.99999").write_text(
+        '{"leases": [{"task_id": "task-a", "att', encoding="utf-8"
+    )
     (change / "running-tasks.json.tmp.4242").write_text("", encoding="utf-8")
 
     leases = registry.read_all()
@@ -590,9 +604,7 @@ def test_classify_abandons_when_pid_or_session_provably_dead() -> None:
 
 def test_classify_waits_when_liveness_unknown_and_lease_unexpired() -> None:
     lease = _lease("task-a", pid=4242)
-    action = classify_recovery(
-        lease=lease, reconnect=False, probe=_FakeProbe(pid_map={4242: None}), now=T0
-    )
+    action = classify_recovery(lease=lease, reconnect=False, probe=_FakeProbe(pid_map={4242: None}), now=T0)
     assert action.kind == "wait"
 
     alive_but_not_reconnectable = classify_recovery(
@@ -610,9 +622,7 @@ def test_classify_abandons_when_lease_expired() -> None:
     assert unknown.kind == "abandon"
     assert unknown.reason == "lease expired"
     # 即使本机 pid 仍活，lease 到期也 abandon（lease 才是执行权凭证）。
-    alive = classify_recovery(
-        lease=expired, reconnect=False, probe=_FakeProbe(pid_map={4242: True}), now=now
-    )
+    alive = classify_recovery(lease=expired, reconnect=False, probe=_FakeProbe(pid_map={4242: True}), now=now)
     assert alive.kind == "abandon"
 
 
@@ -655,9 +665,7 @@ def test_abandon_running_attempt_appends_strict_event_and_dedups(tmp_path: Path)
     )
     assert stale is False
 
-    abandoned_events = [
-        e for e in read_events_strict(change) if e.get("type") == "task_attempt_abandoned"
-    ]
+    abandoned_events = [e for e in read_events_strict(change) if e.get("type") == "task_attempt_abandoned"]
     assert len(abandoned_events) == 1
     assert abandoned_events[0]["attempt_id"] == "task-a-a1"
 

@@ -58,9 +58,7 @@ def build_graph_runtime(
 
     def resolve_pinned(digest: str) -> CompiledWorkflow:
         if digest != compiled.digest:
-            raise GraphDefinitionChanged(
-                f"requested graph digest {digest} does not match {compiled.digest}"
-            )
+            raise GraphDefinitionChanged(f"requested graph digest {digest} does not match {compiled.digest}")
         return compiled
 
     object_store = TreeStore(loc.path)

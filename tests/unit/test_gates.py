@@ -5,12 +5,24 @@ from pathlib import Path
 from assurance_agent.artifacts.models import WorkflowState
 from assurance_agent.workflow.core.events import append_event_strict
 from assurance_agent.workflow.orchestration.gates import check_gate, resolve_change_path
-from assurance_agent.workflow.orchestration.schema import parse_schema
+import yaml
+from assurance_agent.workflow.orchestration.schema import normalize_gates
 from tests.helpers_aa import loc_for
+
+
+class _GateSchema:
+    def __init__(self, gates: dict) -> None:
+        self.gates = gates
+
+
+def _gates_schema(text: str) -> _GateSchema:
+    doc = yaml.safe_load(text)
+    return _GateSchema(normalize_gates(doc.get("gates") or {}))
+
 
 EMPTY = WorkflowState()  # gates 接收 WorkflowState，不接收裸 dict
 
-SCHEMA = parse_schema("""
+SCHEMA = _gates_schema("""
 schema_version: "1"
 name: t
 params:
@@ -95,7 +107,7 @@ def test_safety_order_declaration_first_true_wins(tmp_path: Path):
     fixture 里 needs_fix_when 与 pass_when 同时为真，needs_fix 声明在前 → 裁决 needs_fix。
     注意 skill!=null 的 phase 必须带白名单 agent（Task 4 校验），故 `r` 声明 agent。
     """
-    schema = parse_schema("""
+    schema = _gates_schema("""
 schema_version: "1"
 name: t
 phases:
@@ -118,7 +130,7 @@ gates:
 
 # ── applyGateDecision: human decisions upgrade needs_human_review ────────────
 
-_NHR_SCHEMA = parse_schema("""
+_NHR_SCHEMA = _gates_schema("""
 schema_version: "1"
 name: t
 phases:
@@ -203,7 +215,7 @@ def test_decision_ignored_without_review_evidence(tmp_path: Path):
 
 # ── fixer-safety-gate: healing.safety decisions anchor the gate (TS engine.ts) ─
 
-_FIXER_SAFETY_SCHEMA = parse_schema("""
+_FIXER_SAFETY_SCHEMA = _gates_schema("""
 schema_version: "1"
 name: t
 phases:

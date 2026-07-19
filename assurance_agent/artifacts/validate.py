@@ -142,11 +142,35 @@ def _belongs_to_produce(rel: str, produce: str) -> bool:
 
 
 def _packaged_phase_produces(phase_id: str) -> list[str] | None:
+    """Resolve node outputs from the packaged v2 schema.
+
+    ``phase`` remains the CLI filter name for historical callers; under schema
+    v2 it matches a graph node id. Output paths drop the ``change:`` / ``repo:``
+    locator prefix so they compare against change-dir relative paths.
+    """
     doc = yaml.safe_load(resources.read_text("schemas", "workflow-schema.yaml"))
-    for entry in doc.get("phases", []):
-        if entry.get("id") == phase_id:
-            return [str(p) for p in entry.get("produces", [])]
+    graphs = doc.get("graphs") or {}
+    if not isinstance(graphs, dict):
+        return None
+    for graph in graphs.values():
+        if not isinstance(graph, dict):
+            continue
+        nodes = graph.get("nodes") or {}
+        if not isinstance(nodes, dict):
+            continue
+        node = nodes.get(phase_id)
+        if not isinstance(node, dict):
+            continue
+        produces = node.get("outputs") or []
+        return [_strip_output_locator(str(p)) for p in produces]
     return None
+
+
+def _strip_output_locator(path: str) -> str:
+    for prefix in ("change:", "repo:", "qa:"):
+        if path.startswith(prefix):
+            return path[len(prefix) :]
+    return path
 
 
 def _validate_file(spec: ArtifactSpec, abs_path: Path, rel: str) -> ArtifactResult:

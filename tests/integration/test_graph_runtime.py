@@ -245,9 +245,7 @@ def test_crash_after_attempt_started_abandons_and_retries(tmp_path: Path) -> Non
     assert any(e.get("type") == "task_attempt_started" for e in events)
     assert not any(e.get("type") == "task_attempt_succeeded" for e in events)
     invocation_id = next(
-        str(e["invocation_id"])
-        for e in events
-        if e.get("type") == "graph_invocation_started"
+        str(e["invocation_id"]) for e in events if e.get("type") == "graph_invocation_started"
     )
 
     clock.advance(3600)
@@ -289,9 +287,7 @@ def test_crash_after_success_retries_update_only(tmp_path: Path) -> None:
     assert not any(e.get("type") == "superstep_committed" for e in events)
     assert calls["n"] == 1
     invocation_id = next(
-        str(e["invocation_id"])
-        for e in events
-        if e.get("type") == "graph_invocation_started"
+        str(e["invocation_id"]) for e in events if e.get("type") == "graph_invocation_started"
     )
 
     fresh_calls = {"n": 0}
@@ -355,9 +351,7 @@ def test_crash_during_materialization_repairs_without_reexec(tmp_path: Path) -> 
     assert any(e.get("type") == "superstep_committed" for e in events)
     assert calls["n"] == 1
     invocation_id = next(
-        str(e["invocation_id"])
-        for e in events
-        if e.get("type") == "graph_invocation_started"
+        str(e["invocation_id"]) for e in events if e.get("type") == "graph_invocation_started"
     )
 
     fresh_calls = {"n": 0}
@@ -386,9 +380,7 @@ def test_crash_after_write_set_freeze_before_success_retries_attempt(tmp_path: P
     compiled, contracts = _write_compiled()
     ops = _write_ops()
     clock = FakeClock()
-    runtime = _build_runtime(
-        project, compiled, contracts, clock=clock, node_runner=_op_runner(ops)
-    )
+    runtime = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(ops))
     store = runtime._objects  # noqa: SLF001
     original_freeze = store.freeze_write_set
 
@@ -405,9 +397,7 @@ def test_crash_after_write_set_freeze_before_success_retries_attempt(tmp_path: P
     assert any(e.get("type") == "task_attempt_started" for e in events)
     assert not any(e.get("type") == "task_attempt_succeeded" for e in events)
     invocation_id = next(
-        str(e["invocation_id"])
-        for e in events
-        if e.get("type") == "graph_invocation_started"
+        str(e["invocation_id"]) for e in events if e.get("type") == "graph_invocation_started"
     )
 
     clock.advance(3600)

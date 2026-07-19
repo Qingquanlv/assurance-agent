@@ -10,9 +10,7 @@ from assurance_agent.workflow.graph.schema_v2 import (
 
 
 def test_minimal_v2_schema_loads() -> None:
-    schema = parse_workflow_v2(
-        Path("tests/fixtures/workflow-v2-minimal.yaml").read_text(encoding="utf-8")
-    )
+    schema = parse_workflow_v2(Path("tests/fixtures/workflow-v2-minimal.yaml").read_text(encoding="utf-8"))
     assert schema.schema_version == "2"
     assert schema.entrypoints["full"].graph == "main"
     assert list(schema.graphs["main"].nodes) == ["first"]

@@ -37,7 +37,11 @@ from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
 from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
 from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
-from assurance_agent.workflow.graph.handlers.operation import OperationFn, OperationHandler, default_operations
+from assurance_agent.workflow.graph.handlers.operation import (
+    OperationFn,
+    OperationHandler,
+    default_operations,
+)
 from assurance_agent.workflow.graph.models import ExecutableTask, TaskResult
 from tests.helpers_aa import write_aa_config
 
@@ -557,9 +561,7 @@ def test_valid_completed_review_gate_import(tmp_path: Path) -> None:
     assert gate_report["verdict"] == "pass"
     assert gate_report["reads_sha256"] == dict(report.reads_sha256)
     # No physical attempt for the imported review task.
-    assert not any(
-        e["type"] == "task_attempt_started" and e.get("node_id") == "review" for e in events
-    )
+    assert not any(e["type"] == "task_attempt_started" and e.get("node_id") == "review" for e in events)
 
 
 def test_wrong_fixture_digest_rejected(tmp_path: Path) -> None:
@@ -577,9 +579,7 @@ def test_output_hash_mismatch_rejected(tmp_path: Path) -> None:
     digest = _seed_fixture(project)
     review_dir = project / "qa" / "changes" / "CH-1" / "review"
     review_dir.mkdir(parents=True)
-    (review_dir / "api-plan-review.json").write_text(
-        json.dumps({"decision": "pass"}), encoding="utf-8"
-    )
+    (review_dir / "api-plan-review.json").write_text(json.dumps({"decision": "pass"}), encoding="utf-8")
     compiled, contracts = _compile(_GATED)
     runtime = _build_runtime(project, compiled, contracts)
     manifest = _base_manifest(
@@ -731,9 +731,7 @@ def test_valid_nested_structural_path_import(tmp_path: Path) -> None:
     runtime = _build_runtime(project, compiled, contracts)
     manifest = _base_manifest(
         fixture_digest=digest,
-        completed=(
-            ImportedTask(path="main/assurance/child", graph="child", node="leaf"),
-        ),
+        completed=(ImportedTask(path="main/assurance/child", graph="child", node="leaf"),),
     )
     result = runtime.import_checkpoint(compiled, manifest, _context(project))
     assert result.imported_tasks == ("main/assurance/child:leaf",)

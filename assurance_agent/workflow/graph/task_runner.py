@@ -97,10 +97,7 @@ def build_default_node_runner(
     contracts: ExecutionContractCatalog,
     *,
     compiled: CompiledWorkflow,
-    run_child: Callable[
-        [ExecutableTask, str, TaskWorkspace, RuntimeContext], TaskResult
-    ]
-    | None = None,
+    run_child: Callable[[ExecutableTask, str, TaskWorkspace, RuntimeContext], TaskResult] | None = None,
 ) -> NodeRunner:
     """注册 canonical target handler：agent 桥、domain operation、builtin 与 subgraph。
 

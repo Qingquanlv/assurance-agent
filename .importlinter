@@ -45,10 +45,11 @@ source_modules =
 forbidden_modules =
     assurance_agent.workflow
 
-[importlinter:contract:driver-layer]
-name = workflow.driver sits above orchestration and core
+[importlinter:contract:graph-runtime-layer]
+name = driver depends on graph, graph depends on orchestration and core
 type = layers
 layers =
     assurance_agent.workflow.driver
+    assurance_agent.workflow.graph
     assurance_agent.workflow.orchestration
     assurance_agent.workflow.core

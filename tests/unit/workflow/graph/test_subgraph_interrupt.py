@@ -157,9 +157,7 @@ def _compile(body: str) -> tuple[CompiledWorkflow, object]:
         "  retry:\n    never: {max_attempts: 1, retry_on: []}\n"
         "  timeout:\n    local: {run_seconds: 60, heartbeat_seconds: 0.05}\n"
         "  scheduler: {max_parallel_tasks: 4}\n"
-        "graphs:\n"
-        + textwrap.indent(textwrap.dedent(body), "  ")
-        + _GATE_FOOTER
+        "graphs:\n" + textwrap.indent(textwrap.dedent(body), "  ") + _GATE_FOOTER
     )
     contracts = parse_execution_contracts(_CONTRACTS)
     return compile_workflow(parse_workflow_v2(text), contracts), contracts
@@ -237,6 +235,7 @@ def _build_runtime(
     )
     if ops is not None:
         op_handler = OperationHandler(ops)
+
         # Wrap: keep builtins/subgraph from base, override operations.
         class Combined:
             def execute(self, task, workspace, context):  # type: ignore[no-untyped-def]
@@ -365,11 +364,7 @@ child_b:
     assert result.exit_code == 0
 
     change = _context(project).change_dir
-    started = [
-        e
-        for e in read_events_strict(change)
-        if e.get("type") == "graph_invocation_started"
-    ]
+    started = [e for e in read_events_strict(change) if e.get("type") == "graph_invocation_started"]
     root = next(e for e in started if e.get("parent_invocation_id") is None)
     children = [e for e in started if e.get("parent_invocation_id") == root["invocation_id"]]
     assert len(children) == 2
@@ -549,9 +544,7 @@ def test_parallel_subgraph_interrupts_both_pending(tmp_path: Path) -> None:
     change = project / "qa" / "changes" / "CH-1"
     review = change / "review"
     review.mkdir(parents=True)
-    (review / "case-review.json").write_text(
-        json.dumps({"decision": "needs_human_review"}), encoding="utf-8"
-    )
+    (review / "case-review.json").write_text(json.dumps({"decision": "needs_human_review"}), encoding="utf-8")
     compiled, contracts = _compile(_PARALLEL_INTERRUPT_SUBGRAPHS)
     runtime = _build_runtime(project, compiled, contracts, ops=_ops())
     result = runtime.run(compiled, "full", _context(project))

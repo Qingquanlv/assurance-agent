@@ -7,6 +7,13 @@
 from typing import Literal
 
 ErrorKind = Literal[
-    "timeout", "transport", "rate_limit", "auth", "invalid_input",
-    "invalid_output", "forbidden_write", "contract", "internal",
+    "timeout",
+    "transport",
+    "rate_limit",
+    "auth",
+    "invalid_input",
+    "invalid_output",
+    "forbidden_write",
+    "contract",
+    "internal",
 ]

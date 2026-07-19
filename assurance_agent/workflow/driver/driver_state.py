@@ -187,9 +187,7 @@ def evaluate_start_guard(change_dir: Path) -> StartGuard:
     if terminal == "completed":
         return StartGuard(
             allowed=False,
-            reason=(
-                f"graph already completed (invocation {invocation_id}); refuse restart"
-            ),
+            reason=(f"graph already completed (invocation {invocation_id}); refuse restart"),
             existing=existing,
         )
     if existing is not None and existing.status == "running" and is_pid_alive(existing.pid):

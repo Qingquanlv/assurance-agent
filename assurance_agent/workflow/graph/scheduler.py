@@ -199,9 +199,7 @@ class Scheduler:
 
                 prepared = self._begin_attempt(task, plan, projection, context, leases)
                 if prepared is None:
-                    decision = next_attempt_decision(
-                        task=task, projection=projection, now=self._clock.now()
-                    )
+                    decision = next_attempt_decision(task=task, projection=projection, now=self._clock.now())
                     if decision.kind == "wait" and decision.next_retry_at is not None:
                         retry_ats.append(decision.next_retry_at)
                     elif decision.kind in ("exhausted", "failed"):
@@ -308,8 +306,7 @@ class Scheduler:
             # resume：已投影成功的 sibling 绕过 handler，重新加入 pending wave。
             return _PreparedAttempt(
                 task=task,
-                attempt_id=existing.latest_attempt_id
-                or f"{task.task_id}-a{max(existing.attempts_used, 1)}",
+                attempt_id=existing.latest_attempt_id or f"{task.task_id}-a{max(existing.attempts_used, 1)}",
                 attempt_number=max(existing.attempts_used, 1),
                 workspace=None,
                 bypass=True,
@@ -318,9 +315,7 @@ class Scheduler:
         if existing is not None and existing.status == "running":
             return None
 
-        decision = next_attempt_decision(
-            task=task, projection=projection, now=self._clock.now()
-        )
+        decision = next_attempt_decision(task=task, projection=projection, now=self._clock.now())
         if decision.kind != "start" or decision.attempt_number is None:
             return None
 
@@ -470,9 +465,7 @@ class Scheduler:
                             artifact_view=result.interrupt.artifact_view,
                         )
                     )
-            return _SettledAttempt(
-                task_id=task.task_id, status="interrupted", write_set_id=write_set_id
-            )
+            return _SettledAttempt(task_id=task.task_id, status="interrupted", write_set_id=write_set_id)
 
         self._persist_success(
             prepared=prepared,
@@ -481,9 +474,7 @@ class Scheduler:
             result=result,
             write_set_id=write_set_id,
         )
-        status: Literal["succeeded", "stopped"] = (
-            "stopped" if result.status == "stopped" else "succeeded"
-        )
+        status: Literal["succeeded", "stopped"] = "stopped" if result.status == "stopped" else "succeeded"
         return _SettledAttempt(task_id=task.task_id, status=status, write_set_id=write_set_id)
 
     def _freeze_if_needed(
@@ -534,9 +525,7 @@ class Scheduler:
                 )
             )
             if task.budget is not None:
-                live = fold_invocation_events(
-                    task.invocation_id, read_events_strict(context.change_dir)
-                )
+                live = fold_invocation_events(task.invocation_id, read_events_strict(context.change_dir))
                 if not _budget_already_consumed(live, task):
                     txn.append_strict(
                         BudgetConsumedEvent(
@@ -560,9 +549,7 @@ class Scheduler:
         message: str,
     ) -> _SettledAttempt:
         task = prepared.task
-        retryable = (
-            error_kind in task.retry_policy.retry_on and error_kind in task.retryable_errors
-        )
+        retryable = error_kind in task.retry_policy.retry_on and error_kind in task.retryable_errors
         next_retry: str | None = None
         if retryable and prepared.attempt_number < task.retry_policy.max_attempts:
             next_retry = compute_next_retry_at(
@@ -585,9 +572,7 @@ class Scheduler:
                     next_retry_at=next_retry,
                 )
             )
-        return _SettledAttempt(
-            task_id=task.task_id, status="failed", retry_at=next_retry
-        )
+        return _SettledAttempt(task_id=task.task_id, status="failed", retry_at=next_retry)
 
     def _commit_wave(
         self,
@@ -612,9 +597,7 @@ class Scheduler:
 
         if write_sets:
             target_tree_id = self._objects.merge_write_sets(write_sets)
-            committed_ids = [
-                ws.write_set_id for ws in sorted(write_sets, key=lambda item: item.task_id)
-            ]
+            committed_ids = [ws.write_set_id for ws in sorted(write_sets, key=lambda item: item.task_id)]
         else:
             target_tree_id = projection.current_tree_id
             committed_ids = []

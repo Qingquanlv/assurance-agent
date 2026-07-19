@@ -66,7 +66,7 @@ def _stub_execute_attempt(monkeypatch):
         (review / "case-review.json").write_text('{"decision":"pass"}', encoding="utf-8")
         (attempt_dir / "stdout.log").write_text("ok\n", encoding="utf-8")
         (attempt_dir / "stderr.log").write_text("", encoding="utf-8")
-        (attempt_dir / "execution.json").write_text("{\"exit_code\":0}", encoding="utf-8")
+        (attempt_dir / "execution.json").write_text('{"exit_code":0}', encoding="utf-8")
         return ExecutionResult(
             sample_id=sample.id, attempt=0, executor="workflow-run", status="ok", exit_code=0
         )

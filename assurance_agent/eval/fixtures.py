@@ -420,9 +420,7 @@ def _write_import_manifest(
     completed: list[dict[str, Any]] = []
     node_results: dict[str, object] = {}
     for task in import_def.completed:
-        outputs = {
-            logical: _hash_logical(change_dir, project_root, logical) for logical in task.outputs
-        }
+        outputs = {logical: _hash_logical(change_dir, project_root, logical) for logical in task.outputs}
         entry: dict[str, Any] = {
             "path": task.path,
             "graph": task.graph,
@@ -520,9 +518,7 @@ def seed_change(
         import_def = tier.imports.get(entrypoint)
         if import_def is not None:
             if import_def.entrypoint != entrypoint:
-                raise AaError(
-                    f"tier import key {entrypoint!r} declares entrypoint {import_def.entrypoint!r}"
-                )
+                raise AaError(f"tier import key {entrypoint!r} declares entrypoint {import_def.entrypoint!r}")
             import_manifest_path = _write_import_manifest(
                 change_dir=change_dir,
                 project_root=sut_sandbox,

@@ -345,9 +345,7 @@ def test_write_runtime_file_writes_under_graph_runtime(tmp_path: Path) -> None:
         ".graph-runtime/sub/../../workflow-state.yaml",
     ],
 )
-def test_write_runtime_file_rejects_reserved_escape_and_foreign_paths(
-    tmp_path: Path, rel: str
-) -> None:
+def test_write_runtime_file_rejects_reserved_escape_and_foreign_paths(tmp_path: Path, rel: str) -> None:
     change = tmp_path / "CH-1"
     change.mkdir()
     with pytest.raises(ValueError):
@@ -399,9 +397,7 @@ def test_commit_tree_pointer_commits_checkpoint_and_event(tmp_path: Path) -> Non
     assert strict[0]["target_tree_id"] == "tree-1"
 
 
-def test_commit_tree_pointer_rolls_back_checkpoint_on_event_failure(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_commit_tree_pointer_rolls_back_checkpoint_on_event_failure(tmp_path: Path, monkeypatch) -> None:
     change = tmp_path / "CH-1"
     change.mkdir()
 

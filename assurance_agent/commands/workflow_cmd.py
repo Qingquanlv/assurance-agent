@@ -12,7 +12,12 @@ import yaml
 from assurance_agent.change_location import ChangeNotFoundError, resolve_change
 from assurance_agent.identifiers import UnsafeIdentifierError
 from assurance_agent.workflow.driver.adapter import DriverError
-from assurance_agent.workflow.driver.driver_state import evaluate_start_guard, project_graph_pointer, read_driver_state, write_driver_state
+from assurance_agent.workflow.driver.driver_state import (
+    evaluate_start_guard,
+    project_graph_pointer,
+    read_driver_state,
+    write_driver_state,
+)
 from assurance_agent.workflow.driver.headless_adapter import HeadlessAdapter
 from assurance_agent.workflow.driver.loop import (
     EXIT_COMPLETED,
@@ -126,9 +131,7 @@ def _run_or_detach(
             raise SystemExit(EXIT_ERROR)
         click.secho(started.message, fg="green")
         raise SystemExit(EXIT_COMPLETED)
-    adapter = _build_adapter(
-        adapter_name, project_root, server, directory, model, parent_session, agent_cmd
-    )
+    adapter = _build_adapter(adapter_name, project_root, server, directory, model, parent_session, agent_cmd)
     result = run_workflow_loop(
         project_root=project_root,
         change_id=change_id,
@@ -292,9 +295,7 @@ def workflow_resume(
         click.secho(guard.reason or "start refused", fg="red")
         raise SystemExit(EXIT_ERROR)
 
-    adapter = _build_adapter(
-        adapter_name, project_root, server, directory, model, parent_session, agent_cmd
-    )
+    adapter = _build_adapter(adapter_name, project_root, server, directory, model, parent_session, agent_cmd)
     try:
         bundle = build_graph_runtime(
             project_root=project_root,
@@ -396,7 +397,13 @@ def workflow_status(change_id: str, as_json: bool) -> None:
 
 @workflow_group.command("import-checkpoint")
 @click.option("--change", "change_id", required=True, help="Change ID under qa/changes/.")
-@click.option("--manifest", "manifest_path", required=True, type=click.Path(path_type=Path), help="Import manifest YAML.")
+@click.option(
+    "--manifest",
+    "manifest_path",
+    required=True,
+    type=click.Path(path_type=Path),
+    help="Import manifest YAML.",
+)
 @click.option("--adapter", "adapter_name", type=_ADAPTER_CHOICE, default="headless", show_default=True)
 @click.option("--params", default=None, help="Runtime params JSON override.")
 @click.option("--server", default=None, help="OpenCode server URL (opencode adapter).")
@@ -428,9 +435,7 @@ def workflow_import_checkpoint(
         click.secho(f"invalid manifest: {err}", fg="red")
         raise SystemExit(EXIT_ERROR) from err
 
-    adapter = _build_adapter(
-        adapter_name, project_root, server, directory, model, parent_session, agent_cmd
-    )
+    adapter = _build_adapter(adapter_name, project_root, server, directory, model, parent_session, agent_cmd)
     try:
         bundle = build_graph_runtime(
             project_root=project_root,

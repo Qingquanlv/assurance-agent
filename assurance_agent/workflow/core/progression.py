@@ -144,7 +144,9 @@ class ProgressionTxn:
 
     def set_state(self, state: WorkflowState) -> None:
         if self._state_projection is not None:
-            raise ValueError("set_state cannot be mixed with set_workflow_state_projection in one transaction")
+            raise ValueError(
+                "set_state cannot be mixed with set_workflow_state_projection in one transaction"
+            )
         if self._state_set:
             raise ValueError("set_state may be called at most once per transaction")
         self._state_set = True
@@ -159,7 +161,9 @@ class ProgressionTxn:
         if self._state_projection is not None:
             raise ValueError("set_workflow_state_projection may be called at most once per transaction")
         if self._state_set:
-            raise ValueError("set_workflow_state_projection cannot be mixed with set_state in one transaction")
+            raise ValueError(
+                "set_workflow_state_projection cannot be mixed with set_state in one transaction"
+            )
         self._state_projection = content.encode("utf-8") if isinstance(content, str) else content
 
     def _resolve_rel(self, rel: str) -> Path:

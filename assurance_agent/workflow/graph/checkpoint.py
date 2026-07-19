@@ -117,9 +117,7 @@ def parse_import_manifest(raw: Mapping[str, object] | str | bytes) -> ImportMani
             raise CheckpointImportError("import manifest source must be a mapping")
         unknown_source = sorted(str(k) for k in source if k not in {"kind", "fixture_id", "fixture_digest"})
         if unknown_source:
-            raise CheckpointImportError(
-                "unknown source fields: " + ", ".join(unknown_source)
-            )
+            raise CheckpointImportError("unknown source fields: " + ", ".join(unknown_source))
         if "kind" in source:
             payload["source_kind"] = source["kind"]
         if "fixture_id" in source:
@@ -177,9 +175,7 @@ def validate_import(
         graph = compiled.graphs[task.graph]
         node = graph.nodes[task.node]
         if node.definition.fan_out is not None and not task.task_key:
-            raise CheckpointImportError(
-                f"fan-out node '{task.node}' import requires task_key"
-            )
+            raise CheckpointImportError(f"fan-out node '{task.node}' import requires task_key")
         if projection is not None and task.task_key is not None:
             expansion = projection.fan_out_expansions.get(task.node)
             if expansion is not None and task.task_key not in expansion.task_keys:
@@ -259,8 +255,7 @@ def _verify_fixture_digest(context: RuntimeContext, fixture_id: str, fixture_dig
     expected = _strip_sha_prefix(fixture_digest)
     if entry.aggregate_sha256 != expected:
         raise CheckpointImportError(
-            f"fixture digest mismatch for {fixture_id}: "
-            f"manifest={expected} lock={entry.aggregate_sha256}"
+            f"fixture digest mismatch for {fixture_id}: manifest={expected} lock={entry.aggregate_sha256}"
         )
 
 
@@ -437,9 +432,7 @@ def _reevaluate_gate(
     evaluated_reads = {k: _strip_sha_prefix(v) for k, v in report.reads_sha256.items()}
     manifest_reads = {k: _strip_sha_prefix(v) for k, v in task.gate.reads_sha256.items()}
     if evaluated_reads != manifest_reads:
-        raise CheckpointImportError(
-            f"gate reads_sha256 mismatch for '{gate_id}'"
-        )
+        raise CheckpointImportError(f"gate reads_sha256 mismatch for '{gate_id}'")
     return {
         "gate_id": report.gate_id,
         "verdict": report.verdict.value,
@@ -467,9 +460,7 @@ def _validate_budgets(
     for task_id, (path, budget_id) in consumers.items():
         entry = budget_by_task.get(task_id)
         if entry is None:
-            raise CheckpointImportError(
-                f"budget consumer '{task_id}' imported without matching budget event"
-            )
+            raise CheckpointImportError(f"budget consumer '{task_id}' imported without matching budget event")
         if entry.budget_id != budget_id:
             raise CheckpointImportError(
                 f"budget id mismatch for '{task_id}': manifest={entry.budget_id} schema={budget_id}"
@@ -480,9 +471,7 @@ def _validate_budgets(
             )
     for entry in manifest.budgets:
         if entry.task_path not in consumers:
-            raise CheckpointImportError(
-                f"budget event for unknown consumer task_path '{entry.task_path}'"
-            )
+            raise CheckpointImportError(f"budget event for unknown consumer task_path '{entry.task_path}'")
 
 
 def _require_task(tasks: dict[str, TaskProjection], event: _AttemptOutcomeEvent) -> TaskProjection:
@@ -634,9 +623,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                     f"graph_resumed references unknown interrupt {event.interrupt_id} "
                     f"in invocation {invocation_id}"
                 )
-            interrupts[event.interrupt_id] = pending.model_copy(
-                update={"resolved_action": event.action}
-            )
+            interrupts[event.interrupt_id] = pending.model_copy(update={"resolved_action": event.action})
         elif isinstance(event, SuperstepCommittedEvent):
             # sibling state 直到 Update（commit）才可见：state_values 只在这里推进。
             latest_checkpoint_id = event.checkpoint_id

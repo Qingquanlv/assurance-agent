@@ -68,7 +68,8 @@ from assurance_agent.workflow.orchestration.gates import (
     GateEvaluationContext,
     check_gate_in_view,
 )
-from assurance_agent.workflow.orchestration.schema import parse_schema
+import yaml
+from assurance_agent.workflow.orchestration.schema import normalize_gates
 from tests.helpers_aa import write_aa_config
 
 # ---------------------------------------------------------------------------
@@ -122,11 +123,7 @@ def _task(
     resources: ResourceClaims | None = None,
     run_seconds: float = 60.0,
 ) -> ExecutableTask:
-    payload = (
-        input_payload
-        if input_payload is not None
-        else {"with": {}, "context": {"change_id": "CH-1"}}
-    )
+    payload = input_payload if input_payload is not None else {"with": {}, "context": {"change_id": "CH-1"}}
     return ExecutableTask(
         task_id=task_id,
         invocation_id="inv-1",
@@ -149,9 +146,7 @@ def _compiled(body: str, *, footer: str = "gates: {}\n") -> CompiledWorkflow:
     text = (
         'schema_version: "2"\nname: t\n'
         "entrypoints:\n  full: {graph: main}\n"
-        "graphs:\n"
-        + textwrap.indent(textwrap.dedent(body), "  ")
-        + footer
+        "graphs:\n" + textwrap.indent(textwrap.dedent(body), "  ") + footer
     )
     return compile_workflow(parse_workflow_v2(text))
 
@@ -203,9 +198,7 @@ def test_dispatches_one_handler_per_namespace_exactly(tmp_path: Path) -> None:
     h_skill = RecordingHandler(TaskResult(status="succeeded", value="skill"))
     h_op = RecordingHandler(TaskResult(status="succeeded", value="op"))
     h_builtin = RecordingHandler(TaskResult(status="succeeded", value="builtin"))
-    runner = HandlerNodeRunner(
-        {"skill:a": h_skill, "operation:b": h_op, "builtin:c": h_builtin}
-    )
+    runner = HandlerNodeRunner({"skill:a": h_skill, "operation:b": h_op, "builtin:c": h_builtin})
     for target, handler, value in (
         ("skill:a", h_skill, "skill"),
         ("operation:b", h_op, "op"),
@@ -470,9 +463,7 @@ def test_run_tests_invokes_run_change_against_workspace_paths(
         batch_id = "b-1"
         final_status = "PASS"
 
-    def fake_run_change(
-        project_root: Path, change_dir: Path, config: object, **kwargs: object
-    ) -> _Manifest:
+    def fake_run_change(project_root: Path, change_dir: Path, config: object, **kwargs: object) -> _Manifest:
         calls["project_root"] = project_root
         calls["change_dir"] = change_dir
         execution = change_dir / "execution"
@@ -493,14 +484,10 @@ def _write_execution_and_proposal(project: Path) -> None:
     change = project / "qa" / "changes" / "CH-1"
     execution = change / "execution"
     execution.mkdir(parents=True, exist_ok=True)
-    (execution / "execution-manifest.yaml").write_text(
-        "batch_id: 20260719-120000\n", encoding="utf-8"
-    )
+    (execution / "execution-manifest.yaml").write_text("batch_id: 20260719-120000\n", encoding="utf-8")
     healing = change / "healing"
     healing.mkdir(parents=True, exist_ok=True)
-    (healing / "fix-proposal.json").write_text(
-        json.dumps({"proposals": []}), encoding="utf-8"
-    )
+    (healing / "fix-proposal.json").write_text(json.dumps({"proposals": []}), encoding="utf-8")
 
 
 def test_allocate_healing_attempt_writes_baseline_and_state_updates(tmp_path: Path) -> None:
@@ -519,9 +506,7 @@ def test_allocate_healing_attempt_writes_baseline_and_state_updates(tmp_path: Pa
     proposal_sha = hashlib.sha256(
         (workspace.change_dir / "healing" / "fix-proposal.json").read_bytes()
     ).hexdigest()
-    expected_episode = hashlib.sha256(
-        f"CH-1:20260719-120000:{proposal_sha}".encode()
-    ).hexdigest()
+    expected_episode = hashlib.sha256(f"CH-1:20260719-120000:{proposal_sha}".encode()).hexdigest()
     assert payload["episode_id"] == expected_episode
 
     update = result.state_updates["healing_attempt"]
@@ -563,7 +548,18 @@ def test_record_healing_status(tmp_path: Path) -> None:
 # Step 5：显式 artifact view 上的冻结 gate 求值
 # ---------------------------------------------------------------------------
 
-_GATES = parse_schema("""
+
+class _GateSchema:
+    def __init__(self, gates: dict) -> None:
+        self.gates = gates
+
+
+def _gates_schema(text: str) -> _GateSchema:
+    doc = yaml.safe_load(text)
+    return _GateSchema(normalize_gates(doc.get("gates") or {}))
+
+
+_GATES = _gates_schema("""
 schema_version: "1"
 name: t
 phases:
@@ -691,9 +687,7 @@ def test_gate_handler_named_gate_business_success_regardless_of_verdict(tmp_path
             footer=_GATE_FOOTER,
         )
     )
-    result = handler.execute(
-        _gate_task("review", {"gate": "case-review-gate"}), workspace, _context(project)
-    )
+    result = handler.execute(_gate_task("review", {"gate": "case-review-gate"}), workspace, _context(project))
     assert result.status == "succeeded"
     assert result.value == "reject"
     assert result.gate_report is not None
@@ -721,9 +715,7 @@ def test_gate_handler_unknown_gate_is_contract_failure(tmp_path: Path) -> None:
             footer=_GATE_FOOTER,
         )
     )
-    result = handler.execute(
-        _gate_task("review", {"gate": "nope"}), _workspace(project), _context(project)
-    )
+    result = handler.execute(_gate_task("review", {"gate": "nope"}), _workspace(project), _context(project))
     assert result.status == "failed"
     assert result.error_kind == "contract"
 
@@ -838,9 +830,7 @@ def test_interrupt_handler_builds_structural_projection_without_ledger(tmp_path:
     assert projection.node_id == "human-review"
     assert projection.checkpoint == "case-review-gate"
     assert projection.actions == ("fix_and_proceed", "accept_risk", "stop")
-    expected = hashlib.sha256(
-        (workspace.change_dir / "review" / "case-review.json").read_bytes()
-    ).hexdigest()
+    expected = hashlib.sha256((workspace.change_dir / "review" / "case-review.json").read_bytes()).hexdigest()
     assert projection.audited_reads_sha256 == {"review/case-review.json": expected}
     assert projection.resolved_action is None
     # handler 不写 ledger；graph_interrupted 由 GraphRuntime 在 sibling settle 后发布。
@@ -984,9 +974,7 @@ def test_opencode_invoke_uses_workspace_directory_and_returns_session_id(tmp_pat
     ("status_code", "kind"),
     [(401, "auth"), (403, "auth"), (429, "rate_limit"), (500, "internal")],
 )
-def test_opencode_invoke_http_error_mapping(
-    tmp_path: Path, status_code: int, kind: str
-) -> None:
+def test_opencode_invoke_http_error_mapping(tmp_path: Path, status_code: int, kind: str) -> None:
     adapter = OpenCodeAdapter(
         "http://host",
         "/sut",

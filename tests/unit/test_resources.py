@@ -6,8 +6,9 @@ from assurance_agent import resources
 def test_read_packaged_workflow_schema() -> None:
     text = resources.read_text("schemas", "workflow-schema.yaml")
     doc = yaml.safe_load(text)
-    assert doc["schema_version"] == "1"
-    assert doc["name"] == "aa-full"
+    assert doc["schema_version"] == "2"
+    assert "graphs" in doc
+    assert "phases" not in doc
 
 
 def test_workflow_schema_has_no_legacy_aws_references() -> None:

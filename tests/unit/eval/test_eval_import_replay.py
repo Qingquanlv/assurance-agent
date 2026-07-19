@@ -24,7 +24,11 @@ from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
 from assurance_agent.workflow.graph.checkpoint import CheckpointStore
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import parse_execution_contracts
-from assurance_agent.workflow.graph.handlers.operation import OperationFn, OperationHandler, default_operations
+from assurance_agent.workflow.graph.handlers.operation import (
+    OperationFn,
+    OperationHandler,
+    default_operations,
+)
 from assurance_agent.workflow.graph.leases import SystemClock
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
 from assurance_agent.workflow.graph.runtime import GraphRuntime
@@ -307,15 +311,9 @@ def test_eval_imported_tasks_have_no_physical_attempts(tmp_path: Path) -> None:
 def test_eval_codegen_only_starts_only_unimported_task(tmp_path: Path) -> None:
     _attempt, change = _run_import_attempt(tmp_path, run_mode="codegen-only")
     events = read_events_strict(change)
-    started_nodes = {
-        e.get("node_id") for e in events if e.get("type") == "task_attempt_started"
-    }
-    started_task_ids = {
-        e.get("task_id") for e in events if e.get("type") == "task_attempt_started"
-    }
-    succeeded_task_ids = {
-        e.get("task_id") for e in events if e.get("type") == "task_attempt_succeeded"
-    }
+    started_nodes = {e.get("node_id") for e in events if e.get("type") == "task_attempt_started"}
+    started_task_ids = {e.get("task_id") for e in events if e.get("type") == "task_attempt_started"}
+    succeeded_task_ids = {e.get("task_id") for e in events if e.get("type") == "task_attempt_succeeded"}
     assert started_nodes == {"codegen"}
     assert started_task_ids and started_task_ids <= succeeded_task_ids
     assert "review" not in started_nodes

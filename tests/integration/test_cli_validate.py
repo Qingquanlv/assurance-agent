@@ -78,12 +78,29 @@ def test_validate_phase_filters_to_produced_artifacts() -> None:
     runner = CliRunner()
     with runner.isolated_filesystem():
         change_dir = make_change()
+        (change_dir / ".qa.yaml").write_text(
+            """schema_version: "1.0"
+schema: qa-yaml/v1
+created_at: "2026-07-15T00:00:00Z"
+change:
+  change_id: CH-1
+  requirement_id: REQ-1
+  feature_name: menus
+  status: in_progress
+targets:
+  cases:
+    - module: menus
+      change_case_file: cases/menus/case.yaml
+      target_case_file: qa/cases/menus/case.yaml
+""",
+            encoding="utf-8",
+        )
         (change_dir / "review/case-review.json").write_text(VALID_REVIEW, encoding="utf-8")
-        (change_dir / "review/plan-review.json").write_text(VALID_REVIEW, encoding="utf-8")
-        result = runner.invoke(main, ["validate", "--change", "CH-1", "--phase", "case-review", "--json"])
-        assert result.exit_code == 0
+        # packaged v2: case-design outputs [.qa.yaml, proposal.md, cases/]
+        result = runner.invoke(main, ["validate", "--change", "CH-1", "--phase", "case-design", "--json"])
+        assert result.exit_code == 0, result.output
         doc = json.loads(result.output)
-        assert [r["path"] for r in doc["results"]] == ["review/case-review.json"]
+        assert [r["path"] for r in doc["results"]] == [".qa.yaml"]
 
 
 def test_validate_single_artifact_missing_exits_1() -> None:

@@ -24,9 +24,7 @@ def build_phase_prompt(
     item: str | None = None,
 ) -> str:
     if allowed_writes is not None:
-        return build_node_prompt(
-            skill, phase, change_id, allowed_writes=allowed_writes, item=item
-        )
+        return build_node_prompt(skill, phase, change_id, allowed_writes=allowed_writes, item=item)
     fix_proposal_binding = (
         " Set fix-proposal.json source_batch_id from the current execution "
         "manifest and source_analysis_sha256 to the SHA256 of the exact current "

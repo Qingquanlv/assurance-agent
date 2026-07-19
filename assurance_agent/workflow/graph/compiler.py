@@ -274,7 +274,9 @@ def _check_output_path(loc: str, output: str, node: NodeDef) -> list[str]:
     return errors
 
 
-def _check_budget_limit(schema: WorkflowSchemaV2, graph_id: str, budget_id: str, limit: str | int) -> list[str]:
+def _check_budget_limit(
+    schema: WorkflowSchemaV2, graph_id: str, budget_id: str, limit: str | int
+) -> list[str]:
     hint = "must be a non-negative int or an int param reference"
     if isinstance(limit, bool):
         return [f"graph '{graph_id}' budget '{budget_id}' limit {hint}"]
@@ -392,7 +394,9 @@ def _validate_graph_refs(schema: WorkflowSchemaV2) -> list[str]:
                         errors.append(f"{loc} join must not list itself as a source")
             if node.fan_out is not None and node.fan_out.reduce is not None:
                 if node.fan_out.reduce.into not in graph.state:
-                    errors.append(f"{loc} fan_out reduce into undeclared state key '{node.fan_out.reduce.into}'")
+                    errors.append(
+                        f"{loc} fan_out reduce into undeclared state key '{node.fan_out.reduce.into}'"
+                    )
             for key in node.state_writes:
                 if key not in graph.state:
                     errors.append(f"{loc} writes undeclared state key '{key}'")
@@ -402,7 +406,9 @@ def _validate_graph_refs(schema: WorkflowSchemaV2) -> list[str]:
                     errors.append(f"{loc} consumes unknown budget '{budget.consume}'")
                 else:
                     errors.extend(
-                        _check_budget_limit(schema, graph_id, budget.consume, graph.budgets[budget.consume].limit)
+                        _check_budget_limit(
+                            schema, graph_id, budget.consume, graph.budgets[budget.consume].limit
+                        )
                     )
                 if budget.exhausted_to not in graph.nodes and budget.exhausted_to not in _TERMINALS:
                     errors.append(f"{loc} exhausted_to unknown node '{budget.exhausted_to}'")
@@ -417,7 +423,9 @@ def _validate_graph_refs(schema: WorkflowSchemaV2) -> list[str]:
             targets = list(route.cases.values()) + ([route.default] if route.default is not None else [])
             for target in targets:
                 if target not in graph.nodes and target not in _TERMINALS:
-                    errors.append(f"graph '{graph_id}' route from '{route.from_}' targets unknown node '{target}'")
+                    errors.append(
+                        f"graph '{graph_id}' route from '{route.from_}' targets unknown node '{target}'"
+                    )
         errors.extend(_check_reachability(graph_id, graph))
     return errors
 
@@ -589,46 +597,69 @@ def _validate_expressions(schema: WorkflowSchemaV2) -> list[str]:
             if node.when:
                 errors.extend(
                     _check_expression(
-                        f"{loc}.when", node.when,
-                        allowed_idents=allowed, allow_node=True, node_ids=node_ids, schema=schema,
+                        f"{loc}.when",
+                        node.when,
+                        allowed_idents=allowed,
+                        allow_node=True,
+                        node_ids=node_ids,
+                        schema=schema,
                     )
                 )
             with_expr = node.with_.get("expression")
             if isinstance(with_expr, str):
                 errors.extend(
                     _check_expression(
-                        f"{loc}.with.expression", with_expr,
-                        allowed_idents=allowed, allow_node=True, node_ids=node_ids, schema=schema,
+                        f"{loc}.with.expression",
+                        with_expr,
+                        allowed_idents=allowed,
+                        allow_node=True,
+                        node_ids=node_ids,
+                        schema=schema,
                     )
                 )
             if node.fan_out is not None:
                 errors.extend(
                     _check_expression(
-                        f"{loc}.fan_out.items", node.fan_out.items,
-                        allowed_idents=allowed, allow_node=True, node_ids=node_ids, schema=schema,
+                        f"{loc}.fan_out.items",
+                        node.fan_out.items,
+                        allowed_idents=allowed,
+                        allow_node=True,
+                        node_ids=node_ids,
+                        schema=schema,
                     )
                 )
             for key, target in node.state_writes.items():
                 errors.extend(
                     _check_expression(
-                        f"{loc}.state_writes['{key}']", target,
-                        allowed_idents={"result"}, allow_node=False, node_ids=node_ids, schema=schema,
+                        f"{loc}.state_writes['{key}']",
+                        target,
+                        allowed_idents={"result"},
+                        allow_node=False,
+                        node_ids=node_ids,
+                        schema=schema,
                     )
                 )
         for edge in graph.edges:
             if edge.when:
                 errors.extend(
                     _check_expression(
-                        f"graph '{graph_id}' edge {edge.from_} -> {edge.to}.when", edge.when,
-                        allowed_idents=allowed, allow_node=True, node_ids=node_ids, schema=schema,
+                        f"graph '{graph_id}' edge {edge.from_} -> {edge.to}.when",
+                        edge.when,
+                        allowed_idents=allowed,
+                        allow_node=True,
+                        node_ids=node_ids,
+                        schema=schema,
                     )
                 )
         for route in graph.routes:
             errors.extend(
                 _check_expression(
-                    f"graph '{graph_id}' route from '{route.from_}'.select", route.select,
+                    f"graph '{graph_id}' route from '{route.from_}'.select",
+                    route.select,
                     allowed_idents=allowed | {"resume"},
-                    allow_node=True, node_ids=node_ids, schema=schema,
+                    allow_node=True,
+                    node_ids=node_ids,
+                    schema=schema,
                 )
             )
     return errors
@@ -813,7 +844,9 @@ def _check_authorization_narrowing(loc: str, node: NodeDef, contract: ExecutionC
             errors.append(f"{loc}: {exc}")
             continue
         if not any(path_covers(auth, claim) for auth in authorization):
-            errors.append(f"{loc} resources.writes '{write}' expands authorization beyond '{contract.target}'")
+            errors.append(
+                f"{loc} resources.writes '{write}' expands authorization beyond '{contract.target}'"
+            )
     return errors
 
 
@@ -838,7 +871,9 @@ def _check_retry_kinds(
     return []
 
 
-def _graph_footprints(schema: WorkflowSchemaV2, catalog: ExecutionContractCatalog | None) -> dict[str, ResourceClaims]:
+def _graph_footprints(
+    schema: WorkflowSchemaV2, catalog: ExecutionContractCatalog | None
+) -> dict[str, ResourceClaims]:
     """每个 graph 的保守资源 footprint：全部 node claim 的并集，``graph:<id>`` 递归展开。
 
     互斥的运行期条件在 v2 首版不用于削减 claim——保守串行是正确的。subgraph
@@ -866,7 +901,9 @@ def _graph_footprints(schema: WorkflowSchemaV2, catalog: ExecutionContractCatalo
     return {graph_id: footprint(graph_id) for graph_id in schema.graphs}
 
 
-def _referenced_contract_digests(schema: WorkflowSchemaV2, catalog: ExecutionContractCatalog) -> dict[str, str]:
+def _referenced_contract_digests(
+    schema: WorkflowSchemaV2, catalog: ExecutionContractCatalog
+) -> dict[str, str]:
     """workflow 实际引用到的 contract 的 canonical digest（invocation 冻结与 resume 校验用）。"""
     digests: dict[str, str] = {}
     for graph in schema.graphs.values():
@@ -949,7 +986,9 @@ def _validate_bounded_sccs(schema: WorkflowSchemaV2) -> list[str]:
 # 编译产物
 
 
-def _condensation_order(graph: GraphDef, adj: Mapping[str, list[str]], sccs: list[tuple[str, ...]]) -> list[tuple[str, ...]]:
+def _condensation_order(
+    graph: GraphDef, adj: Mapping[str, list[str]], sccs: list[tuple[str, ...]]
+) -> list[tuple[str, ...]]:
     """SCC 冷凝 DAG 的确定性拓扑序（并列时按成员最小 declaration index）。"""
     decl = {nid: i for i, nid in enumerate(graph.nodes)}
 

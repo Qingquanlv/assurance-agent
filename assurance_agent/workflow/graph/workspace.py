@@ -132,16 +132,10 @@ def _parse_tree(raw: bytes) -> _TreeManifest:
         path = item.get("path")
         kind = item.get("kind")
         sha256 = item.get("sha256")
-        if (
-            not isinstance(path, str)
-            or kind not in ("file", "symlink")
-            or not isinstance(sha256, str)
-        ):
+        if not isinstance(path, str) or kind not in ("file", "symlink") or not isinstance(sha256, str):
             raise WorkspaceError(f"invalid tree manifest entry: {item!r}")
         _assert_digest(sha256)
-        entries[path] = _Entry(
-            kind=kind, sha256=sha256, executable=bool(item.get("executable", False))
-        )
+        entries[path] = _Entry(kind=kind, sha256=sha256, executable=bool(item.get("executable", False)))
     return _TreeManifest(roots=roots, entries=entries, raw=raw)
 
 
@@ -478,17 +472,14 @@ class TreeStore:
                 current_sha = current.sha256 if current else None
                 if entry.before_sha256 != current_sha:
                     raise WorkspaceError(
-                        f"write-set entry {entry.logical_path} before_sha256 "
-                        "disagrees with base tree"
+                        f"write-set entry {entry.logical_path} before_sha256 disagrees with base tree"
                     )
                 if entry.operation == "delete":
                     del entries[rel]
                 else:
                     if entry.after_sha256 is None:
                         raise WorkspaceError(f"write-set entry missing after_sha256: {entry.logical_path}")
-                    entries[rel] = _Entry(
-                        kind="file", sha256=entry.after_sha256, executable=entry.executable
-                    )
+                    entries[rel] = _Entry(kind="file", sha256=entry.after_sha256, executable=entry.executable)
         raw = _canonical_json(_tree_payload(base.roots, entries))
         target_tree_id = hashlib.sha256(raw).hexdigest()
         self._write_object(target_tree_id, raw)
@@ -593,9 +584,7 @@ class TaskWorkspace:
         shutil.rmtree(self.root, ignore_errors=True)
 
     @classmethod
-    def from_materialized_root(
-        cls, task_id: str, root: Path, base_tree_id: str
-    ) -> "TaskWorkspace":
+    def from_materialized_root(cls, task_id: str, root: Path, base_tree_id: str) -> "TaskWorkspace":
         """从物化 root 的 tree manifest 解析逻辑 project/repo/change root。
 
         manifest 缺失、root 未声明、root 目录不存在或解析到物化 root 之外，

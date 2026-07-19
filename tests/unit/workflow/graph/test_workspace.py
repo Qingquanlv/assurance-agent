@@ -153,9 +153,7 @@ def test_freeze_write_set_roundtrip_and_canonical_untouched(tmp_path: Path) -> N
 def test_freeze_empty_diff_produces_empty_entries(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     store = _store(project)
-    workspace = _backend(project).create(
-        task_id="task-a", base_tree_id=store.capture(project), store=store
-    )
+    workspace = _backend(project).create(task_id="task-a", base_tree_id=store.capture(project), store=store)
     write_set = store.freeze_write_set(workspace, claims=_claims("repo:**"))
     assert write_set.entries == ()
     assert write_set.outputs_sha256 == {}
@@ -164,9 +162,7 @@ def test_freeze_empty_diff_produces_empty_entries(tmp_path: Path) -> None:
 def test_freeze_rejects_write_outside_authorization(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     store = _store(project)
-    workspace = _backend(project).create(
-        task_id="task-a", base_tree_id=store.capture(project), store=store
-    )
+    workspace = _backend(project).create(task_id="task-a", base_tree_id=store.capture(project), store=store)
     (workspace.project_root / "app" / "source.py").write_text("changed\n")
     with pytest.raises(WorkspaceError, match="forbidden"):
         store.freeze_write_set(workspace, claims=_claims("repo:tests/api/**"))
@@ -175,9 +171,7 @@ def test_freeze_rejects_write_outside_authorization(tmp_path: Path) -> None:
 def test_freeze_rejects_missing_declared_output(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     store = _store(project)
-    workspace = _backend(project).create(
-        task_id="task-a", base_tree_id=store.capture(project), store=store
-    )
+    workspace = _backend(project).create(task_id="task-a", base_tree_id=store.capture(project), store=store)
     (workspace.project_root / "tests" / "api" / "test_a.py").write_text("changed\n")
     with pytest.raises(WorkspaceError, match="output"):
         store.freeze_write_set(
@@ -192,9 +186,7 @@ def test_freeze_rejects_symlink_escape(tmp_path: Path) -> None:
     outside = tmp_path / "outside.txt"
     outside.write_text("secret\n", encoding="utf-8")
     store = _store(project)
-    workspace = _backend(project).create(
-        task_id="task-a", base_tree_id=store.capture(project), store=store
-    )
+    workspace = _backend(project).create(task_id="task-a", base_tree_id=store.capture(project), store=store)
     os.symlink(outside, workspace.project_root / "tests" / "api" / "evil_link")
     with pytest.raises(WorkspaceError):
         store.freeze_write_set(workspace, claims=_claims("repo:tests/api/**"))
@@ -203,9 +195,7 @@ def test_freeze_rejects_symlink_escape(tmp_path: Path) -> None:
 def test_freeze_rejects_added_symlink_even_inside_root(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     store = _store(project)
-    workspace = _backend(project).create(
-        task_id="task-a", base_tree_id=store.capture(project), store=store
-    )
+    workspace = _backend(project).create(task_id="task-a", base_tree_id=store.capture(project), store=store)
     os.symlink("test_a.py", workspace.project_root / "tests" / "api" / "link.py")
     with pytest.raises(WorkspaceError, match="symlink"):
         store.freeze_write_set(workspace, claims=_claims("repo:tests/api/**"))
@@ -214,9 +204,7 @@ def test_freeze_rejects_added_symlink_even_inside_root(tmp_path: Path) -> None:
 def test_freeze_rejects_glob_output(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     store = _store(project)
-    workspace = _backend(project).create(
-        task_id="task-a", base_tree_id=store.capture(project), store=store
-    )
+    workspace = _backend(project).create(task_id="task-a", base_tree_id=store.capture(project), store=store)
     with pytest.raises(WorkspaceError, match="output"):
         store.freeze_write_set(
             workspace,
@@ -228,9 +216,7 @@ def test_freeze_rejects_glob_output(tmp_path: Path) -> None:
 def test_load_write_set_rejects_tampered_object_bytes(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     store = _store(project)
-    workspace = _backend(project).create(
-        task_id="task-a", base_tree_id=store.capture(project), store=store
-    )
+    workspace = _backend(project).create(task_id="task-a", base_tree_id=store.capture(project), store=store)
     (workspace.project_root / "tests" / "api" / "test_a.py").write_text("changed\n")
     write_set = store.freeze_write_set(workspace, claims=_claims("repo:tests/api/**"))
 
@@ -295,12 +281,20 @@ def test_merge_rejects_overlapping_sibling_write_sets(tmp_path: Path) -> None:
     backend = _backend(project)
     base_tree = store.capture(project)
     set_a = _freeze_change(
-        backend, store, base_tree, "task-a",
-        (("tests/api/test_a.py", "a\n"),), "repo:tests/api/**",
+        backend,
+        store,
+        base_tree,
+        "task-a",
+        (("tests/api/test_a.py", "a\n"),),
+        "repo:tests/api/**",
     )
     set_b = _freeze_change(
-        backend, store, base_tree, "task-b",
-        (("tests/api/test_a.py", "b\n"),), "repo:tests/api/**",
+        backend,
+        store,
+        base_tree,
+        "task-b",
+        (("tests/api/test_a.py", "b\n"),),
+        "repo:tests/api/**",
     )
     with pytest.raises(WorkspaceError, match="overlap"):
         store.merge_write_sets((set_a, set_b))
@@ -312,14 +306,22 @@ def test_merge_rejects_mismatched_base_trees(tmp_path: Path) -> None:
     backend = _backend(project)
     base_tree = store.capture(project)
     set_a = _freeze_change(
-        backend, store, base_tree, "task-a",
-        (("tests/api/test_a.py", "a\n"),), "repo:tests/api/**",
+        backend,
+        store,
+        base_tree,
+        "task-a",
+        (("tests/api/test_a.py", "a\n"),),
+        "repo:tests/api/**",
     )
     (project / "app" / "source.py").write_text("other base\n", encoding="utf-8")
     other_base = store.capture(project)
     set_b = _freeze_change(
-        backend, store, other_base, "task-b",
-        (("app/source.py", "b\n"),), "repo:app/**",
+        backend,
+        store,
+        other_base,
+        "task-b",
+        (("app/source.py", "b\n"),),
+        "repo:app/**",
     )
     with pytest.raises(WorkspaceError, match="base"):
         store.merge_write_sets((set_a, set_b))
@@ -332,11 +334,18 @@ def test_merge_and_apply_converges_canonical_tree(tmp_path: Path) -> None:
     backend = _backend(project)
     base_tree = store.capture(project)
     set_b = _freeze_change(
-        backend, store, base_tree, "task-b",
-        (("app/source.py", "b\n"),), "repo:app/**",
+        backend,
+        store,
+        base_tree,
+        "task-b",
+        (("app/source.py", "b\n"),),
+        "repo:app/**",
     )
     set_a = _freeze_change(
-        backend, store, base_tree, "task-a",
+        backend,
+        store,
+        base_tree,
+        "task-a",
         (("tests/api/test_a.py", "a\n"), ("tests/api/obsolete.py", None)),
         "repo:tests/api/**",
     )
@@ -363,8 +372,12 @@ def test_apply_tree_rejects_canonical_drift(tmp_path: Path) -> None:
     backend = _backend(project)
     base_tree = store.capture(project)
     write_set = _freeze_change(
-        backend, store, base_tree, "task-a",
-        (("tests/api/test_a.py", "a\n"),), "repo:tests/api/**",
+        backend,
+        store,
+        base_tree,
+        "task-a",
+        (("tests/api/test_a.py", "a\n"),),
+        "repo:tests/api/**",
     )
     target = store.merge_write_sets((write_set,))
     # operator 在 commit 之后外部改动 canonical root（target 未触碰的路径）。
@@ -382,9 +395,13 @@ def test_apply_tree_converges_after_partial_failure(tmp_path: Path, monkeypatch)
     backend = _backend(project)
     base_tree = store.capture(project)
     write_set = _freeze_change(
-        backend, store, base_tree, "task-a",
+        backend,
+        store,
+        base_tree,
+        "task-a",
         (("tests/api/test_a.py", "a\n"), ("app/source.py", "b\n")),
-        "repo:tests/api/**", "repo:app/**",
+        "repo:tests/api/**",
+        "repo:app/**",
     )
     target = store.merge_write_sets((write_set,))
 
@@ -420,9 +437,7 @@ def test_workspace_git_index_tracks_base_tree(tmp_path: Path) -> None:
     assert git is not None  # skipif 已保证；局部变量为 pyright 类型收窄
     project = _make_project(tmp_path)
     store = _store(project)
-    workspace = _backend(project).create(
-        task_id="task-a", base_tree_id=store.capture(project), store=store
-    )
+    workspace = _backend(project).create(task_id="task-a", base_tree_id=store.capture(project), store=store)
     assert (workspace.root / ".git").is_dir()
 
     def diff_names() -> str:
@@ -464,8 +479,6 @@ def test_missing_git_binary_skips_convenience_index(tmp_path: Path, monkeypatch)
     project = _make_project(tmp_path)
     store = _store(project)
     monkeypatch.setattr(workspace_mod.shutil, "which", lambda _name: None)
-    workspace = _backend(project).create(
-        task_id="task-a", base_tree_id=store.capture(project), store=store
-    )
+    workspace = _backend(project).create(task_id="task-a", base_tree_id=store.capture(project), store=store)
     assert workspace.project_root.is_dir()
     assert not (workspace.root / ".git").exists()

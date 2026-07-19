@@ -393,9 +393,7 @@ def test_workflow_state_yaml_rebuilds_semantically_identical(tmp_path: Path) -> 
     with transaction(change) as txn:
         txn.set_workflow_state_projection(original)
     state_file = change / "workflow-state.yaml"
-    assert yaml.safe_load(state_file.read_text(encoding="utf-8")) == yaml.safe_load(
-        original.decode("utf-8")
-    )
+    assert yaml.safe_load(state_file.read_text(encoding="utf-8")) == yaml.safe_load(original.decode("utf-8"))
 
     # 删除投影文件后从 strict ledger 重建：字节在语义上完全一致。
     state_file.unlink()
@@ -403,9 +401,7 @@ def test_workflow_state_yaml_rebuilds_semantically_identical(tmp_path: Path) -> 
     rebuilt = render_workflow_state_yaml(project_invocation(change, "inv-1"))
     with transaction(change) as txn:
         txn.set_workflow_state_projection(rebuilt)
-    assert yaml.safe_load(state_file.read_text(encoding="utf-8")) == yaml.safe_load(
-        original.decode("utf-8")
-    )
+    assert yaml.safe_load(state_file.read_text(encoding="utf-8")) == yaml.safe_load(original.decode("utf-8"))
 
 
 def test_corrupt_workflow_state_yaml_does_not_affect_projection(tmp_path: Path) -> None:

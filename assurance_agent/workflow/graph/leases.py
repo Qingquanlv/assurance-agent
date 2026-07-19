@@ -143,8 +143,7 @@ def next_attempt_decision(
         return AttemptDecision(kind="wait", reason="attempt still running; recovery classification owns it")
     if proj.status in ("succeeded", "interrupted"):
         raise ValueError(
-            f"next_attempt_decision requires a pending/failed/abandoned task; "
-            f"{task.task_id} is {proj.status}"
+            f"next_attempt_decision requires a pending/failed/abandoned task; {task.task_id} is {proj.status}"
         )
     if proj.status == "abandoned":
         # abandoned 消耗一次 attempt（started 已计入 attempts_used），只看剩余 budget。

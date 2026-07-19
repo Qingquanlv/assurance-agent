@@ -80,9 +80,7 @@ def _prepare(tmp_path: Path) -> None:
 
 def test_completed_path_exit_0(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _prepare(tmp_path)
-    runtime = _patch_bundle(
-        monkeypatch, latest=None, result=_run_result(EXIT_COMPLETED, "completed", "done")
-    )
+    runtime = _patch_bundle(monkeypatch, latest=None, result=_run_result(EXIT_COMPLETED, "completed", "done"))
     result = run_workflow_loop(
         project_root=tmp_path,
         change_id="CH-1",
@@ -133,9 +131,7 @@ def test_stopped_path_exit_20(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
 
 def test_interrupted_path_exit_30(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _prepare(tmp_path)
-    _patch_bundle(
-        monkeypatch, latest=None, result=_run_result(EXIT_HUMAN_REVIEW, "interrupted", "decide")
-    )
+    _patch_bundle(monkeypatch, latest=None, result=_run_result(EXIT_HUMAN_REVIEW, "interrupted", "decide"))
     result = run_workflow_loop(
         project_root=tmp_path,
         change_id="CH-1",
@@ -250,4 +246,3 @@ def test_default_executors_removed() -> None:
     assert not hasattr(loop_mod, "HealingActionExecutor")
     assert "cli_executor" not in run_workflow_loop.__code__.co_varnames
     assert "healing_executor" not in run_workflow_loop.__code__.co_varnames
-

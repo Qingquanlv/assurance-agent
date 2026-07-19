@@ -176,9 +176,7 @@ class OpenCodeAdapter:
             body["model"] = self._model
         if agent:
             body["agent"] = agent
-        resp = self._request(
-            "POST", f"/session/{session_id}/prompt_async", json=body, directory=directory
-        )
+        resp = self._request("POST", f"/session/{session_id}/prompt_async", json=body, directory=directory)
         if resp.status_code != 204 and not 200 <= resp.status_code < 300:
             raise _OpenCodeCallError(
                 _classify_http_status(resp.status_code),
@@ -220,9 +218,7 @@ class OpenCodeAdapter:
                 if idle_streak >= need:
                     return
             self._sleep(self._poll_interval)
-        raise _OpenCodeCallError(
-            "timeout", f"opencode phase timed out after {limit}s (session {session_id})"
-        )
+        raise _OpenCodeCallError("timeout", f"opencode phase timed out after {limit}s (session {session_id})")
 
     def run_phase(self, request: PhaseRequest) -> PhaseResult:
         try:
@@ -231,8 +227,8 @@ class OpenCodeAdapter:
             self._await_idle(session_id)
         except DriverError as err:
             return PhaseResult(ok=False, output="", error=str(err))
-        # Output is written to artifacts by the agent; the loop next commits the
-        # signed attempt outcome. Gate routing remains inside compute_status.
+        # Output is written to artifacts by the agent; GraphRuntime commits the
+        # attempt outcome and routes gates from the ledger projection.
         return PhaseResult(ok=True, output="")
 
     def invoke(self, request: AgentRequest) -> AgentResult:

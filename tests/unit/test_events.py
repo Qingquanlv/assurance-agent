@@ -184,7 +184,7 @@ def test_read_events_strict_rejects_bad_json_and_sequence_gap(tmp_path: Path) ->
         '"graph_digest":"d","contract_digests":{},"params":{},'
         '"params_sha256":"p","root_tree_id":"t","max_parallel_tasks":2,'
         '"checkpoint_ns":"i","structural_path":"main"}\n'
-        '{bad}\n',
+        "{bad}\n",
         encoding="utf-8",
     )
     with pytest.raises(LedgerIntegrityError, match="line 2"):

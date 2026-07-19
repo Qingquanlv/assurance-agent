@@ -35,7 +35,9 @@ _INV = "inv-1"
 _DIGEST = "g" * 64
 
 
-def _claims(*, writes: tuple[str, ...] = (), reads: tuple[str, ...] = (), exclusive: tuple[str, ...] = ()) -> ResourceClaims:
+def _claims(
+    *, writes: tuple[str, ...] = (), reads: tuple[str, ...] = (), exclusive: tuple[str, ...] = ()
+) -> ResourceClaims:
     w = tuple(ResourcePath.parse(p) for p in writes)
     r = tuple(ResourcePath.parse(p) for p in reads)
     return ResourceClaims(reads=r, writes=w, exclusive=exclusive, authorization_writes=w)
@@ -440,9 +442,7 @@ def test_update_failure_after_both_successes_retains_write_sets(tmp_path: Path) 
 
     store.merge_write_sets = failing_merge  # type: ignore[method-assign]
     try:
-        result = scheduler.execute(
-            _plan(task_a, task_b), _projection(change, tree_id), _context(project)
-        )
+        result = scheduler.execute(_plan(task_a, task_b), _projection(change, tree_id), _context(project))
     finally:
         store.merge_write_sets = original_merge  # type: ignore[method-assign]
 

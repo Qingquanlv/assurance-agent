@@ -321,9 +321,7 @@ def test_healing_routes_cover_required_outcomes() -> None:
     assert allocate.budget.consume == "healing_attempts"
     assert allocate.budget.exhausted_to == "complete-exhausted"
     consumers = [
-        nid
-        for nid, node in compiled.schema.graphs["healing"].nodes.items()
-        if node.budget is not None
+        nid for nid, node in compiled.schema.graphs["healing"].nodes.items() if node.budget is not None
     ]
     assert consumers == ["allocate"]
 
@@ -446,12 +444,7 @@ def test_gate_routes_exhaustive_or_fail_closed_and_interrupts_routed() -> None:
         for nid, node in graph.nodes.items():
             if node.interrupt is None:
                 continue
-            routed = {
-                label
-                for route in graph.routes
-                if route.from_ == nid
-                for label in route.cases
-            }
+            routed = {label for route in graph.routes if route.from_ == nid for label in route.cases}
             assert set(node.interrupt.actions) <= routed, f"{graph_id}/{nid}"
 
 
@@ -494,9 +487,7 @@ def test_schema_and_contract_digests_stable_across_two_loads() -> None:
     assert first.contract_digests == second.contract_digests
     assert {
         target: canonical_digest(contracts_a.contracts[target]) for target in sorted(EXPECTED_CONTRACTS)
-    } == {
-        target: canonical_digest(contracts_b.contracts[target]) for target in sorted(EXPECTED_CONTRACTS)
-    }
+    } == {target: canonical_digest(contracts_b.contracts[target]) for target in sorted(EXPECTED_CONTRACTS)}
     # Wheel-resource load path (no project-local override).
     from assurance_agent import resources
 

@@ -153,9 +153,7 @@ def _install_task12_runtime_patches() -> None:
                         artifact_view=result.interrupt.artifact_view,
                     )
                 )
-            return _SettledAttempt(
-                task_id=task.task_id, status="interrupted", write_set_id=write_set_id
-            )
+            return _SettledAttempt(task_id=task.task_id, status="interrupted", write_set_id=write_set_id)
         return original_persist(
             self,
             prepared=prepared,
@@ -178,22 +176,17 @@ def _install_task12_runtime_patches() -> None:
             return graph
         entrypoint = compiled.entrypoints.get(projection.entrypoint)
         if entrypoint is None:
-            raise planner_mod.PlanError(
-                f"projection references unknown entrypoint '{projection.entrypoint}'"
-            )
+            raise planner_mod.PlanError(f"projection references unknown entrypoint '{projection.entrypoint}'")
         graph = compiled.graphs.get(entrypoint.graph_id)
         if graph is None:
-            raise planner_mod.PlanError(
-                f"entrypoint '{projection.entrypoint}' references unknown graph"
-            )
+            raise planner_mod.PlanError(f"entrypoint '{projection.entrypoint}' references unknown graph")
         return graph
 
     def _latest_resolved_resume_action(projection: GraphProjection) -> str | None:
         resolved = [
             interrupt
             for interrupt in projection.interrupts.values()
-            if interrupt.resolved_action is not None
-            and interrupt.checkpoint_ns == projection.checkpoint_ns
+            if interrupt.resolved_action is not None and interrupt.checkpoint_ns == projection.checkpoint_ns
         ]
         if not resolved:
             return None
@@ -231,9 +224,7 @@ def _install_task12_runtime_patches() -> None:
                 continue
             if _node_interrupt_resolved(projection, nid):
                 outcomes[nid] = planner_mod._Outcome(status="unresolved", task=task)
-                node_task_count = sum(
-                    1 for item in projection.tasks.values() if item.node_id == nid
-                )
+                node_task_count = sum(1 for item in projection.tasks.values() if item.node_id == nid)
                 retry.append(
                     planner_mod._build_task(
                         compiled,
@@ -287,9 +278,7 @@ def graph_status_from_projection(
         for _, interrupt in sorted(projection.interrupts.items())
         if interrupt.resolved_action is None
     )
-    running = tuple(
-        sorted(task_id for task_id, task in projection.tasks.items() if task.status == "running")
-    )
+    running = tuple(sorted(task_id for task_id, task in projection.tasks.items() if task.status == "running"))
     pending = tuple(
         sorted(
             task_id
@@ -298,11 +287,7 @@ def graph_status_from_projection(
             or (task.status == "failed" and task.next_retry_at is not None)
         )
     )
-    retry_ats = [
-        task.next_retry_at
-        for task in projection.tasks.values()
-        if task.next_retry_at is not None
-    ]
+    retry_ats = [task.next_retry_at for task in projection.tasks.values() if task.next_retry_at is not None]
     if projection.terminal == "completed":
         status: Literal["running", "interrupted", "completed", "stopped", "failed"] = "completed"
     elif projection.terminal == "stopped":
@@ -402,12 +387,8 @@ class GraphRuntime:
             params = resolve_params(schema.schema, {**entry.param_overrides, **context.params})
         except Exception as exc:
             raise GraphRuntimeError(f"invalid params: {exc}") from exc
-        if entry.allow_expr is not None and not is_satisfied(
-            entry.allow_expr, Scope({"params": params})
-        ):
-            raise GraphRuntimeError(
-                f"entrypoint '{manifest.entrypoint}' allow expression rejected params"
-            )
+        if entry.allow_expr is not None and not is_satisfied(entry.allow_expr, Scope({"params": params})):
+            raise GraphRuntimeError(f"entrypoint '{manifest.entrypoint}' allow expression rejected params")
 
         root_tree_id = self._objects.capture(context.project_root, repo_root=context.repo_root)
         invocation_id = str(uuid4())
@@ -521,15 +502,9 @@ class GraphRuntime:
                 error_kind="contract",
                 error=f"unknown subgraph '{graph_id}'",
             )
-        child_invocation_id = canonical_digest(
-            {"parent_task_id": parent_task.task_id, "graph_id": graph_id}
-        )
-        checkpoint_ns = (
-            f"{parent_task.checkpoint_ns}/{parent_task.node_id}/{child_invocation_id}"
-        )
-        structural_path = (
-            f"{parent_task.structural_path}/{parent_task.node_id}/{graph_id}"
-        )
+        child_invocation_id = canonical_digest({"parent_task_id": parent_task.task_id, "graph_id": graph_id})
+        checkpoint_ns = f"{parent_task.checkpoint_ns}/{parent_task.node_id}/{child_invocation_id}"
+        structural_path = f"{parent_task.structural_path}/{parent_task.node_id}/{graph_id}"
         child_context = context.model_copy(
             update={
                 "project_root": workspace.project_root,
@@ -575,9 +550,7 @@ class GraphRuntime:
                     ).encode("utf-8"),
                 )
         result = self._drive(child_invocation_id, child_context)
-        return self._child_result_to_task_result(
-            result, parent_task=parent_task, workspace=workspace
-        )
+        return self._child_result_to_task_result(result, parent_task=parent_task, workspace=workspace)
 
     def _schema_resolver_for_parent(self, parent_task: ExecutableTask) -> CompiledWorkflow:
         parent = self._checkpoints.project(parent_task.invocation_id)
@@ -657,9 +630,7 @@ class GraphRuntime:
             params = resolve_params(compiled.schema, {**entry.param_overrides, **context.params})
         except Exception as exc:  # CompileError
             raise GraphRuntimeError(f"invalid params: {exc}") from exc
-        if entry.allow_expr is not None and not is_satisfied(
-            entry.allow_expr, Scope({"params": params})
-        ):
+        if entry.allow_expr is not None and not is_satisfied(entry.allow_expr, Scope({"params": params})):
             raise GraphRuntimeError(f"entrypoint '{entrypoint}' allow expression rejected params")
 
         root_tree_id = self._objects.capture(context.project_root, repo_root=context.repo_root)
@@ -783,9 +754,7 @@ class GraphRuntime:
                 f"action {command.action!r} not allowed for interrupt {command.interrupt_id}"
             )
         audited = self._rehash_artifact_view(context.change_dir, pending)
-        child_invocation_id = _child_invocation_from_ns(
-            pending.checkpoint_ns, projection.checkpoint_ns
-        )
+        child_invocation_id = _child_invocation_from_ns(pending.checkpoint_ns, projection.checkpoint_ns)
         with transaction(context.change_dir) as txn:
             resumed = GraphResumedEvent(
                 type="graph_resumed",
@@ -798,13 +767,8 @@ class GraphRuntime:
                 audited_reads_sha256=audited,
             )
             txn.append_strict(resumed)
-            if (
-                child_invocation_id is not None
-                and child_invocation_id != projection.invocation_id
-            ):
-                txn.append_strict(
-                    resumed.model_copy(update={"invocation_id": child_invocation_id})
-                )
+            if child_invocation_id is not None and child_invocation_id != projection.invocation_id:
+                txn.append_strict(resumed.model_copy(update={"invocation_id": child_invocation_id}))
             if command.action == "stop":
                 txn.append_strict(
                     GraphTerminalEvent(
@@ -840,17 +804,13 @@ class GraphRuntime:
             path = view_root / rel
             actual = sha256_file(path)
             if actual is None or actual != expected:
-                raise GraphRuntimeError(
-                    f"audited read drift for interrupt {pending.interrupt_id}: {rel}"
-                )
+                raise GraphRuntimeError(f"audited read drift for interrupt {pending.interrupt_id}: {rel}")
             audited[rel] = actual
         return audited
 
     def _context_for(self, projection: GraphProjection) -> RuntimeContext:
         change_dir = self._checkpoints._change_dir  # noqa: SLF001
-        meta_path = (
-            change_dir / ".graph-runtime" / "invocations" / f"{projection.invocation_id}.json"
-        )
+        meta_path = change_dir / ".graph-runtime" / "invocations" / f"{projection.invocation_id}.json"
         project_root = change_dir.parent.parent.parent
         repo_root = project_root
         change_id = change_dir.name
@@ -936,9 +896,7 @@ class GraphRuntime:
             if projection.terminal is not None:
                 return self._result_from_projection(projection)
 
-            pending_interrupts = [
-                i for i in projection.interrupts.values() if i.resolved_action is None
-            ]
+            pending_interrupts = [i for i in projection.interrupts.values() if i.resolved_action is None]
             if pending_interrupts and not plan.tasks:
                 return self._result_from_projection(projection)
 
@@ -990,9 +948,7 @@ class GraphRuntime:
                     reason=reason,
                 )
             )
-            live = fold_after_append(
-                context.change_dir, invocation_id, event_type, reason, projection
-            )
+            live = fold_after_append(context.change_dir, invocation_id, event_type, reason, projection)
             txn.set_workflow_state_projection(render_workflow_state_yaml(live))
         return self._result_from_projection(self._checkpoints.project(invocation_id))
 
@@ -1055,9 +1011,7 @@ class GraphRuntime:
         except WorkspaceError as exc:
             raise GraphRuntimeError(f"failed to repair materialization: {exc}") from exc
 
-    def _last_committed_tree_edge(
-        self, projection: GraphProjection
-    ) -> tuple[str | None, str | None]:
+    def _last_committed_tree_edge(self, projection: GraphProjection) -> tuple[str | None, str | None]:
         cursor = projection.root_tree_id
         last_prev: str | None = None
         last_target: str | None = None
@@ -1077,11 +1031,7 @@ class GraphRuntime:
         planned = self._last_uncommitted_plan(projection.invocation_id)
         if planned is None:
             return
-        succeeded = [
-            task_id
-            for task_id, task in projection.tasks.items()
-            if task.status in ("succeeded",)
-        ]
+        succeeded = [task_id for task_id, task in projection.tasks.items() if task.status in ("succeeded",)]
         if not succeeded:
             return
         plan = PlanResult(
