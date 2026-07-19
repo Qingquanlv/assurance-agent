@@ -1,4 +1,7 @@
+import pytest
+
 from assurance_agent.workflow.orchestration.dsl import (
+    DslError,
     MISSING,
     Scope,
     evaluate,
@@ -58,6 +61,22 @@ def test_builtins():
     assert ev("defined(a)", {}) is False
     assert ev("file_exists('healing/x.json')", {}, file_exists=lambda p: True) is True
     assert ev("gate('g').verdict == 'enter'", {}, gate_verdict=lambda i: "enter") is True
+
+
+def test_node_result_builtin() -> None:
+    assert (
+        ev(
+            "node('review').gate.verdict == 'pass'",
+            {},
+            node_result=lambda node_id: {"gate": {"verdict": "pass"}} if node_id == "review" else {},
+        )
+        is True
+    )
+
+
+def test_node_result_without_resolver_fails_closed() -> None:
+    with pytest.raises(DslError, match="no resolver"):
+        ev("node('review').value == true", {})
 
 
 def test_subscript_eval():

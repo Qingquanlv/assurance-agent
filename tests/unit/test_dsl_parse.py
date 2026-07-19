@@ -1,6 +1,7 @@
 import pytest
 
 from assurance_agent.workflow.orchestration.dsl import (
+    BUILTIN_ARITY,
     BoolOp,
     Call,
     Compare,
@@ -47,6 +48,18 @@ def test_two_arg_any_keeps_predicate_ast():
 def test_gate_ref_collection():
     node = parse_expression("gate('healing-entry-gate').verdict == 'enter'")
     assert collect_gate_refs(node) == ["healing-entry-gate"]
+
+
+def test_node_call_parses_as_call_below_two_members():
+    node = parse_expression("node('x').gate.verdict")
+    assert isinstance(node, Member)
+    assert node.prop == "verdict"
+    assert isinstance(node.obj, Member)
+    assert node.obj.prop == "gate"
+    assert isinstance(node.obj.obj, Call)
+    assert node.obj.obj.callee == "node"
+    assert node.obj.obj.args == (Literal("x"),)
+    assert BUILTIN_ARITY["node"] == 1
 
 
 def test_subscript_constant_index():

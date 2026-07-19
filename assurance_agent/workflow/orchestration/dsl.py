@@ -29,6 +29,7 @@ BUILTIN_ARITY: dict[str, int] = {
     "all": 2,
     "count": 2,
     "gate": 1,
+    "node": 1,
 }
 
 _KEYWORD_LITERALS: dict[str, object] = {"true": True, "false": False, "null": None}
@@ -232,6 +233,7 @@ MISSING = _Missing()
 
 FileExistsResolver = Callable[[str], bool]
 GateResolver = Callable[[str], str]
+NodeResolver = Callable[[str], object]
 
 
 class Scope:
@@ -241,10 +243,12 @@ class Scope:
         *,
         file_exists: FileExistsResolver | None = None,
         gate_verdict: GateResolver | None = None,
+        node_result: NodeResolver | None = None,
     ) -> None:
         self._vars = vars
         self.file_exists = file_exists
         self.gate_verdict = gate_verdict
+        self.node_result = node_result
 
     def lookup(self, name: str) -> object:
         return self._vars[name] if name in self._vars else MISSING
@@ -253,7 +257,12 @@ class Scope:
         base = dict(self._vars)
         if isinstance(element, dict):
             base.update(element)
-        return Scope(base, file_exists=self.file_exists, gate_verdict=self.gate_verdict)
+        return Scope(
+            base,
+            file_exists=self.file_exists,
+            gate_verdict=self.gate_verdict,
+            node_result=self.node_result,
+        )
 
 
 def _to_bool(v: object) -> bool | None:
@@ -385,6 +394,13 @@ def _eval_call(expr: Call, scope: Scope) -> object:
         if scope.gate_verdict is None:
             raise DslError("gate() called but no resolver was provided")
         return {"verdict": scope.gate_verdict(gid)}
+    if callee == "node":
+        node_id = evaluate(expr.args[0], scope)
+        if not isinstance(node_id, str):
+            return MISSING
+        if scope.node_result is None:
+            raise DslError("node() called but no resolver was provided")
+        return scope.node_result(node_id)
     # any / all / count
     coll = evaluate(expr.args[0], scope)
     pred = expr.args[1]
