@@ -1,14 +1,17 @@
-"""schema v2 编译产物模型：冻结拓扑 + 稳定 digest；ledger 投影模型。
+"""schema v2 编译产物模型：冻结拓扑 + 稳定 digest；Plan 语义模型；ledger 投影模型。
 
 GraphRuntime 只接受 compiled model，不直接解释原始 YAML。compiled 拓扑一律使用
 tuple（而非 list），使 digest 之后的执行顺序不可被调用方原地修改。
-投影模型（TaskProjection/GraphProjection 等）是 strict ledger 的纯函数输出，
-frozen + extra="forbid"，绝不反向覆盖 ledger。
+Plan 语义模型（RuntimeContext/ExecutableTask/PlanResult 等）是纯 planner 的
+输入输出，不含 wall-clock 或线程调度顺序。投影模型（TaskProjection/
+GraphProjection 等）是 strict ledger 的纯函数输出，frozen + extra="forbid"，
+绝不反向覆盖 ledger。
 """
 
 from __future__ import annotations
 
-from typing import Literal
+from pathlib import Path
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,7 +20,9 @@ from assurance_agent.workflow.graph.contracts import ResourceClaims
 from assurance_agent.workflow.graph.schema_v2 import (
     EdgeDef,
     NodeDef,
+    RetryPolicyDef,
     RouteDef,
+    TimeoutPolicyDef,
     WorkflowSchemaV2,
 )
 from assurance_agent.workflow.orchestration.dsl import Expr
@@ -64,6 +69,67 @@ class CompiledWorkflow(BaseModel):
     entrypoints: dict[str, CompiledEntrypoint]
     graphs: dict[str, CompiledGraph]
     contract_digests: dict[str, str] = Field(default_factory=dict)
+
+
+# ---- Plan 语义模型（纯 planner 的输入输出；确定性，无 wall-clock）----
+
+
+class RuntimeContext(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    project_root: Path
+    repo_root: Path
+    change_dir: Path
+    change_id: str
+    params: dict[str, object] = Field(default_factory=dict)
+    parent_session_id: str | None = None
+
+
+class ResolvedArtifact(BaseModel):
+    """一次 artifact 读取的冻结结果：解析后的 JSON 值 + 实际读取路径的内容 hash。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    value: object
+    reads_sha256: dict[str, str]
+
+
+class ArtifactReader(Protocol):
+    """按 tree 读取逻辑路径上的 JSON artifact；缺读/解析失败/hash 漂移时抛出异常。"""
+
+    def read_json(self, tree_id: str, logical_path: str) -> ResolvedArtifact:
+        raise NotImplementedError
+
+
+class ExecutableTask(BaseModel):
+    """一次逻辑 node invocation 的可执行单元；retry 时 task_id 不变。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    task_id: str
+    invocation_id: str
+    checkpoint_ns: str
+    graph_id: str
+    node_id: str
+    structural_path: str
+    input: object
+    input_sha256: str
+    contract_digest: str
+    retryable_errors: tuple[ErrorKind, ...]
+    retry_policy: RetryPolicyDef
+    timeout_policy: TimeoutPolicyDef
+    target: str
+    resources: ResourceClaims
+    task_key: str | None = None
+
+
+class PlanResult(BaseModel):
+    """一次纯 Plan 的输出：ready tasks、待持久化的 strict events 与终局判定。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", arbitrary_types_allowed=True)
+    superstep_id: str
+    checkpoint_id: str
+    tasks: tuple[ExecutableTask, ...]
+    strict_events: tuple[BaseModel, ...] = ()
+    terminal: Literal["end", "stop", "fail", "interrupt"] | None = None
+    reason: str | None = None
 
 
 # ---- ledger 投影模型（strict events 的唯一权威视图）----
