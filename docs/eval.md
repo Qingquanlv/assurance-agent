@@ -22,6 +22,13 @@
 | **PR smoke 用 fake adapter** | CI 验证 harness 通路；真实 LLM 质量在本地 / nightly 评 |
 | **Hard / Advisory / Observe** | 见 `eval/contracts/p0-metrics.yaml` |
 
+### Schema v2 / fixture import
+
+- Suite executor 使用 `entrypoint: case|full|execute`（不再使用 `scope`）。
+- Mid-graph 回放通过 tier `imports` → `.graph-runtime/import-manifest.yaml` → `import_checkpoint`；
+  裸 `workflow-state.yaml` phase 标记不是权威。
+- GraphRuntime 真并行 + 资源序列化；retry 与业务 budget 分计；interrupt/resume。
+
 ### 阶段与 Suite 对照
 
 | 阶段 | Suite | 样本（模块） | 测什么 |

@@ -8,9 +8,9 @@ description: "Run two-stage AA intake mode: interactive test-infra bootstrap (Ph
 `aa-intake` is the **two-stage / interactive** orchestration entrypoint for design-time clarification.
 
 > **Preferred handoff (M3+):** after intake completes and the user confirms, call the OpenCode
-> `workflow_start` tool (`scope: execute`) so the TS driver owns post-intake phases.
+> `workflow_start` tool (`entrypoint: execute`) so the GraphRuntime owns post-intake phases.
 > Fallback when the tool/driver is unavailable: tell the user to run `aa-execute` or
-> `aa workflow run --change <id> --scope execute`.
+> `aa workflow run --change <id> --entrypoint execute`.
 
 It owns the intake scope plus **Phase 0 test-infra bootstrap** (runs at startup, before explore):
 
@@ -24,13 +24,13 @@ It does not run fact-baseline, plan, codegen, execution, inspect, healing, repor
 
 The **ordered intake runbook is inline in this file** (see **Intake Runbook** below) — Phase 0 bootstrap, the interactive explore/case-design behaviour, the case-review gate check, and the case-fix loop are written here as a gap-free checklist.
 
-Still **referenced** from `skills/aa-workflow/FALLBACK-RUNBOOK.md` when the TS driver is
+Still **referenced** from `skills/aa-workflow/FALLBACK-RUNBOOK.md` when the GraphRuntime is
 unavailable (shared fallback; single source of truth to avoid drift):
 
 - **Shared orchestration mechanics**: Scheme E dispatch + state-hash rules, Phase Completion Rule, Skill Load Gate, Phase → Skill Path Map, `workflow-state.yaml` schema, Subagent Usage Disambiguation.
 - **Deep per-phase contracts**: `aa-test-infra-bootstrap` (per-file contract), `aa-explore`, `aa-case-design`, `aa-case-reviewer`, `aa-case-fixer`. Load the phase skill when dispatched; the runbook only sequences them.
 
-Preferred post-intake handoff remains **`workflow_start`** / `aa workflow run --scope execute`
+Preferred post-intake handoff remains **`workflow_start`** / `aa workflow run --entrypoint execute`
 (see Completion below) — not loading the full fallback runbook.
 
 ## Startup
@@ -74,18 +74,18 @@ This writes:
 run_context:
   orchestrator_skill: aa-intake
   interaction_mode: interactive
-  active_scope: intake
+  entrypoint: intake
 ```
 
 Do not hand-write `run_context`.
 
 ## Orchestration Loop
 
-Use the `aa-workflow` Scheme E / inline orchestration loop unchanged, with the current `run_context.active_scope = intake`. `aa status --change <id> --next --json` drives phase selection and only dispatches intake-scope phases. The **Intake Runbook** below is the ordered checklist the loop walks.
+Use the `aa-workflow` Scheme E / inline orchestration loop unchanged, with the current `run_context.entrypoint = intake`. `aa status --change <id> --next --json` drives phase selection and only dispatches intake-scope phases. The **Intake Runbook** below is the ordered checklist the loop walks.
 
 ## Intake Runbook (ordered, inline)
 
-**Phase Completion Rule (inline — do not skip).** Producing artifacts on disk is NOT phase completion. After every phase you MUST hand-update `phases.<x>.status` (+ produces/gate refs) in `workflow-state.yaml`, then run `aa status`. Intake has no CLI `aa state apply` phases — every state write here is hand-written by the orchestrator (except `run_context`, which is stamped by CLI). Each line ends with its obligation as `⟶ state: …`.
+**Phase Completion Rule (inline — do not skip).** Producing artifacts on disk is NOT completion. GraphRuntime commits node outcomes to the ledger; operators never hand-edit progression. Prefer `aa workflow run --entrypoint case` / `workflow_start`.
 
 ```
 Phase 0 — Test Infra Bootstrap   (see Startup above; interactive; before explore)
@@ -121,7 +121,7 @@ Phase 2.3 — Case Fix loop (if gate needs_fix)
 
 ### Human Review (intake scope) — no hand-written pass
 
-If the case-review gate returns `needs_human_review` or `reject`: **STOP** and ask the user. Never edit `review/case-review.json` to `decision: pass`. To proceed after a human decision, use `aa decide --change <id> --at case-review --action fix_and_proceed --reason "<user decision>"`, then `aa-case-fixer` (human-approved mode) → `aa-case-reviewer` re-review → `aa gate check`.
+If the case-review gate returns `needs_human_review` or `reject`: **STOP** and ask the user. Never edit `review/case-review.json` to `decision: pass`. To proceed after a human decision, use `aa workflow resume --change <id> --interrupt <interrupt-id> --action fix_and_proceed --reason "<user decision>"`.
 
 ## Completion Condition
 
@@ -131,20 +131,20 @@ If the case-review gate returns `needs_human_review` or `reject`: **STOP** and a
 2. `qa/changes/<change-id>/.qa.yaml` contains `approval.approved_by: user`, `approval.approved_approach`, and `approval.approved_at` for interactive intake;
 3. `qa/changes/<change-id>/cases/` contains generated case delta YAML and `case-design-gate` passes;
 4. `review/case-review.json` exists with `decision == "pass"`;
-5. `aa status --change <id> --next --json` reports terminal `completed` for `active_scope: intake`.
+5. `aa status --change <id> --next --json` reports terminal `completed` for `entrypoint: intake`.
 
 When complete, stop. Do not automatically continue into execute scope.
 
 ### Handoff (after user confirmation)
 
 1. Ask the user to confirm starting autonomous execute for `<change-id>`.
-2. **Preferred:** call the `workflow_start` tool with `change_id` and `scope: "execute"`.
+2. **Preferred:** call the `workflow_start` tool with `change_id` and "entrypoint": "execute"`.
    Progress continues in nested sessions / QA panel; do not run execute phases yourself.
 3. **Fallback** (tool missing or driver unavailable):
 
 ```text
 Intake complete. To continue autonomous execution:
   - Prefer: workflow_start tool (scope=execute), or
-  - CLI: aa workflow run --change <change-id> --scope execute
+  - CLI: aa workflow run --change <change-id> --entrypoint execute
   - Legacy skill: aa-execute
 ```

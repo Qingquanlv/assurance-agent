@@ -125,7 +125,7 @@ If test files changed since the previous batch:
 
 - Product roots come from `.aa/config.yaml` `execution.product_code_roots` (default: `app`, `web/src`, `src`; missing roots are skipped).
 - During healing, product code changes are a hard error: `PRODUCT-CHANGED-DURING-HEALING`.
-- There is no bypass flag for product code changes in healing. Revert the product change, or abandon healing via `aa state heal --to failed` and start a new formal run.
+- There is no bypass flag for product code changes in healing. Revert the product change, or abandon healing via `graph healing terminal (failed)` and start a new formal run.
 - Outside healing, product tree changes are allowed and recorded as a `product_tree_changed` event; the new batch becomes the baseline.
 
 ## Python SUT Coverage

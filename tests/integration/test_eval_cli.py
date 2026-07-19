@@ -22,7 +22,7 @@ def _seed(project_root: Path) -> None:
             {
                 "name": "workflow-case",
                 "scorer": "workflow-case",
-                "executor": {"type": "workflow-run", "scope": "case"},
+                "executor": {"type": "workflow-run", "entrypoint": "case"},
                 "thresholds": [
                     {"metric": "case_review_gate_pass_rate", "gate": "hard", "op": "gte", "value": 0.99},
                 ],
@@ -53,12 +53,34 @@ def _seed(project_root: Path) -> None:
     subprocess.run(["git", "init"], cwd=sut, check=True, capture_output=True)
 
 
+def _stub_execute_attempt(monkeypatch):
+    from assurance_agent.eval import runner as runner_mod
+    from assurance_agent.eval.types import ExecutionResult
+
+    def fake_execute(sample, attempt_dir, **kwargs):
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        raw = attempt_dir / "raw-output"
+        raw.mkdir(parents=True, exist_ok=True)
+        review = raw / "review"
+        review.mkdir(parents=True, exist_ok=True)
+        (review / "case-review.json").write_text('{"decision":"pass"}', encoding="utf-8")
+        (attempt_dir / "stdout.log").write_text("ok\n", encoding="utf-8")
+        (attempt_dir / "stderr.log").write_text("", encoding="utf-8")
+        (attempt_dir / "execution.json").write_text("{\"exit_code\":0}", encoding="utf-8")
+        return ExecutionResult(
+            sample_id=sample.id, attempt=0, executor="workflow-run", status="ok", exit_code=0
+        )
+
+    monkeypatch.setattr(runner_mod, "execute_attempt", fake_execute)
+
+
 def test_eval_run_json_shape(monkeypatch) -> None:
     runner = CliRunner()
     with runner.isolated_filesystem() as fs:
         project_root = Path(fs)
         _seed(project_root)
         monkeypatch.setenv("AA_EVAL_FAKE_ADAPTER", "1")
+        _stub_execute_attempt(monkeypatch)
         result = runner.invoke(
             main,
             [
@@ -171,6 +193,7 @@ def test_eval_report_json(monkeypatch) -> None:
         project_root = Path(fs)
         _seed(project_root)
         monkeypatch.setenv("AA_EVAL_FAKE_ADAPTER", "1")
+        _stub_execute_attempt(monkeypatch)
         run = runner.invoke(
             main,
             [

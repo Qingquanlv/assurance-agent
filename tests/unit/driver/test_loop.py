@@ -246,6 +246,8 @@ def test_adopt_lock_token_mismatch(tmp_path: Path) -> None:
 def test_default_executors_removed() -> None:
     assert not hasattr(loop_mod, "DefaultCliPhaseExecutor")
     assert not hasattr(loop_mod, "DefaultHealingActionExecutor")
+    assert not hasattr(loop_mod, "CliPhaseExecutor")
+    assert not hasattr(loop_mod, "HealingActionExecutor")
     assert "cli_executor" not in run_workflow_loop.__code__.co_varnames
     assert "healing_executor" not in run_workflow_loop.__code__.co_varnames
 

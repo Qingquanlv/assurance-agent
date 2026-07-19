@@ -10,9 +10,9 @@
 #
 # One tick:
 #   1. Seed intake inputs for each item (.qa.yaml + proposal.md). The driver's
-#      full scope starts at `explore` and has NO interactive intake phase, so the
+#      full entrypoint starts at `explore` and has NO interactive intake phase, so the
 #      requirement must be materialized on disk before the driver runs.
-#   2. `aa workflow run --scope full` drives the change to a terminal state,
+#   2. `aa workflow run --entrypoint full` drives the change to a terminal state,
 #      dispatching each phase to OpenCode (opencode adapter, default) or to a
 #      spawned `opencode run` per phase (headless adapter).
 #   3. The script verifies completion with deterministic `aa status`.
@@ -81,7 +81,7 @@ CLEAN_TARGETS="${CLEAN_TARGETS:-qa/cases qa/changes}"
 # Python workflow driver -----------------------------------------------------
 AA_BIN="${AA_BIN:-aa}"                          # deterministic CLI (owns the driver)
 DRIVER_ADAPTER="${DRIVER_ADAPTER:-opencode}"    # opencode | headless
-DRIVER_SCOPE="${DRIVER_SCOPE:-full}"            # full | execute
+DRIVER_ENTRYPOINT="${DRIVER_ENTRYPOINT:-full}"            # full | execute
 TEST_TYPES="${TEST_TYPES:-api,e2e}"             # comma-separated layers to cover
 MAX_HEALING_ATTEMPTS="${MAX_HEALING_ATTEMPTS:-3}"
 OPENCODE_SERVER="${OPENCODE_SERVER:-http://127.0.0.1:4096}"  # opencode adapter only
@@ -166,7 +166,7 @@ run_with_timeout() {
   fi
 }
 
-# Seed intake inputs for one change. The driver's full scope starts at `explore`
+# Seed intake inputs for one change. The driver's full entrypoint starts at `explore`
 # and has no interactive intake phase, so the requirement must exist on disk as
 # proposal.md (+ an autonomous-mode .qa.yaml) before the driver runs. This is the
 # deterministic equivalent of what aa-intake writes in the interactive flow.
@@ -247,14 +247,28 @@ run_driver() {
   local logf="$1" change_id="$2"
   local params
   params="$(driver_params_json)"
+  local has_invocation="false"
+  if "$AA_BIN" workflow status --change "$change_id" --json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("status") else 1)'; then
+    has_invocation="true"
+  fi
 
-  local -a cmd=(
-    "$AA_BIN" workflow run
-    --change "$change_id"
-    --scope "$DRIVER_SCOPE"
-    --adapter "$DRIVER_ADAPTER"
-    --params "$params"
-  )
+  local -a cmd
+  if [ "$has_invocation" = "true" ]; then
+    cmd=(
+      "$AA_BIN" workflow resume
+      --change "$change_id"
+      --adapter "$DRIVER_ADAPTER"
+      --params "$params"
+    )
+  else
+    cmd=(
+      "$AA_BIN" workflow run
+      --change "$change_id"
+      --entrypoint "$DRIVER_ENTRYPOINT"
+      --adapter "$DRIVER_ADAPTER"
+      --params "$params"
+    )
+  fi
 
   if [ "$DRIVER_ADAPTER" = "opencode" ]; then
     cmd+=(--server "$OPENCODE_SERVER" --directory "$PROJECT_ROOT")
@@ -471,7 +485,7 @@ fi
 
 log "opencode benchmark loop start - runstamp=$RUNSTAMP items=${#BENCHMARK_ITEMS[@]}"
 log "project_root=$PROJECT_ROOT run_mode=$RUN_MODE run_tests=$RUN_TESTS test_types=$TEST_TYPES"
-log "driver: adapter=$DRIVER_ADAPTER scope=$DRIVER_SCOPE max_healing=$MAX_HEALING_ATTEMPTS server=${OPENCODE_SERVER}"
+log "driver: adapter=$DRIVER_ADAPTER entrypoint=$DRIVER_ENTRYPOINT max_healing=$MAX_HEALING_ATTEMPTS server=${OPENCODE_SERVER}"
 log "opencode=$OPENCODE_BIN model=${OPENCODE_MODEL:-default} max_attempts=$OPENCODE_MAX_WORKFLOW_ATTEMPTS"
 log "do_archive=$DO_ARCHIVE do_nightly_collect=$DO_NIGHTLY_COLLECT do_retro=$DO_RETRO"
 
@@ -623,7 +637,7 @@ fi
   echo "- project: \`$PROJECT_ROOT\`"
   echo "- engine: \`aa workflow run\` (Python driver, adapter=\`$DRIVER_ADAPTER\`)"
   echo "- run_mode: \`$RUN_MODE\` run_tests: \`$RUN_TESTS\` test_types: \`$TEST_TYPES\` force_continue: \`$FORCE_CONTINUE\`"
-  echo "- driver scope: \`$DRIVER_SCOPE\` max healing attempts: \`$MAX_HEALING_ATTEMPTS\`"
+  echo "- driver entrypoint: \`$DRIVER_ENTRYPOINT\` max healing attempts: \`$MAX_HEALING_ATTEMPTS\`"
   echo "- max workflow attempts: \`$OPENCODE_MAX_WORKFLOW_ATTEMPTS\`"
   echo "- nightly collect: \`$DO_NIGHTLY_COLLECT\` (exit: \`${nightly_collect_exit:-n/a}\`)"
   echo "- legacy retro: \`$DO_RETRO\`"

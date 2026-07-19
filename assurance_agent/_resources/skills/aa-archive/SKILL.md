@@ -27,13 +27,9 @@ Do not rely on prior conversation context.
 
 1. Write archived artifacts to `qa/archive/<change-id>/`.
 2. Merge case delta into `qa/cases/<module>/case.yaml`.
-3. Apply the archive outcome to `workflow-state.yaml` **only through the guarded CLI** — never hand-edit `workflow-state.yaml` (a direct edit leaves `_integrity.state_sha256` stale and trips the read-side auditor with `STATE-INTEGRITY-TAMPERED`):
-   - Decide the status: `archived | archived_with_warnings | skipped`.
-     Use `archived_with_warnings` if execution was `PASS_WITH_WARNINGS`, known product issues exist, or inspect recorded warnings.
-   - Inline/standalone: run
-     `aa state apply --change <change-id> --phase archive --status <archived|archived_with_warnings|skipped> --skill aa-archive --skill-md-path skills/aa-archive/SKILL.md`
-     This routes the write through the progression boundary: it re-hashes `_integrity` and emits a `phase_outcome_committed` event.
-   - Dispatched subagent: never run `aa state apply` and never write `workflow-state.yaml` — report the chosen status in your final message and the orchestrator applies it via the same command.
+3. Archive status is committed by the **archive graph node** (GraphRuntime). Never hand-edit
+   `workflow-state.yaml`, never run `aa workflow status`, and never write ledger/checkpoint files.
+   Report the intended archive outcome in your final message; the graph node records it.
 
 ---
 
@@ -197,7 +193,7 @@ Read `final_status` from result JSON when present; otherwise derive from `workfl
 
 ### Step 4: Archive Process Artifacts
 
-> **Order matters:** run the `aa state apply --phase archive --status …` command
+> **Order matters:** run the `aa workflow status --phase archive --status …` command
 > (see "After completing work" step 3) **before** copying `workflow-state.yaml`,
 > so the archived copy carries the finalized `phases.archive.status` and a valid
 > `_integrity.state_sha256`.

@@ -65,6 +65,8 @@ skills/                        # 同步的 aa-* skill 套件
 
 ### 工作流总览
 
+打包 schema 为 **`schema_version: "2"`**（GraphRuntime）：`entrypoints` + `graphs` 拓扑；同超步内真并行与资源序列化；task retry 与业务 budget 分计；interrupt/resume；严格 `events.jsonl` 为权威；eval mid-graph 仅经 validated import-manifest。
+
 一个变更（change）从 `explore` 走到 `report`，每阶段落结构化产物到 `qa/changes/<change-id>/`；CLI 用确定性状态机推进：
 
 ```bash
@@ -73,7 +75,7 @@ aa gate    check --change <id> --phase <phase>  # 单阶段 gate 裁决
 aa run     --change <id>                         # 执行测试（写 execution/runs/<batch-id>/）
 aa report  inspect  --change <id>               # 失败分类 + quality-gate-result.json
 aa report  generate --change <id>               # Quality Score + 报告三件套
-aa workflow run --change <id> --scope full --adapter opencode --server http://127.0.0.1:4096
+aa workflow run --change <id> --entrypoint full --adapter opencode --server http://127.0.0.1:4096
 ```
 
 `aa workflow run` 是完整的确定性 driver（主循环 + gate + 状态推进），不是 `status --next` 的别名。
@@ -94,18 +96,19 @@ aa workflow run --change <id> --scope full --adapter opencode --server http://12
 | `aa validate --change <id> [--phase <p>] [--artifact <rel>] [--json]` | 确定性校验 change 产物；退出码 0 通过 / 1 失败、缺失或零注册产物 / 2 用法错误 |
 | `aa status --change <id> [--next] [--json]` | 各阶段状态与下一批 dispatch；退出码 0 running/completed / 20 stopped / 30 needs_human_review / 40 error |
 | `aa gate check --change <id> --phase <p> [--json]` | 单阶段 gate 四态裁决；退出码 0 pass/enter/exit/skip / 30 needs_fix/needs_human_review/continue / 40 reject/stop |
-| `aa state apply --change <id> --phase <p>` | CLI 阶段（execution/healing-rerun/inspect/report）落盘 |
-| `aa state heal --change <id> --status <s>` | 记录 healing 决策（strict 审计事件） |
-| `aa decide --change <id> ...` | 记录人工决定（strict 审计事件 + 失败回滚） |
+| `aa state ...` | 非图进度辅助（如 configure）；禁止用 apply/heal 伪造进度 |
+| `aa decide --change <id> ...` | 非图策略决定（如 `allow_test_changes`）；图内人工裁决走 `workflow resume --interrupt` |
 | `aa risk context --change <id> [--project-dir <root>]` | 聚合 diff / cases / archive → `explore/context.json` |
 | `aa risk validate-advisory --change <id>` | 校验 `explore/advisory.json` 与 context |
 | `aa run --change <id>` | 按 `selected_targets` 执行测试，写 batch 结果 + 顶层指针 |
 | `aa report inspect --change <id>` | 失败分类 → `inspect/failure-analysis.json` + `quality-gate-result.json` |
 | `aa report generate --change <id>` | Quality Score → `report/` 三件套 |
 | `aa heal ...` | Healing 支持命令（fix-proposal 校验等） |
-| `aa workflow run --change <id> --scope full\|execute --adapter opencode\|headless [...]` | 确定性 driver 主循环；退出码 0 completed / 20 stopped / 30 needs_human_review / 40 error |
-| `aa workflow run --detach ...` | detached 后台启动（OpenCode `workflow_start` tool 走这条；立刻返回启动成败） |
-| `aa workflow status --change <id>` | 读 driver 状态文件 |
+| `aa workflow run --change <id> --entrypoint full\|intake\|execute\|case --adapter opencode\|headless [...]` | GraphRuntime 主循环；退出码 0 completed / 20 stopped / 30 interrupted / 40 error |
+| `aa workflow run --detach ...` | detached 后台启动（OpenCode `workflow_start`；立刻返回启动成败） |
+| `aa workflow status --change <id>` | GraphStatus（pending tasks / interrupts / retry） |
+| `aa workflow resume --change <id> [--interrupt <id> --action <a> --reason <text>]` | 续跑或解决 interrupt |
+| `aa workflow import-checkpoint --change <id> --manifest <path>` | 校验后导入 fixture/benchmark checkpoint |
 | `aa skill refresh [--sync-agents] [--dry-run]` | 同步 skills 到 `skills/`（始终）；`--sync-agents` 追加 `.opencode/{agents,tools,plugins}` |
 | `aa eval run\|plan\|report ...` | AI Eval 框架（权威文档 `docs/eval.md`） |
 | `aa retro --retro-id <id> --change <id>... [--json]` | 回顾聚合；`--json` stdout 含 `retro_id`/`signal_count`/`change_count` |

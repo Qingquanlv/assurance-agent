@@ -167,6 +167,10 @@ def validate_import(
     imported_ids: set[str] = set()
     ledger_complete = _ledger_succeeded_nodes(projection) if projection is not None else set()
     resolved: list[ResolvedImportTask] = []
+    # Accumulate prior imported gate reports so later gate() DSL refs resolve
+    # (e.g. codegen precondition → plan-review verdict).
+    node_results: dict[str, object] = {}
+    state_values = _state_values_from_change(context)
 
     for task in manifest.completed:
         structural_path = _resolve_structural_path(compiled, manifest.entrypoint, task)
@@ -200,7 +204,11 @@ def validate_import(
             if actual is None or actual != _strip_sha_prefix(expected):
                 raise CheckpointImportError(f"output hash mismatch for {logical}")
 
-        gate_report = _reevaluate_gate(compiled, context, task)
+        gate_report = _reevaluate_gate(
+            compiled, context, task, state_values=state_values, node_results=node_results
+        )
+        if gate_report is not None:
+            node_results[task.node] = {"gate": gate_report}
         imported_ids.add(_node_identity(structural_path, task.node, task.task_key))
         resolved.append(
             ResolvedImportTask(
@@ -373,10 +381,31 @@ def _assert_predecessor_closure(
         )
 
 
+def _state_values_from_change(context: RuntimeContext) -> dict[str, object]:
+    """Load workflow-state.yaml into gate ``state.*`` (phases/run_context/…)."""
+    path = context.change_dir / "workflow-state.yaml"
+    if not path.is_file():
+        return {}
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        key: value
+        for key, value in raw.items()
+        if key not in {"_integrity", "schema_version"} and not str(key).startswith("_")
+    }
+
+
 def _reevaluate_gate(
     compiled: CompiledWorkflow,
     context: RuntimeContext,
     task: ImportedTask,
+    *,
+    state_values: Mapping[str, object] | None = None,
+    node_results: Mapping[str, object] | None = None,
 ) -> dict[str, object] | None:
     node = compiled.graphs[task.graph].nodes[task.node]
     gate_id = node.definition.gate
@@ -396,8 +425,8 @@ def _reevaluate_gate(
         change_dir=context.change_dir,
         change_id=context.change_id,
         params=context.params,
-        state_values={},
-        node_results={},
+        state_values=dict(state_values) if state_values is not None else _state_values_from_change(context),
+        node_results=dict(node_results) if node_results is not None else {},
     )
     report = check_gate_in_view(compiled.schema.gates, gate_id, eval_context)
     if report.verdict.value != task.gate.verdict:

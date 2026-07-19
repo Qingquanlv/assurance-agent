@@ -70,14 +70,13 @@ def _build_eval_runner(data_root: Path, sut_root: Path):
         # available as an explicit opt-in (AA_EVAL_FAKE_ADAPTER) for CI/tests
         # and for deterministic suites where memory has no effect.
         use_fake = bool(os.environ.get("AA_EVAL_FAKE_ADAPTER"))
-        adapter_factory, status_factory = _resolve_adapter_factory(use_fake=use_fake, sut=sut_dir)
+        adapter_factory = _resolve_adapter_factory(use_fake=use_fake, sut=sut_dir)
 
         run_id, gate = run_suite(
             suite_file=suite_file,
             project_root=engine_root,
             sut_dir=sut_dir,
             adapter_factory=adapter_factory,
-            status_provider_factory=status_factory,
             fixtures_root=sut_dir / "eval-fixtures",
             extra_memory_dir=extra_memory_dir,
             repeat=suite_obj.regression.repeat if suite_obj.regression is not None else 1,

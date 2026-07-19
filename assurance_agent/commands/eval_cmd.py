@@ -18,7 +18,7 @@ from assurance_agent.eval.plan import generate_plan, load_suite, write_plan
 from assurance_agent.eval.report import generate_trend_report
 from assurance_agent.eval.runner import run_plan, run_suite
 from assurance_agent.exceptions import AaError
-from assurance_agent.workflow.driver.adapter import Adapter, PhaseRequest, PhaseResult
+from assurance_agent.workflow.graph.agent_api import AgentInvoker, AgentRequest, AgentResult
 
 _FAILING = {"fail", "inconclusive", "needs_human_review"}
 
@@ -26,35 +26,26 @@ _FAILING = {"fail", "inconclusive", "needs_human_review"}
 class _FakeAdapter:
     """AA_EVAL_FAKE_ADAPTER: skip real agent; seed/fixture supplies artifacts."""
 
-    def run_phase(self, request: PhaseRequest) -> PhaseResult:
-        return PhaseResult(ok=True, output="fake")
-
-
-def _terminal_status_provider_factory(**_: object):
-    from assurance_agent.workflow.orchestration.engine import Terminal, WorkflowStatus
-
-    def provider() -> WorkflowStatus:
-        return WorkflowStatus(phases=[], next_dispatch=[], terminal=Terminal(kind="completed", reason="fake"))
-
-    return provider
+    def invoke(self, request: AgentRequest) -> AgentResult:
+        return AgentResult(ok=True)
 
 
 def _resolve_adapter_factory(*, use_fake: bool, sut: Path):
     if use_fake:
 
-        def fake_factory(**_: object) -> Adapter:
+        def fake_factory(**_: object) -> AgentInvoker:
             return _FakeAdapter()
 
-        return fake_factory, _terminal_status_provider_factory
+        return fake_factory
 
     from assurance_agent.workflow.driver.headless_adapter import HeadlessAdapter
 
     agent_cmd = os.environ.get("AA_EVAL_AGENT_CMD", "cursor-agent")
 
-    def real_factory(*, sut_dir: Path | None = None, **_: object) -> Adapter:
+    def real_factory(*, sut_dir: Path | None = None, **_: object) -> AgentInvoker:
         return HeadlessAdapter(agent_cmd=agent_cmd, cwd=sut_dir or sut)
 
-    return real_factory, None
+    return real_factory
 
 
 def _resolve_sut(project_root: Path, sut_dir: str | None) -> Path:
@@ -108,7 +99,7 @@ def eval_run(
 
     use_fake = bool(os.environ.get("AA_EVAL_FAKE_ADAPTER"))
     sut = _resolve_sut(project_root, sut_dir)
-    adapter_factory, status_factory = _resolve_adapter_factory(use_fake=use_fake, sut=sut)
+    adapter_factory = _resolve_adapter_factory(use_fake=use_fake, sut=sut)
     overlay = Path(extra_memory_dir).resolve() if extra_memory_dir else None
 
     try:
@@ -122,7 +113,6 @@ def eval_run(
                 repeat=repeat,
                 calibrate=calibrate,
                 adapter_factory=adapter_factory,
-                status_provider_factory=status_factory,
                 extra_memory_dir=overlay,
             )
             _print_run(output_mode, as_json, run_id, gate.verdict)
@@ -134,7 +124,6 @@ def eval_run(
                 project_root=project_root,
                 sut_dir=sut,
                 adapter_factory=adapter_factory,
-                status_provider_factory=status_factory,
                 extra_memory_dir=overlay,
             )
             worst = _worst_verdict([g.verdict for g in gates])

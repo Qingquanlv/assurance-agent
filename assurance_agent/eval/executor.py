@@ -14,10 +14,22 @@ from assurance_agent.eval.write_scan import (
 )
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import assert_change_id_safe
-from assurance_agent.workflow.driver.adapter import Adapter
-from assurance_agent.workflow.driver.loop import CliPhaseExecutor, LoopResult, run_workflow_loop
+from assurance_agent.workflow.core.exit_codes import (
+    EXIT_COMPLETED,
+    EXIT_ERROR,
+    EXIT_HUMAN_REVIEW,
+    EXIT_STOPPED,
+)
+from assurance_agent.workflow.driver.runtime_factory import (
+    RuntimeBundle,
+    build_graph_runtime,
+    runtime_context_for,
+)
+from assurance_agent.workflow.graph.agent_api import AgentInvoker, AgentRequest, AgentResult
+from assurance_agent.workflow.graph.checkpoint import parse_import_manifest
+from assurance_agent.workflow.graph.runtime import GraphRuntimeError
 
-LoopRunner = Callable[..., LoopResult]
+RuntimeFactory = Callable[..., RuntimeBundle]  # tests may return structural stand-ins
 
 _IN_PROCESS_TYPES = frozenset({"in_process", "score-only"})
 
@@ -64,6 +76,44 @@ def _copy_sut_tests(sut_dir: Path, raw_output: Path) -> None:
     shutil.copytree(src, dest)
 
 
+def _exit_for_status(status: str) -> int:
+    if status == "completed":
+        return EXIT_COMPLETED
+    if status == "stopped":
+        return EXIT_STOPPED
+    if status == "interrupted":
+        return EXIT_HUMAN_REVIEW
+    return EXIT_ERROR
+
+
+def _as_invoker(adapter: AgentInvoker | object) -> AgentInvoker:
+    """Accept graph ``AgentInvoker`` or legacy ``run_phase``-only adapters."""
+    if callable(getattr(adapter, "invoke", None)):
+        return adapter  # type: ignore[return-value]
+
+    run_phase = getattr(adapter, "run_phase", None)
+    if not callable(run_phase):
+        raise AaError("eval adapter must implement invoke() or run_phase()")
+
+    class _Bridge:
+        def invoke(self, request: AgentRequest) -> AgentResult:
+            from assurance_agent.workflow.driver.adapter import PhaseRequest
+
+            phase = PhaseRequest(
+                change_id=request.change_id,
+                phase_id=request.node_id,
+                skill=request.target.removeprefix("skill:") if request.target.startswith("skill:") else None,
+                agent=None,
+                prompt=request.prompt,
+            )
+            result = run_phase(phase)
+            ok = bool(getattr(result, "ok", False))
+            error = getattr(result, "error", None)
+            return AgentResult(ok=ok, error=str(error) if error else None)
+
+    return _Bridge()
+
+
 def execute_in_process(
     sample: DatasetSample,
     attempt_dir: Path,
@@ -105,16 +155,15 @@ def execute_attempt(
     *,
     suite: str,
     sut_dir: Path,
-    adapter: Adapter,
-    scope: str = "full",
-    loop_runner: LoopRunner = run_workflow_loop,
-    status_provider: Callable[[], object] | None = None,
-    cli_executor: CliPhaseExecutor | None = None,
+    adapter: AgentInvoker | object,
+    entrypoint: str = "full",
+    runtime_factory: Callable[..., object] | None = None,
     expected_outputs: list[str] | None = None,
     fixtures_root: Path | None = None,
     executor_type: str = "workflow-run",
     run_mode: str | None = None,
     test_types: str | None = None,
+    run_tests: bool | None = None,
 ) -> ExecutionResult:
     if executor_type in _IN_PROCESS_TYPES:
         return execute_in_process(sample, attempt_dir, suite=suite)
@@ -125,7 +174,16 @@ def execute_attempt(
     assert_change_id_safe(change_id)
     attempt_dir.mkdir(parents=True, exist_ok=True)
 
+    resolved_run_mode = _expand_sample_input_vars(run_mode, sample) if run_mode else "full"
+    resolved_test_types = (
+        [t.strip() for t in str(test_types).split(",") if t.strip()]
+        if test_types
+        else ["api", "e2e"]
+    )
+    resolved_run_tests = True if run_tests is None else bool(run_tests)
+
     fixture_tier = sample.input.get("fixture_tier")
+    import_manifest_path: Path | None = None
     if fixture_tier:
         if fixtures_root is None:
             raise AaError(f"sample {sample.id} has fixture_tier but fixtures_root was not provided")
@@ -134,19 +192,18 @@ def execute_attempt(
             raise AaError(f"sample {sample.id} has fixture_tier but no explicit fixture_id")
         from assurance_agent.eval.fixtures import seed_change
 
-        seed_change(
+        seeded = seed_change(
             sut_sandbox=sut_dir,
             change_id=str(change_id),
             tier_name=str(fixture_tier),
             fixtures_root=fixtures_root,
             fixture_id=str(fixture_id),
+            entrypoint=entrypoint,
         )
+        import_manifest_path = seeded.import_manifest_path
 
     # Write-scan (P0 forbidden_write_executed_count): snapshot the SUT worktree
-    # after seeding, before the loop — aligned with the TS workflow-run executor.
-    # A non-git SUT fails closed: the attempt is recorded as an infrastructure
-    # error and the loop never runs (same as the old executor).
-    resolved_run_mode = _expand_sample_input_vars(run_mode, sample) if run_mode else "full"
+    # after seeding, before the runtime — aligned with the TS workflow-run executor.
     policy = resolve_write_policy(resolved_run_mode, test_types)
     try:
         before_porcelain = capture_write_scan_before(attempt_dir, sut_dir, policy)
@@ -156,7 +213,7 @@ def execute_attempt(
         execution = {
             "executor": f"workflow-run:{suite}",
             "change_id": change_id,
-            "scope": scope,
+            "entrypoint": entrypoint,
             "exit_code": 1,
             "reason": str(exc),
             "fixture_tier": fixture_tier,
@@ -175,15 +232,33 @@ def execute_attempt(
             extra={"infrastructure_error": True},
         )
 
-    loop = loop_runner(
-        project_root=sut_dir,
-        change_id=change_id,
-        scope=scope,
-        adapter=adapter,
-        status_provider=status_provider,
-        cli_executor=cli_executor,
-        skip_lock=True,
-    )
+    params: dict[str, object] = {
+        "run_mode": resolved_run_mode,
+        "test_types": resolved_test_types,
+        "run_tests": resolved_run_tests,
+    }
+    invoker = _as_invoker(adapter)
+    factory = runtime_factory or build_graph_runtime
+    reason = "ok"
+    exit_code = EXIT_COMPLETED
+    try:
+        bundle = factory(project_root=sut_dir, change_id=str(change_id), adapter=invoker)
+        context = runtime_context_for(sut_dir, str(change_id), params)
+        runtime = bundle.runtime  # type: ignore[attr-defined]
+        compiled = bundle.compiled  # type: ignore[attr-defined]
+        if import_manifest_path is not None and import_manifest_path.is_file():
+            manifest = parse_import_manifest(import_manifest_path.read_text(encoding="utf-8"))
+            imported = runtime.import_checkpoint(compiled, manifest, context)
+            status = runtime.status(imported.invocation_id)
+            exit_code = _exit_for_status(status.status)
+            reason = status.terminal_reason or status.status
+        else:
+            result = runtime.run(compiled, entrypoint, context)
+            exit_code = result.exit_code
+            reason = result.reason
+    except (GraphRuntimeError, AaError, ValueError, OSError) as exc:
+        exit_code = EXIT_ERROR
+        reason = str(exc)
 
     post_error: str | None = None
     try:
@@ -196,18 +271,19 @@ def execute_attempt(
     _copy_change_artifacts(change_dir, raw_output)
     _copy_sut_tests(sut_dir, raw_output)
 
-    status = "ok" if loop.exit_code == 0 else "error"
-    (attempt_dir / "stdout.log").write_text(loop.reason + "\n", encoding="utf-8")
+    status = "ok" if exit_code == 0 else "error"
+    (attempt_dir / "stdout.log").write_text(reason + "\n", encoding="utf-8")
     (attempt_dir / "stderr.log").write_text("", encoding="utf-8")
     execution = {
         "executor": f"workflow-run:{suite}",
         "change_id": change_id,
-        "scope": scope,
-        "exit_code": loop.exit_code,
-        "reason": loop.reason,
+        "entrypoint": entrypoint,
+        "exit_code": exit_code,
+        "reason": reason,
         "fixture_tier": fixture_tier,
         "executor_type": executor_type,
         "run_mode": resolved_run_mode,
+        "import_manifest": str(import_manifest_path) if import_manifest_path else None,
     }
     if post_error:
         execution["infrastructure_error"] = True
@@ -223,7 +299,7 @@ def execute_attempt(
         attempt=0,
         executor="workflow-run",
         status=status,
-        exit_code=loop.exit_code,
-        error=None if status == "ok" else (post_error or loop.reason or f"missing outputs: {missing}"),
+        exit_code=exit_code,
+        error=None if status == "ok" else (post_error or reason or f"missing outputs: {missing}"),
         extra={"missing_outputs": missing},
     )

@@ -28,8 +28,8 @@ Do not rely on prior conversation context.
    `source_batch_id` and latest manifest `batch_id`.
 4. Verify `fix-proposal.json.source_analysis_sha256` exactly equals the current
    `inspect/failure-analysis.json` SHA256.
-5. Do not write healing status to `workflow-state.yaml`; `proposal_created` and
-   `not_needed` are derived by the CLI from current artifacts.
+5. Do not write healing status by hand; healing status is a graph terminal operation
+   derived from ledger events and current artifacts.
 
 ---
 
@@ -99,7 +99,7 @@ For each **eligible** failure:
 5. Set `verification.rerun_required = true` always.
 6. Set `verification.success_case_ids` to the stable `case_id`s (as they appear in `inspect/failure-analysis.json`) that this fix must make pass. This is the human-readable declaration of intent. **The CLI does not trust it as the gate**: healing state is derived from the fresh analysis, proposal identity, and CLI-recorded apply evidence, because the `failure_ids` (FAIL-NNN) labels are agent-authored and can be renumbered across re-inspects.
 
-**Per-target resolution contract (RETRO-009).** Healing is recorded as `resolved` only after the post-rerun re-inspect proves each targeted failure is cleared — either it passes (gone from `failures[]`) or it is explicitly reclassified via `aa report reclassify` (evidence-logged). If a targeted failure is silently downgraded to a non-eligible category without that reclassify stamp, `aa state heal --to resolved` is rejected with `HEAL-TARGET-UNRESOLVED`; loop back for another attempt, reclassify with evidence, or go to `exhausted`. Never treat "patch applied" as "failure resolved".
+**Per-target resolution contract (RETRO-009).** Healing is recorded as `resolved` only after the post-rerun re-inspect proves each targeted failure is cleared — either it passes (gone from `failures[]`) or it is explicitly reclassified via `aa report reclassify` (evidence-logged). If a targeted failure is silently downgraded to a non-eligible category without that reclassify stamp, `graph healing terminal (resolved)` is rejected with `HEAL-TARGET-UNRESOLVED`; loop back for another attempt, reclassify with evidence, or go to `exhausted`. Never treat "patch applied" as "failure resolved".
 
 For any failure where `needs_review == true` (including `assertion_expectation_error`), generate the proposal but mark it review-gated. The fixer MUST NOT apply it until a human approval is recorded with `aa decide --at healing.safety --action accept_risk` or an equivalent supported workflow decision.
 

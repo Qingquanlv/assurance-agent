@@ -11,6 +11,38 @@ paths:
 - .qa.yaml
 resets:
   workflow_state:
+    phases.skill_registry_check.status: pass
+    run_context.interaction_mode: autonomous
+    run_context.orchestrator_skill: aa-workflow
     phases.case-design.status: done
     phases.case-review.status: done
     phases.api-plan.status: pending
+imports:
+  case:
+    entrypoint: case
+    inputs: []
+    completed:
+    - path: intake-workflow/bootstrap/bootstrap
+      graph: bootstrap
+      node: registry
+      outputs:
+      - change:workflow-state.yaml
+      gate: registry-gate
+    - path: intake-workflow/intake/intake
+      graph: intake
+      node: explore
+      outputs:
+      - change:explore/advisory.json
+    - path: intake-workflow/intake/intake
+      graph: intake
+      node: case-design
+      outputs:
+      - change:.qa.yaml
+      - change:proposal.md
+      gate: case-design-gate
+    - path: intake-workflow/intake/intake/case-review-cycle/case-review-cycle
+      graph: case-review-cycle
+      node: review
+      outputs:
+      - change:review/case-review.json
+      gate: case-review-gate

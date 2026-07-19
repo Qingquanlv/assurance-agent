@@ -1,4 +1,4 @@
-"""Temporary GraphRuntime compatibility wrapper for eval callers (until Task 16).
+"""GraphRuntime compatibility wrapper for CLI / detached launch.
 
 ``LoopResult(exit_code, reason)`` is retained. Ownership of workflow progression
 lives in ``GraphRuntime``; this module only acquires the process lock, projects
@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
 
 from assurance_agent.change_location import ChangeNotFoundError, resolve_change
 from assurance_agent.config import ConfigNotFoundError
@@ -46,27 +45,10 @@ __all__ = [
     "EXIT_STOPPED",
     "EXIT_HUMAN_REVIEW",
     "EXIT_ERROR",
-    "CliPhaseExecutor",
-    "HealingActionExecutor",
     "LoopResult",
     "build_driver_telemetry",
     "run_workflow_loop",
 ]
-
-
-class CliPhaseExecutor(Protocol):
-    """Typing stub retained for eval imports until Task 16; not injectable."""
-
-    def run_cli_phase(self, entry: object, ctx: object) -> object: ...
-
-    def apply_phase_state(self, entry: object, ctx: object, attempt_id: str) -> object: ...
-
-
-class HealingActionExecutor(Protocol):
-    """Typing stub retained for eval imports until Task 16; not injectable."""
-
-    def execute(self, action: object, ctx: object) -> object: ...
-
 
 
 @dataclass

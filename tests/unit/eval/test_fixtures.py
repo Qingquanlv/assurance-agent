@@ -79,14 +79,16 @@ def test_seed_change_preserves_state_integrity(tmp_path: Path) -> None:
     fixtures = _write_synth_fixtures(tmp_path)
     sut = tmp_path / "sut"
     sut.mkdir()
-    seed_change(
+    result = seed_change(
         sut_sandbox=sut,
         change_id="eval-sample-001",
         tier_name="L3-run-seed",
         fixtures_root=fixtures,
         fixture_id="fixture-001",
+        entrypoint=None,
     )
-    change = sut / "qa" / "changes" / "eval-sample-001"
+    change = result.change_dir
+    assert result.import_manifest_path is None
     assert (change / "proposal.md").exists()
     assert (sut / "tests" / "api" / "test_synth.py").exists()
     assert verify_state_integrity(change) is None
@@ -104,3 +106,61 @@ def test_seed_change_rejects_fixture_drift(tmp_path: Path) -> None:
             fixtures_root=fixtures,
             fixture_id="fixture-001",
         )
+
+
+def test_load_tier_merges_imports_by_entrypoint(tmp_path: Path) -> None:
+    fixtures = tmp_path / "eval-fixtures"
+    tiers = fixtures / "tiers"
+    tiers.mkdir(parents=True)
+    (tiers / "parent.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": "parent",
+                "imports": {
+                    "execute": {
+                        "entrypoint": "execute",
+                        "inputs": ["change:proposal.md"],
+                        "completed": [
+                            {
+                                "path": "execute-workflow/bootstrap/bootstrap",
+                                "graph": "bootstrap",
+                                "node": "registry",
+                                "outputs": ["change:workflow-state.yaml"],
+                                "gate": "registry-gate",
+                            }
+                        ],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tiers / "child.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": "child",
+                "extends": "parent",
+                "imports": {
+                    "execute": {
+                        "entrypoint": "execute",
+                        "inputs": ["change:.qa.yaml"],
+                        "completed": [
+                            {
+                                "path": "execute-workflow/assurance/assurance",
+                                "graph": "assurance",
+                                "node": "fact-baseline",
+                                "outputs": ["change:facts/fact-baseline.json"],
+                            }
+                        ],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    tier = load_tier(fixtures, "child")
+    imp = tier.imports["execute"]
+    assert "change:proposal.md" in imp.inputs
+    assert "change:.qa.yaml" in imp.inputs
+    nodes = {t.node for t in imp.completed}
+    assert nodes == {"registry", "fact-baseline"}
