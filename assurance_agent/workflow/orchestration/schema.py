@@ -256,6 +256,19 @@ def _normalize_gate(gate_id: str, raw: dict[str, object]) -> GateDef:
     )
 
 
+def normalize_gates(raw: object) -> dict[str, GateDef]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise SchemaError("gates must be a mapping")
+    normalized: dict[str, GateDef] = {}
+    for gate_id, gate_raw in raw.items():
+        if gate_raw is not None and not isinstance(gate_raw, dict):
+            raise SchemaError(f"gate {gate_id!r} must be a mapping")
+        normalized[str(gate_id)] = _normalize_gate(str(gate_id), gate_raw or {})
+    return normalized
+
+
 def parse_schema(yaml_text: str) -> WorkflowSchema:
     try:
         doc = yaml.safe_load(yaml_text)
@@ -268,7 +281,7 @@ def parse_schema(yaml_text: str) -> WorkflowSchema:
             lid: LoopDef(id=lid, **{k: v for k, v in (lv or {}).items()})
             for lid, lv in (doc.get("loops") or {}).items()
         }
-        gates = {gid: _normalize_gate(gid, gv or {}) for gid, gv in (doc.get("gates") or {}).items()}
+        gates = normalize_gates(doc.get("gates"))
         schema = WorkflowSchema(
             schema_version=str(doc.get("schema_version", "")),
             name=str(doc.get("name", "")),
