@@ -131,6 +131,9 @@ class ExecutableTask(BaseModel):
     resources: ResourceClaims
     task_key: str | None = None
     budget: BudgetConsumption | None = None
+    # scheduler 确定性 wave 选择键；planner 尚未回填时默认为 0，退化为 task_id 序。
+    topology_rank: int = 0
+    declaration_index: int = 0
 
 
 class PlanResult(BaseModel):
@@ -143,6 +146,19 @@ class PlanResult(BaseModel):
     strict_events: tuple[BaseModel, ...] = ()
     terminal: Literal["end", "stop", "fail", "interrupt"] | None = None
     reason: str | None = None
+
+
+class WaveResult(BaseModel):
+    """一次 Execute/Update wave 的冻结结果：成功/失败/中断与 pending write-set。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    superstep_id: str
+    succeeded: tuple[str, ...] = ()
+    failed: tuple[str, ...] = ()
+    interrupted: tuple[str, ...] = ()
+    stopped: tuple[str, ...] = ()
+    pending_write_set_ids: tuple[str, ...] = ()
+    retry_at: str | None = None
 
 
 # ---- ledger 投影模型（strict events 的唯一权威视图）----

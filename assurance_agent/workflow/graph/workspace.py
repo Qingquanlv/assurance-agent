@@ -11,7 +11,9 @@ write-sets，校验 sibling 不重叠、entry before 与 base tree 一致、cano
 tree manifest 是按路径排序的规范 JSON，记录 ``kind``/``sha256``/executable mode 与逻辑
 root 映射（``change:``/``project:``/``repo:`` → 树内前缀）。capture 排除 ``.git/``、
 ``.graph-runtime/``、``.worktrees/``、``.venv/``、``node_modules/``、``__pycache__/``、
-``.pytest_cache/``、``.ruff_cache/``；变化的 symlink 与解析到逻辑 root 之外的路径
+``.pytest_cache/``、``.ruff_cache/``，以及 change-dir coordinator 文件
+（``events.jsonl``、``workflow-state.yaml``、``running-tasks.json``、
+``.progression.lock``）；变化的 symlink 与解析到逻辑 root 之外的路径
 一律拒绝。对象库由 coordinator 独占写入，不暴露给 handler。
 """
 
@@ -45,6 +47,15 @@ _EXCLUDED_DIRS = frozenset(
         "__pycache__",
         ".pytest_cache",
         ".ruff_cache",
+    }
+)
+# change-dir coordinator 文件：不进 tree capture，也不参与 apply drift。
+_EXCLUDED_FILES = frozenset(
+    {
+        "events.jsonl",
+        "workflow-state.yaml",
+        "running-tasks.json",
+        ".progression.lock",
     }
 )
 _HEX = frozenset("0123456789abcdef")
@@ -159,6 +170,8 @@ def _walk(root: Path) -> dict[str, _Entry]:
         with os.scandir(directory) as children:
             for child in children:
                 rel = f"{prefix}{child.name}"
+                if child.name in _EXCLUDED_FILES:
+                    continue
                 if child.is_dir(follow_symlinks=False):
                     if child.name not in _EXCLUDED_DIRS:
                         visit(Path(child.path), f"{rel}/")

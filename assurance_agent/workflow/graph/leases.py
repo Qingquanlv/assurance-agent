@@ -556,6 +556,48 @@ def recover_running_tasks(
     return tuple(actions)
 
 
+@contextmanager
+def heartbeat_while(
+    registry: LeaseRegistry,
+    *,
+    task_id: str,
+    attempt_id: str,
+    clock: Clock,
+    heartbeat_seconds: float,
+    lease_extension_seconds: float,
+) -> Iterator[None]:
+    """为运行中的 attempt 起一个只更新 liveness 的 heartbeat 线程。
+
+    绝不能把 failed task 变成成功，也不触碰预算与成功投影；只推进匹配的
+    ``(task_id, attempt_id)`` lease 到期时刻。退出 context 时停止线程。
+    """
+    stop = threading.Event()
+    interval = max(0.05, float(heartbeat_seconds))
+    extension = max(interval, float(lease_extension_seconds))
+
+    def _loop() -> None:
+        while not stop.wait(interval):
+            now = clock.now()
+            registry.heartbeat(
+                task_id,
+                attempt_id,
+                at=now.isoformat(),
+                lease_expires_at=(now + timedelta(seconds=extension)).isoformat(),
+            )
+
+    thread = threading.Thread(
+        target=_loop,
+        name=f"lease-heartbeat-{task_id}",
+        daemon=True,
+    )
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=interval + 1.0)
+
+
 __all__ = [
     "RUNNING_TASKS_FILENAME",
     "AttemptDecision",
@@ -571,6 +613,7 @@ __all__ = [
     "abandon_running_attempt",
     "classify_recovery",
     "compute_next_retry_at",
+    "heartbeat_while",
     "new_lease",
     "next_attempt_decision",
     "recover_running_tasks",
