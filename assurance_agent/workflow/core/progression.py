@@ -94,6 +94,7 @@ class ProgressionTxn:
         self._events: list[Mapping[str, object]] = []
         self._next_state: WorkflowState | None = None
         self._state_set = False
+        self._state_projection: bytes | None = None
 
     def read_state(self) -> WorkflowState:
         return read_state(self._change_dir)
@@ -124,10 +125,24 @@ class ProgressionTxn:
             self._events.append(dict(event))
 
     def set_state(self, state: WorkflowState) -> None:
+        if self._state_projection is not None:
+            raise ValueError("set_state cannot be mixed with set_workflow_state_projection in one transaction")
         if self._state_set:
             raise ValueError("set_state may be called at most once per transaction")
         self._state_set = True
         self._next_state = state
+
+    def set_workflow_state_projection(self, content: bytes | str) -> None:
+        """graph 路径专属：stage 保留文件 ``workflow-state.yaml`` 的投影字节。
+
+        与 ``write_file`` 分开存放（保留文件走独立槽位），随同一事务
+        capture/apply/rollback；每事务至多一次，且不得与 v1 ``set_state`` 混用。
+        """
+        if self._state_projection is not None:
+            raise ValueError("set_workflow_state_projection may be called at most once per transaction")
+        if self._state_set:
+            raise ValueError("set_workflow_state_projection cannot be mixed with set_state in one transaction")
+        self._state_projection = content.encode("utf-8") if isinstance(content, str) else content
 
     def _resolve_rel(self, rel: str) -> Path:
         if not rel or rel.startswith("/") or "\\" in rel:
@@ -149,10 +164,17 @@ class ProgressionTxn:
         return target
 
     def _apply(self) -> None:
-        if not self._files and not self._events and self._next_state is None:
+        if (
+            not self._files
+            and not self._events
+            and self._next_state is None
+            and self._state_projection is None
+        ):
             return
 
         targets: list[Path] = [self._change_dir / rel for rel, _ in self._files]
+        if self._state_projection is not None:
+            targets.append(state_file(self._change_dir))
         targets.append(self._change_dir / "events.jsonl")
         if self._next_state is not None:
             targets.append(state_file(self._change_dir))
@@ -161,6 +183,8 @@ class ProgressionTxn:
         try:
             for rel, data in self._files:
                 _atomic_write_bytes(self._change_dir / rel, data)
+            if self._state_projection is not None:
+                _atomic_write_bytes(state_file(self._change_dir), self._state_projection)
             for event in self._events:
                 append_event_strict(self._change_dir, event)
             if self._next_state is not None:

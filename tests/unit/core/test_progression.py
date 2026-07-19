@@ -155,6 +155,72 @@ def test_set_state_twice_raises(tmp_path: Path) -> None:
             txn.set_state(WorkflowState())
 
 
+def test_set_workflow_state_projection_writes_reserved_file(tmp_path: Path) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    with transaction(change) as txn:
+        txn.set_workflow_state_projection(b"invocation_id: inv-1\n")
+    assert (change / "workflow-state.yaml").read_bytes() == b"invocation_id: inv-1\n"
+
+
+def test_set_workflow_state_projection_accepts_str(tmp_path: Path) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    with transaction(change) as txn:
+        txn.set_workflow_state_projection("terminal: completed\n")
+    assert (change / "workflow-state.yaml").read_bytes() == b"terminal: completed\n"
+
+
+def test_set_workflow_state_projection_rejects_second_call(tmp_path: Path) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    with pytest.raises(ValueError, match="at most once"):
+        with transaction(change) as txn:
+            txn.set_workflow_state_projection(b"a")
+            txn.set_workflow_state_projection(b"b")
+
+
+def test_set_workflow_state_projection_rejects_set_state_mix(tmp_path: Path) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    with pytest.raises(ValueError, match="mixed"):
+        with transaction(change) as txn:
+            txn.set_state(WorkflowState())
+            txn.set_workflow_state_projection(b"a")
+    with pytest.raises(ValueError, match="mixed"):
+        with transaction(change) as txn:
+            txn.set_workflow_state_projection(b"a")
+            txn.set_state(WorkflowState())
+
+
+def test_workflow_state_projection_block_exception_writes_nothing(tmp_path: Path) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    with pytest.raises(RuntimeError, match="boom"):
+        with transaction(change) as txn:
+            txn.set_workflow_state_projection(b"x")
+            raise RuntimeError("boom")
+    assert not (change / "workflow-state.yaml").exists()
+
+
+def test_workflow_state_projection_rolls_back_on_commit_failure(tmp_path: Path, monkeypatch) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    write_state(change, WorkflowState())
+    original = (change / "workflow-state.yaml").read_bytes()
+
+    def fail_append(*_a, **_k) -> None:
+        raise OSError("append failed")
+
+    monkeypatch.setattr(progression_mod, "append_event_strict", fail_append)
+    with pytest.raises(ProgressionCommitError):
+        with transaction(change) as txn:
+            txn.set_workflow_state_projection(b"projected: true\n")
+            txn.append_strict(_event())
+    # 投影字节随事务回滚，磁盘保留原 workflow-state.yaml。
+    assert (change / "workflow-state.yaml").read_bytes() == original
+
+
 def test_empty_transaction_is_noop(tmp_path: Path) -> None:
     change = tmp_path / "CH-1"
     change.mkdir()

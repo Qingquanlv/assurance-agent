@@ -6,10 +6,12 @@ import pytest
 from assurance_agent.workflow.core.events import (
     EventWriteError,
     HealingAttemptAllocatedEvent,
+    LedgerIntegrityError,
     append_event_best_effort,
     append_event_strict,
     next_seq,
     read_events,
+    read_events_strict,
 )
 
 
@@ -153,3 +155,95 @@ def test_events_are_jsonl(tmp_path: Path):
     append_event_strict(tmp_path, _allocation())
     line = (tmp_path / "events.jsonl").read_text().strip()
     assert json.loads(line)["operation_id"] == "op-1"
+
+
+def _invocation_started_payload(invocation_id: str = "i") -> dict:
+    return {
+        "source": "graph",
+        "type": "graph_invocation_started",
+        "invocation_id": invocation_id,
+        "entrypoint": "full",
+        "graph_id": "main",
+        "graph_digest": "d",
+        "contract_digests": {},
+        "params": {},
+        "params_sha256": "p",
+        "root_tree_id": "t",
+        "max_parallel_tasks": 2,
+        "checkpoint_ns": invocation_id,
+        "structural_path": "main",
+    }
+
+
+def test_read_events_strict_rejects_bad_json_and_sequence_gap(tmp_path: Path) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    (change / "events.jsonl").write_text(
+        '{"seq":1,"ts":"x","source":"graph","type":"graph_invocation_started",'
+        '"invocation_id":"i","entrypoint":"full","graph_id":"main",'
+        '"graph_digest":"d","contract_digests":{},"params":{},'
+        '"params_sha256":"p","root_tree_id":"t","max_parallel_tasks":2,'
+        '"checkpoint_ns":"i","structural_path":"main"}\n'
+        '{bad}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(LedgerIntegrityError, match="line 2"):
+        read_events_strict(change)
+
+
+def test_read_events_strict_rejects_sequence_gap(tmp_path: Path) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    append_event_strict(change, _invocation_started_payload())
+    append_event_strict(change, _invocation_started_payload("j"))
+    # 手工把第二行 seq 改成 3，制造 1..N 缺口。
+    lines = (change / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    forged = json.loads(lines[1])
+    forged["seq"] = 3
+    lines[1] = json.dumps(forged, ensure_ascii=False)
+    (change / "events.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(LedgerIntegrityError, match="line 2.*seq"):
+        read_events_strict(change)
+
+
+def test_read_events_strict_rejects_unknown_type_and_extra_field(tmp_path: Path) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    unknown = dict(_invocation_started_payload())
+    unknown["type"] = "graph_bogus"
+    append_event_strict(change, _invocation_started_payload())  # seq 1 合法
+    with (change / "events.jsonl").open("a", encoding="utf-8") as fh:
+        record = {"seq": 2, "ts": "x", **unknown}
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    with pytest.raises(LedgerIntegrityError, match="line 2"):
+        read_events_strict(change)
+
+    change2 = tmp_path / "CH-2"
+    change2.mkdir()
+    append_event_strict(change2, _invocation_started_payload())
+    with (change2 / "events.jsonl").open("a", encoding="utf-8") as fh:
+        record = {"seq": 2, "ts": "x", **_invocation_started_payload("j"), "unexpected": 1}
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    with pytest.raises(LedgerIntegrityError, match="line 2"):
+        read_events_strict(change2)
+
+
+def test_read_events_strict_returns_envelopes_intact(tmp_path: Path) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    append_event_strict(change, _invocation_started_payload())
+    append_event_strict(change, _invocation_started_payload("j"))
+    events = read_events_strict(change)
+    assert [e["seq"] for e in events] == [1, 2]
+    assert all(isinstance(e["ts"], str) and e["ts"] for e in events)
+    assert [e["invocation_id"] for e in events] == ["i", "j"]
+
+
+def test_graph_event_requires_declared_fields(tmp_path: Path) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    with pytest.raises(EventWriteError):
+        append_event_strict(
+            change,
+            {"source": "graph", "type": "task_attempt_started", "task_id": "missing-fields"},
+        )

@@ -16,8 +16,10 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from assurance_agent.exceptions import AaError
+from assurance_agent.workflow.core.graph_events import GRAPH_EVENT_ADAPTER, GraphEvent
 
 EVENTS_RELPATH = "events.jsonl"
+_LEDGER_ENVELOPE_KEYS = frozenset({"seq", "ts"})
 
 
 class _AuditEventBase(BaseModel):
@@ -131,7 +133,8 @@ AuditEvent = Annotated[
     | HealTransitionEvent
     | HealingEntryBaselinePinnedEvent
     | GateVerdictEvent
-    | FailureReclassifiedEvent,
+    | FailureReclassifiedEvent
+    | GraphEvent,
     Field(discriminator="type"),
 ]
 _AUDIT_ADAPTER = TypeAdapter(AuditEvent)
@@ -139,6 +142,10 @@ _AUDIT_ADAPTER = TypeAdapter(AuditEvent)
 
 class EventWriteError(AaError):
     """strict 审计事件写入失败。"""
+
+
+class LedgerIntegrityError(AaError):
+    """strict ledger 读取失败：坏 JSON、非 dict 行、seq 缺口或非法 graph 事件。"""
 
 
 def _events_file(change_dir: Path) -> Path:
@@ -205,6 +212,43 @@ def read_events(change_dir: Path) -> list[dict[str, object]]:
             continue  # 容错：跳过坏行（对齐源版 readEvents）
         if isinstance(value, dict):
             out.append(value)
+    return out
+
+
+def read_events_strict(change_dir: Path) -> list[dict[str, object]]:
+    """Fail-closed 读取：每行必须是合法 JSON dict，seq 严格 1..N 连续。
+
+    仅剥离 ledger 信封键 ``seq``/``ts`` 后，把每个 ``source == "graph"`` 的
+    payload 过 graph-event adapter 校验（未知 type、未声明字段即完整性失败）；
+    返回值保留原始 dict（含信封键），projection 得以保留事件序号。
+    首个违规即抛 ``LedgerIntegrityError``（带行号/seq 上下文）。
+    """
+    file = _events_file(change_dir)
+    if not file.exists():
+        return []
+    out: list[dict[str, object]] = []
+    expected_seq = 0
+    for line_no, raw in enumerate(file.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise LedgerIntegrityError(f"{file} line {line_no}: invalid JSON: {exc}") from exc
+        if not isinstance(value, dict):
+            raise LedgerIntegrityError(f"{file} line {line_no}: event is not a JSON object")
+        expected_seq += 1
+        seq = value.get("seq")
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq != expected_seq:
+            raise LedgerIntegrityError(f"{file} line {line_no}: expected seq {expected_seq}, got {seq!r}")
+        if value.get("source") == "graph":
+            payload = {k: v for k, v in value.items() if k not in _LEDGER_ENVELOPE_KEYS}
+            try:
+                GRAPH_EVENT_ADAPTER.validate_python(payload)
+            except ValidationError as exc:
+                raise LedgerIntegrityError(f"{file} line {line_no}: invalid graph event: {exc}") from exc
+        out.append(value)
     return out
 
 
