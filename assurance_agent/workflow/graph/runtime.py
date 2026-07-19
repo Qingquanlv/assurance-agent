@@ -18,15 +18,20 @@ from assurance_agent.workflow.core.exit_codes import (
     EXIT_STOPPED,
 )
 from assurance_agent.workflow.core.graph_events import (
+    BudgetConsumedEvent,
+    CheckpointImportedEvent,
     GraphInvocationStartedEvent,
     GraphResumedEvent,
     GraphTerminalEvent,
+    TaskImportedEvent,
 )
 from assurance_agent.workflow.core.progression import ProgressionError, transaction
 from assurance_agent.workflow.execution.tree_hash import sha256_file
 from assurance_agent.workflow.graph.checkpoint import (
+    CheckpointImportError,
     CheckpointStore,
     render_workflow_state_yaml,
+    validate_import,
 )
 from assurance_agent.workflow.graph.compiler import canonical_digest, resolve_params
 from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog
@@ -42,6 +47,8 @@ from assurance_agent.workflow.graph.models import (
     ExecutableTask,
     GraphProjection,
     GraphStatus,
+    ImportManifest,
+    ImportResult,
     InterruptProjection,
     PlanResult,
     ResumeCommand,
@@ -367,6 +374,133 @@ class GraphRuntime:
         return graph_status_from_projection(
             projection,
             pending_write_sets=self._pending_write_sets(invocation_id),
+        )
+
+    def import_checkpoint(
+        self,
+        schema: CompiledWorkflow,
+        manifest: ImportManifest,
+        context: RuntimeContext,
+    ) -> ImportResult:
+        """校验并原子导入显式 manifest；不伪造物理 attempt，随后 resume 继续。"""
+        validated = validate_import(schema, manifest, context)
+        latest = self.latest_root_invocation()
+        if latest is not None:
+            try:
+                existing = self._checkpoints.project(latest)
+            except LedgerIntegrityError as exc:
+                raise GraphIntegrityError(str(exc)) from exc
+            if existing.terminal is None:
+                raise GraphRuntimeError(
+                    f"change already has active invocation {latest}; resume instead of import"
+                )
+
+        if manifest.entrypoint not in schema.entrypoints:
+            raise CheckpointImportError(f"unknown entrypoint '{manifest.entrypoint}'")
+        entry = schema.entrypoints[manifest.entrypoint]
+        try:
+            params = resolve_params(schema.schema, {**entry.param_overrides, **context.params})
+        except Exception as exc:
+            raise GraphRuntimeError(f"invalid params: {exc}") from exc
+        if entry.allow_expr is not None and not is_satisfied(
+            entry.allow_expr, Scope({"params": params})
+        ):
+            raise GraphRuntimeError(
+                f"entrypoint '{manifest.entrypoint}' allow expression rejected params"
+            )
+
+        root_tree_id = self._objects.capture(context.project_root, repo_root=context.repo_root)
+        invocation_id = str(uuid4())
+        checkpoint_ns = invocation_id
+        bound = context.model_copy(update={"params": params})
+        started = GraphInvocationStartedEvent(
+            type="graph_invocation_started",
+            invocation_id=invocation_id,
+            entrypoint=manifest.entrypoint,
+            graph_id=entry.graph_id,
+            graph_digest=schema.digest,
+            contract_digests=dict(schema.contract_digests),
+            params=params,
+            params_sha256=canonical_digest(params),
+            root_tree_id=root_tree_id,
+            max_parallel_tasks=schema.schema.policies.scheduler.max_parallel_tasks,
+            checkpoint_ns=checkpoint_ns,
+            structural_path=entry.graph_id,
+        )
+
+        imported_task_ids: list[str] = []
+        try:
+            with transaction(context.change_dir) as txn:
+                txn.append_strict(started)
+                self._stage_pinned_definitions(txn, schema)
+                txn.write_runtime_file(
+                    f".graph-runtime/invocations/{invocation_id}.json",
+                    json.dumps(
+                        {
+                            "project_root": str(context.project_root),
+                            "repo_root": str(context.repo_root),
+                            "change_id": context.change_id,
+                            "parent_session_id": context.parent_session_id,
+                        },
+                        sort_keys=True,
+                    ).encode("utf-8"),
+                )
+                for item in validated.resolved:
+                    txn.append_strict(
+                        TaskImportedEvent(
+                            type="task_imported",
+                            invocation_id=invocation_id,
+                            checkpoint_ns=checkpoint_ns,
+                            graph_id=item.task.graph,
+                            node_id=item.task.node,
+                            structural_path=item.structural_path,
+                            task_key=item.task.task_key,
+                            outputs_sha256=dict(item.task.outputs),
+                            gate_report=item.gate_report,
+                        )
+                    )
+                    imported_task_ids.append(item.task_id)
+                for budget in validated.budgets:
+                    txn.append_strict(
+                        BudgetConsumedEvent(
+                            type="budget_consumed",
+                            invocation_id=invocation_id,
+                            checkpoint_ns=checkpoint_ns,
+                            graph_id=entry.graph_id,
+                            budget_id=budget.budget_id,
+                            consumption_id=budget.consumption_id,
+                            task_id=budget.task_path,
+                        )
+                    )
+                txn.append_strict(
+                    CheckpointImportedEvent(
+                        type="checkpoint_imported",
+                        invocation_id=invocation_id,
+                        checkpoint_ns=checkpoint_ns,
+                        fixture_id=manifest.fixture_id,
+                        fixture_digest=_strip_sha_prefix(manifest.fixture_digest),
+                        manifest_sha256=validated.manifest_sha256,
+                        input_sha256=dict(validated.input_sha256),
+                    )
+                )
+        except CheckpointImportError:
+            raise
+        except Exception as exc:
+            if "duplicate" in str(exc).lower():
+                raise GraphRuntimeError(f"duplicate invocation start: {invocation_id}") from exc
+            raise
+
+        projection = self._checkpoints.project(invocation_id)
+        checkpoint_id = f"bootstrap-{invocation_id}"
+        # 首个 checkpoint 来自严格 ledger 投影（无 superstep_committed 时用 bootstrap 名）。
+        self._checkpoints.write(projection)
+
+        # 导入后从未完成 task 继续；失败不回滚已提交的 import 事件。
+        self._drive(invocation_id, bound)
+        return ImportResult(
+            invocation_id=invocation_id,
+            checkpoint_id=checkpoint_id,
+            imported_tasks=tuple(imported_task_ids),
         )
 
     def latest_root_invocation(self) -> str | None:
@@ -1073,6 +1207,12 @@ def _child_invocation_from_ns(checkpoint_ns: str, root_ns: str) -> str | None:
     if len(parts) < 3:
         return None
     return parts[-1]
+
+
+def _strip_sha_prefix(value: str) -> str:
+    if value.startswith("sha256:"):
+        return value[len("sha256:") :]
+    return value
 
 
 __all__ = [

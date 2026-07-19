@@ -5,17 +5,25 @@
 ``event_seq`` 与 digest 三元组（graph/contract/params）和 ledger 投影完全
 一致时才被接受，否则从 ledger 重建并覆盖缓存。``workflow-state.yaml`` 只经
 ``ProgressionTxn.set_workflow_state_projection`` 落盘，运行时决策从不读它。
+
+显式 ``import-checkpoint`` 校验也落在本模块：fixture digest、structural path、
+前驱闭包、输出 hash 与 gate 重求值；裸 artifact 存在绝不伪造 completed task。
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 import yaml
 from pydantic import ValidationError
 
+from assurance_agent.eval.fixtures import FixtureLock
+from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
 from assurance_agent.workflow.core.graph_events import (
     GRAPH_EVENT_ADAPTER,
@@ -37,12 +45,22 @@ from assurance_agent.workflow.core.graph_events import (
     TaskImportedEvent,
 )
 from assurance_agent.workflow.core.progression import transaction
+from assurance_agent.workflow.execution.tree_hash import sha256_file
 from assurance_agent.workflow.graph.models import (
+    CompiledWorkflow,
     FanOutExpansion,
     GraphProjection,
+    ImportManifest,
+    ImportedBudget,
+    ImportedTask,
     InterruptProjection,
+    RuntimeContext,
     TaskProjection,
     WorkflowStateProjection,
+)
+from assurance_agent.workflow.orchestration.gates import (
+    GateEvaluationContext,
+    check_gate_in_view,
 )
 
 CHECKPOINT_DIR_RELPATH = ".graph-runtime/checkpoints"
@@ -54,6 +72,380 @@ _TERMINAL_BY_TYPE: dict[str, Literal["completed", "stopped", "failed"]] = {
 }
 
 _AttemptOutcomeEvent = TaskAttemptSucceededEvent | TaskAttemptFailedEvent | TaskAttemptAbandonedEvent
+
+
+class CheckpointImportError(AaError):
+    """显式 import-checkpoint 校验失败；不写入任何 ledger 事件。"""
+
+
+@dataclass(frozen=True)
+class ResolvedImportTask:
+    task: ImportedTask
+    structural_path: str
+    task_id: str
+    gate_report: dict[str, object] | None
+
+
+@dataclass(frozen=True)
+class ValidatedImport:
+    manifest: ImportManifest
+    manifest_sha256: str
+    resolved: tuple[ResolvedImportTask, ...]
+    budgets: tuple[ImportedBudget, ...]
+    input_sha256: dict[str, str]
+
+
+def parse_import_manifest(raw: Mapping[str, object] | str | bytes) -> ImportManifest:
+    """把 YAML/dict manifest 正规化为冻结 ``ImportManifest``。
+
+    ``source.kind`` / ``source.fixture_id`` / ``source.fixture_digest`` 扁平化到
+    顶层字段；拒绝额外字段与缺少 ``path`` 的模糊 graph/node-only 引用。
+    """
+    if isinstance(raw, (str, bytes)):
+        try:
+            loaded = yaml.safe_load(raw)
+        except yaml.YAMLError as exc:
+            raise CheckpointImportError(f"invalid import manifest YAML: {exc}") from exc
+        if not isinstance(loaded, dict):
+            raise CheckpointImportError("import manifest root must be a mapping")
+        payload: dict[str, object] = loaded
+    else:
+        payload = dict(raw)
+
+    if "source" in payload:
+        source = payload.pop("source")
+        if not isinstance(source, dict):
+            raise CheckpointImportError("import manifest source must be a mapping")
+        unknown_source = sorted(str(k) for k in source if k not in {"kind", "fixture_id", "fixture_digest"})
+        if unknown_source:
+            raise CheckpointImportError(
+                "unknown source fields: " + ", ".join(unknown_source)
+            )
+        if "kind" in source:
+            payload["source_kind"] = source["kind"]
+        if "fixture_id" in source:
+            payload["fixture_id"] = source["fixture_id"]
+        if "fixture_digest" in source:
+            payload["fixture_digest"] = source["fixture_digest"]
+
+    completed_raw = payload.get("completed")
+    if isinstance(completed_raw, list):
+        for index, item in enumerate(completed_raw):
+            if not isinstance(item, dict):
+                raise CheckpointImportError(f"completed[{index}] must be a mapping")
+            if "path" not in item:
+                raise CheckpointImportError(
+                    f"completed[{index}] ambiguous graph/node-only task reference; path is required"
+                )
+
+    try:
+        return ImportManifest.model_validate(payload)
+    except ValidationError as exc:
+        raise CheckpointImportError(f"invalid import manifest: {exc}") from exc
+
+
+def validate_import(
+    compiled: CompiledWorkflow,
+    manifest: ImportManifest,
+    context: RuntimeContext,
+    *,
+    projection: GraphProjection | None = None,
+) -> ValidatedImport:
+    """校验 fixture digest、路径安全、structural path、前驱闭包、输出 hash 与 gate。"""
+    if manifest.entrypoint not in compiled.entrypoints:
+        raise CheckpointImportError(f"unknown entrypoint '{manifest.entrypoint}'")
+
+    _verify_fixture_digest(context, manifest.fixture_id, manifest.fixture_digest)
+
+    input_sha256: dict[str, str] = {}
+    for logical, expected in sorted(manifest.inputs.items()):
+        path = _resolve_logical_path(context, logical)
+        actual = sha256_file(path)
+        if actual is None or actual != _strip_sha_prefix(expected):
+            raise CheckpointImportError(f"input hash mismatch for {logical}")
+        input_sha256[logical] = actual
+
+    imported_ids: set[str] = set()
+    ledger_complete = _ledger_succeeded_nodes(projection) if projection is not None else set()
+    resolved: list[ResolvedImportTask] = []
+
+    for task in manifest.completed:
+        structural_path = _resolve_structural_path(compiled, manifest.entrypoint, task)
+        graph = compiled.graphs[task.graph]
+        node = graph.nodes[task.node]
+        if node.definition.fan_out is not None and not task.task_key:
+            raise CheckpointImportError(
+                f"fan-out node '{task.node}' import requires task_key"
+            )
+        if projection is not None and task.task_key is not None:
+            expansion = projection.fan_out_expansions.get(task.node)
+            if expansion is not None and task.task_key not in expansion.task_keys:
+                raise CheckpointImportError(
+                    f"task_key {task.task_key!r} not present in frozen expansion for '{task.node}'"
+                )
+
+        task_id = _import_task_id(structural_path, task.node, task.task_key)
+        _assert_predecessor_closure(
+            compiled,
+            entrypoint=manifest.entrypoint,
+            task=task,
+            structural_path=structural_path,
+            imported_ids=imported_ids,
+            ledger_complete=ledger_complete,
+            params=context.params,
+        )
+
+        for logical, expected in sorted(task.outputs.items()):
+            path = _resolve_logical_path(context, logical)
+            actual = sha256_file(path)
+            if actual is None or actual != _strip_sha_prefix(expected):
+                raise CheckpointImportError(f"output hash mismatch for {logical}")
+
+        gate_report = _reevaluate_gate(compiled, context, task)
+        imported_ids.add(_node_identity(structural_path, task.node, task.task_key))
+        resolved.append(
+            ResolvedImportTask(
+                task=task,
+                structural_path=structural_path,
+                task_id=task_id,
+                gate_report=gate_report,
+            )
+        )
+
+    _validate_budgets(compiled, manifest, resolved)
+
+    manifest_sha = hashlib.sha256(
+        json.dumps(
+            manifest.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    return ValidatedImport(
+        manifest=manifest,
+        manifest_sha256=manifest_sha,
+        resolved=tuple(resolved),
+        budgets=manifest.budgets,
+        input_sha256=input_sha256,
+    )
+
+
+def _verify_fixture_digest(context: RuntimeContext, fixture_id: str, fixture_digest: str) -> None:
+    lock_path = context.project_root / "eval-fixtures" / "fixture-lock.json"
+    try:
+        lock = FixtureLock.model_validate_json(lock_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, ValidationError) as exc:
+        raise CheckpointImportError(f"fixture lock missing or invalid: {exc}") from exc
+    entry = lock.fixtures.get(fixture_id)
+    if entry is None:
+        raise CheckpointImportError(f"fixture_id not found in fixture lock: {fixture_id}")
+    expected = _strip_sha_prefix(fixture_digest)
+    if entry.aggregate_sha256 != expected:
+        raise CheckpointImportError(
+            f"fixture digest mismatch for {fixture_id}: "
+            f"manifest={expected} lock={entry.aggregate_sha256}"
+        )
+
+
+def _strip_sha_prefix(value: str) -> str:
+    if value.startswith("sha256:"):
+        return value[len("sha256:") :]
+    return value
+
+
+def _resolve_logical_path(context: RuntimeContext, logical: str) -> Path:
+    if not logical or "\\" in logical:
+        raise CheckpointImportError(f"unsafe logical path: {logical!r}")
+    root, sep, rest = logical.partition(":")
+    if not sep or root not in {"change", "project", "repo"}:
+        raise CheckpointImportError(f"unsafe logical path root: {logical!r}")
+    segments = rest.split("/")
+    if rest.startswith("/") or any(seg in ("", ".", "..") for seg in segments):
+        raise CheckpointImportError(f"unsafe logical path: {logical!r}")
+    base = {
+        "change": context.change_dir,
+        "project": context.project_root,
+        "repo": context.repo_root,
+    }[root]
+    return base / rest
+
+
+def _resolve_structural_path(
+    compiled: CompiledWorkflow,
+    entrypoint_name: str,
+    task: ImportedTask,
+) -> str:
+    """校验 ``path`` 是从 entrypoint root 起的真实 ``graph:*`` 调用链。"""
+    entry = compiled.entrypoints[entrypoint_name]
+    parts = [p for p in task.path.split("/") if p]
+    if not parts:
+        raise CheckpointImportError("impossible structural path: empty")
+    if any(seg in (".", "..") or not seg for seg in parts):
+        raise CheckpointImportError(f"unsafe structural path: {task.path!r}")
+    if parts[0] != entry.graph_id:
+        raise CheckpointImportError(
+            f"structural path must start at entrypoint graph '{entry.graph_id}', got {task.path!r}"
+        )
+    current_graph_id = entry.graph_id
+    index = 1
+    while index < len(parts):
+        if index + 1 >= len(parts):
+            raise CheckpointImportError(
+                f"impossible structural path (incomplete graph:* edge): {task.path!r}"
+            )
+        node_id, next_graph = parts[index], parts[index + 1]
+        graph = compiled.graphs.get(current_graph_id)
+        if graph is None or node_id not in graph.nodes:
+            raise CheckpointImportError(
+                f"impossible structural path: unknown node '{node_id}' in graph '{current_graph_id}'"
+            )
+        uses = graph.nodes[node_id].definition.uses
+        if not uses.startswith("graph:") or uses[len("graph:") :] != next_graph:
+            raise CheckpointImportError(
+                f"impossible structural path: node '{node_id}' is not graph:{next_graph}"
+            )
+        if next_graph not in compiled.graphs:
+            raise CheckpointImportError(f"impossible structural path: unknown graph '{next_graph}'")
+        current_graph_id = next_graph
+        index += 2
+    if current_graph_id != task.graph:
+        raise CheckpointImportError(
+            f"structural path resolves to graph '{current_graph_id}', not '{task.graph}'"
+        )
+    if task.node not in compiled.graphs[task.graph].nodes:
+        raise CheckpointImportError(
+            f"impossible structural path: unknown node '{task.node}' in graph '{task.graph}'"
+        )
+    return "/".join(parts)
+
+
+def _import_task_id(structural_path: str, node_id: str, task_key: str | None) -> str:
+    if task_key is not None:
+        return f"{structural_path}:{node_id}:{task_key}"
+    return f"{structural_path}:{node_id}"
+
+
+def _node_identity(structural_path: str, node_id: str, task_key: str | None) -> str:
+    return _import_task_id(structural_path, node_id, task_key)
+
+
+def _ledger_succeeded_nodes(projection: GraphProjection) -> set[str]:
+    done: set[str] = set()
+    for task in projection.tasks.values():
+        if task.status == "succeeded":
+            # projection task_id 已是 structural 形式
+            done.add(task.task_id)
+    return done
+
+
+def _assert_predecessor_closure(
+    compiled: CompiledWorkflow,
+    *,
+    entrypoint: str,
+    task: ImportedTask,
+    structural_path: str,
+    imported_ids: set[str],
+    ledger_complete: set[str],
+    params: Mapping[str, object],
+) -> None:
+    """每个活跃前驱必须已导入、START 可达跳过、或已在 strict ledger 完成。"""
+    del entrypoint, params  # when/run_mode 跳过留给后续加深；首版要求同图前驱已导入
+    graph = compiled.graphs[task.graph]
+    node = graph.nodes[task.node]
+    known = imported_ids | ledger_complete
+    for edge in node.incoming:
+        if edge.from_ == "START":
+            continue
+        pred_id = _import_task_id(structural_path, edge.from_, None)
+        if pred_id in known:
+            continue
+        raise CheckpointImportError(
+            f"missing predecessor closure: node '{task.node}' requires predecessor '{edge.from_}'"
+        )
+
+
+def _reevaluate_gate(
+    compiled: CompiledWorkflow,
+    context: RuntimeContext,
+    task: ImportedTask,
+) -> dict[str, object] | None:
+    node = compiled.graphs[task.graph].nodes[task.node]
+    gate_id = node.definition.gate
+    if gate_id is None and task.gate is None:
+        return None
+    if gate_id is None:
+        raise CheckpointImportError(f"node '{task.node}' has no attached gate but manifest supplies one")
+    if task.gate is None:
+        raise CheckpointImportError(f"gated node '{task.node}' import requires gate block")
+    if task.gate.id != gate_id:
+        raise CheckpointImportError(
+            f"gate id mismatch for node '{task.node}': manifest={task.gate.id} schema={gate_id}"
+        )
+    eval_context = GateEvaluationContext(
+        project_root=context.project_root,
+        repo_root=context.repo_root,
+        change_dir=context.change_dir,
+        change_id=context.change_id,
+        params=context.params,
+        state_values={},
+        node_results={},
+    )
+    report = check_gate_in_view(compiled.schema.gates, gate_id, eval_context)
+    if report.verdict.value != task.gate.verdict:
+        raise CheckpointImportError(
+            f"gate verdict mismatch for '{gate_id}': "
+            f"manifest={task.gate.verdict} evaluated={report.verdict.value}"
+        )
+    evaluated_reads = {k: _strip_sha_prefix(v) for k, v in report.reads_sha256.items()}
+    manifest_reads = {k: _strip_sha_prefix(v) for k, v in task.gate.reads_sha256.items()}
+    if evaluated_reads != manifest_reads:
+        raise CheckpointImportError(
+            f"gate reads_sha256 mismatch for '{gate_id}'"
+        )
+    return {
+        "gate_id": report.gate_id,
+        "verdict": report.verdict.value,
+        "matched_rule": report.matched_rule,
+        "reason": report.reason,
+        "reads_sha256": dict(report.reads_sha256),
+        "value": report.verdict.value,
+    }
+
+
+def _validate_budgets(
+    compiled: CompiledWorkflow,
+    manifest: ImportManifest,
+    resolved: list[ResolvedImportTask],
+) -> None:
+    consumers: dict[str, tuple[str, str]] = {}
+    for item in resolved:
+        node = compiled.graphs[item.task.graph].nodes[item.task.node]
+        budget = node.definition.budget
+        if budget is None:
+            continue
+        consumers[item.task_id] = (item.structural_path, budget.consume)
+
+    budget_by_task = {b.task_path: b for b in manifest.budgets}
+    for task_id, (path, budget_id) in consumers.items():
+        entry = budget_by_task.get(task_id)
+        if entry is None:
+            raise CheckpointImportError(
+                f"budget consumer '{task_id}' imported without matching budget event"
+            )
+        if entry.budget_id != budget_id:
+            raise CheckpointImportError(
+                f"budget id mismatch for '{task_id}': manifest={entry.budget_id} schema={budget_id}"
+            )
+        if entry.path != path:
+            raise CheckpointImportError(
+                f"budget path mismatch for '{task_id}': manifest={entry.path} resolved={path}"
+            )
+    for entry in manifest.budgets:
+        if entry.task_path not in consumers:
+            raise CheckpointImportError(
+                f"budget event for unknown consumer task_path '{entry.task_path}'"
+            )
 
 
 def _require_task(tasks: dict[str, TaskProjection], event: _AttemptOutcomeEvent) -> TaskProjection:
@@ -384,11 +776,15 @@ class CheckpointStore:
 
 __all__ = [
     "CHECKPOINT_DIR_RELPATH",
+    "CheckpointImportError",
     "CheckpointStore",
+    "ValidatedImport",
     "checkpoint_snapshot_relpath",
     "dump_checkpoint_snapshot",
     "fold_invocation_events",
+    "parse_import_manifest",
     "project_invocation",
     "project_workflow_state",
     "render_workflow_state_yaml",
+    "validate_import",
 ]

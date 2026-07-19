@@ -323,3 +323,43 @@ class ImportResult(BaseModel):
     invocation_id: str
     checkpoint_id: str
     imported_tasks: tuple[str, ...]
+
+
+# ---- 显式 checkpoint import manifest（Task 13）----
+
+
+class ImportedGate(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    id: str
+    verdict: str
+    reads_sha256: dict[str, str]
+
+
+class ImportedTask(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    path: str
+    graph: str
+    node: str
+    task_key: str | None = None
+    outputs: dict[str, str] = Field(default_factory=dict)
+    gate: ImportedGate | None = None
+
+
+class ImportedBudget(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    path: str
+    budget_id: str
+    consumption_id: str
+    task_path: str
+
+
+class ImportManifest(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    schema_version: Literal["2"]
+    entrypoint: str
+    source_kind: Literal["eval-fixture", "benchmark-seed", "v1-artifact-import"]
+    fixture_id: str
+    fixture_digest: str
+    inputs: dict[str, str] = Field(default_factory=dict)
+    completed: tuple[ImportedTask, ...] = ()
+    budgets: tuple[ImportedBudget, ...] = ()
