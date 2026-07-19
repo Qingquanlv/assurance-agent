@@ -197,6 +197,30 @@ class InterruptProjection(BaseModel):
     resolved_action: str | None = None
 
 
+# ---- task 执行结果（TaskHandler → NodeRunner → scheduler 的唯一返回通道）----
+
+
+class TaskResult(BaseModel):
+    """一次物理 task 执行的冻结结果；handler 只返回它，绝不直接写 strict events。
+
+    ``write_set_id``/``outputs_sha256`` 由已自行冻结 write-set 的 handler（agent、
+    subgraph）填写；其余 write-capable handler 留空，由 scheduler 在成功事务中
+    冻结并持久化（Task 10）。``gate_report`` 是 gate handler 的冻结裁决载体，
+    planner 只读其中的 ``value``/``verdict`` 键。
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    status: Literal["succeeded", "failed", "interrupted", "stopped"]
+    value: object = None
+    state_updates: dict[str, object] = Field(default_factory=dict)
+    outputs_sha256: dict[str, str] = Field(default_factory=dict)
+    gate_report: dict[str, object] | None = None
+    write_set_id: str | None = None
+    error_kind: ErrorKind | None = None
+    error: str | None = None
+    interrupt: InterruptProjection | None = None
+
+
 class GraphProjection(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     invocation_id: str

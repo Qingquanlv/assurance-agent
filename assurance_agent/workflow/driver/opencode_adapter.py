@@ -16,6 +16,12 @@ Every request carries ?directory=<sut> and optional Basic-Auth headers derived
 from the environment (never from CLI args). Only an *explicit* model is pinned;
 otherwise the field is omitted so the server resolves its own default (TS
 behavior — pinning a parent session's stale model breaks phases).
+
+同时实现 graph 的 ``AgentInvoker``：v2 路径的每个请求都使用
+``request.workspace_root`` 作为 ``?directory=``（task 私有 workspace），并把
+失败归一化为 typed error kind（401/403 → ``auth``，429 → ``rate_limit``，网络
+错误 → ``transport``，轮询超时 → ``timeout``）；成功时返回新建 session ID 供
+reconnect 元数据使用。
 """
 
 import base64
@@ -26,13 +32,31 @@ from typing import Any, Literal
 
 import httpx
 
+from assurance_agent.workflow.core.graph_types import ErrorKind
 from assurance_agent.workflow.driver.adapter import DriverError, PhaseRequest, PhaseResult
+from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
 
 SessionStatus = Literal["busy", "retry", "idle"]
 
 DEFAULT_POLL_INTERVAL_S = 2.0
 DEFAULT_POLL_MAX_S = 3600.0
 DEFAULT_IDLE_DONE_STREAK = 8
+
+
+class _OpenCodeCallError(DriverError):
+    """带 typed ``ErrorKind`` 的 opencode 调用失败；v1 run_phase 仍按 DriverError 捕获。"""
+
+    def __init__(self, kind: ErrorKind, message: str) -> None:
+        super().__init__(message)
+        self.kind: ErrorKind = kind
+
+
+def _classify_http_status(status_code: int) -> ErrorKind:
+    if status_code in (401, 403):
+        return "auth"
+    if status_code == 429:
+        return "rate_limit"
+    return "internal"
 
 
 def auth_headers_from_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -102,52 +126,90 @@ class OpenCodeAdapter:
         self._sleep = sleep
         self._monotonic = monotonic
 
-    def _request(self, method: str, path: str, json: Any | None = None) -> httpx.Response:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        json: Any | None = None,
+        *,
+        directory: str | None = None,
+    ) -> httpx.Response:
         return self._client.request(
             method,
             f"{self._base}{path}",
-            params={"directory": self._directory},
+            params={"directory": directory if directory is not None else self._directory},
             json=json,
             headers=self._headers,
         )
 
-    def _create_session(self, request: PhaseRequest) -> str:
-        body: dict[str, Any] = {"title": f"Phase {request.phase_id}"}
-        if self._parent:
-            body["parentID"] = self._parent
-        resp = self._request("POST", "/session", json=body)
+    def _create_session(
+        self,
+        title: str,
+        parent: str | None,
+        *,
+        directory: str | None = None,
+    ) -> str:
+        body: dict[str, Any] = {"title": title}
+        if parent:
+            body["parentID"] = parent
+        resp = self._request("POST", "/session", json=body, directory=directory)
         if not 200 <= resp.status_code < 300:
-            raise DriverError(f"opencode create session failed ({resp.status_code}): {resp.text[:300]}")
+            raise _OpenCodeCallError(
+                _classify_http_status(resp.status_code),
+                f"opencode create session failed ({resp.status_code}): {resp.text[:300]}",
+            )
         session_id = (resp.json() or {}).get("id")
         if not session_id:
-            raise DriverError("opencode create session: missing id")
+            raise _OpenCodeCallError("internal", "opencode create session: missing id")
         return session_id
 
-    def _dispatch_prompt(self, session_id: str, request: PhaseRequest) -> None:
-        body: dict[str, Any] = {"parts": [{"type": "text", "text": request.prompt}]}
+    def _dispatch_prompt(
+        self,
+        session_id: str,
+        prompt: str,
+        *,
+        agent: str | None = None,
+        directory: str | None = None,
+    ) -> None:
+        body: dict[str, Any] = {"parts": [{"type": "text", "text": prompt}]}
         if self._model:
             body["model"] = self._model
-        if request.agent:
-            body["agent"] = request.agent
-        resp = self._request("POST", f"/session/{session_id}/prompt_async", json=body)
+        if agent:
+            body["agent"] = agent
+        resp = self._request(
+            "POST", f"/session/{session_id}/prompt_async", json=body, directory=directory
+        )
         if resp.status_code != 204 and not 200 <= resp.status_code < 300:
-            raise DriverError(f"opencode prompt failed ({resp.status_code}): {resp.text[:300]}")
+            raise _OpenCodeCallError(
+                _classify_http_status(resp.status_code),
+                f"opencode prompt failed ({resp.status_code}): {resp.text[:300]}",
+            )
 
-    def get_status(self, session_id: str) -> SessionStatus:
-        resp = self._request("GET", "/session/status")
+    def get_status(self, session_id: str, *, directory: str | None = None) -> SessionStatus:
+        resp = self._request("GET", "/session/status", directory=directory)
         if not 200 <= resp.status_code < 300:
-            raise DriverError(f"opencode status failed ({resp.status_code}): {resp.text[:300]}")
+            raise _OpenCodeCallError(
+                _classify_http_status(resp.status_code),
+                f"opencode status failed ({resp.status_code}): {resp.text[:300]}",
+            )
         payload = resp.json() if resp.content else {}
         return _session_status(payload, session_id)
 
-    def _await_idle(self, session_id: str) -> None:
-        deadline = self._monotonic() + self._poll_max
+    def _await_idle(
+        self,
+        session_id: str,
+        *,
+        directory: str | None = None,
+        poll_max: float | None = None,
+    ) -> None:
+        limit = poll_max if poll_max is not None else self._poll_max
+        deadline = self._monotonic() + limit
         saw_busy = False
         idle_streak = 0
         # Grace period so the session can flip to busy before we trust "idle".
         self._sleep(min(self._poll_interval, 1.5))
         while self._monotonic() < deadline:
-            status = self.get_status(session_id)
+            status = self.get_status(session_id, directory=directory)
             if status in ("busy", "retry"):
                 saw_busy = True
                 idle_streak = 0
@@ -158,15 +220,40 @@ class OpenCodeAdapter:
                 if idle_streak >= need:
                     return
             self._sleep(self._poll_interval)
-        raise DriverError(f"opencode phase timed out after {self._poll_max}s (session {session_id})")
+        raise _OpenCodeCallError(
+            "timeout", f"opencode phase timed out after {limit}s (session {session_id})"
+        )
 
     def run_phase(self, request: PhaseRequest) -> PhaseResult:
         try:
-            session_id = self._create_session(request)
-            self._dispatch_prompt(session_id, request)
+            session_id = self._create_session(f"Phase {request.phase_id}", self._parent)
+            self._dispatch_prompt(session_id, request.prompt, agent=request.agent)
             self._await_idle(session_id)
         except DriverError as err:
             return PhaseResult(ok=False, output="", error=str(err))
         # Output is written to artifacts by the agent; the loop next commits the
         # signed attempt outcome. Gate routing remains inside compute_status.
         return PhaseResult(ok=True, output="")
+
+    def invoke(self, request: AgentRequest) -> AgentResult:
+        """graph AgentInvoker：每个请求都以 task 私有 workspace root 为 directory。"""
+        directory = str(request.workspace_root)
+        session_id: str | None = None
+        try:
+            session_id = self._create_session(
+                f"Phase {request.node_id}",
+                request.reconnect_session_id or self._parent,
+                directory=directory,
+            )
+            self._dispatch_prompt(session_id, request.prompt, directory=directory)
+            self._await_idle(session_id, directory=directory, poll_max=request.timeout_seconds)
+        except _OpenCodeCallError as exc:
+            return AgentResult(ok=False, error_kind=exc.kind, error=str(exc), session_id=session_id)
+        except httpx.TransportError as exc:
+            return AgentResult(
+                ok=False,
+                error_kind="transport",
+                error=f"opencode transport error: {exc}",
+                session_id=session_id,
+            )
+        return AgentResult(ok=True, session_id=session_id)
