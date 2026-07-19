@@ -1,0 +1,26 @@
+# =============================================================================
+# AA Execution Contracts
+# =============================================================================
+#
+# Default resource claims, write authorization and retry semantics for
+# workflow node targets. A project-local `.aa/execution-contracts.yaml`
+# overrides this packaged registry entirely. Targets missing from the
+# registry — or write-capable targets whose write scope cannot be derived —
+# fall back to a conservative `global:exclusive` claim at compile time.
+# =============================================================================
+
+schema_version: "1"
+
+contracts:
+  operation:no-op:
+    handler: operation
+    side_effect_free: true
+  builtin:join:
+    handler: builtin
+    side_effect_free: true
+  builtin:gate:
+    handler: builtin
+    side_effect_free: true
+  builtin:interrupt:
+    handler: builtin
+    side_effect_free: true

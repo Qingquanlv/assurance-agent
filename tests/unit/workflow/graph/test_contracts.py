@@ -1,0 +1,524 @@
+import textwrap
+from pathlib import Path
+
+import pytest
+
+from assurance_agent.workflow.graph.compiler import (
+    CompileError,
+    canonical_digest,
+    compile_workflow,
+)
+from assurance_agent.workflow.graph.contracts import (
+    ContractError,
+    ExecutionContractCatalog,
+    ResourceClaims,
+    ResourcePath,
+    claims_conflict,
+    load_execution_contracts,
+    parse_execution_contracts,
+)
+from assurance_agent.workflow.graph.schema_v2 import (
+    NodeDef,
+    ResourceDef,
+    parse_workflow_v2,
+)
+
+
+def test_read_read_does_not_conflict() -> None:
+    left = ResourceClaims(reads=(ResourcePath.parse("repo:tests/api/**"),))
+    right = ResourceClaims(reads=(ResourcePath.parse("repo:tests/api/test_users.py"),))
+    assert claims_conflict(left, right) is False
+
+
+def test_write_read_and_write_write_conflict() -> None:
+    writer = ResourceClaims(writes=(ResourcePath.parse("repo:tests/api/**"),))
+    reader = ResourceClaims(reads=(ResourcePath.parse("repo:tests/api/test_users.py"),))
+    other_writer = ResourceClaims(writes=(ResourcePath.parse("repo:tests/api/test_roles.py"),))
+    assert claims_conflict(writer, reader) is True
+    assert claims_conflict(writer, other_writer) is True
+
+
+def test_disjoint_api_and_e2e_writes_do_not_conflict() -> None:
+    api = ResourceClaims(writes=(ResourcePath.parse("repo:tests/api/**"),))
+    e2e = ResourceClaims(writes=(ResourcePath.parse("repo:tests/e2e/**"),))
+    assert claims_conflict(api, e2e) is False
+
+
+def test_equal_exclusive_token_conflicts() -> None:
+    left = ResourceClaims(exclusive=("repo:test-runtime",))
+    right = ResourceClaims(exclusive=("repo:test-runtime",))
+    assert claims_conflict(left, right) is True
+
+
+def test_distinct_exclusive_tokens_do_not_conflict() -> None:
+    left = ResourceClaims(exclusive=("repo:test-runtime",))
+    right = ResourceClaims(exclusive=("repo:test-infra",))
+    assert claims_conflict(left, right) is False
+
+
+# ---------------------------------------------------------------------------
+# ResourcePath 正规化
+
+
+def test_parse_valid_resource_paths() -> None:
+    path = ResourcePath.parse("repo:tests/api/**")
+    assert path.root == "repo"
+    assert path.pattern == "tests/api/**"
+    glob_in_segment = ResourcePath.parse("change:plans/api-*.md")
+    assert glob_in_segment.root == "change"
+    directory = ResourcePath.parse("change:reports/")
+    assert directory.pattern == "reports"  # 目录 claim 允许结尾 "/"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "ftp:tests/api/x.py",  # 未知 root
+        "tests/api/x.py",  # 缺少 root 分隔符
+        ":tests/api/x.py",  # 空 root
+    ],
+)
+def test_parse_rejects_unknown_roots(value: str) -> None:
+    with pytest.raises(ContractError, match="invalid resource root"):
+        ResourcePath.parse(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "repo:/abs/path",  # 绝对路径
+        "repo:tests\\api",  # 反斜杠
+        "repo:tests/../escape",  # ..
+        "repo:**/..",  # ..
+        "repo:tests//api",  # 空 segment
+        "repo:.",  # 当前目录
+        "repo:",  # 空 pattern
+        "repo:tests/a**",  # 部分 ** segment
+        "repo:te**sts/api",  # 部分 ** segment
+    ],
+)
+def test_parse_rejects_unsafe_patterns(value: str) -> None:
+    with pytest.raises(ContractError, match="unsafe resource pattern"):
+        ResourcePath.parse(value)
+
+
+# ---------------------------------------------------------------------------
+# 保守 path 相交（parent dirs / file-vs-glob / ** / global）
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "expected"),
+    [
+        ("repo:tests/**", "repo:tests/api/test_users.py", True),  # 父目录 glob 覆盖子文件
+        ("repo:tests/api/*", "repo:tests/api/test_users.py", True),  # file-vs-glob
+        ("repo:tests/api/*", "repo:tests/e2e/test_users.py", False),  # * 只匹配一段
+        ("repo:a/**", "repo:a/b/c/d.py", True),  # ** 匹配任意后缀
+        ("repo:a/b/**", "repo:a/x/y.py", False),
+        ("repo:a/x.py", "repo:a/x.py", True),  # 同一字面文件
+        ("repo:a/x.py", "repo:a/y.py", False),  # 不同字面文件
+        ("repo:tests/**", "change:tests/**", False),  # 不同 root 不相交
+        ("global:**", "repo:tests/api/x.py", True),  # global root 与一切相交
+        ("global:tmp/scratch", "project:tmp/scratch", True),
+    ],
+)
+def test_write_write_intersection(left: str, right: str, expected: bool) -> None:
+    left_claims = ResourceClaims(writes=(ResourcePath.parse(left),))
+    right_claims = ResourceClaims(writes=(ResourcePath.parse(right),))
+    assert claims_conflict(left_claims, right_claims) is expected
+    assert claims_conflict(right_claims, left_claims) is expected  # 对称
+
+
+def test_global_exclusive_fallback_serializes_unknown_tasks() -> None:
+    unknown_a = ResourceClaims(exclusive=("global:exclusive",))
+    unknown_b = ResourceClaims(exclusive=("global:exclusive",))
+    assert claims_conflict(unknown_a, unknown_b) is True
+
+
+# ---------------------------------------------------------------------------
+# registry 加载（项目本地优先于打包资源，与 schema loader 同序）
+
+
+def test_loads_packaged_registry(tmp_path: Path) -> None:
+    catalog = load_execution_contracts(tmp_path)
+    assert "operation:no-op" in catalog.contracts
+    assert catalog.contracts["builtin:join"].side_effect_free is True
+
+
+def test_project_local_registry_overrides_packaged(tmp_path: Path) -> None:
+    local = tmp_path / ".aa" / "execution-contracts.yaml"
+    local.parent.mkdir(parents=True)
+    local.write_text(
+        'schema_version: "1"\ncontracts:\n  operation:custom:\n    handler: operation\n    side_effect_free: true\n',
+        encoding="utf-8",
+    )
+    catalog = load_execution_contracts(tmp_path)
+    assert "operation:custom" in catalog.contracts
+    assert "operation:no-op" not in catalog.contracts  # 项目本地整体取代打包默认
+
+
+def test_explicit_registry_path(tmp_path: Path) -> None:
+    explicit = tmp_path / "custom" / "contracts.yaml"
+    explicit.parent.mkdir(parents=True)
+    explicit.write_text(
+        'schema_version: "1"\ncontracts:\n  operation:custom:\n    handler: operation\n',
+        encoding="utf-8",
+    )
+    assert "operation:custom" in load_execution_contracts(tmp_path, explicit).contracts
+    relative = load_execution_contracts(tmp_path, Path("custom/contracts.yaml"))
+    assert "operation:custom" in relative.contracts
+    with pytest.raises(ContractError, match="not found"):
+        load_execution_contracts(tmp_path, tmp_path / "missing.yaml")
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("schema_version: 1\ncontracts: {}\n", 'must be exactly "1"'),  # YAML int 不接受
+        ('schema_version: "2"\ncontracts: {}\n', 'must be exactly "1"'),
+        ('schema_version: "1"\ncontracts: []\n', "must be a mapping"),
+        ('schema_version: "1"\nunknown: 1\ncontracts: {}\n', "unknown root keys"),
+        (
+            'schema_version: "1"\ncontracts:\n  operation:x:\n    handler: operation\n    writes: ["repo:../x"]\n',
+            "unsafe resource pattern",
+        ),
+        (
+            'schema_version: "1"\ncontracts:\n  operation:x:\n    handler: operation\n    reads: ["ftp:x"]\n',
+            "invalid resource root",
+        ),
+        (
+            'schema_version: "1"\ncontracts:\n  operation:x:\n    handler: operation\n    target: operation:y\n',
+            "target mismatch",
+        ),
+        (
+            'schema_version: "1"\ncontracts:\n  operation:x:\n    handler: operation\n    bogus: 1\n',
+            "invalid execution contracts",
+        ),
+    ],
+)
+def test_parse_rejects_invalid_registries(text: str, message: str) -> None:
+    with pytest.raises(ContractError, match=message):
+        parse_execution_contracts(text)
+
+
+# ---------------------------------------------------------------------------
+# claims_for 合成
+
+
+def _claims_catalog() -> ExecutionContractCatalog:
+    return parse_execution_contracts(
+        'schema_version: "1"\n'
+        "contracts:\n"
+        "  skill:codegen:\n"
+        "    handler: agent\n"
+        "    reads: [change:plans/api-*.md]\n"
+        "    writes: [repo:tests/api/**]\n"
+        "    exclusive: [repo:test-infra]\n"
+        "    authorization_writes: [repo:tests/**, change:codegen/**]\n"
+        "    retryable_errors: [timeout, transport]\n"
+        "  operation:opaque:\n"
+        "    handler: operation\n"
+        "  builtin:join:\n"
+        "    handler: builtin\n"
+        "    side_effect_free: true\n"
+    )
+
+
+def test_claims_for_unknown_target_gets_global_exclusive() -> None:
+    claims = _claims_catalog().claims_for(NodeDef(uses="operation:ghost"))
+    assert claims == ResourceClaims(exclusive=("global:exclusive",))
+
+
+def test_claims_compose_registry_outputs_and_node_resources() -> None:
+    node = NodeDef(
+        uses="skill:codegen",
+        outputs=["change:codegen/${context.change_id}/summary.json"],
+        resources=ResourceDef(
+            reads=["repo:pyproject.toml"],
+            writes=["repo:tests/api/smoke/**"],
+            exclusive=["repo:test-runtime"],
+        ),
+    )
+    claims = _claims_catalog().claims_for(node)
+    assert ResourcePath.parse("change:plans/api-*.md") in claims.reads
+    assert ResourcePath.parse("repo:pyproject.toml") in claims.reads
+    assert ResourcePath.parse("repo:tests/api/**") in claims.writes
+    # outputs 自动派生 write claim；${...} 模板变量按单段 * 处理
+    assert ResourcePath.parse("change:codegen/*/summary.json") in claims.writes
+    assert ResourcePath.parse("repo:tests/api/smoke/**") in claims.writes
+    assert set(claims.exclusive) == {"repo:test-infra", "repo:test-runtime"}
+    # node resources.writes 收窄授权写范围
+    assert claims.authorization_writes == (ResourcePath.parse("repo:tests/api/smoke/**"),)
+
+
+def test_claims_for_write_capable_contract_without_scope_is_unknown() -> None:
+    claims = _claims_catalog().claims_for(NodeDef(uses="operation:opaque"))
+    assert claims == ResourceClaims(exclusive=("global:exclusive",))
+
+
+def test_claims_for_side_effect_free_without_scope_is_empty() -> None:
+    claims = _claims_catalog().claims_for(NodeDef(uses="builtin:join"))
+    assert claims == ResourceClaims()
+
+
+# ---------------------------------------------------------------------------
+# compiler 的 contract-aware 校验与 footprint
+
+_HEADER = """\
+params:
+  run_mode: {type: enum, values: [full], default: full}
+entrypoints:
+  full: {graph: main}
+policies:
+  retry:
+    agent-transient: {max_attempts: 3, retry_on: [timeout, transport]}
+    too-broad: {max_attempts: 2, retry_on: [timeout, internal]}
+  timeout: {local: {run_seconds: 60, heartbeat_seconds: 10}}
+gates: {}
+"""
+
+_COMPILER_CATALOG = """\
+schema_version: "1"
+contracts:
+  skill:codegen:
+    handler: agent
+    reads: [change:plans/api-*.md]
+    writes: [repo:tests/api/**]
+    exclusive: [repo:test-infra]
+    authorization_writes: [repo:tests/**]
+    retryable_errors: [timeout, transport]
+  operation:no-op:
+    handler: operation
+    side_effect_free: true
+  operation:shady:
+    handler: builtin
+  builtin:join:
+    handler: builtin
+    side_effect_free: true
+  builtin:interrupt:
+    handler: builtin
+    side_effect_free: true
+  builtin:gate:
+    handler: builtin
+    side_effect_free: true
+"""
+
+
+def _wf(graph_body: str) -> str:
+    return (
+        'schema_version: "2"\nname: t\n'
+        + _HEADER
+        + "graphs:\n"
+        + textwrap.indent(textwrap.dedent(graph_body), "  ")
+    )
+
+
+def _compile(graph_body: str, catalog: ExecutionContractCatalog | None = None):
+    return compile_workflow(parse_workflow_v2(_wf(graph_body)), catalog)
+
+
+def _compiler_catalog() -> ExecutionContractCatalog:
+    return parse_execution_contracts(_COMPILER_CATALOG)
+
+
+def test_compiler_rejects_unknown_uses_with_catalog() -> None:
+    with pytest.raises(CompileError, match="no execution contract"):
+        _compile(
+            """
+            main:
+              max_supersteps: 5
+              nodes:
+                a: {uses: operation:ghost}
+              edges:
+                - {from: START, to: a}
+                - {from: a, to: END}
+            """,
+            _compiler_catalog(),
+        )
+
+
+def test_compiler_rejects_agent_node_with_non_skill_target() -> None:
+    with pytest.raises(CompileError, match="not skill"):
+        _compile(
+            """
+            main:
+              max_supersteps: 5
+              nodes:
+                a: {uses: operation:no-op, agent: aa-doc-author}
+              edges:
+                - {from: START, to: a}
+                - {from: a, to: END}
+            """,
+            _compiler_catalog(),
+        )
+
+
+def test_compiler_rejects_contract_handler_mismatch() -> None:
+    with pytest.raises(CompileError, match="contract handler"):
+        _compile(
+            """
+            main:
+              max_supersteps: 5
+              nodes:
+                a: {uses: operation:shady}
+              edges:
+                - {from: START, to: a}
+                - {from: a, to: END}
+            """,
+            _compiler_catalog(),
+        )
+
+
+def test_compiler_rejects_builtin_with_wrong_detail_block() -> None:
+    with pytest.raises(CompileError, match="declares no join"):
+        _compile(
+            """
+            main:
+              max_supersteps: 5
+              nodes:
+                a: {uses: builtin:join}
+              edges:
+                - {from: START, to: a}
+                - {from: a, to: END}
+            """,
+            _compiler_catalog(),
+        )
+
+
+def test_compiler_rejects_resources_expanding_authorization() -> None:
+    with pytest.raises(CompileError, match="expands authorization"):
+        _compile(
+            """
+            main:
+              max_supersteps: 5
+              nodes:
+                gen:
+                  uses: skill:codegen
+                  resources: {writes: [repo:src/**]}
+              edges:
+                - {from: START, to: gen}
+                - {from: gen, to: END}
+            """,
+            _compiler_catalog(),
+        )
+
+
+def test_compiler_rejects_retry_kinds_outside_contract() -> None:
+    with pytest.raises(CompileError, match="not retryable"):
+        _compile(
+            """
+            main:
+              max_supersteps: 5
+              nodes:
+                gen: {uses: skill:codegen, retry: too-broad}
+              edges:
+                - {from: START, to: gen}
+                - {from: gen, to: END}
+            """,
+            _compiler_catalog(),
+        )
+
+
+def test_compiler_accepts_narrowed_authorization_and_allowed_retry() -> None:
+    compiled = _compile(
+        """
+        main:
+          max_supersteps: 5
+          nodes:
+            gen:
+              uses: skill:codegen
+              retry: agent-transient
+              resources: {writes: [repo:tests/api/smoke/**]}
+          edges:
+            - {from: START, to: gen}
+            - {from: gen, to: END}
+        """,
+        _compiler_catalog(),
+    )
+    footprint = compiled.graphs["main"].resource_footprint
+    assert ResourcePath.parse("repo:tests/api/smoke/**") in footprint.writes
+
+
+def test_compiler_populates_contract_digests_and_footprint() -> None:
+    catalog = _compiler_catalog()
+    graph_body = """
+        main:
+          max_supersteps: 5
+          nodes:
+            gen:
+              uses: skill:codegen
+              agent: aa-doc-author
+              outputs: [change:codegen/summary.json]
+            join:
+              uses: builtin:join
+              join: {sources: [gen], mode: all}
+          edges:
+            - {from: START, to: gen}
+            - {from: gen, to: join}
+            - {from: join, to: END}
+    """
+    compiled = _compile(graph_body, catalog)
+    assert set(compiled.contract_digests) == {"skill:codegen", "builtin:join"}
+    assert compiled.contract_digests["skill:codegen"] == canonical_digest(catalog.contracts["skill:codegen"])
+    assert _compile(graph_body, catalog).contract_digests == compiled.contract_digests  # digest 稳定
+    footprint = compiled.graphs["main"].resource_footprint
+    assert ResourcePath.parse("repo:tests/api/**") in footprint.writes
+    assert ResourcePath.parse("change:codegen/summary.json") in footprint.writes
+    assert ResourcePath.parse("change:plans/api-*.md") in footprint.reads
+    assert "repo:test-infra" in footprint.exclusive
+
+
+def test_subgraph_footprint_unions_reachable_child_claims() -> None:
+    compiled = _compile(
+        """
+        main:
+          max_supersteps: 5
+          nodes:
+            call-child: {uses: graph:child}
+          edges:
+            - {from: START, to: call-child}
+            - {from: call-child, to: END}
+        child:
+          max_supersteps: 5
+          nodes:
+            gen:
+              uses: skill:codegen
+              outputs: [change:codegen/summary.json]
+          edges:
+            - {from: START, to: gen}
+            - {from: gen, to: END}
+        """,
+        _compiler_catalog(),
+    )
+    assert set(compiled.contract_digests) == {"skill:codegen"}  # graph:<id> 不是 contract
+    main_footprint = compiled.graphs["main"].resource_footprint
+    child_footprint = compiled.graphs["child"].resource_footprint
+    assert ResourcePath.parse("repo:tests/api/**") in main_footprint.writes
+    assert ResourcePath.parse("change:codegen/summary.json") in main_footprint.writes
+    assert "repo:test-infra" in main_footprint.exclusive
+    assert main_footprint == child_footprint  # main 的唯一节点就是 child subgraph
+
+
+def test_compile_without_catalog_keeps_topology_only_behavior() -> None:
+    compiled = _compile(
+        """
+        main:
+          max_supersteps: 5
+          nodes:
+            a: {uses: operation:no-op}
+          edges:
+            - {from: START, to: a}
+            - {from: a, to: END}
+        """
+    )
+    assert compiled.contract_digests == {}
+    # 无 catalog 时资源范围不可推导，footprint 保守为 global:exclusive
+    assert compiled.graphs["main"].resource_footprint == ResourceClaims(exclusive=("global:exclusive",))
+
+
+def test_packaged_contracts_compile_minimal_fixture(tmp_path: Path) -> None:
+    catalog = load_execution_contracts(tmp_path)  # 无 .aa 覆盖 → 打包 registry
+    text = Path("tests/fixtures/workflow-v2-minimal.yaml").read_text(encoding="utf-8")
+    compiled = compile_workflow(parse_workflow_v2(text), catalog)
+    assert set(compiled.contract_digests) == {"operation:no-op"}
+    # no-op 是 side_effect_free，无写范围 → footprint 为空 claims
+    assert compiled.graphs["main"].resource_footprint == ResourceClaims()

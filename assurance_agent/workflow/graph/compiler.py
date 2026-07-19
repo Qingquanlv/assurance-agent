@@ -11,7 +11,12 @@
 - route 对 gate verdict 必须 exhaustive，interrupt action 必须有完整 resume route；
 - state writer 必须声明合法，同 step ``replace`` 多 writer 拒绝；
 - subgraph 调用图不允许递归；
-- 每个 cyclic SCC（Tarjan）必须含有限业务预算消费点，且 ``exhausted_to`` 离开 SCC。
+- 每个 cyclic SCC（Tarjan）必须含有限业务预算消费点，且 ``exhausted_to`` 离开 SCC；
+- 提供 execution contract catalog 时：``uses`` 必须解析到 contract 且 handler 与
+  前缀一致、agent node 的 target 必须是 ``skill:*``、显式 node resources 只能收窄
+  contract 授权写范围、retry policy 的 ``retry_on`` 必须落在目标 contract 的
+  ``retryable_errors`` 白名单内；同时计算各 graph 的保守资源 footprint 与
+  workflow 引用到的 contract digests。
 
 校验通过后生成冻结的 CompiledWorkflow：拓扑用 tuple 固化，digest 来自
 canonical JSON（sort_keys + 紧凑分隔符）的 SHA-256，两次编译同一 schema 结果
@@ -28,6 +33,16 @@ from collections.abc import Mapping
 from pydantic import BaseModel
 
 from assurance_agent.exceptions import AaError
+from assurance_agent.workflow.graph.contracts import (
+    ContractError,
+    ExecutionContract,
+    ExecutionContractCatalog,
+    ResourceClaims,
+    ResourcePath,
+    normalize_claim_pattern,
+    path_covers,
+    unknown_claims,
+)
 from assurance_agent.workflow.graph.models import (
     CompiledEntrypoint,
     CompiledGraph,
@@ -71,6 +86,7 @@ _PREDICATE_BUILTINS = ("any", "all", "count")
 
 def compile_workflow(
     schema: WorkflowSchemaV2,
+    contracts: ExecutionContractCatalog | None = None,
 ) -> CompiledWorkflow:
     errors: list[str] = []
     errors.extend(_validate_params_and_entrypoints(schema))
@@ -80,16 +96,22 @@ def compile_workflow(
     errors.extend(_validate_state_writers(schema))
     errors.extend(_validate_subgraph_recursion(schema))
     errors.extend(_validate_bounded_sccs(schema))
+    if contracts is not None:
+        errors.extend(_validate_contract_usage(schema, contracts))
     if errors:
         raise CompileError("workflow v2 compile failed:\n  - " + "\n  - ".join(errors))
-    graphs = {graph_id: _compile_graph(graph_id, graph) for graph_id, graph in schema.graphs.items()}
+    footprints = _graph_footprints(schema, contracts)
+    graphs = {
+        graph_id: _compile_graph(graph_id, graph, footprints[graph_id])
+        for graph_id, graph in schema.graphs.items()
+    }
     canonical = schema.model_dump(mode="json", by_alias=True, exclude_none=True)
     return CompiledWorkflow(
         schema=schema,
         digest=canonical_digest(canonical),
         entrypoints=_compile_entrypoints(schema),
         graphs=graphs,
-        contract_digests={},
+        contract_digests=_referenced_contract_digests(schema, contracts) if contracts is not None else {},
     )
 
 
@@ -748,6 +770,114 @@ def _validate_subgraph_recursion(schema: WorkflowSchemaV2) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# execution contract 校验与资源 footprint
+
+_HANDLER_BY_PREFIX = {"skill": "agent", "operation": "operation", "builtin": "builtin"}
+
+
+def _validate_contract_usage(schema: WorkflowSchemaV2, catalog: ExecutionContractCatalog) -> list[str]:
+    """catalog 存在时的 target 级校验：uses 解析、handler 一致、授权收窄、retry kind 白名单。"""
+    errors: list[str] = []
+    for graph_id, graph in schema.graphs.items():
+        for nid, node in graph.nodes.items():
+            loc = f"graph '{graph_id}' node '{nid}'"
+            uses = node.uses
+            prefix, _, _ = uses.partition(":")
+            if prefix == "graph":
+                continue  # graph:<id> 引用与递归由拓扑校验负责，footprint 另行展开
+            contract = catalog.contracts.get(uses)
+            if contract is None:
+                errors.append(f"{loc} uses '{uses}' which has no execution contract")
+                continue
+            expected = _HANDLER_BY_PREFIX.get(prefix)
+            if expected is not None and contract.handler != expected:
+                errors.append(f"{loc} uses '{uses}' but its contract handler is '{contract.handler}'")
+            if node.agent is not None and prefix != "skill":
+                errors.append(f"{loc} declares agent '{node.agent}' but uses '{uses}' which is not skill:*")
+            errors.extend(_check_authorization_narrowing(loc, node, contract))
+            errors.extend(_check_retry_kinds(loc, node, schema, contract))
+    return errors
+
+
+def _check_authorization_narrowing(loc: str, node: NodeDef, contract: ExecutionContract) -> list[str]:
+    """显式 node resources.writes 只能收窄 contract 授权写范围，不能扩大。"""
+    declared = node.resources
+    if declared is None:
+        return []
+    authorization = tuple(ResourcePath.parse(v) for v in contract.authorization_writes)
+    errors: list[str] = []
+    for write in declared.writes:
+        try:
+            claim = ResourcePath.parse(normalize_claim_pattern(write))
+        except ContractError as exc:
+            errors.append(f"{loc}: {exc}")
+            continue
+        if not any(path_covers(auth, claim) for auth in authorization):
+            errors.append(f"{loc} resources.writes '{write}' expands authorization beyond '{contract.target}'")
+    return errors
+
+
+def _check_retry_kinds(
+    loc: str,
+    node: NodeDef,
+    schema: WorkflowSchemaV2,
+    contract: ExecutionContract,
+) -> list[str]:
+    """retry policy 的 retry_on 必须落在目标 contract 的 retryable_errors 白名单内。"""
+    if node.retry is None:
+        return []
+    policy = schema.policies.retry.get(node.retry)
+    if policy is None:
+        return []  # 未知 policy 已在 graph_refs 报告
+    unsupported = sorted(set(policy.retry_on) - set(contract.retryable_errors))
+    if unsupported:
+        return [
+            f"{loc} retry policy '{node.retry}' kinds not retryable for "
+            f"'{contract.target}': {', '.join(unsupported)}"
+        ]
+    return []
+
+
+def _graph_footprints(schema: WorkflowSchemaV2, catalog: ExecutionContractCatalog | None) -> dict[str, ResourceClaims]:
+    """每个 graph 的保守资源 footprint：全部 node claim 的并集，``graph:<id>`` 递归展开。
+
+    互斥的运行期条件在 v2 首版不用于削减 claim——保守串行是正确的。subgraph
+    递归已在编译期拒绝，memoized 展开不会成环。
+    """
+    memo: dict[str, ResourceClaims] = {}
+
+    def footprint(graph_id: str) -> ResourceClaims:
+        if graph_id in memo:
+            return memo[graph_id]
+        claims = ResourceClaims()
+        graph = schema.graphs[graph_id]
+        for node in graph.nodes.values():
+            prefix, _, target = node.uses.partition(":")
+            if prefix == "graph":
+                child = footprint(target) if target in schema.graphs else unknown_claims()
+            elif catalog is None:
+                child = unknown_claims()
+            else:
+                child = catalog.claims_for(node)
+            claims = claims.union(child)
+        memo[graph_id] = claims
+        return claims
+
+    return {graph_id: footprint(graph_id) for graph_id in schema.graphs}
+
+
+def _referenced_contract_digests(schema: WorkflowSchemaV2, catalog: ExecutionContractCatalog) -> dict[str, str]:
+    """workflow 实际引用到的 contract 的 canonical digest（invocation 冻结与 resume 校验用）。"""
+    digests: dict[str, str] = {}
+    for graph in schema.graphs.values():
+        for node in graph.nodes.values():
+            contract = catalog.contracts.get(node.uses)
+            if contract is not None and node.uses not in digests:
+                digests[node.uses] = canonical_digest(contract)
+    return digests
+
+
+# ---------------------------------------------------------------------------
 # 有界 cycle（Tarjan SCC）
 
 
@@ -848,7 +978,7 @@ def _condensation_order(graph: GraphDef, adj: Mapping[str, list[str]], sccs: lis
     return [sccs[i] for i in order]
 
 
-def _compile_graph(graph_id: str, graph: GraphDef) -> CompiledGraph:
+def _compile_graph(graph_id: str, graph: GraphDef, footprint: ResourceClaims) -> CompiledGraph:
     decl = {nid: i for i, nid in enumerate(graph.nodes)}
     adj = _graph_adjacency(graph)
     ordered_sccs = _condensation_order(graph, adj, _tarjan_sccs(adj))
@@ -877,6 +1007,7 @@ def _compile_graph(graph_id: str, graph: GraphDef) -> CompiledGraph:
         nodes=nodes,
         sccs=tuple(tuple(sorted(scc, key=lambda nid: decl[nid])) for scc in ordered_sccs),
         artifact_symbols=symbols,
+        resource_footprint=footprint,
     )
 
 

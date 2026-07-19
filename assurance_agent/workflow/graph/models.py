@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from assurance_agent.workflow.graph.contracts import ResourceClaims
 from assurance_agent.workflow.graph.schema_v2 import (
     EdgeDef,
     NodeDef,
@@ -30,13 +31,16 @@ class CompiledNode(BaseModel):
 
 
 class CompiledGraph(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", arbitrary_types_allowed=True)
     graph_id: str
     max_supersteps: int
     declaration_order: tuple[str, ...]
     nodes: dict[str, CompiledNode]
     sccs: tuple[tuple[str, ...], ...]
     artifact_symbols: dict[str, str]
+    # 保守资源 footprint：全图 node claim 的并集（graph:<id> 递归展开）；
+    # 无 catalog 编译时不可推导，为 global:exclusive。
+    resource_footprint: ResourceClaims = Field(default_factory=ResourceClaims)
 
 
 class CompiledEntrypoint(BaseModel):
