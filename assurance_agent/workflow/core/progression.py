@@ -24,10 +24,12 @@ from pydantic import BaseModel
 from assurance_agent.artifacts.models import WorkflowState
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.events import Ledger, append_event_strict, read_events
+from assurance_agent.workflow.core.graph_events import SuperstepCommittedEvent
 from assurance_agent.workflow.core.snapshot import capture_files, restore_files
 from assurance_agent.workflow.core.state import read_state, state_file, state_guard, write_state
 
 LOCK_FILENAME = ".progression.lock"
+_RUNTIME_REL_PREFIX = ".graph-runtime/"
 _RESERVED_RELS = frozenset({"events.jsonl", "workflow-state.yaml", LOCK_FILENAME})
 _DEFAULT_LOCK_TIMEOUT_S = 0.5
 _LOCK_POLL_S = 0.01
@@ -113,6 +115,22 @@ class ProgressionTxn:
         resolved = self._resolve_rel(rel)
         data = content.encode("utf-8") if isinstance(content, str) else content
         # Last write for the same rel wins within one txn.
+        self._files = [(r, c) for r, c in self._files if r != rel]
+        self._files.append((rel, data))
+        _ = resolved  # validated
+
+    def write_runtime_file(self, rel: str, content: bytes | str) -> None:
+        """graph 运行时专属：stage coordinator 所有的 ``.graph-runtime/`` 文件。
+
+        与 ``write_file`` 共用同一份路径安全校验，仍拒绝保留文件
+        （``events.jsonl``/``workflow-state.yaml``/锁文件）、绝对路径与
+        目录穿越；额外限制只能落在 ``.graph-runtime/`` 之内。
+        """
+        resolved = self._resolve_rel(rel)
+        normalized = Path(rel).as_posix()
+        if not normalized.startswith(_RUNTIME_REL_PREFIX):
+            raise ValueError(f"write_runtime_file path must stay under .graph-runtime/: {rel!r}")
+        data = content.encode("utf-8") if isinstance(content, str) else content
         self._files = [(r, c) for r, c in self._files if r != rel]
         self._files.append((rel, data))
         _ = resolved  # validated
@@ -252,6 +270,24 @@ def transaction(
         thread_lock.release()
 
 
+def commit_tree_pointer(
+    change_dir: Path,
+    *,
+    event: SuperstepCommittedEvent,
+    checkpoint_rel: str,
+    checkpoint_bytes: bytes,
+) -> None:
+    """coordinator 的 tree pointer 提交：checkpoint 字节与 strict commit 事件同事务落盘。
+
+    strict event/tree pointer 先于 canonical 文件物化提交；物化中断时，下一次
+    运行时调用从 ledger 读 ``target_tree_id`` 并幂等修复 canonical 文件，
+    不重跑任何 task。
+    """
+    with transaction(change_dir) as txn:
+        txn.write_runtime_file(checkpoint_rel, checkpoint_bytes)
+        txn.append_strict(event)
+
+
 # Re-export for type checkers / callers that probe internals in tests.
 __all__ = [
     "ProgressionError",
@@ -259,6 +295,7 @@ __all__ = [
     "ProgressionRollbackError",
     "ProgressionLockTimeout",
     "ProgressionTxn",
+    "commit_tree_pointer",
     "transaction",
     "LOCK_FILENAME",
 ]

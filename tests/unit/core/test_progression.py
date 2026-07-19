@@ -12,11 +12,13 @@ import pytest
 
 from assurance_agent.artifacts.models import WorkflowState
 from assurance_agent.workflow.core import progression as progression_mod
-from assurance_agent.workflow.core.events import read_events
+from assurance_agent.workflow.core.events import read_events, read_events_strict
+from assurance_agent.workflow.core.graph_events import SuperstepCommittedEvent
 from assurance_agent.workflow.core.progression import (
     ProgressionCommitError,
     ProgressionLockTimeout,
     ProgressionRollbackError,
+    commit_tree_pointer,
     transaction,
 )
 from assurance_agent.workflow.core.state import read_state, write_state
@@ -319,3 +321,101 @@ def test_killed_holder_releases_fcntl_lock(tmp_path: Path) -> None:
     with transaction(change, lock_timeout_s=1.0) as txn:
         txn.write_file("healing/ok.txt", "yes")
     assert (change / "healing" / "ok.txt").read_text() == "yes"
+
+
+def test_write_runtime_file_writes_under_graph_runtime(tmp_path: Path) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    with transaction(change) as txn:
+        txn.write_runtime_file(".graph-runtime/checkpoints/cp-1.json", b"{}")
+    assert (change / ".graph-runtime" / "checkpoints" / "cp-1.json").read_bytes() == b"{}"
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "events.jsonl",
+        "workflow-state.yaml",
+        ".progression.lock",
+        "../outside.txt",
+        "/abs.txt",
+        "healing/note.txt",
+        ".graph-runtime",
+        ".graph-runtime/../events.jsonl",
+        ".graph-runtime/sub/../../workflow-state.yaml",
+    ],
+)
+def test_write_runtime_file_rejects_reserved_escape_and_foreign_paths(
+    tmp_path: Path, rel: str
+) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    with pytest.raises(ValueError):
+        with transaction(change) as txn:
+            txn.write_runtime_file(rel, b"x")
+
+
+def test_write_runtime_file_rolls_back_on_commit_failure(tmp_path: Path, monkeypatch) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+
+    def fail_append(*_a, **_k) -> None:
+        raise OSError("append failed")
+
+    monkeypatch.setattr(progression_mod, "append_event_strict", fail_append)
+    with pytest.raises(ProgressionCommitError):
+        with transaction(change) as txn:
+            txn.write_runtime_file(".graph-runtime/checkpoints/cp-1.json", b"{}")
+            txn.append_strict(_event())
+    assert not (change / ".graph-runtime" / "checkpoints" / "cp-1.json").exists()
+
+
+def _superstep_committed() -> SuperstepCommittedEvent:
+    return SuperstepCommittedEvent(
+        type="superstep_committed",
+        invocation_id="inv-1",
+        checkpoint_ns="inv-1",
+        superstep_id="ss-1",
+        checkpoint_id="cp-1",
+        write_set_ids=["ws-1"],
+        target_tree_id="tree-1",
+        state_values={"k": 1},
+    )
+
+
+def test_commit_tree_pointer_commits_checkpoint_and_event(tmp_path: Path) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    commit_tree_pointer(
+        change,
+        event=_superstep_committed(),
+        checkpoint_rel=".graph-runtime/checkpoints/cp-1.json",
+        checkpoint_bytes=b'{"cp": 1}',
+    )
+    assert (change / ".graph-runtime" / "checkpoints" / "cp-1.json").read_bytes() == b'{"cp": 1}'
+    strict = read_events_strict(change)
+    assert len(strict) == 1
+    assert strict[0]["type"] == "superstep_committed"
+    assert strict[0]["target_tree_id"] == "tree-1"
+
+
+def test_commit_tree_pointer_rolls_back_checkpoint_on_event_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+
+    def fail_append(*_a, **_k) -> None:
+        raise OSError("append failed")
+
+    monkeypatch.setattr(progression_mod, "append_event_strict", fail_append)
+    with pytest.raises(ProgressionCommitError):
+        commit_tree_pointer(
+            change,
+            event=_superstep_committed(),
+            checkpoint_rel=".graph-runtime/checkpoints/cp-1.json",
+            checkpoint_bytes=b"{}",
+        )
+    # strict event/tree pointer 提交是原子的：event 失败时 checkpoint 文件回滚。
+    assert not (change / ".graph-runtime" / "checkpoints" / "cp-1.json").exists()
+    assert read_events(change) == []
