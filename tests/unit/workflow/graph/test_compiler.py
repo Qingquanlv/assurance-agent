@@ -1,0 +1,362 @@
+import textwrap
+from pathlib import Path
+
+import pytest
+import yaml
+
+from assurance_agent.workflow.graph.compiler import (
+    CompileError,
+    compile_workflow,
+    resolve_params,
+)
+from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
+
+_DEFAULT_HEADER = """\
+params:
+  run_mode: {type: enum, values: [full], default: full}
+  max_fix: {type: int, default: 3}
+entrypoints:
+  full: {graph: main}
+policies:
+  retry: {never: {max_attempts: 1}}
+  timeout: {local: {run_seconds: 60, heartbeat_seconds: 10}}
+"""
+
+
+def compile_text(text: str):
+    return compile_workflow(parse_workflow_v2(text))
+
+
+def _wf(graph_body: str, *, header: str = _DEFAULT_HEADER, footer: str = "gates: {}\n") -> str:
+    return (
+        'schema_version: "2"\nname: t\n'
+        + header
+        + "graphs:\n"
+        + textwrap.indent(textwrap.dedent(graph_body), "  ")
+        + footer
+    )
+
+
+def _mutate_fixture(mutation) -> str:
+    raw = yaml.safe_load(Path("tests/fixtures/workflow-v2-minimal.yaml").read_text(encoding="utf-8"))
+    mutation(raw)
+    return yaml.safe_dump(raw, sort_keys=False)
+
+
+def test_compiles_minimal_fixture_with_stable_digest() -> None:
+    text = Path("tests/fixtures/workflow-v2-minimal.yaml").read_text(encoding="utf-8")
+    first = compile_text(text)
+    second = compile_text(text)
+    assert first.digest == second.digest
+    assert first.entrypoints["full"].graph_id == "main"
+    assert first.graphs["main"].declaration_order == ("first",)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda d: d["entrypoints"].update({"bad": {"graph": "missing"}}), "unknown graph"),
+        (lambda d: d["graphs"]["main"]["edges"].append({"from": "missing", "to": "END"}), "unknown node"),
+        (lambda d: d["graphs"]["main"]["nodes"].update({"dead": {"uses": "operation:no-op"}}), "unreachable"),
+    ],
+)
+def test_rejects_invalid_references(mutation, message: str) -> None:
+    raw = yaml.safe_load(Path("tests/fixtures/workflow-v2-minimal.yaml").read_text())
+    mutation(raw)
+    with pytest.raises(CompileError, match=message):
+        compile_text(yaml.safe_dump(raw, sort_keys=False))
+
+
+def test_compiles_bounded_cycle_with_budget() -> None:
+    compiled = compile_text(
+        _wf(
+            """
+            main:
+              max_supersteps: 10
+              budgets:
+                fix_attempts: {limit: "params.max_fix"}
+              nodes:
+                review: {uses: operation:review}
+                fix:
+                  uses: operation:fix
+                  budget: {consume: fix_attempts, "on": committed, exhausted_to: done}
+                done: {uses: operation:finish}
+              edges:
+                - {from: START, to: review}
+                - {from: review, to: fix}
+                - {from: fix, to: review}
+                - {from: done, to: END}
+            """
+        )
+    )
+    graph = compiled.graphs["main"]
+    assert ("review", "fix") in graph.sccs
+    assert graph.nodes["review"].topology_rank < graph.nodes["done"].topology_rank
+    assert graph.nodes["fix"].topology_rank < graph.nodes["done"].topology_rank
+
+
+def test_rejects_subgraph_recursion() -> None:
+    with pytest.raises(CompileError, match="recursion"):
+        compile_text(
+            _wf(
+                """
+                a:
+                  max_supersteps: 5
+                  nodes:
+                    call-b: {uses: graph:b}
+                  edges:
+                    - {from: START, to: call-b}
+                    - {from: call-b, to: END}
+                b:
+                  max_supersteps: 5
+                  nodes:
+                    call-a: {uses: graph:a}
+                  edges:
+                    - {from: START, to: call-a}
+                    - {from: call-a, to: END}
+                """,
+                header=_DEFAULT_HEADER.replace("full: {graph: main}", "full: {graph: a}"),
+            )
+        )
+
+
+def test_rejects_cycle_without_finite_budget_consumer() -> None:
+    with pytest.raises(CompileError, match="no bounded budget consumer"):
+        compile_text(
+            _wf(
+                """
+                main:
+                  max_supersteps: 5
+                  nodes:
+                    a: {uses: operation:a}
+                    b: {uses: operation:b}
+                  edges:
+                    - {from: START, to: a}
+                    - {from: a, to: b}
+                    - {from: b, to: a}
+                    - {from: a, to: END}
+                """
+            )
+        )
+
+
+def test_rejects_cycle_when_exhausted_to_stays_inside() -> None:
+    with pytest.raises(CompileError, match="exhausted_to"):
+        compile_text(
+            _wf(
+                """
+                main:
+                  max_supersteps: 10
+                  budgets:
+                    fix_attempts: {limit: 3}
+                  nodes:
+                    review: {uses: operation:review}
+                    fix:
+                      uses: operation:fix
+                      budget: {consume: fix_attempts, "on": committed, exhausted_to: review}
+                  edges:
+                    - {from: START, to: review}
+                    - {from: review, to: fix}
+                    - {from: fix, to: review}
+                    - {from: fix, to: END}
+                """
+            )
+        )
+
+
+def test_rejects_non_exhaustive_interrupt_action_route() -> None:
+    with pytest.raises(CompileError, match="no resume route"):
+        compile_text(
+            _wf(
+                """
+                main:
+                  max_supersteps: 5
+                  budgets:
+                    fix_attempts: {limit: 3}
+                  nodes:
+                    work:
+                      uses: operation:work
+                      budget: {consume: fix_attempts, "on": committed, exhausted_to: END}
+                    human:
+                      uses: builtin:interrupt
+                      interrupt:
+                        reason: needs a human
+                        checkpoint: c1
+                        bind: audited_gate_read
+                        actions: [fix_and_proceed, accept_risk, stop]
+                  edges:
+                    - {from: START, to: work}
+                    - {from: work, to: human}
+                  routes:
+                    - from: human
+                      select: "resume.action"
+                      cases:
+                        fix_and_proceed: work
+                        stop: STOP
+                      default: STOP
+                """
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        ("retry: nope", "unknown retry policy"),
+        ("timeout: nope", "unknown timeout policy"),
+    ],
+)
+def test_rejects_bad_policy_refs(field: str, message: str) -> None:
+    body = """
+        main:
+          max_supersteps: 5
+          nodes:
+            a:
+              uses: operation:a
+              FIELD
+          edges:
+            - {from: START, to: a}
+            - {from: a, to: END}
+        """.replace("FIELD", field)
+    with pytest.raises(CompileError, match=message):
+        compile_text(_wf(body))
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda d: d["graphs"]["main"]["nodes"]["first"].update({"gate": "nope"}), "unknown gate"),
+        (
+            lambda d: d["graphs"]["main"]["edges"].append(
+                {"from": "first", "to": "END", "when": "gate('nope').verdict == 'pass'"}
+            ),
+            "unknown gate",
+        ),
+    ],
+)
+def test_rejects_bad_gate_refs(mutation, message: str) -> None:
+    with pytest.raises(CompileError, match=message):
+        compile_text(_mutate_fixture(mutation))
+
+
+def test_rejects_replace_multi_writer() -> None:
+    with pytest.raises(CompileError, match="replace"):
+        compile_text(
+            _wf(
+                """
+                main:
+                  max_supersteps: 5
+                  state:
+                    summary: {type: object, default: {}, reducer: replace}
+                  nodes:
+                    a: {uses: operation:a, state_writes: {summary: "result.a"}}
+                    b: {uses: operation:b, state_writes: {summary: "result.b"}}
+                  edges:
+                    - {from: START, to: a}
+                    - {from: START, to: b}
+                    - {from: a, to: END}
+                    - {from: b, to: END}
+                """
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            lambda d: d["graphs"]["main"]["nodes"].update({"bad id": {"uses": "operation:x"}}),
+            "unsafe node id",
+        ),
+        (lambda d: d["graphs"]["main"]["nodes"].update({"END": {"uses": "operation:x"}}), "reserved"),
+        (
+            lambda d: d["graphs"]["main"]["nodes"]["first"].update({"outputs": ["change:../escape.json"]}),
+            "unsafe path",
+        ),
+        (
+            lambda d: d["graphs"]["main"]["nodes"]["first"].update({"outputs": ["plain.json"]}),
+            "rooted",
+        ),
+    ],
+)
+def test_rejects_unsafe_identifiers(mutation, message: str) -> None:
+    with pytest.raises(CompileError, match=message):
+        compile_text(_mutate_fixture(mutation))
+
+
+def test_rejects_unknown_node_in_expression() -> None:
+    def mutation(raw) -> None:
+        raw["graphs"]["main"]["nodes"]["first"]["when"] = "node('ghost').value == true"
+
+    with pytest.raises(CompileError, match="unknown node"):
+        compile_text(_mutate_fixture(mutation))
+
+
+def test_rejects_duplicate_artifact_symbols() -> None:
+    with pytest.raises(CompileError, match="duplicate artifact symbol"):
+        compile_text(
+            _wf(
+                """
+                main:
+                  max_supersteps: 5
+                  nodes:
+                    a: {uses: operation:a, outputs: [change:x/result.json]}
+                    b: {uses: operation:b, outputs: [change:y/result.json]}
+                  edges:
+                    - {from: START, to: a}
+                    - {from: START, to: b}
+                    - {from: a, to: END}
+                    - {from: b, to: END}
+                """
+            )
+        )
+
+
+def test_artifact_symbols_derive_from_json_output_stems() -> None:
+    compiled = compile_text(
+        _wf(
+            """
+            main:
+              max_supersteps: 5
+              nodes:
+                explore:
+                  uses: operation:explore
+                  outputs: [change:explore/advisory.json, change:explore/notes.md]
+                report: {uses: operation:report}
+              edges:
+                - {from: START, to: explore}
+                - {from: explore, to: report}
+                - {from: report, to: END}
+            """
+        )
+    )
+    assert compiled.graphs["main"].artifact_symbols == {"advisory": "change:explore/advisory.json"}
+
+
+def test_resolve_params_validates_overrides_and_cross_constraints() -> None:
+    schema = parse_workflow_v2(
+        _wf(
+            """
+            main:
+              max_supersteps: 5
+              nodes:
+                a: {uses: operation:a}
+              edges:
+                - {from: START, to: a}
+                - {from: a, to: END}
+            """,
+            header=(
+                "params:\n"
+                "  run_mode: {type: enum, values: [full, api-only, e2e-only], default: full}\n"
+                "  test_types: {type: list, values: [api, e2e], min_items: 1, unique: true, default: [api]}\n"
+                "entrypoints:\n"
+                "  full: {graph: main}\n"
+            ),
+        )
+    )
+    with pytest.raises(CompileError, match="unknown params"):
+        resolve_params(schema, {"nope": 1})
+    with pytest.raises(CompileError, match="api-only requires"):
+        resolve_params(schema, {"run_mode": "api-only", "test_types": ["e2e"]})
+    resolved = resolve_params(schema, {"run_mode": "api-only", "test_types": ["api"]})
+    assert resolved["run_mode"] == "api-only"

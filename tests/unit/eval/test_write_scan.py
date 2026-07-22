@@ -16,12 +16,30 @@ from assurance_agent.eval.types import DatasetSample
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.events import append_event_strict
 from assurance_agent.workflow.driver.adapter import PhaseRequest, PhaseResult
-from assurance_agent.workflow.orchestration.engine import (
-    DispatchEntry,
-    PhaseView,
-    Terminal,
-    WorkflowStatus,
-)
+
+
+class _UnusedStatusStub:
+    """Legacy LoopRunner stubs retained only so dead local helpers still type-check."""
+
+
+class WorkflowStatus(_UnusedStatusStub):
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+class PhaseView(_UnusedStatusStub):
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+class Terminal(_UnusedStatusStub):
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+class DispatchEntry(_UnusedStatusStub):
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
 
 
 def _git_init(repo: Path) -> None:
@@ -98,6 +116,50 @@ def _make_sut(tmp_path: Path) -> Path:
     return sut
 
 
+def _fake_runtime_factory(writes: dict[str, str], sut: Path):
+    """Apply intended agent writes inside run(), then report completed."""
+    from assurance_agent.workflow.core.exit_codes import EXIT_COMPLETED
+    from assurance_agent.workflow.graph.models import GraphStatus, RunResult
+
+    class _RT:
+        def run(self, compiled, entrypoint, context):  # noqa: ANN001, ANN201
+            for rel, content in writes.items():
+                target = sut / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+            status = GraphStatus(
+                invocation_id="i",
+                entrypoint="case",
+                status="completed",
+                checkpoint_id="c",
+                event_seq=1,
+                superstep=1,
+                running_tasks=(),
+                pending_tasks=(),
+                pending_write_sets=(),
+                pending_interrupts=(),
+                next_retry_at=None,
+                budgets={},
+                terminal_reason="ok",
+            )
+            return RunResult(invocation_id="i", status=status, exit_code=EXIT_COMPLETED, reason="ok")
+
+        def import_checkpoint(self, *a, **k):  # noqa: ANN001, ANN201
+            raise AssertionError("unexpected import")
+
+        def status(self, invocation_id: str):  # noqa: ANN201
+            return self.run(None, None, None).status
+
+    class _Bundle:
+        runtime = _RT()
+        compiled = object()
+
+    def factory(**_: object):
+        return _Bundle()
+
+    return factory
+
+
 def _run_attempt(
     tmp_path: Path,
     writes: dict[str, str],
@@ -120,10 +182,9 @@ def _run_attempt(
         attempt,
         suite="workflow-case",
         sut_dir=sut,
-        scope="case",
         adapter=adapter,
-        status_provider=_scripted_status(),
-        cli_executor=AuditOutcomeExecutor(),
+        entrypoint="case",
+        runtime_factory=_fake_runtime_factory(writes, sut),
         run_mode=run_mode,
         test_types=test_types,
     )
@@ -213,14 +274,12 @@ def test_execute_attempt_non_git_sut_gets_disposable_snapshot(tmp_path: Path) ->
         attempt,
         suite="workflow-case",
         sut_dir=sut,
-        scope="case",
         adapter=adapter,
-        status_provider=_scripted_status(),
-        cli_executor=AuditOutcomeExecutor(),
+        entrypoint="case",
+        runtime_factory=_fake_runtime_factory({}, sut),
     )
 
     assert result.status == "ok"
-    assert len(adapter.requests) == 1
     assert (sut / ".git").is_dir()
     diff = _read_write_diff(attempt)
     assert diff["forbidden_write_executed_count"] == 0

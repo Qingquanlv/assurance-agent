@@ -7,10 +7,47 @@ paths:
 - facts
 - explore
 - review
+- registry
+- healing
 - workflow-state.yaml
 - .qa.yaml
 resets:
+  # Scorers still read workflow-state phase stamps; GraphRuntime gates use artifacts.
   workflow_state:
+    phases.skill_registry_check.status: pass
+    run_context.interaction_mode: autonomous
+    run_context.orchestrator_skill: aa-workflow
     phases.case-design.status: done
     phases.case-review.status: done
     phases.api-plan.status: pending
+  qa_yaml:
+    approval.mode: autonomous
+imports:
+  case:
+    entrypoint: case
+    inputs: []
+    completed:
+    - path: intake-workflow/bootstrap/bootstrap
+      graph: bootstrap
+      node: registry
+      outputs:
+      - change:registry/skill-registry-check.json
+      gate: registry-gate
+    - path: intake-workflow/intake/intake
+      graph: intake
+      node: explore
+      outputs:
+      - change:explore/advisory.json
+    - path: intake-workflow/intake/intake
+      graph: intake
+      node: case-design
+      outputs:
+      - change:.qa.yaml
+      - change:proposal.md
+      gate: case-design-gate
+    - path: intake-workflow/intake/intake/case-review-cycle/case-review-cycle
+      graph: case-review-cycle
+      node: review
+      outputs:
+      - change:review/case-review.json
+      gate: case-review-gate

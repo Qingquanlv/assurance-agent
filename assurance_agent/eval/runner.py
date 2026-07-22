@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from assurance_agent.eval.dataset_loader import load_for_run
-from assurance_agent.eval.executor import LoopRunner, execute_attempt
+from assurance_agent.eval.executor import execute_attempt
 from assurance_agent.eval.gate import compute_gate_result, write_gate_result
 from assurance_agent.eval.judge import run_judge
 from assurance_agent.eval.metrics import aggregate_scores, write_metrics
@@ -27,8 +27,6 @@ from assurance_agent.eval.types import (
     regression_policy_sha256,
 )
 from assurance_agent.exceptions import AaError
-from assurance_agent.workflow.driver.adapter import Adapter
-from assurance_agent.workflow.driver.loop import CliPhaseExecutor, run_workflow_loop
 
 
 def _now() -> str:
@@ -107,10 +105,8 @@ def run_suite(
     repeat: int = 1,
     calibrate: bool = False,
     run_id: str | None = None,
-    adapter_factory: Callable[..., Adapter] | None = None,
-    status_provider_factory: Callable[..., Callable[[], object]] | None = None,
-    cli_executor_factory: Callable[..., CliPhaseExecutor] | None = None,
-    loop_runner: LoopRunner = run_workflow_loop,
+    adapter_factory: Callable[..., object] | None = None,
+    runtime_factory: Callable[..., object] | None = None,
     fixtures_root: Path | None = None,
     extra_memory_dir: Path | None = None,
 ) -> tuple[str, EvalGateResult]:
@@ -152,10 +148,14 @@ def run_suite(
 
     scorer = get_scorer(suite.scorer)
     scores: list[SampleScore] = []
-    scope = str(suite.executor.get("scope", "full"))
+    if "entrypoint" not in suite.executor and "scope" in suite.executor:
+        raise AaError("suite executor.scope is removed; use executor.entrypoint")
+    entrypoint = str(suite.executor.get("entrypoint", "full"))
     executor_type = str(suite.executor.get("type", "workflow-run"))
     run_mode = suite.executor.get("run_mode")
-    test_types = suite.executor.get("test_type")
+    test_types = suite.executor.get("test_type") or suite.executor.get("test_types")
+    run_tests_raw = suite.executor.get("run_tests")
+    run_tests = None if run_tests_raw is None else bool(run_tests_raw)
     in_process = executor_type in {"in_process", "score-only"}
     for sample in samples:
         for attempt_index in range(repeat):
@@ -170,17 +170,15 @@ def run_suite(
                 "attempt": attempt_index,
             }
             adapter = adapter_factory(**factory_args) if adapter_factory else None
-            status_provider = status_provider_factory(**factory_args) if status_provider_factory else None
-            cli_executor = cli_executor_factory(**factory_args) if cli_executor_factory else None
             if not in_process and adapter is None:
                 raise ValueError("adapter_factory required (real adapters wired by CLI)")
             # in_process suites never call the adapter; pass a noop when unset.
             if adapter is None:
-                from assurance_agent.workflow.driver.adapter import PhaseRequest, PhaseResult
+                from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
 
                 class _NoopAdapter:
-                    def run_phase(self, request: PhaseRequest) -> PhaseResult:
-                        return PhaseResult(ok=True, output="noop")
+                    def invoke(self, request: AgentRequest) -> AgentResult:
+                        return AgentResult(ok=True)
 
                 adapter = _NoopAdapter()  # type: ignore[assignment]
             result = execute_attempt(
@@ -189,15 +187,14 @@ def run_suite(
                 suite=suite.name,
                 sut_dir=attempt_sut,
                 adapter=adapter,
-                scope=scope,
-                loop_runner=loop_runner,
-                status_provider=status_provider,
-                cli_executor=cli_executor,
+                entrypoint=entrypoint,
+                runtime_factory=runtime_factory,
                 expected_outputs=suite.executor.get("expected_outputs"),
                 fixtures_root=resolved_fixtures,
                 executor_type=executor_type,
                 run_mode=str(run_mode) if run_mode is not None else None,
                 test_types=str(test_types) if test_types is not None else None,
+                run_tests=run_tests,
             )
             manifest.executed_samples += 1
             score_key = f"{sample.id}#attempt-{attempt_index}"
@@ -262,8 +259,8 @@ def run_plan(
     plan_path: Path,
     project_root: Path,
     sut_dir: Path,
-    adapter_factory: Callable[..., Adapter] | None = None,
-    status_provider_factory: Callable[..., Callable[[], object]] | None = None,
+    adapter_factory: Callable[..., object] | None = None,
+    runtime_factory: Callable[..., object] | None = None,
     extra_memory_dir: Path | None = None,
 ) -> tuple[str, list[EvalGateResult]]:
     plan = read_plan(plan_path)
@@ -276,7 +273,7 @@ def run_plan(
             project_root=project_root,
             sut_dir=sut_dir,
             adapter_factory=adapter_factory,
-            status_provider_factory=status_provider_factory,
+            runtime_factory=runtime_factory,
             extra_memory_dir=extra_memory_dir,
         )
         results.append(gate)

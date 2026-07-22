@@ -1,49 +1,41 @@
 ---
 name: aa-workflow
-description: "Full AA QA workflow entry. Prefer `aa workflow run --scope full` (the aa workflow driver) or workflow_start. Fallback only when the driver is unavailable — then follow FALLBACK-RUNBOOK.md in this skill directory."
+description: "Full AA QA workflow entry. Prefer `aa workflow run --entrypoint full` (GraphRuntime) or workflow_start. Operator recovery: FALLBACK-RUNBOOK.md in this skill directory."
 ---
 
 # AA Workflow
 
-## Preferred entry (driver)
+## Preferred entry (GraphRuntime)
 
 ```bash
-aa workflow run --change <change-id> --scope full
-# or from chat (after intake / for full): workflow_start tool with scope=full
+aa workflow run --change <change-id> --entrypoint full
+# or from chat: workflow_start tool with entrypoint=full
 ```
 
-The aa workflow driver owns `aa status` / `aa gate check` / `workflow-state.yaml`, phase dispatch,
-review/fix loops, healing, and human-review pause/resume. Phase skills under `skills/aa-*`
-remain the per-phase contracts; do not re-implement them here.
+GraphRuntime owns progression (ledger, checkpoints, retries, interrupts). Phase skills under
+`skills/aa-*` remain per-node contracts; agents never write the ledger or edit checkpoints.
 
 | Mode | Explore |
 |---|---|
-| **Driver** | Dispatched to `aa-doc-author` |
-| **Fallback** (this skill) | **Inline** in the primary agent (subagents often lack Bash for `aa risk *`) |
+| **Driver** | Dispatched as a graph agent node |
+| **Operator recovery** | See `FALLBACK-RUNBOOK.md` — inspect / resume / import only |
 
-## When to use this skill (fallback)
+## When to open the runbook
 
-Use this skill only if:
-
-1. `aa workflow` CLI / driver is unavailable in the environment, **or**
-2. The user explicitly asks for legacy agent-orchestrated mode.
-
-Then:
-
-1. Read **`skills/aa-workflow/FALLBACK-RUNBOOK.md`** (same directory) and follow it end-to-end.
-2. Keep explore **inline** in fallback task mode.
-3. Orchestrator still owns `aa status --next`, `aa gate check`, and `workflow-state.yaml`.
-
-Do **not** paste or re-derive the full runbook into the chat — open the fallback file.
+Use `FALLBACK-RUNBOOK.md` when recovering a stuck change (expired lease, interrupt, digest drift).
+There is **no** agent-orchestrated phase fallback.
 
 ## Mode binding
 
-- **Full / autonomous** end-to-end without design-time clarification dialogue.
-- Design-time questions → `aa-intake` first, then `workflow_start` (`scope: execute`) or `aa workflow run --scope execute`.
-- Two-stage execute without driver → `aa-execute` fallback skill (also thin; points here).
+- **Full / autonomous** end-to-end: `--entrypoint full`.
+- Design-time questions → `aa-intake` first, then `workflow_start` (`entrypoint: execute`) or
+  `aa workflow run --entrypoint execute`.
+- Case-only: `--entrypoint case`.
 
-## Invariants (all modes)
+## Invariants
 
-- Subagents / phase agents never run `aa gate` / `aa status` or edit `workflow-state.yaml`.
-- Producing artifacts on disk is **not** phase completion — state apply / hand-update + `aa status` required (see fallback runbook).
-- `force_continue` and review gates are schema/CLI-owned (`schemas/workflow-schema.yaml`).
+- Subagents never run `aa gate` / `aa status` as progression writers, never edit `events.jsonl`,
+  and never hand-mark tasks complete from files.
+- Artifact presence is **not** completion — only ledger `task_*` / `task_imported` events are.
+- Human safety approval uses `aa workflow resume --interrupt ...`.
+- `allow_test_changes` stays on `aa decide` (policy), not graph gates.

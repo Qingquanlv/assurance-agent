@@ -1,21 +1,16 @@
-import json
+"""aa decide — non-graph policy decisions (graph gate actions use workflow resume)."""
+
 from pathlib import Path
 
-from tests.helpers_aa import write_aa_config
-
-import yaml
 from click.testing import CliRunner
 
 from assurance_agent.cli import main
+from tests.helpers_aa import write_aa_config
 
 STATE = """schema_version: "1"
 params:
   run_mode: full
-phases:
-  skill_registry_check:
-    status: pass
-  explore:
-    status: done
+phases: {}
 """
 
 
@@ -38,9 +33,9 @@ def test_decide_missing_change_exits_1() -> None:
                 "--change",
                 "NOPE",
                 "--at",
-                "case-review",
+                "bootstrap",
                 "--action",
-                "fix_and_proceed",
+                "skip_branch",
                 "--reason",
                 "x",
             ],
@@ -54,21 +49,16 @@ def test_decide_unsupported_action_exits_1() -> None:
     with runner.isolated_filesystem():
         make_change()
         result = runner.invoke(
-            main, ["decide", "--change", "CH-1", "--at", "case-review", "--action", "wibble", "--reason", "x"]
+            main, ["decide", "--change", "CH-1", "--at", "bootstrap", "--action", "wibble", "--reason", "x"]
         )
         assert result.exit_code == 1
         assert "wibble" in result.output
 
 
-def test_decide_records_event_and_appends_state_decision() -> None:
+def test_decide_rejects_graph_gate_actions() -> None:
     runner = CliRunner()
     with runner.isolated_filesystem():
-        change_dir = make_change()
-        # case-review is a gated phase; case-review-gate reads an audited artifact
-        # that a non-stop decision must bind (TS decide.ts).
-        review = change_dir / "review" / "case-review.json"
-        review.parent.mkdir()
-        review.write_text(json.dumps({"decision": "needs_human_review"}), encoding="utf-8")
+        make_change()
         result = runner.invoke(
             main,
             [
@@ -83,30 +73,39 @@ def test_decide_records_event_and_appends_state_decision() -> None:
                 "looks good",
             ],
         )
-        assert result.exit_code == 0, result.output
-        events = [json.loads(line) for line in (change_dir / "events.jsonl").read_text().strip().splitlines()]
-        rec = next(e for e in events if e["type"] == "human_decision")
-        assert rec["action"] == "fix_and_proceed"
-        assert rec["checkpoint"] == "case-review"
-        assert rec["reason"] == "looks good"
-        assert len(events) == 1
-        state = yaml.safe_load((change_dir / "workflow-state.yaml").read_text())
-        assert state["decisions"][-1]["action"] == "fix_and_proceed"
+        assert result.exit_code == 1
+        assert "workflow resume" in result.output
 
 
-def test_decide_stop_marks_terminal() -> None:
+def test_decide_records_skip_branch_policy() -> None:
+    import json
+
+    import yaml
+
     runner = CliRunner()
     with runner.isolated_filesystem():
         change_dir = make_change()
         result = runner.invoke(
-            main, ["decide", "--change", "CH-1", "--at", "explore", "--action", "stop", "--reason", "halt"]
+            main,
+            [
+                "decide",
+                "--change",
+                "CH-1",
+                "--at",
+                "bootstrap",
+                "--action",
+                "skip_branch",
+                "--reason",
+                "not needed",
+            ],
         )
         assert result.exit_code == 0, result.output
-        state = yaml.safe_load((change_dir / "workflow-state.yaml").read_text())
-        assert state["terminal"]["kind"] == "stopped"
         events = [json.loads(line) for line in (change_dir / "events.jsonl").read_text().strip().splitlines()]
-        assert any(e["type"] == "human_decision" for e in events)
-        assert isinstance(state["decisions"][-1]["state_at_stop"]["next"], list)
+        rec = next(e for e in events if e["type"] == "human_decision")
+        assert rec["action"] == "skip_branch"
+        assert rec["checkpoint"] == "bootstrap"
+        state = yaml.safe_load((change_dir / "workflow-state.yaml").read_text())
+        assert state["decisions"][-1]["action"] == "skip_branch"
 
 
 def test_decide_strict_event_failure_rolls_back_and_exits_40(monkeypatch) -> None:
@@ -122,9 +121,6 @@ def test_decide_strict_event_failure_rolls_back_and_exits_40(monkeypatch) -> Non
     runner = CliRunner()
     with runner.isolated_filesystem():
         change_dir = make_change()
-        review = change_dir / "review" / "case-review.json"
-        review.parent.mkdir()
-        review.write_text(json.dumps({"decision": "needs_human_review"}), encoding="utf-8")
         before = (change_dir / "workflow-state.yaml").read_text()
         result = runner.invoke(
             main,
@@ -133,9 +129,9 @@ def test_decide_strict_event_failure_rolls_back_and_exits_40(monkeypatch) -> Non
                 "--change",
                 "CH-1",
                 "--at",
-                "case-review",
+                "bootstrap",
                 "--action",
-                "fix_and_proceed",
+                "skip_branch",
                 "--reason",
                 "x",
             ],
@@ -143,53 +139,3 @@ def test_decide_strict_event_failure_rolls_back_and_exits_40(monkeypatch) -> Non
         assert result.exit_code == 40
         assert (change_dir / "workflow-state.yaml").read_text() == before
         assert not (change_dir / "events.jsonl").exists()
-
-
-def test_decide_empty_reason_rejected() -> None:
-    runner = CliRunner()
-    with runner.isolated_filesystem():
-        make_change()
-        result = runner.invoke(
-            main,
-            [
-                "decide",
-                "--change",
-                "CH-1",
-                "--at",
-                "case-review",
-                "--action",
-                "fix_and_proceed",
-                "--reason",
-                "   ",
-            ],
-        )
-        assert result.exit_code == 1
-        assert "reason" in result.output.lower()
-
-
-def test_decide_evidence_is_committed_to_strict_event() -> None:
-    runner = CliRunner()
-    with runner.isolated_filesystem():
-        change_dir = make_change()
-        evidence = Path("decision-note.md")
-        evidence.write_text("approved after manual review\n", encoding="utf-8")
-        result = runner.invoke(
-            main,
-            [
-                "decide",
-                "--change",
-                "CH-1",
-                "--at",
-                "explore",
-                "--action",
-                "stop",
-                "--reason",
-                "halt",
-                "--evidence",
-                str(evidence),
-            ],
-        )
-        assert result.exit_code == 0, result.output
-        event = json.loads((change_dir / "events.jsonl").read_text(encoding="utf-8").strip())
-        assert event["evidence_file"] == "decision-note.md"
-        assert len(event["evidence_sha256"]) == 64

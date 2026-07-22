@@ -111,14 +111,11 @@ def test_collect_agent_failure_exit_40(tmp_path: Path) -> None:
 
 
 def test_default_is_terminal_treats_archived_change_as_terminal(tmp_path: Path) -> None:
-    """Regression: `compute_status` against an archived directory spuriously
-    reported non-terminal, because `aa-archive` intentionally does not copy
-    `cases/<module>/case.yaml` (merged into the stable `qa/cases/` file, not
-    archived), so case-design/case-review produces-presence checks fail
-    against the archived copy. This silently dropped every already-archived
-    change from the retro window. Archived is terminal by construction — the
-    archive gate only lets a change through after execution/healing/review
-    already passed.
+    """Regression: archived changes must be terminal by construction.
+
+    Re-projecting GraphRuntime status against an archived directory is
+    unreliable (archive omits some case artifacts). The archive gate only
+    lets a change through after execution/healing/review already passed.
     """
     write_aa_config(tmp_path)
     change_dir = make_archived_change(tmp_path, "CH-ARCHIVED", failures=[])

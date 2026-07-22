@@ -48,14 +48,14 @@ export default {
       /^[A-Za-z0-9][A-Za-z0-9._-]*$/,
       'change_id must be one safe path segment',
     ).describe('Change ID (e.g. REQ-001-login)'),
-    scope: z.enum(['execute', 'full']).default('execute').describe('Workflow scope'),
+    entrypoint: z.enum(['full', 'intake', 'execute', 'case']).default('execute').describe('Workflow entrypoint'),
     params_json: z.string().optional().describe('Optional runtime params as JSON object string'),
   },
   async execute(
-    args: { change_id: string; scope?: 'execute' | 'full'; params_json?: string },
+    args: { change_id: string; entrypoint?: 'full' | 'intake' | 'execute' | 'case'; params_json?: string },
     context: { sessionID?: string; sessionId?: string; directory?: string; worktree?: string },
   ) {
-    const scope = args.scope ?? 'execute';
+    const entrypoint = args.entrypoint ?? 'execute';
     const directory = context.directory ?? context.worktree ?? process.cwd();
     const parent = context.sessionID ?? context.sessionId;
 
@@ -71,7 +71,7 @@ export default {
       '--detach',
       '--adapter', 'opencode',
       '--change', args.change_id,
-      '--scope', scope,
+      '--entrypoint', entrypoint,
       '--server', serverUrl,
       '--directory', directory,
     ];
@@ -90,6 +90,6 @@ export default {
     if (result.status !== 0) {
       return `workflow_start failed (exit ${result.status}): ${out || 'no output'}`;
     }
-    return out || `已启动 workflow（change=${args.change_id}, scope=${scope}）`;
+    return out || `已启动 workflow（change=${args.change_id}, entrypoint=${entrypoint}）`;
   },
 };

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from assurance_agent.artifacts.models import WorkflowState
 from assurance_agent.change_location import ChangeLocation
@@ -20,7 +22,14 @@ from assurance_agent.workflow.orchestration.dsl import (
     evaluate,
     parse_expression,
 )
-from assurance_agent.workflow.orchestration.schema import GateDef, ReadEntry, Verdict, WorkflowSchema
+from typing import Protocol
+
+from assurance_agent.workflow.orchestration.schema import GateDef, ReadEntry, Verdict
+
+
+class _SchemaWithGates(Protocol):
+    gates: dict[str, GateDef]
+
 
 # Human decisions that can upgrade a `needs_human_review` gate verdict. Mirror of
 # TS ``applyGateDecision`` (engine.ts): ``accept_risk``→pass, ``fix_and_proceed``
@@ -78,7 +87,7 @@ def _scope_state(state: WorkflowState) -> dict:
 
 
 def build_evidence_scope(
-    schema: WorkflowSchema,
+    schema: _SchemaWithGates,
     loc: ChangeLocation,
     state: WorkflowState,
     params: dict,
@@ -126,7 +135,7 @@ def build_evidence_scope(
 
 
 def resolve_gate_verdict(
-    schema: WorkflowSchema,
+    schema: _SchemaWithGates,
     gate_name: str,
     loc: ChangeLocation,
     state: WorkflowState,
@@ -148,7 +157,7 @@ def resolve_gate_verdict(
 
 
 def _adjudicate(
-    schema: WorkflowSchema,
+    schema: _SchemaWithGates,
     gate: GateDef,
     loc: ChangeLocation,
     state: WorkflowState,
@@ -165,7 +174,7 @@ def _adjudicate(
 
 
 def _adjudicate_base(
-    schema: WorkflowSchema,
+    schema: _SchemaWithGates,
     gate: GateDef,
     loc: ChangeLocation,
     state: WorkflowState,
@@ -217,7 +226,7 @@ def is_codegen_hard_gate(gate_id: str) -> bool:
 
 
 def latest_valid_gate_decision(
-    schema: WorkflowSchema,
+    schema: _SchemaWithGates,
     gate_id: str,
     loc: ChangeLocation,
 ) -> dict[str, object] | None:
@@ -245,12 +254,7 @@ def latest_valid_gate_decision(
             latest = event
             break
         if isinstance(checkpoint, str):
-            phase = next((p for p in schema.phases if p.id == checkpoint), None)
-            if phase is not None and phase.gate == gate_id:
-                latest = event
-                break
-            # Mirror of TS engine.ts ``latestValidGateDecision``: a decision at the
-            # special ``healing.safety`` checkpoint also anchors the fixer-safety-gate.
+            # Special ``healing.safety`` checkpoint also anchors the fixer-safety-gate.
             if gate_id == "fixer-safety-gate" and checkpoint == "healing.safety":
                 latest = event
                 break
@@ -284,7 +288,7 @@ def latest_valid_gate_decision(
 
 
 def _apply_gate_decision(
-    schema: WorkflowSchema,
+    schema: _SchemaWithGates,
     gate_id: str,
     loc: ChangeLocation,
     base_verdict: Verdict,
@@ -304,7 +308,7 @@ def _apply_gate_decision(
 
 
 def check_gate(
-    schema: WorkflowSchema,
+    schema: _SchemaWithGates,
     gate_name: str,
     loc: ChangeLocation,
     state: WorkflowState,
@@ -319,3 +323,197 @@ def check_gate(
     except GateCycleError as exc:
         return GateVerdict(gate=gate_name, verdict=Verdict.STOP, reason=str(exc))
     return GateVerdict(gate=gate_name, verdict=verdict, matched_rule=matched)
+
+
+# ---------------------------------------------------------------------------
+# graph artifact view 上的冻结 gate 求值（schema v2）
+#
+# ``check_gate_in_view`` 与 v1 ``check_gate`` 保持同一份裁决语义（invalid_json →
+# 有序规则 first-true-wins → missing_field_is → missing_file_is → fail-closed
+# default），但所有输入都来自显式 ``GateEvaluationContext``：三个逻辑 root 指向
+# task 私有 workspace（attached gate）或 committed graph workspace（builtin
+# gate），state/gate()/node() 结局来自冻结映射而非 v1 ledger/engine 递归。
+# v1 ``check_gate`` 路径保持原实现不变，直到 Task 15 切换。
+
+
+class GateError(AaError):
+    """artifact view 上的 gate 求值失败（未知 gate 等）。"""
+
+
+@dataclass(frozen=True)
+class GateEvaluationContext:
+    """一次冻结 gate 求值的显式 artifact view。"""
+
+    project_root: Path
+    repo_root: Path
+    change_dir: Path
+    change_id: str
+    params: Mapping[str, object]
+    state_values: Mapping[str, object]
+    node_results: Mapping[str, object]
+
+
+class FrozenGateReport(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    gate_id: str
+    verdict: Verdict
+    matched_rule: str | None
+    reason: str
+    reads_sha256: dict[str, str]
+
+
+def resolve_view_path(context: GateEvaluationContext, rel: str) -> Path:
+    """``resolve_change_path`` 的 view 版本：``repo:`` → repo root，``qa/`` → project root，其余 → change dir。"""
+    normalized = rel.replace("<change-id>", context.change_id)
+    if normalized.startswith("repo:"):
+        return context.repo_root / normalized[len("repo:") :]
+    if normalized.startswith("qa/"):
+        return context.project_root / normalized
+    return context.change_dir / normalized
+
+
+def check_gate_in_view(
+    gates: Mapping[str, GateDef],
+    gate_id: str,
+    context: GateEvaluationContext,
+) -> FrozenGateReport:
+    gate = gates.get(gate_id)
+    if gate is None:
+        raise GateError(f"unknown gate: {gate_id}")
+    verdict, matched_rule, reason, reads_sha256 = _evaluate_gate_def(gate, context)
+    return FrozenGateReport(
+        gate_id=gate_id,
+        verdict=verdict,
+        matched_rule=matched_rule,
+        reason=reason,
+        reads_sha256=reads_sha256,
+    )
+
+
+def _load_view_doc(context: GateEvaluationContext, rel: str) -> tuple[bool, bool, object]:
+    """``_load_doc`` 的 view 版本：returns (present, parse_error, value)。"""
+    path = resolve_view_path(context, rel)
+    if not path.exists():
+        return False, False, None
+    try:
+        text = path.read_text(encoding="utf-8")
+        if rel.endswith((".yaml", ".yml")):
+            return True, False, yaml.safe_load(text)
+        return True, False, json.loads(text)
+    except (json.JSONDecodeError, yaml.YAMLError, ValueError):
+        return True, True, None
+
+
+def _view_gate_verdict(context: GateEvaluationContext, gate_id: str) -> str:
+    """从冻结 node 结局中解析 ``gate()`` 调用；无法解析时 fail closed 到 stop。"""
+    for result in context.node_results.values():
+        if not isinstance(result, dict):
+            continue
+        report = result.get("gate")
+        if isinstance(report, dict) and report.get("gate_id") == gate_id:
+            verdict = report.get("verdict")
+            if isinstance(verdict, str):
+                return verdict
+    return Verdict.STOP.value
+
+
+def _view_scope(gate: GateDef, context: GateEvaluationContext) -> Scope:
+    """view 版 gate 作用域：primary hoist + aliases + params/state + 冻结结局解析器。"""
+    alias_docs: dict[str, object] = {}
+    for entry in gate.reads:
+        _, _, val = _load_view_doc(context, entry.path)
+        alias_docs[entry.alias] = val
+    primary_val = alias_docs.get(gate.reads[0].alias) if gate.reads else None
+    hoisted = primary_val if isinstance(primary_val, dict) else {}
+    scope_vars: dict[str, object] = {
+        **hoisted,
+        **alias_docs,
+        "params": dict(context.params),
+        "state": dict(context.state_values),
+    }
+
+    def file_exists(rel: str) -> bool:
+        return resolve_view_path(context, rel).exists()
+
+    def gate_verdict(gid: str) -> str:
+        return _view_gate_verdict(context, gid)
+
+    def node_result(node_id: str) -> object:
+        result = context.node_results.get(node_id)
+        return result if isinstance(result, dict) else {}
+
+    return Scope(scope_vars, file_exists=file_exists, gate_verdict=gate_verdict, node_result=node_result)
+
+
+def _audited_reads_sha256(gate: GateDef, context: GateEvaluationContext) -> dict[str, str]:
+    """冻结每个 audited gate read 的当前内容 hash；缺失文件无法 hash，按缺失省略。"""
+    hashes: dict[str, str] = {}
+    for entry in gate.reads:
+        if not is_audited_gate_read(entry.path):
+            continue
+        digest = sha256_file(resolve_view_path(context, entry.path))
+        if digest is not None:
+            hashes[entry.path] = digest
+    return hashes
+
+
+def _evaluate_gate_def(
+    gate: GateDef,
+    context: GateEvaluationContext,
+) -> tuple[Verdict, str | None, str, dict[str, str]]:
+    """在显式 view 上求值单个 GateDef：返回 (verdict, matched_rule, reason, reads_sha256)。
+
+    规则求值顺序与 v1 ``_adjudicate_base`` 逐步对齐（声明序 first-true-wins）；
+    每个返回路径都冻结当前 audited read hash。
+    """
+    # Step 1 — invalid_json: stop
+    if gate.invalid_json == Verdict.STOP:
+        for entry in gate.reads:
+            present, parse_error, _ = _load_view_doc(context, entry.path)
+            if present and parse_error:
+                return (
+                    Verdict.STOP,
+                    "invalid_json",
+                    "gate read contains invalid JSON",
+                    _audited_reads_sha256(gate, context),
+                )
+
+    # Step 2 — scope（gate: primary hoist + aliases + params/state + 冻结结局）
+    scope = _view_scope(gate, context)
+
+    # Step 3 — rules in DECLARATION order, first-true-wins（与 v1 相同）
+    saw_missing = False
+    for rule in gate.rules:
+        result = evaluate(parse_expression(rule.expr), scope)
+        if result is True:
+            matched = f"{rule.field}: {rule.expr}"
+            return (
+                rule.verdict,
+                matched,
+                f"matched rule {rule.field}: {rule.expr}",
+                _audited_reads_sha256(gate, context),
+            )
+        if result is MISSING:
+            saw_missing = True
+
+    # Step 4 — missing_field_is
+    if saw_missing and gate.missing_field_is:
+        return (
+            gate.missing_field_is,
+            "missing_field",
+            "gate read is missing a referenced field",
+            _audited_reads_sha256(gate, context),
+        )
+
+    # Step 5 — missing_file_is
+    any_missing = any(not resolve_view_path(context, entry.path).exists() for entry in gate.reads)
+    if any_missing and gate.missing_file_is:
+        return (
+            gate.missing_file_is,
+            "missing_file",
+            "gate read file is missing",
+            _audited_reads_sha256(gate, context),
+        )
+
+    # Step 6 — fail-closed default
+    return gate.default, None, "fail-closed default", _audited_reads_sha256(gate, context)

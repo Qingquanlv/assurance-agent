@@ -3,21 +3,16 @@
 # run-workflow-loop.sh - scheduled benchmark loop using the Python workflow driver.
 #
 # OpenCode sibling of run-workflow-loop-cursor.sh. Reuses benchmark/benchmark.env
-# and benchmark/requirements/*.md, but drives the Assurance Workflow through the
-# deterministic Python driver (`aa workflow run`) instead of asking a single
-# main-agent to follow aa-workflow/SKILL.md prose. The driver owns the state
-# machine (explore -> report); OpenCode only executes one bounded agent per phase.
+# and benchmark/requirements/*.md, but drives Assurance Workflow through
+# GraphRuntime (`aa workflow run` / `resume`). OpenCode executes one bounded
+# agent per task (opencode adapter) or `opencode run` per task (headless).
 #
 # One tick:
-#   1. Seed intake inputs for each item (.qa.yaml + proposal.md). The driver's
-#      full scope starts at `explore` and has NO interactive intake phase, so the
-#      requirement must be materialized on disk before the driver runs.
-#   2. `aa workflow run --scope full` drives the change to a terminal state,
-#      dispatching each phase to OpenCode (opencode adapter, default) or to a
-#      spawned `opencode run` per phase (headless adapter).
-#   3. The script verifies completion with deterministic `aa status`.
-#   4. Completed changes are archived through OpenCode + aa-archive.
-#   5. (Optional) retro-nightly collect — meta loop via skills repo driver.
+#   1. Seed intake inputs for each item (.qa.yaml + proposal.md).
+#   2. `aa workflow run --entrypoint full` drives the change to a terminal state.
+#   3. Verify completion with `aa workflow status` (or `aa status --next`).
+#   4. Archive completed changes through OpenCode + aa-archive.
+#   5. (Optional) retro-nightly collect.
 #
 # Retro is NOT inlined here by default. Set DO_RETRO=true to restore the legacy
 # end-of-loop `aa retro` + agent proposals path (do not enable both DO_RETRO
@@ -53,8 +48,10 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Python migration: skills are synced INTO the SUT project by `aa skill refresh`
 # (M7), so archive/retro prompts point at $PROJECT_ROOT/skills, not a TS repo.
 AA_SKILLS_ROOT="${AA_SKILLS_ROOT:-$PROJECT_ROOT/skills}"
-AA_REPO_ROOT="${AA_REPO_ROOT:-/Users/lvqingquan/agent/assurance-agent}"   # for uv-based aa install
+# SCRIPT_DIR = <aa-repo>/benchmark/vue-fastapi-admin/benchmark → repo root is ../../..
+AA_REPO_ROOT="${AA_REPO_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 NIGHTLY_CLI="${NIGHTLY_CLI:-aa retro nightly}"
+AUTO_DECIDE_BENCHMARK="${AUTO_DECIDE_BENCHMARK:-true}"
 cd "$PROJECT_ROOT"
 
 CONFIG_FILE="${BENCHMARK_ENV:-$SCRIPT_DIR/benchmark.env}"
@@ -81,7 +78,7 @@ CLEAN_TARGETS="${CLEAN_TARGETS:-qa/cases qa/changes}"
 # Python workflow driver -----------------------------------------------------
 AA_BIN="${AA_BIN:-aa}"                          # deterministic CLI (owns the driver)
 DRIVER_ADAPTER="${DRIVER_ADAPTER:-opencode}"    # opencode | headless
-DRIVER_SCOPE="${DRIVER_SCOPE:-full}"            # full | execute
+DRIVER_ENTRYPOINT="${DRIVER_ENTRYPOINT:-full}"            # full | execute
 TEST_TYPES="${TEST_TYPES:-api,e2e}"             # comma-separated layers to cover
 MAX_HEALING_ATTEMPTS="${MAX_HEALING_ATTEMPTS:-3}"
 OPENCODE_SERVER="${OPENCODE_SERVER:-http://127.0.0.1:4096}"  # opencode adapter only
@@ -116,6 +113,20 @@ SUMMARY="$RUN_DIR/loop-summary.md"
 # Helpers
 # ---------------------------------------------------------------------------
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$LOOP_LOG"; }
+
+maybe_auto_decide() {
+  local change_id="$1"
+  [ "$AUTO_DECIDE_BENCHMARK" = "true" ] || return 1
+  local status_json interrupt_id action reason
+  status_json="$("$AA_BIN" workflow status --change "$change_id" --json 2>/dev/null || true)"
+  [ -n "$status_json" ] || return 1
+  interrupt_id="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); ints=d.get("pending_interrupts") or []; print((ints[0].get("interrupt_id") or ints[0].get("id") or "") if ints else "")' "$status_json")"
+  [ -n "$interrupt_id" ] || return 1
+  action="accept_risk"
+  reason="benchmark auto resume interrupt $interrupt_id so workflow can complete"
+  log "[$change_id] auto resume interrupt=$interrupt_id action=$action"
+  "$AA_BIN" workflow resume --change "$change_id" --interrupt "$interrupt_id" --action "$action" --reason "$reason"
+}
 
 if command -v gtimeout >/dev/null 2>&1; then
   TIMEOUT_CMD=(gtimeout "$STEP_TIMEOUT")
@@ -166,10 +177,10 @@ run_with_timeout() {
   fi
 }
 
-# Seed intake inputs for one change. The driver's full scope starts at `explore`
-# and has no interactive intake phase, so the requirement must exist on disk as
-# proposal.md (+ an autonomous-mode .qa.yaml) before the driver runs. This is the
-# deterministic equivalent of what aa-intake writes in the interactive flow.
+# Seed intake inputs for one change. GraphRuntime full entrypoint has no
+# interactive intake, so the requirement must exist on disk as proposal.md
+# (+ an autonomous-mode .qa.yaml) before `aa workflow run`. Params are passed
+# via --params; do not pre-seed a v1 workflow-state.yaml.
 # $1=change_id $2=base_id (requirement id) $3=requirement text
 seed_change() {
   local change_id="$1" base_id="$2" requirement="$3"
@@ -200,9 +211,9 @@ YAML
   {
     echo "# $feature — QA Proposal (benchmark seed)"
     echo
-    echo "> Autonomous benchmark seed: intake inputs for the TS driver full-scope"
-    echo "> run. The driver starts at \`explore\`; there is no interactive intake"
-    echo "> phase, so the requirement is materialized here for the workflow to read."
+    echo "> Autonomous benchmark seed for GraphRuntime \`aa workflow run\`."
+    echo "> Intake is non-interactive; the requirement is materialized here for"
+    echo "> explore / case-design nodes to read."
     echo
     echo "## Requirement"
     echo
@@ -239,22 +250,35 @@ print(json.dumps({
 }))'
 }
 
-# Run one driver attempt for a change. The driver resumes from the
-# workflow-state breakpoint, so a retry after a timeout continues rather than
-# restarting (stale driver.lock is auto-recycled when its pid is dead).
+# Run one driver attempt for a change. GraphRuntime resumes from the ledger
+# checkpoint, so a retry after a timeout continues rather than restarting.
 # $1=logfile $2=change_id
 run_driver() {
   local logf="$1" change_id="$2"
   local params
   params="$(driver_params_json)"
+  local has_invocation="false"
+  if "$AA_BIN" workflow status --change "$change_id" --json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("status") else 1)'; then
+    has_invocation="true"
+  fi
 
-  local -a cmd=(
-    "$AA_BIN" workflow run
-    --change "$change_id"
-    --scope "$DRIVER_SCOPE"
-    --adapter "$DRIVER_ADAPTER"
-    --params "$params"
-  )
+  local -a cmd
+  if [ "$has_invocation" = "true" ]; then
+    # resume has no --params (params are pinned on the invocation).
+    cmd=(
+      "$AA_BIN" workflow resume
+      --change "$change_id"
+      --adapter "$DRIVER_ADAPTER"
+    )
+  else
+    cmd=(
+      "$AA_BIN" workflow run
+      --change "$change_id"
+      --entrypoint "$DRIVER_ENTRYPOINT"
+      --adapter "$DRIVER_ADAPTER"
+      --params "$params"
+    )
+  fi
 
   if [ "$DRIVER_ADAPTER" = "opencode" ]; then
     cmd+=(--server "$OPENCODE_SERVER" --directory "$PROJECT_ROOT")
@@ -291,12 +315,34 @@ status_json_path() {
 }
 
 # `aa status`: 0 running/completed, 20 stopped, 30 needs_human_review,
-# 40 command/data error. Terminal control uses JSON, but rc=40 must fail closed.
+# 40 failed (or command/data error). Prefer JSON body when present.
 write_status_snapshot() {
   local change_id="$1"
   local rc=0
-  "$AA_BIN" status --change "$change_id" --next --json >"$(status_json_path "$change_id")" 2>>"$LOOP_LOG" || rc=$?
-  case "$rc" in 0|20|30) return 0 ;; *) rm -f "$(status_json_path "$change_id")"; return "$rc" ;; esac
+  local out
+  out="$(status_json_path "$change_id")"
+  "$AA_BIN" status --change "$change_id" --next --json >"$out" 2>>"$LOOP_LOG" || rc=$?
+  case "$rc" in
+    0|20|30|40)
+      if python3 - "$out" <<'PY'
+import json, sys
+try:
+    s = json.load(open(sys.argv[1])).get("status")
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if s in {"running", "completed", "stopped", "needs_human_review", "failed", "interrupted"} else 1)
+PY
+      then
+        return 0
+      fi
+      rm -f "$out"
+      return "$rc"
+      ;;
+    *)
+      rm -f "$out"
+      return "$rc"
+      ;;
+  esac
 }
 
 terminal_kind() {
@@ -318,7 +364,12 @@ if isinstance(terminal, dict):
 elif terminal:
     print(str(terminal))
 else:
-    print("running")
+    # Flat GraphRuntime shape from `aa status --json` / `aa workflow status --json`.
+    status = data.get("status")
+    if status in ("completed", "stopped", "needs_human_review", "failed", "running"):
+        print(status)
+    else:
+        print("running")
 PY
 }
 
@@ -343,7 +394,7 @@ terminal = data.get("terminal")
 if isinstance(terminal, dict):
     print(terminal.get("reason") or "")
 else:
-    print("")
+    print(data.get("terminal_reason") or "")
 PY
 }
 
@@ -471,9 +522,10 @@ fi
 
 log "opencode benchmark loop start - runstamp=$RUNSTAMP items=${#BENCHMARK_ITEMS[@]}"
 log "project_root=$PROJECT_ROOT run_mode=$RUN_MODE run_tests=$RUN_TESTS test_types=$TEST_TYPES"
-log "driver: adapter=$DRIVER_ADAPTER scope=$DRIVER_SCOPE max_healing=$MAX_HEALING_ATTEMPTS server=${OPENCODE_SERVER}"
+log "driver: adapter=$DRIVER_ADAPTER entrypoint=$DRIVER_ENTRYPOINT max_healing=$MAX_HEALING_ATTEMPTS server=${OPENCODE_SERVER}"
 log "opencode=$OPENCODE_BIN model=${OPENCODE_MODEL:-default} max_attempts=$OPENCODE_MAX_WORKFLOW_ATTEMPTS"
 log "do_archive=$DO_ARCHIVE do_nightly_collect=$DO_NIGHTLY_COLLECT do_retro=$DO_RETRO"
+log "auto_decide=$AUTO_DECIDE_BENCHMARK"
 
 clean_generated_artifacts
 
@@ -515,8 +567,31 @@ for item in "${BENCHMARK_ITEMS[@]}"; do
     log "[$change_id] aa status terminal=$workflow_kind${workflow_reason:+ reason=$workflow_reason}"
 
     if [ "$workflow_kind" = "completed" ] || [ "$workflow_kind" = "stopped" ]; then
+      python3 - "$change_id" <<'PYASSERT' || true
+import json, sys
+from pathlib import Path
+cid = sys.argv[1]
+events = Path(f"qa/changes/{cid}/events.jsonl")
+if not events.is_file():
+    raise SystemExit(0)
+success = {}
+for line in events.read_text().splitlines():
+    if not line.strip():
+        continue
+    ev = json.loads(line)
+    if ev.get("type") == "task_attempt_succeeded":
+        tid = ev.get("task_id")
+        if tid:
+            success[tid] = success.get(tid, 0) + 1
+dupes = [t for t, n in success.items() if n > 1]
+if dupes:
+    print(f"WARNING: duplicate successful task ids across restarts: {dupes[:5]}", file=sys.stderr)
+    raise SystemExit(1)
+PYASSERT
       break
     fi
+
+    maybe_auto_decide "$change_id" || true
 
     attempt=$((attempt + 1))
   done
@@ -623,7 +698,7 @@ fi
   echo "- project: \`$PROJECT_ROOT\`"
   echo "- engine: \`aa workflow run\` (Python driver, adapter=\`$DRIVER_ADAPTER\`)"
   echo "- run_mode: \`$RUN_MODE\` run_tests: \`$RUN_TESTS\` test_types: \`$TEST_TYPES\` force_continue: \`$FORCE_CONTINUE\`"
-  echo "- driver scope: \`$DRIVER_SCOPE\` max healing attempts: \`$MAX_HEALING_ATTEMPTS\`"
+  echo "- driver entrypoint: \`$DRIVER_ENTRYPOINT\` max healing attempts: \`$MAX_HEALING_ATTEMPTS\`"
   echo "- max workflow attempts: \`$OPENCODE_MAX_WORKFLOW_ATTEMPTS\`"
   echo "- nightly collect: \`$DO_NIGHTLY_COLLECT\` (exit: \`${nightly_collect_exit:-n/a}\`)"
   echo "- legacy retro: \`$DO_RETRO\`"

@@ -5,17 +5,21 @@ Mirror of TS ``buildGateVerdictEvent`` / ``computeReadsSha256`` in events.ts.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Protocol
 
 from assurance_agent.change_location import ChangeLocation
 from assurance_agent.workflow.core.audit_scope import is_audited_gate_read
 from assurance_agent.workflow.execution.tree_hash import sha256_file
 from assurance_agent.workflow.orchestration.gates import resolve_change_path
-from assurance_agent.workflow.orchestration.schema import WorkflowSchema
+from assurance_agent.workflow.orchestration.schema import GateDef
+
+
+class _SchemaWithGates(Protocol):
+    gates: dict[str, GateDef]
 
 
 def compute_reads_sha256(
-    schema: WorkflowSchema,
+    schema: _SchemaWithGates,
     loc: ChangeLocation,
     gate_id: str,
 ) -> dict[str, str] | None:
@@ -35,7 +39,7 @@ def compute_reads_sha256(
 
 def build_gate_verdict_event(
     loc: ChangeLocation,
-    schema: WorkflowSchema,
+    schema: _SchemaWithGates,
     *,
     phase: str | None,
     gate: str,

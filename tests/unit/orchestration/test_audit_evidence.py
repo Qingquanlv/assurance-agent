@@ -10,10 +10,22 @@ from assurance_agent.workflow.orchestration.audit_evidence import (
     build_gate_verdict_event,
     compute_reads_sha256,
 )
-from assurance_agent.workflow.orchestration.schema import parse_schema
+import yaml
+from assurance_agent.workflow.orchestration.schema import normalize_gates
 from tests.helpers_aa import loc_for
 
-SCHEMA = parse_schema("""
+
+class _GateSchema:
+    def __init__(self, gates: dict) -> None:
+        self.gates = gates
+
+
+def _gates_schema(text: str) -> _GateSchema:
+    doc = yaml.safe_load(text)
+    return _GateSchema(normalize_gates(doc.get("gates") or {}))
+
+
+SCHEMA = _gates_schema("""
 schema_version: "1"
 name: t
 phases:
@@ -52,7 +64,7 @@ def test_compute_reads_sha256_returns_none_when_file_missing(tmp_path: Path) -> 
 
 
 def test_compute_reads_sha256_skips_non_audited_reads(tmp_path: Path) -> None:
-    schema = parse_schema("""
+    schema = _gates_schema("""
 schema_version: "1"
 name: t
 phases:

@@ -24,10 +24,12 @@ from pydantic import BaseModel
 from assurance_agent.artifacts.models import WorkflowState
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.events import Ledger, append_event_strict, read_events
+from assurance_agent.workflow.core.graph_events import SuperstepCommittedEvent
 from assurance_agent.workflow.core.snapshot import capture_files, restore_files
 from assurance_agent.workflow.core.state import read_state, state_file, state_guard, write_state
 
 LOCK_FILENAME = ".progression.lock"
+_RUNTIME_REL_PREFIX = ".graph-runtime/"
 _RESERVED_RELS = frozenset({"events.jsonl", "workflow-state.yaml", LOCK_FILENAME})
 _DEFAULT_LOCK_TIMEOUT_S = 0.5
 _LOCK_POLL_S = 0.01
@@ -94,6 +96,7 @@ class ProgressionTxn:
         self._events: list[Mapping[str, object]] = []
         self._next_state: WorkflowState | None = None
         self._state_set = False
+        self._state_projection: bytes | None = None
 
     def read_state(self) -> WorkflowState:
         return read_state(self._change_dir)
@@ -116,6 +119,22 @@ class ProgressionTxn:
         self._files.append((rel, data))
         _ = resolved  # validated
 
+    def write_runtime_file(self, rel: str, content: bytes | str) -> None:
+        """graph 运行时专属：stage coordinator 所有的 ``.graph-runtime/`` 文件。
+
+        与 ``write_file`` 共用同一份路径安全校验，仍拒绝保留文件
+        （``events.jsonl``/``workflow-state.yaml``/锁文件）、绝对路径与
+        目录穿越；额外限制只能落在 ``.graph-runtime/`` 之内。
+        """
+        resolved = self._resolve_rel(rel)
+        normalized = Path(rel).as_posix()
+        if not normalized.startswith(_RUNTIME_REL_PREFIX):
+            raise ValueError(f"write_runtime_file path must stay under .graph-runtime/: {rel!r}")
+        data = content.encode("utf-8") if isinstance(content, str) else content
+        self._files = [(r, c) for r, c in self._files if r != rel]
+        self._files.append((rel, data))
+        _ = resolved  # validated
+
     def append_strict(self, event: Mapping[str, object] | BaseModel) -> None:
         if isinstance(event, BaseModel):
             dumped = event.model_dump(mode="json", by_alias=True, exclude_none=True)
@@ -124,10 +143,28 @@ class ProgressionTxn:
             self._events.append(dict(event))
 
     def set_state(self, state: WorkflowState) -> None:
+        if self._state_projection is not None:
+            raise ValueError(
+                "set_state cannot be mixed with set_workflow_state_projection in one transaction"
+            )
         if self._state_set:
             raise ValueError("set_state may be called at most once per transaction")
         self._state_set = True
         self._next_state = state
+
+    def set_workflow_state_projection(self, content: bytes | str) -> None:
+        """graph 路径专属：stage 保留文件 ``workflow-state.yaml`` 的投影字节。
+
+        与 ``write_file`` 分开存放（保留文件走独立槽位），随同一事务
+        capture/apply/rollback；每事务至多一次，且不得与 v1 ``set_state`` 混用。
+        """
+        if self._state_projection is not None:
+            raise ValueError("set_workflow_state_projection may be called at most once per transaction")
+        if self._state_set:
+            raise ValueError(
+                "set_workflow_state_projection cannot be mixed with set_state in one transaction"
+            )
+        self._state_projection = content.encode("utf-8") if isinstance(content, str) else content
 
     def _resolve_rel(self, rel: str) -> Path:
         if not rel or rel.startswith("/") or "\\" in rel:
@@ -149,10 +186,17 @@ class ProgressionTxn:
         return target
 
     def _apply(self) -> None:
-        if not self._files and not self._events and self._next_state is None:
+        if (
+            not self._files
+            and not self._events
+            and self._next_state is None
+            and self._state_projection is None
+        ):
             return
 
         targets: list[Path] = [self._change_dir / rel for rel, _ in self._files]
+        if self._state_projection is not None:
+            targets.append(state_file(self._change_dir))
         targets.append(self._change_dir / "events.jsonl")
         if self._next_state is not None:
             targets.append(state_file(self._change_dir))
@@ -161,6 +205,8 @@ class ProgressionTxn:
         try:
             for rel, data in self._files:
                 _atomic_write_bytes(self._change_dir / rel, data)
+            if self._state_projection is not None:
+                _atomic_write_bytes(state_file(self._change_dir), self._state_projection)
             for event in self._events:
                 append_event_strict(self._change_dir, event)
             if self._next_state is not None:
@@ -228,6 +274,24 @@ def transaction(
         thread_lock.release()
 
 
+def commit_tree_pointer(
+    change_dir: Path,
+    *,
+    event: SuperstepCommittedEvent,
+    checkpoint_rel: str,
+    checkpoint_bytes: bytes,
+) -> None:
+    """coordinator 的 tree pointer 提交：checkpoint 字节与 strict commit 事件同事务落盘。
+
+    strict event/tree pointer 先于 canonical 文件物化提交；物化中断时，下一次
+    运行时调用从 ledger 读 ``target_tree_id`` 并幂等修复 canonical 文件，
+    不重跑任何 task。
+    """
+    with transaction(change_dir) as txn:
+        txn.write_runtime_file(checkpoint_rel, checkpoint_bytes)
+        txn.append_strict(event)
+
+
 # Re-export for type checkers / callers that probe internals in tests.
 __all__ = [
     "ProgressionError",
@@ -235,6 +299,7 @@ __all__ = [
     "ProgressionRollbackError",
     "ProgressionLockTimeout",
     "ProgressionTxn",
+    "commit_tree_pointer",
     "transaction",
     "LOCK_FILENAME",
 ]

@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
+
+
+class SeedResult(BaseModel):
+    change_dir: Path
+    import_manifest_path: Path | None = None
+
 
 Gate = Literal["hard", "advisory", "observe"]
 CmpOp = Literal["gte", "lte", "eq"]

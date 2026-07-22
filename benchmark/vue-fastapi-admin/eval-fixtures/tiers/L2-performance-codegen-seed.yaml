@@ -13,3 +13,34 @@ resets:
   qa_yaml:
     test_types:
     - performance
+imports:
+  execute:
+    entrypoint: execute
+    inputs:
+    - change:proposal.md
+    - change:.qa.yaml
+    completed:
+    - path: execute-workflow/bootstrap/bootstrap
+      graph: bootstrap
+      node: registry
+      outputs:
+      - change:registry/skill-registry-check.json
+      gate: registry-gate
+    - path: execute-workflow/assurance/assurance/performance/performance-branch/review-cycle/performance-plan-review-cycle
+      graph: performance-plan-review-cycle
+      node: review
+      outputs:
+      - change:review/performance-plan-review.json
+      gate: performance-plan-review-gate
+    - path: execute-workflow/assurance/assurance/performance/performance-branch
+      graph: performance-branch
+      node: review-cycle
+    - path: execute-workflow/assurance/assurance/performance/performance-branch
+      graph: performance-branch
+      node: codegen
+      outputs:
+      - change:codegen/performance-codegen-summary.md
+      gate: performance-codegen-precondition-gate
+    - path: execute-workflow/assurance/assurance
+      graph: assurance
+      node: performance

@@ -27,7 +27,7 @@ Usage:
 
 `--pgid-file <path>` writes the child's process-group id to <path> as soon as
 it is spawned. This lets an external supervisor (e.g. a bash loop polling a
-separate readiness signal such as `aws status`) kill the whole group early -
+separate readiness signal such as `aa workflow status`) kill the whole group early -
 before the hard timeout - once it independently determines the underlying
 task is actually done, without needing to wait for cursor-agent's own
 process to exit on its own.

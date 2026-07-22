@@ -9,8 +9,7 @@ from tests.helpers_aa import write_aa_config
 
 from assurance_agent.eval.fixtures import write_fixture_lock
 from assurance_agent.eval.runner import run_suite
-from assurance_agent.workflow.driver.adapter import PhaseRequest, PhaseResult
-from assurance_agent.workflow.orchestration.engine import Terminal, WorkflowStatus
+from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
 
 
 def test_synth_workflow_run_writes_under_sut_out(tmp_path: Path) -> None:
@@ -28,7 +27,7 @@ def test_synth_workflow_run_writes_under_sut_out(tmp_path: Path) -> None:
             {
                 "name": "workflow-run",
                 "scorer": "workflow-run",
-                "executor": {"type": "aws-run", "scope": "full"},
+                "executor": {"type": "workflow-run", "entrypoint": "execute"},
                 "thresholds": [],
             }
         ),
@@ -56,7 +55,11 @@ def test_synth_workflow_run_writes_under_sut_out(tmp_path: Path) -> None:
     sample = fixtures / "samples" / "eval-sample-001"
     sample.mkdir(parents=True)
     (sample / "proposal.md").write_text("# p\n", encoding="utf-8")
-    (sample / "workflow-state.yaml").write_text("phases: {}\n", encoding="utf-8")
+    (sample / "workflow-state.yaml").write_text(
+        "phases:\n  skill_registry_check: {status: pass}\n"
+        "run_context: {interaction_mode: autonomous, orchestrator_skill: aa-workflow}\n",
+        encoding="utf-8",
+    )
     (sample / "tests").mkdir()
     for required in ("config.py", "conftest.py", "schema_validation.py"):
         (sample / "tests" / required).write_text("# fixture\n", encoding="utf-8")
@@ -73,6 +76,13 @@ def test_synth_workflow_run_writes_under_sut_out(tmp_path: Path) -> None:
                     "tests/schema_validation.py",
                 ],
                 "resets": {"workflow_state": {"phases.execution.status": "pending"}},
+                "imports": {
+                    "execute": {
+                        "entrypoint": "execute",
+                        "inputs": ["change:proposal.md"],
+                        "completed": [],
+                    }
+                },
             }
         ),
         encoding="utf-8",
@@ -80,18 +90,14 @@ def test_synth_workflow_run_writes_under_sut_out(tmp_path: Path) -> None:
     write_fixture_lock(fixtures, {"eval-sample-001": "samples/eval-sample-001"})
 
     class FakeAdapter:
-        def run_phase(self, request: PhaseRequest) -> PhaseResult:
-            return PhaseResult(ok=True, output="fake")
-
-    def status_provider() -> WorkflowStatus:
-        return WorkflowStatus(phases=[], next_dispatch=[], terminal=Terminal(kind="completed", reason="fake"))
+        def invoke(self, request: AgentRequest) -> AgentResult:
+            return AgentResult(ok=True)
 
     run_id, gate = run_suite(
         suite_file=suite_file,
         project_root=engine,
         sut_dir=sut,
         adapter_factory=lambda **_: FakeAdapter(),
-        status_provider_factory=lambda **_: status_provider,
         fixtures_root=fixtures,
     )
     report = sut / "eval" / "out" / "runs" / run_id / "report.json"

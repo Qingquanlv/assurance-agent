@@ -1,21 +1,18 @@
-"""Deterministic workflow dispatch loop (spec 5a).
+"""GraphRuntime compatibility wrapper for CLI / detached launch.
 
-Each iteration asks compute_status for typed healing actions, dispatches and a
-terminal. Strict audit writes use only M3's frozen union; driver lifecycle is
-best-effort telemetry. Ordinary DAG completion remains produces/gate-derived.
+``LoopResult(exit_code, reason)`` is retained. Ownership of workflow progression
+lives in ``GraphRuntime``; this module only acquires the process lock, projects
+the graph pointer into ``driver.json``, and delegates run/resume.
 """
 
+from __future__ import annotations
+
 import os
-import time
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
-from uuid import uuid4
 
-from assurance_agent.change_location import ChangeLocation, ChangeNotFoundError, resolve_change
+from assurance_agent.change_location import ChangeNotFoundError, resolve_change
 from assurance_agent.config import ConfigNotFoundError
-from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import UnsafeIdentifierError
 from assurance_agent.workflow.core.events import append_event_best_effort
 from assurance_agent.workflow.core.exit_codes import (
@@ -24,78 +21,34 @@ from assurance_agent.workflow.core.exit_codes import (
     EXIT_HUMAN_REVIEW,
     EXIT_STOPPED,
 )
-from assurance_agent.workflow.core.progression import ProgressionError, ProgressionRollbackError
-from assurance_agent.workflow.core.state import configure_workflow_params, read_state
-from assurance_agent.workflow.driver.adapter import Adapter, DriverError, PhaseRequest, PhaseResult
+from assurance_agent.workflow.driver.adapter import AgentInvoker, DriverError
 from assurance_agent.workflow.driver.driver_state import (
     DriverState,
+    DriverStatus,
     acquire_lock,
     create_initial_driver_state,
     evaluate_start_guard,
     now_iso,
+    project_graph_pointer,
     read_driver_state,
     release_lock,
     write_driver_state,
 )
-from assurance_agent.workflow.driver.phase_prompt import build_phase_prompt
-from assurance_agent.workflow.driver.process_runner import (
-    ProcessRunner,
-    SubprocessRunner,
-    resolve_aa_command,
+from assurance_agent.workflow.driver.runtime_factory import (
+    build_graph_runtime,
+    runtime_context_for,
 )
-from assurance_agent.workflow.driver.test_infra_bootstrap import (
-    evaluate_test_infra_bootstrap,
-    mark_test_infra_bootstrap_done,
-)
-from assurance_agent.workflow.orchestration.engine import (
-    DispatchEntry,
-    Terminal,
-    WorkflowStatus,
-    compute_status,
-)
-from assurance_agent.workflow.orchestration.healing_episode import HealingEpisodeAction
-from assurance_agent.workflow.orchestration.operations import (
-    allocate_healing_attempt,
-    apply_phase_outcome,
-    record_dispatch,
-)
-from assurance_agent.workflow.orchestration.schema import WorkflowSchema, load_workflow_schema
+from assurance_agent.workflow.graph.runtime import GraphRuntimeError
 
 __all__ = [
     "EXIT_COMPLETED",
     "EXIT_STOPPED",
     "EXIT_HUMAN_REVIEW",
     "EXIT_ERROR",
-    "PhaseContext",
-    "CliPhaseExecutor",
-    "DefaultCliPhaseExecutor",
-    "HealingActionExecutor",
-    "DefaultHealingActionExecutor",
     "LoopResult",
     "build_driver_telemetry",
     "run_workflow_loop",
 ]
-
-StatusProvider = Callable[[], WorkflowStatus]
-
-
-@dataclass
-class PhaseContext:
-    loc: ChangeLocation
-    params: dict
-    parent_session_id: str | None = None
-
-    @property
-    def change_id(self) -> str:
-        return self.loc.change_id
-
-    @property
-    def change_dir(self) -> Path:
-        return self.loc.path
-
-    @property
-    def project_root(self) -> Path:
-        return self.loc.project_root
 
 
 @dataclass
@@ -111,231 +64,27 @@ def build_driver_telemetry(event_type: str, run_id: str, **extra: object) -> dic
     return event
 
 
-class CliPhaseExecutor(Protocol):
-    def run_cli_phase(self, entry: DispatchEntry, ctx: PhaseContext) -> PhaseResult: ...
-
-    def apply_phase_state(
-        self,
-        entry: DispatchEntry,
-        ctx: PhaseContext,
-        attempt_id: str,
-    ) -> PhaseResult:
-        """Commit the signed phase outcome and typed presentation state.
-
-        Agents cannot write workflow-state or strict events. Ordinary progress
-        remains produces-driven; this boundary guarantees audit completeness and
-        supplies the registry gate's typed state evidence.
-        """
-        ...
-
-
-class DefaultCliPhaseExecutor:
-    """Run cli-kind phases via pinned `aa` CLI; commit outcomes in-process.
-
-    Phase->command mapping is driver-local because DispatchEntry does not carry
-    a per-phase executor command. `aa run` exiting non-zero while its execution
-    manifest + quality-gate result exist is a gate FAIL (tests ran, some failed)
-    and is routed onward, not treated as a driver-fatal error (TS parity).
-
-    State advancement (`apply_phase_state`) calls ``apply_phase_outcome`` in
-    process — CLI remains available for manual/agent use, but the driver no
-    longer shells out for the write.
-    """
-
-    def __init__(
-        self,
-        runner: ProcessRunner | None = None,
-        aa_command: list[str] | None = None,
-        timeout: float | None = None,
-        schema: WorkflowSchema | None = None,
-    ) -> None:
-        self._runner = runner or SubprocessRunner()
-        self._aa = aa_command or resolve_aa_command()
-        self._timeout = timeout
-        self._schema = schema
-
-    def apply_phase_state(
-        self,
-        entry: DispatchEntry,
-        ctx: PhaseContext,
-        attempt_id: str,
-    ) -> PhaseResult:
-        schema = self._schema or load_workflow_schema(ctx.project_root)
-        try:
-            apply_phase_outcome(
-                ctx.loc,
-                schema,
-                entry.phase_id,
-                attempt_id=attempt_id,
-                skill=entry.skill,
-            )
-        except ProgressionRollbackError as err:
-            return PhaseResult(
-                ok=False,
-                error=f"phase {entry.phase_id} state apply partial-commit: {err}",
-            )
-        except (ProgressionError, AaError) as err:
-            return PhaseResult(
-                ok=False,
-                error=f"phase {entry.phase_id} state apply failed: {err}",
-            )
-        return PhaseResult(ok=True, output=f"applied {entry.phase_id}")
-
-    def run_cli_phase(self, entry: DispatchEntry, ctx: PhaseContext) -> PhaseResult:
-        args = self._phase_args(entry.phase_id, ctx.change_id)
-        if args is None:
-            return PhaseResult(ok=False, output="", error=f"no CLI mapping for cli phase '{entry.phase_id}'")
-
-        run = self._runner.run([*self._aa, *args], ctx.project_root, timeout=self._timeout)
-        is_run = args[0] == "run"
-        ok = run.exit_code == 0 or (is_run and self._execution_results_present(ctx.change_dir))
-        if not ok:
-            detail = (run.stderr or run.stdout)[:500]
-            return PhaseResult(
-                ok=False,
-                output=run.stdout,
-                error=f"aa {' '.join(args)} failed (exit {run.exit_code}): {detail}",
-            )
-        # Outcome commit happens in the loop via apply_phase_state, not here.
-        return PhaseResult(ok=True, output=run.stdout)
-
-    @staticmethod
-    def _phase_args(phase_id: str, change_id: str) -> list[str] | None:
-        name = phase_id.lower()
-        # execution / healing-rerun both (re)run the test suite → `aa run`.
-        if name == "execution" or name.endswith("execution") or name.endswith("-rerun"):
-            return ["run", "--change", change_id]
-        if "inspect" in name:
-            return ["report", "inspect", "--change", change_id]
-        if "report" in name:
-            return ["report", "generate", "--change", change_id]
-        return None
-
-    @staticmethod
-    def _execution_results_present(change_dir: Path) -> bool:
-        base = change_dir / "execution"
-        return (base / "execution-manifest.yaml").is_file() and (base / "quality-gate-result.json").is_file()
-
-
-class HealingActionExecutor(Protocol):
-    def execute(self, action: HealingEpisodeAction, ctx: PhaseContext) -> PhaseResult: ...
-
-
-class DefaultHealingActionExecutor:
-    """Commit M3 healing control actions without recomputing their semantics."""
-
-    def __init__(
-        self,
-        runner: ProcessRunner | None = None,
-        aa_command: list[str] | None = None,
-    ) -> None:
-        self._runner = runner or SubprocessRunner()
-        self._aa = aa_command or resolve_aa_command()
-
-    def execute(self, action: HealingEpisodeAction, ctx: PhaseContext) -> PhaseResult:
-        if action.kind == "allocate_attempt" and action.allocation is not None:
-            return self._allocate(action, ctx)
-        if action.kind == "complete" and action.outcome:
-            result = self._runner.run(
-                [*self._aa, "state", "heal", "--change", ctx.change_id, "--status", action.outcome],
-                ctx.project_root,
-            )
-            return PhaseResult(
-                ok=result.exit_code == 0,
-                output=result.stdout,
-                error=None if result.exit_code == 0 else (result.stderr or result.stdout)[:500],
-            )
-        return PhaseResult(ok=False, error=f"unsupported healing action: {action.kind}")
-
-    @staticmethod
-    def _allocate(action: HealingEpisodeAction, ctx: PhaseContext) -> PhaseResult:
-        allocation = action.allocation
-        assert allocation is not None
-        try:
-            result = allocate_healing_attempt(ctx.change_dir, allocation)
-        except ProgressionRollbackError as err:
-            return PhaseResult(ok=False, error=f"healing allocation partial-commit: {err}")
-        except (ProgressionError, AaError) as err:
-            return PhaseResult(ok=False, error=f"healing allocation failed: {err}")
-        return PhaseResult(ok=True, output=result.attempt_id)
-
-
-class _DefaultStatusProvider:
-    def __init__(self, schema: WorkflowSchema, loc: ChangeLocation, params: dict, scope: str) -> None:
-        self._schema = schema
-        self._loc = loc
-        self._params = params
-        self._scope = scope
-
-    def __call__(self) -> WorkflowStatus:
-        from assurance_agent.workflow.orchestration.audit import apply_audits_to_report, run_status_audits
-        from assurance_agent.workflow.core.state import StateIntegrityError, read_state_lenient
-
-        try:
-            state = read_state(self._loc.path)
-        except StateIntegrityError:
-            state = read_state_lenient(self._loc.path)
-        status = compute_status(
-            self._schema,
-            self._loc,
-            state,
-            self._params,
-            scope=self._scope,
-        )
-        return apply_audits_to_report(
-            status,
-            run_status_audits(self._loc, status, self._schema),
-        )
-
-
-def _exit_for_terminal(terminal: Terminal) -> int:
-    return {
-        "completed": EXIT_COMPLETED,
-        "stopped": EXIT_STOPPED,
-        "needs_human_review": EXIT_HUMAN_REVIEW,
-    }.get(terminal.kind, EXIT_ERROR)
-
-
-def _dispatch_entry(
-    entry: DispatchEntry,
-    ctx: PhaseContext,
-    adapter: Adapter,
-    cli_executor: CliPhaseExecutor,
-) -> PhaseResult:
-    if entry.kind == "orchestrator":
-        return PhaseResult(ok=True, output="")
-    if entry.kind == "cli":
-        return cli_executor.run_cli_phase(entry, ctx)
-    if not entry.skill:
-        return PhaseResult(ok=False, output="", error=f"skill phase {entry.phase_id} missing skill")
-    request = PhaseRequest(
-        change_id=ctx.change_id,
-        phase_id=entry.phase_id,
-        skill=entry.skill,
-        agent=entry.agent,
-        prompt=build_phase_prompt(entry.skill, entry.phase_id, ctx.change_id, item=entry.item),
-    )
-    return adapter.run_phase(request)
+def _driver_status_for(graph_status: str) -> DriverStatus:
+    if graph_status == "completed":
+        return "completed"
+    if graph_status == "interrupted":
+        return "paused"
+    if graph_status in {"stopped", "failed"}:
+        return "failed"
+    return "running"
 
 
 def run_workflow_loop(
     *,
     project_root: Path,
     change_id: str,
-    scope: str,
-    adapter: Adapter,
-    params: dict | None = None,
+    entrypoint: str,
+    adapter: AgentInvoker,
+    params: dict[str, object] | None = None,
+    explicit_schema: Path | None = None,
     parent_session_id: str | None = None,
-    schema: WorkflowSchema | None = None,
-    status_provider: StatusProvider | None = None,
-    cli_executor: CliPhaseExecutor | None = None,
-    healing_executor: HealingActionExecutor | None = None,
-    max_iterations: int = 50,
-    max_phase_attempts: int = 1,
-    break_at: str | None = None,
     skip_lock: bool = False,
     adopt_lock_token: str | None = None,
-    sleep: Callable[[float], None] = time.sleep,
 ) -> LoopResult:
     params = params or {}
     try:
@@ -343,15 +92,12 @@ def run_workflow_loop(
     except (UnsafeIdentifierError, ChangeNotFoundError, ConfigNotFoundError) as err:
         return LoopResult(EXIT_ERROR, str(err))
     change_dir = loc.path
-    schema = schema or load_workflow_schema(project_root)
-    cli_executor = cli_executor or DefaultCliPhaseExecutor(schema=schema)
-    healing_executor = healing_executor or DefaultHealingActionExecutor()
 
-    # ---- lock / driver-state setup ------------------------------------------
     if adopt_lock_token:
-        driver = read_driver_state(change_dir)
-        if driver is None or driver.start_token != adopt_lock_token:
+        existing_driver = read_driver_state(change_dir)
+        if existing_driver is None or existing_driver.start_token != adopt_lock_token:
             return LoopResult(EXIT_ERROR, "adopt-lock token mismatch or missing driver.json")
+        driver = existing_driver
         driver.pid = os.getpid()
         driver.status = "running"
         driver.updated_at = now_iso()
@@ -368,10 +114,9 @@ def run_workflow_loop(
             existing_run_id=guard.existing.run_id if guard.existing else None,
         )
         if guard.existing is not None:
-            # Resume: checkpoint counters belong to the change (the "thread"),
-            # not to this particular run — carry them over.
-            driver.iteration = guard.existing.iteration
-            driver.last_checkpoint_at = guard.existing.last_checkpoint_at
+            driver.invocation_id = guard.existing.invocation_id
+            driver.checkpoint_id = guard.existing.checkpoint_id
+            driver.event_seq = guard.existing.event_seq
         owns_lock = not skip_lock
         if not skip_lock:
             try:
@@ -379,25 +124,30 @@ def run_workflow_loop(
             except DriverError as err:
                 return LoopResult(EXIT_ERROR, str(err))
 
+    active: DriverState = driver
+
     try:
-        write_driver_state(change_dir, driver)
+        write_driver_state(change_dir, active)
     except Exception as err:
         if owns_lock:
             release_lock(change_dir)
-        return LoopResult(EXIT_ERROR, f"failed to persist initial driver state: {err}", driver)
-    append_event_best_effort(change_dir, build_driver_telemetry("driver_started", driver.run_id, scope=scope))
+        return LoopResult(EXIT_ERROR, f"failed to persist initial driver state: {err}", active)
+    append_event_best_effort(
+        change_dir,
+        build_driver_telemetry("driver_started", active.run_id, entrypoint=entrypoint),
+    )
 
-    def finish(exit_code: int, reason: str, status: str) -> LoopResult:
-        driver.status = status  # type: ignore[assignment]
-        driver.current_attempt_id = None
-        driver.updated_at = now_iso()
+    def finish(exit_code: int, reason: str, status: DriverStatus) -> LoopResult:
+        nonlocal active
+        active.status = status
+        active.updated_at = now_iso()
         try:
-            write_driver_state(change_dir, driver)
+            write_driver_state(change_dir, active)
             append_event_best_effort(
                 change_dir,
                 build_driver_telemetry(
                     "driver_finished",
-                    driver.run_id,
+                    active.run_id,
                     exit_code=exit_code,
                     detail=reason,
                 ),
@@ -405,164 +155,35 @@ def run_workflow_loop(
         except Exception as err:  # persistence failure must not strand the lock
             exit_code = EXIT_ERROR
             reason = f"{reason}; failed to persist final driver state: {err}"
-            driver.status = "failed"
+            active.status = "failed"
         finally:
             if owns_lock:
                 release_lock(change_dir)
-        return LoopResult(exit_code, reason, driver)
-
-    def pause(phase: str, reason: str) -> LoopResult:
-        driver.status = "paused"
-        driver.paused_on = phase
-        driver.updated_at = now_iso()
-        exit_code = EXIT_HUMAN_REVIEW
-        try:
-            write_driver_state(change_dir, driver)
-            append_event_best_effort(
-                change_dir,
-                build_driver_telemetry("driver_paused", driver.run_id, phase=phase, detail=reason),
-            )
-        except Exception as err:  # persistence failure must not strand the lock
-            exit_code = EXIT_ERROR
-            reason = f"{reason}; failed to persist paused driver state: {err}"
-            driver.status = "failed"
-        finally:
-            if owns_lock:
-                release_lock(change_dir)
-        return LoopResult(exit_code, reason, driver)
-
-    ctx = PhaseContext(
-        loc=loc,
-        params=params,
-        parent_session_id=parent_session_id,
-    )
-
-    def commit_checkpoint() -> None:
-        """Iteration-boundary checkpoint. Recovery never reads a snapshot back:
-        compute_status is a pure projection over (schema, artifacts, state,
-        events), so re-running the driver re-projects from the last committed
-        boundary. driver.json only points at how far this run got."""
-        driver.iteration += 1
-        driver.last_checkpoint_at = now_iso()
-        write_driver_state(change_dir, driver)
+        return LoopResult(exit_code, reason, active)
 
     try:
-        # configure (TS loop.ts parity): merge runtime params into
-        # workflow-state.yaml and stamp run_context before the first dispatch.
-        orchestrator = "aa-execute" if scope == "execute" else "aa-workflow"
-        try:
-            configure_workflow_params(change_dir, params, orchestrator)
-        except AaError as err:
-            return finish(EXIT_ERROR, f"configure failed: {err}", "failed")
-        if scope == "full":
-            bootstrap = evaluate_test_infra_bootstrap(project_root, change_dir)
-            if bootstrap.kind == "needs_human":
-                return pause("test-infra-bootstrap", bootstrap.reason or "test infra not ready")
-            mark_test_infra_bootstrap_done(change_dir, bootstrap)
-        if status_provider is None:
-            # Engine params come from state post-configure: TS progression reads
-            # state.params, which CLI --params reached via `state configure`.
-            status_provider = _DefaultStatusProvider(schema, loc, read_state(change_dir).params, scope)
-        for _ in range(max_iterations):
-            status = status_provider()
-            # A human/gate stop always preempts pending control work. A completed
-            # status may still carry the final healing `complete(resolved)` action,
-            # so that one is committed before returning 0.
-            if status.terminal is not None and status.terminal.kind != "completed":
-                terminal = status.terminal
-                return finish(_exit_for_terminal(terminal), terminal.reason or terminal.kind, "failed")
-            handled_control = False
-            for action in status.healing_episode.next_actions:
-                if action.kind == "dispatch_phase":
-                    continue  # mirrored in next_dispatch by M3
-                if action.kind == "await_human":
-                    return pause("healing", "healing safety needs human review")
-                result = healing_executor.execute(action, ctx)
-                if not result.ok:
-                    return finish(EXIT_ERROR, result.error or f"healing {action.kind} failed", "failed")
-                handled_control = True
-            if handled_control:
-                commit_checkpoint()
-                continue  # allocation/complete changes the ledger; re-project before dispatch
-            if status.terminal is not None:
-                terminal = status.terminal
-                exit_code = _exit_for_terminal(terminal)
-                status_name = "completed" if terminal.kind == "completed" else "failed"
-                return finish(exit_code, terminal.reason or terminal.kind, status_name)
-            if not status.next_dispatch:
-                return finish(EXIT_ERROR, "no ready phases but workflow not terminal", "failed")
-
-            for entry in status.next_dispatch:
-                if break_at is not None and entry.phase_id == break_at:
-                    return pause(entry.phase_id, f"breakpoint before {entry.phase_id}")
-
-                # Schema per-phase retry policy (carried on DispatchEntry) takes
-                # priority; the global max_phase_attempts remains a floor for
-                # skill phases only. Only the dispatch invocation is retried —
-                # outcome-commit failures below never enter this loop.
-                attempt_limit = max(entry.max_attempts, max_phase_attempts if entry.kind == "skill" else 1, 1)
-                result = PhaseResult(ok=False, output="", error="not attempted")
-                successful_attempt_id: str | None = None
-                for attempt_number in range(attempt_limit):
-                    if attempt_number > 0:
-                        append_event_best_effort(
-                            change_dir,
-                            build_driver_telemetry(
-                                "phase_retry",
-                                driver.run_id,
-                                phase=entry.phase_id,
-                                attempt=attempt_number + 1,
-                            ),
-                        )
-                        if entry.backoff_seconds > 0:
-                            sleep(entry.backoff_seconds)
-                    # Every physical adapter invocation gets its own signed id.
-                    # Only the successful invocation's id crosses the outcome boundary.
-                    driver.current_phase = entry.phase_id
-                    attempt_id = f"{entry.phase_id}:{uuid4()}"
-                    driver.current_attempt_id = attempt_id
-                    driver.updated_at = now_iso()
-                    write_driver_state(change_dir, driver)
-                    try:
-                        record_dispatch(
-                            change_dir,
-                            phase_id=entry.phase_id,
-                            kind="dispatch_phase",
-                            attempt_id=driver.current_attempt_id,
-                            dispatched_at=int(time.time() * 1000),
-                        )
-                    except (ProgressionError, AaError) as err:
-                        return finish(EXIT_ERROR, f"dispatch_signed failed: {err}", "failed")
-                    result = _dispatch_entry(entry, ctx, adapter, cli_executor)
-                    if result.ok:
-                        successful_attempt_id = attempt_id
-                        break
-                if not result.ok:
-                    return finish(EXIT_ERROR, f"phase {entry.phase_id} failed: {result.error}", "failed")
-                if successful_attempt_id is None:  # defensive type/runtime invariant
-                    return finish(EXIT_ERROR, "successful dispatch missing attempt id", "failed")
-
-                # Commit one frozen outcome for the exact signed attempt. This
-                # is mandatory audit/state evidence even though ordinary DAG
-                # completion is projected from produces + gate.
-                applied = cli_executor.apply_phase_state(
-                    entry,
-                    ctx,
-                    successful_attempt_id,
-                )
-                if not applied.ok:
-                    return finish(
-                        EXIT_ERROR,
-                        f"phase {entry.phase_id} state apply failed: {applied.error}",
-                        "failed",
-                    )
-
-                # M4 state apply has committed the frozen phase_outcome_committed
-                # for this exact attempt id. No second driver-specific strict event.
-                driver.current_attempt_id = None
-                driver.updated_at = now_iso()
-                commit_checkpoint()
-
-        return finish(EXIT_ERROR, f"max iterations ({max_iterations}) exceeded", "failed")
+        bundle = build_graph_runtime(
+            project_root=project_root,
+            change_id=change_id,
+            adapter=adapter,
+            explicit_schema=explicit_schema,
+        )
+        context = runtime_context_for(project_root, change_id, params, parent_session_id)
+        latest = bundle.runtime.latest_root_invocation()
+        result = (
+            bundle.runtime.run(bundle.compiled, entrypoint, context)
+            if latest is None
+            else bundle.runtime.resume(latest)
+        )
+        active = project_graph_pointer(
+            active,
+            invocation_id=result.invocation_id,
+            checkpoint_id=result.status.checkpoint_id,
+            event_seq=result.status.event_seq,
+            status=_driver_status_for(result.status.status),
+        )
+        return finish(result.exit_code, result.reason, active.status)
+    except GraphRuntimeError as err:
+        return finish(EXIT_ERROR, str(err), "failed")
     except Exception as err:  # noqa: BLE001 — driver must never leak; surface as EXIT_ERROR
         return finish(EXIT_ERROR, str(err), "failed")

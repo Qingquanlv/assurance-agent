@@ -14,3 +14,36 @@ resets:
   qa_yaml:
     test_types:
     - e2e
+imports:
+  execute:
+    entrypoint: execute
+    inputs:
+    - change:proposal.md
+    - change:.qa.yaml
+    - change:plans/e2e-plan.md
+    - change:review/plan-review.json
+    completed:
+    - path: execute-workflow/bootstrap/bootstrap
+      graph: bootstrap
+      node: registry
+      outputs:
+      - change:registry/skill-registry-check.json
+      gate: registry-gate
+    - path: execute-workflow/assurance/assurance/e2e/e2e-branch/review-cycle/e2e-plan-cycle
+      graph: e2e-plan-cycle
+      node: review
+      outputs:
+      - change:review/plan-review.json
+      gate: e2e-plan-review-gate
+    - path: execute-workflow/assurance/assurance/e2e/e2e-branch
+      graph: e2e-branch
+      node: review-cycle
+    - path: execute-workflow/assurance/assurance/e2e/e2e-branch
+      graph: e2e-branch
+      node: codegen
+      outputs:
+      - change:codegen/e2e-codegen-summary.md
+      gate: e2e-codegen-precondition-gate
+    - path: execute-workflow/assurance/assurance
+      graph: assurance
+      node: e2e

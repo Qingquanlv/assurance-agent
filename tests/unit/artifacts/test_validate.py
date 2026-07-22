@@ -139,8 +139,13 @@ def test_phase_filter_uses_packaged_produces(change_dir: Path) -> None:
     write(change_dir, "review/case-review.json", json.dumps(VALID_REVIEW))
     write(change_dir, ".qa.yaml", VALID_QA_YAML)
 
-    # packaged schema: case-review produces [review/case-review.json]
-    report = validate_change(change_dir, phase="case-review")
+    class CaseReviewSchema:
+        def phase_produces(self, phase_id: str) -> list[str] | None:
+            if phase_id == "case-review":
+                return ["review/case-review.json"]
+            return None
+
+    report = validate_change(change_dir, phase="case-review", schema=CaseReviewSchema())
 
     assert [r.path for r in report.results] == ["review/case-review.json"]
 
@@ -150,7 +155,7 @@ def test_phase_directory_produce_matches_by_prefix(change_dir: Path) -> None:
     write(change_dir, "cases/menus/case.yaml", VALID_CASE_YAML)
     write(change_dir, "review/case-review.json", json.dumps(VALID_REVIEW))
 
-    # packaged schema: case-design produces [.qa.yaml, proposal.md, cases/]
+    # packaged v2 schema: case-design outputs [.qa.yaml, proposal.md, cases/]
     report = validate_change(change_dir, phase="case-design")
 
     assert [r.path for r in report.results] == [".qa.yaml", "cases/menus/case.yaml"]

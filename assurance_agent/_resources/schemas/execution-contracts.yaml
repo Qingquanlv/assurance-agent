@@ -1,0 +1,480 @@
+# =============================================================================
+# AA Execution Contracts
+# =============================================================================
+#
+# Default resource claims, write authorization and retry semantics for
+# workflow node targets. A project-local `.aa/execution-contracts.yaml`
+# overrides this packaged registry entirely. Targets missing from the
+# registry — or write-capable targets whose write scope cannot be derived —
+# fall back to a conservative `global:exclusive` claim at compile time.
+# =============================================================================
+
+schema_version: "1"
+
+contracts:
+  # ---- builtins ------------------------------------------------------------
+  builtin:join:
+    handler: builtin
+    side_effect_free: true
+
+  builtin:gate:
+    handler: builtin
+    side_effect_free: true
+
+  builtin:interrupt:
+    handler: builtin
+    side_effect_free: true
+
+  # ---- operations ----------------------------------------------------------
+  operation:no-op:
+    handler: operation
+    side_effect_free: true
+
+  operation:stop:
+    handler: operation
+    side_effect_free: true
+
+  operation:record-healing-status:
+    handler: operation
+    writes:
+      - change:healing/status.json
+    authorization_writes:
+      - change:healing/status.json
+    retryable_errors: []
+
+  operation:skill-registry-check:
+    handler: operation
+    reads:
+      - project:skills/**
+    writes:
+      - change:registry/**
+    authorization_writes:
+      - change:registry/**
+    retryable_errors: []
+
+  operation:run-tests:
+    handler: operation
+    reads:
+      - repo:tests/api/**
+      - repo:tests/e2e/**
+      - repo:tests/fuzz/**
+      - repo:tests/perf/**
+      - change:codegen/**
+    writes:
+      - change:execution/**
+    authorization_writes:
+      - change:execution/**
+    exclusive: [repo:test-runtime]
+    retryable_errors: [timeout, transport]
+
+  operation:inspect:
+    handler: operation
+    reads:
+      - change:execution/**
+      - change:codegen/**
+    writes:
+      - change:inspect/**
+    authorization_writes:
+      - change:inspect/**
+    retryable_errors: [timeout, transport]
+
+  operation:allocate-healing-attempt:
+    handler: operation
+    reads:
+      - change:execution/execution-manifest.yaml
+      - change:healing/fix-proposal.json
+    writes:
+      - change:healing/entry-baseline.json
+      - change:healing/status.json
+    authorization_writes:
+      - change:healing/entry-baseline.json
+      - change:healing/status.json
+      - change:healing/**
+    retryable_errors: []
+
+  # ---- intake / case -------------------------------------------------------
+  skill:aa-explore:
+    handler: agent
+    reads:
+      - project:qa/**
+      - repo:**
+    writes:
+      - change:explore/**
+    authorization_writes:
+      - change:explore/**
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  skill:aa-case-design:
+    handler: agent
+    reads:
+      - change:explore/advisory.json
+      - project:qa/**
+    writes:
+      - change:.qa.yaml
+      - change:proposal.md
+      - change:cases/**
+      - change:trace/minimum-coverage-matrix.yaml
+    authorization_writes:
+      - change:.qa.yaml
+      - change:proposal.md
+      - change:cases/**
+      - change:trace/minimum-coverage-matrix.yaml
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  skill:aa-case-reviewer:
+    handler: agent
+    reads:
+      - change:.qa.yaml
+      - change:proposal.md
+      - change:cases/**
+      - change:trace/minimum-coverage-matrix.yaml
+    writes:
+      - change:review/case-review.json
+    authorization_writes:
+      - change:review/**
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  skill:aa-case-fixer:
+    handler: agent
+    reads:
+      - change:review/case-review.json
+      - change:.qa.yaml
+      - change:cases/**
+      - change:trace/minimum-coverage-matrix.yaml
+    writes:
+      - change:review/case-review-apply-summary.md
+      - change:cases/**
+      - change:.qa.yaml
+      - change:proposal.md
+      - change:trace/minimum-coverage-matrix.yaml
+    authorization_writes:
+      - change:review/**
+      - change:cases/**
+      - change:.qa.yaml
+      - change:proposal.md
+      - change:trace/minimum-coverage-matrix.yaml
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  skill:aa-fact-baseline:
+    handler: agent
+    reads:
+      - change:cases/**
+      - change:.qa.yaml
+      - repo:**
+    writes:
+      - change:facts/**
+    authorization_writes:
+      - change:facts/**
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  # ---- API branch ----------------------------------------------------------
+  skill:aa-api-plan:
+    handler: agent
+    reads:
+      - change:facts/fact-baseline.json
+      - change:cases/**
+    writes:
+      - change:plans/api-plan.md
+      - change:plans/api-test-data-plan.md
+      - change:plans/api-codegen-plan.md
+      - change:plans/m3-review-summary.md
+    authorization_writes:
+      - change:plans/**
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  skill:aa-api-plan-reviewer:
+    handler: agent
+    reads:
+      - change:plans/api-*.md
+      - change:plans/m3-review-summary.md
+    writes:
+      - change:review/api-plan-review.json
+      - change:review/api-plan-review-summary.md
+    authorization_writes:
+      - change:review/**
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  skill:aa-api-plan-fixer:
+    handler: agent
+    reads:
+      - change:review/api-plan-review.json
+      - change:plans/api-*.md
+    writes:
+      - change:review/api-plan-review-apply-summary.md
+      - change:plans/api-*.md
+      - change:plans/m3-review-summary.md
+    authorization_writes:
+      - change:review/**
+      - change:plans/**
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  skill:aa-api-codegen:
+    handler: agent
+    reads:
+      - change:plans/api-*.md
+      - change:review/api-plan-review.json
+      - repo:.aa/data-knowledge.yaml
+    writes:
+      - change:codegen/api-codegen-summary.md
+      - repo:tests/api/**
+      # Shared domain factories (create-if-missing / reuse). Serialized by the
+      # repo:test-infra exclusive lock so concurrent layers cannot clobber.
+      - repo:tests/testdata/**
+    exclusive: [repo:test-infra]
+    authorization_writes:
+      - change:codegen/api-codegen-summary.md
+      - repo:tests/api/**
+      - repo:tests/testdata/**
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  # ---- E2E branch ----------------------------------------------------------
+  skill:aa-e2e-plan:
+    handler: agent
+    reads:
+      - change:facts/fact-baseline.json
+      - change:cases/**
+    writes:
+      - change:plans/e2e-plan.md
+      - change:plans/e2e-test-data-plan.md
+      - change:plans/e2e-codegen-plan.md
+      - change:plans/m4-review-summary.md
+    authorization_writes:
+      - change:plans/**
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  skill:aa-e2e-plan-reviewer:
+    handler: agent
+    reads:
+      - change:plans/e2e-*.md
+      - change:plans/m4-review-summary.md
+    writes:
+      - change:review/plan-review.json
+      - change:review/plan-review-summary.md
+    authorization_writes:
+      - change:review/**
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  skill:aa-e2e-plan-fixer:
+    handler: agent
+    reads:
+      - change:review/plan-review.json
+      - change:plans/e2e-*.md
+    writes:
+      - change:review/plan-review-apply-summary.md
+      - change:plans/e2e-*.md
+      - change:plans/m4-review-summary.md
+    authorization_writes:
+      - change:review/**
+      - change:plans/**
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  skill:aa-e2e-codegen:
+    handler: agent
+    reads:
+      - change:plans/e2e-*.md
+      - change:review/plan-review.json
+      - repo:.aa/data-knowledge.yaml
+    writes:
+      - change:codegen/e2e-codegen-summary.md
+      - repo:tests/e2e/**
+      - repo:tests/testdata/**
+    exclusive: [repo:test-infra]
+    authorization_writes:
+      - change:codegen/e2e-codegen-summary.md
+      - repo:tests/e2e/**
+      - repo:tests/testdata/**
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  # ---- Fuzz branch ---------------------------------------------------------
+  skill:aa-fuzz-plan:
+    handler: agent
+    reads:
+      - change:facts/fact-baseline.json
+      - change:cases/**
+    writes:
+      - change:plans/fuzz-plan.md
+      - change:plans/fuzz-codegen-plan.md
+      - change:plans/fuzz-review-summary.md
+    authorization_writes:
+      - change:plans/**
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  skill:aa-fuzz-plan-reviewer:
+    handler: agent
+    reads:
+      - change:plans/fuzz-*.md
+    writes:
+      - change:review/fuzz-plan-review.json
+      - change:review/fuzz-plan-review-summary.md
+    authorization_writes:
+      - change:review/**
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  skill:aa-fuzz-codegen:
+    handler: agent
+    reads:
+      - change:plans/fuzz-*.md
+      - change:review/fuzz-plan-review.json
+    writes:
+      - change:codegen/fuzz-codegen-summary.md
+      - repo:tests/fuzz/**
+      - repo:tests/testdata/**
+    exclusive: [repo:test-infra]
+    authorization_writes:
+      - change:codegen/fuzz-codegen-summary.md
+      - repo:tests/fuzz/**
+      - repo:tests/testdata/**
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  # ---- Performance branch --------------------------------------------------
+  skill:aa-performance-plan:
+    handler: agent
+    reads:
+      - change:facts/fact-baseline.json
+      - change:cases/**
+    writes:
+      - change:plans/performance-plan.md
+      - change:plans/performance-codegen-plan.md
+      - change:plans/performance-review-summary.md
+    authorization_writes:
+      - change:plans/**
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  skill:aa-performance-plan-reviewer:
+    handler: agent
+    reads:
+      - change:plans/performance-*.md
+    writes:
+      - change:review/performance-plan-review.json
+      - change:review/performance-plan-review-summary.md
+    authorization_writes:
+      - change:review/**
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  skill:aa-performance-codegen:
+    handler: agent
+    reads:
+      - change:plans/performance-*.md
+      - change:review/performance-plan-review.json
+    writes:
+      - change:codegen/performance-codegen-summary.md
+      - repo:tests/perf/**
+      - repo:tests/testdata/**
+    exclusive: [repo:test-infra]
+    authorization_writes:
+      - change:codegen/performance-codegen-summary.md
+      - repo:tests/perf/**
+      - repo:tests/testdata/**
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  # ---- inspect / healing / report / archive --------------------------------
+  skill:aa-inspect:
+    handler: agent
+    reads:
+      - change:execution/**
+      - change:codegen/**
+    writes:
+      - change:inspect/**
+    authorization_writes:
+      - change:inspect/**
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  skill:aa-fix-proposal:
+    handler: agent
+    reads:
+      - change:inspect/failure-analysis.json
+      - change:execution/**
+    writes:
+      - change:healing/fix-proposal.json
+    authorization_writes:
+      - change:healing/fix-proposal.json
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  skill:aa-api-codegen-fixer:
+    handler: agent
+    reads:
+      - change:healing/fix-proposal.json
+      - change:codegen/api-codegen-summary.md
+      - repo:tests/api/**
+      - repo:tests/testdata/**
+    writes:
+      - change:healing/api-apply-summary.json
+      - change:healing/fixer-safety-check.json
+      - repo:tests/api/**
+      # Shared domain factories referenced by api tests. Trusted edits only
+      # (preserve shared contract); serialized by the repo:test-infra lock.
+      - repo:tests/testdata/**
+    exclusive: [repo:test-infra]
+    authorization_writes:
+      - change:healing/**
+      - repo:tests/api/**
+      - repo:tests/testdata/**
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  skill:aa-e2e-codegen-fixer:
+    handler: agent
+    reads:
+      - change:healing/fix-proposal.json
+      - change:codegen/e2e-codegen-summary.md
+      - repo:tests/e2e/**
+      - repo:tests/testdata/**
+    writes:
+      - change:healing/e2e-apply-summary.json
+      - change:healing/fixer-safety-check.json
+      - repo:tests/e2e/**
+      - repo:tests/testdata/**
+    exclusive: [repo:test-infra]
+    authorization_writes:
+      - change:healing/**
+      - repo:tests/e2e/**
+      - repo:tests/testdata/**
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  skill:aa-report-generator:
+    handler: agent
+    reads:
+      - change:inspect/**
+      - change:execution/**
+      - change:review/**
+      - change:healing/**
+    writes:
+      - change:report/**
+    authorization_writes:
+      - change:report/**
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true
+
+  skill:aa-archive:
+    handler: agent
+    reads:
+      - change:**
+      - project:qa/changes/**
+    writes:
+      - project:qa/archive/**
+    authorization_writes:
+      - project:qa/archive/**
+    retryable_errors: [timeout, transport, rate_limit]
+    reconnect: true

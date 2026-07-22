@@ -86,8 +86,11 @@ ${skills.join('\n')}
 - \`Task\` with subagents → OpenCode's subagent system
 
 **Key CLI commands (must be run in terminal, never fabricated):**
-- \`aa status --change <change-id> --json\` — compute deterministic workflow phase status
-- \`aa gate check --change <change-id> --phase <phase-id> --json\` — adjudicate one phase gate deterministically
+- \`aa workflow run --change <id> --entrypoint full|intake|execute|case\` — start GraphRuntime
+- \`aa workflow status --change <id> --json\` — graph status / pending interrupts
+- \`aa workflow resume --change <id>\` — resume after lease expiry or interruption
+- \`aa workflow import-checkpoint --change <id> --manifest <path>\` — validated fixture import
+- \`aa status --change <change-id> --json\` — GraphStatus projection
 - \`aa run --change <change-id>\` — execute tests (skill: aa-run)
 - \`aa report inspect --change <change-id>\` — classify failures (skill: aa-inspect)
 `;

@@ -3,7 +3,7 @@
   "fixtures": {
     "eval-sample-001": {
       "sample_dir": "samples/eval-sample-001",
-      "aggregate_sha256": "1f04a761c0519f5d634631756b75149b497fd4916b8b4ecf4c2d3d53a62914de",
+      "aggregate_sha256": "e149002f32125cd0efdecb66083aafd4f3c9ee1b38afd7ad9c912cd4181badc1",
       "files": {
         ".qa.yaml": "dccabbb8c719b86d5980b856a36a10de28f9e31e2af81e4a8b231527129142a4",
         "cases/system/api/case.yaml": "502cb7351ad63cb3363b08edd153ca3db2296086cac42cdd32591c4a4cd0a2bb",
@@ -32,6 +32,8 @@
         "explore/advisory.json": "3cd98ad322e1e9ccb57afb58bb04186d777376c77f57240263a27d2a18eeafba",
         "explore/context.json": "01ded35d24b1ecda00ddda8cf8bdbd8b999108ca8c3418f2b0006f8d4511fd3b",
         "facts/fact-baseline.json": "55659c48b67212ca4b42e6cc15317e0d0e97b0efab15dd7cbdac85cb96467a37",
+        "healing/status.json": "651b64f5a5b9878517bd02714f5064108126c55df67b24d6558530613214ac0f",
+        "inspect/failure-analysis.json": "051c81c511fb8a926df52c740cfac7f20e3fae25a2ecc415f4af44af255a8b17",
         "plans/api-codegen-plan.md": "489e199b71a77a69ea950927c0ec037557675f4767c669e04aa520a50c2f75a9",
         "plans/api-plan.md": "3c84957b1148a5629ca2c3338f259de746de9470f20d07b3dd2238ca4e8561a7",
         "plans/api-test-data-plan.md": "f8481a931028d1014d111e807dce868ecbbb05f4259fecaa3bb71bd007e2f270",
@@ -41,6 +43,7 @@
         "plans/m3-review-summary.md": "b1d0c3e790946c0369ffdb8e3bf0d11d974cb75f3166593112f6fbc1aa05a828",
         "plans/m4-review-summary.md": "0b98e667882c63c3030ab15e4440b133f890db695bc11653b5b0b68be0c51fe0",
         "proposal.md": "80938825ba4c0a48dacdf0e37cdc3d513d8ec13db96deaf3640249397eb95b1a",
+        "registry/skill-registry-check.json": "8bc761ad1982df44012c2578801ba048c739e28aeaf8d3bc854081cc72e2c011",
         "review/api-plan-review-summary.md": "a0cfde73395db6b93677175e6191bd2dfaa3246dd436e4d4c6ae0f5b2b8b61c6",
         "review/api-plan-review.json": "272168c1efa3f8743682584318c88b3f1e56705c08579a17701f1c9f81ea8520",
         "review/case-review-apply-summary.md": "2eb2c6259688c03f326335f2304afabd8c2f4e26c99d7dbc9ea578372a4ccb4e",

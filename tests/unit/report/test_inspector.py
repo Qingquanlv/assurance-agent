@@ -98,6 +98,49 @@ def test_inspect_no_failures_writes_analysis(tmp_path: Path) -> None:
     assert (tmp_path / "qa" / "changes" / "CH-1" / "inspect" / "quality-gate-result.json").is_file()
 
 
+def test_inspect_skipped_execution_writes_no_failures(tmp_path: Path) -> None:
+    skipped = TargetResult(
+        change_id="CH-1",
+        batch_id="20260715-000000",
+        target="api",
+        status="skipped",
+        command="uv run pytest tests/api/test_user_api.py",
+        source=ResultSource(framework="pytest", raw_log="raw/api.log"),
+        total=0,
+        passed=0,
+        failed=0,
+        skipped=0,
+        cases=[],
+        unmapped_tests=[
+            CaseResult(
+                case_id="",
+                status="skipped",
+                file="",
+                test_name="pytest json report not found — pytest may not have run.",
+                duration_ms=0,
+                message="pytest json report not found — pytest may not have run.",
+                raw_log_ref="raw/api.log",
+            )
+        ],
+    )
+    skipped_cov = CoverageResult(
+        change_id="CH-1",
+        batch_id="20260715-000000",
+        available=False,
+        line_coverage=0.0,
+        branch_coverage=0.0,
+        threshold=CoverageThreshold(line=70, branch=60),
+        status="SKIPPED",
+        skip_reason="coverage.json not produced",
+    )
+    change_id = _seed_change(tmp_path, skipped, skipped_cov)
+    result = inspect_change(tmp_path, change_id)
+    assert result.analysis.status == "no_failures"
+    assert result.analysis.final_status == "SKIPPED"
+    assert result.analysis.failures == []
+    assert (tmp_path / "qa" / "changes" / "CH-1" / "inspect" / "failure-analysis.json").is_file()
+
+
 def test_inspect_classifies_locator_failure_as_fixable(tmp_path: Path) -> None:
     change_id = _seed_change(tmp_path, _api("AssertionError: expected 200 received 500"), _cov())
     result = inspect_change(tmp_path, change_id)

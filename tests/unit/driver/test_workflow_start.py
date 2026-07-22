@@ -1,8 +1,12 @@
+"""Detached workflow start uses --entrypoint and adopts the lock token."""
+
+from __future__ import annotations
+
 from pathlib import Path
 
-from tests.helpers_aa import write_aa_config
-
 import pytest
+
+from tests.helpers_aa import write_aa_config
 
 from assurance_agent.workflow.driver.adapter import DriverError
 from assurance_agent.workflow.driver.driver_state import (
@@ -41,7 +45,7 @@ def test_detached_spawn_writes_driver_and_lock(tmp_path: Path) -> None:
     result = start_workflow_detached(
         project_root=tmp_path,
         change_id="CH-1",
-        scope="full",
+        entrypoint="full",
         adapter="opencode",
         server="http://host:9",
         spawn=_spy_spawn(calls),
@@ -54,6 +58,9 @@ def test_detached_spawn_writes_driver_and_lock(tmp_path: Path) -> None:
     assert driver is not None and driver.pid == 4242
     lock = driver_lock_path(change_dir).read_text().splitlines()
     assert lock[0] == "4242" and lock[1] == driver.start_token
+    assert "--entrypoint" in calls[0]["argv"]
+    assert "full" in calls[0]["argv"]
+    assert "--scope" not in calls[0]["argv"]
 
 
 def test_detached_argv_for_opencode(tmp_path: Path) -> None:
@@ -63,7 +70,7 @@ def test_detached_argv_for_opencode(tmp_path: Path) -> None:
     start_workflow_detached(
         project_root=tmp_path,
         change_id="CH-1",
-        scope="execute",
+        entrypoint="execute",
         adapter="opencode",
         server="http://host:9",
         model="prov/mod",
@@ -75,6 +82,7 @@ def test_detached_argv_for_opencode(tmp_path: Path) -> None:
     argv = calls[0]["argv"]
     assert argv[:2] == ["aa", "workflow"]
     assert "run" in argv
+    assert "--entrypoint" in argv and "execute" in argv
     assert "--server" in argv and "http://host:9" in argv
     assert "--model" in argv and "prov/mod" in argv
     assert "--parent-session" in argv and "ses_1" in argv
@@ -89,7 +97,7 @@ def test_detached_argv_for_headless(tmp_path: Path) -> None:
     start_workflow_detached(
         project_root=tmp_path,
         change_id="CH-1",
-        scope="execute",
+        entrypoint="execute",
         adapter="headless",
         agent_cmd="cursor-agent --print",
         spawn=_spy_spawn(calls),
@@ -110,7 +118,7 @@ def test_spawn_failure_releases_lock(tmp_path: Path) -> None:
     result = start_workflow_detached(
         project_root=tmp_path,
         change_id="CH-1",
-        scope="execute",
+        entrypoint="execute",
         adapter="headless",
         spawn=bad_spawn,
         aa_command=["aa"],
@@ -134,7 +142,7 @@ def test_start_guard_refuses_when_running(tmp_path: Path) -> None:
     result = start_workflow_detached(
         project_root=tmp_path,
         change_id="CH-1",
-        scope="execute",
+        entrypoint="execute",
         adapter="headless",
         spawn=_spy_spawn([]),
         aa_command=["aa"],

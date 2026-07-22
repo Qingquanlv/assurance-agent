@@ -14,3 +14,36 @@ resets:
   qa_yaml:
     test_types:
     - api
+imports:
+  execute:
+    entrypoint: execute
+    inputs:
+    - change:proposal.md
+    - change:.qa.yaml
+    - change:plans/api-plan.md
+    - change:review/api-plan-review.json
+    completed:
+    - path: execute-workflow/bootstrap/bootstrap
+      graph: bootstrap
+      node: registry
+      outputs:
+      - change:registry/skill-registry-check.json
+      gate: registry-gate
+    - path: execute-workflow/assurance/assurance/api/api-branch/review-cycle/api-plan-cycle
+      graph: api-plan-cycle
+      node: review
+      outputs:
+      - change:review/api-plan-review.json
+      gate: api-plan-review-gate
+    - path: execute-workflow/assurance/assurance/api/api-branch
+      graph: api-branch
+      node: review-cycle
+    - path: execute-workflow/assurance/assurance/api/api-branch
+      graph: api-branch
+      node: codegen
+      outputs:
+      - change:codegen/api-codegen-summary.md
+      gate: api-codegen-precondition-gate
+    - path: execute-workflow/assurance/assurance
+      graph: assurance
+      node: api

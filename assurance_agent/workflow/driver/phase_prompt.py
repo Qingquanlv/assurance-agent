@@ -4,10 +4,27 @@ Clean-room port of the TS buildPhasePrompt (src/workflow/driver/phase_prompt.ts)
 aws->aa renames, same behavioral contract. The prompt pins the change scope and
 forbids the phase agent from touching gate/status/workflow-state — those are the
 CLI's exclusive responsibility.
+
+v2 分支（传入 ``allowed_writes``）委托 graph 拥有的 ``build_node_prompt``：列出
+contract 授权写范围，不再宣称每个 phase 只能写 change 目录。v1 分支（不传）
+保留原 Scheme E 文案，``loop.py`` 与既有调用方不受影响。
 """
 
+from collections.abc import Sequence
 
-def build_phase_prompt(skill: str, phase: str, change_id: str, item: str | None = None) -> str:
+from assurance_agent.workflow.graph.agent_api import build_node_prompt
+
+
+def build_phase_prompt(
+    skill: str,
+    phase: str,
+    change_id: str,
+    *,
+    allowed_writes: Sequence[str] | None = None,
+    item: str | None = None,
+) -> str:
+    if allowed_writes is not None:
+        return build_node_prompt(skill, phase, change_id, allowed_writes=allowed_writes, item=item)
     fix_proposal_binding = (
         " Set fix-proposal.json source_batch_id from the current execution "
         "manifest and source_analysis_sha256 to the SHA256 of the exact current "

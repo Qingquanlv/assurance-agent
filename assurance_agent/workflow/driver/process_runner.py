@@ -1,8 +1,8 @@
 """Generic subprocess lifecycle + timeout management for the driver.
 
-Used both by HeadlessAdapter (spawn an arbitrary agent CLI) and by the default
-CliPhaseExecutor (invoke pinned `aa` subcommands). Mirrors the TS ProcessRunner
-seam (src/workflow/driver/process_runner.ts) so callers can inject a fake.
+Used by HeadlessAdapter (spawn an arbitrary agent CLI). Mirrors the TS
+ProcessRunner seam (src/workflow/driver/process_runner.ts) so callers can
+inject a fake.
 """
 
 from __future__ import annotations

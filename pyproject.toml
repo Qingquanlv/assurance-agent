@@ -41,7 +41,7 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 110
 target-version = "py311"
-extend-exclude = ["benchmark", ".worktrees"]
+extend-exclude = ["benchmark", ".worktrees", ".history"]
 
 [tool.pyright]
 include = ["assurance_agent", "tests"]

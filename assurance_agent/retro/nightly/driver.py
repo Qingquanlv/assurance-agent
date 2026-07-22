@@ -49,9 +49,7 @@ from assurance_agent.retro.promotions import (
 from assurance_agent.retro.proposals import read_proposals, validate_retro_proposals
 from assurance_agent.retro.state import complete_retro_stage, mark_consumed_change, read_state
 from assurance_agent.retro.types import RetroContext
-from assurance_agent.workflow.core.state import read_state as read_workflow_state
-from assurance_agent.workflow.orchestration.engine import compute_status
-from assurance_agent.workflow.orchestration.schema import load_workflow_schema
+from assurance_agent.workflow.graph.checkpoint import CheckpointStore, project_invocation
 
 AgentRunner = Callable[[str, Path], int]
 ContextBuilder = Callable[..., RetroContext]
@@ -63,28 +61,18 @@ def _default_is_terminal(project_root: Path, change_dir: Path, change_id: str) -
     try:
         if change_dir == archive_root(project_root) / change_id:
             # `aa-archive` only ever archives a change after every archive-gate
-            # condition (execution PASS/PASS_WITH_WARNINGS, healing resolved,
-            # review gates pass) already held — archived is terminal by
-            # construction. Recomputing terminality via `compute_status` against
-            # the archived directory is unreliable: the archive skill
-            # intentionally does not copy `cases/<module>/case.yaml` (merged
-            # into the stable `qa/cases/` file instead, not archived as a
-            # process artifact), so produces-presence checks for case-design /
-            # case-review phases spuriously fail against the archived copy.
+            # condition already held — archived is terminal by construction.
+            # Re-projecting against the archived directory is unreliable: the
+            # archive skill intentionally does not copy all case artifacts.
             return True
         loc = resolve_change(project_root, change_id, prefer="active")
-        schema = load_workflow_schema(project_root)
-        state = read_workflow_state(loc.path)
-        status = compute_status(
-            schema,
-            loc,
-            state,
-            state.params,
-            scope="full",
-        )
+        invocation_id = CheckpointStore(loc.path).latest_root_invocation()
+        if invocation_id is None:
+            return False
+        projection = project_invocation(loc.path, invocation_id)
     except (AaError, OSError, ValueError):
         return False
-    return status.terminal is not None
+    return projection.terminal in {"completed", "stopped", "failed"}
 
 
 def collect_nightly(

@@ -2,15 +2,15 @@
 #
 # run-workflow-loop-cursor.sh - scheduled benchmark loop using Cursor Agent.
 #
-# Cursor sibling of run-workflow-loop.sh. Same deterministic Python driver
-# (`aa workflow run`), but phases are dispatched through headless
-# `cursor-agent --print` instead of an OpenCode server / `opencode run`.
+# Cursor sibling of run-workflow-loop.sh. Same GraphRuntime driver
+# (`aa workflow run` / `resume`), but task handlers are dispatched through
+# headless `cursor-agent --print` instead of OpenCode.
 #
 # One tick:
 #   1. Seed intake inputs for each item (.qa.yaml + proposal.md).
 #   2. `aa workflow run --adapter headless --agent-cmd 'cursor-agent …'`
-#      drives the change to a terminal state (one cursor-agent spawn per phase).
-#   3. Verify completion with deterministic `aa status`.
+#      drives the change to a terminal state (one cursor-agent spawn per task).
+#   3. Verify completion with deterministic `aa workflow status`.
 #   4. Archive completed changes through Cursor Agent + aa-archive.
 #   5. (Optional) retro-nightly collect via skills repo driver.
 #
@@ -21,7 +21,7 @@
 #
 # Usage:
 #   ./benchmark/run-workflow-loop-cursor.sh
-#   CURSOR_MODEL=gpt-5.5-medium ./benchmark/run-workflow-loop-cursor.sh
+#   CURSOR_MODEL=cursor-grok-4.5-high-fast ./benchmark/run-workflow-loop-cursor.sh
 #   CURSOR_MAX_WORKFLOW_ATTEMPTS=4 ./benchmark/run-workflow-loop-cursor.sh
 #   DO_NIGHTLY_COLLECT=false ./benchmark/run-workflow-loop-cursor.sh
 #   RESUME_RUNSTAMP=20260713-113457 ./benchmark/run-workflow-loop-cursor.sh
@@ -36,10 +36,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Python migration: skills are synced INTO the SUT project by `aa skill refresh`.
 AA_SKILLS_ROOT="${AA_SKILLS_ROOT:-$PROJECT_ROOT/skills}"
-AA_REPO_ROOT="${AA_REPO_ROOT:-/Users/lvqingquan/agent/assurance-agent}"   # for uv-based aa install
+# SCRIPT_DIR = <aa-repo>/benchmark/vue-fastapi-admin/benchmark → repo root is ../../..
+AA_REPO_ROOT="${AA_REPO_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 NIGHTLY_CLI="${NIGHTLY_CLI:-aa retro nightly}"
 RESUME_LOG_DIR="${RESUME_LOG_DIR:-$SCRIPT_DIR/resume-logs}"
 AUTO_DECIDE_BENCHMARK="${AUTO_DECIDE_BENCHMARK:-true}"
+# When set, log non-terminal / needs-human stalls (does not mutate state).
 RECOVER_HEALING_DEADLOCK="${RECOVER_HEALING_DEADLOCK:-true}"
 cd "$PROJECT_ROOT"
 
@@ -77,7 +79,7 @@ elif [ -x "$AA_REPO_ROOT/.venv/bin/aa" ]; then
   export PATH="$AA_REPO_ROOT/.venv/bin:$PATH"
 fi
 export AA_BIN
-DRIVER_SCOPE="${DRIVER_SCOPE:-full}"
+DRIVER_ENTRYPOINT="${DRIVER_ENTRYPOINT:-full}"
 TEST_TYPES="${TEST_TYPES:-api,e2e}"
 MAX_HEALING_ATTEMPTS="${MAX_HEALING_ATTEMPTS:-3}"
 
@@ -86,6 +88,21 @@ CURSOR_MODEL="${CURSOR_MODEL:-}"
 CURSOR_MAX_WORKFLOW_ATTEMPTS="${CURSOR_MAX_WORKFLOW_ATTEMPTS:-3}"
 CURSOR_AGENT_FORCE="${CURSOR_AGENT_FORCE:-true}"
 CURSOR_OUTPUT_FORMAT="${CURSOR_OUTPUT_FORMAT:-stream-json}"
+
+# QA test-runtime endpoints (inherited by the driver → operation:run-tests → pytest).
+# The isolated task sandbox excludes db.sqlite3 from tree capture, so the fuzz/api
+# isolated_worker would otherwise fall back to an empty DB ("no such table"). Pin
+# QA_SQLITE_FILE to the live SUT DB by absolute path so workers read the migrated DB.
+export QA_SQLITE_FILE="${QA_SQLITE_FILE:-$PROJECT_ROOT/db.sqlite3}"
+export BASE_URL="${BASE_URL:-http://127.0.0.1:9999}"
+export E2E_FRONTEND_URL="${E2E_FRONTEND_URL:-http://127.0.0.1:3100}"
+# Fuzz schema acquisition: hit the LIVE SUT (from_url) instead of importing the
+# app in-process (from_asgi). from_asgi boots the app lifespan → aerich migrate →
+# writes migrations/** inside the task sandbox (forbidden_write) AND fuzzes an
+# in-process app bound to the sandbox DB, inconsistent with the real-DB seeds.
+# Both env names are set because generated fuzz files vary in which they read.
+export QA_FUZZ_SCHEMA_MODE="${QA_FUZZ_SCHEMA_MODE:-uri}"
+export FUZZ_SCHEMA_MODE="${FUZZ_SCHEMA_MODE:-uri}"
 
 # Full agent argv prefix for headless driver + nightly (prompt appended last).
 if [ -z "${CURSOR_NIGHTLY_AGENT:-}" ]; then
@@ -132,88 +149,16 @@ setup_run_tracking() {
   log "tracking: $TRACK_LOG (latest → cursor-loop-latest.log)"
 }
 
-paused_phase() {
-  local change_id="$1"
-  python3 - <<PY
-import json, pathlib
-p = pathlib.Path("qa/changes/$change_id/driver.json")
-if not p.exists():
-    print("")
-else:
-    d = json.loads(p.read_text())
-    print(d.get("paused_on") or "")
-PY
-}
-
-# Resolve the checkpoint phase that needs a human decision, from either the
-# driver pause (break_at / healing await-human sets driver.paused_on) OR a
-# needs_human_review terminal, which the engine records in status.terminal.phase
-# (not driver.paused_on). Without the terminal fallback, review gates are never
-# auto-decided and the loop stalls.
-current_review_phase() {
-  local change_id="$1" phase kind
-  phase="$(paused_phase "$change_id")"
-  if [ -n "$phase" ]; then
-    printf '%s' "$phase"
-    return 0
-  fi
-  kind="$(terminal_kind "$change_id")"
-  [ "$kind" = "needs_human_review" ] || { printf ''; return 0; }
-  python3 - "$RUN_DIR/${change_id}.status.json" <<'PY'
-import json, sys
-try:
-    data = json.load(open(sys.argv[1]))
-except Exception:
-    print(""); raise SystemExit(0)
-terminal = data.get("terminal")
-print(terminal.get("phase") or "" if isinstance(terminal, dict) else "")
-PY
-}
-
-gate_for_phase() {
-  case "$1" in
-    api-plan-review) echo "api-plan-review-gate" ;;
-    e2e-plan-review) echo "e2e-plan-review-gate" ;;
-    case-review) echo "case-review-gate" ;;
-    fuzz-plan-review) echo "fuzz-plan-review-gate" ;;
-    performance-plan-review) echo "performance-plan-review-gate" ;;
-    *) echo "" ;;
-  esac
-}
-
+# Auto-resume the first pending GraphRuntime interrupt (benchmark headless path).
+# Also best-effort materializes .aa/data-knowledge.yaml from a proposal if missing.
 maybe_auto_decide() {
   local change_id="$1"
   [ "$AUTO_DECIDE_BENCHMARK" = "true" ] || return 1
-  local phase gate review_json decision reason
-  phase="$(current_review_phase "$change_id")"
-  [ -n "$phase" ] || return 1
-  gate="$(gate_for_phase "$phase")"
-  [ -n "$gate" ] || return 1
-  case "$phase" in
-    api-plan-review) review_json="qa/changes/$change_id/review/api-plan-review.json" ;;
-    e2e-plan-review) review_json="qa/changes/$change_id/review/plan-review.json" ;;
-    case-review) review_json="qa/changes/$change_id/review/case-review.json" ;;
-    fuzz-plan-review) review_json="qa/changes/$change_id/review/fuzz-plan-review.json" ;;
-    performance-plan-review) review_json="qa/changes/$change_id/review/performance-plan-review.json" ;;
-    *) return 1 ;;
-  esac
-  [ -f "$review_json" ] || return 1
-  decision="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("decision") or "")' "$review_json")"
-  if [ "$decision" != "needs_human_review" ] && [ "$decision" != "changes_requested" ]; then
-    return 1
-  fi
-  # Do NOT edit the review JSON. The reviewer's artifact is a frozen gate read
-  # (audited: reads_sha256). Editing it out-of-band trips the read-side audit
-  # (ARTIFACT-TAMPERED). Instead record an `accept_risk` decision: `aa decide`
-  # auto-binds the current audited review artifact as evidence, and the engine's
-  # applyGateDecision upgrades needs_human_review -> pass anchored to that hash.
-  # Best-effort: materialize formal data-knowledge if a proposal exists.
   if [ ! -f ".aa/data-knowledge.yaml" ]; then
     local proposal="qa/changes/$change_id/plans/data-knowledge.proposal.yaml"
     if [ -f "$proposal" ]; then
       mkdir -p .aa
-      # Drop leading proposal-only comment block; keep YAML body.
-      python3 - "$proposal" .aa/data-knowledge.yaml <<'PY'
+      python3 - "$proposal" .aa/data-knowledge.yaml <<'PYDK'
 import sys
 from pathlib import Path
 src, dst = Path(sys.argv[1]), Path(sys.argv[2])
@@ -223,66 +168,22 @@ while lines and lines[0].lstrip().startswith("#"):
 while lines and not lines[0].strip():
     lines.pop(0)
 dst.write_text("".join(lines), encoding="utf-8")
-PY
+PYDK
       log "[$change_id] materialized .aa/data-knowledge.yaml from proposal"
     fi
   fi
-  reason="benchmark auto accept_risk at $phase so workflow can complete"
-  log "[$change_id] auto decide accept_risk at $gate (paused_on=$phase); engine upgrades needs_human_review -> pass"
-  "$AA_BIN" decide --change "$change_id" --at "$gate" --action accept_risk --reason "$reason"
+  local status_json interrupt_id action reason
+  status_json="$("$AA_BIN" workflow status --change "$change_id" --json 2>/dev/null || true)"
+  [ -n "$status_json" ] || return 1
+  interrupt_id="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); ints=d.get("pending_interrupts") or []; print((ints[0].get("interrupt_id") or ints[0].get("id") or "") if ints else "")' "$status_json")"
+  [ -n "$interrupt_id" ] || return 1
+  action="accept_risk"
+  reason="benchmark auto resume interrupt $interrupt_id so workflow can complete"
+  log "[$change_id] auto resume interrupt=$interrupt_id action=$action"
+  "$AA_BIN" workflow resume --change "$change_id" --interrupt "$interrupt_id" --action "$action" --reason "$reason"
 }
 
-break_fixer_loop() {
-  local change_id="$1"
-  python3 - "$change_id" <<'PY' || return 0
-import json, os, subprocess, sys
-cid = sys.argv[1]
-aa = os.environ.get("AA_BIN", "aa")
-try:
-    proc = subprocess.run(
-        [aa, "status", "--change", cid, "--next", "--json"],
-        text=True, capture_output=True, check=False,
-    )
-    if proc.returncode not in (0, 20, 30):
-        raise RuntimeError(f"aa status failed ({proc.returncode}): {proc.stderr.strip()}")
-    st = json.loads(proc.stdout)
-except Exception:
-    raise SystemExit(0)
-nxt = [x.get("phase_id") for x in (st.get("next_dispatch") or []) if isinstance(x, dict)]
-if not nxt or not set(nxt) <= {"api-plan-fix", "e2e-plan-fix"}:
-    raise SystemExit(0)
-# accept_risk alone does not clear needs_fix — gate verdicts read review JSON.
-# Promote the artifact to pass so the repair phase is pruned and codegen can run.
-for gate, review_rel, summary in [
-    ("api-plan-review-gate", "review/api-plan-review.json", "review/api-plan-review-apply-summary.md"),
-    ("e2e-plan-review-gate", "review/plan-review.json", "review/plan-review-apply-summary.md"),
-]:
-    summary_path = f"qa/changes/{cid}/{summary}"
-    review_path = f"qa/changes/{cid}/{review_rel}"
-    if not os.path.exists(summary_path):
-        continue
-    if os.path.exists(review_path):
-        doc = json.load(open(review_path))
-        doc["decision"] = "pass"
-        doc["human_review_required"] = False
-        doc["auto_fix_allowed"] = False
-        if "codegen_readiness" in doc:
-            doc["codegen_readiness"] = "ready"
-        if doc.get("risk_level") in ("high", "critical"):
-            doc["risk_level"] = "medium"
-        doc["summary"] = (
-            (doc.get("summary") or "")
-            + "\n\n[benchmark] promoted to pass to break empty fixer loop."
-        ).strip()
-        open(review_path, "w").write(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
-    subprocess.call([
-        aa, "decide", "--change", cid, "--at", gate,
-        "--action", "fix_and_proceed",
-        "--reason", f"benchmark: break fixer loop after {summary}",
-    ])
-PY
-}
-
+# Diagnostic only: log stalls that need operator attention. Does not mutate ledger.
 recover_dead_end() {
   local change_id="$1"
   [ "$RECOVER_HEALING_DEADLOCK" = "true" ] || return 1
@@ -290,9 +191,9 @@ recover_dead_end() {
   kind="$(terminal_kind "$change_id")"
   reason="$(terminal_reason "$change_id")"
   if [ "$kind" = "needs_human_review" ]; then
-    log "[$change_id] workflow needs human review${reason:+: $reason}; use aa decide"
+    log "[$change_id] workflow needs human review${reason:+: $reason}; use aa workflow resume --interrupt …"
   elif [ -z "$kind" ]; then
-    log "[$change_id] no dispatch and no terminal; preserve evidence and inspect driver error"
+    log "[$change_id] no terminal yet; preserve evidence and inspect driver error / pending interrupts"
   fi
   return 1
 }
@@ -326,9 +227,9 @@ clean_generated_artifacts() {
   done
 }
 
-# Driver full-scope pauses at test-infra-bootstrap when the shared pytest
-# scaffold is missing. Ensure the three contract files exist before any change
-# is started so the loop is not stuck on needs_human_review for every item.
+# The codegen/execution phases assume the shared pytest scaffold already exists in
+# the SUT repo (tests/config.py, tests/conftest.py, tests/schema_validation.py).
+# Verify they are present up front so codegen does not STOP and tests can run.
 ensure_test_infra() {
   local missing=()
   local f
@@ -338,7 +239,7 @@ ensure_test_infra() {
   if [ ${#missing[@]} -ne 0 ]; then
     log "ERROR: missing test infra: ${missing[*]}"
     log "       restore tests/config.py, tests/conftest.py, tests/schema_validation.py"
-    log "       (driver will pause every change at bootstrap otherwise)"
+    log "       (codegen phases STOP and tests cannot run without them)"
     exit 1
   fi
   if [ ! -f "$PROJECT_ROOT/.aa/config.yaml" ]; then
@@ -380,7 +281,9 @@ force_kill_agent_run() {
   kill_pgid_file "$pgid_file" "$supervisor_pid"
 }
 
-# Seed intake inputs for one change (driver full scope starts at explore).
+# Seed intake inputs for one change (GraphRuntime full entrypoint has no
+# interactive intake). Params are passed on `aa workflow run --params`; do not
+# pre-write a v1 workflow-state.yaml — the runtime owns the ledger/projection.
 # $1=change_id $2=base_id $3=requirement text
 seed_change() {
   local change_id="$1" base_id="$2" requirement="$3"
@@ -411,9 +314,9 @@ YAML
   {
     echo "# $feature — QA Proposal (benchmark seed)"
     echo
-    echo "> Autonomous benchmark seed: intake inputs for the TS driver full-scope"
-    echo "> run. The driver starts at \`explore\`; there is no interactive intake"
-    echo "> phase, so the requirement is materialized here for the workflow to read."
+    echo "> Autonomous benchmark seed for GraphRuntime \`aa workflow run\`."
+    echo "> Intake is non-interactive; the requirement is materialized here for"
+    echo "> explore / case-design nodes to read."
     echo
     echo "## Requirement"
     echo
@@ -431,57 +334,7 @@ YAML
     echo "generation_mode: autonomous"
   } >"$cdir/proposal.md"
 
-  # Seed the canonical workflow-state so the deterministic Python engine can start:
-  #   - params: IDENTICAL to the driver's --params so `aa status` (which reads
-  #     state.params) computes the SAME phase DAG the driver dispatches; otherwise
-  #     terminal detection disagrees with the run.
-  #   - run_context.interaction_mode=autonomous so case-design-gate passes without
-  #     an interactive user approval (the benchmark is headless/autonomous).
-  #   - skill_registry_check=pass so registry-gate does not stop the run (the
-  #     packaged driver ships every workflow skill).
-  local params_json
-  params_json="$(driver_params_json)"
-  cat >"$cdir/workflow-state.yaml" <<YAML
-params: $params_json
-run_context:
-  interaction_mode: autonomous
-  orchestrator_skill: aa-workflow
-phases:
-  skill_registry_check:
-    status: pass
-    reason: benchmark seed — driver ships all workflow skills
-YAML
-
-  log "[$change_id] seeded intake inputs (.qa.yaml + proposal.md + workflow-state, feature=$feature)"
-}
-
-# Drop orphan dispatch_signed rows that block progression resume/advance (H0 stale).
-prune_stale_dispatches() {
-  local change_id="$1"
-  local events="qa/changes/${change_id}/events.jsonl"
-  [ -f "$events" ] || return 0
-  local pruned
-  pruned="$(python3 - <<'PY' "$events"
-import json, sys
-path = sys.argv[1]
-lines = [json.loads(l) for l in open(path) if l.strip()]
-committed = {e.get("attempt_id") for e in lines if e.get("type") == "phase_outcome_committed"}
-kept, pruned = [], 0
-for e in lines:
-    if e.get("type") == "dispatch_signed" and e.get("attempt_id") not in committed:
-        pruned += 1
-        continue
-    kept.append(e)
-if pruned:
-    with open(path, "w") as f:
-        for e in kept:
-            f.write(json.dumps(e) + "\n")
-print(pruned)
-PY
-)"
-  if [ "${pruned:-0}" -gt 0 ]; then
-    log "[$change_id] pruned $pruned orphan dispatch_signed event(s)"
-  fi
+  log "[$change_id] seeded intake inputs (.qa.yaml + proposal.md, feature=$feature)"
 }
 
 driver_params_json() {
@@ -500,7 +353,10 @@ print(json.dumps({
 }
 
 cursor_agent_cmd_prefix() {
-  local cmd="$CURSOR_AGENT_BIN --print --output-format $CURSOR_OUTPUT_FORMAT --workspace $PROJECT_ROOT --trust"
+  # Do NOT pin --workspace to PROJECT_ROOT here. HeadlessAdapter.invoke rewrites
+  # or injects --workspace to the task-private materialized root so freeze/repair
+  # see agent writes. Archive / nightly helpers below still pass PROJECT_ROOT.
+  local cmd="$CURSOR_AGENT_BIN --print --output-format $CURSOR_OUTPUT_FORMAT --trust"
   [ "$CURSOR_AGENT_FORCE" = "true" ] && cmd="$cmd --force"
   [ -n "$CURSOR_MODEL" ] && cmd="$cmd --model $CURSOR_MODEL"
   printf '%s' "$cmd"
@@ -567,14 +423,26 @@ run_driver() {
   local params agent_cmd
   params="$(driver_params_json)"
   agent_cmd="$(cursor_agent_cmd_prefix)"
-
-  run_hard_timeout "$logf" "$change_id" \
-    "$AA_BIN" workflow run \
-    --change "$change_id" \
-    --scope "$DRIVER_SCOPE" \
-    --adapter headless \
-    --params "$params" \
-    --agent-cmd "$agent_cmd"
+  local has_invocation="false"
+  if "$AA_BIN" workflow status --change "$change_id" --json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("status") else 1)'; then
+    has_invocation="true"
+  fi
+  if [ "$has_invocation" = "true" ]; then
+    # resume has no --params (params are pinned on the invocation); only adapter/agent.
+    run_hard_timeout "$logf" "$change_id" \
+      "$AA_BIN" workflow resume \
+      --change "$change_id" \
+      --adapter headless \
+      --agent-cmd "$agent_cmd"
+  else
+    run_hard_timeout "$logf" "$change_id" \
+      "$AA_BIN" workflow run \
+      --change "$change_id" \
+      --entrypoint "$DRIVER_ENTRYPOINT" \
+      --adapter headless \
+      --params "$params" \
+      --agent-cmd "$agent_cmd"
+  fi
 }
 
 # One-shot cursor-agent prompt (archive / legacy retro proposals).
@@ -601,12 +469,35 @@ status_json_path() {
 }
 
 # aa status: 0 running/completed, 20 stopped, 30 needs_human_review,
-# 40 command/data error. Terminal control uses JSON; rc=40 fails closed.
+# 40 failed (or command/data error). Prefer JSON body when present.
 write_status_snapshot() {
   local change_id="$1"
   local rc=0
-  "$AA_BIN" status --change "$change_id" --next --json >"$(status_json_path "$change_id")" 2>>"$LOOP_LOG" || rc=$?
-  case "$rc" in 0|20|30) return 0 ;; *) rm -f "$(status_json_path "$change_id")"; return "$rc" ;; esac
+  local out
+  out="$(status_json_path "$change_id")"
+  "$AA_BIN" status --change "$change_id" --next --json >"$out" 2>>"$LOOP_LOG" || rc=$?
+  case "$rc" in
+    0|20|30|40)
+      # Keep the snapshot when JSON parsed a known status (incl. failed→40).
+      if python3 - "$out" <<'PY'
+import json, sys
+try:
+    s = json.load(open(sys.argv[1])).get("status")
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if s in {"running", "completed", "stopped", "needs_human_review", "failed", "interrupted"} else 1)
+PY
+      then
+        return 0
+      fi
+      rm -f "$out"
+      return "$rc"
+      ;;
+    *)
+      rm -f "$out"
+      return "$rc"
+      ;;
+  esac
 }
 
 terminal_kind() {
@@ -628,7 +519,12 @@ if isinstance(terminal, dict):
 elif terminal:
     print(str(terminal))
 else:
-    print("running")
+    # Flat GraphRuntime shape from `aa status --json` / `aa workflow status --json`.
+    status = data.get("status")
+    if status in ("completed", "stopped", "needs_human_review", "failed", "running"):
+        print(status)
+    else:
+        print("running")
 PY
 }
 
@@ -653,7 +549,7 @@ terminal = data.get("terminal")
 if isinstance(terminal, dict):
     print(terminal.get("reason") or "")
 else:
-    print("")
+    print(data.get("terminal_reason") or "")
 PY
 }
 
@@ -717,7 +613,6 @@ run_nightly_collect() {
   local collect_log="$RUN_DIR/nightly-collect.log"
   local collect_exit=0
   log "stage 3/3 retro-nightly collect --sut $PROJECT_ROOT ..."
-  set +e
   if command -v "$AA_BIN" >/dev/null 2>&1 && "$AA_BIN" retro nightly --help >/dev/null 2>&1; then
     # shellcheck disable=SC2086
     "$AA_BIN" retro nightly collect \
@@ -729,8 +624,7 @@ run_nightly_collect() {
     log "nightly collect: aa retro nightly not available"
     collect_exit=40
   fi
-  set -e
-  cat "$collect_log" >>"$LOOP_LOG"
+  cat "$collect_log" >>"$LOOP_LOG" || true
   return "$collect_exit"
 }
 
@@ -758,8 +652,8 @@ run_eval_regression() {
     set +e
     out="$(cd "$EVAL_ENGINE_ROOT" && AA_EVAL_FAKE_ADAPTER=1 "$AA_BIN" eval run \
       --suite "$suite" --sut-dir "$PROJECT_ROOT" --json 2>>"$eval_log")"
-    set -e
-    printf '%s\n' "$out" >>"$eval_log"
+    set +e
+    printf '%s\n' "$out" >>"$eval_log" || true
     rid="$(printf '%s' "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("run_id",""))' 2>/dev/null || true)"
     verdict="$(printf '%s' "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("verdict",""))' 2>/dev/null || true)"
     [ -n "$verdict" ] || verdict="error"
@@ -816,7 +710,7 @@ fi
 
 log "cursor benchmark loop start - runstamp=$RUNSTAMP items=${#BENCHMARK_ITEMS[@]}${RESUME_RUNSTAMP:+ (resume)}"
 log "project_root=$PROJECT_ROOT run_mode=$RUN_MODE run_tests=$RUN_TESTS test_types=$TEST_TYPES"
-log "driver: adapter=headless scope=$DRIVER_SCOPE max_healing=$MAX_HEALING_ATTEMPTS"
+log "driver: adapter=headless entrypoint=$DRIVER_ENTRYPOINT max_healing=$MAX_HEALING_ATTEMPTS"
 log "cursor_agent=$CURSOR_AGENT_BIN model=${CURSOR_MODEL:-default} max_attempts=$CURSOR_MAX_WORKFLOW_ATTEMPTS"
 log "do_archive=$DO_ARCHIVE do_nightly_collect=$DO_NIGHTLY_COLLECT do_retro=$DO_RETRO"
 log "auto_decide=$AUTO_DECIDE_BENCHMARK recover_healing=$RECOVER_HEALING_DEADLOCK"
@@ -886,7 +780,6 @@ for item in "${BENCHMARK_ITEMS[@]}"; do
   fi
 
   recover_dead_end "$change_id" || true
-  prune_stale_dispatches "$change_id"
   workflow_kind="$(terminal_kind "$change_id")"
 
   while [ "$attempt" -le "$CURSOR_MAX_WORKFLOW_ATTEMPTS" ]; do
@@ -903,11 +796,31 @@ for item in "${BENCHMARK_ITEMS[@]}"; do
     log "[$change_id] aa status terminal=$workflow_kind${workflow_reason:+ reason=$workflow_reason}"
 
     if [ "$workflow_kind" = "completed" ] || [ "$workflow_kind" = "stopped" ]; then
+      python3 - "$change_id" <<'PYASSERT' || true
+import json, sys
+from pathlib import Path
+cid = sys.argv[1]
+events = Path(f"qa/changes/{cid}/events.jsonl")
+if not events.is_file():
+    raise SystemExit(0)
+success = {}
+for line in events.read_text().splitlines():
+    if not line.strip():
+        continue
+    ev = json.loads(line)
+    if ev.get("type") == "task_attempt_succeeded":
+        tid = ev.get("task_id")
+        if tid:
+            success[tid] = success.get(tid, 0) + 1
+dupes = [t for t, n in success.items() if n > 1]
+if dupes:
+    print(f"WARNING: duplicate successful task ids across restarts: {dupes[:5]}", file=sys.stderr)
+    raise SystemExit(1)
+PYASSERT
       break
     fi
 
     maybe_auto_decide "$change_id" || true
-    break_fixer_loop "$change_id" || true
     recover_dead_end "$change_id" || true
 
     attempt=$((attempt + 1))
@@ -1019,7 +932,7 @@ fi
   echo "- project: \`$PROJECT_ROOT\`"
   echo "- engine: \`aa workflow run --adapter headless\` + \`cursor-agent\`"
   echo "- run_mode: \`$RUN_MODE\` run_tests: \`$RUN_TESTS\` test_types: \`$TEST_TYPES\` force_continue: \`$FORCE_CONTINUE\`"
-  echo "- driver scope: \`$DRIVER_SCOPE\` max healing attempts: \`$MAX_HEALING_ATTEMPTS\`"
+  echo "- driver entrypoint: \`$DRIVER_ENTRYPOINT\` max healing attempts: \`$MAX_HEALING_ATTEMPTS\`"
   echo "- max workflow attempts: \`$CURSOR_MAX_WORKFLOW_ATTEMPTS\`"
   echo "- nightly collect: \`$DO_NIGHTLY_COLLECT\` (exit: \`${nightly_collect_exit:-n/a}\`)"
   echo "- legacy retro: \`$DO_RETRO\`"

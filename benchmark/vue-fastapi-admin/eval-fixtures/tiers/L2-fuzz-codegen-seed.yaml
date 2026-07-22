@@ -13,3 +13,34 @@ resets:
   qa_yaml:
     test_types:
     - fuzz
+imports:
+  execute:
+    entrypoint: execute
+    inputs:
+    - change:proposal.md
+    - change:.qa.yaml
+    completed:
+    - path: execute-workflow/bootstrap/bootstrap
+      graph: bootstrap
+      node: registry
+      outputs:
+      - change:registry/skill-registry-check.json
+      gate: registry-gate
+    - path: execute-workflow/assurance/assurance/fuzz/fuzz-branch/review-cycle/fuzz-plan-review-cycle
+      graph: fuzz-plan-review-cycle
+      node: review
+      outputs:
+      - change:review/fuzz-plan-review.json
+      gate: fuzz-plan-review-gate
+    - path: execute-workflow/assurance/assurance/fuzz/fuzz-branch
+      graph: fuzz-branch
+      node: review-cycle
+    - path: execute-workflow/assurance/assurance/fuzz/fuzz-branch
+      graph: fuzz-branch
+      node: codegen
+      outputs:
+      - change:codegen/fuzz-codegen-summary.md
+      gate: fuzz-codegen-precondition-gate
+    - path: execute-workflow/assurance/assurance
+      graph: assurance
+      node: fuzz

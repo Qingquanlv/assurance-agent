@@ -59,23 +59,37 @@ Fuzz tests use schemathesis's pytest integration so they run on the existing pyt
 
 ```python
 import schemathesis
-from app.main import app  # per plan's schema acquisition strategy
+from tests.config import settings
 
-schema = schemathesis.from_asgi("/openapi.json", app)
+# Default: acquire the schema from the LIVE SUT over HTTP. Do NOT import the app.
+schema = schemathesis.openapi.from_url(f"{settings.base_url}/openapi.json")
 
 # case_id TC_MENU_FUZZ_001
 @schema.parametrize(endpoint="/api/v1/menu/create")
 def test_tc_menu_fuzz_001__menu_create(case):
-    response = case.call_asgi()
+    response = case.call()
     case.validate_response(response)   # asserts: no 5xx, response conforms to declared schema
 ```
 
 - **The test function name MUST be prefixed with the normalized case_id** (lowercase case_id + `__` + description): `test_<case_id lowercase>__<description>`. e.g. case_id `TC_MENU_FUZZ_001` → `def test_tc_menu_fuzz_001__menu_create(case)`. This is the **only mandatory traceability marker** (not a comment/docstring); `aa run` recovers the case_id from the function name (case-insensitive).
-- Use `from_asgi` (in-process) when the plan specifies it; otherwise `from_uri` against the live base URL.
+- **Default to `from_url` against the live SUT** (`settings.base_url`) with `case.call()`. This fuzzes the same running SUT + real DB that the seed/cleanup adapters target, so results are consistent. **Do NOT default to `from_asgi`/`from app import app`**: importing the app boots its lifespan in-process (e.g. aerich `init_db → migrate`, which writes `migrations/**` and would trip the execution write-set guard) and binds the fuzzed app to the sandbox DB instead of the seeded real DB. Only use `from_asgi` when the plan *explicitly* requires in-process transport; if you gate on an env var, use exactly `QA_FUZZ_SCHEMA_MODE` (default = `uri`).
 - Pass auth via the plan's strategy (reuse fixtures / data-knowledge). Never hardcode real tokens.
 - Output exactly to `tests/fuzz/test_<module>_fuzz.py` so the CLI runner discovers it.
 - Put reusable pure value generation in `tests/fuzz/strategies/`. Put persistent setup/cleanup in `tests/fuzz/adapters/`; never create state inside a Hypothesis strategy.
 - Never import `tests/api/adapters/` or `tests/e2e/adapters/`. Reuse shared domain code only through the mapped fuzz adapter.
+- When a schemathesis-parametrized test consumes **function-scoped** pytest fixtures for fixed setup context (seeded role/dept/user, cleanup trackers), Hypothesis raises `FailedHealthCheck: function_scoped_fixture` because the fixture is not reset per generated input. That is expected here — the seed is stable context while the body is fuzzed — so suppress **only** that one health check:
+
+```python
+from hypothesis import HealthCheck
+from hypothesis import settings as hypothesis_settings  # alias: tests.config already exports `settings`
+
+@_create_schema.parametrize()
+@hypothesis_settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+def test_tc_user_fuzz_001__user_create_schema_robustness(case, fuzz_admin_headers, fuzz_role_dept_seed):
+    ...
+```
+
+  This is a fixture-scope compatibility shim, NOT a generation-disabling setting — it does not reduce examples, extend deadlines, or hide 5xx. Never suppress other health checks or pass `max_examples`/`deadline`/`phases` to force green (see Test Failure Integrity).
 
 ## Test Failure Integrity
 

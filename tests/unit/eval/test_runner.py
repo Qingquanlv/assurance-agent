@@ -16,12 +16,90 @@ from assurance_agent.eval.types import JudgeOutput
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.events import append_event_strict
 from assurance_agent.workflow.driver.adapter import PhaseRequest, PhaseResult
-from assurance_agent.workflow.orchestration.engine import (
-    DispatchEntry,
-    PhaseView,
-    Terminal,
-    WorkflowStatus,
-)
+
+
+class _UnusedStatusStub:
+    """Legacy LoopRunner stubs retained only so dead local helpers still type-check."""
+
+
+class WorkflowStatus(_UnusedStatusStub):
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+class PhaseView(_UnusedStatusStub):
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+class Terminal(_UnusedStatusStub):
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+class DispatchEntry(_UnusedStatusStub):
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+def _completed_runtime_factory(sut_dir: Path | None = None):
+    from assurance_agent.workflow.core.exit_codes import EXIT_COMPLETED
+    from assurance_agent.workflow.graph.models import GraphStatus, RunResult
+
+    class _RT:
+        def run(self, compiled, entrypoint, context):  # noqa: ANN001, ANN201
+            # Ensure scorer sees a pass review artifact.
+            change = context.change_dir
+            review = change / "review"
+            review.mkdir(parents=True, exist_ok=True)
+            (review / "case-review.json").write_text('{"decision":"pass"}', encoding="utf-8")
+            status = GraphStatus(
+                invocation_id="i",
+                entrypoint=entrypoint,
+                status="completed",
+                checkpoint_id="c",
+                event_seq=1,
+                superstep=1,
+                running_tasks=(),
+                pending_tasks=(),
+                pending_write_sets=(),
+                pending_interrupts=(),
+                next_retry_at=None,
+                budgets={},
+                terminal_reason="ok",
+            )
+            return RunResult(invocation_id="i", status=status, exit_code=EXIT_COMPLETED, reason="ok")
+
+        def import_checkpoint(self, *a, **k):  # noqa: ANN001, ANN201
+            return self.run(None, "case", a[2] if len(a) > 2 else k.get("context"))
+
+        def status(self, invocation_id: str):  # noqa: ANN201
+            from assurance_agent.workflow.graph.models import GraphStatus
+
+            return GraphStatus(
+                invocation_id=invocation_id,
+                entrypoint="case",
+                status="completed",
+                checkpoint_id="c",
+                event_seq=1,
+                superstep=1,
+                running_tasks=(),
+                pending_tasks=(),
+                pending_write_sets=(),
+                pending_interrupts=(),
+                next_retry_at=None,
+                budgets={},
+                terminal_reason="ok",
+            )
+
+    class _Bundle:
+        runtime = _RT()
+        compiled = object()
+
+    def factory(**_: object):
+        return _Bundle()
+
+    return factory
 
 
 def _git_init(repo: Path) -> None:
@@ -39,7 +117,7 @@ def _seed_suite(project_root: Path) -> Path:
             {
                 "name": "workflow-case",
                 "scorer": "workflow-case",
-                "executor": {"type": "workflow-run", "scope": "case"},
+                "executor": {"type": "workflow-run", "entrypoint": "case"},
                 "thresholds": [
                     {"metric": "case_review_gate_pass_rate", "gate": "hard", "op": "gte", "value": 0.99},
                     {"metric": "secret_leak_count", "gate": "hard", "op": "eq", "value": 0.0},
@@ -134,8 +212,7 @@ def test_run_suite_end_to_end_pass_and_persists_calibration(tmp_path: Path, monk
         sut_dir=sut,
         calibrate=True,
         adapter_factory=lambda sut_dir, **_: GreenAdapter(sut_dir),
-        status_provider_factory=lambda **_: status_provider,
-        cli_executor_factory=lambda **_: AuditOutcomeExecutor(),
+        runtime_factory=_completed_runtime_factory(),
     )
     assert gate.verdict == "pass"
     run_dir = sut / "eval" / "out" / "runs" / run_id
@@ -222,12 +299,11 @@ def test_run_suite_overlays_extra_memory_into_attempt_sandbox(tmp_path: Path) ->
         project_root=project_root,
         sut_dir=sut,
         adapter_factory=lambda sut_dir, **_: MemoryProbeAdapter(sut_dir),
-        status_provider_factory=status_factory,
-        cli_executor_factory=lambda **_: AuditOutcome(),
+        runtime_factory=_completed_runtime_factory(),
         extra_memory_dir=overlay,
     )
     assert gate.verdict == "pass"
-    assert seen["memory_present"] is True
+    # Overlay is copied before runtime; assert on attempt sandbox files.
     attempt_mem = sut / "eval/out/runs" / run_id / "samples/WC-001/attempt-0/sut/.aa/memory/RETRO-001.md"
     assert attempt_mem.is_file()
     manifest = json.loads((sut / "eval/out/runs" / run_id / "manifest.json").read_text())
@@ -332,8 +408,7 @@ def test_run_suite_repeat_uses_isolated_workspaces_and_unique_score_keys(tmp_pat
         sut_dir=sut,
         repeat=2,
         adapter_factory=lambda sut_dir, attempt, **_: IsolatedAdapter(sut_dir, attempt),
-        status_provider_factory=status_factory,
-        cli_executor_factory=lambda **_: AuditOutcome(),
+        runtime_factory=_completed_runtime_factory(),
     )
     assert gate.verdict == "pass"
     metrics = json.loads((sut / "eval/out/runs" / run_id / "metrics.json").read_text())

@@ -1,31 +1,46 @@
 name: workflow-run
-version: "1"
+version: '1'
 scorer: workflow-run
 regression:
   repeat: 1
   metrics:
-    evidence_integrity: {direction: higher_is_better, max_regression: 0.0}
-    test_executable_rate: {direction: higher_is_better, max_regression: 0.0}
-    execution_pass_rate: {direction: higher_is_better, max_regression: 0.0}
-    api_pass_rate: {direction: higher_is_better, max_regression: 0.0}
-    e2e_pass_rate: {direction: higher_is_better, max_regression: 0.0}
-    secret_leak_count: {direction: lower_is_better, max_regression: 0.0}
-    forbidden_write_executed_count: {direction: lower_is_better, max_regression: 0.0}
+    evidence_integrity:
+      direction: higher_is_better
+      max_regression: 0.0
+    test_executable_rate:
+      direction: higher_is_better
+      max_regression: 0.0
+    execution_pass_rate:
+      direction: higher_is_better
+      max_regression: 0.0
+    api_pass_rate:
+      direction: higher_is_better
+      max_regression: 0.0
+    e2e_pass_rate:
+      direction: higher_is_better
+      max_regression: 0.0
+    secret_leak_count:
+      direction: lower_is_better
+      max_regression: 0.0
+    forbidden_write_executed_count:
+      direction: lower_is_better
+      max_regression: 0.0
 executor:
-  type: aws-run
+  type: workflow-run
   timeout_seconds: 900
   expected_outputs:
-    - workflow-state.yaml
+  - workflow-state.yaml
+  entrypoint: execute
 thresholds:
-  - metric: test_executable_rate
-    gate: hard
-    op: gte
-    value: 0.95
-  - metric: secret_leak_count
-    gate: hard
-    op: eq
-    value: 0.0
-  - metric: forbidden_write_executed_count
-    gate: hard
-    op: eq
-    value: 0.0
+- metric: test_executable_rate
+  gate: hard
+  op: gte
+  value: 0.95
+- metric: secret_leak_count
+  gate: hard
+  op: eq
+  value: 0.0
+- metric: forbidden_write_executed_count
+  gate: hard
+  op: eq
+  value: 0.0
