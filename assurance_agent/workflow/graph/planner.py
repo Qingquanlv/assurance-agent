@@ -43,12 +43,10 @@ graph/node 路径、activation ordinal 与 fan-out key 经 canonical SHA-256 派
 - 终局优先级：integrity/runtime FAIL > STOP/REJECT > pending interrupt >
   retry pending > completed；出现高优先级结果时不再 Plan 新 task。
 
-当前边界（后续 task 扩展，均在 planner.py 内演进）：cyclic SCC 的跨代再激活
-（activation ordinal > 0 的新 token 代）随 Task 11 落地，本实现完整支持 DAG
-与单代语义；嵌套 subgraph invocation 的 graph 解析属于 Task 12，这里只接受
-root invocation（经 entrypoint 解析 graph）。逐 child 收窄 resource claims 与
-contract 授权范围校验随 scheduler/handler 侧的 contract 注入演进（Task
-9/10）；planner 只对展开后的路径做 root/segment 安全校验与模板白名单校验。
+跨代再激活（cyclic SCC）：当已 settled 的 node 收到来自非 START 前驱的新
+token（例如 ``fix → review``），清除当前代结局并按新 ordinal 再激活；START
+入边只在目标尚无任何 task 时投递，避免与回边 token 叠加以致 fail-closed。
+嵌套 subgraph 由 runtime 解析 child graph；planner 接受任意已编译 graph。
 """
 
 from __future__ import annotations
@@ -126,10 +124,18 @@ _PROJECTION_TERMINAL: dict[str, _Terminal] = {
 
 @dataclass(frozen=True)
 class _Outcome:
-    """node 当前代的冻结结局；只有 succeeded/skipped 对下游是「已解决」。"""
+    """node 当前代的冻结结局；只有 succeeded/skipped 对下游是「已解决」。
+
+    ``reached``（默认 True）区分两类 skipped：structurally unreachable
+    （前驱从未 succeeded，节点从未收到 token——``reached=False``）vs 节点确实
+    被路由到、只是自身 ``when``/fan-out 条件判定不激活（``reached=True``，
+    仍是一次有意义的决策）。``all_active`` join 用它区分「整条上游分支本就
+    是死路」与「预期至少一个 source 该跑但没跑」。
+    """
 
     status: Literal["succeeded", "skipped", "unresolved"]
     task: TaskProjection | None = None
+    reached: bool = True
 
 
 class _StopResolution(Exception):
@@ -200,6 +206,8 @@ def plan_superstep(
 
     outcomes, retry_tasks, fail_reason = _seed_outcomes(compiled, graph, projection, context)
     if fail_reason is not None:
+        if fail_reason.startswith("__graph_stop__:"):
+            return result(terminal="stop", reason=fail_reason.removeprefix("__graph_stop__:"))
         # integrity/runtime FAIL：最高优先级；不完整的 wave 保持 pending。
         return result(terminal="fail", reason=fail_reason)
 
@@ -447,6 +455,15 @@ def _seed_outcomes(
         if latest.status == "succeeded":
             outcomes[nid] = _Outcome(status="succeeded", task=latest)
             continue
+        if latest.status == "stopped":
+            reason = f"task {latest.task_id} (node '{nid}') stopped"
+            if isinstance(latest.value, dict):
+                raw = latest.value.get("reason")
+                if isinstance(raw, str) and raw.strip():
+                    reason = raw
+            elif isinstance(latest.value, str) and latest.value.strip():
+                reason = latest.value
+            return outcomes, retry, f"__graph_stop__:{reason}"
         if latest.status in ("running", "pending", "interrupted"):
             # wave 仍在飞行：交由 lease/scheduler 对账，planner 不重复执行。
             outcomes[nid] = _Outcome(status="unresolved", task=latest)
@@ -526,30 +543,49 @@ def _deliver_tokens(
         rerouted.setdefault(target, redirect)
         deliver(redirect, f"budget:{target}:exhausted")
 
-    # START 恒已解决：其出边在首次 Plan 即求值（invocation 输入）。
+    # Phase 1: START + ordinary edges（cycle 回边按成功代数门控，避免 pass 后仍被 fix 拉回）。
     for nid in graph.declaration_order:
         for edge in graph.nodes[nid].incoming:
-            if edge.from_ == "START" and (edge.when is None or _satisfied(edge.when, scope, nid)):
+            if edge.from_ != "START":
+                continue
+            if _node_has_task(projection, edge.to):
+                continue
+            if edge.when is None or _satisfied(edge.when, scope, edge.to):
                 deliver(edge.to, "edge:START")
     for nid in graph.declaration_order:
         if outcomes[nid].status != "succeeded":
             continue
-        cnode = graph.nodes[nid]
-        targets: list[tuple[str, str]] = []
-        for edge in cnode.outgoing:
+        for edge in graph.nodes[nid].outgoing:
             if edge.when is not None and not _satisfied(edge.when, scope, nid):
                 continue
-            targets.append((edge.to, f"edge:{nid}"))
-        for route in cnode.routes:
+            if not _should_deliver_successorship(graph, projection, outcomes, nid, edge.to):
+                continue
+            deliver(edge.to, f"edge:{nid}")
+
+    # Phase 2: 将被回边重新选中的 settled node 标为跨代再激活；它们上一代的 route 作废。
+    reopen = {
+        nid
+        for nid, status in ((n, outcomes[n].status) for n in graph.nodes)
+        if status in ("succeeded", "skipped") and _fresh_cycle_tokens(selected.get(nid, []))
+    }
+
+    # Phase 3: routes（跳过即将再激活的 src，避免 stale needs_fix 再次拉起 fix）。
+    for nid in graph.declaration_order:
+        if outcomes[nid].status != "succeeded" or nid in reopen:
+            continue
+        for route in graph.nodes[nid].routes:
             try:
                 target, descriptor = _resolve_route(route, scope, nid)
             except _StopResolution as exc:
                 if stop_reason is None:
                     stop_reason = str(exc)
                 continue
-            targets.append((target, descriptor))
-        for target, descriptor in targets:
+            if target not in ("END", "STOP", "FAIL") and not _should_deliver_successorship(
+                graph, projection, outcomes, nid, target
+            ):
+                continue
             deliver(target, descriptor)
+
     return _Delivery(
         selected=selected,
         end_reached=end_reached,
@@ -579,8 +615,18 @@ def _decide_nodes(
     for nid in sorted(graph.nodes, key=lambda n: graph.nodes[n].topology_rank):
         cnode = graph.nodes[nid]
         definition = cnode.definition
-        if outcomes[nid].status != "unresolved" or outcomes[nid].task is not None:
-            continue  # 已有当前代结局，或 task 在飞行/重试中：不重放决策
+        tokens = delivery.selected.get(nid, [])
+        if outcomes[nid].task is not None and outcomes[nid].status == "unresolved":
+            continue  # task 在飞行/重试中：不重放决策
+        if outcomes[nid].status in ("succeeded", "skipped"):
+            # 跨代再激活：settled node 收到非 START 新 token（cycle 回边 / 新 route），
+            # 或（join 不接收投递 token）其 source 已跑出更新的一代。
+            if _fresh_cycle_tokens(tokens) or _join_should_reopen(graph, projection, outcomes, nid):
+                outcomes[nid] = _Outcome(status="unresolved")
+            else:
+                continue
+        elif outcomes[nid].status != "unresolved":
+            continue
         if definition.join is not None:
             _decide_join(
                 compiled,
@@ -596,7 +642,6 @@ def _decide_nodes(
             )
             continue
 
-        tokens = delivery.selected.get(nid, [])
         if not tokens and not _incoming_resolved(graph, outcomes, nid):
             continue  # 前驱尚未稳定：本 superstep 不做决定
         if len(tokens) > 1:
@@ -614,7 +659,13 @@ def _decide_nodes(
                 else "(no incoming edge selected)"
             )
             _emit_skip(graph, projection, source_reads, events, nid, reason)
-            outcomes[nid] = _Outcome(status="skipped")
+            # Structural skip: no predecessor ever succeeded/delivered a route to
+            # this node, so it never had a real chance to activate this
+            # generation (e.g. its sole predecessor was itself skipped because an
+            # upstream gate routed elsewhere entirely). Mark unreached so a
+            # downstream ``all_active`` join can tell this apart from a node that
+            # was genuinely reached but opted out via its own ``when``.
+            outcomes[nid] = _Outcome(status="skipped", reached=False)
             continue
         if definition.fan_out is not None:
             _decide_fan_out(
@@ -669,11 +720,22 @@ def _decide_join(
         if waiting:
             return
         if join.mode == "all_active" and not succeeded:
-            raise PlanError(
-                f"graph '{graph.graph_id}' join '{nid}' mode all_active has no "
-                "activated source (all sources skipped); this is a runtime error, "
-                "not an implicit pass"
+            if any(outcomes[src].reached for src in join.sources if states[src] == "skipped"):
+                raise PlanError(
+                    f"graph '{graph.graph_id}' join '{nid}' mode all_active has no "
+                    "activated source (all sources skipped); this is a runtime error, "
+                    "not an implicit pass"
+                )
+            # Every source was structurally unreachable this generation (their own
+            # predecessor chain never succeeded — e.g. an upstream gate routed the
+            # whole branch elsewhere). There was never a real chance for any source
+            # to activate, so propagate the same structural skip instead of hard
+            # failing; a genuinely dead branch must not crash the graph.
+            _emit_skip(
+                graph, projection, source_reads, events, nid, "(all join sources structurally unreachable)"
             )
+            outcomes[nid] = _Outcome(status="skipped", reached=False)
+            return
         # all：每个 source 已 succeeded 或 skipped；all_active：≥1 个已激活 source 成功。
     if definition.when is not None and not _satisfied(definition.when, scope, nid):
         _emit_skip(graph, projection, source_reads, events, nid, definition.when)
@@ -1328,9 +1390,10 @@ def _build_task(
     ordinal: int,
 ) -> ExecutableTask:
     definition = graph.nodes[nid].definition
-    input_payload = {
+    input_payload: dict[str, object] = {
         "with": dict(definition.with_),
         "context": {"change_id": context.change_id},
+        "outputs": list(definition.outputs),
     }
     retry_policy = _retry_policy(compiled, definition)
     task_id = _task_id(projection, graph.graph_id, nid, ordinal, None)
@@ -1348,7 +1411,7 @@ def _build_task(
         retry_policy=retry_policy,
         timeout_policy=_timeout_policy(compiled, definition),
         target=definition.uses,
-        resources=_task_resources(compiled, graph, definition.uses),
+        resources=_task_resources(compiled, graph, nid),
         task_key=None,
         budget=_budget_mark(definition, projection, task_id),
     )
@@ -1405,7 +1468,7 @@ def _build_fan_out_task(
         retry_policy=retry_policy,
         timeout_policy=_timeout_policy(compiled, definition),
         target=definition.uses,
-        resources=_task_resources(compiled, graph, definition.uses),
+        resources=_task_resources(compiled, graph, nid),
         task_key=display_key,
         budget=_budget_mark(definition, projection, task_id),
     )
@@ -1486,6 +1549,91 @@ def _latest_task(
     )
 
 
+def _node_has_task(projection: GraphProjection, nid: str) -> bool:
+    return any(task.node_id == nid for task in projection.tasks.values())
+
+
+def _succeeded_count(projection: GraphProjection, nid: str) -> int:
+    return sum(1 for task in projection.tasks.values() if task.node_id == nid and task.status == "succeeded")
+
+
+def _same_cyclic_scc(graph: CompiledGraph, left: str, right: str) -> bool:
+    for scc in graph.sccs:
+        if left in scc and right in scc:
+            return len(scc) > 1 or left == right
+    return False
+
+
+def _is_back_edge(graph: CompiledGraph, src: str, dst: str) -> bool:
+    """SCC 内 src→dst 是否为回边（指回环头）。
+
+    以声明序为环头判据：良构工作流按执行顺序声明节点，闭合循环的边（如
+    decide→proposal、fix→review）总是指向更早声明的环头（``decl[dst] <= decl[src]``），
+    而前向边指向更晚声明的下游。据此区分「重投使环头再跑一代」与「一次性前向推进」。
+    """
+    return graph.nodes[dst].declaration_index <= graph.nodes[src].declaration_index
+
+
+def _should_deliver_successorship(
+    graph: CompiledGraph,
+    projection: GraphProjection,
+    outcomes: Mapping[str, _Outcome],
+    src: str,
+    dst: str,
+) -> bool:
+    """门控已成功 src 对 dst 的 edge/route token，防止 DAG 重复投递与 cycle 过期回边。
+
+    - DAG（不同 SCC）：``succ(src) > succ(dst)``。
+    - cyclic SCC 内的**回边**（dst 声明序 <= src，即指回环头）：
+      ``succ(src) >= succ(dst) and succ(src) > 0`` —— fix 追上 review 代数时回边生效，
+      让环头再跑一代。
+    - cyclic SCC 内的**前向边**（dst 声明序 > src）：按 DAG 语义 ``succ(src) > succ(dst)``。
+      否则前向边会在下游已追平（succ 相等）时反复重投，导致 allocate/fixer 空转、
+      白烧循环预算，且饿死同代的兄弟节点。
+    - fan-out 空展开等「无 task 投影但 outcome 已 succeeded」的 src 按至少 1 次成功计。
+    """
+    if dst in ("END", "STOP", "FAIL"):
+        return True
+
+    def _effective_succ(nid: str) -> int:
+        counted = _succeeded_count(projection, nid)
+        if counted == 0 and outcomes.get(nid) is not None and outcomes[nid].status == "succeeded":
+            return 1
+        return counted
+
+    src_n = _effective_succ(src)
+    dst_n = _effective_succ(dst)
+    if _same_cyclic_scc(graph, src, dst) and _is_back_edge(graph, src, dst):
+        return src_n > 0 and src_n >= dst_n
+    return src_n > dst_n
+
+
+def _fresh_cycle_tokens(tokens: Sequence[str]) -> bool:
+    """非 START 入边/route/budget token 视为 cycle 跨代再激活信号。"""
+    return any(token != "edge:START" for token in tokens)
+
+
+def _join_should_reopen(
+    graph: CompiledGraph,
+    projection: GraphProjection,
+    outcomes: Mapping[str, _Outcome],
+    nid: str,
+) -> bool:
+    """已 settled 的 join 是否应跨代再激活。
+
+    join 节点不经 edge/route 投递 token（``deliver`` 跳过 join 目标），因此无法靠
+    ``_fresh_cycle_tokens`` 感知回边。循环体内的 join 需在其 source 跑出比自身更新的
+    一代时重新触发：``max(succ(source)) > succ(join)``。非循环 join 的 source 只成功
+    一次，永不满足，故对 DAG 无副作用。``_decide_join`` 随后仍会在 source 未就绪时等待。
+    """
+    definition = graph.nodes[nid].definition
+    join = definition.join
+    if join is None:
+        return False
+    join_n = _succeeded_count(projection, nid)
+    return any(_succeeded_count(projection, src) > join_n for src in join.sources)
+
+
 def _incoming_resolved(graph: CompiledGraph, outcomes: dict[str, _Outcome], nid: str) -> bool:
     """前驱结果是否全部稳定：edge/route 源 succeeded 或 skipped；START 恒已解决。
 
@@ -1552,18 +1700,19 @@ def _timeout_policy(compiled: CompiledWorkflow, definition: NodeDef) -> TimeoutP
 def _task_resources(
     compiled: CompiledWorkflow,
     graph: CompiledGraph,
-    uses: str,
+    nid: str,
 ) -> ResourceClaims:
-    """task 的资源 claim：subgraph 目标用子图 footprint，否则用本图保守并集。
+    """task 的资源 claim：subgraph 目标用子图 footprint，否则用本 node 的 claim。
 
-    编译期 footprint 是全图 node claim 的保守并集（catalog 缺失时为
-    ``global:exclusive``）；逐 node 收窄随 scheduler/handler 侧的 contract
-    注入演进，保守方向只会增加串行，绝不放行冲突。
+    逐 node claim 由编译期 ``catalog.claims_for`` 合成（catalog 缺失时为
+    ``global:exclusive``），比全图 footprint 并集更窄，让互不冲突的兄弟 node
+    可在同一 wave 并行；真正的写/exclusive 冲突仍由 ``claims_conflict`` 串行化。
     """
-    prefix, _, target = uses.partition(":")
+    node = graph.nodes[nid]
+    prefix, _, target = node.definition.uses.partition(":")
     if prefix == "graph" and target in compiled.graphs:
         return compiled.graphs[target].resource_footprint
-    return graph.resource_footprint
+    return node.resources
 
 
 def _has_inflight(outcomes: dict[str, _Outcome]) -> bool:

@@ -845,3 +845,97 @@ bad_child:
     # Successful sibling child work and completed seed must not re-run.
     assert calls["write-child-a"] == 1
     assert calls["write-review"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Three-level nest: root → mid → leaf interrupt (intake → case-review-cycle)
+# ---------------------------------------------------------------------------
+
+_THREE_LEVEL_INTERRUPT = """
+main:
+  max_supersteps: 12
+  nodes:
+    mid:
+      uses: graph:mid
+      retry: never
+      timeout: local
+  edges:
+    - {from: START, to: mid}
+    - {from: mid, to: END}
+mid:
+  max_supersteps: 10
+  nodes:
+    leaf:
+      uses: graph:leaf
+      retry: never
+      timeout: local
+  edges:
+    - {from: START, to: leaf}
+    - {from: leaf, to: END}
+leaf:
+  max_supersteps: 6
+  nodes:
+    seed:
+      uses: operation:write-review
+      outputs: [change:review/case-review.json]
+      retry: never
+      timeout: local
+    human:
+      uses: builtin:interrupt
+      interrupt:
+        reason: needs a human
+        checkpoint: case-review-gate
+        bind: audited_gate_read
+        actions: [fix_and_proceed, accept_risk, stop]
+      retry: never
+      timeout: local
+  edges:
+    - {from: START, to: seed}
+    - {from: seed, to: human}
+  routes:
+    - from: human
+      select: "resume.action"
+      cases:
+        fix_and_proceed: END
+        accept_risk: END
+        stop: STOP
+      default: STOP
+"""
+
+
+def test_accept_risk_through_three_level_nest_completes(tmp_path: Path) -> None:
+    """accept_risk must resolve interrupts on every ancestor invocation along ns.
+
+    Regression: only root+leaf got graph_resumed, so the mid invocation still
+    saw a pending interrupt and immediately re-bubbled the same gate.
+    """
+    project = _make_project(tmp_path)
+    compiled, contracts = _compile(_THREE_LEVEL_INTERRUPT)
+    runtime = _build_runtime(project, compiled, contracts, ops=_ops())
+    result = runtime.run(compiled, "full", _context(project))
+    assert result.exit_code == 30
+    assert result.status.status == "interrupted"
+    interrupt = result.status.pending_interrupts[0]
+    # ns: root/mid/<mid-inv>/leaf/<leaf-inv> — three invocation ids
+    assert interrupt.checkpoint_ns.count("/") >= 4
+
+    done = runtime.resume(
+        result.invocation_id,
+        ResumeCommand(
+            interrupt_id=interrupt.interrupt_id,
+            action="accept_risk",
+            reason="accept through mid layer",
+            who="reviewer",
+        ),
+    )
+    assert done.exit_code == 0, done.reason
+    assert done.status.status == "completed"
+    assert done.status.pending_interrupts == ()
+
+    events = read_events_strict(_context(project).change_dir)
+    resumed = [e for e in events if e.get("type") == "graph_resumed"]
+    resumed_invs = {e.get("invocation_id") for e in resumed}
+    # Every invocation id along the interrupt ns must receive graph_resumed.
+    ns_parts = interrupt.checkpoint_ns.split("/")
+    expected_invs = {ns_parts[i] for i in range(0, len(ns_parts), 2)}
+    assert expected_invs <= resumed_invs

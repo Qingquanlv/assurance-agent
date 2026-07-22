@@ -128,14 +128,49 @@ def safety_check(change_id: str, file_path: str | None) -> None:
 @heal_group.command("record-apply")
 @click.option("--change", "change_id", required=True, help="Change ID.")
 @click.option("--target", required=True, type=click.Choice(["api", "e2e"]), help="Heal target.")
-@click.option("--proposal", "proposal_ids", multiple=True, required=True, help="Proposal ID(s).")
-def record_apply(change_id: str, target: str, proposal_ids: tuple[str, ...]) -> None:
-    """Record apply summary and frozen heal_record_apply audit event."""
+@click.option(
+    "--proposal",
+    "proposal_ids",
+    multiple=True,
+    required=False,
+    help="Proposal ID(s). Required when --outcome=applied.",
+)
+@click.option(
+    "--outcome",
+    type=click.Choice(["applied", "no_op", "skipped"]),
+    default="applied",
+    show_default=True,
+    help="applied=diff-based apply; no_op/skipped=contract-closing summary with applied=false.",
+)
+@click.option(
+    "--reason",
+    default=None,
+    help="Required for --outcome no_op|skipped (e.g. Condition 3 failure).",
+)
+def record_apply(
+    change_id: str,
+    target: str,
+    proposal_ids: tuple[str, ...],
+    outcome: str,
+    reason: str | None,
+) -> None:
+    """Record apply summary and frozen heal_record_apply audit event.
+
+    Always writes ``healing/{target}-apply-summary.json`` so graph fixer nodes
+    that declare that file as a hard output can close on STOP/no-op paths.
+    """
     if any(pid.lower() in {"all", "*"} for pid in proposal_ids):
         click.secho("Placeholder proposal ids (e.g. 'all') are not allowed.", fg="red")
         raise SystemExit(1)
     try:
-        result = record_apply_summary(Path.cwd(), change_id, target, list(proposal_ids))
+        result = record_apply_summary(
+            Path.cwd(),
+            change_id,
+            target,
+            list(proposal_ids),
+            outcome=outcome,  # type: ignore[arg-type]
+            reason=reason,
+        )
     except ProgressionError as err:
         click.secho(f"record-apply failed: {err}", fg="red")
         raise SystemExit(EXIT_ERROR) from err
@@ -145,6 +180,7 @@ def record_apply(change_id: str, target: str, proposal_ids: tuple[str, ...]) -> 
 
     click.secho(f"\naa heal record-apply — change: {change_id}\n", bold=True)
     click.echo(f"  target          : {target}")
+    click.echo(f"  outcome         : {outcome}")
     click.echo(f"  files_modified  : {len(result.files_modified)}")
     click.echo(f"  apply-summary   : {result.json_path}")
     raise SystemExit(EXIT_COMPLETED)

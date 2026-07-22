@@ -113,6 +113,19 @@ class TaskAttemptSucceededEvent(_GraphEvent):
     value: object = None
 
 
+class TaskAttemptStoppedEvent(_GraphEvent):
+    """业务 STOP（非失败）：child/operation stop 传播为父图终局前的 task 结算。"""
+
+    type: Literal["task_attempt_stopped"]
+    invocation_id: str
+    checkpoint_ns: str
+    superstep_id: str
+    task_id: str
+    attempt_id: str
+    reason: str
+    value: object = None
+
+
 class TaskAttemptFailedEvent(_GraphEvent):
     type: Literal["task_attempt_failed"]
     invocation_id: str
@@ -217,6 +230,7 @@ GraphEvent = Annotated[
     | SuperstepPlannedEvent
     | TaskAttemptStartedEvent
     | TaskAttemptSucceededEvent
+    | TaskAttemptStoppedEvent
     | TaskAttemptFailedEvent
     | TaskAttemptAbandonedEvent
     | BudgetConsumedEvent
@@ -241,6 +255,7 @@ __all__ = [
     "SuperstepPlannedEvent",
     "TaskAttemptStartedEvent",
     "TaskAttemptSucceededEvent",
+    "TaskAttemptStoppedEvent",
     "TaskAttemptFailedEvent",
     "TaskAttemptAbandonedEvent",
     "BudgetConsumedEvent",

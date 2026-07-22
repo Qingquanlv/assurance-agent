@@ -3,21 +3,16 @@
 # run-workflow-loop.sh - scheduled benchmark loop using the Python workflow driver.
 #
 # OpenCode sibling of run-workflow-loop-cursor.sh. Reuses benchmark/benchmark.env
-# and benchmark/requirements/*.md, but drives the Assurance Workflow through the
-# deterministic Python driver (`aa workflow run`) instead of asking a single
-# main-agent to follow aa-workflow/SKILL.md prose. The driver owns the state
-# machine (explore -> report); OpenCode only executes one bounded agent per phase.
+# and benchmark/requirements/*.md, but drives Assurance Workflow through
+# GraphRuntime (`aa workflow run` / `resume`). OpenCode executes one bounded
+# agent per task (opencode adapter) or `opencode run` per task (headless).
 #
 # One tick:
-#   1. Seed intake inputs for each item (.qa.yaml + proposal.md). The driver's
-#      full entrypoint starts at `explore` and has NO interactive intake phase, so the
-#      requirement must be materialized on disk before the driver runs.
-#   2. `aa workflow run --entrypoint full` drives the change to a terminal state,
-#      dispatching each phase to OpenCode (opencode adapter, default) or to a
-#      spawned `opencode run` per phase (headless adapter).
-#   3. The script verifies completion with deterministic `aa status`.
-#   4. Completed changes are archived through OpenCode + aa-archive.
-#   5. (Optional) retro-nightly collect — meta loop via skills repo driver.
+#   1. Seed intake inputs for each item (.qa.yaml + proposal.md).
+#   2. `aa workflow run --entrypoint full` drives the change to a terminal state.
+#   3. Verify completion with `aa workflow status` (or `aa status --next`).
+#   4. Archive completed changes through OpenCode + aa-archive.
+#   5. (Optional) retro-nightly collect.
 #
 # Retro is NOT inlined here by default. Set DO_RETRO=true to restore the legacy
 # end-of-loop `aa retro` + agent proposals path (do not enable both DO_RETRO
@@ -53,7 +48,8 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Python migration: skills are synced INTO the SUT project by `aa skill refresh`
 # (M7), so archive/retro prompts point at $PROJECT_ROOT/skills, not a TS repo.
 AA_SKILLS_ROOT="${AA_SKILLS_ROOT:-$PROJECT_ROOT/skills}"
-AA_REPO_ROOT="${AA_REPO_ROOT:-/Users/lvqingquan/agent/assurance-agent}"   # for uv-based aa install
+# SCRIPT_DIR = <aa-repo>/benchmark/vue-fastapi-admin/benchmark → repo root is ../../..
+AA_REPO_ROOT="${AA_REPO_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 NIGHTLY_CLI="${NIGHTLY_CLI:-aa retro nightly}"
 AUTO_DECIDE_BENCHMARK="${AUTO_DECIDE_BENCHMARK:-true}"
 cd "$PROJECT_ROOT"
@@ -181,10 +177,10 @@ run_with_timeout() {
   fi
 }
 
-# Seed intake inputs for one change. The driver's full entrypoint starts at `explore`
-# and has no interactive intake phase, so the requirement must exist on disk as
-# proposal.md (+ an autonomous-mode .qa.yaml) before the driver runs. This is the
-# deterministic equivalent of what aa-intake writes in the interactive flow.
+# Seed intake inputs for one change. GraphRuntime full entrypoint has no
+# interactive intake, so the requirement must exist on disk as proposal.md
+# (+ an autonomous-mode .qa.yaml) before `aa workflow run`. Params are passed
+# via --params; do not pre-seed a v1 workflow-state.yaml.
 # $1=change_id $2=base_id (requirement id) $3=requirement text
 seed_change() {
   local change_id="$1" base_id="$2" requirement="$3"
@@ -215,9 +211,9 @@ YAML
   {
     echo "# $feature — QA Proposal (benchmark seed)"
     echo
-    echo "> Autonomous benchmark seed: intake inputs for the TS driver full-scope"
-    echo "> run. The driver starts at \`explore\`; there is no interactive intake"
-    echo "> phase, so the requirement is materialized here for the workflow to read."
+    echo "> Autonomous benchmark seed for GraphRuntime \`aa workflow run\`."
+    echo "> Intake is non-interactive; the requirement is materialized here for"
+    echo "> explore / case-design nodes to read."
     echo
     echo "## Requirement"
     echo
@@ -254,9 +250,8 @@ print(json.dumps({
 }))'
 }
 
-# Run one driver attempt for a change. The driver resumes from the
-# workflow-state breakpoint, so a retry after a timeout continues rather than
-# restarting (stale driver.lock is auto-recycled when its pid is dead).
+# Run one driver attempt for a change. GraphRuntime resumes from the ledger
+# checkpoint, so a retry after a timeout continues rather than restarting.
 # $1=logfile $2=change_id
 run_driver() {
   local logf="$1" change_id="$2"
@@ -269,11 +264,11 @@ run_driver() {
 
   local -a cmd
   if [ "$has_invocation" = "true" ]; then
+    # resume has no --params (params are pinned on the invocation).
     cmd=(
       "$AA_BIN" workflow resume
       --change "$change_id"
       --adapter "$DRIVER_ADAPTER"
-      --params "$params"
     )
   else
     cmd=(
@@ -320,12 +315,34 @@ status_json_path() {
 }
 
 # `aa status`: 0 running/completed, 20 stopped, 30 needs_human_review,
-# 40 command/data error. Terminal control uses JSON, but rc=40 must fail closed.
+# 40 failed (or command/data error). Prefer JSON body when present.
 write_status_snapshot() {
   local change_id="$1"
   local rc=0
-  "$AA_BIN" status --change "$change_id" --next --json >"$(status_json_path "$change_id")" 2>>"$LOOP_LOG" || rc=$?
-  case "$rc" in 0|20|30) return 0 ;; *) rm -f "$(status_json_path "$change_id")"; return "$rc" ;; esac
+  local out
+  out="$(status_json_path "$change_id")"
+  "$AA_BIN" status --change "$change_id" --next --json >"$out" 2>>"$LOOP_LOG" || rc=$?
+  case "$rc" in
+    0|20|30|40)
+      if python3 - "$out" <<'PY'
+import json, sys
+try:
+    s = json.load(open(sys.argv[1])).get("status")
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if s in {"running", "completed", "stopped", "needs_human_review", "failed", "interrupted"} else 1)
+PY
+      then
+        return 0
+      fi
+      rm -f "$out"
+      return "$rc"
+      ;;
+    *)
+      rm -f "$out"
+      return "$rc"
+      ;;
+  esac
 }
 
 terminal_kind() {
@@ -347,7 +364,12 @@ if isinstance(terminal, dict):
 elif terminal:
     print(str(terminal))
 else:
-    print("running")
+    # Flat GraphRuntime shape from `aa status --json` / `aa workflow status --json`.
+    status = data.get("status")
+    if status in ("completed", "stopped", "needs_human_review", "failed", "running"):
+        print(status)
+    else:
+        print("running")
 PY
 }
 
@@ -372,7 +394,7 @@ terminal = data.get("terminal")
 if isinstance(terminal, dict):
     print(terminal.get("reason") or "")
 else:
-    print("")
+    print(data.get("terminal_reason") or "")
 PY
 }
 

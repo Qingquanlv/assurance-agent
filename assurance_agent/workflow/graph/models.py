@@ -29,7 +29,7 @@ from assurance_agent.workflow.orchestration.dsl import Expr
 
 
 class CompiledNode(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", arbitrary_types_allowed=True)
     graph_id: str
     node_id: str
     declaration_index: int
@@ -38,6 +38,9 @@ class CompiledNode(BaseModel):
     incoming: tuple[EdgeDef, ...]
     outgoing: tuple[EdgeDef, ...]
     routes: tuple[RouteDef, ...]
+    # 本 node 自己的保守资源 claim（``graph:<id>`` 为子图 footprint，无 catalog 时
+    # 为 global:exclusive）；scheduler 据此做 wave 冲突判定，无需再退回全图 footprint。
+    resources: ResourceClaims = Field(default_factory=ResourceClaims)
 
 
 class CompiledGraph(BaseModel):
@@ -164,7 +167,7 @@ class WaveResult(BaseModel):
 # ---- ledger 投影模型（strict events 的唯一权威视图）----
 
 
-TaskStatus = Literal["pending", "running", "succeeded", "failed", "abandoned", "interrupted"]
+TaskStatus = Literal["pending", "running", "succeeded", "failed", "abandoned", "interrupted", "stopped"]
 
 
 class TaskProjection(BaseModel):

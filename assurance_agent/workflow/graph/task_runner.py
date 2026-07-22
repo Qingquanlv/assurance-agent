@@ -69,9 +69,13 @@ class HandlerNodeRunner:
         handlers: Mapping[str, TaskHandler],
         *,
         namespace_handlers: Mapping[str, TaskHandler] | None = None,
+        compiled: CompiledWorkflow | None = None,
+        object_store: TreeStore | None = None,
     ) -> None:
         self._handlers = dict(handlers)
         self._namespace_handlers = dict(namespace_handlers or {})
+        self._compiled = compiled
+        self._object_store = object_store
 
     def execute(
         self,
@@ -86,9 +90,25 @@ class HandlerNodeRunner:
         if handler is None:
             return task_failure("contract", f"unknown target: {task.target}")
         try:
-            return handler.execute(task, workspace, context)
+            result = handler.execute(task, workspace, context)
         except Exception as exc:  # noqa: BLE001 - handler 异常绝不逃出 runner
             return task_failure("internal", f"{type(exc).__name__}: {exc}")
+        if (
+            self._compiled is not None
+            and self._object_store is not None
+            and result.status in ("succeeded", "stopped")
+        ):
+            from assurance_agent.workflow.graph.finalize import finalize_task_result
+
+            return finalize_task_result(
+                compiled=self._compiled,
+                store=self._object_store,
+                task=task,
+                result=result,
+                workspace=workspace,
+                context=context,
+            )
+        return result
 
 
 def build_default_node_runner(
@@ -104,6 +124,7 @@ def build_default_node_runner(
     ``compiled`` 提供 node 定义（per-node contract claim 收窄、interrupt 配置）
     与 gate 定义；``contracts`` 提供 execution contract 默认 claim。
     ``run_child`` 注入后注册 ``graph:`` namespace handler。
+    成功路径统一经 ``finalize_task_result``：output 校验 → attached gate → 冻结报告。
     """
     from assurance_agent.workflow.graph.handlers.agent import AgentHandler
     from assurance_agent.workflow.graph.handlers.gate import GateHandler
@@ -126,7 +147,12 @@ def build_default_node_runner(
     namespace_handlers: dict[str, TaskHandler] = {"skill": agent}
     if run_child is not None:
         namespace_handlers["graph"] = SubgraphHandler(run_child)
-    return HandlerNodeRunner(handlers, namespace_handlers=namespace_handlers)
+    return HandlerNodeRunner(
+        handlers,
+        namespace_handlers=namespace_handlers,
+        compiled=compiled,
+        object_store=object_store,
+    )
 
 
 __all__ = [

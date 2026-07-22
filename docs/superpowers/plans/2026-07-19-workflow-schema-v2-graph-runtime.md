@@ -1857,7 +1857,7 @@ git commit -m "feat(workflow): run safe graph tasks in parallel"
 - Consumes: compiler, projector, planner, scheduler, handler registry, workspace store.
 - Produces: the public `GraphRuntime.run`, `resume`, `status`, and `latest_root_invocation` methods; `RunResult`, `RuntimeContext`, `GraphStatus`, `ResumeCommand`.
 
-- [ ] **Step 1: Define the remaining public command/result models exactly once**
+- [x] **Step 1: Define the remaining public command/result models exactly once**
 
 Reuse `RuntimeContext` from Task 6 and add the remaining models to `models.py`:
 
@@ -1903,7 +1903,7 @@ Export only `GraphRuntime`, these public models, and `CompiledWorkflow` from `gr
 
 Define `GraphRuntimeError(AaError)`, `GraphDefinitionChanged(GraphRuntimeError)`, and `GraphIntegrityError(GraphRuntimeError)` in `runtime.py`. The CLI maps them to exit 40; checkpoint/ledger corruption must use `GraphIntegrityError`, while pinned digest drift must use `GraphDefinitionChanged`.
 
-- [ ] **Step 2: Write an end-to-end minimal run test**
+- [x] **Step 2: Write an end-to-end minimal run test**
 
 Compile the minimal v2 fixture, register `operation:no-op`, initialize a temp project/change, and call `runtime.run`. Assert exit 0, one physical attempt, one committed superstep, `graph_completed`, and status reconstructed from a fresh runtime instance.
 
@@ -1922,7 +1922,7 @@ Run: `uv run pytest tests/integration/test_graph_runtime.py::test_minimal_graph_
 
 Expected: FAIL because GraphRuntime does not exist.
 
-- [ ] **Step 3: Implement dependency construction and the public interface**
+- [x] **Step 3: Implement dependency construction and the public interface**
 
 ```python
 class GraphRuntime:
@@ -1972,11 +1972,11 @@ class GraphRuntime:
 
 `import_checkpoint` is added in Task 13. The runtime is synchronous externally; concurrency is internal to Scheduler.
 
-- [ ] **Step 4: Start an invocation in one strict transaction**
+- [x] **Step 4: Start an invocation in one strict transaction**
 
 Resolve/freeze params, validate entrypoint allow, capture initial tree, generate invocation/checkpoint namespace IDs, and append `graph_invocation_started`. Save the canonical schema and referenced contract JSON objects by digest so `schema_resolver` can compare current definitions after restart. A duplicate start with the same invocation ID is rejected; a completed change is not silently restarted.
 
-- [ ] **Step 5: Drive Plan → Execute → Update until a stable return boundary**
+- [x] **Step 5: Drive Plan → Execute → Update until a stable return boundary**
 
 Implement one loop that:
 
@@ -1993,11 +1993,11 @@ No branch switches on skill/CLI/healing kinds.
 
 After each root `superstep_committed` and graph terminal event, stage the `workflow-state.yaml` compatibility projection in the same coordinator transaction. At startup/status, repair a missing or malformed projection from strict events; never infer ledger completion from that file.
 
-- [ ] **Step 6: Add crash/recovery and Update-only retry tests**
+- [x] **Step 6: Add crash/recovery and Update-only retry tests**
 
 Inject failures after `task_attempt_started`, after write-set freeze, after `task_attempt_succeeded`, after pointer commit, and during materialization. Assert a fresh runtime either abandons/retries the physical attempt or retries only Update; it never re-executes a task with strict success.
 
-- [ ] **Step 7: Verify and commit Task 11**
+- [x] **Step 7: Verify and commit Task 11**
 
 Run:
 
@@ -2034,7 +2034,7 @@ git commit -m "feat(workflow): add ledger-driven graph runtime"
 - Consumes: named compiled graphs, checkpoint namespaces, pending write-sets, `ResumeCommand`.
 - Produces: per-invocation child graph execution, interrupt bubbling/publication, audited resume.
 
-- [ ] **Step 1: Use the parent/child identity already present in invocation events**
+- [x] **Step 1: Use the parent/child identity already present in invocation events**
 
 Project and validate the Task 4 fields:
 
@@ -2047,25 +2047,25 @@ structural_path: str
 
 Root namespace is `<root-invocation-id>`; child namespace is `<parent-ns>/<parent-node-id>/<child-invocation-id>`. Derive child invocation ID from parent task ID and graph ID so resume cannot create a second child.
 
-- [ ] **Step 2: Write nested completion and namespace tests**
+- [x] **Step 2: Write nested completion and namespace tests**
 
 Use a parent whose two START children invoke the same named subgraph with different node IDs. Assert distinct namespaces, no checkpoint collision, true parallel child work, and one parent pending write-set per child. A fresh runtime must project both child states.
 
-- [ ] **Step 3: Implement child runtime over the parent task workspace**
+- [x] **Step 3: Implement child runtime over the parent task workspace**
 
 `SubgraphHandler` calls an injected internal `run_child(parent_task, graph_id, workspace, context)`. Child supersteps commit to the child's private tree lineage and ledger namespace, not the root canonical workspace. On child completion, freeze the accumulated child tree delta as the parent task write-set. On child failure/interrupt, return the corresponding TaskResult without flattening partial files into the parent graph.
 
-- [ ] **Step 4: Write interrupt publication tests**
+- [x] **Step 4: Write interrupt publication tests**
 
 Create a review → interrupt graph. Assert exit 30, `graph_interrupted` includes actions and audited hashes, `GraphStatus.pending_interrupts` contains one item, and a read-only artifact view contains the exact reviewed bytes even though the parent write-set is pending.
 
 Add two parallel subgraphs that interrupt and assert both interrupt IDs are returned; resolving one leaves the other pending.
 
-- [ ] **Step 5: Publish immutable artifact views and bubble interrupts**
+- [x] **Step 5: Publish immutable artifact views and bubble interrupts**
 
 Materialize the checkpoint namespace tree under `.graph-runtime/views/<interrupt-id>/`, mark files read-only, and store its relative path in the event. Nested interrupts propagate to root status while retaining their child namespace. Once any interrupt exists, Plan starts no new task, but Scheduler settles already-running siblings and persists their write-sets.
 
-- [ ] **Step 6: Validate and commit audited resume decisions**
+- [x] **Step 6: Validate and commit audited resume decisions**
 
 `resume` requires a pending interrupt ID, allowed action, nonblank reason and who. Rehash every audited path in the saved namespace view; reject drift. Append `graph_resumed` with the same hashes in one transaction, then route by `resume.action` from the original namespace.
 
@@ -2077,7 +2077,7 @@ Tests must prove:
 - an action for a different checkpoint or stale hash is rejected without `graph_resumed`;
 - resume runs neither a successful sibling nor a completed child node again.
 
-- [ ] **Step 7: Verify and commit Task 12**
+- [x] **Step 7: Verify and commit Task 12**
 
 Run:
 
@@ -2110,7 +2110,7 @@ git commit -m "feat(workflow): resume nested graph interrupts"
 - Consumes: compiled entrypoint topology, fixture locks, tree hashing, gate evaluator.
 - Produces: `ImportManifest`; `GraphRuntime.import_checkpoint(schema: CompiledWorkflow, manifest: ImportManifest, context: RuntimeContext) -> ImportResult`.
 
-- [ ] **Step 1: Define strict import models and parser tests**
+- [x] **Step 1: Define strict import models and parser tests**
 
 ```python
 class ImportedGate(BaseModel):
@@ -2149,7 +2149,7 @@ class ImportManifest(BaseModel):
 
 YAML normalization maps `source.kind`, `source.fixture_id`, and `source.fixture_digest` to the flat frozen model. Reject extra fields and ambiguous graph/node-only task references.
 
-- [ ] **Step 2: Write import validation tests**
+- [x] **Step 2: Write import validation tests**
 
 Cover valid input-only import, valid completed review/gate import, wrong fixture digest, output hash mismatch, unsafe path, impossible structural path, missing predecessor closure, imported budget consumer without matching budget event, gate verdict/hash mismatch, and fan-out child missing `task_key`.
 
@@ -2157,19 +2157,19 @@ Run: `uv run pytest tests/unit/workflow/graph/test_import_checkpoint.py -v`
 
 Expected: FAIL because import models/runtime method do not exist.
 
-- [ ] **Step 3: Implement structural-path resolution and closure validation**
+- [x] **Step 3: Implement structural-path resolution and closure validation**
 
 Resolve from entrypoint root one node segment at a time. Each segment must be a real `graph:*` invocation edge; repeated named graphs remain distinct by path. For fan-out, require a task key present in a frozen expansion. A completed node is legal only when every active predecessor is imported, START-reachable for this run mode, or already strict-ledger complete.
 
-- [ ] **Step 4: Re-evaluate gates and freeze provenance**
+- [x] **Step 4: Re-evaluate gates and freeze provenance**
 
 Verify fixture lock/digest and every input/output file hash. Input entries establish provenance only. For each imported gated task, evaluate the gate against the imported artifact view and require exact verdict/read hashes. Do not trust the manifest's verdict alone.
 
-- [ ] **Step 5: Commit import atomically without fabricating attempts**
+- [x] **Step 5: Commit import atomically without fabricating attempts**
 
 Start a new invocation, append `task_imported` entries, matching unique `budget_consumed` entries, and one `checkpoint_imported` in a single progression transaction. Do not append `task_attempt_started` or `task_attempt_succeeded`. Build the first checkpoint from the resulting strict ledger, then continue with `resume`.
 
-- [ ] **Step 6: Verify and commit Task 13**
+- [x] **Step 6: Verify and commit Task 13**
 
 Run:
 
@@ -2201,7 +2201,7 @@ git commit -m "feat(workflow): import explicit graph checkpoints"
 - Consumes: the compiler and handler target names delivered by Tasks 1–13.
 - Produces: one fully compiling canonical v2 workflow resource and a complete target contract catalog, still not selected by default until Task 15.
 
-- [ ] **Step 1: Write the canonical inventory test before the YAML**
+- [x] **Step 1: Write the canonical inventory test before the YAML**
 
 Assert exact graph IDs:
 
@@ -2225,23 +2225,23 @@ Run: `uv run pytest tests/unit/workflow/graph/test_canonical_schema_v2.py -v`
 
 Expected: FAIL because the canonical v2 resource does not exist and contracts are incomplete.
 
-- [ ] **Step 2: Encode wrappers, intake, and bounded case repair**
+- [x] **Step 2: Encode wrappers, intake, and bounded case repair**
 
 Use the design spec's exact params/policies. `workflow`, `intake-workflow`, and `execute-workflow` all call `graph:bootstrap` first. Intake routes full/case-only through explore → case-design → case-review-cycle and review-case directly to case-review-cycle. Case review routes pass to END, needs_fix to fixer, needs_human_review to interrupt, reject/stop to STOP; only successful fixer consumes `max_case_fix_attempts`.
 
-- [ ] **Step 3: Encode all four assurance branches and explicit all-active join**
+- [x] **Step 3: Encode all four assurance branches and explicit all-active join**
 
 The assurance graph activates API/E2E/Fuzz/Performance branches from frozen `test_types` and run mode. API and E2E each contain plan → bounded review/fix cycle → codegen. Fuzz and Performance contain plan → review/interrupt → codegen without an automatic fixer. `generation-join` uses `all_active`; execution never starts after only one active codegen sibling.
 
 Add parametrized tests for full, api-only, e2e-only, plan-only, codegen-only and review-plan that assert the first two planned supersteps and active branch set.
 
-- [ ] **Step 4: Encode healing as an ordinary bounded graph**
+- [x] **Step 4: Encode healing as an ordinary bounded graph**
 
 Use nodes entry, proposal, proposal-eligible, allocate, parallel fix-api/fix-e2e, all-active fixer-join, safety, safety-interrupt, rerun, reinspect, decide and four completion operations. Only allocate consumes `max_healing_attempts`. `accept_risk` routes safety-interrupt to rerun; `fix_and_proceed` routes to proposal; no path returns immediately to the same unresolved interrupt.
 
 Add a compiler/runtime test for zero eligible proposals, API-only fixer, both fixers, safety interrupt accept-risk, resolved, exhausted and failed outcomes.
 
-- [ ] **Step 5: Complete every target contract**
+- [x] **Step 5: Complete every target contract**
 
 Contracts must cover these exact targets:
 
@@ -2284,11 +2284,11 @@ builtin:interrupt
 
 Give every skill/operation concrete reads, writes, authorization writes, exclusive tokens, retryable error kinds and side-effect-free flag. API/E2E/Fuzz/Performance plan/codegen paths must be disjoint where their real outputs are disjoint. Run-tests holds `repo:test-runtime` exclusive and reads every selected test root.
 
-- [ ] **Step 6: Assert canonical safety properties**
+- [x] **Step 6: Assert canonical safety properties**
 
 Tests must prove every cyclic SCC has a finite consumer/exhausted route, every gate verdict route is exhaustive/fail-closed, every interrupt action has a route, all node targets resolve, `test_types` branches can actually overlap, unknown resources do not occur in the packaged schema, and the schema/contract digest is stable across two wheel-resource loads.
 
-- [ ] **Step 7: Verify and commit Task 14**
+- [x] **Step 7: Verify and commit Task 14**
 
 Run:
 
@@ -2332,7 +2332,7 @@ git commit -m "feat(workflow): encode canonical graph workflow"
 - Consumes: canonical compiled workflow, contracts, adapter implementations, GraphRuntime.
 - Produces: `aa workflow run|status|resume|import-checkpoint`; top-level `aa status` graph projection; detached entrypoint launch.
 
-- [ ] **Step 1: Create one runtime factory used by foreground, detached, eval, and tests**
+- [x] **Step 1: Create one runtime factory used by foreground, detached, eval, and tests**
 
 ```python
 @dataclass(frozen=True)
@@ -2384,11 +2384,11 @@ def build_graph_runtime(
 
 The factory passes the same clock instance to runtime and scheduler, and the resolver fails rather than returning a mismatched compiled schema.
 
-- [ ] **Step 2: Replace the canonical resource atomically**
+- [x] **Step 2: Replace the canonical resource atomically**
 
 Move the fully tested v2 resource content into `workflow-schema.yaml` and remove the temporary v2 filename. `load_workflow_v2` now loads the packaged default. Add an integration assertion that `load_workflow_v2` from an installed-resource context returns version 2 and that `parse_schema` rejects the same file as incompatible v1 during the transition.
 
-- [ ] **Step 3: Write new CLI surface tests**
+- [x] **Step 3: Write new CLI surface tests**
 
 Required commands and assertions:
 
@@ -2402,11 +2402,11 @@ aa workflow import-checkpoint --change CH-1 --manifest import.yaml
 
 Test exit 0 completed, 20 stopped, 30 interrupted, 40 schema/runtime error. Reject removed `--scope`, missing reason/who, invalid params, interrupt action on plain resume, and import without a manifest. Keep `workflow start` as the detached alias with `--entrypoint`.
 
-- [ ] **Step 4: Implement workflow commands over the runtime factory**
+- [x] **Step 4: Implement workflow commands over the runtime factory**
 
 `run` starts a new invocation only when none exists; otherwise it calls plain resume. `resume` with no command advances retry/abandoned work; with interrupt flags it builds `ResumeCommand`. `status` finds the latest root invocation from strict ledger, not `driver.json`. `import-checkpoint` parses YAML, invokes runtime import, and prints the new invocation/checkpoint IDs.
 
-- [ ] **Step 5: Reduce the old loop to a temporary compatibility wrapper**
+- [x] **Step 5: Reduce the old loop to a temporary compatibility wrapper**
 
 Retain `LoopResult(exit_code, reason)` for eval callers until Task 16, but change the function to:
 
@@ -2439,19 +2439,19 @@ def run_workflow_loop(
 
 Delete `CliPhaseExecutor`, `DefaultCliPhaseExecutor`, `HealingActionExecutor`, `DefaultHealingActionExecutor`, `_DefaultStatusProvider`, and `_dispatch_entry`. No caller may inject either executor.
 
-- [ ] **Step 6: Make driver.json a non-authoritative process pointer**
+- [x] **Step 6: Make driver.json a non-authoritative process pointer**
 
 Replace `current_phase`, `current_attempt_id`, `paused_on`, `iteration`, and `last_checkpoint_at` with `invocation_id`, `checkpoint_id`, and `event_seq`. Start guard uses the latest root graph terminal plus process liveness. A stale/absent driver file never causes successful tasks to re-run.
 
-- [ ] **Step 7: Project top-level status and frozen gates**
+- [x] **Step 7: Project top-level status and frozen gates**
 
 Top-level `aa status` prints `GraphStatus`; `--next --json` emits pending structural task IDs and interrupt metadata. It does not call v1 `compute_status`. `aa gate check --node-path <path>` returns the latest frozen gate report for that node task and refuses to re-adjudicate mutable files. `aa decide` rejects graph gate actions with guidance to `aa workflow resume`; it continues supporting `allow_test_changes` and any other non-graph policy decision still consumed outside GraphRuntime.
 
-- [ ] **Step 8: Update detached launch and lock adoption**
+- [x] **Step 8: Update detached launch and lock adoption**
 
 Replace all `scope` fields/argv with `entrypoint`. The detached child adopts the same lock token, projects the invocation ID after start, and writes it to driver.json. A hard-killed child releases the OS lock; the next run reconciles leases from ledger.
 
-- [ ] **Step 9: Verify and commit Task 15**
+- [x] **Step 9: Verify and commit Task 15**
 
 Run:
 
@@ -2502,7 +2502,7 @@ git commit -m "feat(workflow): switch cli to graph runtime"
 - Consumes: runtime factory, import manifest, workflow CLI.
 - Produces: fixture-provenance imports, retry-safe benchmark loops, v2-only user/agent instructions.
 
-- [ ] **Step 1: Extend fixture tiers with structural import declarations**
+- [x] **Step 1: Extend fixture tiers with structural import declarations**
 
 Add an optional model:
 
@@ -2534,7 +2534,7 @@ class TierManifest(BaseModel):
 
 Merge imports through tier inheritance by entrypoint and structural task identity.
 
-- [ ] **Step 2: Generate hash-complete import manifests during seeding**
+- [x] **Step 2: Generate hash-complete import manifests during seeding**
 
 `seed_change` returns `SeedResult(change_dir, import_manifest_path)`. For the requested entrypoint, hash fixture lock, input paths, completed outputs and gate reads after copy/reset, then write `.graph-runtime/import-manifest.yaml`. Missing declared source files fail seeding.
 
@@ -2545,17 +2545,17 @@ Tier declarations must cover:
 - each fan-out import includes its task key;
 - no tier imports a v1 `workflow-state.yaml` phase marker as authority.
 
-- [ ] **Step 3: Replace eval loop injection with runtime invocation**
+- [x] **Step 3: Replace eval loop injection with runtime invocation**
 
 Remove `LoopRunner`, `CliPhaseExecutor`, `scope`, and `status_provider` from `execute_attempt`. Inject a `RuntimeFactory` for tests. After seeding, call `import_checkpoint` when a manifest exists, otherwise `run` the suite entrypoint. Preserve before/after write scan and scorer raw-output copying.
 
 Map suite configuration `scope: case|full|execute` to `entrypoint: case|full|execute` while accepting only the new key after dataset migration. Set `params.run_mode`, `params.test_types`, and `params.run_tests` explicitly.
 
-- [ ] **Step 4: Prove eval replay uses imported ledger events**
+- [x] **Step 4: Prove eval replay uses imported ledger events**
 
 Update tests to assert `checkpoint_imported` and `task_imported` exist, no imported task has a physical attempt event, codegen-only starts only its unimported task, and forbidden-write evidence still reports actual project diffs. Run all ten workflow suites with synthetic adapters.
 
-- [ ] **Step 5: Remove benchmark ledger surgery and use graph resume**
+- [x] **Step 5: Remove benchmark ledger surgery and use graph resume**
 
 In both benchmark scripts:
 
@@ -2568,11 +2568,11 @@ In both benchmark scripts:
 - retain `CURSOR_MAX_WORKFLOW_ATTEMPTS` only as a process-restart ceiling;
 - assert a successful task ID appears exactly once across restarts.
 
-- [ ] **Step 6: Update OpenCode plugin/tool inputs**
+- [x] **Step 6: Update OpenCode plugin/tool inputs**
 
 `workflow_start.ts` accepts `entrypoint: full | intake | execute | case` and emits `--entrypoint`; remove `scope`. Plugin help lists run, status, resume and import-checkpoint and no longer instructs phase agents to apply state.
 
-- [ ] **Step 7: Replace fallback orchestration with a fail-closed v2 operator runbook**
+- [x] **Step 7: Replace fallback orchestration with a fail-closed v2 operator runbook**
 
 The replacement `FALLBACK-RUNBOOK.md` must state:
 
@@ -2584,11 +2584,11 @@ The replacement `FALLBACK-RUNBOOK.md` must state:
 
 Update aa-workflow/intake/execute/archive/run/fix-proposal skills to the same command surface. Archive status is committed by the archive graph node. Healing status is a graph terminal operation. Human safety approval uses interrupt resume.
 
-- [ ] **Step 8: Update README/eval docs and command-corpus tests**
+- [x] **Step 8: Update README/eval docs and command-corpus tests**
 
 Document schema v2, entrypoints, true parallelism, resource serialization, retry vs business budget, interrupt/resume, strict ledger authority, and fixture imports. Update command examples and integration command allowlists so no live instruction uses `--scope`, `aa state apply`, `aa state heal`, or graph-gate `aa decide`.
 
-- [ ] **Step 9: Verify and commit Task 16**
+- [x] **Step 9: Verify and commit Task 16**
 
 Run:
 
@@ -2636,7 +2636,7 @@ git commit -m "feat(workflow): migrate fixtures and runbooks to graphs"
 - Consumes: fully migrated GraphRuntime callers.
 - Produces: no production v1 phase/loop scheduler or dual-executor seam; complete fault-injection and CI evidence.
 
-- [ ] **Step 1: Prove there are no production consumers before deletion**
+- [x] **Step 1: Prove there are no production consumers before deletion**
 
 Run:
 
@@ -2646,13 +2646,13 @@ rg -n "compute_status|LoopRegistry|HealingEpisode|ReviewFix|CliPhaseExecutor|Hea
 
 Expected: only compatibility definitions scheduled for deletion, legacy event import/migration code explicitly named `v1`, or zero matches. Any live command/runtime consumer must be migrated before continuing.
 
-- [ ] **Step 2: Remove v1 scheduler, loop projectors, executor seams, and state progression commands**
+- [x] **Step 2: Remove v1 scheduler, loop projectors, executor seams, and state progression commands**
 
 Delete the files listed above. Keep shared `Verdict`, `GateDef`, `ReadEntry`, gate normalization, and any non-graph decision/test-change policy operations. Remove `state apply` and `state heal`; keep `state configure` only if a non-running change still needs pre-run convenience, and make it refuse once `graph_invocation_started` exists because params are frozen.
 
 Strip `parse_schema`, `WorkflowSchema`, `PhaseDef`, `LoopDef`, fan-out child phase helpers, and v1 validations from `orchestration/schema.py`. Remove old dispatch/outcome/healing-allocation event models only after v1-artifact import tests prove legacy files can be read as opaque source data without accepting them as new strict graph events.
 
-- [ ] **Step 3: Update import-layer contracts**
+- [x] **Step 3: Update import-layer contracts**
 
 Set workflow internal layers to:
 
@@ -2669,7 +2669,7 @@ layers =
 
 `workflow.core` remains forbidden from importing `workflow.graph` or `workflow.orchestration`. Driver adapters implement the graph-owned `AgentInvoker` protocol; graph code does not import driver.
 
-- [ ] **Step 4: Add process-kill fault tests at every persistence boundary**
+- [x] **Step 4: Add process-kill fault tests at every persistence boundary**
 
 Use subprocesses and synchronization files to kill at:
 
@@ -2685,7 +2685,7 @@ Use subprocesses and synchronization files to kill at:
 
 For every case, start a fresh process and assert final terminal, exact attempt count, exact business budget count, no repeated successful task, no event deletion, and canonical tree matching the committed target tree.
 
-- [ ] **Step 5: Add full acceptance assertions**
+- [x] **Step 5: Add full acceptance assertions**
 
 Tests must cover:
 
@@ -2702,7 +2702,7 @@ Tests must cover:
 - write-policy hard gate detects a forbidden task write;
 - schema/contract digest drift refuses resume.
 
-- [ ] **Step 6: Run focused and full repository verification**
+- [x] **Step 6: Run focused and full repository verification**
 
 Run:
 
@@ -2718,7 +2718,7 @@ bash scripts/packaging_smoke_test.sh
 
 Expected: every command exits 0; pytest reports zero failures; packaging loads the packaged v2 schema and contract resources.
 
-- [ ] **Step 7: Verify and commit Task 17 after v1 removal**
+- [x] **Step 7: Verify and commit Task 17 after v1 removal**
 
 Run:
 

@@ -194,7 +194,8 @@ class ExecutionContractCatalog(BaseModel):
         declared = node.resources
         reads = [ResourcePath.parse(v) for v in contract.reads]
         writes = [ResourcePath.parse(v) for v in contract.writes]
-        writes.extend(ResourcePath.parse(normalize_claim_pattern(o)) for o in node.outputs)
+        output_paths = tuple(ResourcePath.parse(normalize_claim_pattern(o)) for o in node.outputs)
+        writes.extend(output_paths)
         exclusive = list(contract.exclusive)
         if declared is not None:
             reads.extend(ResourcePath.parse(normalize_claim_pattern(v)) for v in declared.reads)
@@ -205,6 +206,9 @@ class ExecutionContractCatalog(BaseModel):
             authorization = tuple(ResourcePath.parse(normalize_claim_pattern(v)) for v in declared.writes)
         else:
             authorization = tuple(ResourcePath.parse(v) for v in contract.authorization_writes)
+        # Declared outputs are always authorized — freeze requires the agent to write them,
+        # and mid-segment globs like ``api-*.md`` are not provable by path_covers.
+        authorization = tuple(dict.fromkeys((*authorization, *output_paths)))
         if not contract.side_effect_free and not writes and not authorization:
             return unknown_claims()
         return ResourceClaims(

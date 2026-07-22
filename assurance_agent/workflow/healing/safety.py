@@ -6,6 +6,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel
@@ -268,6 +269,8 @@ def compute_and_write_fixer_safety_check(
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
+        if not summary.get("applied", False):
+            continue
         modified_files.extend(str(f) for f in summary.get("files_modified", []))
         applied_proposal_ids.extend(str(p) for p in summary.get("proposal_ids", []))
 
@@ -345,15 +348,34 @@ def _prior_applied_files(change_dir: Path, *, exclude_target: str) -> set[str]:
     return applied
 
 
+_ApplyOutcome = Literal["applied", "no_op", "skipped"]
+
+
 def record_apply_summary(
     project_root: Path,
     change_id: str,
     target: str,
-    proposal_ids: list[str],
+    proposal_ids: list[str] | None = None,
+    *,
+    outcome: _ApplyOutcome = "applied",
+    reason: str | None = None,
 ) -> RecordApplySummaryResult:
+    """Write ``{target}-apply-summary.json`` and a frozen ``heal_record_apply`` event.
+
+    ``outcome``:
+    - ``applied`` (default): diff test tree against execution baseline; require
+      authorized proposal ids. Empty ``files_modified`` yields ``applied: false``.
+    - ``no_op`` / ``skipped``: contract-closing path for fixer STOP/no-eligible
+      cases. Requires an unchanged test tree (aside from the other target's
+      prior applied files) and writes ``applied: false`` so graph nodes that
+      declare the summary as a hard output can still succeed.
+    """
     if target not in ("api", "e2e"):
         raise HealingGuardError(f"unsupported heal target: {target}")
+    if outcome not in ("applied", "no_op", "skipped"):
+        raise HealingGuardError(f"unsupported record-apply outcome: {outcome}")
 
+    ids = list(proposal_ids or [])
     change_dir = _active_change_dir(project_root, change_id)
     context = derive_guard_context(project_root, change_id)
     if context.source_batch_id is None or context.attempt_key is None or context.proposal_sha256 is None:
@@ -367,41 +389,69 @@ def record_apply_summary(
     except (OSError, json.JSONDecodeError) as err:
         raise HealingGuardError(f"fix-proposal.json unreadable: {err}") from err
 
-    authorized = _authorized_files(proposal_raw, proposal_ids, target)
-    if not authorized:
-        raise HealingGuardError("no authorized proposals matched the given proposal ids")
-
     _, baseline_files, _ = _load_manifest_hashes(change_dir)
     current = hash_test_tree(project_root)
     changed = diff_trees(baseline_files, current.files)
     prior_applied = _prior_applied_files(change_dir, exclude_target=target)
-    modified = [f for f in changed if f in authorized]
-    unauthorized = [f for f in changed if f not in authorized and f not in prior_applied]
-    if unauthorized:
-        raise HealingGuardError(f"modified files outside authorized proposals: {', '.join(unauthorized)}")
+
+    if outcome in ("no_op", "skipped"):
+        if not reason or not reason.strip():
+            raise HealingGuardError(f"record-apply outcome '{outcome}' requires --reason")
+        residual = [f for f in changed if f not in prior_applied]
+        if residual:
+            raise HealingGuardError(
+                f"test tree changed; cannot record outcome '{outcome}': {', '.join(sorted(residual))}"
+            )
+        modified: list[str] = []
+        applied = False
+        resolved_outcome: _ApplyOutcome = outcome
+        resolved_reason = reason.strip()
+    else:
+        if not ids:
+            raise HealingGuardError("applied outcome requires at least one --proposal id")
+        authorized = _authorized_files(proposal_raw, ids, target)
+        if not authorized:
+            raise HealingGuardError("no authorized proposals matched the given proposal ids")
+        modified = [f for f in changed if f in authorized]
+        unauthorized = [f for f in changed if f not in authorized and f not in prior_applied]
+        if unauthorized:
+            raise HealingGuardError(
+                f"modified files outside authorized proposals: {', '.join(unauthorized)}"
+            )
+        applied = bool(modified)
+        resolved_outcome = "applied" if applied else "no_op"
+        resolved_reason = reason.strip() if reason and reason.strip() else None
 
     json_rel = f"healing/{target}-apply-summary.json"
     md_rel = f"healing/{target}-apply-summary.md"
-    summary = {
+    summary: dict[str, object] = {
         "schema_version": "1.0",
+        "change_id": change_id,
         "target": target,
-        "applied": bool(modified),
-        "proposal_ids": proposal_ids,
+        "applied": applied,
+        "outcome": resolved_outcome,
+        "proposal_ids": ids,
         "files_modified": modified,
         "source_batch_id": context.source_batch_id,
         "attempt_key": context.attempt_key,
+        "rerun_required": applied,
+        "next_action": "run_aa_run" if applied else "continue",
     }
+    if resolved_reason is not None:
+        summary["reason"] = resolved_reason
     summary_text = json.dumps(summary, indent=2)
-    md_text = "\n".join(
-        [
-            f"# Apply Summary — {target}",
-            "",
-            f"- Applied: {summary['applied']}",
-            f"- Files modified: {len(modified)}",
-            *(f"- {f}" for f in modified),
-            "",
-        ]
-    )
+    md_lines = [
+        f"# Apply Summary — {target}",
+        "",
+        f"- Applied: {summary['applied']}",
+        f"- Outcome: {summary['outcome']}",
+        f"- Files modified: {len(modified)}",
+        *(f"- {f}" for f in modified),
+    ]
+    if resolved_reason is not None:
+        md_lines.extend(["", f"- Reason: {resolved_reason}"])
+    md_lines.append("")
+    md_text = "\n".join(md_lines)
     summary_sha = hashlib.sha256(summary_text.encode("utf-8")).hexdigest()
 
     with transaction(change_dir) as txn:

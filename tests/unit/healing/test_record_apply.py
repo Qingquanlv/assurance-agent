@@ -91,6 +91,99 @@ def test_record_apply_rejects_without_active_allocation(tmp_path: Path) -> None:
         record_apply_summary(tmp_path, "CH-1", "api", ["FIX-001"])
 
 
+def test_record_apply_no_op_writes_summary_without_proposals(tmp_path: Path) -> None:
+    """Graph fix-api requires api-apply-summary.json even when fixer applies nothing."""
+    write_aa_config(tmp_path)
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    change_dir.mkdir(parents=True)
+    _write(tmp_path / "tests" / "api" / "test_menu.py", "v1\n")
+    baseline = hash_test_tree(tmp_path)
+    _manifest(change_dir, baseline.files, baseline.aggregate)
+    _seed_healing_episode(change_dir, source_batch="20260101-000000")
+    _proposal(change_dir)
+
+    result = record_apply_summary(
+        tmp_path,
+        "CH-1",
+        "api",
+        [],
+        outcome="no_op",
+        reason="no eligible api proposals",
+    )
+    summary = json.loads(Path(result.json_path).read_text(encoding="utf-8"))
+    assert summary["applied"] is False
+    assert summary["outcome"] == "no_op"
+    assert summary["reason"] == "no eligible api proposals"
+    assert summary["files_modified"] == []
+    assert result.files_modified == []
+    events = read_events(change_dir)
+    apply = next(e for e in events if e.get("type") == "heal_record_apply")
+    assert apply["files_modified"] == []
+    assert apply["target"] == "api"
+
+
+def test_record_apply_skipped_writes_summary_for_unauthorized_proposal(tmp_path: Path) -> None:
+    """Condition-3 / validation STOP must still produce the declared apply summary."""
+    write_aa_config(tmp_path)
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    change_dir.mkdir(parents=True)
+    _write(tmp_path / "tests" / "api" / "test_menu.py", "v1\n")
+    baseline = hash_test_tree(tmp_path)
+    _manifest(change_dir, baseline.files, baseline.aggregate)
+    _seed_healing_episode(change_dir, source_batch="20260101-000000")
+    _proposal(change_dir)
+
+    result = record_apply_summary(
+        tmp_path,
+        "CH-1",
+        "api",
+        ["FIX-001"],
+        outcome="skipped",
+        reason="Condition 3: files not in codegen trusted set",
+    )
+    summary = json.loads(Path(result.json_path).read_text(encoding="utf-8"))
+    assert summary["applied"] is False
+    assert summary["outcome"] == "skipped"
+    assert summary["proposal_ids"] == ["FIX-001"]
+    assert "Condition 3" in summary["reason"]
+    assert (change_dir / "healing" / "fixer-safety-check.json").is_file()
+
+
+def test_record_apply_no_op_rejects_when_test_tree_changed(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    change_dir.mkdir(parents=True)
+    _write(tmp_path / "tests" / "api" / "test_menu.py", "v1\n")
+    baseline = hash_test_tree(tmp_path)
+    _manifest(change_dir, baseline.files, baseline.aggregate)
+    _seed_healing_episode(change_dir)
+    _proposal(change_dir)
+    _write(tmp_path / "tests" / "api" / "test_menu.py", "v2\n")
+
+    with pytest.raises(HealingGuardError, match="test tree changed"):
+        record_apply_summary(
+            tmp_path,
+            "CH-1",
+            "api",
+            [],
+            outcome="no_op",
+            reason="no eligible api proposals",
+        )
+
+
+def test_record_apply_applied_rejects_empty_proposal_ids(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    change_dir.mkdir(parents=True)
+    _write(tmp_path / "tests" / "api" / "test_menu.py", "v1\n")
+    baseline = hash_test_tree(tmp_path)
+    _manifest(change_dir, baseline.files, baseline.aggregate)
+    _seed_healing_episode(change_dir)
+    _proposal(change_dir)
+    with pytest.raises(HealingGuardError, match="proposal"):
+        record_apply_summary(tmp_path, "CH-1", "api", [], outcome="applied")
+
+
 def test_record_apply_rejects_file_outside_authorized_proposals(tmp_path: Path) -> None:
     write_aa_config(tmp_path)
     change_dir = tmp_path / "qa" / "changes" / "CH-1"

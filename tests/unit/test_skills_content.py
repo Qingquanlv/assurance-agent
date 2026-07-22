@@ -95,9 +95,11 @@ def _load_field_allowlist() -> set[str]:
     return entries
 
 
-def test_thirty_three_skills_present() -> None:
+def test_thirty_two_skills_present() -> None:
     names = _skill_names()
-    assert len(names) == 33
+    # aa-test-infra-bootstrap was removed (test-infra scaffold is now a fixture
+    # prerequisite, not a skill), taking the packaged skill count 33 -> 32.
+    assert len(names) == 32
     assert "writing-skills" in names
     assert "aa-workflow" in names
     assert "aa-dashboard" in names

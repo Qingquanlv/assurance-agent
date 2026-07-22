@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,7 @@ from assurance_agent.workflow.graph.compiler import canonical_digest, compile_wo
 from assurance_agent.workflow.core.graph_events import NodeSkippedEvent
 from assurance_agent.workflow.graph.contracts import (
     ExecutionContractCatalog,
+    ResourcePath,
     load_execution_contracts,
 )
 from assurance_agent.workflow.graph.models import (
@@ -21,7 +24,7 @@ from assurance_agent.workflow.graph.models import (
     RuntimeContext,
     TaskProjection,
 )
-from assurance_agent.workflow.graph.planner import plan_superstep
+from assurance_agent.workflow.graph.planner import PlanError, plan_superstep
 from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
 
 EXPECTED_GRAPHS = {
@@ -72,6 +75,7 @@ EXPECTED_CONTRACTS = {
     "operation:no-op",
     "operation:skill-registry-check",
     "operation:run-tests",
+    "operation:inspect",
     "operation:allocate-healing-attempt",
     "operation:record-healing-status",
     "operation:stop",
@@ -87,6 +91,19 @@ BRANCH_NODES = ("api", "e2e", "fuzz", "performance")
 class _EmptyArtifacts:
     def read_json(self, tree_id: str, logical_path: str) -> ResolvedArtifact:
         raise KeyError(logical_path)
+
+
+class _FakeArtifacts:
+    def __init__(self, payloads: dict[tuple[str, str], object] | None = None) -> None:
+        self._payloads = payloads or {}
+
+    def read_json(self, tree_id: str, logical_path: str) -> ResolvedArtifact:
+        payload = self._payloads[(tree_id, logical_path)]
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return ResolvedArtifact(
+            value=payload,
+            reads_sha256={logical_path: hashlib.sha256(canonical.encode("utf-8")).hexdigest()},
+        )
 
 
 def _load_compiled() -> tuple[CompiledWorkflow, ExecutionContractCatalog]:
@@ -184,12 +201,13 @@ def _plan_healing(
     params: dict[str, object],
     *,
     tasks: list[TaskProjection] | None = None,
+    artifacts: _EmptyArtifacts | _FakeArtifacts | None = None,
 ):
     return plan_superstep(
         compiled,
         _healing_projection(compiled, params, tasks=tasks),
         _context(tmp_path),
-        _EmptyArtifacts(),
+        artifacts or _EmptyArtifacts(),
     )
 
 
@@ -208,6 +226,22 @@ def test_canonical_v2_compiles_with_all_targets() -> None:
 def test_packaged_contracts_cover_exact_targets() -> None:
     contracts = load_execution_contracts(Path.cwd())
     assert set(contracts.contracts) == EXPECTED_CONTRACTS
+
+
+def test_healing_fixers_carry_narrow_per_node_claims() -> None:
+    """fix-api / fix-e2e must claim their own contract scope, not the whole-graph
+    footprint — otherwise every healing node serializes against every other."""
+    compiled, _ = _load_compiled()
+    healing = compiled.graphs["healing"]
+    fix_api = healing.nodes["fix-api"].resources
+    fix_e2e = healing.nodes["fix-e2e"].resources
+    footprint = healing.resource_footprint
+    # Per-node claims are strictly narrower than the conservative graph union.
+    assert fix_api != footprint
+    assert fix_e2e != footprint
+    assert ResourcePath.parse("repo:tests/api/**") in fix_api.writes
+    assert ResourcePath.parse("repo:tests/e2e/**") in fix_e2e.writes
+    assert ResourcePath.parse("repo:tests/e2e/**") not in fix_api.writes
 
 
 # ---------------------------------------------------------------------------
@@ -369,18 +403,81 @@ def test_healing_fixer_activation_after_allocate(
         assert [task.node_id for task in after_entry.tasks] == ["proposal"]
         return
 
-    # Structural: fixer nodes exist and only allocate consumes budget (above).
+    proposal_doc = {"proposals": eligible}
+    artifacts = _FakeArtifacts({("tree-0", "change:healing/fix-proposal.json"): proposal_doc})
+
+    entry_plan = _plan_healing(compiled, tmp_path, params, artifacts=artifacts)
+    entry = entry_plan.tasks[0]
+    proposal_plan = _plan_healing(
+        compiled,
+        tmp_path,
+        params,
+        artifacts=artifacts,
+        tasks=[
+            _task(
+                entry,
+                gate_report={"gate_id": "healing-entry-gate", "verdict": "enter", "value": "enter"},
+            )
+        ],
+    )
+    proposal = proposal_plan.tasks[0]
+    eligible_plan = _plan_healing(
+        compiled,
+        tmp_path,
+        params,
+        artifacts=artifacts,
+        tasks=[
+            _task(
+                entry,
+                gate_report={"gate_id": "healing-entry-gate", "verdict": "enter", "value": "enter"},
+            ),
+            _task(proposal),
+        ],
+    )
+    proposal_eligible = next(task for task in eligible_plan.tasks if task.node_id == "proposal-eligible")
+    allocate_plan = _plan_healing(
+        compiled,
+        tmp_path,
+        params,
+        artifacts=artifacts,
+        tasks=[
+            _task(
+                entry,
+                gate_report={"gate_id": "healing-entry-gate", "verdict": "enter", "value": "enter"},
+            ),
+            _task(proposal),
+            _task(proposal_eligible, value=True, gate_report={"expression": "...", "value": True}),
+        ],
+    )
+    allocate = next(task for task in allocate_plan.tasks if task.node_id == "allocate")
+    seeded = [
+        _task(
+            entry,
+            gate_report={"gate_id": "healing-entry-gate", "verdict": "enter", "value": "enter"},
+        ),
+        _task(proposal),
+        _task(proposal_eligible, value=True, gate_report={"expression": "...", "value": True}),
+        _task(allocate),
+    ]
+    fixer_plan = _plan_healing(
+        compiled,
+        tmp_path,
+        params,
+        artifacts=artifacts,
+        tasks=seeded,
+    )
+    activated = {task.node_id for task in fixer_plan.tasks}
+    assert expected_fixers.issubset(activated)
+
+    with pytest.raises(PlanError, match="all_active"):
+        _plan_healing(compiled, tmp_path, params, tasks=seeded)
+
     healing = compiled.schema.graphs["healing"]
     assert healing.nodes["fix-api"].when is not None
     assert healing.nodes["fix-e2e"].when is not None
-    assert "api" in healing.nodes["fix-api"].when
-    assert "e2e" in healing.nodes["fix-e2e"].when
-    if expected_fixers == {"fix-api"}:
-        assert "target == 'api'" in (healing.nodes["fix-api"].when or "")
     if expected_fixers == {"fix-api", "fix-e2e"}:
         assert healing.nodes["fixer-join"].join is not None
         assert healing.nodes["fixer-join"].join.mode == "all_active"
-        assert healing.nodes["fixer-join"].join.sources == ["fix-api", "fix-e2e"]
 
 
 def test_healing_completion_and_interrupt_terminals() -> None:
@@ -463,11 +560,17 @@ def test_all_node_targets_resolve_without_unknown_resources() -> None:
 
 def test_codegen_write_claims_are_disjoint_across_suites() -> None:
     contracts = load_execution_contracts(Path.cwd())
+    # ``repo:tests/testdata/**`` holds shared, business-valid domain factories
+    # (create-if-missing / reuse). It is deliberately shared across all suites and
+    # its writes are serialized by the ``repo:test-infra`` exclusive lock, so it is
+    # excluded from the per-suite disjointness invariant (which protects each
+    # suite's private test dir from cross-suite clobbering).
+    shared = {"repo:tests/testdata/**"}
     writes = {
-        "api": set(contracts.contracts["skill:aa-api-codegen"].writes),
-        "e2e": set(contracts.contracts["skill:aa-e2e-codegen"].writes),
-        "fuzz": set(contracts.contracts["skill:aa-fuzz-codegen"].writes),
-        "performance": set(contracts.contracts["skill:aa-performance-codegen"].writes),
+        "api": set(contracts.contracts["skill:aa-api-codegen"].writes) - shared,
+        "e2e": set(contracts.contracts["skill:aa-e2e-codegen"].writes) - shared,
+        "fuzz": set(contracts.contracts["skill:aa-fuzz-codegen"].writes) - shared,
+        "performance": set(contracts.contracts["skill:aa-performance-codegen"].writes) - shared,
     }
     assert writes["api"].isdisjoint(writes["e2e"])
     assert writes["api"].isdisjoint(writes["fuzz"])
@@ -475,6 +578,10 @@ def test_codegen_write_claims_are_disjoint_across_suites() -> None:
     assert writes["e2e"].isdisjoint(writes["fuzz"])
     assert writes["e2e"].isdisjoint(writes["performance"])
     assert writes["fuzz"].isdisjoint(writes["performance"])
+    # The shared factory claim is present in every codegen suite (all layers may
+    # create-if-missing / reuse it under the serializing test-infra lock).
+    for suite in ("aa-api-codegen", "aa-e2e-codegen", "aa-fuzz-codegen", "aa-performance-codegen"):
+        assert "repo:tests/testdata/**" in contracts.contracts[f"skill:{suite}"].writes
     run_tests = contracts.contracts["operation:run-tests"]
     assert "repo:test-runtime" in run_tests.exclusive
     assert any(r.startswith("repo:tests/") for r in run_tests.reads)

@@ -246,8 +246,11 @@ def test_claims_compose_registry_outputs_and_node_resources() -> None:
     assert ResourcePath.parse("change:codegen/*/summary.json") in claims.writes
     assert ResourcePath.parse("repo:tests/api/smoke/**") in claims.writes
     assert set(claims.exclusive) == {"repo:test-infra", "repo:test-runtime"}
-    # node resources.writes 收窄授权写范围
-    assert claims.authorization_writes == (ResourcePath.parse("repo:tests/api/smoke/**"),)
+    # node resources.writes 收窄授权写范围；declared outputs remain authorized.
+    assert claims.authorization_writes == (
+        ResourcePath.parse("repo:tests/api/smoke/**"),
+        ResourcePath.parse("change:codegen/*/summary.json"),
+    )
 
 
 def test_claims_for_write_capable_contract_without_scope_is_unknown() -> None:
@@ -465,6 +468,65 @@ def test_compiler_populates_contract_digests_and_footprint() -> None:
     assert ResourcePath.parse("change:codegen/summary.json") in footprint.writes
     assert ResourcePath.parse("change:plans/api-*.md") in footprint.reads
     assert "repo:test-infra" in footprint.exclusive
+
+
+def test_compiler_populates_per_node_resource_claims() -> None:
+    catalog = _compiler_catalog()
+    compiled = _compile(
+        """
+        main:
+          max_supersteps: 5
+          nodes:
+            gen:
+              uses: skill:codegen
+              agent: aa-doc-author
+              outputs: [change:codegen/summary.json]
+            join:
+              uses: builtin:join
+              join: {sources: [gen], mode: all}
+          edges:
+            - {from: START, to: gen}
+            - {from: gen, to: join}
+            - {from: join, to: END}
+        """,
+        catalog,
+    )
+    nodes = compiled.graphs["main"].nodes
+    gen_claims = nodes["gen"].resources
+    join_claims = nodes["join"].resources
+    # 每个 node 携带自己的 contract claim，而不是全图 footprint 并集。
+    assert ResourcePath.parse("repo:tests/api/**") in gen_claims.writes
+    assert "repo:test-infra" in gen_claims.exclusive
+    # side_effect_free 的 join 是空 claim —— 不继承 gen 的 exclusive，可与他人并行。
+    assert join_claims == ResourceClaims()
+    assert join_claims != compiled.graphs["main"].resource_footprint
+    assert claims_conflict(gen_claims, join_claims) is False
+
+
+def test_compiled_subgraph_node_carries_child_footprint_claims() -> None:
+    compiled = _compile(
+        """
+        main:
+          max_supersteps: 5
+          nodes:
+            call-child: {uses: graph:child}
+          edges:
+            - {from: START, to: call-child}
+            - {from: call-child, to: END}
+        child:
+          max_supersteps: 5
+          nodes:
+            gen:
+              uses: skill:codegen
+              outputs: [change:codegen/summary.json]
+          edges:
+            - {from: START, to: gen}
+            - {from: gen, to: END}
+        """,
+        _compiler_catalog(),
+    )
+    call_child = compiled.graphs["main"].nodes["call-child"].resources
+    assert call_child == compiled.graphs["child"].resource_footprint
 
 
 def test_subgraph_footprint_unions_reachable_child_claims() -> None:

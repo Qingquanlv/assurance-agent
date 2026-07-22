@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -62,10 +63,19 @@ def test_capture_is_deterministic_and_excludes_runtime_dirs(tmp_path: Path) -> N
         ".graph-runtime/objects/sha256/ab/cd",
         ".worktrees/wt/file.txt",
         ".venv/lib/python.py",
+        ".opencode/skills/aws-run",
+        "eval/out/runs/x/report.json",
+        "benchmark/runs/x.status.json",
         "node_modules/pkg/index.js",
         "__pycache__/mod.cpython-311.pyc",
         ".pytest_cache/v/cache/lastfailed",
         ".ruff_cache/cache.json",
+        ".hypothesis/unicode_data/codec.json",
+        "htmlcov/index.html",
+        "migrations/models/0_20260101000000_init.py",
+        ".coverage",
+        "db.sqlite3",
+        "db.sqlite3-wal",
     ):
         path = project / junk
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -86,15 +96,42 @@ def test_capture_is_deterministic_and_excludes_runtime_dirs(tmp_path: Path) -> N
         ".git",
         ".worktrees",
         ".venv",
+        ".opencode",
+        "eval",
+        "benchmark",
         "node_modules",
         "__pycache__",
         ".pytest_cache",
         ".ruff_cache",
+        ".hypothesis",
+        "htmlcov",
+        "migrations",
     ):
         assert not (dest / excluded).exists()
+    assert not (dest / ".coverage").exists()
+    assert not (dest / "db.sqlite3").exists()
+    assert not (dest / "db.sqlite3-wal").exists()
     # workspace 内的 .graph-runtime/tree.json 是物化元数据，不参与 diff。
     assert (dest / ".graph-runtime" / "tree.json").exists()
     assert not (dest / ".graph-runtime" / "objects").exists()
+
+
+def test_tree_store_read_json_by_logical_path(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    change = project / "qa" / "changes" / "CH-1"
+    healing = change / "healing"
+    healing.mkdir(parents=True)
+    doc = {"proposals": [{"target": "api", "eligible": True}]}
+    (healing / "fix-proposal.json").write_text(json.dumps(doc), encoding="utf-8")
+
+    store = _store(project)
+    tree_id = store.capture(project)
+    resolved = store.read_json(tree_id, "change:healing/fix-proposal.json")
+    assert resolved.value == doc
+    assert resolved.reads_sha256["change:healing/fix-proposal.json"]
+
+    with pytest.raises(FileNotFoundError):
+        store.read_json(tree_id, "change:healing/missing.json")
 
 
 def test_capture_rejects_symlink_escaping_root(tmp_path: Path) -> None:
@@ -179,6 +216,52 @@ def test_freeze_rejects_missing_declared_output(tmp_path: Path) -> None:
             claims=_claims("repo:tests/api/**"),
             outputs=("repo:tests/api/missing.py",),
         )
+
+
+def test_freeze_accepts_directory_output_with_files(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    store = _store(project)
+    workspace = _backend(project).create(task_id="task-a", base_tree_id=store.capture(project), store=store)
+    case = workspace.change_dir / "cases" / "system" / "dept" / "case.yaml"
+    case.parent.mkdir(parents=True)
+    case.write_text("id: c1\n", encoding="utf-8")
+    write_set = store.freeze_write_set(
+        workspace,
+        claims=_claims("change:cases/**"),
+        outputs=("change:cases/",),
+    )
+    assert "change:cases/" in write_set.outputs_sha256
+    assert any(e.logical_path.endswith("cases/system/dept/case.yaml") for e in write_set.entries)
+
+
+def test_freeze_rejects_empty_directory_output(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    store = _store(project)
+    workspace = _backend(project).create(task_id="task-a", base_tree_id=store.capture(project), store=store)
+    (workspace.change_dir / "cases").mkdir(parents=True)
+    with pytest.raises(WorkspaceError, match="directory empty"):
+        store.freeze_write_set(
+            workspace,
+            claims=_claims("change:cases/**"),
+            outputs=("change:cases/",),
+        )
+
+
+def test_capture_skips_sibling_change_dirs(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    sibling = project / "qa" / "changes" / "OTHER"
+    sibling.mkdir(parents=True)
+    (sibling / "leak.txt").write_text("nope\n", encoding="utf-8")
+    (project / "qa" / "changes" / "CH-1" / "driver.json").write_text("{}\n", encoding="utf-8")
+    (project / "qa" / "changes" / "CH-1" / "driver.lock").write_text("1\ntoken\n", encoding="utf-8")
+    store = _store(project)
+    tree = store.capture(project)
+    dest = tmp_path / "out"
+    dest.mkdir()
+    store.materialize(tree, dest)
+    assert not (dest / "qa" / "changes" / "OTHER").exists()
+    assert not (dest / "qa" / "changes" / "CH-1" / "driver.json").exists()
+    assert not (dest / "qa" / "changes" / "CH-1" / "driver.lock").exists()
 
 
 def test_freeze_rejects_symlink_escape(tmp_path: Path) -> None:

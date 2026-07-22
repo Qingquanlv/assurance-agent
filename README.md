@@ -120,7 +120,6 @@ aa workflow run --change <id> --entrypoint full --adapter opencode --server http
 
 | 阶段 | Skill | Agent | 说明 |
 |---|---|---|---|
-| 0 | `aa-test-infra-bootstrap` | — | 一次性测试基础设施脚手架 |
 | 1.1 | — | 编排器 | Skill Registry Check + `execution_mode` 探测 |
 | 1.2 | `aa-explore` | `aa-doc-author` | 历史上下文 + 浅读源码 + 研判 `advisory.json` |
 | 2.1 | `aa-case-design` | `aa-doc-author` | Case 增量设计 |

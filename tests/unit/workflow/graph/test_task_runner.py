@@ -35,6 +35,7 @@ from assurance_agent.workflow.graph.contracts import (
     parse_execution_contracts,
 )
 from assurance_agent.workflow.graph.handlers import operation as operation_mod
+from assurance_agent.workflow.graph.handlers.operation import link_host_task_paths
 from assurance_agent.workflow.graph.handlers.agent import AgentHandler
 from assurance_agent.workflow.graph.handlers.gate import GateHandler
 from assurance_agent.workflow.graph.handlers.interrupt import InterruptHandler
@@ -327,7 +328,8 @@ def test_agent_handler_builds_workspace_request_and_freezes(tmp_path: Path) -> N
     assert request.change_id == "CH-1"
     assert request.workspace_root == workspace.root
     assert request.timeout_seconds == 60.0
-    assert request.allowed_writes == ("change:explore/**",)
+    # Declared outputs are always authorized alongside the contract's write scope.
+    assert request.allowed_writes == ("change:explore/**", "change:explore/summary.md")
     assert "Authorized write paths: change:explore/**" in request.prompt
     assert "skill(name='aa-explore')" in request.prompt
 
@@ -390,6 +392,7 @@ def test_default_operations_registry_has_exact_keys() -> None:
         "operation:run-tests",
         "operation:allocate-healing-attempt",
         "operation:record-healing-status",
+        "operation:inspect",
         "operation:stop",
     }
 
@@ -428,20 +431,22 @@ def test_stop_requires_reason(tmp_path: Path) -> None:
 
 def test_skill_registry_check(tmp_path: Path) -> None:
     project = _make_project(tmp_path, skills=True)
+    workspace = _workspace(project)
     result = operation_mod.skill_registry_check(
         _task("operation:skill-registry-check"),
-        _workspace(project),
+        workspace,
         _context(project, params={"max_healing_attempts": 3}),
     )
     assert result.status == "succeeded"
-    assert result.value == {"healing_available": True}
+    assert result.value == {"healing_available": True, "status": "pass"}
+    assert (workspace.change_dir / "registry" / "skill-registry-check.json").is_file()
 
     zero_budget = operation_mod.skill_registry_check(
         _task("operation:skill-registry-check"),
         _workspace(project),
         _context(project, params={"max_healing_attempts": 0}),
     )
-    assert zero_budget.value == {"healing_available": False}
+    assert zero_budget.value == {"healing_available": False, "status": "fail"}
 
     bare = _make_project(tmp_path / "bare", skills=False)
     missing = operation_mod.skill_registry_check(
@@ -449,13 +454,15 @@ def test_skill_registry_check(tmp_path: Path) -> None:
         _workspace(bare),
         _context(bare, params={"max_healing_attempts": 3}),
     )
-    assert missing.value == {"healing_available": False}
+    assert missing.value == {"healing_available": False, "status": "fail"}
 
 
 def test_run_tests_invokes_run_change_against_workspace_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = _make_project(tmp_path)
+    (project / ".venv").mkdir()
+    (project / "node_modules").mkdir()
     workspace = _workspace(project)
     calls: dict[str, Path] = {}
 
@@ -478,6 +485,43 @@ def test_run_tests_invokes_run_change_against_workspace_paths(
     assert result.value == {"batch_id": "b-1", "final_status": "PASS"}
     assert calls["project_root"] == workspace.project_root
     assert calls["change_dir"] == workspace.change_dir
+    assert (workspace.project_root / ".venv").is_symlink()
+    assert (workspace.project_root / ".venv").resolve() == (project / ".venv").resolve()
+    assert (workspace.project_root / "node_modules").is_symlink()
+
+
+def test_workspace_capture_includes_python_version(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    (project / ".python-version").write_text("3.11\n", encoding="utf-8")
+    workspace = _workspace(project)
+    captured = workspace.project_root / ".python-version"
+    assert captured.is_file()
+    assert not captured.is_symlink()
+    assert captured.read_text(encoding="utf-8").strip() == "3.11"
+
+
+def test_inspect_operation_writes_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project = _make_project(tmp_path)
+    execution = project / "qa" / "changes" / "CH-1" / "execution"
+    execution.mkdir(parents=True, exist_ok=True)
+    (execution / "execution-manifest.yaml").write_text("batch_id: b-1\n", encoding="utf-8")
+
+    class _InspectResult:
+        class _Analysis:
+            batch_id = "b-1"
+            final_status = "SKIPPED"
+            status = "no_failures"
+
+        analysis = _Analysis()
+
+    monkeypatch.setattr(operation_mod, "inspect_change", lambda *_a, **_k: _InspectResult())
+    workspace = _workspace(project)
+    result = operation_mod.inspect_operation(
+        _task("operation:inspect"), workspace, _context(project)
+    )
+
+    assert result.status == "succeeded"
+    assert result.value == {"batch_id": "b-1", "final_status": "SKIPPED", "status": "no_failures"}
 
 
 def _write_execution_and_proposal(project: Path) -> None:
@@ -490,7 +534,7 @@ def _write_execution_and_proposal(project: Path) -> None:
     (healing / "fix-proposal.json").write_text(json.dumps({"proposals": []}), encoding="utf-8")
 
 
-def test_allocate_healing_attempt_writes_baseline_and_state_updates(tmp_path: Path) -> None:
+def test_allocate_healing_attempt_writes_baseline_and_status(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     _write_execution_and_proposal(project)
     workspace = _workspace(project)
@@ -509,11 +553,55 @@ def test_allocate_healing_attempt_writes_baseline_and_state_updates(tmp_path: Pa
     expected_episode = hashlib.sha256(f"CH-1:20260719-120000:{proposal_sha}".encode()).hexdigest()
     assert payload["episode_id"] == expected_episode
 
-    update = result.state_updates["healing_attempt"]
-    assert isinstance(update, dict)
-    assert update["attempt_id"] == f"ha-{expected_episode[:12]}-1"
-    assert update["attempt_number"] == 1
-    assert update["source_batch_id"] == "20260719-120000"
+    assert isinstance(result.value, dict)
+    assert result.value["attempt_id"] == f"ha-{expected_episode[:12]}-1"
+    assert result.value["attempt_number"] == 1
+    assert result.value["source_batch_id"] == "20260719-120000"
+
+    status = json.loads((workspace.change_dir / "healing" / "status.json").read_text(encoding="utf-8"))
+    assert status["attempts_used"] == 1
+    assert status["status"] == "pending"
+    assert status["latest_attempt_id"] == result.value["attempt_id"]
+
+    from assurance_agent.workflow.healing.allocation import commit_healing_allocation_ledger
+    from assurance_agent.workflow.core.events import read_events
+
+    assert isinstance(result.value, dict)
+    committed = commit_healing_allocation_ledger(
+        project / "qa" / "changes" / "CH-1",
+        episode_id=str(result.value["episode_id"]),
+        attempt_id=str(result.value["attempt_id"]),
+        attempt_number=int(result.value["attempt_number"]),
+        operation_id=str(result.value["operation_id"]),
+        source_batch_id=str(result.value["source_batch_id"]),
+        baseline_sha256=str(result.value["baseline_sha256"]),
+        entry_batch_id=str(result.value["entry_batch_id"]),
+    )
+    assert committed is True
+    types = [e["type"] for e in read_events(project / "qa" / "changes" / "CH-1")]
+    assert types == ["healing_entry_baseline_pinned", "healing_attempt_allocated"]
+    assert commit_healing_allocation_ledger(
+        project / "qa" / "changes" / "CH-1",
+        episode_id=str(result.value["episode_id"]),
+        attempt_id=str(result.value["attempt_id"]),
+        attempt_number=int(result.value["attempt_number"]),
+        operation_id=str(result.value["operation_id"]),
+        source_batch_id=str(result.value["source_batch_id"]),
+        baseline_sha256=str(result.value["baseline_sha256"]),
+        entry_batch_id=str(result.value["entry_batch_id"]),
+    ) is False
+
+
+def test_link_host_task_paths_symlinks_events_jsonl(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    host_change = project / "qa" / "changes" / "CH-1"
+    host_change.mkdir(parents=True, exist_ok=True)
+    (host_change / "events.jsonl").write_text('{"seq":1}\n', encoding="utf-8")
+    workspace = _workspace(project)
+    link_host_task_paths(workspace, _context(project))
+    task_events = workspace.change_dir / "events.jsonl"
+    assert task_events.is_symlink()
+    assert task_events.resolve() == (host_change / "events.jsonl").resolve()
 
 
 def test_allocate_healing_attempt_requires_execution_batch(tmp_path: Path) -> None:
@@ -527,19 +615,22 @@ def test_allocate_healing_attempt_requires_execution_batch(tmp_path: Path) -> No
 
 def test_record_healing_status(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
+    workspace = _workspace(project)
     task = _task(
         "operation:record-healing-status",
         input_payload={"with": {"status": "resolved"}, "context": {}},
     )
-    result = operation_mod.operation_record_healing_status(task, _workspace(project), _context(project))
+    result = operation_mod.operation_record_healing_status(task, workspace, _context(project))
     assert result.status == "succeeded"
     assert result.value == {"healing_status": "resolved"}
+    status = json.loads((workspace.change_dir / "healing" / "status.json").read_text(encoding="utf-8"))
+    assert status["status"] == "resolved"
 
     bogus = _task(
         "operation:record-healing-status",
         input_payload={"with": {"status": "bogus"}, "context": {}},
     )
-    rejected = operation_mod.operation_record_healing_status(bogus, _workspace(project), _context(project))
+    rejected = operation_mod.operation_record_healing_status(bogus, workspace, _context(project))
     assert rejected.status == "failed"
     assert rejected.error_kind == "invalid_input"
 

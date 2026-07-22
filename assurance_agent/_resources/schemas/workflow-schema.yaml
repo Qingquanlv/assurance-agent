@@ -1,8 +1,9 @@
 # =============================================================================
-# AA Workflow Schema v2 (canonical graph runtime)
+# AA Workflow Schema v2 (canonical GraphRuntime)
 # =============================================================================
 #
-# Packaged beside v1 until Task 15 cutover. schema_version must be exactly "2".
+# Packaged schema_version must be exactly "2". Topology, gates, and routes are
+# the sole orchestration contract for CLI / eval / benchmark.
 # =============================================================================
 
 schema_version: "2"
@@ -94,7 +95,7 @@ graphs:
     nodes:
       registry:
         uses: operation:skill-registry-check
-        outputs: [change:workflow-state.yaml]
+        outputs: [change:registry/skill-registry-check.json]
         gate: registry-gate
         retry: never
         timeout: local-operation
@@ -299,13 +300,12 @@ graphs:
         timeout: cli
 
       inspect:
-        uses: skill:aa-inspect
-        agent: aa-reviewer
+        uses: operation:inspect
         outputs:
           - change:inspect/failure-analysis.json
           - change:inspect/quality-gate-result.json
-        retry: agent-transient
-        timeout: agent
+        retry: cli-transient
+        timeout: cli
 
       healing:
         uses: graph:healing
@@ -325,10 +325,17 @@ graphs:
       - {from: START, to: e2e, when: "params.run_mode == 'codegen-only'"}
       - {from: START, to: fuzz, when: "params.run_mode == 'codegen-only'"}
       - {from: START, to: performance, when: "params.run_mode == 'codegen-only'"}
-      - {from: fact-baseline, to: api}
-      - {from: fact-baseline, to: e2e}
-      - {from: fact-baseline, to: fuzz}
-      - {from: fact-baseline, to: performance}
+      # Guard the fact-baseline fan-out so it is mutually exclusive with the
+      # codegen-only START edges above. Without the guard, a run where
+      # fact-baseline is already succeeded (e.g. an imported checkpoint / eval
+      # fixture seeded at plan tier) AND run_mode == 'codegen-only' would deliver
+      # BOTH edge:START and edge:fact-baseline into api/e2e/fuzz/performance,
+      # tripping the "selected by 2 non-mutually-exclusive incoming paths" planner
+      # error. codegen-only re-entry reads seeded facts from disk, not via token.
+      - {from: fact-baseline, to: api, when: "params.run_mode != 'codegen-only'"}
+      - {from: fact-baseline, to: e2e, when: "params.run_mode != 'codegen-only'"}
+      - {from: fact-baseline, to: fuzz, when: "params.run_mode != 'codegen-only'"}
+      - {from: fact-baseline, to: performance, when: "params.run_mode != 'codegen-only'"}
       - {from: api, to: generation-join}
       - {from: e2e, to: generation-join}
       - {from: fuzz, to: generation-join}
@@ -384,7 +391,7 @@ graphs:
       review:
         uses: skill:aa-api-plan-reviewer
         agent: aa-reviewer
-        outputs: [change:review/api-plan-review.json]
+        outputs: [change:review/api-plan-review.json, change:review/api-plan-review-summary.md]
         gate: api-plan-review-gate
         retry: agent-transient
         timeout: agent
@@ -479,7 +486,7 @@ graphs:
       review:
         uses: skill:aa-e2e-plan-reviewer
         agent: aa-reviewer
-        outputs: [change:review/plan-review.json]
+        outputs: [change:review/plan-review.json, change:review/plan-review-summary.md]
         gate: e2e-plan-review-gate
         retry: agent-transient
         timeout: agent
@@ -570,7 +577,7 @@ graphs:
       review:
         uses: skill:aa-fuzz-plan-reviewer
         agent: aa-reviewer
-        outputs: [change:review/fuzz-plan-review.json]
+        outputs: [change:review/fuzz-plan-review.json, change:review/fuzz-plan-review-summary.md]
         gate: fuzz-plan-review-gate
         retry: agent-transient
         timeout: agent
@@ -644,7 +651,7 @@ graphs:
       review:
         uses: skill:aa-performance-plan-reviewer
         agent: aa-reviewer
-        outputs: [change:review/performance-plan-review.json]
+        outputs: [change:review/performance-plan-review.json, change:review/performance-plan-review-summary.md]
         gate: performance-plan-review-gate
         retry: agent-transient
         timeout: agent
@@ -754,13 +761,12 @@ graphs:
         timeout: cli
 
       reinspect:
-        uses: skill:aa-inspect
-        agent: aa-reviewer
+        uses: operation:inspect
         outputs:
           - change:inspect/failure-analysis.json
           - change:inspect/quality-gate-result.json
-        retry: agent-transient
-        timeout: agent
+        retry: cli-transient
+        timeout: cli
 
       decide:
         uses: builtin:gate
@@ -841,9 +847,11 @@ graphs:
 
 gates:
   registry-gate:
-    reads: [workflow-state.yaml]
-    pass_when: "state.phases.skill_registry_check.status == 'pass'"
-    stop_when: "state.phases.skill_registry_check.status == 'fail'"
+    reads: [{ path: registry/skill-registry-check.json, as: registry }]
+    invalid_json: stop
+    missing_field_is: stop
+    pass_when: "registry.status == 'pass' and registry.healing_available == true"
+    stop_when: "registry.status == 'fail' or registry.healing_available == false"
 
   case-review-gate:
     reads: [review/case-review.json]
@@ -861,16 +869,13 @@ gates:
 
   case-design-gate:
     reads:
-      - workflow-state.yaml
       - { path: .qa.yaml, as: qa }
     invalid_json: stop
     missing_field_is: stop
     pass_when: >
-      state.run_context.interaction_mode == 'autonomous'
+      qa.approval.mode == 'autonomous'
       or (
-        state.run_context.orchestrator_skill == 'aa-intake'
-        and state.run_context.interaction_mode == 'interactive'
-        and qa.approval.approved_by == 'user'
+        qa.approval.approved_by == 'user'
         and qa.approval.approved_approach != null
         and qa.approval.approved_at != null
       )
@@ -940,22 +945,22 @@ gates:
     pass_when: "performance_plan_review.decision in ['pass','approved']"
 
   api-codegen-precondition-gate:
-    reads: [workflow-state.yaml]
+    reads: []
     pass_when: "gate('api-plan-review-gate').verdict == 'pass' and file_exists('repo:.aa/data-knowledge.yaml')"
     stop_when: "not file_exists('repo:.aa/data-knowledge.yaml')"
 
   e2e-codegen-precondition-gate:
-    reads: [workflow-state.yaml]
+    reads: []
     pass_when: "gate('e2e-plan-review-gate').verdict == 'pass' and file_exists('repo:.aa/data-knowledge.yaml')"
     stop_when: "not file_exists('repo:.aa/data-knowledge.yaml')"
 
   fuzz-codegen-precondition-gate:
-    reads: [workflow-state.yaml]
+    reads: []
     pass_when: "gate('fuzz-plan-review-gate').verdict == 'pass'"
     stop_when: "gate('fuzz-plan-review-gate').verdict == 'stop'"
 
   performance-codegen-precondition-gate:
-    reads: [workflow-state.yaml]
+    reads: []
     pass_when: "gate('performance-plan-review-gate').verdict == 'pass'"
     stop_when: "gate('performance-plan-review-gate').verdict == 'stop'"
 
@@ -973,55 +978,66 @@ gates:
 
   healing-entry-gate:
     reads:
-      - workflow-state.yaml
+      - { path: execution/execution-manifest.yaml, as: execution }
       - { path: inspect/failure-analysis.json, as: failure_analysis }
+      - { path: registry/skill-registry-check.json, as: registry }
+    missing_file_is: stop
+    invalid_json: stop
+    missing_field_is: stop
     enter_when: >
-      state.phases.execution.status == 'FAIL'
+      execution.final_status == 'FAIL'
       and any(failure_analysis.failures, fix_proposal_eligible == true)
-      and state.phases.inspect.inspect_mode == 'primary'
-      and state.gates.healing_available == true
-      and state.phases.healing.attempts_used < params.max_healing_attempts
+      and failure_analysis.inspect_mode == 'primary'
+      and registry.healing_available == true
     stop_when: >
-      state.phases.execution.status == 'FAIL'
+      execution.final_status == 'FAIL'
       and any(failure_analysis.failures, fix_proposal_eligible == true)
-      and state.gates.healing_available == false
+      and registry.healing_available == false
     skip_when: >
-      state.phases.execution.status in ['PASS','PASS_WITH_WARNINGS']
+      execution.final_status in ['PASS','PASS_WITH_WARNINGS']
       or not any(failure_analysis.failures, fix_proposal_eligible == true)
 
   healing-loop-gate:
     reads:
-      - workflow-state.yaml
+      - { path: execution/execution-manifest.yaml, as: execution }
       - { path: inspect/failure-analysis.json, as: failure_analysis }
-    exit_when: "state.phases.execution.status in ['PASS','PASS_WITH_WARNINGS']"
+      - { path: healing/status.json, as: healing }
+    missing_file_is: stop
+    invalid_json: stop
+    missing_field_is: stop
+    exit_when: "execution.final_status in ['PASS','PASS_WITH_WARNINGS']"
     continue_when: >
-      state.phases.execution.status == 'FAIL'
+      execution.final_status == 'FAIL'
       and any(failure_analysis.failures, fix_proposal_eligible == true)
-      and state.phases.healing.attempts_used < params.max_healing_attempts
+      and healing.attempts_used < params.max_healing_attempts
     stop_when: >
-      state.phases.healing.attempts_used >= params.max_healing_attempts
-      or state.phases.healing.all_fixers_no_op == true
+      healing.attempts_used >= params.max_healing_attempts
+      or healing.all_fixers_no_op == true
     reject_when: >
-      state.phases.execution.status == 'FAIL'
+      execution.final_status == 'FAIL'
       and not any(failure_analysis.failures, fix_proposal_eligible == true)
 
   archive-gate:
     reads:
-      - workflow-state.yaml
+      - { path: execution/execution-manifest.yaml, as: execution }
       - { path: inspect/failure-analysis.json, as: failure_analysis }
+      - { path: healing/status.json, as: healing }
       - { path: review/case-review.json, as: case_review }
       - { path: review/api-plan-review.json, as: api_plan_review }
       - { path: review/plan-review.json, as: plan_review }
+    missing_file_is: stop
+    invalid_json: stop
+    missing_field_is: stop
     pass_when: >
-      (params.auto_archive == true or state.user_requested_archive == true)
+      params.auto_archive == true
       and case_review.decision == 'pass'
       and (not ('api' in params.test_types) or api_plan_review.decision == 'pass')
       and (not ('e2e' in params.test_types) or plan_review.decision == 'pass')
-      and state.phases.execution.status in ['PASS','PASS_WITH_WARNINGS']
-      and state.phases.healing.status in ['not_needed','resolved','skipped']
-      and failure_analysis.source_batch_id == state.phases.execution.batch_id
+      and execution.final_status in ['PASS','PASS_WITH_WARNINGS']
+      and healing.status in ['not_needed','resolved','skipped']
+      and failure_analysis.source_batch_id == execution.batch_id
       and not any(failure_analysis.failures, fix_proposal_eligible == true)
     stop_when: >
-      state.phases.execution.status == 'FAIL'
-      or state.phases.healing.status in ['applied','exhausted','failed']
-      or failure_analysis.source_batch_id != state.phases.execution.batch_id
+      execution.final_status == 'FAIL'
+      or healing.status in ['applied','exhausted','failed']
+      or failure_analysis.source_batch_id != execution.batch_id

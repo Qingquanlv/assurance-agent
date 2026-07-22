@@ -1,6 +1,6 @@
 ---
 name: aa-intake
-description: "Run two-stage AA intake mode: interactive test-infra bootstrap (Phase 0) + explore + case design + case review/fix only. Prefer `aa workflow run --entrypoint case|intake` / workflow_start. Stops after case review passes; after user confirmation hand off via workflow_start (entrypoint: execute)."
+description: "Run two-stage AA intake mode: interactive explore + case design + case review/fix only. Prefer `aa workflow run --entrypoint case|intake` / workflow_start. Stops after case review passes; after user confirmation hand off via workflow_start (entrypoint: execute)."
 ---
 
 # AA Intake
@@ -15,23 +15,23 @@ description: "Run two-stage AA intake mode: interactive test-infra bootstrap (Ph
 > `workflow_start` (`entrypoint: execute`) or
 > `aa workflow run --change <id> --entrypoint execute`.
 
-It owns the intake scope plus **Phase 0 test-infra bootstrap** (runs at startup, before explore):
+It owns the intake scope:
 
 ```text
-test-infra-bootstrap (Phase 0) -> explore -> case-design -> case-review -> case-fix loop
+explore -> case-design -> case-review -> case-fix loop
 ```
 
 It does not run fact-baseline, plan, codegen, execution, inspect, healing, report, or archive phases.
 
 ## What is inline here vs referenced
 
-The **ordered intake runbook is inline in this file** (see **Intake Runbook** below) — Phase 0 bootstrap, the interactive explore/case-design behaviour, the case-review gate check, and the case-fix loop are written here as a gap-free checklist for the interactive agent.
+The **ordered intake runbook is inline in this file** (see **Intake Runbook** below) — the interactive explore/case-design behaviour, the case-review gate check, and the case-fix loop are written here as a gap-free checklist for the interactive agent.
 
 Operator recovery (expired lease, interrupt, digest drift) lives in
 `skills/aa-workflow/FALLBACK-RUNBOOK.md` — inspect / resume / import only. There is no
 hand-edited phase fallback and no agent orchestration loop that writes progression.
 
-Deep per-phase contracts: load `aa-test-infra-bootstrap`, `aa-explore`, `aa-case-design`,
+Deep per-phase contracts: load `aa-explore`, `aa-case-design`,
 `aa-case-reviewer`, `aa-case-fixer` when dispatched; this skill only sequences them.
 
 ## Startup
@@ -39,30 +39,7 @@ Deep per-phase contracts: load `aa-test-infra-bootstrap`, `aa-explore`, `aa-case
 1. Resolve `<change-id>` and runtime params. Prefer starting via
    `aa workflow run --entrypoint case|intake` / `workflow_start` so GraphRuntime owns the ledger.
 2. Ensure params `run_mode` is one of `full`, `case-only`, or `review-case`.
-
-### Phase 0 — Test Infra Bootstrap (interactive; runs before explore)
-
-Run **inline** in the primary agent before any intake phase dispatch when the driver has
-not already completed bootstrap. This is the **only** place in two-stage mode where
-bootstrap may ask the user for config (URLs, credentials, ports) when defaults cannot be
-verified from `run.py` / `web/.env` / `app/core/init_app.py`.
-
-```
-Load aa-test-infra-bootstrap
-  → check tests/config.py, tests/conftest.py, tests/schema_validation.py against per-file contract
-  → CREATE missing conformant files; KEEP existing conformant files untouched
-  → if a file exists but fails contract → STOP, ask user (never silently overwrite)
-  → if defaults cannot be verified → ask user before writing
-  → GraphRuntime / driver records bootstrap completion — never hand-edit workflow-state
-```
-
-Gate:
-
-- Bootstrap done and all 3 files present → continue to explore.
-- Pending or contract mismatch → **STOP** until bootstrap completes or user explicitly skips via interrupt resume.
-
 3. Intake-phase skills expected by the registry:
-   - `aa-test-infra-bootstrap` (Phase 0)
    - `aa-explore`
    - `aa-case-design`
    - `aa-case-reviewer`
@@ -84,10 +61,6 @@ commits node outcomes to the ledger; operators never hand-edit progression. Pref
 `aa workflow run --entrypoint case` / `workflow_start`.
 
 ```
-Phase 0 — Test Infra Bootstrap   (see Startup above; interactive; before explore)
-  → gate: bootstrap done + 3 files present, else STOP
-  → ledger: GraphRuntime commits bootstrap — do not hand-update workflow-state
-
 Phase 1.2 — Explore              (INLINE in primary agent when interactive)
   → load aa-explore; interaction_mode: interactive → ask per-pitfall open questions
   → write explore/advisory.json (open_questions answered_via: aa-intake, with user confirmation)

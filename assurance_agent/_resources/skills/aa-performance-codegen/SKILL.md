@@ -138,4 +138,4 @@ If any answer is unsafe, fix the locustfile before reporting codegen complete.
 - Do not write to `tests/api/`, `tests/e2e/`, or `tests/fuzz/` — performance output goes to `tests/perf/` only.
 - Do **not** read URLs / credentials / prefixes from `os.environ` or hardcoded literals in the locustfile — always go through `tests.config.settings`.
 - Do **not** skip the `@events.test_start` readiness listener — Locust does not load pytest conftest, so this is the only readiness gate for the performance layer.
-- If `tests/config.py` does not exist (test-infra not bootstrapped), STOP and request `aa-test-infra-bootstrap` to run — do not create it from `aa-performance-codegen`.
+- If `tests/config.py` does not exist, STOP and report that the shared test infra is missing — do not create it from `aa-performance-codegen`.

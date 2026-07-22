@@ -219,3 +219,21 @@ def test_build_scenario_verdicts_pass_fail_skip() -> None:
     assert by_cap["fast"] == "PASS"
     assert by_cap["slow"] == "FAIL"
     assert by_cap["quiet"] == "SKIPPED"
+
+
+def test_build_scenario_verdicts_accepts_dict_endpoint() -> None:
+    scenarios = [
+        {
+            "capability": "user-list-pagination",
+            "endpoint": {"method": "GET", "path": "/api/v1/user/list"},
+            "thresholds": {"p95_ms": 2000, "error_rate_max": 0.01},
+        }
+    ]
+    stats = {
+        "user-list-paginated-query": {"p95": 40.0, "requests": 100.0, "failures": 0.0},
+        "user-list-pagination": {"p95": 40.0, "requests": 100.0, "failures": 0.0},
+    }
+    verdicts = build_scenario_verdicts(scenarios, stats)
+    assert len(verdicts) == 1
+    assert verdicts[0].endpoint == "GET /api/v1/user/list"
+    assert verdicts[0].verdict == "PASS"

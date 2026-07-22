@@ -36,17 +36,20 @@ contracts:
 
   operation:record-healing-status:
     handler: operation
-    side_effect_free: true
+    writes:
+      - change:healing/status.json
+    authorization_writes:
+      - change:healing/status.json
+    retryable_errors: []
 
   operation:skill-registry-check:
     handler: operation
     reads:
       - project:skills/**
-      - change:workflow-state.yaml
     writes:
-      - change:workflow-state.yaml
+      - change:registry/**
     authorization_writes:
-      - change:workflow-state.yaml
+      - change:registry/**
     retryable_errors: []
 
   operation:run-tests:
@@ -55,13 +58,24 @@ contracts:
       - repo:tests/api/**
       - repo:tests/e2e/**
       - repo:tests/fuzz/**
-      - repo:tests/performance/**
+      - repo:tests/perf/**
       - change:codegen/**
     writes:
       - change:execution/**
     authorization_writes:
       - change:execution/**
     exclusive: [repo:test-runtime]
+    retryable_errors: [timeout, transport]
+
+  operation:inspect:
+    handler: operation
+    reads:
+      - change:execution/**
+      - change:codegen/**
+    writes:
+      - change:inspect/**
+    authorization_writes:
+      - change:inspect/**
     retryable_errors: [timeout, transport]
 
   operation:allocate-healing-attempt:
@@ -71,7 +85,10 @@ contracts:
       - change:healing/fix-proposal.json
     writes:
       - change:healing/entry-baseline.json
+      - change:healing/status.json
     authorization_writes:
+      - change:healing/entry-baseline.json
+      - change:healing/status.json
       - change:healing/**
     retryable_errors: []
 
@@ -97,10 +114,12 @@ contracts:
       - change:.qa.yaml
       - change:proposal.md
       - change:cases/**
+      - change:trace/minimum-coverage-matrix.yaml
     authorization_writes:
       - change:.qa.yaml
       - change:proposal.md
       - change:cases/**
+      - change:trace/minimum-coverage-matrix.yaml
     retryable_errors: [timeout, transport, rate_limit]
     reconnect: true
 
@@ -110,6 +129,7 @@ contracts:
       - change:.qa.yaml
       - change:proposal.md
       - change:cases/**
+      - change:trace/minimum-coverage-matrix.yaml
     writes:
       - change:review/case-review.json
     authorization_writes:
@@ -123,16 +143,19 @@ contracts:
       - change:review/case-review.json
       - change:.qa.yaml
       - change:cases/**
+      - change:trace/minimum-coverage-matrix.yaml
     writes:
       - change:review/case-review-apply-summary.md
       - change:cases/**
       - change:.qa.yaml
       - change:proposal.md
+      - change:trace/minimum-coverage-matrix.yaml
     authorization_writes:
       - change:review/**
       - change:cases/**
       - change:.qa.yaml
       - change:proposal.md
+      - change:trace/minimum-coverage-matrix.yaml
     retryable_errors: [timeout, transport, rate_limit]
     reconnect: true
 
@@ -161,8 +184,7 @@ contracts:
       - change:plans/api-codegen-plan.md
       - change:plans/m3-review-summary.md
     authorization_writes:
-      - change:plans/api-*.md
-      - change:plans/m3-review-summary.md
+      - change:plans/**
     retryable_errors: [timeout, transport, rate_limit]
     reconnect: true
 
@@ -173,8 +195,9 @@ contracts:
       - change:plans/m3-review-summary.md
     writes:
       - change:review/api-plan-review.json
+      - change:review/api-plan-review-summary.md
     authorization_writes:
-      - change:review/api-plan-review.json
+      - change:review/**
     retryable_errors: [timeout, transport, rate_limit]
     reconnect: true
 
@@ -189,8 +212,7 @@ contracts:
       - change:plans/m3-review-summary.md
     authorization_writes:
       - change:review/**
-      - change:plans/api-*.md
-      - change:plans/m3-review-summary.md
+      - change:plans/**
     retryable_errors: [timeout, transport, rate_limit]
     reconnect: true
 
@@ -203,10 +225,14 @@ contracts:
     writes:
       - change:codegen/api-codegen-summary.md
       - repo:tests/api/**
+      # Shared domain factories (create-if-missing / reuse). Serialized by the
+      # repo:test-infra exclusive lock so concurrent layers cannot clobber.
+      - repo:tests/testdata/**
     exclusive: [repo:test-infra]
     authorization_writes:
       - change:codegen/api-codegen-summary.md
       - repo:tests/api/**
+      - repo:tests/testdata/**
     retryable_errors: [timeout, transport, rate_limit]
     reconnect: true
 
@@ -222,8 +248,7 @@ contracts:
       - change:plans/e2e-codegen-plan.md
       - change:plans/m4-review-summary.md
     authorization_writes:
-      - change:plans/e2e-*.md
-      - change:plans/m4-review-summary.md
+      - change:plans/**
     retryable_errors: [timeout, transport, rate_limit]
     reconnect: true
 
@@ -234,8 +259,9 @@ contracts:
       - change:plans/m4-review-summary.md
     writes:
       - change:review/plan-review.json
+      - change:review/plan-review-summary.md
     authorization_writes:
-      - change:review/plan-review.json
+      - change:review/**
     retryable_errors: [timeout, transport, rate_limit]
     reconnect: true
 
@@ -250,8 +276,7 @@ contracts:
       - change:plans/m4-review-summary.md
     authorization_writes:
       - change:review/**
-      - change:plans/e2e-*.md
-      - change:plans/m4-review-summary.md
+      - change:plans/**
     retryable_errors: [timeout, transport, rate_limit]
     reconnect: true
 
@@ -264,10 +289,12 @@ contracts:
     writes:
       - change:codegen/e2e-codegen-summary.md
       - repo:tests/e2e/**
+      - repo:tests/testdata/**
     exclusive: [repo:test-infra]
     authorization_writes:
       - change:codegen/e2e-codegen-summary.md
       - repo:tests/e2e/**
+      - repo:tests/testdata/**
     retryable_errors: [timeout, transport, rate_limit]
     reconnect: true
 
@@ -282,7 +309,7 @@ contracts:
       - change:plans/fuzz-codegen-plan.md
       - change:plans/fuzz-review-summary.md
     authorization_writes:
-      - change:plans/fuzz-*.md
+      - change:plans/**
     retryable_errors: [timeout, transport, rate_limit]
     reconnect: true
 
@@ -292,8 +319,9 @@ contracts:
       - change:plans/fuzz-*.md
     writes:
       - change:review/fuzz-plan-review.json
+      - change:review/fuzz-plan-review-summary.md
     authorization_writes:
-      - change:review/fuzz-plan-review.json
+      - change:review/**
     retryable_errors: [timeout, transport, rate_limit]
     reconnect: true
 
@@ -305,10 +333,12 @@ contracts:
     writes:
       - change:codegen/fuzz-codegen-summary.md
       - repo:tests/fuzz/**
+      - repo:tests/testdata/**
     exclusive: [repo:test-infra]
     authorization_writes:
       - change:codegen/fuzz-codegen-summary.md
       - repo:tests/fuzz/**
+      - repo:tests/testdata/**
     retryable_errors: [timeout, transport, rate_limit]
     reconnect: true
 
@@ -323,7 +353,7 @@ contracts:
       - change:plans/performance-codegen-plan.md
       - change:plans/performance-review-summary.md
     authorization_writes:
-      - change:plans/performance-*.md
+      - change:plans/**
     retryable_errors: [timeout, transport, rate_limit]
     reconnect: true
 
@@ -333,8 +363,9 @@ contracts:
       - change:plans/performance-*.md
     writes:
       - change:review/performance-plan-review.json
+      - change:review/performance-plan-review-summary.md
     authorization_writes:
-      - change:review/performance-plan-review.json
+      - change:review/**
     retryable_errors: [timeout, transport, rate_limit]
     reconnect: true
 
@@ -345,11 +376,13 @@ contracts:
       - change:review/performance-plan-review.json
     writes:
       - change:codegen/performance-codegen-summary.md
-      - repo:tests/performance/**
+      - repo:tests/perf/**
+      - repo:tests/testdata/**
     exclusive: [repo:test-infra]
     authorization_writes:
       - change:codegen/performance-codegen-summary.md
-      - repo:tests/performance/**
+      - repo:tests/perf/**
+      - repo:tests/testdata/**
     retryable_errors: [timeout, transport, rate_limit]
     reconnect: true
 
@@ -384,14 +417,19 @@ contracts:
       - change:healing/fix-proposal.json
       - change:codegen/api-codegen-summary.md
       - repo:tests/api/**
+      - repo:tests/testdata/**
     writes:
       - change:healing/api-apply-summary.json
       - change:healing/fixer-safety-check.json
       - repo:tests/api/**
+      # Shared domain factories referenced by api tests. Trusted edits only
+      # (preserve shared contract); serialized by the repo:test-infra lock.
+      - repo:tests/testdata/**
     exclusive: [repo:test-infra]
     authorization_writes:
       - change:healing/**
       - repo:tests/api/**
+      - repo:tests/testdata/**
     retryable_errors: [timeout, transport, rate_limit]
     reconnect: true
 
@@ -401,14 +439,17 @@ contracts:
       - change:healing/fix-proposal.json
       - change:codegen/e2e-codegen-summary.md
       - repo:tests/e2e/**
+      - repo:tests/testdata/**
     writes:
       - change:healing/e2e-apply-summary.json
       - change:healing/fixer-safety-check.json
       - repo:tests/e2e/**
+      - repo:tests/testdata/**
     exclusive: [repo:test-infra]
     authorization_writes:
       - change:healing/**
       - repo:tests/e2e/**
+      - repo:tests/testdata/**
     retryable_errors: [timeout, transport, rate_limit]
     reconnect: true
 

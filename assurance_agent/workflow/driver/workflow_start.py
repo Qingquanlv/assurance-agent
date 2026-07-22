@@ -141,6 +141,9 @@ def start_workflow_detached(
             argv += ["--model", model]
     else:
         argv += ["--agent-cmd", agent_cmd or "cursor-agent --print"]
+        # Headless/cursor-agent also honors --model (default applied in workflow_cmd).
+        if model:
+            argv += ["--model", model]
     if parent_session:
         argv += ["--parent-session", parent_session]
     if params:

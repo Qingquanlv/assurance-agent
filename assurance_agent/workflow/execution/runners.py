@@ -6,6 +6,7 @@ SKIPPED result. subprocess.run is monkeypatched in unit tests.
 """
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,20 @@ from assurance_agent.workflow.execution.results import (
 )
 
 _RAW = "raw"
+
+
+def _subprocess_env(project_root: Path) -> dict[str, str]:
+    """Put the SUT project root first so ``import tests`` resolves to the SUT.
+
+    Editable installs of assurance-agent (or other packages) may expose a top-level
+    ``tests`` package on ``sys.path``; without this, SUT ``tests/config.py`` imports
+    fail with ``ModuleNotFoundError: No module named 'tests.config'``.
+    """
+    env = os.environ.copy()
+    root = str(project_root.resolve())
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = root if not existing else f"{root}{os.pathsep}{existing}"
+    return env
 
 
 def run_pytest_target(
@@ -74,7 +89,13 @@ def run_pytest_target(
         args += [f"--cov={cov_package}", "--cov-branch", f"--cov-report=json:{cov_json}"]
     command = " ".join(args)
 
-    proc = subprocess.run(args, cwd=str(project_root), capture_output=True, text=True)  # noqa: S603
+    proc = subprocess.run(  # noqa: S603
+        args,
+        cwd=str(project_root),
+        capture_output=True,
+        text=True,
+        env=_subprocess_env(project_root),
+    )
     log_path.write_text(f"$ {command}\n\n{proc.stdout or ''}\n{proc.stderr or ''}", encoding="utf-8")
 
     return parse_pytest_json(
@@ -237,7 +258,13 @@ def run_performance_target(
             "--only-summary",
         ]
         commands.append(" ".join(args))
-        proc = subprocess.run(args, cwd=str(project_root), capture_output=True, text=True)  # noqa: S603
+        proc = subprocess.run(  # noqa: S603
+            args,
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            env=_subprocess_env(project_root),
+        )
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(f"$ {' '.join(args)}\n\n{proc.stdout or ''}\n{proc.stderr or ''}\n")
         stats_csv = prefix.with_name(prefix.name + "_stats.csv")
@@ -296,6 +323,29 @@ def parse_locust_stats(csv_path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _endpoint_lookup_keys(endpoint: Any) -> list[str]:
+    """Normalize case.yaml endpoint (str or {method,path}) into stats lookup keys."""
+    if isinstance(endpoint, dict):
+        method = str(endpoint.get("method") or "").strip().upper()
+        path = str(endpoint.get("path") or "").strip()
+        keys: list[str] = []
+        if method and path:
+            keys.append(f"{method} {path}")
+        if path:
+            keys.append(path)
+        return keys
+    text = str(endpoint or "").strip()
+    return [text] if text else []
+
+
+def _endpoint_label(endpoint: Any) -> str:
+    if isinstance(endpoint, dict):
+        method = str(endpoint.get("method") or "").strip().upper()
+        path = str(endpoint.get("path") or "").strip()
+        return f"{method} {path}".strip()
+    return str(endpoint or "")
+
+
 def build_scenario_verdicts(
     scenarios: list[dict[str, Any]],
     stats_by_name: dict[str, dict[str, float]],
@@ -303,12 +353,19 @@ def build_scenario_verdicts(
     verdicts: list[PerformanceScenarioVerdict] = []
     for sc in scenarios:
         thr = sc["thresholds"]
-        stat = stats_by_name.get(sc["capability"]) or stats_by_name.get(sc["endpoint"])
+        endpoint = sc["endpoint"]
+        endpoint_label = _endpoint_label(endpoint)
+        stat = stats_by_name.get(sc["capability"])
+        if not stat:
+            for key in _endpoint_lookup_keys(endpoint):
+                stat = stats_by_name.get(key)
+                if stat:
+                    break
         if not stat or stat["requests"] == 0:
             verdicts.append(
                 PerformanceScenarioVerdict(
                     capability=sc["capability"],
-                    endpoint=sc["endpoint"],
+                    endpoint=endpoint_label,
                     measured_p95_ms=None,
                     threshold_p95_ms=float(thr["p95_ms"]),
                     measured_error_rate=None,
@@ -322,7 +379,7 @@ def build_scenario_verdicts(
         verdicts.append(
             PerformanceScenarioVerdict(
                 capability=sc["capability"],
-                endpoint=sc["endpoint"],
+                endpoint=endpoint_label,
                 measured_p95_ms=float(stat["p95"]),
                 threshold_p95_ms=float(thr["p95_ms"]),
                 measured_error_rate=round(error_rate, 4),
@@ -369,9 +426,10 @@ def _parse_perf_case(case: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(thresholds, dict) or thresholds.get("p95_ms") is None:
         return None
     perf = case.get("performance") or ((case.get("automation") or {}).get("performance")) or {}
+    endpoint = nested.get("endpoint") or perf.get("endpoint") or ""
     return {
         "capability": nested.get("capability") or perf.get("capability") or case.get("case_id") or "unknown",
-        "endpoint": nested.get("endpoint") or perf.get("endpoint") or "",
+        "endpoint": endpoint,
         "thresholds": {
             "p95_ms": float(thresholds["p95_ms"]),
             "error_rate_max": float(thresholds.get("error_rate_max", 0.01)),

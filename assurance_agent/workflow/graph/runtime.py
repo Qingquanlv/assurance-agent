@@ -214,8 +214,46 @@ def _install_task12_runtime_patches() -> None:
 
     original_seed = planner_mod._seed_outcomes
 
+    def _imported_task_id(structural_path: str, node_id: str) -> str:
+        return f"{structural_path}:{node_id}"
+
+    def _root_invocation_id(projection: GraphProjection) -> str:
+        head, _, _ = projection.checkpoint_ns.partition("/")
+        return head or projection.invocation_id
+
+    def _overlay_imported_outcomes(
+        graph,
+        projection: GraphProjection,
+        context: RuntimeContext,
+        outcomes,
+        retry,
+    ):
+        """Honor root ``task_imported`` records inside nested subgraph projections."""
+        from assurance_agent.workflow.graph.checkpoint import project_invocation
+
+        root_id = _root_invocation_id(projection)
+        if root_id == projection.invocation_id:
+            root_projection = projection
+        else:
+            root_projection = project_invocation(context.change_dir, root_id)
+        filtered_retry = list(retry)
+        for nid in graph.declaration_order:
+            imported = root_projection.tasks.get(_imported_task_id(projection.structural_path, nid))
+            if imported is None or imported.status != "succeeded":
+                continue
+            outcome = outcomes.get(nid)
+            if outcome is None:
+                continue
+            if outcome.status == "succeeded":
+                continue
+            outcomes[nid] = planner_mod._Outcome(status="succeeded", task=imported)
+            filtered_retry = [task for task in filtered_retry if task.node_id != nid]
+        return filtered_retry
+
     def _seed_outcomes(compiled, graph, projection, context):  # type: ignore[no-untyped-def]
         outcomes, retry, fail_reason = original_seed(compiled, graph, projection, context)
+        if fail_reason is None:
+            retry = _overlay_imported_outcomes(graph, projection, context, outcomes, retry)
         if fail_reason is not None:
             return outcomes, retry, fail_reason
         for nid, outcome in list(outcomes.items()):
@@ -258,13 +296,6 @@ class GraphDefinitionChanged(GraphRuntimeError):
 
 class GraphIntegrityError(GraphRuntimeError):
     """checkpoint/ledger 损坏或因果完整性失败。"""
-
-
-class _EmptyArtifacts:
-    """最小 ArtifactReader：缺读一律失败，由 planner 按 MISSING 处理。"""
-
-    def read_json(self, tree_id: str, logical_path: str) -> object:
-        raise FileNotFoundError(logical_path)
 
 
 def graph_status_from_projection(
@@ -754,11 +785,17 @@ class GraphRuntime:
                 f"action {command.action!r} not allowed for interrupt {command.interrupt_id}"
             )
         audited = self._rehash_artifact_view(context.change_dir, pending)
-        child_invocation_id = _child_invocation_from_ns(pending.checkpoint_ns, projection.checkpoint_ns)
+        # Emit graph_resumed for every invocation along the interrupt ns
+        # (root → mid → leaf). Writing only root+leaf leaves intermediate
+        # subgraphs with a still-pending interrupt, so they re-bubble the
+        # same gate instead of honouring resume.action.
+        resume_invocation_ids = _invocation_ids_along_ns(pending.checkpoint_ns)
+        if projection.invocation_id not in resume_invocation_ids:
+            resume_invocation_ids.insert(0, projection.invocation_id)
         with transaction(context.change_dir) as txn:
             resumed = GraphResumedEvent(
                 type="graph_resumed",
-                invocation_id=projection.invocation_id,
+                invocation_id=resume_invocation_ids[0],
                 checkpoint_ns=pending.checkpoint_ns,
                 interrupt_id=command.interrupt_id,
                 action=command.action,
@@ -766,9 +803,11 @@ class GraphRuntime:
                 who=command.who,
                 audited_reads_sha256=audited,
             )
-            txn.append_strict(resumed)
-            if child_invocation_id is not None and child_invocation_id != projection.invocation_id:
-                txn.append_strict(resumed.model_copy(update={"invocation_id": child_invocation_id}))
+            for index, invocation_id in enumerate(resume_invocation_ids):
+                if index == 0:
+                    txn.append_strict(resumed)
+                else:
+                    txn.append_strict(resumed.model_copy(update={"invocation_id": invocation_id}))
             if command.action == "stop":
                 txn.append_strict(
                     GraphTerminalEvent(
@@ -835,7 +874,7 @@ class GraphRuntime:
     # ------------------------------------------------------------------ drive
 
     def _drive(self, invocation_id: str, context: RuntimeContext) -> RunResult:
-        artifacts = _EmptyArtifacts()
+        artifacts = self._objects
         while True:
             try:
                 projection = self._checkpoints.project(invocation_id)
@@ -903,6 +942,27 @@ class GraphRuntime:
             if wave.interrupted:
                 projection = self._checkpoints.project(invocation_id)
                 return self._result_from_projection(projection)
+
+            if wave.stopped:
+                reason = "task stopped"
+                for task_id in wave.stopped:
+                    task_proj = projection.tasks.get(task_id)
+                    if task_proj is not None and isinstance(task_proj.value, dict):
+                        raw = task_proj.value.get("reason")
+                        if isinstance(raw, str) and raw.strip():
+                            reason = raw
+                            break
+                    elif task_proj is not None and isinstance(task_proj.value, str) and task_proj.value.strip():
+                        reason = task_proj.value
+                        break
+                stop_plan = PlanResult(
+                    superstep_id=plan.superstep_id,
+                    checkpoint_id=plan.checkpoint_id,
+                    tasks=(),
+                    terminal="stop",
+                    reason=reason,
+                )
+                return self._finish_terminal(invocation_id, context, stop_plan)
 
             if wave.retry_at is not None:
                 retry_at = _parse_ts(wave.retry_at)
@@ -1157,6 +1217,16 @@ def _child_invocation_from_ns(checkpoint_ns: str, root_ns: str) -> str | None:
     if len(parts) < 3:
         return None
     return parts[-1]
+
+
+def _invocation_ids_along_ns(checkpoint_ns: str) -> list[str]:
+    """Return invocation ids embedded in a checkpoint namespace.
+
+    Namespace shape is ``inv0/node1/inv1/node2/inv2/...`` — even-index segments
+    are invocation ids, odd-index segments are node ids.
+    """
+    parts = [part for part in checkpoint_ns.split("/") if part]
+    return [parts[index] for index in range(0, len(parts), 2)]
 
 
 def _strip_sha_prefix(value: str) -> str:

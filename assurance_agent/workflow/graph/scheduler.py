@@ -27,6 +27,7 @@ from assurance_agent.workflow.core.graph_events import (
     SuperstepCommittedEvent,
     TaskAttemptFailedEvent,
     TaskAttemptStartedEvent,
+    TaskAttemptStoppedEvent,
     TaskAttemptSucceededEvent,
 )
 from assurance_agent.workflow.core.graph_types import ErrorKind
@@ -74,6 +75,7 @@ from assurance_agent.workflow.graph.workspace import (
     WorkspaceBackend,
     WorkspaceError,
 )
+from assurance_agent.workflow.healing.allocation import commit_healing_allocation_ledger
 
 
 class SchedulerError(AaError):
@@ -191,7 +193,7 @@ class Scheduler:
                         pending_writes,
                         retry_ats,
                     )
-                    if settled.status in ("failed", "interrupted"):
+                    if settled.status in ("failed", "interrupted", "stopped"):
                         stop_submitting = True
                     del futures[finished]
                 if stop_submitting:
@@ -240,16 +242,16 @@ class Scheduler:
         stopped = list(dict.fromkeys(stopped))
         pending_writes = list(dict.fromkeys(pending_writes))
 
-        wave_ok = not failed and not interrupted and not retry_ats
+        wave_ok = not failed and not interrupted and not retry_ats and not stopped
         required_ids = {task.task_id for task in wave}
-        completed_ok = set(succeeded) | set(stopped)
+        completed_ok = set(succeeded)
         if wave_ok and required_ids and required_ids <= completed_ok:
             try:
                 pending_writes = self._commit_wave(
                     plan=plan,
                     projection=projection,
                     context=context,
-                    succeeded_ids=succeeded + stopped,
+                    succeeded_ids=succeeded,
                 )
             except (WorkspaceError, ProgressionError, SchedulerError, ValueError):
                 # Update 失败：保留 pending write-set，不推断成功物化。
@@ -423,6 +425,27 @@ class Scheduler:
                 message=result.error or "task failed",
             )
 
+        if result.status == "stopped":
+            reason = result.error or "stopped"
+            if isinstance(result.value, dict):
+                raw = result.value.get("reason")
+                if isinstance(raw, str) and raw.strip():
+                    reason = raw
+            with transaction(context.change_dir) as txn:
+                txn.append_strict(
+                    TaskAttemptStoppedEvent(
+                        type="task_attempt_stopped",
+                        invocation_id=task.invocation_id,
+                        checkpoint_ns=task.checkpoint_ns,
+                        superstep_id=plan.superstep_id,
+                        task_id=task.task_id,
+                        attempt_id=prepared.attempt_id,
+                        reason=reason,
+                        value=result.value,
+                    )
+                )
+            return _SettledAttempt(task_id=task.task_id, status="stopped", write_set_id=None)
+
         try:
             write_set_id = self._freeze_if_needed(task, result, workspace)
         except WorkspaceError as exc:
@@ -474,8 +497,7 @@ class Scheduler:
             result=result,
             write_set_id=write_set_id,
         )
-        status: Literal["succeeded", "stopped"] = "stopped" if result.status == "stopped" else "succeeded"
-        return _SettledAttempt(task_id=task.task_id, status=status, write_set_id=write_set_id)
+        return _SettledAttempt(task_id=task.task_id, status="succeeded", write_set_id=write_set_id)
 
     def _freeze_if_needed(
         self,
@@ -538,6 +560,30 @@ class Scheduler:
                             task_id=task.task_id,
                         )
                     )
+        if task.target == "operation:allocate-healing-attempt" and isinstance(result.value, Mapping):
+            allocation = result.value
+            required = (
+                "episode_id",
+                "attempt_id",
+                "attempt_number",
+                "operation_id",
+                "source_batch_id",
+                "baseline_sha256",
+                "entry_batch_id",
+            )
+            if all(isinstance(allocation.get(key), str) for key in required if key != "attempt_number") and isinstance(
+                allocation.get("attempt_number"), int
+            ):
+                commit_healing_allocation_ledger(
+                    context.change_dir,
+                    episode_id=str(allocation["episode_id"]),
+                    attempt_id=str(allocation["attempt_id"]),
+                    attempt_number=int(allocation["attempt_number"]),
+                    operation_id=str(allocation["operation_id"]),
+                    source_batch_id=str(allocation["source_batch_id"]),
+                    baseline_sha256=str(allocation["baseline_sha256"]),
+                    entry_batch_id=str(allocation["entry_batch_id"]),
+                )
 
     def _persist_failure(
         self,

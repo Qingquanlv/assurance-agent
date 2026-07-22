@@ -145,6 +145,129 @@ graphs:
         default: STOP
 """
 
+CYCLE_GRAPH = """
+schema_version: "2"
+name: planner-cycle
+params:
+  max_plan_fix_attempts: {type: int, default: 3}
+entrypoints:
+  full: {graph: main}
+graphs:
+  main:
+    max_supersteps: 20
+    budgets:
+      fix_attempts:
+        limit: "params.max_plan_fix_attempts"
+    nodes:
+      review: {uses: operation:review-op}
+      fix:
+        uses: operation:fix-op
+        budget:
+          consume: fix_attempts
+          "on": committed
+          exhausted_to: exhausted
+      exhausted:
+        uses: operation:stop
+        with: {reason: "fix attempts exhausted"}
+    edges:
+      - {from: START, to: review}
+      - {from: fix, to: review}
+      - {from: exhausted, to: STOP}
+    routes:
+      - from: review
+        select: "node('review').gate.verdict"
+        cases:
+          pass: END
+          needs_fix: fix
+        default: STOP
+"""
+
+# 大 cyclic SCC 内的前向边（普通 edge，非 route）：head→mid→gate 全在一个环里
+# （gate→head 回边闭合）。head/mid 各自成功一代后，前向边不得把已 settled 的下游
+# 再次投递（否则 allocate/fixer 空转、白烧预算）。
+FORWARD_EDGE_CYCLE_GRAPH = """
+schema_version: "2"
+name: planner-forward-edge-cycle
+params:
+  max_loops: {type: int, default: 3}
+entrypoints:
+  full: {graph: main}
+graphs:
+  main:
+    max_supersteps: 20
+    budgets:
+      loop_attempts:
+        limit: "params.max_loops"
+    nodes:
+      head: {uses: operation:review-op}
+      mid:
+        uses: operation:fix-op
+        budget:
+          consume: loop_attempts
+          "on": committed
+          exhausted_to: giveup
+      gate: {uses: operation:review-op}
+      giveup:
+        uses: operation:stop
+        with: {reason: "loops exhausted"}
+    edges:
+      - {from: START, to: head}
+      - {from: head, to: mid}
+      - {from: mid, to: gate}
+      - {from: giveup, to: STOP}
+    routes:
+      - from: gate
+        select: "node('gate').gate.verdict"
+        cases:
+          pass: END
+          loop: head
+        default: STOP
+"""
+
+# 循环体内含 builtin:join：head→{a,b}→join→decide→head 回边闭合。join 每一代
+# 都必须随 source 再跑而重新触发，否则第二代 fixer 成功后 graph 卡死不前。
+JOIN_CYCLE_GRAPH = """
+schema_version: "2"
+name: planner-join-cycle
+params:
+  max_loops: {type: int, default: 5}
+entrypoints:
+  full: {graph: main}
+graphs:
+  main:
+    max_supersteps: 40
+    budgets:
+      loops:
+        limit: "params.max_loops"
+    nodes:
+      head: {uses: operation:review-op}
+      a:
+        uses: operation:fix-op
+        budget:
+          consume: loops
+          "on": committed
+          exhausted_to: giveup
+      b: {uses: operation:fix-op}
+      join: {uses: builtin:join, join: {sources: [a, b], mode: all_active}}
+      decide: {uses: operation:review-op}
+      giveup: {uses: operation:stop, with: {reason: "loops exhausted"}}
+    edges:
+      - {from: START, to: head}
+      - {from: head, to: a}
+      - {from: head, to: b}
+      - {from: a, to: join}
+      - {from: b, to: join}
+      - {from: join, to: decide}
+      - {from: giveup, to: STOP}
+    routes:
+      - from: decide
+        select: "node('decide').gate.verdict"
+        cases:
+          loop: head
+          done: END
+        default: STOP
+"""
+
 ROUTE_NO_DEFAULT = """
 schema_version: "2"
 name: planner-route-no-default
@@ -507,6 +630,121 @@ def test_route_selects_case_default_and_fail_closed(tmp_path: Path) -> None:
     assert closed.tasks == ()
 
 
+def test_cycle_fix_edge_reactivates_review(tmp_path: Path) -> None:
+    """fix → review 回边必须跨代再激活 review，而不是 settled-without-END。"""
+    compiled = _compile(CYCLE_GRAPH)
+    initial = _initial_tasks(compiled, tmp_path)
+    review_0 = initial["review"]
+
+    after_review = _projection(
+        compiled,
+        params={"max_plan_fix_attempts": 3},
+        tasks=[_task(review_0, "succeeded", gate_report={"verdict": "needs_fix"})],
+        supersteps=1,
+    )
+    fix_plan = _plan(compiled, after_review, tmp_path)
+    assert [task.node_id for task in fix_plan.tasks] == ["fix"]
+    fix_0 = fix_plan.tasks[0]
+
+    after_fix = _projection(
+        compiled,
+        params={"max_plan_fix_attempts": 3},
+        tasks=[
+            _task(review_0, "succeeded", gate_report={"verdict": "needs_fix"}),
+            _task(fix_0, "succeeded"),
+        ],
+        supersteps=2,
+    )
+    rereview = _plan(compiled, after_fix, tmp_path)
+    assert rereview.terminal is None
+    assert [task.node_id for task in rereview.tasks] == ["review"]
+    assert rereview.tasks[0].task_id != review_0.task_id
+
+    # 第二代 review pass → END（即使上一代 fix 仍是 succeeded）。
+    review_1 = rereview.tasks[0]
+    passed = _projection(
+        compiled,
+        params={"max_plan_fix_attempts": 3},
+        tasks=[
+            _task(review_0, "succeeded", gate_report={"verdict": "needs_fix"}),
+            _task(fix_0, "succeeded"),
+            _task(review_1, "succeeded", gate_report={"verdict": "pass"}),
+        ],
+        supersteps=3,
+    )
+    end_plan = _plan(compiled, passed, tmp_path)
+    assert end_plan.tasks == ()
+    assert end_plan.terminal == "end"
+
+
+def test_intra_scc_forward_edge_does_not_rerun_settled_downstream(tmp_path: Path) -> None:
+    """SCC 内的前向 edge（head→mid）在 mid 已成功后不得再把 mid 拉起重跑；
+    进度应交给下一个前向 edge（mid→gate）。回归 healing allocate/fixer 空转。"""
+    compiled = _compile(FORWARD_EDGE_CYCLE_GRAPH)
+    initial = _initial_tasks(compiled, tmp_path)
+    head_0 = initial["head"]
+
+    # head 成功 → 前向 edge head→mid 首次投递 mid（succ(head)=1 > succ(mid)=0）。
+    after_head = _projection(
+        compiled,
+        params={"max_loops": 3},
+        tasks=[_task(head_0, "succeeded")],
+        supersteps=1,
+    )
+    mid_plan = _plan(compiled, after_head, tmp_path)
+    assert [task.node_id for task in mid_plan.tasks] == ["mid"]
+    mid_0 = mid_plan.tasks[0]
+
+    # head + mid 均成功一代：head→mid 不得再投递 mid；mid→gate 应推进到 gate。
+    after_mid = _projection(
+        compiled,
+        params={"max_loops": 3},
+        tasks=[_task(head_0, "succeeded"), _task(mid_0, "succeeded")],
+        supersteps=2,
+    )
+    plan = _plan(compiled, after_mid, tmp_path)
+    assert [task.node_id for task in plan.tasks] == ["gate"]
+
+
+def test_join_inside_cycle_reactivates_each_generation(tmp_path: Path) -> None:
+    """循环体内的 builtin:join 必须随其 source 的新一代成功而重新触发。
+
+    回归 healing fixer-join：第一代 fix-api/fix-e2e → join → safety 后循环回到
+    proposal；第二代 fixer 成功后 join 若不再激活，graph 会 settle 而无终局。
+    """
+    compiled = _compile(JOIN_CYCLE_GRAPH)
+    params = {"max_loops": 5}
+
+    def _run_generation(prior: list[TaskProjection], superstep: int) -> list[TaskProjection]:
+        """驱动一代 head→{a,b}→join→decide(loop) 并返回累积的 task 投影。"""
+        tasks = list(prior)
+
+        def plan_now(step: int) -> list[ExecutableTask]:
+            proj = _projection(compiled, params=params, tasks=tasks, supersteps=step)
+            return list(_plan(compiled, proj, tmp_path).tasks)
+
+        # head
+        head = next(t for t in plan_now(superstep) if t.node_id == "head")
+        tasks.append(_task(head, "succeeded"))
+        # a + b（head 的两条前向边）
+        ab = plan_now(superstep + 1)
+        assert sorted(t.node_id for t in ab) == ["a", "b"]
+        for t in ab:
+            tasks.append(_task(t, "succeeded"))
+        # join —— 每一代都必须重新激活
+        join_ready = plan_now(superstep + 2)
+        assert [t.node_id for t in join_ready] == ["join"]
+        tasks.append(_task(join_ready[0], "succeeded"))
+        # decide（verdict=loop 回到 head）
+        decide = next(t for t in plan_now(superstep + 3) if t.node_id == "decide")
+        tasks.append(_task(decide, "succeeded", gate_report={"verdict": "loop"}))
+        return tasks
+
+    gen1 = _run_generation([], superstep=0)
+    # 第二代：核心回归——join 必须再次激活，而不是让 graph settle。
+    _run_generation(gen1, superstep=10)
+
+
 def test_route_missing_selection_uses_explicit_default(tmp_path: Path) -> None:
     text = """
 schema_version: "2"
@@ -615,6 +853,62 @@ def test_join_all_active_empty_is_error_not_implicit_pass(tmp_path: Path) -> Non
     params: dict[str, object] = {"go": False, "flag": False}
     with pytest.raises(PlanError, match="all_active"):
         _plan(compiled, _projection(compiled, params=params), tmp_path)
+
+
+JOIN_DEAD_BRANCH_GRAPH = """
+schema_version: "2"
+name: planner-join-dead-branch
+params:
+  go: {type: bool, default: true}
+entrypoints:
+  full: {graph: main}
+graphs:
+  main:
+    max_supersteps: 8
+    nodes:
+      gate: {uses: operation:review-op}
+      a: {uses: operation:a-op}
+      b: {uses: operation:b-op}
+      j:
+        uses: builtin:join
+        join: {sources: [a, b], mode: all_active}
+      bypass: {uses: operation:fix-op}
+    edges:
+      - {from: START, to: gate}
+      - {from: gate, to: a, when: "params.go == true"}
+      - {from: gate, to: b, when: "params.go == true"}
+      - {from: gate, to: bypass, when: "params.go == false"}
+      - {from: a, to: j}
+      - {from: b, to: j}
+      - {from: j, to: END}
+      - {from: bypass, to: END}
+"""
+
+
+def test_join_all_active_structurally_dead_branch_skips_not_errors(tmp_path: Path) -> None:
+    """回归 healing fixer-join：整条上游分支被 gate 路由绕开（source 从未收到
+
+    token，不是自己 ``when`` 判定不激活）时，``all_active`` join 必须结构化
+    skip 而不是硬 raise——否则任何「本次无需修复」的合法终局都会把 graph 炸掉。
+    """
+    compiled = _compile(JOIN_DEAD_BRANCH_GRAPH)
+    params: dict[str, object] = {"go": False}
+    gate_plan = _plan(compiled, _projection(compiled, params=params), tmp_path)
+    assert [task.node_id for task in gate_plan.tasks] == ["gate"]
+
+    after_gate = _projection(compiled, params=params, tasks=[_task(gate_plan.tasks[0], "succeeded")])
+    plan = _plan(compiled, after_gate, tmp_path)
+    assert [task.node_id for task in plan.tasks] == ["bypass"]
+    skipped = {e.node_id for e in plan.strict_events if isinstance(e, NodeSkippedEvent)}
+    assert {"a", "b", "j"} <= skipped
+
+    done = _projection(
+        compiled,
+        params=params,
+        tasks=[_task(gate_plan.tasks[0], "succeeded"), _task(plan.tasks[0], "succeeded")],
+    )
+    final = _plan(compiled, done, tmp_path)
+    assert final.terminal == "end"
 
 
 def test_join_any_ready_after_first_success(tmp_path: Path) -> None:

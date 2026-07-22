@@ -31,6 +31,7 @@ from assurance_agent.workflow.graph.models import (
 )
 from assurance_agent.workflow.graph.schema_v2 import NodeDef
 from assurance_agent.workflow.graph.task_runner import task_failure
+from assurance_agent.workflow.graph.handlers.operation import link_host_task_paths
 from assurance_agent.workflow.graph.workspace import TaskWorkspace, TreeStore, WorkspaceError
 
 
@@ -65,6 +66,7 @@ class AgentHandler:
         outputs = self._outputs(task, node_def)
         allowed = tuple(_display_path(path) for path in claims.authorization_writes)
         skill = task.target.partition(":")[2]
+        link_host_task_paths(workspace, context)
         request = AgentRequest(
             target=task.target,
             node_id=task.node_id,

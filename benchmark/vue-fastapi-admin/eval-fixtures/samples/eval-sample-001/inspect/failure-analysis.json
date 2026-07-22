@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "change_id": "RET-api-management-20260716-192358-cursor",
+  "source_manifest": "/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/qa/changes/RET-api-management-20260716-192358-cursor/execution/execution-manifest.yaml",
+  "inspection_status": "completed",
+  "batch_id": "20260716-194559",
+  "source_batch_id": "20260716-194559",
+  "final_status": "PASS",
+  "inspect_mode": "primary",
+  "compat_fallback_reason": null,
+  "classification_performed": true,
+  "status": "no_failures",
+  "failures": [],
+  "hard_fails": [],
+  "needs_review": [],
+  "known_product_issues": [],
+  "warnings": null,
+  "coverage_gaps": null
+}

@@ -100,9 +100,9 @@ def compile_workflow(
         errors.extend(_validate_contract_usage(schema, contracts))
     if errors:
         raise CompileError("workflow v2 compile failed:\n  - " + "\n  - ".join(errors))
-    footprints = _graph_footprints(schema, contracts)
+    footprints, node_claims = _graph_footprints(schema, contracts)
     graphs = {
-        graph_id: _compile_graph(graph_id, graph, footprints[graph_id])
+        graph_id: _compile_graph(graph_id, graph, footprints[graph_id], node_claims[graph_id])
         for graph_id, graph in schema.graphs.items()
     }
     canonical = schema.model_dump(mode="json", by_alias=True, exclude_none=True)
@@ -873,20 +873,24 @@ def _check_retry_kinds(
 
 def _graph_footprints(
     schema: WorkflowSchemaV2, catalog: ExecutionContractCatalog | None
-) -> dict[str, ResourceClaims]:
-    """每个 graph 的保守资源 footprint：全部 node claim 的并集，``graph:<id>`` 递归展开。
+) -> tuple[dict[str, ResourceClaims], dict[str, dict[str, ResourceClaims]]]:
+    """每个 graph 的保守资源 footprint 与逐 node claim。
 
+    footprint 是全图 node claim 的并集（``graph:<id>`` 递归展开）；逐 node claim
+    保留 catalog 合成的本 node 授权范围，供 scheduler 做更细粒度的 wave 冲突判定。
     互斥的运行期条件在 v2 首版不用于削减 claim——保守串行是正确的。subgraph
     递归已在编译期拒绝，memoized 展开不会成环。
     """
     memo: dict[str, ResourceClaims] = {}
+    node_claims: dict[str, dict[str, ResourceClaims]] = {}
 
     def footprint(graph_id: str) -> ResourceClaims:
         if graph_id in memo:
             return memo[graph_id]
         claims = ResourceClaims()
         graph = schema.graphs[graph_id]
-        for node in graph.nodes.values():
+        per_node: dict[str, ResourceClaims] = {}
+        for nid, node in graph.nodes.items():
             prefix, _, target = node.uses.partition(":")
             if prefix == "graph":
                 child = footprint(target) if target in schema.graphs else unknown_claims()
@@ -894,11 +898,14 @@ def _graph_footprints(
                 child = unknown_claims()
             else:
                 child = catalog.claims_for(node)
+            per_node[nid] = child
             claims = claims.union(child)
+        node_claims[graph_id] = per_node
         memo[graph_id] = claims
         return claims
 
-    return {graph_id: footprint(graph_id) for graph_id in schema.graphs}
+    footprints = {graph_id: footprint(graph_id) for graph_id in schema.graphs}
+    return footprints, node_claims
 
 
 def _referenced_contract_digests(
@@ -1017,7 +1024,12 @@ def _condensation_order(
     return [sccs[i] for i in order]
 
 
-def _compile_graph(graph_id: str, graph: GraphDef, footprint: ResourceClaims) -> CompiledGraph:
+def _compile_graph(
+    graph_id: str,
+    graph: GraphDef,
+    footprint: ResourceClaims,
+    node_claims: dict[str, ResourceClaims],
+) -> CompiledGraph:
     decl = {nid: i for i, nid in enumerate(graph.nodes)}
     adj = _graph_adjacency(graph)
     ordered_sccs = _condensation_order(graph, adj, _tarjan_sccs(adj))
@@ -1035,6 +1047,7 @@ def _compile_graph(graph_id: str, graph: GraphDef, footprint: ResourceClaims) ->
             incoming=tuple(edge for edge in graph.edges if edge.to == nid),
             outgoing=tuple(edge for edge in graph.edges if edge.from_ == nid),
             routes=tuple(route for route in graph.routes if route.from_ == nid),
+            resources=node_claims.get(nid, unknown_claims()),
         )
         for nid, node in graph.nodes.items()
     }

@@ -44,12 +44,12 @@ P_FULL = {
 CORPUS: dict[str, tuple[tuple[dict, dict], tuple[dict, dict, object]]] = {}
 
 CORPUS["gate:registry-gate:pass_when"] = (
-    ({"state": {"phases": {"skill_registry_check": {"status": "pass"}}}}, {}),
-    ({"state": {"phases": {}}}, {}, MISS),
+    ({"registry": {"status": "pass", "healing_available": True}}, {}),
+    ({"registry": {"status": "fail", "healing_available": False}}, {}, False),
 )
 CORPUS["gate:registry-gate:stop_when"] = (
-    ({"state": {"phases": {"skill_registry_check": {"status": "fail"}}}}, {}),
-    ({"state": {"phases": {}}}, {}, MISS),
+    ({"registry": {"status": "fail", "healing_available": False}}, {}),
+    ({"registry": {"status": "pass", "healing_available": True}}, {}, False),
 )
 
 _NF = ({"case_review": {"decision": "needs_fix", "auto_fix_allowed": True}}, {})
@@ -110,7 +110,7 @@ for _alias, _gid in [
     )
 
 CORPUS["gate:case-design-gate:pass_when"] = (
-    ({"state": {"run_context": {"interaction_mode": "autonomous"}}}, {}),
+    ({"qa": {"approval": {"mode": "autonomous"}}}, {}),
     ({}, {}, MISS),
 )
 
@@ -146,16 +146,12 @@ CORPUS["gate:fixer-safety-gate:needs_human_review_when"] = (
 CORPUS["gate:healing-entry-gate:enter_when"] = (
     (
         {
-            "state": {
-                "phases": {
-                    "execution": {"status": "FAIL"},
-                    "inspect": {"inspect_mode": "primary"},
-                    "healing": {"attempts_used": 0},
-                },
-                "gates": {"healing_available": True},
+            "execution": {"final_status": "FAIL"},
+            "failure_analysis": {
+                "failures": [{"fix_proposal_eligible": True}],
+                "inspect_mode": "primary",
             },
-            "failure_analysis": {"failures": [{"fix_proposal_eligible": True}]},
-            "params": {"max_healing_attempts": 3},
+            "registry": {"healing_available": True},
         },
         {},
     ),
@@ -164,27 +160,29 @@ CORPUS["gate:healing-entry-gate:enter_when"] = (
 CORPUS["gate:healing-entry-gate:stop_when"] = (
     (
         {
-            "state": {"phases": {"execution": {"status": "FAIL"}}, "gates": {"healing_available": False}},
+            "execution": {"final_status": "FAIL"},
             "failure_analysis": {"failures": [{"fix_proposal_eligible": True}]},
+            "registry": {"healing_available": False},
         },
         {},
     ),
     ({}, {}, MISS),
 )
 CORPUS["gate:healing-entry-gate:skip_when"] = (
-    ({"state": {"phases": {"execution": {"status": "PASS"}}}}, {}),
+    ({"execution": {"final_status": "PASS"}}, {}),
     ({}, {}, MISS),
 )
 
 CORPUS["gate:healing-loop-gate:exit_when"] = (
-    ({"state": {"phases": {"execution": {"status": "PASS"}}}}, {}),
-    ({"state": {"phases": {}}}, {}, MISS),
+    ({"execution": {"final_status": "PASS"}}, {}),
+    ({"execution": {}}, {}, MISS),
 )
 CORPUS["gate:healing-loop-gate:continue_when"] = (
     (
         {
-            "state": {"phases": {"execution": {"status": "FAIL"}, "healing": {"attempts_used": 0}}},
+            "execution": {"final_status": "FAIL"},
             "failure_analysis": {"failures": [{"fix_proposal_eligible": True}]},
+            "healing": {"attempts_used": 0},
             "params": {"max_healing_attempts": 3},
         },
         {},
@@ -192,20 +190,23 @@ CORPUS["gate:healing-loop-gate:continue_when"] = (
     ({}, {}, MISS),
 )
 CORPUS["gate:healing-loop-gate:stop_when"] = (
-    ({"state": {"phases": {"healing": {"attempts_used": 3}}}, "params": {"max_healing_attempts": 3}}, {}),
-    ({"state": {"phases": {"healing": {}}}}, {}, MISS),
+    (
+        {"healing": {"attempts_used": 3}, "params": {"max_healing_attempts": 3}},
+        {},
+    ),
+    ({"healing": {}}, {}, MISS),
 )
 CORPUS["gate:healing-loop-gate:reject_when"] = (
     (
         {
-            "state": {"phases": {"execution": {"status": "FAIL"}}},
+            "execution": {"final_status": "FAIL"},
             "failure_analysis": {"failures": [{"fix_proposal_eligible": False}]},
         },
         {},
     ),
     (
         {
-            "state": {"phases": {"execution": {"status": "FAIL"}}},
+            "execution": {"final_status": "FAIL"},
             "failure_analysis": {"failures": [{"fix_proposal_eligible": True}]},
         },
         {},
@@ -217,13 +218,8 @@ CORPUS["gate:archive-gate:pass_when"] = (
     (
         {
             **P_FULL,
-            "state": {
-                "user_requested_archive": False,
-                "phases": {
-                    "execution": {"status": "PASS", "batch_id": "b1"},
-                    "healing": {"status": "resolved"},
-                },
-            },
+            "execution": {"final_status": "PASS", "batch_id": "b1"},
+            "healing": {"status": "resolved"},
             "case_review": {"decision": "pass"},
             "api_plan_review": {"decision": "pass"},
             "plan_review": {"decision": "pass"},
@@ -234,7 +230,7 @@ CORPUS["gate:archive-gate:pass_when"] = (
     ({}, {}, MISS),
 )
 CORPUS["gate:archive-gate:stop_when"] = (
-    ({"state": {"phases": {"execution": {"status": "FAIL"}}}}, {}),
+    ({"execution": {"final_status": "FAIL"}}, {}),
     ({}, {}, MISS),
 )
 

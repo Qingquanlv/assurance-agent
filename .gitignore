@@ -22,3 +22,6 @@ benchmark/vue-fastapi-admin/benchmark/runs/
 benchmark/vue-fastapi-admin/benchmark/resume-logs/
 
 docs/
+
+# Editor local history (local-history extension)
+.history/

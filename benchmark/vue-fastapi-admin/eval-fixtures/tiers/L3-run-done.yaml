@@ -18,7 +18,7 @@ imports:
       graph: bootstrap
       node: registry
       outputs:
-      - change:workflow-state.yaml
+      - change:registry/skill-registry-check.json
       gate: registry-gate
     - path: execute-workflow/assurance/assurance
       graph: assurance

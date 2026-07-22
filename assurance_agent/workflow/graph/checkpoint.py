@@ -40,12 +40,14 @@ from assurance_agent.workflow.core.graph_events import (
     TaskAttemptAbandonedEvent,
     TaskAttemptFailedEvent,
     TaskAttemptStartedEvent,
+    TaskAttemptStoppedEvent,
     TaskAttemptSucceededEvent,
     TaskImportedEvent,
 )
 from assurance_agent.workflow.core.progression import transaction
 from assurance_agent.workflow.execution.tree_hash import sha256_file
 from assurance_agent.workflow.graph.models import (
+    CompiledGraph,
     CompiledWorkflow,
     FanOutExpansion,
     GraphProjection,
@@ -57,6 +59,7 @@ from assurance_agent.workflow.graph.models import (
     TaskProjection,
     WorkflowStateProjection,
 )
+from assurance_agent.workflow.graph.schema_v2 import NodeDef
 from assurance_agent.workflow.orchestration.gates import (
     GateEvaluationContext,
     check_gate_in_view,
@@ -70,7 +73,12 @@ _TERMINAL_BY_TYPE: dict[str, Literal["completed", "stopped", "failed"]] = {
     "graph_failed": "failed",
 }
 
-_AttemptOutcomeEvent = TaskAttemptSucceededEvent | TaskAttemptFailedEvent | TaskAttemptAbandonedEvent
+_AttemptOutcomeEvent = (
+    TaskAttemptSucceededEvent
+    | TaskAttemptStoppedEvent
+    | TaskAttemptFailedEvent
+    | TaskAttemptAbandonedEvent
+)
 
 
 class CheckpointImportError(AaError):
@@ -350,6 +358,52 @@ def _ledger_succeeded_nodes(projection: GraphProjection) -> set[str]:
     return done
 
 
+def _successors_from(graph: CompiledGraph, node_id: str) -> tuple[str, ...]:
+    if node_id == "START":
+        return tuple(
+            edge.to
+            for compiled in graph.nodes.values()
+            for edge in compiled.incoming
+            if edge.from_ == "START"
+        )
+    compiled = graph.nodes.get(node_id)
+    if compiled is None:
+        return ()
+    return tuple(edge.to for edge in compiled.outgoing)
+
+
+def _can_reach_without_node(
+    graph: CompiledGraph,
+    *,
+    start: str,
+    target: str,
+    avoid: str,
+) -> bool:
+    """Return True when ``target`` is reachable from ``start`` without visiting ``avoid``."""
+    if start == target:
+        return True
+    visited: set[str] = set()
+    queue = [node for node in _successors_from(graph, start) if node != avoid]
+    while queue:
+        current = queue.pop(0)
+        if current == target:
+            return True
+        if current in visited:
+            continue
+        visited.add(current)
+        for successor in _successors_from(graph, current):
+            if successor != avoid:
+                queue.append(successor)
+    return False
+
+
+def _is_mandatory_predecessor(graph: CompiledGraph, *, pred: str, node: str) -> bool:
+    """Predecessor is mandatory when every START→node path must pass through ``pred``."""
+    if pred == "START":
+        return False
+    return not _can_reach_without_node(graph, start="START", target=node, avoid=pred)
+
+
 def _assert_predecessor_closure(
     compiled: CompiledWorkflow,
     *,
@@ -360,13 +414,15 @@ def _assert_predecessor_closure(
     ledger_complete: set[str],
     params: Mapping[str, object],
 ) -> None:
-    """每个活跃前驱必须已导入、START 可达跳过、或已在 strict ledger 完成。"""
+    """Each mandatory predecessor must be imported, START-skipped, or ledger-complete."""
     del entrypoint, params  # when/run_mode 跳过留给后续加深；首版要求同图前驱已导入
     graph = compiled.graphs[task.graph]
     node = graph.nodes[task.node]
     known = imported_ids | ledger_complete
     for edge in node.incoming:
         if edge.from_ == "START":
+            continue
+        if not _is_mandatory_predecessor(graph, pred=edge.from_, node=task.node):
             continue
         pred_id = _import_task_id(structural_path, edge.from_, None)
         if pred_id in known:
@@ -377,7 +433,7 @@ def _assert_predecessor_closure(
 
 
 def _state_values_from_change(context: RuntimeContext) -> dict[str, object]:
-    """Load workflow-state.yaml into gate ``state.*`` (phases/run_context/…)."""
+    """Load workflow-state.yaml into gate ``state.*`` (legacy phase/run_context stamps)."""
     path = context.change_dir / "workflow-state.yaml"
     if not path.is_file():
         return {}
@@ -394,6 +450,16 @@ def _state_values_from_change(context: RuntimeContext) -> dict[str, object]:
     }
 
 
+def _resolved_gate_id(node: NodeDef) -> str | None:
+    if node.gate is not None:
+        return node.gate
+    if node.uses == "builtin:gate":
+        candidate = node.with_.get("gate")
+        if isinstance(candidate, str):
+            return candidate
+    return None
+
+
 def _reevaluate_gate(
     compiled: CompiledWorkflow,
     context: RuntimeContext,
@@ -403,7 +469,7 @@ def _reevaluate_gate(
     node_results: Mapping[str, object] | None = None,
 ) -> dict[str, object] | None:
     node = compiled.graphs[task.graph].nodes[task.node]
-    gate_id = node.definition.gate
+    gate_id = _resolved_gate_id(node.definition)
     if gate_id is None and task.gate is None:
         return None
     if gate_id is None:
@@ -570,6 +636,20 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                     "gate_report": event.gate_report,
                     "state_updates": dict(event.state_updates),
                     "value": event.value,
+                    "error_kind": None,
+                    "next_retry_at": None,
+                }
+            )
+        elif isinstance(event, TaskAttemptStoppedEvent):
+            prev = _require_task(tasks, event)
+            value = event.value
+            if value is None:
+                value = {"reason": event.reason}
+            tasks[event.task_id] = prev.model_copy(
+                update={
+                    "status": "stopped",
+                    "latest_attempt_id": event.attempt_id,
+                    "value": value,
                     "error_kind": None,
                     "next_retry_at": None,
                 }
