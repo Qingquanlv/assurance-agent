@@ -533,11 +533,7 @@ class TreeStore:
             # coordinator projection files are excluded from tree walk but may be
             # declared node outputs (e.g. change:workflow-state.yaml).
             basename = logical.segments[-1] if logical.segments else ""
-            if (
-                basename in _EXCLUDED_FILES
-                and workspace is not None
-                and (workspace.root / rel).is_file()
-            ):
+            if basename in _EXCLUDED_FILES and workspace is not None and (workspace.root / rel).is_file():
                 data = (workspace.root / rel).read_bytes()
                 frozen[declared] = hashlib.sha256(data).hexdigest()
                 continue

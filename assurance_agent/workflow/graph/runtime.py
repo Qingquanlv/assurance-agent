@@ -952,7 +952,9 @@ class GraphRuntime:
                         if isinstance(raw, str) and raw.strip():
                             reason = raw
                             break
-                    elif task_proj is not None and isinstance(task_proj.value, str) and task_proj.value.strip():
+                    elif (
+                        task_proj is not None and isinstance(task_proj.value, str) and task_proj.value.strip()
+                    ):
                         reason = task_proj.value
                         break
                 stop_plan = PlanResult(

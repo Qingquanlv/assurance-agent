@@ -176,7 +176,11 @@ def _run_or_detach(
 @click.option("--params", default=None, help="Runtime params JSON override.")
 @click.option("--server", default=None, help="OpenCode server URL (opencode adapter).")
 @click.option("--directory", default=None, help="SUT directory for OpenCode ?directory=.")
-@click.option("--model", default=None, help='Model id. OpenCode: "provider/model". Headless/cursor-agent: defaults to cursor-grok-4.5-high-fast.')
+@click.option(
+    "--model",
+    default=None,
+    help='Model id. OpenCode: "provider/model". Headless/cursor-agent: defaults to cursor-grok-4.5-high-fast.',
+)
 @click.option("--parent-session", "parent_session", default=None, help="Parent session id.")
 @click.option("--agent-cmd", "agent_cmd", default="cursor-agent --print", show_default=True)
 @click.option(
@@ -222,7 +226,11 @@ def workflow_run(
 @click.option("--params", default=None, help="Runtime params JSON override.")
 @click.option("--server", default=None, help="OpenCode server URL (opencode adapter).")
 @click.option("--directory", default=None, help="SUT directory for OpenCode ?directory=.")
-@click.option("--model", default=None, help='Model id. OpenCode: "provider/model". Headless/cursor-agent: defaults to cursor-grok-4.5-high-fast.')
+@click.option(
+    "--model",
+    default=None,
+    help='Model id. OpenCode: "provider/model". Headless/cursor-agent: defaults to cursor-grok-4.5-high-fast.',
+)
 @click.option("--parent-session", "parent_session", default=None, help="Parent session id.")
 @click.option("--agent-cmd", "agent_cmd", default="cursor-agent --print", show_default=True)
 def workflow_start(
@@ -261,7 +269,11 @@ def workflow_start(
 @click.option("--adapter", "adapter_name", type=_ADAPTER_CHOICE, default="headless", show_default=True)
 @click.option("--server", default=None, help="OpenCode server URL (opencode adapter).")
 @click.option("--directory", default=None, help="SUT directory for OpenCode ?directory=.")
-@click.option("--model", default=None, help='Model id. OpenCode: "provider/model". Headless/cursor-agent: defaults to cursor-grok-4.5-high-fast.')
+@click.option(
+    "--model",
+    default=None,
+    help='Model id. OpenCode: "provider/model". Headless/cursor-agent: defaults to cursor-grok-4.5-high-fast.',
+)
 @click.option("--parent-session", "parent_session", default=None, help="Parent session id.")
 @click.option("--agent-cmd", "agent_cmd", default="cursor-agent --print", show_default=True)
 def workflow_resume(
@@ -426,7 +438,11 @@ def workflow_status(change_id: str, as_json: bool) -> None:
 @click.option("--params", default=None, help="Runtime params JSON override.")
 @click.option("--server", default=None, help="OpenCode server URL (opencode adapter).")
 @click.option("--directory", default=None, help="SUT directory for OpenCode ?directory=.")
-@click.option("--model", default=None, help='Model id. OpenCode: "provider/model". Headless/cursor-agent: defaults to cursor-grok-4.5-high-fast.')
+@click.option(
+    "--model",
+    default=None,
+    help='Model id. OpenCode: "provider/model". Headless/cursor-agent: defaults to cursor-grok-4.5-high-fast.',
+)
 @click.option("--parent-session", "parent_session", default=None, help="Parent session id.")
 @click.option("--agent-cmd", "agent_cmd", default="cursor-agent --print", show_default=True)
 def workflow_import_checkpoint(

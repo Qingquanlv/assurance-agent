@@ -74,10 +74,7 @@ _TERMINAL_BY_TYPE: dict[str, Literal["completed", "stopped", "failed"]] = {
 }
 
 _AttemptOutcomeEvent = (
-    TaskAttemptSucceededEvent
-    | TaskAttemptStoppedEvent
-    | TaskAttemptFailedEvent
-    | TaskAttemptAbandonedEvent
+    TaskAttemptSucceededEvent | TaskAttemptStoppedEvent | TaskAttemptFailedEvent | TaskAttemptAbandonedEvent
 )
 
 

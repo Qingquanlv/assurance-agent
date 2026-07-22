@@ -157,7 +157,10 @@ def test_invoke_injects_workspace_for_cursor_agent(tmp_path: Path) -> None:
     ("stderr", "kind"),
     [
         ("RetriableError: [unavailable] PING timed out\n", "transport"),
-        ("Error: [aborted] Client network socket disconnected before secure TLS connection was established\n", "transport"),
+        (
+            "Error: [aborted] Client network socket disconnected before secure TLS connection was established\n",
+            "transport",
+        ),
         # cursor-agent transient auth/session flake: it momentarily fails to
         # fetch the model catalogue and rejects the pinned model with an empty
         # available list. Must be retryable, not a fatal internal error.
@@ -166,9 +169,7 @@ def test_invoke_injects_workspace_for_cursor_agent(tmp_path: Path) -> None:
         ("kaboom: assertion failed\n", "internal"),
     ],
 )
-def test_invoke_classifies_network_failures_as_transport(
-    tmp_path: Path, stderr: str, kind: str
-) -> None:
+def test_invoke_classifies_network_failures_as_transport(tmp_path: Path, stderr: str, kind: str) -> None:
     from assurance_agent.workflow.graph.agent_api import AgentRequest
 
     class _Fail:

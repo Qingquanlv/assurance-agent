@@ -713,7 +713,7 @@ def test_join_inside_cycle_reactivates_each_generation(tmp_path: Path) -> None:
     proposal；第二代 fixer 成功后 join 若不再激活，graph 会 settle 而无终局。
     """
     compiled = _compile(JOIN_CYCLE_GRAPH)
-    params = {"max_loops": 5}
+    params: dict[str, object] = {"max_loops": 5}
 
     def _run_generation(prior: list[TaskProjection], superstep: int) -> list[TaskProjection]:
         """驱动一代 head→{a,b}→join→decide(loop) 并返回累积的 task 投影。"""
