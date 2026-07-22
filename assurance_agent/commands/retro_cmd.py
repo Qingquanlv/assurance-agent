@@ -165,7 +165,78 @@ def register_retro(main_group: click.Group) -> None:
 
     _register_nightly(retro)
     _register_promotion_commands(retro)
+    _register_read_commands(retro)
     main_group.add_command(retro)
+
+
+def _register_read_commands(retro: click.Group) -> None:
+    """Read-only JSON projections so frontends never parse retro files directly."""
+
+    @retro.command("list")
+    @click.option("--sut", default=None, help="SUT project root (default: cwd)")
+    @click.option("--json", "as_json", is_flag=True, help="Emit JSON")
+    def list_runs(sut, as_json) -> None:
+        """List retro runs with folded proposal status counts."""
+        from assurance_agent.retro.projection import project_retro_list
+
+        payload = project_retro_list(Path(sut).resolve() if sut else Path.cwd())
+        if as_json:
+            click.echo(json.dumps(payload))
+            return
+        for run in payload["runs"]:
+            counts = ", ".join(f"{state}={n}" for state, n in run["status_counts"].items())
+            click.echo(
+                f"{run['retro_id']}  proposals={run['proposal_count']}  "
+                f"changes={len(run['change_ids'])}  [{counts}]"
+            )
+
+    @retro.command("show")
+    @click.option("--sut", default=None, help="SUT project root (default: cwd)")
+    @click.option("--retro", "retro_id", required=True, help="Retro id")
+    @click.option("--json", "as_json", is_flag=True, help="Emit JSON")
+    def show_run(sut, retro_id, as_json) -> None:
+        """Show one retro run: proposals + folded state + timeline + eval results."""
+        from assurance_agent.identifiers import UnsafeIdentifierError, assert_path_segment_safe
+        from assurance_agent.retro.projection import project_retro_show
+
+        try:
+            assert_path_segment_safe(retro_id, label="retro id")
+        except UnsafeIdentifierError as err:
+            click.echo(f"Error: {err}", err=True)
+            raise SystemExit(2) from err
+        root = Path(sut).resolve() if sut else Path.cwd()
+        retro_dir = root / "qa" / "retro" / retro_id
+        if not retro_dir.is_dir():
+            click.echo(f"Error: retro run not found: {retro_id}", err=True)
+            raise SystemExit(1)
+        payload = project_retro_show(root, retro_id)
+        if as_json:
+            click.echo(json.dumps(payload))
+            return
+        click.echo(f"retro_id: {payload['retro_id']}  changes: {len(payload['change_ids'])}")
+        for proposal in payload["proposals"]:
+            click.echo(f"  {proposal['id']}  [{proposal['state']}]  {proposal.get('target') or ''}")
+
+    @retro.command("proposals-for-change")
+    @click.option("--sut", default=None, help="SUT project root (default: cwd)")
+    @click.option("--change", "change_id", required=True, help="Change id")
+    @click.option("--json", "as_json", is_flag=True, help="Emit JSON")
+    def proposals_for_change(sut, change_id, as_json) -> None:
+        """Reverse index: proposals whose evidence cites this change."""
+        from assurance_agent.identifiers import UnsafeIdentifierError, assert_change_id_safe
+        from assurance_agent.retro.projection import project_proposals_for_change
+
+        try:
+            assert_change_id_safe(change_id)
+        except UnsafeIdentifierError as err:
+            click.echo(f"Error: {err}", err=True)
+            raise SystemExit(2) from err
+        payload = project_proposals_for_change(Path(sut).resolve() if sut else Path.cwd(), change_id)
+        if as_json:
+            click.echo(json.dumps(payload))
+            return
+        for proposal in payload["proposals"]:
+            click.echo(f"  {proposal['retro_id']}  {proposal['id']}  [{proposal['state']}]")
 
 
 def _register_promotion_commands(retro: click.Group) -> None:
@@ -181,7 +252,8 @@ def _register_promotion_commands(retro: click.Group) -> None:
     @click.option("--decided-by", required=True, help="Decision maker")
     @click.option("--rework-note", default=None, help="Rework note when decision=needs_rework")
     @click.option("--engine-root", default=None, help="Engine repo root for suite lookup (default: cwd)")
-    def promote(retro_id, proposal_id, decision, decided_by, rework_note, engine_root) -> None:
+    @click.option("--json", "as_json", is_flag=True, help="Emit the decision result as JSON (always on)")
+    def promote(retro_id, proposal_id, decision, decided_by, rework_note, engine_root, as_json) -> None:
         """Record a human review decision for a retro proposal.
 
         A ``promoted`` decision is the authorization point: after recording
