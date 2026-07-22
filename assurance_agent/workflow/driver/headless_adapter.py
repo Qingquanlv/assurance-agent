@@ -46,6 +46,7 @@ _TRANSPORT_FAILURE = re.compile(
 def _classify_nonzero_exit(detail: str) -> Literal["transport", "internal"]:
     return "transport" if _TRANSPORT_FAILURE.search(detail or "") else "internal"
 
+
 def _with_workspace(prefix: list[str], workspace_root: Path) -> list[str]:
     """Rewrite or inject ``--workspace`` so the agent edits the task-private root."""
     root = str(workspace_root)
@@ -126,7 +127,9 @@ class HeadlessAdapter:
         self._timeout = timeout
         self._prompt_via = prompt_via
 
-    def _run(self, prompt: str, cwd: Path, timeout: float | None, *, argv_prefix: list[str] | None = None) -> ProcessResult:
+    def _run(
+        self, prompt: str, cwd: Path, timeout: float | None, *, argv_prefix: list[str] | None = None
+    ) -> ProcessResult:
         prefix = list(self._prefix if argv_prefix is None else argv_prefix)
         if self._prompt_via == "stdin":
             argv = prefix

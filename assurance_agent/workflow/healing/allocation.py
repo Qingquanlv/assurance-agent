@@ -36,8 +36,7 @@ def commit_healing_allocation_ledger(
 
     with transaction(change_dir) as txn:
         baseline_exists = any(
-            e.get("episode_id") == episode_id
-            for e in txn.ledger.filter(type="healing_entry_baseline_pinned")
+            e.get("episode_id") == episode_id for e in txn.ledger.filter(type="healing_entry_baseline_pinned")
         )
         if not baseline_exists:
             txn.append_strict(

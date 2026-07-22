@@ -571,9 +571,9 @@ class Scheduler:
                 "baseline_sha256",
                 "entry_batch_id",
             )
-            if all(isinstance(allocation.get(key), str) for key in required if key != "attempt_number") and isinstance(
-                allocation.get("attempt_number"), int
-            ):
+            if all(
+                isinstance(allocation.get(key), str) for key in required if key != "attempt_number"
+            ) and isinstance(allocation.get("attempt_number"), int):
                 commit_healing_allocation_ledger(
                     context.change_dir,
                     episode_id=str(allocation["episode_id"]),

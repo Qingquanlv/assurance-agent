@@ -415,9 +415,7 @@ def record_apply_summary(
         modified = [f for f in changed if f in authorized]
         unauthorized = [f for f in changed if f not in authorized and f not in prior_applied]
         if unauthorized:
-            raise HealingGuardError(
-                f"modified files outside authorized proposals: {', '.join(unauthorized)}"
-            )
+            raise HealingGuardError(f"modified files outside authorized proposals: {', '.join(unauthorized)}")
         applied = bool(modified)
         resolved_outcome = "applied" if applied else "no_op"
         resolved_reason = reason.strip() if reason and reason.strip() else None

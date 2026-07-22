@@ -516,9 +516,7 @@ def test_inspect_operation_writes_artifacts(tmp_path: Path, monkeypatch: pytest.
 
     monkeypatch.setattr(operation_mod, "inspect_change", lambda *_a, **_k: _InspectResult())
     workspace = _workspace(project)
-    result = operation_mod.inspect_operation(
-        _task("operation:inspect"), workspace, _context(project)
-    )
+    result = operation_mod.inspect_operation(_task("operation:inspect"), workspace, _context(project))
 
     assert result.status == "succeeded"
     assert result.value == {"batch_id": "b-1", "final_status": "SKIPPED", "status": "no_failures"}
@@ -580,16 +578,19 @@ def test_allocate_healing_attempt_writes_baseline_and_status(tmp_path: Path) -> 
     assert committed is True
     types = [e["type"] for e in read_events(project / "qa" / "changes" / "CH-1")]
     assert types == ["healing_entry_baseline_pinned", "healing_attempt_allocated"]
-    assert commit_healing_allocation_ledger(
-        project / "qa" / "changes" / "CH-1",
-        episode_id=str(result.value["episode_id"]),
-        attempt_id=str(result.value["attempt_id"]),
-        attempt_number=int(result.value["attempt_number"]),
-        operation_id=str(result.value["operation_id"]),
-        source_batch_id=str(result.value["source_batch_id"]),
-        baseline_sha256=str(result.value["baseline_sha256"]),
-        entry_batch_id=str(result.value["entry_batch_id"]),
-    ) is False
+    assert (
+        commit_healing_allocation_ledger(
+            project / "qa" / "changes" / "CH-1",
+            episode_id=str(result.value["episode_id"]),
+            attempt_id=str(result.value["attempt_id"]),
+            attempt_number=int(result.value["attempt_number"]),
+            operation_id=str(result.value["operation_id"]),
+            source_batch_id=str(result.value["source_batch_id"]),
+            baseline_sha256=str(result.value["baseline_sha256"]),
+            entry_batch_id=str(result.value["entry_batch_id"]),
+        )
+        is False
+    )
 
 
 def test_link_host_task_paths_symlinks_events_jsonl(tmp_path: Path) -> None:
