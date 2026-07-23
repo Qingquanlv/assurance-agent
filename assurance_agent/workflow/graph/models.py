@@ -183,6 +183,12 @@ class TaskProjection(BaseModel):
     state_updates: dict[str, object] = Field(default_factory=dict)
     value: object = None
     error_kind: ErrorKind | None = None
+    # 失败 attempt 的原始 message（如 subgraph 失败时子图自身的终止原因、或
+    # handler 抛出的异常详情）。之前只投影 error_kind，terminal-reason 拼字符串
+    # 时无从得知具体原因（尤其 subgraph 节点：任何子图失败都折叠成笼统的
+    # "internal"）。ledger event 一直带着 ``message``，这里补上投影字段，让
+    # planner 的终止原因可以把它拼进去，不必回挖 ledger jsonl 才能定位根因。
+    error: str | None = None
     next_retry_at: str | None = None
     # 最近 attempt 的 lease 到期时刻（来自 task_attempt_started）；lease 文件
     # 丢失时恢复分类退回此字段判断，绝不凭空放宽或收紧。

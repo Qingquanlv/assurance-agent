@@ -241,7 +241,9 @@ class OpenCodeAdapter:
                 request.reconnect_session_id or self._parent,
                 directory=directory,
             )
-            self._dispatch_prompt(session_id, request.prompt, directory=directory)
+            self._dispatch_prompt(
+                session_id, request.prompt, agent=request.agent, directory=directory
+            )
             self._await_idle(session_id, directory=directory, poll_max=request.timeout_seconds)
         except _OpenCodeCallError as exc:
             return AgentResult(ok=False, error_kind=exc.kind, error=str(exc), session_id=session_id)

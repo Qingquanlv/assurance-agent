@@ -406,8 +406,10 @@ contracts:
       - change:execution/**
     writes:
       - change:healing/fix-proposal.json
+      - change:healing/fix-proposal.md
     authorization_writes:
       - change:healing/fix-proposal.json
+      - change:healing/fix-proposal.md
     retryable_errors: [timeout, transport, rate_limit]
     reconnect: true
 

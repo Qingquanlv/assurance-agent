@@ -476,13 +476,14 @@ def _seed_outcomes(
                 and latest.attempts_used < policy.max_attempts
             )
             if not retryable:
+                detail = f": {latest.error}" if latest.error else ""
                 return (
                     outcomes,
                     retry,
                     (
                         f"task {latest.task_id} (node '{nid}') failed with "
                         f"{latest.error_kind}; attempts {latest.attempts_used}/"
-                        f"{policy.max_attempts}"
+                        f"{policy.max_attempts}{detail}"
                     ),
                 )
         elif latest.attempts_used >= policy.max_attempts:  # abandoned

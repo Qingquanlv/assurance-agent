@@ -79,9 +79,11 @@ class AgentHandler:
                 context.change_id,
                 allowed_writes=allowed,
                 item=_fan_out_item(task),
+                workspace_root=str(Path(workspace.root)),
             ),
             timeout_seconds=task.timeout_policy.run_seconds,
             reconnect_session_id=context.parent_session_id,
+            agent=agent_for_skill(skill),
         )
         result = self._invoker.invoke(request)
         if not result.ok:
@@ -135,6 +137,39 @@ class AgentHandler:
         return tuple(node_def.outputs)
 
 
+def agent_for_skill(skill: str) -> str | None:
+    """Route a phase skill to its bounded aa-* worker agent (opencode persona).
+
+    Each aa-* agent declares the phases it serves (see ``.opencode/agents/*.md``)
+    plus a restrictive permission floor and ``external_directory: deny``. Running
+    a node under its matching worker keeps it focused on producing declared
+    outputs (instead of an aggressive general coding preset that over-explores
+    and never writes) and blocks writes/reads outside the task sandbox.
+
+    Mapping is keyword-based so new sibling skills route correctly:
+    - ``*codegen*``                     -> aa-test-author (tests/ + codegen/)
+    - ``*reviewer*`` / ``*inspect*``    -> aa-reviewer   (review/ + inspect/)
+    - ``*report*``                      -> aa-reporter   (report/)
+    - ``*archive*``                     -> aa-archiver   (qa/cases + qa/archive)
+    - explore / case-design / *-plan /
+      *-fixer / fact-baseline /
+      fix-proposal (the rest)           -> aa-doc-author (authoring/design/plan)
+
+    Returns ``None`` for an unknown/empty skill so the adapter keeps its default.
+    """
+    if not skill:
+        return None
+    if "codegen" in skill:
+        return "aa-test-author"
+    if "reviewer" in skill or "inspect" in skill:
+        return "aa-reviewer"
+    if "report" in skill:
+        return "aa-reporter"
+    if "archive" in skill:
+        return "aa-archiver"
+    return "aa-doc-author"
+
+
 def _display_path(path: ResourcePath) -> str:
     return f"{path.root}:{path.pattern}"
 
@@ -157,4 +192,4 @@ def _freeze_error_kind(exc: WorkspaceError) -> ErrorKind:
     return "forbidden_write"
 
 
-__all__ = ["AgentHandler"]
+__all__ = ["AgentHandler", "agent_for_skill"]

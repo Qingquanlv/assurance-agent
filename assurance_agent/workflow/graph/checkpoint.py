@@ -634,6 +634,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                     "state_updates": dict(event.state_updates),
                     "value": event.value,
                     "error_kind": None,
+                    "error": None,
                     "next_retry_at": None,
                 }
             )
@@ -648,6 +649,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                     "latest_attempt_id": event.attempt_id,
                     "value": value,
                     "error_kind": None,
+                    "error": None,
                     "next_retry_at": None,
                 }
             )
@@ -658,6 +660,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                     "status": "failed",
                     "latest_attempt_id": event.attempt_id,
                     "error_kind": event.error_kind,
+                    "error": event.message,
                     "next_retry_at": event.next_retry_at,
                 }
             )
