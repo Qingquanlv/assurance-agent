@@ -454,6 +454,8 @@ def test_default_operations_registry_has_exact_keys() -> None:
         "operation:record-healing-status",
         "operation:inspect",
         "operation:stop",
+        "operation:retro-collect",
+        "operation:retro-accept",
     }
 
 
