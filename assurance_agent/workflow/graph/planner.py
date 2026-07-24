@@ -60,6 +60,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from assurance_agent.exceptions import AaError
+from assurance_agent.identifiers import UnsafeIdentifierError, assert_path_segment_safe
 from assurance_agent.workflow.core.graph_types import ErrorKind
 from assurance_agent.workflow.core.graph_events import (
     FanOutExpandedEvent,
@@ -989,7 +990,7 @@ def _resolve_template(
     *,
     path: bool,
 ) -> object:
-    """解析 ``${<item_as>}`` 与 ``${context.change_id}`` 模板；其它变量一律拒绝。
+    """解析 ``${<item_as>}``、``${context.change_id}`` 与 ``${params.<name>}`` 模板；其它变量一律拒绝。
 
     整串恰好一个模板时返回原值（标量/结构化 item 均可）；复合串把各模板替换为
     display 字符串。``path=True`` 时每个替换值必须是安全 path segment。
@@ -997,6 +998,18 @@ def _resolve_template(
     matches = list(_TEMPLATE.finditer(template))
     for match in matches:
         var = match.group(1)
+        if var.startswith("params."):
+            pname = var.removeprefix("params.")
+            value = context.params.get(pname)
+            if not isinstance(value, str) or not value.strip():
+                raise PlanError(
+                    f"node '{nid}' template '${{{var}}}' requires a non-empty string param"
+                )
+            try:
+                assert_path_segment_safe(value, label=f"params.{pname}")
+            except UnsafeIdentifierError as err:
+                raise PlanError(f"node '{nid}' template '${{{var}}}': {err}") from err
+            continue
         if var not in (item_as, "context.change_id"):
             raise PlanError(
                 f"node '{nid}' template '${{{var}}}' is not '${{{item_as}}}' or '${{context.change_id}}'"
@@ -1005,6 +1018,8 @@ def _resolve_template(
         return template
 
     def value_of(var: str) -> object:
+        if var.startswith("params."):
+            return context.params[var.removeprefix("params.")]
         return item if var == item_as else context.change_id
 
     if len(matches) == 1 and matches[0].span() == (0, len(template)):
