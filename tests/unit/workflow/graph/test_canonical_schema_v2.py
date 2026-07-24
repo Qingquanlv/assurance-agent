@@ -241,19 +241,6 @@ def test_packaged_contracts_cover_exact_targets() -> None:
     assert set(contracts.contracts) == EXPECTED_CONTRACTS
 
 
-def test_api_branch_wires_plan_review_evidence_and_export() -> None:
-    """api-plan-cycle exports the committed plan review; api-branch.codegen binds
-    it as evidence so the frozen review flows into codegen deterministically."""
-    compiled, _ = _load_compiled()
-    review_cycle = compiled.graphs["api-branch"].nodes["review-cycle"]
-    exported = {e.symbol: (e.from_node, e.output) for e in review_cycle.exports}
-    assert exported == {"api_plan_review": ("review", "api_plan_review")}
-
-    codegen = compiled.graphs["api-branch"].nodes["codegen"].definition
-    ref = codegen.evidence["api_plan_review"]
-    assert (ref.node, ref.symbol) == ("review-cycle", "api_plan_review")
-
-
 def test_healing_fixers_carry_narrow_per_node_claims() -> None:
     """fix-api / fix-e2e must claim their own contract scope, not the whole-graph
     footprint — otherwise every healing node serializes against every other."""

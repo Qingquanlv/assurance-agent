@@ -387,12 +387,6 @@ graphs:
         when: "params.run_mode in ['full','api-only','codegen-only']"
         outputs: [change:codegen/api-codegen-summary.md]
         gate: api-codegen-precondition-gate
-        # Frozen, committed API-plan review forwarded out of the review subgraph
-        # (see api-plan-cycle.exports). Injected into the codegen agent prompt as
-        # authoritative upstream evidence; behaviour is additive (gates still read
-        # from disk), and planning fails closed if the review is not committed.
-        evidence:
-          api_plan_review: {node: review-cycle, symbol: api_plan_review}
         retry: agent-transient
         timeout: agent
 
@@ -479,15 +473,6 @@ graphs:
           accept_risk: END
           stop: STOP
         default: STOP
-
-    # Forward the committed API-plan review FrozenOutput to the parent
-    # (api-branch) so the sibling `codegen` node can bind it as evidence.
-    # `output` is the ingest-catalog symbol produced by the review node's
-    # change:review/api-plan-review.json output.
-    exports:
-      api_plan_review:
-        from: review
-        output: api_plan_review
 
   e2e-branch:
     max_supersteps: 30
