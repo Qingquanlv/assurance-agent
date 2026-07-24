@@ -10,6 +10,7 @@ from tempfile import mkdtemp
 
 from assurance_agent.change_location import archive_root, resolve_change
 from assurance_agent.exceptions import AaError
+from assurance_agent.identifiers import assert_path_segment_safe
 from assurance_agent.retro.accept_stage import run_retro_accept
 from assurance_agent.retro.aggregator import build_retro_context
 from assurance_agent.retro.apply import (
