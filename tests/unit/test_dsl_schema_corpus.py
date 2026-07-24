@@ -71,12 +71,26 @@ for _alias, _gid in [
     ("api_plan_review", "api-plan-review-gate"),
     ("plan_review", "e2e-plan-review-gate"),
 ]:
+    CORPUS[f"gate:{_gid}:stop_when"] = (
+        ({_alias: {"required_capabilities": None}}, {}),
+        ({_alias: {"required_capabilities": ["auth.api_admin_token"]}}, {}, False),
+    )
     CORPUS[f"gate:{_gid}:needs_fix_when"] = (
         ({_alias: {"decision": "needs_fix", "auto_fix_allowed": True}}, {}),
         ({}, {}, MISS),
     )
     CORPUS[f"gate:{_gid}:needs_human_review_when"] = (
-        ({_alias: {"decision": "needs_human_review"}, "params": {"force_continue": False}}, {}),
+        (
+            {
+                _alias: {
+                    "decision": "pass",
+                    "required_capabilities": ["auth.api_admin_token"],
+                    "codegen_readiness": "ready",
+                },
+                "data_knowledge": {},
+            },
+            {"capabilities_present": lambda _r, _d: False},
+        ),
         ({}, {}, MISS),
     )
     CORPUS[f"gate:{_gid}:reject_when"] = (
@@ -84,8 +98,18 @@ for _alias, _gid in [
         ({}, {}, MISS),
     )
     CORPUS[f"gate:{_gid}:pass_when"] = (
-        ({_alias: {"decision": "pass", "codegen_readiness": "ready"}}, {}),
-        ({}, {}, MISS),
+        (
+            {
+                _alias: {
+                    "decision": "pass",
+                    "codegen_readiness": "ready",
+                    "required_capabilities": ["auth.api_admin_token"],
+                },
+                "data_knowledge": {"auth": {"api_admin_token": {"method": "token"}}},
+            },
+            {"capabilities_present": lambda _r, _d: True},
+        ),
+        ({}, {"capabilities_present": lambda _r, _d: False}, False),
     )
 
 for _alias, _gid in [
@@ -98,6 +122,10 @@ for _alias, _gid in [
     )
     CORPUS[f"gate:{_gid}:needs_human_review_when"] = (
         ({_alias: {"decision": "changes_requested"}}, {}),
+        ({}, {}, MISS),
+    )
+    CORPUS[f"gate:{_gid}:skip_when"] = (
+        ({_alias: {"layer_applicable": False}}, {}),
         ({}, {}, MISS),
     )
     CORPUS[f"gate:{_gid}:reject_when"] = (

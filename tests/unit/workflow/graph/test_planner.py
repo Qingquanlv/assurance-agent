@@ -974,6 +974,36 @@ def test_failed_retryable_task_is_replanned_with_same_task_id(tmp_path: Path) ->
     assert planned[0].task_ids == [original.task_id]
 
 
+def test_failed_retryable_task_carries_prior_failure_feedback(tmp_path: Path) -> None:
+    """Retry tasks receive prior_failure off the input payload so prompts can advise."""
+    # RETRY_GRAPH only retries `internal`; widen for the contract-violation kind.
+    text = RETRY_GRAPH.replace("retry_on: [internal]", "retry_on: [invalid_output]")
+    compiled = _compile(text)
+    original = _initial_tasks(compiled, tmp_path)["a"]
+    assert original.prior_failure is None
+    assert original.prior_error_kind is None
+    projection = _projection(
+        compiled,
+        tasks=[
+            _task(
+                original,
+                "failed",
+                error_kind="invalid_output",
+                error="output 'change:review/api-plan-review.json' failed review schema validation",
+                attempts_used=1,
+            )
+        ],
+    )
+    plan = _plan(compiled, projection, tmp_path)
+    assert len(plan.tasks) == 1
+    retry_task = plan.tasks[0]
+    assert retry_task.task_id == original.task_id
+    assert retry_task.input_sha256 == original.input_sha256
+    assert retry_task.prior_error_kind == "invalid_output"
+    assert retry_task.prior_failure is not None
+    assert "schema validation" in retry_task.prior_failure
+
+
 @pytest.mark.parametrize(
     ("status", "overrides"),
     [

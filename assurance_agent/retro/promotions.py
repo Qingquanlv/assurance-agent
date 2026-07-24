@@ -39,6 +39,7 @@ SCHEMA_VERSION = "2"
 EVENT_REVIEW_DECISION = "review_decision"
 EVENT_EVAL_COMPLETED = "eval_completed"
 EVENT_APPLICATION = "application"
+EVENT_PROPOSAL_EXPORTED = "proposal_exported"
 
 TERMINAL_STATES = frozenset({"applied", "rejected"})
 # `rolled_back` proposals are treated as `needs_rework` (spec §6.4).
@@ -163,6 +164,27 @@ def eval_completed_event(
     return event
 
 
+def proposal_exported_event(
+    proposal_id: str,
+    *,
+    actor: str,
+    at: str | None = None,
+    target: str | None = None,
+    source_sha256: str | None = None,
+) -> dict:
+    event = {
+        "proposal_id": proposal_id,
+        "type": EVENT_PROPOSAL_EXPORTED,
+        "actor": actor,
+        "at": at or utc_now_iso(),
+    }
+    if target:
+        event["target"] = target
+    if source_sha256:
+        event["source_sha256"] = source_sha256
+    return event
+
+
 def application_event(
     proposal_id: str,
     *,
@@ -222,6 +244,8 @@ def proposal_states(events: list[dict]) -> dict[str, str]:
                 states[proposal_id] = "applied"
             elif result == "rolled_back":
                 states[proposal_id] = "rolled_back"
+        elif event_type == EVENT_PROPOSAL_EXPORTED:
+            states[proposal_id] = "exported"
     return states
 
 

@@ -36,7 +36,7 @@ from assurance_agent.workflow.graph.contracts import (
 )
 from assurance_agent.workflow.graph.handlers import operation as operation_mod
 from assurance_agent.workflow.graph.handlers.operation import link_host_task_paths
-from assurance_agent.workflow.graph.handlers.agent import AgentHandler
+from assurance_agent.workflow.graph.handlers.agent import AgentHandler, agent_for_skill
 from assurance_agent.workflow.graph.handlers.gate import GateHandler
 from assurance_agent.workflow.graph.handlers.interrupt import InterruptHandler
 from assurance_agent.workflow.graph.handlers.join import JoinHandler
@@ -332,6 +332,66 @@ def test_agent_handler_builds_workspace_request_and_freezes(tmp_path: Path) -> N
     assert request.allowed_writes == ("change:explore/**", "change:explore/summary.md")
     assert "Authorized write paths: change:explore/**" in request.prompt
     assert "skill(name='aa-explore')" in request.prompt
+    # explore routes to the bounded authoring worker, not an aggressive default.
+    assert request.agent == "aa-doc-author"
+    # The prompt pins the absolute sandbox cwd so a bash-restricted agent cannot
+    # "discover" the canonical project root and resolve outputs outside the sandbox.
+    assert str(workspace.root) in request.prompt
+    assert "IS this task's project root" in request.prompt
+
+
+def test_build_node_prompt_pins_absolute_workspace_root() -> None:
+    from assurance_agent.workflow.graph.agent_api import build_node_prompt
+
+    prompt = build_node_prompt(
+        "aa-fix-proposal",
+        "proposal",
+        "CH-1",
+        allowed_writes=["change:healing/fix-proposal.json"],
+        workspace_root="/ws/tasks/abc",
+    )
+    assert "Your working directory is EXACTLY '/ws/tasks/abc'" in prompt
+    assert "/ws/tasks/abc/qa/changes/CH-1/" in prompt
+    # Without workspace_root the concrete cwd clause is omitted.
+    bare = build_node_prompt(
+        "aa-fix-proposal", "proposal", "CH-1", allowed_writes=["change:healing/**"]
+    )
+    assert "Your working directory is EXACTLY" not in bare
+
+
+def test_agent_for_skill_routes_every_workflow_skill() -> None:
+    # Authoritative skill -> aa-* worker mapping (see .opencode/agents/*.md
+    # "Serves phases"). Wrong routing breaks a node on its permission floor.
+    expected = {
+        "aa-explore": "aa-doc-author",
+        "aa-case-design": "aa-doc-author",
+        "aa-case-fixer": "aa-doc-author",
+        "aa-fact-baseline": "aa-doc-author",
+        "aa-api-plan": "aa-doc-author",
+        "aa-api-plan-fixer": "aa-doc-author",
+        "aa-e2e-plan": "aa-doc-author",
+        "aa-e2e-plan-fixer": "aa-doc-author",
+        "aa-fuzz-plan": "aa-doc-author",
+        "aa-performance-plan": "aa-doc-author",
+        "aa-fix-proposal": "aa-doc-author",
+        "aa-api-codegen": "aa-test-author",
+        "aa-api-codegen-fixer": "aa-test-author",
+        "aa-e2e-codegen": "aa-test-author",
+        "aa-e2e-codegen-fixer": "aa-test-author",
+        "aa-fuzz-codegen": "aa-test-author",
+        "aa-performance-codegen": "aa-test-author",
+        "aa-case-reviewer": "aa-reviewer",
+        "aa-api-plan-reviewer": "aa-reviewer",
+        "aa-e2e-plan-reviewer": "aa-reviewer",
+        "aa-fuzz-plan-reviewer": "aa-reviewer",
+        "aa-performance-plan-reviewer": "aa-reviewer",
+        "aa-inspect": "aa-reviewer",
+        "aa-report-generator": "aa-reporter",
+        "aa-archive": "aa-archiver",
+    }
+    for skill, agent in expected.items():
+        assert agent_for_skill(skill) == agent, skill
+    assert agent_for_skill("") is None
 
 
 def test_agent_handler_adapter_failure_preserves_error_kind(tmp_path: Path) -> None:

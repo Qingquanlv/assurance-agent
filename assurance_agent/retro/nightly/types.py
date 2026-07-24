@@ -11,7 +11,6 @@ class NightlyOptions(BaseModel):
     retro_id: str | None = None
     dry_run: bool = False
     agent: str = "cursor-agent"
-    history: int = 5
     min_evidence: int = 2
     rework_alert: int = 3
     skip_eval: bool = False

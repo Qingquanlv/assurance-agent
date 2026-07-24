@@ -18,6 +18,7 @@ from assurance_agent.artifacts.models import (
     Advisory,
     ApplySummary,
     CaseYaml,
+    DataKnowledgeProposal,
     ExecutionManifest,
     FactBaseline,
     FailureAnalysis,
@@ -99,6 +100,12 @@ REGISTRY: list[ArtifactSpec] = [
     ),
     ArtifactSpec(
         artifact_type="workflow_state", pattern="workflow-state.yaml", model=WorkflowState, compat="versioned"
+    ),
+    ArtifactSpec(
+        artifact_type="data_knowledge_proposal",
+        pattern="plans/data-knowledge.proposal.*.yaml",
+        model=DataKnowledgeProposal,
+        compat="versioned",
     ),
 ]
 

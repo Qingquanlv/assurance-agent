@@ -57,6 +57,43 @@ aa validate --change <id> [--phase <phase>] [--artifact <relpath>] [--json]
 - `versioned`——带 `schema_version`、允许结构演进的 CLI 产物（如 `workflow-state.yaml`、execution manifest）。
 - `free`——纯 CLI 内部产物（报告 markdown 排版、events 扩展字段），不进注册表、不校验。
 
+## Data knowledge（L1 / L2）
+
+**L1（repo 级）**：`.aa/data-knowledge.yaml` — 正式领域知识库，注册于 `assurance_agent/artifacts/repo_registry.py`，由 `aa knowledge validate`（无 `--change`）与 `aa knowledge promote` 消费。
+
+**L2（change 级）**：`plans/data-knowledge.proposal.<layer>.yaml`（`layer ∈ {api,e2e}`）— 规划/评审阶段的增量提案，注册于 change-relative `artifacts/registry.py`。`mode: bootstrap` 表示 L1 缺失首生；`mode: delta` 表示 L1 存在但缺 leaf。
+
+```text
+aa knowledge validate [--project-dir] [--change <id>] [--proposal <path>]
+aa knowledge promote [--project-dir] (--change <id> | --from <proposal-path>) [--yes] [--force]
+```
+
+- `validate` 从 registry 解析 pydantic 模型，不维护平行映射。
+- `promote` 将 L2 leaf merge 进 L1（剥离 proposal-only metadata）；冲突写入 `promote-conflicts.json`，需 `--force` 才覆盖。
+- API/E2E plan-review gate 通过 `required_capabilities[]`（review JSON 中的 leaf dotted keys）与 L1 做 pre-codegen 能力校验；缺 leaf → `needs_human_review` + **knowledge-remediation** checkpoint（人工 promote 后 `fix_and_proceed` 重跑 review）。
+- Fuzz/Performance plan-review gate 读 review JSON 的 `layer_applicable`：被 proposal 选中但无对应 `type:Fuzz`/`type:Performance` case（空 scope）时 reviewer 置 `layer_applicable: false` → gate 走 `skip`（分支结束、codegen 跳过），而非硬 `reject` 拖垮整条并行链。缺失该字段时按原 `pass`/`reject` 语义处理。
+
+## Retro 三轨与 memory
+
+Retro proposal 用 `finding_kind` / `apply_kind` 分流：
+
+| finding_kind | apply_kind | 落点 |
+|---|---|---|
+| `prompt_rule` | `memory_append` | `.aa/memory/<skill>.md`（经 promote → eval → apply） |
+| `workflow_bug` | `issue_export` | `qa/retro/<id>/issue-drafts/<proposal-id>.yaml` |
+| `domain_knowledge` | `knowledge_delta` | `qa/retro/<id>/knowledge-delta/<proposal-id>.proposal.yaml` |
+
+```text
+aa retro export-issues --retro-id <id> [--overwrite]
+aa retro export-knowledge --retro-id <id> [--overwrite]
+```
+
+导出物化后，`knowledge_delta` 经 `aa knowledge promote --from <path> --yes` 合入 L1。运行时 memory 由 `load_skill_memory(project_root, skill)` 注入 graph v2 / legacy prompt（8 KiB 上限，过滤 `deprecated:` 行）。
+
+## Known product issues（跨 change 历史）
+
+归档根目录 `qa/archive/<change-id>/known-product-issues.md`（现有 markdown 模板）由 `risk/context.py` 解析为 `historical_issues`；去重 key 为 `<source_change_id>:<id>`，evidence ID 为 `EV-HIST-ISSUE-<change>-<id>`。`known_product_issue` 分类在 quality report 中归入 product 缺陷桶。
+
 ## Quality Score 与 Quality Gate
 
 Quality Score 由 CLI **确定性**计算，LLM 不参与。Quality Gate 四态：`PASS` / `PASS_WITH_WARNINGS` / `FAIL` / `SKIPPED`，跨维度 worst-wins 合并。

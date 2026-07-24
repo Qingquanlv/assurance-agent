@@ -63,6 +63,7 @@ class TestHealthEntry(BaseModel):
 
 class HistoricalIssue(BaseModel):
     id: str
+    source_change_id: str
     module: str
     endpoint: str | None = None
     severity: str | None = None
@@ -455,8 +456,67 @@ def _cap_for_source(source: str) -> Confidence:
     return "low"
 
 
+def _normalize_issue_severity(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    normalized = raw.strip().lower()
+    if normalized in ("critical", "major"):
+        return "high"
+    if normalized == "minor":
+        return "medium"
+    return None
+
+
+def _sanitize_evidence_token(value: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9]+", "-", value).upper()
+
+
+def _historical_issue_evidence_id(source_change_id: str, issue_id: str) -> str:
+    return (
+        "EV-HIST-ISSUE-"
+        + _sanitize_evidence_token(source_change_id)
+        + "-"
+        + _sanitize_evidence_token(issue_id)
+    )
+
+
+def _parse_known_product_issues_md(text: str, source_path: str) -> list[dict]:
+    found: list[dict] = []
+    for block in re.split(r"(?=^## )", text, flags=re.MULTILINE):
+        heading = re.match(r"^## (?P<id>[A-Z]{2,}-\S+)", block, re.MULTILINE)
+        if not heading:
+            continue
+        fields: dict[str, str] = {}
+        for match in re.finditer(
+            r"^-\s*(?P<key>module|endpoint|severity|status)\s*:\s*(?P<value>.+)\s*$",
+            block,
+            re.IGNORECASE | re.MULTILINE,
+        ):
+            key = match.group("key").lower()
+            value = match.group("value").strip()
+            if key == "endpoint":
+                value = value.strip("`")
+            fields[key] = value
+        module = fields.get("module")
+        if not module:
+            continue
+        found.append(
+            {
+                "id": heading.group("id"),
+                "module": module,
+                "endpoint": fields.get("endpoint"),
+                "severity": _normalize_issue_severity(fields.get("severity")),
+                "status": fields.get("status"),
+                "parse_source": "known_product_issues_regex",
+                "source_path": source_path,
+            }
+        )
+    return found
+
+
 def _collect_issues_from_archive(archive_path: Path) -> list[dict]:
     found: list[dict] = []
+    source_change_id = archive_path.name
     json_path = archive_path / "known-product-issues.json"
     if json_path.is_file():
         try:
@@ -470,6 +530,7 @@ def _collect_issues_from_archive(archive_path: Path) -> list[dict]:
                     found.append(
                         {
                             "id": item["id"],
+                            "source_change_id": source_change_id,
                             "module": item["module"],
                             "endpoint": item.get("endpoint")
                             if isinstance(item.get("endpoint"), str)
@@ -484,26 +545,37 @@ def _collect_issues_from_archive(archive_path: Path) -> list[dict]:
                     )
         except (json.JSONDecodeError, OSError):
             pass
+    md_path = archive_path / "known-product-issues.md"
+    if md_path.is_file():
+        try:
+            parsed = _parse_known_product_issues_md(md_path.read_text(encoding="utf-8"), str(md_path))
+            for item in parsed:
+                item["source_change_id"] = source_change_id
+                found.append(item)
+        except OSError:
+            pass
     return found
 
 
 def _merge_historical_issues(archive_paths: list[Path]) -> tuple[list[HistoricalIssue], list[EvidenceEntry]]:
-    by_id: dict[str, dict] = {}
+    by_key: dict[str, dict] = {}
     for archive_path in archive_paths:
         for issue in _collect_issues_from_archive(archive_path):
-            existing = by_id.get(issue["id"])
+            key = f"{issue['source_change_id']}:{issue['id']}"
+            existing = by_key.get(key)
             if (
                 existing is None
                 or _SOURCE_RANK[issue["parse_source"]] > _SOURCE_RANK[existing["parse_source"]]
             ):
-                by_id[issue["id"]] = issue
+                by_key[key] = issue
     issues: list[HistoricalIssue] = []
     evidence: list[EvidenceEntry] = []
-    for issue in by_id.values():
-        ev_id = "EV-HIST-ISSUE-" + re.sub(r"[^a-zA-Z0-9]+", "-", issue["id"]).upper()
+    for issue in by_key.values():
+        ev_id = _historical_issue_evidence_id(issue["source_change_id"], issue["id"])
         issues.append(
             HistoricalIssue(
                 id=issue["id"],
+                source_change_id=issue["source_change_id"],
                 module=issue["module"],
                 endpoint=issue.get("endpoint"),
                 severity=issue.get("severity"),
@@ -523,7 +595,7 @@ def _merge_historical_issues(archive_paths: list[Path]) -> tuple[list[Historical
                 parse_confidence_cap=_cap_for_source(issue["parse_source"]),
             )
         )
-    issues.sort(key=lambda h: h.id)
+    issues.sort(key=lambda h: (h.source_change_id, h.id))
     evidence.sort(key=lambda e: e.id)
     return issues, evidence
 

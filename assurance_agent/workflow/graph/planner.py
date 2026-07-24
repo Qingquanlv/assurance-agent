@@ -60,6 +60,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from assurance_agent.exceptions import AaError
+from assurance_agent.workflow.core.graph_types import ErrorKind
 from assurance_agent.workflow.core.graph_events import (
     FanOutExpandedEvent,
     NodeActivatedEvent,
@@ -476,13 +477,14 @@ def _seed_outcomes(
                 and latest.attempts_used < policy.max_attempts
             )
             if not retryable:
+                detail = f": {latest.error}" if latest.error else ""
                 return (
                     outcomes,
                     retry,
                     (
                         f"task {latest.task_id} (node '{nid}') failed with "
                         f"{latest.error_kind}; attempts {latest.attempts_used}/"
-                        f"{policy.max_attempts}"
+                        f"{policy.max_attempts}{detail}"
                     ),
                 )
         elif latest.attempts_used >= policy.max_attempts:  # abandoned
@@ -496,7 +498,18 @@ def _seed_outcomes(
             )
         # failed-retryable 或 abandoned 且预算未耗尽：同一 task_id 进入下一 wave。
         outcomes[nid] = _Outcome(status="unresolved", task=latest)
-        retry.append(_build_task(compiled, graph, projection, context, nid, len(node_tasks) - 1))
+        retry.append(
+            _build_task(
+                compiled,
+                graph,
+                projection,
+                context,
+                nid,
+                len(node_tasks) - 1,
+                prior_failure=latest.error if latest.status == "failed" else None,
+                prior_error_kind=latest.error_kind if latest.status == "failed" else None,
+            )
+        )
     return outcomes, retry, None
 
 
@@ -830,7 +843,19 @@ def _seed_fan_out(
                 ),
             )
         # failed-retryable 或 abandoned 且预算未耗尽：同一 task_id 进入下一 wave。
-        retry.append(_build_fan_out_task(compiled, graph, projection, context, nid, expansion, index))
+        retry.append(
+            _build_fan_out_task(
+                compiled,
+                graph,
+                projection,
+                context,
+                nid,
+                expansion,
+                index,
+                prior_failure=child.error if child.status == "failed" else None,
+                prior_error_kind=child.error_kind if child.status == "failed" else None,
+            )
+        )
 
     settled = missing == 0 and waiting is None and not retry
     if settled and fan_out.reduce is not None:
@@ -1388,6 +1413,9 @@ def _build_task(
     context: RuntimeContext,
     nid: str,
     ordinal: int,
+    *,
+    prior_failure: str | None = None,
+    prior_error_kind: ErrorKind | None = None,
 ) -> ExecutableTask:
     definition = graph.nodes[nid].definition
     input_payload: dict[str, object] = {
@@ -1414,6 +1442,8 @@ def _build_task(
         resources=_task_resources(compiled, graph, nid),
         task_key=None,
         budget=_budget_mark(definition, projection, task_id),
+        prior_failure=prior_failure,
+        prior_error_kind=prior_error_kind,
     )
 
 
@@ -1425,6 +1455,9 @@ def _build_fan_out_task(
     nid: str,
     expansion: FanOutExpansion,
     index: int,
+    *,
+    prior_failure: str | None = None,
+    prior_error_kind: ErrorKind | None = None,
 ) -> ExecutableTask:
     """按冻结展开重建第 ``index`` 个 child：同一 ID、同一展开输入，可安全重放。"""
     definition = graph.nodes[nid].definition
@@ -1471,6 +1504,8 @@ def _build_fan_out_task(
         resources=_task_resources(compiled, graph, nid),
         task_key=display_key,
         budget=_budget_mark(definition, projection, task_id),
+        prior_failure=prior_failure,
+        prior_error_kind=prior_error_kind,
     )
 
 

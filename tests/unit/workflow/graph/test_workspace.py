@@ -472,6 +472,55 @@ def test_apply_tree_rejects_canonical_drift(tmp_path: Path) -> None:
     assert (project / "tests" / "api" / "test_a.py").read_text() == "base\n"
 
 
+def test_apply_tree_cleans_untracked_change_dir_stray(tmp_path: Path) -> None:
+    # resume 修复：agent 把声明产物用绝对路径直写进 canonical 的 change 目录
+    # （越界残留）。apply_tree 应清理该 untracked 残留而非以 drift 阻断 resume。
+    project = _make_project(tmp_path)
+    store = _store(project)
+    backend = _backend(project)
+    base_tree = store.capture(project)
+    write_set = _freeze_change(
+        backend,
+        store,
+        base_tree,
+        "task-a",
+        (("tests/api/test_a.py", "a\n"),),
+        "repo:tests/api/**",
+    )
+    target = store.merge_write_sets((write_set,))
+    stray = project / "qa" / "changes" / "CH-1" / "explore" / "advisory.json"
+    stray.parent.mkdir(parents=True, exist_ok=True)
+    stray.write_text("{}\n", encoding="utf-8")
+
+    store.apply_tree(project, target, base_tree_id=base_tree)
+
+    assert not stray.exists()  # 越界残留被清理
+    assert not stray.parent.exists()  # 空父目录被回收
+    assert (project / "tests" / "api" / "test_a.py").read_text() == "a\n"  # target 正常落盘
+
+
+def test_apply_tree_rejects_untracked_outside_change_dir(tmp_path: Path) -> None:
+    # change 目录之外的 untracked 路径是真实源码漂移，仍须 fail closed。
+    project = _make_project(tmp_path)
+    store = _store(project)
+    backend = _backend(project)
+    base_tree = store.capture(project)
+    write_set = _freeze_change(
+        backend,
+        store,
+        base_tree,
+        "task-a",
+        (("tests/api/test_a.py", "a\n"),),
+        "repo:tests/api/**",
+    )
+    target = store.merge_write_sets((write_set,))
+    rogue = project / "app" / "rogue.py"
+    rogue.write_text("out-of-band source\n", encoding="utf-8")
+    with pytest.raises(WorkspaceError, match="untracked path"):
+        store.apply_tree(project, target, base_tree_id=base_tree)
+    assert rogue.read_text() == "out-of-band source\n"  # fail closed，不删源码
+
+
 def test_apply_tree_converges_after_partial_failure(tmp_path: Path, monkeypatch) -> None:
     project = _make_project(tmp_path)
     store = _store(project)

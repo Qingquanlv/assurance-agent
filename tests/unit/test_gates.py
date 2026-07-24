@@ -84,6 +84,42 @@ def test_missing_file_default_stop(tmp_path: Path):
     assert check_gate(SCHEMA, "case-review-gate", loc_for(tmp_path), EMPTY, {}).verdict == "stop"
 
 
+def _fuzz_gate_schema() -> _GateSchema:
+    from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
+
+    return _GateSchema(load_workflow_v2(Path("/nonexistent")).gates)
+
+
+def _write_fuzz_review(change_dir: Path, payload: dict) -> None:
+    d = change_dir / "review"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "fuzz-plan-review.json").write_text(json.dumps(payload))
+
+
+def test_fuzz_empty_scope_layer_applicable_false_skips(tmp_path: Path):
+    # Empty-scope layer: reviewer honestly rejects but flags layer_applicable=false.
+    # skip_when is declared before reject_when → graceful skip wins over reject.
+    schema = _fuzz_gate_schema()
+    _write_fuzz_review(
+        tmp_path,
+        {"decision": "reject", "codegen_readiness": "not_ready", "layer_applicable": False},
+    )
+    assert check_gate(schema, "fuzz-plan-review-gate", loc_for(tmp_path), EMPTY, {}).verdict == "skip"
+
+
+def test_fuzz_reject_without_layer_applicable_still_rejects(tmp_path: Path):
+    # Absent layer_applicable → skip_when is MISSING (not True) → real reject stands.
+    schema = _fuzz_gate_schema()
+    _write_fuzz_review(tmp_path, {"decision": "reject", "codegen_readiness": "not_ready"})
+    assert check_gate(schema, "fuzz-plan-review-gate", loc_for(tmp_path), EMPTY, {}).verdict == "reject"
+
+
+def test_fuzz_pass_unaffected_by_skip_rule(tmp_path: Path):
+    schema = _fuzz_gate_schema()
+    _write_fuzz_review(tmp_path, {"decision": "pass", "codegen_readiness": "ready"})
+    assert check_gate(schema, "fuzz-plan-review-gate", loc_for(tmp_path), EMPTY, {}).verdict == "pass"
+
+
 def test_change_id_placeholder_resolves_for_archive_produce(tmp_path: Path):
     change = tmp_path / "qa" / "changes" / "C-42"
     loc = loc_for(change, project_root=tmp_path)

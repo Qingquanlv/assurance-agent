@@ -9,7 +9,7 @@ from pathlib import Path
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import assert_path_segment_safe
 from assurance_agent.retro.proposals import read_proposals
-from assurance_agent.retro.types import RetroProposal
+from assurance_agent.retro.types import RetroProposal, memory_body_text
 
 
 def apply_proposal_to_stage(
@@ -36,7 +36,7 @@ def apply_proposal_to_stage(
         shutil.rmtree(stage_dir)
     memory_dir = stage_dir / ".aa" / "memory"
     memory_dir.mkdir(parents=True)
-    body = proposal.proposed_change or proposal.body or proposal.problem
+    body = memory_body_text(proposal)
     (memory_dir / f"{proposal.id}.md").write_text(body + "\n", encoding="utf-8")
     (stage_dir / "proposal-meta.json").write_text(
         json.dumps(proposal.model_dump(mode="json"), indent=2), encoding="utf-8"
@@ -101,7 +101,7 @@ def apply_memory_proposal(
             out_path.write_text(base, encoding="utf-8")
         return False
 
-    change = (proposal.proposed_change or proposal.body or proposal.problem).strip()
+    change = memory_body_text(proposal)
     evidence = ",".join(proposal.evidence_ids)
     block = f"\n<!-- {marker} evidence:{evidence} -->\n- {change}\n<!-- /retro -->\n"
     out_path.parent.mkdir(parents=True, exist_ok=True)

@@ -25,6 +25,8 @@ BUILTIN_ARITY: dict[str, int] = {
     "len": 1,
     "file_exists": 1,
     "defined": 1,
+    "capabilities_present": 2,
+    "plan_review_route": 1,
     "any": 2,
     "all": 2,
     "count": 2,
@@ -234,6 +236,7 @@ MISSING = _Missing()
 FileExistsResolver = Callable[[str], bool]
 GateResolver = Callable[[str], str]
 NodeResolver = Callable[[str], object]
+CapabilitiesPresentResolver = Callable[[object, object], bool]
 
 
 class Scope:
@@ -244,11 +247,13 @@ class Scope:
         file_exists: FileExistsResolver | None = None,
         gate_verdict: GateResolver | None = None,
         node_result: NodeResolver | None = None,
+        capabilities_present: CapabilitiesPresentResolver | None = None,
     ) -> None:
         self._vars = vars
         self.file_exists = file_exists
         self.gate_verdict = gate_verdict
         self.node_result = node_result
+        self.capabilities_present = capabilities_present
 
     def lookup(self, name: str) -> object:
         return self._vars[name] if name in self._vars else MISSING
@@ -262,6 +267,7 @@ class Scope:
             file_exists=self.file_exists,
             gate_verdict=self.gate_verdict,
             node_result=self.node_result,
+            capabilities_present=self.capabilities_present,
         )
 
 
@@ -387,6 +393,21 @@ def _eval_call(expr: Call, scope: Scope) -> object:
         if scope.file_exists is None:
             raise DslError("file_exists() called but no resolver was provided")
         return scope.file_exists(p)
+    if callee == "capabilities_present":
+        review_doc = evaluate(expr.args[0], scope)
+        dk_doc = evaluate(expr.args[1], scope)
+        if scope.capabilities_present is None:
+            raise DslError("capabilities_present() called but no resolver was provided")
+        return scope.capabilities_present(review_doc, dk_doc)
+    if callee == "plan_review_route":
+        from assurance_agent.knowledge.capabilities import plan_review_route as resolve_plan_review_route
+
+        node_id = evaluate(expr.args[0], scope)
+        if not isinstance(node_id, str):
+            return MISSING
+        if scope.node_result is None:
+            raise DslError("plan_review_route() called but no node_result resolver was provided")
+        return resolve_plan_review_route(scope.node_result(node_id))
     if callee == "gate":
         gid = evaluate(expr.args[0], scope)
         if not isinstance(gid, str):

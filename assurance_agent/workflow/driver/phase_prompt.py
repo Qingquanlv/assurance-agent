@@ -11,8 +11,10 @@ contract 授权写范围，不再宣称每个 phase 只能写 change 目录。v1
 """
 
 from collections.abc import Sequence
+from pathlib import Path
 
 from assurance_agent.workflow.graph.agent_api import build_node_prompt
+from assurance_agent.workflow.skill_memory import load_skill_memory
 
 
 def build_phase_prompt(
@@ -22,9 +24,18 @@ def build_phase_prompt(
     *,
     allowed_writes: Sequence[str] | None = None,
     item: str | None = None,
+    project_root: Path | str | None = None,
 ) -> str:
     if allowed_writes is not None:
-        return build_node_prompt(skill, phase, change_id, allowed_writes=allowed_writes, item=item)
+        memory_root = Path(project_root) if project_root is not None else None
+        return build_node_prompt(
+            skill,
+            phase,
+            change_id,
+            allowed_writes=allowed_writes,
+            item=item,
+            memory_root=memory_root,
+        )
     fix_proposal_binding = (
         " Set fix-proposal.json source_batch_id from the current execution "
         "manifest and source_analysis_sha256 to the SHA256 of the exact current "
@@ -38,6 +49,14 @@ def build_phase_prompt(
         if item is not None
         else ""
     )
+    memory_clause = ""
+    if project_root is not None:
+        memory = load_skill_memory(Path(project_root), skill)
+        if memory:
+            memory_clause = (
+                f" Active skill memory for {skill}:\n{memory}\n"
+                "Apply these rules when producing declared outputs."
+            )
     return (
         f"Call skill(name='{skill}'). "
         f"Operate strictly on change_id='{change_id}' — read and write only under "
@@ -45,6 +64,7 @@ def build_phase_prompt(
         f"or pick a different (e.g. more recent) change. "
         f"Produce only the outputs for phase {phase} as described in the skill."
         f"{fix_proposal_binding}"
-        f"{item_binding} "
+        f"{item_binding}"
+        f"{memory_clause} "
         f"Do NOT run aa gate/status. Do NOT modify workflow-state.yaml."
     )

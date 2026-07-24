@@ -190,6 +190,20 @@ seed_change() {
   now="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
   mkdir -p "$cdir"
 
+  # Derive selected layers from TEST_TYPES so the seed proposal stays a single
+  # source of truth with the driver params. Hardcoding all four layers while
+  # TEST_TYPES only covers api,e2e made case-design emit no Fuzz/Performance
+  # cases, which then hard-rejected at the fuzz/performance plan-review gate.
+  local -a _layer_names=(API E2E Fuzz Performance)
+  local -a _layer_keys=(api e2e fuzz performance)
+  local approach="" i
+  for i in "${!_layer_names[@]}"; do
+    if [[ ",$TEST_TYPES," == *",${_layer_keys[$i]},"* ]]; then
+      approach+="${approach:+ + }${_layer_names[$i]}"
+    fi
+  done
+  [[ -n "$approach" ]] || approach="API + E2E"
+
   cat >"$cdir/.qa.yaml" <<YAML
 schema_version: "1.0"
 schema: case-driven
@@ -204,7 +218,7 @@ change:
 approval:
   mode: autonomous
   approved_by: aa-workflow
-  approved_approach: API + E2E + Fuzz + Performance
+  approved_approach: $approach
   approved_at: "$now"
 YAML
 
@@ -220,13 +234,16 @@ YAML
     printf '%s\n' "$requirement"
     echo
     echo "## Test Types Considered"
-    echo "- API: selected"
-    echo "- E2E: selected"
-    echo "- Fuzz: selected"
-    echo "- Performance: selected"
+    for i in "${!_layer_names[@]}"; do
+      if [[ ",$TEST_TYPES," == *",${_layer_keys[$i]},"* ]]; then
+        echo "- ${_layer_names[$i]}: selected"
+      else
+        echo "- ${_layer_names[$i]}: declined"
+      fi
+    done
     echo
     echo "## Layer Rationale"
-    echo "Benchmark autonomous run — API + E2E + Fuzz + Performance coverage for $feature."
+    echo "Benchmark autonomous run — $approach coverage for $feature."
     echo
     echo "generation_mode: autonomous"
   } >"$cdir/proposal.md"

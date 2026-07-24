@@ -3,6 +3,10 @@ name: aa-report-generator
 description: "AA Quality Reporting: Generate a deterministic quality report via `aa report generate --change <change-id>`. Invoked in the M5 workflow after aa-inspect (post-execution inspect). Computes Quality Score across Functional, Coverage, Fuzz, and Performance dimensions and writes quality-report.json, quality-report.md, executive-summary.md. Never fabricates the score, final status, or a release recommendation."
 ---
 
+## Per-Skill Memory
+
+Before producing output, check whether `.aa/memory/aa-report-generator.md` exists in the project root. If it exists, read it before producing output and apply only entries that are not marked `deprecated:`. Treat the file as read-only runtime guidance; do not create, edit, or delete `.aa/memory/**`.
+
 ## Context Contract
 
 Do not rely on prior conversation context.

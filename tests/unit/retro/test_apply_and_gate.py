@@ -11,6 +11,7 @@ from assurance_agent.retro.nightly.exit_codes import NIGHTLY_OK, NIGHTLY_PENDING
 from assurance_agent.retro.nightly.types import NightlyOptions
 from assurance_agent.retro.nightly.utils import write_json
 from assurance_agent.retro.promotions import read_promotion_events
+from tests.unit.retro.proposal_fixtures import memory_proposal_dict
 
 
 def _eval_support_from_disk(engine: Path, suite: str) -> dict:
@@ -37,16 +38,13 @@ def _retro_with_proposal(sut: Path, retro_id: str, *, status: str = "promoted") 
         retro / "proposals.json",
         {
             "proposals": [
-                {
-                    "id": "P-1",
-                    "apply_kind": "memory_append",
-                    "eval_suite": "workflow-run",
-                    "status": status,
-                    "target": ".aa/memory/P-1.md",
-                    "problem": "x",
-                    "proposed_change": "remember to check fixtures",
-                    "evidence_ids": ["CH-1#F-1"],
-                }
+                memory_proposal_dict(
+                    id="P-1",
+                    eval_suite="workflow-run",
+                    status=status,
+                    target=".aa/memory/P-1.md",
+                    problem="x",
+                )
             ]
         },
     )

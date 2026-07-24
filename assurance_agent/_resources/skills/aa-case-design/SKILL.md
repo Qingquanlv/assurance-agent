@@ -3,6 +3,10 @@ name: aa-case-design
 description: "MUST use to design QA scope and generate proposal.md plus semantic case delta YAML before aa-case-reviewer. Clarifies requirements, target module, QA scope, test target selection (API/E2E/Fuzz/Performance), data needs, assertions, and coverage approach through collaborative dialogue."
 ---
 
+## Per-Skill Memory
+
+Before producing output, check whether `.aa/memory/aa-case-design.md` exists in the project root. If it exists, read it before producing output and apply only entries that are not marked `deprecated:`. Treat the file as read-only runtime guidance; do not create, edit, or delete `.aa/memory/**`.
+
 ## Context Contract
 
 Do not rely on prior conversation context.

@@ -1,0 +1,17 @@
+schema_version: "1"
+based_on_l1_version: 1
+mode: delta
+accounts: {}
+auth: {}
+entities: {}
+capabilities:
+  domain_factories: {}
+  adapters:
+    api: {}
+    e2e: {}
+    fuzz: {}
+    performance: {}
+  cleanup: {}
+discovered_candidates: []
+needs_review: []
+promotion_checklist: []

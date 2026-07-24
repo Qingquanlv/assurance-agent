@@ -102,7 +102,7 @@ contracts:
       - change:explore/**
     authorization_writes:
       - change:explore/**
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   skill:aa-case-design:
@@ -120,7 +120,7 @@ contracts:
       - change:proposal.md
       - change:cases/**
       - change:trace/minimum-coverage-matrix.yaml
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   skill:aa-case-reviewer:
@@ -134,7 +134,7 @@ contracts:
       - change:review/case-review.json
     authorization_writes:
       - change:review/**
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   skill:aa-case-fixer:
@@ -156,7 +156,7 @@ contracts:
       - change:.qa.yaml
       - change:proposal.md
       - change:trace/minimum-coverage-matrix.yaml
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   skill:aa-fact-baseline:
@@ -169,7 +169,7 @@ contracts:
       - change:facts/**
     authorization_writes:
       - change:facts/**
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   # ---- API branch ----------------------------------------------------------
@@ -185,7 +185,7 @@ contracts:
       - change:plans/m3-review-summary.md
     authorization_writes:
       - change:plans/**
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   skill:aa-api-plan-reviewer:
@@ -198,7 +198,7 @@ contracts:
       - change:review/api-plan-review-summary.md
     authorization_writes:
       - change:review/**
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   skill:aa-api-plan-fixer:
@@ -213,7 +213,7 @@ contracts:
     authorization_writes:
       - change:review/**
       - change:plans/**
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   skill:aa-api-codegen:
@@ -233,7 +233,7 @@ contracts:
       - change:codegen/api-codegen-summary.md
       - repo:tests/api/**
       - repo:tests/testdata/**
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   # ---- E2E branch ----------------------------------------------------------
@@ -249,7 +249,7 @@ contracts:
       - change:plans/m4-review-summary.md
     authorization_writes:
       - change:plans/**
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   skill:aa-e2e-plan-reviewer:
@@ -262,7 +262,7 @@ contracts:
       - change:review/plan-review-summary.md
     authorization_writes:
       - change:review/**
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   skill:aa-e2e-plan-fixer:
@@ -277,7 +277,7 @@ contracts:
     authorization_writes:
       - change:review/**
       - change:plans/**
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   skill:aa-e2e-codegen:
@@ -295,7 +295,7 @@ contracts:
       - change:codegen/e2e-codegen-summary.md
       - repo:tests/e2e/**
       - repo:tests/testdata/**
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   # ---- Fuzz branch ---------------------------------------------------------
@@ -310,7 +310,7 @@ contracts:
       - change:plans/fuzz-review-summary.md
     authorization_writes:
       - change:plans/**
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   skill:aa-fuzz-plan-reviewer:
@@ -322,7 +322,7 @@ contracts:
       - change:review/fuzz-plan-review-summary.md
     authorization_writes:
       - change:review/**
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   skill:aa-fuzz-codegen:
@@ -339,7 +339,7 @@ contracts:
       - change:codegen/fuzz-codegen-summary.md
       - repo:tests/fuzz/**
       - repo:tests/testdata/**
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   # ---- Performance branch --------------------------------------------------
@@ -354,7 +354,7 @@ contracts:
       - change:plans/performance-review-summary.md
     authorization_writes:
       - change:plans/**
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   skill:aa-performance-plan-reviewer:
@@ -366,7 +366,7 @@ contracts:
       - change:review/performance-plan-review-summary.md
     authorization_writes:
       - change:review/**
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   skill:aa-performance-codegen:
@@ -383,7 +383,7 @@ contracts:
       - change:codegen/performance-codegen-summary.md
       - repo:tests/perf/**
       - repo:tests/testdata/**
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   # ---- inspect / healing / report / archive --------------------------------
@@ -396,7 +396,7 @@ contracts:
       - change:inspect/**
     authorization_writes:
       - change:inspect/**
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   skill:aa-fix-proposal:
@@ -406,9 +406,11 @@ contracts:
       - change:execution/**
     writes:
       - change:healing/fix-proposal.json
+      - change:healing/fix-proposal.md
     authorization_writes:
       - change:healing/fix-proposal.json
-    retryable_errors: [timeout, transport, rate_limit]
+      - change:healing/fix-proposal.md
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   skill:aa-api-codegen-fixer:
@@ -430,7 +432,7 @@ contracts:
       - change:healing/**
       - repo:tests/api/**
       - repo:tests/testdata/**
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   skill:aa-e2e-codegen-fixer:
@@ -450,7 +452,7 @@ contracts:
       - change:healing/**
       - repo:tests/e2e/**
       - repo:tests/testdata/**
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   skill:aa-report-generator:
@@ -464,7 +466,7 @@ contracts:
       - change:report/**
     authorization_writes:
       - change:report/**
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   skill:aa-archive:
@@ -476,5 +478,5 @@ contracts:
       - project:qa/archive/**
     authorization_writes:
       - project:qa/archive/**
-    retryable_errors: [timeout, transport, rate_limit]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true

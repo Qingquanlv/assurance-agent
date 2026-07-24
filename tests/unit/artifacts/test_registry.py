@@ -6,6 +6,7 @@ def test_registry_covers_every_expected_artifact_type() -> None:
         "advisory",
         "apply_summary",
         "case_yaml",
+        "data_knowledge_proposal",
         "execution_manifest",
         "fact_baseline",
         "failure_analysis",
@@ -18,7 +19,7 @@ def test_registry_covers_every_expected_artifact_type() -> None:
         "workflow_state",
     }
     assert {spec.artifact_type for spec in REGISTRY} == expected
-    assert len(REGISTRY) == 13
+    assert len(REGISTRY) == 14
 
 
 def test_case_yaml_matches_nested_and_direct_paths() -> None:

@@ -56,7 +56,10 @@ policies:
   retry:
     agent-transient:
       max_attempts: 3
-      retry_on: [timeout, transport, rate_limit]
+      # invalid_output: registry schema validation of declared must_compat
+      # artifacts runs at output freeze; a fresh agent attempt with prior-failure
+      # feedback is the intended recovery, so treat it as transient.
+      retry_on: [timeout, transport, rate_limit, invalid_output]
       backoff:
         initial_seconds: 2
         multiplier: 2
@@ -415,6 +418,14 @@ graphs:
           bind: audited_gate_read
           actions: [fix_and_proceed, accept_risk, stop]
 
+      knowledge-remediation:
+        uses: builtin:interrupt
+        interrupt:
+          reason: "api plan review requires L1 capability remediation (aa knowledge promote)"
+          checkpoint: api-plan-review-gate
+          bind: audited_gate_read
+          actions: [fix_and_proceed, accept_risk, stop]
+
       exhausted:
         uses: operation:stop
         with: {reason: "api plan fix attempts exhausted"}
@@ -426,10 +437,11 @@ graphs:
 
     routes:
       - from: review
-        select: "node('review').gate.verdict"
+        select: "plan_review_route('review')"
         cases:
           pass: END
           needs_fix: fix
+          knowledge_remediation: knowledge-remediation
           needs_human_review: human-review
           reject: STOP
           stop: STOP
@@ -438,6 +450,13 @@ graphs:
         select: "resume.action"
         cases:
           fix_and_proceed: fix
+          accept_risk: END
+          stop: STOP
+        default: STOP
+      - from: knowledge-remediation
+        select: "resume.action"
+        cases:
+          fix_and_proceed: review
           accept_risk: END
           stop: STOP
         default: STOP
@@ -510,6 +529,14 @@ graphs:
           bind: audited_gate_read
           actions: [fix_and_proceed, accept_risk, stop]
 
+      knowledge-remediation:
+        uses: builtin:interrupt
+        interrupt:
+          reason: "e2e plan review requires L1 capability remediation (aa knowledge promote)"
+          checkpoint: e2e-plan-review-gate
+          bind: audited_gate_read
+          actions: [fix_and_proceed, accept_risk, stop]
+
       exhausted:
         uses: operation:stop
         with: {reason: "e2e plan fix attempts exhausted"}
@@ -521,10 +548,11 @@ graphs:
 
     routes:
       - from: review
-        select: "node('review').gate.verdict"
+        select: "plan_review_route('review')"
         cases:
           pass: END
           needs_fix: fix
+          knowledge_remediation: knowledge-remediation
           needs_human_review: human-review
           reject: STOP
           stop: STOP
@@ -533,6 +561,13 @@ graphs:
         select: "resume.action"
         cases:
           fix_and_proceed: fix
+          accept_risk: END
+          stop: STOP
+        default: STOP
+      - from: knowledge-remediation
+        select: "resume.action"
+        cases:
+          fix_and_proceed: review
           accept_risk: END
           stop: STOP
         default: STOP
@@ -554,6 +589,14 @@ graphs:
       review-cycle:
         uses: graph:fuzz-plan-review-cycle
 
+      # Re-reads the fuzz plan-review verdict so the branch can route an
+      # empty-scope `skip` (layer selected but no cases) straight to END,
+      # bypassing codegen. gate() is only resolvable inside a builtin:gate
+      # node — never in a node/edge `when` — so the branch cannot inline it.
+      codegen-gate:
+        uses: builtin:gate
+        with: {gate: fuzz-plan-review-gate}
+
       codegen:
         uses: skill:aa-fuzz-codegen
         agent: aa-test-author
@@ -567,9 +610,17 @@ graphs:
       - {from: START, to: plan, when: "params.run_mode != 'codegen-only'"}
       - {from: START, to: review-cycle, when: "params.run_mode == 'codegen-only'"}
       - {from: plan, to: review-cycle}
-      - {from: review-cycle, to: codegen, when: "params.run_mode in ['full','codegen-only']"}
+      - {from: review-cycle, to: codegen-gate, when: "params.run_mode in ['full','codegen-only']"}
       - {from: review-cycle, to: END, when: "params.run_mode in ['plan-only','review-plan']"}
       - {from: codegen, to: END}
+
+    routes:
+      - from: codegen-gate
+        select: "node('codegen-gate').gate.verdict"
+        cases:
+          pass: codegen
+          skip: END
+        default: END
 
   fuzz-plan-review-cycle:
     max_supersteps: 10
@@ -598,6 +649,7 @@ graphs:
         select: "node('review').gate.verdict"
         cases:
           pass: END
+          skip: END
           needs_fix: human-review
           needs_human_review: human-review
           reject: STOP
@@ -628,6 +680,14 @@ graphs:
       review-cycle:
         uses: graph:performance-plan-review-cycle
 
+      # Re-reads the performance plan-review verdict so the branch can route an
+      # empty-scope `skip` (layer selected but no cases) straight to END,
+      # bypassing codegen. gate() is only resolvable inside a builtin:gate
+      # node — never in a node/edge `when` — so the branch cannot inline it.
+      codegen-gate:
+        uses: builtin:gate
+        with: {gate: performance-plan-review-gate}
+
       codegen:
         uses: skill:aa-performance-codegen
         agent: aa-test-author
@@ -641,9 +701,17 @@ graphs:
       - {from: START, to: plan, when: "params.run_mode != 'codegen-only'"}
       - {from: START, to: review-cycle, when: "params.run_mode == 'codegen-only'"}
       - {from: plan, to: review-cycle}
-      - {from: review-cycle, to: codegen, when: "params.run_mode in ['full','codegen-only']"}
+      - {from: review-cycle, to: codegen-gate, when: "params.run_mode in ['full','codegen-only']"}
       - {from: review-cycle, to: END, when: "params.run_mode in ['plan-only','review-plan']"}
       - {from: codegen, to: END}
+
+    routes:
+      - from: codegen-gate
+        select: "node('codegen-gate').gate.verdict"
+        cases:
+          pass: codegen
+          skip: END
+        default: END
 
   performance-plan-review-cycle:
     max_supersteps: 10
@@ -672,6 +740,7 @@ graphs:
         select: "node('review').gate.verdict"
         cases:
           pass: END
+          skip: END
           needs_fix: human-review
           needs_human_review: human-review
           reject: STOP
@@ -881,12 +950,23 @@ gates:
       )
 
   api-plan-review-gate: &plan-review-gate
-    reads: [review/api-plan-review.json]
+    reads:
+      - review/api-plan-review.json
+      - { path: repo:.aa/data-knowledge.yaml, as: data_knowledge }
     invalid_json: stop
     missing_field_is: stop
+    stop_when: >
+      not defined(api_plan_review.required_capabilities)
+      or api_plan_review.required_capabilities == null
+      or len(api_plan_review.required_capabilities) == 0
     needs_fix_when: "api_plan_review.decision == 'needs_fix' and api_plan_review.auto_fix_allowed == true"
     needs_human_review_when: >
-      api_plan_review.decision == 'needs_human_review'
+      (
+        defined(api_plan_review.required_capabilities)
+        and len(api_plan_review.required_capabilities) > 0
+        and not capabilities_present(api_plan_review, data_knowledge)
+      )
+      or api_plan_review.decision == 'needs_human_review'
       or (
         (api_plan_review.human_review_required == true or api_plan_review.risk_level in ['high','critical'])
         and not (
@@ -896,15 +976,29 @@ gates:
         )
       )
     reject_when: "api_plan_review.decision == 'reject' or api_plan_review.codegen_readiness == 'not_ready'"
-    pass_when: "api_plan_review.decision == 'pass' and api_plan_review.codegen_readiness in ['ready','ready_with_warnings']"
+    pass_when: >
+      api_plan_review.decision == 'pass'
+      and api_plan_review.codegen_readiness in ['ready','ready_with_warnings']
+      and capabilities_present(api_plan_review, data_knowledge)
 
   e2e-plan-review-gate:
-    reads: [review/plan-review.json]
+    reads:
+      - review/plan-review.json
+      - { path: repo:.aa/data-knowledge.yaml, as: data_knowledge }
     invalid_json: stop
     missing_field_is: stop
+    stop_when: >
+      not defined(plan_review.required_capabilities)
+      or plan_review.required_capabilities == null
+      or len(plan_review.required_capabilities) == 0
     needs_fix_when: "plan_review.decision == 'needs_fix' and plan_review.auto_fix_allowed == true"
     needs_human_review_when: >
-      plan_review.decision == 'needs_human_review'
+      (
+        defined(plan_review.required_capabilities)
+        and len(plan_review.required_capabilities) > 0
+        and not capabilities_present(plan_review, data_knowledge)
+      )
+      or plan_review.decision == 'needs_human_review'
       or (
         (plan_review.human_review_required == true or plan_review.risk_level in ['high','critical'])
         and not (
@@ -914,7 +1008,10 @@ gates:
         )
       )
     reject_when: "plan_review.decision == 'reject' or plan_review.codegen_readiness == 'not_ready'"
-    pass_when: "plan_review.decision == 'pass' and plan_review.codegen_readiness in ['ready','ready_with_warnings']"
+    pass_when: >
+      plan_review.decision == 'pass'
+      and plan_review.codegen_readiness in ['ready','ready_with_warnings']
+      and capabilities_present(plan_review, data_knowledge)
 
   fuzz-plan-review-gate:
     reads: [review/fuzz-plan-review.json]
@@ -927,6 +1024,10 @@ gates:
         fuzz_plan_review.human_review_required == true
         and not (params.force_continue == true and fuzz_plan_review.decision in ['pass','approved'])
       )
+    # Empty-scope skip: the layer was selected but has no applicable cases, so
+    # there is nothing to fuzz. Route a graceful skip (branch ends, codegen is
+    # skipped) rather than a dead-end reject that halts the whole run.
+    skip_when: "fuzz_plan_review.layer_applicable == false"
     reject_when: "fuzz_plan_review.decision == 'reject'"
     pass_when: "fuzz_plan_review.decision in ['pass','approved']"
 
@@ -941,6 +1042,10 @@ gates:
         performance_plan_review.human_review_required == true
         and not (params.force_continue == true and performance_plan_review.decision in ['pass','approved'])
       )
+    # Empty-scope skip: the layer was selected but has no applicable cases, so
+    # there is nothing to load-test. Route a graceful skip (branch ends, codegen
+    # is skipped) rather than a dead-end reject that halts the whole run.
+    skip_when: "performance_plan_review.layer_applicable == false"
     reject_when: "performance_plan_review.decision == 'reject'"
     pass_when: "performance_plan_review.decision in ['pass','approved']"
 

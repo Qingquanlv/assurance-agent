@@ -16,6 +16,7 @@ def make_review(**overrides: object) -> dict:
         "human_review_required": False,
         "summary": "Short review summary.",
         "findings": [],
+        "required_capabilities": ["auth.api_admin_token"],
         "next_action": "continue",
     }
     doc.update(overrides)
@@ -47,8 +48,8 @@ def test_review_valid_full_fixture_parses_and_keeps_extras() -> None:
     assert model.human_review_required is False
     assert model.risk_level == "low"
     assert model.findings == []
-    assert model.model_extra is not None
-    assert model.model_extra["review_type"] == "api-plan"
+    assert model.review_type == "api-plan"
+    assert model.required_capabilities == ["auth.api_admin_token"]
 
 
 def test_review_minimal_required_fields() -> None:
@@ -57,6 +58,40 @@ def test_review_minimal_required_fields() -> None:
     )
     assert model.auto_fix_allowed is None
     assert model.codegen_readiness is None
+    assert model.review_type is None
+
+
+@pytest.mark.parametrize("review_type", ["api-plan", "e2e-plan"])
+def test_plan_review_missing_required_capabilities_fails(review_type: str) -> None:
+    doc = make_review(review_type=review_type)
+    del doc["required_capabilities"]
+    with pytest.raises(ValidationError, match="required_capabilities"):
+        Review.model_validate(doc)
+
+
+@pytest.mark.parametrize("review_type", ["api-plan", "e2e-plan"])
+def test_plan_review_empty_required_capabilities_fails(review_type: str) -> None:
+    with pytest.raises(ValidationError, match="required_capabilities"):
+        Review.model_validate(make_review(review_type=review_type, required_capabilities=[]))
+
+
+@pytest.mark.parametrize("review_type", ["api-plan", "e2e-plan"])
+def test_plan_review_null_required_capabilities_fails(review_type: str) -> None:
+    with pytest.raises(ValidationError, match="required_capabilities"):
+        Review.model_validate(make_review(review_type=review_type, required_capabilities=None))
+
+
+def test_plan_review_blank_capability_item_fails() -> None:
+    with pytest.raises(ValidationError, match="non-empty leaf key"):
+        Review.model_validate(make_review(required_capabilities=["auth.api_admin_token", "  "]))
+
+
+@pytest.mark.parametrize("review_type", ["case", "fuzz-plan", "performance-plan", None])
+def test_non_plan_reviews_do_not_require_capabilities(review_type: str | None) -> None:
+    doc = make_review(review_type=review_type)
+    del doc["required_capabilities"]
+    model = Review.model_validate(doc)
+    assert model.required_capabilities is None
 
 
 def test_review_decision_enum_violation_fails() -> None:

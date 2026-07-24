@@ -92,4 +92,95 @@ def test_historical_issue_from_json_sidecar(tmp_path: Path, monkeypatch: pytest.
     )
     ctx = build_risk_context(change_id="CH-1", project_root=tmp_path, now=FIXED_NOW)
     assert [h.id for h in ctx.historical_issues] == ["KPI-1"]
+    assert ctx.historical_issues[0].source_change_id == "A-001"
+    assert ctx.historical_issues[0].evidence_id == "EV-HIST-ISSUE-A-001-KPI-1"
     assert any(e.type == "historical_issue" and e.issue_id == "KPI-1" for e in ctx.evidence)
+
+
+_KPI_MD = """\
+# Known Product Issues
+
+## KPI-001 — menu delete returns 500
+
+- Category: known_product_issue
+- Severity: major
+- Module: menus
+- Endpoint: `DELETE /api/v1/menus/{id}`
+- Status: open
+"""
+
+_PH_MD = """\
+## PH-001 — priority hint issue
+
+- Severity: minor
+- Module: auth
+- Status: open
+"""
+
+
+def test_historical_issue_from_markdown_template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write(tmp_path, "qa/archive/A-001/known-product-issues.md", _KPI_MD)
+    write(tmp_path, "qa/archive/A-001/archive-summary.md", "archived_at: '2026-07-10T00:00:00Z'\n")
+    monkeypatch.setattr(
+        ctxmod,
+        "get_changed_files",
+        lambda root, base: ctxmod.GitDiffResult(changed_files=[], no_git=False, degraded_reasons=[]),
+    )
+    ctx = build_risk_context(change_id="CH-1", project_root=tmp_path, now=FIXED_NOW)
+    assert len(ctx.historical_issues) == 1
+    issue = ctx.historical_issues[0]
+    assert issue.id == "KPI-001"
+    assert issue.module == "menus"
+    assert issue.endpoint == "DELETE /api/v1/menus/{id}"
+    assert issue.severity == "high"
+    assert issue.source_change_id == "A-001"
+    hist_evidence = [e for e in ctx.evidence if e.type == "historical_issue"]
+    assert len(hist_evidence) == 1
+    assert hist_evidence[0].parse_source == "known_product_issues_regex"
+    assert hist_evidence[0].parse_confidence_cap == "low"
+
+
+def test_historical_issue_markdown_accepts_non_kpi_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write(tmp_path, "qa/archive/A-001/known-product-issues.md", _PH_MD)
+    write(tmp_path, "qa/archive/A-001/archive-summary.md", "archived_at: '2026-07-10T00:00:00Z'\n")
+    monkeypatch.setattr(
+        ctxmod,
+        "get_changed_files",
+        lambda root, base: ctxmod.GitDiffResult(changed_files=[], no_git=False, degraded_reasons=[]),
+    )
+    ctx = build_risk_context(change_id="CH-1", project_root=tmp_path, now=FIXED_NOW)
+    assert [h.id for h in ctx.historical_issues] == ["PH-001"]
+    assert ctx.historical_issues[0].module == "auth"
+    assert ctx.historical_issues[0].severity == "medium"
+
+
+def test_historical_issue_dedup_namespaces_by_source_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write(tmp_path, "qa/archive/CHANGE-A/known-product-issues.md", _KPI_MD)
+    write(tmp_path, "qa/archive/CHANGE-A/archive-summary.md", "archived_at: '2026-07-11T00:00:00Z'\n")
+    write(
+        tmp_path,
+        "qa/archive/CHANGE-B/known-product-issues.md",
+        _KPI_MD.replace("menu delete returns 500", "different symptom"),
+    )
+    write(tmp_path, "qa/archive/CHANGE-B/archive-summary.md", "archived_at: '2026-07-10T00:00:00Z'\n")
+    monkeypatch.setattr(
+        ctxmod,
+        "get_changed_files",
+        lambda root, base: ctxmod.GitDiffResult(changed_files=[], no_git=False, degraded_reasons=[]),
+    )
+    ctx = build_risk_context(change_id="CH-1", project_root=tmp_path, now=FIXED_NOW)
+    assert len(ctx.historical_issues) == 2
+    assert {(h.source_change_id, h.id) for h in ctx.historical_issues} == {
+        ("CHANGE-A", "KPI-001"),
+        ("CHANGE-B", "KPI-001"),
+    }
+    evidence_ids = [e.id for e in ctx.evidence if e.type == "historical_issue"]
+    assert len(evidence_ids) == len(set(evidence_ids))
+    assert evidence_ids == [
+        "EV-HIST-ISSUE-CHANGE-A-KPI-001",
+        "EV-HIST-ISSUE-CHANGE-B-KPI-001",
+    ]

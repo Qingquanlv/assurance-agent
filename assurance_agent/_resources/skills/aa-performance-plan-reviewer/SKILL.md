@@ -63,7 +63,15 @@ Return one of: `pass` / `needs_fix` / `needs_human_review` / `reject`.
 - **pass**: `codegen_readiness in [ready, ready_with_warnings]`, `blockers` empty, no blocking `needs_review`.
 - **needs_fix**: mechanically fixable plan issues only; `auto_fix_plan` non-empty; all referenced findings `severity in [low, medium]`.
 - **needs_human_review**: thresholds missing/unconfirmed, base URL unknown, or auth unknown.
-- **reject**: wrong feature, required files missing, plan contradicts case files, or Performance used as a baseline/regression comparison instead of absolute thresholds.
+- **reject**: wrong feature, plan contradicts case files, or Performance used as a baseline/regression comparison instead of absolute thresholds.
+
+### Empty-scope skip (do NOT reject a layer that has no cases)
+
+If the proposal selected the Performance layer but there are **zero applicable `type: Performance` cases** in scope (empty selection, and the plan honestly documents the empty scope), this is **not** a defect — there is simply nothing to load-test. Do **not** hard-reject and do **not** invent scenarios.
+
+- Set **`layer_applicable: false`** in the review JSON. Keep `codegen_readiness: not_ready` and record a `finding` explaining the empty scope.
+- The `performance-plan-review-gate` reads `layer_applicable == false` and routes a graceful **skip**: the performance branch ends and `aa-performance-codegen` is skipped, without halting the parallel API/E2E work.
+- Only omit `layer_applicable` (or set it `true`) when the layer genuinely has applicable cases — in that case the normal `pass`/`needs_fix`/`needs_human_review`/`reject` rules apply. Missing `cases/**` while cases were expected is still a real problem: raise `needs_human_review`, not a silent skip.
 
 ### Gate Consistency Rules
 
@@ -125,9 +133,12 @@ qa/changes/<change-id>/review/performance-plan-review.json
 
 `reviewed_files` MUST be non-empty and include `plans/performance-plan.md`, `plans/performance-codegen-plan.md`, `plans/performance-review-summary.md`.
 
+Optional field **`layer_applicable`** (boolean): set `false` only for the empty-scope skip case described in Decision Rules. Omit it otherwise.
+
 ## Hard Rules
 
 - Do not modify plan files.
 - Do not write `decision == pass` when any scenario lacks confirmed absolute thresholds.
 - Do not accept plans whose base URL or auth strategy is unresolved.
 - Performance is a pass/fail against absolute thresholds — reject baseline/regression framing.
+- Do not hard-reject a layer solely because it has no applicable cases — use `layer_applicable: false` (empty-scope skip) instead.

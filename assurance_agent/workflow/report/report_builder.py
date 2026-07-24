@@ -27,7 +27,12 @@ from assurance_agent.workflow.report.quality_score import ScoreDimension, comput
 
 _NO_DATA = "No data"
 
-_PRODUCT = {"business_logic_failure", "fuzz_stateful_failure", "perf_threshold_exceeded"}
+_PRODUCT = {
+    "business_logic_failure",
+    "fuzz_stateful_failure",
+    "known_product_issue",
+    "perf_threshold_exceeded",
+}
 _ENVIRONMENT = {"environment_failure", "perf_environment"}
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)

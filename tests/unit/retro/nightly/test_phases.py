@@ -14,8 +14,9 @@ from assurance_agent.retro.nightly.phase_f import (
     compare_suite_regression,
     should_auto_apply,
 )
-from assurance_agent.retro.types import RetroProposal, RetroPromoteRecord
+from assurance_agent.retro.types import RetroPromoteRecord
 from tests.unit.retro.archive_fixtures import make_archived_change
+from tests.unit.retro.proposal_fixtures import issue_proposal, knowledge_proposal, memory_proposal
 
 
 def test_has_required_evidence(tmp_path: Path) -> None:
@@ -41,12 +42,6 @@ def test_enumerate_candidates_skips_consumed_and_non_terminal(tmp_path: Path) ->
 
 
 def test_enumerate_candidates_handles_preserved_change_dir_after_archive(tmp_path: Path) -> None:
-    """Regression: `aa-archive` copies (never moves) and never deletes
-    `qa/changes/<id>/` after archiving (preserved as reference), so a change
-    existing under both `qa/changes/` and `qa/archive/` is the normal
-    post-archive steady state, not an error (ADR-0002). Archive-first
-    resolution (`prefer="archive"`) picks the archived copy.
-    """
     write_aa_config(tmp_path)
     make_archived_change(tmp_path, "CH-ARCHIVED", failures=[])
     stray_active_copy = tmp_path / "qa" / "changes" / "CH-ARCHIVED"
@@ -61,11 +56,16 @@ def test_enumerate_candidates_handles_preserved_change_dir_after_archive(tmp_pat
     assert incomplete == []
 
 
-def test_partition_forwards_for_review(tmp_path: Path) -> None:
-    write_aa_config(tmp_path)
+def test_partition_forwards_for_review() -> None:
     proposals = [
-        RetroProposal(id="P-1", apply_kind="memory_append", body="x", eval_suite="s"),
-        RetroProposal(id="P-2", apply_kind="memory_append", body="y", eval_suite="s"),
+        memory_proposal(
+            id="P-1",
+            evidence_ids=["CH-A#E1", "CH-B#E2"],
+        ),
+        memory_proposal(
+            id="P-2",
+            evidence_ids=["CH-A#E1", "CH-C#E3"],
+        ),
     ]
     promotions: list[RetroPromoteRecord] = []
     partition = partition_proposals_for_review(proposals, promotions, min_evidence=2, rework_alert=3)
@@ -75,13 +75,45 @@ def test_partition_forwards_for_review(tmp_path: Path) -> None:
 
 
 def test_partition_flags_stuck_after_rework_alert() -> None:
-    proposals = [RetroProposal(id="P-1", apply_kind="memory_append", body="x")]
+    proposals = [memory_proposal(id="P-1")]
     promotions = [
         RetroPromoteRecord(proposal_id="P-1", decision="needs_rework", decided_by="h", decided_at="t")
         for _ in range(3)
     ]
     partition = partition_proposals_for_review(proposals, promotions, min_evidence=1, rework_alert=3)
     assert "P-1" in partition.stuck_tags
+
+
+def test_partition_moves_low_evidence_proposals_to_threshold_bucket() -> None:
+    proposals = [
+        memory_proposal(
+            id="P-LOW",
+            evidence_ids=["RET-user-management-20260722#FAIL-001"],
+        ),
+        memory_proposal(
+            id="P-OK",
+            evidence_ids=["CH-A#E1", "CH-B#E2"],
+        ),
+    ]
+    partition = partition_proposals_for_review(proposals, [], min_evidence=2, rework_alert=3)
+    assert [p.id for p in partition.below_evidence_threshold] == ["P-LOW"]
+    assert [p.id for p in partition.for_review] == ["P-OK"]
+    md = build_review_queue_markdown("retro-1", partition)
+    assert "Below evidence threshold" in md
+    assert "P-LOW" in md
+
+
+def test_partition_routes_export_kinds_to_export_track() -> None:
+    proposals = [
+        memory_proposal(id="P-MEM"),
+        issue_proposal(id="P-ISSUE"),
+        knowledge_proposal(id="P-KNOW"),
+    ]
+    partition = partition_proposals_for_review(proposals, [], min_evidence=1, rework_alert=3)
+    assert [p.id for p in partition.for_review] == ["P-MEM"]
+    assert {p.id for p in partition.pr_only} == {"P-ISSUE", "P-KNOW"}
+    md = build_review_queue_markdown("retro-1", partition)
+    assert "Export track (issue/knowledge)" in md
 
 
 def test_phase_f_regression_and_auto_apply() -> None:

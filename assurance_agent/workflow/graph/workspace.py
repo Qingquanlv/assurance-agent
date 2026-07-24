@@ -607,8 +607,18 @@ class TreeStore:
         base = self._load_tree(base_tree_id)
         target = self._load_tree(target_tree_id)
         current = _walk(project_root, keep_change_dir=self._change_dir)
+        # 本 change 目录（qa/changes/<id>/）是 runtime 独占产出区：落在其中的
+        # untracked 路径通常是 agent 把声明产物用绝对路径直写进 canonical（而非
+        # 其 task 沙箱）留下的越界残留。此类残留由重跑节点重新生成、只经受控
+        # write-set 提升，故 resume 修复时清理而非以 canonical drift 阻断；change
+        # 目录之外的 untracked 路径仍是真实源码漂移，一律 fail closed。
+        resolved_change = self._change_dir.resolve()
+        change_prefix: str | None = None
+        if _is_within(resolved_change, project_root):
+            change_prefix = resolved_change.relative_to(project_root).as_posix()
         writes: list[tuple[str, _Entry]] = []
         deletes: list[str] = []
+        change_dir_strays: list[str] = []
         for rel in sorted(set(base.entries) | set(target.entries)):
             if _is_excluded_rel(rel):
                 continue
@@ -632,11 +642,16 @@ class TreeStore:
         for rel in sorted(set(current) - set(base.entries) - set(target.entries)):
             if _is_excluded_rel(rel):
                 continue
+            if change_prefix is not None and (
+                rel == change_prefix or rel.startswith(f"{change_prefix}/")
+            ):
+                change_dir_strays.append(rel)
+                continue
             raise WorkspaceError(f"canonical workspace drift: untracked path {rel}")
 
         for rel, entry in writes:
             _install_file(project_root / rel, self._read_object(entry.sha256), entry.executable)
-        for rel in deletes:
+        for rel in deletes + change_dir_strays:
             victim = project_root / rel
             victim.unlink(missing_ok=True)
             _prune_empty_parents(victim, project_root)

@@ -4,6 +4,16 @@ Every module that consumes structured artifacts imports from here.
 """
 
 from assurance_agent.artifacts.models.cases import CaseEntry, CaseRemoval, CaseYaml, QaYaml
+from assurance_agent.artifacts.models.data_knowledge import (
+    AccountLeaf,
+    AuthLeaf,
+    CapabilitiesBlock,
+    CapabilityLeaf,
+    CleanupLeaf,
+    DataKnowledge,
+    DataKnowledgeProposal,
+    EntityLeaf,
+)
 from assurance_agent.artifacts.models.common import (
     CoverageDimension,
     CoverageThreshold,
@@ -62,6 +72,14 @@ __all__ = [
     "CaseEntry",
     "CaseRemoval",
     "CaseYaml",
+    "AccountLeaf",
+    "AuthLeaf",
+    "CapabilitiesBlock",
+    "CapabilityLeaf",
+    "CleanupLeaf",
+    "DataKnowledge",
+    "DataKnowledgeProposal",
+    "EntityLeaf",
     "CoverageDimension",
     "CoverageGapEntry",
     "CoverageThreshold",
