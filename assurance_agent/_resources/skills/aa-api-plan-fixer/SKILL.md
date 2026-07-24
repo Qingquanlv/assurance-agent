@@ -37,7 +37,7 @@ Do not rely on prior conversation context.
    - `qa/changes/<change-id>/plans/api-test-data-plan.md`
    - `qa/changes/<change-id>/plans/api-codegen-plan.md`
    - `qa/changes/<change-id>/plans/m3-review-summary.md`
-   - `qa/changes/<change-id>/plans/data-knowledge.proposal.yaml` (only if changed per authorized `auto_fix_plan` entry — see **data-knowledge.proposal.yaml** rules)
+   - `qa/changes/<change-id>/plans/data-knowledge.proposal.api.yaml` (only if changed per authorized `auto_fix_plan` entry — see **data-knowledge.proposal.api.yaml** rules)
    - `qa/changes/<change-id>/review/api-plan-review-apply-summary.md`
 2. Report the `workflow-state.yaml` state delta (inline mode: apply it directly; dispatched subagent: never write `workflow-state.yaml` — report the values in your final message and the orchestrator applies them):
    - Append to `phases.api_plan_review.fix_attempts`:
@@ -99,7 +99,7 @@ qa/changes/<change-id>/plans/m3-review-summary.md
 Optional (only present when `.aa/data-knowledge.yaml` was missing during planning):
 
 ```text
-qa/changes/<change-id>/plans/data-knowledge.proposal.yaml
+qa/changes/<change-id>/plans/data-knowledge.proposal.api.yaml
 .aa/data-knowledge.yaml
 ```
 
@@ -116,7 +116,7 @@ Update only allowed plan files:
 
 ```text
 qa/changes/<change-id>/plans/*.md
-qa/changes/<change-id>/plans/data-knowledge.proposal.yaml
+qa/changes/<change-id>/plans/data-knowledge.proposal.api.yaml
 ```
 
 Write:
@@ -220,7 +220,7 @@ Do not change:
 
 Do not hide unknowns. If something is unknown, make it explicit in the plan as a TODO or human review item — only when the reviewer already classified it as a non-blocking warning.
 
-Do not directly update `.aa/data-knowledge.yaml`. Only propose updates in `data-knowledge.proposal.yaml` when authorized by a validated `auto_fix_plan` entry.
+Do not directly update `.aa/data-knowledge.yaml`. Only propose updates in `data-knowledge.proposal.api.yaml` when authorized by a validated `auto_fix_plan` entry.
 
 ---
 
@@ -266,16 +266,16 @@ qa/changes/<change-id>/plans/api-plan.md
 qa/changes/<change-id>/plans/api-test-data-plan.md
 qa/changes/<change-id>/plans/api-codegen-plan.md
 qa/changes/<change-id>/plans/m3-review-summary.md
-qa/changes/<change-id>/plans/data-knowledge.proposal.yaml
+qa/changes/<change-id>/plans/data-knowledge.proposal.api.yaml
 ```
 
 If `target_file` is outside this allowlist and appears in `auto_fix_plan`, **STOP** as reviewer contract error — do not skip and continue.
 
-**`data-knowledge.proposal.yaml` creation rule:**
+**`data-knowledge.proposal.api.yaml` creation rule:**
 
-May create or modify `data-knowledge.proposal.yaml` **only when**:
+May create or modify `data-knowledge.proposal.api.yaml` **only when**:
 
-- `auto_fix_plan.target_file` is exactly `qa/changes/<change-id>/plans/data-knowledge.proposal.yaml`
+- `auto_fix_plan.target_file` is exactly `qa/changes/<change-id>/plans/data-knowledge.proposal.api.yaml`
 - The referenced finding is `severity in ["low", "medium"]` with `auto_fix_allowed == true` and `human_review_required == false`
 - Content is limited to missing capability descriptions or `discovered_candidates` already evidenced in files on disk
 - Do **not** create the file proactively outside an authorized `auto_fix_plan` entry
@@ -296,7 +296,7 @@ May create or modify `data-knowledge.proposal.yaml` **only when**:
 3. For each `auto_fix_plan` item, run **Per-Item Validation** (Fix Source Rule). Any failure → write apply summary with **Reviewer Contract Errors** and **STOP**.
 4. Apply minimal edits to target plan files per validated `auto_fix_plan` instructions only.
 5. Preserve existing style and ordering.
-6. Add unknowns to plan TODO sections or `data-knowledge.proposal.yaml` — only when authorized by a validated `auto_fix_plan` entry and the unknown is already a non-blocking reviewer warning. Never downgrade blockers.
+6. Add unknowns to plan TODO sections or `data-knowledge.proposal.api.yaml` — only when authorized by a validated `auto_fix_plan` entry and the unknown is already a non-blocking reviewer warning. Never downgrade blockers.
 7. Write `api-plan-review-apply-summary.md`.
 8. Report the state delta: append to `phases.api_plan_review.fix_attempts` (do **not** modify `phases.api_plan_review.status`) — applied to `workflow-state.yaml` per the Context Contract.
 9. Tell the orchestrator to re-run `aa-api-plan-reviewer`.
@@ -356,7 +356,7 @@ May update:
 - Do **not** replace enum readiness values with `pending re-review` or any non-enum string.
 - If `m3-review-summary.md` is updated, add a separate note (outside the enum fields): `Pending re-review after fixes.`
 
-### `data-knowledge.proposal.yaml`
+### `data-knowledge.proposal.api.yaml`
 
 May append proposed knowledge entries **only** when authorized by a validated `auto_fix_plan` entry targeting this file (see Target File Allowlist).
 

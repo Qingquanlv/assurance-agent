@@ -155,21 +155,26 @@ maybe_auto_decide() {
   local change_id="$1"
   [ "$AUTO_DECIDE_BENCHMARK" = "true" ] || return 1
   if [ ! -f ".aa/data-knowledge.yaml" ]; then
-    local proposal="qa/changes/$change_id/plans/data-knowledge.proposal.yaml"
-    if [ -f "$proposal" ]; then
-      mkdir -p .aa
-      python3 - "$proposal" .aa/data-knowledge.yaml <<'PYDK'
-import sys
-from pathlib import Path
-src, dst = Path(sys.argv[1]), Path(sys.argv[2])
-lines = src.read_text(encoding="utf-8").splitlines(True)
-while lines and lines[0].lstrip().startswith("#"):
-    lines.pop(0)
-while lines and not lines[0].strip():
-    lines.pop(0)
-dst.write_text("".join(lines), encoding="utf-8")
-PYDK
-      log "[$change_id] materialized .aa/data-knowledge.yaml from proposal"
+    mkdir -p .aa
+    cat >".aa/data-knowledge.yaml" <<'EOF'
+version: 1
+accounts: {}
+auth: {}
+entities: {}
+capabilities:
+  domain_factories: {}
+  adapters:
+    api: {}
+    e2e: {}
+    fuzz: {}
+    performance: {}
+  cleanup: {}
+EOF
+    log "[$change_id] scaffolded empty .aa/data-knowledge.yaml"
+  fi
+  if compgen -G "qa/changes/$change_id/plans/data-knowledge.proposal.*.yaml" >/dev/null; then
+    if "$AA_BIN" knowledge promote --change "$change_id" --yes; then
+      log "[$change_id] promoted data-knowledge proposals into .aa/data-knowledge.yaml"
     fi
   fi
   local status_json interrupt_id action reason
@@ -293,6 +298,20 @@ seed_change() {
   now="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
   mkdir -p "$cdir"
 
+  # Derive selected layers from TEST_TYPES so the seed proposal stays a single
+  # source of truth with the driver params. Hardcoding all four layers while
+  # TEST_TYPES only covers api,e2e made case-design emit no Fuzz/Performance
+  # cases, which then hard-rejected at the fuzz/performance plan-review gate.
+  local -a _layer_names=(API E2E Fuzz Performance)
+  local -a _layer_keys=(api e2e fuzz performance)
+  local approach="" i
+  for i in "${!_layer_names[@]}"; do
+    if [[ ",$TEST_TYPES," == *",${_layer_keys[$i]},"* ]]; then
+      approach+="${approach:+ + }${_layer_names[$i]}"
+    fi
+  done
+  [[ -n "$approach" ]] || approach="API + E2E"
+
   cat >"$cdir/.qa.yaml" <<YAML
 schema_version: "1.0"
 schema: case-driven
@@ -307,7 +326,7 @@ change:
 approval:
   mode: autonomous
   approved_by: aa-workflow
-  approved_approach: API + E2E + Fuzz + Performance
+  approved_approach: $approach
   approved_at: "$now"
 YAML
 
@@ -323,13 +342,16 @@ YAML
     printf '%s\n' "$requirement"
     echo
     echo "## Test Types Considered"
-    echo "- API: selected"
-    echo "- E2E: selected"
-    echo "- Fuzz: selected"
-    echo "- Performance: selected"
+    for i in "${!_layer_names[@]}"; do
+      if [[ ",$TEST_TYPES," == *",${_layer_keys[$i]},"* ]]; then
+        echo "- ${_layer_names[$i]}: selected"
+      else
+        echo "- ${_layer_names[$i]}: declined"
+      fi
+    done
     echo
     echo "## Layer Rationale"
-    echo "Benchmark autonomous run — API + E2E + Fuzz + Performance coverage for $feature."
+    echo "Benchmark autonomous run — $approach coverage for $feature."
     echo
     echo "generation_mode: autonomous"
   } >"$cdir/proposal.md"

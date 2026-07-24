@@ -14,20 +14,22 @@ Use this skill when asked to analyze `qa/retro/<retro-id>/context.json` and prop
   - recent `qa/retro/*/promotions.json` files (for rejected / needs_rework history)
   - `qa/retro/<retro-id>/evidence/<change-id>/` snapshots for `evidence_source: "unarchived"`
   - `.aa/memory/**`
+  - `.aa/data-knowledge.yaml`
   - `schemas/workflow-schema.yaml`
   - relevant `skills/*/SKILL.md`
 
 ## Hard Rules
 
-- Do not modify SKILL.md, workflow schema, `.aa/memory/**`, or project source files.
+- Do not modify SKILL.md, workflow schema, `.aa/memory/**`, `.aa/data-knowledge.yaml`, or project source files.
 - Write only:
   - `qa/retro/<retro-id>/proposals.json`
   - `qa/retro/<retro-id>/retro-summary.md`
-- Every proposal must cite evidence_ids that already exist in context.json.
+- Every proposal must cite `evidence_ids` that already exist in `context.json`.
 - If evidence is weak or missing, do not create a proposal — **except** skill-execution drift (see below), which is mandatory when the signal is present.
 - Generate proposals with `status: "proposed"` only.
 - Do not repeat proposals that are equivalent to recent `rejected` proposals.
 - For observations similar to recent `needs_rework` proposals, incorporate the `rework_note` and materially revise the proposal instead of resubmitting the same text.
+- Every proposal **must** include machine fields `finding_kind`, `apply_kind`, and structured `payload` (see Three-Track Routing below). Natural-language `problem` / `proposed_change` are for humans; export and apply use `payload`.
 
 ## Required Analysis Order
 
@@ -44,10 +46,10 @@ Use this skill when asked to analyze `qa/retro/<retro-id>/context.json` and prop
 For each drifted phase entry:
 
 - Cite that entry's `evidence_ids` (e.g. `RET-…#workflow-state:report`).
-- Prefer `layer: "agent"`, `apply_kind: "memory_append"`.
+- Use `finding_kind: "prompt_rule"`, `apply_kind: "memory_append"`.
 - Target the phase's skill memory file; if the root cause is orchestrator not enforcing load-before-work, also consider a second proposal targeting `.aa/memory/aa-workflow.md`.
 - `problem` must name the phase and state it is skill-execution drift (`skill_loaded=false`).
-- `proposed_change` must append a concrete rule: read that phase's `SKILL.md` before doing phase work, and only then set / report `skill_loaded: true`.
+- `payload.body` must append a concrete rule: read that phase's `SKILL.md` before doing phase work, and only then set / report `skill_loaded: true`.
 
 Phase → memory target → eval_suite:
 
@@ -63,11 +65,67 @@ Phase → memory target → eval_suite:
 
 Single-change drift still gets a proposal (nightly may auto-tag `needs_rework` when unique change evidence `< 2`; that is driver policy, not a reason to omit the proposal).
 
-## Proposal Layers
+## Three-Track Routing
 
-- `agent`: per-skill memory rule, `apply_kind: "memory_append"`, target `.aa/memory/aa-<skill>.md`
-- `interaction`: contract change across producer/consumer skills, `apply_kind: "contract_field"`
-- `team`: workflow schema change, `apply_kind: "schema_param"` or `"schema_structure"`
+Use **`finding_kind`** to choose the track. **`layer`** is optional human context only (agent / interaction / team); it does **not** route proposals.
+
+| finding_kind | apply_kind | Where it goes | Human action after export |
+|---|---|---|---|
+| `prompt_rule` | `memory_append` | `.aa/memory/<skill>.md` via `aa retro promote` → eval → apply | Review queue → promote → nightly eval |
+| `workflow_bug` | `issue_export` | `qa/retro/<id>/issue-drafts/<proposal-id>.yaml` via `aa retro export-issues` | Dev issue / PR from exported draft |
+| `domain_knowledge` | `knowledge_delta` | `qa/retro/<id>/knowledge-delta/<proposal-id>.proposal.yaml` via `aa retro export-knowledge` | `aa knowledge promote --from <path>` merges into L1 |
+
+**Mandatory correspondence** (validator rejects mismatches):
+
+- `prompt_rule` ↔ `memory_append`
+- `workflow_bug` ↔ `issue_export`
+- `domain_knowledge` ↔ `knowledge_delta`
+
+### Track 1 — `prompt_rule` / `memory_append`
+
+- `target`: `.aa/memory/aa-<skill>.md` (must stay under `.aa/memory/`).
+- `payload`: `{ "body": "<exact memory rule text to append>" }`
+- `eval_suite`: required (see Eval Suite Selection).
+- Routed to nightly review queue when evidence spans enough distinct changes.
+
+### Track 2 — `workflow_bug` / `issue_export`
+
+- Use when the fix belongs in engine code, inspect classifier, gate wiring, etc.—not a skill memory rule.
+- `target`: human-readable code area (e.g. `assurance_agent/workflow/inspect`).
+- `payload` (all required):
+
+```json
+{
+  "title": "short issue title",
+  "target": "assurance_agent/workflow/report/failure_classifier.py",
+  "severity": "low|medium|high",
+  "evidence_ids": ["RET-…#FAIL-001"],
+  "proposed_change": "what to change in code or contract"
+}
+```
+
+- No `eval_suite` for memory eval; export via `aa retro export-issues --retro <id>`.
+
+### Track 3 — `domain_knowledge` / `knowledge_delta`
+
+- Use when retro discovered missing or contradictory **L1 domain facts** (auth, accounts, entities, capabilities).
+- `payload`: canonical L2 proposal object with `schema_version`, `mode: "delta"`, optional `based_on_l1_version`, and only the **new/changed** L1 leaves (same shape as `plans/data-knowledge.proposal.*.yaml`).
+
+```json
+{
+  "schema_version": "1",
+  "mode": "delta",
+  "based_on_l1_version": 1,
+  "auth": {
+    "api_admin_token": {
+      "method": "token",
+      "symbol": "tests.api.conftest.admin_token"
+    }
+  }
+}
+```
+
+- Export via `aa retro export-knowledge --retro <id>`, then merge with `aa knowledge promote --from qa/retro/<id>/knowledge-delta/<proposal-id>.proposal.yaml`.
 
 ## Evidence Source Handling
 
@@ -82,7 +140,7 @@ summarizing evidence:
 
 ## Eval Suite Selection
 
-Use an existing eval suite only:
+Use an existing eval suite only (required for `memory_append` proposals):
 
 | Target | eval_suite |
 |---|---|
@@ -104,15 +162,39 @@ Never invent suite names such as `workflow-inspect-codegen`.
   "proposals": [
     {
       "id": "RETRO-001",
+      "finding_kind": "prompt_rule",
+      "apply_kind": "memory_append",
       "layer": "agent",
       "target": ".aa/memory/aa-api-codegen.md",
       "problem": "Repeated test data failures for department name length",
       "evidence_ids": ["RET-a#fail-1"],
       "proposed_change": "Append a rule to keep generated department names within ORM max_length constraints.",
-      "apply_kind": "memory_append",
+      "payload": {
+        "body": "Append a rule to keep generated department names within ORM max_length constraints."
+      },
       "eval_suite": "workflow-api-codegen",
       "risk": "low",
       "confidence": "high",
+      "status": "proposed"
+    },
+    {
+      "id": "RETRO-002",
+      "finding_kind": "workflow_bug",
+      "apply_kind": "issue_export",
+      "layer": "interaction",
+      "target": "assurance_agent/workflow/inspect",
+      "problem": "Inspect classifies schema KeyError as unknown despite explicit log excerpt",
+      "evidence_ids": ["RET-b#fail-2"],
+      "proposed_change": "Classify _LOCAL_SCHEMAS KeyError as test_data_failure, not unknown.",
+      "payload": {
+        "title": "Inspect misclassifies schema KeyError as unknown",
+        "target": "assurance_agent/workflow/inspect",
+        "severity": "medium",
+        "evidence_ids": ["RET-b#fail-2"],
+        "proposed_change": "Classify _LOCAL_SCHEMAS KeyError as test_data_failure, not unknown."
+      },
+      "risk": "low",
+      "confidence": "medium",
       "status": "proposed"
     }
   ]
@@ -126,6 +208,6 @@ Summarize:
 - evidence window and change count
 - **skill execution drift**: for each `signals.skill_execution` entry, state phase / count / whether a proposal was filed (or why skipped: recent reject / rework revision only)
 - top repeated failures
-- proposed changes grouped by layer
+- proposed changes grouped by **finding_kind** (prompt_rule / workflow_bug / domain_knowledge) and expected downstream command (`promote`, `export-issues`, `export-knowledge` → `knowledge promote`)
 - rejected observations with insufficient evidence
-- eval suite required for each proposal
+- eval suite required for each `memory_append` proposal

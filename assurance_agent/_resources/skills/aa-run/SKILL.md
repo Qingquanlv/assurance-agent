@@ -3,6 +3,10 @@ name: aa-run
 description: "AA M5: Execute quality targets for a change via `aa run --change <change-id>`. Runs API (pytest + coverage), E2E (pytest-playwright), Fuzz (schemathesis via pytest), and Performance (Locust) per selected_targets. CLI writes normalised results to execution/runs/<batch-id>/ (api/e2e/fuzz/performance/coverage-result.json, summary.md, quality-gate-result.json, execution-manifest.yaml) plus latest pointers under execution/. Never fabricates test results or coverage numbers."
 ---
 
+## Per-Skill Memory
+
+Before producing output, check whether `.aa/memory/aa-run.md` exists in the project root. If it exists, read it before producing output and apply only entries that are not marked `deprecated:`. Treat the file as read-only runtime guidance; do not create, edit, or delete `.aa/memory/**`.
+
 ## Context Contract
 
 Do not rely on prior conversation context.

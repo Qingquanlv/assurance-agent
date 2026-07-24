@@ -163,3 +163,17 @@ def test_generate_report_business_defect_is_high_risk(tmp_path: Path) -> None:
     assert result.report.final_status == "FAIL"
     assert result.report.risk_level == "HIGH"
     assert len(result.report.defects.product) == 1
+
+
+def test_generate_report_known_product_issue_is_product_defect(tmp_path: Path) -> None:
+    change_id = _seed_change(
+        tmp_path,
+        _api("expected-product-fail: known product issue documented"),
+        _cov(),
+    )
+    inspect_change(tmp_path, change_id)
+    result = generate_report(tmp_path, change_id)
+    assert result.report.risk_level == "HIGH"
+    assert len(result.report.defects.product) == 1
+    assert result.report.defects.product[0].category == "known_product_issue"
+    assert len(result.report.defects.test) == 0

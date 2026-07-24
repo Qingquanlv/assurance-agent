@@ -67,6 +67,8 @@ class GateHandler:
                 "reads_sha256": dict(report.reads_sha256),
                 "value": value,
             }
+            if report.details is not None:
+                gate_report["details"] = dict(report.details)
             return TaskResult(status="succeeded", value=value, gate_report=gate_report)
         expression = params.get("expression")
         if isinstance(expression, str):

@@ -15,6 +15,7 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict
 
 from assurance_agent.workflow.core.graph_types import ErrorKind
+from assurance_agent.workflow.skill_memory import load_skill_memory
 
 
 class AgentRequest(BaseModel):
@@ -47,6 +48,10 @@ class AgentInvoker(Protocol):
         raise NotImplementedError
 
 
+_PRIOR_FAILURE_KINDS = frozenset({"invalid_output", "forbidden_write"})
+_PRIOR_FAILURE_MAX_CHARS = 800
+
+
 def build_node_prompt(
     skill: str,
     node_id: str,
@@ -55,6 +60,9 @@ def build_node_prompt(
     allowed_writes: Sequence[str],
     item: str | None = None,
     workspace_root: str | Path | None = None,
+    memory_root: Path | None = None,
+    prior_failure: str | None = None,
+    prior_error_kind: ErrorKind | None = None,
 ) -> str:
     """v2 node prompt：列出 contract 授权写范围，不再宣称只能写 change 目录。
 
@@ -66,6 +74,10 @@ def build_node_prompt(
     模型无法自证 cwd 时会"向上发现" canonical ``.aa/config.yaml`` 并把相对产物
     路径解析到 canonical（越界写、被沙箱权限拒 → ``invalid_output``）。显式给出
     cwd 消除这种猜测：agent 直接以此为项目根落盘。
+
+    Contract-violation retries (``invalid_output`` / ``forbidden_write``) append a
+    prior-failure clause with the exact engine error so the agent can fix the
+    declared artifact instead of blindly replaying.
     """
     allowed = ", ".join(sorted(allowed_writes)) or "(none)"
     cwd_clause = ""
@@ -76,6 +88,30 @@ def build_node_prompt(
             "NOT search parent directories for a different project root, and resolve "
             "every declared output under it (e.g. write "
             f"'{workspace_root}/qa/changes/{change_id}/<declared-output>')."
+        )
+    memory_clause = ""
+    if memory_root is not None:
+        memory = load_skill_memory(Path(memory_root), skill)
+        if memory:
+            memory_clause = (
+                f" Active skill memory for {skill} (from frozen workspace snapshot):\n{memory}\n"
+                "Apply these rules when producing declared outputs."
+            )
+    failure_clause = ""
+    if (
+        prior_failure
+        and prior_error_kind is not None
+        and prior_error_kind in _PRIOR_FAILURE_KINDS
+    ):
+        detail = prior_failure.strip()
+        if len(detail) > _PRIOR_FAILURE_MAX_CHARS:
+            detail = detail[:_PRIOR_FAILURE_MAX_CHARS] + "…"
+        failure_clause = (
+            f" PRIOR ATTEMPT FAILED ({prior_error_kind}) — do not repeat it:\n"
+            f"{detail}\n"
+            "Your previous attempt violated the artifact contract. Open the declared "
+            "output you wrote, fix exactly the reported fields, rewrite it, and keep "
+            "all other content unchanged."
         )
     return (
         f"Call skill(name='{skill}'). Operate strictly on change_id='{change_id}'. "
@@ -94,5 +130,7 @@ def build_node_prompt(
         "write via an absolute path outside the working directory — doing so "
         "escapes the isolated workspace and fails output validation."
         + cwd_clause
+        + memory_clause
+        + failure_clause
         + (f" Fan-out item: {item}." if item is not None else "")
     )

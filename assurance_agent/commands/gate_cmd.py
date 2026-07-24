@@ -108,6 +108,11 @@ def gate_check(change_id: str, node_path: str, as_json: bool) -> None:
         click.echo(f"  Verdict : {verdict}")
         if report.get("reason"):
             click.echo(f"  Reason  : {report['reason']}")
+        details = report.get("details")
+        if isinstance(details, dict):
+            missing = details.get("missing_capabilities")
+            if isinstance(missing, list) and missing:
+                click.echo(f"  Missing capabilities: {', '.join(str(item) for item in missing)}")
         click.echo()
 
     raise SystemExit(exit_code_for_gate_verdict(verdict))

@@ -12,7 +12,9 @@ from assurance_agent.retro.nightly.exit_codes import (
     NIGHTLY_OK,
 )
 from assurance_agent.retro.nightly.types import NightlyOptions
+from assurance_agent.retro.promotions import read_promotion_events
 from tests.unit.retro.archive_fixtures import make_archived_change
+from tests.unit.retro.proposal_fixtures import memory_proposal_dict
 
 
 def _opts(sut: Path, *, dry_run: bool = False) -> NightlyOptions:
@@ -21,7 +23,6 @@ def _opts(sut: Path, *, dry_run: bool = False) -> NightlyOptions:
         retro_id="retro-test",
         dry_run=dry_run,
         agent="fake-agent",
-        history=5,
         min_evidence=1,
         rework_alert=3,
         skip_eval=False,
@@ -36,13 +37,12 @@ def _write_proposals(sut: Path, retro_id: str) -> None:
         json.dumps(
             {
                 "proposals": [
-                    {
-                        "id": "P-1",
-                        "apply_kind": "memory_append",
-                        "body": "append this",
-                        "eval_suite": "s",
-                        "evidence_ids": ["CH-1#F-1"],
-                    },
+                    memory_proposal_dict(
+                        id="P-1",
+                        payload={"body": "append this"},
+                        proposed_change="append this",
+                        eval_suite="s",
+                    ),
                 ]
             }
         ),

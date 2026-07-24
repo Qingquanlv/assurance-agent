@@ -15,6 +15,7 @@ from typing import Any
 from assurance_agent.retro.promotions import (
     EVENT_APPLICATION,
     EVENT_EVAL_COMPLETED,
+    EVENT_PROPOSAL_EXPORTED,
     EVENT_REVIEW_DECISION,
     proposal_states,
     read_promotion_events,
@@ -85,6 +86,9 @@ def _timeline_event(event: dict) -> dict:
         base["target"] = event.get("target")
         base["content_sha256"] = event.get("content_sha256")
         base["note"] = event.get("note")
+    elif event.get("type") == EVENT_PROPOSAL_EXPORTED:
+        base["target"] = event.get("target")
+        base["source_sha256"] = event.get("source_sha256")
     return base
 
 
@@ -140,10 +144,20 @@ def project_retro_show(sut: Path, retro_id: str) -> dict:
     eval_by_proposal = _eval_results_by_proposal(retro_dir)
 
     grouped: dict[str, list[dict]] = {}
+    export_meta: dict[str, dict[str, str | None]] = {}
     for event in events:
         pid = event.get("proposal_id")
         if isinstance(pid, str):
             grouped.setdefault(pid, []).append(event)
+            if event.get("type") == EVENT_PROPOSAL_EXPORTED:
+                export_meta[pid] = {
+                    "target_path": event.get("target") if isinstance(event.get("target"), str) else None,
+                    "source_sha256": (
+                        event.get("source_sha256")
+                        if isinstance(event.get("source_sha256"), str)
+                        else None
+                    ),
+                }
 
     proposal_map = {p.id: p for p in proposals}
     all_ids = set(proposal_map)
@@ -156,6 +170,7 @@ def project_retro_show(sut: Path, retro_id: str) -> dict:
             {
                 "id": pid,
                 "layer": proposal.layer if proposal else None,
+                "finding_kind": proposal.finding_kind if proposal else None,
                 "target": proposal.target if proposal else None,
                 "problem": proposal.problem if proposal else None,
                 "proposed_change": proposal.proposed_change if proposal else None,
@@ -165,6 +180,8 @@ def project_retro_show(sut: Path, retro_id: str) -> dict:
                 "confidence": proposal.confidence if proposal else None,
                 "state": states.get(pid, "proposed"),
                 "evidence_ids": list(proposal.evidence_ids) if proposal else [],
+                "export_target_path": export_meta.get(pid, {}).get("target_path"),
+                "export_source_sha256": export_meta.get(pid, {}).get("source_sha256"),
                 "timeline": [_timeline_event(e) for e in grouped.get(pid, [])],
                 "eval_results": eval_by_proposal.get(pid, []),
             }

@@ -113,6 +113,9 @@ aa workflow run --change <id> --entrypoint full --adapter opencode --server http
 | `aa eval run\|plan\|report ...` | AI Eval 框架（权威文档 `docs/eval.md`） |
 | `aa retro --retro-id <id> --change <id>... [--json]` | 回顾聚合；`--json` stdout 含 `retro_id`/`signal_count`/`change_count` |
 | `aa retro nightly collect --sut <dir> --agent <cmd>` | nightly 回顾驱动；退出码 0 成功 / 10 no-op / 其他失败 |
+| `aa retro export-issues\|export-knowledge --retro-id <id> [--overwrite]` | 物化 issue draft / L2 knowledge delta |
+| `aa knowledge validate [--project-dir] [--change <id>] [--proposal <path>]` | 校验 L1/L2 data-knowledge 产物 |
+| `aa knowledge promote [--project-dir] (--change <id> \| --from <path>) [--yes] [--force]` | 将 L2 proposal merge 进 L1 |
 
 ---
 

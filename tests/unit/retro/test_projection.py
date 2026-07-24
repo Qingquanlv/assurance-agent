@@ -13,7 +13,9 @@ from assurance_agent.retro.projection import (
 def _proposal(pid: str, *, evidence: list[str], suite: str = "workflow-full") -> dict:
     return {
         "id": pid,
+        "finding_kind": "prompt_rule",
         "apply_kind": "memory_append",
+        "payload": {"body": f"remember {pid}"},
         "eval_suite": suite,
         "status": "proposed",
         "layer": "agent",

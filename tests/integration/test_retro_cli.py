@@ -15,6 +15,7 @@ from assurance_agent.cli import main
 from assurance_agent.retro.apply import apply_memory_proposal
 from assurance_agent.retro.proposals import read_proposals
 from tests.unit.retro.archive_fixtures import make_archived_change
+from tests.unit.retro.proposal_fixtures import issue_proposal_dict, memory_proposal_dict
 
 
 def _eval_support_from_disk(engine: Path, suite: str) -> dict:
@@ -78,8 +79,7 @@ def test_retro_nightly_collect_success_exit_0(tmp_path: Path) -> None:
         agent.write_text(
             "#!/usr/bin/env bash\n"
             f'd="$(ls -1d {retro_glob}/retro-* | tail -1)"\n'
-            'printf \'{"proposals":[{"id":"P-1","apply_kind":"memory_append",'
-            '"body":"x","eval_suite":"s","evidence_ids":["CH-1#F-1"]}]}\' > "$d/proposals.json"\n'
+            'printf \'{"proposals":[{"id":"P-1","finding_kind":"prompt_rule","apply_kind":"memory_append","payload":{"body":"x"},"eval_suite":"s","evidence_ids":["CH-1#F-1"]}]}\' > "$d/proposals.json"\n'
             'printf "# summary\\n" > "$d/retro-summary.md"\n',
             encoding="utf-8",
         )
@@ -130,15 +130,12 @@ def test_retro_nightly_collect_dry_run_exit_0(tmp_path: Path) -> None:
 
 # --- retro promotion loop: promote / complete / apply / rollback (spec §6) ---
 
-_PROPOSAL = {
-    "id": "P-1",
-    "apply_kind": "memory_append",
-    "eval_suite": "workflow-run",
-    "target": ".aa/memory/aa-run.md",
-    "problem": "flaky fixture use",
-    "proposed_change": "remember to check fixtures",
-    "evidence_ids": ["CH-1#F-1"],
-}
+_PROPOSAL = memory_proposal_dict(
+    id="P-1",
+    eval_suite="workflow-run",
+    target=".aa/memory/aa-run.md",
+    problem="flaky fixture use",
+)
 
 
 def _seed_retro_dir(root: Path, retro_id: str, proposals: list[dict] | None = None) -> Path:
@@ -313,7 +310,7 @@ def test_retro_promote_rejects_non_memory_append() -> None:
     runner = CliRunner()
     with runner.isolated_filesystem() as fs:
         root = Path(fs)
-        proposal = dict(_PROPOSAL, apply_kind="skill_edit")
+        proposal = issue_proposal_dict(id="P-1", eval_suite="workflow-run", target=".aa/memory/aa-run.md")
         retro_dir = _seed_retro_dir(root, "retro-p", [proposal])
         _seed_suite(root)
         result = runner.invoke(
@@ -333,7 +330,6 @@ def test_retro_promote_rejects_non_memory_append() -> None:
         )
         assert result.exit_code == 1
         assert "memory_append" in result.output
-        assert not (retro_dir / "promotions.json").exists()
 
 
 def test_retro_promote_rejects_unknown_suite() -> None:

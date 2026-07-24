@@ -503,6 +503,7 @@ def _reevaluate_gate(
         "reason": report.reason,
         "reads_sha256": dict(report.reads_sha256),
         "value": report.verdict.value,
+        **({"details": dict(report.details)} if report.details is not None else {}),
     }
 
 

@@ -291,12 +291,18 @@ def test_error_retries_only_when_in_policy_and_contract(tmp_path: Path) -> None:
 
 
 def test_canonical_contract_violations_stop_immediately(tmp_path: Path) -> None:
-    # packaged registry 的 canonical contract 不把合约类错误列为可重试。
+    # Hard contract violations stay non-retryable. invalid_output is the exception:
+    # skill contracts intentionally retry it so agents can fix schema breaches with
+    # prior-failure feedback. Operation contracts still omit it.
     catalog = load_execution_contracts(tmp_path)
-    violations = {"auth", "invalid_output", "forbidden_write", "contract"}
+    hard_violations = {"auth", "forbidden_write", "contract"}
     assert catalog.contracts, "canonical registry must not be empty"
     for contract in catalog.contracts.values():
-        assert not set(contract.retryable_errors) & violations
+        assert not set(contract.retryable_errors) & hard_violations
+        if contract.target.startswith("skill:"):
+            assert "invalid_output" in contract.retryable_errors
+        else:
+            assert "invalid_output" not in contract.retryable_errors
 
     change = tmp_path / "CH-1"
     change.mkdir()
@@ -308,7 +314,7 @@ def test_canonical_contract_violations_stop_immediately(tmp_path: Path) -> None:
     projection = _project(change)
 
     for kind in kinds:
-        # canonical contract 的 retryable_errors 为空；即使 policy 全部放行也立即失败。
+        # When the contract omits the kind, even an open policy fails closed.
         task = _task(f"task-{kind}", retry_on=list(_ALL_KINDS), retryable_errors=())
         decision = next_attempt_decision(task=task, projection=projection, now=T0)
         assert decision.kind == "failed", kind

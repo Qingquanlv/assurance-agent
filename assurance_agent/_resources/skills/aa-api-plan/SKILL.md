@@ -32,8 +32,8 @@ Do not rely on prior conversation context.
    - `.aa/data-knowledge.yaml` (if missing, proceed and generate proposal — see Data Knowledge Layer Rules)
    - Backend source files (for endpoint / schema confirmation)
    > **data-knowledge tier rules:**
-   > - `aa-api-plan` stage: missing `.aa/data-knowledge.yaml` does not block planning; generate `data-knowledge.proposal.yaml`; Plan Readiness may be `ready_with_warnings`; **Codegen Readiness MUST be `not_ready`** (regardless of case data needs).
-   > - `aa-api-codegen` stage: `.aa/data-knowledge.yaml` **must exist**. `data-knowledge.proposal.yaml` is reference only and cannot substitute.
+   > - `aa-api-plan` stage: missing `.aa/data-knowledge.yaml` does not block planning; generate `data-knowledge.proposal.api.yaml`; Plan Readiness may be `ready_with_warnings`; **Codegen Readiness MUST be `not_ready`** (regardless of case data needs).
+   > - `aa-api-codegen` stage: `.aa/data-knowledge.yaml` **must exist**. `data-knowledge.proposal.api.yaml` is reference only and cannot substitute.
 5. Use files as the sole source of truth.
 
 **After completing work:**
@@ -43,10 +43,10 @@ Do not rely on prior conversation context.
    - `qa/changes/<change-id>/plans/api-test-data-plan.md`
    - `qa/changes/<change-id>/plans/api-codegen-plan.md`
    - `qa/changes/<change-id>/plans/m3-review-summary.md`
-   - `qa/changes/<change-id>/plans/data-knowledge.proposal.yaml` (only when `.aa/data-knowledge.yaml` is missing)
+   - `qa/changes/<change-id>/plans/data-knowledge.proposal.api.yaml` (only when `.aa/data-knowledge.yaml` is missing)
 2. Report the `workflow-state.yaml` state delta (inline mode: apply it directly; dispatched subagent: never write `workflow-state.yaml` — report the values in your final message and the orchestrator applies them):
    - `phases.api_plan.status = done`
-   - `phases.api_plan.outputs` = **all actually generated** output files (include `data-knowledge.proposal.yaml` if generated)
+   - `phases.api_plan.outputs` = **all actually generated** output files (include `data-knowledge.proposal.api.yaml` if generated)
    - **Do NOT** set `phases.api_plan_review.status` — that gate belongs to `aa-api-plan-reviewer`
 
 ---
@@ -100,13 +100,13 @@ If `.aa/config.yaml` is missing, record a warning but do not block.
 
 If `.aa/data-knowledge.yaml` is missing, **do not block the plan stage**. Do not write directly to the project-level knowledge base. You MUST generate:
 
-`qa/changes/<change-id>/plans/data-knowledge.proposal.yaml`
+`qa/changes/<change-id>/plans/data-knowledge.proposal.api.yaml`
 
 Record a warning in `m3-review-summary.md` and provide **Plan Readiness** and **Codegen Readiness** separately (see decision rules).
 
 > **Plan vs Codegen gate (data-knowledge):**
-> - **aa-api-plan**: missing `.aa/data-knowledge.yaml` does not block planning; generate `plans/data-knowledge.proposal.yaml`; Plan Readiness may be `ready_with_warnings`; **Codegen Readiness MUST be `not_ready`**.
-> - **aa-api-codegen**: missing `.aa/data-knowledge.yaml` is a **BLOCKER**; `data-knowledge.proposal.yaml` is reference only and cannot substitute the formal knowledge base.
+> - **aa-api-plan**: missing `.aa/data-knowledge.yaml` does not block planning; generate `plans/data-knowledge.proposal.api.yaml`; Plan Readiness may be `ready_with_warnings`; **Codegen Readiness MUST be `not_ready`**.
+> - **aa-api-codegen**: missing `.aa/data-knowledge.yaml` is a **BLOCKER**; `data-knowledge.proposal.api.yaml` is reference only and cannot substitute the formal knowledge base.
 > - **Reason**: `aa-api-codegen` requires formal `.aa/data-knowledge.yaml` before start regardless of whether selected cases have minimal data needs.
 
 ## Outputs
@@ -117,7 +117,7 @@ May generate ONLY:
 - `qa/changes/<change-id>/plans/api-test-data-plan.md`
 - `qa/changes/<change-id>/plans/api-codegen-plan.md`
 - `qa/changes/<change-id>/plans/m3-review-summary.md`
-- `qa/changes/<change-id>/plans/data-knowledge.proposal.yaml` (only when `.aa/data-knowledge.yaml` does not exist)
+- `qa/changes/<change-id>/plans/data-knowledge.proposal.api.yaml` (only when `.aa/data-knowledge.yaml` does not exist)
 
 Must NOT generate:
 
@@ -138,7 +138,7 @@ Must NOT generate:
 6. Filter cases with `type = API` and `automation.required = true` **from `added` and `modified` only**. If none match, stop and report.
    - **Must NOT** generate API plans for cases under `removed`.
    - `removed` entries (case_id / reason only) are for context and archive merge validation, not plan selection.
-7. Read `.aa/data-knowledge.yaml`. If missing, generate `plans/data-knowledge.proposal.yaml` (must NOT write `.aa/data-knowledge.yaml`) and record warning in `m3-review-summary.md`.
+7. Read `.aa/data-knowledge.yaml`. If missing, generate `plans/data-knowledge.proposal.api.yaml` (must NOT write `.aa/data-knowledge.yaml`) and record warning in `m3-review-summary.md`.
 8. Generate `plans/api-plan.md` (create `plans/` if missing).
 9. Generate `plans/api-test-data-plan.md`.
 10. Generate `plans/api-codegen-plan.md`.
@@ -160,7 +160,7 @@ Complete in order:
 - [ ] Read `cases/**/case.yaml`
 - [ ] Confirm `schema_version: "1.0"`
 - [ ] Filter API automation cases from `added` / `modified` only (`type: API` + `automation.required: true`); skip `removed`
-- [ ] Read `.aa/data-knowledge.yaml` (if missing, write `plans/data-knowledge.proposal.yaml`; must NOT write `.aa/data-knowledge.yaml` directly)
+- [ ] Read `.aa/data-knowledge.yaml` (if missing, write `plans/data-knowledge.proposal.api.yaml`; must NOT write `.aa/data-knowledge.yaml` directly)
 - [ ] Generate `api-plan.md`
 - [ ] Generate `api-test-data-plan.md`
 - [ ] Generate `api-codegen-plan.md`
@@ -244,7 +244,7 @@ Seeding method is determined by **aggregate boundary**; do not mix layers:
 | Role | Within domain | `make_role()` | M2M menus/apis |
 | User | Within domain | `make_user()` | M2M roles + password hash |
 | Dept | Within domain | `make_dept()` | DeptClosure |
-| Menu | Within domain | `make_menu()` when present in `tests/testdata/domain/menu.py`; else propose in `data-knowledge.proposal.yaml` | Single table + `parent_id`; factory encapsulates resolve |
+| Menu | Within domain | `make_menu()` when present in `tests/testdata/domain/menu.py`; else propose in `data-knowledge.proposal.api.yaml` | Single table + `parent_id`; factory encapsulates resolve |
 | AuditLog | Within domain (leaf) | `make_audit_log()` or direct insert | No derived tables |
 
 **HTTP API seeding boundary (hard rule for plan + codegen):**
@@ -301,7 +301,7 @@ Must include:
 - **Codegen Preconditions** — conditions before codegen starts:
   - `api-plan-review.json` `decision == "pass"`
   - `codegen_readiness in ["ready", "ready_with_warnings"]` (from reviewer, not plan self-assessment)
-  - **Formal** `.aa/data-knowledge.yaml` **must exist** (hard gate; `data-knowledge.proposal.yaml` cannot substitute; if missing at plan stage Codegen Readiness MUST be `not_ready` until knowledge base is filled)
+  - **Formal** `.aa/data-knowledge.yaml` **must exist** (hard gate; `data-knowledge.proposal.api.yaml` cannot substitute; if missing at plan stage Codegen Readiness MUST be `not_ready` until knowledge base is filled)
 
 ### m3-review-summary.md
 
@@ -313,7 +313,7 @@ Must include:
 - **Loaded Case Files** — processed case.yaml path list
 - **API Cases** — total (`added` + `modified` only), plan-ready count, codegen readiness status
 - **Removed Cases** — case_id list from `removed` (record only, not in plan)
-- **Generated Plan Files** — four required plan file paths; if `data-knowledge.proposal.yaml` was generated, list separately as optional artifact
+- **Generated Plan Files** — four required plan file paths; if `data-knowledge.proposal.api.yaml` was generated, list separately as optional artifact
 - **Data Knowledge Layer Status** — OK / Warning and capability resolution results
 - **Blockers** — items blocking codegen (or None)
 - **Needs Review** — items requiring human confirmation
@@ -343,9 +343,9 @@ Assess whether orchestrator may enter `aa-api-codegen` after review pass (**stri
 
 **Tier rules when `.aa/data-knowledge.yaml` is missing (hard rule):**
 
-- Plan stage does not block → may generate `data-knowledge.proposal.yaml`; **Plan Readiness** may be `ready_with_warnings`.
+- Plan stage does not block → may generate `data-knowledge.proposal.api.yaml`; **Plan Readiness** may be `ready_with_warnings`.
 - **Codegen Readiness MUST be `not_ready`** — regardless of whether selected API cases have minimal data needs.
-- **Reason**: `aa-api-codegen` requires formal `.aa/data-knowledge.yaml` before start; `data-knowledge.proposal.yaml` is a remediation artifact only.
+- **Reason**: `aa-api-codegen` requires formal `.aa/data-knowledge.yaml` before start; `data-knowledge.proposal.api.yaml` is a remediation artifact only.
 - Orchestrator must fill `.aa/data-knowledge.yaml` and re-review before codegen.
 
 ## Data Knowledge Layer Rules
@@ -356,12 +356,12 @@ Must attempt to read: `.aa/data-knowledge.yaml` (missing does not block plan sta
 
 | Stage | When `.aa/data-knowledge.yaml` is missing |
 |-------|---------------------------------------------|
-| **aa-api-plan** | Do not block planning; generate `plans/data-knowledge.proposal.yaml`; Plan Readiness may be `ready_with_warnings`; **Codegen Readiness MUST be `not_ready`** |
-| **aa-api-codegen** | **BLOCKER**; `data-knowledge.proposal.yaml` is reference only and cannot substitute formal knowledge base |
+| **aa-api-plan** | Do not block planning; generate `plans/data-knowledge.proposal.api.yaml`; Plan Readiness may be `ready_with_warnings`; **Codegen Readiness MUST be `not_ready`** |
+| **aa-api-codegen** | **BLOCKER**; `data-knowledge.proposal.api.yaml` is reference only and cannot substitute formal knowledge base |
 
 If the file does not exist:
 
-1. Generate `plans/data-knowledge.proposal.yaml` — use the **empty proposal template** below.
+1. Generate `plans/data-knowledge.proposal.api.yaml` — use the **empty proposal template** below.
 2. **Must NOT** generate `.aa/data-knowledge.yaml`.
 3. **Must NOT** invent specific capability names in the template (fixture names, auth methods, cleanup methods).
 4. If `tests/` exists, scan and fill `discovered_candidates` (`confidence: low`). Priority scan targets:
@@ -415,7 +415,7 @@ Rules:
 - If `.aa/data-knowledge.yaml` is missing, **Codegen Readiness MUST be `not_ready`** (regardless of case data needs).
 - If capability exists but verify is incomplete, record as needs_review.
 - Stage 1 is static validation only; do not execute real seeding.
-- `data-knowledge.proposal.yaml` must NOT be used by codegen as a substitute for `.aa/data-knowledge.yaml`.
+- `data-knowledge.proposal.api.yaml` must NOT be used by codegen as a substitute for `.aa/data-knowledge.yaml`.
 
 ## Hard Rules
 
@@ -447,12 +447,12 @@ Must stop immediately after generating these four required plan files:
 - `api-codegen-plan.md`
 - `m3-review-summary.md`
 
-If `.aa/data-knowledge.yaml` is missing, must also generate `data-knowledge.proposal.yaml` (fifth optional artifact).
+If `.aa/data-knowledge.yaml` is missing, must also generate `data-knowledge.proposal.api.yaml` (fifth optional artifact).
 
 Before stopping, report the `workflow-state.yaml` state delta (see Context Contract for who applies it):
 
 - `phases.api_plan.status = done`
-- `phases.api_plan.outputs` = **all actually generated** output paths (include `data-knowledge.proposal.yaml` if generated)
+- `phases.api_plan.outputs` = **all actually generated** output paths (include `data-knowledge.proposal.api.yaml` if generated)
 - **Must NOT** set `phases.api_plan_review.status`
 
 After stopping, output:

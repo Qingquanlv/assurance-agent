@@ -1,0 +1,2 @@
+method: token
+symbol: tests.api.conftest.admin_token

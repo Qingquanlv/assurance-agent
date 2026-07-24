@@ -3,6 +3,10 @@ name: aa-workflow
 description: "Full AA QA workflow entry. Prefer `aa workflow run --entrypoint full` (GraphRuntime) or workflow_start. Operator recovery: FALLBACK-RUNBOOK.md in this skill directory."
 ---
 
+## Per-Skill Memory
+
+Before producing output, check whether `.aa/memory/aa-workflow.md` exists in the project root. If it exists, read it before producing output and apply only entries that are not marked `deprecated:`. Treat the file as read-only runtime guidance; do not create, edit, or delete `.aa/memory/**`.
+
 # AA Workflow
 
 ## Preferred entry (GraphRuntime)

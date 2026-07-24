@@ -11,6 +11,7 @@ import re
 
 AUDITED_GATE_READS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^review/[^/]+\.json$"),
+    re.compile(r"^repo:\.aa/data-knowledge\.yaml$"),
     re.compile(r"^healing/fixer-safety-check\.json$"),
     re.compile(r"^healing/(api|e2e)-apply-summary\.json$"),
     re.compile(r"^inspect/inspect-safety-check\.json$"),

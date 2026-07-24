@@ -205,7 +205,7 @@ def build_data_knowledge_yaml() -> str:
 # of the capability they need.
 #
 # Do NOT let skills write here directly - planning writes discoveries to
-# `qa/changes/<id>/plans/data-knowledge.proposal.yaml`; a human promotes
+# `qa/changes/<id>/plans/data-knowledge.proposal.<layer>.yaml`; a human promotes
 # confirmed entries into this file.
 # =============================================================================
 

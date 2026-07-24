@@ -13,6 +13,8 @@ from pydantic import BaseModel, ConfigDict
 from assurance_agent.artifacts.models import WorkflowState
 from assurance_agent.change_location import ChangeLocation
 from assurance_agent.exceptions import AaError
+from assurance_agent.knowledge.capabilities import capabilities_present as check_capabilities_present
+from assurance_agent.knowledge.capabilities import compute_missing_capabilities
 from assurance_agent.workflow.core.audit_scope import is_audited_gate_read
 from assurance_agent.workflow.core.events import read_events
 from assurance_agent.workflow.execution.tree_hash import sha256_file
@@ -22,7 +24,7 @@ from assurance_agent.workflow.orchestration.dsl import (
     evaluate,
     parse_expression,
 )
-from typing import Protocol
+from typing import Any, Protocol
 
 from assurance_agent.workflow.orchestration.schema import GateDef, ReadEntry, Verdict
 
@@ -131,7 +133,12 @@ def build_evidence_scope(
         except GateCycleError:
             return Verdict.STOP.value
 
-    return Scope(scope_vars, file_exists=file_exists, gate_verdict=gate_verdict)
+    return Scope(
+        scope_vars,
+        file_exists=file_exists,
+        gate_verdict=gate_verdict,
+        capabilities_present=check_capabilities_present,
+    )
 
 
 def resolve_gate_verdict(
@@ -360,6 +367,7 @@ class FrozenGateReport(BaseModel):
     matched_rule: str | None
     reason: str
     reads_sha256: dict[str, str]
+    details: Mapping[str, Any] | None = None
 
 
 def resolve_view_path(context: GateEvaluationContext, rel: str) -> Path:
@@ -380,13 +388,14 @@ def check_gate_in_view(
     gate = gates.get(gate_id)
     if gate is None:
         raise GateError(f"unknown gate: {gate_id}")
-    verdict, matched_rule, reason, reads_sha256 = _evaluate_gate_def(gate, context)
+    verdict, matched_rule, reason, reads_sha256, details = _evaluate_gate_def(gate, context)
     return FrozenGateReport(
         gate_id=gate_id,
         verdict=verdict,
         matched_rule=matched_rule,
         reason=reason,
         reads_sha256=reads_sha256,
+        details=details,
     )
 
 
@@ -442,7 +451,27 @@ def _view_scope(gate: GateDef, context: GateEvaluationContext) -> Scope:
         result = context.node_results.get(node_id)
         return result if isinstance(result, dict) else {}
 
-    return Scope(scope_vars, file_exists=file_exists, gate_verdict=gate_verdict, node_result=node_result)
+    return Scope(
+        scope_vars,
+        file_exists=file_exists,
+        gate_verdict=gate_verdict,
+        node_result=node_result,
+        capabilities_present=check_capabilities_present,
+    )
+
+
+def _gate_details(gate: GateDef, scope: Scope) -> dict[str, Any] | None:
+    review_doc: dict | None = None
+    dk_doc: dict | None = None
+    for entry in gate.reads:
+        value = scope.lookup(entry.alias)
+        if entry.path == "repo:.aa/data-knowledge.yaml" and isinstance(value, dict):
+            dk_doc = value
+        elif entry.path.endswith(".json") and "plan-review" in entry.path and isinstance(value, dict):
+            review_doc = value
+    if review_doc is None or dk_doc is None:
+        return None
+    return {"missing_capabilities": compute_missing_capabilities(review_doc, dk_doc)}
 
 
 def _audited_reads_sha256(gate: GateDef, context: GateEvaluationContext) -> dict[str, str]:
@@ -460,8 +489,8 @@ def _audited_reads_sha256(gate: GateDef, context: GateEvaluationContext) -> dict
 def _evaluate_gate_def(
     gate: GateDef,
     context: GateEvaluationContext,
-) -> tuple[Verdict, str | None, str, dict[str, str]]:
-    """在显式 view 上求值单个 GateDef：返回 (verdict, matched_rule, reason, reads_sha256)。
+) -> tuple[Verdict, str | None, str, dict[str, str], dict[str, Any] | None]:
+    """在显式 view 上求值单个 GateDef：返回 (verdict, matched_rule, reason, reads_sha256, details)。
 
     规则求值顺序与 v1 ``_adjudicate_base`` 逐步对齐（声明序 first-true-wins）；
     每个返回路径都冻结当前 audited read hash。
@@ -476,10 +505,12 @@ def _evaluate_gate_def(
                     "invalid_json",
                     "gate read contains invalid JSON",
                     _audited_reads_sha256(gate, context),
+                    None,
                 )
 
     # Step 2 — scope（gate: primary hoist + aliases + params/state + 冻结结局）
     scope = _view_scope(gate, context)
+    details = _gate_details(gate, scope)
 
     # Step 3 — rules in DECLARATION order, first-true-wins（与 v1 相同）
     saw_missing = False
@@ -492,6 +523,7 @@ def _evaluate_gate_def(
                 matched,
                 f"matched rule {rule.field}: {rule.expr}",
                 _audited_reads_sha256(gate, context),
+                details,
             )
         if result is MISSING:
             saw_missing = True
@@ -503,6 +535,7 @@ def _evaluate_gate_def(
             "missing_field",
             "gate read is missing a referenced field",
             _audited_reads_sha256(gate, context),
+            details,
         )
 
     # Step 5 — missing_file_is
@@ -513,7 +546,8 @@ def _evaluate_gate_def(
             "missing_file",
             "gate read file is missing",
             _audited_reads_sha256(gate, context),
+            details,
         )
 
     # Step 6 — fail-closed default
-    return gate.default, None, "fail-closed default", _audited_reads_sha256(gate, context)
+    return gate.default, None, "fail-closed default", _audited_reads_sha256(gate, context), details

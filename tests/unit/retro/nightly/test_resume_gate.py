@@ -26,6 +26,7 @@ from assurance_agent.retro.nightly.types import NightlyOptions
 from assurance_agent.retro.nightly.phase_f import compare_suite_regression
 from assurance_agent.retro.nightly.utils import write_json
 from assurance_agent.retro.promotions import proposal_states, read_promotion_events
+from tests.unit.retro.proposal_fixtures import memory_proposal_dict
 
 
 def _eval_support_from_disk(engine: Path, suite: str) -> dict:
@@ -56,16 +57,15 @@ def _eval_support_from_disk(engine: Path, suite: str) -> dict:
 
 
 def _proposal(pid: str, suite: str) -> dict:
-    return {
-        "id": pid,
-        "apply_kind": "memory_append",
-        "eval_suite": suite,
-        "status": "proposed",
-        "target": f".aa/memory/{pid}.md",
-        "problem": "x",
-        "proposed_change": f"remember {pid}",
-        "evidence_ids": ["CH-1#F-1"],
-    }
+    return memory_proposal_dict(
+        id=pid,
+        eval_suite=suite,
+        status="proposed",
+        target=f".aa/memory/{pid}.md",
+        problem="x",
+        proposed_change=f"remember {pid}",
+        payload={"body": f"remember {pid}"},
+    )
 
 
 def _seed_promoted(sut: Path, retro_id: str, proposals: list[dict]) -> Path:

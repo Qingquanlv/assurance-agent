@@ -7,12 +7,15 @@ route 可读的 ``gate_report``。
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import ValidationError
 
+from assurance_agent.artifacts.registry import match_artifact
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
@@ -55,6 +58,9 @@ def finalize_task_result(
         )
         if result.status != "succeeded":
             return result
+        invalid = _validate_registry_outputs(workspace=workspace, outputs=outputs)
+        if invalid is not None:
+            return invalid
 
     if result.status == "succeeded" and node_def is not None and node_def.gate and result.gate_report is None:
         result = _attach_gate_report(
@@ -112,6 +118,52 @@ def _ensure_outputs_frozen(
     )
 
 
+def _validate_registry_outputs(
+    *,
+    workspace: TaskWorkspace,
+    outputs: tuple[str, ...],
+) -> TaskResult | None:
+    """Validate declared ``change:`` file outputs against their registry model.
+
+    Gate expressions read artifact fields (e.g. a plan review's
+    ``required_capabilities``) straight from the file, while freeze only checks
+    the file exists — so a skill that omits a gate-critical field slips through
+    and dead-ends at a terminal ``stop``. Running the artifact-registry pydantic
+    model here converts that into an ``invalid_output`` task failure that the
+    node's retry policy can recover from, surfacing the exact contract breach.
+
+    Scope: single-file ``change:`` outputs whose registry spec is
+    ``must_compat`` (the engine-enforced contract grade). ``versioned`` specs
+    stay advisory and directory outputs (e.g. ``change:cases/``) are not
+    expanded here.
+    """
+    for output in outputs:
+        root, _, rest = output.partition(":")
+        if root != "change" or not rest or rest.endswith("/"):
+            continue
+        spec = match_artifact(rest)
+        if spec is None or spec.compat != "must_compat":
+            continue
+        try:
+            raw = (workspace.change_dir / rest).read_text(encoding="utf-8")
+        except OSError:
+            continue  # existence is enforced by freeze; skip unreadable here
+        is_yaml = rest.endswith((".yaml", ".yml"))
+        try:
+            data = yaml.safe_load(raw) if is_yaml else json.loads(raw)
+        except (ValueError, yaml.YAMLError) as exc:
+            kind = "YAML" if is_yaml else "JSON"
+            return task_failure("invalid_output", f"output '{output}' is not valid {kind}: {exc}")
+        try:
+            spec.model.model_validate(data)
+        except ValidationError as exc:
+            return task_failure(
+                "invalid_output",
+                f"output '{output}' failed {spec.artifact_type} schema validation: {exc}",
+            )
+    return None
+
+
 def _attach_gate_report(
     *,
     compiled: CompiledWorkflow,
@@ -143,6 +195,8 @@ def _attach_gate_report(
         "reads_sha256": dict(report.reads_sha256),
         "value": report.verdict.value,
     }
+    if report.details is not None:
+        gate_report["details"] = dict(report.details)
     return result.model_copy(update={"gate_report": gate_report})
 
 

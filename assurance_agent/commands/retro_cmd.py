@@ -165,6 +165,7 @@ def register_retro(main_group: click.Group) -> None:
 
     _register_nightly(retro)
     _register_promotion_commands(retro)
+    _register_export_commands(retro)
     _register_read_commands(retro)
     main_group.add_command(retro)
 
@@ -487,6 +488,88 @@ def _register_promotion_commands(retro: click.Group) -> None:
         )
 
 
+def _register_export_commands(retro: click.Group) -> None:
+    @retro.command("export-issues")
+    @click.option("--retro", "retro_id", required=True, help="Retro id")
+    @click.option("--overwrite", is_flag=True, help="Overwrite existing drafts with different content hash")
+    @click.option("--json", "as_json", is_flag=True, help="Emit JSON summary")
+    def export_issues_cmd(retro_id, overwrite, as_json) -> None:
+        """Materialize issue_export proposals into qa/retro/<id>/issue-drafts/*.yaml."""
+        from assurance_agent.retro.export import ExportConflictError, ExportIneligibleError, export_proposals
+
+        retro_dir = Path.cwd() / "qa" / "retro" / retro_id
+        if not retro_dir.is_dir():
+            click.echo(f"Error: retro run not found: {retro_id}", err=True)
+            raise SystemExit(1)
+        try:
+            outcomes = export_proposals(
+                retro_dir, apply_kind="issue_export", overwrite=overwrite, actor="aa"
+            )
+        except (ExportConflictError, ExportIneligibleError, AaError) as err:
+            click.echo(f"Error: {err}", err=True)
+            raise SystemExit(1) from err
+        payload = {
+            "retro_id": retro_id,
+            "exported": [
+                {
+                    "proposal_id": outcome.proposal_id,
+                    "target_path": str(outcome.target_path.relative_to(retro_dir)),
+                    "action": outcome.action,
+                    "source_sha256": outcome.source_sha256,
+                }
+                for outcome in outcomes
+            ],
+        }
+        if as_json:
+            click.echo(json.dumps(payload))
+        else:
+            for item in payload["exported"]:
+                click.echo(
+                    f"{item['proposal_id']}  {item['action']}  "
+                    f"{item['target_path']}  sha256={item['source_sha256'][:12]}"
+                )
+
+    @retro.command("export-knowledge")
+    @click.option("--retro", "retro_id", required=True, help="Retro id")
+    @click.option("--overwrite", is_flag=True, help="Overwrite existing drafts with different content hash")
+    @click.option("--json", "as_json", is_flag=True, help="Emit JSON summary")
+    def export_knowledge_cmd(retro_id, overwrite, as_json) -> None:
+        """Materialize knowledge_delta proposals into knowledge-delta/*.proposal.yaml."""
+        from assurance_agent.retro.export import ExportConflictError, ExportIneligibleError, export_proposals
+
+        retro_dir = Path.cwd() / "qa" / "retro" / retro_id
+        if not retro_dir.is_dir():
+            click.echo(f"Error: retro run not found: {retro_id}", err=True)
+            raise SystemExit(1)
+        try:
+            outcomes = export_proposals(
+                retro_dir, apply_kind="knowledge_delta", overwrite=overwrite, actor="aa"
+            )
+        except (ExportConflictError, ExportIneligibleError, AaError) as err:
+            click.echo(f"Error: {err}", err=True)
+            raise SystemExit(1) from err
+        payload = {
+            "retro_id": retro_id,
+            "exported": [
+                {
+                    "proposal_id": outcome.proposal_id,
+                    "target_path": str(outcome.target_path.relative_to(retro_dir)),
+                    "action": outcome.action,
+                    "source_sha256": outcome.source_sha256,
+                }
+                for outcome in outcomes
+            ],
+        }
+        if as_json:
+            click.echo(json.dumps(payload))
+        else:
+            for item in payload["exported"]:
+                click.echo(
+                    f"{item['proposal_id']}  {item['action']}  "
+                    f"{item['target_path']}  sha256={item['source_sha256'][:12]}"
+                )
+
+
 def _register_nightly(retro: click.Group) -> None:
     @retro.group("nightly")
     def nightly() -> None:
@@ -497,16 +580,14 @@ def _register_nightly(retro: click.Group) -> None:
     @click.option("--retro-id", "retro_id", help="Stable retro run id")
     @click.option("--dry-run", is_flag=True, help="Stop before invoking the proposal agent")
     @click.option("--agent", default="cursor-agent", help="Proposal agent command")
-    @click.option("--history", type=int, default=5)
     @click.option("--min-evidence", type=int, default=2)
     @click.option("--rework-alert", type=int, default=3)
-    def collect(sut, retro_id, dry_run, agent, history, min_evidence, rework_alert) -> None:
+    def collect(sut, retro_id, dry_run, agent, min_evidence, rework_alert) -> None:
         options = NightlyOptions(
             sut=sut,
             retro_id=retro_id,
             dry_run=dry_run,
             agent=agent,
-            history=history,
             min_evidence=min_evidence,
             rework_alert=rework_alert,
         )

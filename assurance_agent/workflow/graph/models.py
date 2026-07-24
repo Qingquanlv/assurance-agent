@@ -137,6 +137,11 @@ class ExecutableTask(BaseModel):
     # scheduler 确定性 wave 选择键；planner 尚未回填时默认为 0，退化为 task_id 序。
     topology_rank: int = 0
     declaration_index: int = 0
+    # Retry-only feedback from the previous failed attempt. Kept off the input
+    # payload so input_sha256 / task_id stay stable across attempts; AgentHandler
+    # injects contract-violation kinds into the prompt so the agent can fix them.
+    prior_failure: str | None = None
+    prior_error_kind: ErrorKind | None = None
 
 
 class PlanResult(BaseModel):

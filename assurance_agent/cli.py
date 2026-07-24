@@ -4,6 +4,7 @@ from assurance_agent import __version__
 from assurance_agent.commands.config_cmd import config_group
 from assurance_agent.commands.doctor import doctor_command
 from assurance_agent.commands.init_cmd import init_command
+from assurance_agent.commands.knowledge_cmd import knowledge_group
 from assurance_agent.commands.decide_cmd import decide_command
 from assurance_agent.commands.gate_cmd import gate_group
 from assurance_agent.commands.risk_cmd import risk_group
@@ -25,6 +26,7 @@ def main() -> None:
     """aa - Assurance Agent deterministic QA workflow CLI."""
 
 
+main.add_command(knowledge_group)
 main.add_command(init_command)
 main.add_command(doctor_command)
 main.add_command(config_group)

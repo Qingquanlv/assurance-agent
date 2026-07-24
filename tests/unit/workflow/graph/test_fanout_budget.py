@@ -549,6 +549,37 @@ def test_fan_out_failed_child_is_retried_with_same_task_id(tmp_path: Path) -> No
     assert fan_out_state_updates(compiled, projection) == []
 
 
+def test_fan_out_retry_child_carries_prior_failure_feedback(tmp_path: Path) -> None:
+    text = FANOUT_GRAPH.replace("retry_on: [internal]", "retry_on: [invalid_output]", 1)
+    compiled = _compile(text)
+    event, children = _expanded_event(compiled, tmp_path)
+    gen = _initial_tasks(compiled, tmp_path)["gen"]
+    by_key = {task.task_key: task for task in children}
+    projection = _projection(
+        compiled,
+        current_tree_id="tree-1",
+        tasks=[
+            _task(gen, "succeeded"),
+            _task(by_key["menu"], "succeeded", value=["m1"]),
+            _task(
+                by_key["order"],
+                "failed",
+                error_kind="invalid_output",
+                error="output 'change:out/order.json' failed schema validation",
+                attempts_used=1,
+            ),
+        ],
+        fan_out_expansions={"per-module": _frozen_expansion(event)},
+    )
+    plan = _plan(compiled, projection, tmp_path)
+    assert len(plan.tasks) == 1
+    retry_task = plan.tasks[0]
+    assert retry_task.task_id == by_key["order"].task_id
+    assert retry_task.prior_error_kind == "invalid_output"
+    assert retry_task.prior_failure is not None
+    assert "schema validation" in retry_task.prior_failure
+
+
 def test_fan_out_non_retryable_child_failure_is_terminal_fail(tmp_path: Path) -> None:
     compiled = _compile(FANOUT_GRAPH)
     event, children = _expanded_event(compiled, tmp_path)
