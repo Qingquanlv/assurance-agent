@@ -255,11 +255,11 @@ def _check_uses(loc: str, node: NodeDef, schema: WorkflowSchemaV2) -> list[str]:
     return errors
 
 
-def _check_output_path(loc: str, output: str, node: NodeDef) -> list[str]:
+def _check_output_path(loc: str, output: str, node: NodeDef, *, param_names: frozenset[str] = frozenset()) -> list[str]:
     errors: list[str] = []
     if not output.startswith(_PATH_ROOTS):
         return [f"{loc} output '{output}' must be rooted in change:/project:/repo:"]
-    allowed_vars = {"context.change_id"}
+    allowed_vars = {"context.change_id"} | {f"params.{name}" for name in param_names}
     if node.fan_out is not None:
         allowed_vars.add(node.fan_out.item_as)
     for match in _TEMPLATE.finditer(output):
@@ -385,7 +385,7 @@ def _validate_graph_refs(schema: WorkflowSchemaV2) -> list[str]:
             if gate_id is not None and gate_id not in schema.gates:
                 errors.append(f"{loc} references unknown gate '{gate_id}'")
             for output in node.outputs:
-                errors.extend(_check_output_path(loc, output, node))
+                errors.extend(_check_output_path(loc, output, node, param_names=frozenset(schema.params)))
             if node.join is not None:
                 for src in node.join.sources:
                     if src not in graph.nodes:

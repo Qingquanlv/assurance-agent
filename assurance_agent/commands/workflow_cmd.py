@@ -109,7 +109,7 @@ def _default_who(explicit: str | None) -> str:
 
 
 _ADAPTER_CHOICE = click.Choice(["opencode", "headless"])
-_ENTRYPOINT_CHOICE = click.Choice(["full", "intake", "execute", "case", "archive"])
+_ENTRYPOINT_CHOICE = click.Choice(["full", "intake", "execute", "case", "archive", "retro"])
 _RESUME_ACTION = click.Choice(["fix_and_proceed", "accept_risk", "stop"])
 
 

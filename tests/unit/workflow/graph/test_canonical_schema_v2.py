@@ -33,6 +33,7 @@ EXPECTED_GRAPHS = {
     "intake-workflow",
     "execute-workflow",
     "archive-workflow",
+    "retro-workflow",
     "intake",
     "case-review-cycle",
     "assurance",
@@ -224,7 +225,7 @@ def test_canonical_v2_compiles_with_all_targets() -> None:
     contracts = load_execution_contracts(Path.cwd())
     compiled = compile_workflow(schema, contracts)
     assert set(compiled.graphs) == EXPECTED_GRAPHS
-    assert set(compiled.entrypoints) == {"full", "intake", "execute", "case", "archive"}
+    assert set(compiled.entrypoints) == {"full", "intake", "execute", "case", "archive", "retro"}
 
 
 def test_archive_entrypoint_and_subgraph() -> None:
@@ -601,6 +602,16 @@ def test_codegen_write_claims_are_disjoint_across_suites() -> None:
     run_tests = contracts.contracts["operation:run-tests"]
     assert "repo:test-runtime" in run_tests.exclusive
     assert any(r.startswith("repo:tests/") for r in run_tests.reads)
+
+
+def test_retro_entrypoint_topology() -> None:
+    compiled, _ = _load_compiled()
+    assert compiled.entrypoints["retro"].graph_id == "retro-workflow"
+    g = compiled.graphs["retro-workflow"]
+    assert set(g.nodes) >= {"collect", "propose", "accept"}
+    assert g.nodes["collect"].definition.uses == "operation:retro-collect"
+    assert g.nodes["propose"].definition.uses == "skill:aa-retro"
+    assert g.nodes["accept"].definition.uses == "operation:retro-accept"
 
 
 def test_schema_and_contract_digests_stable_across_two_loads() -> None:

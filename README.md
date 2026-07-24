@@ -104,7 +104,7 @@ aa workflow run --change <id> --entrypoint full --adapter opencode --server http
 | `aa report inspect --change <id>` | 失败分类 → `inspect/failure-analysis.json` + `quality-gate-result.json` |
 | `aa report generate --change <id>` | Quality Score → `report/` 三件套 |
 | `aa heal ...` | Healing 支持命令（fix-proposal 校验等） |
-| `aa workflow run --change <id> --entrypoint full\|intake\|execute\|case\|archive --adapter opencode\|headless [...]` | GraphRuntime 主循环；退出码 0 completed / 20 stopped / 30 interrupted / 40 error |
+| `aa workflow run --change <id> --entrypoint full\|intake\|execute\|case\|archive\|retro --adapter opencode\|headless [...]` | GraphRuntime 主循环；退出码 0 completed / 20 stopped / 30 interrupted / 40 error |
 | `aa workflow run --detach ...` | detached 后台启动（OpenCode `workflow_start`；立刻返回启动成败） |
 | `aa workflow status --change <id>` | GraphStatus（pending tasks / interrupts / retry） |
 | `aa workflow resume --change <id> [--interrupt <id> --action <a> --reason <text>]` | 续跑或解决 interrupt |

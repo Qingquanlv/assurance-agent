@@ -34,6 +34,10 @@ params:
   max_healing_attempts: {type: int, default: 3}
   auto_archive: {type: bool, default: false}
   force_continue: {type: bool, default: false}
+  retro_id: {type: str, default: ""}
+  retro_last: {type: int, default: 10}
+  retro_min_evidence: {type: int, default: 2}
+  retro_dry_run: {type: bool, default: false}
 
 entrypoints:
   full:
@@ -55,6 +59,8 @@ entrypoints:
     graph: archive-workflow
     with:
       auto_archive: true
+  retro:
+    graph: retro-workflow
 
 policies:
   retry:
@@ -167,6 +173,37 @@ graphs:
     edges:
       - {from: START, to: archive}
       - {from: archive, to: END}
+
+  retro-workflow:
+    max_supersteps: 20
+    nodes:
+      collect:
+        uses: operation:retro-collect
+        outputs:
+          - project:qa/retro/${params.retro_id}/context.json
+        retry: never
+        timeout: local-operation
+      propose:
+        uses: skill:aa-retro
+        agent: aa-doc-author
+        outputs:
+          - project:qa/retro/${params.retro_id}/proposals.json
+          - project:qa/retro/${params.retro_id}/retro-summary.md
+        retry: agent-transient
+        timeout: agent
+      accept:
+        uses: operation:retro-accept
+        outputs:
+          - project:qa/retro/${params.retro_id}/proposals.json
+          - project:qa/retro/${params.retro_id}/review-queue.md
+        retry: never
+        timeout: local-operation
+    edges:
+      - {from: START, to: collect}
+      - {from: collect, to: END, when: "params.retro_dry_run == true or node('collect').value.signal_count == 0"}
+      - {from: collect, to: propose, when: "params.retro_dry_run == false and node('collect').value.signal_count > 0"}
+      - {from: propose, to: accept}
+      - {from: accept, to: END}
 
   intake:
     max_supersteps: 30
