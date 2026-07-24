@@ -1118,6 +1118,21 @@ def _expand_output(
     return resolved
 
 
+def _expand_static_output(output: str, context: RuntimeContext, nid: str) -> str:
+    """Expand ``${params.<name>}`` and ``${context.change_id}`` in a non-fan-out output path.
+
+    Regular (non-fan-out) node outputs may carry ``${params.X}`` segments so the
+    same schema works across different param values (e.g. ``retro_id``).  Fan-out
+    expansion already routes through ``_expand_output``; this helper handles the
+    equivalent substitution for singleton tasks.
+    """
+    resolved = _resolve_template(output, "__none__", None, context, nid, path=True)
+    if not isinstance(resolved, str):
+        raise PlanError(f"node '{nid}' output template must resolve to a string path")
+    _assert_safe_path(resolved, nid)
+    return resolved
+
+
 def _expand_resources(
     resources: ResourceDef,
     item_as: str,
@@ -1438,7 +1453,7 @@ def _build_task(
     input_payload: dict[str, object] = {
         "with": dict(definition.with_),
         "context": {"change_id": context.change_id},
-        "outputs": list(definition.outputs),
+        "outputs": [_expand_static_output(o, context, nid) for o in definition.outputs],
     }
     retry_policy = _retry_policy(compiled, definition)
     task_id = _task_id(projection, graph.graph_id, nid, ordinal, None)
