@@ -29,6 +29,9 @@ class GraphInvocationStartedEvent(_GraphEvent):
     entrypoint: str
     graph_id: str
     graph_digest: str
+    event_schema_version: int = 1
+    ir_digest: str = ""
+    ingest_catalog_digest: str = ""
     contract_digests: dict[str, str]
     params: dict[str, object]
     params_sha256: str
@@ -46,6 +49,7 @@ class NodeActivatedEvent(_GraphEvent):
     checkpoint_ns: str
     graph_id: str
     node_id: str
+    generation_ordinal: int = 0
     activation_id: str
     input_sha256: str
     source_reads_sha256: dict[str, str]
@@ -57,6 +61,7 @@ class NodeSkippedEvent(_GraphEvent):
     checkpoint_ns: str
     graph_id: str
     node_id: str
+    generation_ordinal: int = 0
     expression: str
     input_sha256: str
     source_reads_sha256: dict[str, str]
@@ -68,6 +73,7 @@ class FanOutExpandedEvent(_GraphEvent):
     checkpoint_ns: str
     graph_id: str
     node_id: str
+    generation_ordinal: int = 0
     source_reads_sha256: dict[str, str]
     items: list[object]
     task_keys: list[str]
@@ -108,6 +114,7 @@ class TaskAttemptSucceededEvent(_GraphEvent):
     attempt_id: str
     write_set_id: str | None = None
     outputs_sha256: dict[str, str] = Field(default_factory=dict)
+    frozen_outputs: dict[str, object] = Field(default_factory=dict)
     gate_report: dict[str, object] | None = None
     state_updates: dict[str, object] = Field(default_factory=dict)
     value: object = None
@@ -168,6 +175,16 @@ class GraphInterruptedEvent(_GraphEvent):
     actions: list[str]
     audited_reads_sha256: dict[str, str]
     artifact_view: str | None = None
+    anchor: "ResumeAnchor | None" = None
+    parent_anchor_ref: str | None = None
+
+
+class ResumeAnchor(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    invocation_id: str
+    checkpoint_ns: str
+    node_id: str
+    interrupt_id: str
 
 
 class GraphResumedEvent(_GraphEvent):
@@ -179,6 +196,9 @@ class GraphResumedEvent(_GraphEvent):
     reason: str
     who: str
     audited_reads_sha256: dict[str, str]
+    anchor: ResumeAnchor | None = None
+    parent_anchor_ref: str | None = None
+    payload: dict[str, object] = Field(default_factory=dict)
 
 
 class SuperstepCommittedEvent(_GraphEvent):
@@ -191,6 +211,7 @@ class SuperstepCommittedEvent(_GraphEvent):
     write_set_ids: list[str]
     target_tree_id: str
     state_values: dict[str, object]
+    committed_task_ids: list[str] = Field(default_factory=list)
 
 
 class GraphTerminalEvent(_GraphEvent):
@@ -261,6 +282,7 @@ __all__ = [
     "BudgetConsumedEvent",
     "GraphInterruptedEvent",
     "GraphResumedEvent",
+    "ResumeAnchor",
     "SuperstepCommittedEvent",
     "GraphTerminalEvent",
     "TaskImportedEvent",
