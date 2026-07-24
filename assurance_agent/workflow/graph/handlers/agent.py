@@ -77,7 +77,6 @@ class AgentHandler:
             memory_root=Path(workspace.project_root),
             prior_failure=task.prior_failure,
             prior_error_kind=task.prior_error_kind,
-            evidence=task.resolved_evidence or None,
         )
         if skill == "aa-retro":
             rid = context.params.get("retro_id")
