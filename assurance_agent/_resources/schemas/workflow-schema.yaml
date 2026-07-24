@@ -51,6 +51,10 @@ entrypoints:
     graph: intake-workflow
     with:
       run_mode: case-only
+  archive:
+    graph: archive-workflow
+    with:
+      auto_archive: true
 
 policies:
   retry:
@@ -120,13 +124,8 @@ graphs:
       assurance:
         uses: graph:assurance
       archive:
-        uses: skill:aa-archive
-        agent: aa-archiver
+        uses: graph:archive-workflow
         when: "params.auto_archive == true"
-        outputs: ["project:qa/archive/${context.change_id}/"]
-        gate: archive-gate
-        retry: agent-transient
-        timeout: agent
     edges:
       - {from: START, to: bootstrap}
       - {from: bootstrap, to: intake}
@@ -154,6 +153,20 @@ graphs:
       - {from: START, to: bootstrap}
       - {from: bootstrap, to: assurance}
       - {from: assurance, to: END}
+
+  archive-workflow:
+    max_supersteps: 10
+    nodes:
+      archive:
+        uses: skill:aa-archive
+        agent: aa-archiver
+        outputs: ["project:qa/archive/${context.change_id}/"]
+        gate: archive-gate
+        retry: agent-transient
+        timeout: agent
+    edges:
+      - {from: START, to: archive}
+      - {from: archive, to: END}
 
   intake:
     max_supersteps: 30
@@ -374,6 +387,12 @@ graphs:
         when: "params.run_mode in ['full','api-only','codegen-only']"
         outputs: [change:codegen/api-codegen-summary.md]
         gate: api-codegen-precondition-gate
+        # Frozen, committed API-plan review forwarded out of the review subgraph
+        # (see api-plan-cycle.exports). Injected into the codegen agent prompt as
+        # authoritative upstream evidence; behaviour is additive (gates still read
+        # from disk), and planning fails closed if the review is not committed.
+        evidence:
+          api_plan_review: {node: review-cycle, symbol: api_plan_review}
         retry: agent-transient
         timeout: agent
 
@@ -460,6 +479,15 @@ graphs:
           accept_risk: END
           stop: STOP
         default: STOP
+
+    # Forward the committed API-plan review FrozenOutput to the parent
+    # (api-branch) so the sibling `codegen` node can bind it as evidence.
+    # `output` is the ingest-catalog symbol produced by the review node's
+    # change:review/api-plan-review.json output.
+    exports:
+      api_plan_review:
+        from: review
+        output: api_plan_review
 
   e2e-branch:
     max_supersteps: 30

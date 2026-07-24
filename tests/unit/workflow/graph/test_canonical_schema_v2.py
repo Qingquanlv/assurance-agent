@@ -32,6 +32,7 @@ EXPECTED_GRAPHS = {
     "workflow",
     "intake-workflow",
     "execute-workflow",
+    "archive-workflow",
     "intake",
     "case-review-cycle",
     "assurance",
@@ -220,12 +221,37 @@ def test_canonical_v2_compiles_with_all_targets() -> None:
     contracts = load_execution_contracts(Path.cwd())
     compiled = compile_workflow(schema, contracts)
     assert set(compiled.graphs) == EXPECTED_GRAPHS
-    assert set(compiled.entrypoints) == {"full", "intake", "execute", "case"}
+    assert set(compiled.entrypoints) == {"full", "intake", "execute", "case", "archive"}
+
+
+def test_archive_entrypoint_and_subgraph() -> None:
+    compiled, _ = _load_compiled()
+    assert "archive" in compiled.entrypoints
+    assert compiled.entrypoints["archive"].graph_id == "archive-workflow"
+    assert compiled.entrypoints["archive"].param_overrides.get("auto_archive") is True
+    parent = compiled.graphs["workflow"].nodes["archive"]
+    assert parent.definition.uses == "graph:archive-workflow"
+    arch = compiled.graphs["archive-workflow"].nodes["archive"]
+    assert arch.definition.uses == "skill:aa-archive"
+    assert arch.definition.gate == "archive-gate"
 
 
 def test_packaged_contracts_cover_exact_targets() -> None:
     contracts = load_execution_contracts(Path.cwd())
     assert set(contracts.contracts) == EXPECTED_CONTRACTS
+
+
+def test_api_branch_wires_plan_review_evidence_and_export() -> None:
+    """api-plan-cycle exports the committed plan review; api-branch.codegen binds
+    it as evidence so the frozen review flows into codegen deterministically."""
+    compiled, _ = _load_compiled()
+    review_cycle = compiled.graphs["api-branch"].nodes["review-cycle"]
+    exported = {e.symbol: (e.from_node, e.output) for e in review_cycle.exports}
+    assert exported == {"api_plan_review": ("review", "api_plan_review")}
+
+    codegen = compiled.graphs["api-branch"].nodes["codegen"].definition
+    ref = codegen.evidence["api_plan_review"]
+    assert (ref.node, ref.symbol) == ("review-cycle", "api_plan_review")
 
 
 def test_healing_fixers_carry_narrow_per_node_claims() -> None:
