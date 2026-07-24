@@ -10,24 +10,21 @@ from tempfile import mkdtemp
 
 from assurance_agent.change_location import archive_root, resolve_change
 from assurance_agent.exceptions import AaError
-from assurance_agent.identifiers import assert_path_segment_safe
-from assurance_agent.retro.aggregator import build_retro_context, count_signals
+from assurance_agent.retro.accept_stage import run_retro_accept
+from assurance_agent.retro.aggregator import build_retro_context
 from assurance_agent.retro.apply import (
     apply_memory_proposal,
     apply_proposal_to_stage,
     resolve_memory_target,
 )
+from assurance_agent.retro.collect_stage import ContextBuilder, RetroCollectResult, run_retro_collect
 from assurance_agent.retro.nightly.exit_codes import (
     NIGHTLY_FAILURE,
     NIGHTLY_NOOP,
     NIGHTLY_OK,
     NIGHTLY_PENDING_REVIEW,
 )
-from assurance_agent.retro.nightly.phase_a import (
-    IsTerminal,
-    enumerate_candidates,
-    snapshot_unarchived_evidence,
-)
+from assurance_agent.retro.nightly.phase_a import IsTerminal
 from assurance_agent.retro.nightly.phase_d import (
     build_review_queue_markdown,
     partition_proposals_for_review,
@@ -46,13 +43,12 @@ from assurance_agent.retro.promotions import (
     proposal_states,
     read_promotion_events,
 )
-from assurance_agent.retro.proposals import read_proposals, validate_retro_proposals
-from assurance_agent.retro.state import complete_retro_stage, mark_consumed_change, read_state
+from assurance_agent.retro.proposals import read_proposals
+from assurance_agent.retro.state import complete_retro_stage
 from assurance_agent.retro.types import RetroContext
 from assurance_agent.workflow.graph.checkpoint import CheckpointStore, project_invocation
 
 AgentRunner = Callable[[str, Path], int]
-ContextBuilder = Callable[..., RetroContext]
 
 
 def _default_is_terminal(project_root: Path, change_dir: Path, change_id: str) -> bool:
@@ -88,40 +84,28 @@ def collect_nightly(
     if is_terminal is None:
         is_terminal = partial(_default_is_terminal, sut)
     retro_id = options.retro_id or generate_retro_id(now)
-    assert_path_segment_safe(retro_id, label="retro id")
-    retro_dir = sut / "qa" / "retro" / retro_id
-
-    state = read_state(sut)
-    candidates, _incomplete = enumerate_candidates(sut, state, is_terminal=is_terminal)
-    if not candidates:
-        return NIGHTLY_NOOP
-    for candidate in candidates:
-        if candidate.evidence_source == "unarchived":
-            snapshot_unarchived_evidence(sut, retro_id, candidate.change_id)
 
     try:
-        context = context_builder(sut, changes=[c.change_id for c in candidates], retro_id=retro_id)
+        result = run_retro_collect(
+            sut,
+            retro_id=retro_id,
+            context_builder=context_builder,
+            is_terminal=is_terminal,
+            now=now,
+        )
     except Exception:  # noqa: BLE001 - aggregation failure is infrastructure failure
         return NIGHTLY_FAILURE
-    write_json(retro_dir / "context.json", context.model_dump())
 
-    consumed_at = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    for candidate in candidates:
-        mark_consumed_change(
-            sut,
-            change_id=candidate.change_id,
-            source=candidate.evidence_source,
-            consumed_at=consumed_at,
-            retro_id=retro_id,
-        )
-
-    if count_signals(context) == 0:
-        complete_retro_stage(sut, retro_id)
+    if result.signal_count == 0:
+        # Zero-signal with candidates: mark stage complete so consumed changes are finalized.
+        if result.context is not None:
+            complete_retro_stage(sut, retro_id)
         return NIGHTLY_NOOP
 
     if options.dry_run:
         return NIGHTLY_OK
 
+    retro_dir = result.retro_dir
     retro_dir.mkdir(parents=True, exist_ok=True)
     agent_exit = agent_runner(options.agent, retro_dir)
     if agent_exit != 0:
@@ -129,19 +113,19 @@ def collect_nightly(
     if not (retro_dir / "proposals.json").exists():
         return NIGHTLY_FAILURE
 
-    proposals = read_proposals(retro_dir)
-    proposals = [p for p in proposals if not validate_retro_proposals(context, [p])]
+    try:
+        proposals = run_retro_accept(
+            sut,
+            retro_id=retro_id,
+            min_evidence=options.min_evidence,
+            rework_alert=options.rework_alert,
+        )
+    except AaError:
+        return NIGHTLY_FAILURE
+
     if not proposals:
-        complete_retro_stage(sut, retro_id)
         return NIGHTLY_NOOP
 
-    partition = partition_proposals_for_review(
-        proposals, promotions=[], min_evidence=options.min_evidence, rework_alert=options.rework_alert
-    )
-    (retro_dir / "review-queue.md").write_text(
-        build_review_queue_markdown(retro_id, partition), encoding="utf-8"
-    )
-    complete_retro_stage(sut, retro_id)
     return NIGHTLY_OK
 
 
