@@ -1137,3 +1137,43 @@ def test_state_updates_reject_undeclared_keys() -> None:
     defs = _defs(k=("int", 0, "replace"))
     with pytest.raises(PlanError, match="undeclared state key"):
         apply_state_updates(defs, {}, [("t-1", {"unknown": 1})])
+
+
+# ---------------------------------------------------------------------------
+# node().value routing
+
+
+_NODE_VALUE_GRAPH = """
+schema_version: "2"
+name: planner-node-value
+entrypoints:
+  full: {graph: main}
+graphs:
+  main:
+    max_supersteps: 8
+    nodes:
+      collect: {uses: operation:collect-op}
+      next: {uses: operation:next-op}
+    edges:
+      - {from: START, to: collect}
+      - {from: collect, to: END, when: "node('collect').value.signal_count == 0"}
+      - {from: collect, to: next, when: "node('collect').value.signal_count > 0"}
+      - {from: next, to: END}
+"""
+
+
+def test_edge_when_can_read_node_value_signal_count(tmp_path: Path) -> None:
+    # collect returns value={signal_count: 0} → edge to END fires, next never activated
+    compiled = _compile(_NODE_VALUE_GRAPH)
+    initial = _initial_tasks(compiled, tmp_path)
+    collect_task = initial["collect"]
+
+    projection = _projection(
+        compiled,
+        tasks=[_task(collect_task, "succeeded", value={"signal_count": 0})],
+    )
+    plan = _plan(compiled, projection, tmp_path)
+
+    activated_node_ids = {task.node_id for task in plan.tasks}
+    assert "next" not in activated_node_ids
+    assert plan.terminal == "end"
