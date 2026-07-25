@@ -95,14 +95,15 @@ def _load_field_allowlist() -> set[str]:
     return entries
 
 
-def test_thirty_two_skills_present() -> None:
+def test_thirty_four_skills_present() -> None:
     names = _skill_names()
-    # aa-test-infra-bootstrap was removed (test-infra scaffold is now a fixture
-    # prerequisite, not a skill), taking the packaged skill count 33 -> 32.
-    assert len(names) == 32
+    # Issue lifecycle adds aa-issue-analyzer + aa-issue-triage-advisor (32 -> 34).
+    assert len(names) == 34
     assert "writing-skills" in names
     assert "aa-workflow" in names
     assert "aa-dashboard" in names
+    assert "aa-issue-analyzer" in names
+    assert "aa-issue-triage-advisor" in names
     assert not any(n.startswith("aws-") for n in names)
 
 
