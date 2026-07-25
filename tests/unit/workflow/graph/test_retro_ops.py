@@ -138,9 +138,7 @@ def _write_terminal_archived_change(
             "reason": "settled",
         },
     ]
-    (root / "events.jsonl").write_text(
-        "\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8"
-    )
+    (root / "events.jsonl").write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
     (root / "workflow-state.yaml").write_text("phases: {}\n", encoding="utf-8")
     return root
 
@@ -226,7 +224,9 @@ def test_retro_collect_op_maps_issue_history_integrity_to_invalid_input(
 # ---------------------------------------------------------------------------
 
 
-def _write_v2_context_json(retro_dir: Path, retro_id: str, *, evidence_ids: tuple[str, ...] = ("PROB-1",)) -> dict:
+def _write_v2_context_json(
+    retro_dir: Path, retro_id: str, *, evidence_ids: tuple[str, ...] = ("PROB-1",)
+) -> dict:
     """Write a schema-v2 RetroContext used by Improvement Candidate accept."""
     from assurance_agent.retro.candidates import context_sha256
     from assurance_agent.retro.types import (

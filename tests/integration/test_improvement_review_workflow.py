@@ -261,9 +261,7 @@ class TestOperationRegistration:
         assert "operation:apply-improvement-review" in ops
 
     def test_contracts_declare_improvement_ledger_lock(self) -> None:
-        catalog = parse_execution_contracts(
-            resources.read_text("schemas", "execution-contracts.yaml")
-        )
+        catalog = parse_execution_contracts(resources.read_text("schemas", "execution-contracts.yaml"))
         apply = catalog.contracts["operation:apply-improvement-review"]
         assert "project:qa/improvements/**" in apply.synchronized
         assert "project:improvement-registry" in apply.exclusive
@@ -323,15 +321,7 @@ def test_interrupt_resume_increments_version_without_touching_issues(
     assert (issues_dir / "review-queue.json").read_bytes() == before_queue
 
     # Context written under change:improvement-review/**
-    context_path = (
-        project
-        / "qa"
-        / "changes"
-        / "CH-REVIEW"
-        / "improvement-review"
-        / "IREV-1"
-        / "context.json"
-    )
+    context_path = project / "qa" / "changes" / "CH-REVIEW" / "improvement-review" / "IREV-1" / "context.json"
     assert context_path.is_file()
     ctx_doc = json.loads(context_path.read_text(encoding="utf-8"))
     assert ctx_doc["improvement_id"] == IMP_ID

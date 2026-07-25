@@ -86,9 +86,7 @@ class InvalidImprovementTransitionError(AaError):
 
 def assert_improvement_transition(current: ImprovementState, target: ImprovementState) -> None:
     if current is target:
-        raise InvalidImprovementTransitionError(
-            f"self-transition is not allowed for state {current.value}"
-        )
+        raise InvalidImprovementTransitionError(f"self-transition is not allowed for state {current.value}")
     allowed = _ALLOWED.get(current, frozenset())
     if target not in allowed:
         raise InvalidImprovementTransitionError(

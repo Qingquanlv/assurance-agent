@@ -609,9 +609,7 @@ def test_malformed_jsonl_raises_integrity_error(tmp_path: Path) -> None:
     (tmp_path / "qa/issues").mkdir(parents=True)
     (tmp_path / "qa/issues/events.jsonl").write_bytes(b"")
     with pytest.raises(IssueHistoryIntegrityError):
-        LedgerIssueHistoryReader(tmp_path).read_window(
-            IssueWindowSelection(change_ids=(CHANGE_ID,))
-        )
+        LedgerIssueHistoryReader(tmp_path).read_window(IssueWindowSelection(change_ids=(CHANGE_ID,)))
 
 
 def test_unknown_event_schema_raises_integrity_error(tmp_path: Path) -> None:
@@ -635,9 +633,7 @@ def test_unknown_event_schema_raises_integrity_error(tmp_path: Path) -> None:
     (tmp_path / "qa/issues").mkdir(parents=True)
     (tmp_path / "qa/issues/events.jsonl").write_bytes(b"")
     with pytest.raises(IssueHistoryIntegrityError):
-        LedgerIssueHistoryReader(tmp_path).read_window(
-            IssueWindowSelection(change_ids=(CHANGE_ID,))
-        )
+        LedgerIssueHistoryReader(tmp_path).read_window(IssueWindowSelection(change_ids=(CHANGE_ID,)))
 
 
 def test_mismatched_projection_raises_integrity_error(tmp_path: Path) -> None:
@@ -670,10 +666,9 @@ def test_since_until_selection_applies_reference_closure(tmp_path: Path) -> None
     # Change issue events in the interval, plus problem closure through head.
     assert any(o.observation_id == OBS.observation_id for o in slice_.observations)
     assert any(e.event_id == "PEVT-4" for e in slice_.problem_events)
-    assert (
-        slice_.model_dump(mode="json")
-        == InMemoryIssueHistoryReader.from_events(typed).read_window(selection).model_dump(mode="json")
-    )
+    assert slice_.model_dump(mode="json") == InMemoryIssueHistoryReader.from_events(typed).read_window(
+        selection
+    ).model_dump(mode="json")
 
 
 def test_project_event_through_pins_head(tmp_path: Path) -> None:

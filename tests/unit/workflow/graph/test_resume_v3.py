@@ -168,13 +168,9 @@ def test_canonical_workflow_issue_entrypoints_are_repeatable() -> None:
     for ep_name in ("issue-review", "issue-analyze", "issue-reconcile"):
         ep = compiled.entrypoints.get(ep_name)
         assert ep is not None, f"entrypoint {ep_name!r} not found in compiled workflow"
-        assert ep.restart == "repeatable", (
-            f"entrypoint {ep_name!r} should be repeatable, got {ep.restart!r}"
-        )
+        assert ep.restart == "repeatable", f"entrypoint {ep_name!r} should be repeatable, got {ep.restart!r}"
 
     for ep_name in ("full", "execute", "archive", "retro"):
         ep = compiled.entrypoints.get(ep_name)
         assert ep is not None, f"entrypoint {ep_name!r} not found in compiled workflow"
-        assert ep.restart == "once", (
-            f"entrypoint {ep_name!r} should be once, got {ep.restart!r}"
-        )
+        assert ep.restart == "once", f"entrypoint {ep_name!r} should be once, got {ep.restart!r}"

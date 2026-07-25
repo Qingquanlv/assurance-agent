@@ -53,9 +53,9 @@ class CandidateBatchInvalid(AaError):
 
 
 def _canonical_json_bytes(payload: object) -> bytes:
-    return (
-        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
-    ).encode("utf-8")
+    return (json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode(
+        "utf-8"
+    )
 
 
 def context_sha256(context: RetroContext) -> str:
@@ -63,9 +63,7 @@ def context_sha256(context: RetroContext) -> str:
 
 
 def candidate_batch_digest(document: ImprovementCandidateDocument) -> str:
-    return "sha256:" + hashlib.sha256(
-        _canonical_json_bytes(document.model_dump(mode="json"))
-    ).hexdigest()
+    return "sha256:" + hashlib.sha256(_canonical_json_bytes(document.model_dump(mode="json"))).hexdigest()
 
 
 def _parse_errors(err: ValidationError) -> list[CandidateValidationError]:

@@ -125,9 +125,7 @@ def resolve_retro_window(
             if change_id not in known:
                 reasons.append(f"workflow_source_missing:{change_id}")
         workflow_heads = tuple(
-            ref.ledger_sha256
-            for ref in terminals
-            if ref.change_id in change_ids and ref.ledger_sha256
+            ref.ledger_sha256 for ref in terminals if ref.change_id in change_ids and ref.ledger_sha256
         )
         integrity = (
             RetroIntegrity(status="incomplete", reasons=tuple(reasons))
@@ -151,11 +149,7 @@ def resolve_retro_window(
                 until = max(ref.terminal_ts for ref in terminals)
             else:
                 reasons.append("workflow_source_head_unavailable")
-        selected = [
-            ref
-            for ref in terminals
-            if _ts_in_closed_range(ref.terminal_ts, since, until)
-        ]
+        selected = [ref for ref in terminals if _ts_in_closed_range(ref.terminal_ts, since, until)]
         change_ids = tuple(sorted({ref.change_id for ref in selected}))
         integrity = (
             RetroIntegrity(status="incomplete", reasons=tuple(reasons))

@@ -40,7 +40,7 @@ def _resolve_adapter_factory(*, use_fake: bool, sut: Path):
 
 
 def build_eval_runner(engine_root: Path, sut_root: Path):
-    """Build the shared real ``eval_runner`` used by Retro nightly and memory evaluate.
+    """Build the shared real ``eval_runner`` used by memory Improvement evaluate.
 
     Explicit ``sut_dir`` / ``engine_root`` call kwargs win over the bound roots.
     """
@@ -98,9 +98,7 @@ def build_eval_runner(engine_root: Path, sut_root: Path):
             "suite_version": manifest.suite_version,
             "repeat": manifest.repeat,
             "regression_policy_sha256": manifest.regression_policy_sha256,
-            "baseline_suite_version": (
-                baseline_entry.suite_version if baseline_entry is not None else None
-            ),
+            "baseline_suite_version": (baseline_entry.suite_version if baseline_entry is not None else None),
             "baseline_repeat": baseline_entry.repeat if baseline_entry is not None else None,
             "baseline_regression_policy_sha256": (
                 baseline_entry.regression_policy_sha256 if baseline_entry is not None else None

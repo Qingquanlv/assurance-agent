@@ -85,9 +85,7 @@ def _event_idempotency_key(batch_key: str, event_type: str, ordinal: int) -> str
     return f"{batch_key}:{event_type}:{ordinal}"
 
 
-def _source_refs_covered(
-    existing: ImprovementSourceRefs, incoming: ImprovementSourceRefs
-) -> bool:
+def _source_refs_covered(existing: ImprovementSourceRefs, incoming: ImprovementSourceRefs) -> bool:
     for field in (
         "problem_ids",
         "occurrence_ids",
@@ -232,9 +230,7 @@ def reconcile_improvement_candidates(
     )
 
 
-def _batch_events(
-    events: list[ImprovementEvent], *, batch_key: str
-) -> list[ImprovementEvent]:
+def _batch_events(events: list[ImprovementEvent], *, batch_key: str) -> list[ImprovementEvent]:
     """Locate ledger events belonging to ``retro_id:batch_digest`` idempotency key."""
     prefix = f"{batch_key}:"
     return [event for event in events if event.idempotency_key.startswith(prefix)]
@@ -342,9 +338,7 @@ def run_improvement_reconcile(project_root: Path, *, retro_id: str) -> Improveme
         raise AaError(f"context.json missing: {context_path}")
 
     try:
-        context = RetroContext.model_validate(
-            json.loads(context_path.read_text(encoding="utf-8"))
-        )
+        context = RetroContext.model_validate(json.loads(context_path.read_text(encoding="utf-8")))
     except Exception as exc:
         raise AaError(f"context.json invalid: {context_path}: {exc}") from exc
 
@@ -390,9 +384,7 @@ def run_improvement_reconcile(project_root: Path, *, retro_id: str) -> Improveme
                 events=prior,
             )
             _write_accept_status(retro_dir, status)
-            _write_review_queue_md(
-                retro_dir, retro_id=retro_id, improvement_ids=status.improvement_ids
-            )
+            _write_review_queue_md(retro_dir, retro_id=retro_id, improvement_ids=status.improvement_ids)
             return status
 
         current = project_improvements(existing)
@@ -408,7 +400,5 @@ def run_improvement_reconcile(project_root: Path, *, retro_id: str) -> Improveme
             events=list(plan.events),
         )
         _write_accept_status(retro_dir, status)
-        _write_review_queue_md(
-            retro_dir, retro_id=retro_id, improvement_ids=status.improvement_ids
-        )
+        _write_review_queue_md(retro_dir, retro_id=retro_id, improvement_ids=status.improvement_ids)
         return status

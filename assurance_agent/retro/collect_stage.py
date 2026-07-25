@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,8 +21,6 @@ from assurance_agent.retro.workflow_history import (
 )
 from assurance_agent.workflow.issues.history import IssueHistoryReader, LedgerIssueHistoryReader
 
-ContextBuilder = Callable[..., RetroContext]
-
 
 @dataclass(frozen=True)
 class RetroCollectResult:
@@ -35,9 +32,9 @@ class RetroCollectResult:
 
 def _canonical_context_bytes(context: RetroContext) -> bytes:
     payload = context.model_dump(mode="json")
-    return (
-        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
-    ).encode("utf-8")
+    return (json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode(
+        "utf-8"
+    )
 
 
 def _write_context_json(path: Path, context: RetroContext) -> None:
@@ -46,9 +43,7 @@ def _write_context_json(path: Path, context: RetroContext) -> None:
         existing = path.read_bytes()
         if existing == canonical:
             return
-        raise RetroContextImmutableError(
-            f"context.json at {path} already exists with different bytes"
-        )
+        raise RetroContextImmutableError(f"context.json at {path} already exists with different bytes")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(canonical)
 
@@ -67,9 +62,6 @@ def run_retro_collect(
     workflow_history: WorkflowHistoryReader | None = None,
     eval_history: EvalHistoryReader | None = None,
     now: datetime | None = None,
-    # Half-cutover: absorb legacy nightly/test kwargs until Tasks 7–12 rewrite callers.
-    is_terminal: object | None = None,
-    context_builder: ContextBuilder | None = None,
 ) -> RetroCollectResult:
     """Collect Retro evidence through typed readers and write ``context.json``.
 
@@ -78,7 +70,6 @@ def run_retro_collect(
     change state. ``IssueHistoryIntegrityError`` propagates as a hard failure.
     Incomplete Issue analysis/sync marks context incomplete but still succeeds.
     """
-    _ = (is_terminal, context_builder)
     assert_path_segment_safe(retro_id, label="retro id")
     out_root = write_root or sut
     retro_dir = out_root / "qa" / "retro" / retro_id

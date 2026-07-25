@@ -83,9 +83,7 @@ def test_run_retro_collect_idempotent_identical_bytes(tmp_path: Path, readers: _
     assert first.context.model_dump(mode="json") == second.context.model_dump(mode="json")
 
 
-def test_run_retro_collect_rejects_different_context_bytes(
-    tmp_path: Path, readers: _Readers
-) -> None:
+def test_run_retro_collect_rejects_different_context_bytes(tmp_path: Path, readers: _Readers) -> None:
     write_aa_config(tmp_path)
     run_retro_collect(
         tmp_path,

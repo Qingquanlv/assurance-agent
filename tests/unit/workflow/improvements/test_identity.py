@@ -74,12 +74,7 @@ def test_fingerprint_changes_with_kind_delivery_target_intent_version(
     candidate: ImprovementCandidate,
 ) -> None:
     baseline = improvement_fingerprint(candidate)
-    assert (
-        improvement_fingerprint(
-            candidate.model_copy(update={"kind": ImprovementKind.TEST})
-        )
-        != baseline
-    )
+    assert improvement_fingerprint(candidate.model_copy(update={"kind": ImprovementKind.TEST})) != baseline
     assert (
         improvement_fingerprint(
             candidate.model_copy(
@@ -91,13 +86,9 @@ def test_fingerprint_changes_with_kind_delivery_target_intent_version(
         )
         != baseline
     )
+    assert improvement_fingerprint(candidate.model_copy(update={"target": "other/module"})) != baseline
     assert (
-        improvement_fingerprint(candidate.model_copy(update={"target": "other/module"})) != baseline
-    )
-    assert (
-        improvement_fingerprint(
-            candidate.model_copy(update={"proposed_change": "Different intent text"})
-        )
+        improvement_fingerprint(candidate.model_copy(update={"proposed_change": "Different intent text"}))
         != baseline
     )
     assert improvement_fingerprint(candidate, version="2") != baseline
@@ -122,9 +113,7 @@ def test_fingerprint_normalizes_unicode_case_and_whitespace(
     assert improvement_fingerprint(left) == improvement_fingerprint(right)
 
     composed = candidate.model_copy(update={"target": "café/path"})
-    decomposed = candidate.model_copy(
-        update={"target": unicodedata.normalize("NFD", "café/path")}
-    )
+    decomposed = candidate.model_copy(update={"target": unicodedata.normalize("NFD", "café/path")})
     assert improvement_fingerprint(composed) == improvement_fingerprint(decomposed)
 
 
@@ -133,12 +122,8 @@ def test_fingerprint_matches_canonical_sha256(candidate: ImprovementCandidate) -
         "version": "1",
         "kind": candidate.kind.value,
         "delivery": candidate.delivery.value,
-        "target": " ".join(
-            unicodedata.normalize("NFKC", candidate.target).casefold().split()
-        ),
-        "intent": " ".join(
-            unicodedata.normalize("NFKC", candidate.proposed_change).casefold().split()
-        ),
+        "target": " ".join(unicodedata.normalize("NFKC", candidate.target).casefold().split()),
+        "intent": " ".join(unicodedata.normalize("NFKC", candidate.proposed_change).casefold().split()),
     }
     wire = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     expected = hashlib.sha256(wire.encode("utf-8")).hexdigest()

@@ -313,9 +313,7 @@ def test_exact_fingerprint_match_links_occurrence() -> None:
     existing = _make_existing_problem(status="detected", version=1)
     problems = _problems_with(existing)
 
-    plan = _plan(
-        candidates_doc, obs, _empty_snapshot(change_id="CH-002", batch_id="BATCH-002"), problems
-    )
+    plan = _plan(candidates_doc, obs, _empty_snapshot(change_id="CH-002", batch_id="BATCH-002"), problems)
 
     change_types = [e.type for e in plan.change_events]
     problem_types = [e.type for e in plan.problem_events]
@@ -335,9 +333,7 @@ def test_exact_fingerprint_resolved_triggers_regression() -> None:
     existing = _make_existing_problem(status="resolved", version=2)
     problems = _problems_with(existing)
 
-    plan = _plan(
-        candidates_doc, obs, _empty_snapshot(change_id="CH-003", batch_id="BATCH-003"), problems
-    )
+    plan = _plan(candidates_doc, obs, _empty_snapshot(change_id="CH-003", batch_id="BATCH-003"), problems)
 
     change_types = [e.type for e in plan.change_events]
     problem_types = [e.type for e in plan.problem_events]
@@ -370,9 +366,7 @@ def test_possible_problem_ids_with_no_exact_match_emits_merge_suggested() -> Non
     )
     candidates_doc = _make_candidate_doc([cand], change_id="CH-004", batch_id="BATCH-004")
 
-    plan = _plan(
-        candidates_doc, obs, _empty_snapshot(change_id="CH-004", batch_id="BATCH-004"), problems
-    )
+    plan = _plan(candidates_doc, obs, _empty_snapshot(change_id="CH-004", batch_id="BATCH-004"), problems)
 
     problem_types = [e.type for e in plan.problem_events]
     assert "problem_merge_suggested" in problem_types
@@ -527,9 +521,7 @@ def test_regression_resets_problem_version() -> None:
     existing = _make_existing_problem(status="resolved", version=3)
     problems = _problems_with(existing)
 
-    plan = _plan(
-        candidates_doc, obs, _empty_snapshot(change_id="CH-REG", batch_id="BATCH-REG"), problems
-    )
+    plan = _plan(candidates_doc, obs, _empty_snapshot(change_id="CH-REG", batch_id="BATCH-REG"), problems)
 
     regressed = next(e for e in plan.problem_events if e.type == "problem_regressed")
     assert regressed.expected_problem_version == 3  # matches existing.version
@@ -544,9 +536,7 @@ def test_occurrence_linked_has_correct_expected_version() -> None:
     existing = _make_existing_problem(status="triaged", version=4)
     problems = _problems_with(existing)
 
-    plan = _plan(
-        candidates_doc, obs, _empty_snapshot(change_id="CH-LINK", batch_id="BATCH-LINK"), problems
-    )
+    plan = _plan(candidates_doc, obs, _empty_snapshot(change_id="CH-LINK", batch_id="BATCH-LINK"), problems)
 
     linked = next(e for e in plan.problem_events if e.type == "problem_occurrence_linked")
     assert linked.expected_problem_version == 4
@@ -693,9 +683,7 @@ def test_no_merge_suggestion_on_exact_fingerprint_link() -> None:
     )
     candidates_doc = _make_candidate_doc([cand], change_id="CH-EXACT", batch_id="BATCH-EXACT")
 
-    plan = _plan(
-        candidates_doc, obs, _empty_snapshot(change_id="CH-EXACT", batch_id="BATCH-EXACT"), problems
-    )
+    plan = _plan(candidates_doc, obs, _empty_snapshot(change_id="CH-EXACT", batch_id="BATCH-EXACT"), problems)
 
     problem_types = [e.type for e in plan.problem_events]
     assert "problem_merge_suggested" not in problem_types, (

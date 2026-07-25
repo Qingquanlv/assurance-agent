@@ -60,9 +60,7 @@ def _load_ledger(project_root: Path) -> ImprovementLedgerProjection:
     path = project_root / "qa" / "improvements" / "improvements.json"
     if not path.is_file():
         raise ImprovementDeliveryError(f"improvement ledger projection missing at {path}")
-    return ImprovementLedgerProjection.model_validate(
-        json.loads(path.read_text(encoding="utf-8"))
-    )
+    return ImprovementLedgerProjection.model_validate(json.loads(path.read_text(encoding="utf-8")))
 
 
 def _draft_path(project_root: Path, improvement_id: str) -> Path:
@@ -144,8 +142,10 @@ class ChangeDraftDelivery:
             )
 
         path = _draft_path(self.project_root, current.improvement_id)
-        rel = path.relative_to(self.project_root).as_posix() if path.exists() else (
-            f"qa/improvements/drafts/{current.improvement_id}.yaml"
+        rel = (
+            path.relative_to(self.project_root).as_posix()
+            if path.exists()
+            else (f"qa/improvements/drafts/{current.improvement_id}.yaml")
         )
 
         # Already exported: hash-idempotent re-export returns the on-disk artifact.
@@ -159,9 +159,7 @@ class ChangeDraftDelivery:
                 if isinstance(prior, dict) and isinstance(prior.get("content_sha256"), str)
                 else _sha256_bytes(existing)
             )
-            return ChangeExportReceipt(
-                sha256=str(digest), created=False, artifact_path=rel
-            )
+            return ChangeExportReceipt(sha256=str(digest), created=False, artifact_path=rel)
 
         payload_bytes = _canonicalize_yaml(_draft_document(current))
         embedded = yaml.safe_load(payload_bytes.decode("utf-8")).get("content_sha256")
@@ -199,12 +197,8 @@ class ChangeDraftDelivery:
         event = ImprovementExportedEvent(
             schema_version="1.0",
             seq=1,
-            event_id=_event_id(
-                f"improvement-exported:{current.improvement_id}:{current.version}:{digest}"
-            ),
-            idempotency_key=(
-                f"improvement-exported:{current.improvement_id}:{current.version}:{digest}"
-            ),
+            event_id=_event_id(f"improvement-exported:{current.improvement_id}:{current.version}:{digest}"),
+            idempotency_key=(f"improvement-exported:{current.improvement_id}:{current.version}:{digest}"),
             ts=_utc_now(),
             improvement_id=current.improvement_id,
             expected_improvement_version=current.version,

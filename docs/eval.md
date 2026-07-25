@@ -79,8 +79,9 @@ Workflow 类 suite 还需要：
 
 ```bash
 aa eval <subcommand> ...
-aa retro [--since|--change|--retro-id] [--json]
-aa retro nightly collect|resume|report ...
+aa retro [--change|--since/--until|--last] [--retro-id] [--dry-run] [--json]
+aa retro show --retro-id <id> [--json]
+aa improvement list|show ...
 ```
 
 ---
@@ -228,76 +229,54 @@ Gate 三档：
 
 ---
 
-## Retro Loop
+## Retro → Improvement（与 Eval 的边界）
 
-### 手动路径（`aa retro`）
+Retro **不是** Eval suite 的一部分，也不是 full workflow 的边。它是独立入口，从 Issue / Workflow / Eval **只读历史**派生 schema-v2 `context.json`，再经 `skill:aa-retro` 产出 Candidates，由确定性 reconciler 写入 Project Improvement Ledger。
+
+### 触发
 
 ```bash
 aa retro --since 2026-07-01T00:00:00Z --json
 aa retro --retro-id retro-x --change CH-1 --change CH-2 --json
+aa retro --last 10 --dry-run --json
+aa retro show --retro-id retro-x --json
 ```
 
-stdout JSON 含 `retro_id`、`change_count`、`signal_count`（benchmark nightly 分支消费）。
+Window 选择互斥：`--change` / `--since`+`--until` / `--last`。stdout JSON 含 `retro_id`、`change_count`、`signal_count`。`--dry-run` 只写 `context.json`。
 
-写入 `qa/retro/<retro-id>/context.json`。`context.json` **顶层含 `signal_count`**（= `count_signals(context)`，TS 版无此字段，Python 有意增补）。
-
-`--since` 与 `--change` 互斥。目录已有 `promotions.json` 时不可再写 context（immutable）。
-
-### Nightly 驱动（`aa retro nightly`）
-
-```bash
-# PHASE A–D
-aa retro nightly collect \
-  --sut /path/to/sut \
-  [--retro-id <id>] [--dry-run] [--agent cursor-agent] \
-  [--history 5] [--min-evidence 2] [--rework-alert 3]
-
-# PHASE E–F（resume）
-aa retro nightly resume --sut /path/to/sut --retro-id <id> [--skip-eval]
-
-# 跨 run 汇总
-aa retro nightly report --sut /path/to/sut [--last 10]
-```
-
-| 阶段 | 做什么 |
-|------|--------|
-| **A** | 枚举未消费 / unarchived 且 terminal 的 change；必要时 snapshot 证据 |
-| **B** | 进程内直调 `build_retro_context` 写 `context.json`；`signal_count=0` → exit 10 |
-| **C** | 调 `--agent` 生成 `proposals.json`；schema 校验剔除非法提案 |
-| **D** | 分流提案；写 `review-queue.md`；`complete_retro_stage` |
-| **E** | resume：对已 promote 的 `memory_append` stage apply |
-| **F** | eval baseline/candidate 回归；有 hard_gates 且未回归才 auto-apply |
-
-**退出码**
-
-| 码 | 含义 |
-|----|------|
-| 0 | 成功 |
-| 10 | no-op（无候选 / 零信号 / 校验后无提案） |
-| 30 | 仍待人工审阅（resume，`skip_eval` 或缺 eval runner） |
-| 40 | 基础设施 / agent 失败 |
-
-产物（SUT 的 `qa/retro/`）：
+当前 run 产物：
 
 ```text
-qa/retro/
-├── _state.json
-├── cross-run-report.json
-└── <retro-id>/
-    ├── context.json      # 含顶层 signal_count
-    ├── proposals.json
-    ├── promotions.json
-    ├── review-queue.md
-    └── retro-summary.md
+qa/retro/<retro-id>/
+├── context.json                 # schema_version "2"；immutable（同字节幂等，不同字节拒绝）
+├── proposal-candidates.json     # schema_version "2" Candidates（非权威）
+├── retro-summary.md
+├── accept-status.json           # reconcile receipt
+└── review-queue.md
 ```
+
+权威 Improvement 状态只在：
+
+```text
+qa/improvements/
+├── events.jsonl
+├── improvements.json
+└── review-queue.json
+```
+
+`memory_patch` Improvement 的 evaluate 会调用共享 `eval_runner`（`assurance_agent/eval/host_runner.py`）做 baseline/candidate 回归；**不会**再走已删除的 `aa retro nightly` 驱动。
+
+已移除：`aa retro nightly *`、`export-issues` / `export-knowledge`、`_state.json`、`cross-run-report.json`、per-run `promotions.json` / `proposals.json`。详情见 `docs/schemas.md`「Retro（schema-v2）与 Improvement lifecycle」。
+
+CLI 读模型：`aa improvement list|show`（只读投影）。
 
 ---
 
 ## 与 TS 版差异（Python M8 落地）
 
 1. **CLI**：`node dist/cli.js eval` → `aa eval`；`aws retro` → `aa retro`；`aws run` → `aa run`。
-2. **Nightly phase B**：进程内直调聚合，**不** shell out `aa retro`。
-3. **`context.json`**：顶层新增 `signal_count`（benchmark 依赖）。
+2. **Retro**：独立 GraphRuntime 入口 + Project Improvement Ledger；无 nightly driver / consumed-state cursor。
+3. **`context.json`**：schema_version `"2"`，含 `signal_count` / `source_manifest` / typed signals。
 4. **Judge**：经 `httpx` 直连 Anthropic 兼容端点；`AA_JUDGE_MOCK` 走确定性 stub。
 5. **Run 根目录**：`eval/out/runs/`（非 `eval/runs/`）。
 6. **deferred**：OpenCode 过程可观测性 7 项；`eval gate|compare --batch`；judge 校准写基准。
@@ -308,4 +287,6 @@ qa/retro/
 
 - `eval/contracts/p0-metrics.yaml` — 指标注册表
 - `assurance_agent/eval/scorers/` — Python scorer 实现
-- `assurance_agent/retro/` — retro 聚合与 nightly 驱动
+- `assurance_agent/retro/` — schema-v2 Retro collect / Candidates
+- `assurance_agent/workflow/improvements/` — Improvement Ledger / review / delivery
+- `docs/schemas.md` — Retro / Improvement 产物与命令契约

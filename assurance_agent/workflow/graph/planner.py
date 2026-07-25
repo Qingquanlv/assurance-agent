@@ -1727,9 +1727,7 @@ def _build_task(
     }
     expanded_resources: dict[str, list[str]] | None = None
     if definition.resources is not None:
-        expanded_resources = _expand_resources(
-            definition.resources, "__none__", None, context, nid
-        )
+        expanded_resources = _expand_resources(definition.resources, "__none__", None, context, nid)
         input_payload["resources"] = expanded_resources
     retry_policy = _retry_policy(compiled, definition)
     task_id = _task_id(projection, graph.graph_id, nid, ordinal, None)
@@ -1849,9 +1847,7 @@ def _build_fan_out_task(
     }
     expanded_resources: dict[str, list[str]] | None = None
     if definition.resources is not None:
-        expanded_resources = _expand_resources(
-            definition.resources, fan_out.item_as, item, context, nid
-        )
+        expanded_resources = _expand_resources(definition.resources, fan_out.item_as, item, context, nid)
         input_payload["resources"] = expanded_resources
     retry_policy = _retry_policy(compiled, definition)
     return ExecutableTask(

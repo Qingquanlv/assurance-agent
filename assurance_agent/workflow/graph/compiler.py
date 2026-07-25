@@ -437,9 +437,7 @@ def _validate_graph_refs(schema: WorkflowSchemaV2) -> list[str]:
                 elif recovery.via == nid:
                     errors.append(f"{loc} recovery via must differ from recovering node '{nid}'")
                 if recovery.continue_to not in graph.nodes and recovery.continue_to not in _TERMINALS:
-                    errors.append(
-                        f"{loc} recovery continue_to unknown node '{recovery.continue_to}'"
-                    )
+                    errors.append(f"{loc} recovery continue_to unknown node '{recovery.continue_to}'")
         for edge in graph.edges:
             if edge.from_ != "START" and edge.from_ not in graph.nodes:
                 errors.append(f"graph '{graph_id}' edge from unknown node '{edge.from_}'")
@@ -454,9 +452,7 @@ def _validate_graph_refs(schema: WorkflowSchemaV2) -> list[str]:
                     errors.append(
                         f"graph '{graph_id}' route from '{route.from_}' targets unknown node '{target}'"
                     )
-        recovery_nodes = {
-            node.recover.via for node in graph.nodes.values() if node.recover is not None
-        }
+        recovery_nodes = {node.recover.via for node in graph.nodes.values() if node.recover is not None}
         for recovery_nid in sorted(recovery_nodes):
             ordinary_incoming = any(edge.to == recovery_nid for edge in graph.edges) or any(
                 recovery_nid in route.cases.values() or route.default == recovery_nid
@@ -929,10 +925,7 @@ def _check_recovery_kinds(
         return []
     unsupported = sorted(set(node.recover.errors) - set(contract.retryable_errors))
     if unsupported:
-        return [
-            f"{loc} recovery kinds not retryable for "
-            f"'{contract.target}': {', '.join(unsupported)}"
-        ]
+        return [f"{loc} recovery kinds not retryable for '{contract.target}': {', '.join(unsupported)}"]
     return []
 
 

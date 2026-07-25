@@ -178,15 +178,10 @@ def test_existing_fingerprint_adds_evidence_only(
     document = _document(context, linked)
     plan = reconcile_improvement_candidates(document, context, current)
     assert [event.type for event in plan.events] == ["improvement_evidence_linked"]
-    assert (
-        plan.events[0].improvement_id
-        == current.by_fingerprint[improvement_fingerprint(linked)]
-    )
+    assert plan.events[0].improvement_id == current.by_fingerprint[improvement_fingerprint(linked)]
 
 
-def test_same_retry_is_byte_identical(
-    context: RetroContext, candidate: ImprovementCandidate
-) -> None:
+def test_same_retry_is_byte_identical(context: RetroContext, candidate: ImprovementCandidate) -> None:
     document = _document(context, candidate)
     current = _empty_projection()
     first = reconcile_improvement_candidates(document, context, current)
@@ -195,24 +190,18 @@ def test_same_retry_is_byte_identical(
     assert isinstance(first, ImprovementReconciliationPlan)
 
 
-def test_new_fingerprint_proposes_improvement(
-    context: RetroContext, candidate: ImprovementCandidate
-) -> None:
+def test_new_fingerprint_proposes_improvement(context: RetroContext, candidate: ImprovementCandidate) -> None:
     document = _document(context, candidate)
     plan = reconcile_improvement_candidates(document, context, _empty_projection())
     assert [event.type for event in plan.events] == ["improvement_proposed"]
     event = plan.events[0]
     assert isinstance(event, ImprovementProposedEvent)
-    assert event.improvement_id == improvement_id_for_fingerprint(
-        improvement_fingerprint(candidate)
-    )
+    assert event.improvement_id == improvement_id_for_fingerprint(improvement_fingerprint(candidate))
     assert event.expected_improvement_version == 0
     assert event.fingerprint == improvement_fingerprint(candidate)
 
 
-def test_duplicate_refs_cause_no_event(
-    context: RetroContext, candidate: ImprovementCandidate
-) -> None:
+def test_duplicate_refs_cause_no_event(context: RetroContext, candidate: ImprovementCandidate) -> None:
     current = _projection_with(candidate)
     document = _document(context, candidate)
     plan = reconcile_improvement_candidates(document, context, current)
@@ -273,9 +262,7 @@ def test_same_fingerprint_across_two_retro_ids_links_evidence(
     first_context = _context(retro_id="retro-a")
     second_context = _context(retro_id="retro-b")
     first_doc = _document(first_context, candidate)
-    first_plan = reconcile_improvement_candidates(
-        first_doc, first_context, _empty_projection()
-    )
+    first_plan = reconcile_improvement_candidates(first_doc, first_context, _empty_projection())
     assert [event.type for event in first_plan.events] == ["improvement_proposed"]
 
     # Simulate projection after first Retro wrote the proposal.
@@ -287,9 +274,7 @@ def test_same_fingerprint_across_two_retro_ids_links_evidence(
         }
     )
     second_doc = _document(second_context, second_candidate)
-    second_plan = reconcile_improvement_candidates(
-        second_doc, second_context, after_first
-    )
+    second_plan = reconcile_improvement_candidates(second_doc, second_context, after_first)
     assert [event.type for event in second_plan.events] == ["improvement_evidence_linked"]
     assert second_plan.events[0].improvement_id == first_plan.events[0].improvement_id
     assert second_plan.idempotency_key != first_plan.idempotency_key

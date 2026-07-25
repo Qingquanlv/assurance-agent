@@ -182,7 +182,9 @@ def test_generate_report_known_product_issue_is_product_defect(tmp_path: Path) -
 # ---- Issue risk / schema 1.1 tests -----------------------------------------
 
 
-def _seed_issue_snapshot(change_dir: Path, *, analysis_status: str = "completed", occurrences: list | None = None) -> None:
+def _seed_issue_snapshot(
+    change_dir: Path, *, analysis_status: str = "completed", occurrences: list | None = None
+) -> None:
     """Write a minimal issues/snapshot.json for testing."""
     import json
 

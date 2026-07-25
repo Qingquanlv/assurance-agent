@@ -199,14 +199,10 @@ def read_improvement_events(path: Path) -> list[ImprovementEvent]:
         try:
             data = json.loads(raw_line)
         except json.JSONDecodeError as exc:
-            raise ImprovementLedgerIntegrityError(
-                f"{path} line {line_no}: invalid JSON: {exc}"
-            ) from exc
+            raise ImprovementLedgerIntegrityError(f"{path} line {line_no}: invalid JSON: {exc}") from exc
 
         if not isinstance(data, dict):
-            raise ImprovementLedgerIntegrityError(
-                f"{path} line {line_no}: event is not a JSON object"
-            )
+            raise ImprovementLedgerIntegrityError(f"{path} line {line_no}: event is not a JSON object")
 
         seq = data.get("seq")
         if not isinstance(seq, int) or isinstance(seq, bool) or seq != expected_seq:
@@ -217,15 +213,12 @@ def read_improvement_events(path: Path) -> list[ImprovementEvent]:
         try:
             event = IMPROVEMENT_EVENT_ADAPTER.validate_python(data)
         except ValidationError as exc:
-            raise ImprovementLedgerIntegrityError(
-                f"{path} line {line_no}: invalid event: {exc}"
-            ) from exc
+            raise ImprovementLedgerIntegrityError(f"{path} line {line_no}: invalid event: {exc}") from exc
 
         prior = seen_event_ids.get(event.event_id)
         if prior is not None and prior != raw_line:
             raise ImprovementLedgerIntegrityError(
-                f"{path} line {line_no}: duplicate event_id {event.event_id!r} "
-                "with different bytes"
+                f"{path} line {line_no}: duplicate event_id {event.event_id!r} with different bytes"
             )
         if prior is not None:
             raise ImprovementLedgerIntegrityError(

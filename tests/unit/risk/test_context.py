@@ -162,9 +162,7 @@ def test_historical_issue_from_resolved_problem(tmp_path: Path, monkeypatch: pyt
     assert ctx.historical_issues[0].problem_id == "PROB-resolved-001"
 
 
-def test_historical_issue_from_accepted_risk_problem(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_historical_issue_from_accepted_risk_problem(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     write_problems(
         tmp_path,
         make_problem(
@@ -189,9 +187,7 @@ def test_historical_issue_from_accepted_risk_problem(
     assert ctx.historical_issues[0].severity == "medium"
 
 
-def test_historical_issue_from_not_an_issue_problem(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_historical_issue_from_not_an_issue_problem(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     write_problems(
         tmp_path,
         make_problem(
@@ -216,9 +212,7 @@ def test_historical_issue_from_not_an_issue_problem(
     assert ctx.historical_issues[0].classification == "test_bug"
 
 
-def test_historical_issue_merge_alias_appears_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_historical_issue_merge_alias_appears_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     write_problems(
         tmp_path,
         make_problem(
@@ -280,9 +274,7 @@ def test_corrupt_projection_is_visible_degraded_reason(
     assert not any(r.startswith("no_history") for r in ctx.degraded_reasons)
 
 
-def test_archive_legacy_issue_files_are_ignored(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_archive_legacy_issue_files_are_ignored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     legacy_json = "known-product-issues" + ".json"
     write(
         tmp_path,

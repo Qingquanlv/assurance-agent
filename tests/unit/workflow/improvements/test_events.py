@@ -103,9 +103,7 @@ class TestImprovementProposedEvent:
 
     def test_rejects_unknown_field(self) -> None:
         with pytest.raises(ValidationError):
-            IMPROVEMENT_EVENT_ADAPTER.validate_python(
-                _proposed_payload(severity="high")
-            )
+            IMPROVEMENT_EVENT_ADAPTER.validate_python(_proposed_payload(severity="high"))
 
 
 class TestImprovementEvidenceLinkedEvent:

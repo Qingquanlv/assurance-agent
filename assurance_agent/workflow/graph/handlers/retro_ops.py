@@ -1,8 +1,7 @@
 """Retro operation handlers for ``operation:retro-collect`` and reconcile.
 
 Both handlers delegate to the shared stage functions in ``assurance_agent.retro``
-/ ``workflow.improvements`` so the same logic serves the nightly driver and the
-graph runtime.
+/ ``workflow.improvements`` so CLI and GraphRuntime share one path.
 """
 
 from __future__ import annotations
@@ -66,16 +65,10 @@ def reconcile_improvements(
     retro_id = context.params.get("retro_id")
     if not isinstance(retro_id, str) or not retro_id.strip():
         return task_failure("invalid_input", "params.retro_id must be a non-empty string")
-    min_evidence = context.params.get("retro_min_evidence")
-    try:
-        min_evidence_int = int(min_evidence) if isinstance(min_evidence, (int, str)) else 2
-    except (TypeError, ValueError):
-        min_evidence_int = 2
     try:
         receipt = run_retro_accept(
             workspace.project_root,
             retro_id=retro_id,
-            min_evidence=min_evidence_int,
         )
     except AaError as err:
         return task_failure("invalid_output", str(err))
@@ -96,7 +89,7 @@ def reconcile_improvements(
     )
 
 
-# Half-cutover alias for unit tests / nightly that still import the old name.
+# Compatibility alias: older unit tests still import the previous name.
 retro_accept = reconcile_improvements
 
 

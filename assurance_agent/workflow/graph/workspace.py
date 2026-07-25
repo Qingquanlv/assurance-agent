@@ -229,9 +229,7 @@ def _is_synchronized_ledger_rel(
         logical = ResourcePath.parse(_canonical_logical(roots, rel))
     except WorkspaceError:
         return False
-    return logical.root == "project" and any(
-        path_covers(prefix, logical) for prefix in synchronized
-    )
+    return logical.root == "project" and any(path_covers(prefix, logical) for prefix in synchronized)
 
 
 def _walk(root: Path, *, keep_change_dir: Path | None = None) -> dict[str, _Entry]:
@@ -330,13 +328,9 @@ def _validated_synchronized_paths(
     for value in paths:
         path = ResourcePath.parse(value) if isinstance(value, str) else value
         if path.root != "project":
-            raise WorkspaceError(
-                f"synchronized path must use the project root: {path.root}:{path.pattern}"
-            )
+            raise WorkspaceError(f"synchronized path must use the project root: {path.root}:{path.pattern}")
         wildcard_segments = [segment for segment in path.segments if "*" in segment]
-        if wildcard_segments and not (
-            wildcard_segments == ["**"] and path.segments[-1] == "**"
-        ):
+        if wildcard_segments and not (wildcard_segments == ["**"] and path.segments[-1] == "**"):
             raise WorkspaceError(
                 f"synchronized path must be a concrete file or directory prefix: {path.pattern}"
             )
@@ -660,9 +654,7 @@ class TreeStore:
                 and logical_path.root == "project"
                 and not any(path_covers(prefix, logical_path) for prefix in claims.synchronized)
             ):
-                raise WorkspaceError(
-                    f"synchronized write outside declared prefixes: {logical}"
-                )
+                raise WorkspaceError(f"synchronized write outside declared prefixes: {logical}")
             if not _is_authorized(base.roots, rel, claims):
                 raise WorkspaceError(f"forbidden write outside authorization_writes: {logical}")
             if after is None:
@@ -697,13 +689,9 @@ class TreeStore:
             "kind": "write_set",
             "outputs_sha256": outputs_sha256,
             "project_exclusive_tokens": sorted(
-                token
-                for token in claims.exclusive
-                if claims.synchronized and token.startswith("project:")
+                token for token in claims.exclusive if claims.synchronized and token.startswith("project:")
             ),
-            "synchronized_paths": sorted(
-                f"{path.root}:{path.pattern}" for path in claims.synchronized
-            ),
+            "synchronized_paths": sorted(f"{path.root}:{path.pattern}" for path in claims.synchronized),
             "task_id": workspace.task_id,
             "version": 1,
         }
@@ -716,9 +704,7 @@ class TreeStore:
             base_tree_id=workspace.base_tree_id,
             entries=tuple(entries),
             outputs_sha256=outputs_sha256,
-            synchronized_paths=tuple(
-                sorted(f"{path.root}:{path.pattern}" for path in claims.synchronized)
-            ),
+            synchronized_paths=tuple(sorted(f"{path.root}:{path.pattern}" for path in claims.synchronized)),
             project_exclusive_tokens=tuple(
                 sorted(
                     token
@@ -851,11 +837,7 @@ class TreeStore:
                 entries.pop(rel, None)
                 continue
             source = project_root / rel
-            data = (
-                source.read_bytes()
-                if current.kind == "file"
-                else os.readlink(source).encode("utf-8")
-            )
+            data = source.read_bytes() if current.kind == "file" else os.readlink(source).encode("utf-8")
             if hashlib.sha256(data).hexdigest() != current.sha256:
                 raise WorkspaceError(f"synchronized path changed during overlay: {rel}")
             self._write_object(current.sha256, data)
@@ -1194,9 +1176,7 @@ class WorkspaceBackend:
         root.mkdir(parents=True)
         # Materialize a sibling-omitted view when claims pin a Retro run, but
         # keep freeze/merge base_tree_id on the full overlay/invocation tree.
-        materialize_tree = (
-            store.filter_tree(base_tree_id, claims) if claims is not None else base_tree_id
-        )
+        materialize_tree = store.filter_tree(base_tree_id, claims) if claims is not None else base_tree_id
         store.materialize(materialize_tree, root)
         self._init_convenience_git(root, side_effect_free=side_effect_free)
         return TaskWorkspace.from_materialized_root(task_id, root, base_tree_id)

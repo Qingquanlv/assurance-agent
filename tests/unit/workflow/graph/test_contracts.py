@@ -206,7 +206,7 @@ def test_parse_rejects_invalid_registries(text: str, message: str) -> None:
 
 def test_synchronized_project_path_parses_and_propagates_to_claims() -> None:
     catalog = parse_execution_contracts(
-        '''schema_version: "1"
+        """schema_version: "1"
 contracts:
   operation:update-issues:
     handler: operation
@@ -215,18 +215,14 @@ contracts:
     authorization_writes: [project:qa/issues/**]
     synchronized: [project:qa/issues/**]
     exclusive: [project:issue-registry]
-'''
+"""
     )
 
     claims = catalog.claims_for(NodeDef(uses="operation:update-issues"))
 
-    assert catalog.contracts["operation:update-issues"].synchronized == (
-        "project:qa/issues/**",
-    )
+    assert catalog.contracts["operation:update-issues"].synchronized == ("project:qa/issues/**",)
     assert claims.synchronized == (ResourcePath.parse("project:qa/issues/**"),)
-    ordinary_writer = ResourceClaims(
-        writes=(ResourcePath.parse("project:qa/issues/ISSUE-1.yaml"),)
-    )
+    ordinary_writer = ResourceClaims(writes=(ResourcePath.parse("project:qa/issues/ISSUE-1.yaml"),))
     assert claims_conflict(claims, ordinary_writer) is True
 
 
@@ -287,11 +283,7 @@ contracts:
 )
 def test_synchronized_project_path_contract_invariants(body: str, message: str) -> None:
     text = (
-        'schema_version: "1"\n'
-        "contracts:\n"
-        "  operation:update-issues:\n"
-        "    handler: operation\n"
-        f"    {body}\n"
+        f'schema_version: "1"\ncontracts:\n  operation:update-issues:\n    handler: operation\n    {body}\n'
     )
     with pytest.raises(ContractError, match=message):
         parse_execution_contracts(text)

@@ -506,9 +506,7 @@ def test_synchronized_commit_before_apply_is_repaired_by_fresh_runtime(tmp_path:
     events = read_events_strict(_context(project).change_dir)
     assert any(event.get("type") == "superstep_committed" for event in events)
     invocation_id = next(
-        str(event["invocation_id"])
-        for event in events
-        if event.get("type") == "graph_invocation_started"
+        str(event["invocation_id"]) for event in events if event.get("type") == "graph_invocation_started"
     )
     assert calls["n"] == 1
     assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version":1}\n'
@@ -566,9 +564,7 @@ def test_synchronized_partial_apply_is_repaired_by_fresh_runtime(
 
     events = read_events_strict(_context(project).change_dir)
     invocation_id = next(
-        str(event["invocation_id"])
-        for event in events
-        if event.get("type") == "graph_invocation_started"
+        str(event["invocation_id"]) for event in events if event.get("type") == "graph_invocation_started"
     )
     assert calls["n"] == 1
     assert (project / "qa/changes/CH-1/results/update.json").read_text() == '{"updated":true}\n'
@@ -751,9 +747,7 @@ def test_prepared_publication_blocks_later_change_after_apply_before_ack_crash(
 
     events_a = read_events_strict(project / "qa/changes/CH-A")
     invocation_a = next(
-        str(event["invocation_id"])
-        for event in events_a
-        if event.get("type") == "graph_invocation_started"
+        str(event["invocation_id"]) for event in events_a if event.get("type") == "graph_invocation_started"
     )
     fresh_a = _build_runtime(
         project,

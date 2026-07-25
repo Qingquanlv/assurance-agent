@@ -126,9 +126,7 @@ def _do_one_reconcile(
     # Load current project projection
     problems_path = project_root / "qa" / "issues" / "problems.json"
     if problems_path.is_file():
-        projection = ProblemProjection.model_validate(
-            json.loads(problems_path.read_text(encoding="utf-8"))
-        )
+        projection = ProblemProjection.model_validate(json.loads(problems_path.read_text(encoding="utf-8")))
     else:
         projection = ProblemProjection(
             schema_version="1.0",
@@ -263,15 +261,11 @@ def test_two_changes_same_fingerprint_sequential() -> None:
         )
 
         # After Change B: still ONE problem, now version 2
-        assert len(proj_after_b.problems) == 1, (
-            f"Expected 1 problem, got {len(proj_after_b.problems)}"
-        )
+        assert len(proj_after_b.problems) == 1, f"Expected 1 problem, got {len(proj_after_b.problems)}"
         prob_b = proj_after_b.problems[0]
         assert prob_b.problem_id == prob_a.problem_id, "Problem identity must be stable"
         assert prob_b.version == 2, f"Expected version 2, got {prob_b.version}"
-        assert len(prob_b.occurrences) == 2, (
-            f"Expected 2 occurrences, got {len(prob_b.occurrences)}"
-        )
+        assert len(prob_b.occurrences) == 2, f"Expected 2 occurrences, got {len(prob_b.occurrences)}"
 
         # The two occurrences must be distinct
         occ_a = prob_b.occurrences[0]
@@ -434,6 +428,7 @@ def test_idempotent_replay_does_not_duplicate_problems() -> None:
 
         # Change events.jsonl: issue_analysis_completed + occurrence_detected = 2 events
         from assurance_agent.workflow.issues.events import read_change_issue_events
+
         change_events = read_change_issue_events(change_dir / "issues" / "events.jsonl")
         assert len(change_events) == 2  # analysis_completed + occurrence_detected
 
@@ -558,16 +553,12 @@ def test_two_processes_same_fingerprint_single_problem_identity() -> None:
         proj2 = ProblemProjection.model_validate(result2_data)
 
         # Final assertions
-        assert len(proj2.problems) == 1, (
-            f"Expected exactly 1 problem, got {len(proj2.problems)}"
-        )
+        assert len(proj2.problems) == 1, f"Expected exactly 1 problem, got {len(proj2.problems)}"
         final_problem = proj2.problems[0]
         assert final_problem.problem_id == proj1.problems[0].problem_id, (
             "Problem identity must be the same across both processes"
         )
-        assert final_problem.version == 2, (
-            f"Expected version 2, got {final_problem.version}"
-        )
+        assert final_problem.version == 2, f"Expected version 2, got {final_problem.version}"
         assert len(final_problem.occurrences) == 2, (
             f"Expected 2 occurrences, got {len(final_problem.occurrences)}"
         )

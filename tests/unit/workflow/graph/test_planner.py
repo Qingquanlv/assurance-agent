@@ -1514,9 +1514,7 @@ def _planned_retro_agent_task(tmp_path: Path, *, retro_id: str):
     from assurance_agent.workflow.graph.contracts import load_execution_contracts
     from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
 
-    schema = load_workflow_v2(
-        Path.cwd(), Path("assurance_agent/_resources/schemas/workflow-schema.yaml")
-    )
+    schema = load_workflow_v2(Path.cwd(), Path("assurance_agent/_resources/schemas/workflow-schema.yaml"))
     contracts = load_execution_contracts(Path.cwd())
     compiled = compile_workflow(schema, contracts)
     params = resolve_params(
@@ -1602,9 +1600,7 @@ def test_retro_reconcile_claims_are_synchronized_and_exclusive(tmp_path: Path) -
     from assurance_agent.workflow.graph.contracts import load_execution_contracts
     from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
 
-    schema = load_workflow_v2(
-        Path.cwd(), Path("assurance_agent/_resources/schemas/workflow-schema.yaml")
-    )
+    schema = load_workflow_v2(Path.cwd(), Path("assurance_agent/_resources/schemas/workflow-schema.yaml"))
     contracts = load_execution_contracts(Path.cwd())
     compiled = compile_workflow(schema, contracts)
     params = resolve_params(
@@ -1678,6 +1674,5 @@ def test_retro_reconcile_claims_are_synchronized_and_exclusive(tmp_path: Path) -
     assert all("qa/issues" not in p.pattern for p in reconcile.resources.writes)
     # Narrowed to the current run — no sibling Retro wildcard materialization.
     assert all(
-        "retro-other" not in p.pattern and p.pattern != "qa/retro/**"
-        for p in reconcile.resources.reads
+        "retro-other" not in p.pattern and p.pattern != "qa/retro/**" for p in reconcile.resources.reads
     )

@@ -28,6 +28,7 @@ DOCUMENTED_COMMANDS = {
     "skill",
     "eval",
     "retro",
+    "improvement",
     "knowledge",
 }
 

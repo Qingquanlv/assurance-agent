@@ -41,6 +41,7 @@ _REVIEW_ACTIONS: dict[str, str] = {
     "problem_merged": "merge",
 }
 
+
 class RetroContextImmutableError(AaError):
     """Raised when an existing context.json differs from a newly built context."""
 
@@ -153,9 +154,7 @@ def assert_signal_refs_resolve(signals: RetroSignalSet, manifest: RetroSourceMan
     for signal in _iter_signals(signals):
         missing = [ref for ref in signal.source_refs.all_ids() if ref not in resolvable]
         if missing:
-            raise ValueError(
-                f"signal {signal.signal_id!r} cites unresolved source ids: {', '.join(missing)}"
-            )
+            raise ValueError(f"signal {signal.signal_id!r} cites unresolved source ids: {', '.join(missing)}")
 
 
 def _aggregate_issue_signals(issue_slice: IssueEvidenceSlice) -> IssueRetroSignals:
@@ -203,9 +202,7 @@ def _aggregate_issue_signals(issue_slice: IssueEvidenceSlice) -> IssueRetroSigna
     # Map problem_id -> first provisional classification from occurrences.
     provisional: dict[str, str] = {}
     for occurrence in issue_slice.occurrences:
-        provisional.setdefault(
-            occurrence.problem_id, occurrence.provisional_assessment.classification
-        )
+        provisional.setdefault(occurrence.problem_id, occurrence.provisional_assessment.classification)
     detected_class: dict[str, str] = {}
     for event in issue_slice.problem_events:
         if isinstance(event, ProblemDetectedEvent):

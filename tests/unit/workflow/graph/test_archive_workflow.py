@@ -48,6 +48,7 @@ class FakeArchiver:
         issues_src = request.workspace_root / "qa" / "changes" / CHANGE_ID / "issues"
         if issues_src.is_dir():
             import shutil
+
             shutil.copytree(issues_src, archive_dir / "issues", dirs_exist_ok=True)
         return AgentResult(ok=True)
 

@@ -73,22 +73,50 @@ aa knowledge promote [--project-dir] (--change <id> | --from <proposal-path>) [-
 - API/E2E plan-review gate 通过 `required_capabilities[]`（review JSON 中的 leaf dotted keys）与 L1 做 pre-codegen 能力校验；缺 leaf → `needs_human_review` + **knowledge-remediation** checkpoint（人工 promote 后 `fix_and_proceed` 重跑 review）。
 - Fuzz/Performance plan-review gate 读 review JSON 的 `layer_applicable`：被 proposal 选中但无对应 `type:Fuzz`/`type:Performance` case（空 scope）时 reviewer 置 `layer_applicable: false` → gate 走 `skip`（分支结束、codegen 跳过），而非硬 `reject` 拖垮整条并行链。缺失该字段时按原 `pass`/`reject` 语义处理。
 
-## Retro 三轨与 memory
+## Retro（schema-v2）与 Improvement lifecycle
 
-Retro proposal 用 `finding_kind` / `apply_kind` 分流：
+Retro 是**独立入口**（`aa workflow run --entrypoint retro` / `aa retro`），不挂在 full workflow 上。当前 run 只读写 `qa/retro/<retro-id>/`；生产路径不扫描、不迁移、不消费历史 Retro 目录。
 
-| finding_kind | apply_kind | 落点 |
+### 当前 run 产物
+
+| 文件 | 写入方 | 说明 |
 |---|---|---|
-| `prompt_rule` | `memory_append` | `.aa/memory/<skill>.md`（经 promote → eval → apply） |
-| `workflow_bug` | `issue_export` | `qa/retro/<id>/issue-drafts/<proposal-id>.yaml` |
-| `domain_knowledge` | `knowledge_delta` | `qa/retro/<id>/knowledge-delta/<proposal-id>.proposal.yaml` |
+| `qa/retro/<id>/context.json` | `operation:retro-collect` | schema_version `"2"`：冻结 window、`source_manifest`、signals、integrity |
+| `qa/retro/<id>/proposal-candidates.json` | `skill:aa-retro` | Candidate 批（非权威）；须 pin `context_sha256` |
+| `qa/retro/<id>/retro-summary.md` | `skill:aa-retro` | 人类摘要 |
+| `qa/retro/<id>/accept-status.json` | `operation:reconcile-improvements` | 批级 receipt（accepted/failed + digests/event ids） |
+| `qa/retro/<id>/review-queue.md` | reconcile | 指向本批 canonical Improvement IDs |
 
-```text
-aa retro export-issues --retro-id <id> [--overwrite]
-aa retro export-knowledge --retro-id <id> [--overwrite]
-```
+### Window 选择
 
-导出物化后，`knowledge_delta` 经 `aa knowledge promote --from <path> --yes` 合入 L1。运行时 memory 由 `load_skill_memory(project_root, skill)` 注入 graph v2 / legacy prompt（8 KiB 上限，过滤 `deprecated:` 行）。
+互斥：`--change`（显式 Change 集） / `--since`+`--until`（时间窗） / `--last N`（默认 10）。`--dry-run` 只 collect，跳过 propose/reconcile。
+
+### Improvement kinds 与 deliveries
+
+| kind | 允许的 delivery |
+|---|---|
+| `prompt_improvement` | `memory_patch` |
+| `fixture_improvement` / `test_improvement` | `memory_patch` 或 `change_draft` |
+| `workflow_improvement` | `change_draft` |
+| `domain_knowledge` | `knowledge_delta` |
+
+Project Improvement Ledger（唯一权威）：
+
+| 路径 | 角色 |
+|---|---|
+| `qa/improvements/events.jsonl` | 追加事件 |
+| `qa/improvements/improvements.json` | 确定性投影 |
+| `qa/improvements/review-queue.json` | 待审队列 |
+
+独立入口：`improvement-review` / `improvement-evaluate` / `improvement-export` / `improvement-apply` / `improvement-rollback`。CLI 读模型：`aa improvement list|show`（只读投影，不扫 `qa/retro/`）。
+
+Delivery 落点：
+
+- `memory_patch` → `.aa/memory/<skill>.md`（evaluate → apply/rollback；运行时 `load_skill_memory` 注入，8 KiB 上限，过滤 `deprecated:`）
+- `change_draft` → `qa/improvements/drafts/<id>.md`（人工落地 Change 后 `record-*-applied`）
+- `knowledge_delta` → `qa/improvements/knowledge-delta/<id>.proposal.yaml`（**不**写 L1；合入 L1 仍走 `aa knowledge promote`，且要求引用的 Problem 已 `resolved` + `human_confirmed` + 有 verification scope）
+
+已删除的旧路径（无生产读/写）：`aa retro nightly`、`export-issues` / `export-knowledge`、`qa/retro/_state.json`、`cross-run-report.json`、per-run `promotions.json` / `issue-drafts/**`、枚举 `workflow_bug` / `issue_export`。
 
 ## Issue lifecycle (Change Issue Ledger + Project Problem Ledger)
 

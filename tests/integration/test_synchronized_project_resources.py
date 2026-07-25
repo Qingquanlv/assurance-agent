@@ -132,9 +132,7 @@ def _synchronized_change_worker(
         )
         start_barrier.wait(timeout=5.0)
         result = scheduler.execute(plan, projection, context)
-        committed = sum(
-            event.get("type") == "superstep_committed" for event in read_events_strict(change)
-        )
+        committed = sum(event.get("type") == "superstep_committed" for event in read_events_strict(change))
         results.put(
             {
                 "change_id": change_id,
@@ -200,9 +198,7 @@ def test_project_resource_locks_use_sorted_deterministic_identity(
         acquire_one(handle, token=token, deadline=deadline)
 
     monkeypatch.setattr(manager, "_acquire_one", record_acquire)
-    with manager.acquire(
-        ("project:zeta", "project:alpha", "project:zeta"), timeout_seconds=0.0
-    ):
+    with manager.acquire(("project:zeta", "project:alpha", "project:zeta"), timeout_seconds=0.0):
         pass
 
     expected = [
@@ -210,9 +206,7 @@ def test_project_resource_locks_use_sorted_deterministic_identity(
         for token in ("project:alpha", "project:zeta")
     ]
     assert observed == ["project:alpha", "project:zeta"]
-    assert sorted(path.name for path in (project / "qa/.graph-runtime/locks").iterdir()) == sorted(
-        expected
-    )
+    assert sorted(path.name for path in (project / "qa/.graph-runtime/locks").iterdir()) == sorted(expected)
     for lock_path in (project / "qa/.graph-runtime/locks").iterdir():
         assert lock_path.resolve().is_relative_to(project.resolve())
 
@@ -277,9 +271,7 @@ def test_project_resource_locks_release_after_exception(tmp_path: Path) -> None:
         with manager.acquire(("project:issue-registry",), timeout_seconds=0.0):
             raise RuntimeError("handler failed")
 
-    with ProjectResourceLockManager(project).acquire(
-        ("project:issue-registry",), timeout_seconds=0.0
-    ):
+    with ProjectResourceLockManager(project).acquire(("project:issue-registry",), timeout_seconds=0.0):
         pass
 
 

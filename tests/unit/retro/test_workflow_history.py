@@ -99,9 +99,7 @@ def _write_terminal_change(
             "reason": "settled",
         }
     )
-    (root / "events.jsonl").write_text(
-        "\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8"
-    )
+    (root / "events.jsonl").write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
     (root / "workflow-state.yaml").write_text(
         yaml.safe_dump({"change_id": change_id, "phases": phases or {}}),
         encoding="utf-8",
@@ -124,13 +122,9 @@ def _write_terminal_change(
 
 def test_list_terminal_changes_orders_by_event_ts_not_mtime(tmp_path: Path) -> None:
     # Create RET-1 first (older mtime) but with later terminal_ts.
-    early_dir = _write_terminal_change(
-        tmp_path, "RET-EARLY-MTIME", terminal_ts="2026-07-03T00:00:00Z"
-    )
+    early_dir = _write_terminal_change(tmp_path, "RET-EARLY-MTIME", terminal_ts="2026-07-03T00:00:00Z")
     time.sleep(0.05)
-    late_dir = _write_terminal_change(
-        tmp_path, "RET-LATE-MTIME", terminal_ts="2026-07-01T00:00:00Z"
-    )
+    late_dir = _write_terminal_change(tmp_path, "RET-LATE-MTIME", terminal_ts="2026-07-01T00:00:00Z")
     # Flip directory mtimes so mtime order is opposite of event ts order.
     early_mtime = early_dir.stat().st_mtime
     late_mtime = late_dir.stat().st_mtime

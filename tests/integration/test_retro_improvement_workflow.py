@@ -294,9 +294,7 @@ def test_zero_signal_never_invokes_agent(tmp_path: Path) -> None:
     assert not (project / "qa/retro/retro-zero/proposal-candidates.json").exists()
 
 
-def test_corrupt_issue_ledger_fails_before_agent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_corrupt_issue_ledger_fails_before_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Integrity errors surface via real retro_collect → invalid_input, before aa-retro."""
 
     def _boom(*_a: object, **_k: object) -> object:
@@ -348,9 +346,7 @@ def test_incomplete_issue_context_allows_process_improvements_only(tmp_path: Pat
     result = runtime.run(compiled, "retro", _ctx(project, retro_id))
     assert result.exit_code == 0, result.reason
     assert invoker.calls == 1
-    status = json.loads(
-        (project / "qa/retro" / retro_id / "accept-status.json").read_text(encoding="utf-8")
-    )
+    status = json.loads((project / "qa/retro" / retro_id / "accept-status.json").read_text(encoding="utf-8"))
     assert status["result"] == "accepted"
     assert len(status["improvement_ids"]) == 1
 

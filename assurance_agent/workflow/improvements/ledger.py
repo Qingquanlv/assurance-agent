@@ -42,9 +42,7 @@ def _canonical_payload_bytes(event: ImprovementEvent) -> bytes:
     """Canonical event bytes with ``seq`` excluded (matches projection idempotency)."""
     data = event.model_dump(mode="json")
     data.pop("seq", None)
-    return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
-        "utf-8"
-    )
+    return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
 def filter_idempotent_events(
@@ -154,9 +152,9 @@ def atomic_write_json(json_path: Path, data: object) -> None:
     if isinstance(data, (bytes, bytearray)):
         payload = bytes(data)
     else:
-        payload = (
-            json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
-        ).encode("utf-8")
+        payload = (json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode(
+            "utf-8"
+        )
 
     json_path.parent.mkdir(parents=True, exist_ok=True)
     dir_path = json_path.parent
@@ -182,9 +180,7 @@ class ProjectImprovementStore:
         self._improvements_path = self.root / "improvements.json"
         self._queue_path = self.root / "review-queue.json"
 
-    def append_and_rebuild(
-        self, events: Sequence[ImprovementEvent]
-    ) -> ImprovementLedgerProjection:
+    def append_and_rebuild(self, events: Sequence[ImprovementEvent]) -> ImprovementLedgerProjection:
         """Append new events and rebuild projections; idempotent on repeat.
 
         Raises:
@@ -205,8 +201,7 @@ class ProjectImprovementStore:
             # leaves the on-disk ledger untouched.
             start_seq = (existing[-1].seq + 1) if existing else 1
             sequenced = [
-                event.model_copy(update={"seq": start_seq + index})
-                for index, event in enumerate(new_events)
+                event.model_copy(update={"seq": start_seq + index}) for index, event in enumerate(new_events)
             ]
             combined = [*existing, *sequenced]
             projection = project_improvements(combined)

@@ -47,9 +47,7 @@ EvalRunner = Callable[..., Mapping[str, object]]
 _ACTION_DELIVERIES: dict[str, frozenset[DeliveryKind]] = {
     "evaluate": frozenset({DeliveryKind.MEMORY_PATCH}),
     "export": frozenset({DeliveryKind.CHANGE_DRAFT, DeliveryKind.KNOWLEDGE_DELTA}),
-    "apply": frozenset(
-        {DeliveryKind.MEMORY_PATCH, DeliveryKind.CHANGE_DRAFT, DeliveryKind.KNOWLEDGE_DELTA}
-    ),
+    "apply": frozenset({DeliveryKind.MEMORY_PATCH, DeliveryKind.CHANGE_DRAFT, DeliveryKind.KNOWLEDGE_DELTA}),
     "rollback": frozenset({DeliveryKind.MEMORY_PATCH}),
 }
 
@@ -178,9 +176,7 @@ def _stage_overlay(
         stage_dir=overlay_memory,
     )
     staged_files = sorted(overlay_memory.glob("*.md"))
-    digest_parts = [
-        f"{path.name}:{sha256_bytes(path.read_bytes())}" for path in staged_files
-    ]
+    digest_parts = [f"{path.name}:{sha256_bytes(path.read_bytes())}" for path in staged_files]
     staged_sha256 = sha256_bytes("\n".join(digest_parts).encode("utf-8"))
     return stage_root, staged_sha256
 
@@ -293,9 +289,9 @@ class MemoryPatchDelivery:
                     baseline_raw = result.get("baseline_metrics")
                     if isinstance(baseline_raw, Mapping):
                         baseline_sha256 = sha256_bytes(
-                            json.dumps(
-                                dict(baseline_raw), sort_keys=True, separators=(",", ":")
-                            ).encode("utf-8")
+                            json.dumps(dict(baseline_raw), sort_keys=True, separators=(",", ":")).encode(
+                                "utf-8"
+                            )
                         )
                     if classified != "passed":
                         outcome = classified
@@ -384,12 +380,8 @@ class MemoryPatchDelivery:
         applied = ImprovementAppliedEvent(
             schema_version="1.0",
             seq=1,
-            event_id=_event_id(
-                f"improvement-applied:{current.improvement_id}:{current.version}:{after_sha}"
-            ),
-            idempotency_key=(
-                f"improvement-applied:{current.improvement_id}:{current.version}:{after_sha}"
-            ),
+            event_id=_event_id(f"improvement-applied:{current.improvement_id}:{current.version}:{after_sha}"),
+            idempotency_key=(f"improvement-applied:{current.improvement_id}:{current.version}:{after_sha}"),
             ts=_utc_now(),
             improvement_id=current.improvement_id,
             expected_improvement_version=current.version,
@@ -419,9 +411,7 @@ class MemoryPatchDelivery:
             raise ImprovementDeliveryError("rollback reason must not be empty")
         current = self._reload(improvement.improvement_id)
         if current.state is not ImprovementState.APPLIED:
-            raise ImprovementDeliveryError(
-                f"rollback requires applied state, got {current.state.value}"
-            )
+            raise ImprovementDeliveryError(f"rollback requires applied state, got {current.state.value}")
         events = read_improvement_events(self.project_root / "qa/improvements/events.jsonl")
         applied = _latest_applied(events, current.improvement_id)
         if applied is None:
@@ -429,10 +419,7 @@ class MemoryPatchDelivery:
 
         target_path = resolve_memory_target(self.project_root, current.target)
         current_digest = sha256_bytes(target_path.read_bytes()) if target_path.is_file() else ""
-        if (
-            expected_applied_digest != applied.after_sha256
-            or current_digest != applied.after_sha256
-        ):
+        if expected_applied_digest != applied.after_sha256 or current_digest != applied.after_sha256:
             raise ImprovementDeliveryError(
                 "applied digest mismatch: refuse rollback without matching applied target digest"
             )
@@ -461,9 +448,7 @@ class MemoryPatchDelivery:
             reason=reason.strip(),
         )
         self.store.append_and_rebuild([event])
-        return MemoryRollbackReceipt(
-            target=current.target, restored_sha256=restored, reason=reason.strip()
-        )
+        return MemoryRollbackReceipt(target=current.target, restored_sha256=restored, reason=reason.strip())
 
 
 # ---------------------------------------------------------------------------
@@ -488,9 +473,7 @@ def load_improvement_delivery_operation(
     improvement_id = _param_str(context.params, "improvement_id")
     action = _param_str(context.params, "delivery_action") or ""
     if not improvement_id:
-        return task_failure(
-            "invalid_input", "load-improvement-delivery: improvement_id param is required"
-        )
+        return task_failure("invalid_input", "load-improvement-delivery: improvement_id param is required")
     try:
         projection = _load_ledger(workspace.project_root).improvements[improvement_id]
     except (ImprovementDeliveryError, KeyError) as exc:
@@ -627,8 +610,7 @@ def rollback_memory_improvement_operation(
     if not improvement_id or not reason or not digest:
         return task_failure(
             "invalid_input",
-            "rollback-memory-improvement: improvement_id, delivery_reason, "
-            "expected_applied_digest required",
+            "rollback-memory-improvement: improvement_id, delivery_reason, expected_applied_digest required",
         )
     try:
         projection = _load_projection(workspace, improvement_id)

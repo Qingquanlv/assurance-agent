@@ -363,7 +363,7 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:stop": stop_operation,
         "operation:retro-collect": retro_collect,
         "operation:reconcile-improvements": reconcile_improvements,
-        # Half-cutover alias until nightly/CLI cutover (Task 12).
+        # Compatibility alias for older unit tests (not in execution contracts).
         "operation:retro-accept": retro_accept,
         "operation:collect-observations": collect_observations_operation,
         "operation:record-empty-issue-analysis": record_empty_issue_analysis_operation,

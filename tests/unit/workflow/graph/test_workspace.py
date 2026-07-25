@@ -613,16 +613,12 @@ def test_synchronized_overlay_and_targeted_apply_preserve_unrelated_live_tree(
     os.symlink(outside, project / "app" / "unrelated-live-link")
     synchronized = (ResourcePath.parse("project:qa/issues/**"),)
     overlay_tree = store.overlay_synchronized_paths(invocation_tree, project, synchronized)
-    workspace = _backend(project).create(
-        task_id="update-issue", base_tree_id=overlay_tree, store=store
-    )
+    workspace = _backend(project).create(task_id="update-issue", base_tree_id=overlay_tree, store=store)
 
     assert (workspace.project_root / "qa/issues/ISSUE-1.json").read_text() == '{"version":2}\n'
     assert (workspace.project_root / "app/source.py").read_text() == "app base\n"
     assert not (workspace.project_root / "app/unrelated-live-link").exists()
-    (workspace.project_root / "qa/issues/ISSUE-1.json").write_text(
-        '{"version":3}\n', encoding="utf-8"
-    )
+    (workspace.project_root / "qa/issues/ISSUE-1.json").write_text('{"version":3}\n', encoding="utf-8")
     result = workspace.change_dir / "results" / "update.json"
     result.parent.mkdir(parents=True)
     result.write_text('{"updated":true}\n', encoding="utf-8")
@@ -654,9 +650,7 @@ def test_synchronized_targeted_apply_converges_after_partial_failure(
     synchronized = (ResourcePath.parse("project:qa/issues/**"),)
     overlay_tree = store.overlay_synchronized_paths(invocation_tree, project, synchronized)
     workspace = _backend(project).create(task_id="update-issue", base_tree_id=overlay_tree, store=store)
-    (workspace.project_root / "qa/issues/ISSUE-1.json").write_text(
-        '{"version":3}\n', encoding="utf-8"
-    )
+    (workspace.project_root / "qa/issues/ISSUE-1.json").write_text('{"version":3}\n', encoding="utf-8")
     result = workspace.change_dir / "results" / "update.json"
     result.parent.mkdir(parents=True)
     result.write_text('{"updated":true}\n', encoding="utf-8")

@@ -90,9 +90,9 @@ class IssueEvidenceSlice(BaseModel):
 
     def canonical_bytes(self) -> bytes:
         data = self.model_dump(mode="json")
-        return (
-            json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
-        ).encode("utf-8")
+        return (json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode(
+            "utf-8"
+        )
 
     def digest(self) -> str:
         return "sha256:" + hashlib.sha256(self.canonical_bytes()).hexdigest()

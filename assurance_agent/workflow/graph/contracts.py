@@ -180,8 +180,7 @@ def narrow_claims(
         raise ContractError("expanded read exceeds the static execution contract")
     requested_writes = (*writes, *outputs)
     if not all(
-        any(path_covers(bound, item) for bound in base.authorization_writes)
-        for item in requested_writes
+        any(path_covers(bound, item) for bound in base.authorization_writes) for item in requested_writes
     ):
         raise ContractError("expanded write exceeds the static execution contract")
     concrete_writes = tuple(dict.fromkeys((*writes, *outputs)))
@@ -286,8 +285,7 @@ def _validate_catalog_paths(catalog: ExecutionContractCatalog) -> None:
                 )
             wildcard_segments = [segment for segment in path.segments if "*" in segment]
             if raw_path.endswith("/") or (
-                wildcard_segments
-                and not (wildcard_segments == ["**"] and path.segments[-1] == "**")
+                wildcard_segments and not (wildcard_segments == ["**"] and path.segments[-1] == "**")
             ):
                 raise ContractError(
                     f"contract '{key}' synchronized path must be a concrete file or directory prefix: "
@@ -300,8 +298,7 @@ def _validate_catalog_paths(catalog: ExecutionContractCatalog) -> None:
             can_write = any(paths_intersect(path, claim) for claim in (*writes, *authorization))
             if can_write and not any(path_covers(write, path) for write in writes):
                 raise ContractError(
-                    f"contract '{key}' writable synchronized path must be covered by writes: "
-                    f"{path.pattern}"
+                    f"contract '{key}' writable synchronized path must be covered by writes: {path.pattern}"
                 )
             # Authorization may fully cover the synchronized prefix, or refine it to
             # concrete ledger/delivery paths under that prefix (least privilege).

@@ -1247,9 +1247,7 @@ class GraphRuntime:
                 last_prev = cursor
                 last_target = target_tree
                 raw_checkpoint_id = raw.get("checkpoint_id")
-                last_publication_id = (
-                    raw_checkpoint_id if isinstance(raw_checkpoint_id, str) else None
-                )
+                last_publication_id = raw_checkpoint_id if isinstance(raw_checkpoint_id, str) else None
                 raw_ids = raw.get("write_set_ids")
                 last_write_set_ids = tuple(
                     value

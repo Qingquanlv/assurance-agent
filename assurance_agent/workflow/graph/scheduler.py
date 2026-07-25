@@ -397,8 +397,7 @@ class Scheduler:
                 (
                     candidate
                     for candidate in wave
-                    if candidate.resources.synchronized
-                    and blocked_token in candidate.resources.exclusive
+                    if candidate.resources.synchronized and blocked_token in candidate.resources.exclusive
                 ),
                 None,
             )
@@ -870,18 +869,10 @@ class Scheduler:
         )
         if recovered_paths and not synchronized_paths:
             recovered_tokens = tuple(
-                sorted(
-                    {
-                        token
-                        for write_set in write_sets
-                        for token in write_set.project_exclusive_tokens
-                    }
-                )
+                sorted({token for write_set in write_sets for token in write_set.project_exclusive_tokens})
             )
             if not recovered_tokens:
-                raise WorkspaceError(
-                    "pending synchronized Update lacks project exclusive token metadata"
-                )
+                raise WorkspaceError("pending synchronized Update lacks project exclusive token metadata")
             manager = self._project_locks or ProjectResourceLockManager(
                 context.project_root,
                 clock=self._clock,
@@ -949,13 +940,7 @@ class Scheduler:
         publication_status: Literal["prepared", "applied"] | None = None
         if synchronized_paths:
             publication_tokens = tuple(
-                sorted(
-                    {
-                        token
-                        for write_set in write_sets
-                        for token in write_set.project_exclusive_tokens
-                    }
-                )
+                sorted({token for write_set in write_sets for token in write_set.project_exclusive_tokens})
             )
             if not publication_tokens:
                 raise SchedulerError("synchronized Update lacks project publication tokens")
@@ -1043,13 +1028,7 @@ class Scheduler:
         if not synchronized_paths:
             return False
         tokens = tuple(
-            sorted(
-                {
-                    token
-                    for write_set in write_sets
-                    for token in write_set.project_exclusive_tokens
-                }
-            )
+            sorted({token for write_set in write_sets for token in write_set.project_exclusive_tokens})
         )
         if not tokens:
             raise SchedulerError("committed synchronized Update lacks project lock metadata")

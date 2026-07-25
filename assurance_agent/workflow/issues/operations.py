@@ -584,9 +584,7 @@ def reconcile_issues_operation(
     # ------------------------------------------------------------------
     manifest_path = inspect_dir / "issue-evidence-manifest.json"
     try:
-        evidence_manifest = _load_json_model(
-            manifest_path, IssueEvidenceManifest, "reconcile-issues"
-        )
+        evidence_manifest = _load_json_model(manifest_path, IssueEvidenceManifest, "reconcile-issues")
     except (FileNotFoundError, ValueError) as exc:
         return task_failure("invalid_input", str(exc))
 

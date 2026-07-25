@@ -80,9 +80,7 @@ def _seed_approved(project: Path, *, state_events: list[dict] | None = None) -> 
     ]
     if state_events:
         events.extend(state_events)
-    store.append_and_rebuild(
-        [IMPROVEMENT_EVENT_ADAPTER.validate_python(item) for item in events]
-    )
+    store.append_and_rebuild([IMPROVEMENT_EVENT_ADAPTER.validate_python(item) for item in events])
     ledger = json.loads((project / "qa/improvements/improvements.json").read_text(encoding="utf-8"))
     return ImprovementProjection.model_validate(ledger["improvements"][IMP_ID])
 
@@ -211,9 +209,7 @@ def test_rollback_validates_applied_digest(project: Path) -> None:
     with pytest.raises(ImprovementDeliveryError, match="applied digest"):
         delivery.rollback(current, reason="bad", expected_applied_digest="0" * 64)
 
-    delivery.rollback(
-        current, reason="regression found", expected_applied_digest=applied.after_sha256
-    )
+    delivery.rollback(current, reason="regression found", expected_applied_digest=applied.after_sha256)
     content = (project / ".aa/memory/aa-run.md").read_text(encoding="utf-8")
     assert "- deprecated: always seed department name" in content
     ledger = json.loads((project / "qa/improvements/improvements.json").read_text(encoding="utf-8"))

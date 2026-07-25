@@ -128,7 +128,9 @@ def _run_retro_graph(
         raise SystemExit(2)
 
     try:
-        resolved_id = retro_id.strip() if isinstance(retro_id, str) and retro_id.strip() else _generate_retro_id()
+        resolved_id = (
+            retro_id.strip() if isinstance(retro_id, str) and retro_id.strip() else _generate_retro_id()
+        )
         assert_path_segment_safe(resolved_id, label="retro id")
         params = _build_params(
             retro_id=resolved_id,

@@ -100,9 +100,7 @@ def _read_events_from_bytes(data: bytes, adapter: object) -> list[object]:
             raise LedgerIntegrityError(f"<bytes> line {line_no}: event is not a JSON object")
         seq = payload.get("seq")
         if not isinstance(seq, int) or isinstance(seq, bool) or seq != expected_seq:
-            raise LedgerIntegrityError(
-                f"<bytes> line {line_no}: expected seq {expected_seq}, got {seq!r}"
-            )
+            raise LedgerIntegrityError(f"<bytes> line {line_no}: expected seq {expected_seq}, got {seq!r}")
         try:
             event = adapter.validate_python(payload)  # type: ignore[attr-defined]
         except ValidationError as exc:
@@ -190,9 +188,7 @@ def _filter_problem_events_for_ids(
 
 
 def _observations_from_events(events: Sequence[ChangeIssueEvent]) -> list[Observation]:
-    return [
-        event.observation for event in events if isinstance(event, ObservationRecordedEvent)
-    ]
+    return [event.observation for event in events if isinstance(event, ObservationRecordedEvent)]
 
 
 def _occurrences_from_events(events: Sequence[ChangeIssueEvent]) -> list[IssueOccurrence]:
@@ -262,8 +258,7 @@ def build_issue_evidence_slice(
     if selection.change_ids:
         selected_change_ids = tuple(sorted(selection.change_ids))
         selected_change_events = {
-            change_id: list(change_events_by_id.get(change_id, ()))
-            for change_id in selected_change_ids
+            change_id: list(change_events_by_id.get(change_id, ())) for change_id in selected_change_ids
         }
     elif time_bounded:
         selected_change_events = {}
@@ -367,8 +362,10 @@ def build_issue_evidence_slice(
                 sha256=_sha256_bytes(raw),
             )
         )
-    problem_head = relevant_problem_events[-1].event_id if relevant_problem_events else (
-        pinned_problems[-1].event_id if pinned_problems else None
+    problem_head = (
+        relevant_problem_events[-1].event_id
+        if relevant_problem_events
+        else (pinned_problems[-1].event_id if pinned_problems else None)
     )
     # Source descriptor pins the full ledger bytes actually read (through stable head),
     # while problem_events on the slice are the relevant closed subset.
@@ -468,9 +465,7 @@ class LedgerIssueHistoryReader:
                 return before
         raise IssueHistoryConflict("project Problem ledger changed during Retro collection")
 
-    def _read_change_ledger(
-        self, change_id: str
-    ) -> tuple[list[ChangeIssueEvent], bytes, Path]:
+    def _read_change_ledger(self, change_id: str) -> tuple[list[ChangeIssueEvent], bytes, Path]:
         try:
             loc = resolve_change(self._project_root, change_id, prefer="archive")
         except ChangeNotFoundError as exc:

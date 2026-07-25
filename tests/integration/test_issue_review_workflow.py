@@ -93,9 +93,7 @@ class TestIssueEntrypointRegistration:
     def test_once_entrypoints_retain_once_policy(self) -> None:
         schema = load_workflow_v2(Path("."))
         for name in ("full", "execute", "archive", "retro"):
-            assert schema.entrypoints[name].restart == "once", (
-                f"{name} should be once"
-            )
+            assert schema.entrypoints[name].restart == "once", f"{name} should be once"
 
     def test_compiled_restart_policy_propagated(self) -> None:
         schema = load_workflow_v2(Path("."))
@@ -126,9 +124,7 @@ class TestIssueEntrypointRegistration:
         assert interrupt_node.interrupt is not None
         declared = set(interrupt_node.interrupt.actions)
         for action in REVIEW_ACTIONS:
-            assert action in declared, (
-                f"review action {action!r} not declared in human-interrupt"
-            )
+            assert action in declared, f"review action {action!r} not declared in human-interrupt"
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +135,7 @@ class TestIssueEntrypointRegistration:
 class TestCLIEntrypointChoices:
     def test_entrypoint_choices_include_issue_entrypoints(self) -> None:
         from assurance_agent.commands.workflow_cmd import _ENTRYPOINT_CHOICE
+
         choices = set(_ENTRYPOINT_CHOICE.choices)
         assert "issue-review" in choices
         assert "issue-analyze" in choices
@@ -146,6 +143,7 @@ class TestCLIEntrypointChoices:
 
     def test_legacy_entrypoints_still_present(self) -> None:
         from assurance_agent.commands.workflow_cmd import _ENTRYPOINT_CHOICE
+
         choices = set(_ENTRYPOINT_CHOICE.choices)
         for name in ("full", "execute", "archive", "retro"):
             assert name in choices
@@ -165,10 +163,12 @@ class TestBuildProblemReviewContextIntegration:
         assert ctx.problem_status == "triaged"
 
     def test_two_reviews_on_different_problems(self) -> None:
-        proj = _make_projection([
-            _base_problem(problem_id="PROB-1", status="detected", version=1),
-            _base_problem(problem_id="PROB-2", status="triaged", version=2),
-        ])
+        proj = _make_projection(
+            [
+                _base_problem(problem_id="PROB-1", status="detected", version=1),
+                _base_problem(problem_id="PROB-2", status="triaged", version=2),
+            ]
+        )
         ctx1 = build_problem_review_context("PROB-1", proj)
         ctx2 = build_problem_review_context("PROB-2", proj)
         assert ctx1.problem_id != ctx2.problem_id
@@ -222,7 +222,11 @@ class TestPostArchiveReviewBehavior:
             "evidence_refs": ["OCC-1"],
         }
         events = validate_review_action(
-            ctx, "accept_risk", payload, "post-archive risk acceptance", "pm",
+            ctx,
+            "accept_risk",
+            payload,
+            "post-archive risk acceptance",
+            "pm",
             projection=proj,
         )
         assert len(events) == 1
@@ -238,6 +242,7 @@ class TestPostArchiveReviewBehavior:
 class TestOperationRegistration:
     def test_review_operations_registered(self) -> None:
         from assurance_agent.workflow.graph.handlers.operation import default_operations
+
         ops = default_operations()
         assert "operation:load-problem-review-context" in ops
         assert "operation:apply-problem-review" in ops

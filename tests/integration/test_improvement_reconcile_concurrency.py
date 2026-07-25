@@ -129,9 +129,7 @@ def test_two_processes_same_fingerprint_different_retro_ids(tmp_path: Path) -> N
     _write_retro(project, "retro-a", "PROB-1")
     _write_retro(project, "retro-b", "PROB-2")
 
-    fingerprint = improvement_fingerprint(
-        _candidate(candidate_id="x", problem_id="PROB-1")
-    )
+    fingerprint = improvement_fingerprint(_candidate(candidate_id="x", problem_id="PROB-1"))
 
     ctx = multiprocessing.get_context("spawn")
     start_barrier = ctx.Barrier(2)
@@ -161,9 +159,7 @@ def test_two_processes_same_fingerprint_different_retro_ids(tmp_path: Path) -> N
     assert [event.seq for event in committed] == list(range(1, len(committed) + 1))
 
     # At most one evidence link per source-ref set.
-    linked_ref_sets = {
-        tuple(sorted(event.source_refs.problem_ids)) for event in linked
-    }
+    linked_ref_sets = {tuple(sorted(event.source_refs.problem_ids)) for event in linked}
     assert len(linked_ref_sets) == len(linked)
 
     projection = project_improvements(committed)

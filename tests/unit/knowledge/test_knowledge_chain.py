@@ -61,9 +61,7 @@ def test_improvement_l2_knowledge_then_promote_from_merges_auth_leaf(tmp_path: P
     write_aa_config(tmp_path)
     _write(tmp_path, ".aa/data-knowledge.yaml", (FIXTURES / "l1_valid.yaml").read_text(encoding="utf-8"))
 
-    exported_path = (
-        tmp_path / "qa" / "improvements" / "knowledge-delta" / "IMP-KNOW.proposal.yaml"
-    )
+    exported_path = tmp_path / "qa" / "improvements" / "knowledge-delta" / "IMP-KNOW.proposal.yaml"
     exported_path.parent.mkdir(parents=True, exist_ok=True)
     exported_path.write_text(
         yaml.safe_dump(

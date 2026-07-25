@@ -25,6 +25,7 @@ from assurance_agent.workflow.core.events import LedgerIntegrityError, read_even
 def _list_dir_names(root: Path) -> list[str]:
     return sorted(p.name for p in root.iterdir() if p.is_dir()) if root.is_dir() else []
 
+
 if TYPE_CHECKING:
     from assurance_agent.retro.window import ResolvedRetroWindow
 
@@ -141,17 +142,13 @@ def _read_ledger_strict(change_id: str, change_dir: Path) -> tuple[bytes, list[d
     try:
         data = events_path.read_bytes()
     except OSError as exc:
-        raise WorkflowHistoryIntegrityError(
-            f"workflow_ledger_corrupt:{change_id}: {exc}"
-        ) from exc
+        raise WorkflowHistoryIntegrityError(f"workflow_ledger_corrupt:{change_id}: {exc}") from exc
     if not data:
         return data, []
     try:
         events = read_events_strict(change_dir)
     except (LedgerIntegrityError, UnicodeDecodeError) as exc:
-        raise WorkflowHistoryIntegrityError(
-            f"workflow_ledger_corrupt:{change_id}: {exc}"
-        ) from exc
+        raise WorkflowHistoryIntegrityError(f"workflow_ledger_corrupt:{change_id}: {exc}") from exc
     return data, events
 
 

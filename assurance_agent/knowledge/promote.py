@@ -41,9 +41,7 @@ def assert_l1_sha256(project_root: Path, expected: str) -> None:
     """Raise when the live L1 digest does not match ``expected``."""
     actual = l1_sha256(project_root)
     if actual != expected:
-        raise KnowledgePromoteError(
-            f"L1 digest mismatch: expected {expected}, found {actual}"
-        )
+        raise KnowledgePromoteError(f"L1 digest mismatch: expected {expected}, found {actual}")
 
 
 def validate_improvement_knowledge_proposal(path: Path) -> None:

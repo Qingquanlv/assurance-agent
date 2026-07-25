@@ -104,9 +104,7 @@ class TestBuildImprovementReviewContext:
             assert ctx.allowed_actions == ()
 
     def test_delivery_specific_advice_fields(self) -> None:
-        change_ctx = build_improvement_review_context(
-            _projection(delivery=DeliveryKind.CHANGE_DRAFT)
-        )
+        change_ctx = build_improvement_review_context(_projection(delivery=DeliveryKind.CHANGE_DRAFT))
         assert change_ctx.advice.delivery is DeliveryKind.CHANGE_DRAFT
         assert change_ctx.advice.change_draft_outline
         assert change_ctx.advice.memory_patch_path is None
@@ -159,9 +157,7 @@ class TestBuildImprovementReviewContext:
         ("supersede", "improvement_superseded", "IMP-NEW00000000000001"),
     ],
 )
-def test_review_action_builds_typed_event(
-    action: str, event_type: str, superseded_by: str | None
-) -> None:
+def test_review_action_builds_typed_event(action: str, event_type: str, superseded_by: str | None) -> None:
     projection = _projection()
     event = validate_improvement_review_action(
         projection,
@@ -253,6 +249,4 @@ class TestValidateImprovementReviewActionGuards:
             )
 
     def test_review_actions_constant(self) -> None:
-        assert REVIEW_ACTIONS == frozenset(
-            {"approve", "reject", "request_rework", "supersede"}
-        )
+        assert REVIEW_ACTIONS == frozenset({"approve", "reject", "request_rework", "supersede"})

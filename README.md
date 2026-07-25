@@ -111,9 +111,10 @@ aa workflow run --change <id> --entrypoint full --adapter opencode --server http
 | `aa workflow import-checkpoint --change <id> --manifest <path>` | 校验后导入 fixture/benchmark checkpoint |
 | `aa skill refresh [--sync-agents] [--dry-run]` | 同步 skills 到 `skills/`（始终）；`--sync-agents` 追加 `.opencode/{agents,tools,plugins}` |
 | `aa eval run\|plan\|report ...` | AI Eval 框架（权威文档 `docs/eval.md`） |
-| `aa retro --retro-id <id> --change <id>... [--json]` | 回顾聚合；`--json` stdout 含 `retro_id`/`signal_count`/`change_count` |
-| `aa retro nightly collect --sut <dir> --agent <cmd>` | nightly 回顾驱动；退出码 0 成功 / 10 no-op / 其他失败 |
-| `aa retro export-issues\|export-knowledge --retro-id <id> [--overwrite]` | 物化 issue draft / L2 knowledge delta |
+| `aa retro [--change <id>... \| --since/--until \| --last N] [--retro-id <id>] [--dry-run] [--json]` | 触发独立 Retro 图；写当前 run 的 `qa/retro/<id>/context.json`（及 propose/reconcile 产物） |
+| `aa retro show --retro-id <id> [--json]` | 只读展示一个显式当前 run（不扫描其他 Retro） |
+| `aa improvement list [--state\|--kind\|--delivery] [--json]` | 从 Project Improvement Ledger 列出 Improvements |
+| `aa improvement show --id <id> [--json]` | 展示单个 Improvement 投影 + 事件时间线 |
 | `aa knowledge validate [--project-dir] [--change <id>] [--proposal <path>]` | 校验 L1/L2 data-knowledge 产物 |
 | `aa knowledge promote [--project-dir] (--change <id> \| --from <path>) [--yes] [--force]` | 将 L2 proposal merge 进 L1 |
 
@@ -223,7 +224,8 @@ bash scripts/packaging_smoke_test.sh   # 构建 wheel + 全新环境安装 + 源
 | `assurance_agent/workflow/execution/` | pytest / playwright / schemathesis / locust runner |
 | `assurance_agent/workflow/report/` | 失败分类、Quality Score、报告生成 |
 | `assurance_agent/risk/` | Explore context 聚合与 advisory 校验 |
-| `assurance_agent/eval/` `assurance_agent/retro/` | AI Eval 框架、回顾聚合与 nightly driver |
+| `assurance_agent/eval/` | AI Eval 框架 |
+| `assurance_agent/retro/` `assurance_agent/workflow/improvements/` | 独立 Retro 证据收集 + Project Improvement Ledger |
 | `assurance_agent/_resources/` | 运行时资源唯一源（schemas / skills / opencode） |
 
 ---

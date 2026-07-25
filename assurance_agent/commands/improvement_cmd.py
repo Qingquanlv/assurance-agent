@@ -108,9 +108,7 @@ def improvement_show(improvement_id: str, as_json: bool) -> None:
     events_path = root / "qa" / "improvements" / "events.jsonl"
     try:
         events = [
-            event
-            for event in read_improvement_events(events_path)
-            if event.improvement_id == improvement_id
+            event for event in read_improvement_events(events_path) if event.improvement_id == improvement_id
         ]
     except ImprovementLedgerIntegrityError as err:
         click.echo(f"Error: {err}", err=True)

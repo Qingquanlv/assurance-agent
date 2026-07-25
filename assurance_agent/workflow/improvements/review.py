@@ -53,9 +53,7 @@ from assurance_agent.workflow.improvements.transitions import (
 # Supported review actions
 # ---------------------------------------------------------------------------
 
-REVIEW_ACTIONS: frozenset[str] = frozenset(
-    {"approve", "reject", "request_rework", "supersede"}
-)
+REVIEW_ACTIONS: frozenset[str] = frozenset({"approve", "reject", "request_rework", "supersede"})
 
 _ACTION_TARGET: dict[str, ImprovementState] = {
     "approve": ImprovementState.APPROVED,
@@ -105,13 +103,13 @@ def _delivery_advice(projection: ImprovementProjection) -> ImprovementReviewAdvi
                 "Confirm verification suites cover the proposed change",
                 "Ensure the draft references source IDs, not Problem copies",
             ),
-            change_draft_outline=(
-                f"Draft change against {projection.target}: {projection.proposed_change}"
-            ),
+            change_draft_outline=(f"Draft change against {projection.target}: {projection.proposed_change}"),
         )
     if delivery is DeliveryKind.KNOWLEDGE_DELTA:
-        summary = "Knowledge delta present" if projection.knowledge_delta is not None else (
-            "Knowledge delta missing"
+        summary = (
+            "Knowledge delta present"
+            if projection.knowledge_delta is not None
+            else ("Knowledge delta missing")
         )
         return ImprovementReviewAdvice(
             delivery=delivery,
@@ -234,9 +232,7 @@ def validate_improvement_review_action(
             raise ReviewValidationError("review_id must be a non-empty string")
     else:
         if not superseded_by or not superseded_by.strip():
-            raise ReviewValidationError(
-                "supersede requires 'superseded_by' (non-empty string)"
-            )
+            raise ReviewValidationError("supersede requires 'superseded_by' (non-empty string)")
         if superseded_by.strip() == projection.improvement_id:
             raise ReviewValidationError("superseded_by must differ from improvement_id")
 
@@ -276,9 +272,7 @@ def validate_improvement_review_action(
         )
 
     if action == "request_rework":
-        idem_key = (
-            f"improvement-review:request_rework:{projection.improvement_id}:{expected}:{review_id}"
-        )
+        idem_key = f"improvement-review:request_rework:{projection.improvement_id}:{expected}:{review_id}"
         return ImprovementReworkRequestedEvent(
             schema_version="1.0",
             seq=1,
@@ -295,10 +289,7 @@ def validate_improvement_review_action(
 
     # supersede
     assert superseded_by is not None
-    idem_key = (
-        f"improvement-review:supersede:{projection.improvement_id}:{expected}:"
-        f"{superseded_by.strip()}"
-    )
+    idem_key = f"improvement-review:supersede:{projection.improvement_id}:{expected}:{superseded_by.strip()}"
     return ImprovementSupersededEvent(
         schema_version="1.0",
         seq=1,
@@ -319,9 +310,9 @@ def validate_improvement_review_action(
 
 
 def _canonical_json(model_dict: object) -> bytes:
-    return (
-        json.dumps(model_dict, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
-    ).encode("utf-8")
+    return (json.dumps(model_dict, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode(
+        "utf-8"
+    )
 
 
 def _write_json(path: Path, data: bytes) -> None:
@@ -340,9 +331,7 @@ def _load_ledger(project_root: Path) -> ImprovementLedgerProjection:
     return ImprovementLedgerProjection.model_validate(data)
 
 
-def _find_improvement(
-    improvement_id: str, ledger: ImprovementLedgerProjection
-) -> ImprovementProjection:
+def _find_improvement(improvement_id: str, ledger: ImprovementLedgerProjection) -> ImprovementProjection:
     item = ledger.improvements.get(improvement_id)
     if item is None:
         raise ReviewContextError(
@@ -465,9 +454,7 @@ def apply_improvement_review_operation(
     try:
         saved_ctx = json.loads(context_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        return task_failure(
-            "invalid_input", f"apply-improvement-review: corrupt context.json: {exc}"
-        )
+        return task_failure("invalid_input", f"apply-improvement-review: corrupt context.json: {exc}")
     saved_version = saved_ctx.get("expected_improvement_version")
 
     resumed = _read_resume_event(context.change_dir, task.invocation_id)
@@ -507,9 +494,7 @@ def apply_improvement_review_operation(
 
     superseded_by = payload.get("superseded_by")
     superseded_by_str = (
-        superseded_by.strip()
-        if isinstance(superseded_by, str) and superseded_by.strip()
-        else None
+        superseded_by.strip() if isinstance(superseded_by, str) and superseded_by.strip() else None
     )
 
     try:

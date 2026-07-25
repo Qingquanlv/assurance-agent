@@ -181,8 +181,12 @@ def _derive_issue_report(change_base: Path, project_root: Path) -> IssueReport |
             else "Project synchronization pending"
         )
         return _build_issue_report(
-            snapshot, projection, analysis_status_val, project_sync_status_val,
-            issue_risk, issue_risk_rationale,
+            snapshot,
+            projection,
+            analysis_status_val,
+            project_sync_status_val,
+            issue_risk,
+            issue_risk_rationale,
         )
 
     # Aggregate counts from problems linked to this change's occurrences.
@@ -224,15 +228,17 @@ def _derive_issue_report(change_base: Path, project_root: Path) -> IssueReport |
         highest = max(active_severities, key=lambda s: _SEVERITY_RANK.get(s, 0))
         issue_risk = highest
         active_count = len(active_severities)
-        issue_risk_rationale = (
-            f"{active_count} active issue(s); highest severity: {highest}."
-        )
+        issue_risk_rationale = f"{active_count} active issue(s); highest severity: {highest}."
         if accepted_risk_count:
             issue_risk_rationale += f" ({accepted_risk_count} accepted_risk — still active)."
 
     return _build_issue_report(
-        snapshot, projection, analysis_status_val, project_sync_status_val,
-        issue_risk, issue_risk_rationale,
+        snapshot,
+        projection,
+        analysis_status_val,
+        project_sync_status_val,
+        issue_risk,
+        issue_risk_rationale,
         counts_by_status=counts_by_status,
         counts_by_classification=counts_by_classification,
         counts_by_severity=counts_by_severity,
@@ -525,7 +531,9 @@ def _issue_risk_section(r: QualityReport) -> list[str]:
         f"- **Occurrences**: {ir.total_occurrences}",
     ]
     if ir.counts_by_status:
-        lines.append("- **By Status**: " + ", ".join(f"{k}={v}" for k, v in sorted(ir.counts_by_status.items())))
+        lines.append(
+            "- **By Status**: " + ", ".join(f"{k}={v}" for k, v in sorted(ir.counts_by_status.items()))
+        )
     lines.append("")
     return lines
 

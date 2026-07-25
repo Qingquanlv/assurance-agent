@@ -159,9 +159,7 @@ def _seed_l1(project: Path) -> str:
 
 
 @pytest.mark.parametrize("status", _PROHIBITED)
-def test_knowledge_export_rejects_prohibited_problem_states(
-    tmp_path: Path, status: str
-) -> None:
+def test_knowledge_export_rejects_prohibited_problem_states(tmp_path: Path, status: str) -> None:
     improvement = _seed_approved(tmp_path)
     _seed_l1(tmp_path)
     delivery = KnowledgeDeltaDelivery(tmp_path)
@@ -233,9 +231,7 @@ def test_knowledge_export_rejects_invalid_l2_semantics(tmp_path: Path) -> None:
         ]
     )
     improvement = ImprovementProjection.model_validate(
-        json.loads((tmp_path / "qa/improvements/improvements.json").read_text())["improvements"][
-            IMP_ID
-        ]
+        json.loads((tmp_path / "qa/improvements/improvements.json").read_text())["improvements"][IMP_ID]
     )
     _seed_l1(tmp_path)
     delivery = KnowledgeDeltaDelivery(tmp_path)
@@ -251,10 +247,7 @@ def test_knowledge_export_does_not_mutate_l1(tmp_path: Path) -> None:
     receipt = delivery.export(improvement, problems={PROB_ID: _problem()})
     assert receipt.created is True
     assert (tmp_path / ".aa/data-knowledge.yaml").read_bytes() == before
-    assert (
-        hashlib.sha256((tmp_path / ".aa/data-knowledge.yaml").read_bytes()).hexdigest()
-        == l1_digest
-    )
+    assert hashlib.sha256((tmp_path / ".aa/data-knowledge.yaml").read_bytes()).hexdigest() == l1_digest
     proposal_path = tmp_path / "qa/improvements/knowledge-delta" / f"{IMP_ID}.proposal.yaml"
     assert proposal_path.is_file()
     raw = yaml.safe_load(proposal_path.read_text(encoding="utf-8"))
@@ -352,9 +345,7 @@ def test_export_operation_uses_pinned_retro_not_live_problems(
 
     pinned_ineligible = _problem(status="detected")
     slice_ = IssueEvidenceSlice(
-        selection=IssueWindowSelection(
-            change_ids=("CH-1",), project_event_through="PEVT-1"
-        ),
+        selection=IssueWindowSelection(change_ids=("CH-1",), project_event_through="PEVT-1"),
         sources=(),
         integrity=IssueHistoryIntegrity(status="complete"),
         problem_snapshots=(pinned_ineligible,),
@@ -380,9 +371,7 @@ def test_export_operation_uses_pinned_retro_not_live_problems(
         "signals": {"issue": {}, "workflow": {}, "eval": {}},
         "signal_count": 0,
     }
-    (retro_dir / "context.json").write_text(
-        json.dumps(context_doc, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    (retro_dir / "context.json").write_text(json.dumps(context_doc, sort_keys=True) + "\n", encoding="utf-8")
     # Live projection greened after the pin — must not unlock eligibility.
     problems_path = tmp_path / "qa" / "issues" / "problems.json"
     problems_path.parent.mkdir(parents=True, exist_ok=True)

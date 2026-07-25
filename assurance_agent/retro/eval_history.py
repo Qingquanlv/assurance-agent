@@ -155,9 +155,7 @@ class FileEvalHistoryReader:
                 if unbounded:
                     reasons.append(f"eval_report_missing:{run_path.name}")
                 continue
-            record, error, started_hint = _parse_report(
-                report_path, run_id_fallback=run_path.name
-            )
+            record, error, started_hint = _parse_report(report_path, run_id_fallback=run_path.name)
             if error is not None:
                 if started_hint is not None:
                     if _ts_in_closed_range(started_hint, window.since, window.until):
@@ -199,7 +197,6 @@ class InMemoryEvalHistoryReader:
         reasons = tuple(
             reason
             for reason in self._slice.integrity.reasons
-            if reason == "eval_runs_missing"
-            or any(run_id in reason for run_id in kept_run_ids)
+            if reason == "eval_runs_missing" or any(run_id in reason for run_id in kept_run_ids)
         )
         return _build_slice(filtered, reasons)

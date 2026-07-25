@@ -169,9 +169,7 @@ def test_allowed_kind_delivery_matrix_passes_batch_validation(context: RetroCont
 def test_duplicate_candidate_ids_reject_whole_batch(
     context: RetroContext, valid_candidate: ImprovementCandidate
 ) -> None:
-    twin = valid_candidate.model_copy(
-        update={"proposed_change": "Different intent but same candidate_id"}
-    )
+    twin = valid_candidate.model_copy(update={"proposed_change": "Different intent but same candidate_id"})
     document = ImprovementCandidateDocument(
         retro_id=context.retro_id,
         context_sha256=context_sha256(context),
@@ -224,18 +222,14 @@ def test_forbidden_problem_fields_reject_on_read(tmp_path: Path, context: RetroC
             }
         ],
     }
-    (retro_dir / "proposal-candidates.json").write_text(
-        json.dumps(raw, indent=2) + "\n", encoding="utf-8"
-    )
+    (retro_dir / "proposal-candidates.json").write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
     with pytest.raises(CandidateBatchInvalid) as error:
         read_candidate_document(retro_dir)
     assert {item.code for item in error.value.errors} == {"forbidden_problem_field"}
 
 
 def test_incomplete_context_blocks_only_domain_knowledge(context: RetroContext) -> None:
-    incomplete = _context(
-        integrity=RetroIntegrity(status="incomplete", reasons=("analysis_failed",))
-    )
+    incomplete = _context(integrity=RetroIntegrity(status="incomplete", reasons=("analysis_failed",)))
     assert incomplete.allows_domain_knowledge is False
     knowledge = _valid_candidate(
         candidate_id="IMP-CAND-K",

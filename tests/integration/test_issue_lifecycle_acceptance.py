@@ -576,23 +576,17 @@ def _compile_acceptance() -> tuple[CompiledWorkflow, ExecutionContractCatalog]:
 def _custom_operations(state: AcceptanceState) -> dict[str, OperationFn]:
     ops = default_operations()
 
-    def seed_execution_batch(
-        task: ExecutableTask, workspace: Any, context: RuntimeContext
-    ) -> TaskResult:
+    def seed_execution_batch(task: ExecutableTask, workspace: Any, context: RuntimeContext) -> TaskResult:
         batch_id = _copy_batch_fixture(workspace.change_dir, "initial", change_id=context.change_id)
         state.current_batch = batch_id
         return TaskResult(status="succeeded", value={"batch_id": batch_id})
 
-    def seed_healing_batch(
-        task: ExecutableTask, workspace: Any, context: RuntimeContext
-    ) -> TaskResult:
+    def seed_healing_batch(task: ExecutableTask, workspace: Any, context: RuntimeContext) -> TaskResult:
         batch_id = _copy_batch_fixture(workspace.change_dir, "healing", change_id=context.change_id)
         state.current_batch = batch_id
         return TaskResult(status="succeeded", value={"batch_id": batch_id})
 
-    def fake_inspect_gate(
-        task: ExecutableTask, workspace: Any, context: RuntimeContext
-    ) -> TaskResult:
+    def fake_inspect_gate(task: ExecutableTask, workspace: Any, context: RuntimeContext) -> TaskResult:
         inspect_dir = workspace.change_dir / "inspect"
         inspect_dir.mkdir(parents=True, exist_ok=True)
         batch_id = state.current_batch
@@ -614,9 +608,7 @@ def _custom_operations(state: AcceptanceState) -> dict[str, OperationFn]:
         )
         return TaskResult(status="succeeded", value={"final_status": state.execution_final_status})
 
-    def report_gate_marker(
-        task: ExecutableTask, workspace: Any, context: RuntimeContext
-    ) -> TaskResult:
+    def report_gate_marker(task: ExecutableTask, workspace: Any, context: RuntimeContext) -> TaskResult:
         marker = workspace.change_dir / "report" / "acceptance-marker.json"
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(json.dumps({"reached": True, "after_reconcile": True}) + "\n", encoding="utf-8")
@@ -625,9 +617,7 @@ def _custom_operations(state: AcceptanceState) -> dict[str, OperationFn]:
     def no_op_marker(task: ExecutableTask, workspace: Any, context: RuntimeContext) -> TaskResult:
         return TaskResult(status="succeeded")
 
-    def capture_issue_baseline(
-        task: ExecutableTask, workspace: Any, context: RuntimeContext
-    ) -> TaskResult:
+    def capture_issue_baseline(task: ExecutableTask, workspace: Any, context: RuntimeContext) -> TaskResult:
         baseline_dir = workspace.change_dir / "issues" / "baseline"
         baseline_dir.mkdir(parents=True, exist_ok=True)
         for name in ("observations.json", "issue-evidence-manifest.json"):
@@ -655,9 +645,7 @@ def _custom_operations(state: AcceptanceState) -> dict[str, OperationFn]:
 
     original_reconcile = ops["operation:reconcile-issues"]
 
-    def tracking_reconcile(
-        task: ExecutableTask, workspace: Any, context: RuntimeContext
-    ) -> TaskResult:
+    def tracking_reconcile(task: ExecutableTask, workspace: Any, context: RuntimeContext) -> TaskResult:
         result = original_reconcile(task, workspace, context)
         if result.status == "succeeded":
             state.reconcile_markers.append(state.current_batch)
@@ -925,9 +913,7 @@ def test_issue_lifecycle_acceptance_invariants(tmp_path: Path) -> None:
     assert (change_dir / "report" / "acceptance-marker.json").is_file()
 
     # 8. linked fix plus complete authoritative verification resolves
-    product_probs = [
-        p for p in problems.problems if p.assessment.classification == "product_bug"
-    ]
+    product_probs = [p for p in problems.problems if p.assessment.classification == "product_bug"]
     assert product_probs, "expected at least one product_bug Problem"
     target = product_probs[0]
     triaged = target.model_copy(
@@ -940,9 +926,7 @@ def test_issue_lifecycle_acceptance_invariants(tmp_path: Path) -> None:
     triaged_projection = ProblemProjection(
         schema_version="1.0",
         generated_at=problems.generated_at,
-        problems=[
-            triaged if p.problem_id == target.problem_id else p for p in problems.problems
-        ],
+        problems=[triaged if p.problem_id == target.problem_id else p for p in problems.problems],
     )
     ctx = build_problem_review_context(triaged.problem_id, triaged_projection)
     verify_events = validate_review_action(
@@ -991,9 +975,7 @@ def test_issue_lifecycle_acceptance_invariants(tmp_path: Path) -> None:
     bug_projection = ProblemProjection(
         schema_version="1.0",
         generated_at=problems.generated_at,
-        problems=[
-            triaged_bug if p.problem_id == test_bug.problem_id else p for p in problems.problems
-        ],
+        problems=[triaged_bug if p.problem_id == test_bug.problem_id else p for p in problems.problems],
     )
     ctx_bug = build_problem_review_context(triaged_bug.problem_id, bug_projection)
     bug_verify = validate_review_action(
@@ -1052,9 +1034,7 @@ def test_issue_lifecycle_acceptance_invariants(tmp_path: Path) -> None:
     assert _sha256_dir(archive_issues) == digest_before
 
     # 11. execution final_status is identical before and after Issue processing
-    post_gate = json.loads(
-        (change_dir / "inspect" / "quality-gate-result.json").read_text(encoding="utf-8")
-    )
+    post_gate = json.loads((change_dir / "inspect" / "quality-gate-result.json").read_text(encoding="utf-8"))
     assert post_gate.get("final_status") == pre_final_status == "FAIL"
 
 
@@ -1076,3 +1056,26 @@ def test_run_tests_false_creates_no_issue_subgraph_artifacts(tmp_path: Path) -> 
     assert not list(change_dir.rglob("issue-candidates.json"))
     assert not list(change_dir.rglob("issue-reconcile-status.json"))
     assert not list(change_dir.rglob("issues/events.jsonl"))
+
+
+def test_acceptance_graph_orders_inspect_before_report_without_retro() -> None:
+    """Initial + healing inspect-with-issues both precede report; no Retro/Improvement."""
+    schema = parse_workflow_v2(_ACCEPTANCE_WORKFLOW)
+    main = schema.graphs["main"]
+    edges = {(edge.from_, edge.to) for edge in main.edges}
+    assert ("seed-execution", "inspect-with-issues") in edges
+    assert ("seed-healing", "inspect-healing") in edges
+    assert ("inspect-healing", "report-marker") in edges
+    uses = {node.uses for node in main.nodes.values()}
+    assert main.nodes["inspect-with-issues"].uses == "graph:inspect-with-issues"
+    assert main.nodes["inspect-healing"].uses == "graph:inspect-with-issues"
+    assert "graph:inspect-with-issues" in uses
+    for forbidden in (
+        "graph:retro-workflow",
+        "operation:reconcile-improvements",
+        "operation:retro-collect",
+        "skill:aa-retro",
+        "operation:apply-improvement-review",
+        "operation:export-knowledge-improvement",
+    ):
+        assert forbidden not in uses

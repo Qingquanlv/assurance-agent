@@ -88,19 +88,11 @@ def _load_ledger(project_root: Path) -> ImprovementLedgerProjection:
     path = project_root / "qa" / "improvements" / "improvements.json"
     if not path.is_file():
         raise ImprovementDeliveryError(f"improvement ledger projection missing at {path}")
-    return ImprovementLedgerProjection.model_validate(
-        json.loads(path.read_text(encoding="utf-8"))
-    )
+    return ImprovementLedgerProjection.model_validate(json.loads(path.read_text(encoding="utf-8")))
 
 
 def _proposal_path(project_root: Path, improvement_id: str) -> Path:
-    return (
-        project_root
-        / "qa"
-        / "improvements"
-        / "knowledge-delta"
-        / f"{improvement_id}.proposal.yaml"
-    )
+    return project_root / "qa" / "improvements" / "knowledge-delta" / f"{improvement_id}.proposal.yaml"
 
 
 def _has_l2_leaves(delta: Mapping[str, Any]) -> bool:
@@ -126,9 +118,7 @@ def assert_knowledge_eligibility(
         raise ImprovementDeliveryError("knowledge export requires knowledge_delta delivery")
     problem_ids = projection.source_refs.problem_ids
     if not problem_ids:
-        raise ImprovementDeliveryError(
-            "knowledge eligibility requires at least one cited problem_id"
-        )
+        raise ImprovementDeliveryError("knowledge eligibility requires at least one cited problem_id")
     matched = False
     for problem_id in problem_ids:
         problem = problems.get(problem_id)
@@ -151,9 +141,7 @@ def assert_knowledge_eligibility(
                 "knowledge eligibility requires assessment.authority=human_confirmed"
             )
         if problem.resolution is None or not problem.resolution.verification_scope:
-            raise ImprovementDeliveryError(
-                "knowledge eligibility requires a verified resolution scope"
-            )
+            raise ImprovementDeliveryError("knowledge eligibility requires a verified resolution scope")
     if not matched:
         raise ImprovementDeliveryError(
             "knowledge eligibility requires at least one cited Problem snapshot "
@@ -168,25 +156,17 @@ def load_pinned_retro_problems(
     """Load Problem snapshots from pinned Retro contexts (digest-verified)."""
     retro_ids = projection.proposed_by_retro_ids
     if not retro_ids:
-        raise ImprovementDeliveryError(
-            "knowledge eligibility requires non-empty proposed_by_retro_ids"
-        )
+        raise ImprovementDeliveryError("knowledge eligibility requires non-empty proposed_by_retro_ids")
     problems: dict[str, Problem] = {}
     reader = LedgerIssueHistoryReader(project_root)
     for retro_id in retro_ids:
         context_path = project_root / "qa" / "retro" / retro_id / "context.json"
         if not context_path.is_file():
-            raise ImprovementDeliveryError(
-                f"pinned Retro context missing for {retro_id}: {context_path}"
-            )
+            raise ImprovementDeliveryError(f"pinned Retro context missing for {retro_id}: {context_path}")
         try:
-            context = RetroContext.model_validate(
-                json.loads(context_path.read_text(encoding="utf-8"))
-            )
+            context = RetroContext.model_validate(json.loads(context_path.read_text(encoding="utf-8")))
         except (OSError, ValueError) as exc:
-            raise ImprovementDeliveryError(
-                f"corrupt pinned Retro context for {retro_id}: {exc}"
-            ) from exc
+            raise ImprovementDeliveryError(f"corrupt pinned Retro context for {retro_id}: {exc}") from exc
         selection = IssueWindowSelection(
             change_ids=tuple(context.window.change_ids),
             project_event_through=context.window.project_event_through,
@@ -201,8 +181,7 @@ def load_pinned_retro_problems(
         expected = context.source_manifest.issue_slice_sha256
         if digest != expected:
             raise ImprovementDeliveryError(
-                f"pinned Issue slice digest mismatch for {retro_id}: "
-                f"expected {expected}, found {digest}"
+                f"pinned Issue slice digest mismatch for {retro_id}: expected {expected}, found {digest}"
             )
         for problem in slice_.problem_snapshots:
             problems[problem.problem_id] = problem
@@ -250,8 +229,10 @@ class KnowledgeDeltaDelivery:
         path.parent.mkdir(parents=True, exist_ok=True)
         # Never touch L1 here — only write the Improvement-scoped L2 proposal.
         payload_bytes = yaml.safe_dump(delta, sort_keys=True, allow_unicode=True).encode("utf-8")
-        rel = path.relative_to(self.project_root).as_posix() if path.exists() else (
-            f"qa/improvements/knowledge-delta/{current.improvement_id}.proposal.yaml"
+        rel = (
+            path.relative_to(self.project_root).as_posix()
+            if path.exists()
+            else (f"qa/improvements/knowledge-delta/{current.improvement_id}.proposal.yaml")
         )
         digest = _sha256_bytes(payload_bytes)
 
@@ -286,9 +267,7 @@ class KnowledgeDeltaDelivery:
                 event_id=_event_id(
                     f"improvement-exported:{current.improvement_id}:{current.version}:{digest}"
                 ),
-                idempotency_key=(
-                    f"improvement-exported:{current.improvement_id}:{current.version}:{digest}"
-                ),
+                idempotency_key=(f"improvement-exported:{current.improvement_id}:{current.version}:{digest}"),
                 ts=_utc_now(),
                 improvement_id=current.improvement_id,
                 expected_improvement_version=current.version,
@@ -351,12 +330,8 @@ class KnowledgeDeltaDelivery:
         event = ImprovementAppliedEvent(
             schema_version="1.0",
             seq=1,
-            event_id=_event_id(
-                f"improvement-applied:{current.improvement_id}:{current.version}:{after_l1}"
-            ),
-            idempotency_key=(
-                f"improvement-applied:{current.improvement_id}:{current.version}:{after_l1}"
-            ),
+            event_id=_event_id(f"improvement-applied:{current.improvement_id}:{current.version}:{after_l1}"),
+            idempotency_key=(f"improvement-applied:{current.improvement_id}:{current.version}:{after_l1}"),
             ts=_utc_now(),
             improvement_id=current.improvement_id,
             expected_improvement_version=current.version,
@@ -384,9 +359,7 @@ def export_knowledge_improvement_operation(
     del task
     improvement_id = _param_str(context.params, "improvement_id")
     if not improvement_id:
-        return task_failure(
-            "invalid_input", "export-knowledge-improvement: improvement_id required"
-        )
+        return task_failure("invalid_input", "export-knowledge-improvement: improvement_id required")
     try:
         projection = _load_ledger(workspace.project_root).improvements[improvement_id]
         if projection.delivery is not DeliveryKind.KNOWLEDGE_DELTA:
@@ -395,9 +368,7 @@ def export_knowledge_improvement_operation(
                 "export-knowledge-improvement: reject non-knowledge_delta before target write",
             )
         problems = load_pinned_retro_problems(workspace.project_root, projection)
-        receipt = KnowledgeDeltaDelivery(workspace.project_root).export(
-            projection, problems=problems
-        )
+        receipt = KnowledgeDeltaDelivery(workspace.project_root).export(projection, problems=problems)
     except (ImprovementDeliveryError, ImprovementDeliveryConflict, KeyError) as exc:
         return task_failure("invalid_input", f"export-knowledge-improvement: {exc}")
     return TaskResult(

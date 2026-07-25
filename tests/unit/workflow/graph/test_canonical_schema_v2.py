@@ -261,14 +261,23 @@ def test_canonical_v2_compiles_with_all_targets() -> None:
     compiled = compile_workflow(schema, contracts)
     assert set(compiled.graphs) == EXPECTED_GRAPHS
     assert set(compiled.entrypoints) == {
-        "full", "intake", "execute", "case", "archive", "retro",
+        "full",
+        "intake",
+        "execute",
+        "case",
+        "archive",
+        "retro",
         # Issue review entrypoints (Task 12)
-        "issue-review", "issue-analyze", "issue-reconcile",
+        "issue-review",
+        "issue-analyze",
+        "issue-reconcile",
         # Improvement review (retro/improvement separation Task 10)
         "improvement-review",
         # Improvement delivery (retro/improvement separation Task 11)
-        "improvement-evaluate", "improvement-export",
-        "improvement-apply", "improvement-rollback",
+        "improvement-evaluate",
+        "improvement-export",
+        "improvement-apply",
+        "improvement-rollback",
     }
 
 
@@ -744,9 +753,7 @@ def test_retro_graph_is_independent_and_closed() -> None:
     assert retro.nodes["collect-retro-evidence"].uses == "operation:retro-collect"
     assert retro.nodes["propose-improvements"].uses == "skill:aa-retro"
     assert retro.nodes["reconcile-improvements"].uses == "operation:reconcile-improvements"
-    full_targets = {
-        node.uses for graph in _full_graph_closure(schema) for node in graph.nodes.values()
-    }
+    full_targets = {node.uses for graph in _full_graph_closure(schema) for node in graph.nodes.values()}
     assert not any("retro" in target or "improvement" in target for target in full_targets)
 
 
@@ -766,9 +773,7 @@ def test_retro_entrypoint_topology() -> None:
     collect_edges = [e for e in schema_graph.edges if e.from_ == "collect-retro-evidence"]
     assert any(e.to == "END" and e.when for e in collect_edges)
     assert any(e.to == "propose-improvements" and e.when for e in collect_edges)
-    assert any(
-        e.when and "retro_dry_run" in e.when and "signal_count" in e.when for e in collect_edges
-    )
+    assert any(e.when and "retro_dry_run" in e.when and "signal_count" in e.when for e in collect_edges)
 
 
 # ---------------------------------------------------------------------------
@@ -803,9 +808,7 @@ def test_run_tests_false_skips_execution_and_issue_subgraph(tmp_path: Path) -> N
     execution and the inspect-with-issues Issue subgraph."""
     compiled, _ = _load_compiled()
     assurance = compiled.schema.graphs["assurance"]
-    skip_edge = next(
-        e for e in assurance.edges if e.from_ == "generation-join" and e.to == "END"
-    )
+    skip_edge = next(e for e in assurance.edges if e.from_ == "generation-join" and e.to == "END")
     assert skip_edge.when is not None
     assert "run_tests" in skip_edge.when
     assert "false" in skip_edge.when.lower() or "== false" in skip_edge.when

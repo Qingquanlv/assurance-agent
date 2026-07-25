@@ -69,9 +69,7 @@ def _seed_approved(project: Path) -> ImprovementProjection:
             "review_id": "REV-1",
         },
     ]
-    store.append_and_rebuild(
-        [IMPROVEMENT_EVENT_ADAPTER.validate_python(item) for item in events]
-    )
+    store.append_and_rebuild([IMPROVEMENT_EVENT_ADAPTER.validate_python(item) for item in events])
     ledger = json.loads((project / "qa/improvements/improvements.json").read_text(encoding="utf-8"))
     return ImprovementProjection.model_validate(ledger["improvements"][IMP_ID])
 
@@ -257,19 +255,11 @@ def test_record_applied_requires_actor_reason_and_digest(tmp_path: Path) -> None
     ledger = json.loads((tmp_path / "qa/improvements/improvements.json").read_text(encoding="utf-8"))
     current = ImprovementProjection.model_validate(ledger["improvements"][IMP_ID])
     with pytest.raises(ImprovementDeliveryError, match="actor"):
-        delivery.record_applied(
-            current, actor="", reason="done", artifact_digest=exported.sha256
-        )
+        delivery.record_applied(current, actor="", reason="done", artifact_digest=exported.sha256)
     with pytest.raises(ImprovementDeliveryError, match="reason"):
-        delivery.record_applied(
-            current, actor="human", reason="", artifact_digest=exported.sha256
-        )
+        delivery.record_applied(current, actor="human", reason="", artifact_digest=exported.sha256)
     with pytest.raises(ImprovementDeliveryError, match="digest"):
-        delivery.record_applied(
-            current, actor="human", reason="done", artifact_digest="0" * 64
-        )
-    delivery.record_applied(
-        current, actor="human", reason="merged PR", artifact_digest=exported.sha256
-    )
+        delivery.record_applied(current, actor="human", reason="done", artifact_digest="0" * 64)
+    delivery.record_applied(current, actor="human", reason="merged PR", artifact_digest=exported.sha256)
     ledger = json.loads((tmp_path / "qa/improvements/improvements.json").read_text(encoding="utf-8"))
     assert ledger["improvements"][IMP_ID]["state"] == ImprovementState.APPLIED.value

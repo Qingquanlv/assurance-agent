@@ -113,10 +113,7 @@ def test_two_processes_same_fingerprint_under_project_lock(tmp_path: Path) -> No
     start_barrier = ctx.Barrier(2)
     results = ctx.Queue()
 
-    workers = [
-        ctx.Process(target=_worker, args=(str(project), start_barrier, results))
-        for _ in range(2)
-    ]
+    workers = [ctx.Process(target=_worker, args=(str(project), start_barrier, results)) for _ in range(2)]
     for worker in workers:
         worker.start()
     for worker in workers:

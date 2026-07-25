@@ -284,19 +284,19 @@ def _compile() -> tuple[CompiledWorkflow, Any]:
     return compiled, contracts
 
 
-def _fake_inspect(
-    task: ExecutableTask, workspace: Any, context: RuntimeContext
-) -> TaskResult:
+def _fake_inspect(task: ExecutableTask, workspace: Any, context: RuntimeContext) -> TaskResult:
     """Write minimal quality-gate artifacts to satisfy downstream reads."""
     inspect_dir = workspace.change_dir / "inspect"
     inspect_dir.mkdir(parents=True, exist_ok=True)
     (inspect_dir / "failure-analysis.json").write_text(
-        json.dumps({
-            "final_status": "FAIL",
-            "failures": [],
-            "inspect_mode": "primary",
-            "source_batch_id": "batch-1",
-        }),
+        json.dumps(
+            {
+                "final_status": "FAIL",
+                "failures": [],
+                "inspect_mode": "primary",
+                "source_batch_id": "batch-1",
+            }
+        ),
         encoding="utf-8",
     )
     (inspect_dir / "quality-gate-result.json").write_text(
@@ -335,9 +335,7 @@ def _fake_collect_observations(abnormal_count: int) -> OperationFn:
     return _fn
 
 
-def _fake_record_empty_analysis(
-    task: ExecutableTask, workspace: Any, context: RuntimeContext
-) -> TaskResult:
+def _fake_record_empty_analysis(task: ExecutableTask, workspace: Any, context: RuntimeContext) -> TaskResult:
     inspect_dir = workspace.change_dir / "inspect"
     inspect_dir.mkdir(parents=True, exist_ok=True)
     (inspect_dir / "issue-candidates.json").write_text(
@@ -349,9 +347,7 @@ def _fake_record_empty_analysis(
     return TaskResult(status="succeeded", value={"candidate_count": 0})
 
 
-def _fake_reconcile_issues(
-    task: ExecutableTask, workspace: Any, context: RuntimeContext
-) -> TaskResult:
+def _fake_reconcile_issues(task: ExecutableTask, workspace: Any, context: RuntimeContext) -> TaskResult:
     inspect_dir = workspace.change_dir / "inspect"
     inspect_dir.mkdir(parents=True, exist_ok=True)
     issues_dir = workspace.change_dir / "issues"
@@ -362,9 +358,7 @@ def _fake_reconcile_issues(
         json.dumps({"status": "completed", "occurrence_count": 0}), encoding="utf-8"
     )
     (issues_dir / "events.jsonl").write_text("", encoding="utf-8")
-    (issues_dir / "snapshot.json").write_text(
-        json.dumps({"occurrences": [], "version": 1}), encoding="utf-8"
-    )
+    (issues_dir / "snapshot.json").write_text(json.dumps({"occurrences": [], "version": 1}), encoding="utf-8")
     (project_issues / "problems.json").write_text(
         json.dumps({"problems": [], "version": 1}), encoding="utf-8"
     )
@@ -403,9 +397,7 @@ def _fake_record_project_sync_pending(
     return TaskResult(status="succeeded", value={"sync_pending": True})
 
 
-def _fake_analyzer_succeed(
-    task: ExecutableTask, workspace: Any, context: RuntimeContext
-) -> TaskResult:
+def _fake_analyzer_succeed(task: ExecutableTask, workspace: Any, context: RuntimeContext) -> TaskResult:
     """Analyzer that always succeeds."""
     inspect_dir = workspace.change_dir / "inspect"
     inspect_dir.mkdir(parents=True, exist_ok=True)
@@ -433,9 +425,7 @@ def _make_forbidden_write_analyzer() -> OperationFn:
     """Returns an analyzer that returns a forbidden_write error."""
 
     def _fn(task: ExecutableTask, workspace: Any, context: RuntimeContext) -> TaskResult:
-        return TaskResult(
-            status="failed", error_kind="forbidden_write", error="wrote outside contract"
-        )
+        return TaskResult(status="failed", error_kind="forbidden_write", error="wrote outside contract")
 
     return _fn
 
@@ -486,7 +476,7 @@ def _build(
         "builtin:gate": GateHandler(compiled),
         "builtin:interrupt": InterruptHandler(compiled),
     }
-    for target in (ops or {}):
+    for target in ops or {}:
         handlers[target] = op_handler
     namespace_handlers: dict[str, Any] = {
         "graph": SubgraphHandler(run_child),
@@ -538,9 +528,7 @@ def test_observations_commit_before_analyzer_starts(tmp_path: Path) -> None:
 
     observations_committed_before_analyzer: list[bool] = []
 
-    def _checking_analyzer(
-        task: ExecutableTask, workspace: Any, context: RuntimeContext
-    ) -> TaskResult:
+    def _checking_analyzer(task: ExecutableTask, workspace: Any, context: RuntimeContext) -> TaskResult:
         # Check that the observations file was committed to the canonical
         # change dir before the analyzer runs.
         change = project / "qa" / "changes" / "CH-1"
@@ -658,12 +646,8 @@ def test_run_tests_false_produces_no_issue_subgraph_artifacts(tmp_path: Path) ->
     assert result.exit_code == 0
     change = project / "qa" / "changes" / "CH-1"
     assert not list(change.rglob("observations.json")), "observations.json must not exist"
-    assert not list(change.rglob("issue-candidates.json")), (
-        "issue-candidates.json must not exist"
-    )
-    assert not list(change.rglob("issue-reconcile-status.json")), (
-        "issue-reconcile-status.json must not exist"
-    )
+    assert not list(change.rglob("issue-candidates.json")), "issue-candidates.json must not exist"
+    assert not list(change.rglob("issue-reconcile-status.json")), "issue-reconcile-status.json must not exist"
 
 
 def test_issue_outcomes_do_not_alter_quality_gate_final_status(tmp_path: Path) -> None:
@@ -672,9 +656,7 @@ def test_issue_outcomes_do_not_alter_quality_gate_final_status(tmp_path: Path) -
     project = _make_project(tmp_path)
     compiled, contracts = _compile()
 
-    def _succeeding_analyzer(
-        task: ExecutableTask, workspace: Any, context: RuntimeContext
-    ) -> TaskResult:
+    def _succeeding_analyzer(task: ExecutableTask, workspace: Any, context: RuntimeContext) -> TaskResult:
         inspect_dir = workspace.change_dir / "inspect"
         inspect_dir.mkdir(parents=True, exist_ok=True)
         (inspect_dir / "issue-candidates.json").write_text(
@@ -697,6 +679,18 @@ def test_issue_outcomes_do_not_alter_quality_gate_final_status(tmp_path: Path) -
     analysis_files = list(change.rglob("failure-analysis.json"))
     assert analysis_files
     analysis = json.loads(analysis_files[0].read_text(encoding="utf-8"))
-    assert analysis["final_status"] == "FAIL", (
-        "Issue analysis must not alter execution final_status"
-    )
+    assert analysis["final_status"] == "FAIL", "Issue analysis must not alter execution final_status"
+
+
+def test_inline_main_graph_orders_inspect_before_end_without_retro() -> None:
+    """Graph-order invariant: inspect-with-issues precedes END; no Retro nodes."""
+    schema = parse_workflow_v2(_WORKFLOW)
+    main = schema.graphs["main"]
+    edges = {(edge.from_, edge.to) for edge in main.edges}
+    assert ("generation-join", "inspect-with-issues") in edges
+    assert ("inspect-with-issues", "END") in edges
+    uses = {node.uses for node in main.nodes.values()}
+    assert "graph:inspect-with-issues" in uses
+    assert "graph:retro-workflow" not in uses
+    assert "operation:reconcile-improvements" not in uses
+    assert "skill:aa-retro" not in uses

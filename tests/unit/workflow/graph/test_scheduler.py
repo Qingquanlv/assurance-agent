@@ -615,9 +615,7 @@ def test_scheduler_holds_project_locks_across_overlay_handler_and_update(tmp_pat
         phases.append("handler")
         assert (workspace.project_root / "qa/issues/ISSUE-1.json").read_text() == '{"version":2}\n'
         assert (workspace.project_root / "app/source.py").read_text() == "app base\n"
-        (workspace.project_root / "qa/issues/ISSUE-1.json").write_text(
-            '{"version":3}\n', encoding="utf-8"
-        )
+        (workspace.project_root / "qa/issues/ISSUE-1.json").write_text('{"version":3}\n', encoding="utf-8")
         result = workspace.change_dir / "results/update.json"
         result.parent.mkdir(parents=True)
         result.write_text('{"updated":true}\n', encoding="utf-8")
@@ -639,7 +637,7 @@ def test_scheduler_holds_project_locks_across_overlay_handler_and_update(tmp_pat
 
     assert result.succeeded == ("update-issue",)
     assert result.pending_write_set_ids
-    assert locks.calls == [(('project:issue-registry', 'project:zzz'), 0.25)]
+    assert locks.calls == [(("project:issue-registry", "project:zzz"), 0.25)]
     assert phases == ["overlay", "handler", "apply"]
     assert locks.held is False
     assert issue.read_text() == '{"version":3}\n'
@@ -708,7 +706,7 @@ def test_scheduler_persists_project_lock_timeout_as_retryable_conflict(tmp_path:
     assert failures[0]["attempt_id"] == started[0]["attempt_id"]
     assert failures[0]["error_kind"] == "conflict"
     assert failures[0]["next_retry_at"] is not None
-    assert locks.calls == [(('project:issue-registry', 'project:zzz'), 0.125)]
+    assert locks.calls == [(("project:issue-registry", "project:zzz"), 0.125)]
 
 
 def test_project_lock_timeout_is_attributed_to_task_owning_blocked_token(
@@ -791,9 +789,7 @@ def test_synchronized_pending_update_reacquires_lock_and_replays_without_handler
     def update_issue(task, workspace, context) -> TaskResult:
         nonlocal calls
         calls += 1
-        (workspace.project_root / "qa/issues/ISSUE-1.json").write_text(
-            '{"version":3}\n', encoding="utf-8"
-        )
+        (workspace.project_root / "qa/issues/ISSUE-1.json").write_text('{"version":3}\n', encoding="utf-8")
         result = workspace.change_dir / "results/update.json"
         result.parent.mkdir(parents=True)
         result.write_text('{"updated":true}\n', encoding="utf-8")

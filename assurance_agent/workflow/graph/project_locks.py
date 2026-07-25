@@ -93,9 +93,7 @@ def _prepare_confined_directory(project_root: Path, relpath: Path) -> Path:
             resolved = candidate.resolve(strict=True)
             resolved.relative_to(project_root)
         except (OSError, ValueError) as exc:
-            raise ProjectLockPathError(
-                f"project lock directory escapes project root: {candidate}"
-            ) from exc
+            raise ProjectLockPathError(f"project lock directory escapes project root: {candidate}") from exc
         current = candidate
     return current
 
@@ -175,9 +173,7 @@ class ProjectPublicationStore:
         for change_dir in changes_root.iterdir():
             if not change_dir.is_dir() or change_dir.is_symlink():
                 continue
-            checkpoint = (
-                change_dir / ".graph-runtime" / "checkpoints" / f"{publication_id}.json"
-            )
+            checkpoint = change_dir / ".graph-runtime" / "checkpoints" / f"{publication_id}.json"
             try:
                 if checkpoint.is_symlink():
                     continue
@@ -203,9 +199,7 @@ class ProjectPublicationStore:
         path = self._path(publication.publication_id)
         existing, status = self._load(path)
         if existing != publication:
-            raise ProjectPublicationError(
-                f"publication identity mismatch for {publication.publication_id}"
-            )
+            raise ProjectPublicationError(f"publication identity mismatch for {publication.publication_id}")
         if status == "applied":
             return
         self._write(path, publication, "applied")
@@ -214,9 +208,7 @@ class ProjectPublicationStore:
         return _prepare_confined_directory(self._project_root, _PUBLICATIONS_RELPATH)
 
     def _path(self, publication_id: str) -> Path:
-        if len(publication_id) != 64 or any(
-            char not in "0123456789abcdef" for char in publication_id
-        ):
+        if len(publication_id) != 64 or any(char not in "0123456789abcdef" for char in publication_id):
             raise ProjectPublicationError("unsafe synchronized publication identity")
         return self._prepare_root() / f"{publication_id}.json"
 
@@ -242,9 +234,7 @@ class ProjectPublicationStore:
                 isinstance(value, str) for value in raw_write_sets
             ):
                 raise ValueError("invalid publication write_set_ids")
-            if not isinstance(raw_tokens, list) or not all(
-                isinstance(value, str) for value in raw_tokens
-            ):
+            if not isinstance(raw_tokens, list) or not all(isinstance(value, str) for value in raw_tokens):
                 raise ValueError("invalid publication tokens")
             publication = ProjectPublication(
                 publication_id=str(payload["publication_id"]),
@@ -297,9 +287,7 @@ class ProjectPublicationStore:
 
 
 class ProjectLockManager(Protocol):
-    def acquire(
-        self, tokens: Sequence[str], timeout_seconds: float
-    ) -> AbstractContextManager[None]: ...
+    def acquire(self, tokens: Sequence[str], timeout_seconds: float) -> AbstractContextManager[None]: ...
 
 
 class ProjectResourceLockManager:

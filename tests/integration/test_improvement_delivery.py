@@ -89,9 +89,7 @@ def test_delivery_graphs_load_first_then_branch_on_delivery() -> None:
 
     evaluate = schema.graphs["improvement-evaluate-workflow"]
     assert "load-improvement-delivery" in evaluate.nodes
-    assert any(
-        edge.from_ == "START" and edge.to == "load-improvement-delivery" for edge in evaluate.edges
-    )
+    assert any(edge.from_ == "START" and edge.to == "load-improvement-delivery" for edge in evaluate.edges)
     assert evaluate.routes[0].cases["memory_patch"] == "evaluate-memory"
     assert evaluate.routes[0].default == "STOP"
 

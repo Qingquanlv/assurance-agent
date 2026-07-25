@@ -70,11 +70,7 @@ def apply_improvement_memory_patch(
         return False
 
     evidence = ",".join(sorted(evidence_ids))
-    block = (
-        f"\n<!-- {marker} evidence:{evidence} -->\n"
-        f"- {proposed_change}\n"
-        f"<!-- /improvement -->\n"
-    )
+    block = f"\n<!-- {marker} evidence:{evidence} -->\n- {proposed_change}\n<!-- /improvement -->\n"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(base + block, encoding="utf-8")
     return True
