@@ -53,6 +53,21 @@ def _planned(task_ids: list[str], inv: str = "inv-1") -> dict:
     }
 
 
+def _activated(node_id: str, generation: int = 0, inv: str = "inv-1") -> dict:
+    return {
+        "source": "graph",
+        "type": "node_activated",
+        "invocation_id": inv,
+        "checkpoint_ns": inv,
+        "graph_id": "main",
+        "node_id": node_id,
+        "generation_ordinal": generation,
+        "activation_id": f"{node_id}-g{generation}",
+        "input_sha256": "in-1",
+        "source_reads_sha256": {},
+    }
+
+
 def _begin(task_id: str, node_id: str, attempt: int = 1, inv: str = "inv-1") -> dict:
     return {
         "source": "graph",
@@ -100,6 +115,31 @@ def _failed(task_id: str, inv: str = "inv-1", next_retry_at: str | None = None) 
         "error_kind": "internal",
         "message": "boom",
         "next_retry_at": next_retry_at,
+    }
+
+
+def _recovery(
+    task_id: str,
+    *,
+    node_id: str = "node-a",
+    generation: int = 0,
+    error_kind: str = "internal",
+    message: str = "boom",
+    inv: str = "inv-1",
+) -> dict:
+    return {
+        "source": "graph",
+        "type": "task_recovery_routed",
+        "invocation_id": inv,
+        "checkpoint_ns": inv,
+        "graph_id": "main",
+        "node_id": node_id,
+        "generation_ordinal": generation,
+        "task_id": task_id,
+        "error_kind": error_kind,
+        "message": message,
+        "via": "recover-a",
+        "continue_to": "after-a",
     }
 
 
@@ -198,6 +238,102 @@ def test_projection_folds_task_lifecycle(tmp_path: Path) -> None:
     assert projection.tasks["task-b"].status == "failed"
     assert projection.tasks["task-b"].attempts_used == 1
     assert projection.latest_checkpoint_id is None
+
+
+def test_recovery_route_projects_without_rewriting_failed_attempt(tmp_path: Path) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    _append_all(
+        change,
+        [
+            _started(),
+            _activated("node-a"),
+            _planned(["task-a"]),
+            _begin("task-a", "node-a"),
+            _failed("task-a"),
+            _recovery("task-a"),
+        ],
+    )
+
+    projection = project_invocation(change, "inv-1")
+    task = projection.tasks["task-a"]
+    assert task.status == "failed"
+    assert task.error_kind == "internal"
+    assert task.error == "boom"
+    recovery = projection.recoveries["task-a"]
+    assert recovery.task_id == "task-a"
+    assert recovery.node_id == "node-a"
+    assert recovery.generation_ordinal == 0
+    assert recovery.error_kind == "internal"
+    assert recovery.message == "boom"
+    assert recovery.via == "recover-a"
+    assert recovery.continue_to == "after-a"
+
+
+@pytest.mark.parametrize(
+    ("events", "match"),
+    [
+        ([_recovery("missing")], "unknown task"),
+        (
+            [
+                _activated("node-a"),
+                _planned(["task-a"]),
+                _begin("task-a", "node-a"),
+                _failed("task-a"),
+                _recovery("task-a", node_id="other"),
+            ],
+            "node/generation",
+        ),
+        (
+            [
+                _activated("node-a"),
+                _planned(["task-a"]),
+                _begin("task-a", "node-a"),
+                _failed("task-a"),
+                _recovery("task-a", generation=1),
+            ],
+            "node/generation",
+        ),
+        (
+            [
+                _activated("node-a"),
+                _planned(["task-a"]),
+                _begin("task-a", "node-a"),
+                _failed("task-a"),
+                _recovery("task-a", message="different"),
+            ],
+            "error context",
+        ),
+    ],
+)
+def test_recovery_route_requires_matching_failed_attempt(
+    tmp_path: Path, events: list[dict], match: str
+) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    _append_all(change, [_started(), *events])
+    with pytest.raises(LedgerIntegrityError, match=match):
+        project_invocation(change, "inv-1")
+
+
+def test_duplicate_identical_recovery_route_is_integrity_error(tmp_path: Path) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    recovery = _recovery("task-a")
+    _append_all(
+        change,
+        [
+            _started(),
+            _activated("node-a"),
+            _planned(["task-a"]),
+            _begin("task-a", "node-a"),
+            _failed("task-a"),
+            recovery,
+            recovery,
+        ],
+    )
+    with pytest.raises(LedgerIntegrityError, match="duplicate.*recovery"):
+        project_invocation(change, "inv-1")
 
 
 def test_superstep_commit_projects_checkpoint_and_tree(tmp_path: Path) -> None:

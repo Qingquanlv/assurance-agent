@@ -19,6 +19,7 @@ from assurance_agent.workflow.core.graph_events import (
     NodeActivatedEvent,
     NodeSkippedEvent,
     SuperstepPlannedEvent,
+    TaskRecoveryRoutedEvent,
 )
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.models import (
@@ -26,6 +27,7 @@ from assurance_agent.workflow.graph.models import (
     ExecutableTask,
     GraphProjection,
     InterruptProjection,
+    RecoveryProjection,
     ResolvedArtifact,
     RuntimeContext,
     TaskProjection,
@@ -344,6 +346,35 @@ graphs:
       - {from: a, to: END}
 """
 
+RECOVERY_GRAPH = """
+schema_version: "2"
+name: planner-recovery
+entrypoints:
+  full: {graph: main}
+policies:
+  retry:
+    transient: {max_attempts: 2, retry_on: [timeout]}
+graphs:
+  main:
+    max_supersteps: 8
+    nodes:
+      analyzer:
+        uses: operation:analyzer
+        retry: transient
+        recover:
+          errors: [timeout]
+          via: fallback
+          continue_to: recovered
+      fallback: {uses: operation:fallback}
+      normal: {uses: operation:normal}
+      recovered: {uses: operation:recovered}
+    edges:
+      - {from: START, to: analyzer}
+      - {from: analyzer, to: normal}
+      - {from: normal, to: END}
+      - {from: recovered, to: END}
+"""
+
 PRIORITY_GRAPH = """
 schema_version: "2"
 name: planner-priority
@@ -410,6 +441,7 @@ def _projection(
     current_tree_id: str = "tree-0",
     latest_checkpoint_id: str | None = None,
     interrupts: dict[str, InterruptProjection] | None = None,
+    recoveries: dict[str, RecoveryProjection] | None = None,
     terminal: str | None = None,
     terminal_reason: str | None = None,
     graph_digest: str | None = None,
@@ -429,6 +461,7 @@ def _projection(
         state_values=state_values or {},
         tasks={task.task_id: task for task in tasks or []},
         interrupts=interrupts or {},
+        recoveries=recoveries or {},
         terminal=terminal,  # type: ignore[arg-type]
         terminal_reason=terminal_reason,
     )
@@ -1002,6 +1035,178 @@ def test_failed_retryable_task_carries_prior_failure_feedback(tmp_path: Path) ->
     assert retry_task.prior_error_kind == "invalid_output"
     assert retry_task.prior_failure is not None
     assert "schema validation" in retry_task.prior_failure
+
+
+def _recovery_projection(source: ExecutableTask) -> RecoveryProjection:
+    return RecoveryProjection(
+        task_id=source.task_id,
+        node_id=source.node_id,
+        generation_ordinal=0,
+        error_kind="timeout",
+        message="analyzer timed out",
+        via="fallback",
+        continue_to="recovered",
+    )
+
+
+def test_exhausted_allowed_failure_emits_recovery_and_schedules_fallback(tmp_path: Path) -> None:
+    compiled = _compile(RECOVERY_GRAPH)
+    analyzer = _initial_tasks(compiled, tmp_path)["analyzer"]
+    failed = _task(
+        analyzer,
+        "failed",
+        generation_ordinal=0,
+        error_kind="timeout",
+        error="analyzer timed out",
+        attempts_used=2,
+        write_set_id="failed-analyzer-write-set",
+    )
+
+    plan = _plan(compiled, _projection(compiled, tasks=[failed]), tmp_path)
+
+    assert [task.node_id for task in plan.tasks] == ["fallback"]
+    routed = [event for event in plan.strict_events if isinstance(event, TaskRecoveryRoutedEvent)]
+    assert len(routed) == 1
+    assert routed[0].task_id == analyzer.task_id
+    assert routed[0].error_kind == "timeout"
+    assert routed[0].message == "analyzer timed out"
+    recovery = plan.tasks[0].recovery
+    assert recovery is not None
+    assert recovery.source_task_id == analyzer.task_id
+    assert recovery.source_node_id == "analyzer"
+    assert recovery.attempts_used == 2
+    assert recovery.error_kind == "timeout"
+    assert recovery.message == "analyzer timed out"
+    assert recovery.recovery_event == routed[0]
+    assert failed.status == "failed"
+    assert failed.outputs_committed is False
+    assert all(getattr(event, "type", None) != "superstep_committed" for event in plan.strict_events)
+
+
+def test_persisted_recovery_replays_exactly_one_deterministic_fallback(tmp_path: Path) -> None:
+    compiled = _compile(RECOVERY_GRAPH)
+    analyzer = _initial_tasks(compiled, tmp_path)["analyzer"]
+    failed = _task(
+        analyzer,
+        "failed",
+        generation_ordinal=0,
+        error_kind="timeout",
+        error="analyzer timed out",
+        attempts_used=2,
+    )
+    recovery = _recovery_projection(analyzer)
+    projection = _projection(
+        compiled,
+        tasks=[failed],
+        recoveries={analyzer.task_id: recovery},
+    )
+
+    first = _plan(compiled, projection, tmp_path)
+    replay = _plan(compiled, projection, tmp_path)
+
+    assert first == replay
+    assert len(first.tasks) == 1
+    assert first.tasks[0].node_id == "fallback"
+    assert first.tasks[0].recovery is not None
+    assert not any(isinstance(event, TaskRecoveryRoutedEvent) for event in first.strict_events)
+
+
+def test_corrupt_recovery_projection_fails_closed(tmp_path: Path) -> None:
+    compiled = _compile(RECOVERY_GRAPH)
+    analyzer = _initial_tasks(compiled, tmp_path)["analyzer"]
+    failed = _task(
+        analyzer,
+        "failed",
+        generation_ordinal=0,
+        error_kind="timeout",
+        error="analyzer timed out",
+        attempts_used=2,
+    )
+    corrupt = _recovery_projection(analyzer).model_copy(update={"via": "normal"})
+
+    plan = _plan(
+        compiled,
+        _projection(
+            compiled,
+            tasks=[failed],
+            recoveries={analyzer.task_id: corrupt},
+        ),
+        tmp_path,
+    )
+
+    assert plan.terminal == "fail"
+    assert plan.reason is not None and "recovery projection" in plan.reason
+    assert plan.tasks == ()
+
+
+def test_successful_fallback_delivers_only_frozen_recovery_continuation(tmp_path: Path) -> None:
+    compiled = _compile(RECOVERY_GRAPH)
+    analyzer = _initial_tasks(compiled, tmp_path)["analyzer"]
+    failed = _task(
+        analyzer,
+        "failed",
+        generation_ordinal=0,
+        error_kind="timeout",
+        error="analyzer timed out",
+        attempts_used=2,
+    )
+    recovery = _recovery_projection(analyzer)
+    recovery_projection = _projection(
+        compiled,
+        tasks=[failed],
+        recoveries={analyzer.task_id: recovery},
+    )
+    fallback = _plan(compiled, recovery_projection, tmp_path).tasks[0]
+
+    after_fallback = _projection(
+        compiled,
+        tasks=[failed, _task(fallback, "succeeded", generation_ordinal=0)],
+        recoveries={analyzer.task_id: recovery},
+    )
+    plan = _plan(compiled, after_fallback, tmp_path)
+
+    assert [task.node_id for task in plan.tasks] == ["recovered"]
+    assert all(task.node_id != "normal" for task in plan.tasks)
+
+
+def test_normal_success_uses_ordinary_edge_and_never_activates_recovery_via(tmp_path: Path) -> None:
+    compiled = _compile(RECOVERY_GRAPH)
+    analyzer = _initial_tasks(compiled, tmp_path)["analyzer"]
+    projection = _projection(
+        compiled,
+        tasks=[_task(analyzer, "succeeded", generation_ordinal=0)],
+    )
+
+    plan = _plan(compiled, projection, tmp_path)
+
+    assert [task.node_id for task in plan.tasks] == ["normal"]
+    assert all(task.node_id != "fallback" for task in plan.tasks)
+    assert not any(isinstance(event, TaskRecoveryRoutedEvent) for event in plan.strict_events)
+
+
+@pytest.mark.parametrize("error_kind", ["forbidden_write", "contract"])
+def test_hard_failure_never_enters_recovery(tmp_path: Path, error_kind: str) -> None:
+    compiled = _compile(RECOVERY_GRAPH)
+    analyzer = _initial_tasks(compiled, tmp_path)["analyzer"]
+    projection = _projection(
+        compiled,
+        tasks=[
+            _task(
+                analyzer,
+                "failed",
+                generation_ordinal=0,
+                error_kind=error_kind,
+                error="hard failure",
+                attempts_used=2,
+            )
+        ],
+    )
+
+    plan = _plan(compiled, projection, tmp_path)
+
+    assert plan.terminal == "fail"
+    assert plan.tasks == ()
+    assert not any(isinstance(event, TaskRecoveryRoutedEvent) for event in plan.strict_events)
 
 
 @pytest.mark.parametrize(

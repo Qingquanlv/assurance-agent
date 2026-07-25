@@ -145,6 +145,20 @@ class TaskAttemptFailedEvent(_GraphEvent):
     next_retry_at: str | None = None
 
 
+class TaskRecoveryRoutedEvent(_GraphEvent):
+    type: Literal["task_recovery_routed"]
+    invocation_id: str
+    checkpoint_ns: str
+    graph_id: str
+    node_id: str
+    generation_ordinal: int
+    task_id: str
+    error_kind: ErrorKind
+    message: str
+    via: str
+    continue_to: str
+
+
 class TaskAttemptAbandonedEvent(_GraphEvent):
     type: Literal["task_attempt_abandoned"]
     invocation_id: str
@@ -253,6 +267,7 @@ GraphEvent = Annotated[
     | TaskAttemptSucceededEvent
     | TaskAttemptStoppedEvent
     | TaskAttemptFailedEvent
+    | TaskRecoveryRoutedEvent
     | TaskAttemptAbandonedEvent
     | BudgetConsumedEvent
     | GraphInterruptedEvent
@@ -278,6 +293,7 @@ __all__ = [
     "TaskAttemptSucceededEvent",
     "TaskAttemptStoppedEvent",
     "TaskAttemptFailedEvent",
+    "TaskRecoveryRoutedEvent",
     "TaskAttemptAbandonedEvent",
     "BudgetConsumedEvent",
     "GraphInterruptedEvent",
