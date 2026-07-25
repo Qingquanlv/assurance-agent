@@ -579,6 +579,32 @@ contracts:
       - change:issues/snapshot.json
     retryable_errors: []
 
+  operation:reconcile-issues:
+    handler: operation
+    reads:
+      - change:inspect/**
+      - change:issues/**
+      - project:qa/issues/**
+    writes:
+      - change:inspect/issue-reconcile-status.json
+      - change:issues/events.jsonl
+      - change:issues/snapshot.json
+      - project:qa/issues/events.jsonl
+      - project:qa/issues/problems.json
+      - project:qa/issues/review-queue.json
+    authorization_writes:
+      - change:inspect/issue-reconcile-status.json
+      - change:issues/events.jsonl
+      - change:issues/snapshot.json
+      - project:qa/issues/events.jsonl
+      - project:qa/issues/problems.json
+      - project:qa/issues/review-queue.json
+    synchronized:
+      - project:qa/issues/**
+    exclusive:
+      - project:issue-registry
+    retryable_errors: [conflict, transport]
+
   # ---- retro workflow -------------------------------------------------------
   operation:retro-collect:
     handler: operation

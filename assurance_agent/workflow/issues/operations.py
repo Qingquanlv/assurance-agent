@@ -5,8 +5,9 @@ Currently contains:
     record_empty_issue_analysis        — operation:record-empty-issue-analysis
     record_issue_analysis_failure      — operation:record-issue-analysis-failure
     record_project_sync_pending        — operation:record-project-sync-pending
+    reconcile_issues_operation         — operation:reconcile-issues
 
-All three recovery operations are deterministic (no LLM), idempotent, and
+All recovery operations are deterministic (no LLM), idempotent, and
 pin evidence/candidate digests so the workflow continues visibly even when
 the analyzer is unavailable or the project sync resource is contended.
 
@@ -33,7 +34,9 @@ from assurance_agent.artifacts.models.issues import (
     ChangeIssueSnapshot,
     IssueCandidateDocument,
     IssueAnalysisStatus,
+    IssueReconcileStatus,
     ObservationDocument,
+    ProblemProjection,
 )
 from assurance_agent.workflow.execution.evidence import EvidenceError
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
@@ -45,8 +48,12 @@ from assurance_agent.workflow.issues.events import (
     ObservationRecordedEvent,
     ProjectSyncPendingEvent,
 )
-from assurance_agent.workflow.issues.ledger import ChangeIssueStore
-from assurance_agent.workflow.issues.projection import dump_projection
+from assurance_agent.workflow.issues.ledger import ChangeIssueStore, ProjectProblemStore
+from assurance_agent.workflow.issues.projection import dump_projection, project_problems
+from assurance_agent.workflow.issues.reconciler import (
+    ReconciliationValidationError,
+    plan_reconciliation,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -472,5 +479,210 @@ def record_project_sync_pending_operation(
             "batch_id": batch_id,
             "evidence_bundle_digest": evidence_bundle_digest,
             "candidate_digest": candidate_digest,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# reconcile_issues_operation
+# ---------------------------------------------------------------------------
+
+
+def _load_json_model(path: Path, model_cls, context_label: str):
+    """Load and validate a JSON file into a Pydantic model; raise TaskResult failure on error."""
+    if not path.is_file():
+        raise FileNotFoundError(f"{context_label}: {path} not found")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return model_cls.model_validate(data)
+    except Exception as exc:
+        raise ValueError(f"{context_label}: invalid JSON/model at {path}: {exc}") from exc
+
+
+def _load_problem_projection(workspace_root: Path) -> ProblemProjection:
+    """Load the project problem projection from the (synchronized) workspace root.
+
+    Returns an empty projection when the file does not exist yet
+    (first ever reconcile for this project).
+    """
+    problems_path = workspace_root / "qa" / "issues" / "problems.json"
+    if not problems_path.is_file():
+        return ProblemProjection(
+            schema_version="1.0",
+            generated_at="1970-01-01T00:00:00Z",
+            problems=[],
+        )
+    try:
+        data = json.loads(problems_path.read_text(encoding="utf-8"))
+        return ProblemProjection.model_validate(data)
+    except Exception as exc:
+        raise ValueError(
+            f"reconcile-issues: corrupt project problem projection at {problems_path}: {exc}"
+        ) from exc
+
+
+def reconcile_issues_operation(
+    task: ExecutableTask,
+    workspace: TaskWorkspace,
+    context: RuntimeContext,
+) -> TaskResult:
+    """Reconcile a completed candidate batch into Occurrences and Problems.
+
+    Reads (all from workspace):
+        change:inspect/issue-candidates.json
+        change:inspect/issue-evidence-manifest.json
+        change:inspect/observations.json
+        change:issues/snapshot.json   (optional — missing means empty snapshot)
+        project:qa/issues/problems.json (synchronized; optional — missing means empty)
+
+    Writes on success (atomic, same task write-set):
+        change:inspect/issue-reconcile-status.json  (status: completed)
+        change:issues/events.jsonl
+        change:issues/snapshot.json
+        project:qa/issues/events.jsonl
+        project:qa/issues/problems.json
+        project:qa/issues/review-queue.json
+
+    Writes on semantic validation failure (all-or-nothing):
+        change:inspect/issue-reconcile-status.json  (status: failed)
+        Returns TaskResult SUCCESS so the workflow continues visibly.
+
+    Infrastructure / ledger integrity failures propagate as typed task failures.
+    """
+    change_dir = workspace.change_dir
+    project_root = workspace.project_root
+    change_id = context.change_id
+    inspect_dir = change_dir / "inspect"
+    inspect_dir.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # 1. Load candidates document
+    # ------------------------------------------------------------------
+    candidates_path = inspect_dir / "issue-candidates.json"
+    try:
+        candidates_doc = _load_json_model(
+            candidates_path, IssueCandidateDocument, "reconcile-issues"
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return task_failure("invalid_input", str(exc))
+
+    # ------------------------------------------------------------------
+    # 2. Load observations document
+    # ------------------------------------------------------------------
+    observations_path = inspect_dir / "observations.json"
+    try:
+        observations = _load_json_model(
+            observations_path, ObservationDocument, "reconcile-issues"
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return task_failure("invalid_input", str(exc))
+
+    # ------------------------------------------------------------------
+    # 3. Load change issue snapshot (optional)
+    # ------------------------------------------------------------------
+    snapshot_path = change_dir / "issues" / "snapshot.json"
+    if snapshot_path.is_file():
+        try:
+            change_snapshot_data = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            change_snapshot = ChangeIssueSnapshot.model_validate(change_snapshot_data)
+        except Exception as exc:
+            return task_failure(
+                "invalid_input",
+                f"reconcile-issues: corrupt change issue snapshot: {exc}",
+            )
+    else:
+        change_snapshot = ChangeIssueSnapshot(
+            schema_version="1.0",
+            change_id=change_id,
+            authoritative_batch_id=candidates_doc.batch_id,
+            observations=[],
+            occurrences=[],
+            analysis_status=None,
+            project_sync_status="completed",
+            batches=[candidates_doc.batch_id],
+        )
+
+    # ------------------------------------------------------------------
+    # 4. Load project problem projection from synchronized workspace root
+    # ------------------------------------------------------------------
+    try:
+        problems = _load_problem_projection(project_root)
+    except ValueError as exc:
+        return task_failure("invalid_input", str(exc))
+
+    # ------------------------------------------------------------------
+    # 5. Run full semantic validation + event derivation
+    # ------------------------------------------------------------------
+    batch_id = candidates_doc.batch_id
+    evidence_bundle_digest = candidates_doc.evidence_bundle_digest
+
+    try:
+        plan = plan_reconciliation(candidates_doc, observations, change_snapshot, problems)
+    except ReconciliationValidationError as exc:
+        # Semantic failure: write failed reconcile-status; return success
+        reconcile_status = IssueReconcileStatus(
+            schema_version="1.0",
+            change_id=change_id,
+            batch_id=batch_id,
+            status="failed",
+            evidence_bundle_digest=evidence_bundle_digest,
+            error=str(exc),
+        )
+        _write_json(
+            inspect_dir / "issue-reconcile-status.json",
+            _canonical_json(reconcile_status.model_dump(mode="json")),
+        )
+        return TaskResult(
+            status="succeeded",
+            value={
+                "reconcile_status": "failed",
+                "batch_id": batch_id,
+                "error": str(exc),
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # 6. Append + rebuild both stores in the same task write-set
+    # ------------------------------------------------------------------
+    try:
+        change_store = ChangeIssueStore(change_dir)
+        change_store.append_and_rebuild(list(plan.change_events))
+    except Exception as exc:
+        return task_failure("invalid_output", f"reconcile-issues: change ledger write failed: {exc}")
+
+    if plan.problem_events:
+        try:
+            problem_store = ProjectProblemStore(project_root)
+            problem_store.append_and_rebuild(list(plan.problem_events))
+        except Exception as exc:
+            return task_failure(
+                "invalid_output",
+                f"reconcile-issues: project problem ledger write failed: {exc}",
+            )
+
+    # ------------------------------------------------------------------
+    # 7. Write completed reconcile status
+    # ------------------------------------------------------------------
+    reconcile_status = IssueReconcileStatus(
+        schema_version="1.0",
+        change_id=change_id,
+        batch_id=batch_id,
+        status="completed",
+        evidence_bundle_digest=evidence_bundle_digest,
+        candidate_digest=plan.candidate_digest,
+        occurrence_count=plan.occurrence_count,
+    )
+    _write_json(
+        inspect_dir / "issue-reconcile-status.json",
+        _canonical_json(reconcile_status.model_dump(mode="json")),
+    )
+
+    return TaskResult(
+        status="succeeded",
+        value={
+            "reconcile_status": "completed",
+            "batch_id": batch_id,
+            "occurrence_count": plan.occurrence_count,
+            "candidate_digest": plan.candidate_digest,
         },
     )

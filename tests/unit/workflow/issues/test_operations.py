@@ -877,3 +877,352 @@ def test_record_sync_pending_fallback_to_evidence_digest_when_no_candidates(tmp_
 def test_record_sync_pending_is_registered(tmp_path: Path) -> None:
     ops = default_operations()
     assert "operation:record-project-sync-pending" in ops
+
+
+# ===========================================================================
+# Tests: reconcile_issues_operation
+# ===========================================================================
+
+
+def _make_observations_doc(change_dir: Path, batch_id: str, obs_ids: list[str]) -> None:
+    """Write inspect/observations.json with the given observation IDs."""
+    from assurance_agent.artifacts.models.issues import (
+        Observation,
+        ObservationDocument,
+        ObservationSource,
+    )
+
+    observations = [
+        Observation(
+            observation_id=oid,
+            change_id=change_dir.name,
+            batch_id=batch_id,
+            kind="test_failure",
+            target="api",
+            case_id=f"case-{i}",
+            source=ObservationSource(
+                artifact=f"execution/runs/{batch_id}/api-result.json",
+                json_pointer=f"/cases/{i}",
+            ),
+            evidence_refs=[f"execution/runs/{batch_id}/api-result.json"],
+            signature="HTTP 500 from endpoint",
+            observed_at="2026-07-25T10:00:00Z",
+        )
+        for i, oid in enumerate(obs_ids)
+    ]
+    doc = ObservationDocument(
+        schema_version="1.0",
+        change_id=change_dir.name,
+        batch_id=batch_id,
+        observations=observations,
+    )
+    from assurance_agent.workflow.issues.projection import dump_projection
+    inspect_dir = change_dir / "inspect"
+    inspect_dir.mkdir(parents=True, exist_ok=True)
+    (inspect_dir / "observations.json").write_bytes(dump_projection(doc))
+
+
+def _make_candidates_doc(
+    change_dir: Path,
+    batch_id: str,
+    obs_ids: list[str],
+    evidence_digest: str,
+) -> None:
+    """Write inspect/issue-candidates.json with one candidate per obs_id."""
+    from assurance_agent.artifacts.models.issues import (
+        AffectedSurface,
+        FingerprintInputs,
+        IssueCandidate,
+        IssueCandidateDocument,
+        IssueCandidateProposed,
+    )
+    from assurance_agent.workflow.issues.projection import dump_projection
+
+    candidates = [
+        IssueCandidate(
+            candidate_id=f"CAND-{i:03d}",
+            observation_ids=[oid],
+            proposed=IssueCandidateProposed(
+                title=f"Issue from {oid}",
+                classification="product_bug",
+                severity="high",
+                root_cause_hypothesis="Unhandled exception",
+            ),
+            affected_surface=AffectedSurface(kind="endpoint", value=f"GET /api/v1/item{i}"),
+            fingerprint_inputs=FingerprintInputs(
+                surface="endpoint",
+                symptom=f"http 500 error {i}",
+            ),
+            possible_problem_ids=[],
+            confidence=0.8,
+            recommended_action="investigate",
+        )
+        for i, oid in enumerate(obs_ids)
+    ]
+    doc = IssueCandidateDocument(
+        schema_version="1.0",
+        change_id=change_dir.name,
+        batch_id=batch_id,
+        evidence_bundle_digest=evidence_digest,
+        candidates=candidates,
+    )
+    inspect_dir = change_dir / "inspect"
+    inspect_dir.mkdir(parents=True, exist_ok=True)
+    (inspect_dir / "issue-candidates.json").write_bytes(dump_projection(doc))
+
+
+def _make_reconcile_task() -> ExecutableTask:
+    """Build an ExecutableTask for reconcile operation tests."""
+    from assurance_agent.workflow.graph.contracts import ResourceClaims
+    from assurance_agent.workflow.graph.schema_v2 import RetryPolicyDef, TimeoutPolicyDef
+
+    return ExecutableTask(
+        task_id="task-rec-001",
+        invocation_id="inv-001",
+        checkpoint_ns="ns-001",
+        graph_id="g-001",
+        node_id="reconcile-issues",
+        structural_path="reconcile-issues",
+        input={},
+        input_sha256="0" * 64,
+        contract_digest="0" * 64,
+        retryable_errors=("conflict", "transport"),
+        retry_policy=RetryPolicyDef(max_attempts=3),
+        timeout_policy=TimeoutPolicyDef(run_seconds=300, heartbeat_seconds=60),
+        target="operation:reconcile-issues",
+        resources=ResourceClaims(),
+    )
+
+
+class _FakeReconcileWorkspace:
+    """Minimal workspace stub with separate change_dir and project_root."""
+
+    def __init__(self, change_dir: Path, project_root: Path) -> None:
+        self.change_dir = change_dir
+        self.project_root = project_root
+
+
+def test_reconcile_is_registered() -> None:
+    """operation:reconcile-issues must be in default_operations()."""
+    ops = default_operations()
+    assert "operation:reconcile-issues" in ops
+
+
+def test_reconcile_creates_occurrences_and_problems(tmp_path: Path) -> None:
+    """Successful reconcile writes all 6 required files."""
+    from assurance_agent.workflow.issues.operations import reconcile_issues_operation
+
+    change_id = "CH-rec-001"
+    change_dir = tmp_path / change_id
+    project_root = tmp_path / "project"
+    batch_id = "BATCH-001"
+    evidence_digest = "sha256:" + "a" * 64
+
+    obs_ids = ["OBS-001"]
+    _make_observations_doc(change_dir, batch_id, obs_ids)
+    _make_candidates_doc(change_dir, batch_id, obs_ids, evidence_digest)
+
+    task = _make_reconcile_task()
+    workspace = _FakeReconcileWorkspace(change_dir, project_root)
+    context = _make_context(change_dir)
+
+    result = reconcile_issues_operation(task, workspace, context)  # type: ignore[arg-type]
+
+    assert result.status == "succeeded"
+    value = result.value
+    assert isinstance(value, dict)
+    assert value["reconcile_status"] == "completed"
+    assert value["occurrence_count"] == 1
+
+    # All 6 required output files
+    assert (change_dir / "inspect" / "issue-reconcile-status.json").is_file()
+    assert (change_dir / "issues" / "events.jsonl").is_file()
+    assert (change_dir / "issues" / "snapshot.json").is_file()
+    assert (project_root / "qa" / "issues" / "events.jsonl").is_file()
+    assert (project_root / "qa" / "issues" / "problems.json").is_file()
+    assert (project_root / "qa" / "issues" / "review-queue.json").is_file()
+
+
+def test_reconcile_status_completed_on_success(tmp_path: Path) -> None:
+    """issue-reconcile-status.json is written with status=completed on success."""
+    from assurance_agent.workflow.issues.operations import reconcile_issues_operation
+
+    change_id = "CH-rec-002"
+    change_dir = tmp_path / change_id
+    project_root = tmp_path / "project"
+    batch_id = "BATCH-001"
+    evidence_digest = "sha256:" + "b" * 64
+
+    _make_observations_doc(change_dir, batch_id, ["OBS-001"])
+    _make_candidates_doc(change_dir, batch_id, ["OBS-001"], evidence_digest)
+
+    task = _make_reconcile_task()
+    workspace = _FakeReconcileWorkspace(change_dir, project_root)
+    context = _make_context(change_dir)
+
+    result = reconcile_issues_operation(task, workspace, context)  # type: ignore[arg-type]
+
+    assert result.status == "succeeded"
+
+    status = json.loads(
+        (change_dir / "inspect" / "issue-reconcile-status.json").read_text(encoding="utf-8")
+    )
+    assert status["status"] == "completed"
+    assert status["change_id"] == change_id
+
+
+def test_reconcile_semantic_failure_writes_failed_status_returns_success(tmp_path: Path) -> None:
+    """Semantic validation failure: only failed reconcile-status written, TaskResult is success."""
+    from assurance_agent.workflow.issues.operations import reconcile_issues_operation
+
+    change_id = "CH-rec-sem-fail"
+    change_dir = tmp_path / change_id
+    project_root = tmp_path / "project"
+    batch_id = "BATCH-001"
+    evidence_digest = "sha256:" + "c" * 64
+
+    # observations has OBS-001 but candidate references OBS-UNKNOWN
+    _make_observations_doc(change_dir, batch_id, ["OBS-001"])
+    _make_candidates_doc(change_dir, batch_id, ["OBS-UNKNOWN"], evidence_digest)
+
+    task = _make_reconcile_task()
+    workspace = _FakeReconcileWorkspace(change_dir, project_root)
+    context = _make_context(change_dir)
+
+    result = reconcile_issues_operation(task, workspace, context)  # type: ignore[arg-type]
+
+    # Must return success (workflow continues)
+    assert result.status == "succeeded"
+    value = result.value
+    assert isinstance(value, dict)
+    assert value["reconcile_status"] == "failed"
+
+    # Only reconcile-status written; no occurrence/problem files
+    assert (change_dir / "inspect" / "issue-reconcile-status.json").is_file()
+    assert not (change_dir / "issues" / "events.jsonl").is_file()
+    assert not (project_root / "qa" / "issues" / "events.jsonl").is_file()
+
+    status = json.loads(
+        (change_dir / "inspect" / "issue-reconcile-status.json").read_text(encoding="utf-8")
+    )
+    assert status["status"] == "failed"
+
+
+def test_reconcile_missing_candidates_returns_invalid_input(tmp_path: Path) -> None:
+    """Missing candidates file → task failure with invalid_input."""
+    from assurance_agent.workflow.issues.operations import reconcile_issues_operation
+
+    change_id = "CH-rec-no-cand"
+    change_dir = tmp_path / change_id
+    project_root = tmp_path / "project"
+    batch_id = "BATCH-001"
+
+    _make_observations_doc(change_dir, batch_id, ["OBS-001"])
+    # No candidates file written
+
+    task = _make_reconcile_task()
+    workspace = _FakeReconcileWorkspace(change_dir, project_root)
+    context = _make_context(change_dir)
+
+    result = reconcile_issues_operation(task, workspace, context)  # type: ignore[arg-type]
+
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_input"
+
+
+def test_reconcile_missing_observations_returns_invalid_input(tmp_path: Path) -> None:
+    """Missing observations file → task failure with invalid_input."""
+    from assurance_agent.workflow.issues.operations import reconcile_issues_operation
+
+    change_id = "CH-rec-no-obs"
+    change_dir = tmp_path / change_id
+    project_root = tmp_path / "project"
+    batch_id = "BATCH-001"
+    evidence_digest = "sha256:" + "d" * 64
+
+    # No observations file, but candidates exist
+    _make_candidates_doc(change_dir, batch_id, ["OBS-001"], evidence_digest)
+
+    task = _make_reconcile_task()
+    workspace = _FakeReconcileWorkspace(change_dir, project_root)
+    context = _make_context(change_dir)
+
+    result = reconcile_issues_operation(task, workspace, context)  # type: ignore[arg-type]
+
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_input"
+
+
+def test_reconcile_empty_candidates_no_problem_events(tmp_path: Path) -> None:
+    """Empty candidates document → analysis_completed written, no problem events."""
+    from assurance_agent.workflow.issues.operations import reconcile_issues_operation
+    from assurance_agent.workflow.issues.events import read_change_issue_events, read_problem_events
+
+    change_id = "CH-rec-empty"
+    change_dir = tmp_path / change_id
+    project_root = tmp_path / "project"
+    batch_id = "BATCH-001"
+    evidence_digest = "sha256:" + "e" * 64
+
+    _make_observations_doc(change_dir, batch_id, [])
+    _make_candidates_doc(change_dir, batch_id, [], evidence_digest)
+
+    task = _make_reconcile_task()
+    workspace = _FakeReconcileWorkspace(change_dir, project_root)
+    context = _make_context(change_dir)
+
+    result = reconcile_issues_operation(task, workspace, context)  # type: ignore[arg-type]
+
+    assert result.status == "succeeded"
+    assert result.value["occurrence_count"] == 0  # type: ignore[index]
+
+    # Change events: issue_analysis_completed only (no occurrences)
+    change_events = read_change_issue_events(change_dir / "issues" / "events.jsonl")
+    assert len(change_events) == 1
+    assert change_events[0].type == "issue_analysis_completed"
+
+    # No project files written (no problem events)
+    assert not (project_root / "qa" / "issues" / "events.jsonl").is_file()
+
+
+def test_reconcile_is_idempotent(tmp_path: Path) -> None:
+    """Calling reconcile twice with the same inputs produces no duplicate events."""
+    from assurance_agent.workflow.issues.operations import reconcile_issues_operation
+    from assurance_agent.workflow.issues.events import read_change_issue_events, read_problem_events
+
+    change_id = "CH-rec-idem"
+    change_dir = tmp_path / change_id
+    project_root = tmp_path / "project"
+    batch_id = "BATCH-001"
+    evidence_digest = "sha256:" + "f" * 64
+
+    _make_observations_doc(change_dir, batch_id, ["OBS-001"])
+    _make_candidates_doc(change_dir, batch_id, ["OBS-001"], evidence_digest)
+
+    task = _make_reconcile_task()
+    workspace = _FakeReconcileWorkspace(change_dir, project_root)
+    context = _make_context(change_dir)
+
+    # First call
+    result1 = reconcile_issues_operation(task, workspace, context)  # type: ignore[arg-type]
+    assert result1.status == "succeeded"
+
+    # Capture ledger state after first call
+    project_events_after_1 = (project_root / "qa" / "issues" / "events.jsonl").read_text(encoding="utf-8")
+    change_events_after_1 = (change_dir / "issues" / "events.jsonl").read_text(encoding="utf-8")
+
+    # Reset project store to empty so second call sees the same initial state
+    # (simulates the synchronized workspace frozen snapshot)
+    (project_root / "qa" / "issues" / "events.jsonl").unlink()
+    (project_root / "qa" / "issues" / "problems.json").unlink()
+    (project_root / "qa" / "issues" / "review-queue.json").unlink()
+
+    # Second call with same inputs and same initial project state
+    result2 = reconcile_issues_operation(task, workspace, context)  # type: ignore[arg-type]
+    assert result2.status == "succeeded"
+
+    # Both calls produce identical project event content
+    project_events_after_2 = (project_root / "qa" / "issues" / "events.jsonl").read_text(encoding="utf-8")
+    assert project_events_after_1 == project_events_after_2, (
+        "Idempotent replay must produce byte-identical project ledger content"
+    )

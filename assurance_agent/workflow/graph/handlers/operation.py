@@ -44,6 +44,7 @@ from assurance_agent.workflow.issues.operations import (
     record_empty_issue_analysis_operation,
     record_issue_analysis_failure_operation,
     record_project_sync_pending_operation,
+    reconcile_issues_operation,
 )
 
 OperationResult = TaskResult
@@ -342,6 +343,7 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:record-empty-issue-analysis": record_empty_issue_analysis_operation,
         "operation:record-issue-analysis-failure": record_issue_analysis_failure_operation,
         "operation:record-project-sync-pending": record_project_sync_pending_operation,
+        "operation:reconcile-issues": reconcile_issues_operation,
     }
 
 
