@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 
 from assurance_agent.workflow.graph.handlers.retro_ops import retro_accept, retro_collect
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext
@@ -196,6 +197,28 @@ def test_retro_collect_op_missing_retro_id_is_invalid_input(tmp_path: Path) -> N
 
     assert result.status == "failed"
     assert result.error_kind == "invalid_input"
+
+
+def test_retro_collect_op_maps_issue_history_integrity_to_invalid_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Product path: IssueHistoryIntegrityError → invalid_input (not a replaced op)."""
+    from assurance_agent.workflow.issues.history import IssueHistoryIntegrityError
+
+    def _boom(*_a: object, **_k: object) -> object:
+        raise IssueHistoryIntegrityError("corrupt Issue Ledger")
+
+    monkeypatch.setattr(
+        "assurance_agent.workflow.graph.handlers.retro_ops.run_retro_collect",
+        _boom,
+    )
+    workspace = _make_workspace(tmp_path)
+    context = _make_context(workspace, params={"retro_id": "retro-corrupt", "retro_last": 5})
+    result = retro_collect(_make_task("operation:retro-collect"), workspace, context)
+
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_input"
+    assert "corrupt Issue Ledger" in (result.error or "")
 
 
 # ---------------------------------------------------------------------------

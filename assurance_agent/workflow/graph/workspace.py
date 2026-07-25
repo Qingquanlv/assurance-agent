@@ -558,19 +558,21 @@ class TreeStore:
         return ResolvedArtifact(value=value, reads_sha256={logical_path: entry.sha256})
 
     def filter_tree(self, tree_id: str, claims: ResourceClaims) -> str:
-        """Return a tree id containing only entries in the task's claim scope.
+        """Return a tree id that omits sibling Retro runs pinned out of scope.
 
-        Used so task workspaces omit sibling Retro runs (and other out-of-scope
-        paths) while freeze still diffs against a matching sparse base tree.
+        When task claims name concrete ``project:qa/retro/<id>/...`` paths,
+        other ``qa/retro/<sibling>/`` entries are dropped from the materialized
+        workspace. The freeze/merge ``base_tree_id`` stays the full overlay tree
+        — callers must not rebind it to this filtered id.
         """
         manifest = self._load_tree(tree_id)
-        bounds = (*claims.reads, *claims.writes, *claims.authorization_writes)
-        if not bounds:
+        claimed_retro_ids = _claimed_retro_run_ids(claims)
+        if not claimed_retro_ids:
             return tree_id
         entries = {
             rel: entry
             for rel, entry in manifest.entries.items()
-            if _entry_covered_by_claims(manifest.roots, rel, claims)
+            if not _is_omitted_retro_sibling(manifest.roots, rel, claimed_retro_ids)
         }
         if entries == manifest.entries:
             return tree_id
@@ -626,6 +628,7 @@ class TreeStore:
                 workspace.root, base.roots, claims.synchronized
             ).items():
                 current[rel] = entry
+        claimed_retro_ids = _claimed_retro_run_ids(claims)
         entries: list[WriteEntry] = []
         for rel in sorted(set(base.entries) | set(current)):
             if _is_excluded_rel(rel) and not _is_synchronized_ledger_rel(
@@ -637,6 +640,14 @@ class TreeStore:
             before = base.entries.get(rel)
             after = current.get(rel)
             if before == after:
+                continue
+            # Sibling Retro dirs were intentionally not materialized; absence is
+            # not a delete against the full freeze/merge base tree.
+            if (
+                after is None
+                and before is not None
+                and _is_omitted_retro_sibling(base.roots, rel, claimed_retro_ids)
+            ):
                 continue
             if (before is not None and before.kind == "symlink") or (
                 after is not None and after.kind == "symlink"
@@ -1058,6 +1069,44 @@ def _entry_covered_by_claims(
     return False
 
 
+def _claimed_retro_run_ids(claims: ResourceClaims) -> frozenset[str]:
+    """Concrete ``qa/retro/<id>`` run ids pinned by task read/write claims."""
+    ids: set[str] = set()
+    for bound in (*claims.reads, *claims.writes, *claims.authorization_writes):
+        if bound.root != "project":
+            continue
+        segments = bound.segments
+        if (
+            len(segments) >= 3
+            and segments[0] == "qa"
+            and segments[1] == "retro"
+            and segments[2] not in ("*", "**")
+        ):
+            ids.add(segments[2])
+    return frozenset(ids)
+
+
+def _is_omitted_retro_sibling(
+    roots: Mapping[str, str],
+    rel: str,
+    claimed_retro_ids: frozenset[str],
+) -> bool:
+    """True for ``qa/retro/<other>/...`` entries when claims pin specific run ids."""
+    if not claimed_retro_ids:
+        return False
+    try:
+        logical = ResourcePath.parse(_canonical_logical(roots, rel))
+    except WorkspaceError:
+        return False
+    if logical.root != "project":
+        return False
+    segments = logical.segments
+    if len(segments) < 3 or segments[0] != "qa" or segments[1] != "retro":
+        return False
+    run_id = segments[2]
+    return run_id not in claimed_retro_ids and run_id not in ("*", "**")
+
+
 def _physical_for(roots: Mapping[str, str], logical: ResourcePath) -> str:
     prefix = roots.get(logical.root)
     if prefix is None:
@@ -1143,10 +1192,14 @@ class WorkspaceBackend:
         if root.exists():
             shutil.rmtree(root)
         root.mkdir(parents=True)
-        effective_tree = store.filter_tree(base_tree_id, claims) if claims is not None else base_tree_id
-        store.materialize(effective_tree, root)
+        # Materialize a sibling-omitted view when claims pin a Retro run, but
+        # keep freeze/merge base_tree_id on the full overlay/invocation tree.
+        materialize_tree = (
+            store.filter_tree(base_tree_id, claims) if claims is not None else base_tree_id
+        )
+        store.materialize(materialize_tree, root)
         self._init_convenience_git(root, side_effect_free=side_effect_free)
-        return TaskWorkspace.from_materialized_root(task_id, root, effective_tree)
+        return TaskWorkspace.from_materialized_root(task_id, root, base_tree_id)
 
     @staticmethod
     def _init_convenience_git(root: Path, *, side_effect_free: bool) -> None:

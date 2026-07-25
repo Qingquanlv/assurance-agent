@@ -6,6 +6,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from assurance_agent import resources
 from assurance_agent.retro.candidates import context_sha256
 from assurance_agent.retro.types import (
@@ -281,14 +283,6 @@ def _stub_collect(
     return _fn
 
 
-def _stub_collect_hard_fail(
-    task: ExecutableTask,
-    workspace: TaskWorkspace,
-    context: RuntimeContext,
-) -> TaskResult:
-    raise IssueHistoryIntegrityError("corrupt Issue Ledger")
-
-
 def test_zero_signal_never_invokes_agent(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     compiled, contracts = _compile()
@@ -300,17 +294,22 @@ def test_zero_signal_never_invokes_agent(tmp_path: Path) -> None:
     assert not (project / "qa/retro/retro-zero/proposal-candidates.json").exists()
 
 
-def test_corrupt_issue_ledger_fails_before_agent(tmp_path: Path) -> None:
+def test_corrupt_issue_ledger_fails_before_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Integrity errors surface via real retro_collect → invalid_input, before aa-retro."""
+
+    def _boom(*_a: object, **_k: object) -> object:
+        raise IssueHistoryIntegrityError("corrupt Issue Ledger")
+
+    monkeypatch.setattr(
+        "assurance_agent.workflow.graph.handlers.retro_ops.run_retro_collect",
+        _boom,
+    )
     project = _make_project(tmp_path)
     compiled, contracts = _compile()
     invoker = RecordingInvoker()
-    runtime = _runtime(
-        project,
-        compiled,
-        contracts,
-        invoker,
-        extra_ops={"operation:retro-collect": _stub_collect_hard_fail},
-    )
+    runtime = _runtime(project, compiled, contracts, invoker)
     result = runtime.run(compiled, "retro", _ctx(project, "retro-corrupt"))
     assert result.status.status == "failed"
     assert invoker.calls == []

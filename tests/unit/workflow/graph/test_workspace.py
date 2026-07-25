@@ -785,6 +785,13 @@ def test_workspace_create_does_not_materialize_sibling_retro_dirs(tmp_path: Path
     assert (workspace.project_root / "qa/retro/retro-current/context.json").is_file()
     assert not (workspace.project_root / "qa/retro/retro-other").exists()
     assert not (workspace.project_root / "qa/retro/retro-other/secret.md").exists()
+    # Freeze/merge base stays the full overlay tree; sibling omission is materialization-only.
+    assert workspace.base_tree_id == tree_id
+    # Unclaimed project paths remain in the invocation-base snapshot.
+    assert (workspace.project_root / "app/source.py").is_file()
+    write_set = store.freeze_write_set(workspace, claims=claims)
+    assert write_set.base_tree_id == tree_id
+    assert write_set.entries == ()
 
 
 @pytest.mark.skipif(_GIT is None, reason="git binary not available")
