@@ -1,5 +1,19 @@
-"""Deterministic issue identity and lifecycle transition helpers."""
+"""Deterministic issue identity, lifecycle transitions, and read-only history."""
 
+from assurance_agent.workflow.issues.history import (
+    InMemoryIssueHistoryReader,
+    IssueHistoryConflict,
+    IssueHistoryIntegrityError,
+    IssueHistoryReader,
+    LedgerIssueHistoryReader,
+)
+from assurance_agent.workflow.issues.history_models import (
+    IssueEvidenceSlice,
+    IssueHistoryIntegrity,
+    IssueSourceDescriptor,
+    IssueTypedEvents,
+    IssueWindowSelection,
+)
 from assurance_agent.workflow.issues.identity import (
     DIGEST_PREFIX_LENGTH,
     ObservationIdentityInput,
@@ -23,7 +37,17 @@ from assurance_agent.workflow.issues.transitions import (
 __all__ = [
     "DIGEST_PREFIX_LENGTH",
     "HUMAN_TRANSITIONS",
+    "InMemoryIssueHistoryReader",
     "InvalidTransitionError",
+    "IssueEvidenceSlice",
+    "IssueHistoryConflict",
+    "IssueHistoryIntegrity",
+    "IssueHistoryIntegrityError",
+    "IssueHistoryReader",
+    "IssueSourceDescriptor",
+    "IssueTypedEvents",
+    "IssueWindowSelection",
+    "LedgerIssueHistoryReader",
     "ObservationIdentityInput",
     "ResolutionContext",
     "StaleVersionError",
