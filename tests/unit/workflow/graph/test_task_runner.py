@@ -593,6 +593,9 @@ def test_default_operations_registry_has_exact_keys() -> None:
         # Issue review (Task 12)
         "operation:load-problem-review-context",
         "operation:apply-problem-review",
+        # Improvement review (retro/improvement separation Task 10)
+        "operation:load-improvement-review-context",
+        "operation:apply-improvement-review",
     }
 
 

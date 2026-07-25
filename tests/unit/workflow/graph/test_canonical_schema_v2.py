@@ -51,6 +51,8 @@ EXPECTED_GRAPHS = {
     "issue-review-workflow",
     "issue-analyze-workflow",
     "issue-reconcile-workflow",
+    # Improvement review (retro/improvement separation Task 10)
+    "improvement-review-workflow",
 }
 
 EXPECTED_CONTRACTS = {
@@ -103,6 +105,9 @@ EXPECTED_CONTRACTS = {
     # Issue review (Task 12)
     "operation:load-problem-review-context",
     "operation:apply-problem-review",
+    # Improvement review (retro/improvement separation Task 10)
+    "operation:load-improvement-review-context",
+    "operation:apply-improvement-review",
 }
 
 SCHEMA_REL = Path("assurance_agent/_resources/schemas/workflow-schema.yaml")
@@ -245,6 +250,8 @@ def test_canonical_v2_compiles_with_all_targets() -> None:
         "full", "intake", "execute", "case", "archive", "retro",
         # Issue review entrypoints (Task 12)
         "issue-review", "issue-analyze", "issue-reconcile",
+        # Improvement review (retro/improvement separation Task 10)
+        "improvement-review",
     }
 
 
