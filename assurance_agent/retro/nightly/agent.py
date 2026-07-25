@@ -6,23 +6,20 @@ from pathlib import Path
 
 
 def build_retro_proposal_prompt(retro_id: str) -> str:
-    """Prompt for the aa-retro proposal agent, in the `build_phase_prompt`
+    """Prompt for the aa-retro candidate agent, in the `build_phase_prompt`
     `skill(name=...)` convention (see `workflow/driver/phase_prompt.py`).
     """
     return (
         "Call skill(name='aa-retro'). "
-        f"Read qa/retro/{retro_id}/context.json. "
-        f"Write qa/retro/{retro_id}/proposals.json and qa/retro/{retro_id}/retro-summary.md. "
-        "Every proposal MUST include machine fields finding_kind, apply_kind, and a structured "
-        "payload (prompt_rule→payload.body; workflow_bug→IssueDraftPayload; "
-        "domain_knowledge→L2 delta with mode:delta). Natural-language problem/proposed_change "
-        "are not enough by themselves. "
-        "Do not modify SKILL.md files, the workflow schema, .aa/memory, or project source files."
+        f"Read only qa/retro/{retro_id}/context.json. "
+        f"Write qa/retro/{retro_id}/proposal-candidates.json and qa/retro/{retro_id}/retro-summary.md. "
+        "Set schema_version='2' and pin context_sha256. Do not read any other Retro run, "
+        "qa/issues, raw archive, qa/improvements, memory, data knowledge, or project source files."
     )
 
 
 def run_agent(agent_cmd: str, retro_dir: Path) -> int:
-    """Invoke external proposal agent (writes proposals.json / retro-summary.md).
+    """Invoke external candidate agent (writes proposal-candidates.json / retro-summary.md).
 
     `agent_cmd` is the agent binary + flags only (no prompt) — e.g.
     `cursor-agent --print --output-format stream-json --workspace <dir> --trust`.

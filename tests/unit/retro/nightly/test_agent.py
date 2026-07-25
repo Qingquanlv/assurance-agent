@@ -9,10 +9,16 @@ from assurance_agent.retro.nightly.agent import build_retro_proposal_prompt, run
 def test_build_retro_proposal_prompt_references_skill_and_retro_id() -> None:
     prompt = build_retro_proposal_prompt("retro-20260716-000000")
     assert "aa-retro" in prompt
-    assert "qa/retro/retro-20260716-000000/context.json" in prompt
-    assert "qa/retro/retro-20260716-000000/proposals.json" in prompt
-    assert "finding_kind" in prompt
-    assert "payload" in prompt
+    assert "Read only qa/retro/retro-20260716-000000/context.json" in prompt
+    assert "qa/retro/retro-20260716-000000/proposal-candidates.json" in prompt
+    assert "qa/retro/retro-20260716-000000/retro-summary.md" in prompt
+    assert "schema_version='2'" in prompt
+    assert "context_sha256" in prompt
+    assert "proposals.json" not in prompt
+    assert "finding_kind" not in prompt
+    assert "Do not read any other Retro run" in prompt
+    assert "qa/issues" in prompt
+    assert "data knowledge" in prompt
 
 
 def test_run_agent_appends_prompt_as_trailing_argv(tmp_path: Path) -> None:
@@ -40,3 +46,4 @@ def test_run_agent_appends_prompt_as_trailing_argv(tmp_path: Path) -> None:
     assert captured_argv[:3] == ["cursor-agent", "--print", "--trust"]
     assert len(captured_argv) == 4
     assert "retro-1" in captured_argv[-1]
+    assert "proposal-candidates.json" in captured_argv[-1]

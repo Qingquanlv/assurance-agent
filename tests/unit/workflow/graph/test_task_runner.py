@@ -360,6 +360,50 @@ def test_agent_handler_builds_workspace_request_and_freezes(tmp_path: Path) -> N
     assert "IS this task's project root" in request.prompt
 
 
+def test_aa_retro_agent_prompt_is_current_run_only(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    workspace = _workspace(project)
+    invoker = RecordingInvoker(write="qa/retro/retro-1/proposal-candidates.json")
+    catalog = parse_execution_contracts(
+        'schema_version: "1"\n'
+        "contracts:\n"
+        "  skill:aa-retro:\n"
+        "    handler: agent\n"
+        "    writes: [project:qa/retro/**]\n"
+        "    authorization_writes: [project:qa/retro/**]\n"
+    )
+    graph = """
+    main:
+      max_supersteps: 5
+      nodes:
+        propose:
+          uses: skill:aa-retro
+          outputs: [project:qa/retro/retro-1/proposal-candidates.json]
+      edges:
+        - {from: START, to: propose}
+        - {from: propose, to: END}
+    """
+    handler = AgentHandler(
+        invoker,
+        _store(project),
+        contracts=catalog,
+        compiled=_compiled(graph),
+    )
+    result = handler.execute(
+        _task("skill:aa-retro", node_id="propose"),
+        workspace,
+        _context(project, params={"retro_id": "retro-1"}),
+    )
+    assert result.status == "succeeded"
+    prompt = invoker.requests[0].prompt
+    assert "Read only qa/retro/retro-1/context.json" in prompt
+    assert "proposal-candidates.json" in prompt
+    assert "schema_version='2'" in prompt
+    assert "proposals.json" not in prompt
+    assert "finding_kind" not in prompt
+    assert "Do not read any other Retro run" in prompt
+
+
 def test_agent_fan_out_preserves_synchronized_claims_in_frozen_write_set(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     workspace = _workspace(project)
