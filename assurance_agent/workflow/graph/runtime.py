@@ -924,7 +924,9 @@ class GraphRuntime:
                     if index == 0:
                         txn.append_strict(resumed)
                     else:
-                        txn.append_strict(resumed.model_copy(update={"invocation_id": invocation_id}))
+                        txn.append_strict(
+                            resumed.model_copy(update={"invocation_id": invocation_id, "payload": {}})
+                        )
             if command.action == "stop":
                 txn.append_strict(
                     GraphTerminalEvent(
