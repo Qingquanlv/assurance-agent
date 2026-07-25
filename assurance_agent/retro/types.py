@@ -266,6 +266,17 @@ class RetroContext(BaseModel):
     signals: RetroSignalSet
     signal_count: int = Field(ge=0)
 
+    @property
+    def allows_domain_knowledge(self) -> bool:
+        """True only when Issue source integrity is complete.
+
+        Incomplete Workflow/Eval sources do not forbid domain_knowledge; only
+        Issue ``analysis_failed`` / ``project_sync_pending`` reasons do.
+        Other ImprovementKinds remain eligible when this is false.
+        """
+        issue_blockers = frozenset({"analysis_failed", "project_sync_pending"})
+        return not any(reason in issue_blockers for reason in self.integrity.reasons)
+
 
 class MemoryBodyPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")

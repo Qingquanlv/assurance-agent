@@ -12,7 +12,6 @@ from assurance_agent.workflow.graph.schema_v2 import RetryPolicyDef, TimeoutPoli
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.graph.contracts import ResourceClaims
 from tests.helpers_aa import write_aa_config
-from tests.unit.retro.archive_fixtures import make_archived_change
 
 
 def _make_workspace(tmp_path: Path) -> TaskWorkspace:
@@ -90,6 +89,61 @@ def _write_context_json(retro_dir: Path, retro_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _write_terminal_archived_change(
+    project_root: Path,
+    change_id: str,
+    *,
+    terminal_ts: str = "2026-07-25T12:00:00Z",
+) -> Path:
+    """Archive Change with an authoritative terminal ledger event (for last-N windows)."""
+    write_aa_config(project_root)
+    root = project_root / "qa" / "archive" / change_id
+    root.mkdir(parents=True, exist_ok=True)
+    events = [
+        {
+            "seq": 1,
+            "ts": "2026-07-25T11:00:00Z",
+            "source": "graph",
+            "type": "graph_invocation_started",
+            "invocation_id": f"inv-{change_id}",
+            "entrypoint": "full",
+            "graph_id": "main",
+            "graph_digest": "sha256:" + "a" * 64,
+            "contract_digests": {},
+            "params": {},
+            "params_sha256": "sha256:" + "b" * 64,
+            "root_tree_id": "tree-1",
+            "max_parallel_tasks": 1,
+            "checkpoint_ns": f"inv-{change_id}",
+            "structural_path": "/",
+        },
+        {
+            "seq": 2,
+            "ts": terminal_ts,
+            "source": "gate",
+            "type": "gate_verdict",
+            "gate": "case-review",
+            "verdict": "needs_fix",
+            "evidence": {},
+            "reason": "unresolved",
+        },
+        {
+            "seq": 3,
+            "ts": terminal_ts,
+            "source": "graph",
+            "type": "graph_completed",
+            "invocation_id": f"inv-{change_id}",
+            "checkpoint_ns": f"inv-{change_id}",
+            "reason": "settled",
+        },
+    ]
+    (root / "events.jsonl").write_text(
+        "\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8"
+    )
+    (root / "workflow-state.yaml").write_text("phases: {}\n", encoding="utf-8")
+    return root
+
+
 def test_retro_collect_op_writes_context_and_value(tmp_path: Path) -> None:
     workspace = _make_workspace(tmp_path)
     context = _make_context(workspace, params={"retro_id": "retro-001", "retro_last": 5})
@@ -103,17 +157,14 @@ def test_retro_collect_op_writes_context_and_value(tmp_path: Path) -> None:
     assert result.value["retro_id"] == "retro-001"
     context_file = workspace.project_root / "qa" / "retro" / "retro-001" / "context.json"
     assert context_file.exists()
+    payload = json.loads(context_file.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "2"
 
 
 def test_retro_collect_op_scans_host_root_not_task_workspace(tmp_path: Path) -> None:
-    """Candidate evidence only exists on the host root.
-
-    A task workspace has ``events.jsonl`` / ``workflow-state.yaml`` pruned by tree
-    capture and holds no sibling change dirs, so scanning it yields an empty window
-    for every change on disk — retro would silently never have anything to do.
-    """
+    """Workflow/Issue evidence is read from the host root; context.json lands in workspace."""
     host = tmp_path / "host"
-    make_archived_change(host, "CH-ARCHIVED", failures=[{"classification": "assertion"}])
+    _write_terminal_archived_change(host, "CH-ARCHIVED")
     workspace = _make_workspace(tmp_path)
     context = RuntimeContext(
         project_root=host,
@@ -127,11 +178,12 @@ def test_retro_collect_op_scans_host_root_not_task_workspace(tmp_path: Path) -> 
 
     assert result.status == "succeeded"
     assert isinstance(result.value, dict)
-    assert result.value["signal_count"] > 0
     written = workspace.project_root / "qa" / "retro" / "retro-host-001" / "context.json"
     assert written.is_file(), "context.json must land in the workspace to be frozen"
-    window = json.loads(written.read_text(encoding="utf-8"))["window"]
-    assert window["change_ids"] == ["CH-ARCHIVED"]
+    payload = json.loads(written.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "2"
+    assert payload["window"]["change_ids"] == ["CH-ARCHIVED"]
+    assert payload["signal_count"] >= 1  # gate pushback from host ledger
     assert not (host / "qa" / "retro" / "retro-host-001").exists()
 
 

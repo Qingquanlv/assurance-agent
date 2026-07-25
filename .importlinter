@@ -27,6 +27,7 @@ layers =
 ignore_imports =
     assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.accept_stage
     assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.collect_stage
+    assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.window
 
 [importlinter:contract:eval-retro-independence]
 name = eval and retro must not import each other
@@ -38,6 +39,7 @@ modules =
 ignore_imports =
     assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.accept_stage
     assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.collect_stage
+    assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.window
 
 [importlinter:contract:core-below-orchestration]
 name = workflow.core must not import workflow.orchestration

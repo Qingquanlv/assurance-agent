@@ -12,13 +12,12 @@ from assurance_agent.change_location import archive_root, resolve_change
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import assert_path_segment_safe
 from assurance_agent.retro.accept_stage import run_retro_accept
-from assurance_agent.retro.aggregator import build_retro_context
 from assurance_agent.retro.apply import (
     apply_memory_proposal,
     apply_proposal_to_stage,
     resolve_memory_target,
 )
-from assurance_agent.retro.collect_stage import ContextBuilder, run_retro_collect
+from assurance_agent.retro.collect_stage import run_retro_collect
 from assurance_agent.retro.nightly.exit_codes import (
     NIGHTLY_FAILURE,
     NIGHTLY_NOOP,
@@ -33,6 +32,7 @@ from assurance_agent.retro.nightly.phase_f import (
 )
 from assurance_agent.retro.nightly.types import NightlyOptions
 from assurance_agent.retro.nightly.utils import generate_retro_id, write_json
+from assurance_agent.retro.window import selection_from_nightly_options
 from assurance_agent.retro.promotions import (
     application_event,
     append_promotion_events,
@@ -70,29 +70,28 @@ def collect_nightly(
     options: NightlyOptions,
     *,
     agent_runner: AgentRunner,
-    context_builder: ContextBuilder = build_retro_context,
     is_terminal: IsTerminal | None = None,
     now: datetime | None = None,
 ) -> int:
     sut = Path(options.sut)
     # Bind project_root into the default probe so it needs no path reverse-derivation.
+    # Kept for callers that still inject is_terminal during the half-cutover window.
     if is_terminal is None:
         is_terminal = partial(_default_is_terminal, sut)
+    _ = is_terminal
     retro_id = options.retro_id or generate_retro_id(now)
 
     try:
         result = run_retro_collect(
             sut,
             retro_id=retro_id,
-            context_builder=context_builder,
-            is_terminal=is_terminal,
+            selection=selection_from_nightly_options(options),
             now=now,
         )
     except Exception:  # noqa: BLE001 - aggregation failure is infrastructure failure
         return NIGHTLY_FAILURE
 
     if result.signal_count == 0:
-        # Stage completion for zero-signal candidates is owned by run_retro_collect.
         return NIGHTLY_NOOP
 
     if options.dry_run:

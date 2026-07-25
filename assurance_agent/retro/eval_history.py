@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from assurance_agent.eval.paths import runs_dir
 from assurance_agent.retro.types import RetroIntegrity, RetroSourceDescriptor
 
 if TYPE_CHECKING:
@@ -49,6 +48,11 @@ class EvalEvidenceSlice(BaseModel):
 @runtime_checkable
 class EvalHistoryReader(Protocol):
     def read_window(self, window: ResolvedRetroWindow) -> EvalEvidenceSlice: ...
+
+
+def _runs_dir(project_root: Path) -> Path:
+    """Eval report root; local helper avoids retro↔eval package imports."""
+    return project_root / "eval" / "out" / "runs"
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -136,7 +140,7 @@ class FileEvalHistoryReader:
         self._root = project_root
 
     def read_window(self, window: ResolvedRetroWindow) -> EvalEvidenceSlice:
-        root = runs_dir(self._root)
+        root = _runs_dir(self._root)
         if not root.is_dir():
             return _build_slice((), ("eval_runs_missing",))
 
