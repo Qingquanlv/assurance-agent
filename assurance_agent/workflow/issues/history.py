@@ -434,6 +434,11 @@ class InMemoryIssueHistoryReader:
             read_problem_events_from_bytes(self._problem_ledger_bytes)
         except LedgerIntegrityError as exc:
             raise IssueHistoryIntegrityError(str(exc)) from exc
+        for change_id in selection.change_ids:
+            if change_id not in self._change_events and change_id not in self._change_ledger_bytes:
+                raise IssueHistoryIntegrityError(
+                    f"change '{change_id}' not found in in-memory issue history bundle"
+                )
         return build_issue_evidence_slice(
             selection,
             change_events_by_id=self._change_events,

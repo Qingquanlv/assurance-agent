@@ -590,6 +590,15 @@ def test_project_sync_pending_marks_incomplete(tmp_path: Path) -> None:
     )
 
 
+def test_in_memory_missing_selected_change_raises_integrity_error(
+    typed_events: IssueTypedEvents,
+) -> None:
+    """Selected change_ids absent from the bundle must hard-fail like ledger."""
+    selection = IssueWindowSelection(change_ids=("RET-MISSING",))
+    with pytest.raises(IssueHistoryIntegrityError):
+        InMemoryIssueHistoryReader.from_events(typed_events).read_window(selection)
+
+
 def test_malformed_jsonl_raises_integrity_error(tmp_path: Path) -> None:
     write_aa_config(tmp_path)
     change_root = tmp_path / "qa/archive" / CHANGE_ID
