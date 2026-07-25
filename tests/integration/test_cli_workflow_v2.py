@@ -461,3 +461,10 @@ def test_decide_rejects_graph_gate_actions() -> None:
         )
         assert result.exit_code == 1
         assert "workflow resume" in result.output
+
+
+def test_vue_fastapi_admin_acceptance_fixture_is_present() -> None:
+    root = Path("tests/fixtures/issues/vue_fastapi_admin")
+    assert (root / "scenario.json").is_file()
+    assert (root / "initial" / "execution-manifest.yaml").is_file()
+    assert (root / "healing" / "execution-manifest.yaml").is_file()
