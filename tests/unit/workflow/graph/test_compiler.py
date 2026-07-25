@@ -448,6 +448,21 @@ def test_recovery_node_cannot_have_ordinary_routes() -> None:
         compile_text(yaml.safe_dump(raw, sort_keys=False))
 
 
+def test_ordinary_route_cannot_target_recovery_node() -> None:
+    text = _wf(_RECOVERY_GRAPH)
+    raw = yaml.safe_load(text)
+    raw["graphs"]["main"]["routes"] = [
+        {
+            "from": "inspect",
+            "select": "state.next",
+            "cases": {"recover": "record-analysis-failure"},
+        }
+    ]
+
+    with pytest.raises(CompileError, match="ordinary incoming"):
+        compile_text(yaml.safe_dump(raw, sort_keys=False))
+
+
 @pytest.mark.parametrize("error", ["forbidden_write", "contract", "internal"])
 def test_recovery_errors_must_be_retryable_by_the_execution_contract(error: str) -> None:
     catalog = ExecutionContractCatalog(
