@@ -23,6 +23,14 @@
 - Every task follows red-green-refactor, runs its focused tests, then commits with a conventional commit message. Do not combine tasks into one commit.
 - All commands run from `/Users/lvqingquan/agent/assurance-agent`.
 
+### Human-approved plan amendments (2026-07-26)
+
+1. **State recovery edges:** `needs_rework -> proposed`, `awaiting_baseline -> evaluating`, `eval_error -> evaluating` (in addition to `-> superseded`).
+2. **Incomplete integrity:** forbid only `domain_knowledge`; other ImprovementKinds stay allowed.
+3. **Tasks 6–8:** continuous commits in one PR; do not merge/push an intermediate half-cutover trunk.
+4. **Fingerprint:** omitting `problem_ids` is intentional; identical intent across Problems links evidence onto one Improvement (Task 13 acceptance must pin this).
+5. **Workspace:** implement in the current checkout on `feature/python-migration-m2-m9` (no new worktree).
+
 ---
 
 ## File map and dependency order
@@ -426,7 +434,14 @@ _ALLOWED: dict[ImprovementState, frozenset[ImprovementState]] = {
         ImprovementState.EXPORTED,
         ImprovementState.SUPERSEDED,
     }),
-    ImprovementState.NEEDS_REWORK: frozenset({ImprovementState.SUPERSEDED}),
+    # Recovery edges (human-approved plan amendment 2026-07-26):
+    # needs_rework -> proposed (re-open for review after rework)
+    # awaiting_baseline -> evaluating (baseline becomes available)
+    # eval_error -> evaluating (retry eval)
+    ImprovementState.NEEDS_REWORK: frozenset({
+        ImprovementState.PROPOSED,
+        ImprovementState.SUPERSEDED,
+    }),
     ImprovementState.EVALUATING: frozenset({
         ImprovementState.APPLIED,
         ImprovementState.ROLLED_BACK,
@@ -434,8 +449,14 @@ _ALLOWED: dict[ImprovementState, frozenset[ImprovementState]] = {
         ImprovementState.EVAL_ERROR,
         ImprovementState.SUPERSEDED,
     }),
-    ImprovementState.AWAITING_BASELINE: frozenset({ImprovementState.SUPERSEDED}),
-    ImprovementState.EVAL_ERROR: frozenset({ImprovementState.SUPERSEDED}),
+    ImprovementState.AWAITING_BASELINE: frozenset({
+        ImprovementState.EVALUATING,
+        ImprovementState.SUPERSEDED,
+    }),
+    ImprovementState.EVAL_ERROR: frozenset({
+        ImprovementState.EVALUATING,
+        ImprovementState.SUPERSEDED,
+    }),
     ImprovementState.EXPORTED: frozenset({
         ImprovementState.APPLIED,
         ImprovementState.NEEDS_REWORK,
@@ -849,7 +870,12 @@ Remove calls to `read_state`, `enumerate_candidates`, `snapshot_unarchived_evide
 
 - [ ] **Step 5: Enforce process-only Candidate eligibility at the context boundary.**
 
-Expose `context.allows_domain_knowledge` only when all Issue source integrity is complete. Preserve specific degraded reasons for missing Workflow/Eval sources. Do not turn those reasons into fabricated zero-valued signals.
+Expose `context.allows_domain_knowledge` only when all Issue source integrity is complete.
+Human-approved amendment (2026-07-26): when integrity is incomplete, **only**
+`domain_knowledge` Candidates are forbidden; `prompt_improvement`,
+`fixture_improvement`, `test_improvement`, and `workflow_improvement` remain
+eligible. Preserve specific degraded reasons for missing Workflow/Eval sources.
+Do not turn those reasons into fabricated zero-valued signals.
 
 - [ ] **Step 6: Run collect tests and regression tests.**
 
