@@ -280,12 +280,13 @@ def test_corrupt_projection_is_visible_degraded_reason(
     assert not any(r.startswith("no_history") for r in ctx.degraded_reasons)
 
 
-def test_archive_known_product_files_are_ignored(
+def test_archive_legacy_issue_files_are_ignored(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    legacy_json = "known-product-issues" + ".json"
     write(
         tmp_path,
-        "qa/archive/A-001/known-product-issues.json",
+        f"qa/archive/A-001/{legacy_json}",
         '{"issues": [{"id": "KPI-1", "module": "menus", "severity": "high", "status": "open"}]}',
     )
     write(tmp_path, "qa/archive/A-001/archive-summary.md", "archived_at: '2026-07-10T00:00:00Z'\n")

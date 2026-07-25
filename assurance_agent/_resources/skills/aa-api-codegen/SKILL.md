@@ -42,7 +42,6 @@ Do not rely on prior conversation context.
    - `tests/testdata/domain/<entity>.py` — shared domain factory, only when marked `create-if-missing`
    - `tests/api/adapters/<module>.py` — API-owned pytest/transport adapter
    - `tests/api/conftest.py` — only if plan explicitly requires it (see conftest rules)
-   - `qa/changes/<change-id>/known-product-issues.md` — append implementation notes only when file already exists and reviewer acknowledged the issue (never first writer for coverage gaps)
    - `qa/changes/<change-id>/codegen/api-codegen-summary.md` (create `codegen/` directory if missing)
 2. Report the `workflow-state.yaml` state delta (inline mode: apply it directly; dispatched subagent: never write `workflow-state.yaml` — report the values in your final message and the orchestrator applies them):
    - `phases.api_codegen.status = done`
@@ -50,8 +49,7 @@ Do not rely on prior conversation context.
    - `phases.api_codegen.codegen_readiness` = value from review JSON
    - `phases.api_codegen.generated_tests.files` = list of generated files
    - `phases.api_codegen.warnings_carried` = warning IDs or summaries from review JSON
-   - `phases.api_codegen.known_product_issues.present` = true|false
-   - `phases.api_codegen.known_product_issues.file` = `qa/changes/<change-id>/known-product-issues.md` (if present)
+   - `phases.api_codegen.workaround_annotations.present` = true|false (explicit test-code workaround comments/xfails emitted for Observation collection)
 
 Example `workflow-state.yaml` fragment (as applied by the state owner):
 
@@ -66,9 +64,8 @@ phases:
         - tests/api/test_<module>_api.py
     warnings_carried:
       - API-PLAN-FINDING-COV-001
-    known_product_issues:
+    workaround_annotations:
       present: true
-      file: qa/changes/<change-id>/known-product-issues.md
 ```
 
 ---
@@ -120,7 +117,7 @@ Must read:
 
 Optional (required when `codegen_readiness == "ready_with_warnings"` due to endpoint coverage gap):
 
-- `qa/changes/<change-id>/known-product-issues.md` — must exist before codegen if workaround / coverage gap is in scope
+- Review JSON must acknowledge any workaround / coverage gap before codegen if such scope is in the plan
 
 > **data-knowledge tier rules:**
 > - `aa-api-plan` stage: missing `.aa/data-knowledge.yaml` does not block; generates `data-knowledge.proposal.yaml`.
@@ -149,11 +146,11 @@ User saying "approved" / "looks good" in chat cannot substitute this JSON gate. 
 
 If `codegen_readiness == "ready_with_warnings"` due to endpoint workaround / coverage gap:
 
-- `qa/changes/<change-id>/known-product-issues.md` **MUST** already exist and document the gap (reviewer pass prerequisite)
+- Review JSON **MUST** already acknowledge the coverage gap (reviewer pass prerequisite)
 - Codegen **MUST** include test docstring / comment referencing the known issue ID (e.g. `KPI-001`)
 - Codegen **MUST NOT** claim direct endpoint coverage
-- Codegen **MUST NOT** create a workaround if the warning is not already documented in `known-product-issues.md`
-- Codegen **MUST NOT** be the first writer of `known-product-issues.md` for coverage gaps
+- Codegen **MUST NOT** create a workaround if the coverage gap is not already acknowledged in review JSON
+- Codegen **MUST NOT** create canonical Issue/Problem lifecycle records or legacy known-product issue files
 
 For other non-blocking warnings (not coverage gaps):
 
@@ -171,7 +168,7 @@ May generate (paths relative to project root; per `api-codegen-plan.md` Target F
 - `tests/api/conftest.py` — **only if** plan explicitly requires conftest changes (see below)
 - `qa/changes/<change-id>/codegen/api-codegen-summary.md` — always
 
-**known-product-issues.md:** Codegen may **append** implementation notes only when the file already exists and `aa-api-plan-reviewer` has acknowledged the issue. Codegen **MUST NOT** create the file for endpoint coverage gaps.
+**Workaround annotations:** Codegen may emit explicit workaround comments, `xfail` markers, or alternate-endpoint calls in generated tests when review JSON acknowledges the gap. The Observation collector records these during `inspect-with-issues`. Codegen **MUST NOT** create legacy known-product issue files.
 
 **Does NOT run pytest or write execution result files** — execution is fully handled by `aa-run` (Phase 8). After this skill completes, run `aa-run` to execute tests.
 
@@ -437,7 +434,7 @@ When `.aa/data-knowledge.yaml` or `facts/fact-baseline.json` documents `CharFiel
 - **Never** build test entity names longer than the ORM limit — overflow often surfaces as HTTP 500, not 422.
 - **Dept.name** (`max_length=20`): use `tests/api/helpers/dept_api.py` → `unique_dept_name(prefix, hex_chars=8)` where `len(prefix) + 1 + 8 ≤ 20` (prefix ≤ 11 chars). Do **not** append long suffixes like `-updated` on update cases — generate a second `unique_dept_name()` instead.
 - **Menu.name** (`max_length=20`): follow conftest comments (`qa-cat-` + hex ≤ 19 chars).
-- Document **known product issues** (e.g. duplicate key → HTTP 500) in `known-product-issues.md` + `facts/fact-baseline.json` anomalies — separate from test-data length bugs.
+- Document product-bug workarounds with explicit test annotations (comments/xfail reason) and `facts/fact-baseline.json` anomalies — separate from test-data length bugs.
 
 Generate **only when** `api-codegen-plan.md` and `.aa/data-knowledge.yaml` explicitly authorize new fixture wrappers or factories.
 
@@ -479,7 +476,7 @@ Must include:
 - **Schema Assertion Coverage** — table: Test Function \| Endpoint Key \| Registered in \_LOCAL\_SCHEMAS (✓/✗)
 - **Schema Registration Required** — unregistered endpoint list (None if all registered)
 - **Warnings Carried from Review** — warnings from `api-plan-review.json` (e.g. `codegen_readiness == "ready_with_warnings"`)
-- **Known Product Issues** — pointer to `qa/changes/<change-id>/known-product-issues.md` (if present; note if append-only)
+- **Workaround annotations** — list explicit test-code workaround markers emitted for Observation collection
 - **Next Step** — `aa run --change <change-id>`
 
 Also output summary in chat, but disk file is the sole trusted source for aa-run and aa-inspect — do not rely on chat context.
@@ -552,7 +549,7 @@ Both call styles are equivalent; prefer direct `import` (clearer), no extra fixt
 - Do not bypass `api-codegen-plan.md`.
 - Do not execute pytest. Test execution belongs to aa-run (Phase 8).
 - Do not write any execution result files (api-result.json, summary.md, etc.).
-- Do not create `known-product-issues.md` as the first acknowledgment of an endpoint coverage gap — that belongs to human + `aa-api-plan-reviewer` before pass.
+- Do not create legacy known-product issue files — coverage-gap acknowledgment belongs to human + plan reviewer before pass.
 - Do not insert raw `Role.create()` / `User.create()` / `Dept.create()` for invariant-bearing entities — use the mapped `make_*` from `tests/testdata/domain/` through the API adapter.
 - Do not use HTTP `POST .../create` in fixtures or conftest for setup/teardown when `make_*` exists — except cases whose primary assertion is the create endpoint.
 - Cleanup must maintain the same invariants; do not raw-delete M2M, closure, or soft-delete entities.
@@ -568,7 +565,7 @@ Rules:
 - Do not swallow failures with empty `try/except` or `except Exception: pass`.
 - Do not add fallback logic that hides product failures.
 - Do not use `skip`, `xfail`, or conditional early return to make generated tests green.
-  - **Only exception for `xfail`:** a known product issue that was explicitly decided at intake/case-design (e.g. `assert_ideal` on a documented product bug) AND is documented in `qa/changes/<change-id>/known-product-issues.md`. The xfail `reason` MUST reference the issue ID from that file (e.g. `KPI-001` / `PH-001`). An xfail whose issue is not recorded in `known-product-issues.md` is a violation — record the issue first (human/reviewer acknowledged), then mark xfail.
+  - **Only exception for `xfail`:** a known product issue explicitly decided at intake/case-design AND acknowledged in review JSON. The xfail `reason` MUST reference the review finding ID (e.g. `API-PLAN-FINDING-COV-001`). An xfail without documented acknowledgment is a violation.
 - Do not loosen expected values after observing failures.
 - Do not mock the behavior under test unless the plan explicitly authorizes it.
 - Setup may be flexible; assertions must be strict.
@@ -590,23 +587,23 @@ If tests use an alternate endpoint because the target endpoint has a known produ
 
 - `api-plan-review.json` `decision == "pass"`
 - `codegen_readiness == "ready_with_warnings"`
-- `qa/changes/<change-id>/known-product-issues.md` **already exists** and documents the gap
+- Review JSON **already acknowledges** the coverage gap
 - The issue was acknowledged by `aa-api-plan-reviewer` (not deferred to codegen)
 
-**Codegen MUST NOT** be the first writer of `known-product-issues.md` for endpoint coverage gaps. If workaround is required but `known-product-issues.md` is missing → **STOP**.
+**Codegen MUST NOT** create legacy known-product issue files. If workaround is required but review JSON lacks acknowledgment → **STOP**.
 
 **During codegen, the skill must:**
 
 1. Add an explicit test docstring referencing the known issue ID (e.g. `KPI-001`) and explaining the workaround.
 2. Add a local comment in the test function body explaining why the alternate endpoint is used.
-3. **May append** implementation-only notes to existing `known-product-issues.md` (e.g. test function name, alternate call path) — **must not** create the file or add undocumented coverage gaps.
+3. **May emit** explicit workaround annotations in generated test code (comments, xfail reason, alternate endpoint call) tied to an acknowledged review finding.
 4. Mark the direct endpoint as a coverage gap in test comments — never claim direct coverage.
-5. Do **not** set execution status — that is `aa-run`'s responsibility. Existing `known-product-issues.md` enables `aa-run` to record `PASS_WITH_WARNINGS`.
+5. Do **not** set execution status or create Problems — Issue lifecycle is handled by `inspect-with-issues` after execution.
 6. Never claim the original endpoint is directly covered if it is not exercised successfully.
 
-> `known-product-issues.md` is a **change-level risk record**, not an execution result. `aa-run` reads it from `qa/changes/<change-id>/known-product-issues.md` and snapshots to `execution/`.
+> Workaround annotations in generated tests are **execution evidence**, not canonical Issue lifecycle state. The Issue subgraph reconciles them into Observations/Occurrences after execution.
 
-### known-product-issues.md Template
+### Workaround Annotation Template (test code comments)
 
 Reference format (typically created by human + acknowledged by reviewer **before** codegen pass). Codegen may append implementation notes only — do not use this template to create the file for the first time during codegen.
 
@@ -657,8 +654,8 @@ Must stop and ask the user when:
 - `api-plan-review.json` missing, invalid JSON, `decision != pass`, or `codegen_readiness == not_ready`
 - Codegen Preconditions not met
 - Data capability missing
-- Endpoint path still in needs_review or coverage gap not recorded in `known-product-issues.md`
-- Workaround required but `known-product-issues.md` missing (codegen must not create it first)
+- Endpoint path still in needs_review or coverage gap not acknowledged in review JSON
+- Workaround required but review JSON lacks coverage-gap acknowledgment
 - `blockers` non-empty or any `needs_review` item has `blocking == true`
 
 ## Anti-patterns
@@ -668,8 +665,8 @@ Forbidden:
 - "Plan is incomplete, but I'll generate code anyway"
 - "I'll add a fixture name for you"
 - "Generate a roughly runnable test first"
-- "Wrote workaround but didn't reference existing known-product-issues.md"
-- "Codegen creates known-product-issues.md first to acknowledge coverage gap"
+- "Wrote workaround but didn't tie it to an acknowledged review finding"
+- "Codegen creates legacy known-product issue files to acknowledge coverage gap"
 - "Generate empty helper / fixture files"
 - "Change conftest.py without plan authorization"
 - "Modify case.yaml while at it"

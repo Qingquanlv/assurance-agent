@@ -77,12 +77,6 @@ Optional (only present when `.aa/data-knowledge.yaml` was missing during plannin
 qa/changes/<change-id>/plans/data-knowledge.proposal.api.yaml
 ```
 
-Optional (required for endpoint coverage-gap acknowledgment before `decision == pass`):
-
-```text
-qa/changes/<change-id>/known-product-issues.md
-```
-
 Recommended:
 
 ```text
@@ -91,11 +85,11 @@ qa/changes/<change-id>/proposal.md
 tests/api/**
 ```
 
-**Known product issues input rule:**
+**Coverage-gap acknowledgment rule:**
 
-- If an endpoint coverage gap is detected and `known-product-issues.md` is missing → do **not** write `decision == pass`.
-- Require the gap to be documented at `qa/changes/<change-id>/known-product-issues.md` before codegen may proceed.
-- Do **not** defer documentation to `aa-api-codegen` — codegen is not the first place where a known product issue is acknowledged.
+- If an endpoint coverage gap is detected, record it as a blocking `needs_review` item in `api-plan-review.json` with `category: coverage_gap`.
+- Do **not** write `decision == pass` until a human acknowledges the workaround scope in review output or via the Issue review workflow.
+- Do **not** defer acknowledgment to `aa-api-codegen` — codegen does not create canonical Issue/Problem lifecycle state.
 
 ## Outputs
 
@@ -261,7 +255,7 @@ If `.aa/data-knowledge.yaml` does not exist (including when `data-knowledge.prop
 `ready_with_warnings` is allowed only when:
 
 - `.aa/data-knowledge.yaml` exists.
-- HTTP method and path are confirmed (not `TBD`), or workaround is explicitly documented with coverage gap **and** `known-product-issues.md` already exists.
+- HTTP method and path are confirmed (not `TBD`), or workaround is explicitly documented with coverage gap **and** acknowledged in review JSON (`needs_review` resolved or `ready_with_warnings` with documented gap finding).
 - Auth strategy is confirmed.
 - Required fixtures / factories are available or safely optional.
 - Request body and expected assertions do not require guessing schema.
@@ -406,7 +400,7 @@ If `decision == "needs_fix"`:
 - `auto_fix_plan` **MUST** be non-empty
 - Every referenced finding **MUST** have `severity in ["low", "medium"]`
 - Every referenced finding **MUST** have `human_review_required == false`
-- `aa-api-plan-fixer` **cannot** write `known-product-issues.md` — missing coverage-gap documentation **cannot** be resolved via `needs_fix`
+- `aa-api-plan-fixer` **cannot** create canonical Issue/Problem records — missing coverage-gap acknowledgment **cannot** be resolved via `needs_fix`
 
 ---
 
@@ -450,7 +444,7 @@ Not auto-fixable:
 - Unknown expected response body
 - Product behavior ambiguity
 - Missing requirement scope
-- Endpoint coverage gap documentation (`known-product-issues.md` — outside fixer allowlist; requires human action)
+- Endpoint coverage-gap acknowledgment (outside fixer allowlist; requires human action or Issue review workflow)
 
 ---
 
@@ -537,7 +531,7 @@ qa/changes/<change-id>/review/api-plan-review.json
 - `qa/changes/<change-id>/plans/m3-review-summary.md`
 - `qa/changes/<change-id>/cases/**/*.yaml`
 - `qa/changes/<change-id>/plans/data-knowledge.proposal.api.yaml` (if present)
-- `qa/changes/<change-id>/known-product-issues.md` (if read for coverage-gap acknowledgment)
+- `review/api-plan-review.json` coverage-gap findings (if read for workaround acknowledgment)
 
 Set `blocking: true` on findings and `needs_review` items when product behavior, scope, endpoint coverage gap, or auth strategy must be confirmed before codegen. Set `blocking: false` only for non-blocking clarifications that do not affect gate safety.
 
@@ -621,15 +615,15 @@ If the plan uses a different endpoint because the target endpoint is broken or u
 
 ### Hard Rules
 
-**If an endpoint coverage gap exists and `qa/changes/<change-id>/known-product-issues.md` does NOT exist:**
+**If an endpoint coverage gap exists and workaround scope is not yet acknowledged:**
 
-- `decision` **MUST** be `needs_human_review` (scope / workaround acknowledgment required; fixer cannot write this file)
+- `decision` **MUST** be `needs_human_review` (scope / workaround acknowledgment required; fixer cannot create Issue lifecycle state)
 - `codegen_readiness` **MUST** be `not_ready`
 - `human_review_required` **MUST** be `true`
 - `auto_fix_allowed` **MUST** be `false`
 - `next_action` **MUST** be `human_review` — **MUST NOT** be `continue`
-- Add a blocking `needs_review` item documenting the required documentation action
-- Do **not** write `decision == needs_fix` for missing `known-product-issues.md` — `aa-api-plan-fixer` cannot create that file
+- Add a blocking `needs_review` item documenting the required human acknowledgment
+- Do **not** write `decision == needs_fix` for missing coverage-gap acknowledgment — `aa-api-plan-fixer` cannot resolve it
 
 **If coverage gap requires product / scope acknowledgment** (workaround not yet accepted):
 
@@ -637,14 +631,14 @@ If the plan uses a different endpoint because the target endpoint is broken or u
 - `codegen_readiness` **MUST** be `not_ready`
 - High-severity coverage findings **MUST** have `human_review_required: true` and **cannot** enter `needs_fix`
 
-**If `known-product-issues.md` exists and explicitly documents the gap** (workaround accepted, coverage gap recorded):
+**If the coverage gap is explicitly acknowledged in review output** (workaround accepted, gap recorded in `needs_review` / findings):
 
 - `decision` **MAY** be `pass`
 - `codegen_readiness` **MUST** be `ready_with_warnings` (never `ready`)
 - `risk_level` **MUST** be at least `medium`
 - `blockers` **MUST** be empty
 - Downstream execution / archive **MUST NOT** be treated as clean PASS
-- Reviewer **MUST** read and verify the file before writing `decision == pass` — do **not** defer to "will be written by codegen"
+- Reviewer **MUST** verify acknowledgment before writing `decision == pass` — do **not** defer to codegen
 
 ### Example — gap not yet documented
 
@@ -669,13 +663,13 @@ The review finding must include:
   "category": "coverage_gap",
   "file": "qa/changes/<change-id>/plans/api-codegen-plan.md",
   "message": "Target endpoint GET /api/v1/menu/get is replaced by GET /api/v1/menu/list due to a product bug. Direct endpoint coverage remains open.",
-  "suggestion": "Human must create qa/changes/<change-id>/known-product-issues.md documenting the coverage gap before pass.",
+  "suggestion": "Human must acknowledge the coverage gap and accepted workaround scope in review output before pass.",
   "auto_fix_allowed": false,
   "human_review_required": true
 }
 ```
 
-Required review output when `known-product-issues.md` is missing:
+Required review output when coverage-gap acknowledgment is missing:
 
 ```json
 {
@@ -688,15 +682,15 @@ Required review output when `known-product-issues.md` is missing:
 }
 ```
 
-### Example — gap documented, pass allowed
+### Example — gap acknowledged, pass allowed
 
-After human creates `qa/changes/<change-id>/known-product-issues.md` with explicit coverage gap entry:
+After human acknowledges the coverage gap in review output (resolved `needs_review` item or explicit finding):
 
 - `decision: pass`
 - `codegen_readiness: ready_with_warnings`
 - `risk_level: medium` (minimum)
 - `blockers: []`
-- Include `known-product-issues.md` in `reviewed_files`
+- Include the acknowledgment finding in `reviewed_files`
 
 ---
 

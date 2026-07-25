@@ -90,9 +90,18 @@ aa retro export-knowledge --retro-id <id> [--overwrite]
 
 导出物化后，`knowledge_delta` 经 `aa knowledge promote --from <path> --yes` 合入 L1。运行时 memory 由 `load_skill_memory(project_root, skill)` 注入 graph v2 / legacy prompt（8 KiB 上限，过滤 `deprecated:` 行）。
 
-## Known product issues（跨 change 历史）
+## Issue lifecycle (Change Issue Ledger + Project Problem Ledger)
 
-归档根目录 `qa/archive/<change-id>/known-product-issues.md`（现有 markdown 模板）由 `risk/context.py` 解析为 `historical_issues`；去重 key 为 `<source_change_id>:<id>`，evidence ID 为 `EV-HIST-ISSUE-<change>-<id>`。`known_product_issue` 分类在 quality report 中归入 product 缺陷桶。
+Issue lifecycle replaces the retired Markdown/JSON known-product side channel. Canonical state lives in two append-only Ledgers and their deterministic projections:
+
+| Scope | Ledger | Projection | Role |
+|---|---|---|---|
+| Change | `qa/changes/<id>/issues/events.jsonl` | `qa/changes/<id>/issues/snapshot.json` | Immutable Observations and Occurrences for one Change |
+| Project | `qa/issues/events.jsonl` | `qa/issues/problems.json`, `qa/issues/review-queue.json` | Cross-Change Problem identity, lifecycle, and human review queue |
+
+Only deterministic reconciler/review apply operations append Ledger events. Inspect/classifier artifacts (`inspect/failure-analysis.json`) and the legacy `known_product_issue` execution label are **classification hints only** — they do not read or write legacy known-product issue files and do not mutate Problems by themselves.
+
+Risk context reads structured Problems from `qa/issues/problems.json` (not archived Markdown/JSON). Reports separate execution `final_status` from Issue risk (`report/quality-report.json` schema 1.1 `issues` section). Open or unknown Issues never block archive; they affect archive status wording only.
 
 ## Quality Score 与 Quality Gate
 

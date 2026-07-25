@@ -41,7 +41,6 @@ Do not rely on prior conversation context.
    - `tests/e2e/scripts/<module>_data_setup.py` — only when plan + data-knowledge authorize new script
    - `tests/e2e/adapters/**/*.py` — only when plan + data-knowledge authorize E2E setup/cleanup adapters
    - `tests/e2e/conftest.py` — only if plan explicitly requires it (see **conftest.py Policy**)
-   - `qa/changes/<change-id>/known-product-issues.md` — append implementation notes only when file already exists and reviewer acknowledged the issue (never first writer for coverage gaps)
    - `qa/changes/<change-id>/codegen/e2e-codegen-summary.md` (create `codegen/` directory if missing)
 2. Report the `workflow-state.yaml` state delta (inline mode: apply it directly; dispatched subagent: never write `workflow-state.yaml` — report the values in your final message and the orchestrator applies them):
    - `phases.e2e_codegen.status = done`
@@ -53,8 +52,7 @@ Do not rely on prior conversation context.
    - `phases.e2e_codegen.fixtures.generated` = newly generated fixture paths
    - `phases.e2e_codegen.fixtures.reused` = reused fixture paths
    - `phases.e2e_codegen.warnings_carried` = warning IDs or summaries from review JSON
-   - `phases.e2e_codegen.known_product_issues.present` = true|false
-   - `phases.e2e_codegen.known_product_issues.file` = `qa/changes/<change-id>/known-product-issues.md` (if present)
+   - `phases.e2e_codegen.workaround_annotations.present` = true|false (explicit test-code workaround comments/xfails emitted for Observation collection)
 
 Example `workflow-state.yaml` fragment (as applied by the state owner):
 
@@ -76,9 +74,8 @@ phases:
       reused: []
     warnings_carried:
       - PLAN-FINDING-001
-    known_product_issues:
+    workaround_annotations:
       present: true
-      file: qa/changes/<change-id>/known-product-issues.md
 ```
 
 ---
@@ -136,7 +133,7 @@ phases:
 
 Optional (required when `codegen_readiness == "ready_with_warnings"` due to E2E workaround / coverage gap):
 
-- `qa/changes/<change-id>/known-product-issues.md` — must exist before codegen if workaround / coverage gap is in scope
+- Review JSON must acknowledge any workaround / coverage gap before codegen if such scope is in the plan
 
 > **data-knowledge 分层规则：**
 > - `aa-e2e-plan` 阶段：`.aa/data-knowledge.yaml` 缺失不阻断 planning；生成 `data-knowledge.proposal.yaml`。
@@ -182,8 +179,8 @@ This aligns with `aa-e2e-plan-reviewer` **Ready With Warnings Boundary**.
 
 If `codegen_readiness == "ready_with_warnings"` due to E2E workaround / coverage gap:
 
-- `qa/changes/<change-id>/known-product-issues.md` **MUST** already exist and document the gap (reviewer pass prerequisite)
-- Codegen **MUST NOT** be the first writer of `known-product-issues.md` for coverage gaps
+- Review JSON **MUST** already acknowledge the coverage gap (reviewer pass prerequisite)
+- Codegen **MUST NOT** create canonical Issue/Problem lifecycle records or legacy known-product issue files
 - See **Known Product Issue / Workaround Policy**
 
 ## Outputs
@@ -231,7 +228,7 @@ def entity_factory(api_client):
         api_client.delete(f"/api/entities/{entity_id}")
 ```
 
-**known-product-issues.md:** Codegen may **append** implementation notes only when the file already exists and `aa-e2e-plan-reviewer` has acknowledged the issue. Codegen **MUST NOT** create the file for E2E coverage gaps.
+**Workaround annotations:** Codegen may emit explicit workaround comments, `xfail` markers, or alternate-flow calls in generated tests when review JSON acknowledges the gap. The Observation collector records these during `inspect-with-issues`. Codegen **MUST NOT** create legacy known-product issue files.
 
 不生成 execution 结果文件 — 测试执行由 `aa-run` (Phase 8) 负责。
 
@@ -408,7 +405,7 @@ qa/changes/<change-id>/codegen/e2e-codegen-summary.md
 - **Fixtures Generated/Reused** — fixture 名称和来源（或 "Reused existing — no new file"）
 - **Conftest Changes** — 变更摘要（如无则 None）
 - **Warnings Carried from Review** — 来自 `plan-review.json` 的警告（如 `codegen_readiness == "ready_with_warnings"`）
-- **Known Product Issues** — 指向 `qa/changes/<change-id>/known-product-issues.md`（如存在；note if append-only)
+- **Workaround annotations** — 列出测试代码中为 Observation 采集显式标注的 workaround
 - **Next Step** — `aa run --change <change-id>`
 
 同时在聊天中输出摘要，但磁盘文件是 aa-run、workflow UI 的唯一可信来源，不依赖聊天上下文。
@@ -456,16 +453,16 @@ Do not silently change tests to avoid product bugs or skip flows.
 
 - `plan-review.json` `decision == "pass"`
 - `codegen_readiness == "ready_with_warnings"`
-- `qa/changes/<change-id>/known-product-issues.md` **already exists** and documents the gap
+- Review JSON **already acknowledges** the coverage gap
 - The issue was acknowledged by `aa-e2e-plan-reviewer` (not deferred to codegen)
 
-**Codegen MUST NOT** be the first writer of `known-product-issues.md` for E2E coverage gaps or flow workarounds. If workaround is required but `known-product-issues.md` is missing → **STOP**.
+**Codegen MUST NOT** create legacy known-product issue files. If workaround is required but review JSON lacks acknowledgment → **STOP**.
 
 **During codegen, the skill must:**
 
 1. Add an explicit test docstring referencing the known issue ID (e.g. `KPI-001`) and explaining the workaround.
 2. Add a local comment in the test function body explaining why the alternate flow is used.
-3. **May append** implementation-only notes to existing `known-product-issues.md` — **must not** create the file or add undocumented coverage gaps.
+3. **May emit** explicit workaround annotations in generated test code tied to an acknowledged review finding.
 4. Mark skipped or worked-around flow as a coverage gap in test comments — never claim direct E2E coverage for a skipped or worked-around flow.
 5. Do **not** set execution status — that is `aa-run`'s responsibility.
 
@@ -494,7 +491,7 @@ Do not silently change tests to avoid product bugs or skip flows.
 - Do not execute pytest. Test execution belongs to aa-run (Phase 8).
 - Do not write any execution result files (e2e-result.json, summary.md, etc.).
 - If data setup cannot run, do not continue UI steps.
-- Do not create `known-product-issues.md` as the first acknowledgment of an E2E coverage gap — that belongs to human + `aa-e2e-plan-reviewer` before pass.
+- Do not create legacy known-product issue files — coverage-gap acknowledgment belongs to human + plan reviewer before pass.
 - Do not generate locators without confirmed Source and Confidence in `e2e-codegen-plan.md`.
 
 ### Test Failure Integrity
@@ -507,7 +504,7 @@ Rules:
 - Do not swallow failures with empty `try/except` or `except Exception: pass`.
 - Do not add fallback logic that hides product failures.
 - Do not use `skip`, `xfail`, `pytest.mark.skip`, or `test.fixme` to make generated tests green.
-  - **Only exception for `xfail`:** a known product issue explicitly decided at intake/case-design AND documented in `qa/changes/<change-id>/known-product-issues.md`; the xfail `reason` MUST reference the issue ID from that file. An xfail without a recorded issue is a violation.
+  - **Only exception for `xfail`:** a known product issue explicitly decided at intake/case-design AND acknowledged in review JSON; the xfail `reason` MUST reference the review finding ID. An xfail without documented acknowledgment is a violation.
 - Do not use conditional early `return` to bypass assertions (e.g. `if "/404" in page.url: return`) — assert the expected denial/behavior explicitly instead.
 - Do not loosen expected values after observing failures.
 - Do not mock the behavior under test unless the plan explicitly authorizes it.
@@ -537,7 +534,7 @@ Self-check before finishing codegen:
 - Data setup capability 缺失
 - Route / selector 仍处于 blocking needs_review 或 Confidence = unknown
 - Data setup script plan 仍处于 blocking needs_review
-- Workaround required but `known-product-issues.md` 缺失（codegen 不得首次创建）
+- Workaround required but review JSON lacks coverage-gap acknowledgment
 - `ready_with_warnings` 但任何 warning 需要 guessing route / selector / auth / setup / fixture / UI copy / cleanup / product semantics
 - **Standalone mode:** 用户未明确要求继续 codegen
 
@@ -549,8 +546,8 @@ Self-check before finishing codegen:
 - "我帮你补一个 setup script 名"
 - "先用 UI 点一遍把数据造出来"
 - "先写固定 time.sleep() 等页面"
-- "Workaround 写了，但没引用已有 known-product-issues.md"
-- "codegen 首次创建 known-product-issues.md 来承认 coverage gap"
+- "Workaround 写了，但没关联已确认的 review finding"
+- "codegen 首次创建 legacy known-product issue 文件来承认 coverage gap"
 - "生成空 fixture / script / conftest 文件"
 - "未经 plan 授权就改 conftest.py"
 - "未经 Source / Confidence 确认就发明 locator"

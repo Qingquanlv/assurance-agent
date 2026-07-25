@@ -167,5 +167,5 @@ The CLI emits a deterministic baseline `risk_level`, `risk_rationale`, and `reco
 - Do **not** run report generation before `inspect` has produced `quality-gate-result.json`.
 - Do **not** fabricate report files; if the CLI fails to write them, set `phases.report.status = failed` and report the failure.
 - Do **not** invoke MCP as a substitute for the CLI.
-- Do **not** read or generate `known-product-issues.md` or `known-product-issues.json`; use structured Issue projections instead.
+- Do **not** read or generate legacy known-product issue Markdown/JSON files; use structured Issue projections instead.
 - Do **not** create temporary shell scripts or other scratch files (e.g. `.tmp_aa_report.sh`) to invoke the CLI — run `aa --version` and `aa report generate` as direct shell commands only. Authorized writes are limited to `change:report/**`.

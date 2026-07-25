@@ -133,11 +133,8 @@ qa/changes/<change-id>/review/api-plan-review-summary.md
 tests/**
 qa/changes/<change-id>/cases/**
 qa/changes/<change-id>/proposal.md
-qa/changes/<change-id>/known-product-issues.md
 .aa/data-knowledge.yaml
 ```
-
-Do not edit `known-product-issues.md` — see **Forbidden Fixes**.
 
 ---
 
@@ -198,14 +195,13 @@ Do not invent:
 - Data setup or cleanup endpoint
 - Business state transition
 - Product behavior
-- Endpoint coverage-gap documentation (`known-product-issues.md`)
+- Canonical Issue/Problem lifecycle records (Issue Ledgers)
 - **`tests/testdata/domain/` implementations** — fixer may only document a `create-if-missing` or `reuse` shared capability; it must not write factory code
 - **`tests/api/adapters/` implementations** — fixer may only repair the plan mapping/ownership text; it must not write adapter code
 
 Do not create or modify:
 
 ```text
-qa/changes/<change-id>/known-product-issues.md
 ```
 
 Endpoint coverage-gap documentation requires human action and cannot be fixed by `aa-api-plan-fixer`. This aligns with `aa-api-plan-reviewer` coverage-gap rules.

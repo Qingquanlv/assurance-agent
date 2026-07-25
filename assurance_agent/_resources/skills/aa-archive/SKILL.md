@@ -22,7 +22,7 @@ Do not rely on prior conversation context.
    - `qa/issues/problems.json` (if present — current Project Problem projection)
 4. If any required gate file is missing or has `decision != "pass"`, stop and report.
 5. Use files as the sole source of truth.
-6. **Never** read or generate `known-product-issues.md` or `known-product-issues.json`. These files are no longer produced.
+6. **Never** read or generate legacy known-product issue Markdown/JSON files. These side-channel files are no longer produced.
 
 **After completing work:**
 
@@ -176,8 +176,7 @@ Read `report/quality-report.json` if present. Check `issues.issue_risk`:
   - Use the normal `archive_status: archived` (unless execution status already requires warnings).
 
 **Issue state never blocks archive.** A critical open Problem is recorded in the
-summary but must not stop the archive cycle. Do **not** read or generate
-`known-product-issues.md` or `known-product-issues.json`.
+summary but must not stop the archive cycle. Do **not** read or generate legacy known-product issue Markdown/JSON files.
 
 ### Step 3b: Record Execution Status
 
@@ -288,7 +287,7 @@ open_problem_count: 1
 | "Execution FAIL but I'll archive anyway" | Default workflow forbids archive on FAIL. |
 | "PASS_WITH_WARNINGS without inspect is fine" | Run `aa-inspect` first; require `phases.inspect.status in [done, partial]`. |
 | "Open Issues block archive" | Issue state never blocks archive; it only changes `archive_status` wording. |
-| "I'll read known-product-issues.md" | That file is no longer produced. Read `report/quality-report.json` issues section instead. |
+| "I'll read legacy known-product issue files" | Those side-channel files are no longer produced. Read `report/quality-report.json` issues section instead. |
 
 ## Post-Archive State
 
