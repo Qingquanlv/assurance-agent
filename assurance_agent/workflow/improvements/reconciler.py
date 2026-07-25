@@ -10,6 +10,7 @@ Public API:
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Literal
@@ -24,6 +25,7 @@ from assurance_agent.artifacts.models.improvements import (
 )
 from assurance_agent.exceptions import AaError
 from assurance_agent.retro.candidates import (
+    CANDIDATE_DOCUMENT_NAME,
     CandidateBatchInvalid,
     candidate_batch_digest,
     context_sha256,
@@ -300,6 +302,32 @@ def _failed_status(
     )
 
 
+def _raw_candidate_file_digest(retro_dir: Path) -> str:
+    """Digest raw Candidate file bytes when the document cannot be schema-parsed."""
+    path = retro_dir / CANDIDATE_DOCUMENT_NAME
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _write_failed_receipt(
+    retro_dir: Path,
+    *,
+    retro_id: str,
+    context_digest: str,
+    batch_digest: str,
+    error: str,
+) -> ImprovementAcceptStatus:
+    key = f"{retro_id}:{batch_digest}"
+    status = _failed_status(
+        retro_id=retro_id,
+        context_digest=context_digest,
+        batch_digest=batch_digest,
+        idempotency_key=key,
+        error=error,
+    )
+    _write_accept_status(retro_dir, status)
+    return status
+
+
 def run_improvement_reconcile(project_root: Path, *, retro_id: str) -> ImprovementAcceptStatus:
     """Validate → lock → append/rebuild → write current-run accept receipt.
 
@@ -320,23 +348,33 @@ def run_improvement_reconcile(project_root: Path, *, retro_id: str) -> Improveme
     except Exception as exc:
         raise AaError(f"context.json invalid: {context_path}: {exc}") from exc
 
-    candidates = read_candidate_document(retro_dir)
     context_digest = context_sha256(context)
+    try:
+        candidates = read_candidate_document(retro_dir)
+    except CandidateBatchInvalid as exc:
+        # Schema-invalid documents never reach semantic validate; still write a
+        # failed current-run receipt with a stable raw-file digest.
+        return _write_failed_receipt(
+            retro_dir,
+            retro_id=retro_id,
+            context_digest=context_digest,
+            batch_digest=_raw_candidate_file_digest(retro_dir),
+            error=str(exc),
+        )
+
     batch_digest = candidate_batch_digest(candidates)
     key = f"{retro_id}:{batch_digest}"
 
     try:
         validate_candidate_document(context, candidates)
     except CandidateBatchInvalid as exc:
-        status = _failed_status(
+        return _write_failed_receipt(
+            retro_dir,
             retro_id=retro_id,
             context_digest=context_digest,
             batch_digest=batch_digest,
-            idempotency_key=key,
             error=str(exc),
         )
-        _write_accept_status(retro_dir, status)
-        return status
 
     locks = ProjectResourceLockManager(project_root)
     with locks.acquire((_LOCK_TOKEN,), timeout_seconds=30.0):

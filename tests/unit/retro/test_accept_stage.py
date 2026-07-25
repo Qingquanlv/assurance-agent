@@ -176,6 +176,50 @@ def test_run_retro_accept_invalid_batch_writes_failed_receipt_only(tmp_path: Pat
     assert not (retro_dir / "review-queue.md").exists()
 
 
+def test_run_retro_accept_schema_invalid_writes_failed_receipt_only(tmp_path: Path) -> None:
+    """Schema-invalid Candidates (forbidden Problem fields) must still write a failed receipt."""
+    retro_dir, ctx, _document = _setup_retro(tmp_path)
+    raw = {
+        "schema_version": "2",
+        "retro_id": ctx.retro_id,
+        "context_sha256": context_sha256(ctx),
+        "candidates": [
+            {
+                "candidate_id": "IMP-CAND-1",
+                "kind": "workflow_improvement",
+                "delivery": "change_draft",
+                "source_refs": {"problem_ids": ["PROB-1"]},
+                "target": "assurance_agent/workflow/inspect",
+                "rationale": "Repeated truncation",
+                "proposed_change": "Preserve pytest E lines",
+                "verification": {
+                    "suites": ["workflow-full"],
+                    "success_criteria": "No truncation",
+                },
+                "risk": "low",
+                "confidence": "high",
+                "severity": "high",
+                "status": "in_progress",
+                "root_cause": "copied Problem assessment",
+            }
+        ],
+    }
+    (retro_dir / "proposal-candidates.json").write_text(
+        json.dumps(raw, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    receipt = run_retro_accept(tmp_path, retro_id="retro-test")
+
+    assert receipt.result == "failed"
+    assert "forbidden_problem_field" in (receipt.error or "")
+    status = json.loads((retro_dir / "accept-status.json").read_text(encoding="utf-8"))
+    assert status["result"] == "failed"
+    assert status["candidate_batch_digest"].startswith("sha256:")
+    assert not (tmp_path / "qa" / "improvements").exists()
+    assert not (retro_dir / "review-queue.md").exists()
+
+
 def test_run_retro_accept_missing_candidates_raises(tmp_path: Path) -> None:
     from assurance_agent.exceptions import AaError
 

@@ -203,23 +203,89 @@ def test_retro_collect_op_missing_retro_id_is_invalid_input(tmp_path: Path) -> N
 # ---------------------------------------------------------------------------
 
 
-def test_retro_accept_op_rewrites_legacy_proposals(tmp_path: Path) -> None:
+def _write_v2_context_json(retro_dir: Path, retro_id: str, *, evidence_ids: tuple[str, ...] = ("PROB-1",)) -> dict:
+    """Write a schema-v2 RetroContext used by Improvement Candidate accept."""
+    from assurance_agent.retro.candidates import context_sha256
+    from assurance_agent.retro.types import (
+        EvalRetroSignals,
+        IssueRetroSignals,
+        RetroContext,
+        RetroIntegrity,
+        RetroSelectionSnapshot,
+        RetroSignalSet,
+        RetroSourceDescriptor,
+        RetroSourceManifest,
+        RetroWindow,
+        WorkflowRetroSignals,
+    )
+
+    ctx = RetroContext(
+        retro_id=retro_id,
+        generated_at="2026-07-25T00:00:00Z",
+        window=RetroWindow(
+            selection=RetroSelectionSnapshot(mode="change_ids", requested_change_ids=("CH-1",)),
+            change_ids=("CH-1",),
+        ),
+        source_manifest=RetroSourceManifest(
+            issue_slice_sha256="sha256:slice",
+            issue_sources=(
+                RetroSourceDescriptor(
+                    kind="change_issue_ledger",
+                    change_id="CH-1",
+                    sha256="sha256:issue",
+                    evidence_ids=evidence_ids,
+                ),
+            ),
+            workflow_sources=(),
+            eval_sources=(),
+        ),
+        integrity=RetroIntegrity(status="complete"),
+        signals=RetroSignalSet(
+            issue=IssueRetroSignals(),
+            workflow=WorkflowRetroSignals(),
+            eval=EvalRetroSignals(),
+        ),
+        signal_count=0,
+    )
+    retro_dir.mkdir(parents=True, exist_ok=True)
+    (retro_dir / "context.json").write_text(
+        json.dumps(ctx.model_dump(mode="json"), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return {"context": ctx, "context_sha256": context_sha256(ctx)}
+
+
+def test_retro_accept_op_accepts_valid_candidates(tmp_path: Path) -> None:
     workspace = _make_workspace(tmp_path)
     retro_id = "retro-002"
     retro_dir = workspace.project_root / "qa" / "retro" / retro_id
-    _write_context_json(retro_dir, retro_id)
-
-    # Legacy proposal shape: apply_kind + proposed_change, no finding_kind/payload.
-    legacy = [
-        {
-            "id": "p1",
-            "apply_kind": "memory_append",
-            "proposed_change": "Update the prompt rule to handle edge cases.",
-            "evidence_ids": ["ev-1"],
-            "problem": "Prompt rule misses edge cases",
-        }
-    ]
-    (retro_dir / "proposals.json").write_text(json.dumps(legacy), encoding="utf-8")
+    meta = _write_v2_context_json(retro_dir, retro_id)
+    document = {
+        "schema_version": "2",
+        "retro_id": retro_id,
+        "context_sha256": meta["context_sha256"],
+        "candidates": [
+            {
+                "candidate_id": "IMP-CAND-1",
+                "kind": "workflow_improvement",
+                "delivery": "change_draft",
+                "source_refs": {"problem_ids": ["PROB-1"]},
+                "target": "assurance_agent/workflow/inspect",
+                "rationale": "Repeated truncation across changes",
+                "proposed_change": "Preserve pytest E lines when classifying failures",
+                "verification": {
+                    "suites": ["workflow-full"],
+                    "success_criteria": "No truncation Observation",
+                },
+                "risk": "low",
+                "confidence": "high",
+            }
+        ],
+    }
+    (retro_dir / "proposal-candidates.json").write_text(
+        json.dumps(document, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
     context = _make_context(workspace, params={"retro_id": retro_id})
     task = _make_task("operation:retro-accept")
@@ -227,30 +293,45 @@ def test_retro_accept_op_rewrites_legacy_proposals(tmp_path: Path) -> None:
     result = retro_accept(task, workspace, context)
 
     assert result.status == "succeeded"
-    rewritten = json.loads((retro_dir / "proposals.json").read_text(encoding="utf-8"))
-    entries = rewritten.get("proposals", rewritten)
-    assert isinstance(entries, list) and len(entries) == 1
-    assert entries[0].get("finding_kind") is not None
-    assert entries[0].get("payload") is not None
-    assert (retro_dir / "review-queue.md").exists()
+    assert result.value is not None
+    assert result.value["result"] == "accepted"
+    assert (retro_dir / "accept-status.json").is_file()
+    assert (retro_dir / "review-queue.md").is_file()
 
 
-def test_retro_accept_op_unroutable_is_invalid_output(tmp_path: Path) -> None:
+def test_retro_accept_op_failed_receipt_is_invalid_output(tmp_path: Path) -> None:
+    """Failed reconcile receipts must surface as graph task failure (fail-visible)."""
     workspace = _make_workspace(tmp_path)
     retro_id = "retro-003"
     retro_dir = workspace.project_root / "qa" / "retro" / retro_id
-    _write_context_json(retro_dir, retro_id)
-
-    # apply_kind: "contract_field" is not in the ApplyKind Literal → unroutable.
-    bad_proposals = [
-        {
-            "id": "p1",
-            "apply_kind": "contract_field",
-            "proposed_change": "Some change",
-            "evidence_ids": ["ev-1"],
-        }
-    ]
-    (retro_dir / "proposals.json").write_text(json.dumps(bad_proposals), encoding="utf-8")
+    meta = _write_v2_context_json(retro_dir, retro_id)
+    # Schema-valid Candidate with missing Problem evidence → semantic failed receipt.
+    document = {
+        "schema_version": "2",
+        "retro_id": retro_id,
+        "context_sha256": meta["context_sha256"],
+        "candidates": [
+            {
+                "candidate_id": "IMP-CAND-1",
+                "kind": "workflow_improvement",
+                "delivery": "change_draft",
+                "source_refs": {"problem_ids": ["PROB-MISSING"]},
+                "target": "assurance_agent/workflow/inspect",
+                "rationale": "Repeated truncation",
+                "proposed_change": "Preserve pytest E lines",
+                "verification": {
+                    "suites": ["workflow-full"],
+                    "success_criteria": "No truncation",
+                },
+                "risk": "low",
+                "confidence": "high",
+            }
+        ],
+    }
+    (retro_dir / "proposal-candidates.json").write_text(
+        json.dumps(document, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
     context = _make_context(workspace, params={"retro_id": retro_id})
     task = _make_task("operation:retro-accept")
@@ -259,3 +340,5 @@ def test_retro_accept_op_unroutable_is_invalid_output(tmp_path: Path) -> None:
 
     assert result.status == "failed"
     assert result.error_kind == "invalid_output"
+    status = json.loads((retro_dir / "accept-status.json").read_text(encoding="utf-8"))
+    assert status["result"] == "failed"

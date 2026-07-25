@@ -75,6 +75,13 @@ def retro_accept(task: ExecutableTask, workspace: TaskWorkspace, context: Runtim
         )
     except AaError as err:
         return task_failure("invalid_output", str(err))
+    if receipt.result == "failed":
+        # Fail-visible: failed accept receipt is already written; surface as
+        # invalid_output so the graph does not treat reconcile failure as success.
+        return task_failure(
+            "invalid_output",
+            receipt.error or "candidate batch reconciliation failed",
+        )
     return TaskResult(
         status="succeeded",
         value={
