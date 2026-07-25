@@ -589,16 +589,12 @@ contracts:
       - change:inspect/issue-reconcile-status.json
       - change:issues/events.jsonl
       - change:issues/snapshot.json
-      - project:qa/issues/events.jsonl
-      - project:qa/issues/problems.json
-      - project:qa/issues/review-queue.json
+      - project:qa/issues/**
     authorization_writes:
       - change:inspect/issue-reconcile-status.json
       - change:issues/events.jsonl
       - change:issues/snapshot.json
-      - project:qa/issues/events.jsonl
-      - project:qa/issues/problems.json
-      - project:qa/issues/review-queue.json
+      - project:qa/issues/**
     synchronized:
       - project:qa/issues/**
     exclusive:

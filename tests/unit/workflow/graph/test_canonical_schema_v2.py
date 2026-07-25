@@ -45,6 +45,7 @@ EXPECTED_GRAPHS = {
     "fuzz-plan-review-cycle",
     "performance-branch",
     "performance-plan-review-cycle",
+    "inspect-with-issues",
     "healing",
 }
 
@@ -87,6 +88,14 @@ EXPECTED_CONTRACTS = {
     "builtin:join",
     "builtin:gate",
     "builtin:interrupt",
+    # Issue lifecycle (Task 8-11)
+    "skill:aa-issue-analyzer",
+    "skill:aa-issue-triage-advisor",
+    "operation:collect-observations",
+    "operation:record-empty-issue-analysis",
+    "operation:record-issue-analysis-failure",
+    "operation:record-project-sync-pending",
+    "operation:reconcile-issues",
 }
 
 SCHEMA_REL = Path("assurance_agent/_resources/schemas/workflow-schema.yaml")
@@ -675,6 +684,165 @@ def test_retro_entrypoint_topology() -> None:
     assert g.nodes["collect"].definition.uses == "operation:retro-collect"
     assert g.nodes["propose"].definition.uses == "skill:aa-retro"
     assert g.nodes["accept"].definition.uses == "operation:retro-accept"
+
+
+# ---------------------------------------------------------------------------
+# Task 11: inspect-with-issues topology
+
+
+def test_assurance_uses_inspect_with_issues_subgraph() -> None:
+    """execution -> inspect-with-issues (subgraph) -> healing -> report."""
+    compiled, _ = _load_compiled()
+    assurance = compiled.schema.graphs["assurance"]
+    # The assurance graph calls inspect-with-issues as a subgraph, not directly.
+    assert assurance.nodes["inspect-with-issues"].uses == "graph:inspect-with-issues"
+    assert "inspect" not in assurance.nodes  # old direct inspect node is gone
+    edge_pairs = {(e.from_, e.to) for e in assurance.edges}
+    assert ("execution", "inspect-with-issues") in edge_pairs
+    assert ("inspect-with-issues", "healing") in edge_pairs
+
+
+def test_healing_uses_inspect_with_issues_subgraph() -> None:
+    """healing.rerun -> inspect-with-issues (subgraph) -> decide."""
+    compiled, _ = _load_compiled()
+    healing = compiled.schema.graphs["healing"]
+    assert healing.nodes["inspect-with-issues"].uses == "graph:inspect-with-issues"
+    assert "reinspect" not in healing.nodes  # old direct reinspect node is gone
+    edge_pairs = {(e.from_, e.to) for e in healing.edges}
+    assert ("rerun", "inspect-with-issues") in edge_pairs
+    assert ("inspect-with-issues", "decide") in edge_pairs
+
+
+def test_run_tests_false_skips_execution_and_issue_subgraph(tmp_path: Path) -> None:
+    """run_tests=false must send generation-join -> END, bypassing both
+    execution and the inspect-with-issues Issue subgraph."""
+    compiled, _ = _load_compiled()
+    params = resolve_params(compiled.schema, {"run_mode": "full", "run_tests": False})
+    assurance = compiled.schema.graphs["assurance"]
+    skip_edge = next(
+        e for e in assurance.edges if e.from_ == "generation-join" and e.to == "END"
+    )
+    assert skip_edge.when is not None
+    assert "run_tests" in skip_edge.when
+    assert "false" in skip_edge.when.lower() or "== false" in skip_edge.when
+
+
+def test_inspect_with_issues_subgraph_structure() -> None:
+    """inspect-with-issues must have the required nodes in correct roles."""
+    compiled, _ = _load_compiled()
+    g = compiled.schema.graphs["inspect-with-issues"]
+    assert g.nodes["inspect"].uses == "operation:inspect"
+    assert g.nodes["collect-observations"].uses == "operation:collect-observations"
+    assert g.nodes["analyze-issues"].uses == "skill:aa-issue-analyzer"
+    assert g.nodes["record-empty-analysis"].uses == "operation:record-empty-issue-analysis"
+    assert g.nodes["reconcile-issues"].uses == "operation:reconcile-issues"
+    assert g.nodes["record-analysis-failure"].uses == "operation:record-issue-analysis-failure"
+    assert g.nodes["record-project-sync-pending"].uses == "operation:record-project-sync-pending"
+    assert g.nodes["inspect-complete"].uses == "operation:no-op"
+
+
+def test_inspect_with_issues_operation_inspect_is_first() -> None:
+    """operation:inspect must be the first node after START, preserving
+    failure-analysis / quality-gate authority."""
+    compiled, _ = _load_compiled()
+    g = compiled.schema.graphs["inspect-with-issues"]
+    start_targets = {e.to for e in g.edges if e.from_ == "START"}
+    assert start_targets == {"inspect"}
+    after_inspect = {e.to for e in g.edges if e.from_ == "inspect"}
+    assert after_inspect == {"collect-observations"}
+
+
+def test_inspect_with_issues_collect_branches_on_abnormal_count() -> None:
+    """collect-observations fans out to analyze-issues when abnormal_count > 0
+    and to record-empty-analysis when abnormal_count == 0."""
+    compiled, _ = _load_compiled()
+    g = compiled.schema.graphs["inspect-with-issues"]
+    collect_edges = [e for e in g.edges if e.from_ == "collect-observations"]
+    targets = {e.to for e in collect_edges}
+    assert targets == {"analyze-issues", "record-empty-analysis"}
+    for edge in collect_edges:
+        assert edge.when is not None, f"conditional edge to {edge.to} missing when clause"
+        assert "abnormal_count" in edge.when
+
+
+def test_inspect_with_issues_analyzer_recovery() -> None:
+    """analyze-issues carries typed recovery to record-analysis-failure,
+    continuing to inspect-complete on recovery success."""
+    compiled, _ = _load_compiled()
+    g = compiled.schema.graphs["inspect-with-issues"]
+    analyzer_node = g.nodes["analyze-issues"]
+    assert analyzer_node.recover is not None
+    recover = analyzer_node.recover
+    assert set(recover.errors) == {"timeout", "transport", "rate_limit", "invalid_output"}
+    assert recover.via == "record-analysis-failure"
+    assert recover.continue_to == "inspect-complete"
+    # Recovery nodes must not have ordinary incoming/outgoing edges.
+    assert not any(e.to == "record-analysis-failure" for e in g.edges)
+    assert not any(e.from_ == "record-analysis-failure" for e in g.edges)
+
+
+def test_inspect_with_issues_reconcile_recovery() -> None:
+    """reconcile-issues carries typed recovery to record-project-sync-pending,
+    continuing to inspect-complete on recovery success."""
+    compiled, _ = _load_compiled()
+    g = compiled.schema.graphs["inspect-with-issues"]
+    reconcile_node = g.nodes["reconcile-issues"]
+    assert reconcile_node.recover is not None
+    recover = reconcile_node.recover
+    assert set(recover.errors) == {"conflict", "transport"}
+    assert recover.via == "record-project-sync-pending"
+    assert recover.continue_to == "inspect-complete"
+    # Recovery nodes must not have ordinary incoming/outgoing edges.
+    assert not any(e.to == "record-project-sync-pending" for e in g.edges)
+    assert not any(e.from_ == "record-project-sync-pending" for e in g.edges)
+
+
+def test_inspect_with_issues_both_analysis_paths_reach_reconcile() -> None:
+    """Both the normal analysis path and the empty-analysis path must reach
+    reconcile-issues before inspect-complete."""
+    compiled, _ = _load_compiled()
+    g = compiled.schema.graphs["inspect-with-issues"]
+    edge_pairs = {(e.from_, e.to) for e in g.edges}
+    # analyze-issues success -> reconcile-issues
+    assert ("analyze-issues", "reconcile-issues") in edge_pairs
+    # record-empty-analysis -> reconcile-issues
+    assert ("record-empty-analysis", "reconcile-issues") in edge_pairs
+    # reconcile-issues -> inspect-complete
+    assert ("reconcile-issues", "inspect-complete") in edge_pairs
+    # inspect-complete -> END
+    assert ("inspect-complete", "END") in edge_pairs
+
+
+def test_inspect_with_issues_retry_policies_declared() -> None:
+    """llm-default and project-sync retry policies must exist in the schema."""
+    schema = load_workflow_v2(Path.cwd(), SCHEMA_REL)
+    assert "llm-default" in schema.policies.retry
+    assert "project-sync" in schema.policies.retry
+    # analyze-issues uses llm-default
+    iwi = schema.graphs["inspect-with-issues"]
+    assert iwi.nodes["analyze-issues"].retry == "llm-default"
+    # reconcile-issues uses project-sync
+    assert iwi.nodes["reconcile-issues"].retry == "project-sync"
+
+
+def test_inspect_with_issues_recovery_kinds_match_contracts(
+    tmp_path: Path,
+) -> None:
+    """Recovery error kinds must be a subset of the contract's retryable_errors."""
+    compiled, contracts = _load_compiled()
+    g = compiled.schema.graphs["inspect-with-issues"]
+    for nid, node in g.nodes.items():
+        if node.recover is None:
+            continue
+        contract_target = node.uses
+        if contract_target.startswith("graph:"):
+            continue
+        contract = contracts.contracts[contract_target]
+        unsupported = set(node.recover.errors) - set(contract.retryable_errors)
+        assert not unsupported, (
+            f"inspect-with-issues/{nid} recovery errors {unsupported} "
+            f"not in {contract_target}.retryable_errors"
+        )
 
 
 def test_schema_and_contract_digests_stable_across_two_loads() -> None:

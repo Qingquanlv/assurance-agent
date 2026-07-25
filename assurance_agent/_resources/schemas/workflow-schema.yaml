@@ -86,6 +86,22 @@ policies:
     never:
       max_attempts: 1
       retry_on: []
+    llm-default:
+      max_attempts: 3
+      retry_on: [timeout, transport, rate_limit, invalid_output]
+      backoff:
+        initial_seconds: 2
+        multiplier: 2
+        max_seconds: 30
+        jitter: true
+    project-sync:
+      max_attempts: 3
+      retry_on: [conflict, transport]
+      backoff:
+        initial_seconds: 1
+        multiplier: 2
+        max_seconds: 15
+        jitter: true
 
   timeout:
     agent:
@@ -364,13 +380,8 @@ graphs:
         retry: cli-transient
         timeout: cli
 
-      inspect:
-        uses: operation:inspect
-        outputs:
-          - change:inspect/failure-analysis.json
-          - change:inspect/quality-gate-result.json
-        retry: cli-transient
-        timeout: cli
+      inspect-with-issues:
+        uses: graph:inspect-with-issues
 
       healing:
         uses: graph:healing
@@ -407,8 +418,8 @@ graphs:
       - {from: performance, to: generation-join}
       - {from: generation-join, to: execution, when: "params.run_tests == true"}
       - {from: generation-join, to: END, when: "params.run_tests == false"}
-      - {from: execution, to: inspect}
-      - {from: inspect, to: healing}
+      - {from: execution, to: inspect-with-issues}
+      - {from: inspect-with-issues, to: healing}
       - {from: healing, to: report}
       - {from: report, to: END}
 
@@ -842,6 +853,78 @@ graphs:
           stop: STOP
         default: STOP
 
+  inspect-with-issues:
+    # Runs after every authoritative execution batch (initial run and every
+    # healing rerun). Keeps operation:inspect first so failure-analysis /
+    # quality-gate artifacts remain authoritative, then collects Observations
+    # and optionally invokes the LLM analyzer before reconciling Issues.
+    max_supersteps: 15
+    nodes:
+      inspect:
+        uses: operation:inspect
+        outputs:
+          - change:inspect/failure-analysis.json
+          - change:inspect/quality-gate-result.json
+        retry: cli-transient
+        timeout: cli
+
+      collect-observations:
+        uses: operation:collect-observations
+        retry: never
+        timeout: local-operation
+
+      analyze-issues:
+        uses: skill:aa-issue-analyzer
+        agent: aa-reporter
+        outputs:
+          - change:inspect/issue-candidates.json
+          - change:inspect/issue-analysis-status.json
+        retry: llm-default
+        timeout: agent
+        recover:
+          errors: [timeout, transport, rate_limit, invalid_output]
+          via: record-analysis-failure
+          continue_to: inspect-complete
+
+      record-empty-analysis:
+        uses: operation:record-empty-issue-analysis
+        retry: never
+        timeout: local-operation
+
+      reconcile-issues:
+        uses: operation:reconcile-issues
+        retry: project-sync
+        timeout: cli
+        recover:
+          errors: [conflict, transport]
+          via: record-project-sync-pending
+          continue_to: inspect-complete
+
+      record-analysis-failure:
+        uses: operation:record-issue-analysis-failure
+        retry: never
+        timeout: local-operation
+
+      record-project-sync-pending:
+        uses: operation:record-project-sync-pending
+        retry: never
+        timeout: local-operation
+
+      inspect-complete:
+        uses: operation:no-op
+
+    edges:
+      - {from: START, to: inspect}
+      - {from: inspect, to: collect-observations}
+      - {from: collect-observations, to: analyze-issues,
+         when: "node('collect-observations').value.abnormal_count > 0"}
+      - {from: collect-observations, to: record-empty-analysis,
+         when: "node('collect-observations').value.abnormal_count == 0"}
+      - {from: record-empty-analysis, to: reconcile-issues}
+      - {from: analyze-issues, to: reconcile-issues}
+      - {from: reconcile-issues, to: inspect-complete}
+      - {from: inspect-complete, to: END}
+
   healing:
     max_supersteps: 50
     budgets:
@@ -917,13 +1000,8 @@ graphs:
         retry: cli-transient
         timeout: cli
 
-      reinspect:
-        uses: operation:inspect
-        outputs:
-          - change:inspect/failure-analysis.json
-          - change:inspect/quality-gate-result.json
-        retry: cli-transient
-        timeout: cli
+      inspect-with-issues:
+        uses: graph:inspect-with-issues
 
       decide:
         uses: builtin:gate
@@ -959,8 +1037,8 @@ graphs:
       - {from: fix-api, to: fixer-join}
       - {from: fix-e2e, to: fixer-join}
       - {from: fixer-join, to: safety}
-      - {from: rerun, to: reinspect}
-      - {from: reinspect, to: decide}
+      - {from: rerun, to: inspect-with-issues}
+      - {from: inspect-with-issues, to: decide}
       - {from: complete-not-needed, to: END}
       - {from: complete-resolved, to: END}
       - {from: complete-exhausted, to: END}
