@@ -12,6 +12,7 @@ from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import load_execution_contracts
 from assurance_agent.workflow.graph.leases import Clock, SystemClock
 from assurance_agent.workflow.graph.models import CompiledWorkflow, RuntimeContext
+from assurance_agent.workflow.graph.project_locks import ProjectResourceLockManager
 from assurance_agent.workflow.graph.runtime import GraphDefinitionChanged, GraphRuntime
 from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
@@ -64,6 +65,7 @@ def build_graph_runtime(
     object_store = TreeStore(loc.path)
     checkpoints = CheckpointStore(loc.path)
     workspaces = WorkspaceBackend(loc.path)
+    project_locks = ProjectResourceLockManager(project_root, clock=runtime_clock)
     holder: dict[str, GraphRuntime] = {}
 
     def run_child(task, graph_id, workspace, context):  # noqa: ANN001, ANN202
@@ -88,6 +90,7 @@ def build_graph_runtime(
         max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
         contracts=contracts,
         state_defs=state_defs,
+        project_lock_manager=project_locks,
     )
     runtime = GraphRuntime(
         checkpoint_store=checkpoints,

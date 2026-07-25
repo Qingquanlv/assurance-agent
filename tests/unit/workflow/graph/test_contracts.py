@@ -201,6 +201,103 @@ def test_parse_rejects_invalid_registries(text: str, message: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# synchronized project resources
+
+
+def test_synchronized_project_path_parses_and_propagates_to_claims() -> None:
+    catalog = parse_execution_contracts(
+        '''schema_version: "1"
+contracts:
+  operation:update-issues:
+    handler: operation
+    reads: [project:qa/issues/**]
+    writes: [project:qa/issues/**]
+    authorization_writes: [project:qa/issues/**]
+    synchronized: [project:qa/issues/**]
+    exclusive: [project:issue-registry]
+'''
+    )
+
+    claims = catalog.claims_for(NodeDef(uses="operation:update-issues"))
+
+    assert catalog.contracts["operation:update-issues"].synchronized == (
+        "project:qa/issues/**",
+    )
+    assert claims.synchronized == (ResourcePath.parse("project:qa/issues/**"),)
+    ordinary_writer = ResourceClaims(
+        writes=(ResourcePath.parse("project:qa/issues/ISSUE-1.yaml"),)
+    )
+    assert claims_conflict(claims, ordinary_writer) is True
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (
+            "reads: [repo:qa/issues/**]\n"
+            "    synchronized: [repo:qa/issues/**]\n"
+            "    exclusive: [project:issue-registry]",
+            "project root",
+        ),
+        (
+            "reads: [project:qa/problems/**]\n"
+            "    synchronized: [project:qa/issues/**]\n"
+            "    exclusive: [project:issue-registry]",
+            "covered by reads",
+        ),
+        (
+            "reads: [project:qa/issues/**]\n"
+            "    authorization_writes: [project:qa/issues/**]\n"
+            "    synchronized: [project:qa/issues/**]\n"
+            "    exclusive: [project:issue-registry]",
+            "covered by writes",
+        ),
+        (
+            "reads: [project:qa/issues/**]\n"
+            "    writes: [project:qa/issues/**]\n"
+            "    synchronized: [project:qa/issues/**]\n"
+            "    exclusive: [project:issue-registry]",
+            "authorization_writes",
+        ),
+        (
+            "reads: [project:qa/*]\n"
+            "    synchronized: [project:qa/*]\n"
+            "    exclusive: [project:issue-registry]",
+            "concrete file or directory prefix",
+        ),
+        (
+            "reads: [project:qa/issues/**]\n"
+            "    synchronized: [project:qa/issues/**]\n"
+            "    exclusive: [repo:issue-registry]",
+            "project exclusive token",
+        ),
+        (
+            "reads: [project:qa/issues/**]\n"
+            "    synchronized: [project:qa/issues/**]\n"
+            '    exclusive: ["project:"]',
+            "project exclusive token",
+        ),
+        (
+            "reads: [project:qa/issues/]\n"
+            "    synchronized: [project:qa/issues/]\n"
+            "    exclusive: [project:issue-registry]",
+            "directory prefix",
+        ),
+    ],
+)
+def test_synchronized_project_path_contract_invariants(body: str, message: str) -> None:
+    text = (
+        'schema_version: "1"\n'
+        "contracts:\n"
+        "  operation:update-issues:\n"
+        "    handler: operation\n"
+        f"    {body}\n"
+    )
+    with pytest.raises(ContractError, match=message):
+        parse_execution_contracts(text)
+
+
+# ---------------------------------------------------------------------------
 # claims_for 合成
 
 

@@ -7,6 +7,7 @@
 from typing import Literal
 
 ErrorKind = Literal[
+    "conflict",
     "timeout",
     "transport",
     "rate_limit",

@@ -27,7 +27,7 @@ import json
 import os
 import shutil
 import subprocess
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -281,6 +281,92 @@ def _prune_empty_parents(path: Path, stop: Path) -> None:
         parent = parent.parent
 
 
+def _validated_synchronized_paths(
+    paths: Sequence[ResourcePath | str],
+) -> tuple[ResourcePath, ...]:
+    validated: dict[str, ResourcePath] = {}
+    for value in paths:
+        path = ResourcePath.parse(value) if isinstance(value, str) else value
+        if path.root != "project":
+            raise WorkspaceError(
+                f"synchronized path must use the project root: {path.root}:{path.pattern}"
+            )
+        wildcard_segments = [segment for segment in path.segments if "*" in segment]
+        if wildcard_segments and not (
+            wildcard_segments == ["**"] and path.segments[-1] == "**"
+        ):
+            raise WorkspaceError(
+                f"synchronized path must be a concrete file or directory prefix: {path.pattern}"
+            )
+        validated[path.pattern] = path
+    return tuple(validated[key] for key in sorted(validated))
+
+
+def _matches_synchronized_path(
+    roots: Mapping[str, str],
+    rel: str,
+    synchronized: Sequence[ResourcePath],
+) -> bool:
+    prefix = roots.get("project")
+    if prefix is None:
+        raise WorkspaceError("tree manifest missing project logical root")
+    prefix = _assert_safe_prefix(prefix)
+    if prefix == ".":
+        logical_rel = rel
+    elif rel.startswith(f"{prefix}/"):
+        logical_rel = rel[len(prefix) + 1 :]
+    else:
+        return False
+    logical = ResourcePath.parse(f"project:{logical_rel}")
+    return any(path_covers(path, logical) for path in synchronized)
+
+
+def _capture_synchronized_entries(
+    project_root: Path,
+    roots: Mapping[str, str],
+    synchronized: Sequence[ResourcePath],
+) -> dict[str, _Entry]:
+    captured: dict[str, _Entry] = {}
+    for path in synchronized:
+        rel_pattern = _physical_for(roots, path)
+        if path.segments[-1] == "**":
+            directory_rel = rel_pattern.removesuffix("/**")
+            directory = project_root / directory_rel
+            if not _is_within(directory.parent.resolve(), project_root):
+                raise WorkspaceError(f"synchronized directory escapes project root: {path.pattern}")
+            if directory.is_symlink():
+                raise WorkspaceError(f"synchronized directory cannot be a symlink: {path.pattern}")
+            if not directory.exists():
+                continue
+            if not directory.is_dir():
+                raise WorkspaceError(f"synchronized prefix is not a directory: {path.pattern}")
+            for child_rel, entry in _walk(directory).items():
+                captured[f"{directory_rel}/{child_rel}"] = entry
+            continue
+        entry = _entry_at(project_root, rel_pattern)
+        if entry is not None:
+            captured[rel_pattern] = entry
+    return captured
+
+
+def _entry_at(project_root: Path, rel: str) -> _Entry | None:
+    target = project_root / rel
+    if not _is_within(target.parent.resolve(), project_root):
+        raise WorkspaceError(f"targeted path escapes project root: {rel}")
+    if target.is_symlink():
+        link_target = os.readlink(target)
+        if not _is_within((target.parent / link_target).resolve(), project_root):
+            raise WorkspaceError(f"targeted symlink escapes project root: {rel}")
+        return _Entry(kind="symlink", sha256=hashlib.sha256(link_target.encode()).hexdigest())
+    if not target.exists():
+        return None
+    if not target.is_file():
+        raise WorkspaceError(f"targeted write-set path is not a file: {rel}")
+    data = target.read_bytes()
+    executable = bool(target.stat(follow_symlinks=False).st_mode & 0o100)
+    return _Entry(kind="file", sha256=hashlib.sha256(data).hexdigest(), executable=executable)
+
+
 # ---------------------------------------------------------------------------
 # write-set 模型
 
@@ -302,6 +388,8 @@ class WriteSet(BaseModel):
     base_tree_id: str
     entries: tuple[WriteEntry, ...]
     outputs_sha256: dict[str, str]
+    synchronized_paths: tuple[str, ...] = ()
+    project_exclusive_tokens: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -458,6 +546,15 @@ class TreeStore:
             ):
                 raise WorkspaceError(f"changed symlink rejected: {rel}")
             logical = _canonical_logical(base.roots, rel)
+            logical_path = ResourcePath.parse(logical)
+            if (
+                claims.synchronized
+                and logical_path.root == "project"
+                and not any(path_covers(prefix, logical_path) for prefix in claims.synchronized)
+            ):
+                raise WorkspaceError(
+                    f"synchronized write outside declared prefixes: {logical}"
+                )
             if not _is_authorized(base.roots, rel, claims):
                 raise WorkspaceError(f"forbidden write outside authorization_writes: {logical}")
             if after is None:
@@ -491,6 +588,14 @@ class TreeStore:
             "entries": [entry.model_dump(mode="json") for entry in entries],
             "kind": "write_set",
             "outputs_sha256": outputs_sha256,
+            "project_exclusive_tokens": sorted(
+                token
+                for token in claims.exclusive
+                if claims.synchronized and token.startswith("project:")
+            ),
+            "synchronized_paths": sorted(
+                f"{path.root}:{path.pattern}" for path in claims.synchronized
+            ),
             "task_id": workspace.task_id,
             "version": 1,
         }
@@ -503,6 +608,16 @@ class TreeStore:
             base_tree_id=workspace.base_tree_id,
             entries=tuple(entries),
             outputs_sha256=outputs_sha256,
+            synchronized_paths=tuple(
+                sorted(f"{path.root}:{path.pattern}" for path in claims.synchronized)
+            ),
+            project_exclusive_tokens=tuple(
+                sorted(
+                    token
+                    for token in claims.exclusive
+                    if claims.synchronized and token.startswith("project:")
+                )
+            ),
         )
 
     def _freeze_outputs(
@@ -603,6 +718,133 @@ class TreeStore:
         target_tree_id = hashlib.sha256(raw).hexdigest()
         self._write_object(target_tree_id, raw)
         return target_tree_id
+
+    def overlay_synchronized_paths(
+        self,
+        base_tree_id: str,
+        project_root: Path,
+        paths: Sequence[ResourcePath],
+    ) -> str:
+        """Replace only declared synchronized paths in ``base_tree_id`` from the live root."""
+        synchronized = _validated_synchronized_paths(paths)
+        if not synchronized:
+            return base_tree_id
+        project_root = project_root.resolve()
+        if not project_root.is_dir():
+            raise WorkspaceError(f"project root is not a directory: {project_root}")
+        base = self._load_tree(base_tree_id)
+        live = _capture_synchronized_entries(project_root, base.roots, synchronized)
+        entries = dict(base.entries)
+        for rel in sorted(set(base.entries) | set(live)):
+            if not _matches_synchronized_path(base.roots, rel, synchronized):
+                continue
+            current = live.get(rel)
+            if current is None:
+                entries.pop(rel, None)
+                continue
+            source = project_root / rel
+            data = (
+                source.read_bytes()
+                if current.kind == "file"
+                else os.readlink(source).encode("utf-8")
+            )
+            if hashlib.sha256(data).hexdigest() != current.sha256:
+                raise WorkspaceError(f"synchronized path changed during overlay: {rel}")
+            self._write_object(current.sha256, data)
+            entries[rel] = current
+        raw = _canonical_json(_tree_payload(base.roots, entries))
+        overlay_tree_id = hashlib.sha256(raw).hexdigest()
+        self._write_object(overlay_tree_id, raw)
+        return overlay_tree_id
+
+    def apply_write_sets_to_synchronized_paths(
+        self,
+        project_root: Path,
+        write_sets: Iterable[WriteSet],
+        paths: Sequence[ResourcePath],
+    ) -> None:
+        """Apply only write-set entries, validating against their live-overlay base tree.
+
+        Synchronized entries therefore compare with the locked live state captured by
+        ``overlay_synchronized_paths``; every other entry compares with the invocation
+        snapshot retained in that same overlay tree. Unrelated canonical paths are never
+        walked or materialized.
+        """
+        synchronized = _validated_synchronized_paths(paths)
+        if not synchronized:
+            raise WorkspaceError("targeted synchronized apply requires synchronized paths")
+        ordered = sorted(write_sets, key=lambda write_set: write_set.task_id)
+        if not ordered:
+            return
+        base_ids = {write_set.base_tree_id for write_set in ordered}
+        if len(base_ids) != 1:
+            raise WorkspaceError("write-sets do not share one synchronized overlay base tree")
+        base = self._load_tree(ordered[0].base_tree_id)
+        project_root = project_root.resolve()
+        if not project_root.is_dir():
+            raise WorkspaceError(f"project root is not a directory: {project_root}")
+
+        touched: dict[str, str] = {}
+        writes: list[tuple[str, _Entry]] = []
+        deletes: list[str] = []
+        for write_set in ordered:
+            for entry in write_set.entries:
+                previous = touched.get(entry.logical_path)
+                if previous is not None:
+                    raise WorkspaceError(
+                        f"overlapping sibling write-sets at {entry.logical_path}: "
+                        f"{previous} vs {write_set.task_id}"
+                    )
+                touched[entry.logical_path] = write_set.task_id
+                logical = ResourcePath.parse(entry.logical_path)
+                if any("*" in segment for segment in logical.segments):
+                    raise WorkspaceError(f"write-set entry must be a concrete path: {entry.logical_path}")
+                rel = _physical_for(base.roots, logical)
+                before = base.entries.get(rel)
+                before_sha = before.sha256 if before is not None else None
+                if entry.before_sha256 != before_sha:
+                    scope = (
+                        "synchronized live overlay"
+                        if logical.root == "project"
+                        and any(path_covers(prefix, logical) for prefix in synchronized)
+                        else "invocation base"
+                    )
+                    raise WorkspaceError(
+                        f"write-set entry {entry.logical_path} before_sha256 disagrees with {scope}"
+                    )
+                if entry.operation == "delete":
+                    if entry.after_sha256 is not None or entry.blob_sha256 is not None:
+                        raise WorkspaceError(
+                            f"delete write-set entry carries after content: {entry.logical_path}"
+                        )
+                    wanted = None
+                else:
+                    if entry.after_sha256 is None or entry.blob_sha256 != entry.after_sha256:
+                        raise WorkspaceError(
+                            f"write-set entry missing matching content hash: {entry.logical_path}"
+                        )
+                    self._read_object(entry.after_sha256)
+                    wanted = _Entry(
+                        kind="file",
+                        sha256=entry.after_sha256,
+                        executable=entry.executable,
+                    )
+                actual = _entry_at(project_root, rel)
+                if actual == wanted:
+                    continue
+                if actual != before:
+                    raise WorkspaceError(f"canonical workspace drift at targeted path {entry.logical_path}")
+                if wanted is None:
+                    deletes.append(rel)
+                else:
+                    writes.append((rel, wanted))
+
+        for rel, wanted in sorted(writes):
+            _install_file(project_root / rel, self._read_object(wanted.sha256), wanted.executable)
+        for rel in sorted(deletes):
+            victim = project_root / rel
+            victim.unlink(missing_ok=True)
+            _prune_empty_parents(victim, project_root)
 
     def apply_tree(self, project_root: Path, target_tree_id: str, *, base_tree_id: str) -> None:
         """把 canonical root 从 base tree 幂等推进到 target tree。

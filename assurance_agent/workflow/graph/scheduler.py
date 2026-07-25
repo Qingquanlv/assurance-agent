@@ -47,6 +47,7 @@ from assurance_agent.workflow.graph.compiler import canonical_digest
 from assurance_agent.workflow.graph.contracts import (
     ExecutionContractCatalog,
     ResourceClaims,
+    ResourcePath,
     claims_conflict,
 )
 from assurance_agent.workflow.graph.leases import (
@@ -67,6 +68,11 @@ from assurance_agent.workflow.graph.models import (
     WaveResult,
 )
 from assurance_agent.workflow.graph.planner import apply_state_updates
+from assurance_agent.workflow.graph.project_locks import (
+    ProjectLockManager,
+    ProjectResourceConflict,
+    ProjectResourceLockManager,
+)
 from assurance_agent.workflow.graph.schema_v2 import StateDef
 from assurance_agent.workflow.graph.task_runner import NodeRunner
 from assurance_agent.workflow.graph.workspace import (
@@ -111,6 +117,31 @@ def _resources_conflict(left: ResourceClaims, right: ResourceClaims) -> bool:
     return claims_conflict(left, right)
 
 
+def _synchronized_paths_for_wave(
+    wave: Sequence[ExecutableTask],
+) -> tuple[ResourcePath, ...]:
+    return tuple(
+        sorted(
+            {path for task in wave for path in task.resources.synchronized},
+            key=lambda path: (path.root, path.pattern),
+        )
+    )
+
+
+def _project_lock_tokens_for_wave(wave: Sequence[ExecutableTask]) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                token
+                for task in wave
+                if task.resources.synchronized
+                for token in task.resources.exclusive
+                if token.startswith("project:")
+            }
+        )
+    )
+
+
 @dataclass
 class _PreparedAttempt:
     task: ExecutableTask
@@ -144,7 +175,11 @@ class Scheduler:
         contracts: ExecutionContractCatalog | None = None,
         state_defs: Mapping[str, StateDef] | None = None,
         lease_registry: LeaseRegistry | None = None,
+        project_lock_manager: ProjectLockManager | None = None,
+        project_lock_timeout_seconds: float = 5.0,
     ) -> None:
+        if project_lock_timeout_seconds < 0:
+            raise ValueError("project_lock_timeout_seconds must be non-negative")
         self._checkpoints = checkpoints
         self._objects = object_store
         self._clock = clock or SystemClock()
@@ -154,6 +189,8 @@ class Scheduler:
         self._contracts = contracts
         self._state_defs = dict(state_defs or {})
         self._leases = lease_registry
+        self._project_locks = project_lock_manager
+        self._project_lock_timeout_seconds = project_lock_timeout_seconds
 
     def execute(
         self,
@@ -163,8 +200,60 @@ class Scheduler:
     ) -> WaveResult:
         if self._workspaces is None or self._runner is None:
             raise SchedulerError("Scheduler requires workspace_backend and node_runner")
-        leases = self._leases or LeaseRegistry(context.change_dir)
         wave = select_wave(plan.tasks, max_parallel_tasks=self._max_parallel_tasks)
+        synchronized_paths = _synchronized_paths_for_wave(wave)
+        if not synchronized_paths:
+            return self._execute_wave(
+                plan,
+                projection,
+                context,
+                wave=wave,
+                base_tree_id=projection.current_tree_id,
+                synchronized_paths=(),
+            )
+
+        tokens = _project_lock_tokens_for_wave(wave)
+        if not tokens:
+            raise SchedulerError("synchronized wave has no project:* exclusive token")
+        manager = self._project_locks or ProjectResourceLockManager(
+            context.project_root,
+            clock=self._clock,
+        )
+        try:
+            with manager.acquire(tokens, timeout_seconds=self._project_lock_timeout_seconds):
+                overlay_tree_id = self._objects.overlay_synchronized_paths(
+                    projection.current_tree_id,
+                    context.project_root,
+                    synchronized_paths,
+                )
+                return self._execute_wave(
+                    plan,
+                    projection,
+                    context,
+                    wave=wave,
+                    base_tree_id=overlay_tree_id,
+                    synchronized_paths=synchronized_paths,
+                )
+        except ProjectResourceConflict as exc:
+            return self._persist_project_lock_conflict(
+                plan=plan,
+                projection=projection,
+                context=context,
+                wave=wave,
+                message=str(exc),
+            )
+
+    def _execute_wave(
+        self,
+        plan: PlanResult,
+        projection: GraphProjection,
+        context: RuntimeContext,
+        *,
+        wave: tuple[ExecutableTask, ...],
+        base_tree_id: str,
+        synchronized_paths: tuple[ResourcePath, ...],
+    ) -> WaveResult:
+        leases = self._leases or LeaseRegistry(context.change_dir)
 
         succeeded: list[str] = []
         failed: list[str] = []
@@ -199,7 +288,19 @@ class Scheduler:
                 if stop_submitting:
                     break
 
-                prepared = self._begin_attempt(task, plan, projection, context, leases)
+                if synchronized_paths:
+                    prepared = self._begin_attempt(
+                        task,
+                        plan,
+                        projection,
+                        context,
+                        leases,
+                        base_tree_id=base_tree_id,
+                    )
+                else:
+                    # Preserve the legacy call shape for fault-injection wrappers and
+                    # ordinary Change-local execution.
+                    prepared = self._begin_attempt(task, plan, projection, context, leases)
                 if prepared is None:
                     decision = next_attempt_decision(task=task, projection=projection, now=self._clock.now())
                     if decision.kind == "wait" and decision.next_retry_at is not None:
@@ -252,6 +353,8 @@ class Scheduler:
                     projection=projection,
                     context=context,
                     succeeded_ids=succeeded,
+                    base_tree_id=base_tree_id,
+                    synchronized_paths=synchronized_paths,
                 )
             except (WorkspaceError, ProgressionError, SchedulerError, ValueError):
                 # Update 失败：保留 pending write-set，不推断成功物化。
@@ -265,6 +368,72 @@ class Scheduler:
             stopped=tuple(stopped),
             pending_write_set_ids=tuple(pending_writes),
             retry_at=min(retry_ats) if retry_ats else None,
+        )
+
+    def _persist_project_lock_conflict(
+        self,
+        *,
+        plan: PlanResult,
+        projection: GraphProjection,
+        context: RuntimeContext,
+        wave: tuple[ExecutableTask, ...],
+        message: str,
+    ) -> WaveResult:
+        task = next((candidate for candidate in wave if candidate.resources.synchronized), None)
+        if task is None:
+            raise SchedulerError("project lock conflict without a synchronized task")
+        decision = next_attempt_decision(task=task, projection=projection, now=self._clock.now())
+        if decision.kind != "start" or decision.attempt_number is None:
+            retry_at = decision.next_retry_at if decision.kind == "wait" else None
+            failed = (task.task_id,) if decision.kind in ("failed", "exhausted") else ()
+            return WaveResult(
+                superstep_id=plan.superstep_id,
+                failed=failed,
+                retry_at=retry_at,
+            )
+
+        attempt_number = decision.attempt_number
+        attempt_id = f"{task.task_id}-a{attempt_number}"
+        started_at = self._clock.now()
+        lease_seconds = max(
+            task.timeout_policy.heartbeat_seconds * 3.0,
+            task.timeout_policy.heartbeat_seconds + 1.0,
+        )
+        lease_expires_at = (started_at + timedelta(seconds=lease_seconds)).isoformat()
+        with transaction(context.change_dir) as txn:
+            txn.append_strict(
+                TaskAttemptStartedEvent(
+                    type="task_attempt_started",
+                    invocation_id=task.invocation_id,
+                    checkpoint_ns=task.checkpoint_ns,
+                    superstep_id=plan.superstep_id,
+                    task_id=task.task_id,
+                    attempt_id=attempt_id,
+                    node_id=task.node_id,
+                    input_sha256=task.input_sha256,
+                    graph_digest=projection.graph_digest,
+                    contract_digest=task.contract_digest,
+                    attempt_number=attempt_number,
+                    lease_expires_at=lease_expires_at,
+                    started_at=started_at.isoformat(),
+                )
+            )
+        settled = self._persist_failure(
+            prepared=_PreparedAttempt(
+                task=task,
+                attempt_id=attempt_id,
+                attempt_number=attempt_number,
+                workspace=None,
+            ),
+            plan=plan,
+            context=context,
+            error_kind="conflict",
+            message=message,
+        )
+        return WaveResult(
+            superstep_id=plan.superstep_id,
+            failed=(task.task_id,),
+            retry_at=settled.retry_at,
         )
 
     @staticmethod
@@ -301,6 +470,8 @@ class Scheduler:
         projection: GraphProjection,
         context: RuntimeContext,
         leases: LeaseRegistry,
+        *,
+        base_tree_id: str | None = None,
     ) -> _PreparedAttempt | None:
         assert self._workspaces is not None
         existing = projection.tasks.get(task.task_id)
@@ -351,7 +522,7 @@ class Scheduler:
 
         workspace = self._workspaces.create(
             task_id=task.task_id,
-            base_tree_id=projection.current_tree_id,
+            base_tree_id=base_tree_id or projection.current_tree_id,
             store=self._objects,
             side_effect_free=self._is_side_effect_free(task),
         )
@@ -643,7 +814,10 @@ class Scheduler:
         projection: GraphProjection,
         context: RuntimeContext,
         succeeded_ids: list[str],
+        base_tree_id: str | None = None,
+        synchronized_paths: tuple[ResourcePath, ...] = (),
     ) -> list[str]:
+        effective_base_tree_id = base_tree_id or projection.current_tree_id
         live = project_invocation(context.change_dir, projection.invocation_id)
         ordered_ids = sorted(succeeded_ids)
         write_sets = []
@@ -660,13 +834,66 @@ class Scheduler:
             if task_proj.state_updates:
                 state_pairs.append((task_id, task_proj.state_updates))
 
+        recovered_paths = tuple(
+            sorted(
+                {
+                    ResourcePath.parse(path)
+                    for write_set in write_sets
+                    for path in write_set.synchronized_paths
+                },
+                key=lambda path: (path.root, path.pattern),
+            )
+        )
+        if recovered_paths and not synchronized_paths:
+            recovered_tokens = tuple(
+                sorted(
+                    {
+                        token
+                        for write_set in write_sets
+                        for token in write_set.project_exclusive_tokens
+                    }
+                )
+            )
+            if not recovered_tokens:
+                raise WorkspaceError(
+                    "pending synchronized Update lacks project exclusive token metadata"
+                )
+            manager = self._project_locks or ProjectResourceLockManager(
+                context.project_root,
+                clock=self._clock,
+            )
+            try:
+                with manager.acquire(
+                    recovered_tokens,
+                    timeout_seconds=self._project_lock_timeout_seconds,
+                ):
+                    refreshed_base = self._objects.overlay_synchronized_paths(
+                        projection.current_tree_id,
+                        context.project_root,
+                        recovered_paths,
+                    )
+                    if {write_set.base_tree_id for write_set in write_sets} != {refreshed_base}:
+                        raise WorkspaceError(
+                            "synchronized live resource changed before pending Update replay"
+                        )
+                    return self._commit_wave(
+                        plan=plan,
+                        projection=projection,
+                        context=context,
+                        succeeded_ids=succeeded_ids,
+                        base_tree_id=refreshed_base,
+                        synchronized_paths=recovered_paths,
+                    )
+            except ProjectResourceConflict as exc:
+                raise SchedulerError(str(exc)) from None
+
         committed_task_ids = sorted(commit_eligible)
 
         if write_sets:
             target_tree_id = self._objects.merge_write_sets(write_sets)
             committed_ids = [ws.write_set_id for ws in sorted(write_sets, key=lambda item: item.task_id)]
         else:
-            target_tree_id = projection.current_tree_id
+            target_tree_id = effective_base_tree_id
             committed_ids = []
 
         next_state = apply_state_updates(self._state_defs, live.state_values, state_pairs)
@@ -708,11 +935,18 @@ class Scheduler:
             txn.set_workflow_state_projection(render_workflow_state_yaml(tentative))
 
         if write_sets:
-            self._objects.apply_tree(
-                context.project_root,
-                target_tree_id,
-                base_tree_id=projection.current_tree_id,
-            )
+            if synchronized_paths:
+                self._objects.apply_write_sets_to_synchronized_paths(
+                    context.project_root,
+                    write_sets,
+                    synchronized_paths,
+                )
+            else:
+                self._objects.apply_tree(
+                    context.project_root,
+                    target_tree_id,
+                    base_tree_id=effective_base_tree_id,
+                )
         return committed_ids
 
     def _is_side_effect_free(self, task: ExecutableTask) -> bool:

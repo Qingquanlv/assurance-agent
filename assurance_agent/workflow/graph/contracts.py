@@ -73,6 +73,7 @@ class ResourcePath:
 class ResourceClaims:
     reads: tuple[ResourcePath, ...] = ()
     writes: tuple[ResourcePath, ...] = ()
+    synchronized: tuple[ResourcePath, ...] = ()
     exclusive: tuple[str, ...] = ()
     authorization_writes: tuple[ResourcePath, ...] = ()
 
@@ -81,6 +82,7 @@ class ResourceClaims:
         return ResourceClaims(
             reads=(*self.reads, *other.reads),
             writes=(*self.writes, *other.writes),
+            synchronized=(*self.synchronized, *other.synchronized),
             exclusive=tuple(dict.fromkeys((*self.exclusive, *other.exclusive))),
             authorization_writes=(*self.authorization_writes, *other.authorization_writes),
         )
@@ -171,6 +173,7 @@ class ExecutionContract(BaseModel):
     handler: Literal["agent", "operation", "builtin"]
     reads: tuple[str, ...] = ()
     writes: tuple[str, ...] = ()
+    synchronized: tuple[str, ...] = ()
     exclusive: tuple[str, ...] = ()
     authorization_writes: tuple[str, ...] = ()
     retryable_errors: tuple[ErrorKind, ...] = ()
@@ -194,6 +197,7 @@ class ExecutionContractCatalog(BaseModel):
         declared = node.resources
         reads = [ResourcePath.parse(v) for v in contract.reads]
         writes = [ResourcePath.parse(v) for v in contract.writes]
+        synchronized = tuple(ResourcePath.parse(v) for v in contract.synchronized)
         output_paths = tuple(ResourcePath.parse(normalize_claim_pattern(o)) for o in node.outputs)
         writes.extend(output_paths)
         exclusive = list(contract.exclusive)
@@ -214,6 +218,7 @@ class ExecutionContractCatalog(BaseModel):
         return ResourceClaims(
             reads=tuple(reads),
             writes=tuple(writes),
+            synchronized=synchronized,
             exclusive=tuple(dict.fromkeys(exclusive)),
             authorization_writes=authorization,
         )
@@ -223,12 +228,55 @@ def _validate_catalog_paths(catalog: ExecutionContractCatalog) -> None:
     """registry 在加载期完成路径安全校验，之后的冲突/授权判定不再接触未审字符串。"""
     for key, contract in catalog.contracts.items():
         try:
-            for value in (*contract.reads, *contract.writes, *contract.authorization_writes):
+            for value in (
+                *contract.reads,
+                *contract.writes,
+                *contract.synchronized,
+                *contract.authorization_writes,
+            ):
                 ResourcePath.parse(value)
         except ContractError as exc:
             raise ContractError(f"contract '{key}': {exc}") from exc
         if any(not token.strip() for token in contract.exclusive):
             raise ContractError(f"contract '{key}' has empty exclusive token")
+        synchronized = tuple(ResourcePath.parse(value) for value in contract.synchronized)
+        if synchronized and not any(
+            token.startswith("project:") and token.removeprefix("project:").strip()
+            for token in contract.exclusive
+        ):
+            raise ContractError(f"contract '{key}' synchronized paths require a project exclusive token")
+        reads = tuple(ResourcePath.parse(value) for value in contract.reads)
+        writes = tuple(ResourcePath.parse(value) for value in contract.writes)
+        authorization = tuple(ResourcePath.parse(value) for value in contract.authorization_writes)
+        for raw_path, path in zip(contract.synchronized, synchronized, strict=True):
+            if path.root != "project":
+                raise ContractError(
+                    f"contract '{key}' synchronized path must use the project root: {path.pattern}"
+                )
+            wildcard_segments = [segment for segment in path.segments if "*" in segment]
+            if raw_path.endswith("/") or (
+                wildcard_segments
+                and not (wildcard_segments == ["**"] and path.segments[-1] == "**")
+            ):
+                raise ContractError(
+                    f"contract '{key}' synchronized path must be a concrete file or directory prefix: "
+                    f"{path.pattern}"
+                )
+            if not any(path_covers(read, path) for read in reads):
+                raise ContractError(
+                    f"contract '{key}' synchronized path must be covered by reads: {path.pattern}"
+                )
+            can_write = any(paths_intersect(path, claim) for claim in (*writes, *authorization))
+            if can_write and not any(path_covers(write, path) for write in writes):
+                raise ContractError(
+                    f"contract '{key}' writable synchronized path must be covered by writes: "
+                    f"{path.pattern}"
+                )
+            if can_write and not any(path_covers(auth, path) for auth in authorization):
+                raise ContractError(
+                    f"contract '{key}' writable synchronized path must be covered by "
+                    f"authorization_writes: {path.pattern}"
+                )
 
 
 def parse_execution_contracts(yaml_text: str) -> ExecutionContractCatalog:

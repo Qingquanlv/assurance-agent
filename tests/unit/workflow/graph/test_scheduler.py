@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
+
+import pytest
 
 from assurance_agent.workflow.core.events import append_event_strict, read_events_strict
 from assurance_agent.workflow.core.graph_types import ErrorKind
@@ -23,6 +26,7 @@ from assurance_agent.workflow.graph.models import (
     TaskResult,
     WaveResult,
 )
+from assurance_agent.workflow.graph.project_locks import ProjectResourceConflict
 from assurance_agent.workflow.graph.scheduler import Scheduler, select_wave
 from assurance_agent.workflow.graph.schema_v2 import (
     BackoffDef,
@@ -504,3 +508,253 @@ def test_overlapping_actual_writes_fail_closed_despite_non_conflicting_claims(
     # merge 因实际重叠 fail closed → 无 commit / 无 materialize。
     assert not any(e.get("type") == "superstep_committed" for e in read_events_strict(change))
     assert not (project / "tests" / "api" / "shared.py").exists()
+
+
+# ---------------------------------------------------------------------------
+# synchronized project resource lifetime / timeout routing
+
+
+class _TrackingProjectLocks:
+    def __init__(self, *, timeout: bool = False) -> None:
+        self.held = False
+        self.timeout = timeout
+        self.calls: list[tuple[tuple[str, ...], float]] = []
+
+    @contextmanager
+    def acquire(self, tokens, timeout_seconds: float):
+        self.calls.append((tuple(tokens), timeout_seconds))
+        if self.timeout:
+            raise ProjectResourceConflict("busy synchronized resource")
+        self.held = True
+        try:
+            yield
+        finally:
+            self.held = False
+
+
+def _synchronized_task(*, retry_conflicts: bool = False) -> ExecutableTask:
+    synchronized = (ResourcePath.parse("project:qa/issues/**"),)
+    return _task(
+        "update-issue",
+        input_payload={
+            "with": {},
+            "outputs": [
+                "project:qa/issues/ISSUE-1.json",
+                "change:results/update.json",
+            ],
+        },
+        retry_on=["conflict"] if retry_conflicts else [],
+        retryable=("conflict",) if retry_conflicts else (),
+    ).model_copy(
+        update={
+            "resources": ResourceClaims(
+                reads=synchronized,
+                writes=(*synchronized, ResourcePath.parse("change:results/**")),
+                synchronized=synchronized,
+                exclusive=("project:issue-registry", "project:zzz"),
+                authorization_writes=(
+                    *synchronized,
+                    ResourcePath.parse("change:results/**"),
+                ),
+            )
+        }
+    )
+
+
+def test_scheduler_holds_project_locks_across_overlay_handler_and_update(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    change = project / "qa/changes/CH-1"
+    issue = project / "qa/issues/ISSUE-1.json"
+    issue.parent.mkdir(parents=True)
+    issue.write_text('{"version":1}\n', encoding="utf-8")
+    (project / "app").mkdir()
+    (project / "app/source.py").write_text("app base\n", encoding="utf-8")
+    store = TreeStore(change)
+    invocation_tree = store.capture(project)
+    _seed_invocation(change, invocation_tree)
+    issue.write_text('{"version":2}\n', encoding="utf-8")
+    (project / "app/source.py").write_text("unrelated live version 2\n", encoding="utf-8")
+    locks = _TrackingProjectLocks()
+    phases: list[str] = []
+
+    overlay = store.overlay_synchronized_paths
+
+    def observed_overlay(base_tree_id, project_root, paths):
+        assert locks.held
+        phases.append("overlay")
+        return overlay(base_tree_id, project_root, paths)
+
+    apply_targeted = store.apply_write_sets_to_synchronized_paths
+
+    def observed_apply(project_root, write_sets, paths):
+        assert locks.held
+        phases.append("apply")
+        return apply_targeted(project_root, write_sets, paths)
+
+    store.overlay_synchronized_paths = observed_overlay  # type: ignore[method-assign]
+    store.apply_write_sets_to_synchronized_paths = observed_apply  # type: ignore[method-assign]
+
+    def update_issue(task, workspace, context) -> TaskResult:
+        assert locks.held
+        phases.append("handler")
+        assert (workspace.project_root / "qa/issues/ISSUE-1.json").read_text() == '{"version":2}\n'
+        assert (workspace.project_root / "app/source.py").read_text() == "app base\n"
+        (workspace.project_root / "qa/issues/ISSUE-1.json").write_text(
+            '{"version":3}\n', encoding="utf-8"
+        )
+        result = workspace.change_dir / "results/update.json"
+        result.parent.mkdir(parents=True)
+        result.write_text('{"updated":true}\n', encoding="utf-8")
+        return TaskResult(status="succeeded")
+
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=_ScriptedRunner({"update-issue": update_issue}),
+        project_lock_manager=locks,
+        project_lock_timeout_seconds=0.25,
+    )
+    result = scheduler.execute(
+        _plan(_synchronized_task()),
+        _projection(change, invocation_tree),
+        _context(project),
+    )
+
+    assert result.succeeded == ("update-issue",)
+    assert result.pending_write_set_ids
+    assert locks.calls == [(('project:issue-registry', 'project:zzz'), 0.25)]
+    assert phases == ["overlay", "handler", "apply"]
+    assert locks.held is False
+    assert issue.read_text() == '{"version":3}\n'
+    assert (change / "results/update.json").read_text() == '{"updated":true}\n'
+    assert (project / "app/source.py").read_text() == "unrelated live version 2\n"
+
+
+def test_scheduler_does_not_acquire_project_locks_for_ordinary_claims(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    change = project / "qa/changes/CH-1"
+    store = TreeStore(change)
+    tree_id = store.capture(project)
+    _seed_invocation(change, tree_id)
+    locks = _TrackingProjectLocks(timeout=True)
+    task = _task("ordinary", reads=("change:input.txt",))
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=_ScriptedRunner({"ordinary": lambda *_: TaskResult(status="succeeded")}),
+        project_lock_manager=locks,
+    )
+
+    result = scheduler.execute(_plan(task), _projection(change, tree_id), _context(project))
+
+    assert result.succeeded == ("ordinary",)
+    assert locks.calls == []
+
+
+def test_scheduler_persists_project_lock_timeout_as_retryable_conflict(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    change = project / "qa/changes/CH-1"
+    issue = project / "qa/issues/ISSUE-1.json"
+    issue.parent.mkdir(parents=True)
+    issue.write_text('{"version":1}\n', encoding="utf-8")
+    store = TreeStore(change)
+    tree_id = store.capture(project)
+    _seed_invocation(change, tree_id)
+    locks = _TrackingProjectLocks(timeout=True)
+    runner = _ScriptedRunner(
+        {"update-issue": lambda *_: (_ for _ in ()).throw(AssertionError("runner called"))}
+    )
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=runner,
+        project_lock_manager=locks,
+        project_lock_timeout_seconds=0.125,
+    )
+
+    result = scheduler.execute(
+        _plan(_synchronized_task(retry_conflicts=True)),
+        _projection(change, tree_id),
+        _context(project),
+    )
+
+    assert result.failed == ("update-issue",)
+    assert result.retry_at is not None
+    assert runner.calls == []
+    events = read_events_strict(change)
+    started = [event for event in events if event.get("type") == "task_attempt_started"]
+    failures = [event for event in events if event.get("type") == "task_attempt_failed"]
+    assert len(started) == 1
+    assert len(failures) == 1
+    assert failures[0]["attempt_id"] == started[0]["attempt_id"]
+    assert failures[0]["error_kind"] == "conflict"
+    assert failures[0]["next_retry_at"] is not None
+    assert locks.calls == [(('project:issue-registry', 'project:zzz'), 0.125)]
+
+
+def test_synchronized_pending_update_reacquires_lock_and_replays_without_handler(
+    tmp_path: Path,
+) -> None:
+    project = _make_project(tmp_path)
+    change = project / "qa/changes/CH-1"
+    issue = project / "qa/issues/ISSUE-1.json"
+    issue.parent.mkdir(parents=True)
+    issue.write_text('{"version":1}\n', encoding="utf-8")
+    store = TreeStore(change)
+    invocation_tree = store.capture(project)
+    _seed_invocation(change, invocation_tree)
+    issue.write_text('{"version":2}\n', encoding="utf-8")
+    locks = _TrackingProjectLocks()
+    calls = 0
+
+    def update_issue(task, workspace, context) -> TaskResult:
+        nonlocal calls
+        calls += 1
+        (workspace.project_root / "qa/issues/ISSUE-1.json").write_text(
+            '{"version":3}\n', encoding="utf-8"
+        )
+        result = workspace.change_dir / "results/update.json"
+        result.parent.mkdir(parents=True)
+        result.write_text('{"updated":true}\n', encoding="utf-8")
+        return TaskResult(status="succeeded")
+
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=_ScriptedRunner({"update-issue": update_issue}),
+        project_lock_manager=locks,
+        project_lock_timeout_seconds=0.25,
+    )
+    plan = _plan(_synchronized_task())
+    projection = _projection(change, invocation_tree)
+    commit_wave = scheduler._commit_wave
+
+    def crash_before_update(**kwargs):
+        raise RuntimeError("simulated coordinator crash before Update")
+
+    scheduler._commit_wave = crash_before_update  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="before Update"):
+        scheduler.execute(plan, projection, _context(project))
+    scheduler._commit_wave = commit_wave  # type: ignore[method-assign]
+
+    assert calls == 1
+    assert issue.read_text() == '{"version":2}\n'
+    live = project_invocation(change, _INV)
+    scheduler._commit_wave(
+        plan=plan,
+        projection=live,
+        context=_context(project),
+        succeeded_ids=["update-issue"],
+    )
+
+    assert calls == 1
+    assert issue.read_text() == '{"version":3}\n'
+    assert (change / "results/update.json").read_text() == '{"updated":true}\n'
+    assert locks.calls == [
+        (("project:issue-registry", "project:zzz"), 0.25),
+        (("project:issue-registry", "project:zzz"), 0.25),
+    ]
