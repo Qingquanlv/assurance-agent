@@ -34,7 +34,7 @@ class CompiledNode(BaseModel):
     node_id: str
     declaration_index: int
     topology_rank: int
-    definition: NodeDef
+    definition: NodeDef  # Includes the optional, validated recovery declaration.
     incoming: tuple[EdgeDef, ...]
     outgoing: tuple[EdgeDef, ...]
     routes: tuple[RouteDef, ...]

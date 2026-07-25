@@ -306,7 +306,7 @@ def _check_budget_limit(
 
 
 def _graph_adjacency(graph: GraphDef) -> dict[str, list[str]]:
-    """node→node 有向边：edges + route targets + budget exhausted_to（都是真实控制流）。"""
+    """node→node 有向边：ordinary topology、budget 和 exhaustion recovery（都是真实控制流）。"""
     adj: dict[str, list[str]] = {nid: [] for nid in graph.nodes}
     for edge in graph.edges:
         if edge.from_ in adj and edge.to in adj:
@@ -318,6 +318,11 @@ def _graph_adjacency(graph: GraphDef) -> dict[str, list[str]]:
     for nid, node in graph.nodes.items():
         if node.budget is not None and node.budget.exhausted_to in adj:
             adj[nid].append(node.budget.exhausted_to)
+        if node.recover is not None:
+            if node.recover.via in adj:
+                adj[nid].append(node.recover.via)
+            if node.recover.via in adj and node.recover.continue_to in adj:
+                adj[node.recover.via].append(node.recover.continue_to)
     return adj
 
 
@@ -349,6 +354,12 @@ def _check_reachability(graph_id: str, graph: GraphDef) -> list[str]:
     for nid, node in graph.nodes.items():
         if node.budget is not None and node.budget.exhausted_to in _TERMINALS:
             terminal_seeds.add(nid)
+        if (
+            node.recover is not None
+            and node.recover.via in graph.nodes
+            and node.recover.continue_to in _TERMINALS
+        ):
+            terminal_seeds.add(node.recover.via)
     reverse: dict[str, list[str]] = {nid: [] for nid in graph.nodes}
     for src, outs in adj.items():
         for dst in outs:
@@ -419,6 +430,16 @@ def _validate_graph_refs(schema: WorkflowSchemaV2) -> list[str]:
                     )
                 if budget.exhausted_to not in graph.nodes and budget.exhausted_to not in _TERMINALS:
                     errors.append(f"{loc} exhausted_to unknown node '{budget.exhausted_to}'")
+            if node.recover is not None:
+                recovery = node.recover
+                if recovery.via not in graph.nodes:
+                    errors.append(f"{loc} recovery via unknown node '{recovery.via}'")
+                elif recovery.via == nid:
+                    errors.append(f"{loc} recovery via must differ from recovering node '{nid}'")
+                if recovery.continue_to not in graph.nodes and recovery.continue_to not in _TERMINALS:
+                    errors.append(
+                        f"{loc} recovery continue_to unknown node '{recovery.continue_to}'"
+                    )
         for edge in graph.edges:
             if edge.from_ != "START" and edge.from_ not in graph.nodes:
                 errors.append(f"graph '{graph_id}' edge from unknown node '{edge.from_}'")
@@ -433,6 +454,25 @@ def _validate_graph_refs(schema: WorkflowSchemaV2) -> list[str]:
                     errors.append(
                         f"graph '{graph_id}' route from '{route.from_}' targets unknown node '{target}'"
                     )
+        recovery_nodes = {
+            node.recover.via for node in graph.nodes.values() if node.recover is not None
+        }
+        for recovery_nid in sorted(recovery_nodes):
+            ordinary_incoming = any(edge.to == recovery_nid for edge in graph.edges) or any(
+                recovery_nid in route.cases.values() or route.default == recovery_nid
+                for route in graph.routes
+            )
+            if ordinary_incoming:
+                errors.append(
+                    f"graph '{graph_id}' recovery node '{recovery_nid}' has ordinary incoming edge/route"
+                )
+            ordinary_outgoing = any(edge.from_ == recovery_nid for edge in graph.edges) or any(
+                route.from_ == recovery_nid for route in graph.routes
+            )
+            if ordinary_outgoing:
+                errors.append(
+                    f"graph '{graph_id}' recovery node '{recovery_nid}' has ordinary outgoing edge/route"
+                )
         errors.extend(_check_reachability(graph_id, graph))
     return errors
 
@@ -834,6 +874,7 @@ def _validate_contract_usage(schema: WorkflowSchemaV2, catalog: ExecutionContrac
                 errors.append(f"{loc} declares agent '{node.agent}' but uses '{uses}' which is not skill:*")
             errors.extend(_check_authorization_narrowing(loc, node, contract))
             errors.extend(_check_retry_kinds(loc, node, schema, contract))
+            errors.extend(_check_recovery_kinds(loc, node, contract))
     return errors
 
 
@@ -873,6 +914,23 @@ def _check_retry_kinds(
     if unsupported:
         return [
             f"{loc} retry policy '{node.retry}' kinds not retryable for "
+            f"'{contract.target}': {', '.join(unsupported)}"
+        ]
+    return []
+
+
+def _check_recovery_kinds(
+    loc: str,
+    node: NodeDef,
+    contract: ExecutionContract,
+) -> list[str]:
+    """Recovery is available only for kinds the target contract permits retrying."""
+    if node.recover is None:
+        return []
+    unsupported = sorted(set(node.recover.errors) - set(contract.retryable_errors))
+    if unsupported:
+        return [
+            f"{loc} recovery kinds not retryable for "
             f"'{contract.target}': {', '.join(unsupported)}"
         ]
     return []

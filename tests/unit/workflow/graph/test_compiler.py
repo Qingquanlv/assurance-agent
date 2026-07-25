@@ -9,6 +9,7 @@ from assurance_agent.workflow.graph.compiler import (
     compile_workflow,
     resolve_params,
 )
+from assurance_agent.workflow.graph.contracts import ExecutionContract, ExecutionContractCatalog
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
 
 _DEFAULT_HEADER = """\
@@ -360,3 +361,138 @@ def test_resolve_params_validates_overrides_and_cross_constraints() -> None:
         resolve_params(schema, {"run_mode": "api-only", "test_types": ["e2e"]})
     resolved = resolve_params(schema, {"run_mode": "api-only", "test_types": ["api"]})
     assert resolved["run_mode"] == "api-only"
+
+
+_RECOVERY_GRAPH = """
+main:
+  max_supersteps: 5
+  nodes:
+    inspect:
+      uses: skill:aa-issue-analyzer
+      recover:
+        errors: [timeout, transport, rate_limit, invalid_output]
+        via: record-analysis-failure
+        continue_to: inspect-complete
+    record-analysis-failure: {uses: skill:aa-issue-analyzer}
+    inspect-complete: {uses: skill:aa-issue-analyzer}
+  edges:
+    - {from: START, to: inspect}
+    - {from: inspect-complete, to: END}
+"""
+
+
+def test_recovery_topology_makes_fallback_and_continuation_reachable() -> None:
+    compiled = compile_text(_wf(_RECOVERY_GRAPH))
+
+    assert compiled.graphs["main"].nodes["inspect"].definition.recover is not None
+
+
+@pytest.mark.parametrize(
+    ("recovery", "message"),
+    [
+        (
+            {"errors": ["timeout"], "via": "missing", "continue_to": "inspect-complete"},
+            "recovery via unknown node",
+        ),
+        (
+            {"errors": ["timeout"], "via": "missing", "continue_to": "STOP"},
+            "recovery via unknown node",
+        ),
+        (
+            {"errors": ["timeout"], "via": "record-analysis-failure", "continue_to": "missing"},
+            "recovery continue_to unknown node",
+        ),
+        (
+            {"errors": ["timeout"], "via": "inspect", "continue_to": "inspect-complete"},
+            "recovery via must differ",
+        ),
+    ],
+)
+def test_recovery_references_are_validated(recovery: dict[str, object], message: str) -> None:
+    text = _wf(_RECOVERY_GRAPH)
+    raw = yaml.safe_load(text)
+    raw["graphs"]["main"]["nodes"]["inspect"]["recover"] = recovery
+
+    with pytest.raises(CompileError, match=message):
+        compile_text(yaml.safe_dump(raw, sort_keys=False))
+
+
+@pytest.mark.parametrize(
+    ("edge", "message"),
+    [
+        ({"from": "START", "to": "record-analysis-failure"}, "ordinary incoming"),
+        ({"from": "record-analysis-failure", "to": "inspect-complete"}, "ordinary outgoing"),
+    ],
+)
+def test_recovery_node_cannot_have_ordinary_edges(edge: dict[str, str], message: str) -> None:
+    text = _wf(_RECOVERY_GRAPH)
+    raw = yaml.safe_load(text)
+    raw["graphs"]["main"]["edges"].append(edge)
+
+    with pytest.raises(CompileError, match=message):
+        compile_text(yaml.safe_dump(raw, sort_keys=False))
+
+
+def test_recovery_node_cannot_have_ordinary_routes() -> None:
+    text = _wf(_RECOVERY_GRAPH)
+    raw = yaml.safe_load(text)
+    raw["graphs"]["main"]["routes"] = [
+        {
+            "from": "record-analysis-failure",
+            "select": "state.next",
+            "cases": {"complete": "inspect-complete"},
+        }
+    ]
+
+    with pytest.raises(CompileError, match="ordinary outgoing"):
+        compile_text(yaml.safe_dump(raw, sort_keys=False))
+
+
+@pytest.mark.parametrize("error", ["forbidden_write", "contract", "internal"])
+def test_recovery_errors_must_be_retryable_by_the_execution_contract(error: str) -> None:
+    catalog = ExecutionContractCatalog(
+        contracts={
+            "skill:aa-issue-analyzer": ExecutionContract(
+                target="skill:aa-issue-analyzer",
+                handler="agent",
+                retryable_errors=("timeout", "transport", "rate_limit", "invalid_output"),
+                side_effect_free=True,
+            )
+        }
+    )
+    text = _wf(_RECOVERY_GRAPH)
+    raw = yaml.safe_load(text)
+    raw["graphs"]["main"]["nodes"]["inspect"]["recover"]["errors"] = [error]
+
+    with pytest.raises(CompileError, match="recovery kinds not retryable"):
+        compile_workflow(parse_workflow_v2(yaml.safe_dump(raw, sort_keys=False)), catalog)
+
+
+def test_subgraph_recovery_has_stable_digest() -> None:
+    text = _wf(
+        """
+        main:
+          max_supersteps: 5
+          nodes:
+            call-inspection: {uses: graph:inspection}
+          edges:
+            - {from: START, to: call-inspection}
+            - {from: call-inspection, to: END}
+        inspection:
+          max_supersteps: 5
+          nodes:
+            inspect:
+              uses: operation:inspect
+              recover:
+                errors: [timeout]
+                via: record-analysis-failure
+                continue_to: inspect-complete
+            record-analysis-failure: {uses: operation:record}
+            inspect-complete: {uses: operation:complete}
+          edges:
+            - {from: START, to: inspect}
+            - {from: inspect-complete, to: END}
+        """
+    )
+
+    assert compile_text(text).digest == compile_text(text).digest

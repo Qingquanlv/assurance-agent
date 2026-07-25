@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from assurance_agent.workflow.graph.schema_v2 import (
+    NodeDef,
     SchemaV2Error,
     load_workflow_v2,
     parse_workflow_v2,
@@ -44,3 +45,32 @@ def test_load_workflow_v2_explicit_path_wins(tmp_path: Path) -> None:
     schema = load_workflow_v2(project, explicit)
 
     assert schema.name == "explicit"
+
+
+def test_node_accepts_typed_recovery_route() -> None:
+    node = NodeDef.model_validate(
+        {
+            "uses": "skill:aa-issue-analyzer",
+            "recover": {
+                "errors": ["timeout", "transport", "rate_limit", "invalid_output"],
+                "via": "record-analysis-failure",
+                "continue_to": "inspect-complete",
+            },
+        }
+    )
+
+    assert node.recover is not None
+    assert node.recover.errors == ["timeout", "transport", "rate_limit", "invalid_output"]
+
+
+@pytest.mark.parametrize(
+    "recover",
+    [
+        {"errors": [], "via": "record", "continue_to": "done"},
+        {"errors": ["timeout", "timeout"], "via": "record", "continue_to": "done"},
+        {"errors": ["unsupported"], "via": "record", "continue_to": "done"},
+    ],
+)
+def test_node_recovery_errors_must_be_non_empty_unique_and_supported(recover: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        NodeDef.model_validate({"uses": "skill:aa-issue-analyzer", "recover": recover})

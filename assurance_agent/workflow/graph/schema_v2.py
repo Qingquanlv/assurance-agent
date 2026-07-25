@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from assurance_agent import resources
 from assurance_agent.exceptions import AaError
@@ -138,6 +138,20 @@ class ExportDef(_FrozenModel):
     output: str
 
 
+class RecoverDef(_FrozenModel):
+    """Fallback taken only after the recovering node exhausts its normal retry policy."""
+
+    errors: list[ErrorKind] = Field(min_length=1)
+    via: str
+    continue_to: str
+
+    @model_validator(mode="after")
+    def unique_errors(self) -> "RecoverDef":
+        if len(set(self.errors)) != len(self.errors):
+            raise ValueError("recover.errors must be unique")
+        return self
+
+
 class NodeDef(_FrozenModel):
     uses: str
     agent: str | None = None
@@ -154,6 +168,7 @@ class NodeDef(_FrozenModel):
     fan_out: FanOutDef | None = None
     budget: BudgetUseDef | None = None
     interrupt: InterruptDef | None = None
+    recover: RecoverDef | None = None
 
 
 class EdgeDef(_FrozenModel):
