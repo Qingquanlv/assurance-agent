@@ -707,3 +707,131 @@ contracts:
     exclusive:
       - project:improvement-registry
     retryable_errors: [conflict, transport]
+
+  # ---- Improvement delivery (Task 11): narrow per-delivery targets --------
+  operation:load-improvement-delivery:
+    handler: operation
+    reads:
+      - project:qa/improvements/improvements.json
+    writes:
+      - change:improvement-delivery/**
+    authorization_writes:
+      - change:improvement-delivery/**
+    retryable_errors: []
+
+  operation:evaluate-memory-improvement:
+    handler: operation
+    reads:
+      - project:qa/improvements/**
+      - project:.aa/memory/**
+      - project:eval/**
+    writes:
+      - project:qa/improvements/**
+      - project:eval/**
+    authorization_writes:
+      - project:qa/improvements/**
+      - project:eval/**
+    synchronized:
+      - project:qa/improvements/**
+    exclusive:
+      - project:improvement-registry
+    retryable_errors: [conflict, transport]
+
+  operation:apply-memory-improvement:
+    handler: operation
+    reads:
+      - project:qa/improvements/**
+      - project:.aa/memory/**
+    writes:
+      - project:qa/improvements/**
+      - project:.aa/memory/**
+    authorization_writes:
+      - project:qa/improvements/**
+      - project:.aa/memory/**
+    synchronized:
+      - project:qa/improvements/**
+    exclusive:
+      - project:improvement-registry
+    retryable_errors: [conflict, transport]
+
+  operation:rollback-memory-improvement:
+    handler: operation
+    reads:
+      - project:qa/improvements/**
+      - project:.aa/memory/**
+    writes:
+      - project:qa/improvements/**
+      - project:.aa/memory/**
+    authorization_writes:
+      - project:qa/improvements/**
+      - project:.aa/memory/**
+    synchronized:
+      - project:qa/improvements/**
+    exclusive:
+      - project:improvement-registry
+    retryable_errors: [conflict, transport]
+
+  operation:export-change-improvement:
+    handler: operation
+    reads:
+      - project:qa/improvements/**
+    writes:
+      - project:qa/improvements/**
+      - project:qa/improvements/drafts/**
+    authorization_writes:
+      - project:qa/improvements/**
+      - project:qa/improvements/drafts/**
+    synchronized:
+      - project:qa/improvements/**
+    exclusive:
+      - project:improvement-registry
+    retryable_errors: [conflict, transport]
+
+  operation:record-change-improvement-applied:
+    handler: operation
+    reads:
+      - project:qa/improvements/**
+      - project:qa/improvements/drafts/**
+    writes:
+      - project:qa/improvements/**
+    authorization_writes:
+      - project:qa/improvements/**
+    synchronized:
+      - project:qa/improvements/**
+    exclusive:
+      - project:improvement-registry
+    retryable_errors: [conflict, transport]
+
+  operation:export-knowledge-improvement:
+    handler: operation
+    reads:
+      - project:qa/improvements/**
+      - project:qa/issues/problems.json
+      - repo:.aa/data-knowledge.yaml
+    writes:
+      - project:qa/improvements/**
+      - project:qa/improvements/knowledge-delta/**
+    authorization_writes:
+      - project:qa/improvements/**
+      - project:qa/improvements/knowledge-delta/**
+    synchronized:
+      - project:qa/improvements/**
+    exclusive:
+      - project:improvement-registry
+    retryable_errors: [conflict, transport]
+
+  operation:record-knowledge-improvement-applied:
+    handler: operation
+    reads:
+      - project:qa/improvements/**
+      - project:qa/improvements/knowledge-delta/**
+      - repo:.aa/data-knowledge.yaml
+    writes:
+      - project:qa/improvements/**
+    authorization_writes:
+      - project:qa/improvements/**
+    synchronized:
+      - project:qa/improvements/**
+    exclusive:
+      - project:improvement-registry
+    retryable_errors: [conflict, transport]

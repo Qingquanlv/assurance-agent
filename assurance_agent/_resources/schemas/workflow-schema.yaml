@@ -45,6 +45,13 @@ params:
   review_id: {type: str, default: ""}
   improvement_id: {type: str, default: ""}
   improvement_review_id: {type: str, default: ""}
+  delivery_action: {type: str, default: ""}
+  delivery_actor: {type: str, default: ""}
+  delivery_reason: {type: str, default: ""}
+  artifact_digest: {type: str, default: ""}
+  expected_target_sha256: {type: str, default: ""}
+  expected_applied_digest: {type: str, default: ""}
+  expected_l1_digest: {type: str, default: ""}
 
 entrypoints:
   full:
@@ -82,6 +89,30 @@ entrypoints:
     graph: improvement-review-workflow
     restart: repeatable
     allow: "params.improvement_id != '' and params.improvement_review_id != ''"
+  improvement-evaluate:
+    graph: improvement-evaluate-workflow
+    restart: repeatable
+    allow: "params.improvement_id != ''"
+    with:
+      delivery_action: evaluate
+  improvement-export:
+    graph: improvement-export-workflow
+    restart: repeatable
+    allow: "params.improvement_id != ''"
+    with:
+      delivery_action: export
+  improvement-apply:
+    graph: improvement-apply-workflow
+    restart: repeatable
+    allow: "params.improvement_id != ''"
+    with:
+      delivery_action: apply
+  improvement-rollback:
+    graph: improvement-rollback-workflow
+    restart: repeatable
+    allow: "params.improvement_id != ''"
+    with:
+      delivery_action: rollback
 
 policies:
   retry:
@@ -1118,6 +1149,112 @@ graphs:
           stop: complete-exhausted
           reject: complete-failed
         default: complete-failed
+
+  # ---- improvement-evaluate-workflow: memory_patch eval only -------------
+  improvement-evaluate-workflow:
+    max_supersteps: 4
+    nodes:
+      load-improvement-delivery:
+        uses: operation:load-improvement-delivery
+        retry: never
+        timeout: local-operation
+      evaluate-memory:
+        uses: operation:evaluate-memory-improvement
+        retry: never
+        timeout: cli
+    edges:
+      - {from: START, to: load-improvement-delivery}
+      - {from: evaluate-memory, to: END}
+    routes:
+      - from: load-improvement-delivery
+        select: "node('load-improvement-delivery').value.delivery"
+        cases:
+          memory_patch: evaluate-memory
+        default: STOP
+
+  # ---- improvement-export-workflow: change_draft | knowledge_delta --------
+  improvement-export-workflow:
+    max_supersteps: 4
+    nodes:
+      load-improvement-delivery:
+        uses: operation:load-improvement-delivery
+        retry: never
+        timeout: local-operation
+      export-change:
+        uses: operation:export-change-improvement
+        retry: project-sync
+        timeout: cli
+      export-knowledge:
+        uses: operation:export-knowledge-improvement
+        retry: project-sync
+        timeout: cli
+    edges:
+      - {from: START, to: load-improvement-delivery}
+      - {from: export-change, to: END}
+      - {from: export-knowledge, to: END}
+    routes:
+      - from: load-improvement-delivery
+        select: "node('load-improvement-delivery').value.delivery"
+        cases:
+          change_draft: export-change
+          knowledge_delta: export-knowledge
+        default: STOP
+
+  # ---- improvement-apply-workflow: memory apply | record external apply --
+  improvement-apply-workflow:
+    max_supersteps: 4
+    nodes:
+      load-improvement-delivery:
+        uses: operation:load-improvement-delivery
+        retry: never
+        timeout: local-operation
+      apply-memory:
+        uses: operation:apply-memory-improvement
+        retry: project-sync
+        timeout: cli
+      record-change-applied:
+        uses: operation:record-change-improvement-applied
+        retry: project-sync
+        timeout: cli
+      record-knowledge-applied:
+        uses: operation:record-knowledge-improvement-applied
+        retry: project-sync
+        timeout: cli
+    edges:
+      - {from: START, to: load-improvement-delivery}
+      - {from: apply-memory, to: END}
+      - {from: record-change-applied, to: END}
+      - {from: record-knowledge-applied, to: END}
+    routes:
+      - from: load-improvement-delivery
+        select: "node('load-improvement-delivery').value.delivery"
+        cases:
+          memory_patch: apply-memory
+          change_draft: record-change-applied
+          knowledge_delta: record-knowledge-applied
+        default: STOP
+
+  # ---- improvement-rollback-workflow: applied memory_patch only ----------
+  improvement-rollback-workflow:
+    max_supersteps: 4
+    nodes:
+      load-improvement-delivery:
+        uses: operation:load-improvement-delivery
+        retry: never
+        timeout: local-operation
+      rollback-memory:
+        uses: operation:rollback-memory-improvement
+        retry: project-sync
+        timeout: cli
+    edges:
+      - {from: START, to: load-improvement-delivery}
+      - {from: rollback-memory, to: END}
+    routes:
+      - from: load-improvement-delivery
+        select: "node('load-improvement-delivery').value.delivery"
+        cases:
+          memory_patch: rollback-memory
+        default: STOP
 
   # ---- improvement-review-workflow: human Improvement review (repeatable) -
   improvement-review-workflow:

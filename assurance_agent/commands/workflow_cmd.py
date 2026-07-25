@@ -114,8 +114,22 @@ def _default_who(explicit: str | None) -> str:
 
 _ADAPTER_CHOICE = click.Choice(["opencode", "headless"])
 _ENTRYPOINT_CHOICE = click.Choice(
-    ["full", "intake", "execute", "case", "archive", "retro",
-     "issue-review", "issue-analyze", "issue-reconcile", "improvement-review"]
+    [
+        "full",
+        "intake",
+        "execute",
+        "case",
+        "archive",
+        "retro",
+        "issue-review",
+        "issue-analyze",
+        "issue-reconcile",
+        "improvement-review",
+        "improvement-evaluate",
+        "improvement-export",
+        "improvement-apply",
+        "improvement-rollback",
+    ]
 )
 
 

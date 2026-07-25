@@ -53,6 +53,11 @@ EXPECTED_GRAPHS = {
     "issue-reconcile-workflow",
     # Improvement review (retro/improvement separation Task 10)
     "improvement-review-workflow",
+    # Improvement delivery (retro/improvement separation Task 11)
+    "improvement-evaluate-workflow",
+    "improvement-export-workflow",
+    "improvement-apply-workflow",
+    "improvement-rollback-workflow",
 }
 
 EXPECTED_CONTRACTS = {
@@ -108,6 +113,15 @@ EXPECTED_CONTRACTS = {
     # Improvement review (retro/improvement separation Task 10)
     "operation:load-improvement-review-context",
     "operation:apply-improvement-review",
+    # Improvement delivery (retro/improvement separation Task 11)
+    "operation:load-improvement-delivery",
+    "operation:evaluate-memory-improvement",
+    "operation:apply-memory-improvement",
+    "operation:rollback-memory-improvement",
+    "operation:export-change-improvement",
+    "operation:record-change-improvement-applied",
+    "operation:export-knowledge-improvement",
+    "operation:record-knowledge-improvement-applied",
 }
 
 SCHEMA_REL = Path("assurance_agent/_resources/schemas/workflow-schema.yaml")
@@ -252,6 +266,9 @@ def test_canonical_v2_compiles_with_all_targets() -> None:
         "issue-review", "issue-analyze", "issue-reconcile",
         # Improvement review (retro/improvement separation Task 10)
         "improvement-review",
+        # Improvement delivery (retro/improvement separation Task 11)
+        "improvement-evaluate", "improvement-export",
+        "improvement-apply", "improvement-rollback",
     }
 
 

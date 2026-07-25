@@ -43,6 +43,20 @@ from assurance_agent.workflow.graph.handlers.retro_ops import (
     retro_accept,
     retro_collect,
 )
+from assurance_agent.workflow.improvements.change_delivery import (
+    export_change_improvement_operation,
+    record_change_improvement_applied_operation,
+)
+from assurance_agent.workflow.improvements.knowledge_delivery import (
+    export_knowledge_improvement_operation,
+    record_knowledge_improvement_applied_operation,
+)
+from assurance_agent.workflow.improvements.memory_delivery import (
+    apply_memory_improvement_operation,
+    evaluate_memory_improvement_operation,
+    load_improvement_delivery_operation,
+    rollback_memory_improvement_operation,
+)
 from assurance_agent.workflow.improvements.review import (
     apply_improvement_review_operation,
     load_improvement_review_context_operation,
@@ -360,6 +374,14 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:apply-problem-review": apply_problem_review_operation,
         "operation:load-improvement-review-context": load_improvement_review_context_operation,
         "operation:apply-improvement-review": apply_improvement_review_operation,
+        "operation:load-improvement-delivery": load_improvement_delivery_operation,
+        "operation:evaluate-memory-improvement": evaluate_memory_improvement_operation,
+        "operation:apply-memory-improvement": apply_memory_improvement_operation,
+        "operation:rollback-memory-improvement": rollback_memory_improvement_operation,
+        "operation:export-change-improvement": export_change_improvement_operation,
+        "operation:record-change-improvement-applied": record_change_improvement_applied_operation,
+        "operation:export-knowledge-improvement": export_knowledge_improvement_operation,
+        "operation:record-knowledge-improvement-applied": record_knowledge_improvement_applied_operation,
     }
 
 

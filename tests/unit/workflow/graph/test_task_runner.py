@@ -596,6 +596,15 @@ def test_default_operations_registry_has_exact_keys() -> None:
         # Improvement review (retro/improvement separation Task 10)
         "operation:load-improvement-review-context",
         "operation:apply-improvement-review",
+        # Improvement delivery (retro/improvement separation Task 11)
+        "operation:load-improvement-delivery",
+        "operation:evaluate-memory-improvement",
+        "operation:apply-memory-improvement",
+        "operation:rollback-memory-improvement",
+        "operation:export-change-improvement",
+        "operation:record-change-improvement-applied",
+        "operation:export-knowledge-improvement",
+        "operation:record-knowledge-improvement-applied",
     }
 
 
