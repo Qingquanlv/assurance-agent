@@ -15,7 +15,6 @@ from assurance_agent.workflow.core.graph_events import (
     FanOutExpandedEvent,
     NodeActivatedEvent,
     NodeSkippedEvent,
-    SuperstepCommittedEvent,
     TaskAttemptAbandonedEvent,
     TaskAttemptFailedEvent,
     TaskAttemptStartedEvent,
@@ -23,7 +22,7 @@ from assurance_agent.workflow.core.graph_events import (
     TaskAttemptSucceededEvent,
 )
 from assurance_agent.workflow.graph.compiler import canonical_digest
-from assurance_agent.workflow.graph.frozen_output import FrozenOutput, frozen_outputs_from_wire
+from assurance_agent.workflow.graph.frozen_output import frozen_outputs_from_wire
 from assurance_agent.workflow.graph.models import FanOutExpansion, GraphProjection, NodeGeneration, NodeHistory, TaskProjection
 
 GenerationStatus = Literal[

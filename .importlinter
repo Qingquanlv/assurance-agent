@@ -21,6 +21,12 @@ layers =
     assurance_agent.commands
     assurance_agent.retro
     assurance_agent.workflow
+# Graph entrypoints host retro-collect/accept as operations and inject retro_id /
+# aa-retro prompt text. Those are intentional seams until stages are inverted under
+# workflow; keep them listed so new workflow→retro edges stay fail-closed.
+ignore_imports =
+    assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.accept_stage
+    assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.collect_stage
 
 [importlinter:contract:eval-retro-independence]
 name = eval and retro must not import each other
@@ -28,6 +34,10 @@ type = independence
 modules =
     assurance_agent.eval
     assurance_agent.retro
+# Transitive eval → workflow → retro_ops → retro (same intentional seams as above).
+ignore_imports =
+    assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.accept_stage
+    assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.collect_stage
 
 [importlinter:contract:core-below-orchestration]
 name = workflow.core must not import workflow.orchestration

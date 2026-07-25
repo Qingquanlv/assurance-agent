@@ -13,7 +13,8 @@ from assurance_agent.workflow.graph.runtime import ensure_retro_params
 def test_resolve_or_inject_retro_id_fills_empty() -> None:
     params = {"retro_id": "", "retro_last": 10, "retro_min_evidence": 2, "retro_dry_run": False}
     out = ensure_retro_params(params)
-    assert out["retro_id"].startswith("retro-")
+    rid = out["retro_id"]
+    assert isinstance(rid, str) and rid.startswith("retro-")
 
 
 def test_ensure_retro_params_preserves_existing_id() -> None:
@@ -32,7 +33,8 @@ def test_ensure_retro_params_fills_none() -> None:
 def test_ensure_retro_params_fills_whitespace_only() -> None:
     params = {"retro_id": "   ", "retro_last": 10, "retro_min_evidence": 2, "retro_dry_run": False}
     out = ensure_retro_params(params)
-    assert out["retro_id"].startswith("retro-")
+    rid = out["retro_id"]
+    assert isinstance(rid, str) and rid.startswith("retro-")
 
 
 def test_ensure_retro_params_does_not_mutate_input() -> None:

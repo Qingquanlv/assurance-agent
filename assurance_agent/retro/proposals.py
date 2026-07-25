@@ -11,7 +11,6 @@ from assurance_agent.retro.types import (
     FINDING_TO_APPLY,
     DataKnowledgeProposal,
     IssueDraftPayload,
-    MemoryBodyPayload,
     RetroContext,
     RetroProposal,
     memory_body_text,

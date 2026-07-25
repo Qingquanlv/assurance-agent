@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 MAX_SYMBOL_BYTES = 64 * 1024
 MAX_TASK_AGGREGATE_BYTES = 256 * 1024

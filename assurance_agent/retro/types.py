@@ -208,7 +208,10 @@ class RetroProposal(BaseModel):
             return data
         finding_kind = data.get("finding_kind")
         if not finding_kind:
-            finding_kind = APPLY_TO_FINDING.get(data.get("apply_kind"))
+            apply_kind = data.get("apply_kind")
+            finding_kind = None
+            if apply_kind in APPLY_TO_FINDING:
+                finding_kind = APPLY_TO_FINDING[apply_kind]  # type: ignore[index]
             if finding_kind is None:
                 return data
             data = {**data, "finding_kind": finding_kind}
@@ -241,8 +244,9 @@ class RetroProposal(BaseModel):
                 f"proposal {self.id}: payload must be {expected_payload.__name__} "
                 f"for finding_kind={self.finding_kind!r}"
             )
-        if self.finding_kind == "domain_knowledge" and self.payload.mode != "delta":
-            raise ValueError(f"proposal {self.id}: knowledge_delta payload must have mode: delta")
+        if self.finding_kind == "domain_knowledge":
+            if not isinstance(self.payload, DataKnowledgeProposal) or self.payload.mode != "delta":
+                raise ValueError(f"proposal {self.id}: knowledge_delta payload must have mode: delta")
 
         if not self.summary.strip() and self.problem.strip():
             self.summary = self.problem

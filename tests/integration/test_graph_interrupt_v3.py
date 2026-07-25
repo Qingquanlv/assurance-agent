@@ -107,7 +107,11 @@ def test_resume_payload_passes_through_to_first_layer(tmp_path: Path) -> None:
     events = read_events_strict(context.change_dir)
     resumed = [e for e in events if e.get("type") == "graph_resumed"]
     assert resumed, "expected graph_resumed events"
-    first = min(resumed, key=lambda e: e.get("seq", 0))
+    def _seq(event: dict[str, object]) -> int:
+        seq = event.get("seq")
+        return seq if isinstance(seq, int) and not isinstance(seq, bool) else 0
+
+    first = min(resumed, key=_seq)
     assert first.get("payload") == {"waiver_id": "W-42", "notes": "risk accepted"}
     # Non-root layers (if any) must not copy the payload.
     for event in resumed:

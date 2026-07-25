@@ -745,7 +745,7 @@ class GraphRuntime:
         root_tree_id = self._objects.capture(context.project_root, repo_root=context.repo_root)
         invocation_id = str(uuid4())
         checkpoint_ns = invocation_id
-        params_sha = canonical_digest(params)
+        canonical_digest(params)
         max_parallel = compiled.schema.policies.scheduler.max_parallel_tasks
         graph_id = entry.graph_id
 
@@ -1376,12 +1376,12 @@ def ensure_retro_params(params: dict[str, object], *, now: datetime | None = Non
     path segment is always non-empty and path-safe before any node runs.
     """
     from assurance_agent.identifiers import assert_path_segment_safe
-    from assurance_agent.retro.nightly.utils import generate_retro_id
 
     out = dict(params)
     rid = out.get("retro_id")
     if not isinstance(rid, str) or not rid.strip():
-        out["retro_id"] = generate_retro_id(now)
+        stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%d-%H%M%S")
+        out["retro_id"] = f"retro-{stamp}"
     assert_path_segment_safe(str(out["retro_id"]), label="retro id")
     return out
 

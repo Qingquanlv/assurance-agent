@@ -40,7 +40,8 @@ def _read_context(retro_dir: Path, retro_id: str) -> dict:
     raw = _read_json(retro_dir / "context.json")
     if not isinstance(raw, dict):
         return {"retro_id": retro_id, "generated_at": None, "change_ids": []}
-    window = raw.get("window") if isinstance(raw.get("window"), dict) else {}
+    raw_window = raw.get("window")
+    window = raw_window if isinstance(raw_window, dict) else {}
     change_ids = [c for c in window.get("change_ids", []) if isinstance(c, str)]
     return {
         "retro_id": raw.get("retro_id") if isinstance(raw.get("retro_id"), str) else retro_id,

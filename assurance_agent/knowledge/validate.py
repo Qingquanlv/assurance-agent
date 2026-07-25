@@ -7,10 +7,10 @@ Models are resolved from ``artifacts/repo_registry`` (L1) and
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 from assurance_agent.artifacts.registry import ArtifactSpec, match_artifact
-from assurance_agent.artifacts.repo_registry import REPO_REGISTRY, match_repo_artifact
+from assurance_agent.artifacts.repo_registry import RepoArtifactSpec, match_repo_artifact
 from assurance_agent.artifacts.validate import ArtifactResult, ValidationReport, _format_errors
 from assurance_agent.change_location import resolve_change
 from assurance_agent.exceptions import AaError
@@ -29,7 +29,7 @@ def _load_yaml(path: Path) -> object:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
-def _validate_with_spec(spec: ArtifactSpec, abs_path: Path, rel: str) -> ArtifactResult:
+def _validate_with_spec(spec: ArtifactSpec | RepoArtifactSpec, abs_path: Path, rel: str) -> ArtifactResult:
     try:
         raw = _load_yaml(abs_path)
     except yaml.YAMLError as err:

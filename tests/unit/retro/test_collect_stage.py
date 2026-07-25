@@ -9,7 +9,6 @@ from tests.helpers_aa import write_aa_config
 from tests.unit.retro.archive_fixtures import make_archived_change
 
 from assurance_agent.retro.collect_stage import RetroCollectResult, run_retro_collect
-from assurance_agent.retro.types import RetroContext
 
 
 def test_run_retro_collect_no_candidates_signal_zero(tmp_path: Path) -> None:

@@ -9,7 +9,7 @@ from tests.helpers_aa import write_aa_config
 from assurance_agent.exceptions import AaError
 from assurance_agent.retro.aggregator import build_retro_context
 from assurance_agent.retro.proposals import read_proposals, validate_retro_proposals
-from assurance_agent.retro.types import RetroProposal, memory_body_text
+from assurance_agent.retro.types import IssueDraftPayload, RetroProposal, memory_body_text
 from tests.unit.retro.archive_fixtures import make_archived_change
 from tests.unit.retro.proposal_fixtures import memory_proposal, memory_proposal_dict
 
@@ -113,6 +113,7 @@ def test_legacy_issue_proposal_derives_payload_and_maps_risk_to_severity() -> No
         }
     )
     assert proposal.finding_kind == "workflow_bug"
+    assert isinstance(proposal.payload, IssueDraftPayload)
     assert proposal.payload.severity == "low"
     assert proposal.payload.target == "assurance_agent/workflow/inspect"
     assert proposal.payload.proposed_change == "register the local schema key before classifying"

@@ -311,7 +311,7 @@ def test_retro_promote_rejects_non_memory_append() -> None:
     with runner.isolated_filesystem() as fs:
         root = Path(fs)
         proposal = issue_proposal_dict(id="P-1", eval_suite="workflow-run", target=".aa/memory/aa-run.md")
-        retro_dir = _seed_retro_dir(root, "retro-p", [proposal])
+        _seed_retro_dir(root, "retro-p", [proposal])
         _seed_suite(root)
         result = runner.invoke(
             main,

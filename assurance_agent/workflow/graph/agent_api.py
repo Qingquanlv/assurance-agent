@@ -8,7 +8,8 @@ driver adapter（headless/opencode）import 并实现 ``AgentInvoker``；graph �
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import json
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -63,6 +64,7 @@ def build_node_prompt(
     memory_root: Path | None = None,
     prior_failure: str | None = None,
     prior_error_kind: ErrorKind | None = None,
+    evidence: Mapping[str, object] | None = None,
 ) -> str:
     """v2 node prompt：列出 contract 授权写范围，不再宣称只能写 change 目录。
 
@@ -113,6 +115,13 @@ def build_node_prompt(
             "output you wrote, fix exactly the reported fields, rewrite it, and keep "
             "all other content unchanged."
         )
+    evidence_clause = ""
+    if evidence:
+        rendered = json.dumps(evidence, sort_keys=True, ensure_ascii=False, indent=2)
+        evidence_clause = (
+            " FROZEN UPSTREAM EVIDENCE (authoritative; do not re-derive from disk):\n"
+            f"{rendered}\n"
+        )
     return (
         f"Call skill(name='{skill}'). Operate strictly on change_id='{change_id}'. "
         f"Authorized write paths: {allowed}. Produce only node {node_id}'s declared outputs. "
@@ -131,6 +140,7 @@ def build_node_prompt(
         "escapes the isolated workspace and fails output validation."
         + cwd_clause
         + memory_clause
+        + evidence_clause
         + failure_clause
         + (f" Fan-out item: {item}." if item is not None else "")
     )

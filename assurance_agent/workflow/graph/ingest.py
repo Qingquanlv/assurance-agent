@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import yaml
 
@@ -24,7 +23,7 @@ def ingest_from_write_set(
     output_paths: tuple[str, ...],
 ) -> dict[str, FrozenOutput]:
     """从 content-addressed write-set blob 摄入 catalog 声明的 concrete file outputs。"""
-    catalog = validate_catalog_runtime()
+    validate_catalog_runtime()
     write_set = store.load_write_set(write_set_id)
     frozen: dict[str, FrozenOutput] = {}
     for output_path in output_paths:

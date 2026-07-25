@@ -242,7 +242,7 @@ def read_events_raw(change_dir: Path) -> list[dict[str, object]]:
 
 def read_events_strict(change_dir: Path) -> list[dict[str, object]]:
     """Fail-closed 读取：seq 校验 → v1→v2 migrate → graph payload 校验。"""
-    from assurance_agent.workflow.graph.migrate_events import migrate_events_for_fold
+    from assurance_agent.workflow.core.migrate_events import migrate_events_for_fold
 
     events = migrate_events_for_fold(read_events_raw(change_dir))
     file = _events_file(change_dir)

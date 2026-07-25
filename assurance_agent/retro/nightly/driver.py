@@ -18,7 +18,7 @@ from assurance_agent.retro.apply import (
     apply_proposal_to_stage,
     resolve_memory_target,
 )
-from assurance_agent.retro.collect_stage import ContextBuilder, RetroCollectResult, run_retro_collect
+from assurance_agent.retro.collect_stage import ContextBuilder, run_retro_collect
 from assurance_agent.retro.nightly.exit_codes import (
     NIGHTLY_FAILURE,
     NIGHTLY_NOOP,
@@ -26,10 +26,6 @@ from assurance_agent.retro.nightly.exit_codes import (
     NIGHTLY_PENDING_REVIEW,
 )
 from assurance_agent.retro.nightly.phase_a import IsTerminal
-from assurance_agent.retro.nightly.phase_d import (
-    build_review_queue_markdown,
-    partition_proposals_for_review,
-)
 from assurance_agent.retro.nightly.phase_f import (
     classify_eval_gate,
     compare_suite_regression,
@@ -45,7 +41,6 @@ from assurance_agent.retro.promotions import (
     read_promotion_events,
 )
 from assurance_agent.retro.proposals import read_proposals
-from assurance_agent.retro.types import RetroContext
 from assurance_agent.workflow.graph.checkpoint import CheckpointStore, project_invocation
 
 AgentRunner = Callable[[str, Path], int]

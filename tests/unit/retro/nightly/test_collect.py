@@ -12,7 +12,6 @@ from assurance_agent.retro.nightly.exit_codes import (
     NIGHTLY_OK,
 )
 from assurance_agent.retro.nightly.types import NightlyOptions
-from assurance_agent.retro.promotions import read_promotion_events
 from tests.unit.retro.archive_fixtures import make_archived_change
 from tests.unit.retro.proposal_fixtures import memory_proposal_dict
 

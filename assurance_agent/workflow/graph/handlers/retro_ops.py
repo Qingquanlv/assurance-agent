@@ -23,7 +23,7 @@ def retro_collect(
         return task_failure("invalid_input", "params.retro_id must be a non-empty string")
     last = context.params.get("retro_last")
     try:
-        last_int = int(last) if last is not None else 10
+        last_int = int(last) if isinstance(last, (int, str)) else 10
     except (TypeError, ValueError):
         last_int = 10
     try:
@@ -50,7 +50,7 @@ def retro_accept(
         return task_failure("invalid_input", "params.retro_id must be a non-empty string")
     min_evidence = context.params.get("retro_min_evidence")
     try:
-        min_evidence_int = int(min_evidence) if min_evidence is not None else 2
+        min_evidence_int = int(min_evidence) if isinstance(min_evidence, (int, str)) else 2
     except (TypeError, ValueError):
         min_evidence_int = 2
     try:

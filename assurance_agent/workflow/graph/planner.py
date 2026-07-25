@@ -86,7 +86,7 @@ from assurance_agent.workflow.graph.models import (
     RuntimeContext,
     TaskProjection,
 )
-from assurance_agent.workflow.graph.node_history import node_history_key
+from assurance_agent.workflow.graph.node_history import fan_out_aggregate_task_id, node_history_key
 from assurance_agent.workflow.graph.schema_v2 import (
     BudgetUseDef,
     FanOutDef,
@@ -797,7 +797,15 @@ def _seed_fan_out(
             )
         return _Outcome(status="unresolved"), [], None
     _validate_expansion_shape(graph, expansion, nid)
-    frozen_ids = set(expansion.task_ids)
+    aggregate_id = fan_out_aggregate_task_id(
+        invocation_id=projection.invocation_id,
+        checkpoint_ns=projection.checkpoint_ns,
+        structural_path=projection.structural_path,
+        graph_id=graph.graph_id,
+        node_id=nid,
+        child_count=len(expansion.task_ids),
+    )
+    frozen_ids = set(expansion.task_ids) | {aggregate_id}
     unknown = sorted(task.task_id for task in node_tasks if task.task_id not in frozen_ids)
     if unknown:
         raise PlanError(
@@ -866,6 +874,33 @@ def _seed_fan_out(
         # 全部成功：reducer 契约与 child value 类型在这里 fail-closed 校验。
         _reduce_fan_out(compiled, graph, projection, nid, fan_out.reduce, expansion)
     if settled:
+        if not expansion.task_ids:
+            key = node_history_key(projection.checkpoint_ns, graph.graph_id, nid)
+            history = projection.node_histories.get(key)
+            if history is not None:
+                gen = history.generations_by_ordinal.get(history.latest_generation_ordinal)
+                if gen is not None and gen.outputs_committed:
+                    return _Outcome(status="succeeded"), retry, None
+            return _Outcome(status="unresolved"), retry, None
+        aggregate_id = fan_out_aggregate_task_id(
+            invocation_id=projection.invocation_id,
+            checkpoint_ns=projection.checkpoint_ns,
+            structural_path=projection.structural_path,
+            graph_id=graph.graph_id,
+            node_id=nid,
+            child_count=len(expansion.task_ids),
+        )
+        aggregate = by_id.get(aggregate_id) or projection.tasks.get(aggregate_id)
+        if aggregate is None or aggregate.status != "succeeded":
+            if aggregate is not None:
+                return _Outcome(status="unresolved", task=aggregate), retry, None
+            return _Outcome(status="unresolved"), retry, None
+        key = node_history_key(projection.checkpoint_ns, graph.graph_id, nid)
+        history = projection.node_histories.get(key)
+        if history is not None:
+            gen = history.generations_by_ordinal.get(history.latest_generation_ordinal)
+            if gen is None or not gen.outputs_committed:
+                return _Outcome(status="unresolved", task=aggregate), retry, None
         return _Outcome(status="succeeded"), retry, None
     if missing:
         representative = None  # 有缺失 child：交给 _decide_fan_out 重放/补建
@@ -905,6 +940,23 @@ def _decide_fan_out(
         for index, task_id in enumerate(expansion.task_ids):
             if task_id not in projection.tasks:
                 ready.append(_build_fan_out_task(compiled, graph, projection, context, nid, expansion, index))
+        if all(
+            (child := projection.tasks.get(task_id)) is not None and child.status == "succeeded"
+            for task_id in expansion.task_ids
+        ):
+            aggregate_id = fan_out_aggregate_task_id(
+                invocation_id=projection.invocation_id,
+                checkpoint_ns=projection.checkpoint_ns,
+                structural_path=projection.structural_path,
+                graph_id=graph.graph_id,
+                node_id=nid,
+                child_count=len(expansion.task_ids),
+            )
+            aggregate = projection.tasks.get(aggregate_id)
+            if aggregate is None or aggregate.status not in ("succeeded", "running"):
+                ready.append(
+                    _build_fan_out_aggregate_task(compiled, graph, projection, context, nid, expansion)
+                )
         return
     if definition.when is not None and not _satisfied(definition.when, scope, nid):
         _emit_skip(graph, projection, source_reads, events, nid, definition.when)
@@ -1496,6 +1548,56 @@ def _build_task(
     )
 
 
+def _build_fan_out_aggregate_task(
+    compiled: CompiledWorkflow,
+    graph: CompiledGraph,
+    projection: GraphProjection,
+    context: RuntimeContext,
+    nid: str,
+    expansion: FanOutExpansion,
+) -> ExecutableTask:
+    """Fan-out 全部 child 成功后的 synthetic aggregate（side-effect-free）。"""
+    task_id = fan_out_aggregate_task_id(
+        invocation_id=projection.invocation_id,
+        checkpoint_ns=projection.checkpoint_ns,
+        structural_path=projection.structural_path,
+        graph_id=graph.graph_id,
+        node_id=nid,
+        child_count=len(expansion.task_ids),
+    )
+    expected = _task_id(projection, graph.graph_id, nid, len(expansion.task_ids), "__aggregate__")
+    if task_id != expected:
+        raise PlanError(
+            f"node '{nid}' fan_out aggregate task ID drifted from frozen expansion (ledger integrity)"
+        )
+    definition = graph.nodes[nid].definition
+    retry_policy = _retry_policy(compiled, definition)
+    input_payload: dict[str, object] = {
+        "with": {},
+        "context": {"change_id": context.change_id},
+        "outputs": [],
+        "fan_out_aggregate": True,
+    }
+    return ExecutableTask(
+        task_id=task_id,
+        invocation_id=projection.invocation_id,
+        checkpoint_ns=projection.checkpoint_ns,
+        graph_id=graph.graph_id,
+        node_id=nid,
+        structural_path=projection.structural_path,
+        input=input_payload,
+        input_sha256=canonical_digest(input_payload),
+        contract_digest=compiled.contract_digests.get("builtin:join", ""),
+        retryable_errors=(),
+        retry_policy=retry_policy,
+        timeout_policy=_timeout_policy(compiled, definition),
+        target="builtin:join",
+        resources=ResourceClaims(),
+        task_key="__aggregate__",
+        budget=None,
+    )
+
+
 def _build_fan_out_task(
     compiled: CompiledWorkflow,
     graph: CompiledGraph,
@@ -1638,7 +1740,22 @@ def _node_has_task(projection: GraphProjection, nid: str) -> bool:
 
 
 def _succeeded_count(projection: GraphProjection, nid: str) -> int:
-    return sum(1 for task in projection.tasks.values() if task.node_id == nid and task.status == "succeeded")
+    """Count non-child successes for successorship gating.
+
+    Fan-out children share ``node_id`` with the parent but must not inflate
+    ``succ(parent)``; otherwise upstream edges stop delivering while the node
+    is still waiting on the synthetic aggregate.
+    """
+    expansion = projection.fan_out_expansions.get(nid)
+    child_ids = set(expansion.task_ids) if expansion is not None else set()
+    return sum(
+        1
+        for task in projection.tasks.values()
+        if task.node_id == nid
+        and task.status == "succeeded"
+        and task.task_id not in child_ids
+        and not task.fan_out_child
+    )
 
 
 def _same_cyclic_scc(graph: CompiledGraph, left: str, right: str) -> bool:

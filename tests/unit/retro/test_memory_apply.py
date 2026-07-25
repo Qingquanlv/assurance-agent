@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
-import yaml
 
 from assurance_agent.exceptions import AaError
 from assurance_agent.retro.apply import (

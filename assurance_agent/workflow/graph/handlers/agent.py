@@ -77,12 +77,27 @@ class AgentHandler:
             memory_root=Path(workspace.project_root),
             prior_failure=task.prior_failure,
             prior_error_kind=task.prior_error_kind,
+            evidence=task.resolved_evidence or None,
         )
         if skill == "aa-retro":
             rid = context.params.get("retro_id")
             if isinstance(rid, str) and rid.strip():
-                from assurance_agent.retro.nightly.agent import build_retro_proposal_prompt
-                prompt = prompt + " " + build_retro_proposal_prompt(rid)
+                # Keep the prompt here (not via assurance_agent.retro) so graph
+                # stays below the retro layer in .importlinter.
+                prompt = (
+                    prompt
+                    + " "
+                    + (
+                        "Call skill(name='aa-retro'). "
+                        f"Read qa/retro/{rid}/context.json. "
+                        f"Write qa/retro/{rid}/proposals.json and qa/retro/{rid}/retro-summary.md. "
+                        "Every proposal MUST include machine fields finding_kind, apply_kind, and a structured "
+                        "payload (prompt_rule→payload.body; workflow_bug→IssueDraftPayload; "
+                        "domain_knowledge→L2 delta with mode:delta). Natural-language problem/proposed_change "
+                        "are not enough by themselves. "
+                        "Do not modify SKILL.md files, the workflow schema, .aa/memory, or project source files."
+                    )
+                )
         request = AgentRequest(
             target=task.target,
             node_id=task.node_id,
