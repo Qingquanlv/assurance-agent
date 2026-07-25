@@ -1,8 +1,8 @@
 """Memory-patch Improvement delivery: evaluate / apply / rollback + graph ops.
 
 Default evaluate path builds a host Eval runner via ``eval.host_runner`` (importlint
-seam). Constructor injection remains available for unit tests. Memory writes reuse
-Improvement-scoped helpers in ``retro.apply`` (importlint seam).
+seam). Constructor injection remains available for unit tests. Memory writes use
+Improvement-scoped helpers in ``memory_markers``.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from assurance_agent.artifacts.models.improvements import (
 )
 from assurance_agent.eval.host_runner import build_eval_runner
 from assurance_agent.exceptions import AaError
-from assurance_agent.retro.apply import (
+from assurance_agent.workflow.improvements.memory_markers import (
     apply_improvement_memory_patch,
     deprecate_improvement_memory_block,
     resolve_memory_target,

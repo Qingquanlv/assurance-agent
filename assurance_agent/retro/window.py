@@ -10,7 +10,6 @@ from assurance_agent.retro.types import RetroIntegrity, RetroSelectionSnapshot, 
 from assurance_agent.workflow.issues.history_models import IssueWindowSelection
 
 if TYPE_CHECKING:
-    from assurance_agent.retro.nightly.types import NightlyOptions
     from assurance_agent.retro.workflow_history import WorkflowHistoryReader
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
@@ -36,6 +35,21 @@ class RetroWindowSelection(BaseModel):
         if sum(modes) != 1:
             raise ValueError("exactly one window mode is required")
         return self
+
+
+def selection_from_options(
+    *,
+    change_ids: tuple[str, ...] = (),
+    since: str | None = None,
+    until: str | None = None,
+    last: int = 10,
+) -> RetroWindowSelection:
+    """Map CLI/graph window fields onto the mutually exclusive constructor."""
+    if change_ids:
+        return RetroWindowSelection(change_ids=tuple(change_ids), last=None)
+    if since is not None or until is not None:
+        return RetroWindowSelection(since=since, until=until, last=None)
+    return RetroWindowSelection(last=last)
 
 
 class ResolvedRetroWindow(BaseModel):
@@ -92,15 +106,6 @@ def _ts_in_closed_range(ts: str, since: str | None, until: str | None) -> bool:
     if until is not None and ts > until:
         return False
     return True
-
-
-def selection_from_nightly_options(options: NightlyOptions) -> RetroWindowSelection:
-    """Map CLI/graph NightlyOptions onto the mutually exclusive window constructor."""
-    if options.change_ids:
-        return RetroWindowSelection(change_ids=tuple(options.change_ids), last=None)
-    if options.since is not None or options.until is not None:
-        return RetroWindowSelection(since=options.since, until=options.until, last=None)
-    return RetroWindowSelection(last=options.last)
 
 
 def resolve_retro_window(

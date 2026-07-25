@@ -34,8 +34,6 @@ ignore_imports =
     # Improvement reconciler validates Candidates against RetroContext (Task 8/9 seam).
     assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.types
     assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.candidates
-    # Memory delivery reuses Improvement-scoped marker helpers in retro.apply (Task 11).
-    assurance_agent.workflow.improvements.memory_delivery -> assurance_agent.retro.apply
     # Knowledge delivery loads pinned RetroContext for Problem eligibility (Task 11).
     assurance_agent.workflow.improvements.knowledge_delivery -> assurance_agent.retro.types
 
@@ -52,7 +50,6 @@ ignore_imports =
     assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.window
     assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.types
     assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.candidates
-    assurance_agent.workflow.improvements.memory_delivery -> assurance_agent.retro.apply
     assurance_agent.workflow.improvements.knowledge_delivery -> assurance_agent.retro.types
 
 [importlinter:contract:core-below-orchestration]

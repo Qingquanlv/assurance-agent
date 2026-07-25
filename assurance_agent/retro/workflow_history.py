@@ -18,9 +18,12 @@ from assurance_agent.change_location import (
     resolve_change,
 )
 from assurance_agent.exceptions import AaError
-from assurance_agent.retro.nightly.utils import list_dir_names
 from assurance_agent.retro.types import RetroIntegrity, RetroSourceDescriptor
 from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
+
+
+def _list_dir_names(root: Path) -> list[str]:
+    return sorted(p.name for p in root.iterdir() if p.is_dir()) if root.is_dir() else []
 
 if TYPE_CHECKING:
     from assurance_agent.retro.window import ResolvedRetroWindow
@@ -323,9 +326,9 @@ class LedgerWorkflowHistoryReader:
         archive = archive_root(self._root)
         active = changes_root(self._root)
         if archive.is_dir():
-            ids.update(list_dir_names(archive))
+            ids.update(_list_dir_names(archive))
         if active.is_dir():
-            ids.update(list_dir_names(active))
+            ids.update(_list_dir_names(active))
         return frozenset(ids)
 
     def list_terminal_changes(self) -> tuple[TerminalChangeRef, ...]:

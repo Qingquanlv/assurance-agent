@@ -15,7 +15,7 @@ from assurance_agent.retro.context import (
 )
 from assurance_agent.retro.eval_history import EvalHistoryReader, FileEvalHistoryReader
 from assurance_agent.retro.types import RetroContext
-from assurance_agent.retro.window import RetroWindowSelection, selection_from_nightly_options
+from assurance_agent.retro.window import RetroWindowSelection, selection_from_options
 from assurance_agent.retro.workflow_history import (
     LedgerWorkflowHistoryReader,
     WorkflowHistoryReader,
@@ -85,20 +85,12 @@ def run_retro_collect(
     generated_at = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     if selection is None:
-        if change_ids or since is not None or until is not None:
-            from assurance_agent.retro.nightly.types import NightlyOptions
-
-            selection = selection_from_nightly_options(
-                NightlyOptions(
-                    sut=str(sut),
-                    last=last,
-                    change_ids=change_ids,
-                    since=since,
-                    until=until,
-                )
-            )
-        else:
-            selection = RetroWindowSelection(last=last)
+        selection = selection_from_options(
+            change_ids=change_ids,
+            since=since,
+            until=until,
+            last=last,
+        )
 
     issues = issue_history or LedgerIssueHistoryReader(sut)
     workflow = workflow_history or LedgerWorkflowHistoryReader(sut)
