@@ -1057,9 +1057,7 @@ def _resolve_template(
             pname = var.removeprefix("params.")
             value = context.params.get(pname)
             if not isinstance(value, str) or not value.strip():
-                raise PlanError(
-                    f"node '{nid}' template '${{{var}}}' requires a non-empty string param"
-                )
+                raise PlanError(f"node '{nid}' template '${{{var}}}' requires a non-empty string param")
             try:
                 assert_path_segment_safe(value, label=f"params.{pname}")
             except UnsafeIdentifierError as err:
@@ -1442,9 +1440,7 @@ def _next_generation_ordinal(projection: GraphProjection, graph_id: str, node_id
     非最新槽位，使 ``node(id).outputs`` 读到空代。接线前需先按 §5.4 判定「本次
     决策是否已有槽位」并复用之。
     """
-    history = projection.node_histories.get(
-        node_history_key(projection.checkpoint_ns, graph_id, node_id)
-    )
+    history = projection.node_histories.get(node_history_key(projection.checkpoint_ns, graph_id, node_id))
     if history is None:
         return 0
     return history.latest_generation_ordinal + 1

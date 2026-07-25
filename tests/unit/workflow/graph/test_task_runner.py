@@ -353,9 +353,7 @@ def test_build_node_prompt_pins_absolute_workspace_root() -> None:
     assert "Your working directory is EXACTLY '/ws/tasks/abc'" in prompt
     assert "/ws/tasks/abc/qa/changes/CH-1/" in prompt
     # Without workspace_root the concrete cwd clause is omitted.
-    bare = build_node_prompt(
-        "aa-fix-proposal", "proposal", "CH-1", allowed_writes=["change:healing/**"]
-    )
+    bare = build_node_prompt("aa-fix-proposal", "proposal", "CH-1", allowed_writes=["change:healing/**"])
     assert "Your working directory is EXACTLY" not in bare
 
 
@@ -372,9 +370,7 @@ def test_build_node_prompt_renders_frozen_evidence_clause() -> None:
     assert "FROZEN UPSTREAM EVIDENCE" in prompt
     assert '"decision": "approve"' in prompt
     # No evidence -> clause omitted.
-    bare = build_node_prompt(
-        "aa-api-codegen", "codegen", "CH-1", allowed_writes=["change:tests/**"]
-    )
+    bare = build_node_prompt("aa-api-codegen", "codegen", "CH-1", allowed_writes=["change:tests/**"])
     assert "FROZEN UPSTREAM EVIDENCE" not in bare
 
 

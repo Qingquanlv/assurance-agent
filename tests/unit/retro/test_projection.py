@@ -67,10 +67,35 @@ def test_list_folds_status_counts(tmp_path: Path) -> None:
         ],
         change_ids=["CH-A", "CH-B"],
         events=[
-            {"proposal_id": "RETRO-001", "type": "review_decision", "decision": "promoted", "actor": "LQ", "at": "t"},
-            {"proposal_id": "RETRO-001", "type": "eval_completed", "result": "pass", "run_ids": ["e1"], "actor": "gate", "at": "t"},
-            {"proposal_id": "RETRO-001", "type": "application", "result": "applied", "actor": "gate", "at": "t"},
-            {"proposal_id": "RETRO-002", "type": "review_decision", "decision": "rejected", "actor": "LQ", "at": "t"},
+            {
+                "proposal_id": "RETRO-001",
+                "type": "review_decision",
+                "decision": "promoted",
+                "actor": "LQ",
+                "at": "t",
+            },
+            {
+                "proposal_id": "RETRO-001",
+                "type": "eval_completed",
+                "result": "pass",
+                "run_ids": ["e1"],
+                "actor": "gate",
+                "at": "t",
+            },
+            {
+                "proposal_id": "RETRO-001",
+                "type": "application",
+                "result": "applied",
+                "actor": "gate",
+                "at": "t",
+            },
+            {
+                "proposal_id": "RETRO-002",
+                "type": "review_decision",
+                "decision": "rejected",
+                "actor": "LQ",
+                "at": "t",
+            },
         ],
     )
     payload = project_retro_list(tmp_path)
@@ -100,11 +125,40 @@ def test_show_maps_proposal_state_timeline_and_eval(tmp_path: Path) -> None:
         proposals=[_proposal("RETRO-001", evidence=["CH-A#FAIL-1", "CH-B#FAIL-2"])],
         change_ids=["CH-A", "CH-B"],
         events=[
-            {"proposal_id": "RETRO-001", "type": "review_decision", "decision": "promoted", "actor": "LQ", "at": "t1"},
-            {"proposal_id": "RETRO-001", "type": "eval_completed", "result": "pass", "run_ids": ["e1"], "gate": "pass", "actor": "gate", "at": "t2"},
-            {"proposal_id": "RETRO-001", "type": "application", "result": "applied", "target": ".aa/memory/RETRO-001.md", "actor": "gate", "at": "t3"},
+            {
+                "proposal_id": "RETRO-001",
+                "type": "review_decision",
+                "decision": "promoted",
+                "actor": "LQ",
+                "at": "t1",
+            },
+            {
+                "proposal_id": "RETRO-001",
+                "type": "eval_completed",
+                "result": "pass",
+                "run_ids": ["e1"],
+                "gate": "pass",
+                "actor": "gate",
+                "at": "t2",
+            },
+            {
+                "proposal_id": "RETRO-001",
+                "type": "application",
+                "result": "applied",
+                "target": ".aa/memory/RETRO-001.md",
+                "actor": "gate",
+                "at": "t3",
+            },
         ],
-        eval_results=[{"suite": "workflow-full", "eval_run_id": "e1", "verdict": "pass", "auto_apply": False, "proposal_ids": ["RETRO-001"]}],
+        eval_results=[
+            {
+                "suite": "workflow-full",
+                "eval_run_id": "e1",
+                "verdict": "pass",
+                "auto_apply": False,
+                "proposal_ids": ["RETRO-001"],
+            }
+        ],
     )
     payload = project_retro_show(tmp_path, "retro-20260722-035702")
     assert payload["change_ids"] == ["CH-A", "CH-B"]
@@ -125,7 +179,15 @@ def test_show_includes_orphan_event_proposal(tmp_path: Path) -> None:
         "retro-20260722-035702",
         proposals=[],
         change_ids=[],
-        events=[{"proposal_id": "RETRO-ORPHAN", "type": "review_decision", "decision": "rejected", "actor": "LQ", "at": "t"}],
+        events=[
+            {
+                "proposal_id": "RETRO-ORPHAN",
+                "type": "review_decision",
+                "decision": "rejected",
+                "actor": "LQ",
+                "at": "t",
+            }
+        ],
     )
     payload = project_retro_show(tmp_path, "retro-20260722-035702")
     assert [p["id"] for p in payload["proposals"]] == ["RETRO-ORPHAN"]

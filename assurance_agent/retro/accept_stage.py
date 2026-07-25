@@ -26,13 +26,13 @@ def run_retro_accept(
     a hard failure. Returns the accepted proposal list.
     """
     retro_dir = sut / "qa" / "retro" / retro_id
-    context = RetroContext.model_validate(json.loads((retro_dir / "context.json").read_text(encoding="utf-8")))
+    context = RetroContext.model_validate(
+        json.loads((retro_dir / "context.json").read_text(encoding="utf-8"))
+    )
     proposals = accept_proposals(retro_dir)
     errors = validate_retro_proposals(context, proposals)
     if errors:
-        raise AaError(
-            f"{retro_dir / 'proposals.json'} failed semantic validation: {'; '.join(errors)}"
-        )
+        raise AaError(f"{retro_dir / 'proposals.json'} failed semantic validation: {'; '.join(errors)}")
     partition = partition_proposals_for_review(
         proposals, promotions=[], min_evidence=min_evidence, rework_alert=rework_alert
     )

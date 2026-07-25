@@ -48,9 +48,7 @@ def _load_proposals_document(path: Path, *, strict: bool) -> tuple[dict | list |
     return raw if isinstance(raw, (dict, list)) else {"proposals": entries}, entries
 
 
-def _parse_proposal_entries(
-    entries: list, *, path: Path, strict: bool
-) -> list[RetroProposal]:
+def _parse_proposal_entries(entries: list, *, path: Path, strict: bool) -> list[RetroProposal]:
     proposals: list[RetroProposal] = []
     rejected: list[str] = []
     for index, entry in enumerate(entries):
@@ -171,7 +169,5 @@ def validate_retro_proposals(context: RetroContext, proposals: list[RetroProposa
             continue
         unknown = [eid for eid in proposal.evidence_ids if eid not in valid_evidence]
         if unknown:
-            errors.append(
-                f"proposal {proposal.id} cites evidence_ids absent from context: {sorted(unknown)}"
-            )
+            errors.append(f"proposal {proposal.id} cites evidence_ids absent from context: {sorted(unknown)}")
     return errors

@@ -23,7 +23,13 @@ from assurance_agent.workflow.core.graph_events import (
 )
 from assurance_agent.workflow.graph.compiler import canonical_digest
 from assurance_agent.workflow.graph.frozen_output import frozen_outputs_from_wire
-from assurance_agent.workflow.graph.models import FanOutExpansion, GraphProjection, NodeGeneration, NodeHistory, TaskProjection
+from assurance_agent.workflow.graph.models import (
+    FanOutExpansion,
+    GraphProjection,
+    NodeGeneration,
+    NodeHistory,
+    TaskProjection,
+)
 
 GenerationStatus = Literal[
     "activated",
@@ -130,12 +136,17 @@ class GenerationFoldState:
         latest = max(history.latest_generation_ordinal, generation_ordinal)
         self._put_history(
             node_history_key(self.checkpoint_ns, self.graph_id, node_id),
-            history.model_copy(update={"generations_by_ordinal": by_ordinal, "latest_generation_ordinal": latest}),
+            history.model_copy(
+                update={"generations_by_ordinal": by_ordinal, "latest_generation_ordinal": latest}
+            ),
         )
         return generation
 
     def apply_node_activated(self, event: NodeActivatedEvent) -> None:
-        key_tuple = (node_history_key(event.checkpoint_ns, event.graph_id, event.node_id), event.generation_ordinal)
+        key_tuple = (
+            node_history_key(event.checkpoint_ns, event.graph_id, event.node_id),
+            event.generation_ordinal,
+        )
         canonical = decision_identity(event)
         seen = self.seen_activation_payloads.get(key_tuple)
         if seen is not None:
@@ -154,7 +165,10 @@ class GenerationFoldState:
         )
 
     def apply_node_skipped(self, event: NodeSkippedEvent) -> None:
-        key_tuple = (node_history_key(event.checkpoint_ns, event.graph_id, event.node_id), event.generation_ordinal)
+        key_tuple = (
+            node_history_key(event.checkpoint_ns, event.graph_id, event.node_id),
+            event.generation_ordinal,
+        )
         canonical = decision_identity(event)
         seen = self.seen_activation_payloads.get(key_tuple)
         if seen is not None:
@@ -396,6 +410,7 @@ class GenerationFoldState:
         if any(status in ("running", "pending", "interrupted") for status in child_statuses):
             self._update_generation(node_id, generation_ordinal, status="running")
             return
+
 
 def _outcome_status(
     event: TaskAttemptSucceededEvent

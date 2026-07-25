@@ -199,9 +199,9 @@ def test_next_generation_ordinal_uses_node_history() -> None:
         root_tree_id="t0",
         current_tree_id="t0",
         node_histories={
-            key: __import__(
-                "assurance_agent.workflow.graph.models", fromlist=["NodeHistory"]
-            ).NodeHistory(latest_generation_ordinal=1, generations_by_ordinal={}),
+            key: __import__("assurance_agent.workflow.graph.models", fromlist=["NodeHistory"]).NodeHistory(
+                latest_generation_ordinal=1, generations_by_ordinal={}
+            ),
         },
     )
     assert _next_generation_ordinal(projection, "main", "loop") == 2

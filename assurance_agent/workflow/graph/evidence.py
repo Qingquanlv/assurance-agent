@@ -36,8 +36,7 @@ def resolve_committed_frozen_output(
         )
     if frozen.source_sha256 != binding.source_sha256:
         raise EvidenceResolutionError(
-            f"evidence source_sha256 drift for task {binding.producer_task_id} "
-            f"symbol {binding.symbol!r}"
+            f"evidence source_sha256 drift for task {binding.producer_task_id} symbol {binding.symbol!r}"
         )
     return frozen
 
@@ -54,15 +53,11 @@ def binding_from_task(
     if task is None:
         raise EvidenceResolutionError(f"evidence producer task {producer_task_id} not found")
     if task.status != "succeeded" or not task.outputs_committed:
-        raise EvidenceResolutionError(
-            f"evidence producer task {producer_task_id} is not committed-success"
-        )
+        raise EvidenceResolutionError(f"evidence producer task {producer_task_id} is not committed-success")
     parsed = frozen_outputs_from_wire(task.frozen_outputs)
     frozen = parsed.get(symbol)
     if frozen is None:
-        raise EvidenceResolutionError(
-            f"evidence symbol {symbol!r} missing on task {producer_task_id}"
-        )
+        raise EvidenceResolutionError(f"evidence symbol {symbol!r} missing on task {producer_task_id}")
     return EvidenceBinding(
         alias=alias,
         producer_task_id=producer_task_id,
@@ -118,9 +113,7 @@ def resolve_evidence_bindings(projection: GraphProjection, node_def: NodeDef) ->
     for alias, ref in sorted(_evidence_specs(node_def).items()):
         producer_task_id = _producer_task_id(projection, ref)
         bindings.append(
-            binding_from_task(
-                projection, alias=alias, producer_task_id=producer_task_id, symbol=ref.symbol
-            )
+            binding_from_task(projection, alias=alias, producer_task_id=producer_task_id, symbol=ref.symbol)
         )
     return tuple(bindings)
 

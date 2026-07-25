@@ -76,10 +76,7 @@ def _validate_l1_dict(l1: dict[str, Any]) -> None:
 
 
 def _write_conflicts(path: Path, conflicts: list[PromoteConflict]) -> None:
-    payload = [
-        {"key": c.key, "l1_value": c.l1_value, "proposal_value": c.proposal_value}
-        for c in conflicts
-    ]
+    payload = [{"key": c.key, "l1_value": c.l1_value, "proposal_value": c.proposal_value} for c in conflicts]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 

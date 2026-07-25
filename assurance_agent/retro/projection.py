@@ -154,9 +154,7 @@ def project_retro_show(sut: Path, retro_id: str) -> dict:
                 export_meta[pid] = {
                     "target_path": event.get("target") if isinstance(event.get("target"), str) else None,
                     "source_sha256": (
-                        event.get("source_sha256")
-                        if isinstance(event.get("source_sha256"), str)
-                        else None
+                        event.get("source_sha256") if isinstance(event.get("source_sha256"), str) else None
                     ),
                 }
 

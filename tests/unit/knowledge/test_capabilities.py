@@ -82,7 +82,9 @@ def test_plan_review_route_splits_missing_capabilities() -> None:
         == "knowledge_remediation"
     )
     assert (
-        plan_review_route({"gate": {"verdict": "needs_human_review", "details": {"missing_capabilities": []}}})
+        plan_review_route(
+            {"gate": {"verdict": "needs_human_review", "details": {"missing_capabilities": []}}}
+        )
         == "needs_human_review"
     )
     assert plan_review_route({"gate": {"verdict": "pass", "details": {"missing_capabilities": []}}}) == "pass"

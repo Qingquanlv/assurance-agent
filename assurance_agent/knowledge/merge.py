@@ -129,9 +129,7 @@ def merge_l2_into_l1(l1: dict[str, Any], proposal: dict[str, Any], *, force: boo
             merged_keys.append(key)
             l1_leaves[key] = proposal_leaf
         else:
-            conflicts.append(
-                PromoteConflict(key=key, l1_value=existing, proposal_value=proposal_leaf)
-            )
+            conflicts.append(PromoteConflict(key=key, l1_value=existing, proposal_value=proposal_leaf))
 
     changed = bool(merged_keys)
     return MergeResult(merged=merged, conflicts=conflicts, merged_keys=merged_keys, changed=changed)

@@ -91,8 +91,10 @@ def migrate_graph_event_stream(raw_graph_events: list[dict[str, object]]) -> lis
             fan_out_by_node[str(node_id)] = event
             task_ids = event.get("task_ids")
             generation_ordinal = event.get("generation_ordinal")
-            if isinstance(task_ids, list) and isinstance(generation_ordinal, int) and not isinstance(
-                generation_ordinal, bool
+            if (
+                isinstance(task_ids, list)
+                and isinstance(generation_ordinal, int)
+                and not isinstance(generation_ordinal, bool)
             ):
                 for task_id in task_ids:
                     if isinstance(task_id, str):
@@ -112,7 +114,9 @@ def migrate_graph_event_stream(raw_graph_events: list[dict[str, object]]) -> lis
     return out
 
 
-def merge_preserving_seq(all_events: list[dict[str, object]], migrated_graph: list[dict[str, object]]) -> list[dict[str, object]]:
+def merge_preserving_seq(
+    all_events: list[dict[str, object]], migrated_graph: list[dict[str, object]]
+) -> list[dict[str, object]]:
     """用 migrated graph payload 替换原流中的 graph 行，non-graph 逐字节保留。"""
     graph_iter = iter(migrated_graph)
     merged: list[dict[str, object]] = []

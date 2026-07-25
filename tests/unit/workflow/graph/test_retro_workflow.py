@@ -86,9 +86,7 @@ class FakeRetroAgent:
                 "problem": "Prompt rule misses edge cases",
             }
         ]
-        (retro_dir / "proposals.json").write_text(
-            json.dumps(proposals), encoding="utf-8"
-        )
+        (retro_dir / "proposals.json").write_text(json.dumps(proposals), encoding="utf-8")
         # propose also declares retro-summary.md as a required output
         (retro_dir / "retro-summary.md").write_text(
             "# Retro summary\n\nSynthetic summary for test.\n", encoding="utf-8"
@@ -234,8 +232,14 @@ def _fake_retro_collect_with_signal(
         "signals": {
             "failure_distribution": [],
             "gate_pushback": [
-                {"gate": "test-gate", "verdict": "needs_fix", "count": 1,
-                 "top_reasons": [], "evidence_ids": ["CH-SEED-1#seq1"], "changes": ["CH-SEED-1"]}
+                {
+                    "gate": "test-gate",
+                    "verdict": "needs_fix",
+                    "count": 1,
+                    "top_reasons": [],
+                    "evidence_ids": ["CH-SEED-1#seq1"],
+                    "changes": ["CH-SEED-1"],
+                }
             ],
             "healing_efficiency": {"attempts": 0, "applied": 0, "success_rate": 0.0, "evidence_ids": []},
             "human_decisions": [],

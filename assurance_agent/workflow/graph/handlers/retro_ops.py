@@ -14,9 +14,7 @@ from assurance_agent.workflow.graph.task_runner import task_failure
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 
 
-def retro_collect(
-    task: ExecutableTask, workspace: TaskWorkspace, context: RuntimeContext
-) -> TaskResult:
+def retro_collect(task: ExecutableTask, workspace: TaskWorkspace, context: RuntimeContext) -> TaskResult:
     """Collect retro candidates and write ``qa/retro/<id>/context.json``."""
     retro_id = context.params.get("retro_id")
     if not isinstance(retro_id, str) or not retro_id.strip():
@@ -41,9 +39,7 @@ def retro_collect(
     )
 
 
-def retro_accept(
-    task: ExecutableTask, workspace: TaskWorkspace, context: RuntimeContext
-) -> TaskResult:
+def retro_accept(task: ExecutableTask, workspace: TaskWorkspace, context: RuntimeContext) -> TaskResult:
     """Validate proposals, write ``review-queue.md``, and mark the retro stage complete."""
     retro_id = context.params.get("retro_id")
     if not isinstance(retro_id, str) or not retro_id.strip():

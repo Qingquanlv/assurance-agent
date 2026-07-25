@@ -26,9 +26,7 @@ def apply_subgraph_exports(
         key = node_history_key(child_projection.checkpoint_ns, child_graph_id, spec.from_node)
         history = child_projection.node_histories.get(key)
         if history is None or history.latest_generation_ordinal < 0:
-            raise SubgraphExportError(
-                f"export {spec.symbol!r}: child node {spec.from_node!r} has no history"
-            )
+            raise SubgraphExportError(f"export {spec.symbol!r}: child node {spec.from_node!r} has no history")
         generation = history.generations_by_ordinal.get(history.latest_generation_ordinal)
         if generation is None or generation.status != "succeeded" or not generation.outputs_committed:
             raise SubgraphExportError(
@@ -45,8 +43,7 @@ def apply_subgraph_exports(
             )
             if outputs is None or spec.output not in outputs:
                 raise SubgraphExportError(
-                    f"export {spec.symbol!r}: output {spec.output!r} missing on child node "
-                    f"{spec.from_node!r}"
+                    f"export {spec.symbol!r}: output {spec.output!r} missing on child node {spec.from_node!r}"
                 )
             raise SubgraphExportError(
                 f"export {spec.symbol!r}: output {spec.output!r} on {spec.from_node!r} "

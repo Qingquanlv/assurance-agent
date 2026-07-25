@@ -8,7 +8,11 @@ from pathlib import Path
 
 from assurance_agent.identifiers import assert_path_segment_safe
 from assurance_agent.retro.aggregator import build_retro_context, count_signals
-from assurance_agent.retro.nightly.phase_a import IsTerminal, enumerate_candidates, snapshot_unarchived_evidence
+from assurance_agent.retro.nightly.phase_a import (
+    IsTerminal,
+    enumerate_candidates,
+    snapshot_unarchived_evidence,
+)
 from assurance_agent.retro.nightly.utils import write_json
 from assurance_agent.retro.state import complete_retro_stage, mark_consumed_change, read_state
 from assurance_agent.retro.types import RetroContext, RetroSignalSet, RetroWindow
@@ -62,7 +66,9 @@ def run_retro_collect(
     generated_at = (now or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     if is_terminal is None:
-        from assurance_agent.retro.nightly.driver import _default_is_terminal  # avoid circular at module level
+        from assurance_agent.retro.nightly.driver import (
+            _default_is_terminal,
+        )  # avoid circular at module level
 
         is_terminal = partial(_default_is_terminal, sut)
 

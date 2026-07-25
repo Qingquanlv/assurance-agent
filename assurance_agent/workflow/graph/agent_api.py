@@ -100,11 +100,7 @@ def build_node_prompt(
                 "Apply these rules when producing declared outputs."
             )
     failure_clause = ""
-    if (
-        prior_failure
-        and prior_error_kind is not None
-        and prior_error_kind in _PRIOR_FAILURE_KINDS
-    ):
+    if prior_failure and prior_error_kind is not None and prior_error_kind in _PRIOR_FAILURE_KINDS:
         detail = prior_failure.strip()
         if len(detail) > _PRIOR_FAILURE_MAX_CHARS:
             detail = detail[:_PRIOR_FAILURE_MAX_CHARS] + "…"
@@ -119,8 +115,7 @@ def build_node_prompt(
     if evidence:
         rendered = json.dumps(evidence, sort_keys=True, ensure_ascii=False, indent=2)
         evidence_clause = (
-            " FROZEN UPSTREAM EVIDENCE (authoritative; do not re-derive from disk):\n"
-            f"{rendered}\n"
+            f" FROZEN UPSTREAM EVIDENCE (authoritative; do not re-derive from disk):\n{rendered}\n"
         )
     return (
         f"Call skill(name='{skill}'). Operate strictly on change_id='{change_id}'. "

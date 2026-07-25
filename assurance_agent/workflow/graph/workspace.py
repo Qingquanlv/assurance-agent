@@ -650,9 +650,7 @@ class TreeStore:
         for rel in sorted(set(current) - set(base.entries) - set(target.entries)):
             if _is_excluded_rel(rel):
                 continue
-            if change_prefix is not None and (
-                rel == change_prefix or rel.startswith(f"{change_prefix}/")
-            ):
+            if change_prefix is not None and (rel == change_prefix or rel.startswith(f"{change_prefix}/")):
                 change_dir_strays.append(rel)
                 continue
             raise WorkspaceError(f"canonical workspace drift: untracked path {rel}")

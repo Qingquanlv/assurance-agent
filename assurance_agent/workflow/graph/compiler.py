@@ -260,7 +260,9 @@ def _check_uses(loc: str, node: NodeDef, schema: WorkflowSchemaV2) -> list[str]:
     return errors
 
 
-def _check_output_path(loc: str, output: str, node: NodeDef, *, param_names: frozenset[str] = frozenset()) -> list[str]:
+def _check_output_path(
+    loc: str, output: str, node: NodeDef, *, param_names: frozenset[str] = frozenset()
+) -> list[str]:
     errors: list[str] = []
     if not output.startswith(_PATH_ROOTS):
         return [f"{loc} output '{output}' must be rooted in change:/project:/repo:"]
@@ -1034,9 +1036,7 @@ def _validate_exports(schema: WorkflowSchemaV2) -> list[str]:
     for graph_id, graph in schema.graphs.items():
         for symbol, spec in graph.exports.items():
             if spec.from_ not in graph.nodes:
-                errors.append(
-                    f"graph '{graph_id}' export '{symbol}' references unknown node '{spec.from_}'"
-                )
+                errors.append(f"graph '{graph_id}' export '{symbol}' references unknown node '{spec.from_}'")
     return errors
 
 

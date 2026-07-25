@@ -29,9 +29,7 @@ def _write_proposals(retro_dir: Path, proposals: list[dict] | None = None) -> No
         proposals = [
             memory_proposal_dict(id="P-1", payload={"body": "append this"}, evidence_ids=["CH-1#F-1"]),
         ]
-    (retro_dir / "proposals.json").write_text(
-        json.dumps({"proposals": proposals}), encoding="utf-8"
-    )
+    (retro_dir / "proposals.json").write_text(json.dumps({"proposals": proposals}), encoding="utf-8")
     (retro_dir / "retro-summary.md").write_text("# summary\n", encoding="utf-8")
 
 
