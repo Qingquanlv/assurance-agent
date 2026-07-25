@@ -39,18 +39,22 @@ def workflow_group() -> None:
     """Graph workflow driver (run / status / resume / import-checkpoint)."""
 
 
-def _parse_params(raw: str | None) -> dict[str, object]:
+def _parse_json_object(raw: str | None, option_name: str) -> dict[str, object]:
     if not raw:
         return {}
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as err:
-        click.secho(f"Invalid --params JSON: {err}", fg="red")
+        click.secho(f"Invalid {option_name} JSON: {err}", fg="red")
         raise SystemExit(EXIT_ERROR) from err
     if not isinstance(parsed, dict):
-        click.secho("Invalid --params JSON: expected an object", fg="red")
+        click.secho(f"Invalid {option_name} JSON: expected an object", fg="red")
         raise SystemExit(EXIT_ERROR)
     return parsed
+
+
+def _parse_params(raw: str | None) -> dict[str, object]:
+    return _parse_json_object(raw, "--params")
 
 
 _DEFAULT_CURSOR_MODEL = "cursor-grok-4.5-high-fast"
@@ -110,7 +114,6 @@ def _default_who(explicit: str | None) -> str:
 
 _ADAPTER_CHOICE = click.Choice(["opencode", "headless"])
 _ENTRYPOINT_CHOICE = click.Choice(["full", "intake", "execute", "case", "archive", "retro"])
-_RESUME_ACTION = click.Choice(["fix_and_proceed", "accept_risk", "stop"])
 
 
 def _run_or_detach(
@@ -263,9 +266,10 @@ def workflow_start(
 @workflow_group.command("resume")
 @click.option("--change", "change_id", required=True, help="Change ID under qa/changes/.")
 @click.option("--interrupt", "interrupt_id", default=None, help="Pending interrupt id to resolve.")
-@click.option("--action", type=_RESUME_ACTION, default=None, help="Interrupt action (requires --interrupt).")
+@click.option("--action", default=None, help="Interrupt action (requires --interrupt).")
 @click.option("--reason", default=None, help="Human reason (required with --interrupt).")
 @click.option("--who", "who", default=None, help="Decision author (defaults to $USER).")
+@click.option("--payload", default=None, help="Structured JSON payload for the interrupt resolution.")
 @click.option("--adapter", "adapter_name", type=_ADAPTER_CHOICE, default="headless", show_default=True)
 @click.option("--server", default=None, help="OpenCode server URL (opencode adapter).")
 @click.option("--directory", default=None, help="SUT directory for OpenCode ?directory=.")
@@ -282,6 +286,7 @@ def workflow_resume(
     action: str | None,
     reason: str | None,
     who: str | None,
+    payload: str | None,
     adapter_name: str,
     server: str | None,
     directory: str | None,
@@ -306,9 +311,10 @@ def workflow_resume(
             raise SystemExit(EXIT_ERROR)
         command = ResumeCommand(
             interrupt_id=interrupt_id,
-            action=action,  # type: ignore[arg-type]
+            action=action,
             reason=reason.strip(),
             who=resolved_who,
+            payload=_parse_json_object(payload, "--payload"),
         )
     else:
         command = None

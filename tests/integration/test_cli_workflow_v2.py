@@ -224,6 +224,80 @@ def test_workflow_resume_interrupt_command(monkeypatch: pytest.MonkeyPatch) -> N
         assert command.who == "tester"
 
 
+def test_workflow_resume_passes_domain_action_and_structured_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = MagicMock()
+    runtime.latest_root_invocation.return_value = "inv-1"
+    runtime.resume.return_value = _run_result(EXIT_COMPLETED, "completed", "confirmed")
+    monkeypatch.setattr(wf, "build_graph_runtime", lambda **_k: MagicMock(runtime=runtime, compiled=None))
+    monkeypatch.setattr(wf, "evaluate_start_guard", lambda _p: MagicMock(allowed=True))
+    with CliRunner().isolated_filesystem():
+        write_aa_config(Path.cwd())
+        (Path("qa/changes/CH-1")).mkdir(parents=True)
+        result = CliRunner().invoke(
+            main,
+            [
+                "workflow",
+                "resume",
+                "--change",
+                "CH-1",
+                "--interrupt",
+                "INT-1",
+                "--action",
+                "confirm_assessment",
+                "--reason",
+                "triaged from execution evidence",
+                "--who",
+                "tester",
+                "--payload",
+                '{"expected_problem_version":2,"classification":"product_bug","severity":"high","evidence_refs":["OCC-1"]}',
+            ],
+        )
+
+        assert result.exit_code == EXIT_COMPLETED
+        command = runtime.resume.call_args.args[1]
+        assert isinstance(command, ResumeCommand)
+        assert command.action == "confirm_assessment"
+        assert command.payload == {
+            "expected_problem_version": 2,
+            "classification": "product_bug",
+            "severity": "high",
+            "evidence_refs": ["OCC-1"],
+        }
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ("{not-json}", "Invalid --payload JSON"),
+        ("[]", "Invalid --payload JSON: expected an object"),
+    ],
+)
+def test_workflow_resume_rejects_non_object_payload(payload: str, message: str) -> None:
+    with CliRunner().isolated_filesystem():
+        result = CliRunner().invoke(
+            main,
+            [
+                "workflow",
+                "resume",
+                "--change",
+                "CH-1",
+                "--interrupt",
+                "INT-1",
+                "--action",
+                "accept_risk",
+                "--reason",
+                "approved",
+                "--payload",
+                payload,
+            ],
+        )
+
+        assert result.exit_code == EXIT_ERROR
+        assert message in result.output
+
+
 def test_workflow_resume_rejects_action_without_interrupt() -> None:
     with CliRunner().isolated_filesystem():
         result = CliRunner().invoke(

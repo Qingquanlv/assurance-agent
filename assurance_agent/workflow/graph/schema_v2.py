@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from assurance_agent import resources
 from assurance_agent.exceptions import AaError
@@ -124,7 +124,16 @@ class InterruptDef(_FrozenModel):
     reason: str
     checkpoint: str
     bind: Literal["audited_gate_read"]
-    actions: list[Literal["fix_and_proceed", "accept_risk", "stop"]]
+    actions: list[str] = Field(min_length=1)
+
+    @field_validator("actions")
+    @classmethod
+    def actions_are_unique_and_nonblank(cls, actions: list[str]) -> list[str]:
+        if any(not action.strip() for action in actions):
+            raise ValueError("interrupt.actions must not contain blank values")
+        if len(set(actions)) != len(actions):
+            raise ValueError("interrupt.actions must be unique")
+        return actions
 
 
 class EvidenceRef(_FrozenModel):

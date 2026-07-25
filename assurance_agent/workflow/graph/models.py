@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from assurance_agent.workflow.core.graph_events import TaskRecoveryRoutedEvent
 from assurance_agent.workflow.core.graph_types import ErrorKind
@@ -394,13 +394,20 @@ class WorkflowStateProjection(BaseModel):
 class ResumeCommand(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     interrupt_id: str
-    action: Literal["fix_and_proceed", "accept_risk", "stop"]
+    action: str = Field(min_length=1)
     reason: str
     who: str
     # Optional structured resume payload, forwarded onto the first-layer
     # graph_resumed event verbatim. Payload-model validation (payload_model_id /
     # payload_model_schema_digest) is a later increment; passthrough only for now.
     payload: dict[str, object] = Field(default_factory=dict)
+
+    @field_validator("action")
+    @classmethod
+    def action_is_nonblank(cls, action: str) -> str:
+        if not action.strip():
+            raise ValueError("action must not be blank")
+        return action
 
 
 class GraphStatus(BaseModel):

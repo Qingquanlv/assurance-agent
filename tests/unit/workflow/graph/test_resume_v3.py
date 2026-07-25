@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
 from assurance_agent.workflow.core.graph_events import GraphResumedEvent, ResumeAnchor
+from assurance_agent.workflow.graph.models import ResumeCommand
 from assurance_agent.workflow.graph.runtime import (
     _checkpoint_ns_for_invocation,
     _invocation_ids_along_ns,
@@ -54,3 +57,25 @@ def test_graph_resumed_event_accepts_anchor_fields() -> None:
     )
     assert event.anchor is not None
     assert event.payload["note"] == "resume"
+
+
+def test_resume_command_accepts_audited_domain_action() -> None:
+    command = ResumeCommand(
+        interrupt_id="INT-1",
+        action="confirm_assessment",
+        reason="triaged from execution evidence",
+        who="reviewer",
+    )
+
+    assert command.action == "confirm_assessment"
+
+
+@pytest.mark.parametrize("action", ["", "   "])
+def test_resume_command_rejects_empty_or_blank_action(action: str) -> None:
+    with pytest.raises(ValueError):
+        ResumeCommand(
+            interrupt_id="INT-1",
+            action=action,
+            reason="triaged from execution evidence",
+            who="reviewer",
+        )
