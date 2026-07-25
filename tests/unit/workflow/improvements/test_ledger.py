@@ -11,6 +11,7 @@ from assurance_agent.artifacts.models.improvements import ImprovementState
 from assurance_agent.workflow.improvements.events import (
     IMPROVEMENT_EVENT_ADAPTER,
     ImprovementEvent,
+    ImprovementLedgerIntegrityError,
     read_improvement_events,
 )
 from assurance_agent.workflow.improvements.ledger import ProjectImprovementStore
@@ -160,3 +161,52 @@ def test_projection_files_are_canonical(tmp_path: Path) -> None:
     raw = (tmp_path / "qa/improvements/improvements.json").read_bytes()
     parsed = json.loads(raw)
     assert list(parsed.keys()) == sorted(parsed.keys())
+
+
+def test_within_batch_duplicate_does_not_poison_ledger(tmp_path: Path) -> None:
+    """Same event twice in one batch must append a single JSONL line."""
+    store = ProjectImprovementStore(tmp_path)
+    event = _proposed()
+    projection = store.append_and_rebuild([event, event])
+
+    committed = read_improvement_events(tmp_path / "qa/improvements/events.jsonl")
+    assert len(committed) == 1
+    assert committed[0].seq == 1
+    assert committed[0].idempotency_key == "IDEM-PROP"
+    assert projection.improvements[IMP_ID].version == 1
+
+
+def test_within_batch_same_event_id_different_bytes_raises(tmp_path: Path) -> None:
+    store = ProjectImprovementStore(tmp_path)
+    first = _proposed()
+    conflict = _proposed(idempotency_key="IDEM-OTHER")
+    # Same event_id, different idempotency_key → different canonical bytes.
+    conflict = conflict.model_copy(update={"event_id": first.event_id})
+    with pytest.raises(ImprovementLedgerIntegrityError, match="event_id"):
+        store.append_and_rebuild([first, conflict])
+
+    events_path = tmp_path / "qa/improvements/events.jsonl"
+    assert not events_path.exists() or events_path.read_text(encoding="utf-8") == ""
+
+
+def test_committed_idempotency_conflict_raises(tmp_path: Path) -> None:
+    """Committed key + different payload must raise, not silent no-op."""
+    store = ProjectImprovementStore(tmp_path)
+    store.append_and_rebuild([_proposed()])
+
+    conflict = _proposed(event_id="IMPEVT-CONFLICT")
+    conflict = conflict.model_copy(update={"rationale": "Different rationale under same key"})
+    with pytest.raises(ImprovementLedgerIntegrityError, match="idempotency"):
+        store.append_and_rebuild([conflict])
+
+    committed = read_improvement_events(tmp_path / "qa/improvements/events.jsonl")
+    assert len(committed) == 1
+    assert committed[0].model_dump()["rationale"] == "Repeated truncation"
+
+
+def test_committed_idempotency_same_payload_is_noop(tmp_path: Path) -> None:
+    store = ProjectImprovementStore(tmp_path)
+    store.append_and_rebuild([_proposed()])
+    before = (tmp_path / "qa/improvements/events.jsonl").read_bytes()
+    store.append_and_rebuild([_proposed(seq=99)])
+    assert (tmp_path / "qa/improvements/events.jsonl").read_bytes() == before

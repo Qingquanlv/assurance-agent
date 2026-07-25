@@ -3,9 +3,13 @@
 Writes use a temp-file + ``os.replace`` pattern for atomicity. Cross-process
 serialisation is supplied by callers via ``project:improvement-registry``.
 
-``append_and_rebuild`` is idempotent: events whose ``idempotency_key`` already
-appears in the JSONL file are filtered out. When the filtered batch is empty the
-call rebuilds projections from the committed ledger and returns them.
+``append_and_rebuild`` is idempotent: events whose ``idempotency_key`` (or
+``event_id``) already appears in the JSONL file with the same canonical payload
+(seq excluded) are filtered out. A committed or within-batch key/id with a
+different payload raises ``ImprovementLedgerIntegrityError`` before write.
+Within-batch duplicates with identical bytes collapse to a single append.
+When the filtered batch is empty the call rebuilds projections from the
+committed ledger and returns them.
 
 Paths (relative to project_root):
     qa/improvements/events.jsonl
@@ -24,6 +28,7 @@ from pathlib import Path
 from assurance_agent.artifacts.models.improvements import ImprovementLedgerProjection
 from assurance_agent.workflow.improvements.events import (
     ImprovementEvent,
+    ImprovementLedgerIntegrityError,
     read_improvement_events,
 )
 from assurance_agent.workflow.improvements.projection import (
@@ -33,13 +38,79 @@ from assurance_agent.workflow.improvements.projection import (
 )
 
 
+def _canonical_payload_bytes(event: ImprovementEvent) -> bytes:
+    """Canonical event bytes with ``seq`` excluded (matches projection idempotency)."""
+    data = event.model_dump(mode="json")
+    data.pop("seq", None)
+    return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
+
+
 def filter_idempotent_events(
     existing: Sequence[ImprovementEvent],
     events: Sequence[ImprovementEvent],
 ) -> list[ImprovementEvent]:
-    """Return only events whose idempotency_key is not already committed."""
-    committed = {event.idempotency_key for event in existing}
-    return [event for event in events if event.idempotency_key not in committed]
+    """Return events that still need appending; raise on payload conflicts.
+
+    Same ``idempotency_key`` or ``event_id`` with identical canonical bytes
+    (seq excluded) is treated as an idempotent duplicate (committed → filtered;
+    within-batch → keep one). A mismatch raises
+    ``ImprovementLedgerIntegrityError`` before any write.
+    """
+    committed_by_key: dict[str, bytes] = {}
+    committed_by_event_id: dict[str, bytes] = {}
+    for event in existing:
+        payload = _canonical_payload_bytes(event)
+        committed_by_key[event.idempotency_key] = payload
+        committed_by_event_id[event.event_id] = payload
+
+    seen_by_key: dict[str, bytes] = {}
+    seen_by_event_id: dict[str, bytes] = {}
+    filtered: list[ImprovementEvent] = []
+
+    for event in events:
+        payload = _canonical_payload_bytes(event)
+
+        prior_event_id = committed_by_event_id.get(event.event_id)
+        if prior_event_id is not None:
+            if prior_event_id != payload:
+                raise ImprovementLedgerIntegrityError(
+                    f"duplicate event_id {event.event_id!r} with different bytes"
+                )
+            continue
+
+        prior_key = committed_by_key.get(event.idempotency_key)
+        if prior_key is not None:
+            if prior_key != payload:
+                raise ImprovementLedgerIntegrityError(
+                    f"idempotency conflict for key {event.idempotency_key!r}: "
+                    "same key with different event payload"
+                )
+            continue
+
+        batch_event_id = seen_by_event_id.get(event.event_id)
+        if batch_event_id is not None:
+            if batch_event_id != payload:
+                raise ImprovementLedgerIntegrityError(
+                    f"duplicate event_id {event.event_id!r} with different bytes"
+                )
+            continue
+
+        batch_key = seen_by_key.get(event.idempotency_key)
+        if batch_key is not None:
+            if batch_key != payload:
+                raise ImprovementLedgerIntegrityError(
+                    f"idempotency conflict for key {event.idempotency_key!r}: "
+                    "same key with different event payload"
+                )
+            continue
+
+        seen_by_key[event.idempotency_key] = payload
+        seen_by_event_id[event.event_id] = payload
+        filtered.append(event)
+
+    return filtered
 
 
 def _serialize_event(event: ImprovementEvent, seq: int) -> str:
@@ -117,7 +188,9 @@ class ProjectImprovementStore:
         """Append new events and rebuild projections; idempotent on repeat.
 
         Raises:
-            ImprovementLedgerIntegrityError: if the existing ledger is corrupt.
+            ImprovementLedgerIntegrityError: if the existing ledger is corrupt,
+                or an incoming event conflicts with a committed / within-batch
+                ``idempotency_key`` or ``event_id`` payload.
             ValueError: if ``events`` is empty.
             ProjectionError: if new events cannot be applied to the projection.
         """
