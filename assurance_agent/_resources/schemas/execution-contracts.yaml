@@ -729,7 +729,9 @@ contracts:
       - project:qa/improvements/**
       - project:eval/**
     authorization_writes:
-      - project:qa/improvements/**
+      - project:qa/improvements/events.jsonl
+      - project:qa/improvements/improvements.json
+      - project:qa/improvements/review-queue.json
       - project:eval/**
     synchronized:
       - project:qa/improvements/**
@@ -746,7 +748,9 @@ contracts:
       - project:qa/improvements/**
       - project:.aa/memory/**
     authorization_writes:
-      - project:qa/improvements/**
+      - project:qa/improvements/events.jsonl
+      - project:qa/improvements/improvements.json
+      - project:qa/improvements/review-queue.json
       - project:.aa/memory/**
     synchronized:
       - project:qa/improvements/**
@@ -763,7 +767,9 @@ contracts:
       - project:qa/improvements/**
       - project:.aa/memory/**
     authorization_writes:
-      - project:qa/improvements/**
+      - project:qa/improvements/events.jsonl
+      - project:qa/improvements/improvements.json
+      - project:qa/improvements/review-queue.json
       - project:.aa/memory/**
     synchronized:
       - project:qa/improvements/**
@@ -779,7 +785,9 @@ contracts:
       - project:qa/improvements/**
       - project:qa/improvements/drafts/**
     authorization_writes:
-      - project:qa/improvements/**
+      - project:qa/improvements/events.jsonl
+      - project:qa/improvements/improvements.json
+      - project:qa/improvements/review-queue.json
       - project:qa/improvements/drafts/**
     synchronized:
       - project:qa/improvements/**
@@ -795,7 +803,9 @@ contracts:
     writes:
       - project:qa/improvements/**
     authorization_writes:
-      - project:qa/improvements/**
+      - project:qa/improvements/events.jsonl
+      - project:qa/improvements/improvements.json
+      - project:qa/improvements/review-queue.json
     synchronized:
       - project:qa/improvements/**
     exclusive:
@@ -806,13 +816,15 @@ contracts:
     handler: operation
     reads:
       - project:qa/improvements/**
-      - project:qa/issues/problems.json
-      - repo:.aa/data-knowledge.yaml
+      - project:qa/retro/*/context.json
+      - project:qa/issues/**
     writes:
       - project:qa/improvements/**
       - project:qa/improvements/knowledge-delta/**
     authorization_writes:
-      - project:qa/improvements/**
+      - project:qa/improvements/events.jsonl
+      - project:qa/improvements/improvements.json
+      - project:qa/improvements/review-queue.json
       - project:qa/improvements/knowledge-delta/**
     synchronized:
       - project:qa/improvements/**
@@ -829,7 +841,9 @@ contracts:
     writes:
       - project:qa/improvements/**
     authorization_writes:
-      - project:qa/improvements/**
+      - project:qa/improvements/events.jsonl
+      - project:qa/improvements/improvements.json
+      - project:qa/improvements/review-queue.json
     synchronized:
       - project:qa/improvements/**
     exclusive:

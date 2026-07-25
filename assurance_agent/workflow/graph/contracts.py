@@ -303,7 +303,11 @@ def _validate_catalog_paths(catalog: ExecutionContractCatalog) -> None:
                     f"contract '{key}' writable synchronized path must be covered by writes: "
                     f"{path.pattern}"
                 )
-            if can_write and not any(path_covers(auth, path) for auth in authorization):
+            # Authorization may fully cover the synchronized prefix, or refine it to
+            # concrete ledger/delivery paths under that prefix (least privilege).
+            auth_covers_sync = any(path_covers(auth, path) for auth in authorization)
+            auth_refines_sync = any(path_covers(path, auth) for auth in authorization)
+            if can_write and not (auth_covers_sync or auth_refines_sync):
                 raise ContractError(
                     f"contract '{key}' writable synchronized path must be covered by "
                     f"authorization_writes: {path.pattern}"

@@ -3,6 +3,9 @@
 Export writes only L2 proposal files under ``qa/improvements/knowledge-delta/``.
 ``knowledge.promote`` remains the sole L1 writer; record_applied verifies the
 live L1 digest after external promotion.
+
+Eligibility uses Problem snapshots from pinned Retro Issue windows (replayed via
+``LedgerIssueHistoryReader``), never live ``qa/issues/problems.json`` alone.
 """
 
 from __future__ import annotations
@@ -23,13 +26,14 @@ from assurance_agent.artifacts.models.improvements import (
     ImprovementProjection,
     ImprovementState,
 )
-from assurance_agent.artifacts.models.issues import Problem, ProblemProjection, ProblemStatus
+from assurance_agent.artifacts.models.issues import Problem
 from assurance_agent.knowledge.promote import (
     KnowledgePromoteError,
     assert_l1_sha256,
     l1_sha256,
     validate_improvement_knowledge_proposal,
 )
+from assurance_agent.retro.types import RetroContext
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
 from assurance_agent.workflow.graph.task_runner import task_failure
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
@@ -39,10 +43,13 @@ from assurance_agent.workflow.improvements.events import (
 )
 from assurance_agent.workflow.improvements.ledger import ProjectImprovementStore
 from assurance_agent.workflow.improvements.memory_delivery import (
+    ImprovementDeliveryConflict,
     ImprovementDeliveryError,
 )
+from assurance_agent.workflow.issues.history import LedgerIssueHistoryReader
+from assurance_agent.workflow.issues.history_models import IssueWindowSelection
 
-_PROHIBITED_STATUSES: frozenset[ProblemStatus] = frozenset(
+_PROHIBITED_STATUSES: frozenset[str] = frozenset(
     {
         "detected",
         "triaged",
@@ -54,10 +61,13 @@ _PROHIBITED_STATUSES: frozenset[ProblemStatus] = frozenset(
 )
 
 __all__ = [
+    "ImprovementDeliveryConflict",
     "ImprovementDeliveryError",
     "KnowledgeDeltaDelivery",
     "KnowledgeExportReceipt",
+    "assert_knowledge_eligibility",
     "export_knowledge_improvement_operation",
+    "load_pinned_retro_problems",
     "record_knowledge_improvement_applied_operation",
 ]
 
@@ -123,7 +133,10 @@ def assert_knowledge_eligibility(
     for problem_id in problem_ids:
         problem = problems.get(problem_id)
         if problem is None:
-            continue
+            raise ImprovementDeliveryError(
+                f"knowledge eligibility rejected: cited problem {problem_id} "
+                "missing from pinned Retro Problem snapshots"
+            )
         matched = True
         if problem.status in _PROHIBITED_STATUSES:
             raise ImprovementDeliveryError(
@@ -146,6 +159,54 @@ def assert_knowledge_eligibility(
             "knowledge eligibility requires at least one cited Problem snapshot "
             "in the pinned Retro/Issue source"
         )
+
+
+def load_pinned_retro_problems(
+    project_root: Path,
+    projection: ImprovementProjection,
+) -> dict[str, Problem]:
+    """Load Problem snapshots from pinned Retro contexts (digest-verified)."""
+    retro_ids = projection.proposed_by_retro_ids
+    if not retro_ids:
+        raise ImprovementDeliveryError(
+            "knowledge eligibility requires non-empty proposed_by_retro_ids"
+        )
+    problems: dict[str, Problem] = {}
+    reader = LedgerIssueHistoryReader(project_root)
+    for retro_id in retro_ids:
+        context_path = project_root / "qa" / "retro" / retro_id / "context.json"
+        if not context_path.is_file():
+            raise ImprovementDeliveryError(
+                f"pinned Retro context missing for {retro_id}: {context_path}"
+            )
+        try:
+            context = RetroContext.model_validate(
+                json.loads(context_path.read_text(encoding="utf-8"))
+            )
+        except (OSError, ValueError) as exc:
+            raise ImprovementDeliveryError(
+                f"corrupt pinned Retro context for {retro_id}: {exc}"
+            ) from exc
+        selection = IssueWindowSelection(
+            change_ids=tuple(context.window.change_ids),
+            project_event_through=context.window.project_event_through,
+        )
+        try:
+            slice_ = reader.read_window(selection)
+        except Exception as exc:  # noqa: BLE001 — surface as delivery error
+            raise ImprovementDeliveryError(
+                f"failed to replay pinned Issue window for {retro_id}: {exc}"
+            ) from exc
+        digest = slice_.digest()
+        expected = context.source_manifest.issue_slice_sha256
+        if digest != expected:
+            raise ImprovementDeliveryError(
+                f"pinned Issue slice digest mismatch for {retro_id}: "
+                f"expected {expected}, found {digest}"
+            )
+        for problem in slice_.problem_snapshots:
+            problems[problem.problem_id] = problem
+    return problems
 
 
 @dataclass(frozen=True)
@@ -189,6 +250,26 @@ class KnowledgeDeltaDelivery:
         path.parent.mkdir(parents=True, exist_ok=True)
         # Never touch L1 here — only write the Improvement-scoped L2 proposal.
         payload_bytes = yaml.safe_dump(delta, sort_keys=True, allow_unicode=True).encode("utf-8")
+        rel = path.relative_to(self.project_root).as_posix() if path.exists() else (
+            f"qa/improvements/knowledge-delta/{current.improvement_id}.proposal.yaml"
+        )
+        digest = _sha256_bytes(payload_bytes)
+
+        if path.is_file():
+            existing = path.read_bytes()
+            if existing == payload_bytes:
+                # Hash-idempotent: identical bytes, no rewrite.
+                return KnowledgeExportReceipt(
+                    sha256=digest,
+                    created=False,
+                    artifact_path=path.relative_to(self.project_root).as_posix(),
+                )
+            if current.state is ImprovementState.EXPORTED:
+                raise ImprovementDeliveryConflict(
+                    f"knowledge proposal conflict for {current.improvement_id}: "
+                    "different bytes while already exported"
+                )
+
         path.write_bytes(payload_bytes)
         try:
             validate_improvement_knowledge_proposal(path)
@@ -196,13 +277,8 @@ class KnowledgeDeltaDelivery:
             path.unlink(missing_ok=True)
             raise ImprovementDeliveryError(f"L2 semantic rejection: {exc}") from exc
 
-        digest = _sha256_bytes(payload_bytes)
-        created = True
-        # Hash-idempotent re-export: identical bytes keep created=False semantics for ledger.
-        # First write always created; second call with same bytes is idempotent export event.
         rel = path.relative_to(self.project_root).as_posix()
-        if current.state is ImprovementState.EXPORTED:
-            created = False
+        created = True
         if current.state is ImprovementState.APPROVED:
             event = ImprovementExportedEvent(
                 schema_version="1.0",
@@ -293,14 +369,6 @@ class KnowledgeDeltaDelivery:
         self.store.append_and_rebuild([event])
 
 
-def _load_problems(project_root: Path) -> dict[str, Problem]:
-    path = project_root / "qa" / "issues" / "problems.json"
-    if not path.is_file():
-        return {}
-    projection = ProblemProjection.model_validate(json.loads(path.read_text(encoding="utf-8")))
-    return {problem.problem_id: problem for problem in projection.problems}
-
-
 def _param_str(params: Mapping[str, object], key: str) -> str | None:
     value = params.get(key)
     if isinstance(value, str) and value.strip():
@@ -326,11 +394,11 @@ def export_knowledge_improvement_operation(
                 "invalid_input",
                 "export-knowledge-improvement: reject non-knowledge_delta before target write",
             )
-        problems = _load_problems(workspace.project_root)
+        problems = load_pinned_retro_problems(workspace.project_root, projection)
         receipt = KnowledgeDeltaDelivery(workspace.project_root).export(
             projection, problems=problems
         )
-    except (ImprovementDeliveryError, KeyError) as exc:
+    except (ImprovementDeliveryError, ImprovementDeliveryConflict, KeyError) as exc:
         return task_failure("invalid_input", f"export-knowledge-improvement: {exc}")
     return TaskResult(
         status="succeeded",

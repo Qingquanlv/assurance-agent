@@ -1,7 +1,8 @@
 """Memory-patch Improvement delivery: evaluate / apply / rollback + graph ops.
 
-Eval runners are injected (workflow must not import ``assurance_agent.eval``).
-Memory writes reuse Improvement-scoped helpers in ``retro.apply`` (importlint seam).
+Default evaluate path builds a host Eval runner via ``eval.host_runner`` (importlint
+seam). Constructor injection remains available for unit tests. Memory writes reuse
+Improvement-scoped helpers in ``retro.apply`` (importlint seam).
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from assurance_agent.artifacts.models.improvements import (
     ImprovementProjection,
     ImprovementState,
 )
+from assurance_agent.eval.host_runner import build_eval_runner
 from assurance_agent.exceptions import AaError
 from assurance_agent.retro.apply import (
     apply_improvement_memory_patch,
@@ -538,6 +540,12 @@ def evaluate_memory_improvement_operation(
     workspace: TaskWorkspace,
     context: RuntimeContext,
 ) -> TaskResult:
+    """Evaluate a memory_patch Improvement.
+
+    ``eval_runner`` is not a schema/CLI param (``resolve_params`` rejects unknown
+    keys and JSON cannot carry callables). The operation builds a host runner via
+    ``build_eval_runner``; ``MemoryPatchDelivery(eval_runner=...)`` remains for tests.
+    """
     del task
     improvement_id = _param_str(context.params, "improvement_id")
     if not improvement_id:
@@ -549,18 +557,15 @@ def evaluate_memory_improvement_operation(
                 "invalid_input",
                 "evaluate-memory-improvement: reject non-memory_patch before target write",
             )
-        runner = context.params.get("eval_runner")
-        eval_runner = runner if callable(runner) else None
+        # Never read eval_runner from params — not a declared schema param.
+        engine_root = context.project_root
+        sut_root = context.project_root
+        eval_runner = build_eval_runner(engine_root, sut_root)
         delivery = MemoryPatchDelivery(
             workspace.project_root,
-            eval_runner=eval_runner,  # type: ignore[arg-type]
-            engine_root=workspace.project_root,
+            eval_runner=eval_runner,
+            engine_root=engine_root,
         )
-        if eval_runner is None:
-            return task_failure(
-                "invalid_input",
-                "evaluate-memory-improvement: eval_runner must be injected via params",
-            )
         receipt = delivery.evaluate(projection)
     except (ImprovementDeliveryError, KeyError) as exc:
         return task_failure("invalid_input", f"evaluate-memory-improvement: {exc}")

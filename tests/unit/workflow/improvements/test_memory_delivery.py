@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,11 +13,15 @@ from assurance_agent.artifacts.models.improvements import (
     ImprovementProjection,
     ImprovementState,
 )
+from assurance_agent.workflow.graph.contracts import ResourceClaims
+from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext
+from assurance_agent.workflow.graph.schema_v2 import RetryPolicyDef, TimeoutPolicyDef
 from assurance_agent.workflow.improvements.events import IMPROVEMENT_EVENT_ADAPTER
 from assurance_agent.workflow.improvements.ledger import ProjectImprovementStore
 from assurance_agent.workflow.improvements.memory_delivery import (
     ImprovementDeliveryError,
     MemoryPatchDelivery,
+    evaluate_memory_improvement_operation,
     sha256_bytes,
 )
 
@@ -213,3 +218,55 @@ def test_rollback_validates_applied_digest(project: Path) -> None:
     assert "- deprecated: always seed department name" in content
     ledger = json.loads((project / "qa/improvements/improvements.json").read_text(encoding="utf-8"))
     assert ledger["improvements"][IMP_ID]["state"] == ImprovementState.ROLLED_BACK.value
+
+
+def _make_task() -> ExecutableTask:
+    return ExecutableTask(
+        task_id="task-eval-mem",
+        invocation_id="inv-eval-mem",
+        checkpoint_ns="ns-eval-mem",
+        graph_id="improvement-evaluate-workflow",
+        node_id="evaluate-memory",
+        structural_path="evaluate-memory",
+        input={},
+        input_sha256="0" * 64,
+        contract_digest="0" * 64,
+        retryable_errors=(),
+        retry_policy=RetryPolicyDef(max_attempts=1),
+        timeout_policy=TimeoutPolicyDef(run_seconds=300, heartbeat_seconds=60),
+        target="operation:evaluate-memory-improvement",
+        resources=ResourceClaims(),
+    )
+
+
+def test_evaluate_operation_builds_host_runner_without_params(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Operation must obtain a callable runner without schema/CLI eval_runner params."""
+    _seed_approved(project)
+    calls: list = []
+
+    def fake_build(engine_root: Path, sut_root: Path):
+        assert engine_root == project
+        assert sut_root == project
+        return _passing_runner(calls)
+
+    monkeypatch.setattr(
+        "assurance_agent.workflow.improvements.memory_delivery.build_eval_runner",
+        fake_build,
+    )
+    change_dir = project / "qa" / "changes" / "CH-eval"
+    change_dir.mkdir(parents=True)
+    workspace = SimpleNamespace(project_root=project, change_dir=change_dir)
+    context = RuntimeContext(
+        project_root=project,
+        repo_root=project,
+        change_dir=change_dir,
+        change_id="CH-eval",
+        params={"improvement_id": IMP_ID},
+    )
+    result = evaluate_memory_improvement_operation(_make_task(), workspace, context)  # type: ignore[arg-type]
+    assert result.status == "succeeded"
+    assert isinstance(result.value, dict)
+    assert result.value["outcome"] == "passed"
+    assert calls, "host build_eval_runner must supply the callable used for suites"

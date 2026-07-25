@@ -6,6 +6,7 @@ from pathlib import Path
 
 import click
 
+from assurance_agent.eval.host_runner import build_eval_runner
 from assurance_agent.exceptions import AaError
 from assurance_agent.retro.aggregator import build_retro_context, count_signals
 from assurance_agent.retro.apply import (
@@ -34,77 +35,8 @@ from assurance_agent.retro.proposals import read_proposals, validate_retro_propo
 from assurance_agent.retro.state import complete_retro_stage, mark_consumed_change
 from assurance_agent.retro.types import LegacyRetroContext
 
-
-def _build_eval_runner(data_root: Path, sut_root: Path):
-    """Shared real ``eval_runner`` factory (spec §5).
-
-    ``aa retro promote`` and ``aa retro nightly resume`` both build their
-    runner here so the two entry points never diverge. Explicit
-    ``sut_dir``/``engine_root`` call kwargs (passed by ``resume_nightly``)
-    win over the bound roots.
-    """
-
-    def eval_runner(
-        *,
-        suite: str,
-        sut_dir: Path | None = None,
-        engine_root: Path | None = None,
-        extra_memory_dir: Path | None = None,
-    ) -> dict:
-        import os
-
-        from assurance_agent.commands.eval_cmd import _resolve_adapter_factory
-        from assurance_agent.eval.baseline import read_baseline, read_run_manifest
-        from assurance_agent.eval.metrics import read_metrics
-        from assurance_agent.eval.paths import run_dir as run_dir_for
-        from assurance_agent.eval.plan import load_suite
-        from assurance_agent.eval.runner import run_suite
-
-        sut_dir = Path(sut_dir) if sut_dir is not None else sut_root
-        engine_root = Path(engine_root) if engine_root is not None else data_root
-        suite_obj, suite_file = load_suite(engine_root, suite)
-        baseline_entry = read_baseline(engine_root).get(suite)
-
-        # Real validation: use the real agent adapter (cursor-agent) so the
-        # candidate memory overlay actually influences generation. Fake stays
-        # available as an explicit opt-in (AA_EVAL_FAKE_ADAPTER) for CI/tests
-        # and for deterministic suites where memory has no effect.
-        use_fake = bool(os.environ.get("AA_EVAL_FAKE_ADAPTER"))
-        adapter_factory = _resolve_adapter_factory(use_fake=use_fake, sut=sut_dir)
-
-        run_id, gate = run_suite(
-            suite_file=suite_file,
-            project_root=engine_root,
-            sut_dir=sut_dir,
-            adapter_factory=adapter_factory,
-            fixtures_root=sut_dir / "eval-fixtures",
-            extra_memory_dir=extra_memory_dir,
-            repeat=suite_obj.regression.repeat if suite_obj.regression is not None else 1,
-        )
-        manifest = read_run_manifest(run_dir_for(sut_dir, run_id))
-        metrics = {}
-        try:
-            metrics = read_metrics(run_dir_for(sut_dir, run_id)).metrics
-        except Exception:
-            pass
-        return {
-            "run_id": run_id,
-            "verdict": gate.verdict,
-            "metrics": metrics,
-            "hard_gate_failures": list(gate.hard_gate_failures),
-            "suite_contract": suite_obj.model_dump(mode="json"),
-            "baseline_metrics": baseline_entry.metrics if baseline_entry is not None else None,
-            "suite_version": manifest.suite_version,
-            "repeat": manifest.repeat,
-            "regression_policy_sha256": manifest.regression_policy_sha256,
-            "baseline_suite_version": (baseline_entry.suite_version if baseline_entry is not None else None),
-            "baseline_repeat": baseline_entry.repeat if baseline_entry is not None else None,
-            "baseline_regression_policy_sha256": (
-                baseline_entry.regression_policy_sha256 if baseline_entry is not None else None
-            ),
-        }
-
-    return eval_runner
+# Compat alias for tests that patch ``retro_cmd._build_eval_runner``.
+_build_eval_runner = build_eval_runner
 
 
 def _run_retro(since, changes, retro_id, out, as_json) -> None:

@@ -59,7 +59,14 @@ def test_delivery_contracts_are_narrow_and_separate() -> None:
     assert any("drafts" in path for path in change_export.writes)
     assert any("knowledge-delta" in path for path in knowledge_export.writes)
     assert not any("data-knowledge" in path for path in knowledge_export.writes)
+    assert "project:qa/retro/*/context.json" in knowledge_export.reads
+    assert "project:qa/issues/problems.json" not in knowledge_export.reads
 
+    ledger_auth = {
+        "project:qa/improvements/events.jsonl",
+        "project:qa/improvements/improvements.json",
+        "project:qa/improvements/review-queue.json",
+    }
     for target in (
         "operation:evaluate-memory-improvement",
         "operation:apply-memory-improvement",
@@ -72,6 +79,8 @@ def test_delivery_contracts_are_narrow_and_separate() -> None:
         contract = catalog.contracts[target]
         assert "project:qa/improvements/**" in contract.synchronized
         assert "project:improvement-registry" in contract.exclusive
+        assert "project:qa/improvements/**" not in contract.authorization_writes
+        assert ledger_auth <= set(contract.authorization_writes)
 
 
 def test_delivery_graphs_load_first_then_branch_on_delivery() -> None:

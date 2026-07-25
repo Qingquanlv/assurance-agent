@@ -177,8 +177,15 @@ def _apply_event(
 
     if isinstance(event, ImprovementEvidenceLinkedEvent):
         retros = tuple(sorted({*current.proposed_by_retro_ids, event.retro_id}))
+        # Resubmit after rework: new evidence returns the item to the review queue.
+        resubmit = (
+            ImprovementState.PROPOSED
+            if current.state is ImprovementState.NEEDS_REWORK
+            else None
+        )
         return _with_version(
             current,
+            state=resubmit,
             source_refs=_union_source_refs(current.source_refs, event.source_refs),
             proposed_by_retro_ids=retros,
             last_event_id=event.event_id,

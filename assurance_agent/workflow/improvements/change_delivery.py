@@ -24,6 +24,8 @@ from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.improvements.events import (
     ImprovementAppliedEvent,
     ImprovementExportedEvent,
+    ImprovementReworkRequestedEvent,
+    read_improvement_events,
 )
 from assurance_agent.workflow.improvements.ledger import ProjectImprovementStore
 from assurance_agent.workflow.improvements.memory_delivery import (
@@ -87,6 +89,27 @@ def _canonicalize_yaml(document: dict[str, Any]) -> bytes:
     digest = _sha256_bytes(dumped.encode("utf-8"))
     body["content_sha256"] = digest
     return yaml.safe_dump(body, sort_keys=True, allow_unicode=True).encode("utf-8")
+
+
+def _rework_unlocks_draft_overwrite(
+    project_root: Path,
+    *,
+    improvement_id: str,
+    prior_draft_version: int,
+) -> bool:
+    """True when an explicit rework covers the prior draft version.
+
+    Evidence-link (or any other version bump) alone must not unlock overwrite.
+    """
+    events = read_improvement_events(project_root / "qa/improvements/events.jsonl")
+    for event in events:
+        if (
+            isinstance(event, ImprovementReworkRequestedEvent)
+            and event.improvement_id == improvement_id
+            and event.expected_improvement_version >= prior_draft_version
+        ):
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -157,9 +180,10 @@ class ChangeDraftDelivery:
                         f"change draft conflict for {current.improvement_id}: unreadable prior bytes"
                     ) from exc
                 prior_version = prior.get("improvement_version") if isinstance(prior, dict) else None
-                if (
-                    isinstance(prior_version, int)
-                    and current.version > prior_version
+                if isinstance(prior_version, int) and _rework_unlocks_draft_overwrite(
+                    self.project_root,
+                    improvement_id=current.improvement_id,
+                    prior_draft_version=prior_version,
                 ):
                     created = True
                 else:

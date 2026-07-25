@@ -13,6 +13,9 @@ layers =
     assurance_agent.artifacts
     assurance_agent.config
     assurance_agent.resources
+# Memory evaluate builds a host Eval runner (callables cannot be CLI JSON params).
+ignore_imports =
+    assurance_agent.workflow.improvements.memory_delivery -> assurance_agent.eval.host_runner
 
 [importlinter:contract:retro-layers]
 name = commands depend on retro domain, never the reverse
@@ -33,6 +36,8 @@ ignore_imports =
     assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.candidates
     # Memory delivery reuses Improvement-scoped marker helpers in retro.apply (Task 11).
     assurance_agent.workflow.improvements.memory_delivery -> assurance_agent.retro.apply
+    # Knowledge delivery loads pinned RetroContext for Problem eligibility (Task 11).
+    assurance_agent.workflow.improvements.knowledge_delivery -> assurance_agent.retro.types
 
 [importlinter:contract:eval-retro-independence]
 name = eval and retro must not import each other
@@ -48,6 +53,7 @@ ignore_imports =
     assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.types
     assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.candidates
     assurance_agent.workflow.improvements.memory_delivery -> assurance_agent.retro.apply
+    assurance_agent.workflow.improvements.knowledge_delivery -> assurance_agent.retro.types
 
 [importlinter:contract:core-below-orchestration]
 name = workflow.core must not import workflow.orchestration
@@ -73,3 +79,8 @@ layers =
     assurance_agent.workflow.graph
     assurance_agent.workflow.orchestration
     assurance_agent.workflow.core
+# Graph delivery ops build a host Eval runner (callables cannot be CLI params).
+# That pulls eval → driver transitively; keep the seam explicit and fail-closed
+# for any new graph → driver edges.
+ignore_imports =
+    assurance_agent.workflow.improvements.memory_delivery -> assurance_agent.eval.host_runner

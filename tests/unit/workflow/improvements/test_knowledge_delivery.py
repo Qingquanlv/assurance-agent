@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -15,12 +16,23 @@ from assurance_agent.artifacts.models.improvements import (
     ImprovementState,
 )
 from assurance_agent.artifacts.models.issues import Problem
+from assurance_agent.workflow.graph.contracts import ResourceClaims
+from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext
+from assurance_agent.workflow.graph.schema_v2 import RetryPolicyDef, TimeoutPolicyDef
 from assurance_agent.workflow.improvements.events import IMPROVEMENT_EVENT_ADAPTER
 from assurance_agent.workflow.improvements.knowledge_delivery import (
+    ImprovementDeliveryConflict,
     ImprovementDeliveryError,
     KnowledgeDeltaDelivery,
+    assert_knowledge_eligibility,
+    export_knowledge_improvement_operation,
 )
 from assurance_agent.workflow.improvements.ledger import ProjectImprovementStore
+from assurance_agent.workflow.issues.history_models import (
+    IssueEvidenceSlice,
+    IssueHistoryIntegrity,
+    IssueWindowSelection,
+)
 
 IMP_ID = "IMP-KNOW00000000000001"
 PROB_ID = "PROB-know1"
@@ -274,3 +286,159 @@ def test_record_applied_verifies_current_l1_digest(tmp_path: Path) -> None:
     )
     ledger = json.loads((tmp_path / "qa/improvements/improvements.json").read_text(encoding="utf-8"))
     assert ledger["improvements"][IMP_ID]["state"] == ImprovementState.APPLIED.value
+
+
+def test_knowledge_export_is_hash_idempotent(tmp_path: Path) -> None:
+    improvement = _seed_approved(tmp_path)
+    _seed_l1(tmp_path)
+    delivery = KnowledgeDeltaDelivery(tmp_path)
+    first = delivery.export(improvement, problems={PROB_ID: _problem()})
+    ledger = json.loads((tmp_path / "qa/improvements/improvements.json").read_text(encoding="utf-8"))
+    current = ImprovementProjection.model_validate(ledger["improvements"][IMP_ID])
+    proposal = tmp_path / "qa/improvements/knowledge-delta" / f"{IMP_ID}.proposal.yaml"
+    before = proposal.read_bytes()
+    second = delivery.export(current, problems={PROB_ID: _problem()})
+    assert first.sha256 == second.sha256
+    assert first.created is True and second.created is False
+    assert proposal.read_bytes() == before
+
+
+def test_knowledge_export_conflicts_on_different_bytes_when_exported(tmp_path: Path) -> None:
+    improvement = _seed_approved(tmp_path)
+    _seed_l1(tmp_path)
+    delivery = KnowledgeDeltaDelivery(tmp_path)
+    delivery.export(improvement, problems={PROB_ID: _problem()})
+    ledger = json.loads((tmp_path / "qa/improvements/improvements.json").read_text(encoding="utf-8"))
+    current = ImprovementProjection.model_validate(ledger["improvements"][IMP_ID])
+    assert current.state is ImprovementState.EXPORTED
+    proposal = tmp_path / "qa/improvements/knowledge-delta" / f"{IMP_ID}.proposal.yaml"
+    proposal.write_text("schema_version: '1'\nmode: delta\nentities: {}\n", encoding="utf-8")
+    with pytest.raises(ImprovementDeliveryConflict, match="conflict|different bytes"):
+        delivery.export(current, problems={PROB_ID: _problem()})
+
+
+def test_assert_knowledge_eligibility_hard_fails_missing_cited_problem() -> None:
+    improvement = ImprovementProjection.model_validate(
+        {
+            "improvement_id": IMP_ID,
+            "fingerprint": "k" * 64,
+            "fingerprint_version": "1",
+            "kind": "domain_knowledge",
+            "delivery": "knowledge_delta",
+            "source_refs": {"problem_ids": [PROB_ID, "PROB-missing"]},
+            "target": ".aa/data-knowledge.yaml",
+            "rationale": "Stable dept rule",
+            "proposed_change": "Require dept.name",
+            "knowledge_delta": _delta().model_dump(mode="json"),
+            "verification": {"suites": ["workflow-run"], "success_criteria": "L2 validates"},
+            "risk": "low",
+            "confidence": "high",
+            "state": "approved",
+            "version": 2,
+            "proposed_by_retro_ids": ["retro-1"],
+            "last_event_id": "IMPEVT-APP",
+        }
+    )
+    with pytest.raises(ImprovementDeliveryError, match="missing from pinned"):
+        assert_knowledge_eligibility(improvement, {PROB_ID: _problem()})
+
+
+def test_export_operation_uses_pinned_retro_not_live_problems(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Greening live problems.json must not make export succeed when pin is ineligible."""
+    _seed_approved(tmp_path)
+    _seed_l1(tmp_path)
+
+    pinned_ineligible = _problem(status="detected")
+    slice_ = IssueEvidenceSlice(
+        selection=IssueWindowSelection(
+            change_ids=("CH-1",), project_event_through="PEVT-1"
+        ),
+        sources=(),
+        integrity=IssueHistoryIntegrity(status="complete"),
+        problem_snapshots=(pinned_ineligible,),
+    )
+    retro_dir = tmp_path / "qa" / "retro" / "retro-1"
+    retro_dir.mkdir(parents=True)
+    context_doc = {
+        "schema_version": "2",
+        "retro_id": "retro-1",
+        "generated_at": "2026-07-26T00:00:00Z",
+        "window": {
+            "selection": {"mode": "change_ids", "requested_change_ids": ["CH-1"]},
+            "change_ids": ["CH-1"],
+            "project_event_through": "PEVT-1",
+        },
+        "source_manifest": {
+            "issue_slice_sha256": slice_.digest(),
+            "issue_sources": [],
+            "workflow_sources": [],
+            "eval_sources": [],
+        },
+        "integrity": {"status": "complete"},
+        "signals": {"issue": {}, "workflow": {}, "eval": {}},
+        "signal_count": 0,
+    }
+    (retro_dir / "context.json").write_text(
+        json.dumps(context_doc, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    # Live projection greened after the pin — must not unlock eligibility.
+    problems_path = tmp_path / "qa" / "issues" / "problems.json"
+    problems_path.parent.mkdir(parents=True, exist_ok=True)
+    live = _problem(status="resolved", authority="human_confirmed")
+    problems_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "problems": [live.model_dump(mode="json")],
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class _FakeReader:
+        def __init__(self, project_root: Path) -> None:
+            self.project_root = project_root
+
+        def read_window(self, selection: IssueWindowSelection) -> IssueEvidenceSlice:
+            assert selection.change_ids == ("CH-1",)
+            return slice_
+
+    monkeypatch.setattr(
+        "assurance_agent.workflow.improvements.knowledge_delivery.LedgerIssueHistoryReader",
+        _FakeReader,
+    )
+
+    change_dir = tmp_path / "qa" / "changes" / "CH-know"
+    change_dir.mkdir(parents=True)
+    workspace = SimpleNamespace(project_root=tmp_path, change_dir=change_dir)
+    context = RuntimeContext(
+        project_root=tmp_path,
+        repo_root=tmp_path,
+        change_dir=change_dir,
+        change_id="CH-know",
+        params={"improvement_id": IMP_ID},
+    )
+    task = ExecutableTask(
+        task_id="task-export-know",
+        invocation_id="inv-export-know",
+        checkpoint_ns="ns-export-know",
+        graph_id="improvement-export-workflow",
+        node_id="export-knowledge",
+        structural_path="export-knowledge",
+        input={},
+        input_sha256="0" * 64,
+        contract_digest="0" * 64,
+        retryable_errors=(),
+        retry_policy=RetryPolicyDef(max_attempts=1),
+        timeout_policy=TimeoutPolicyDef(run_seconds=300, heartbeat_seconds=60),
+        target="operation:export-knowledge-improvement",
+        resources=ResourceClaims(),
+    )
+    result = export_knowledge_improvement_operation(task, workspace, context)  # type: ignore[arg-type]
+    assert result.status == "failed"
+    assert result.error is not None
+    assert "eligibility" in result.error or "status" in result.error

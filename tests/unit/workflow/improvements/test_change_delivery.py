@@ -120,7 +120,7 @@ def test_conflicting_draft_bytes_raise_unless_rework_bumped_version(tmp_path: Pa
     with pytest.raises(ImprovementDeliveryConflict, match="conflict"):
         delivery.export(improvement)
 
-    # Lower draft version + evidence link bump allows overwrite while still approved.
+    # Evidence-link version bump alone must NOT unlock overwrite.
     path.write_text(
         yaml.safe_dump(
             {
@@ -161,7 +161,91 @@ def test_conflicting_draft_bytes_raise_unless_rework_bumped_version(tmp_path: Pa
     )
     ledger = json.loads((tmp_path / "qa/improvements/improvements.json").read_text(encoding="utf-8"))
     current = ImprovementProjection.model_validate(ledger["improvements"][IMP_ID])
-    overwritten = delivery.export(current)
+    with pytest.raises(ImprovementDeliveryConflict, match="conflict"):
+        delivery.export(current)
+
+    # Explicit rework (then resubmit → re-approve) unlocks overwrite of older draft bytes.
+    store.append_and_rebuild(
+        [
+            IMPROVEMENT_EVENT_ADAPTER.validate_python(
+                {
+                    "schema_version": "1.0",
+                    "seq": 1,
+                    "event_id": "IMPEVT-EXPORT",
+                    "idempotency_key": "IDEM-EXPORT",
+                    "ts": "2026-07-26T00:06:00Z",
+                    "improvement_id": IMP_ID,
+                    "expected_improvement_version": current.version,
+                    "type": "improvement_exported",
+                    "artifact_path": f"qa/improvements/drafts/{IMP_ID}.yaml",
+                    "artifact_sha256": "0" * 64,
+                }
+            )
+        ]
+    )
+    ledger = json.loads((tmp_path / "qa/improvements/improvements.json").read_text(encoding="utf-8"))
+    exported = ImprovementProjection.model_validate(ledger["improvements"][IMP_ID])
+    store.append_and_rebuild(
+        [
+            IMPROVEMENT_EVENT_ADAPTER.validate_python(
+                {
+                    "schema_version": "1.0",
+                    "seq": 1,
+                    "event_id": "IMPEVT-REWORK",
+                    "idempotency_key": "IDEM-REWORK",
+                    "ts": "2026-07-26T00:07:00Z",
+                    "improvement_id": IMP_ID,
+                    "expected_improvement_version": exported.version,
+                    "type": "improvement_rework_requested",
+                    "who": "reviewer",
+                    "reason": "rewrite draft",
+                    "review_id": "REV-REWORK",
+                }
+            ),
+            IMPROVEMENT_EVENT_ADAPTER.validate_python(
+                {
+                    "schema_version": "1.0",
+                    "seq": 1,
+                    "event_id": "IMPEVT-RESUB",
+                    "idempotency_key": "IDEM-RESUB",
+                    "ts": "2026-07-26T00:08:00Z",
+                    "improvement_id": IMP_ID,
+                    "expected_improvement_version": exported.version + 1,
+                    "type": "improvement_evidence_linked",
+                    "source_refs": {"problem_ids": ["PROB-3"]},
+                    "retro_id": "retro-3",
+                    "candidate_id": "C-3",
+                    "context_sha256": "3" * 64,
+                    "candidate_batch_digest": "4" * 64,
+                }
+            ),
+        ]
+    )
+    ledger = json.loads((tmp_path / "qa/improvements/improvements.json").read_text(encoding="utf-8"))
+    resubmitted = ImprovementProjection.model_validate(ledger["improvements"][IMP_ID])
+    assert resubmitted.state is ImprovementState.PROPOSED
+    store.append_and_rebuild(
+        [
+            IMPROVEMENT_EVENT_ADAPTER.validate_python(
+                {
+                    "schema_version": "1.0",
+                    "seq": 1,
+                    "event_id": "IMPEVT-REAPP",
+                    "idempotency_key": "IDEM-REAPP",
+                    "ts": "2026-07-26T00:09:00Z",
+                    "improvement_id": IMP_ID,
+                    "expected_improvement_version": resubmitted.version,
+                    "type": "improvement_review_approved",
+                    "who": "reviewer",
+                    "reason": "ok after rework",
+                    "review_id": "REV-2",
+                }
+            )
+        ]
+    )
+    ledger = json.loads((tmp_path / "qa/improvements/improvements.json").read_text(encoding="utf-8"))
+    reapproved = ImprovementProjection.model_validate(ledger["improvements"][IMP_ID])
+    overwritten = delivery.export(reapproved)
     assert overwritten.created is True
     assert overwritten.sha256 != "0" * 64
 
