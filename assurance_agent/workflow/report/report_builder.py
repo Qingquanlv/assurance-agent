@@ -12,7 +12,10 @@ from typing import TypeVar
 from pydantic import BaseModel
 
 from assurance_agent.artifacts.models import (
+    ChangeIssueSnapshot,
     FailureAnalysis,
+    IssueReport,
+    ProblemProjection,
     QualityGateResult,
     QualityReport,
     ReportDefect,
@@ -34,6 +37,13 @@ _PRODUCT = {
     "perf_threshold_exceeded",
 }
 _ENVIRONMENT = {"environment_failure", "perf_environment"}
+
+# Issue statuses that are considered active (not resolved/dismissed).
+# accepted_risk is active — the risk exists even though it has been acknowledged.
+_ACTIVE_PROBLEM_STATUSES = frozenset(
+    {"detected", "triaged", "in_progress", "verification_pending", "accepted_risk"}
+)
+_SEVERITY_RANK: dict[str, int] = {"critical": 4, "high": 3, "medium": 2, "low": 1}
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
@@ -63,9 +73,10 @@ def generate_report(project_root: Path, change_id: str) -> GenerateReportResult:
     risk_level, risk_rationale = _risk(gate, defects)
     recommendation = _recommendation(gate.final_status, defects)
     started_at, duration = _execution_timing(change_base)
+    issue_report = _derive_issue_report(change_base, project_root)
 
     report = QualityReport(
-        schema_version="1.0",
+        schema_version="1.1",
         change_id=change_id,
         batch_id=gate.batch_id or evidence.batch_id,
         final_status=gate.final_status,
@@ -81,6 +92,7 @@ def generate_report(project_root: Path, change_id: str) -> GenerateReportResult:
         started_at=started_at,
         duration=duration,
         non_functional=gate.dimensions.non_functional,
+        issues=issue_report,
     )
 
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -95,6 +107,134 @@ def generate_report(project_root: Path, change_id: str) -> GenerateReportResult:
         json_path=str(json_path),
         md_path=str(md_path),
         exec_summary_path=str(exec_path),
+    )
+
+
+def _derive_issue_report(change_base: Path, project_root: Path) -> IssueReport | None:
+    """Load Change Issue snapshot and Project Problem projection; derive IssueReport.
+
+    Returns None when no Issue data exists (no snapshot file). Never raises; a
+    corrupt/missing file yields ``unknown`` risk rather than an exception.
+    Reading a 1.0 report does not look up any legacy Issue Markdown files.
+    """
+    snapshot = _load(change_base / "issues" / "snapshot.json", ChangeIssueSnapshot)
+    if snapshot is None:
+        return None
+
+    problems_path = project_root / "qa" / "issues" / "problems.json"
+    projection = _load(problems_path, ProblemProjection)
+
+    analysis_status_val = (
+        snapshot.analysis_status.status if snapshot.analysis_status is not None else "completed"
+    )
+    project_sync_status_val = snapshot.project_sync_status
+
+    # Derive risk first so we can return early on unknown.
+    if analysis_status_val != "completed" or project_sync_status_val == "pending":
+        issue_risk: str = "unknown"
+        issue_risk_rationale = (
+            "Issue analysis failed or incomplete"
+            if analysis_status_val != "completed"
+            else "Project synchronization pending"
+        )
+        return _build_issue_report(
+            snapshot, projection, analysis_status_val, project_sync_status_val,
+            issue_risk, issue_risk_rationale,
+        )
+
+    # Aggregate counts from problems linked to this change's occurrences.
+    change_occ_ids = {occ.occurrence_id for occ in snapshot.occurrences}
+    counts_by_status: dict[str, int] = {}
+    counts_by_classification: dict[str, int] = {}
+    counts_by_severity: dict[str, int] = {}
+    active_severities: list[str] = []
+    new_count = repeated_count = regressed_count = 0
+    resolved_count = accepted_risk_count = not_an_issue_count = 0
+
+    if projection is not None:
+        for prob in projection.problems:
+            # Only consider problems where at least one occurrence belongs to this change.
+            if not any(occ_id in change_occ_ids for occ_id in prob.occurrences):
+                continue
+            st = prob.status
+            counts_by_status[st] = counts_by_status.get(st, 0) + 1
+            cls = prob.assessment.classification
+            counts_by_classification[cls] = counts_by_classification.get(cls, 0) + 1
+            sev = prob.assessment.severity
+            if st in _ACTIVE_PROBLEM_STATUSES:
+                counts_by_severity[sev] = counts_by_severity.get(sev, 0) + 1
+                active_severities.append(sev)
+            if st == "accepted_risk":
+                accepted_risk_count += 1
+            elif st == "not_an_issue":
+                not_an_issue_count += 1
+            elif st == "resolved":
+                resolved_count += 1
+
+    # Summarize occurrences vs earlier batches.
+    new_count = len(snapshot.occurrences)
+
+    if not active_severities:
+        issue_risk = "clear"
+        issue_risk_rationale = "No active Issues — all resolved or not-an-issue."
+    else:
+        highest = max(active_severities, key=lambda s: _SEVERITY_RANK.get(s, 0))
+        issue_risk = highest
+        active_count = len(active_severities)
+        issue_risk_rationale = (
+            f"{active_count} active issue(s); highest severity: {highest}."
+        )
+        if accepted_risk_count:
+            issue_risk_rationale += f" ({accepted_risk_count} accepted_risk — still active)."
+
+    return _build_issue_report(
+        snapshot, projection, analysis_status_val, project_sync_status_val,
+        issue_risk, issue_risk_rationale,
+        counts_by_status=counts_by_status,
+        counts_by_classification=counts_by_classification,
+        counts_by_severity=counts_by_severity,
+        new_count=new_count,
+        repeated_count=repeated_count,
+        regressed_count=regressed_count,
+        resolved_count=resolved_count,
+        accepted_risk_count=accepted_risk_count,
+        not_an_issue_count=not_an_issue_count,
+    )
+
+
+def _build_issue_report(
+    snapshot: ChangeIssueSnapshot,
+    projection: ProblemProjection | None,
+    analysis_status: str,
+    project_sync_status: str,
+    issue_risk: str,
+    issue_risk_rationale: str,
+    *,
+    counts_by_status: dict[str, int] | None = None,
+    counts_by_classification: dict[str, int] | None = None,
+    counts_by_severity: dict[str, int] | None = None,
+    new_count: int = 0,
+    repeated_count: int = 0,
+    regressed_count: int = 0,
+    resolved_count: int = 0,
+    accepted_risk_count: int = 0,
+    not_an_issue_count: int = 0,
+) -> IssueReport:
+    return IssueReport(
+        analysis_status=analysis_status,
+        project_sync_status=project_sync_status,
+        total_occurrences=len(snapshot.occurrences),
+        counts_by_status=counts_by_status or {},
+        counts_by_classification=counts_by_classification or {},
+        counts_by_severity=counts_by_severity or {},
+        new_count=new_count,
+        repeated_count=repeated_count,
+        regressed_count=regressed_count,
+        resolved_count=resolved_count,
+        accepted_risk_count=accepted_risk_count,
+        not_an_issue_count=not_an_issue_count,
+        issue_risk=issue_risk,  # type: ignore[arg-type]
+        issue_risk_rationale=issue_risk_rationale,
     )
 
 
@@ -322,8 +462,29 @@ def _report_md(r: QualityReport) -> str:
         f"- **Rationale**: {r.risk_rationale}",
         f"- **Recommendation**: {r.recommendation}",
         "",
+        *_issue_risk_section(r),
     ]
     return "\n".join(lines)
+
+
+def _issue_risk_section(r: QualityReport) -> list[str]:
+    """Render the Issue Risk section (omitted when no Issue data)."""
+    if r.issues is None:
+        return []
+    ir = r.issues
+    lines = [
+        "## Issue Risk",
+        "",
+        f"- **Issue Risk**: {ir.issue_risk}",
+        f"- **Rationale**: {ir.issue_risk_rationale}",
+        f"- **Analysis Status**: {ir.analysis_status}",
+        f"- **Project Sync**: {ir.project_sync_status}",
+        f"- **Occurrences**: {ir.total_occurrences}",
+    ]
+    if ir.counts_by_status:
+        lines.append("- **By Status**: " + ", ".join(f"{k}={v}" for k, v in sorted(ir.counts_by_status.items())))
+    lines.append("")
+    return lines
 
 
 def _defect_section(title: str, defects: list[ReportDefect]) -> list[str]:
@@ -344,19 +505,25 @@ def _exec_summary(r: QualityReport) -> str:
         if r.coverage.available
         else " Coverage: not collected."
     )
-    return "\n".join(
-        [
-            f"# Executive Summary — {r.change_id}",
-            "",
-            f"**Final Status**: {r.final_status}  |  **Quality Score**: {r.quality_score}/100  |  **Risk**: {r.risk_level}",
-            "",
-            f"**Start**: {r.started_at or _NO_DATA}  |  **Duration**: {r.duration or _NO_DATA}",
-            "",
-            r.risk_rationale,
-            "",
-            f"**Recommendation**: {r.recommendation}",
-            "",
-            f"Functional: {passed}/{total} passed.{coverage}",
-            "",
-        ]
+    issue_line = (
+        f"**Issue Risk**: {r.issues.issue_risk} — {r.issues.issue_risk_rationale}"
+        if r.issues is not None
+        else ""
     )
+    lines = [
+        f"# Executive Summary — {r.change_id}",
+        "",
+        f"**Final Status**: {r.final_status}  |  **Quality Score**: {r.quality_score}/100  |  **Risk**: {r.risk_level}",
+        "",
+        f"**Start**: {r.started_at or _NO_DATA}  |  **Duration**: {r.duration or _NO_DATA}",
+        "",
+        r.risk_rationale,
+        "",
+        f"**Recommendation**: {r.recommendation}",
+        "",
+        f"Functional: {passed}/{total} passed.{coverage}",
+        "",
+    ]
+    if issue_line:
+        lines.extend([issue_line, ""])
+    return "\n".join(lines)

@@ -18,10 +18,11 @@ Do not rely on prior conversation context.
    - `execution/api-result.json`, `execution/e2e-result.json`, `execution/summary.md` (if present)
    - `execution/execution-manifest.yaml` (if present)
    - `inspect/failure-analysis.json`, `inspect/failure-summary.md` (if present)
-   - `qa/changes/<change-id>/known-product-issues.md` (source of truth, if present)
-   - `execution/known-product-issues.md`, `inspect/known-product-issues.md` (snapshots, if present)
+   - `report/quality-report.json` (if present — read `issues.issue_risk` for archive status)
+   - `qa/issues/problems.json` (if present — current Project Problem projection)
 4. If any required gate file is missing or has `decision != "pass"`, stop and report.
 5. Use files as the sole source of truth.
+6. **Never** read or generate `known-product-issues.md` or `known-product-issues.json`. These files are no longer produced.
 
 **After completing work:**
 
@@ -61,9 +62,8 @@ ALL of the following must be true before archiving:
 
 **Inspect gates (when warnings exist)**
 
-- If `phases.execution.status == PASS_WITH_WARNINGS` or known product issues exist:
+- If `phases.execution.status == PASS_WITH_WARNINGS`:
   - `phases.inspect.status` must be in `[done, partial]` — if not, STOP and run `aa-inspect` first
-  - Known product issues must be explicitly acknowledged in archive summary
 
 **Assets**
 
@@ -122,9 +122,13 @@ Read `workflow-state.yaml`:
 - If `phases.healing.status in [exhausted, failed]` → **STOP**
 - If `inspect/failure-analysis.json` contains unresolved `fix_proposal_eligible` failures → **STOP**
 
-If `phases.execution.status == PASS_WITH_WARNINGS` or known product issues exist:
+If `phases.execution.status == PASS_WITH_WARNINGS`:
 
 - Require `phases.inspect.status in [done, partial]` — otherwise **STOP**, run `aa-inspect` first
+
+**Issue state never blocks archive.** Open, unknown, or accepted-risk Issues do
+not stop the archive cycle. Instead, they influence the `archive_status` wording
+in the summary (see **Step 3a**).
 
 ### Step 2: Merge Case Delta
 
@@ -159,22 +163,21 @@ Verify that test files referenced in `api-codegen-plan.md` and `e2e-codegen-plan
 
 If required test files are missing: **STOP**. Test code must exist before archiving.
 
-### Step 3a: Check Known Product Issues
+### Step 3a: Determine Archive Status from Issue Risk
 
-Before writing the archive summary, check for known product issue files:
+Read `report/quality-report.json` if present. Check `issues.issue_risk`:
 
-```text
-qa/changes/<change-id>/known-product-issues.md          ← source of truth (written by codegen)
-qa/changes/<change-id>/execution/known-product-issues.md ← execution snapshot
-qa/changes/<change-id>/inspect/known-product-issues.md   ← inspect snapshot (if present)
-qa/changes/<change-id>/inspect/failure-analysis.json
-```
+- If `issues.issue_risk` is `unknown`, `critical`, `high`, `medium`, or `low` (any active or uncertain
+  state), **or** if `issues.project_sync_status == "pending"`:
+  - Archive summary **must** use `archive_status: archived_with_warnings`.
+  - Record the `issue_risk` value and `issue_risk_rationale` in the summary.
+  - Do **not** write `clean`, `no risk`, or `fully passed without issues`.
+- If `issues.issue_risk == "clear"` or the `issues` field is absent:
+  - Use the normal `archive_status: archived` (unless execution status already requires warnings).
 
-If any known product issue record exists:
-
-- Archive is still allowed, provided all review gates pass and execution is `PASS` or `PASS_WITH_WARNINGS`.
-- Archive summary **must** use `archive_status: archived_with_warnings`.
-- Do **not** write `clean`, `no risk`, or `fully passed without issues` anywhere in the archive summary.
+**Issue state never blocks archive.** A critical open Problem is recorded in the
+summary but must not stop the archive cycle. Do **not** read or generate
+`known-product-issues.md` or `known-product-issues.json`.
 
 ### Step 3b: Record Execution Status
 
@@ -206,10 +209,11 @@ Copy (do not move) the following to `qa/archive/<change-id>/`:
 | `qa/changes/<change-id>/review/` | `qa/archive/<change-id>/review/` |
 | `qa/changes/<change-id>/execution/` | `qa/archive/<change-id>/execution/` |
 | `qa/changes/<change-id>/inspect/` | `qa/archive/<change-id>/inspect/` |
+| `qa/changes/<change-id>/issues/` | `qa/archive/<change-id>/issues/` (if present — preserves byte digests) |
+| `qa/changes/<change-id>/report/` | `qa/archive/<change-id>/report/` (if present) |
 | `qa/changes/<change-id>/trace/` | `qa/archive/<change-id>/trace/` |
 | `qa/changes/<change-id>/proposal.md` | `qa/archive/<change-id>/proposal.md` |
 | `qa/changes/<change-id>/.qa.yaml` | `qa/archive/<change-id>/.qa.yaml` |
-| `qa/changes/<change-id>/known-product-issues.md` | `qa/archive/<change-id>/known-product-issues.md` (if present) |
 | `qa/changes/<change-id>/workflow-state.yaml` | `qa/archive/<change-id>/workflow-state.yaml` |
 
 Additional retro evidence requirements:
@@ -239,18 +243,13 @@ Must include:
   - Workflow execution: `phases.execution.status`
   - Note: `FAIL` blocks archive by default; `PASS_WITH_WARNINGS` requires inspect acknowledgment
 - Archive status: `archived` | `archived_with_warnings`
-- Known product issues section (if applicable):
+- Issue Risk section (if `issues.issue_risk` is present and not `clear`):
 
 ```yaml
 archive_status: archived_with_warnings
-known_product_issues:
-  - id: KPI-001
-    endpoint: GET /api/v1/menu/get
-    severity: major
-    status: open
-    workaround: validated through GET /api/v1/menu/list
-    coverage_gap: direct GET /api/v1/menu/get remains open
-    follow_up: fix backend serialization in get_menu
+issue_risk: high
+issue_risk_rationale: "1 active issue(s); highest severity: high."
+open_problem_count: 1
 ```
 
 ## What NEVER Gets Merged Into qa/cases/
@@ -284,10 +283,12 @@ known_product_issues:
 | "API plan review is not pass but I'll archive anyway" | API/E2E plan reviews must also pass if the corresponding plan files exist. |
 | "The test code is already there, skip step 3" | Confirm explicitly — step 3 is a safety check. |
 | "I'll skip the archive summary" | Archive summary is the audit trail. |
-| "Tests passed so archive is clean" | If `known-product-issues.md` exists or execution is `PASS_WITH_WARNINGS`, archive must use `archived_with_warnings`. |
+| "Tests passed so archive is clean" | If `issues.issue_risk` is non-clear or execution is `PASS_WITH_WARNINGS`, archive must use `archived_with_warnings`. |
 | "I'll write to qa/cases/<module>.md" | Cases are YAML, not Markdown: `qa/cases/<module>/case.yaml`. |
 | "Execution FAIL but I'll archive anyway" | Default workflow forbids archive on FAIL. |
 | "PASS_WITH_WARNINGS without inspect is fine" | Run `aa-inspect` first; require `phases.inspect.status in [done, partial]`. |
+| "Open Issues block archive" | Issue state never blocks archive; it only changes `archive_status` wording. |
+| "I'll read known-product-issues.md" | That file is no longer produced. Read `report/quality-report.json` issues section instead. |
 
 ## Post-Archive State
 

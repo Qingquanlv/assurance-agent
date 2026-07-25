@@ -462,6 +462,8 @@ contracts:
       - change:execution/**
       - change:review/**
       - change:healing/**
+      - change:issues/snapshot.json
+      - project:qa/issues/problems.json
     writes:
       - change:report/**
     authorization_writes:
@@ -474,6 +476,7 @@ contracts:
     reads:
       - change:**
       - project:qa/changes/**
+      - project:qa/issues/problems.json
     writes:
       - project:qa/archive/**
     authorization_writes:

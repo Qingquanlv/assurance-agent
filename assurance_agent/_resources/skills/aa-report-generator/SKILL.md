@@ -90,9 +90,24 @@ execution/runs/<batch-id>/fuzz-result.json         (if selected_targets.fuzz)
 execution/runs/<batch-id>/performance-result.json  (if selected_targets.performance)
 inspect/failure-analysis.json
 inspect/quality-gate-result.json     ← required (gate conclusion + final_status, incl. fuzz/non_functional when run)
+issues/snapshot.json                 ← optional; Issue risk section when present (schema 1.1)
+qa/issues/problems.json              ← optional; Project Problem projection for Issue risk derivation
 qa/changes/<change-id>/cases/**/case*.yaml   ← best-effort scope (cases + requirements)
 risk-advisory/advisory.json or explore/advisory.json ← minimum_required_coverage (optional)
 ```
+
+## Issue Risk vs Execution Status
+
+The CLI emits schema version `1.1`. The `issues` field contains a separate
+`issue_risk` (`unknown|critical|high|medium|low|clear`) derived from the Change
+Issue snapshot and Project Problem projection. It is **never** copied into
+`final_status`. Reading a historical `1.0` report does not look up any legacy
+Issue Markdown files.
+
+- `unknown`: analysis or project sync is incomplete.
+- `critical`/`high`/`medium`/`low`: highest severity of active Problems linked to this Change.
+- `accepted_risk`: treated as **active** (not clear).
+- `clear`: no Issues or only resolved/not-an-issue Problems.
 
 ## Quality Score (deterministic, CLI-computed)
 
@@ -148,7 +163,9 @@ The CLI emits a deterministic baseline `risk_level`, `risk_rationale`, and `reco
 
 - The report is a **terminal artifact**; it does **not** make gate decisions (the gate is `inspect/quality-gate-result.json`).
 - `quality_score` and `final_status` come from the CLI — the skill does not recompute or alter them.
+- **Never** copy `issue_risk` into `final_status` or use it to change `quality_score`.
 - Do **not** run report generation before `inspect` has produced `quality-gate-result.json`.
 - Do **not** fabricate report files; if the CLI fails to write them, set `phases.report.status = failed` and report the failure.
 - Do **not** invoke MCP as a substitute for the CLI.
+- Do **not** read or generate `known-product-issues.md` or `known-product-issues.json`; use structured Issue projections instead.
 - Do **not** create temporary shell scripts or other scratch files (e.g. `.tmp_aa_report.sh`) to invoke the CLI — run `aa --version` and `aa report generate` as direct shell commands only. Authorized writes are limited to `change:report/**`.

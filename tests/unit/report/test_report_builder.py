@@ -177,3 +177,95 @@ def test_generate_report_known_product_issue_is_product_defect(tmp_path: Path) -
     assert len(result.report.defects.product) == 1
     assert result.report.defects.product[0].category == "known_product_issue"
     assert len(result.report.defects.test) == 0
+
+
+# ---- Issue risk / schema 1.1 tests -----------------------------------------
+
+
+def _seed_issue_snapshot(change_dir: Path, *, analysis_status: str = "completed", occurrences: list | None = None) -> None:
+    """Write a minimal issues/snapshot.json for testing."""
+    import json
+
+    issues_dir = change_dir / "issues"
+    issues_dir.mkdir(parents=True, exist_ok=True)
+    snapshot = {
+        "schema_version": "1.0",
+        "change_id": "CH-1",
+        "authoritative_batch_id": "20260715-000000",
+        "observations": [],
+        "occurrences": occurrences or [],
+        "analysis_status": {
+            "schema_version": "1.0",
+            "change_id": "CH-1",
+            "batch_id": "20260715-000000",
+            "status": analysis_status,
+            "evidence_bundle_digest": "abc123",
+            "candidate_count": 0,
+        },
+        "project_sync_status": "completed",
+        "batches": ["20260715-000000"],
+    }
+    (issues_dir / "snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
+
+
+def test_generate_report_emits_schema_version_11(tmp_path: Path) -> None:
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    inspect_change(tmp_path, change_id)
+    result = generate_report(tmp_path, change_id)
+    assert result.report.schema_version == "1.1"
+
+
+def test_generate_report_no_issue_snapshot_yields_none_issues(tmp_path: Path) -> None:
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    inspect_change(tmp_path, change_id)
+    result = generate_report(tmp_path, change_id)
+    # No issues/snapshot.json → issues field is None
+    assert result.report.issues is None
+    # final_status unchanged
+    assert result.report.final_status == "PASS"
+
+
+def test_generate_report_no_occurrences_yields_clear_issue_risk(tmp_path: Path) -> None:
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    _seed_issue_snapshot(change_dir, analysis_status="completed", occurrences=[])
+    inspect_change(tmp_path, change_id)
+    result = generate_report(tmp_path, change_id)
+    assert result.report.issues is not None
+    assert result.report.issues.issue_risk == "clear"
+    # execution final_status must not be changed by Issue risk
+    assert result.report.final_status == "PASS"
+
+
+def test_generate_report_failed_analysis_yields_unknown_issue_risk(tmp_path: Path) -> None:
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    _seed_issue_snapshot(change_dir, analysis_status="failed")
+    inspect_change(tmp_path, change_id)
+    result = generate_report(tmp_path, change_id)
+    assert result.report.issues is not None
+    assert result.report.issues.issue_risk == "unknown"
+    assert result.report.issues.analysis_status == "failed"
+    # execution final_status unchanged
+    assert result.report.final_status == "PASS"
+
+
+def test_generate_report_issue_section_in_markdown(tmp_path: Path) -> None:
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    _seed_issue_snapshot(change_dir, analysis_status="completed", occurrences=[])
+    inspect_change(tmp_path, change_id)
+    result = generate_report(tmp_path, change_id)
+    md = (tmp_path / "qa" / "changes" / "CH-1" / "report" / "quality-report.md").read_text()
+    assert "## Issue Risk" in md
+    assert "**Issue Risk**: clear" in md
+
+
+def test_generate_report_issue_risk_in_exec_summary(tmp_path: Path) -> None:
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    _seed_issue_snapshot(change_dir, analysis_status="failed")
+    inspect_change(tmp_path, change_id)
+    result = generate_report(tmp_path, change_id)
+    exec_summary = (tmp_path / "qa" / "changes" / "CH-1" / "report" / "executive-summary.md").read_text()
+    assert "**Issue Risk**: unknown" in exec_summary

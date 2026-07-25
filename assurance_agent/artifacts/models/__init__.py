@@ -86,6 +86,8 @@ from assurance_agent.artifacts.models.issues import (
     ProvisionalAssessment,
 )
 from assurance_agent.artifacts.models.report import (
+    IssueReport,
+    IssueRisk,
     QualityReport,
     QualityScoreBreakdown,
     ReportDefect,
@@ -140,6 +142,8 @@ __all__ = [
     "GateStatus",
     "HealingPhaseState",
     "IssueAnalysisFailureReason",
+    "IssueReport",
+    "IssueRisk",
     "IssueAnalysisStatus",
     "IssueAnalysisStatusValue",
     "IssueCandidate",
