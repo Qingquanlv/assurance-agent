@@ -63,8 +63,10 @@ Lifecycle subsystem embedded in the full workflow.
 
 1. A Change owns immutable Observations and IssueOccurrences. A project-level
    Problem Ledger owns cross-Change identity and lifecycle.
-2. Every validated LLM candidate is recorded as a `detected` occurrence/Problem;
-   low confidence does not cause evidence loss.
+2. Every validated LLM candidate is recorded as an IssueOccurrence. With no exact
+   match it creates a `detected` Problem; an existing Problem keeps its lifecycle
+   state except when a resolved Problem deterministically regresses. Low
+   confidence does not cause evidence loss.
 3. Observation and Issue are separate concepts. Multiple Observations may support
    one IssueOccurrence, and multiple Occurrences may refer to one Problem.
 4. The LLM may propose classification, severity, root cause, fingerprint inputs,
@@ -462,7 +464,8 @@ generation
        -> inspect-classify
        -> collect-observations
        -> analyze-issues
-       -> reconcile-issues
+          -> reconcile-issues                 # successful analysis
+          -> record-analysis-failure          # recoverable failure after retries
        -> inspect-complete
   -> healing
        -> rerun
@@ -483,6 +486,36 @@ Rules:
 - The independent review workflow may run before or after archive and never
   blocks the full workflow.
 
+### 11.1 Required Recoverable-Failure Route
+
+The current graph runtime treats an agent failure after retry exhaustion as a
+terminal task failure. That behavior cannot implement the confirmed analyzer
+fail-open requirement. This feature therefore includes one minimal graph control
+capability: a node may declare a typed recovery route for an allowlist of errors.
+
+Conceptually:
+
+```yaml
+analyze-issues:
+  uses: skill:aa-issue-analyzer
+  recover:
+    errors: [timeout, transport, rate_limit, invalid_output]
+    via: record-analysis-failure
+    continue_to: inspect-complete
+```
+
+Recovery runs only after the declared retry policy is exhausted. The failed
+node's write-set is discarded. The deterministic recovery operation writes an
+empty candidate document and `issue-analysis-status.json` with the pinned
+evidence digest and typed failure reason, then continues the graph.
+
+The recovery allowlist does not include `forbidden_write`, corrupt Ledger state,
+compiler errors, or invalid workflow contracts. Those are workflow-integrity
+defects, not Issue-analysis outcomes, and remain hard failures. Compiler and
+scheduler support for this narrowly defined recovery route is part of the
+implementation scope; an issue-specific operation that hides an LLM call is not
+an acceptable substitute.
+
 ## 12. Failure, Retry, and Concurrency Semantics
 
 ### 12.1 Analyzer Failure
@@ -499,7 +532,8 @@ retryable: true
 
 The workflow continues. It does not fabricate candidates or fall back to treating
 keyword classifications as canonical Problems. A later standalone retry may use
-the same evidence digest.
+the same evidence digest. Continuation uses the recovery route defined in Section
+11.1; the analyzer handler itself must not report a failed call as success.
 
 ### 12.2 Semantic Validation Failure
 
