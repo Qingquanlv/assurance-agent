@@ -195,3 +195,31 @@ def test_build_context_no_pushback_or_drift_evidence(tmp_path: Path) -> None:
 
     assert context.signals.gate_pushback == []
     assert context.signals.skill_execution == []
+
+
+def test_build_context_issue_lifecycle_signals(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
+    root = make_archived_change(tmp_path, "CH-1", failures=[{"classification": "assertion"}])
+    from tests.unit.retro.issue_fixtures import write_change_occurrence_detected, write_project_problem_lifecycle
+
+    issue_evidence = write_change_occurrence_detected(root, change_id="CH-1")
+    project_evidence = write_project_problem_lifecycle(tmp_path, change_id="CH-1")
+
+    context = build_retro_context(tmp_path, changes=["CH-1"], retro_id="retro-issues")
+
+    trends = context.signals.occurrence_trends
+    assert len(trends) == 1
+    assert trends[0].classification == "product_bug"
+    assert trends[0].count == 1
+    assert trends[0].evidence_ids == [issue_evidence]
+
+    assert len(context.signals.issue_regressions) == 1
+    assert context.signals.issue_regressions[0].evidence_ids == [project_evidence["regressed"]]
+
+    assert any(
+        signal.outcome == "resolved" and signal.evidence_ids == [project_evidence["resolved"]]
+        for signal in context.signals.problem_resolutions
+    )
+    assert context.signals.not_an_issue_patterns[0].classification == "test_bug"
+    assert project_evidence["not_an_issue"] in context.signals.not_an_issue_patterns[0].evidence_ids
+    assert context.signal_count == count_signals(context)

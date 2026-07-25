@@ -8,8 +8,10 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from assurance_agent.artifacts.models import ApplySummary, FailureAnalysis, Review, WorkflowState
+from assurance_agent.artifacts.models.issues import ChangeIssueSnapshot
 from assurance_agent.change_location import ChangeNotFoundError, archive_root, resolve_change
 from assurance_agent.retro.types import ArchivedChange, EvidenceSource
+from assurance_agent.workflow.issues.events import LedgerIntegrityError, read_change_issue_events
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -57,6 +59,22 @@ def _read_events(path: Path) -> list[dict]:
     return events
 
 
+def read_issue_evidence(
+    change_dir: Path,
+) -> tuple[list, ChangeIssueSnapshot | None, str | None]:
+    """Load strict Change Issue ledger/snapshot evidence for retro aggregation."""
+    events_path = change_dir / "issues" / "events.jsonl"
+    issue_events: list = []
+    issue_read_error: str | None = None
+    if events_path.exists():
+        try:
+            issue_events = read_change_issue_events(events_path)
+        except LedgerIntegrityError as exc:
+            issue_read_error = str(exc)
+    snapshot = _read_model(change_dir / "issues" / "snapshot.json", ChangeIssueSnapshot)
+    return issue_events, snapshot, issue_read_error
+
+
 def read_archived_change(change_dir: Path, *, source: EvidenceSource) -> ArchivedChange:
     reviews: dict[str, Review] = {}
     review_dir = change_dir / "review"
@@ -72,6 +90,7 @@ def read_archived_change(change_dir: Path, *, source: EvidenceSource) -> Archive
             data = _read_model(file, ApplySummary)
             if data is not None:
                 apply_summaries.append(data)
+    issue_events, issue_snapshot, issue_read_error = read_issue_evidence(change_dir)
     return ArchivedChange(
         change_id=change_dir.name,
         evidence_source=source,
@@ -88,6 +107,9 @@ def read_archived_change(change_dir: Path, *, source: EvidenceSource) -> Archive
             WorkflowState,
             yaml_input=True,
         ),
+        issue_events=issue_events,
+        issue_snapshot=issue_snapshot,
+        issue_read_error=issue_read_error,
     )
 
 

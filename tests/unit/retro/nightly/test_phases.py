@@ -19,6 +19,40 @@ from tests.unit.retro.archive_fixtures import make_archived_change
 from tests.unit.retro.proposal_fixtures import issue_proposal, knowledge_proposal, memory_proposal
 
 
+def test_archived_evidence_includes_issues_dir(tmp_path: Path) -> None:
+    change_dir = tmp_path / "qa" / "archive" / "CH-1"
+    (change_dir / "issues").mkdir(parents=True)
+    (change_dir / "issues" / "snapshot.json").write_text("{}", encoding="utf-8")
+
+    assert has_required_evidence(change_dir, "archive") is True
+
+
+def test_enumerate_candidates_marks_malformed_issue_jsonl_incomplete(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
+    root = make_archived_change(tmp_path, "CH-BAD", failures=[])
+    (root / "issues").mkdir()
+    (root / "issues" / "events.jsonl").write_text("{not json\n", encoding="utf-8")
+
+    candidates, incomplete = enumerate_candidates(tmp_path, {}, is_terminal=lambda _d, _c: True)
+
+    assert candidates == []
+    assert incomplete == ["CH-BAD"]
+
+
+def test_snapshot_unarchived_evidence_copies_issues_tree(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
+    active = tmp_path / "qa" / "changes" / "CH-1"
+    active.mkdir(parents=True)
+    issues = active / "issues"
+    issues.mkdir()
+    (issues / "events.jsonl").write_text("{}\n", encoding="utf-8")
+
+    from assurance_agent.retro.nightly.phase_a import snapshot_unarchived_evidence
+
+    dest = snapshot_unarchived_evidence(tmp_path, "retro-1", "CH-1")
+    assert (dest / "issues" / "events.jsonl").is_file()
+
+
 def test_has_required_evidence(tmp_path: Path) -> None:
     write_aa_config(tmp_path)
     root = make_archived_change(tmp_path, "CH-1", failures=[])
@@ -157,3 +191,22 @@ def test_classify_eval_gate() -> None:
     assert classify_eval_gate({"verdict": "fail"}) == "fail"
     assert classify_eval_gate({"verdict": "bogus"}) == "inconclusive"
     assert classify_eval_gate({}) == "inconclusive"
+
+
+def test_retro_contracts_read_issues_but_never_write_them() -> None:
+    from pathlib import Path
+
+    from assurance_agent.workflow.graph.contracts import load_execution_contracts
+
+    catalog = load_execution_contracts(Path.cwd())
+    collect = catalog.contracts["operation:retro-collect"]
+    retro = catalog.contracts["skill:aa-retro"]
+    issue_reads = "project:qa/issues/**"
+    issue_writes = "project:qa/issues/events.jsonl"
+
+    assert issue_reads in collect.reads
+    assert issue_reads in retro.reads
+    assert issue_writes not in collect.writes
+    assert issue_writes not in collect.authorization_writes
+    assert issue_writes not in retro.writes
+    assert issue_writes not in retro.authorization_writes

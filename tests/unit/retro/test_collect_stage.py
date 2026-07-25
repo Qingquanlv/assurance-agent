@@ -134,3 +134,19 @@ def test_run_retro_collect_context_builder_exception_propagates(tmp_path: Path) 
             context_builder=bad_builder,  # type: ignore[arg-type]
             is_terminal=lambda _d, _c: True,
         )
+
+
+def test_run_retro_collect_snapshots_issue_evidence(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
+    active = tmp_path / "qa" / "changes" / "CH-ACTIVE"
+    active.mkdir(parents=True)
+    (active / "events.jsonl").write_text('{"seq": 1, "type": "workflow_started"}\n', encoding="utf-8")
+    (active / "workflow-state.yaml").write_text("phases: {}\n", encoding="utf-8")
+    from tests.unit.retro.issue_fixtures import write_change_occurrence_detected
+
+    write_change_occurrence_detected(active, change_id="CH-ACTIVE")
+
+    run_retro_collect(tmp_path, retro_id="retro-test", is_terminal=lambda _d, _c: True)
+
+    snapshot = tmp_path / "qa" / "retro" / "retro-test" / "evidence" / "CH-ACTIVE" / "issues"
+    assert (snapshot / "events.jsonl").is_file()

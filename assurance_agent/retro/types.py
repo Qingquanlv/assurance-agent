@@ -6,7 +6,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from assurance_agent.artifacts.models import ApplySummary, FailureAnalysis, Review, WorkflowState
 from assurance_agent.artifacts.models.data_knowledge import DataKnowledgeProposal
+from assurance_agent.artifacts.models.issues import ChangeIssueSnapshot
 from assurance_agent.identifiers import UnsafeIdentifierError, assert_path_segment_safe
+from assurance_agent.workflow.issues.events import ChangeIssueEvent
 
 EvidenceSource = Literal["archive", "unarchived"]
 FindingKind = Literal["prompt_rule", "workflow_bug", "domain_knowledge"]
@@ -30,6 +32,9 @@ class ArchivedChange(BaseModel):
     reviews: dict[str, Review] = Field(default_factory=dict)
     apply_summaries: list[ApplySummary] = Field(default_factory=list)
     workflow_state: WorkflowState | None = None
+    issue_events: list[ChangeIssueEvent] = Field(default_factory=list)
+    issue_snapshot: ChangeIssueSnapshot | None = None
+    issue_read_error: str | None = None
 
 
 class ChangeSource(BaseModel):
@@ -88,6 +93,39 @@ class EvalTrendSignal(BaseModel):
     started_at: str
 
 
+class OccurrenceTrendSignal(BaseModel):
+    classification: str
+    count: int
+    changes: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class IssueRegressionSignal(BaseModel):
+    problem_id: str
+    change_id: str
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class ProblemDecisionSignal(BaseModel):
+    problem_id: str
+    action: str
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class ProblemResolutionSignal(BaseModel):
+    problem_id: str
+    outcome: str
+    change_id: str | None = None
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class NotAnIssuePatternSignal(BaseModel):
+    classification: str
+    count: int
+    problem_ids: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
 class RetroSignalSet(BaseModel):
     failure_distribution: list[FailureDistributionSignal] = Field(default_factory=list)
     gate_pushback: list[GatePushbackSignal] = Field(default_factory=list)
@@ -96,6 +134,11 @@ class RetroSignalSet(BaseModel):
     reclassifications: list[ReclassificationSignal] = Field(default_factory=list)
     skill_execution: list[SkillExecutionSignal] = Field(default_factory=list)
     eval_trend: list[EvalTrendSignal] = Field(default_factory=list)
+    occurrence_trends: list[OccurrenceTrendSignal] = Field(default_factory=list)
+    issue_regressions: list[IssueRegressionSignal] = Field(default_factory=list)
+    problem_decisions: list[ProblemDecisionSignal] = Field(default_factory=list)
+    problem_resolutions: list[ProblemResolutionSignal] = Field(default_factory=list)
+    not_an_issue_patterns: list[NotAnIssuePatternSignal] = Field(default_factory=list)
 
 
 class RetroWindow(BaseModel):
@@ -103,6 +146,7 @@ class RetroWindow(BaseModel):
     change_count: int = 0
     change_ids: list[str] = Field(default_factory=list)
     change_sources: list[ChangeSource] = Field(default_factory=list)
+    issue_evidence_errors: dict[str, str] = Field(default_factory=dict)
 
 
 class RetroContext(BaseModel):

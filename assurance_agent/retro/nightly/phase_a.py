@@ -6,7 +6,11 @@ from pathlib import Path
 
 from assurance_agent.change_location import changes_root, resolve_change
 from assurance_agent.identifiers import assert_path_segment_safe
-from assurance_agent.retro.archive_reader import list_archived_changes, resolve_change_dir
+from assurance_agent.retro.archive_reader import (
+    list_archived_changes,
+    read_issue_evidence,
+    resolve_change_dir,
+)
 from assurance_agent.retro.nightly.types import ChangeCandidate
 from assurance_agent.retro.nightly.utils import list_dir_names
 from assurance_agent.retro.types import EvidenceSource
@@ -22,6 +26,7 @@ _ARCHIVED_EVIDENCE_RELS = (
     "execution/execution-manifest.yaml",
     "review",
     "healing",
+    "issues",
 )
 
 
@@ -35,7 +40,18 @@ def has_required_evidence(change_dir: Path, source: EvidenceSource = "unarchived
     """
     if source == "archive":
         return any((change_dir / rel).exists() for rel in _ARCHIVED_EVIDENCE_RELS)
+    if issue_evidence_error(change_dir) is not None:
+        return False
     return (change_dir / "events.jsonl").exists() and (change_dir / "workflow-state.yaml").exists()
+
+
+def issue_evidence_error(change_dir: Path) -> str | None:
+    """Return a visible error when Change Issue JSONL exists but is malformed."""
+    events_path = change_dir / "issues" / "events.jsonl"
+    if not events_path.exists():
+        return None
+    _, _, error = read_issue_evidence(change_dir)
+    return error
 
 
 def enumerate_candidates(
@@ -55,6 +71,10 @@ def enumerate_candidates(
         if resolved is None:
             continue
         change_dir, source = resolved
+        issue_error = issue_evidence_error(change_dir)
+        if issue_error is not None:
+            incomplete.append(change_id)
+            continue
         if not has_required_evidence(change_dir, source):
             incomplete.append(change_id)
             continue
@@ -67,6 +87,10 @@ def enumerate_candidates(
         if change_id in consumed or any(c.change_id == change_id for c in candidates):
             continue
         change_dir = active_root / change_id
+        issue_error = issue_evidence_error(change_dir)
+        if issue_error is not None:
+            incomplete.append(change_id)
+            continue
         if not has_required_evidence(change_dir):
             incomplete.append(change_id)
             continue
@@ -93,7 +117,7 @@ def snapshot_unarchived_evidence(
     for name in ("events.jsonl", "workflow-state.yaml"):
         if (src / name).exists():
             shutil.copy2(src / name, dest / name)
-    for sub in ("inspect", "review", "healing"):
+    for sub in ("inspect", "review", "healing", "issues"):
         if (src / sub).is_dir():
             shutil.copytree(src / sub, dest / sub, dirs_exist_ok=True)
     return dest

@@ -26,6 +26,7 @@ class RetroCollectResult:
     retro_dir: Path
     signal_count: int
     context: RetroContext | None  # None when no candidates
+    incomplete_changes: tuple[str, ...] = ()
 
 
 def _make_empty_context(retro_id: str, generated_at: str) -> RetroContext:
@@ -73,12 +74,18 @@ def run_retro_collect(
         is_terminal = partial(_default_is_terminal, sut)
 
     state = read_state(sut)
-    candidates, _incomplete = enumerate_candidates(sut, state, is_terminal=is_terminal)
+    candidates, incomplete = enumerate_candidates(sut, state, is_terminal=is_terminal)
 
     if not candidates:
         # Write minimal context.json so graph outputs can freeze even with no work.
         write_json(retro_dir / "context.json", _make_empty_context(retro_id, generated_at).model_dump())
-        return RetroCollectResult(retro_id=retro_id, retro_dir=retro_dir, signal_count=0, context=None)
+        return RetroCollectResult(
+            retro_id=retro_id,
+            retro_dir=retro_dir,
+            signal_count=0,
+            context=None,
+            incomplete_changes=tuple(incomplete),
+        )
 
     for candidate in candidates:
         if candidate.evidence_source == "unarchived":
@@ -104,5 +111,9 @@ def run_retro_collect(
         # changes. The nightly driver used to own this; graph callers need it too.
         complete_retro_stage(out_root, retro_id)
     return RetroCollectResult(
-        retro_id=retro_id, retro_dir=retro_dir, signal_count=signal_count, context=context
+        retro_id=retro_id,
+        retro_dir=retro_dir,
+        signal_count=signal_count,
+        context=context,
+        incomplete_changes=tuple(incomplete),
     )

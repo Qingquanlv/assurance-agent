@@ -13,6 +13,7 @@ Use this skill when asked to analyze `qa/retro/<retro-id>/context.json` and prop
 - Optional read-only context:
   - recent `qa/retro/*/promotions.json` files (for rejected / needs_rework history)
   - `qa/retro/<retro-id>/evidence/<change-id>/` snapshots for `evidence_source: "unarchived"`
+  - `qa/issues/problems.json` and `qa/issues/events.jsonl` (read-only lifecycle evidence; never mutate)
   - `.aa/memory/**`
   - `.aa/data-knowledge.yaml`
   - `schemas/workflow-schema.yaml`
@@ -20,7 +21,7 @@ Use this skill when asked to analyze `qa/retro/<retro-id>/context.json` and prop
 
 ## Hard Rules
 
-- Do not modify SKILL.md, workflow schema, `.aa/memory/**`, `.aa/data-knowledge.yaml`, or project source files.
+- Do not modify SKILL.md, workflow schema, `.aa/memory/**`, `.aa/data-knowledge.yaml`, `qa/issues/**`, or project source files.
 - Write only:
   - `qa/retro/<retro-id>/proposals.json`
   - `qa/retro/<retro-id>/retro-summary.md`
@@ -35,8 +36,9 @@ Use this skill when asked to analyze `qa/retro/<retro-id>/context.json` and prop
 ## Required Analysis Order
 
 1. **Skill execution drift** (`signals.skill_execution`) — evaluate first; see next section.
-2. Failure distribution, gate pushback, healing efficiency, human overrides, reclassifications, eval trend.
-3. Draft proposals; write `proposals.json` + `retro-summary.md`.
+2. **Issue lifecycle** (`signals.occurrence_trends`, `signals.issue_regressions`, `signals.problem_decisions`, `signals.problem_resolutions`, `signals.not_an_issue_patterns`) — cite immutable Change/Project event ids from `context.json`; never mutate Problems or Ledgers.
+3. Failure distribution, gate pushback, healing efficiency, human overrides, reclassifications, eval trend.
+4. Draft proposals; write `proposals.json` + `retro-summary.md`.
 
 ## Skill Execution Drift (mandatory)
 
@@ -65,6 +67,20 @@ Phase → memory target → eval_suite:
 | unknown / orchestrator-wide | `.aa/memory/aa-workflow.md` | `workflow-full` |
 
 Single-change drift still gets a proposal (nightly may auto-tag `needs_rework` when unique change evidence `< 2`; that is driver policy, not a reason to omit the proposal).
+
+## Issue Lifecycle Evidence (read-only)
+
+When `context.json` carries Issue lifecycle signals, treat them as immutable audit evidence:
+
+| signal family | meaning | proposal guidance |
+|---|---|---|
+| `occurrence_trends` | repeated Occurrence classifications in the window | `workflow_bug` when classifier/reconciler wiring is wrong; `domain_knowledge` only when L1 facts are missing |
+| `issue_regressions` | resolved Problems that recurred | `workflow_bug` for verification/healing gaps |
+| `problem_decisions` | human review actions (`confirm_assessment`, `mark_not_an_issue`, etc.) | usually no new proposal unless the workflow made the human repeat the same correction |
+| `problem_resolutions` | `resolved` or `verification_pending` outcomes | `workflow_bug` when verification scope or healing linkage is incomplete |
+| `not_an_issue_patterns` | repeated `mark_not_an_issue` by classification | `prompt_rule` or `workflow_bug` when the same misclassification keeps recurring |
+
+Cite evidence ids exactly as emitted (e.g. `CH-1#issue-EVT-…`, `project#problem-EVT-…`). Retro acceptance validates those ids against `context.json`; retro collect/accept never writes `qa/issues/**` or `.aa/data-knowledge.yaml`. Knowledge changes require export + `aa knowledge promote` after human review.
 
 ## Three-Track Routing
 

@@ -639,6 +639,7 @@ contracts:
       - project:qa/archive/**
       - project:qa/changes/**
       - project:qa/retro/**
+      - project:qa/issues/**
     writes:
       - project:qa/retro/**
     authorization_writes:
@@ -660,6 +661,7 @@ contracts:
     reads:
       - project:qa/retro/**
       - project:qa/archive/**
+      - project:qa/issues/**
     writes:
       - project:qa/retro/**
     authorization_writes:

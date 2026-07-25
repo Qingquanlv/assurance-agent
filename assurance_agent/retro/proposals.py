@@ -134,6 +134,16 @@ def _context_evidence_ids(context: RetroContext) -> set[str]:
             ids.add(decision.evidence_id)
     for signal in signals.skill_execution:
         ids.update(signal.evidence_ids)
+    for signal in signals.occurrence_trends:
+        ids.update(signal.evidence_ids)
+    for signal in signals.issue_regressions:
+        ids.update(signal.evidence_ids)
+    for signal in signals.problem_decisions:
+        ids.update(signal.evidence_ids)
+    for signal in signals.problem_resolutions:
+        ids.update(signal.evidence_ids)
+    for signal in signals.not_an_issue_patterns:
+        ids.update(signal.evidence_ids)
     return ids
 
 

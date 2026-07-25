@@ -157,3 +157,70 @@ def test_effective_review_decisions_last_wins() -> None:
     decisions = effective_review_decisions(events)
     assert decisions["P-1"]["decision"] == "promoted"
     assert decisions["P-1"]["actor"] == "b"
+
+
+def test_knowledge_proposal_acceptance_leaves_data_knowledge_untouched(tmp_path: Path) -> None:
+    """Retro accept validates domain_knowledge proposals but never writes L1 knowledge."""
+    from tests.helpers_aa import write_aa_config
+    from tests.unit.retro.archive_fixtures import make_archived_change
+    from tests.unit.retro.issue_fixtures import write_change_occurrence_detected, write_project_problem_lifecycle
+
+    write_aa_config(tmp_path)
+    root = make_archived_change(tmp_path, "CH-1", failures=[{"classification": "assertion"}])
+    issue_evidence = write_change_occurrence_detected(root, change_id="CH-1")
+    write_project_problem_lifecycle(tmp_path, change_id="CH-1")
+
+    from assurance_agent.retro.collect_stage import run_retro_collect
+    from assurance_agent.retro.accept_stage import run_retro_accept
+    from assurance_agent.workflow.core.templates import build_data_knowledge_yaml
+
+    run_retro_collect(tmp_path, retro_id="retro-test", is_terminal=lambda _d, _c: True)
+    retro_dir = tmp_path / "qa" / "retro" / "retro-test"
+    context = json.loads((retro_dir / "context.json").read_text())
+    resolved_id = next(
+        signal["evidence_ids"][0]
+        for signal in context["signals"]["problem_resolutions"]
+        if signal["outcome"] == "resolved"
+    )
+
+    knowledge_path = tmp_path / ".aa" / "data-knowledge.yaml"
+    knowledge_path.parent.mkdir(parents=True, exist_ok=True)
+    knowledge_path.write_text(build_data_knowledge_yaml(), encoding="utf-8")
+    before = knowledge_path.read_text(encoding="utf-8")
+    issues_before = (tmp_path / "qa" / "issues" / "events.jsonl").read_text(encoding="utf-8")
+
+    (retro_dir / "proposals.json").write_text(
+        json.dumps(
+            {
+                "proposals": [
+                    {
+                        "id": "P-KNOW",
+                        "finding_kind": "domain_knowledge",
+                        "apply_kind": "knowledge_delta",
+                        "payload": {
+                            "schema_version": "1",
+                            "mode": "delta",
+                            "based_on_l1_version": 1,
+                            "auth": {
+                                "api_admin_token": {
+                                    "method": "token",
+                                    "notes": "retro discovered admin token helper",
+                                }
+                            },
+                        },
+                        "problem": "resolved product bug exposed missing auth capability",
+                        "evidence_ids": [resolved_id, issue_evidence],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (retro_dir / "retro-summary.md").write_text("# summary\n", encoding="utf-8")
+
+    proposals = run_retro_accept(tmp_path, retro_id="retro-test", min_evidence=1)
+
+    assert len(proposals) == 1
+    assert proposals[0].finding_kind == "domain_knowledge"
+    assert knowledge_path.read_text(encoding="utf-8") == before
+    assert (tmp_path / "qa" / "issues" / "events.jsonl").read_text(encoding="utf-8") == issues_before
