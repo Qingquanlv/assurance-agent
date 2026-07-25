@@ -866,7 +866,7 @@ class GraphRuntime:
         pending = projection.interrupts.get(command.interrupt_id)
         if pending is None or pending.resolved_action is not None:
             raise GraphRuntimeError(f"interrupt {command.interrupt_id} is not pending")
-        if command.action not in pending.actions and command.action != "stop":
+        if command.action not in pending.actions:
             raise GraphRuntimeError(
                 f"action {command.action!r} not allowed for interrupt {command.interrupt_id}"
             )
@@ -918,6 +918,7 @@ class GraphRuntime:
                     reason=command.reason,
                     who=command.who,
                     audited_reads_sha256=audited,
+                    payload=command.payload,
                 )
                 for index, invocation_id in enumerate(resume_invocation_ids):
                     if index == 0:

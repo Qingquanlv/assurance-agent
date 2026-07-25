@@ -628,6 +628,35 @@ main:
 """
 
 
+_DECLARED_ACTIONS_ONLY = """
+main:
+  max_supersteps: 8
+  nodes:
+    seed:
+      uses: operation:write-review
+      outputs: [change:review/case-review.json]
+      retry: never
+      timeout: local
+    human:
+      uses: builtin:interrupt
+      interrupt:
+        reason: needs a human
+        checkpoint: case-review-gate
+        bind: audited_gate_read
+        actions: [accept_risk]
+      retry: never
+      timeout: local
+  edges:
+    - {from: START, to: seed}
+    - {from: seed, to: human}
+  routes:
+    - from: human
+      select: "resume.action"
+      cases:
+        accept_risk: END
+"""
+
+
 def test_accept_risk_at_healing_safety_routes_to_rerun(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     compiled, contracts = _compile(_HEALING_SAFETY)
@@ -720,6 +749,30 @@ def test_stop_resume_exits_20(tmp_path: Path) -> None:
     )
     assert stopped.exit_code == 20
     assert stopped.status.status == "stopped"
+
+
+@pytest.mark.parametrize("action", ["confirm_assessment", "stop"])
+def test_resume_rejects_every_action_absent_from_pending_interrupt(tmp_path: Path, action: str) -> None:
+    project = _make_project(tmp_path)
+    compiled, contracts = _compile(_DECLARED_ACTIONS_ONLY)
+    runtime = _build_runtime(project, compiled, contracts, ops=_ops())
+    context = _context(project)
+    result = runtime.run(compiled, "full", context)
+    interrupt = result.status.pending_interrupts[0]
+
+    with pytest.raises(GraphRuntimeError, match="not allowed for interrupt"):
+        runtime.resume(
+            result.invocation_id,
+            ResumeCommand(
+                interrupt_id=interrupt.interrupt_id,
+                action=action,
+                reason="not declared by the workflow",
+                who="reviewer",
+            ),
+        )
+
+    events = read_events_strict(context.change_dir)
+    assert not any(event.get("type") == "graph_resumed" for event in events)
 
 
 def test_stale_hash_rejects_without_graph_resumed(tmp_path: Path) -> None:
