@@ -482,6 +482,41 @@ contracts:
     reconnect: true
 
   # ---- issue lifecycle -----------------------------------------------------
+  skill:aa-issue-analyzer:
+    handler: agent
+    reads:
+      - change:inspect/observations.json
+      - change:inspect/issue-evidence-manifest.json
+      - change:execution/**
+      - change:cases/**
+      - change:facts/**
+      - change:review/**
+      - change:healing/**
+      - change:codegen/**
+      - project:qa/issues/problems.json
+      - project:qa/issues/review-queue.json
+    writes:
+      - change:inspect/issue-candidates.json
+      - change:inspect/issue-analysis-status.json
+    authorization_writes:
+      - change:inspect/issue-candidates.json
+      - change:inspect/issue-analysis-status.json
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
+    reconnect: true
+
+  skill:aa-issue-triage-advisor:
+    handler: agent
+    reads:
+      - project:qa/issues/problems.json
+      - project:qa/issues/review-queue.json
+      - change:issues/snapshot.json
+    writes:
+      - change:issue-review/**
+    authorization_writes:
+      - change:issue-review/**
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
+    reconnect: true
+
   operation:collect-observations:
     handler: operation
     reads:
@@ -502,6 +537,47 @@ contracts:
       - change:issues/events.jsonl
       - change:issues/snapshot.json
     retryable_errors: [timeout, transport]
+
+  operation:record-empty-issue-analysis:
+    handler: operation
+    reads:
+      - change:inspect/issue-evidence-manifest.json
+    writes:
+      - change:inspect/issue-candidates.json
+      - change:inspect/issue-analysis-status.json
+    authorization_writes:
+      - change:inspect/issue-candidates.json
+      - change:inspect/issue-analysis-status.json
+    retryable_errors: []
+
+  operation:record-issue-analysis-failure:
+    handler: operation
+    reads:
+      - change:inspect/issue-evidence-manifest.json
+    writes:
+      - change:inspect/issue-candidates.json
+      - change:inspect/issue-analysis-status.json
+      - change:issues/events.jsonl
+      - change:issues/snapshot.json
+    authorization_writes:
+      - change:inspect/issue-candidates.json
+      - change:inspect/issue-analysis-status.json
+      - change:issues/events.jsonl
+      - change:issues/snapshot.json
+    retryable_errors: []
+
+  operation:record-project-sync-pending:
+    handler: operation
+    reads:
+      - change:inspect/issue-evidence-manifest.json
+      - change:inspect/issue-candidates.json
+    writes:
+      - change:issues/events.jsonl
+      - change:issues/snapshot.json
+    authorization_writes:
+      - change:issues/events.jsonl
+      - change:issues/snapshot.json
+    retryable_errors: []
 
   # ---- retro workflow -------------------------------------------------------
   operation:retro-collect:

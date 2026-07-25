@@ -469,6 +469,8 @@ def test_agent_for_skill_routes_every_workflow_skill() -> None:
         "aa-inspect": "aa-reviewer",
         "aa-report-generator": "aa-reporter",
         "aa-archive": "aa-archiver",
+        "aa-issue-analyzer": "aa-doc-author",
+        "aa-issue-triage-advisor": "aa-doc-author",
     }
     for skill, agent in expected.items():
         assert agent_for_skill(skill) == agent, skill
@@ -537,6 +539,10 @@ def test_default_operations_registry_has_exact_keys() -> None:
         "operation:stop",
         "operation:retro-collect",
         "operation:retro-accept",
+        "operation:collect-observations",
+        "operation:record-empty-issue-analysis",
+        "operation:record-issue-analysis-failure",
+        "operation:record-project-sync-pending",
     }
 
 
