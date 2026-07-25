@@ -18,7 +18,6 @@ import pytest
 from pydantic import ValidationError
 
 from assurance_agent.artifacts.models.issues import (
-    AffectedSurface,
     IssueAnalysisStatus,
     IssueOccurrence,
     OccurrenceAnalysis,
@@ -511,16 +510,24 @@ class TestReadChangeIssueEvents:
 
     def test_reads_multiple_events(self, tmp_path: Path) -> None:
         p = tmp_path / "events.jsonl"
-        _write_jsonl(p, [
-            _obs_event_dict(1, "EVT-1", "IDEM-1"),
-            _obs_event_dict(2, "EVT-2", "IDEM-2"),
-        ])
+        _write_jsonl(
+            p,
+            [
+                _obs_event_dict(1, "EVT-1", "IDEM-1"),
+                _obs_event_dict(2, "EVT-2", "IDEM-2"),
+            ],
+        )
         events = read_change_issue_events(p)
         assert len(events) == 2
 
     def test_rejects_blank_hole(self, tmp_path: Path) -> None:
         p = tmp_path / "events.jsonl"
-        content = json.dumps(_obs_event_dict(1, "EVT-1", "IDEM-1")) + "\n\n" + json.dumps(_obs_event_dict(2, "EVT-2", "IDEM-2")) + "\n"
+        content = (
+            json.dumps(_obs_event_dict(1, "EVT-1", "IDEM-1"))
+            + "\n\n"
+            + json.dumps(_obs_event_dict(2, "EVT-2", "IDEM-2"))
+            + "\n"
+        )
         p.write_text(content, encoding="utf-8")
         with pytest.raises(LedgerIntegrityError, match="blank hole"):
             read_change_issue_events(p)
@@ -539,10 +546,13 @@ class TestReadChangeIssueEvents:
 
     def test_rejects_seq_gap(self, tmp_path: Path) -> None:
         p = tmp_path / "events.jsonl"
-        _write_jsonl(p, [
-            _obs_event_dict(1, "EVT-1", "IDEM-1"),
-            _obs_event_dict(3, "EVT-3", "IDEM-3"),  # gap: seq 2 missing
-        ])
+        _write_jsonl(
+            p,
+            [
+                _obs_event_dict(1, "EVT-1", "IDEM-1"),
+                _obs_event_dict(3, "EVT-3", "IDEM-3"),  # gap: seq 2 missing
+            ],
+        )
         with pytest.raises(LedgerIntegrityError, match="expected seq 2"):
             read_change_issue_events(p)
 
@@ -554,19 +564,25 @@ class TestReadChangeIssueEvents:
 
     def test_rejects_duplicate_event_id(self, tmp_path: Path) -> None:
         p = tmp_path / "events.jsonl"
-        _write_jsonl(p, [
-            _obs_event_dict(1, "EVT-SAME", "IDEM-1"),
-            _obs_event_dict(2, "EVT-SAME", "IDEM-2"),
-        ])
+        _write_jsonl(
+            p,
+            [
+                _obs_event_dict(1, "EVT-SAME", "IDEM-1"),
+                _obs_event_dict(2, "EVT-SAME", "IDEM-2"),
+            ],
+        )
         with pytest.raises(LedgerIntegrityError, match="duplicate event_id"):
             read_change_issue_events(p)
 
     def test_rejects_duplicate_idempotency_key(self, tmp_path: Path) -> None:
         p = tmp_path / "events.jsonl"
-        _write_jsonl(p, [
-            _obs_event_dict(1, "EVT-1", "IDEM-SAME"),
-            _obs_event_dict(2, "EVT-2", "IDEM-SAME"),
-        ])
+        _write_jsonl(
+            p,
+            [
+                _obs_event_dict(1, "EVT-1", "IDEM-SAME"),
+                _obs_event_dict(2, "EVT-2", "IDEM-SAME"),
+            ],
+        )
         with pytest.raises(LedgerIntegrityError, match="duplicate idempotency_key"):
             read_change_issue_events(p)
 

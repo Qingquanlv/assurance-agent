@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import cast
+
 from assurance_agent.artifacts.models.issues import (
     IssueClassification,
     IssueSeverity,
@@ -117,7 +119,7 @@ def _extract_assessment(payload: Mapping[str, object]) -> tuple[IssueClassificat
         raise InvalidTransitionError("classification is required for confirm_assessment")
     if severity not in {"critical", "high", "medium", "low"}:
         raise InvalidTransitionError("severity is required for confirm_assessment")
-    return classification, severity
+    return cast(IssueClassification, classification), cast(IssueSeverity, severity)
 
 
 def validate_human_transition(
@@ -137,9 +139,7 @@ def validate_human_transition(
 
     next_status = transitions.get(problem.status)
     if next_status is None:
-        raise InvalidTransitionError(
-            f"action {action} is not allowed from status {problem.status}"
-        )
+        raise InvalidTransitionError(f"action {action} is not allowed from status {problem.status}")
 
     _require_reason_and_evidence(reason, evidence_refs)
 
@@ -215,9 +215,7 @@ def plan_regression(
     _require_current_version(problem, expected_problem_version)
 
     if problem.status != "resolved":
-        raise InvalidTransitionError(
-            f"regression requires status resolved, found {problem.status}"
-        )
+        raise InvalidTransitionError(f"regression requires status resolved, found {problem.status}")
 
     if not occurrence_id.strip():
         raise InvalidTransitionError("occurrence_id must not be empty")

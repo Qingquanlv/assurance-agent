@@ -62,9 +62,7 @@ _HUMAN_TRANSITION_ACTIONS = frozenset(
 
 _MERGE_ACTIONS = frozenset({"merge", "confirm_link"})
 
-_ALLOWED_SUBMIT_RESOLUTION_STATUSES: frozenset[ProblemStatus] = frozenset(
-    {"in_progress", "triaged"}
-)
+_ALLOWED_SUBMIT_RESOLUTION_STATUSES: frozenset[ProblemStatus] = frozenset({"in_progress", "triaged"})
 
 # All actions understood by validate_review_action.
 REVIEW_ACTIONS: frozenset[str] = _HUMAN_TRANSITION_ACTIONS | _MERGE_ACTIONS | {"submit_resolution"}
@@ -118,9 +116,7 @@ def build_problem_review_context(
 
     Raises ReviewContextError if the problem is not found.
     """
-    problem: Problem | None = next(
-        (p for p in projection.problems if p.problem_id == problem_id), None
-    )
+    problem: Problem | None = next((p for p in projection.problems if p.problem_id == problem_id), None)
     if problem is None:
         raise ReviewContextError(
             f"problem {problem_id!r} not found in projection "
@@ -128,10 +124,7 @@ def build_problem_review_context(
         )
 
     problem_data = problem.model_dump(mode="json")
-    problem_json = (
-        json.dumps(problem_data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-        + "\n"
-    )
+    problem_json = json.dumps(problem_data, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
     problem_digest = "sha256:" + hashlib.sha256(problem_json.encode("utf-8")).hexdigest()
 
     return ProblemReviewContext(
@@ -218,8 +211,7 @@ def validate_review_action(
         raise ReviewValidationError("who must not be empty")
     if action not in REVIEW_ACTIONS:
         raise ReviewValidationError(
-            f"unsupported review action {action!r}; "
-            f"supported: {sorted(REVIEW_ACTIONS)}"
+            f"unsupported review action {action!r}; supported: {sorted(REVIEW_ACTIONS)}"
         )
 
     ts = _utc_now()
@@ -338,9 +330,7 @@ def _validate_human_transition_action(
         raise ReviewValidationError(str(exc)) from exc
 
     evidence_digest = _evidence_digest(evidence_refs)
-    idem_key = (
-        f"review:{action}:{context.problem_id}:{expected_version}:{evidence_digest}"
-    )
+    idem_key = f"review:{action}:{context.problem_id}:{expected_version}:{evidence_digest}"
     event_id = _event_id(idem_key)
 
     event: ProblemEvent
@@ -436,15 +426,11 @@ def _validate_merge_action(
     """Validate merge/confirm_link and produce a ProblemMergedEvent."""
     # Merging a resolved/not_an_issue problem back into another is disallowed.
     if problem_status in ("resolved", "not_an_issue", "accepted_risk"):
-        raise ReviewValidationError(
-            f"merge is not allowed from status {problem_status!r}"
-        )
+        raise ReviewValidationError(f"merge is not allowed from status {problem_status!r}")
 
     target_problem_id = payload.get("target_problem_id")
     if not isinstance(target_problem_id, str) or not target_problem_id.strip():
-        raise ReviewValidationError(
-            "merge requires 'target_problem_id' (non-empty string) in payload"
-        )
+        raise ReviewValidationError("merge requires 'target_problem_id' (non-empty string) in payload")
     target_problem_id = target_problem_id.strip()
 
     if target_problem_id == context.problem_id:
@@ -452,13 +438,9 @@ def _validate_merge_action(
 
     # Cycle detection: check that the target is not itself being merged into source.
     if projection is not None:
-        target = next(
-            (p for p in projection.problems if p.problem_id == target_problem_id), None
-        )
+        target = next((p for p in projection.problems if p.problem_id == target_problem_id), None)
         if target is None:
-            raise ReviewValidationError(
-                f"merge target {target_problem_id!r} not found in projection"
-            )
+            raise ReviewValidationError(f"merge target {target_problem_id!r} not found in projection")
         # Simple cycle check: target must not be resolved as an alias of source.
         # (Deep alias chains are not supported in this projection model.)
         if target.status == "resolved" and target.resolution is not None:
@@ -467,10 +449,7 @@ def _validate_merge_action(
 
     evidence_refs = _require_evidence_refs(payload)
     evidence_digest = _evidence_digest(evidence_refs)
-    idem_key = (
-        f"review:merge:{context.problem_id}:{expected_version}:"
-        f"{target_problem_id}:{evidence_digest}"
-    )
+    idem_key = f"review:merge:{context.problem_id}:{expected_version}:{target_problem_id}:{evidence_digest}"
     event_id = _event_id(idem_key)
 
     event = ProblemMergedEvent(
@@ -522,15 +501,11 @@ def _validate_submit_resolution(
 
     change_id = payload.get("change_id")
     if not isinstance(change_id, str) or not change_id.strip():
-        raise ReviewValidationError(
-            "submit_resolution requires 'change_id' (non-empty string) in payload"
-        )
+        raise ReviewValidationError("submit_resolution requires 'change_id' (non-empty string) in payload")
 
     batch_id = payload.get("batch_id")
     if not isinstance(batch_id, str) or not batch_id.strip():
-        raise ReviewValidationError(
-            "submit_resolution requires 'batch_id' (non-empty string) in payload"
-        )
+        raise ReviewValidationError("submit_resolution requires 'batch_id' (non-empty string) in payload")
 
     # evidence_digest derived from verification_scope + change_id + batch_id
     scope_digest_src = json.dumps(

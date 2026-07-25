@@ -26,7 +26,6 @@ import os
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from assurance_agent.artifacts.models.issues import (
     ChangeIssueSnapshot,
@@ -34,10 +33,7 @@ from assurance_agent.artifacts.models.issues import (
     ProblemReviewQueue,
 )
 from assurance_agent.workflow.issues.events import (
-    CHANGE_ISSUE_EVENT_ADAPTER,
-    PROBLEM_EVENT_ADAPTER,
     ChangeIssueEvent,
-    LedgerIntegrityError,
     ProblemEvent,
     read_change_issue_events,
     read_problem_events,
@@ -88,10 +84,11 @@ def _next_seq(path: Path) -> int:
 
 def _serialize_event(event: object, seq: int) -> str:
     """Dump a pydantic event model as a JSONL line with the assigned seq."""
+    data: dict[str, object]
     if hasattr(event, "model_dump"):
-        data = event.model_dump(mode="json")  # type: ignore[union-attr]
+        data = dict(event.model_dump(mode="json"))  # type: ignore[union-attr]
     else:
-        data = dict(event)  # type: ignore[call-overload]
+        data = dict(event)  # type: ignore[arg-type]
     data["seq"] = seq
     return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
@@ -156,7 +153,9 @@ def _filter_new_events(
 ) -> list[object]:
     """Return only events whose idempotency_key has not been committed."""
     return [
-        e for e in all_events if e.idempotency_key not in committed_keys  # type: ignore[union-attr]
+        e
+        for e in all_events
+        if e.idempotency_key not in committed_keys  # type: ignore[union-attr]
     ]
 
 
@@ -186,9 +185,7 @@ class ChangeIssueStore:
         self._events_path = workspace_root / self._EVENTS_RELPATH
         self._snapshot_path = workspace_root / self._SNAPSHOT_RELPATH
 
-    def append_and_rebuild(
-        self, events: Sequence[ChangeIssueEvent]
-    ) -> ChangeIssueSnapshot:
+    def append_and_rebuild(self, events: Sequence[ChangeIssueEvent]) -> ChangeIssueSnapshot:
         """Append new events and rebuild the snapshot; idempotent on repeat.
 
         If every event in ``events`` has an idempotency_key already present in

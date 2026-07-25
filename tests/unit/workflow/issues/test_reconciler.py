@@ -31,13 +31,13 @@ from assurance_agent.artifacts.models.issues import (
     IssueCandidate,
     IssueCandidateDocument,
     IssueCandidateProposed,
-    IssueOccurrence,
+    IssueClassification,
+    IssueSeverity,
     Observation,
     ObservationDocument,
     ObservationSource,
     Problem,
     ProblemAssessment,
-    ProblemFingerprint,
     ProblemProjection,
     ProblemResolution,
     ProblemSeenRef,
@@ -96,8 +96,8 @@ def _make_candidate(
     symptom: str = "returns http 500",
     possible_problem_ids: list[str] | None = None,
     title: str = "API endpoint returns 500",
-    classification: str = "product_bug",
-    severity: str = "high",
+    classification: IssueClassification = "product_bug",
+    severity: IssueSeverity = "high",
 ) -> IssueCandidate:
     return IssueCandidate(
         candidate_id=candidate_id,
@@ -350,9 +350,7 @@ def test_two_candidates_different_fingerprints_creates_two_problems() -> None:
     obs = _make_observations("OBS-X", "OBS-Y")
     cand_x = _make_candidate("CAND-X", ["OBS-X"], surface_value="GET /api/v1/users", symptom="http 500")
     cand_y = _make_candidate("CAND-Y", ["OBS-Y"], surface_value="POST /api/v1/orders", symptom="server error")
-    candidates_doc = _make_candidate_doc(
-        [cand_x, cand_y], change_id="CH-006", batch_id="BATCH-006"
-    )
+    candidates_doc = _make_candidate_doc([cand_x, cand_y], change_id="CH-006", batch_id="BATCH-006")
 
     plan = plan_reconciliation(
         candidates_doc, obs, _empty_snapshot(change_id="CH-006", batch_id="BATCH-006"), _empty_problems()
@@ -402,8 +400,12 @@ def test_idempotency_same_idempotency_keys() -> None:
     plan1 = plan_reconciliation(candidates_doc, obs, _empty_snapshot(), _empty_problems())
     plan2 = plan_reconciliation(candidates_doc, obs, _empty_snapshot(), _empty_problems())
 
-    idem1 = {e.idempotency_key for e in plan1.change_events} | {e.idempotency_key for e in plan1.problem_events}
-    idem2 = {e.idempotency_key for e in plan2.change_events} | {e.idempotency_key for e in plan2.problem_events}
+    idem1 = {e.idempotency_key for e in plan1.change_events} | {
+        e.idempotency_key for e in plan1.problem_events
+    }
+    idem2 = {e.idempotency_key for e in plan2.change_events} | {
+        e.idempotency_key for e in plan2.problem_events
+    }
     assert idem1 == idem2
 
 
@@ -416,7 +418,14 @@ def test_occurrence_id_is_stable_and_unique() -> None:
 
     plan = plan_reconciliation(candidates_doc, obs, _empty_snapshot(), _empty_problems())
 
-    occ_events = [e for e in plan.change_events if e.type in ("occurrence_detected", "occurrence_linked")]
+    from assurance_agent.workflow.issues.events import (
+        OccurrenceDetectedEvent,
+        OccurrenceLinkedEvent,
+    )
+
+    occ_events = [
+        e for e in plan.change_events if isinstance(e, (OccurrenceDetectedEvent, OccurrenceLinkedEvent))
+    ]
     occ_ids = [e.occurrence.occurrence_id for e in occ_events]
     assert len(occ_ids) == 2
     assert occ_ids[0] != occ_ids[1], "Different candidates must produce different occurrence IDs"
@@ -571,7 +580,9 @@ def test_validation_all_or_nothing_invalid_before_valid() -> None:
     """An invalid candidate followed by a valid one → zero events from both."""
     obs = _make_observations("OBS-GOOD")
     cand_bad = _make_candidate("CAND-BAD", ["OBS-UNKNOWN"])  # unknown obs
-    cand_good = _make_candidate("CAND-GOOD", ["OBS-GOOD"], surface_value="POST /api/v1/orders", symptom="error")
+    cand_good = _make_candidate(
+        "CAND-GOOD", ["OBS-GOOD"], surface_value="POST /api/v1/orders", symptom="error"
+    )
     candidates_doc = _make_candidate_doc([cand_bad, cand_good])
 
     with pytest.raises(ReconciliationValidationError):
@@ -595,17 +606,7 @@ def test_duplicate_occurrence_id_from_identical_candidates() -> None:
     """Two candidates with identical content → duplicate occurrence_id → validation error."""
     obs = _make_observations("OBS-DUP")
     # Identical candidates: same surface, symptom, obs → same per-candidate digest → same occ_id
-    cand_a = _make_candidate("CAND-DUP-A", ["OBS-DUP"])
-    cand_b = _make_candidate("CAND-DUP-B", ["OBS-DUP"])
-    # They have different candidate_ids but otherwise identical content.
-    # The per-candidate digest includes the candidate_id, so they MAY have different occ_ids.
-    # Let's create truly identical (same candidate_id would be caught first) - use same obs only.
-    # Actually since candidate_id differs, the digest differs. Let us override by using
-    # same content except candidate_id which is part of the serialized dict.
-    # The duplicate occ_id case occurs only if per_candidate_digest is the same.
-    # Since candidate_id is included, in practice two different candidate_ids won't collide.
-    # This test validates the guard exists; we'll test via same candidate_id (caught first).
-    # Let's just test via duplicate candidate_id as the primary "duplication" concern.
+    # Duplicate candidate_id is the primary duplication guard exercised here.
     cand_dup_a = _make_candidate("CAND-DUP", ["OBS-DUP"])
     cand_dup_b = _make_candidate("CAND-DUP", ["OBS-DUP"])  # same id
     candidates_doc = _make_candidate_doc([cand_dup_a, cand_dup_b])

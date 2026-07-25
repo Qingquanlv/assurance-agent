@@ -64,9 +64,7 @@ def _write_manifest(change_dir: Path, *, batch_id: str, targets: dict | None = N
         result_files["performance"] = f"runs/{batch_id}/performance-result.json"
     manifest["result_files"] = result_files
 
-    (execution_dir / "execution-manifest.yaml").write_text(
-        yaml.safe_dump(manifest), encoding="utf-8"
-    )
+    (execution_dir / "execution-manifest.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
 
 
 def _write_api_result(
@@ -163,9 +161,7 @@ def test_corrupt_execution_manifest_raises(tmp_path: Path) -> None:
     change_dir = tmp_path / "CH-001"
     execution_dir = change_dir / "execution"
     execution_dir.mkdir(parents=True)
-    (execution_dir / "execution-manifest.yaml").write_text(
-        "not: valid: yaml: [[[", encoding="utf-8"
-    )
+    (execution_dir / "execution-manifest.yaml").write_text("not: valid: yaml: [[[", encoding="utf-8")
     with pytest.raises(EvidenceError):
         collect_observations(change_dir, "CH-001")
 
@@ -180,10 +176,14 @@ def test_clean_batch_returns_empty_observations(tmp_path: Path) -> None:
     change_dir = tmp_path / change_id
     batch_id = "20260725-100000"
     _write_manifest(change_dir, batch_id=batch_id)
-    _write_api_result(change_dir, batch_id, cases=[
-        _make_case("API-001", "passed"),
-        _make_case("API-002", "passed"),
-    ])
+    _write_api_result(
+        change_dir,
+        batch_id,
+        cases=[
+            _make_case("API-001", "passed"),
+            _make_case("API-002", "passed"),
+        ],
+    )
 
     result = collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
 
@@ -206,10 +206,14 @@ def test_failed_api_case_produces_test_failure_observation(tmp_path: Path) -> No
     change_dir = tmp_path / change_id
     batch_id = "20260725-100001"
     _write_manifest(change_dir, batch_id=batch_id)
-    _write_api_result(change_dir, batch_id, cases=[
-        _make_case("API-NEG-001", "failed", message="HTTP 500 on empty name"),
-        _make_case("API-POS-001", "passed"),
-    ])
+    _write_api_result(
+        change_dir,
+        batch_id,
+        cases=[
+            _make_case("API-NEG-001", "failed", message="HTTP 500 on empty name"),
+            _make_case("API-POS-001", "passed"),
+        ],
+    )
 
     result = collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
 
@@ -228,12 +232,23 @@ def test_failed_e2e_case_produces_test_failure_observation(tmp_path: Path) -> No
     change_id = "CH-e2e-fail"
     change_dir = tmp_path / change_id
     batch_id = "20260725-100002"
-    _write_manifest(change_dir, batch_id=batch_id, targets={
-        "api": False, "e2e": True, "fuzz": False, "performance": False,
-    })
-    _write_e2e_result(change_dir, batch_id, cases=[
-        _make_case("E2E-LOGIN-001", "failed", message="Locator not found"),
-    ])
+    _write_manifest(
+        change_dir,
+        batch_id=batch_id,
+        targets={
+            "api": False,
+            "e2e": True,
+            "fuzz": False,
+            "performance": False,
+        },
+    )
+    _write_e2e_result(
+        change_dir,
+        batch_id,
+        cases=[
+            _make_case("E2E-LOGIN-001", "failed", message="Locator not found"),
+        ],
+    )
 
     result = collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
 
@@ -253,9 +268,13 @@ def test_skipped_case_without_marker_produces_anomaly(tmp_path: Path) -> None:
     change_dir = tmp_path / change_id
     batch_id = "20260725-100003"
     _write_manifest(change_dir, batch_id=batch_id)
-    _write_api_result(change_dir, batch_id, cases=[
-        _make_case("API-001", "skipped", message="Test not implemented"),
-    ])
+    _write_api_result(
+        change_dir,
+        batch_id,
+        cases=[
+            _make_case("API-001", "skipped", message="Test not implemented"),
+        ],
+    )
 
     result = collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
 
@@ -270,9 +289,13 @@ def test_skipped_case_with_workaround_marker_produces_workaround(tmp_path: Path)
     change_dir = tmp_path / change_id
     batch_id = "20260725-100004"
     _write_manifest(change_dir, batch_id=batch_id)
-    _write_api_result(change_dir, batch_id, cases=[
-        _make_case("API-001", "skipped", message="workaround: known issue with dept mgmt"),
-    ])
+    _write_api_result(
+        change_dir,
+        batch_id,
+        cases=[
+            _make_case("API-001", "skipped", message="workaround: known issue with dept mgmt"),
+        ],
+    )
 
     result = collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
 
@@ -286,9 +309,13 @@ def test_xfail_skipped_case_produces_workaround(tmp_path: Path) -> None:
     change_dir = tmp_path / change_id
     batch_id = "20260725-100005"
     _write_manifest(change_dir, batch_id=batch_id)
-    _write_api_result(change_dir, batch_id, cases=[
-        _make_case("API-001", "skipped", message="xfail: flaky assertion"),
-    ])
+    _write_api_result(
+        change_dir,
+        batch_id,
+        cases=[
+            _make_case("API-001", "skipped", message="xfail: flaky assertion"),
+        ],
+    )
 
     result = collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
 
@@ -305,9 +332,14 @@ def test_runner_anomaly_when_target_failed_no_case_failures(tmp_path: Path) -> N
     change_dir = tmp_path / change_id
     batch_id = "20260725-100006"
     _write_manifest(change_dir, batch_id=batch_id)
-    _write_api_result(change_dir, batch_id, cases=[
-        _make_case("API-001", "passed"),
-    ], status="failed")  # Target-level status says failed but no case failures
+    _write_api_result(
+        change_dir,
+        batch_id,
+        cases=[
+            _make_case("API-001", "passed"),
+        ],
+        status="failed",
+    )  # Target-level status says failed but no case failures
 
     result = collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
 
@@ -328,15 +360,19 @@ def test_traces_screenshots_videos_in_evidence_refs(tmp_path: Path) -> None:
     change_dir = tmp_path / change_id
     batch_id = "20260725-100007"
     _write_manifest(change_dir, batch_id=batch_id)
-    _write_api_result(change_dir, batch_id, cases=[
-        _make_case(
-            "API-001",
-            "failed",
-            trace="execution/runs/20260725-100007/traces/api.zip",
-            screenshot="execution/runs/20260725-100007/screenshots/api.png",
-            video="execution/runs/20260725-100007/videos/api.mp4",
-        ),
-    ])
+    _write_api_result(
+        change_dir,
+        batch_id,
+        cases=[
+            _make_case(
+                "API-001",
+                "failed",
+                trace="execution/runs/20260725-100007/traces/api.zip",
+                screenshot="execution/runs/20260725-100007/screenshots/api.png",
+                video="execution/runs/20260725-100007/videos/api.mp4",
+            ),
+        ],
+    )
 
     result = collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
 
@@ -356,10 +392,17 @@ def test_coverage_gap_observation_produced(tmp_path: Path) -> None:
     change_id = "CH-coverage"
     change_dir = tmp_path / change_id
     batch_id = "20260725-100008"
-    _write_manifest(change_dir, batch_id=batch_id, targets={
-        "api": True, "e2e": False, "fuzz": False, "performance": False,
-        "coverage": True,
-    })
+    _write_manifest(
+        change_dir,
+        batch_id=batch_id,
+        targets={
+            "api": True,
+            "e2e": False,
+            "fuzz": False,
+            "performance": False,
+            "coverage": True,
+        },
+    )
     # Write the coverage result file
     batch_dir = change_dir / "execution" / "runs" / batch_id
     batch_dir.mkdir(parents=True, exist_ok=True)
@@ -426,9 +469,7 @@ def test_performance_signal_observation_produced(tmp_path: Path) -> None:
     execution_dir.mkdir(parents=True, exist_ok=True)
     batch_dir = execution_dir / "runs" / batch_id
     batch_dir.mkdir(parents=True, exist_ok=True)
-    (execution_dir / "execution-manifest.yaml").write_text(
-        yaml.safe_dump(manifest_data), encoding="utf-8"
-    )
+    (execution_dir / "execution-manifest.yaml").write_text(yaml.safe_dump(manifest_data), encoding="utf-8")
     perf_data = {
         "schema_version": "1.0",
         "change_id": change_id,
@@ -443,9 +484,7 @@ def test_performance_signal_observation_produced(tmp_path: Path) -> None:
         "command": "locust",
         "source": {},
     }
-    (batch_dir / "performance-result.json").write_text(
-        json.dumps(perf_data), encoding="utf-8"
-    )
+    (batch_dir / "performance-result.json").write_text(json.dumps(perf_data), encoding="utf-8")
 
     result = collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
 
@@ -470,14 +509,16 @@ def test_review_warning_produces_review_finding(tmp_path: Path) -> None:
     review_dir = change_dir / "review"
     review_dir.mkdir(parents=True, exist_ok=True)
     (review_dir / "api-plan-review.json").write_text(
-        json.dumps({
-            "schema_version": "1.0",
-            "decision": "needs_fix",
-            "findings": [
-                {"type": "missing_negative_test", "severity": "high", "message": "Add 400 case"},
-            ],
-            "risk_level": "high",
-        }),
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "decision": "needs_fix",
+                "findings": [
+                    {"type": "missing_negative_test", "severity": "high", "message": "Add 400 case"},
+                ],
+                "risk_level": "high",
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -504,11 +545,13 @@ def test_healing_apply_produces_workaround_observation(tmp_path: Path) -> None:
     healing_dir = change_dir / "healing"
     healing_dir.mkdir(parents=True, exist_ok=True)
     (healing_dir / "api-apply-summary.json").write_text(
-        json.dumps({
-            "schema_version": "1.0",
-            "target": "api",
-            "applied": True,
-        }),
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "target": "api",
+                "applied": True,
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -529,16 +572,18 @@ def test_healing_skip_xfail_added_produces_workaround(tmp_path: Path) -> None:
     healing_dir = change_dir / "healing"
     healing_dir.mkdir(parents=True, exist_ok=True)
     (healing_dir / "fixer-safety-check.json").write_text(
-        json.dumps({
-            "schema_version": "1.0",
-            "passed": True,
-            "needs_review": False,
-            "product_code_modified": False,
-            "skip_or_xfail_added": True,
-            "unrelated_tests_modified": False,
-            "assertion_expected_value_changes_detected": False,
-            "high_risk_proposal_applied": False,
-        }),
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "passed": True,
+                "needs_review": False,
+                "product_code_modified": False,
+                "skip_or_xfail_added": True,
+                "unrelated_tests_modified": False,
+                "assertion_expected_value_changes_detected": False,
+                "high_risk_proposal_applied": False,
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -558,9 +603,13 @@ def test_observation_id_is_deterministic_on_replay(tmp_path: Path) -> None:
     change_dir = tmp_path / change_id
     batch_id = "20260725-100013"
     _write_manifest(change_dir, batch_id=batch_id)
-    _write_api_result(change_dir, batch_id, cases=[
-        _make_case("API-001", "failed", message="HTTP 500"),
-    ])
+    _write_api_result(
+        change_dir,
+        batch_id,
+        cases=[
+            _make_case("API-001", "failed", message="HTTP 500"),
+        ],
+    )
 
     result1 = collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
     result2 = collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
@@ -580,10 +629,14 @@ def test_every_observation_has_evidence_in_manifest(tmp_path: Path) -> None:
     change_dir = tmp_path / change_id
     batch_id = "20260725-100014"
     _write_manifest(change_dir, batch_id=batch_id)
-    _write_api_result(change_dir, batch_id, cases=[
-        _make_case("API-001", "failed", message="Assertion error"),
-        _make_case("API-002", "skipped", message="workaround: known issue"),
-    ])
+    _write_api_result(
+        change_dir,
+        batch_id,
+        cases=[
+            _make_case("API-001", "failed", message="Assertion error"),
+            _make_case("API-002", "skipped", message="workaround: known issue"),
+        ],
+    )
 
     result = collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
 
@@ -593,8 +646,7 @@ def test_every_observation_has_evidence_in_manifest(tmp_path: Path) -> None:
             # Strip anchors for path matching
             clean = ref.split("#")[0]
             assert clean in manifest_paths, (
-                f"Observation {obs.observation_id} references {ref!r} "
-                f"but it is not in the evidence manifest"
+                f"Observation {obs.observation_id} references {ref!r} but it is not in the evidence manifest"
             )
 
 
@@ -607,15 +659,30 @@ def test_multiple_targets_api_and_e2e(tmp_path: Path) -> None:
     change_id = "CH-multi"
     change_dir = tmp_path / change_id
     batch_id = "20260725-100015"
-    _write_manifest(change_dir, batch_id=batch_id, targets={
-        "api": True, "e2e": True, "fuzz": False, "performance": False,
-    })
-    _write_api_result(change_dir, batch_id, cases=[
-        _make_case("API-001", "failed"),
-    ])
-    _write_e2e_result(change_dir, batch_id, cases=[
-        _make_case("E2E-001", "failed"),
-    ])
+    _write_manifest(
+        change_dir,
+        batch_id=batch_id,
+        targets={
+            "api": True,
+            "e2e": True,
+            "fuzz": False,
+            "performance": False,
+        },
+    )
+    _write_api_result(
+        change_dir,
+        batch_id,
+        cases=[
+            _make_case("API-001", "failed"),
+        ],
+    )
+    _write_e2e_result(
+        change_dir,
+        batch_id,
+        cases=[
+            _make_case("E2E-001", "failed"),
+        ],
+    )
 
     result = collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
 
@@ -673,9 +740,16 @@ def test_fuzz_failed_case_produces_test_failure(tmp_path: Path) -> None:
     change_id = "CH-fuzz"
     change_dir = tmp_path / change_id
     batch_id = "20260725-100017"
-    _write_manifest(change_dir, batch_id=batch_id, targets={
-        "api": False, "e2e": False, "fuzz": True, "performance": False,
-    })
+    _write_manifest(
+        change_dir,
+        batch_id=batch_id,
+        targets={
+            "api": False,
+            "e2e": False,
+            "fuzz": True,
+            "performance": False,
+        },
+    )
     batch_dir = change_dir / "execution" / "runs" / batch_id
     batch_dir.mkdir(parents=True, exist_ok=True)
     manifest_data = {

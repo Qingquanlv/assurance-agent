@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
 
 _LEGACY_STEM = "known-product-issues"
 _FORBIDDEN_MD = _LEGACY_STEM + ".md"

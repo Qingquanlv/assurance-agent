@@ -51,7 +51,7 @@ from assurance_agent.workflow.issues.events import (
     ProjectSyncPendingEvent,
 )
 from assurance_agent.workflow.issues.ledger import ChangeIssueStore, ProjectProblemStore
-from assurance_agent.workflow.issues.projection import dump_projection, project_problems
+from assurance_agent.workflow.issues.projection import dump_projection
 from assurance_agent.workflow.issues.reconciler import (
     ReconciliationValidationError,
     plan_reconciliation,
@@ -86,10 +86,9 @@ def _write_json(path: Path, data: bytes) -> None:
 
 def _canonical_json(model_dict: object) -> bytes:
     """Canonical JSON bytes with sorted keys, compact separators, trailing newline."""
-    return (
-        json.dumps(model_dict, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-        + "\n"
-    ).encode("utf-8")
+    return (json.dumps(model_dict, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode(
+        "utf-8"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -155,9 +154,7 @@ def collect_observations_operation(
     events: list[ObservationRecordedEvent] = []
 
     for obs in result.observations:
-        idem_key = (
-            f"observation_recorded:{context.change_id}:{result.batch_id}:{obs.observation_id}"
-        )
+        idem_key = f"observation_recorded:{context.change_id}:{result.batch_id}:{obs.observation_id}"
         events.append(
             ObservationRecordedEvent(
                 schema_version="1.0",
@@ -395,9 +392,7 @@ def record_issue_analysis_failure_operation(
 
     # Append issue_analysis_failed event to the Change Ledger (idempotent).
     ts = _utc_now()
-    idem_key = (
-        f"issue_analysis_failed:{context.change_id}:{batch_id}:{evidence_bundle_digest}"
-    )
+    idem_key = f"issue_analysis_failed:{context.change_id}:{batch_id}:{evidence_bundle_digest}"
     failed_event = IssueAnalysisFailedEvent(
         schema_version="1.0",
         seq=1,
@@ -460,9 +455,7 @@ def record_project_sync_pending_operation(
         candidate_digest = evidence_bundle_digest
 
     ts = _utc_now()
-    idem_key = (
-        f"project_sync_pending:{context.change_id}:{batch_id}:{candidate_digest}"
-    )
+    idem_key = f"project_sync_pending:{context.change_id}:{batch_id}:{candidate_digest}"
     sync_event = ProjectSyncPendingEvent(
         schema_version="1.0",
         seq=1,
@@ -568,9 +561,7 @@ def reconcile_issues_operation(
     # ------------------------------------------------------------------
     candidates_path = inspect_dir / "issue-candidates.json"
     try:
-        candidates_doc = _load_json_model(
-            candidates_path, IssueCandidateDocument, "reconcile-issues"
-        )
+        candidates_doc = _load_json_model(candidates_path, IssueCandidateDocument, "reconcile-issues")
     except (FileNotFoundError, ValueError) as exc:
         return task_failure("invalid_input", str(exc))
 
@@ -579,9 +570,7 @@ def reconcile_issues_operation(
     # ------------------------------------------------------------------
     observations_path = inspect_dir / "observations.json"
     try:
-        observations = _load_json_model(
-            observations_path, ObservationDocument, "reconcile-issues"
-        )
+        observations = _load_json_model(observations_path, ObservationDocument, "reconcile-issues")
     except (FileNotFoundError, ValueError) as exc:
         return task_failure("invalid_input", str(exc))
 

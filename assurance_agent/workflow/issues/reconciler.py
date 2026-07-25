@@ -42,8 +42,6 @@ from assurance_agent.artifacts.models.issues import (
     OccurrenceAnalysis,
     ObservationDocument,
     ChangeIssueSnapshot,
-    Problem,
-    ProblemFingerprint,
     ProblemProjection,
     ProvisionalAssessment,
 )
@@ -122,19 +120,14 @@ def _event_id(idempotency_key: str) -> str:
 
 def _per_candidate_digest(candidate_data: dict) -> str:
     """Return a per-candidate SHA-256 digest from its canonical JSON representation."""
-    canonical = (
-        json.dumps(candidate_data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-        + "\n"
-    )
+    canonical = json.dumps(candidate_data, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _batch_candidate_digest(candidates_doc: IssueCandidateDocument) -> str:
     """Return a batch-level SHA-256 digest from the canonical IssueCandidateDocument."""
     data = candidates_doc.model_dump(mode="json")
-    canonical = (
-        json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
-    )
+    canonical = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -206,9 +199,7 @@ def _validate_candidate_batch(
         # 2. All observation_ids must exist
         for obs_id in candidate.observation_ids:
             if obs_id not in known_obs_ids:
-                errors.append(
-                    f"candidate {cid!r}: unknown observation_id {obs_id!r}"
-                )
+                errors.append(f"candidate {cid!r}: unknown observation_id {obs_id!r}")
 
         # 3. Fingerprint inputs must be non-empty and normalisable
         try:
@@ -228,24 +219,18 @@ def _validate_candidate_batch(
 
         occ_id = compute_occurrence_id(change_id, batch_id, per_digest)
         if occ_id in seen_occurrence_ids:
-            errors.append(
-                f"candidate {cid!r}: duplicate deterministic occurrence_id {occ_id!r}"
-            )
+            errors.append(f"candidate {cid!r}: duplicate deterministic occurrence_id {occ_id!r}")
         seen_occurrence_ids.add(occ_id)
 
         # 5. Check for within-batch fingerprint collisions producing same occurrence_id
         if fp is not None:
-            if fp.digest in seen_fingerprint_digests and per_digest == _per_candidate_digest(
-                candidate_data
-            ):
+            if fp.digest in seen_fingerprint_digests and per_digest == _per_candidate_digest(candidate_data):
                 pass  # same candidate content produces same occ_id caught above
 
         # 6. possible_problem_ids must reference existing problems
         for possible_pid in candidate.possible_problem_ids:
             if possible_pid not in existing_problem_ids:
-                errors.append(
-                    f"candidate {cid!r}: possible_problem_id {possible_pid!r} not in projection"
-                )
+                errors.append(f"candidate {cid!r}: possible_problem_id {possible_pid!r} not in projection")
 
     if errors:
         raise ReconciliationValidationError(errors)
@@ -284,9 +269,7 @@ def _derive_reconciliation_events(
     problem_events: list[ProblemEvent] = []
 
     # First Change event: issue_analysis_completed
-    completed_idem = (
-        f"issue_analysis_completed:{change_id}:{batch_id}:{batch_candidate_digest}"
-    )
+    completed_idem = f"issue_analysis_completed:{change_id}:{batch_id}:{batch_candidate_digest}"
     analysis_status = IssueAnalysisStatus(
         schema_version="1.0",
         change_id=change_id,
@@ -394,9 +377,7 @@ def _derive_reconciliation_events(
                         occurrence=occurrence,
                     )
                 )
-                link_idem = (
-                    f"problem_occurrence_linked:{existing_pid}:{change_id}:{batch_id}:{per_digest}"
-                )
+                link_idem = f"problem_occurrence_linked:{existing_pid}:{change_id}:{batch_id}:{per_digest}"
                 problem_events.append(
                     ProblemOccurrenceLinkedEvent(
                         schema_version="1.0",
@@ -432,9 +413,7 @@ def _derive_reconciliation_events(
                     occurrence=occurrence,
                 )
             )
-            det_idem = (
-                f"problem_detected:{pid}:{change_id}:{batch_id}:{per_digest}"
-            )
+            det_idem = f"problem_detected:{pid}:{change_id}:{batch_id}:{per_digest}"
             problem_events.append(
                 ProblemDetectedEvent(
                     schema_version="1.0",

@@ -22,7 +22,7 @@ import json
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
 from assurance_agent.artifacts.models.common import NonEmptyStr
 from assurance_agent.artifacts.models.issues import (
@@ -131,7 +131,6 @@ class ProblemDetectedEvent(_BaseProblemEvent):
     """First occurrence of a fingerprint; creates a new Problem at version 1."""
 
     type: Literal["problem_detected"]
-    expected_problem_version: Literal[0] = 0
     occurrence_id: NonEmptyStr
     change_id: NonEmptyStr
     batch_id: NonEmptyStr
@@ -140,6 +139,12 @@ class ProblemDetectedEvent(_BaseProblemEvent):
     classification: IssueClassification
     severity: IssueSeverity
     root_cause_hypothesis: NonEmptyStr | None = None
+
+    @model_validator(mode="after")
+    def _require_expected_version_zero(self) -> "ProblemDetectedEvent":
+        if self.expected_problem_version != 0:
+            raise ValueError("problem_detected requires expected_problem_version == 0")
+        return self
 
 
 class ProblemOccurrenceLinkedEvent(_BaseProblemEvent):
@@ -267,46 +272,32 @@ def _read_strict(
     seen_idempotency_keys: set[str] = set()
     expected_seq = 1
 
-    for line_no, raw_line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(), start=1
-    ):
+    for line_no, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if not raw_line.strip():
-            raise LedgerIntegrityError(
-                f"{path} line {line_no}: blank hole in ledger"
-            )
+            raise LedgerIntegrityError(f"{path} line {line_no}: blank hole in ledger")
 
         try:
             data = json.loads(raw_line)
         except json.JSONDecodeError as exc:
-            raise LedgerIntegrityError(
-                f"{path} line {line_no}: invalid JSON: {exc}"
-            ) from exc
+            raise LedgerIntegrityError(f"{path} line {line_no}: invalid JSON: {exc}") from exc
 
         if not isinstance(data, dict):
-            raise LedgerIntegrityError(
-                f"{path} line {line_no}: event is not a JSON object"
-            )
+            raise LedgerIntegrityError(f"{path} line {line_no}: event is not a JSON object")
 
         seq = data.get("seq")
         if not isinstance(seq, int) or isinstance(seq, bool) or seq != expected_seq:
-            raise LedgerIntegrityError(
-                f"{path} line {line_no}: expected seq {expected_seq}, got {seq!r}"
-            )
+            raise LedgerIntegrityError(f"{path} line {line_no}: expected seq {expected_seq}, got {seq!r}")
 
         try:
             event = adapter.validate_python(data)
         except ValidationError as exc:
-            raise LedgerIntegrityError(
-                f"{path} line {line_no}: invalid event: {exc}"
-            ) from exc
+            raise LedgerIntegrityError(f"{path} line {line_no}: invalid event: {exc}") from exc
 
         event_id: str = event.event_id
         idempotency_key: str = event.idempotency_key
 
         if event_id in seen_event_ids:
-            raise LedgerIntegrityError(
-                f"{path} line {line_no}: duplicate event_id {event_id!r}"
-            )
+            raise LedgerIntegrityError(f"{path} line {line_no}: duplicate event_id {event_id!r}")
         if idempotency_key in seen_idempotency_keys:
             raise LedgerIntegrityError(
                 f"{path} line {line_no}: duplicate idempotency_key {idempotency_key!r}"

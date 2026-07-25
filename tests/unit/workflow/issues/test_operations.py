@@ -21,14 +21,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 import yaml
 
 from assurance_agent.workflow.graph.handlers.operation import default_operations
-from assurance_agent.workflow.graph.models import ExecutableTask, RecoveryContext, RuntimeContext, TaskResult
-from assurance_agent.workflow.graph.workspace import TaskWorkspace
+from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext
 from assurance_agent.workflow.issues.operations import (
     collect_observations_operation,
     record_empty_issue_analysis_operation,
@@ -107,9 +105,7 @@ def _setup_execution(
         "selected_targets": targets_map,
         "result_files": {result_file_key: f"runs/{batch_id}/{target}-result.json"},
     }
-    (execution_dir / "execution-manifest.yaml").write_text(
-        yaml.safe_dump(manifest), encoding="utf-8"
-    )
+    (execution_dir / "execution-manifest.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
 
     result_data = {
         "schema_version": "1.0",
@@ -163,9 +159,13 @@ def test_writes_four_required_files(tmp_path: Path) -> None:
     change_id = "CH-ops-001"
     change_dir = tmp_path / change_id
     batch_id = "20260725-110000"
-    _setup_execution(change_dir, batch_id, cases=[
-        _make_case("API-001", "failed", "HTTP 500"),
-    ])
+    _setup_execution(
+        change_dir,
+        batch_id,
+        cases=[
+            _make_case("API-001", "failed", "HTTP 500"),
+        ],
+    )
 
     task = _make_task()
     workspace = _FakeTaskWorkspace(change_dir)
@@ -189,10 +189,14 @@ def test_returns_batch_id_digest_and_abnormal_count(tmp_path: Path) -> None:
     change_id = "CH-ops-002"
     change_dir = tmp_path / change_id
     batch_id = "20260725-110001"
-    _setup_execution(change_dir, batch_id, cases=[
-        _make_case("API-001", "failed"),
-        _make_case("API-002", "passed"),
-    ])
+    _setup_execution(
+        change_dir,
+        batch_id,
+        cases=[
+            _make_case("API-001", "failed"),
+            _make_case("API-002", "passed"),
+        ],
+    )
 
     task = _make_task()
     workspace = _FakeTaskWorkspace(change_dir)
@@ -217,9 +221,13 @@ def test_idempotent_replay_produces_same_output(tmp_path: Path) -> None:
     change_id = "CH-idempotent"
     change_dir = tmp_path / change_id
     batch_id = "20260725-110002"
-    _setup_execution(change_dir, batch_id, cases=[
-        _make_case("API-001", "failed"),
-    ])
+    _setup_execution(
+        change_dir,
+        batch_id,
+        cases=[
+            _make_case("API-001", "failed"),
+        ],
+    )
 
     task = _make_task()
     workspace = _FakeTaskWorkspace(change_dir)
@@ -279,9 +287,7 @@ def test_hard_failure_on_corrupt_execution_manifest(tmp_path: Path) -> None:
     change_dir = tmp_path / change_id
     execution_dir = change_dir / "execution"
     execution_dir.mkdir(parents=True)
-    (execution_dir / "execution-manifest.yaml").write_text(
-        "this: is: invalid: yaml: [[[", encoding="utf-8"
-    )
+    (execution_dir / "execution-manifest.yaml").write_text("this: is: invalid: yaml: [[[", encoding="utf-8")
 
     task = _make_task()
     workspace = _FakeTaskWorkspace(change_dir)
@@ -302,9 +308,13 @@ def test_clean_batch_writes_empty_observations_and_snapshot(tmp_path: Path) -> N
     change_id = "CH-clean-ops"
     change_dir = tmp_path / change_id
     batch_id = "20260725-110003"
-    _setup_execution(change_dir, batch_id, cases=[
-        _make_case("API-001", "passed"),
-    ])
+    _setup_execution(
+        change_dir,
+        batch_id,
+        cases=[
+            _make_case("API-001", "passed"),
+        ],
+    )
 
     task = _make_task()
     workspace = _FakeTaskWorkspace(change_dir)
@@ -339,12 +349,16 @@ def test_abnormal_count_matches_observation_count(tmp_path: Path) -> None:
     change_id = "CH-count"
     change_dir = tmp_path / change_id
     batch_id = "20260725-110004"
-    _setup_execution(change_dir, batch_id, cases=[
-        _make_case("API-001", "failed"),
-        _make_case("API-002", "failed"),
-        _make_case("API-003", "passed"),
-        _make_case("API-004", "skipped", "anomaly case"),
-    ])
+    _setup_execution(
+        change_dir,
+        batch_id,
+        cases=[
+            _make_case("API-001", "failed"),
+            _make_case("API-002", "failed"),
+            _make_case("API-003", "passed"),
+            _make_case("API-004", "skipped", "anomaly case"),
+        ],
+    )
 
     task = _make_task()
     workspace = _FakeTaskWorkspace(change_dir)
@@ -372,9 +386,13 @@ def test_events_jsonl_contains_observation_recorded(tmp_path: Path) -> None:
     change_id = "CH-events"
     change_dir = tmp_path / change_id
     batch_id = "20260725-110005"
-    _setup_execution(change_dir, batch_id, cases=[
-        _make_case("API-001", "failed"),
-    ])
+    _setup_execution(
+        change_dir,
+        batch_id,
+        cases=[
+            _make_case("API-001", "failed"),
+        ],
+    )
 
     task = _make_task()
     workspace = _FakeTaskWorkspace(change_dir)
@@ -384,7 +402,7 @@ def test_events_jsonl_contains_observation_recorded(tmp_path: Path) -> None:
 
     events_file = change_dir / "issues" / "events.jsonl"
     assert events_file.is_file()
-    lines = [l for l in events_file.read_text(encoding="utf-8").splitlines() if l.strip()]
+    lines = [line for line in events_file.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert len(lines) == 1
     event = json.loads(lines[0])
     assert event["type"] == "observation_recorded"
@@ -402,9 +420,13 @@ def test_idempotent_replay_does_not_duplicate_events(tmp_path: Path) -> None:
     change_id = "CH-no-dup"
     change_dir = tmp_path / change_id
     batch_id = "20260725-110006"
-    _setup_execution(change_dir, batch_id, cases=[
-        _make_case("API-001", "failed"),
-    ])
+    _setup_execution(
+        change_dir,
+        batch_id,
+        cases=[
+            _make_case("API-001", "failed"),
+        ],
+    )
 
     task = _make_task()
     workspace = _FakeTaskWorkspace(change_dir)
@@ -414,7 +436,7 @@ def test_idempotent_replay_does_not_duplicate_events(tmp_path: Path) -> None:
     collect_observations_operation(task, workspace, context)  # type: ignore[arg-type]
 
     events_file = change_dir / "issues" / "events.jsonl"
-    lines = [l for l in events_file.read_text(encoding="utf-8").splitlines() if l.strip()]
+    lines = [line for line in events_file.read_text(encoding="utf-8").splitlines() if line.strip()]
     # Should still be exactly 1 event (idempotency_key deduplication)
     assert len(lines) == 1
 
@@ -453,9 +475,7 @@ def _write_candidate_doc(change_dir: Path, batch_id: str, evidence_digest: str) 
         "evidence_bundle_digest": evidence_digest,
         "candidates": [],
     }
-    (inspect_dir / "issue-candidates.json").write_text(
-        json.dumps(doc, indent=2), encoding="utf-8"
-    )
+    (inspect_dir / "issue-candidates.json").write_text(json.dumps(doc, indent=2), encoding="utf-8")
 
 
 def _make_recovery_task(
@@ -615,9 +635,7 @@ def test_record_failure_writes_failed_status_and_event(tmp_path: Path) -> None:
 
     _write_evidence_manifest(change_dir, batch_id, evidence_digest)
 
-    task = _make_recovery_task(
-        "operation:record-issue-analysis-failure", error_kind="timeout"
-    )
+    task = _make_recovery_task("operation:record-issue-analysis-failure", error_kind="timeout")
     workspace = _FakeTaskWorkspace(change_dir)
     context = _make_context(change_dir)
 
@@ -629,22 +647,18 @@ def test_record_failure_writes_failed_status_and_event(tmp_path: Path) -> None:
     assert value["analysis_reason"] == "timeout"
 
     # Candidates file must exist and be empty.
-    candidates = json.loads(
-        (change_dir / "inspect" / "issue-candidates.json").read_text(encoding="utf-8")
-    )
+    candidates = json.loads((change_dir / "inspect" / "issue-candidates.json").read_text(encoding="utf-8"))
     assert candidates["candidates"] == []
 
     # Status file must show failed.
-    status = json.loads(
-        (change_dir / "inspect" / "issue-analysis-status.json").read_text(encoding="utf-8")
-    )
+    status = json.loads((change_dir / "inspect" / "issue-analysis-status.json").read_text(encoding="utf-8"))
     assert status["status"] == "failed"
     assert status["reason"] == "timeout"
 
     # Event must be appended to issues/events.jsonl.
     events_file = change_dir / "issues" / "events.jsonl"
     assert events_file.is_file()
-    lines = [l for l in events_file.read_text(encoding="utf-8").splitlines() if l.strip()]
+    lines = [line for line in events_file.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert len(lines) == 1
     event = json.loads(lines[0])
     assert event["type"] == "issue_analysis_failed"
@@ -670,9 +684,7 @@ def test_record_failure_error_kind_to_reason_mapping(
 
     _write_evidence_manifest(change_dir, batch_id, evidence_digest)
 
-    task = _make_recovery_task(
-        "operation:record-issue-analysis-failure", error_kind=error_kind
-    )
+    task = _make_recovery_task("operation:record-issue-analysis-failure", error_kind=error_kind)
     workspace = _FakeTaskWorkspace(change_dir)
     context = _make_context(change_dir)
 
@@ -685,9 +697,7 @@ def test_record_failure_error_kind_to_reason_mapping(
         f"error_kind={error_kind!r} should map to reason={expected_reason!r}"
     )
 
-    status = json.loads(
-        (change_dir / "inspect" / "issue-analysis-status.json").read_text(encoding="utf-8")
-    )
+    status = json.loads((change_dir / "inspect" / "issue-analysis-status.json").read_text(encoding="utf-8"))
     assert status["reason"] == expected_reason
 
 
@@ -713,7 +723,7 @@ def test_record_failure_transport_maps_to_unavailable_retains_graph_error_kind(t
     assert result.status == "succeeded"
     value = result.value
     assert isinstance(value, dict)
-    assert value["error_kind"] == "transport"        # graph error_kind preserved
+    assert value["error_kind"] == "transport"  # graph error_kind preserved
     assert value["analysis_reason"] == "unavailable"  # analysis reason mapped
 
 
@@ -734,9 +744,7 @@ def test_record_failure_uses_recovery_context_when_present(tmp_path: Path) -> No
         with_recovery=True,
     )
     # Override task.input to have a different error_kind to prove recovery takes precedence.
-    task = task.model_copy(
-        update={"input": {"error_kind": "transport", "message": "from input"}}
-    )
+    task = task.model_copy(update={"input": {"error_kind": "transport", "message": "from input"}})
 
     workspace = _FakeTaskWorkspace(change_dir)
     context = _make_context(change_dir)
@@ -760,9 +768,7 @@ def test_record_failure_is_idempotent(tmp_path: Path) -> None:
 
     _write_evidence_manifest(change_dir, batch_id, evidence_digest)
 
-    task = _make_recovery_task(
-        "operation:record-issue-analysis-failure", error_kind="timeout"
-    )
+    task = _make_recovery_task("operation:record-issue-analysis-failure", error_kind="timeout")
     workspace = _FakeTaskWorkspace(change_dir)
     context = _make_context(change_dir)
 
@@ -770,7 +776,7 @@ def test_record_failure_is_idempotent(tmp_path: Path) -> None:
     record_issue_analysis_failure_operation(task, workspace, context)  # type: ignore[arg-type]
 
     events_file = change_dir / "issues" / "events.jsonl"
-    lines = [l for l in events_file.read_text(encoding="utf-8").splitlines() if l.strip()]
+    lines = [line for line in events_file.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert len(lines) == 1, "Idempotent replay must not duplicate ledger events"
 
 
@@ -806,7 +812,7 @@ def test_record_sync_pending_appends_event(tmp_path: Path) -> None:
 
     events_file = change_dir / "issues" / "events.jsonl"
     assert events_file.is_file()
-    lines = [l for l in events_file.read_text(encoding="utf-8").splitlines() if l.strip()]
+    lines = [line for line in events_file.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert len(lines) == 1
     event = json.loads(lines[0])
     assert event["type"] == "project_sync_pending"
@@ -847,7 +853,7 @@ def test_record_sync_pending_is_idempotent(tmp_path: Path) -> None:
     record_project_sync_pending_operation(task, workspace, context)  # type: ignore[arg-type]
 
     events_file = change_dir / "issues" / "events.jsonl"
-    lines = [l for l in events_file.read_text(encoding="utf-8").splitlines() if l.strip()]
+    lines = [line for line in events_file.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert len(lines) == 1, "Idempotent replay must not duplicate ledger events"
 
 
@@ -917,6 +923,7 @@ def _make_observations_doc(change_dir: Path, batch_id: str, obs_ids: list[str]) 
         observations=observations,
     )
     from assurance_agent.workflow.issues.projection import dump_projection
+
     inspect_dir = change_dir / "inspect"
     inspect_dir.mkdir(parents=True, exist_ok=True)
     (inspect_dir / "observations.json").write_bytes(dump_projection(doc))
@@ -1064,9 +1071,7 @@ def test_reconcile_status_completed_on_success(tmp_path: Path) -> None:
 
     assert result.status == "succeeded"
 
-    status = json.loads(
-        (change_dir / "inspect" / "issue-reconcile-status.json").read_text(encoding="utf-8")
-    )
+    status = json.loads((change_dir / "inspect" / "issue-reconcile-status.json").read_text(encoding="utf-8"))
     assert status["status"] == "completed"
     assert status["change_id"] == change_id
 
@@ -1102,9 +1107,7 @@ def test_reconcile_semantic_failure_writes_failed_status_returns_success(tmp_pat
     assert not (change_dir / "issues" / "events.jsonl").is_file()
     assert not (project_root / "qa" / "issues" / "events.jsonl").is_file()
 
-    status = json.loads(
-        (change_dir / "inspect" / "issue-reconcile-status.json").read_text(encoding="utf-8")
-    )
+    status = json.loads((change_dir / "inspect" / "issue-reconcile-status.json").read_text(encoding="utf-8"))
     assert status["status"] == "failed"
 
 
@@ -1156,7 +1159,7 @@ def test_reconcile_missing_observations_returns_invalid_input(tmp_path: Path) ->
 def test_reconcile_empty_candidates_no_problem_events(tmp_path: Path) -> None:
     """Empty candidates document → analysis_completed written, no problem events."""
     from assurance_agent.workflow.issues.operations import reconcile_issues_operation
-    from assurance_agent.workflow.issues.events import read_change_issue_events, read_problem_events
+    from assurance_agent.workflow.issues.events import read_change_issue_events
 
     change_id = "CH-rec-empty"
     change_dir = tmp_path / change_id
@@ -1188,7 +1191,6 @@ def test_reconcile_empty_candidates_no_problem_events(tmp_path: Path) -> None:
 def test_reconcile_is_idempotent(tmp_path: Path) -> None:
     """Calling reconcile twice with the same inputs produces no duplicate events."""
     from assurance_agent.workflow.issues.operations import reconcile_issues_operation
-    from assurance_agent.workflow.issues.events import read_change_issue_events, read_problem_events
 
     change_id = "CH-rec-idem"
     change_dir = tmp_path / change_id
@@ -1209,7 +1211,7 @@ def test_reconcile_is_idempotent(tmp_path: Path) -> None:
 
     # Capture ledger state after first call
     project_events_after_1 = (project_root / "qa" / "issues" / "events.jsonl").read_text(encoding="utf-8")
-    change_events_after_1 = (change_dir / "issues" / "events.jsonl").read_text(encoding="utf-8")
+    _ = (change_dir / "issues" / "events.jsonl").read_text(encoding="utf-8")
 
     # Reset project store to empty so second call sees the same initial state
     # (simulates the synchronized workspace frozen snapshot)

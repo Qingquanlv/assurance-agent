@@ -130,9 +130,7 @@ def test_resume_when_invocation_exists(tmp_path: Path, monkeypatch: pytest.Monke
     runtime.resume.assert_called_once_with("inv-existing")
 
 
-def test_once_entrypoint_refuses_completed_restart(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_once_entrypoint_refuses_completed_restart(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _prepare(tmp_path)
     runtime = _patch_bundle(
         monkeypatch,

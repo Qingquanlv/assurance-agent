@@ -30,24 +30,6 @@ from assurance_agent.artifacts.models.issues import (
 from assurance_agent.workflow.issues.events import (
     CHANGE_ISSUE_EVENT_ADAPTER,
     PROBLEM_EVENT_ADAPTER,
-    IssueAnalysisCompletedEvent,
-    IssueAnalysisFailedEvent,
-    ObservationRecordedEvent,
-    OccurrenceDetectedEvent,
-    OccurrenceLinkedEvent,
-    ProblemAssessmentConfirmedEvent,
-    ProblemDetectedEvent,
-    ProblemMergedEvent,
-    ProblemMergeSuggestedEvent,
-    ProblemMarkedNotAnIssueEvent,
-    ProblemOccurrenceLinkedEvent,
-    ProblemRegressedEvent,
-    ProblemReopenedEvent,
-    ProblemResolvedEvent,
-    ProblemRiskAcceptedEvent,
-    ProblemVerificationRequestedEvent,
-    ProblemWorkStartedEvent,
-    ProjectSyncPendingEvent,
 )
 from assurance_agent.workflow.issues.projection import (
     ProjectionError,
@@ -164,10 +146,12 @@ PROB_ID_B = "PROB-beefdeadcafef00d"
 
 def _seq_counter():
     n = 0
+
     def next_seq():
         nonlocal n
         n += 1
         return n
+
     return next_seq
 
 
@@ -213,7 +197,10 @@ class TestProjectChangeIssues:
 
     def test_single_observation(self) -> None:
         events = [
-            _mk_change_event(1, "E1", "I1",
+            _mk_change_event(
+                1,
+                "E1",
+                "I1",
                 type="observation_recorded",
                 observation=OBS_1.model_dump(mode="json"),
             )
@@ -229,11 +216,17 @@ class TestProjectChangeIssues:
 
     def test_observations_retained_across_batches(self) -> None:
         events = [
-            _mk_change_event(1, "E1", "I1",
+            _mk_change_event(
+                1,
+                "E1",
+                "I1",
                 type="observation_recorded",
                 observation=OBS_1.model_dump(mode="json"),
             ),
-            _mk_change_event(2, "E2", "I2",
+            _mk_change_event(
+                2,
+                "E2",
+                "I2",
                 type="observation_recorded",
                 batch_id="B-002",
                 observation=OBS_2.model_dump(mode="json"),
@@ -246,11 +239,17 @@ class TestProjectChangeIssues:
 
     def test_analysis_completed_sets_status(self) -> None:
         events = [
-            _mk_change_event(1, "E1", "I1",
+            _mk_change_event(
+                1,
+                "E1",
+                "I1",
                 type="observation_recorded",
                 observation=OBS_1.model_dump(mode="json"),
             ),
-            _mk_change_event(2, "E2", "I2",
+            _mk_change_event(
+                2,
+                "E2",
+                "I2",
                 type="issue_analysis_completed",
                 analysis_status=ANALYSIS_OK.model_dump(mode="json"),
             ),
@@ -263,11 +262,17 @@ class TestProjectChangeIssues:
 
     def test_analysis_failed_sets_status(self) -> None:
         events = [
-            _mk_change_event(1, "E1", "I1",
+            _mk_change_event(
+                1,
+                "E1",
+                "I1",
                 type="observation_recorded",
                 observation=OBS_1.model_dump(mode="json"),
             ),
-            _mk_change_event(2, "E2", "I2",
+            _mk_change_event(
+                2,
+                "E2",
+                "I2",
                 type="issue_analysis_failed",
                 analysis_status=ANALYSIS_FAIL.model_dump(mode="json"),
             ),
@@ -278,11 +283,17 @@ class TestProjectChangeIssues:
 
     def test_occurrence_detected_added(self) -> None:
         events = [
-            _mk_change_event(1, "E1", "I1",
+            _mk_change_event(
+                1,
+                "E1",
+                "I1",
                 type="observation_recorded",
                 observation=OBS_1.model_dump(mode="json"),
             ),
-            _mk_change_event(2, "E2", "I2",
+            _mk_change_event(
+                2,
+                "E2",
+                "I2",
                 type="occurrence_detected",
                 occurrence=OCC_1.model_dump(mode="json"),
             ),
@@ -293,7 +304,10 @@ class TestProjectChangeIssues:
 
     def test_occurrence_linked_added(self) -> None:
         events = [
-            _mk_change_event(1, "E1", "I1",
+            _mk_change_event(
+                1,
+                "E1",
+                "I1",
                 type="occurrence_linked",
                 occurrence=OCC_1.model_dump(mode="json"),
             ),
@@ -303,11 +317,17 @@ class TestProjectChangeIssues:
 
     def test_project_sync_pending_sets_status(self) -> None:
         events = [
-            _mk_change_event(1, "E1", "I1",
+            _mk_change_event(
+                1,
+                "E1",
+                "I1",
                 type="observation_recorded",
                 observation=OBS_1.model_dump(mode="json"),
             ),
-            _mk_change_event(2, "E2", "I2",
+            _mk_change_event(
+                2,
+                "E2",
+                "I2",
                 type="project_sync_pending",
                 candidate_digest="sha256:11223344",
             ),
@@ -317,15 +337,24 @@ class TestProjectChangeIssues:
 
     def test_occurrence_after_sync_pending_resets_status(self) -> None:
         events = [
-            _mk_change_event(1, "E1", "I1",
+            _mk_change_event(
+                1,
+                "E1",
+                "I1",
                 type="observation_recorded",
                 observation=OBS_1.model_dump(mode="json"),
             ),
-            _mk_change_event(2, "E2", "I2",
+            _mk_change_event(
+                2,
+                "E2",
+                "I2",
                 type="project_sync_pending",
                 candidate_digest="sha256:11223344",
             ),
-            _mk_change_event(3, "E3", "I3",
+            _mk_change_event(
+                3,
+                "E3",
+                "I3",
                 type="occurrence_detected",
                 occurrence=OCC_1.model_dump(mode="json"),
             ),
@@ -341,7 +370,11 @@ class TestProjectChangeIssues:
 
 def _detected_event(seq: int = 1, prob_id: str = PROB_ID, occ_id: str = "OCC-1111111111111111") -> object:
     return _mk_problem_event(
-        seq, f"E{seq}", f"I{seq}", prob_id, 0,
+        seq,
+        f"E{seq}",
+        f"I{seq}",
+        prob_id,
+        0,
         type="problem_detected",
         occurrence_id=occ_id,
         change_id="CH-001",
@@ -375,7 +408,12 @@ class TestProjectProblems:
     def test_problem_occurrence_linked_increments_version(self) -> None:
         events = [
             _detected_event(1),
-            _mk_problem_event(2, "E2", "I2", PROB_ID, 1,
+            _mk_problem_event(
+                2,
+                "E2",
+                "I2",
+                PROB_ID,
+                1,
                 type="problem_occurrence_linked",
                 occurrence_id="OCC-2222222222222222",
                 change_id="CH-001",
@@ -391,7 +429,12 @@ class TestProjectProblems:
     def test_assessment_confirmed_human_authority(self) -> None:
         events = [
             _detected_event(1),
-            _mk_problem_event(2, "E2", "I2", PROB_ID, 1,
+            _mk_problem_event(
+                2,
+                "E2",
+                "I2",
+                PROB_ID,
+                1,
                 type="problem_assessment_confirmed",
                 classification="test_bug",
                 severity="low",
@@ -410,14 +453,24 @@ class TestProjectProblems:
     def test_work_started_sets_in_progress(self) -> None:
         events = [
             _detected_event(1),
-            _mk_problem_event(2, "E2", "I2", PROB_ID, 1,
+            _mk_problem_event(
+                2,
+                "E2",
+                "I2",
+                PROB_ID,
+                1,
                 type="problem_assessment_confirmed",
                 classification="product_bug",
                 severity="high",
                 reason="triaged",
                 evidence_refs=["OCC-1111111111111111"],
             ),
-            _mk_problem_event(3, "E3", "I3", PROB_ID, 2,
+            _mk_problem_event(
+                3,
+                "E3",
+                "I3",
+                PROB_ID,
+                2,
                 type="problem_work_started",
                 reason="assigned",
                 evidence_refs=["OCC-1111111111111111"],
@@ -431,7 +484,12 @@ class TestProjectProblems:
     def test_verification_requested(self) -> None:
         events = [
             _detected_event(1),
-            _mk_problem_event(2, "E2", "I2", PROB_ID, 1,
+            _mk_problem_event(
+                2,
+                "E2",
+                "I2",
+                PROB_ID,
+                1,
                 type="problem_verification_requested",
                 verification_scope=["API-TEST-001"],
                 linked_fix_disposition="PR-42",
@@ -447,14 +505,24 @@ class TestProjectProblems:
     def test_resolved_sets_resolution(self) -> None:
         events = [
             _detected_event(1),
-            _mk_problem_event(2, "E2", "I2", PROB_ID, 1,
+            _mk_problem_event(
+                2,
+                "E2",
+                "I2",
+                PROB_ID,
+                1,
                 type="problem_verification_requested",
                 verification_scope=["API-TEST-001"],
                 linked_fix_disposition="PR-42",
                 change_id="CH-002",
                 batch_id="B-003",
             ),
-            _mk_problem_event(3, "E3", "I3", PROB_ID, 2,
+            _mk_problem_event(
+                3,
+                "E3",
+                "I3",
+                PROB_ID,
+                2,
                 type="problem_resolved",
                 resolved_at="2026-07-25T12:00:00Z",
                 change_id="CH-002",
@@ -473,7 +541,12 @@ class TestProjectProblems:
     def test_not_an_issue(self) -> None:
         events = [
             _detected_event(1),
-            _mk_problem_event(2, "E2", "I2", PROB_ID, 1,
+            _mk_problem_event(
+                2,
+                "E2",
+                "I2",
+                PROB_ID,
+                1,
                 type="problem_marked_not_an_issue",
                 reason="expected behavior",
                 evidence_refs=["OCC-1111111111111111"],
@@ -485,14 +558,24 @@ class TestProjectProblems:
     def test_accepted_risk(self) -> None:
         events = [
             _detected_event(1),
-            _mk_problem_event(2, "E2", "I2", PROB_ID, 1,
+            _mk_problem_event(
+                2,
+                "E2",
+                "I2",
+                PROB_ID,
+                1,
                 type="problem_assessment_confirmed",
                 classification="product_bug",
                 severity="low",
                 reason="triaged",
                 evidence_refs=["OCC-1111111111111111"],
             ),
-            _mk_problem_event(3, "E3", "I3", PROB_ID, 2,
+            _mk_problem_event(
+                3,
+                "E3",
+                "I3",
+                PROB_ID,
+                2,
                 type="problem_risk_accepted",
                 reason="low priority",
                 evidence_refs=["OCC-1111111111111111"],
@@ -504,12 +587,22 @@ class TestProjectProblems:
     def test_reopened(self) -> None:
         events = [
             _detected_event(1),
-            _mk_problem_event(2, "E2", "I2", PROB_ID, 1,
+            _mk_problem_event(
+                2,
+                "E2",
+                "I2",
+                PROB_ID,
+                1,
                 type="problem_marked_not_an_issue",
                 reason="dismissed",
                 evidence_refs=["OCC-1111111111111111"],
             ),
-            _mk_problem_event(3, "E3", "I3", PROB_ID, 2,
+            _mk_problem_event(
+                3,
+                "E3",
+                "I3",
+                PROB_ID,
+                2,
                 type="problem_reopened",
                 reason="still failing",
                 evidence_refs=["OCC-2222222222222222"],
@@ -521,14 +614,24 @@ class TestProjectProblems:
     def test_regressed_reopens_resolved(self) -> None:
         events = [
             _detected_event(1),
-            _mk_problem_event(2, "E2", "I2", PROB_ID, 1,
+            _mk_problem_event(
+                2,
+                "E2",
+                "I2",
+                PROB_ID,
+                1,
                 type="problem_verification_requested",
                 verification_scope=["API-TEST-001"],
                 linked_fix_disposition="PR-42",
                 change_id="CH-002",
                 batch_id="B-003",
             ),
-            _mk_problem_event(3, "E3", "I3", PROB_ID, 2,
+            _mk_problem_event(
+                3,
+                "E3",
+                "I3",
+                PROB_ID,
+                2,
                 type="problem_resolved",
                 resolved_at="2026-07-25T12:00:00Z",
                 change_id="CH-002",
@@ -536,7 +639,12 @@ class TestProjectProblems:
                 disposition="PR-42 merged",
                 verification_scope=["API-TEST-001"],
             ),
-            _mk_problem_event(4, "E4", "I4", PROB_ID, 3,
+            _mk_problem_event(
+                4,
+                "E4",
+                "I4",
+                PROB_ID,
+                3,
                 type="problem_regressed",
                 occurrence_id="OCC-3333333333333333",
                 change_id="CH-003",
@@ -553,7 +661,12 @@ class TestProjectProblems:
         events = [
             _detected_event(1, PROB_ID),
             _detected_event(2, PROB_ID_B, "OCC-bbbbbbbbbbbbbbbb"),
-            _mk_problem_event(3, "E3", "I3", PROB_ID, 1,
+            _mk_problem_event(
+                3,
+                "E3",
+                "I3",
+                PROB_ID,
+                1,
                 type="problem_merged",
                 target_problem_id=PROB_ID_B,
                 reason="duplicate",
@@ -573,7 +686,12 @@ class TestProjectProblems:
     def test_merge_suggested_does_not_modify_problem(self) -> None:
         events = [
             _detected_event(1, PROB_ID),
-            _mk_problem_event(2, "E2", "I2", PROB_ID, 1,
+            _mk_problem_event(
+                2,
+                "E2",
+                "I2",
+                PROB_ID,
+                1,
                 type="problem_merge_suggested",
                 source_occurrence_id="OCC-1111111111111111",
                 source_change_id="CH-001",
@@ -590,7 +708,12 @@ class TestProjectProblems:
         events = [
             _detected_event(1),
             # expected_problem_version=99 but current is 1
-            _mk_problem_event(2, "E2", "I2", PROB_ID, 99,
+            _mk_problem_event(
+                2,
+                "E2",
+                "I2",
+                PROB_ID,
+                99,
                 type="problem_occurrence_linked",
                 occurrence_id="OCC-2222222222222222",
                 change_id="CH-001",
@@ -602,7 +725,12 @@ class TestProjectProblems:
 
     def test_unknown_problem_id_raises(self) -> None:
         events = [
-            _mk_problem_event(1, "E1", "I1", "PROB-unknownxxxxxxxx", 1,
+            _mk_problem_event(
+                1,
+                "E1",
+                "I1",
+                "PROB-unknownxxxxxxxx",
+                1,
                 type="problem_occurrence_linked",
                 occurrence_id="OCC-0000000000000000",
                 change_id="CH-001",
@@ -616,7 +744,12 @@ class TestProjectProblems:
         events = [
             _detected_event(1, PROB_ID, "OCC-1111111111111111"),
             _detected_event(2, PROB_ID_B, "OCC-bbbbbbbbbbbbbbbb"),
-            _mk_problem_event(3, "E3", "I3", PROB_ID, 1,
+            _mk_problem_event(
+                3,
+                "E3",
+                "I3",
+                PROB_ID,
+                1,
                 type="problem_marked_not_an_issue",
                 reason="false positive",
                 evidence_refs=["OCC-1111111111111111"],
@@ -646,7 +779,12 @@ class TestProjectReviewQueue:
     def test_merge_suggested_creates_entry(self) -> None:
         events = [
             _detected_event(1),
-            _mk_problem_event(2, "E2", "I2", PROB_ID, 1,
+            _mk_problem_event(
+                2,
+                "E2",
+                "I2",
+                PROB_ID,
+                1,
                 type="problem_merge_suggested",
                 source_occurrence_id="OCC-1111111111111111",
                 source_change_id="CH-001",
@@ -663,7 +801,12 @@ class TestProjectReviewQueue:
 
     def test_entry_id_is_deterministic(self) -> None:
         events = [
-            _mk_problem_event(1, "EVT-FIXED", "IDEM-FIXED", PROB_ID, 1,
+            _mk_problem_event(
+                1,
+                "EVT-FIXED",
+                "IDEM-FIXED",
+                PROB_ID,
+                1,
                 type="problem_merge_suggested",
                 source_occurrence_id="OCC-1111111111111111",
                 source_change_id="CH-001",
@@ -689,11 +832,17 @@ class TestProjectReviewQueue:
 class TestDumpProjection:
     def test_byte_identical_on_double_replay_change_issues(self) -> None:
         events = [
-            _mk_change_event(1, "E1", "I1",
+            _mk_change_event(
+                1,
+                "E1",
+                "I1",
                 type="observation_recorded",
                 observation=OBS_1.model_dump(mode="json"),
             ),
-            _mk_change_event(2, "E2", "I2",
+            _mk_change_event(
+                2,
+                "E2",
+                "I2",
                 type="issue_analysis_completed",
                 analysis_status=ANALYSIS_OK.model_dump(mode="json"),
             ),
@@ -705,7 +854,12 @@ class TestDumpProjection:
     def test_byte_identical_on_double_replay_problems(self) -> None:
         events = [
             _detected_event(1),
-            _mk_problem_event(2, "E2", "I2", PROB_ID, 1,
+            _mk_problem_event(
+                2,
+                "E2",
+                "I2",
+                PROB_ID,
+                1,
                 type="problem_assessment_confirmed",
                 classification="product_bug",
                 severity="high",
@@ -720,7 +874,12 @@ class TestDumpProjection:
     def test_byte_identical_on_double_replay_queue(self) -> None:
         events = [
             _detected_event(1),
-            _mk_problem_event(2, "E2", "I2", PROB_ID, 1,
+            _mk_problem_event(
+                2,
+                "E2",
+                "I2",
+                PROB_ID,
+                1,
                 type="problem_merge_suggested",
                 source_occurrence_id="OCC-1111111111111111",
                 source_change_id="CH-001",

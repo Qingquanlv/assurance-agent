@@ -242,7 +242,7 @@ class TestChangeIssueStore:
         store.append_and_rebuild(first_batch)
 
         second_batch = _mk_change_events(
-            _obs_event(1, "E1", "IDEM-1"),         # already committed
+            _obs_event(1, "E1", "IDEM-1"),  # already committed
             _obs_event(1, "E2", "IDEM-2", OBS_2, "B-002"),  # new
         )
         snap = store.append_and_rebuild(second_batch)
@@ -352,20 +352,22 @@ class TestProjectProblemStore:
         batch1 = _mk_problem_events(_detected_problem_event(1, "E1", "IDEM-1"))
         store.append_and_rebuild(batch1)
 
-        batch2 = _mk_problem_events({
-            "schema_version": "1.0",
-            "seq": 1,
-            "event_id": "E2",
-            "idempotency_key": "IDEM-2",
-            "ts": "2026-07-25T10:01:00Z",
-            "evidence_digest": "sha256:aabbccdd",
-            "type": "problem_occurrence_linked",
-            "problem_id": PROB_ID,
-            "expected_problem_version": 1,
-            "occurrence_id": "OCC-2222222222222222",
-            "change_id": "CH-001",
-            "batch_id": "B-002",
-        })
+        batch2 = _mk_problem_events(
+            {
+                "schema_version": "1.0",
+                "seq": 1,
+                "event_id": "E2",
+                "idempotency_key": "IDEM-2",
+                "ts": "2026-07-25T10:01:00Z",
+                "evidence_digest": "sha256:aabbccdd",
+                "type": "problem_occurrence_linked",
+                "problem_id": PROB_ID,
+                "expected_problem_version": 1,
+                "occurrence_id": "OCC-2222222222222222",
+                "change_id": "CH-001",
+                "batch_id": "B-002",
+            }
+        )
         proj, _ = store.append_and_rebuild(batch2)
 
         assert proj.problems[0].version == 2
@@ -376,21 +378,23 @@ class TestProjectProblemStore:
         batch1 = _mk_problem_events(_detected_problem_event(1, "E1", "IDEM-1"))
         store.append_and_rebuild(batch1)
 
-        batch2 = _mk_problem_events({
-            "schema_version": "1.0",
-            "seq": 1,
-            "event_id": "E2",
-            "idempotency_key": "IDEM-2",
-            "ts": "2026-07-25T10:01:00Z",
-            "evidence_digest": "sha256:aabbccdd",
-            "type": "problem_assessment_confirmed",
-            "problem_id": PROB_ID,
-            "expected_problem_version": 1,
-            "classification": "product_bug",
-            "severity": "critical",
-            "reason": "confirmed",
-            "evidence_refs": ["OCC-1111111111111111"],
-        })
+        batch2 = _mk_problem_events(
+            {
+                "schema_version": "1.0",
+                "seq": 1,
+                "event_id": "E2",
+                "idempotency_key": "IDEM-2",
+                "ts": "2026-07-25T10:01:00Z",
+                "evidence_digest": "sha256:aabbccdd",
+                "type": "problem_assessment_confirmed",
+                "problem_id": PROB_ID,
+                "expected_problem_version": 1,
+                "classification": "product_bug",
+                "severity": "critical",
+                "reason": "confirmed",
+                "evidence_refs": ["OCC-1111111111111111"],
+            }
+        )
         store.append_and_rebuild(batch2)
 
         events_path = tmp_path / "qa" / "issues" / "events.jsonl"
@@ -417,20 +421,22 @@ class TestProjectProblemStore:
         (tmp_path / "qa" / "issues" / "problems.json").unlink()
         (tmp_path / "qa" / "issues" / "review-queue.json").unlink()
 
-        batch2 = _mk_problem_events({
-            "schema_version": "1.0",
-            "seq": 1,
-            "event_id": "E2",
-            "idempotency_key": "IDEM-2",
-            "ts": "2026-07-25T10:01:00Z",
-            "evidence_digest": "sha256:aabbccdd",
-            "type": "problem_occurrence_linked",
-            "problem_id": PROB_ID,
-            "expected_problem_version": 1,
-            "occurrence_id": "OCC-2222222222222222",
-            "change_id": "CH-001",
-            "batch_id": "B-002",
-        })
+        batch2 = _mk_problem_events(
+            {
+                "schema_version": "1.0",
+                "seq": 1,
+                "event_id": "E2",
+                "idempotency_key": "IDEM-2",
+                "ts": "2026-07-25T10:01:00Z",
+                "evidence_digest": "sha256:aabbccdd",
+                "type": "problem_occurrence_linked",
+                "problem_id": PROB_ID,
+                "expected_problem_version": 1,
+                "occurrence_id": "OCC-2222222222222222",
+                "change_id": "CH-001",
+                "batch_id": "B-002",
+            }
+        )
         proj, queue = store.append_and_rebuild(batch2)
 
         assert (tmp_path / "qa" / "issues" / "problems.json").exists()

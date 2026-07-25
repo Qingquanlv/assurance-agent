@@ -36,8 +36,8 @@ def _observation_input(**overrides: object) -> ObservationIdentityInput:
         "source_json_pointer": "/cases/3",
         "signature": "http_500_on_empty_department_name",
     }
-    base.update(overrides)
-    return ObservationIdentityInput(**base)
+    merged: dict[str, str] = {**base, **{k: str(v) for k, v in overrides.items()}}
+    return ObservationIdentityInput(**merged)
 
 
 def test_observation_id_is_deterministic_and_prefixed() -> None:

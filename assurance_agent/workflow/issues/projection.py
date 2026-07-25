@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
@@ -46,23 +46,7 @@ from assurance_agent.artifacts.models.issues import (
 if TYPE_CHECKING:
     from assurance_agent.workflow.issues.events import (
         ChangeIssueEvent,
-        IssueAnalysisCompletedEvent,
-        IssueAnalysisFailedEvent,
-        ObservationRecordedEvent,
-        OccurrenceDetectedEvent,
-        OccurrenceLinkedEvent,
-        ProjectSyncPendingEvent,
-        ProblemAssessmentConfirmedEvent,
-        ProblemDetectedEvent,
         ProblemEvent,
-        ProblemMergedEvent,
-        ProblemMergeSuggestedEvent,
-        ProblemOccurrenceLinkedEvent,
-        ProblemRegressedEvent,
-        ProblemResolvedEvent,
-        ProblemReopenedEvent,
-        ProblemVerificationRequestedEvent,
-        ProblemWorkStartedEvent,
     )
 
 
@@ -96,8 +80,7 @@ class _ProblemState:
 def _assert_version(state: _ProblemState, expected: int) -> None:
     if state.version != expected:
         raise ProjectionError(
-            f"Problem {state.problem_id}: expected version {expected}, "
-            f"found {state.version}"
+            f"Problem {state.problem_id}: expected version {expected}, found {state.version}"
         )
 
 
@@ -228,9 +211,7 @@ def project_problems(events: Sequence[ProblemEvent]) -> ProblemProjection:
                     f"expected_problem_version=0, got {event.expected_problem_version}"
                 )
             if event.problem_id in states:
-                raise ProjectionError(
-                    f"problem_detected: {event.problem_id} already exists"
-                )
+                raise ProjectionError(f"problem_detected: {event.problem_id} already exists")
             first_ref = ProblemSeenRef(
                 change_id=event.change_id,
                 occurrence_id=event.occurrence_id,
@@ -451,7 +432,6 @@ def dump_projection(model: BaseModel) -> bytes:
     single trailing newline is included for POSIX compliance.
     """
     data = model.model_dump(mode="json")
-    return (
-        json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-        + "\n"
-    ).encode("utf-8")
+    return (json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode(
+        "utf-8"
+    )

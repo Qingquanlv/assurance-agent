@@ -175,8 +175,14 @@ class TestValidateReviewActionGuards:
 
     def test_review_actions_set_contains_all_expected(self) -> None:
         expected = {
-            "confirm_assessment", "mark_not_an_issue", "accept_risk", "start_work",
-            "confirm_link", "merge", "reopen", "submit_resolution",
+            "confirm_assessment",
+            "mark_not_an_issue",
+            "accept_risk",
+            "start_work",
+            "confirm_link",
+            "merge",
+            "reopen",
+            "submit_resolution",
         }
         assert expected.issubset(REVIEW_ACTIONS)
 
@@ -185,7 +191,11 @@ class TestValidateReviewActionGuards:
         ctx = _ctx(version=2)  # stale
         with pytest.raises(ReviewValidationError, match="stale review context"):
             validate_review_action(
-                ctx, "mark_not_an_issue", _STD_PAYLOAD, "reason", "user",
+                ctx,
+                "mark_not_an_issue",
+                _STD_PAYLOAD,
+                "reason",
+                "user",
                 projection=proj,
             )
 
@@ -204,7 +214,9 @@ class TestConfirmAssessment:
             "evidence_refs": _STD_EVIDENCE,
             **payload_extra,
         }
-        return validate_review_action(ctx, "confirm_assessment", payload, "triaged from execution evidence", "reviewer")
+        return validate_review_action(
+            ctx, "confirm_assessment", payload, "triaged from execution evidence", "reviewer"
+        )
 
     def test_legal_transition_detected_to_triaged(self) -> None:
         events = self._do()
@@ -294,9 +306,7 @@ class TestAcceptRisk:
     @pytest.mark.parametrize("status", ["triaged", "in_progress", "verification_pending"])
     def test_legal_from_allowed_statuses(self, status: str) -> None:
         ctx = _ctx(status=status)
-        events = validate_review_action(
-            ctx, "accept_risk", _STD_PAYLOAD, "accepted by PM", "pm"
-        )
+        events = validate_review_action(ctx, "accept_risk", _STD_PAYLOAD, "accepted by PM", "pm")
         assert len(events) == 1
         assert events[0].type == "problem_risk_accepted"
 
@@ -423,9 +433,7 @@ class TestSubmitResolution:
     @pytest.mark.parametrize("status", ["in_progress", "triaged"])
     def test_legal_from_in_progress_and_triaged(self, status: str) -> None:
         ctx = _ctx(status=status)
-        events = validate_review_action(
-            ctx, "submit_resolution", self._good_payload(), "fix merged", "dev"
-        )
+        events = validate_review_action(ctx, "submit_resolution", self._good_payload(), "fix merged", "dev")
         assert len(events) == 1
         ev = events[0]
         assert ev.type == "problem_verification_requested"

@@ -102,9 +102,7 @@ def _utc_now() -> str:
     return datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-_WORKAROUND_MARKERS = frozenset(
-    ["workaround", "xfail", "known_issue", "known-issue", "skip_reason"]
-)
+_WORKAROUND_MARKERS = frozenset(["workaround", "xfail", "known_issue", "known-issue", "skip_reason"])
 
 
 def _is_workaround_skip(message: str) -> bool:
@@ -642,19 +640,15 @@ def collect_observations(
     manifest_path = execution_dir / "execution-manifest.yaml"
     if not manifest_path.is_file():
         raise EvidenceError(
-            "execution/execution-manifest.yaml not found; cannot collect observations. "
-            "Run `aa run` first."
+            "execution/execution-manifest.yaml not found; cannot collect observations. Run `aa run` first."
         )
     try:
         raw_manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
         manifest = ExecutionManifest.model_validate(raw_manifest)
     except Exception as exc:
-        raise EvidenceError(
-            f"execution/execution-manifest.yaml invalid: {exc}"
-        ) from exc
+        raise EvidenceError(f"execution/execution-manifest.yaml invalid: {exc}") from exc
 
     batch_id = manifest.batch_id
-    batch_dir = execution_dir / "runs" / batch_id
     # Anchor evidence path (always in manifest, relative to change_dir)
     manifest_rel = "execution/execution-manifest.yaml"
 
@@ -678,9 +672,7 @@ def collect_observations(
         abs_path = execution_dir / rel
         if not abs_path.is_file():
             # Missing result file is an integrity issue but don't block collection.
-            incomplete_signals.append(
-                f"{target_name} result file missing: {rel}"
-            )
+            incomplete_signals.append(f"{target_name} result file missing: {rel}")
             continue
         try:
             raw_data = json.loads(abs_path.read_text(encoding="utf-8"))
@@ -774,10 +766,12 @@ def collect_observations(
     # ------------------------------------------------------------------
     # 7. Not collected in v1 (fact-baseline, test-source annotations)
     # ------------------------------------------------------------------
-    incomplete_signals.extend([
-        "fact-baseline anomalies not collected in v1",
-        "test-source workaround annotations not collected in v1",
-    ])
+    incomplete_signals.extend(
+        [
+            "fact-baseline anomalies not collected in v1",
+            "test-source workaround annotations not collected in v1",
+        ]
+    )
 
     # ------------------------------------------------------------------
     # 8. Build evidence manifest
