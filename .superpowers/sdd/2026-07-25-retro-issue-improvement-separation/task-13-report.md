@@ -2,7 +2,7 @@
 
 **Status:** DONE  
 **Base:** `4ccacc7`  
-**Commits:** `96b485e` (acceptance/docs/guards) · `343b6be` (report SHA)
+**Commits:** `96b485e` (acceptance/docs/guards) · `343b6be` (report SHA) · `0bad155` (review Important fixes)
 
 ## Deliverables
 
@@ -75,3 +75,5 @@ Closed the three Important findings from `task-13-review.md` so Quality can Appr
 
 **Focused gate:**  
 `uv run pytest tests/unit/retro/test_no_historical_retro_reads.py tests/integration/test_retro_issue_improvement_acceptance.py -q` → **12 passed**
+
+**Review-fix commit:** `0bad155` (`0bad15557662860d7c5f81f0ed6ba2c2a17449e1`)
