@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from assurance_agent.workflow.core.events import append_event_strict, read_events_strict
 from assurance_agent.workflow.core.graph_types import ErrorKind
@@ -187,6 +188,41 @@ def _context(project: Path) -> RuntimeContext:
         change_dir=change,
         change_id="CH-1",
     )
+
+
+def test_runtime_context_rejects_forged_project_lock_tokens(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+
+    with pytest.raises(ValidationError, match="held_project_lock_tokens"):
+        RuntimeContext(
+            project_root=project,
+            repo_root=project,
+            change_dir=project / "qa/changes/CH-1",
+            change_id="CH-1",
+            held_project_lock_tokens=("project:issue-registry",),  # type: ignore[call-arg]
+        )
+
+
+def test_expired_inherited_project_lock_context_reacquires(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    change = project / "qa/changes/CH-1"
+    locks = _TrackingProjectLocks()
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=TreeStore(change),
+        project_lock_manager=locks,
+    )
+    context = _context(project)
+    tokens = ("project:issue-registry",)
+
+    with scheduler._project_lock_scope(context, tokens) as inherited:  # noqa: SLF001
+        assert locks.held is True
+    assert locks.held is False
+
+    with scheduler._project_lock_scope(inherited, tokens):  # noqa: SLF001
+        assert locks.held is True
+
+    assert locks.calls == [(tokens, 5.0), (tokens, 5.0)]
 
 
 def _projection(change: Path, tree_id: str) -> GraphProjection:

@@ -37,6 +37,7 @@ from assurance_agent.retro.workflow_history import (
     SkillLoadedFalseRecord,
     TerminalChangeRef,
     WorkflowEvidenceSlice,
+    WorkflowTaskFailureRecord,
 )
 from assurance_agent.workflow.issues.events import (
     CHANGE_ISSUE_EVENT_ADAPTER,
@@ -378,6 +379,16 @@ def _workflow_slice() -> WorkflowEvidenceSlice:
                 evidence_id="RET-2#workflow-state:inspect",
             ),
         ),
+        task_failures=(
+            WorkflowTaskFailureRecord(
+                change_id="RET-1",
+                node_id="report",
+                error_kind="internal",
+                message="report renderer crashed",
+                recovered=False,
+                evidence_id="RET-1#seq4",
+            ),
+        ),
     )
 
 
@@ -422,6 +433,7 @@ def readers() -> _Readers:
                     evidence_ids=(
                         "RET-1#seq2",
                         "RET-1#seq3",
+                        "RET-1#seq4",
                         "RET-1#healing:api-apply-summary.json",
                     ),
                 ),
@@ -541,6 +553,16 @@ def test_context_aggregates_workflow_and_eval_signals(readers: _Readers) -> None
     assert he.metrics["attempts"] == 1
     assert he.metrics["applied"] == 1
     assert context.signals.workflow.skill_execution_drift
+    assert len(context.signals.workflow.task_failures) == 1
+    failure = context.signals.workflow.task_failures[0]
+    assert failure.source_refs.workflow_evidence_ids == ("RET-1#seq4",)
+    assert failure.metrics == {
+        "node_id": "report",
+        "error_kind": "internal",
+        "recovered": "false",
+        "count": 1,
+        "sample_message": "report renderer crashed",
+    }
     assert context.signals.eval.trends
     assert context.signals.eval.trends[0].source_refs.eval_run_ids == ("eval-run-1",)
 
@@ -674,6 +696,36 @@ def test_missing_workflow_source_is_degraded_not_fabricated(readers: _Readers) -
     assert context.signals.workflow.healing_efficiency == ()
     assert context.signals.workflow.gate_pushback == ()
     assert context.allows_domain_knowledge is True
+
+
+def test_unrecovered_issue_pipeline_failure_blocks_domain_knowledge(readers: _Readers) -> None:
+    failed_issue_pipeline = WorkflowEvidenceSlice(
+        change_ids=("RET-1", "RET-2"),
+        integrity=RetroIntegrity(
+            status="incomplete",
+            reasons=("issue_pipeline_failed:RET-1",),
+        ),
+    )
+    workflow = InMemoryWorkflowHistoryReader(
+        terminals=(
+            TerminalChangeRef(change_id="RET-1", terminal_ts="2026-07-25T18:00:00Z"),
+            TerminalChangeRef(change_id="RET-2", terminal_ts="2026-07-25T19:00:00Z"),
+        ),
+        slice_=failed_issue_pipeline,
+        known_ids=frozenset({"RET-1", "RET-2"}),
+    )
+
+    context = build_retro_context(
+        RetroWindowSelection(change_ids=("RET-1", "RET-2"), last=None),
+        issue_history=readers.issues,
+        workflow_history=workflow,
+        eval_history=readers.eval,
+        retro_id="retro-issue-pipeline-failed",
+        generated_at="2026-07-25T00:00:00Z",
+    )
+
+    assert context.integrity.status == "incomplete"
+    assert context.allows_domain_knowledge is False
 
 
 def test_assert_signal_refs_resolve_rejects_unknown_id() -> None:

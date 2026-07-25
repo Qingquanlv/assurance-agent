@@ -35,6 +35,9 @@ def _write_terminal_change(
     healing_ops: list[str] | None = None,
     phases: dict | None = None,
     apply_applied: bool = True,
+    task_failure: dict[str, str] | None = None,
+    recovery_succeeds: bool | None = None,
+    later_recovery_node_succeeds: bool = False,
 ) -> Path:
     write_aa_config(project_root)
     root = project_root / "qa" / under / change_id
@@ -88,6 +91,145 @@ def _write_terminal_change(
             }
         )
         seq += 1
+    if task_failure is not None:
+        task_id = f"task-{change_id}"
+        attempt_id = f"{task_id}-a1"
+        events.extend(
+            [
+                {
+                    "seq": seq,
+                    "ts": terminal_ts,
+                    "source": "graph",
+                    "type": "task_attempt_started",
+                    "invocation_id": f"inv-{change_id}",
+                    "checkpoint_ns": f"inv-{change_id}",
+                    "superstep_id": f"step-{change_id}",
+                    "task_id": task_id,
+                    "attempt_id": attempt_id,
+                    "node_id": task_failure["node_id"],
+                    "input_sha256": "sha256:" + "c" * 64,
+                    "graph_digest": "sha256:" + "a" * 64,
+                    "contract_digest": "sha256:" + "d" * 64,
+                    "attempt_number": 1,
+                    "lease_expires_at": terminal_ts,
+                    "started_at": terminal_ts,
+                },
+                {
+                    "seq": seq + 1,
+                    "ts": terminal_ts,
+                    "source": "graph",
+                    "type": "task_attempt_failed",
+                    "invocation_id": f"inv-{change_id}",
+                    "checkpoint_ns": f"inv-{change_id}",
+                    "superstep_id": f"step-{change_id}",
+                    "task_id": task_id,
+                    "attempt_id": attempt_id,
+                    "error_kind": task_failure["error_kind"],
+                    "message": task_failure["message"],
+                    "next_retry_at": None,
+                },
+            ]
+        )
+        seq += 2
+        if recovery_succeeds is not None:
+            recovery_task_id = f"recovery-{change_id}"
+            recovery_attempt_id = f"{recovery_task_id}-a1"
+            events.extend(
+                [
+                    {
+                        "seq": seq,
+                        "ts": terminal_ts,
+                        "source": "graph",
+                        "type": "task_recovery_routed",
+                        "invocation_id": f"inv-{change_id}",
+                        "checkpoint_ns": f"inv-{change_id}",
+                        "graph_id": "main",
+                        "node_id": task_failure["node_id"],
+                        "generation_ordinal": 0,
+                        "task_id": task_id,
+                        "error_kind": task_failure["error_kind"],
+                        "message": task_failure["message"],
+                        "via": "record-project-sync-pending",
+                        "continue_to": "END",
+                    },
+                    {
+                        "seq": seq + 1,
+                        "ts": terminal_ts,
+                        "source": "graph",
+                        "type": "task_attempt_started",
+                        "invocation_id": f"inv-{change_id}",
+                        "checkpoint_ns": f"inv-{change_id}",
+                        "superstep_id": f"recovery-step-{change_id}",
+                        "task_id": recovery_task_id,
+                        "attempt_id": recovery_attempt_id,
+                        "node_id": "record-project-sync-pending",
+                        "input_sha256": "sha256:" + "e" * 64,
+                        "graph_digest": "sha256:" + "a" * 64,
+                        "contract_digest": "sha256:" + "f" * 64,
+                        "attempt_number": 1,
+                        "lease_expires_at": terminal_ts,
+                        "started_at": terminal_ts,
+                    },
+                    {
+                        "seq": seq + 2,
+                        "ts": terminal_ts,
+                        "source": "graph",
+                        "type": ("task_attempt_succeeded" if recovery_succeeds else "task_attempt_failed"),
+                        "invocation_id": f"inv-{change_id}",
+                        "checkpoint_ns": f"inv-{change_id}",
+                        "superstep_id": f"recovery-step-{change_id}",
+                        "task_id": recovery_task_id,
+                        "attempt_id": recovery_attempt_id,
+                        **(
+                            {}
+                            if recovery_succeeds
+                            else {
+                                "error_kind": "internal",
+                                "message": "recovery handler failed",
+                                "next_retry_at": None,
+                            }
+                        ),
+                    },
+                ]
+            )
+            seq += 3
+            if later_recovery_node_succeeds:
+                later_task_id = f"later-{change_id}"
+                later_attempt_id = f"{later_task_id}-a1"
+                events.extend(
+                    [
+                        {
+                            "seq": seq,
+                            "ts": terminal_ts,
+                            "source": "graph",
+                            "type": "task_attempt_started",
+                            "invocation_id": f"inv-{change_id}",
+                            "checkpoint_ns": f"inv-{change_id}",
+                            "superstep_id": f"later-step-{change_id}",
+                            "task_id": later_task_id,
+                            "attempt_id": later_attempt_id,
+                            "node_id": "record-project-sync-pending",
+                            "input_sha256": "sha256:" + "1" * 64,
+                            "graph_digest": "sha256:" + "a" * 64,
+                            "contract_digest": "sha256:" + "2" * 64,
+                            "attempt_number": 1,
+                            "lease_expires_at": terminal_ts,
+                            "started_at": terminal_ts,
+                        },
+                        {
+                            "seq": seq + 1,
+                            "ts": terminal_ts,
+                            "source": "graph",
+                            "type": "task_attempt_succeeded",
+                            "invocation_id": f"inv-{change_id}",
+                            "checkpoint_ns": f"inv-{change_id}",
+                            "superstep_id": f"later-step-{change_id}",
+                            "task_id": later_task_id,
+                            "attempt_id": later_attempt_id,
+                        },
+                    ]
+                )
+                seq += 2
     events.append(
         {
             "seq": seq,
@@ -194,6 +336,77 @@ def test_read_window_extracts_gate_healing_and_skill_drift(tmp_path: Path) -> No
     assert file_slice.integrity.status == "complete"
     assert all(source.kind == "workflow_ledger" for source in file_slice.sources)
     assert file_slice.sources[0].sha256.startswith("sha256:")
+
+
+def test_unrecovered_issue_subgraph_failure_is_evidence_and_marks_incomplete(
+    tmp_path: Path,
+) -> None:
+    _write_terminal_change(
+        tmp_path,
+        "RET-ISSUE-FAIL",
+        terminal_ts="2026-07-02T00:00:00Z",
+        terminal_type="graph_failed",
+        task_failure={
+            "node_id": "inspect-with-issues",
+            "error_kind": "conflict",
+            "message": "timed out acquiring project:issue-registry",
+        },
+    )
+    reader = LedgerWorkflowHistoryReader(tmp_path)
+    window = resolve_retro_window(
+        RetroWindowSelection(change_ids=("RET-ISSUE-FAIL",), last=None),
+        workflow_history=reader,
+    )
+
+    slice_ = reader.read_window(window)
+
+    assert len(slice_.task_failures) == 1
+    failure = slice_.task_failures[0]
+    assert failure.node_id == "inspect-with-issues"
+    assert failure.error_kind == "conflict"
+    assert failure.recovered is False
+    assert failure.evidence_id == "RET-ISSUE-FAIL#seq3"
+    assert failure.evidence_id in slice_.sources[0].evidence_ids
+    assert slice_.integrity.status == "incomplete"
+    assert slice_.integrity.reasons == ("issue_pipeline_failed:RET-ISSUE-FAIL",)
+
+
+@pytest.mark.parametrize(
+    ("recovery_succeeds", "expected_recovered", "expected_integrity"),
+    [(False, False, "incomplete"), (True, True, "complete")],
+)
+def test_recovery_is_confirmed_by_recovery_task_settlement(
+    tmp_path: Path,
+    recovery_succeeds: bool,
+    expected_recovered: bool,
+    expected_integrity: str,
+) -> None:
+    _write_terminal_change(
+        tmp_path,
+        "RET-ISSUE-RECOVERY",
+        terminal_ts="2026-07-26T02:00:00Z",
+        terminal_type="graph_completed" if recovery_succeeds else "graph_failed",
+        task_failure={
+            "node_id": "inspect-with-issues",
+            "error_kind": "conflict",
+            "message": "timed out acquiring project:issue-registry",
+        },
+        recovery_succeeds=recovery_succeeds,
+        later_recovery_node_succeeds=not recovery_succeeds,
+    )
+    reader = LedgerWorkflowHistoryReader(tmp_path)
+    window = resolve_retro_window(
+        RetroWindowSelection(change_ids=("RET-ISSUE-RECOVERY",), last=None),
+        workflow_history=reader,
+    )
+
+    slice_ = reader.read_window(window)
+
+    issue_failure = next(
+        failure for failure in slice_.task_failures if failure.node_id == "inspect-with-issues"
+    )
+    assert issue_failure.recovered is expected_recovered
+    assert slice_.integrity.status == expected_integrity
 
 
 def test_missing_change_ledger_marks_incomplete(tmp_path: Path) -> None:

@@ -20,6 +20,7 @@ from assurance_agent.change_location import (
 from assurance_agent.exceptions import AaError
 from assurance_agent.retro.types import RetroIntegrity, RetroSourceDescriptor
 from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
+from assurance_agent.workflow.core.graph_types import ErrorKind
 
 
 def _list_dir_names(root: Path) -> list[str]:
@@ -89,6 +90,19 @@ class SkillLoadedFalseRecord(BaseModel):
     evidence_id: str
 
 
+class WorkflowTaskFailureRecord(BaseModel):
+    """Final task failure pinned to its immutable attempt event."""
+
+    model_config = _FROZEN
+
+    change_id: str
+    node_id: str
+    error_kind: ErrorKind
+    message: str
+    recovered: bool
+    evidence_id: str
+
+
 class WorkflowEvidenceSlice(BaseModel):
     """Digest-pinned Workflow evidence for one Retro window."""
 
@@ -102,6 +116,7 @@ class WorkflowEvidenceSlice(BaseModel):
     healing_allocations: tuple[HealingAllocationRecord, ...] = ()
     healing_applies: tuple[HealingApplyRecord, ...] = ()
     skill_loaded_false: tuple[SkillLoadedFalseRecord, ...] = ()
+    task_failures: tuple[WorkflowTaskFailureRecord, ...] = ()
 
     def resolvable_ids(self) -> frozenset[str]:
         ids: set[str] = set()
@@ -111,6 +126,7 @@ class WorkflowEvidenceSlice(BaseModel):
         ids.update(record.evidence_id for record in self.healing_allocations)
         ids.update(record.evidence_id for record in self.healing_applies)
         ids.update(record.evidence_id for record in self.skill_loaded_false)
+        ids.update(record.evidence_id for record in self.task_failures)
         return frozenset(ids)
 
 
@@ -127,11 +143,16 @@ def _sha256_bytes(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
-def _event_evidence_id(change_id: str, event: Mapping[str, object]) -> str | None:
+def _event_seq(event: Mapping[str, object]) -> int | None:
     seq = event.get("seq")
     if isinstance(seq, int) and not isinstance(seq, bool):
-        return f"{change_id}#seq{seq}"
+        return seq
     return None
+
+
+def _event_evidence_id(change_id: str, event: Mapping[str, object]) -> str | None:
+    seq = _event_seq(event)
+    return f"{change_id}#seq{seq}" if seq is not None else None
 
 
 def _read_ledger_strict(change_id: str, change_dir: Path) -> tuple[bytes, list[dict[str, object]]]:
@@ -202,20 +223,39 @@ def _extract_from_change(
     list[HealingAllocationRecord],
     list[HealingApplyRecord],
     list[SkillLoadedFalseRecord],
+    list[WorkflowTaskFailureRecord],
     str | None,
 ]:
     events_path = change_dir / "events.jsonl"
     if not events_path.is_file():
-        return None, [], [], [], [], f"workflow_source_missing:{change_id}"
+        return None, [], [], [], [], [], f"workflow_source_missing:{change_id}"
     data, events = _read_ledger_strict(change_id, change_dir)
 
     ledger_sha = _sha256_bytes(data)
     gate_verdicts: list[GateVerdictRecord] = []
     healing_allocations: list[HealingAllocationRecord] = []
     evidence_ids: list[str] = []
+    task_starts: dict[str, Mapping[str, object]] = {}
+    task_settlements: dict[str, Mapping[str, object]] = {}
+    recovery_routes: dict[str, Mapping[str, object]] = {}
     for event in events:
         eid = _event_evidence_id(change_id, event)
         event_type = event.get("type")
+        task_id = event.get("task_id")
+        if event_type == "task_attempt_started" and isinstance(task_id, str):
+            node_id = event.get("node_id")
+            if isinstance(node_id, str) and node_id:
+                task_starts[task_id] = event
+        elif event_type in {
+            "task_attempt_succeeded",
+            "task_attempt_failed",
+            "task_attempt_stopped",
+            "task_attempt_abandoned",
+        } and isinstance(task_id, str):
+            task_settlements[task_id] = event
+        elif event_type == "task_recovery_routed" and isinstance(task_id, str):
+            recovery_routes[task_id] = event
+
         if event_type == "gate_verdict":
             verdict = str(event.get("verdict", ""))
             if verdict not in _PUSHBACK_VERDICTS or eid is None:
@@ -247,6 +287,54 @@ def _extract_from_change(
                 )
             )
             evidence_ids.append(eid)
+
+    recovered_task_ids: set[str] = set()
+    for failed_task_id, route in recovery_routes.items():
+        route_seq = _event_seq(route) or 0
+        route_invocation = route.get("invocation_id")
+        recovery_node = route.get("via")
+        if not isinstance(route_invocation, str) or not isinstance(recovery_node, str):
+            continue
+        candidates = sorted(
+            (
+                (_event_seq(started) or 0, recovery_task_id)
+                for recovery_task_id, started in task_starts.items()
+                if started.get("invocation_id") == route_invocation
+                and started.get("node_id") == recovery_node
+                and (_event_seq(started) or 0) > route_seq
+            ),
+            key=lambda item: (item[0], item[1]),
+        )
+        if not candidates:
+            continue
+        recovery_task_id = candidates[0][1]
+        settlement = task_settlements.get(recovery_task_id)
+        if settlement is not None and settlement.get("type") == "task_attempt_succeeded":
+            recovered_task_ids.add(failed_task_id)
+
+    task_failures: list[WorkflowTaskFailureRecord] = []
+    for task_id, event in sorted(
+        task_settlements.items(),
+        key=lambda item: _event_seq(item[1]) or 0,
+    ):
+        if event.get("type") != "task_attempt_failed":
+            continue
+        started = task_starts.get(task_id)
+        node_id = started.get("node_id") if started is not None else None
+        eid = _event_evidence_id(change_id, event)
+        if not isinstance(node_id, str) or eid is None:
+            continue
+        task_failures.append(
+            WorkflowTaskFailureRecord(
+                change_id=change_id,
+                node_id=node_id,
+                error_kind=event["error_kind"],  # type: ignore[arg-type]
+                message=str(event.get("message", "task failed")),
+                recovered=task_id in recovered_task_ids,
+                evidence_id=eid,
+            )
+        )
+        evidence_ids.append(eid)
 
     healing_applies: list[HealingApplyRecord] = []
     healing_dir = change_dir / "healing"
@@ -309,7 +397,15 @@ def _extract_from_change(
         sha256=ledger_sha,
         evidence_ids=tuple(sorted(set(evidence_ids))),
     )
-    return source, gate_verdicts, healing_allocations, healing_applies, skill_loaded_false, None
+    return (
+        source,
+        gate_verdicts,
+        healing_allocations,
+        healing_applies,
+        skill_loaded_false,
+        task_failures,
+        None,
+    )
 
 
 class LedgerWorkflowHistoryReader:
@@ -354,6 +450,7 @@ class LedgerWorkflowHistoryReader:
         healing_allocations: list[HealingAllocationRecord] = []
         healing_applies: list[HealingApplyRecord] = []
         skill_loaded_false: list[SkillLoadedFalseRecord] = []
+        task_failures: list[WorkflowTaskFailureRecord] = []
         reasons: list[str] = []
 
         for change_id in window.change_ids:
@@ -368,6 +465,7 @@ class LedgerWorkflowHistoryReader:
                 allocations,
                 applies,
                 skills,
+                failures,
                 error,
             ) = _extract_from_change(change_id, loc.path)
             if error is not None:
@@ -379,6 +477,11 @@ class LedgerWorkflowHistoryReader:
             healing_allocations.extend(allocations)
             healing_applies.extend(applies)
             skill_loaded_false.extend(skills)
+            task_failures.extend(failures)
+            if any(
+                failure.node_id == "inspect-with-issues" and not failure.recovered for failure in failures
+            ):
+                reasons.append(f"issue_pipeline_failed:{change_id}")
 
         integrity = (
             RetroIntegrity(status="incomplete", reasons=tuple(reasons))
@@ -393,6 +496,7 @@ class LedgerWorkflowHistoryReader:
             healing_allocations=tuple(healing_allocations),
             healing_applies=tuple(healing_applies),
             skill_loaded_false=tuple(skill_loaded_false),
+            task_failures=tuple(task_failures),
         )
 
 

@@ -11,9 +11,9 @@ GraphProjection 等）是 strict ledger 的纯函数输出，frozen + extra="for
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Literal, Protocol, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 from assurance_agent.workflow.core.graph_events import TaskRecoveryRoutedEvent
 from assurance_agent.workflow.core.graph_types import ErrorKind
@@ -83,12 +83,38 @@ class CompiledWorkflow(BaseModel):
 
 class RuntimeContext(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
+    _project_lock_scope_owner: object | None = PrivateAttr(default=None)
+    _project_lock_scope_nonce: object | None = PrivateAttr(default=None)
+    _held_project_lock_tokens: tuple[str, ...] = PrivateAttr(default=())
+
     project_root: Path
     repo_root: Path
     change_dir: Path
     change_id: str
     params: dict[str, object] = Field(default_factory=dict)
     parent_session_id: str | None = None
+
+    def inherited_project_lock_scope(
+        self,
+        owner: object,
+    ) -> tuple[object, tuple[str, ...]] | None:
+        """Return the opaque acquisition nonce and tokens to their scheduler."""
+        if self._project_lock_scope_owner is not owner or self._project_lock_scope_nonce is None:
+            return None
+        return self._project_lock_scope_nonce, self._held_project_lock_tokens
+
+    def with_project_lock_scope(
+        self,
+        owner: object,
+        nonce: object,
+        tokens: tuple[str, ...],
+    ) -> Self:
+        """Copy this context with a process-local, non-serializable lock lease."""
+        locked = self.model_copy()
+        locked._project_lock_scope_owner = owner
+        locked._project_lock_scope_nonce = nonce
+        locked._held_project_lock_tokens = tokens
+        return locked
 
 
 class ResolvedArtifact(BaseModel):

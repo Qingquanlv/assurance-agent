@@ -142,6 +142,7 @@ def _iter_signals(signals: RetroSignalSet) -> Iterable[RetroSignal]:
     yield from workflow.gate_pushback
     yield from workflow.healing_efficiency
     yield from workflow.skill_execution_drift
+    yield from workflow.task_failures
     yield from signals.eval.trends
 
 
@@ -381,10 +382,37 @@ def _aggregate_workflow_signals(workflow_slice: WorkflowEvidenceSlice) -> Workfl
         for phase, count in sorted(skill_counter.items())
     )
 
+    failure_counter: Counter[tuple[str, str, bool]] = Counter()
+    failure_evidence: dict[tuple[str, str, bool], set[str]] = {}
+    failure_messages: dict[tuple[str, str, bool], set[str]] = {}
+    for record in workflow_slice.task_failures:
+        key = (record.node_id, record.error_kind, record.recovered)
+        failure_counter[key] += 1
+        failure_evidence.setdefault(key, set()).add(record.evidence_id)
+        failure_messages.setdefault(key, set()).add(record.message)
+
+    task_failures = tuple(
+        _signal(
+            f"task_failure:{node_id}:{error_kind}:{str(recovered).lower()}",
+            source_refs=ImprovementSourceRefs(
+                workflow_evidence_ids=tuple(sorted(failure_evidence[(node_id, error_kind, recovered)])),
+            ),
+            metrics={
+                "node_id": node_id,
+                "error_kind": error_kind,
+                "recovered": str(recovered).lower(),
+                "count": count,
+                "sample_message": sorted(failure_messages[(node_id, error_kind, recovered)])[0],
+            },
+        )
+        for (node_id, error_kind, recovered), count in sorted(failure_counter.items())
+    )
+
     return WorkflowRetroSignals(
         gate_pushback=gate_pushback,
         healing_efficiency=healing_efficiency,
         skill_execution_drift=skill_execution_drift,
+        task_failures=task_failures,
     )
 
 

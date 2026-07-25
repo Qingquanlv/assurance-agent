@@ -13,8 +13,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Literal
@@ -195,6 +196,51 @@ class Scheduler:
         self._leases = lease_registry
         self._project_locks = project_lock_manager
         self._project_lock_timeout_seconds = project_lock_timeout_seconds
+        self._project_lock_scope_owner = object()
+        self._active_project_lock_scopes: set[object] = set()
+
+    @contextmanager
+    def _project_lock_scope(
+        self,
+        context: RuntimeContext,
+        tokens: Sequence[str],
+    ) -> Iterator[RuntimeContext]:
+        """Acquire canonical project tokens once per nested runtime call stack.
+
+        Graph nodes carry descendant footprints so the outermost scheduler can
+        reserve every project token before materializing its task workspace.
+        Descendant schedulers must therefore reuse that live reservation rather
+        than opening a second, self-conflicting ``flock`` handle.
+        """
+        ordered = tuple(sorted(set(tokens)))
+        inherited_scope = context.inherited_project_lock_scope(self._project_lock_scope_owner)
+        if inherited_scope is not None and inherited_scope[0] in self._active_project_lock_scopes:
+            _, inherited_tokens = inherited_scope
+            inherited = frozenset(inherited_tokens)
+            missing = sorted(set(ordered) - inherited)
+            if missing:
+                raise SchedulerError(
+                    "nested synchronized wave requested tokens outside its ancestor footprint: "
+                    + ", ".join(missing)
+                )
+            yield context
+            return
+
+        manager = self._project_locks or ProjectResourceLockManager(
+            context.project_root,
+            clock=self._clock,
+        )
+        with manager.acquire(ordered, timeout_seconds=self._project_lock_timeout_seconds):
+            nonce = object()
+            self._active_project_lock_scopes.add(nonce)
+            try:
+                yield context.with_project_lock_scope(
+                    self._project_lock_scope_owner,
+                    nonce,
+                    ordered,
+                )
+            finally:
+                self._active_project_lock_scopes.discard(nonce)
 
     def execute(
         self,
@@ -219,22 +265,18 @@ class Scheduler:
         tokens = _project_lock_tokens_for_wave(wave)
         if not tokens:
             raise SchedulerError("synchronized wave has no project:* exclusive token")
-        manager = self._project_locks or ProjectResourceLockManager(
-            context.project_root,
-            clock=self._clock,
-        )
         try:
-            with manager.acquire(tokens, timeout_seconds=self._project_lock_timeout_seconds):
-                ProjectPublicationStore(context.project_root).assert_no_prepared(tokens)
+            with self._project_lock_scope(context, tokens) as locked_context:
+                ProjectPublicationStore(locked_context.project_root).assert_no_prepared(tokens)
                 overlay_tree_id = self._objects.overlay_synchronized_paths(
                     projection.current_tree_id,
-                    context.project_root,
+                    locked_context.project_root,
                     synchronized_paths,
                 )
                 return self._execute_wave(
                     plan,
                     projection,
-                    context,
+                    locked_context,
                     wave=wave,
                     base_tree_id=overlay_tree_id,
                     synchronized_paths=synchronized_paths,
@@ -873,18 +915,11 @@ class Scheduler:
             )
             if not recovered_tokens:
                 raise WorkspaceError("pending synchronized Update lacks project exclusive token metadata")
-            manager = self._project_locks or ProjectResourceLockManager(
-                context.project_root,
-                clock=self._clock,
-            )
             try:
-                with manager.acquire(
-                    recovered_tokens,
-                    timeout_seconds=self._project_lock_timeout_seconds,
-                ):
+                with self._project_lock_scope(context, recovered_tokens) as locked_context:
                     refreshed_base = self._objects.overlay_synchronized_paths(
                         projection.current_tree_id,
-                        context.project_root,
+                        locked_context.project_root,
                         recovered_paths,
                     )
                     if {write_set.base_tree_id for write_set in write_sets} != {refreshed_base}:
@@ -894,7 +929,7 @@ class Scheduler:
                     return self._commit_wave(
                         plan=plan,
                         projection=projection,
-                        context=context,
+                        context=locked_context,
                         succeeded_ids=succeeded_ids,
                         base_tree_id=refreshed_base,
                         synchronized_paths=recovered_paths,
@@ -1038,13 +1073,9 @@ class Scheduler:
             write_set_ids=tuple(write_set_ids),
             tokens=tokens,
         )
-        manager = self._project_locks or ProjectResourceLockManager(
-            context.project_root,
-            clock=self._clock,
-        )
         try:
-            with manager.acquire(tokens, timeout_seconds=self._project_lock_timeout_seconds):
-                publication_store = ProjectPublicationStore(context.project_root)
+            with self._project_lock_scope(context, tokens) as locked_context:
+                publication_store = ProjectPublicationStore(locked_context.project_root)
                 publication_store.assert_no_prepared(
                     tokens,
                     allowed_publication_id=publication_id,
@@ -1052,7 +1083,7 @@ class Scheduler:
                 publication_status = publication_store.prepare(publication)
                 if publication_status != "applied":
                     self._objects.apply_write_sets_to_synchronized_paths(
-                        context.project_root,
+                        locked_context.project_root,
                         write_sets,
                         synchronized_paths,
                     )

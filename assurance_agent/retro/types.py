@@ -88,6 +88,7 @@ class WorkflowRetroSignals(BaseModel):
     gate_pushback: tuple[RetroSignal, ...] = ()
     healing_efficiency: tuple[RetroSignal, ...] = ()
     skill_execution_drift: tuple[RetroSignal, ...] = ()
+    task_failures: tuple[RetroSignal, ...] = ()
 
 
 class EvalRetroSignals(BaseModel):
@@ -125,4 +126,7 @@ class RetroContext(BaseModel):
         Other ImprovementKinds remain eligible when this is false.
         """
         issue_blockers = frozenset({"analysis_failed", "project_sync_pending"})
-        return not any(reason in issue_blockers for reason in self.integrity.reasons)
+        return not any(
+            reason in issue_blockers or reason.startswith("issue_pipeline_failed:")
+            for reason in self.integrity.reasons
+        )

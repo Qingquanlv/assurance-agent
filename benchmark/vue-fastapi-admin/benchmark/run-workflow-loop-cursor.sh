@@ -809,6 +809,7 @@ run_nightly_collect() {
 # Populates EVAL_ROWS / EVAL_WORST for the summary.
 declare -a EVAL_ROWS=()
 EVAL_WORST="pass"
+EVAL_GATE_EXIT=0
 run_eval_regression() {
   local eval_log="$RUN_DIR/eval-regression.log"
   : >"$eval_log"
@@ -817,34 +818,46 @@ run_eval_regression() {
     return 0
   fi
   log "stage: eval regression suites=[$EVAL_REGRESSION_SUITES] engine=$EVAL_ENGINE_ROOT sut=$PROJECT_ROOT"
-  local worst="pass"
   local -a suites=()
+  local -a verdicts=()
   IFS=',' read -ra suites <<<"$EVAL_REGRESSION_SUITES"
-  local suite out rid verdict
+  local suite out rid verdict regression_verdict run_exit regression_exit
   for suite in "${suites[@]}"; do
     suite="$(echo "$suite" | xargs)"
     [ -n "$suite" ] || continue
-    set +e
+    run_exit=0
     out="$(cd "$EVAL_ENGINE_ROOT" && AA_EVAL_FAKE_ADAPTER=1 "$AA_BIN" eval run \
-      --suite "$suite" --sut-dir "$PROJECT_ROOT" --json 2>>"$eval_log")"
-    set +e
+      --suite "$suite" --sut-dir "$PROJECT_ROOT" --json 2>>"$eval_log")" || run_exit=$?
     printf '%s\n' "$out" >>"$eval_log" || true
     rid="$(printf '%s' "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("run_id",""))' 2>/dev/null || true)"
     verdict="$(printf '%s' "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("verdict",""))' 2>/dev/null || true)"
-    [ -n "$verdict" ] || verdict="error"
-    log "eval[$suite]: verdict=$verdict run_id=${rid:-n/a}"
-    if [ -n "$rid" ]; then
+    if [ "$run_exit" -ne 0 ] || [ -z "$verdict" ]; then
+      verdict="error"
+    fi
+    if [ "$verdict" != "error" ] && [ -n "$rid" ]; then
+      regression_exit=0
+      regression_verdict="$(cd "$EVAL_ENGINE_ROOT" && python3 -m assurance_agent.eval.regression_gate \
+        --engine-root "$EVAL_ENGINE_ROOT" --sut-root "$PROJECT_ROOT" --run "$rid" \
+        2>>"$eval_log")" || regression_exit=$?
+      if [ "$regression_exit" -ne 0 ] || [ -z "$regression_verdict" ]; then
+        verdict="error"
+      else
+        verdict="$regression_verdict"
+      fi
       ( cd "$EVAL_ENGINE_ROOT" && "$AA_BIN" eval compare --baseline main \
         --run "$rid" --sut-dir "$PROJECT_ROOT" >>"$eval_log" 2>&1 ) || true
     fi
-    case "$verdict" in
-      pass | pass_with_warnings) ;;
-      *) worst="$verdict" ;;
-    esac
+    log "eval[$suite]: verdict=$verdict run_id=${rid:-n/a}"
+    verdicts+=("$verdict")
     EVAL_ROWS+=("$suite|$verdict|${rid:-n/a}")
   done
-  EVAL_WORST="$worst"
-  return 0
+  EVAL_WORST="$(cd "$EVAL_ENGINE_ROOT" && python3 -c \
+    'from assurance_agent.eval.regression_gate import worst_verdict; import sys; print(worst_verdict(sys.argv[1:]))' \
+    "${verdicts[@]}")" || EVAL_WORST="error"
+  EVAL_GATE_EXIT="$(cd "$EVAL_ENGINE_ROOT" && python3 -c \
+    'from assurance_agent.eval.regression_gate import gate_exit_code; import sys; print(gate_exit_code(sys.argv[1:]))' \
+    "${verdicts[@]}")" || EVAL_GATE_EXIT=1
+  return "$EVAL_GATE_EXIT"
 }
 
 # ---------------------------------------------------------------------------
@@ -1111,7 +1124,7 @@ elif [ "$DO_RETRO" = "true" ]; then
 fi
 
 if [ "$DO_EVAL_REGRESSION" = "true" ]; then
-  run_eval_regression
+  run_eval_regression || EVAL_GATE_EXIT=$?
 fi
 
 {
@@ -1155,6 +1168,7 @@ fi
     echo "## Eval regression (deterministic golden-sample gate)"
     echo
     echo "- worst verdict: \`$EVAL_WORST\`"
+    echo "- gate exit: \`$EVAL_GATE_EXIT\`"
     if [ "${#EVAL_ROWS[@]}" -gt 0 ]; then
       echo
       echo "| suite | verdict | run_id |"
@@ -1180,3 +1194,8 @@ log "cursor benchmark loop done - summary: $SUMMARY"
 rm -f "$TRACK_PID_FILE"
 echo
 cat "$SUMMARY"
+
+if [ "$EVAL_GATE_EXIT" -ne 0 ]; then
+  log "ERROR: eval regression gate failed (worst verdict: $EVAL_WORST)"
+  exit "$EVAL_GATE_EXIT"
+fi

@@ -35,6 +35,7 @@ from assurance_agent.workflow.graph.models import (
     RuntimeContext,
     TaskResult,
 )
+from assurance_agent.workflow.graph.project_locks import ProjectResourceLockManager
 from assurance_agent.workflow.graph.runtime import GraphRuntime
 from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
@@ -156,6 +157,7 @@ params:
   run_tests: {type: bool, default: true}
 entrypoints:
   full: {graph: main, allow: "params.run_mode == 'full'"}
+  nested-full: {graph: nested-main, allow: "params.run_mode == 'full'"}
 policies:
   retry:
     never: {max_attempts: 1, retry_on: []}
@@ -171,6 +173,15 @@ policies:
     local: {run_seconds: 60, heartbeat_seconds: 0.05}
   scheduler: {max_parallel_tasks: 1}
 graphs:
+  nested-main:
+    max_supersteps: 5
+    nodes:
+      assurance:
+        uses: graph:main
+    edges:
+      - {from: START, to: assurance}
+      - {from: assurance, to: END}
+
   main:
     max_supersteps: 10
     nodes:
@@ -452,6 +463,7 @@ def _build(
     contracts: Any,
     *,
     ops: dict[str, OperationFn] | None = None,
+    shared_project_locks: bool = False,
 ) -> GraphRuntime:
     from assurance_agent.workflow.graph.handlers.gate import GateHandler
     from assurance_agent.workflow.graph.handlers.interrupt import InterruptHandler
@@ -499,6 +511,8 @@ def _build(
         max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
         contracts=contracts,
         state_defs=state_defs,
+        project_lock_manager=(ProjectResourceLockManager(project) if shared_project_locks else None),
+        project_lock_timeout_seconds=0.05,
     )
     schemas = {compiled.digest: compiled}
     runtime = GraphRuntime(
@@ -518,6 +532,30 @@ def _build(
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+def test_nested_issue_subgraph_inherits_shared_project_lock(tmp_path: Path) -> None:
+    """A graph task may reserve a descendant project token without deadlocking
+    when the synchronized leaf executes under the same runtime lock manager."""
+    project = _make_project(tmp_path)
+    compiled, contracts = _compile()
+    runtime = _build(
+        project,
+        compiled,
+        contracts,
+        ops=_default_ops(abnormal_count=0),
+        shared_project_locks=True,
+    )
+
+    result = runtime.run(
+        compiled,
+        "nested-full",
+        _context(project, params={"run_mode": "full", "run_tests": True}),
+    )
+
+    assert result.status.status == "completed", result.reason
+    assert result.exit_code == 0
+    assert list((project / "qa" / "changes" / "CH-1").rglob("issue-reconcile-status.json"))
 
 
 def test_observations_commit_before_analyzer_starts(tmp_path: Path) -> None:
