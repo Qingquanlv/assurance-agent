@@ -728,7 +728,6 @@ def test_run_tests_false_skips_execution_and_issue_subgraph(tmp_path: Path) -> N
     """run_tests=false must send generation-join -> END, bypassing both
     execution and the inspect-with-issues Issue subgraph."""
     compiled, _ = _load_compiled()
-    params = resolve_params(compiled.schema, {"run_mode": "full", "run_tests": False})
     assurance = compiled.schema.graphs["assurance"]
     skip_edge = next(
         e for e in assurance.edges if e.from_ == "generation-join" and e.to == "END"

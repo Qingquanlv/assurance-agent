@@ -19,7 +19,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-import pytest
 
 from assurance_agent.workflow.core.events import read_events_strict
 from assurance_agent.workflow.graph.checkpoint import CheckpointStore

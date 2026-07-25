@@ -255,7 +255,7 @@ def test_generate_report_issue_section_in_markdown(tmp_path: Path) -> None:
     change_dir = tmp_path / "qa" / "changes" / "CH-1"
     _seed_issue_snapshot(change_dir, analysis_status="completed", occurrences=[])
     inspect_change(tmp_path, change_id)
-    result = generate_report(tmp_path, change_id)
+    generate_report(tmp_path, change_id)
     md = (tmp_path / "qa" / "changes" / "CH-1" / "report" / "quality-report.md").read_text()
     assert "## Issue Risk" in md
     assert "**Issue Risk**: clear" in md
@@ -266,6 +266,6 @@ def test_generate_report_issue_risk_in_exec_summary(tmp_path: Path) -> None:
     change_dir = tmp_path / "qa" / "changes" / "CH-1"
     _seed_issue_snapshot(change_dir, analysis_status="failed")
     inspect_change(tmp_path, change_id)
-    result = generate_report(tmp_path, change_id)
+    generate_report(tmp_path, change_id)
     exec_summary = (tmp_path / "qa" / "changes" / "CH-1" / "report" / "executive-summary.md").read_text()
     assert "**Issue Risk**: unknown" in exec_summary

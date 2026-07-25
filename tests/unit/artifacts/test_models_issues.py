@@ -2,30 +2,20 @@ import pytest
 from pydantic import ValidationError
 
 from assurance_agent.artifacts.models.issues import (
-    AffectedSurface,
     ChangeIssueSnapshot,
-    FingerprintInputs,
     IssueAnalysisStatus,
     IssueCandidate,
     IssueCandidateDocument,
     IssueCandidateProposed,
     IssueEvidenceManifest,
-    IssueEvidenceManifestEntry,
     IssueOccurrence,
     IssueReconcileStatus,
     Observation,
     ObservationDocument,
     ObservationSource,
-    OccurrenceAnalysis,
     Problem,
-    ProblemAssessment,
-    ProblemFingerprint,
     ProblemProjection,
-    ProblemResolution,
     ProblemReviewQueue,
-    ProblemReviewQueueEntry,
-    ProblemSeenRef,
-    ProvisionalAssessment,
 )
 
 
