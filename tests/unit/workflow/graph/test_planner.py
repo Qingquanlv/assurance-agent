@@ -27,6 +27,8 @@ from assurance_agent.workflow.graph.models import (
     ExecutableTask,
     GraphProjection,
     InterruptProjection,
+    NodeGeneration,
+    NodeHistory,
     RecoveryProjection,
     ResolvedArtifact,
     RuntimeContext,
@@ -37,7 +39,7 @@ from assurance_agent.workflow.graph.planner import (
     apply_state_updates,
     plan_superstep,
 )
-from assurance_agent.workflow.graph.schema_v2 import StateDef, parse_workflow_v2
+from assurance_agent.workflow.graph.schema_v2 import EdgeDef, StateDef, parse_workflow_v2
 
 DIAMOND = """
 schema_version: "2"
@@ -442,6 +444,7 @@ def _projection(
     latest_checkpoint_id: str | None = None,
     interrupts: dict[str, InterruptProjection] | None = None,
     recoveries: dict[str, RecoveryProjection] | None = None,
+    node_histories: dict[str, NodeHistory] | None = None,
     terminal: str | None = None,
     terminal_reason: str | None = None,
     graph_digest: str | None = None,
@@ -462,6 +465,7 @@ def _projection(
         tasks={task.task_id: task for task in tasks or []},
         interrupts=interrupts or {},
         recoveries=recoveries or {},
+        node_histories=node_histories or {},
         terminal=terminal,  # type: ignore[arg-type]
         terminal_reason=terminal_reason,
     )
@@ -1167,6 +1171,125 @@ def test_successful_fallback_delivers_only_frozen_recovery_continuation(tmp_path
 
     assert [task.node_id for task in plan.tasks] == ["recovered"]
     assert all(task.node_id != "normal" for task in plan.tasks)
+
+
+def test_active_recovery_via_ignores_ordinary_successor(tmp_path: Path) -> None:
+    compiled = _compile(RECOVERY_GRAPH)
+    graph = compiled.graphs["main"]
+    fallback = graph.nodes["fallback"].model_copy(
+        update={"outgoing": (EdgeDef.model_validate({"from": "fallback", "to": "normal"}),)}
+    )
+    compiled = compiled.model_copy(
+        update={
+            "graphs": {
+                **compiled.graphs,
+                "main": graph.model_copy(update={"nodes": {**graph.nodes, "fallback": fallback}}),
+            }
+        }
+    )
+    analyzer = _initial_tasks(compiled, tmp_path)["analyzer"]
+    failed = _task(
+        analyzer,
+        "failed",
+        generation_ordinal=0,
+        error_kind="timeout",
+        error="analyzer timed out",
+        attempts_used=2,
+    )
+    recovery = _recovery_projection(analyzer)
+    routed = _projection(
+        compiled,
+        tasks=[failed],
+        recoveries={analyzer.task_id: recovery},
+    )
+    fallback_task = _plan(compiled, routed, tmp_path).tasks[0]
+
+    plan = _plan(
+        compiled,
+        _projection(
+            compiled,
+            tasks=[failed, _task(fallback_task, "succeeded", generation_ordinal=0)],
+            recoveries={analyzer.task_id: recovery},
+        ),
+        tmp_path,
+    )
+
+    assert [task.node_id for task in plan.tasks] == ["recovered"]
+
+
+def test_skipped_recovery_continuation_is_not_redelivered(tmp_path: Path) -> None:
+    compiled = _compile(
+        RECOVERY_GRAPH.replace(
+            "recovered: {uses: operation:recovered}",
+            'recovered: {uses: operation:recovered, when: "false"}\n      blocker: {uses: operation:blocker}',
+        )
+        .replace(
+            "- {from: START, to: analyzer}",
+            "- {from: START, to: analyzer}\n      - {from: START, to: blocker}",
+        )
+        .replace(
+            "- {from: recovered, to: END}",
+            "- {from: recovered, to: END}\n      - {from: blocker, to: END}",
+        )
+    )
+    initial = _initial_tasks(compiled, tmp_path)
+    analyzer = initial["analyzer"]
+    blocker = _task(initial["blocker"], "running", generation_ordinal=0)
+    failed = _task(
+        analyzer,
+        "failed",
+        generation_ordinal=0,
+        error_kind="timeout",
+        error="analyzer timed out",
+        attempts_used=2,
+    )
+    recovery = _recovery_projection(analyzer)
+    routed = _projection(
+        compiled,
+        tasks=[failed, blocker],
+        recoveries={analyzer.task_id: recovery},
+    )
+    fallback = next(task for task in _plan(compiled, routed, tmp_path).tasks if task.node_id == "fallback")
+    fallback_done = _task(fallback, "succeeded", generation_ordinal=0)
+
+    first = _plan(
+        compiled,
+        _projection(
+            compiled,
+            tasks=[failed, blocker, fallback_done],
+            recoveries={analyzer.task_id: recovery},
+        ),
+        tmp_path,
+    )
+    assert [event.node_id for event in first.strict_events if isinstance(event, NodeSkippedEvent)] == [
+        "recovered"
+    ]
+
+    replay = _plan(
+        compiled,
+        _projection(
+            compiled,
+            tasks=[failed, blocker, fallback_done],
+            recoveries={analyzer.task_id: recovery},
+            node_histories={
+                "inv-1\x1fmain\x1frecovered": NodeHistory(
+                    latest_generation_ordinal=0,
+                    generations_by_ordinal={
+                        0: NodeGeneration(
+                            generation_ordinal=0,
+                            status="skipped",
+                            reached=True,
+                        )
+                    },
+                )
+            },
+        ),
+        tmp_path,
+    )
+
+    assert not any(
+        isinstance(event, NodeSkippedEvent) and event.node_id == "recovered" for event in replay.strict_events
+    )
 
 
 def test_normal_success_uses_ordinary_edge_and_never_activates_recovery_via(tmp_path: Path) -> None:

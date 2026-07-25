@@ -125,14 +125,16 @@ def _recovery(
     generation: int = 0,
     error_kind: str = "internal",
     message: str = "boom",
+    checkpoint_ns: str | None = None,
+    graph_id: str = "main",
     inv: str = "inv-1",
 ) -> dict:
     return {
         "source": "graph",
         "type": "task_recovery_routed",
         "invocation_id": inv,
-        "checkpoint_ns": inv,
-        "graph_id": "main",
+        "checkpoint_ns": checkpoint_ns or inv,
+        "graph_id": graph_id,
         "node_id": node_id,
         "generation_ordinal": generation,
         "task_id": task_id,
@@ -333,6 +335,32 @@ def test_duplicate_identical_recovery_route_is_integrity_error(tmp_path: Path) -
         ],
     )
     with pytest.raises(LedgerIntegrityError, match="duplicate.*recovery"):
+        project_invocation(change, "inv-1")
+
+
+@pytest.mark.parametrize(
+    "recovery",
+    [
+        _recovery("task-a", checkpoint_ns="foreign-ns"),
+        _recovery("task-a", graph_id="foreign-graph"),
+    ],
+)
+def test_recovery_route_rejects_foreign_invocation_identity(tmp_path: Path, recovery: dict) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    _append_all(
+        change,
+        [
+            _started(),
+            _activated("node-a"),
+            _planned(["task-a"]),
+            _begin("task-a", "node-a"),
+            _failed("task-a"),
+            recovery,
+        ],
+    )
+
+    with pytest.raises(LedgerIntegrityError, match="canonical identity"):
         project_invocation(change, "inv-1")
 
 

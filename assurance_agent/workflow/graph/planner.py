@@ -670,6 +670,7 @@ def _deliver_tokens(
     """
     selected: dict[str, list[str]] = {}
     rerouted: dict[str, str] = {}
+    active_recovery_vias = frozenset(recovery_deliveries)
     end_reached = False
     stop_reason: str | None = None
     fail_reason: str | None = None
@@ -706,7 +707,7 @@ def _deliver_tokens(
             if edge.when is None or _satisfied(edge.when, scope, edge.to):
                 deliver(edge.to, "edge:START")
     for nid in graph.declaration_order:
-        if outcomes[nid].status != "succeeded":
+        if outcomes[nid].status != "succeeded" or nid in active_recovery_vias:
             continue
         for edge in graph.nodes[nid].outgoing:
             if edge.when is not None and not _satisfied(edge.when, scope, nid):
@@ -724,7 +725,7 @@ def _deliver_tokens(
 
     # Phase 3: routes（跳过即将再激活的 src，避免 stale needs_fix 再次拉起 fix）。
     for nid in graph.declaration_order:
-        if outcomes[nid].status != "succeeded" or nid in reopen:
+        if outcomes[nid].status != "succeeded" or nid in reopen or nid in active_recovery_vias:
             continue
         for route in graph.nodes[nid].routes:
             try:
@@ -745,7 +746,11 @@ def _deliver_tokens(
     for via, recovery in sorted(recovery_deliveries.items()):
         if outcomes[via].status == "succeeded" and (
             recovery.event.continue_to not in graph.nodes
-            or not _node_has_task(projection, recovery.event.continue_to)
+            or not _node_has_task_or_settled_generation(
+                projection,
+                graph.graph_id,
+                recovery.event.continue_to,
+            )
         ):
             deliver(
                 recovery.event.continue_to,
@@ -1906,6 +1911,26 @@ def _latest_task(
 
 def _node_has_task(projection: GraphProjection, nid: str) -> bool:
     return any(task.node_id == nid for task in projection.tasks.values())
+
+
+def _node_has_task_or_settled_generation(
+    projection: GraphProjection,
+    graph_id: str,
+    nid: str,
+) -> bool:
+    if _node_has_task(projection, nid):
+        return True
+    history = projection.node_histories.get(node_history_key(projection.checkpoint_ns, graph_id, nid))
+    if history is None or history.latest_generation_ordinal < 0:
+        return False
+    generation = history.generations_by_ordinal.get(history.latest_generation_ordinal)
+    return generation is not None and generation.status in (
+        "skipped",
+        "succeeded",
+        "failed",
+        "abandoned",
+        "stopped",
+    )
 
 
 def _succeeded_count(projection: GraphProjection, nid: str) -> int:

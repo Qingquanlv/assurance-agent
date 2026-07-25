@@ -744,6 +744,14 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
             )
             generation.apply_task_outcome(event, tasks=tasks, fan_outs=fan_outs)
         elif isinstance(event, TaskRecoveryRoutedEvent):
+            if (
+                started is None
+                or event.checkpoint_ns != started.checkpoint_ns
+                or event.graph_id != started.graph_id
+            ):
+                raise LedgerIntegrityError(
+                    f"task_recovery_routed canonical identity does not match invocation {invocation_id}"
+                )
             failed = tasks.get(event.task_id)
             if failed is None:
                 raise LedgerIntegrityError(
