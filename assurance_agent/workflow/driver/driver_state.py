@@ -181,23 +181,16 @@ def _latest_graph_terminal(change_dir: Path, entrypoint: str | None = None) -> t
 
 
 def evaluate_start_guard(change_dir: Path, entrypoint: str | None = None) -> StartGuard:
-    """Refuse duplicate live processes and completed graphs; resume otherwise.
+    """Refuse duplicate live processes; resume otherwise.
 
     Graph terminal from the ledger is authoritative. A stale/absent ``driver.json``
     never blocks resume of incomplete work and never forces completed tasks to re-run.
 
-    ``entrypoint`` scopes the completed check to that entrypoint's own invocation:
-    standalone entrypoints (``archive``/``retro``) run on a change whose main graph
-    has already completed, and must not be refused because of it.
+    Completed-invocation refusal is handled in ``GraphRuntime._start_and_drive``
+    where the compiled entrypoint ``restart`` policy (``once`` vs ``repeatable``) is
+    available.  The driver only refuses a genuinely live PID here.
     """
     existing = read_driver_state(change_dir)
-    invocation_id, terminal = _latest_graph_terminal(change_dir, entrypoint)
-    if terminal == "completed":
-        return StartGuard(
-            allowed=False,
-            reason=(f"graph already completed (invocation {invocation_id}); refuse restart"),
-            existing=existing,
-        )
     if existing is not None and existing.status == "running" and is_pid_alive(existing.pid):
         return StartGuard(
             allowed=False,

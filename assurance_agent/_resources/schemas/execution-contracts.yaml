@@ -601,6 +601,34 @@ contracts:
       - project:issue-registry
     retryable_errors: [conflict, transport]
 
+  operation:load-problem-review-context:
+    handler: operation
+    reads:
+      - project:qa/issues/problems.json
+      - project:qa/issues/review-queue.json
+    writes:
+      - change:issue-review/**
+    authorization_writes:
+      - change:issue-review/**
+    retryable_errors: []
+
+  operation:apply-problem-review:
+    handler: operation
+    reads:
+      - change:issue-review/**
+      - project:qa/issues/**
+    writes:
+      - change:issue-review/**
+      - project:qa/issues/**
+    authorization_writes:
+      - change:issue-review/**
+      - project:qa/issues/**
+    synchronized:
+      - project:qa/issues/**
+    exclusive:
+      - project:issue-registry
+    retryable_errors: [conflict, transport]
+
   # ---- retro workflow -------------------------------------------------------
   operation:retro-collect:
     handler: operation

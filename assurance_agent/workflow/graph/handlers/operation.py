@@ -40,7 +40,9 @@ from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.orchestration.operations import BASELINE_REL, HEAL_STATUSES
 from assurance_agent.workflow.graph.handlers.retro_ops import retro_accept, retro_collect
 from assurance_agent.workflow.issues.operations import (
+    apply_problem_review_operation,
     collect_observations_operation,
+    load_problem_review_context_operation,
     record_empty_issue_analysis_operation,
     record_issue_analysis_failure_operation,
     record_project_sync_pending_operation,
@@ -344,6 +346,8 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:record-issue-analysis-failure": record_issue_analysis_failure_operation,
         "operation:record-project-sync-pending": record_project_sync_pending_operation,
         "operation:reconcile-issues": reconcile_issues_operation,
+        "operation:load-problem-review-context": load_problem_review_context_operation,
+        "operation:apply-problem-review": apply_problem_review_operation,
     }
 
 

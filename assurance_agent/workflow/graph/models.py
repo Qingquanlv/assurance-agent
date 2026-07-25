@@ -64,6 +64,7 @@ class CompiledEntrypoint(BaseModel):
     graph_id: str
     allow_expr: Expr | None
     param_overrides: dict[str, object]
+    restart: str = "once"  # "once" | "repeatable"
 
 
 class CompiledWorkflow(BaseModel):

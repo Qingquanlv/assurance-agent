@@ -49,6 +49,7 @@ class EntrypointDef(_FrozenModel):
     graph: str
     allow: str | None = None
     with_: dict[str, object] = Field(default_factory=dict, alias="with")
+    restart: Literal["once", "repeatable"] = "once"
 
 
 class BackoffDef(_FrozenModel):

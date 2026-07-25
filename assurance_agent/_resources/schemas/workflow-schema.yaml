@@ -38,6 +38,8 @@ params:
   retro_last: {type: int, default: 10}
   retro_min_evidence: {type: int, default: 2}
   retro_dry_run: {type: bool, default: false}
+  problem_id: {type: str, default: ""}
+  review_id: {type: str, default: ""}
 
 entrypoints:
   full:
@@ -61,6 +63,16 @@ entrypoints:
       auto_archive: true
   retro:
     graph: retro-workflow
+  issue-review:
+    graph: issue-review-workflow
+    restart: repeatable
+    allow: "params.problem_id != '' and params.review_id != ''"
+  issue-analyze:
+    graph: issue-analyze-workflow
+    restart: repeatable
+  issue-reconcile:
+    graph: issue-reconcile-workflow
+    restart: repeatable
 
 policies:
   retry:
@@ -1079,6 +1091,139 @@ graphs:
           stop: complete-exhausted
           reject: complete-failed
         default: complete-failed
+
+  # ---- issue-review-workflow: human Problem review (repeatable) --------
+  issue-review-workflow:
+    # Non-blocking, repeatable human review of a single Problem.
+    # load-problem writes the review context; triage-advisor writes advice
+    # (display-only); human-interrupt captures the decision; apply-review
+    # appends the canonical event to the project Problem ledger.
+    max_supersteps: 6
+    nodes:
+      load-problem:
+        uses: operation:load-problem-review-context
+        retry: never
+        timeout: local-operation
+
+      triage-advisor:
+        uses: skill:aa-issue-triage-advisor
+        agent: aa-reporter
+        outputs:
+          - change:issue-review/**
+        retry: llm-default
+        timeout: agent
+
+      human-interrupt:
+        uses: builtin:interrupt
+        interrupt:
+          reason: "Review problem and take action"
+          checkpoint: review
+          bind: audited_gate_read
+          actions:
+            - confirm_assessment
+            - mark_not_an_issue
+            - accept_risk
+            - start_work
+            - confirm_link
+            - merge
+            - reopen
+            - submit_resolution
+            - stop
+
+      apply-review:
+        uses: operation:apply-problem-review
+        retry: project-sync
+        timeout: cli
+
+    edges:
+      - {from: START, to: load-problem}
+      - {from: load-problem, to: triage-advisor}
+      - {from: triage-advisor, to: human-interrupt}
+      - {from: apply-review, to: END}
+
+    routes:
+      - from: human-interrupt
+        select: "resume.action"
+        cases:
+          confirm_assessment: apply-review
+          mark_not_an_issue: apply-review
+          accept_risk: apply-review
+          start_work: apply-review
+          confirm_link: apply-review
+          merge: apply-review
+          reopen: apply-review
+          submit_resolution: apply-review
+          stop: STOP
+        default: STOP
+
+  # ---- issue-analyze-workflow: retry analyzer without re-collecting -----
+  issue-analyze-workflow:
+    # Reruns the LLM analyzer against the latest existing Observation/evidence
+    # digest and then reconciles on success.  Never re-collects evidence.
+    # Repeatable: can be retried as many times as needed after analysis failure.
+    max_supersteps: 8
+    nodes:
+      analyze-issues:
+        uses: skill:aa-issue-analyzer
+        agent: aa-reporter
+        outputs:
+          - change:inspect/issue-candidates.json
+          - change:inspect/issue-analysis-status.json
+        retry: llm-default
+        timeout: agent
+        recover:
+          errors: [timeout, transport, rate_limit, invalid_output]
+          via: record-analysis-failure
+          continue_to: END
+
+      record-analysis-failure:
+        uses: operation:record-issue-analysis-failure
+        retry: never
+        timeout: local-operation
+
+      reconcile-issues:
+        uses: operation:reconcile-issues
+        retry: project-sync
+        timeout: cli
+        recover:
+          errors: [conflict, transport]
+          via: record-project-sync-pending
+          continue_to: END
+
+      record-project-sync-pending:
+        uses: operation:record-project-sync-pending
+        retry: never
+        timeout: local-operation
+
+    edges:
+      - {from: START, to: analyze-issues}
+      - {from: analyze-issues, to: reconcile-issues}
+      - {from: reconcile-issues, to: END}
+
+  # ---- issue-reconcile-workflow: idempotent reconcile retry --------------
+  issue-reconcile-workflow:
+    # Reruns only operation:reconcile-issues for the latest pinned
+    # candidate/evidence digest.  Idempotent retry path for project_sync_pending.
+    # Never calls the LLM.
+    max_supersteps: 4
+    nodes:
+      reconcile-issues:
+        uses: operation:reconcile-issues
+        retry: project-sync
+        timeout: cli
+        recover:
+          errors: [conflict, transport]
+          via: record-project-sync-pending
+          continue_to: END
+
+      record-project-sync-pending:
+        uses: operation:record-project-sync-pending
+        retry: never
+        timeout: local-operation
+
+    edges:
+      - {from: START, to: reconcile-issues}
+      - {from: reconcile-issues, to: END}
 
 gates:
   registry-gate:

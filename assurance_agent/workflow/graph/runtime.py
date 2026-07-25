@@ -593,6 +593,11 @@ class GraphRuntime:
     def latest_root_invocation(self, entrypoint: str | None = None) -> str | None:
         return self._checkpoints.latest_root_invocation(entrypoint)
 
+    def invocation_terminal(self, invocation_id: str) -> str | None:
+        """Return the terminal status of an invocation, or None if still active."""
+        proj = self._try_project(invocation_id)
+        return proj.terminal if proj is not None else None
+
     def run_child(
         self,
         parent_task: ExecutableTask,
@@ -715,6 +720,25 @@ class GraphRuntime:
         entrypoint: str,
         context: RuntimeContext,
     ) -> RunResult:
+        # --- Entrypoint restart policy safety net ---
+        # For "once" entrypoints, refuse if this entrypoint has a completed
+        # invocation.  loop.py enforces this earlier; this is a secondary guard
+        # for callers that invoke run() directly without going through the driver.
+        ep = compiled.entrypoints.get(entrypoint)
+        if ep is not None and ep.restart == "once":
+            scoped_latest = self.latest_root_invocation(entrypoint)
+            if scoped_latest is not None:
+                try:
+                    scoped_proj = self._checkpoints.project(scoped_latest)
+                except LedgerIntegrityError as exc:
+                    raise GraphIntegrityError(str(exc)) from exc
+                if scoped_proj.terminal is not None:
+                    raise GraphRuntimeError(
+                        f"entrypoint '{entrypoint}' already completed "
+                        f"(invocation {scoped_latest}); refuse restart"
+                    )
+
+        # --- Active invocation guard (any entrypoint) ---
         latest = self.latest_root_invocation()
         if latest is not None:
             try:

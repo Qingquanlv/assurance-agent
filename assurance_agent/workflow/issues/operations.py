@@ -6,6 +6,8 @@ Currently contains:
     record_issue_analysis_failure      — operation:record-issue-analysis-failure
     record_project_sync_pending        — operation:record-project-sync-pending
     reconcile_issues_operation         — operation:reconcile-issues
+    load_problem_review_context_op     — operation:load-problem-review-context
+    apply_problem_review_operation     — operation:apply-problem-review
 
 All recovery operations are deterministic (no LLM), idempotent, and
 pin evidence/candidate digests so the workflow continues visibly even when
@@ -53,6 +55,12 @@ from assurance_agent.workflow.issues.projection import dump_projection, project_
 from assurance_agent.workflow.issues.reconciler import (
     ReconciliationValidationError,
     plan_reconciliation,
+)
+from assurance_agent.workflow.issues.review import (
+    ReviewContextError,
+    ReviewValidationError,
+    build_problem_review_context,
+    validate_review_action,
 )
 
 
@@ -684,5 +692,259 @@ def reconcile_issues_operation(
             "batch_id": batch_id,
             "occurrence_count": plan.occurrence_count,
             "candidate_digest": plan.candidate_digest,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# load_problem_review_context_operation
+# ---------------------------------------------------------------------------
+
+
+def load_problem_review_context_operation(
+    task: ExecutableTask,
+    workspace: TaskWorkspace,
+    context: RuntimeContext,
+) -> TaskResult:
+    """Write a non-canonical review context to change:issue-review/<review_id>/context.json.
+
+    Reads:
+        project:qa/issues/problems.json   (from workspace project root)
+
+    Writes:
+        change:issue-review/<review_id>/context.json
+
+    The context document is display-only and non-canonical; it is rebuilt each
+    time this operation runs.  Advice from the triage-advisor is written
+    alongside by skill:aa-issue-triage-advisor and is not read here.
+
+    Idempotent: writing the same problem version twice produces identical bytes.
+
+    Parameters (from context.params):
+        problem_id:  ID of the Problem to build context for (required, non-empty).
+        review_id:   Unique review session identifier (required, non-empty).
+    """
+    problem_id = context.params.get("problem_id")
+    review_id = context.params.get("review_id")
+    if not isinstance(problem_id, str) or not problem_id.strip():
+        return task_failure("invalid_input", "load-problem-review-context: problem_id param is required")
+    if not isinstance(review_id, str) or not review_id.strip():
+        return task_failure("invalid_input", "load-problem-review-context: review_id param is required")
+    problem_id = problem_id.strip()
+    review_id = review_id.strip()
+
+    # Load the project problem projection.
+    try:
+        problems = _load_problem_projection(workspace.project_root)
+    except ValueError as exc:
+        return task_failure("invalid_input", str(exc))
+
+    # Build the review context.
+    try:
+        review_ctx = build_problem_review_context(problem_id, problems)
+    except ReviewContextError as exc:
+        return task_failure("invalid_input", f"load-problem-review-context: {exc}")
+
+    # Write context to change:issue-review/<review_id>/context.json
+    context_doc: dict[str, object] = {
+        "problem_id": review_ctx.problem_id,
+        "expected_problem_version": review_ctx.expected_problem_version,
+        "problem_status": review_ctx.problem_status,
+        "problem_title": review_ctx.problem_title,
+        "canonical_alias": review_ctx.canonical_alias,
+        "occurrence_ids": list(review_ctx.occurrence_ids),
+        "problem_digest": review_ctx.problem_digest,
+        "review_id": review_id,
+        "generated_at": _utc_now(),
+    }
+    review_dir = workspace.change_dir / "issue-review" / review_id
+    review_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(review_dir / "context.json", _canonical_json(context_doc))
+
+    return TaskResult(
+        status="succeeded",
+        value={
+            "problem_id": problem_id,
+            "review_id": review_id,
+            "problem_version": review_ctx.expected_problem_version,
+            "problem_status": review_ctx.problem_status,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# apply_problem_review_operation
+# ---------------------------------------------------------------------------
+
+
+def _read_resume_event(change_dir: Path, invocation_id: str) -> dict[str, object] | None:
+    """Find the graph_resumed event for the given invocation_id in events.jsonl."""
+    from assurance_agent.workflow.core.events import read_events_strict
+
+    try:
+        events = read_events_strict(change_dir)
+    except Exception:
+        return None
+    # Find the most recent graph_resumed event for this invocation.
+    for event in reversed(events):
+        if (
+            isinstance(event, dict)
+            and event.get("type") == "graph_resumed"
+            and event.get("invocation_id") == invocation_id
+        ):
+            return event
+    return None
+
+
+def apply_problem_review_operation(
+    task: ExecutableTask,
+    workspace: TaskWorkspace,
+    context: RuntimeContext,
+) -> TaskResult:
+    """Apply a human review decision to the project Problem ledger.
+
+    Reads (synchronized workspace overlay):
+        change:issue-review/<review_id>/context.json
+        project:qa/issues/problems.json
+        project:qa/issues/events.jsonl
+        project:qa/issues/review-queue.json
+        change_dir/events.jsonl            (to find graph_resumed event)
+
+    Writes:
+        project:qa/issues/events.jsonl     (appended, synchronized)
+        project:qa/issues/problems.json    (rebuilt)
+        project:qa/issues/review-queue.json (rebuilt)
+        change:issue-review/<review_id>/apply-receipt.json
+
+    Contract: synchronized [project:qa/issues/**] + exclusive [project:issue-registry].
+    The operation reloads the problem projection after lock acquisition, so the
+    expected_problem_version in the context must still match at apply time.
+
+    Idempotent: the ProjectProblemStore deduplicates on idempotency_key.
+
+    Parameters (from context.params):
+        problem_id:  Problem to apply the action to.
+        review_id:   Unique review session identifier.
+    """
+    problem_id = context.params.get("problem_id")
+    review_id = context.params.get("review_id")
+    if not isinstance(problem_id, str) or not problem_id.strip():
+        return task_failure("invalid_input", "apply-problem-review: problem_id param is required")
+    if not isinstance(review_id, str) or not review_id.strip():
+        return task_failure("invalid_input", "apply-problem-review: review_id param is required")
+    problem_id = problem_id.strip()
+    review_id = review_id.strip()
+
+    # ------------------------------------------------------------------
+    # 1. Read the review context written by load-problem-review-context
+    # ------------------------------------------------------------------
+    review_dir = workspace.change_dir / "issue-review" / review_id
+    context_path = review_dir / "context.json"
+    if not context_path.is_file():
+        return task_failure(
+            "invalid_input",
+            f"apply-problem-review: review context not found at {context_path}; "
+            "run load-problem-review-context first",
+        )
+    try:
+        saved_ctx = json.loads(context_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return task_failure("invalid_input", f"apply-problem-review: corrupt context.json: {exc}")
+
+    saved_version = saved_ctx.get("expected_problem_version")
+
+    # ------------------------------------------------------------------
+    # 2. Find the graph_resumed event for this invocation
+    # ------------------------------------------------------------------
+    resumed = _read_resume_event(context.change_dir, task.invocation_id)
+    if resumed is None:
+        return task_failure(
+            "invalid_input",
+            f"apply-problem-review: no graph_resumed event found for invocation "
+            f"{task.invocation_id}; interrupt must be resolved before apply",
+        )
+    action = str(resumed.get("action", ""))
+    reason = str(resumed.get("reason", ""))
+    who = str(resumed.get("who", "unknown"))
+    raw_payload = resumed.get("payload")
+    payload: dict[str, object] = dict(raw_payload) if isinstance(raw_payload, dict) else {}
+
+    if not action:
+        return task_failure("invalid_input", "apply-problem-review: graph_resumed has no action")
+
+    # ------------------------------------------------------------------
+    # 3. Reload synchronized project problem projection
+    # ------------------------------------------------------------------
+    try:
+        problems = _load_problem_projection(workspace.project_root)
+    except ValueError as exc:
+        return task_failure("invalid_input", str(exc))
+
+    # ------------------------------------------------------------------
+    # 4. Build (or rebuild) review context from live projection
+    # ------------------------------------------------------------------
+    try:
+        review_ctx = build_problem_review_context(problem_id, problems)
+    except ReviewContextError as exc:
+        return task_failure("invalid_input", f"apply-problem-review: {exc}")
+
+    # Check that the saved version still matches (stale context detection).
+    if review_ctx.expected_problem_version != saved_version:
+        return task_failure(
+            "invalid_input",
+            f"apply-problem-review: stale review context — problem {problem_id!r} is "
+            f"now at version {review_ctx.expected_problem_version} but context was "
+            f"built at version {saved_version}",
+        )
+
+    # ------------------------------------------------------------------
+    # 5. Validate the action and obtain typed events
+    # ------------------------------------------------------------------
+    try:
+        problem_events = validate_review_action(
+            review_ctx,
+            action,
+            payload,
+            reason,
+            who,
+            projection=problems,
+        )
+    except ReviewValidationError as exc:
+        return task_failure("invalid_input", f"apply-problem-review: {exc}")
+
+    # ------------------------------------------------------------------
+    # 6. Append events to project problem ledger (synchronized)
+    # ------------------------------------------------------------------
+    try:
+        store = ProjectProblemStore(workspace.project_root)
+        store.append_and_rebuild(list(problem_events))
+    except Exception as exc:
+        return task_failure(
+            "invalid_output",
+            f"apply-problem-review: project problem ledger write failed: {exc}",
+        )
+
+    # ------------------------------------------------------------------
+    # 7. Write apply receipt
+    # ------------------------------------------------------------------
+    receipt: dict[str, object] = {
+        "problem_id": problem_id,
+        "review_id": review_id,
+        "action": action,
+        "reason": reason,
+        "who": who,
+        "applied_at": _utc_now(),
+        "events_appended": len(problem_events),
+        "event_ids": [e.event_id for e in problem_events],
+    }
+    _write_json(review_dir / "apply-receipt.json", _canonical_json(receipt))
+
+    return TaskResult(
+        status="succeeded",
+        value={
+            "problem_id": problem_id,
+            "review_id": review_id,
+            "action": action,
+            "events_appended": len(problem_events),
         },
     )

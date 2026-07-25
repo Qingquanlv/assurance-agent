@@ -47,6 +47,10 @@ EXPECTED_GRAPHS = {
     "performance-plan-review-cycle",
     "inspect-with-issues",
     "healing",
+    # Issue review entrypoints (Task 12)
+    "issue-review-workflow",
+    "issue-analyze-workflow",
+    "issue-reconcile-workflow",
 }
 
 EXPECTED_CONTRACTS = {
@@ -96,6 +100,9 @@ EXPECTED_CONTRACTS = {
     "operation:record-issue-analysis-failure",
     "operation:record-project-sync-pending",
     "operation:reconcile-issues",
+    # Issue review (Task 12)
+    "operation:load-problem-review-context",
+    "operation:apply-problem-review",
 }
 
 SCHEMA_REL = Path("assurance_agent/_resources/schemas/workflow-schema.yaml")
@@ -234,7 +241,11 @@ def test_canonical_v2_compiles_with_all_targets() -> None:
     contracts = load_execution_contracts(Path.cwd())
     compiled = compile_workflow(schema, contracts)
     assert set(compiled.graphs) == EXPECTED_GRAPHS
-    assert set(compiled.entrypoints) == {"full", "intake", "execute", "case", "archive", "retro"}
+    assert set(compiled.entrypoints) == {
+        "full", "intake", "execute", "case", "archive", "retro",
+        # Issue review entrypoints (Task 12)
+        "issue-review", "issue-analyze", "issue-reconcile",
+    }
 
 
 def test_archive_entrypoint_and_subgraph() -> None:

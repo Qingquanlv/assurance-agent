@@ -1159,6 +1159,7 @@ def _compile_entrypoints(schema: WorkflowSchemaV2) -> dict[str, CompiledEntrypoi
             graph_id=entrypoint.graph,
             allow_expr=parse_expression(entrypoint.allow) if entrypoint.allow else None,
             param_overrides=dict(entrypoint.with_),
+            restart=entrypoint.restart,
         )
         for name, entrypoint in schema.entrypoints.items()
     }
