@@ -132,7 +132,9 @@ class AgentHandler:
         return node.definition if node is not None else None
 
     def _claims(self, task: ExecutableTask, node_def: NodeDef) -> ResourceClaims:
-        """per-node contract claim；fan-out child 按冻结展开的 resources 收窄授权。"""
+        """Prefer planner-narrowed ``task.resources``; fall back to catalog claims."""
+        if task.resources.reads or task.resources.writes or task.resources.authorization_writes:
+            return task.resources
         claims = self._contracts.claims_for(node_def)
         payload = task.input
         if isinstance(payload, Mapping):

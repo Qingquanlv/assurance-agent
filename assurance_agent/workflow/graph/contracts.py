@@ -163,6 +163,37 @@ def path_covers(authorization: ResourcePath, claim: ResourcePath) -> bool:
     return _segments_cover(authorization.segments, claim.segments)
 
 
+def narrow_claims(
+    base: ResourceClaims,
+    *,
+    reads: tuple[ResourcePath, ...],
+    writes: tuple[ResourcePath, ...],
+    outputs: tuple[ResourcePath, ...],
+) -> ResourceClaims:
+    """Replace broad static claims with concrete expanded current-run paths.
+
+    Every expanded read must be covered by ``base.reads``; every expanded write
+    or output must be covered by ``base.authorization_writes``. Synchronized and
+    exclusive tokens are preserved from the static contract.
+    """
+    if not all(any(path_covers(bound, item) for bound in base.reads) for item in reads):
+        raise ContractError("expanded read exceeds the static execution contract")
+    requested_writes = (*writes, *outputs)
+    if not all(
+        any(path_covers(bound, item) for bound in base.authorization_writes)
+        for item in requested_writes
+    ):
+        raise ContractError("expanded write exceeds the static execution contract")
+    concrete_writes = tuple(dict.fromkeys((*writes, *outputs)))
+    return ResourceClaims(
+        reads=reads,
+        writes=concrete_writes,
+        synchronized=base.synchronized,
+        exclusive=base.exclusive,
+        authorization_writes=concrete_writes,
+    )
+
+
 # ---------------------------------------------------------------------------
 # contract 模型与 catalog
 

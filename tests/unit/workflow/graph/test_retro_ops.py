@@ -293,7 +293,7 @@ def test_retro_accept_op_accepts_valid_candidates(tmp_path: Path) -> None:
     result = retro_accept(task, workspace, context)
 
     assert result.status == "succeeded"
-    assert result.value is not None
+    assert isinstance(result.value, dict)
     assert result.value["result"] == "accepted"
     assert (retro_dir / "accept-status.json").is_file()
     assert (retro_dir / "review-queue.md").is_file()

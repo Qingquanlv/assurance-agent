@@ -548,6 +548,7 @@ class Scheduler:
             base_tree_id=base_tree_id or projection.current_tree_id,
             store=self._objects,
             side_effect_free=self._is_side_effect_free(task),
+            claims=task.resources,
         )
         leases.upsert(
             new_lease(

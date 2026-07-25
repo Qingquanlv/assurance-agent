@@ -638,33 +638,44 @@ contracts:
     reads:
       - project:qa/archive/**
       - project:qa/changes/**
-      - project:qa/retro/**
       - project:qa/issues/**
+      - project:eval/**
     writes:
-      - project:qa/retro/**
+      - project:qa/retro/*/context.json
     authorization_writes:
-      - project:qa/retro/**
-    retryable_errors: []
-
-  operation:retro-accept:
-    handler: operation
-    reads:
-      - project:qa/retro/**
-    writes:
-      - project:qa/retro/**
-    authorization_writes:
-      - project:qa/retro/**
+      - project:qa/retro/*/context.json
     retryable_errors: []
 
   skill:aa-retro:
     handler: agent
     reads:
-      - project:qa/retro/**
-      - project:qa/archive/**
-      - project:qa/issues/**
+      - project:qa/retro/*/context.json
     writes:
-      - project:qa/retro/**
+      - project:qa/retro/*/proposal-candidates.json
+      - project:qa/retro/*/retro-summary.md
     authorization_writes:
-      - project:qa/retro/**
+      - project:qa/retro/*/proposal-candidates.json
+      - project:qa/retro/*/retro-summary.md
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
+
+  operation:reconcile-improvements:
+    handler: operation
+    # Static bounds: qa/retro/** covers current-run receipt writes under the
+    # synchronized publication rule; planner narrow_claims replaces reads/writes
+    # with concrete ${params.retro_id} paths so sibling runs stay out of scope.
+    reads:
+      - project:qa/retro/**
+      - project:qa/improvements/**
+    writes:
+      - project:qa/retro/**
+      - project:qa/improvements/**
+    authorization_writes:
+      - project:qa/retro/**
+      - project:qa/improvements/**
+    synchronized:
+      - project:qa/improvements/**
+      - project:qa/retro/**
+    exclusive:
+      - project:improvement-registry
+    retryable_errors: [conflict, transport]

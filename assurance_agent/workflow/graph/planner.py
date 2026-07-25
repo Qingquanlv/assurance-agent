@@ -74,6 +74,7 @@ from assurance_agent.workflow.graph.contracts import (
     ContractError,
     ResourceClaims,
     ResourcePath,
+    narrow_claims,
 )
 from assurance_agent.workflow.graph.models import (
     ArtifactReader,
@@ -1681,6 +1682,31 @@ def _emit_skip(
     )
 
 
+def _narrow_task_resources(
+    compiled: CompiledWorkflow,
+    graph: CompiledGraph,
+    nid: str,
+    *,
+    expanded_resources: dict[str, list[str]] | None,
+    expanded_outputs: list[str],
+) -> ResourceClaims:
+    """Apply ``narrow_claims`` when the node declares concrete resource templates."""
+    base = _task_resources(compiled, graph, nid)
+    if expanded_resources is None:
+        return base
+    try:
+        reads = (
+            tuple(ResourcePath.parse(value) for value in expanded_resources["reads"])
+            if expanded_resources["reads"]
+            else base.reads
+        )
+        writes = tuple(ResourcePath.parse(value) for value in expanded_resources["writes"])
+        outputs = tuple(ResourcePath.parse(value) for value in expanded_outputs)
+        return narrow_claims(base, reads=reads, writes=writes, outputs=outputs)
+    except ContractError as exc:
+        raise PlanError(f"node '{nid}' resource narrowing: {exc}") from exc
+
+
 def _build_task(
     compiled: CompiledWorkflow,
     graph: CompiledGraph,
@@ -1693,11 +1719,18 @@ def _build_task(
     prior_error_kind: ErrorKind | None = None,
 ) -> ExecutableTask:
     definition = graph.nodes[nid].definition
+    expanded_outputs = [_expand_static_output(o, context, nid) for o in definition.outputs]
     input_payload: dict[str, object] = {
         "with": dict(definition.with_),
         "context": {"change_id": context.change_id},
-        "outputs": [_expand_static_output(o, context, nid) for o in definition.outputs],
+        "outputs": expanded_outputs,
     }
+    expanded_resources: dict[str, list[str]] | None = None
+    if definition.resources is not None:
+        expanded_resources = _expand_resources(
+            definition.resources, "__none__", None, context, nid
+        )
+        input_payload["resources"] = expanded_resources
     retry_policy = _retry_policy(compiled, definition)
     task_id = _task_id(projection, graph.graph_id, nid, ordinal, None)
     return ExecutableTask(
@@ -1714,7 +1747,13 @@ def _build_task(
         retry_policy=retry_policy,
         timeout_policy=_timeout_policy(compiled, definition),
         target=definition.uses,
-        resources=_task_resources(compiled, graph, nid),
+        resources=_narrow_task_resources(
+            compiled,
+            graph,
+            nid,
+            expanded_resources=expanded_resources,
+            expanded_outputs=expanded_outputs,
+        ),
         task_key=None,
         budget=_budget_mark(definition, projection, task_id),
         prior_failure=prior_failure,
@@ -1799,18 +1838,21 @@ def _build_fan_out_task(
         raise PlanError(
             f"node '{nid}' fan_out child {index} task ID drifted from the frozen expansion (ledger integrity)"
         )
+    expanded_outputs = [
+        _expand_output(output, fan_out.item_as, item, context, nid) for output in definition.outputs
+    ]
     input_payload: dict[str, object] = {
         "with": _expand_templates(dict(definition.with_), fan_out.item_as, item, context, nid),
         "context": {"change_id": context.change_id},
-        "outputs": [
-            _expand_output(output, fan_out.item_as, item, context, nid) for output in definition.outputs
-        ],
+        "outputs": expanded_outputs,
         "fan_out": {"item_as": fan_out.item_as, "item": item, "task_key": display_key},
     }
+    expanded_resources: dict[str, list[str]] | None = None
     if definition.resources is not None:
-        input_payload["resources"] = _expand_resources(
+        expanded_resources = _expand_resources(
             definition.resources, fan_out.item_as, item, context, nid
         )
+        input_payload["resources"] = expanded_resources
     retry_policy = _retry_policy(compiled, definition)
     return ExecutableTask(
         task_id=task_id,
@@ -1826,7 +1868,13 @@ def _build_fan_out_task(
         retry_policy=retry_policy,
         timeout_policy=_timeout_policy(compiled, definition),
         target=definition.uses,
-        resources=_task_resources(compiled, graph, nid),
+        resources=_narrow_task_resources(
+            compiled,
+            graph,
+            nid,
+            expanded_resources=expanded_resources,
+            expanded_outputs=expanded_outputs,
+        ),
         task_key=display_key,
         budget=_budget_mark(definition, projection, task_id),
         prior_failure=prior_failure,

@@ -38,6 +38,9 @@ params:
   retro_last: {type: int, default: 10}
   retro_min_evidence: {type: int, default: 2}
   retro_dry_run: {type: bool, default: false}
+  change_ids: {type: list, default: []}
+  since: {type: str, default: ""}
+  until: {type: str, default: ""}
   problem_id: {type: str, default: ""}
   review_id: {type: str, default: ""}
 
@@ -217,33 +220,51 @@ graphs:
   retro-workflow:
     max_supersteps: 20
     nodes:
-      collect:
+      collect-retro-evidence:
         uses: operation:retro-collect
         outputs:
           - project:qa/retro/${params.retro_id}/context.json
+        resources:
+          writes:
+            - project:qa/retro/${params.retro_id}/context.json
         retry: never
         timeout: local-operation
-      propose:
+      propose-improvements:
         uses: skill:aa-retro
         agent: aa-doc-author
         outputs:
-          - project:qa/retro/${params.retro_id}/proposals.json
+          - project:qa/retro/${params.retro_id}/proposal-candidates.json
           - project:qa/retro/${params.retro_id}/retro-summary.md
+        resources:
+          reads:
+            - project:qa/retro/${params.retro_id}/context.json
+          writes:
+            - project:qa/retro/${params.retro_id}/proposal-candidates.json
+            - project:qa/retro/${params.retro_id}/retro-summary.md
         retry: agent-transient
         timeout: agent
-      accept:
-        uses: operation:retro-accept
+      reconcile-improvements:
+        uses: operation:reconcile-improvements
         outputs:
-          - project:qa/retro/${params.retro_id}/proposals.json
+          - project:qa/retro/${params.retro_id}/accept-status.json
           - project:qa/retro/${params.retro_id}/review-queue.md
+        resources:
+          reads:
+            - project:qa/retro/${params.retro_id}/context.json
+            - project:qa/retro/${params.retro_id}/proposal-candidates.json
+            - project:qa/improvements/**
+          writes:
+            - project:qa/retro/${params.retro_id}/accept-status.json
+            - project:qa/retro/${params.retro_id}/review-queue.md
+            - project:qa/improvements/**
         retry: never
         timeout: local-operation
     edges:
-      - {from: START, to: collect}
-      - {from: collect, to: END, when: "params.retro_dry_run == true or node('collect').value.signal_count == 0"}
-      - {from: collect, to: propose, when: "params.retro_dry_run == false and node('collect').value.signal_count > 0"}
-      - {from: propose, to: accept}
-      - {from: accept, to: END}
+      - {from: START, to: collect-retro-evidence}
+      - {from: collect-retro-evidence, to: END, when: "params.retro_dry_run == true or node('collect-retro-evidence').value.signal_count == 0"}
+      - {from: collect-retro-evidence, to: propose-improvements, when: "params.retro_dry_run == false and node('collect-retro-evidence').value.signal_count > 0"}
+      - {from: propose-improvements, to: reconcile-improvements}
+      - {from: reconcile-improvements, to: END}
 
   intake:
     max_supersteps: 30

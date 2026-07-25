@@ -201,12 +201,16 @@ def test_retro_contracts_read_issues_but_never_write_them() -> None:
     catalog = load_execution_contracts(Path.cwd())
     collect = catalog.contracts["operation:retro-collect"]
     retro = catalog.contracts["skill:aa-retro"]
+    reconcile = catalog.contracts["operation:reconcile-improvements"]
     issue_reads = "project:qa/issues/**"
     issue_writes = "project:qa/issues/events.jsonl"
 
     assert issue_reads in collect.reads
-    assert issue_reads in retro.reads
+    # aa-retro is current-run context only; Issue history is collect's job.
+    assert issue_reads not in retro.reads
     assert issue_writes not in collect.writes
     assert issue_writes not in collect.authorization_writes
     assert issue_writes not in retro.writes
     assert issue_writes not in retro.authorization_writes
+    assert issue_writes not in reconcile.writes
+    assert issue_writes not in reconcile.authorization_writes

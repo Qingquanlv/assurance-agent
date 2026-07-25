@@ -1,7 +1,8 @@
-"""Retro operation handlers for ``operation:retro-collect`` and ``operation:retro-accept``.
+"""Retro operation handlers for ``operation:retro-collect`` and reconcile.
 
 Both handlers delegate to the shared stage functions in ``assurance_agent.retro``
-so the same logic serves the nightly driver and the graph runtime.
+/ ``workflow.improvements`` so the same logic serves the nightly driver and the
+graph runtime.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from assurance_agent.retro.window import RetroWindowSelection
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
 from assurance_agent.workflow.graph.task_runner import task_failure
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
+from assurance_agent.workflow.issues.history import IssueHistoryIntegrityError
 
 
 def _selection_from_params(params: dict) -> RetroWindowSelection:
@@ -23,12 +25,10 @@ def _selection_from_params(params: dict) -> RetroWindowSelection:
 
     if isinstance(change_ids, (list, tuple)) and change_ids:
         return RetroWindowSelection(change_ids=tuple(str(item) for item in change_ids), last=None)
-    if isinstance(since, str) or isinstance(until, str):
-        return RetroWindowSelection(
-            since=since if isinstance(since, str) else None,
-            until=until if isinstance(until, str) else None,
-            last=None,
-        )
+    since_s = since if isinstance(since, str) and since.strip() else None
+    until_s = until if isinstance(until, str) and until.strip() else None
+    if since_s is not None or until_s is not None:
+        return RetroWindowSelection(since=since_s, until=until_s, last=None)
     try:
         last_int = int(last) if isinstance(last, (int, str)) else 10
     except (TypeError, ValueError):
@@ -49,6 +49,8 @@ def retro_collect(task: ExecutableTask, workspace: TaskWorkspace, context: Runti
             selection=selection,
             write_root=workspace.project_root,
         )
+    except IssueHistoryIntegrityError as err:
+        return task_failure("invalid_input", str(err))
     except (AaError, OSError, ValueError) as err:
         return task_failure("internal", str(err))
     return TaskResult(
@@ -57,7 +59,9 @@ def retro_collect(task: ExecutableTask, workspace: TaskWorkspace, context: Runti
     )
 
 
-def retro_accept(task: ExecutableTask, workspace: TaskWorkspace, context: RuntimeContext) -> TaskResult:
+def reconcile_improvements(
+    task: ExecutableTask, workspace: TaskWorkspace, context: RuntimeContext
+) -> TaskResult:
     """Reconcile Candidates into the Improvement Ledger and write accept receipt."""
     retro_id = context.params.get("retro_id")
     if not isinstance(retro_id, str) or not retro_id.strip():
@@ -92,4 +96,8 @@ def retro_accept(task: ExecutableTask, workspace: TaskWorkspace, context: Runtim
     )
 
 
-__all__ = ["retro_collect", "retro_accept"]
+# Half-cutover alias for unit tests / nightly that still import the old name.
+retro_accept = reconcile_improvements
+
+
+__all__ = ["retro_collect", "reconcile_improvements", "retro_accept"]

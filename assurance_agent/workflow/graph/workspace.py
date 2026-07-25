@@ -209,6 +209,31 @@ def _is_excluded_rel(rel: str) -> bool:
     return any(part in _EXCLUDED_DIRS for part in parts[:-1] or parts)
 
 
+def _is_synchronized_ledger_rel(
+    roots: Mapping[str, str],
+    rel: str,
+    synchronized: Sequence[ResourcePath],
+) -> bool:
+    """Project ledger JSONL under synchronized prefixes must still publish.
+
+    Basename ``events.jsonl`` is globally capture-excluded (change-dir coordinator),
+    but ``qa/issues/events.jsonl`` / ``qa/improvements/events.jsonl`` are canonical
+    ledgers and must ride synchronized write-sets.
+    """
+    if not synchronized:
+        return False
+    parts = [part for part in rel.split("/") if part and part != "."]
+    if not parts or parts[-1] != "events.jsonl":
+        return False
+    try:
+        logical = ResourcePath.parse(_canonical_logical(roots, rel))
+    except WorkspaceError:
+        return False
+    return logical.root == "project" and any(
+        path_covers(prefix, logical) for prefix in synchronized
+    )
+
+
 def _walk(root: Path, *, keep_change_dir: Path | None = None) -> dict[str, _Entry]:
     root = root.resolve()
     keep_prefix: str | None = None
@@ -359,11 +384,35 @@ def _capture_synchronized_entries(
                 raise WorkspaceError(f"synchronized prefix is not a directory: {path.pattern}")
             for child_rel, entry in _walk(directory).items():
                 captured[f"{directory_rel}/{child_rel}"] = entry
+            # Ledger JSONL is basename-excluded from _walk; include it for live overlay.
+            events_rel = f"{directory_rel}/events.jsonl" if directory_rel else "events.jsonl"
+            events_entry = _entry_at(project_root, events_rel)
+            if events_entry is not None:
+                captured[events_rel] = events_entry
             continue
         entry = _entry_at(project_root, rel_pattern)
         if entry is not None:
             captured[rel_pattern] = entry
     return captured
+
+
+def _synchronized_ledger_entries(
+    workspace_root: Path,
+    roots: Mapping[str, str],
+    synchronized: Sequence[ResourcePath],
+) -> dict[str, _Entry]:
+    """Collect workspace ``events.jsonl`` files under synchronized project prefixes."""
+    found: dict[str, _Entry] = {}
+    for path in synchronized:
+        if path.root != "project" or path.segments[-1] != "**":
+            continue
+        directory_rel = path.pattern.removesuffix("/**")
+        events_rel = f"{directory_rel}/events.jsonl" if directory_rel else "events.jsonl"
+        physical = _physical_for(roots, ResourcePath.parse(f"project:{events_rel}"))
+        entry = _entry_at(workspace_root, physical)
+        if entry is not None:
+            found[physical] = entry
+    return found
 
 
 def _entry_at(project_root: Path, rel: str) -> _Entry | None:
@@ -508,6 +557,28 @@ class TreeStore:
             raise ValueError(f"artifact is not valid JSON: {logical_path}") from exc
         return ResolvedArtifact(value=value, reads_sha256={logical_path: entry.sha256})
 
+    def filter_tree(self, tree_id: str, claims: ResourceClaims) -> str:
+        """Return a tree id containing only entries in the task's claim scope.
+
+        Used so task workspaces omit sibling Retro runs (and other out-of-scope
+        paths) while freeze still diffs against a matching sparse base tree.
+        """
+        manifest = self._load_tree(tree_id)
+        bounds = (*claims.reads, *claims.writes, *claims.authorization_writes)
+        if not bounds:
+            return tree_id
+        entries = {
+            rel: entry
+            for rel, entry in manifest.entries.items()
+            if _entry_covered_by_claims(manifest.roots, rel, claims)
+        }
+        if entries == manifest.entries:
+            return tree_id
+        raw = _canonical_json(_tree_payload(manifest.roots, entries))
+        filtered_id = hashlib.sha256(raw).hexdigest()
+        self._write_object(filtered_id, raw)
+        return filtered_id
+
     def materialize(self, tree_id: str, dest: Path) -> None:
         """把 tree 物化到空目录 ``dest``，并写入 ``.graph-runtime/tree.json`` 元数据。"""
         manifest = self._load_tree(tree_id)
@@ -548,9 +619,18 @@ class TreeStore:
         """
         base = self._load_tree(workspace.base_tree_id)
         current = _walk(workspace.root)
+        # Synchronized project ledgers keep events.jsonl out of ordinary capture
+        # but must still enter the write-set for targeted publication.
+        if claims.synchronized:
+            for rel, entry in _synchronized_ledger_entries(
+                workspace.root, base.roots, claims.synchronized
+            ).items():
+                current[rel] = entry
         entries: list[WriteEntry] = []
         for rel in sorted(set(base.entries) | set(current)):
-            if _is_excluded_rel(rel):
+            if _is_excluded_rel(rel) and not _is_synchronized_ledger_rel(
+                base.roots, rel, claims.synchronized
+            ):
                 # Runtime side-effects may still sit in older base trees; never
                 # promote them into write-sets once they are capture-excluded.
                 continue
@@ -962,6 +1042,22 @@ def _is_authorized(roots: Mapping[str, str], rel: str, claims: ResourceClaims) -
     return False
 
 
+def _entry_covered_by_claims(
+    roots: Mapping[str, str],
+    rel: str,
+    claims: ResourceClaims,
+) -> bool:
+    """True when a physical tree entry is in the task's declared read/write scope."""
+    bounds = (*claims.reads, *claims.writes, *claims.authorization_writes)
+    if not bounds:
+        return True
+    for name, logical in _resolutions(roots, rel):
+        path = ResourcePath.parse(f"{name}:{logical}")
+        if any(path_covers(bound, path) for bound in bounds):
+            return True
+    return False
+
+
 def _physical_for(roots: Mapping[str, str], logical: ResourcePath) -> str:
     prefix = roots.get(logical.root)
     if prefix is None:
@@ -1040,15 +1136,17 @@ class WorkspaceBackend:
         base_tree_id: str,
         store: TreeStore,
         side_effect_free: bool = False,
+        claims: ResourceClaims | None = None,
     ) -> TaskWorkspace:
         _assert_safe_task_id(task_id)
         root = self._tasks_root / task_id
         if root.exists():
             shutil.rmtree(root)
         root.mkdir(parents=True)
-        store.materialize(base_tree_id, root)
+        effective_tree = store.filter_tree(base_tree_id, claims) if claims is not None else base_tree_id
+        store.materialize(effective_tree, root)
         self._init_convenience_git(root, side_effect_free=side_effect_free)
-        return TaskWorkspace.from_materialized_root(task_id, root, base_tree_id)
+        return TaskWorkspace.from_materialized_root(task_id, root, effective_tree)
 
     @staticmethod
     def _init_convenience_git(root: Path, *, side_effect_free: bool) -> None:

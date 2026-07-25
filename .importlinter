@@ -28,6 +28,9 @@ ignore_imports =
     assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.accept_stage
     assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.collect_stage
     assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.window
+    # Improvement reconciler validates Candidates against RetroContext (Task 8/9 seam).
+    assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.types
+    assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.candidates
 
 [importlinter:contract:eval-retro-independence]
 name = eval and retro must not import each other
@@ -40,6 +43,8 @@ ignore_imports =
     assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.accept_stage
     assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.collect_stage
     assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.window
+    assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.types
+    assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.candidates
 
 [importlinter:contract:core-below-orchestration]
 name = workflow.core must not import workflow.orchestration

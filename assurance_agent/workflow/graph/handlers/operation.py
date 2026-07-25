@@ -38,7 +38,11 @@ from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext
 from assurance_agent.workflow.graph.task_runner import task_failure, task_with
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.orchestration.operations import BASELINE_REL, HEAL_STATUSES
-from assurance_agent.workflow.graph.handlers.retro_ops import retro_accept, retro_collect
+from assurance_agent.workflow.graph.handlers.retro_ops import (
+    reconcile_improvements,
+    retro_accept,
+    retro_collect,
+)
 from assurance_agent.workflow.issues.operations import (
     apply_problem_review_operation,
     collect_observations_operation,
@@ -340,6 +344,8 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:record-healing-status": operation_record_healing_status,
         "operation:stop": stop_operation,
         "operation:retro-collect": retro_collect,
+        "operation:reconcile-improvements": reconcile_improvements,
+        # Half-cutover alias until nightly/CLI cutover (Task 12).
         "operation:retro-accept": retro_accept,
         "operation:collect-observations": collect_observations_operation,
         "operation:record-empty-issue-analysis": record_empty_issue_analysis_operation,

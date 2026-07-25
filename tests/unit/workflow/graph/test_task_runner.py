@@ -582,7 +582,8 @@ def test_default_operations_registry_has_exact_keys() -> None:
         "operation:inspect",
         "operation:stop",
         "operation:retro-collect",
-        "operation:retro-accept",
+        "operation:reconcile-improvements",
+        "operation:retro-accept",  # half-cutover alias
         "operation:collect-observations",
         "operation:record-empty-issue-analysis",
         "operation:record-issue-analysis-failure",

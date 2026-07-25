@@ -87,7 +87,7 @@ EXPECTED_CONTRACTS = {
     "operation:record-healing-status",
     "operation:stop",
     "operation:retro-collect",
-    "operation:retro-accept",
+    "operation:reconcile-improvements",
     "skill:aa-retro",
     "builtin:join",
     "builtin:gate",
@@ -687,14 +687,64 @@ def test_codegen_write_claims_are_disjoint_across_suites() -> None:
     assert any(r.startswith("repo:tests/") for r in run_tests.reads)
 
 
+def _full_graph_closure(schema) -> list:
+    """Graphs reachable from the full workflow entrypoint via ``graph:`` edges."""
+    start = schema.entrypoints["full"].graph
+    seen: set[str] = set()
+    stack = [start]
+    ordered: list = []
+    while stack:
+        gid = stack.pop()
+        if gid in seen or gid not in schema.graphs:
+            continue
+        seen.add(gid)
+        graph = schema.graphs[gid]
+        ordered.append(graph)
+        for node in graph.nodes.values():
+            prefix, _, target = node.uses.partition(":")
+            if prefix == "graph" and target in schema.graphs and target not in seen:
+                stack.append(target)
+    return ordered
+
+
+def test_retro_graph_is_independent_and_closed() -> None:
+    compiled, _ = _load_compiled()
+    schema = compiled.schema
+    assert compiled.entrypoints["retro"].graph_id == "retro-workflow"
+    retro = schema.graphs["retro-workflow"]
+    assert tuple(retro.nodes) == (
+        "collect-retro-evidence",
+        "propose-improvements",
+        "reconcile-improvements",
+    )
+    assert retro.nodes["collect-retro-evidence"].uses == "operation:retro-collect"
+    assert retro.nodes["propose-improvements"].uses == "skill:aa-retro"
+    assert retro.nodes["reconcile-improvements"].uses == "operation:reconcile-improvements"
+    full_targets = {
+        node.uses for graph in _full_graph_closure(schema) for node in graph.nodes.values()
+    }
+    assert not any("retro" in target or "improvement" in target for target in full_targets)
+
+
 def test_retro_entrypoint_topology() -> None:
     compiled, _ = _load_compiled()
     assert compiled.entrypoints["retro"].graph_id == "retro-workflow"
     g = compiled.graphs["retro-workflow"]
-    assert set(g.nodes) >= {"collect", "propose", "accept"}
-    assert g.nodes["collect"].definition.uses == "operation:retro-collect"
-    assert g.nodes["propose"].definition.uses == "skill:aa-retro"
-    assert g.nodes["accept"].definition.uses == "operation:retro-accept"
+    assert set(g.nodes) == {
+        "collect-retro-evidence",
+        "propose-improvements",
+        "reconcile-improvements",
+    }
+    assert g.nodes["collect-retro-evidence"].definition.uses == "operation:retro-collect"
+    assert g.nodes["propose-improvements"].definition.uses == "skill:aa-retro"
+    assert g.nodes["reconcile-improvements"].definition.uses == "operation:reconcile-improvements"
+    schema_graph = compiled.schema.graphs["retro-workflow"]
+    collect_edges = [e for e in schema_graph.edges if e.from_ == "collect-retro-evidence"]
+    assert any(e.to == "END" and e.when for e in collect_edges)
+    assert any(e.to == "propose-improvements" and e.when for e in collect_edges)
+    assert any(
+        e.when and "retro_dry_run" in e.when and "signal_count" in e.when for e in collect_edges
+    )
 
 
 # ---------------------------------------------------------------------------

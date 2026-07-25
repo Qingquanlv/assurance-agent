@@ -751,6 +751,42 @@ def test_synchronized_freeze_rejects_project_write_outside_declared_prefix(
 # task-local git 便利索引
 
 
+def test_workspace_create_does_not_materialize_sibling_retro_dirs(tmp_path: Path) -> None:
+    """Narrow read claims must keep sibling Retro runs out of the task workspace."""
+    project = _make_project(tmp_path)
+    current = project / "qa" / "retro" / "retro-current"
+    sibling = project / "qa" / "retro" / "retro-other"
+    current.mkdir(parents=True)
+    sibling.mkdir(parents=True)
+    (current / "context.json").write_text('{"retro_id":"retro-current"}\n', encoding="utf-8")
+    (sibling / "context.json").write_text('{"retro_id":"retro-other"}\n', encoding="utf-8")
+    (sibling / "secret.md").write_text("leak\n", encoding="utf-8")
+    store = _store(project)
+    tree_id = store.capture(project)
+    claims = ResourceClaims(
+        reads=(ResourcePath.parse("project:qa/retro/retro-current/context.json"),),
+        writes=(
+            ResourcePath.parse("project:qa/retro/retro-current/proposal-candidates.json"),
+            ResourcePath.parse("project:qa/retro/retro-current/retro-summary.md"),
+        ),
+        authorization_writes=(
+            ResourcePath.parse("project:qa/retro/retro-current/proposal-candidates.json"),
+            ResourcePath.parse("project:qa/retro/retro-current/retro-summary.md"),
+        ),
+    )
+
+    workspace = _backend(project).create(
+        task_id="propose",
+        base_tree_id=tree_id,
+        store=store,
+        claims=claims,
+    )
+
+    assert (workspace.project_root / "qa/retro/retro-current/context.json").is_file()
+    assert not (workspace.project_root / "qa/retro/retro-other").exists()
+    assert not (workspace.project_root / "qa/retro/retro-other/secret.md").exists()
+
+
 @pytest.mark.skipif(_GIT is None, reason="git binary not available")
 def test_workspace_git_index_tracks_base_tree(tmp_path: Path) -> None:
     git = _GIT
