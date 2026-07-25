@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -161,13 +163,18 @@ def _make_project(tmp_path: Path) -> Path:
     return project
 
 
-def _context(project: Path, *, params: dict[str, object] | None = None) -> RuntimeContext:
-    change = project / "qa" / "changes" / "CH-1"
+def _context(
+    project: Path,
+    *,
+    params: dict[str, object] | None = None,
+    change_id: str = "CH-1",
+) -> RuntimeContext:
+    change = project / "qa" / "changes" / change_id
     return RuntimeContext(
         project_root=project,
         repo_root=project,
         change_dir=change,
-        change_id="CH-1",
+        change_id=change_id,
         params=params or {"run_mode": "full"},
     )
 
@@ -236,8 +243,9 @@ def _build_runtime(
     *,
     clock=None,
     node_runner=None,
+    change_id: str = "CH-1",
 ) -> GraphRuntime:
-    change = project / "qa" / "changes" / "CH-1"
+    change = project / "qa" / "changes" / change_id
     store = TreeStore(change)
     checkpoints = CheckpointStore(change)
     workspaces = WorkspaceBackend(change)
@@ -580,6 +588,150 @@ def test_synchronized_partial_apply_is_repaired_by_fresh_runtime(
     assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version":2}\n'
     assert (project / "qa/changes/CH-1/results/update.json").read_text() == '{"updated":true}\n'
     assert (project / "app/source.py").read_text() == "unrelated live version 2\n"
+
+
+def _versioned_sync_ops(version: int) -> dict[str, OperationFn]:
+    ops = default_operations()
+
+    def update_issue(task: ExecutableTask, workspace, context: RuntimeContext) -> TaskResult:
+        del task, context
+        issue = workspace.project_root / "qa/issues/ISSUE-1.json"
+        issue.write_text(json.dumps({"version": version}) + "\n", encoding="utf-8")
+        result = workspace.change_dir / "results/update.json"
+        result.parent.mkdir(parents=True)
+        result.write_text(json.dumps({"version": version}) + "\n", encoding="utf-8")
+        return TaskResult(status="succeeded")
+
+    ops["operation:update-issue"] = update_issue
+    return ops
+
+
+def _two_change_project(tmp_path: Path) -> Path:
+    project = tmp_path / "project"
+    for change_id in ("CH-A", "CH-B", "CH-C"):
+        (project / "qa/changes" / change_id).mkdir(parents=True)
+    issue = project / "qa/issues/ISSUE-1.json"
+    issue.parent.mkdir(parents=True)
+    issue.write_text('{"version": 1}\n', encoding="utf-8")
+    write_aa_config(project)
+    return project
+
+
+def test_applied_marker_prevents_stale_replay_after_later_change_advances_resource(
+    tmp_path: Path,
+) -> None:
+    project = _two_change_project(tmp_path)
+    compiled, contracts = _sync_compiled()
+    runtime_a = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        node_runner=_op_runner(_versioned_sync_ops(2)),
+        change_id="CH-A",
+    )
+    runtime_b = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        node_runner=_op_runner(_versioned_sync_ops(3)),
+        change_id="CH-B",
+    )
+    a_applied = threading.Event()
+    continue_a = threading.Event()
+    execute_a = runtime_a._scheduler.execute  # noqa: SLF001
+
+    def pause_after_a_releases_lock(*args, **kwargs):  # type: ignore[no-untyped-def]
+        result = execute_a(*args, **kwargs)
+        a_applied.set()
+        if not continue_a.wait(timeout=5.0):
+            raise RuntimeError("timed out waiting for Change B")
+        return result
+
+    runtime_a._scheduler.execute = pause_after_a_releases_lock  # type: ignore[method-assign]  # noqa: SLF001
+    a_results: list[object] = []
+    a_errors: list[BaseException] = []
+
+    def run_a() -> None:
+        try:
+            a_results.append(runtime_a.run(compiled, "full", _context(project, change_id="CH-A")))
+        except BaseException as exc:
+            a_errors.append(exc)
+
+    thread = threading.Thread(target=run_a)
+    thread.start()
+    assert a_applied.wait(timeout=5.0)
+    try:
+        result_b = runtime_b.run(compiled, "full", _context(project, change_id="CH-B"))
+    finally:
+        continue_a.set()
+        thread.join(timeout=5.0)
+
+    assert not thread.is_alive()
+    assert a_errors == []
+    assert len(a_results) == 1
+    assert getattr(a_results[0], "exit_code") == 0
+    assert result_b.exit_code == 0
+    assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version": 3}\n'
+
+
+def test_prepared_publication_blocks_later_change_after_apply_before_ack_crash(
+    tmp_path: Path,
+) -> None:
+    project = _two_change_project(tmp_path)
+    compiled, contracts = _sync_compiled()
+    runtime_a = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        node_runner=_op_runner(_versioned_sync_ops(2)),
+        change_id="CH-A",
+    )
+    apply_a = runtime_a._objects.apply_write_sets_to_synchronized_paths  # noqa: SLF001
+
+    def crash_after_apply(*args, **kwargs):  # type: ignore[no-untyped-def]
+        apply_a(*args, **kwargs)
+        raise _InjectedCrash("after synchronized apply before publication acknowledgement")
+
+    runtime_a._objects.apply_write_sets_to_synchronized_paths = crash_after_apply  # type: ignore[method-assign]  # noqa: SLF001
+    with pytest.raises(_InjectedCrash, match="before publication acknowledgement"):
+        runtime_a.run(compiled, "full", _context(project, change_id="CH-A"))
+    assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version": 2}\n'
+
+    runtime_b = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        node_runner=_op_runner(_versioned_sync_ops(3)),
+        change_id="CH-B",
+    )
+    blocked_b = runtime_b.run(compiled, "full", _context(project, change_id="CH-B"))
+    assert blocked_b.status.status == "failed"
+    assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version": 2}\n'
+
+    events_a = read_events_strict(project / "qa/changes/CH-A")
+    invocation_a = next(
+        str(event["invocation_id"])
+        for event in events_a
+        if event.get("type") == "graph_invocation_started"
+    )
+    fresh_a = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        node_runner=_op_runner(_versioned_sync_ops(2)),
+        change_id="CH-A",
+    )
+    assert fresh_a.resume(invocation_a).exit_code == 0
+
+    runtime_c = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        node_runner=_op_runner(_versioned_sync_ops(3)),
+        change_id="CH-C",
+    )
+    assert runtime_c.run(compiled, "full", _context(project, change_id="CH-C")).exit_code == 0
+    assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version": 3}\n'
 
 
 def test_crash_after_write_set_freeze_before_success_retries_attempt(tmp_path: Path) -> None:

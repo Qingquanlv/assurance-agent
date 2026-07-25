@@ -1177,12 +1177,16 @@ class GraphRuntime:
         projection: GraphProjection,
         context: RuntimeContext,
     ) -> None:
-        prev, target, write_set_ids = self._last_committed_tree_edge(projection)
+        prev, target, publication_id, write_set_ids = self._last_committed_tree_edge(projection)
         if target is None:
             return
+        if publication_id is None:
+            raise GraphRuntimeError("committed tree edge lacks checkpoint identity")
         try:
             if self._scheduler.repair_committed_write_sets(
                 context=context,
+                invocation_id=projection.invocation_id,
+                publication_id=publication_id,
                 write_set_ids=write_set_ids,
             ):
                 return
@@ -1203,10 +1207,11 @@ class GraphRuntime:
     def _last_committed_tree_edge(
         self,
         projection: GraphProjection,
-    ) -> tuple[str | None, str | None, tuple[str, ...]]:
+    ) -> tuple[str | None, str | None, str | None, tuple[str, ...]]:
         cursor = projection.root_tree_id
         last_prev: str | None = None
         last_target: str | None = None
+        last_publication_id: str | None = None
         last_write_set_ids: tuple[str, ...] = ()
         for raw in read_events_strict(self._checkpoints._change_dir):  # noqa: SLF001
             if raw.get("source") != "graph" or raw.get("invocation_id") != projection.invocation_id:
@@ -1217,6 +1222,10 @@ class GraphRuntime:
             if isinstance(target_tree, str):
                 last_prev = cursor
                 last_target = target_tree
+                raw_checkpoint_id = raw.get("checkpoint_id")
+                last_publication_id = (
+                    raw_checkpoint_id if isinstance(raw_checkpoint_id, str) else None
+                )
                 raw_ids = raw.get("write_set_ids")
                 last_write_set_ids = tuple(
                     value
@@ -1224,7 +1233,7 @@ class GraphRuntime:
                     if isinstance(value, str)
                 )
                 cursor = target_tree
-        return last_prev, last_target, last_write_set_ids
+        return last_prev, last_target, last_publication_id, last_write_set_ids
 
     def _retry_pending_update(self, projection: GraphProjection, context: RuntimeContext) -> None:
         planned = self._last_uncommitted_plan(projection.invocation_id)

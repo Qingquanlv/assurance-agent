@@ -71,6 +71,9 @@ from assurance_agent.workflow.graph.planner import apply_state_updates
 from assurance_agent.workflow.graph.project_locks import (
     ProjectLockPathError,
     ProjectLockManager,
+    ProjectPublication,
+    ProjectPublicationError,
+    ProjectPublicationStore,
     ProjectResourceConflict,
     ProjectResourceLockManager,
 )
@@ -222,6 +225,7 @@ class Scheduler:
         )
         try:
             with manager.acquire(tokens, timeout_seconds=self._project_lock_timeout_seconds):
+                ProjectPublicationStore(context.project_root).assert_no_prepared(tokens)
                 overlay_tree_id = self._objects.overlay_synchronized_paths(
                     projection.current_tree_id,
                     context.project_root,
@@ -245,6 +249,8 @@ class Scheduler:
                 blocked_token=exc.token,
             )
         except ProjectLockPathError as exc:
+            raise SchedulerError(str(exc)) from None
+        except ProjectPublicationError as exc:
             raise SchedulerError(str(exc)) from None
 
     def _execute_wave(
@@ -937,6 +943,41 @@ class Scheduler:
             state_values=next_state,
             committed_task_ids=committed_task_ids,
         )
+        publication: ProjectPublication | None = None
+        publication_store: ProjectPublicationStore | None = None
+        publication_status: Literal["prepared", "applied"] | None = None
+        if synchronized_paths:
+            publication_tokens = tuple(
+                sorted(
+                    {
+                        token
+                        for write_set in write_sets
+                        for token in write_set.project_exclusive_tokens
+                    }
+                )
+            )
+            if not publication_tokens:
+                raise SchedulerError("synchronized Update lacks project publication tokens")
+            publication = ProjectPublication(
+                publication_id=checkpoint_id,
+                invocation_id=projection.invocation_id,
+                write_set_ids=tuple(committed_ids),
+                tokens=publication_tokens,
+            )
+            publication_store = ProjectPublicationStore(context.project_root)
+            try:
+                publication_store.assert_no_prepared(
+                    publication_tokens,
+                    allowed_publication_id=checkpoint_id,
+                )
+                # Write-ahead reservation closes the commit/apply/ack crash windows:
+                # later owners cannot advance these tokens until this publication is
+                # durably acknowledged after exact targeted apply.
+                publication_status = publication_store.prepare(publication)
+            except (ProjectLockPathError, ProjectPublicationError) as exc:
+                raise SchedulerError(str(exc)) from None
+            except ProjectResourceConflict as exc:
+                raise SchedulerError(str(exc)) from None
         tentative = live.model_copy(
             update={
                 "latest_checkpoint_id": checkpoint_id,
@@ -955,11 +996,15 @@ class Scheduler:
 
         if write_sets:
             if synchronized_paths:
-                self._objects.apply_write_sets_to_synchronized_paths(
-                    context.project_root,
-                    write_sets,
-                    synchronized_paths,
-                )
+                assert publication is not None
+                assert publication_store is not None
+                if publication_status != "applied":
+                    self._objects.apply_write_sets_to_synchronized_paths(
+                        context.project_root,
+                        write_sets,
+                        synchronized_paths,
+                    )
+                    publication_store.acknowledge(publication)
             else:
                 self._objects.apply_tree(
                     context.project_root,
@@ -972,6 +1017,8 @@ class Scheduler:
         self,
         *,
         context: RuntimeContext,
+        invocation_id: str,
+        publication_id: str,
         write_set_ids: Sequence[str],
     ) -> bool:
         """Replay one committed synchronized publication under its durable lock metadata.
@@ -1005,20 +1052,36 @@ class Scheduler:
         )
         if not tokens:
             raise SchedulerError("committed synchronized Update lacks project lock metadata")
+        publication = ProjectPublication(
+            publication_id=publication_id,
+            invocation_id=invocation_id,
+            write_set_ids=tuple(write_set_ids),
+            tokens=tokens,
+        )
         manager = self._project_locks or ProjectResourceLockManager(
             context.project_root,
             clock=self._clock,
         )
         try:
             with manager.acquire(tokens, timeout_seconds=self._project_lock_timeout_seconds):
-                self._objects.apply_write_sets_to_synchronized_paths(
-                    context.project_root,
-                    write_sets,
-                    synchronized_paths,
+                publication_store = ProjectPublicationStore(context.project_root)
+                publication_store.assert_no_prepared(
+                    tokens,
+                    allowed_publication_id=publication_id,
                 )
+                publication_status = publication_store.prepare(publication)
+                if publication_status != "applied":
+                    self._objects.apply_write_sets_to_synchronized_paths(
+                        context.project_root,
+                        write_sets,
+                        synchronized_paths,
+                    )
+                    publication_store.acknowledge(publication)
         except ProjectResourceConflict as exc:
             raise SchedulerError(str(exc)) from None
         except ProjectLockPathError as exc:
+            raise SchedulerError(str(exc)) from None
+        except ProjectPublicationError as exc:
             raise SchedulerError(str(exc)) from None
         return True
 

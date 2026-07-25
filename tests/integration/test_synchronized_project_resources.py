@@ -283,6 +283,28 @@ def test_project_resource_locks_release_after_exception(tmp_path: Path) -> None:
         pass
 
 
+def test_publication_identity_preserves_committed_write_set_order(tmp_path: Path) -> None:
+    from assurance_agent.workflow.graph.project_locks import (
+        ProjectPublication,
+        ProjectPublicationStore,
+    )
+
+    project = tmp_path / "project"
+    project.mkdir()
+    publication = ProjectPublication(
+        publication_id="c" * 64,
+        invocation_id="inv-a",
+        # Committed write-sets are ordered by task identity, not by their content hash.
+        write_set_ids=("f" * 64, "a" * 64),
+        tokens=("project:issue-registry",),
+    )
+    store = ProjectPublicationStore(project)
+
+    assert store.prepare(publication) == "prepared"
+    store.acknowledge(publication)
+    assert store.prepare(publication) == "applied"
+
+
 def test_project_resource_locks_exclude_two_real_processes(tmp_path: Path) -> None:
     try:
         from assurance_agent.workflow.graph.project_locks import ProjectResourceLockManager
