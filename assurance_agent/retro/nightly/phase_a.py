@@ -9,11 +9,32 @@ from assurance_agent.identifiers import assert_path_segment_safe
 from assurance_agent.retro.archive_reader import list_archived_changes, resolve_change_dir
 from assurance_agent.retro.nightly.types import ChangeCandidate
 from assurance_agent.retro.nightly.utils import list_dir_names
+from assurance_agent.retro.types import EvidenceSource
 
 IsTerminal = Callable[[Path, str], bool]
 
 
-def has_required_evidence(change_dir: Path) -> bool:
+# Signal-bearing artifacts the aggregator reads from an archived snapshot. The
+# coordinator files below cannot appear there: they are excluded from tree capture,
+# so no write-set (and therefore no `aa-archive` run) can ever copy them.
+_ARCHIVED_EVIDENCE_RELS = (
+    "inspect/failure-analysis.json",
+    "execution/execution-manifest.yaml",
+    "review",
+    "healing",
+)
+
+
+def has_required_evidence(change_dir: Path, source: EvidenceSource = "unarchived") -> bool:
+    """Whether ``change_dir`` carries enough evidence for retro aggregation.
+
+    An active change must expose its ledger and state projection — those are what
+    the ledger-derived signals are built from. An archived change is a terminal
+    snapshot by construction, so it qualifies on the evidence `aa-archive` does
+    copy; requiring coordinator files there would reject every archived change.
+    """
+    if source == "archive":
+        return any((change_dir / rel).exists() for rel in _ARCHIVED_EVIDENCE_RELS)
     return (change_dir / "events.jsonl").exists() and (change_dir / "workflow-state.yaml").exists()
 
 
@@ -34,7 +55,7 @@ def enumerate_candidates(
         if resolved is None:
             continue
         change_dir, source = resolved
-        if not has_required_evidence(change_dir):
+        if not has_required_evidence(change_dir, source):
             incomplete.append(change_id)
             continue
         if not is_terminal(change_dir, change_id):
@@ -57,10 +78,17 @@ def enumerate_candidates(
     return candidates, incomplete
 
 
-def snapshot_unarchived_evidence(sut: Path, retro_id: str, change_id: str) -> Path:
+def snapshot_unarchived_evidence(
+    sut: Path, retro_id: str, change_id: str, *, dest_root: Path | None = None
+) -> Path:
+    """Copy an active change's evidence under ``qa/retro/<id>/evidence/<change_id>/``.
+
+    ``dest_root`` (default: ``sut``) lets graph callers read host evidence while
+    writing into their task workspace.
+    """
     assert_path_segment_safe(retro_id, label="retro id")
     src = resolve_change(sut, change_id).path
-    dest = sut / "qa" / "retro" / retro_id / "evidence" / change_id
+    dest = (dest_root or sut) / "qa" / "retro" / retro_id / "evidence" / change_id
     dest.mkdir(parents=True, exist_ok=True)
     for name in ("events.jsonl", "workflow-state.yaml"):
         if (src / name).exists():

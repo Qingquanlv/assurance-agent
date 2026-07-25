@@ -939,3 +939,7 @@ def test_accept_risk_through_three_level_nest_completes(tmp_path: Path) -> None:
     ns_parts = interrupt.checkpoint_ns.split("/")
     expected_invs = {ns_parts[i] for i in range(0, len(ns_parts), 2)}
     assert expected_invs <= resumed_invs
+
+    from tests.helpers_graph_v3 import assert_v3_resume_anchor_chain
+
+    assert_v3_resume_anchor_chain(events, interrupt.checkpoint_ns)

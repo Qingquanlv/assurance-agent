@@ -6,13 +6,12 @@ These tests drive the canonical ``retro`` entrypoint through a minimal
 
 Design note on test_retro_workflow_accept_rewrites_legacy_proposals
 --------------------------------------------------------------------
-The tree-capture layer excludes ``events.jsonl`` and ``workflow-state.yaml``
-(they are coordinator-side write-once append logs, not product sources).
-This means archived changes planted at ``qa/archive/`` will not have their
-required-evidence files visible inside a task workspace, so the real
-``retro_collect`` would always return ``signal_count=0`` in a test context.
+Candidate evidence is read from the *host* project root (``retro_collect`` passes
+``context.project_root`` for reads and the workspace only for writes), so seeding
+it here would mean planting archived changes plus a projectable ledger on the host
+and letting the real aggregator derive signals from them.
 
-To exercise the propose+accept branch we therefore replace
+To exercise the propose+accept branch in isolation we instead replace
 ``operation:retro-collect`` with a stub that writes a minimal
 ``context.json`` with ``signal_count=1`` and returns the matching value.
 Everything else (propose via FakeRetroAgent + accept via the real handler)
@@ -65,7 +64,11 @@ class NeverCalledInvoker:
 
 
 class FakeRetroAgent:
-    """Writes legacy proposals (no finding_kind/payload) to the task workspace."""
+    """Writes legacy proposals (no finding_kind/payload) to the task workspace.
+
+    Cites the evidence id the stub context carries: accept refuses proposals whose
+    ``evidence_ids`` are absent from the collected context.
+    """
 
     def __init__(self, retro_id: str) -> None:
         self._retro_id = retro_id
@@ -79,7 +82,7 @@ class FakeRetroAgent:
                 "id": "p1",
                 "apply_kind": "memory_append",
                 "proposed_change": "Update the prompt rule to handle edge cases.",
-                "evidence_ids": ["ev-1"],
+                "evidence_ids": ["CH-SEED-1#seq1"],
                 "problem": "Prompt rule misses edge cases",
             }
         ]
@@ -215,13 +218,11 @@ def _fake_retro_collect_with_signal(
     workspace: TaskWorkspace,
     context: RuntimeContext,
 ) -> TaskResult:
-    """Stub retro-collect that returns signal_count=1 without scanning the archive.
+    """Stub retro-collect that returns signal_count=1 without scanning for candidates.
 
-    ``events.jsonl`` / ``workflow-state.yaml`` are excluded from tree capture
-    so real archived evidence is never visible inside a task workspace during
-    tests.  This stub bypasses that limitation by writing a minimal context.json
-    directly and returning the matching value dict so the edge expression
-    ``node('collect').value.signal_count > 0`` evaluates to True.
+    Writes a minimal context.json directly and returns the matching value dict so
+    the edge expression ``node('collect').value.signal_count > 0`` evaluates to
+    True, keeping this test focused on the propose+accept branch.
     """
     retro_id = context.params.get("retro_id", "")
     retro_dir = workspace.project_root / "qa" / "retro" / str(retro_id)

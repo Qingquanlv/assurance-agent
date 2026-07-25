@@ -262,6 +262,25 @@ def test_retry_attempts_accumulate_separately(tmp_path: Path) -> None:
     assert task.next_retry_at is None
 
 
+def test_latest_root_invocation_scoped_by_entrypoint(tmp_path: Path) -> None:
+    """Standalone entrypoints get their own root invocation on the same change."""
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    archive = {
+        **_started("inv-2"),
+        "entrypoint": "archive",
+        "graph_id": "archive",
+        "checkpoint_ns": "inv-2",
+    }
+    _append_all(change, [_started(), _terminal(), archive])
+
+    store = CheckpointStore(change)
+    assert store.latest_root_invocation() == "inv-2"
+    assert store.latest_root_invocation("full") == "inv-1"
+    assert store.latest_root_invocation("archive") == "inv-2"
+    assert store.latest_root_invocation("retro") is None
+
+
 def test_task_outcome_without_start_is_integrity_error(tmp_path: Path) -> None:
     change = tmp_path / "CH-1"
     change.mkdir()

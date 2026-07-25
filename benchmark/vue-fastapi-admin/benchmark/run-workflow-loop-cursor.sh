@@ -8,22 +8,27 @@
 #
 # One tick:
 #   1. Seed intake inputs for each item (.qa.yaml + proposal.md).
-#   2. `aa workflow run --adapter headless --agent-cmd 'cursor-agent …'`
+#   2. `aa workflow run --entrypoint full|… --adapter headless --agent-cmd …`
 #      drives the change to a terminal state (one cursor-agent spawn per task).
 #   3. Verify completion with deterministic `aa workflow status`.
-#   4. Archive completed changes through Cursor Agent + aa-archive.
-#   5. (Optional) retro-nightly collect via skills repo driver.
+#   4. Archive via GraphRuntime: `aa workflow run --entrypoint archive`
+#      (skill:aa-archive + archive-gate; not a free-form agent prompt).
+#   5. Retro via GraphRuntime: `aa workflow run --entrypoint retro`
+#      (operation:retro-collect → skill:aa-retro → operation:retro-accept).
+#      Legacy `aa retro nightly collect` / free-form proposal prompts remain
+#      behind USE_WORKFLOW_RETRO=false / DO_RETRO=true.
 #
-# Process-group hard timeout (run_with_hard_timeout.py) wraps driver / archive
-# runs so leftover SUT dev servers started by cursor-agent do not strand the
-# loop. Status-poll early kill is retained as a safety net if the driver
+# Process-group hard timeout (run_with_hard_timeout.py) wraps driver / archive /
+# retro runs so leftover SUT dev servers started by cursor-agent do not strand
+# the loop. Status-poll early kill is retained as a safety net if the driver
 # process lingers after a terminal state is already recorded.
 #
 # Usage:
 #   ./benchmark/run-workflow-loop-cursor.sh
 #   CURSOR_MODEL=cursor-grok-4.5-high-fast ./benchmark/run-workflow-loop-cursor.sh
 #   CURSOR_MAX_WORKFLOW_ATTEMPTS=4 ./benchmark/run-workflow-loop-cursor.sh
-#   DO_NIGHTLY_COLLECT=false ./benchmark/run-workflow-loop-cursor.sh
+#   DO_ARCHIVE=false DO_NIGHTLY_COLLECT=false ./benchmark/run-workflow-loop-cursor.sh
+#   USE_WORKFLOW_ARCHIVE=false USE_WORKFLOW_RETRO=false  # legacy agent/CLI paths
 #   RESUME_RUNSTAMP=20260713-113457 ./benchmark/run-workflow-loop-cursor.sh
 #   DAEMON=1 ./benchmark/run-workflow-loop-cursor.sh   # detach + write PID/log symlinks
 #
@@ -56,6 +61,16 @@ DO_ARCHIVE="${DO_ARCHIVE:-true}"
 DO_RETRO="${DO_RETRO:-false}"
 DO_RETRO_PROPOSALS="${DO_RETRO_PROPOSALS:-true}"
 DO_NIGHTLY_COLLECT="${DO_NIGHTLY_COLLECT:-true}"
+# Prefer GraphRuntime entrypoints (archive-workflow / retro-workflow). Set false
+# to fall back to free-form cursor archive prompt / `aa retro nightly collect`.
+USE_WORKFLOW_ARCHIVE="${USE_WORKFLOW_ARCHIVE:-true}"
+USE_WORKFLOW_RETRO="${USE_WORKFLOW_RETRO:-true}"
+ARCHIVE_ENTRYPOINT="${ARCHIVE_ENTRYPOINT:-archive}"
+RETRO_ENTRYPOINT="${RETRO_ENTRYPOINT:-retro}"
+RETRO_ID="${RETRO_ID:-}"                 # empty → ensure_retro_params generates
+RETRO_LAST="${RETRO_LAST:-10}"
+RETRO_MIN_EVIDENCE="${RETRO_MIN_EVIDENCE:-2}"
+RETRO_DRY_RUN="${RETRO_DRY_RUN:-false}"
 # Deterministic eval regression gate (golden-sample replay; catches engine
 # regressions that break scoring/evidence integrity on a known-good run).
 DO_EVAL_REGRESSION="${DO_EVAL_REGRESSION:-true}"
@@ -467,7 +482,7 @@ run_driver() {
   fi
 }
 
-# One-shot cursor-agent prompt (archive / legacy retro proposals).
+# One-shot cursor-agent prompt (legacy archive / legacy retro proposals only).
 # $1=logfile $2=prompt
 run_cursor_agent() {
   local logf="$1" prompt="$2"
@@ -483,6 +498,127 @@ run_cursor_agent() {
   cmd+=("$prompt")
 
   run_hard_timeout "$logf" "" "${cmd[@]}"
+}
+
+archive_params_json() {
+  # Entrypoint archive also injects with.auto_archive=true; keep params explicit.
+  python3 -c 'import json; print(json.dumps({"auto_archive": True}))'
+}
+
+retro_params_json() {
+  RETRO_ID="$RETRO_ID" RETRO_LAST="$RETRO_LAST" \
+  RETRO_MIN_EVIDENCE="$RETRO_MIN_EVIDENCE" RETRO_DRY_RUN="$RETRO_DRY_RUN" \
+  python3 -c '
+import json, os
+print(json.dumps({
+    "retro_id": os.environ.get("RETRO_ID") or "",
+    "retro_last": int(os.environ.get("RETRO_LAST") or "10"),
+    "retro_min_evidence": int(os.environ.get("RETRO_MIN_EVIDENCE") or "2"),
+    "retro_dry_run": os.environ.get("RETRO_DRY_RUN", "false") == "true",
+}))'
+}
+
+# GraphRuntime entrypoint run (archive / retro). $1=logfile $2=change_id $3=entrypoint $4=params_json
+run_workflow_entrypoint() {
+  local logf="$1" change_id="$2" entrypoint="$3" params="$4"
+  local agent_cmd
+  agent_cmd="$(cursor_agent_cmd_prefix)"
+  run_hard_timeout "$logf" "$change_id" \
+    "$AA_BIN" workflow run \
+    --change "$change_id" \
+    --entrypoint "$entrypoint" \
+    --adapter headless \
+    --params "$params" \
+    --agent-cmd "$agent_cmd"
+}
+
+# Archive one completed change. Prefer --entrypoint archive; optional legacy prompt.
+# $1=change_id  → sets archived=yes|no via caller check of qa/archive/
+run_archive_stage() {
+  local change_id="$1"
+  local ar_log rc=0
+  ARCHIVE_LAST_STATUS="ok"
+  if [ -d "qa/archive/${change_id}" ]; then
+    return 0
+  fi
+  if [ "$USE_WORKFLOW_ARCHIVE" = "true" ]; then
+    ar_log="$RUN_DIR/${change_id}.archive.workflow.log"
+    log "[$change_id] archive via workflow --entrypoint $ARCHIVE_ENTRYPOINT ..."
+    run_workflow_entrypoint "$ar_log" "$change_id" "$ARCHIVE_ENTRYPOINT" "$(archive_params_json)"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+      return 0
+    fi
+    # 20 = graph stopped, i.e. archive-gate refused this change (FAIL execution,
+    # unresolved healing, stale failure analysis). A refusal is a verdict, not an
+    # infrastructure error, and must not read like a crash in the log.
+    if [ "$rc" -eq 20 ]; then
+      ARCHIVE_LAST_STATUS="gate-stop"
+      log "[$change_id] archive refused by archive-gate (exit 20, see $(basename "$ar_log"))"
+      return "$rc"
+    fi
+    ARCHIVE_LAST_STATUS="error"
+    log "[$change_id] archive entrypoint exited $rc (see $(basename "$ar_log"))"
+    return "$rc"
+  fi
+  ar_log="$RUN_DIR/${change_id}.archive.cursor.jsonl"
+  log "[$change_id] archive via legacy cursor prompt ..."
+  run_cursor_agent "$ar_log" "$(archive_prompt "$change_id")"
+}
+
+# Pick a change_id that still exists under qa/changes/ to shell the retro entrypoint.
+# Prefer an archived change from this run; else any completed row change_id.
+# ROW_RESULTS fields: change_id|terminal|detail|archived=yes|no
+retro_shell_change_id() {
+  local cid term detail archive_field archived
+  for row in "${ROW_RESULTS[@]+"${ROW_RESULTS[@]}"}"; do
+    IFS='|' read -r cid term detail archive_field <<<"$row"
+    archived="${archive_field#archived=}"
+    if [ "$archived" = "yes" ] && [ -d "qa/changes/$cid" ]; then
+      printf '%s' "$cid"
+      return 0
+    fi
+  done
+  for row in "${ROW_RESULTS[@]+"${ROW_RESULTS[@]}"}"; do
+    IFS='|' read -r cid term detail archive_field <<<"$row"
+    if [ "$term" = "completed" ] && [ -d "qa/changes/$cid" ]; then
+      printf '%s' "$cid"
+      return 0
+    fi
+  done
+  # Fall back: newest active change dir (session shell only).
+  local newest
+  newest="$(ls -1d qa/changes/*/ 2>/dev/null | sort | tail -1 || true)"
+  if [ -n "$newest" ]; then
+    basename "$newest"
+    return 0
+  fi
+  return 1
+}
+
+# Capture artifacts from the newest qa/retro/retro-* after a collect/entrypoint run.
+# $1=min_epoch: reject dirs older than the retro stage, so a previous run's retro
+# is never reported as this run's output (qa/retro/ survives clean_generated_artifacts).
+# Sets: retro_id signal_count change_count nightly_review_queue (caller-owned vars).
+capture_latest_retro_artifacts() {
+  local min_epoch="${1:-0}"
+  local latest_retro
+  latest_retro="$(ls -1d qa/retro/retro-* 2>/dev/null | sort | tail -1 || true)"
+  [ -n "$latest_retro" ] || return 1
+  python3 -c 'import os,sys; raise SystemExit(0 if os.path.getmtime(sys.argv[1]) >= float(sys.argv[2]) else 1)' \
+    "$latest_retro" "$min_epoch" || return 1
+  retro_id="$(basename "$latest_retro")"
+  if [ -f "$latest_retro/context.json" ]; then
+    signal_count="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("signal_count",""))' "$latest_retro/context.json" 2>/dev/null || true)"
+    change_count="$(python3 -c 'import json,sys; w=json.load(open(sys.argv[1])).get("window",{}); print(w.get("change_count",""))' "$latest_retro/context.json" 2>/dev/null || true)"
+  fi
+  [ -f "$latest_retro/proposals.json" ] && cp "$latest_retro/proposals.json" "$RUN_DIR/proposals.json"
+  [ -f "$latest_retro/retro-summary.md" ] && cp "$latest_retro/retro-summary.md" "$RUN_DIR/retro-summary.md"
+  if [ -f "$latest_retro/review-queue.md" ]; then
+    nightly_review_queue="$latest_retro/review-queue.md"
+    cp "$latest_retro/review-queue.md" "$RUN_DIR/review-queue.md"
+  fi
+  return 0
 }
 
 status_json_path() {
@@ -631,10 +767,27 @@ Instructions:
 EOF
 }
 
+# Cross-change retro via GraphRuntime entrypoint (preferred) or legacy nightly CLI.
+# Uses a shell change_id only as RuntimeContext; writes project:qa/retro/**.
 run_nightly_collect() {
   local collect_log="$RUN_DIR/nightly-collect.log"
   local collect_exit=0
-  log "stage 3/3 retro-nightly collect --sut $PROJECT_ROOT ..."
+  local shell_cid=""
+
+  if [ "$USE_WORKFLOW_RETRO" = "true" ]; then
+    if ! shell_cid="$(retro_shell_change_id)"; then
+      log "retro entrypoint: no shell change_id under qa/changes/ — skipped"
+      return 10
+    fi
+    log "stage 3/3 retro via workflow --entrypoint $RETRO_ENTRYPOINT (shell=$shell_cid) ..."
+    : >"$collect_log"
+    run_workflow_entrypoint "$collect_log" "$shell_cid" "$RETRO_ENTRYPOINT" "$(retro_params_json)"
+    collect_exit=$?
+    cat "$collect_log" >>"$LOOP_LOG" || true
+    return "$collect_exit"
+  fi
+
+  log "stage 3/3 retro-nightly collect --sut $PROJECT_ROOT (legacy CLI) ..."
   if command -v "$AA_BIN" >/dev/null 2>&1 && "$AA_BIN" retro nightly --help >/dev/null 2>&1; then
     # shellcheck disable=SC2086
     "$AA_BIN" retro nightly collect \
@@ -734,7 +887,9 @@ log "cursor benchmark loop start - runstamp=$RUNSTAMP items=${#BENCHMARK_ITEMS[@
 log "project_root=$PROJECT_ROOT run_mode=$RUN_MODE run_tests=$RUN_TESTS test_types=$TEST_TYPES"
 log "driver: adapter=headless entrypoint=$DRIVER_ENTRYPOINT max_healing=$MAX_HEALING_ATTEMPTS"
 log "cursor_agent=$CURSOR_AGENT_BIN model=${CURSOR_MODEL:-default} max_attempts=$CURSOR_MAX_WORKFLOW_ATTEMPTS"
-log "do_archive=$DO_ARCHIVE do_nightly_collect=$DO_NIGHTLY_COLLECT do_retro=$DO_RETRO"
+log "do_archive=$DO_ARCHIVE use_workflow_archive=$USE_WORKFLOW_ARCHIVE entrypoint=$ARCHIVE_ENTRYPOINT"
+log "do_nightly_collect=$DO_NIGHTLY_COLLECT use_workflow_retro=$USE_WORKFLOW_RETRO entrypoint=$RETRO_ENTRYPOINT do_retro=$DO_RETRO"
+log "retro_params: id=${RETRO_ID:-auto} last=$RETRO_LAST min_evidence=$RETRO_MIN_EVIDENCE dry_run=$RETRO_DRY_RUN"
 log "auto_decide=$AUTO_DECIDE_BENCHMARK recover_healing=$RECOVER_HEALING_DEADLOCK"
 
 setup_run_tracking
@@ -782,14 +937,16 @@ for item in "${BENCHMARK_ITEMS[@]}"; do
     log "[$change_id] already completed — skip driver"
     final_status="$(execution_final_status "$change_id")"
     archived="no"
-    if [ "$DO_ARCHIVE" = "true" ] && [ ! -d "qa/archive/$change_id" ]; then
-      ar_log="$RUN_DIR/${change_id}.archive.cursor.jsonl"
-      log "[$change_id] stage 2/2 cursor archive (resume) ..."
-      if run_cursor_agent "$ar_log" "$(archive_prompt "$change_id")"; then
-        [ -d "qa/archive/${change_id}" ] && archived="yes"
-      fi
-    elif [ -d "qa/archive/$change_id" ]; then
+    if [ -d "qa/archive/$change_id" ]; then
       archived="yes"
+    elif [ "$DO_ARCHIVE" = "true" ]; then
+      log "[$change_id] stage 2/2 archive (resume) ..."
+      if run_archive_stage "$change_id"; then
+        [ -d "qa/archive/${change_id}" ] && archived="yes"
+      elif [ "${ARCHIVE_LAST_STATUS:-}" = "gate-stop" ]; then
+        archived="no (archive-gate stop)"
+      fi
+      log "[$change_id] archive done (archived=$archived)"
     fi
     ROW_RESULTS+=("$change_id|completed|final_status=$final_status|archived=$archived")
     continue
@@ -861,13 +1018,14 @@ PYASSERT
   fi
 
   if [ "$DO_ARCHIVE" = "true" ]; then
-    ar_log="$RUN_DIR/${change_id}.archive.cursor.jsonl"
-    log "[$change_id] stage 2/2 cursor archive ..."
-    if run_cursor_agent "$ar_log" "$(archive_prompt "$change_id")"; then
+    log "[$change_id] stage 2/2 archive ..."
+    if run_archive_stage "$change_id"; then
       [ -d "qa/archive/${change_id}" ] && archived="yes"
       log "[$change_id] archive done (archived=$archived)"
+    elif [ "${ARCHIVE_LAST_STATUS:-}" = "gate-stop" ]; then
+      archived="no (archive-gate stop)"
     else
-      log "[$change_id] archive exited non-zero (see $(basename "$ar_log"))"
+      log "[$change_id] archive exited non-zero"
     fi
   fi
 
@@ -883,30 +1041,38 @@ change_count=""
 nightly_collect_exit=""
 nightly_review_queue=""
 if [ "$DO_NIGHTLY_COLLECT" = "true" ]; then
+  retro_stage_epoch="$(python3 -c 'import time; print(time.time())')"
   run_nightly_collect
   nightly_collect_exit=$?
+  # 0 = workflow completed (incl. zero-signal END) or legacy OK
+  # 10 = no-op (legacy nightly / no shell change for entrypoint)
+  # 20 = workflow stopped (archive-gate style); treat as soft failure for retro
   if [ "$nightly_collect_exit" = "0" ] || [ "$nightly_collect_exit" = "10" ]; then
-    latest_retro="$(ls -1d qa/retro/retro-* 2>/dev/null | sort | tail -1 || true)"
-    if [ -n "$latest_retro" ]; then
-      retro_id="$(basename "$latest_retro")"
-      if [ -f "$latest_retro/context.json" ]; then
-        signal_count="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("signal_count",""))' "$latest_retro/context.json" 2>/dev/null || true)"
-        change_count="$(python3 -c 'import json,sys; w=json.load(open(sys.argv[1])).get("window",{}); print(w.get("change_count",""))' "$latest_retro/context.json" 2>/dev/null || true)"
+    if capture_latest_retro_artifacts "$retro_stage_epoch"; then
+      if [ "$nightly_collect_exit" = "10" ]; then
+        log "retro collect: no-op (exit 10) retro_id=${retro_id:-n/a}"
+      else
+        log "retro collect complete: mode=$([ "$USE_WORKFLOW_RETRO" = "true" ] && echo workflow || echo nightly) retro_id=${retro_id:-unknown} signal_count=${signal_count:-?} change_count=${change_count:-?}"
+        # An empty window while change dirs exist on disk means candidate
+        # enumeration rejected everything — a structural failure that otherwise
+        # exits 0 and looks like "nothing to retro about".
+        if [ "${change_count:-}" = "0" ]; then
+          on_disk="$(ls -1d qa/changes/*/ qa/archive/*/ 2>/dev/null | wc -l | tr -d ' ')"
+          if [ "${on_disk:-0}" != "0" ]; then
+            log "retro WARN: empty window (change_count=0) but $on_disk change dir(s) on disk — every candidate was rejected (check qa/retro/_state.json watermark, terminality and evidence completeness)"
+          fi
+        fi
       fi
-      [ -f "$latest_retro/proposals.json" ] && cp "$latest_retro/proposals.json" "$RUN_DIR/proposals.json"
-      [ -f "$latest_retro/retro-summary.md" ] && cp "$latest_retro/retro-summary.md" "$RUN_DIR/retro-summary.md"
-      if [ -f "$latest_retro/review-queue.md" ]; then
-        nightly_review_queue="$latest_retro/review-queue.md"
-        cp "$latest_retro/review-queue.md" "$RUN_DIR/review-queue.md"
-      fi
-    fi
-    if [ "$nightly_collect_exit" = "10" ]; then
-      log "nightly collect: no-op (exit 10)"
     else
-      log "nightly collect complete: retro_id=${retro_id:-unknown}"
+      if [ "$nightly_collect_exit" = "10" ]; then
+        log "retro collect: no-op (exit 10, no retro dir from this run)"
+      else
+        log "retro collect: exit 0 but no retro dir written by this run"
+      fi
     fi
   else
-    log "nightly collect failed (exit $nightly_collect_exit, see nightly-collect.log)"
+    log "retro collect failed (exit $nightly_collect_exit, see nightly-collect.log)"
+    capture_latest_retro_artifacts "$retro_stage_epoch" || true
   fi
 elif [ "$DO_RETRO" = "true" ]; then
   retro_id="retro-${RUNSTAMP}"
@@ -956,7 +1122,8 @@ fi
   echo "- run_mode: \`$RUN_MODE\` run_tests: \`$RUN_TESTS\` test_types: \`$TEST_TYPES\` force_continue: \`$FORCE_CONTINUE\`"
   echo "- driver entrypoint: \`$DRIVER_ENTRYPOINT\` max healing attempts: \`$MAX_HEALING_ATTEMPTS\`"
   echo "- max workflow attempts: \`$CURSOR_MAX_WORKFLOW_ATTEMPTS\`"
-  echo "- nightly collect: \`$DO_NIGHTLY_COLLECT\` (exit: \`${nightly_collect_exit:-n/a}\`)"
+  echo "- archive: \`DO_ARCHIVE=$DO_ARCHIVE\` via \`$([ "$USE_WORKFLOW_ARCHIVE" = "true" ] && echo "workflow:$ARCHIVE_ENTRYPOINT" || echo "legacy-cursor-prompt")\`"
+  echo "- retro collect: \`DO_NIGHTLY_COLLECT=$DO_NIGHTLY_COLLECT\` via \`$([ "$USE_WORKFLOW_RETRO" = "true" ] && echo "workflow:$RETRO_ENTRYPOINT" || echo "aa-retro-nightly")\` (exit: \`${nightly_collect_exit:-n/a}\`)"
   echo "- legacy retro: \`$DO_RETRO\`"
   echo
   echo "## Workflow results"
@@ -1003,7 +1170,8 @@ fi
   echo "## Artifacts"
   echo
   echo "- driver logs: \`benchmark/runs/$RUNSTAMP-cursor/*.workflow.attempt-*.cursor.log\`"
-  echo "- cursor archive/retro logs: \`benchmark/runs/$RUNSTAMP-cursor/*.cursor.jsonl\`"
+  echo "- archive logs: \`benchmark/runs/$RUNSTAMP-cursor/*.archive.workflow.log\` (or \`*.archive.cursor.jsonl\` if legacy)"
+  echo "- retro collect log: \`benchmark/runs/$RUNSTAMP-cursor/nightly-collect.log\`"
   echo "- status snapshots: \`benchmark/runs/$RUNSTAMP-cursor/*.status.json\`"
   echo "- loop log: \`benchmark/runs/$RUNSTAMP-cursor/loop.log\`"
 } >"$SUMMARY"

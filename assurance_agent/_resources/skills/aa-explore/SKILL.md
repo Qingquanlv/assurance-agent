@@ -250,7 +250,7 @@ Three buckets; populate dynamically for every change, do **not** copy-paste the 
 | Bucket | Definition | Rule |
 |--------|-----------|------|
 | `available` | Data that **was read and used** by this advisory | Always: `requirement_text`, `explore_context`. Add route/model/frontend items here **only if actually read in Step 3**. |
-| `missing` | Data the aggregator **tried to collect** (within its scope) but found empty or unavailable | = fields that are empty in `context.json` and whose absence is a degraded_reason (`no_diff` → `git_diff`/`changed_files`; `no_history` → `historical_issues`/`previous_failure_analysis`/`known_product_issues`). |
+| `missing` | Data the aggregator **tried to collect** (within its scope) but found empty or unavailable | = fields that are empty in `context.json` and whose absence is a degraded_reason (`no_diff` → `git_diff`/`changed_files`; `no_history` → `historical_issues`/`previous_failure_analysis`). |
 | `not_inspected` | Data that **exists and could be read** but was **not read in this run** | Always: `existing_tests` (source files), `api_schema` (live schema). Move `api_routes` / `rbac_<module>_model` / `frontend_structure` to `available` if Step 3 actually read them. |
 
 > **Caution — `existing_tests` ambiguity:** test *source files* are always `not_inspected`; test *health signals* (`test_health[]` aggregated from archive) may be `missing` if the archive returned no data. These are different things — do not conflate them.
@@ -260,7 +260,7 @@ Three buckets; populate dynamically for every change, do **not** copy-paste the 
 "evidence_inventory": {
   "available": ["requirement_text", "explore_context", "api_routes", "rbac_menu_model"],
   "missing": ["git_diff", "changed_files", "historical_issues",
-              "previous_failure_analysis", "known_product_issues"],
+              "previous_failure_analysis"],
   "not_inspected": ["existing_tests", "api_schema"]
 }
 ```
@@ -270,7 +270,7 @@ Three buckets; populate dynamically for every change, do **not** copy-paste the 
 "evidence_inventory": {
   "available": ["requirement_text", "explore_context"],
   "missing": ["git_diff", "changed_files", "historical_issues",
-              "previous_failure_analysis", "known_product_issues"],
+              "previous_failure_analysis"],
   "not_inspected": ["existing_tests", "api_routes", "api_schema", "rbac_menu_model"]
 }
 ```

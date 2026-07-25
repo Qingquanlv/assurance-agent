@@ -73,7 +73,7 @@ def test_run_retro_accept_no_proposals_returns_empty(tmp_path: Path) -> None:
 
 
 def test_run_retro_accept_missing_proposals_raises(tmp_path: Path) -> None:
-    retro_dir = _setup_retro(tmp_path)
+    _setup_retro(tmp_path)
     # do NOT write proposals.json
     with pytest.raises(AaError):
         run_retro_accept(tmp_path, retro_id="retro-test", min_evidence=1)
@@ -108,3 +108,42 @@ def test_run_retro_accept_rewrites_legacy_shape(tmp_path: Path) -> None:
     entry = rewritten["proposals"][0]
     assert entry["finding_kind"] == "prompt_rule"
     assert entry["payload"]["body"] == "remember to check fixtures"
+
+
+def test_run_retro_accept_rejects_unknown_evidence_without_completing(tmp_path: Path) -> None:
+    retro_dir = _setup_retro(tmp_path)
+    _write_proposals(
+        retro_dir,
+        [
+            memory_proposal_dict(
+                id="P-UNKNOWN",
+                payload={"body": "append this"},
+                evidence_ids=["CH-1#UNKNOWN"],
+            )
+        ],
+    )
+
+    with pytest.raises(AaError, match="evidence_ids absent from context"):
+        run_retro_accept(tmp_path, retro_id="retro-test", min_evidence=1)
+
+    state = json.loads((tmp_path / "qa" / "retro" / "_state.json").read_text())
+    assert state["consumed_changes"]["CH-1"]["terminal"] is False
+    assert not (retro_dir / "review-queue.md").exists()
+
+
+def test_run_retro_accept_rejects_duplicate_ids_without_completing(tmp_path: Path) -> None:
+    retro_dir = _setup_retro(tmp_path)
+    _write_proposals(
+        retro_dir,
+        [
+            memory_proposal_dict(id="P-DUP", payload={"body": "first"}),
+            memory_proposal_dict(id="P-DUP", payload={"body": "second"}),
+        ],
+    )
+
+    with pytest.raises(AaError, match="duplicate proposal id: P-DUP"):
+        run_retro_accept(tmp_path, retro_id="retro-test", min_evidence=1)
+
+    state = json.loads((tmp_path / "qa" / "retro" / "_state.json").read_text())
+    assert state["consumed_changes"]["CH-1"]["terminal"] is False
+    assert not (retro_dir / "review-queue.md").exists()

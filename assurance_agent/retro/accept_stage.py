@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from assurance_agent.exceptions import AaError
 from assurance_agent.retro.nightly.phase_d import build_review_queue_markdown, partition_proposals_for_review
 from assurance_agent.retro.proposals import accept_proposals, validate_retro_proposals
 from assurance_agent.retro.state import complete_retro_stage
@@ -21,13 +22,17 @@ def run_retro_accept(
     Reads ``context.json`` and ``proposals.json`` from the retro directory, validates
     proposals against the context, writes ``review-queue.md``, and marks the retro
     stage complete. Raises ``AaError`` (from ``accept_proposals``) if proposals are
-    missing or contain unroutable entries — callers should treat this as a hard failure.
-    Returns the accepted proposal list (may be empty after validation filtering).
+    missing, unroutable, or fail semantic validation — callers should treat this as
+    a hard failure. Returns the accepted proposal list.
     """
     retro_dir = sut / "qa" / "retro" / retro_id
     context = RetroContext.model_validate(json.loads((retro_dir / "context.json").read_text(encoding="utf-8")))
     proposals = accept_proposals(retro_dir)
-    proposals = [p for p in proposals if not validate_retro_proposals(context, [p])]
+    errors = validate_retro_proposals(context, proposals)
+    if errors:
+        raise AaError(
+            f"{retro_dir / 'proposals.json'} failed semantic validation: {'; '.join(errors)}"
+        )
     partition = partition_proposals_for_review(
         proposals, promotions=[], min_evidence=min_evidence, rework_alert=rework_alert
     )

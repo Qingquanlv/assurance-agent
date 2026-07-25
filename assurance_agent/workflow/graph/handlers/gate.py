@@ -15,12 +15,15 @@ from __future__ import annotations
 
 import json
 
+from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
+from assurance_agent.workflow.graph.checkpoint import fold_invocation_events
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
     RuntimeContext,
     TaskResult,
 )
+from assurance_agent.workflow.graph.node_history import build_node_results_for_gate
 from assurance_agent.workflow.graph.task_runner import task_failure, task_with
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.orchestration.dsl import DslError, Scope, evaluate, parse_expression
@@ -43,6 +46,7 @@ class GateHandler:
         context: RuntimeContext,
     ) -> TaskResult:
         params = task_with(task)
+        node_results = _node_results_for_gate(task, workspace)
         eval_context = GateEvaluationContext(
             project_root=workspace.project_root,
             repo_root=workspace.repo_root,
@@ -50,7 +54,7 @@ class GateHandler:
             change_id=context.change_id,
             params=context.params,
             state_values={},
-            node_results={},
+            node_results=node_results,
         )
         gate_id = params.get("gate")
         if isinstance(gate_id, str):
@@ -95,6 +99,7 @@ class GateHandler:
                 **symbols,
                 "params": dict(eval_context.params),
                 "state": dict(eval_context.state_values),
+                "evidence": dict(task.resolved_evidence),
             },
             file_exists=lambda rel: resolve_view_path(eval_context, rel).exists(),
             node_result=node_result,
@@ -136,6 +141,14 @@ def _load_artifact_symbols(
         except (OSError, ValueError):
             continue
     return variables
+
+
+def _node_results_for_gate(task: ExecutableTask, workspace: TaskWorkspace) -> dict[str, object]:
+    try:
+        projection = fold_invocation_events(task.invocation_id, read_events_strict(workspace.change_dir))
+        return build_node_results_for_gate(projection, graph_id=task.graph_id)
+    except LedgerIntegrityError:
+        return {}
 
 
 __all__ = ["GateHandler"]

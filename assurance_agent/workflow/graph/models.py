@@ -41,6 +41,7 @@ class CompiledNode(BaseModel):
     # 本 node 自己的保守资源 claim（``graph:<id>`` 为子图 footprint，无 catalog 时
     # 为 global:exclusive）；scheduler 据此做 wave 冲突判定，无需再退回全图 footprint。
     resources: ResourceClaims = Field(default_factory=ResourceClaims)
+    exports: tuple[CompiledExport, ...] = ()
 
 
 class CompiledGraph(BaseModel):
@@ -72,6 +73,7 @@ class CompiledWorkflow(BaseModel):
     entrypoints: dict[str, CompiledEntrypoint]
     graphs: dict[str, CompiledGraph]
     contract_digests: dict[str, str] = Field(default_factory=dict)
+    ingest_catalog_digest: str = ""
 
 
 # ---- Plan 语义模型（纯 planner 的输入输出；确定性，无 wall-clock）----
@@ -114,6 +116,21 @@ class BudgetConsumption(BaseModel):
     consumption_id: str
 
 
+class EvidenceBinding(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    alias: str
+    producer_task_id: str
+    symbol: str
+    source_sha256: str
+
+
+class CompiledExport(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    symbol: str
+    from_node: str
+    output: str
+
+
 class ExecutableTask(BaseModel):
     """一次逻辑 node invocation 的可执行单元；retry 时 task_id 不变。"""
 
@@ -134,6 +151,7 @@ class ExecutableTask(BaseModel):
     resources: ResourceClaims
     task_key: str | None = None
     budget: BudgetConsumption | None = None
+    evidence_bindings: tuple[EvidenceBinding, ...] = ()
     # scheduler 确定性 wave 选择键；planner 尚未回填时默认为 0，退化为 task_id 序。
     topology_rank: int = 0
     declaration_index: int = 0
@@ -142,6 +160,10 @@ class ExecutableTask(BaseModel):
     # injects contract-violation kinds into the prompt so the agent can fix them.
     prior_failure: str | None = None
     prior_error_kind: ErrorKind | None = None
+    # Execution-time resolved evidence values keyed by declared alias. Injected
+    # by the scheduler from committed producer frozen_outputs; kept off the input
+    # payload so input_sha256 / task_id stay stable (mirrors prior_failure).
+    resolved_evidence: dict[str, object] = Field(default_factory=dict)
 
 
 class PlanResult(BaseModel):
@@ -175,15 +197,52 @@ class WaveResult(BaseModel):
 TaskStatus = Literal["pending", "running", "succeeded", "failed", "abandoned", "interrupted", "stopped"]
 
 
+GenerationStatus = Literal[
+    "activated",
+    "skipped",
+    "running",
+    "succeeded",
+    "failed",
+    "abandoned",
+    "interrupted",
+    "stopped",
+]
+
+
+class NodeGeneration(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    generation_ordinal: int
+    status: GenerationStatus = "activated"
+    reached: bool | None = None
+    activation_id: str | None = None
+    aggregate_task_id: str | None = None
+    frozen_outputs: dict[str, object] = Field(default_factory=dict)
+    outputs_committed: bool = False
+    gate_report: dict[str, object] | None = None
+    fan_out_expansion_id: str | None = None
+
+
+class NodeHistory(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    latest_generation_ordinal: int = -1
+    generations_by_ordinal: dict[int, NodeGeneration] = Field(default_factory=dict)
+
+
 class TaskProjection(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     task_id: str
     node_id: str
     status: TaskStatus
+    generation_ordinal: int | None = None
+    task_key: str | None = None
+    fan_out_child: bool = False
+    fan_out_aggregate: bool = False
     attempts_used: int = 0
     latest_attempt_id: str | None = None
     write_set_id: str | None = None
     outputs_sha256: dict[str, str] = Field(default_factory=dict)
+    frozen_outputs: dict[str, object] = Field(default_factory=dict)
+    outputs_committed: bool = False
     gate_report: dict[str, object] | None = None
     state_updates: dict[str, object] = Field(default_factory=dict)
     value: object = None
@@ -246,6 +305,8 @@ class TaskResult(BaseModel):
     outputs_sha256: dict[str, str] = Field(default_factory=dict)
     gate_report: dict[str, object] | None = None
     write_set_id: str | None = None
+    frozen_outputs: dict[str, object] = Field(default_factory=dict)
+    candidate_outputs: dict[str, object] = Field(default_factory=dict)
     error_kind: ErrorKind | None = None
     error: str | None = None
     interrupt: InterruptProjection | None = None
@@ -260,6 +321,9 @@ class GraphProjection(BaseModel):
     parent_task_id: str | None = None
     structural_path: str
     graph_digest: str
+    event_schema_version: int = 1
+    ir_digest: str = ""
+    ingest_catalog_digest: str = ""
     contract_digests: dict[str, str]
     params: dict[str, object]
     root_tree_id: str
@@ -271,6 +335,7 @@ class GraphProjection(BaseModel):
     tasks: dict[str, TaskProjection] = Field(default_factory=dict)
     budgets: dict[str, int] = Field(default_factory=dict)
     fan_out_expansions: dict[str, FanOutExpansion] = Field(default_factory=dict)
+    node_histories: dict[str, NodeHistory] = Field(default_factory=dict)
     interrupts: dict[str, InterruptProjection] = Field(default_factory=dict)
     terminal: Literal["completed", "stopped", "failed"] | None = None
     terminal_reason: str | None = None
@@ -305,6 +370,10 @@ class ResumeCommand(BaseModel):
     action: Literal["fix_and_proceed", "accept_risk", "stop"]
     reason: str
     who: str
+    # Optional structured resume payload, forwarded onto the first-layer
+    # graph_resumed event verbatim. Payload-model validation (payload_model_id /
+    # payload_model_schema_digest) is a later increment; passthrough only for now.
+    payload: dict[str, object] = Field(default_factory=dict)
 
 
 class GraphStatus(BaseModel):

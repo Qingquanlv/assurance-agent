@@ -233,9 +233,13 @@ def _walk(root: Path, *, keep_change_dir: Path | None = None) -> dict[str, _Entr
                     and not rel.startswith(f"{keep_prefix}/")
                 ):
                     continue
+                # Excluded roots are skipped whatever their kind, matching
+                # ``_is_excluded_rel``: tooling often leaves ``.venv`` as a symlink to a
+                # shared interpreter, which must not fail the walk for pointing outside.
+                if child.name in _EXCLUDED_DIRS:
+                    continue
                 if child.is_dir(follow_symlinks=False):
-                    if child.name not in _EXCLUDED_DIRS:
-                        visit(Path(child.path), f"{rel}/")
+                    visit(Path(child.path), f"{rel}/")
                     continue
                 if child.is_symlink():
                     target = os.readlink(child.path)
@@ -338,6 +342,10 @@ class TreeStore:
         if hashlib.sha256(data).hexdigest() != digest:
             raise WorkspaceError(f"object store bytes tampered: {digest}")
         return data
+
+    def read_object(self, digest: str) -> bytes:
+        """Read content-addressed blob bytes (public wrapper)."""
+        return self._read_object(digest)
 
     # ---- tree capture / materialize ----
 

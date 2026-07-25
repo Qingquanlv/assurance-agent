@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -358,6 +358,7 @@ class GateEvaluationContext:
     params: Mapping[str, object]
     state_values: Mapping[str, object]
     node_results: Mapping[str, object]
+    artifact_overrides: Mapping[str, object] = field(default_factory=dict)
 
 
 class FrozenGateReport(BaseModel):
@@ -388,7 +389,9 @@ def check_gate_in_view(
     gate = gates.get(gate_id)
     if gate is None:
         raise GateError(f"unknown gate: {gate_id}")
-    verdict, matched_rule, reason, reads_sha256, details = _evaluate_gate_def(gate, context)
+    verdict, matched_rule, reason, reads_sha256, details = _evaluate_gate_def(
+        gate, context, gates=gates, stack=(gate_id,), memo={}
+    )
     return FrozenGateReport(
         gate_id=gate_id,
         verdict=verdict,
@@ -401,6 +404,8 @@ def check_gate_in_view(
 
 def _load_view_doc(context: GateEvaluationContext, rel: str) -> tuple[bool, bool, object]:
     """``_load_doc`` 的 view 版本：returns (present, parse_error, value)。"""
+    if rel in context.artifact_overrides:
+        return True, False, context.artifact_overrides[rel]
     path = resolve_view_path(context, rel)
     if not path.exists():
         return False, False, None
@@ -413,8 +418,22 @@ def _load_view_doc(context: GateEvaluationContext, rel: str) -> tuple[bool, bool
         return True, True, None
 
 
-def _view_gate_verdict(context: GateEvaluationContext, gate_id: str) -> str:
-    """从冻结 node 结局中解析 ``gate()`` 调用；无法解析时 fail closed 到 stop。"""
+def _view_gate_verdict(
+    context: GateEvaluationContext,
+    gate_id: str,
+    *,
+    gates: Mapping[str, GateDef],
+    stack: tuple[str, ...],
+    memo: dict[str, str],
+) -> str:
+    """解析 ``gate()``：优先冻结 node 结局，否则在同一 view 上重新裁决。
+
+    本图内已有节点裁决过该 gate 时，那份 ``gate_report`` 是冻结证据，直接采用。
+    否则必须就地重算——**子图内**裁决的 gate 在父图 view 里没有任何 node 结局
+    （例如 ``*-plan-cycle.review`` 之于 ``*-branch``），若一律返回 stop，跨子图
+    引用就会静默变成永久阻塞。重算与 v1 ``resolve_gate_verdict`` 同语义：同一
+    view、memo 去重、成环 fail closed。
+    """
     for result in context.node_results.values():
         if not isinstance(result, dict):
             continue
@@ -423,10 +442,24 @@ def _view_gate_verdict(context: GateEvaluationContext, gate_id: str) -> str:
             verdict = report.get("verdict")
             if isinstance(verdict, str):
                 return verdict
-    return Verdict.STOP.value
+    if gate_id in memo:
+        return memo[gate_id]
+    referenced = gates.get(gate_id)
+    if referenced is None or gate_id in stack:
+        return Verdict.STOP.value
+    resolved = _evaluate_gate_def(referenced, context, gates=gates, stack=(*stack, gate_id), memo=memo)[0]
+    memo[gate_id] = resolved.value
+    return resolved.value
 
 
-def _view_scope(gate: GateDef, context: GateEvaluationContext) -> Scope:
+def _view_scope(
+    gate: GateDef,
+    context: GateEvaluationContext,
+    *,
+    gates: Mapping[str, GateDef],
+    stack: tuple[str, ...],
+    memo: dict[str, str],
+) -> Scope:
     """view 版 gate 作用域：primary hoist + aliases + params/state + 冻结结局解析器。"""
     alias_docs: dict[str, object] = {}
     for entry in gate.reads:
@@ -445,7 +478,7 @@ def _view_scope(gate: GateDef, context: GateEvaluationContext) -> Scope:
         return resolve_view_path(context, rel).exists()
 
     def gate_verdict(gid: str) -> str:
-        return _view_gate_verdict(context, gid)
+        return _view_gate_verdict(context, gid, gates=gates, stack=stack, memo=memo)
 
     def node_result(node_id: str) -> object:
         result = context.node_results.get(node_id)
@@ -489,6 +522,10 @@ def _audited_reads_sha256(gate: GateDef, context: GateEvaluationContext) -> dict
 def _evaluate_gate_def(
     gate: GateDef,
     context: GateEvaluationContext,
+    *,
+    gates: Mapping[str, GateDef],
+    stack: tuple[str, ...],
+    memo: dict[str, str],
 ) -> tuple[Verdict, str | None, str, dict[str, str], dict[str, Any] | None]:
     """在显式 view 上求值单个 GateDef：返回 (verdict, matched_rule, reason, reads_sha256, details)。
 
@@ -509,7 +546,7 @@ def _evaluate_gate_def(
                 )
 
     # Step 2 — scope（gate: primary hoist + aliases + params/state + 冻结结局）
-    scope = _view_scope(gate, context)
+    scope = _view_scope(gate, context, gates=gates, stack=stack, memo=memo)
     details = _gate_details(gate, scope)
 
     # Step 3 — rules in DECLARATION order, first-true-wins（与 v1 相同）

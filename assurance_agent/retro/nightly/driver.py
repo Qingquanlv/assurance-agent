@@ -45,7 +45,6 @@ from assurance_agent.retro.promotions import (
     read_promotion_events,
 )
 from assurance_agent.retro.proposals import read_proposals
-from assurance_agent.retro.state import complete_retro_stage
 from assurance_agent.retro.types import RetroContext
 from assurance_agent.workflow.graph.checkpoint import CheckpointStore, project_invocation
 
@@ -98,9 +97,7 @@ def collect_nightly(
         return NIGHTLY_FAILURE
 
     if result.signal_count == 0:
-        # Zero-signal with candidates: mark stage complete so consumed changes are finalized.
-        if result.context is not None:
-            complete_retro_stage(sut, retro_id)
+        # Stage completion for zero-signal candidates is owned by run_retro_collect.
         return NIGHTLY_NOOP
 
     if options.dry_run:

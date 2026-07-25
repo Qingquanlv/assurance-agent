@@ -18,6 +18,8 @@ FINDING_TO_APPLY: dict[FindingKind, ApplyKind] = {
     "domain_knowledge": "knowledge_delta",
 }
 
+APPLY_TO_FINDING: dict[ApplyKind, FindingKind] = {v: k for k, v in FINDING_TO_APPLY.items()}
+
 
 class ArchivedChange(BaseModel):
     change_id: str
@@ -127,6 +129,43 @@ class IssueDraftPayload(BaseModel):
     proposed_change: str
 
 
+def _first_nonempty(data: dict, *keys: str) -> str:
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _legacy_payload(data: dict, finding_kind: str) -> dict | None:
+    """Synthesize a ``payload`` for pre-three-track proposals, or None if impossible.
+
+    Proposals written before the three-track schema carry the routing information
+    as prose (``problem`` / ``proposed_change``) plus ``target``, with no
+    ``payload`` object. The memory and issue tracks are fully recoverable from
+    those fields; ``domain_knowledge`` is not, because L1 leaves cannot be
+    reconstructed from prose — those must fail loudly rather than be guessed.
+    """
+    if finding_kind == "prompt_rule":
+        body = _first_nonempty(data, "proposed_change", "body", "problem")
+        return {"body": body} if body else None
+    if finding_kind == "workflow_bug":
+        title = _first_nonempty(data, "summary", "problem")
+        target = _first_nonempty(data, "target")
+        proposed_change = _first_nonempty(data, "proposed_change", "body")
+        if not (title and target and proposed_change):
+            return None
+        risk = data.get("risk")
+        return {
+            "title": title,
+            "target": target,
+            "severity": risk if risk in ("low", "medium", "high") else "medium",
+            "evidence_ids": data.get("evidence_ids") or [],
+            "proposed_change": proposed_change,
+        }
+    return None
+
+
 class RetroProposal(BaseModel):
     """A retro improvement proposal with discriminated structured payload (spec C6).
 
@@ -152,6 +191,32 @@ class RetroProposal(BaseModel):
     status: str = "proposed"
     summary: str = ""
     body: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _adapt_legacy_shape(cls, data: Any) -> Any:
+        """Backfill the machine routing fields for pre-three-track proposals.
+
+        ``finding_kind`` and ``payload`` became required when the three-track
+        schema landed, but retro agents kept emitting the older shape
+        (``apply_kind`` + ``target`` + prose). Since ``finding_kind`` and
+        ``apply_kind`` are 1:1, the former is derivable; the payload is
+        reconstructed from prose where that is lossless. Explicit values are
+        never overwritten, so conforming proposals pass through untouched.
+        """
+        if not isinstance(data, dict):
+            return data
+        finding_kind = data.get("finding_kind")
+        if not finding_kind:
+            finding_kind = APPLY_TO_FINDING.get(data.get("apply_kind"))
+            if finding_kind is None:
+                return data
+            data = {**data, "finding_kind": finding_kind}
+        if data.get("payload") is None:
+            payload = _legacy_payload(data, finding_kind)
+            if payload is not None:
+                data = {**data, "payload": payload}
+        return data
 
     @model_validator(mode="after")
     def _validate_and_backfill(self) -> RetroProposal:

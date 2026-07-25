@@ -28,9 +28,10 @@ def retro_collect(
         last_int = 10
     try:
         result = run_retro_collect(
-            workspace.project_root,
+            context.project_root,
             retro_id=retro_id,
             last=last_int,
+            write_root=workspace.project_root,
         )
     except (AaError, OSError) as err:
         return task_failure("internal", str(err))

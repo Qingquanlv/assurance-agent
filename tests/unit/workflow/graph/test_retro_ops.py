@@ -5,14 +5,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from assurance_agent.workflow.graph.handlers.retro_ops import retro_accept, retro_collect
-from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
+from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext
 from assurance_agent.workflow.graph.schema_v2 import RetryPolicyDef, TimeoutPolicyDef
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.graph.contracts import ResourceClaims
 from tests.helpers_aa import write_aa_config
+from tests.unit.retro.archive_fixtures import make_archived_change
 
 
 def _make_workspace(tmp_path: Path) -> TaskWorkspace:
@@ -59,14 +59,20 @@ def _make_task(target: str) -> ExecutableTask:
 
 
 def _write_context_json(retro_dir: Path, retro_id: str) -> None:
-    """Write a minimal valid RetroContext to retro_dir/context.json."""
+    """Write a minimal valid RetroContext to retro_dir/context.json.
+
+    Carries evidence ``ev-1`` because accept refuses proposals citing evidence the
+    context never collected.
+    """
     retro_dir.mkdir(parents=True, exist_ok=True)
     ctx = {
         "retro_id": retro_id,
         "generated_at": "2026-07-25T00:00:00Z",
-        "window": {"change_count": 0, "change_ids": [], "change_sources": []},
+        "window": {"change_count": 1, "change_ids": ["CH-1"], "change_sources": []},
         "signals": {
-            "failure_distribution": [],
+            "failure_distribution": [
+                {"category": "assertion", "count": 1, "changes": ["CH-1"], "evidence_ids": ["ev-1"]}
+            ],
             "gate_pushback": [],
             "healing_efficiency": {"attempts": 0, "applied": 0, "success_rate": 0.0, "evidence_ids": []},
             "human_decisions": [],
@@ -74,7 +80,7 @@ def _write_context_json(retro_dir: Path, retro_id: str) -> None:
             "skill_execution": [],
             "eval_trend": [],
         },
-        "signal_count": 0,
+        "signal_count": 1,
     }
     (retro_dir / "context.json").write_text(json.dumps(ctx), encoding="utf-8")
 
@@ -97,6 +103,36 @@ def test_retro_collect_op_writes_context_and_value(tmp_path: Path) -> None:
     assert result.value["retro_id"] == "retro-001"
     context_file = workspace.project_root / "qa" / "retro" / "retro-001" / "context.json"
     assert context_file.exists()
+
+
+def test_retro_collect_op_scans_host_root_not_task_workspace(tmp_path: Path) -> None:
+    """Candidate evidence only exists on the host root.
+
+    A task workspace has ``events.jsonl`` / ``workflow-state.yaml`` pruned by tree
+    capture and holds no sibling change dirs, so scanning it yields an empty window
+    for every change on disk — retro would silently never have anything to do.
+    """
+    host = tmp_path / "host"
+    make_archived_change(host, "CH-ARCHIVED", failures=[{"classification": "assertion"}])
+    workspace = _make_workspace(tmp_path)
+    context = RuntimeContext(
+        project_root=host,
+        repo_root=host,
+        change_dir=host / "qa" / "changes" / "CH-1",
+        change_id="CH-1",
+        params={"retro_id": "retro-host-001", "retro_last": 10},
+    )
+
+    result = retro_collect(_make_task("operation:retro-collect"), workspace, context)
+
+    assert result.status == "succeeded"
+    assert isinstance(result.value, dict)
+    assert result.value["signal_count"] > 0
+    written = workspace.project_root / "qa" / "retro" / "retro-host-001" / "context.json"
+    assert written.is_file(), "context.json must land in the workspace to be frozen"
+    window = json.loads(written.read_text(encoding="utf-8"))["window"]
+    assert window["change_ids"] == ["CH-ARCHIVED"]
+    assert not (host / "qa" / "retro" / "retro-host-001").exists()
 
 
 def test_retro_collect_op_missing_retro_id_is_invalid_input(tmp_path: Path) -> None:

@@ -23,6 +23,9 @@ from assurance_agent.workflow.core.graph_events import (
     GraphInvocationStartedEvent,
     GraphResumedEvent,
     GraphTerminalEvent,
+    ResumeAnchor,
+    SuperstepCommittedEvent,
+    SuperstepPlannedEvent,
     TaskImportedEvent,
 )
 from assurance_agent.workflow.core.progression import ProgressionError, transaction
@@ -34,6 +37,7 @@ from assurance_agent.workflow.graph.checkpoint import (
     validate_import,
 )
 from assurance_agent.workflow.graph.compiler import canonical_digest, resolve_params
+from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog
 from assurance_agent.workflow.graph.leases import (
     AttemptDecision,
@@ -69,6 +73,52 @@ from assurance_agent.workflow.orchestration.dsl import Scope, is_satisfied
 
 _SCHEMA_DIR = ".graph-runtime/schemas"
 _CONTRACT_DIR = ".graph-runtime/contracts"
+_CATALOG_DIR = ".graph-runtime/ingest-catalogs"
+
+
+def _ingest_catalog_digest(compiled: CompiledWorkflow) -> str:
+    digest = compiled.ingest_catalog_digest
+    if digest:
+        return digest
+    return validate_catalog_runtime().digest
+
+
+def _build_invocation_started(
+    *,
+    invocation_id: str,
+    entrypoint: str,
+    graph_id: str,
+    compiled: CompiledWorkflow,
+    params: dict[str, object],
+    root_tree_id: str,
+    max_parallel_tasks: int,
+    checkpoint_ns: str,
+    structural_path: str,
+    parent_invocation_id: str | None = None,
+    parent_task_id: str | None = None,
+) -> GraphInvocationStartedEvent:
+    catalog_digest = _ingest_catalog_digest(compiled)
+    if not catalog_digest:
+        raise GraphRuntimeError("ingest catalog digest is empty; cannot start graph invocation")
+    return GraphInvocationStartedEvent(
+        type="graph_invocation_started",
+        invocation_id=invocation_id,
+        entrypoint=entrypoint,
+        graph_id=graph_id,
+        graph_digest=compiled.digest,
+        event_schema_version=3,
+        ir_digest=compiled.digest,
+        ingest_catalog_digest=catalog_digest,
+        contract_digests=dict(compiled.contract_digests),
+        params=params,
+        params_sha256=canonical_digest(params),
+        root_tree_id=root_tree_id,
+        max_parallel_tasks=max_parallel_tasks,
+        checkpoint_ns=checkpoint_ns,
+        parent_invocation_id=parent_invocation_id,
+        parent_task_id=parent_task_id,
+        structural_path=structural_path,
+    )
 
 
 def _install_task12_runtime_patches() -> None:
@@ -115,15 +165,14 @@ def _install_task12_runtime_patches() -> None:
             and result.interrupt is not None
             and result.interrupt.checkpoint_ns != prepared.task.checkpoint_ns
         ):
-            from assurance_agent.workflow.core.graph_events import (
-                GraphInterruptedEvent,
-                TaskAttemptSucceededEvent,
-            )
+            from assurance_agent.workflow.core.graph_events import TaskAttemptSucceededEvent
             from assurance_agent.workflow.core.progression import transaction
+            from assurance_agent.workflow.graph.resume_wire import build_graph_interrupted_event
             from assurance_agent.workflow.graph.scheduler import _SettledAttempt
 
             task = prepared.task
             write_set_id = self._freeze_if_needed(task, result, workspace)
+            schema_version = self._checkpoints.project(task.invocation_id).event_schema_version
             with transaction(context.change_dir) as txn:
                 txn.append_strict(
                     TaskAttemptSucceededEvent(
@@ -141,16 +190,11 @@ def _install_task12_runtime_patches() -> None:
                     )
                 )
                 txn.append_strict(
-                    GraphInterruptedEvent(
-                        type="graph_interrupted",
-                        invocation_id=task.invocation_id,
+                    build_graph_interrupted_event(
+                        task=task,
+                        interrupt=result.interrupt,
+                        event_schema_version=schema_version,
                         checkpoint_ns=result.interrupt.checkpoint_ns,
-                        interrupt_id=result.interrupt.interrupt_id,
-                        node_id=result.interrupt.node_id,
-                        checkpoint=result.interrupt.checkpoint,
-                        actions=list(result.interrupt.actions),
-                        audited_reads_sha256=dict(result.interrupt.audited_reads_sha256),
-                        artifact_view=result.interrupt.artifact_view,
                     )
                 )
             return _SettledAttempt(task_id=task.task_id, status="interrupted", write_set_id=write_set_id)
@@ -425,15 +469,12 @@ class GraphRuntime:
         invocation_id = str(uuid4())
         checkpoint_ns = invocation_id
         bound = context.model_copy(update={"params": params})
-        started = GraphInvocationStartedEvent(
-            type="graph_invocation_started",
+        started = _build_invocation_started(
             invocation_id=invocation_id,
             entrypoint=manifest.entrypoint,
             graph_id=entry.graph_id,
-            graph_digest=schema.digest,
-            contract_digests=dict(schema.contract_digests),
+            compiled=schema,
             params=params,
-            params_sha256=canonical_digest(params),
             root_tree_id=root_tree_id,
             max_parallel_tasks=schema.schema.policies.scheduler.max_parallel_tasks,
             checkpoint_ns=checkpoint_ns,
@@ -495,6 +536,40 @@ class GraphRuntime:
                         input_sha256=dict(validated.input_sha256),
                     )
                 )
+                bootstrap_checkpoint_id = f"bootstrap-{invocation_id}"
+                superstep_id = f"import-{invocation_id}"
+                txn.append_strict(
+                    SuperstepPlannedEvent(
+                        type="superstep_planned",
+                        invocation_id=invocation_id,
+                        checkpoint_ns=checkpoint_ns,
+                        superstep_id=superstep_id,
+                        checkpoint_id=bootstrap_checkpoint_id,
+                        task_ids=sorted(imported_task_ids),
+                    )
+                )
+                txn.append_strict(
+                    SuperstepCommittedEvent(
+                        type="superstep_committed",
+                        invocation_id=invocation_id,
+                        checkpoint_ns=checkpoint_ns,
+                        superstep_id=superstep_id,
+                        checkpoint_id=canonical_digest(
+                            {
+                                "superstep_id": superstep_id,
+                                "parent_checkpoint_id": bootstrap_checkpoint_id,
+                                "write_set_ids": [],
+                                "target_tree_id": root_tree_id,
+                                "committed_task_ids": sorted(imported_task_ids),
+                            }
+                        ),
+                        parent_checkpoint_id=bootstrap_checkpoint_id,
+                        write_set_ids=[],
+                        target_tree_id=root_tree_id,
+                        state_values={},
+                        committed_task_ids=sorted(imported_task_ids),
+                    )
+                )
         except CheckpointImportError:
             raise
         except Exception as exc:
@@ -515,8 +590,8 @@ class GraphRuntime:
             imported_tasks=tuple(imported_task_ids),
         )
 
-    def latest_root_invocation(self) -> str | None:
-        return self._checkpoints.latest_root_invocation()
+    def latest_root_invocation(self, entrypoint: str | None = None) -> str | None:
+        return self._checkpoints.latest_root_invocation(entrypoint)
 
     def run_child(
         self,
@@ -547,21 +622,18 @@ class GraphRuntime:
             # 父 task workspace 已物化；child 继承同一 base tree，避免以 workspace
             # project_root 调用 TreeStore.capture（change_dir 在 workspace 外）。
             root_tree_id = workspace.base_tree_id
-            started = GraphInvocationStartedEvent(
-                type="graph_invocation_started",
+            started = _build_invocation_started(
                 invocation_id=child_invocation_id,
                 entrypoint=graph_id,
                 graph_id=graph_id,
-                graph_digest=compiled.digest,
-                contract_digests=dict(compiled.contract_digests),
+                compiled=compiled,
                 params=dict(child_context.params),
-                params_sha256=canonical_digest(child_context.params),
                 root_tree_id=root_tree_id,
                 max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
                 checkpoint_ns=checkpoint_ns,
+                structural_path=structural_path,
                 parent_invocation_id=parent_task.invocation_id,
                 parent_task_id=parent_task.task_id,
-                structural_path=structural_path,
             )
             with transaction(context.change_dir) as txn:
                 txn.append_strict(started)
@@ -677,15 +749,12 @@ class GraphRuntime:
         max_parallel = compiled.schema.policies.scheduler.max_parallel_tasks
         graph_id = entry.graph_id
 
-        started = GraphInvocationStartedEvent(
-            type="graph_invocation_started",
+        started = _build_invocation_started(
             invocation_id=invocation_id,
             entrypoint=entrypoint,
             graph_id=graph_id,
-            graph_digest=compiled.digest,
-            contract_digests=dict(compiled.contract_digests),
+            compiled=compiled,
             params=params,
-            params_sha256=params_sha,
             root_tree_id=root_tree_id,
             max_parallel_tasks=max_parallel,
             checkpoint_ns=checkpoint_ns,
@@ -725,6 +794,17 @@ class GraphRuntime:
             + "\n"
         ).encode("utf-8")
         txn.write_runtime_file(f"{_SCHEMA_DIR}/{compiled.digest}.json", schema_bytes)  # type: ignore[attr-defined]
+        catalog = validate_catalog_runtime()
+        catalog_bytes = (
+            json.dumps(
+                catalog.model_dump(mode="json"),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+        txn.write_runtime_file(f"{_CATALOG_DIR}/{catalog.digest}.json", catalog_bytes)  # type: ignore[attr-defined]
         for target, digest in sorted(compiled.contract_digests.items()):
             contract = self._contracts.contracts.get(target)
             if contract is None:
@@ -799,21 +879,51 @@ class GraphRuntime:
         if projection.invocation_id not in resume_invocation_ids:
             resume_invocation_ids.insert(0, projection.invocation_id)
         with transaction(context.change_dir) as txn:
-            resumed = GraphResumedEvent(
-                type="graph_resumed",
-                invocation_id=resume_invocation_ids[0],
-                checkpoint_ns=pending.checkpoint_ns,
-                interrupt_id=command.interrupt_id,
-                action=command.action,
-                reason=command.reason,
-                who=command.who,
-                audited_reads_sha256=audited,
-            )
-            for index, invocation_id in enumerate(resume_invocation_ids):
-                if index == 0:
-                    txn.append_strict(resumed)
-                else:
-                    txn.append_strict(resumed.model_copy(update={"invocation_id": invocation_id}))
+            if projection.event_schema_version >= 3:
+                parent_anchor_ref: str | None = None
+                for index, invocation_id in enumerate(resume_invocation_ids):
+                    layer_ns = _checkpoint_ns_for_invocation(pending.checkpoint_ns, invocation_id)
+                    layer_node = _node_id_for_invocation(
+                        pending.checkpoint_ns, invocation_id, pending.node_id
+                    )
+                    anchor = ResumeAnchor(
+                        invocation_id=invocation_id,
+                        checkpoint_ns=layer_ns,
+                        node_id=layer_node,
+                        interrupt_id=command.interrupt_id,
+                    )
+                    txn.append_strict(
+                        GraphResumedEvent(
+                            type="graph_resumed",
+                            invocation_id=invocation_id,
+                            checkpoint_ns=layer_ns,
+                            interrupt_id=command.interrupt_id,
+                            action=command.action,
+                            reason=command.reason,
+                            who=command.who,
+                            audited_reads_sha256=audited if index == 0 else {},
+                            anchor=anchor,
+                            parent_anchor_ref=parent_anchor_ref,
+                            payload=command.payload if index == 0 else {},
+                        )
+                    )
+                    parent_anchor_ref = canonical_digest(anchor.model_dump(mode="json"))
+            else:
+                resumed = GraphResumedEvent(
+                    type="graph_resumed",
+                    invocation_id=resume_invocation_ids[0],
+                    checkpoint_ns=pending.checkpoint_ns,
+                    interrupt_id=command.interrupt_id,
+                    action=command.action,
+                    reason=command.reason,
+                    who=command.who,
+                    audited_reads_sha256=audited,
+                )
+                for index, invocation_id in enumerate(resume_invocation_ids):
+                    if index == 0:
+                        txn.append_strict(resumed)
+                    else:
+                        txn.append_strict(resumed.model_copy(update={"invocation_id": invocation_id}))
             if command.action == "stop":
                 txn.append_strict(
                     GraphTerminalEvent(
@@ -1235,6 +1345,22 @@ def _invocation_ids_along_ns(checkpoint_ns: str) -> list[str]:
     """
     parts = [part for part in checkpoint_ns.split("/") if part]
     return [parts[index] for index in range(0, len(parts), 2)]
+
+
+def _checkpoint_ns_for_invocation(full_ns: str, invocation_id: str) -> str:
+    parts = [part for part in full_ns.split("/") if part]
+    for index in range(0, len(parts), 2):
+        if parts[index] == invocation_id:
+            return "/".join(parts[: index + 1])
+    return parts[0] if parts else full_ns
+
+
+def _node_id_for_invocation(full_ns: str, invocation_id: str, default_node_id: str) -> str:
+    parts = [part for part in full_ns.split("/") if part]
+    for index in range(0, len(parts), 2):
+        if parts[index] == invocation_id and index + 1 < len(parts):
+            return parts[index + 1]
+    return default_node_id
 
 
 def _strip_sha_prefix(value: str) -> str:

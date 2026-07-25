@@ -107,7 +107,7 @@ def project_retro_list(sut: Path) -> dict:
     for retro_id in list_retro_ids(sut):
         retro_dir = _retro_root(sut) / retro_id
         context = _read_context(retro_dir, retro_id)
-        proposals = read_proposals(retro_dir)
+        proposals = read_proposals(retro_dir, strict=False)
         events = read_promotion_events(retro_dir)
         states = proposal_states(events)
 
@@ -138,7 +138,7 @@ def project_retro_show(sut: Path, retro_id: str) -> dict:
     """Detailed projection of one retro run: proposals + folded state + timeline."""
     retro_dir = _retro_root(sut) / retro_id
     context = _read_context(retro_dir, retro_id)
-    proposals = read_proposals(retro_dir)
+    proposals = read_proposals(retro_dir, strict=False)
     events = read_promotion_events(retro_dir)
     states = proposal_states(events)
     eval_by_proposal = _eval_results_by_proposal(retro_dir)
@@ -201,7 +201,7 @@ def project_proposals_for_change(sut: Path, change_id: str) -> dict:
     matches: list[dict] = []
     for retro_id in list_retro_ids(sut):
         retro_dir = _retro_root(sut) / retro_id
-        proposals = read_proposals(retro_dir)
+        proposals = read_proposals(retro_dir, strict=False)
         if not proposals:
             continue
         states = proposal_states(read_promotion_events(retro_dir))

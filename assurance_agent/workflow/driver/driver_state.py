@@ -163,11 +163,15 @@ def rewrite_lock_pid(change_dir: Path, pid: int, start_token: str) -> None:
     driver_lock_path(change_dir).write_text(f"{pid}\n{start_token}\n", encoding="utf-8")
 
 
-def _latest_graph_terminal(change_dir: Path) -> tuple[str | None, str | None]:
-    """Return ``(invocation_id, terminal)`` for the latest root invocation, if any."""
+def _latest_graph_terminal(change_dir: Path, entrypoint: str | None = None) -> tuple[str | None, str | None]:
+    """Return ``(invocation_id, terminal)`` for the latest root invocation, if any.
+
+    Scoped to ``entrypoint`` when given, so a completed ``full`` run does not look
+    like a completed ``archive``/``retro`` run.
+    """
     try:
         store = CheckpointStore(change_dir)
-        invocation_id = store.latest_root_invocation()
+        invocation_id = store.latest_root_invocation(entrypoint)
         if invocation_id is None:
             return None, None
         projection = store.project(invocation_id)
@@ -176,14 +180,18 @@ def _latest_graph_terminal(change_dir: Path) -> tuple[str | None, str | None]:
         return None, None
 
 
-def evaluate_start_guard(change_dir: Path) -> StartGuard:
+def evaluate_start_guard(change_dir: Path, entrypoint: str | None = None) -> StartGuard:
     """Refuse duplicate live processes and completed graphs; resume otherwise.
 
     Graph terminal from the ledger is authoritative. A stale/absent ``driver.json``
     never blocks resume of incomplete work and never forces completed tasks to re-run.
+
+    ``entrypoint`` scopes the completed check to that entrypoint's own invocation:
+    standalone entrypoints (``archive``/``retro``) run on a change whose main graph
+    has already completed, and must not be refused because of it.
     """
     existing = read_driver_state(change_dir)
-    invocation_id, terminal = _latest_graph_terminal(change_dir)
+    invocation_id, terminal = _latest_graph_terminal(change_dir, entrypoint)
     if terminal == "completed":
         return StartGuard(
             allowed=False,

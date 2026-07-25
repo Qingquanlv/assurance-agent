@@ -23,13 +23,13 @@ from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.events import read_events_strict
 from assurance_agent.workflow.core.graph_events import (
     BudgetConsumedEvent,
-    GraphInterruptedEvent,
     SuperstepCommittedEvent,
     TaskAttemptFailedEvent,
     TaskAttemptStartedEvent,
     TaskAttemptStoppedEvent,
     TaskAttemptSucceededEvent,
 )
+from assurance_agent.workflow.graph.resume_wire import build_graph_interrupted_event
 from assurance_agent.workflow.core.graph_types import ErrorKind
 from assurance_agent.workflow.core.progression import (
     ProgressionError,
@@ -386,6 +386,24 @@ class Scheduler:
         heartbeat_seconds = task.timeout_policy.heartbeat_seconds
         lease_extension = max(heartbeat_seconds * 3.0, heartbeat_seconds + 1.0)
         try:
+            if task.evidence_bindings:
+                from assurance_agent.workflow.graph.evidence import (
+                    EvidenceResolutionError,
+                    resolve_evidence_values,
+                )
+                from assurance_agent.workflow.graph.task_runner import task_failure
+
+                try:
+                    values = resolve_evidence_values(projection, task.evidence_bindings)
+                except EvidenceResolutionError as exc:
+                    return self._persist_result(
+                        prepared=prepared,
+                        plan=plan,
+                        context=context,
+                        result=task_failure("contract", f"evidence resolution failed: {exc}"),
+                        workspace=workspace,
+                    )
+                task = task.model_copy(update={"resolved_evidence": values})
             with heartbeat_while(
                 leases,
                 task_id=task.task_id,
@@ -459,6 +477,7 @@ class Scheduler:
 
         if result.status == "interrupted":
             if result.interrupt is not None:
+                schema_version = self._checkpoints.project(task.invocation_id).event_schema_version
                 with transaction(context.change_dir) as txn:
                     txn.append_strict(
                         TaskAttemptSucceededEvent(
@@ -470,22 +489,17 @@ class Scheduler:
                             attempt_id=prepared.attempt_id,
                             write_set_id=write_set_id,
                             outputs_sha256=dict(result.outputs_sha256),
+                            frozen_outputs=dict(result.frozen_outputs),
                             gate_report=result.gate_report,
                             state_updates=dict(result.state_updates),
                             value=result.value,
                         )
                     )
                     txn.append_strict(
-                        GraphInterruptedEvent(
-                            type="graph_interrupted",
-                            invocation_id=task.invocation_id,
-                            checkpoint_ns=task.checkpoint_ns,
-                            interrupt_id=result.interrupt.interrupt_id,
-                            node_id=result.interrupt.node_id,
-                            checkpoint=result.interrupt.checkpoint,
-                            actions=list(result.interrupt.actions),
-                            audited_reads_sha256=dict(result.interrupt.audited_reads_sha256),
-                            artifact_view=result.interrupt.artifact_view,
+                        build_graph_interrupted_event(
+                            task=task,
+                            interrupt=result.interrupt,
+                            event_schema_version=schema_version,
                         )
                     )
             return _SettledAttempt(task_id=task.task_id, status="interrupted", write_set_id=write_set_id)
@@ -530,6 +544,7 @@ class Scheduler:
                 outputs = dict(self._objects.load_write_set(write_set_id).outputs_sha256)
             except WorkspaceError:
                 outputs = {}
+        frozen_wire = dict(result.frozen_outputs)
         with transaction(context.change_dir) as txn:
             txn.append_strict(
                 TaskAttemptSucceededEvent(
@@ -541,6 +556,7 @@ class Scheduler:
                     attempt_id=prepared.attempt_id,
                     write_set_id=write_set_id,
                     outputs_sha256=outputs,
+                    frozen_outputs=frozen_wire,
                     gate_report=result.gate_report,
                     state_updates=dict(result.state_updates),
                     value=result.value,
@@ -632,14 +648,19 @@ class Scheduler:
         ordered_ids = sorted(succeeded_ids)
         write_sets = []
         state_pairs: list[tuple[str, Mapping[str, object]]] = []
+        commit_eligible: list[str] = []
         for task_id in ordered_ids:
             task_proj = live.tasks.get(task_id)
             if task_proj is None or task_proj.status != "succeeded":
                 continue
+            if not task_proj.fan_out_child:
+                commit_eligible.append(task_id)
             if task_proj.write_set_id is not None:
                 write_sets.append(self._objects.load_write_set(task_proj.write_set_id))
             if task_proj.state_updates:
                 state_pairs.append((task_id, task_proj.state_updates))
+
+        committed_task_ids = sorted(commit_eligible)
 
         if write_sets:
             target_tree_id = self._objects.merge_write_sets(write_sets)
@@ -655,6 +676,7 @@ class Scheduler:
                 "parent_checkpoint_id": plan.checkpoint_id,
                 "write_set_ids": committed_ids,
                 "target_tree_id": target_tree_id,
+                "committed_task_ids": committed_task_ids,
             }
         )
         event = SuperstepCommittedEvent(
@@ -667,6 +689,7 @@ class Scheduler:
             write_set_ids=committed_ids,
             target_tree_id=target_tree_id,
             state_values=next_state,
+            committed_task_ids=committed_task_ids,
         )
         tentative = live.model_copy(
             update={

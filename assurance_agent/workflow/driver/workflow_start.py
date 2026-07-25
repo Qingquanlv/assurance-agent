@@ -95,7 +95,7 @@ def start_workflow_detached(
         return StartResult(ok=False, message=str(err))
     directory = directory or str(project_root)
 
-    guard = evaluate_start_guard(change_dir)
+    guard = evaluate_start_guard(change_dir, entrypoint)
     if not guard.allowed:
         return StartResult(ok=False, message=guard.reason or "start refused")
 

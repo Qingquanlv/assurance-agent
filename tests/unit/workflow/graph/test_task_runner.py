@@ -359,6 +359,25 @@ def test_build_node_prompt_pins_absolute_workspace_root() -> None:
     assert "Your working directory is EXACTLY" not in bare
 
 
+def test_build_node_prompt_renders_frozen_evidence_clause() -> None:
+    from assurance_agent.workflow.graph.agent_api import build_node_prompt
+
+    prompt = build_node_prompt(
+        "aa-api-codegen",
+        "codegen",
+        "CH-1",
+        allowed_writes=["change:tests/**"],
+        evidence={"plan": {"decision": "approve"}},
+    )
+    assert "FROZEN UPSTREAM EVIDENCE" in prompt
+    assert '"decision": "approve"' in prompt
+    # No evidence -> clause omitted.
+    bare = build_node_prompt(
+        "aa-api-codegen", "codegen", "CH-1", allowed_writes=["change:tests/**"]
+    )
+    assert "FROZEN UPSTREAM EVIDENCE" not in bare
+
+
 def test_agent_for_skill_routes_every_workflow_skill() -> None:
     # Authoritative skill -> aa-* worker mapping (see .opencode/agents/*.md
     # "Serves phases"). Wrong routing breaks a node on its permission floor.

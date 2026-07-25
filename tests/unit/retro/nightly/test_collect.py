@@ -110,6 +110,69 @@ def test_collect_agent_failure_exit_40(tmp_path: Path) -> None:
     assert code == NIGHTLY_FAILURE
 
 
+def test_collect_rewrites_legacy_proposals_to_canonical_shape(tmp_path: Path) -> None:
+    """Accept gate must persist finding_kind/payload after the agent writes prose-only."""
+    write_aa_config(tmp_path)
+    sut = tmp_path
+    make_archived_change(sut, "CH-1", failures=[{"classification": "assertion"}], gate_pushbacks=1)
+
+    def agent_runner(cmd: str, retro_dir: Path) -> int:
+        retro_dir.mkdir(parents=True, exist_ok=True)
+        (retro_dir / "proposals.json").write_text(
+            json.dumps(
+                {
+                    "proposals": [
+                        {
+                            "id": "P-1",
+                            "apply_kind": "memory_append",
+                            "target": ".aa/memory/aa-run.md",
+                            "problem": "flaky fixture use",
+                            "proposed_change": "remember to check fixtures",
+                            "evidence_ids": ["CH-1#F-1"],
+                            "eval_suite": "workflow-run",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        (retro_dir / "retro-summary.md").write_text("# summary\n", encoding="utf-8")
+        return 0
+
+    code = collect_nightly(_opts(sut), agent_runner=agent_runner, is_terminal=lambda root, cid: True)
+    assert code == NIGHTLY_OK
+    rewritten = json.loads(
+        (sut / "qa" / "retro" / "retro-test" / "proposals.json").read_text(encoding="utf-8")
+    )
+    entry = rewritten["proposals"][0]
+    assert entry["finding_kind"] == "prompt_rule"
+    assert entry["payload"]["body"] == "remember to check fixtures"
+
+
+def test_collect_unroutable_proposals_exit_40(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
+    sut = tmp_path
+    make_archived_change(sut, "CH-1", failures=[{"classification": "assertion"}])
+
+    def agent_runner(cmd: str, retro_dir: Path) -> int:
+        retro_dir.mkdir(parents=True, exist_ok=True)
+        (retro_dir / "proposals.json").write_text(
+            json.dumps(
+                {
+                    "proposals": [
+                        {"id": "P-BAD", "apply_kind": "contract_field", "problem": "p"},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        (retro_dir / "retro-summary.md").write_text("# summary\n", encoding="utf-8")
+        return 0
+
+    code = collect_nightly(_opts(sut), agent_runner=agent_runner, is_terminal=lambda root, cid: True)
+    assert code == NIGHTLY_FAILURE
+
+
 def test_default_is_terminal_treats_archived_change_as_terminal(tmp_path: Path) -> None:
     """Regression: archived changes must be terminal by construction.
 

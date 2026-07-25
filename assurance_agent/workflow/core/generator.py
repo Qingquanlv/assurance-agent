@@ -15,7 +15,6 @@ from assurance_agent.workflow.core.templates import (
 )
 
 GITKEEP_DIRS = [
-    ".aa/cache",
     "qa/cases",
     "qa/changes",
     "qa/archive",

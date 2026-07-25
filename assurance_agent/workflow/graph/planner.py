@@ -86,6 +86,7 @@ from assurance_agent.workflow.graph.models import (
     RuntimeContext,
     TaskProjection,
 )
+from assurance_agent.workflow.graph.node_history import node_history_key
 from assurance_agent.workflow.graph.schema_v2 import (
     BudgetUseDef,
     FanOutDef,
@@ -1379,6 +1380,22 @@ def _budget_mark(
 
 # ---------------------------------------------------------------------------
 # 事件与 task 构建
+
+
+def _next_generation_ordinal(projection: GraphProjection, graph_id: str, node_id: str) -> int:
+    """spec §5.3 的代号分配器：``latest + 1``（无历史则 0）。
+
+    尚未接入 ``_activate``/``_emit_skip``：planner 会在后续 superstep 幂等重发
+    同一决策（同 ``activation_id``/同 skip 表达式），逐次 +1 会把已成功的代挤到
+    非最新槽位，使 ``node(id).outputs`` 读到空代。接线前需先按 §5.4 判定「本次
+    决策是否已有槽位」并复用之。
+    """
+    history = projection.node_histories.get(
+        node_history_key(projection.checkpoint_ns, graph_id, node_id)
+    )
+    if history is None:
+        return 0
+    return history.latest_generation_ordinal + 1
 
 
 def _activate(
