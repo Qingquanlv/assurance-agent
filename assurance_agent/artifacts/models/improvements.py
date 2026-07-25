@@ -1,0 +1,150 @@
+"""Improvement lifecycle artifact models (schema v1/v2).
+
+Strict Candidate, source-reference, verification, canonical projection, review,
+and candidate-document contracts for the Retro / Improvement separation design.
+"""
+
+from __future__ import annotations
+
+from enum import StrEnum
+from itertools import chain
+from typing import Literal, Self
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from assurance_agent.artifacts.models.data_knowledge import DataKnowledgeProposal
+
+_FROZEN = ConfigDict(frozen=True, extra="forbid")
+
+
+class ImprovementKind(StrEnum):
+    PROMPT = "prompt_improvement"
+    FIXTURE = "fixture_improvement"
+    TEST = "test_improvement"
+    WORKFLOW = "workflow_improvement"
+    DOMAIN_KNOWLEDGE = "domain_knowledge"
+
+
+class DeliveryKind(StrEnum):
+    MEMORY_PATCH = "memory_patch"
+    CHANGE_DRAFT = "change_draft"
+    KNOWLEDGE_DELTA = "knowledge_delta"
+
+
+class ImprovementState(StrEnum):
+    PROPOSED = "proposed"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    NEEDS_REWORK = "needs_rework"
+    EVALUATING = "evaluating"
+    EXPORTED = "exported"
+    APPLIED = "applied"
+    ROLLED_BACK = "rolled_back"
+    AWAITING_BASELINE = "awaiting_baseline"
+    EVAL_ERROR = "eval_error"
+    SUPERSEDED = "superseded"
+
+
+ALLOWED_DELIVERIES: dict[ImprovementKind, frozenset[DeliveryKind]] = {
+    ImprovementKind.PROMPT: frozenset({DeliveryKind.MEMORY_PATCH}),
+    ImprovementKind.FIXTURE: frozenset({DeliveryKind.MEMORY_PATCH, DeliveryKind.CHANGE_DRAFT}),
+    ImprovementKind.TEST: frozenset({DeliveryKind.MEMORY_PATCH, DeliveryKind.CHANGE_DRAFT}),
+    ImprovementKind.WORKFLOW: frozenset({DeliveryKind.CHANGE_DRAFT}),
+    ImprovementKind.DOMAIN_KNOWLEDGE: frozenset({DeliveryKind.KNOWLEDGE_DELTA}),
+}
+
+
+class ImprovementVerification(BaseModel):
+    model_config = _FROZEN
+
+    suites: tuple[str, ...] = ()
+    required_cases: tuple[str, ...] = ()
+    success_criteria: str = Field(min_length=1)
+
+
+class ImprovementSourceRefs(BaseModel):
+    model_config = _FROZEN
+
+    problem_ids: tuple[str, ...] = ()
+    occurrence_ids: tuple[str, ...] = ()
+    issue_event_ids: tuple[str, ...] = ()
+    workflow_evidence_ids: tuple[str, ...] = ()
+    eval_run_ids: tuple[str, ...] = ()
+
+    def all_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(set(chain.from_iterable(self.model_dump().values()))))
+
+
+class ImprovementCandidate(BaseModel):
+    model_config = _FROZEN
+
+    candidate_id: str = Field(min_length=1)
+    kind: ImprovementKind
+    delivery: DeliveryKind
+    source_refs: ImprovementSourceRefs
+    target: str = Field(min_length=1)
+    rationale: str = Field(min_length=1)
+    proposed_change: str = Field(min_length=1)
+    knowledge_delta: DataKnowledgeProposal | None = None
+    verification: ImprovementVerification
+    risk: Literal["low", "medium", "high"]
+    confidence: Literal["low", "medium", "high"]
+    supersedes: str | None = None
+
+    @model_validator(mode="after")
+    def validate_delivery(self) -> Self:
+        if self.delivery not in ALLOWED_DELIVERIES[self.kind]:
+            raise ValueError(f"{self.kind} cannot use {self.delivery}")
+        if not self.source_refs.all_ids():
+            raise ValueError("candidate requires at least one source ref")
+        if (self.knowledge_delta is not None) != (self.delivery is DeliveryKind.KNOWLEDGE_DELTA):
+            raise ValueError("knowledge_delta payload is required only for knowledge_delta delivery")
+        return self
+
+
+class ImprovementProjection(BaseModel):
+    model_config = _FROZEN
+
+    improvement_id: str
+    fingerprint: str
+    fingerprint_version: Literal["1"] = "1"
+    kind: ImprovementKind
+    delivery: DeliveryKind
+    source_refs: ImprovementSourceRefs
+    target: str
+    rationale: str
+    proposed_change: str
+    knowledge_delta: DataKnowledgeProposal | None = None
+    verification: ImprovementVerification
+    risk: Literal["low", "medium", "high"]
+    confidence: Literal["low", "medium", "high"]
+    state: ImprovementState
+    version: int = Field(ge=1)
+    proposed_by_retro_ids: tuple[str, ...]
+    supersedes: str | None = None
+    last_event_id: str
+
+
+class ImprovementLedgerProjection(BaseModel):
+    model_config = _FROZEN
+
+    schema_version: Literal["1"] = "1"
+    last_seq: int = Field(ge=0)
+    improvements: dict[str, ImprovementProjection]
+    by_fingerprint: dict[str, str]
+
+
+class ImprovementReviewQueue(BaseModel):
+    model_config = _FROZEN
+
+    schema_version: Literal["1"] = "1"
+    improvement_ids: tuple[str, ...]
+
+
+class ImprovementCandidateDocument(BaseModel):
+    model_config = _FROZEN
+
+    schema_version: Literal["2"] = "2"
+    retro_id: str
+    context_sha256: str
+    candidates: tuple[ImprovementCandidate, ...] = ()

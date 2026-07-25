@@ -26,9 +26,9 @@ from assurance_agent.retro.types import (
     ProblemDecisionSignal,
     ProblemResolutionSignal,
     ReclassificationSignal,
-    RetroContext,
-    RetroSignalSet,
-    RetroWindow,
+    LegacyRetroContext,
+    LegacyRetroSignalSet,
+    LegacyRetroWindow,
     SkillExecutionSignal,
 )
 from assurance_agent.artifacts.models.issues import ProblemProjection
@@ -530,7 +530,7 @@ def build_retro_context(
     since: str | None = None,
     changes: list[str] | None = None,
     retro_id: str | None = None,
-) -> RetroContext:
+) -> LegacyRetroContext:
     for change_id in changes or []:
         assert_change_id_safe(change_id)
     resolved_retro_id = retro_id or _default_retro_id()
@@ -548,7 +548,7 @@ def build_retro_context(
         for change in collected
         if change.issue_read_error
     }
-    signals = RetroSignalSet(
+    signals = LegacyRetroSignalSet(
         failure_distribution=_failure_distribution(collected),
         gate_pushback=_gate_pushback(collected),
         healing_efficiency=_healing_efficiency(collected),
@@ -562,7 +562,7 @@ def build_retro_context(
         problem_resolutions=problem_resolutions,
         not_an_issue_patterns=not_an_issue_patterns,
     )
-    window = RetroWindow(
+    window = LegacyRetroWindow(
         since=since,
         change_count=len(collected),
         change_ids=[c.change_id for c in collected],
@@ -572,7 +572,7 @@ def build_retro_context(
         ],
         issue_evidence_errors=issue_evidence_errors,
     )
-    context = RetroContext(
+    context = LegacyRetroContext(
         retro_id=resolved_retro_id,
         generated_at=_now(),
         window=window,
@@ -582,7 +582,7 @@ def build_retro_context(
     return context
 
 
-def count_signals(context: RetroContext) -> int:
+def count_signals(context: LegacyRetroContext) -> int:
     signals = context.signals
     total = 0
     total += sum(s.count for s in signals.failure_distribution)

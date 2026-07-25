@@ -15,9 +15,9 @@ from assurance_agent.retro.nightly.phase_a import (
 )
 from assurance_agent.retro.nightly.utils import write_json
 from assurance_agent.retro.state import complete_retro_stage, mark_consumed_change, read_state
-from assurance_agent.retro.types import RetroContext, RetroSignalSet, RetroWindow
+from assurance_agent.retro.types import LegacyRetroContext, LegacyRetroSignalSet, LegacyRetroWindow
 
-ContextBuilder = Callable[..., RetroContext]
+ContextBuilder = Callable[..., LegacyRetroContext]
 
 
 @dataclass(frozen=True)
@@ -25,16 +25,16 @@ class RetroCollectResult:
     retro_id: str
     retro_dir: Path
     signal_count: int
-    context: RetroContext | None  # None when no candidates
+    context: LegacyRetroContext | None  # None when no candidates
     incomplete_changes: tuple[str, ...] = ()
 
 
-def _make_empty_context(retro_id: str, generated_at: str) -> RetroContext:
-    return RetroContext(
+def _make_empty_context(retro_id: str, generated_at: str) -> LegacyRetroContext:
+    return LegacyRetroContext(
         retro_id=retro_id,
         generated_at=generated_at,
-        window=RetroWindow(change_count=0),
-        signals=RetroSignalSet(),
+        window=LegacyRetroWindow(change_count=0),
+        signals=LegacyRetroSignalSet(),
         signal_count=0,
     )
 

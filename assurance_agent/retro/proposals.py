@@ -11,7 +11,7 @@ from assurance_agent.retro.types import (
     FINDING_TO_APPLY,
     DataKnowledgeProposal,
     IssueDraftPayload,
-    RetroContext,
+    LegacyRetroContext,
     RetroProposal,
     memory_body_text,
 )
@@ -118,7 +118,7 @@ def accept_proposals(retro_dir: Path) -> list[RetroProposal]:
     return proposals
 
 
-def _context_evidence_ids(context: RetroContext) -> set[str]:
+def _context_evidence_ids(context: LegacyRetroContext) -> set[str]:
     """All citable evidence ids the aggregator emitted into this context."""
     signals = context.signals
     ids: set[str] = set()
@@ -147,7 +147,7 @@ def _context_evidence_ids(context: RetroContext) -> set[str]:
     return ids
 
 
-def validate_retro_proposals(context: RetroContext, proposals: list[RetroProposal]) -> list[str]:
+def validate_retro_proposals(context: LegacyRetroContext, proposals: list[RetroProposal]) -> list[str]:
     errors: list[str] = []
     seen: set[str] = set()
     valid_evidence = _context_evidence_ids(context)

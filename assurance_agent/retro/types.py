@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from itertools import chain
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from assurance_agent.artifacts.models import ApplySummary, FailureAnalysis, Review, WorkflowState
 from assurance_agent.artifacts.models.data_knowledge import DataKnowledgeProposal
+from assurance_agent.artifacts.models.improvements import ImprovementSourceRefs
 from assurance_agent.artifacts.models.issues import ChangeIssueSnapshot
 from assurance_agent.identifiers import UnsafeIdentifierError, assert_path_segment_safe
 from assurance_agent.workflow.issues.events import ChangeIssueEvent
@@ -126,7 +128,7 @@ class NotAnIssuePatternSignal(BaseModel):
     evidence_ids: list[str] = Field(default_factory=list)
 
 
-class RetroSignalSet(BaseModel):
+class LegacyRetroSignalSet(BaseModel):
     failure_distribution: list[FailureDistributionSignal] = Field(default_factory=list)
     gate_pushback: list[GatePushbackSignal] = Field(default_factory=list)
     healing_efficiency: HealingEfficiencySignal = Field(default_factory=HealingEfficiencySignal)
@@ -141,7 +143,7 @@ class RetroSignalSet(BaseModel):
     not_an_issue_patterns: list[NotAnIssuePatternSignal] = Field(default_factory=list)
 
 
-class RetroWindow(BaseModel):
+class LegacyRetroWindow(BaseModel):
     since: str | None = None
     change_count: int = 0
     change_ids: list[str] = Field(default_factory=list)
@@ -149,12 +151,120 @@ class RetroWindow(BaseModel):
     issue_evidence_errors: dict[str, str] = Field(default_factory=dict)
 
 
+class LegacyRetroContext(BaseModel):
+    retro_id: str
+    generated_at: str
+    window: LegacyRetroWindow
+    signals: LegacyRetroSignalSet
+    signal_count: int = 0
+
+
+_FROZEN = ConfigDict(frozen=True, extra="forbid")
+
+
+class RetroSelectionSnapshot(BaseModel):
+    model_config = _FROZEN
+
+    mode: Literal["change_ids", "time_range", "last"]
+    requested_change_ids: tuple[str, ...] = ()
+    requested_since: str | None = None
+    requested_until: str | None = None
+    requested_last: int | None = None
+
+
+class RetroWindow(BaseModel):
+    model_config = _FROZEN
+
+    selection: RetroSelectionSnapshot
+    change_ids: tuple[str, ...]
+    since: str | None = None
+    until: str | None = None
+    project_event_through: str | None = None
+
+
+class RetroSourceDescriptor(BaseModel):
+    model_config = _FROZEN
+
+    kind: Literal["change_issue_ledger", "project_problem_ledger", "workflow_ledger", "eval_run"]
+    change_id: str | None = None
+    head_event_id: str | None = None
+    sha256: str
+    evidence_ids: tuple[str, ...] = ()
+
+
+class RetroSourceManifest(BaseModel):
+    model_config = _FROZEN
+
+    issue_slice_sha256: str
+    issue_sources: tuple[RetroSourceDescriptor, ...]
+    workflow_sources: tuple[RetroSourceDescriptor, ...]
+    eval_sources: tuple[RetroSourceDescriptor, ...]
+
+    def resolvable_ids(self) -> frozenset[str]:
+        sources = (*self.issue_sources, *self.workflow_sources, *self.eval_sources)
+        return frozenset(chain.from_iterable(source.evidence_ids for source in sources))
+
+
+class RetroIntegrity(BaseModel):
+    model_config = _FROZEN
+
+    status: Literal["complete", "incomplete"]
+    reasons: tuple[str, ...] = ()
+
+
+class RetroSignal(BaseModel):
+    model_config = _FROZEN
+
+    signal_id: str
+    source_refs: ImprovementSourceRefs
+    metrics: dict[str, int | float | str]
+
+
+class IssueRetroSignals(BaseModel):
+    model_config = _FROZEN
+
+    observation_distribution: tuple[RetroSignal, ...] = ()
+    occurrence_trends: tuple[RetroSignal, ...] = ()
+    assessment_corrections: tuple[RetroSignal, ...] = ()
+    regressions: tuple[RetroSignal, ...] = ()
+    review_decision_patterns: tuple[RetroSignal, ...] = ()
+    resolution_outcomes: tuple[RetroSignal, ...] = ()
+    repeated_not_an_issue: tuple[RetroSignal, ...] = ()
+
+
+class WorkflowRetroSignals(BaseModel):
+    model_config = _FROZEN
+
+    gate_pushback: tuple[RetroSignal, ...] = ()
+    healing_efficiency: tuple[RetroSignal, ...] = ()
+    skill_execution_drift: tuple[RetroSignal, ...] = ()
+
+
+class EvalRetroSignals(BaseModel):
+    model_config = _FROZEN
+
+    trends: tuple[RetroSignal, ...] = ()
+
+
+class RetroSignalSet(BaseModel):
+    model_config = _FROZEN
+
+    issue: IssueRetroSignals
+    workflow: WorkflowRetroSignals
+    eval: EvalRetroSignals
+
+
 class RetroContext(BaseModel):
+    model_config = _FROZEN
+
+    schema_version: Literal["2"] = "2"
     retro_id: str
     generated_at: str
     window: RetroWindow
+    source_manifest: RetroSourceManifest
+    integrity: RetroIntegrity
     signals: RetroSignalSet
-    signal_count: int = 0
+    signal_count: int = Field(ge=0)
 
 
 class MemoryBodyPayload(BaseModel):

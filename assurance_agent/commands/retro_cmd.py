@@ -32,7 +32,7 @@ from assurance_agent.retro.promotions import (
 )
 from assurance_agent.retro.proposals import read_proposals, validate_retro_proposals
 from assurance_agent.retro.state import complete_retro_stage, mark_consumed_change
-from assurance_agent.retro.types import RetroContext
+from assurance_agent.retro.types import LegacyRetroContext
 
 
 def _build_eval_runner(data_root: Path, sut_root: Path):
@@ -384,7 +384,7 @@ def _register_promotion_commands(retro: click.Group) -> None:
         if not context_path.exists():
             click.echo(f"Error: required file not found: {context_path}", err=True)
             raise SystemExit(1)
-        context = RetroContext.model_validate(json.loads(context_path.read_text(encoding="utf-8")))
+        context = LegacyRetroContext.model_validate(json.loads(context_path.read_text(encoding="utf-8")))
         proposals = read_proposals(retro_dir)
         if proposal_id and not any(p.id == proposal_id for p in proposals):
             click.echo(f"Error: proposal not found: {proposal_id}", err=True)

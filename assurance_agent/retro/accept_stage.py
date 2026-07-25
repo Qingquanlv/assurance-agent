@@ -7,7 +7,7 @@ from assurance_agent.exceptions import AaError
 from assurance_agent.retro.nightly.phase_d import build_review_queue_markdown, partition_proposals_for_review
 from assurance_agent.retro.proposals import accept_proposals, validate_retro_proposals
 from assurance_agent.retro.state import complete_retro_stage
-from assurance_agent.retro.types import RetroContext, RetroProposal
+from assurance_agent.retro.types import LegacyRetroContext, RetroProposal
 
 
 def run_retro_accept(
@@ -26,7 +26,7 @@ def run_retro_accept(
     a hard failure. Returns the accepted proposal list.
     """
     retro_dir = sut / "qa" / "retro" / retro_id
-    context = RetroContext.model_validate(
+    context = LegacyRetroContext.model_validate(
         json.loads((retro_dir / "context.json").read_text(encoding="utf-8"))
     )
     proposals = accept_proposals(retro_dir)
