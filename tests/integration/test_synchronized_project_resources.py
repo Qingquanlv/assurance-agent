@@ -3,11 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import multiprocessing
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+
+from assurance_agent.exceptions import AaError
 
 
 def _synchronized_change_worker(
@@ -210,6 +213,31 @@ def test_project_resource_locks_use_sorted_deterministic_identity(
     assert sorted(path.name for path in (project / "qa/.graph-runtime/locks").iterdir()) == sorted(
         expected
     )
+    for lock_path in (project / "qa/.graph-runtime/locks").iterdir():
+        assert lock_path.resolve().is_relative_to(project.resolve())
+
+
+@pytest.mark.parametrize("symlink_rel", ("qa/.graph-runtime", "qa/.graph-runtime/locks"))
+def test_project_resource_lock_root_symlink_escape_fails_closed(
+    tmp_path: Path,
+    symlink_rel: str,
+) -> None:
+    from assurance_agent.workflow.graph.project_locks import ProjectResourceLockManager
+
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    symlink = project / symlink_rel
+    symlink.parent.mkdir(parents=True)
+    os.symlink(outside, symlink)
+    manager = ProjectResourceLockManager(project)
+
+    with pytest.raises(AaError, match="lock directory.*symlink"):
+        with manager.acquire(("project:issue-registry",), timeout_seconds=0.0):
+            pytest.fail("lock manager followed a lock-root symlink")
+
+    assert list(outside.iterdir()) == []
 
 
 def test_project_resource_lock_timeout_is_conflict(tmp_path: Path) -> None:

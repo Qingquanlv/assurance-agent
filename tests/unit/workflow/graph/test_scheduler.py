@@ -532,6 +532,22 @@ class _TrackingProjectLocks:
             self.held = False
 
 
+class _TokenBlockingProjectLocks:
+    def __init__(self, blocked_token: str) -> None:
+        self.blocked_token = blocked_token
+        self.calls: list[tuple[str, ...]] = []
+
+    @contextmanager
+    def acquire(self, tokens, timeout_seconds: float):
+        del timeout_seconds
+        self.calls.append(tuple(tokens))
+        raise ProjectResourceConflict(
+            f"busy synchronized resource {self.blocked_token}",
+            token=self.blocked_token,
+        )
+        yield
+
+
 def _synchronized_task(*, retry_conflicts: bool = False) -> ExecutableTask:
     synchronized = (ResourcePath.parse("project:qa/issues/**"),)
     return _task(
@@ -693,6 +709,68 @@ def test_scheduler_persists_project_lock_timeout_as_retryable_conflict(tmp_path:
     assert failures[0]["error_kind"] == "conflict"
     assert failures[0]["next_retry_at"] is not None
     assert locks.calls == [(('project:issue-registry', 'project:zzz'), 0.125)]
+
+
+def test_project_lock_timeout_is_attributed_to_task_owning_blocked_token(
+    tmp_path: Path,
+) -> None:
+    project = _make_project(tmp_path)
+    change = project / "qa/changes/CH-1"
+    store = TreeStore(change)
+    tree_id = store.capture(project)
+    _seed_invocation(change, tree_id)
+
+    def synchronized_task(task_id: str, prefix: str, token: str, index: int) -> ExecutableTask:
+        synchronized = (ResourcePath.parse(prefix),)
+        return _task(
+            task_id,
+            declaration_index=index,
+            retry_on=["conflict"],
+            retryable=("conflict",),
+        ).model_copy(
+            update={
+                "resources": ResourceClaims(
+                    reads=synchronized,
+                    writes=synchronized,
+                    synchronized=synchronized,
+                    exclusive=(token,),
+                    authorization_writes=synchronized,
+                )
+            }
+        )
+
+    task_a = synchronized_task("task-a", "project:qa/a/**", "project:a", 0)
+    task_b = synchronized_task("task-b", "project:qa/b/**", "project:b", 1)
+    locks = _TokenBlockingProjectLocks("project:b")
+    runner = _ScriptedRunner(
+        {
+            "task-a": lambda *_: (_ for _ in ()).throw(AssertionError("task A ran")),
+            "task-b": lambda *_: (_ for _ in ()).throw(AssertionError("task B ran")),
+        }
+    )
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=runner,
+        project_lock_manager=locks,
+    )
+
+    result = scheduler.execute(_plan(task_a, task_b), _projection(change, tree_id), _context(project))
+
+    assert result.failed == ("task-b",)
+    assert result.retry_at is not None
+    assert runner.calls == []
+    assert locks.calls == [("project:a", "project:b")]
+    attempts = [
+        event
+        for event in read_events_strict(change)
+        if event.get("type") in ("task_attempt_started", "task_attempt_failed")
+    ]
+    assert [event["task_id"] for event in attempts] == ["task-b", "task-b"]
+    assert [event["error_kind"] for event in attempts if event["type"] == "task_attempt_failed"] == [
+        "conflict"
+    ]
 
 
 def test_synchronized_pending_update_reacquires_lock_and_replays_without_handler(

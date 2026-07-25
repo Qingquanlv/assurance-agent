@@ -69,6 +69,7 @@ from assurance_agent.workflow.graph.models import (
 )
 from assurance_agent.workflow.graph.planner import apply_state_updates
 from assurance_agent.workflow.graph.project_locks import (
+    ProjectLockPathError,
     ProjectLockManager,
     ProjectResourceConflict,
     ProjectResourceLockManager,
@@ -241,7 +242,10 @@ class Scheduler:
                 context=context,
                 wave=wave,
                 message=str(exc),
+                blocked_token=exc.token,
             )
+        except ProjectLockPathError as exc:
+            raise SchedulerError(str(exc)) from None
 
     def _execute_wave(
         self,
@@ -378,10 +382,23 @@ class Scheduler:
         context: RuntimeContext,
         wave: tuple[ExecutableTask, ...],
         message: str,
+        blocked_token: str | None,
     ) -> WaveResult:
-        task = next((candidate for candidate in wave if candidate.resources.synchronized), None)
+        if blocked_token is None:
+            task = next((candidate for candidate in wave if candidate.resources.synchronized), None)
+        else:
+            task = next(
+                (
+                    candidate
+                    for candidate in wave
+                    if candidate.resources.synchronized
+                    and blocked_token in candidate.resources.exclusive
+                ),
+                None,
+            )
         if task is None:
-            raise SchedulerError("project lock conflict without a synchronized task")
+            detail = f" for token {blocked_token}" if blocked_token is not None else ""
+            raise SchedulerError(f"project lock conflict{detail} without an owning synchronized task")
         decision = next_attempt_decision(task=task, projection=projection, now=self._clock.now())
         if decision.kind != "start" or decision.attempt_number is None:
             retry_at = decision.next_retry_at if decision.kind == "wait" else None
@@ -886,6 +903,8 @@ class Scheduler:
                     )
             except ProjectResourceConflict as exc:
                 raise SchedulerError(str(exc)) from None
+            except ProjectLockPathError as exc:
+                raise SchedulerError(str(exc)) from None
 
         committed_task_ids = sorted(commit_eligible)
 
@@ -948,6 +967,60 @@ class Scheduler:
                     base_tree_id=effective_base_tree_id,
                 )
         return committed_ids
+
+    def repair_committed_write_sets(
+        self,
+        *,
+        context: RuntimeContext,
+        write_set_ids: Sequence[str],
+    ) -> bool:
+        """Replay one committed synchronized publication under its durable lock metadata.
+
+        ``superstep_committed`` is intentionally durable before canonical publication.
+        A recovery loop therefore cannot infer completion from the tree pointer and must
+        replay the exact write-set entries. The operation is idempotent for fully and
+        partially published Updates and never walks or repairs unrelated live paths.
+        """
+        write_sets = [self._objects.load_write_set(write_set_id) for write_set_id in write_set_ids]
+        synchronized_paths = tuple(
+            sorted(
+                {
+                    ResourcePath.parse(path)
+                    for write_set in write_sets
+                    for path in write_set.synchronized_paths
+                },
+                key=lambda path: (path.root, path.pattern),
+            )
+        )
+        if not synchronized_paths:
+            return False
+        tokens = tuple(
+            sorted(
+                {
+                    token
+                    for write_set in write_sets
+                    for token in write_set.project_exclusive_tokens
+                }
+            )
+        )
+        if not tokens:
+            raise SchedulerError("committed synchronized Update lacks project lock metadata")
+        manager = self._project_locks or ProjectResourceLockManager(
+            context.project_root,
+            clock=self._clock,
+        )
+        try:
+            with manager.acquire(tokens, timeout_seconds=self._project_lock_timeout_seconds):
+                self._objects.apply_write_sets_to_synchronized_paths(
+                    context.project_root,
+                    write_sets,
+                    synchronized_paths,
+                )
+        except ProjectResourceConflict as exc:
+            raise SchedulerError(str(exc)) from None
+        except ProjectLockPathError as exc:
+            raise SchedulerError(str(exc)) from None
+        return True
 
     def _is_side_effect_free(self, task: ExecutableTask) -> bool:
         if self._contracts is not None:

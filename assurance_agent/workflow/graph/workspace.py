@@ -266,9 +266,26 @@ def _install_file(path: Path, data: bytes, executable: bool) -> None:
     """temp-file + os.replace 落盘并固定 mode；apply 阶段的最小写入单元。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.parent / f"{path.name}.tmp.{os.getpid()}"
-    tmp.write_bytes(data)
-    os.replace(tmp, path)
-    os.chmod(path, 0o755 if executable else 0o644)
+    try:
+        tmp.write_bytes(data)
+        # The replacement must publish content and mode as one filesystem state.
+        # Otherwise a crash after replace leaves content-at-target with mode-at-base,
+        # which is neither side of the replay comparison.
+        os.chmod(tmp, 0o755 if executable else 0o644)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _same_file_content(left: _Entry | None, right: _Entry | None) -> bool:
+    """Whether two entries differ, if at all, only in executable mode."""
+    return (
+        left is not None
+        and right is not None
+        and left.kind == "file"
+        and right.kind == "file"
+        and left.sha256 == right.sha256
+    )
 
 
 def _prune_empty_parents(path: Path, stop: Path) -> None:
@@ -832,6 +849,10 @@ class TreeStore:
                 actual = _entry_at(project_root, rel)
                 if actual == wanted:
                     continue
+                if _same_file_content(actual, wanted):
+                    assert wanted is not None
+                    writes.append((rel, wanted))
+                    continue
                 if actual != before:
                     raise WorkspaceError(f"canonical workspace drift at targeted path {entry.logical_path}")
                 if wanted is None:
@@ -881,6 +902,10 @@ class TreeStore:
                 continue
             if actual == wanted:
                 continue  # 已物化（重放/幂等）
+            if _same_file_content(actual, wanted):
+                assert wanted is not None
+                writes.append((rel, wanted))
+                continue
             if actual != before:
                 raise WorkspaceError(f"canonical workspace drift at {rel}")
             if wanted is None:

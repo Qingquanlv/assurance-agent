@@ -145,6 +145,7 @@ class AgentHandler:
                     claims = ResourceClaims(
                         reads=claims.reads,
                         writes=claims.writes,
+                        synchronized=claims.synchronized,
                         exclusive=claims.exclusive,
                         authorization_writes=narrowed,
                     )

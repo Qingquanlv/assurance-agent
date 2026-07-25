@@ -1177,9 +1177,17 @@ class GraphRuntime:
         projection: GraphProjection,
         context: RuntimeContext,
     ) -> None:
-        prev, target = self._last_committed_tree_edge(projection)
+        prev, target, write_set_ids = self._last_committed_tree_edge(projection)
         if target is None:
             return
+        try:
+            if self._scheduler.repair_committed_write_sets(
+                context=context,
+                write_set_ids=write_set_ids,
+            ):
+                return
+        except (SchedulerError, WorkspaceError) as exc:
+            raise GraphRuntimeError(f"failed to repair materialization: {exc}") from exc
         try:
             current = self._objects.capture(context.project_root, repo_root=context.repo_root)
         except WorkspaceError:
@@ -1192,10 +1200,14 @@ class GraphRuntime:
         except WorkspaceError as exc:
             raise GraphRuntimeError(f"failed to repair materialization: {exc}") from exc
 
-    def _last_committed_tree_edge(self, projection: GraphProjection) -> tuple[str | None, str | None]:
+    def _last_committed_tree_edge(
+        self,
+        projection: GraphProjection,
+    ) -> tuple[str | None, str | None, tuple[str, ...]]:
         cursor = projection.root_tree_id
         last_prev: str | None = None
         last_target: str | None = None
+        last_write_set_ids: tuple[str, ...] = ()
         for raw in read_events_strict(self._checkpoints._change_dir):  # noqa: SLF001
             if raw.get("source") != "graph" or raw.get("invocation_id") != projection.invocation_id:
                 continue
@@ -1205,8 +1217,14 @@ class GraphRuntime:
             if isinstance(target_tree, str):
                 last_prev = cursor
                 last_target = target_tree
+                raw_ids = raw.get("write_set_ids")
+                last_write_set_ids = tuple(
+                    value
+                    for value in (raw_ids if isinstance(raw_ids, list) else [])
+                    if isinstance(value, str)
+                )
                 cursor = target_tree
-        return last_prev, last_target
+        return last_prev, last_target, last_write_set_ids
 
     def _retry_pending_update(self, projection: GraphProjection, context: RuntimeContext) -> None:
         planned = self._last_uncommitted_plan(projection.invocation_id)

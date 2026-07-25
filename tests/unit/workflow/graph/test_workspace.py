@@ -682,6 +682,46 @@ def test_synchronized_targeted_apply_converges_after_partial_failure(
     assert (project / "qa/changes/CH-1/results/update.json").read_text() == '{"updated":true}\n'
 
 
+def test_synchronized_targeted_apply_repairs_content_published_before_executable_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _make_project(tmp_path)
+    issue = project / "qa/issues/ISSUE-1.json"
+    issue.parent.mkdir(parents=True)
+    issue.write_text("version 1\n", encoding="utf-8")
+    issue.chmod(0o644)
+    store = _store(project)
+    invocation_tree = store.capture(project)
+    synchronized = (ResourcePath.parse("project:qa/issues/**"),)
+    overlay_tree = store.overlay_synchronized_paths(invocation_tree, project, synchronized)
+    workspace = _backend(project).create(task_id="update-issue", base_tree_id=overlay_tree, store=store)
+    workspace_issue = workspace.project_root / "qa/issues/ISSUE-1.json"
+    workspace_issue.write_text("version 2\n", encoding="utf-8")
+    workspace_issue.chmod(0o755)
+    write_set = store.freeze_write_set(workspace, claims=_synchronized_issue_claims())
+    real_install = workspace_mod._install_file
+
+    def publish_content_then_crash(path: Path, data: bytes, executable: bool) -> None:
+        assert executable is True
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        path.chmod(0o644)
+        raise OSError("simulated crash after replace before chmod")
+
+    monkeypatch.setattr(workspace_mod, "_install_file", publish_content_then_crash)
+    with pytest.raises(OSError, match="after replace before chmod"):
+        store.apply_write_sets_to_synchronized_paths(project, (write_set,), synchronized)
+    monkeypatch.setattr(workspace_mod, "_install_file", real_install)
+    assert issue.read_text() == "version 2\n"
+    assert issue.stat().st_mode & 0o100 == 0
+
+    store.apply_write_sets_to_synchronized_paths(project, (write_set,), synchronized)
+
+    assert issue.read_text() == "version 2\n"
+    assert issue.stat().st_mode & 0o100
+
+
 def test_synchronized_freeze_rejects_project_write_outside_declared_prefix(
     tmp_path: Path,
 ) -> None:

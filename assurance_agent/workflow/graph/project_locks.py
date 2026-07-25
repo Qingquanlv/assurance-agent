@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import fcntl
 import hashlib
+import stat
 from collections.abc import Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
@@ -22,6 +23,14 @@ class ProjectResourceConflict(AaError):
     """A synchronized project resource stayed busy until the acquisition deadline."""
 
     error_kind: ErrorKind = "conflict"
+
+    def __init__(self, message: str, *, token: str | None = None) -> None:
+        super().__init__(message)
+        self.token = token
+
+
+class ProjectLockPathError(AaError):
+    """The on-disk lock directory is not safely confined to the project root."""
 
 
 class ProjectLockManager(Protocol):
@@ -51,6 +60,38 @@ class ProjectResourceLockManager:
         identity = f"{self._project_root}\0{token}".encode()
         return self._locks_root / hashlib.sha256(identity).hexdigest()
 
+    def _prepare_locks_root(self) -> None:
+        """Create each lock parent without following a pre-existing symlink."""
+        current = self._project_root
+        for part in _LOCKS_RELPATH.parts:
+            candidate = current / part
+            try:
+                mode = candidate.lstat().st_mode
+            except FileNotFoundError:
+                try:
+                    candidate.mkdir()
+                except FileExistsError:
+                    # A concurrent creator won the race; validate what it created.
+                    pass
+                try:
+                    mode = candidate.lstat().st_mode
+                except FileNotFoundError as exc:
+                    raise ProjectLockPathError(
+                        f"project lock directory disappeared during creation: {candidate}"
+                    ) from exc
+            if stat.S_ISLNK(mode):
+                raise ProjectLockPathError(f"project lock directory cannot be a symlink: {candidate}")
+            if not stat.S_ISDIR(mode):
+                raise ProjectLockPathError(f"project lock directory is not a directory: {candidate}")
+            try:
+                resolved = candidate.resolve(strict=True)
+                resolved.relative_to(self._project_root)
+            except (OSError, ValueError) as exc:
+                raise ProjectLockPathError(
+                    f"project lock directory escapes project root: {candidate}"
+                ) from exc
+            current = candidate
+
     @contextmanager
     def acquire(self, tokens: Sequence[str], timeout_seconds: float) -> Iterator[None]:
         """Acquire sorted project tokens without blocking in the kernel; always release."""
@@ -64,7 +105,7 @@ class ProjectResourceLockManager:
             yield
             return
 
-        self._locks_root.mkdir(parents=True, exist_ok=True)
+        self._prepare_locks_root()
         deadline = self._clock.monotonic() + timeout_seconds
         acquired: list[BinaryIO] = []
         try:
@@ -95,9 +136,15 @@ class ProjectResourceLockManager:
                 now = self._clock.monotonic()
                 if now >= deadline:
                     raise ProjectResourceConflict(
-                        f"timed out acquiring synchronized project resource {token}"
+                        f"timed out acquiring synchronized project resource {token}",
+                        token=token,
                     ) from None
                 self._clock.sleep(min(self._poll_interval_seconds, deadline - now))
 
 
-__all__ = ["ProjectLockManager", "ProjectResourceConflict", "ProjectResourceLockManager"]
+__all__ = [
+    "ProjectLockManager",
+    "ProjectLockPathError",
+    "ProjectResourceConflict",
+    "ProjectResourceLockManager",
+]

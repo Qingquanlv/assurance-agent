@@ -28,6 +28,7 @@ from assurance_agent.workflow.graph.runtime import GraphRuntime
 from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
 from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner, build_default_node_runner
+from assurance_agent.workflow.graph import workspace as workspace_mod
 from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
 from tests.helpers_aa import write_aa_config
 
@@ -76,6 +77,49 @@ graphs:
     edges:
       - {from: START, to: first}
       - {from: first, to: END}
+gates: {}
+"""
+
+_SYNC_CONTRACTS = """\
+schema_version: "1"
+contracts:
+  operation:update-issue:
+    handler: operation
+    side_effect_free: false
+    reads: ["project:qa/issues/**"]
+    writes: ["project:qa/issues/**", "change:results/**"]
+    authorization_writes: ["project:qa/issues/**", "change:results/**"]
+    synchronized: ["project:qa/issues/**"]
+    exclusive: ["project:issue-registry"]
+"""
+
+_SYNC_WORKFLOW = """\
+schema_version: "2"
+name: synchronized-update
+params:
+  run_mode: {type: enum, values: [full], default: full}
+entrypoints:
+  full: {graph: main, allow: "params.run_mode == 'full'"}
+policies:
+  retry:
+    never: {max_attempts: 1, retry_on: []}
+  timeout:
+    local: {run_seconds: 60, heartbeat_seconds: 0.05}
+  scheduler: {max_parallel_tasks: 1}
+graphs:
+  main:
+    max_supersteps: 5
+    nodes:
+      update:
+        uses: operation:update-issue
+        outputs:
+          - project:qa/issues/ISSUE-1.json
+          - change:results/update.json
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: update}
+      - {from: update, to: END}
 gates: {}
 """
 
@@ -141,6 +185,12 @@ def _write_compiled() -> tuple[CompiledWorkflow, object]:
     return compiled, contracts
 
 
+def _sync_compiled() -> tuple[CompiledWorkflow, object]:
+    contracts = parse_execution_contracts(_SYNC_CONTRACTS)
+    compiled = compile_workflow(parse_workflow_v2(_SYNC_WORKFLOW), contracts)
+    return compiled, contracts
+
+
 def _write_ops() -> dict[str, OperationFn]:
     ops = default_operations()
 
@@ -151,6 +201,26 @@ def _write_ops() -> dict[str, OperationFn]:
         return TaskResult(status="succeeded")
 
     ops["operation:write-marker"] = write_marker
+    return ops
+
+
+def _sync_ops(*, calls: dict[str, int] | None = None) -> dict[str, OperationFn]:
+    ops = default_operations()
+
+    def update_issue(task: ExecutableTask, workspace, context: RuntimeContext) -> TaskResult:
+        if calls is not None:
+            calls["n"] += 1
+        # Simulate an unrelated live edit after the invocation snapshot. A synchronized
+        # publication must never repair this path from its stale whole-tree target.
+        (context.project_root / "app/source.py").write_text("unrelated live version 2\n")
+        issue = workspace.project_root / "qa/issues/ISSUE-1.json"
+        issue.write_text('{"version":2}\n', encoding="utf-8")
+        result = workspace.change_dir / "results/update.json"
+        result.parent.mkdir(parents=True)
+        result.write_text('{"updated":true}\n', encoding="utf-8")
+        return TaskResult(status="succeeded")
+
+    ops["operation:update-issue"] = update_issue
     return ops
 
 
@@ -375,6 +445,141 @@ def test_crash_during_materialization_repairs_without_reexec(tmp_path: Path) -> 
     assert fresh_calls["n"] == 0
     assert [e.get("type") for e in read_events_strict(change)].count("task_attempt_succeeded") == 1
     assert (project / "tests" / "api" / "marker.py").read_text(encoding="utf-8") == "marker\n"
+
+
+def _seed_synchronized_project(project: Path) -> None:
+    issue = project / "qa/issues/ISSUE-1.json"
+    issue.parent.mkdir(parents=True)
+    issue.write_text('{"version":1}\n', encoding="utf-8")
+    app = project / "app/source.py"
+    app.parent.mkdir(parents=True)
+    app.write_text("invocation version 1\n", encoding="utf-8")
+
+
+def test_synchronized_commit_next_loop_replays_targeted_publication_only(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    _seed_synchronized_project(project)
+    compiled, contracts = _sync_compiled()
+    runtime = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        node_runner=_op_runner(_sync_ops()),
+    )
+
+    result = runtime.run(compiled, "full", _context(project))
+
+    assert result.exit_code == 0
+    assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version":2}\n'
+    assert (project / "qa/changes/CH-1/results/update.json").read_text() == '{"updated":true}\n'
+    assert (project / "app/source.py").read_text() == "unrelated live version 2\n"
+
+
+def test_synchronized_commit_before_apply_is_repaired_by_fresh_runtime(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    _seed_synchronized_project(project)
+    compiled, contracts = _sync_compiled()
+    calls = {"n": 0}
+    runtime = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        node_runner=_op_runner(_sync_ops(calls=calls)),
+    )
+    store = runtime._objects  # noqa: SLF001
+
+    def crash_before_apply(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise _InjectedCrash("after synchronized commit before targeted apply")
+
+    store.apply_write_sets_to_synchronized_paths = crash_before_apply  # type: ignore[method-assign]
+    with pytest.raises(_InjectedCrash, match="before targeted apply"):
+        runtime.run(compiled, "full", _context(project))
+
+    events = read_events_strict(_context(project).change_dir)
+    assert any(event.get("type") == "superstep_committed" for event in events)
+    invocation_id = next(
+        str(event["invocation_id"])
+        for event in events
+        if event.get("type") == "graph_invocation_started"
+    )
+    assert calls["n"] == 1
+    assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version":1}\n'
+
+    fresh_calls = {"n": 0}
+    fresh = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        node_runner=_op_runner(_sync_ops(calls=fresh_calls)),
+    )
+    result = fresh.resume(invocation_id)
+
+    assert result.exit_code == 0
+    assert fresh_calls["n"] == 0
+    assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version":2}\n'
+    assert (project / "qa/changes/CH-1/results/update.json").read_text() == '{"updated":true}\n'
+    assert (project / "app/source.py").read_text() == "unrelated live version 2\n"
+
+
+def test_synchronized_partial_apply_is_repaired_by_fresh_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _make_project(tmp_path)
+    _seed_synchronized_project(project)
+    compiled, contracts = _sync_compiled()
+    calls = {"n": 0}
+    runtime = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        node_runner=_op_runner(_sync_ops(calls=calls)),
+    )
+    store = runtime._objects  # noqa: SLF001
+    targeted_apply = store.apply_write_sets_to_synchronized_paths
+    real_install = workspace_mod._install_file
+    installs = {"n": 0}
+
+    def crash_second_install(path: Path, data: bytes, executable: bool) -> None:
+        installs["n"] += 1
+        if installs["n"] == 2:
+            raise _InjectedCrash("during synchronized targeted apply")
+        real_install(path, data, executable)
+
+    def crash_during_apply(*args, **kwargs):  # type: ignore[no-untyped-def]
+        monkeypatch.setattr(workspace_mod, "_install_file", crash_second_install)
+        try:
+            return targeted_apply(*args, **kwargs)
+        finally:
+            monkeypatch.setattr(workspace_mod, "_install_file", real_install)
+
+    store.apply_write_sets_to_synchronized_paths = crash_during_apply  # type: ignore[method-assign]
+    with pytest.raises(_InjectedCrash, match="during synchronized targeted apply"):
+        runtime.run(compiled, "full", _context(project))
+
+    events = read_events_strict(_context(project).change_dir)
+    invocation_id = next(
+        str(event["invocation_id"])
+        for event in events
+        if event.get("type") == "graph_invocation_started"
+    )
+    assert calls["n"] == 1
+    assert (project / "qa/changes/CH-1/results/update.json").read_text() == '{"updated":true}\n'
+    assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version":1}\n'
+
+    fresh_calls = {"n": 0}
+    fresh = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        node_runner=_op_runner(_sync_ops(calls=fresh_calls)),
+    )
+    result = fresh.resume(invocation_id)
+
+    assert result.exit_code == 0
+    assert fresh_calls["n"] == 0
+    assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version":2}\n'
+    assert (project / "qa/changes/CH-1/results/update.json").read_text() == '{"updated":true}\n'
+    assert (project / "app/source.py").read_text() == "unrelated live version 2\n"
 
 
 def test_crash_after_write_set_freeze_before_success_retries_attempt(tmp_path: Path) -> None:
