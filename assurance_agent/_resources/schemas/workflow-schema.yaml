@@ -34,6 +34,10 @@ params:
   max_healing_attempts: {type: int, default: 3}
   auto_archive: {type: bool, default: false}
   force_continue: {type: bool, default: false}
+  retro_id: {type: str, default: ""}
+  retro_last: {type: int, default: 10}
+  retro_min_evidence: {type: int, default: 2}
+  retro_dry_run: {type: bool, default: false}
 
 entrypoints:
   full:
@@ -51,6 +55,12 @@ entrypoints:
     graph: intake-workflow
     with:
       run_mode: case-only
+  archive:
+    graph: archive-workflow
+    with:
+      auto_archive: true
+  retro:
+    graph: retro-workflow
 
 policies:
   retry:
@@ -120,13 +130,8 @@ graphs:
       assurance:
         uses: graph:assurance
       archive:
-        uses: skill:aa-archive
-        agent: aa-archiver
+        uses: graph:archive-workflow
         when: "params.auto_archive == true"
-        outputs: ["project:qa/archive/${context.change_id}/"]
-        gate: archive-gate
-        retry: agent-transient
-        timeout: agent
     edges:
       - {from: START, to: bootstrap}
       - {from: bootstrap, to: intake}
@@ -154,6 +159,63 @@ graphs:
       - {from: START, to: bootstrap}
       - {from: bootstrap, to: assurance}
       - {from: assurance, to: END}
+
+  archive-workflow:
+    max_supersteps: 10
+    nodes:
+      # Gate runs before the skill: `archive` declares the archive dir as a
+      # required output, so a post-hoc gate can only report a stop verdict after
+      # the evidence was already copied (and the retry loop would force it).
+      precheck:
+        uses: builtin:gate
+        with: {gate: archive-gate}
+
+      archive:
+        uses: skill:aa-archive
+        agent: aa-archiver
+        outputs: ["project:qa/archive/${context.change_id}/"]
+        retry: agent-transient
+        timeout: agent
+    edges:
+      - {from: START, to: precheck}
+      - {from: archive, to: END}
+
+    routes:
+      - from: precheck
+        select: "node('precheck').gate.verdict"
+        cases: {pass: archive, stop: STOP}
+        default: STOP
+
+  retro-workflow:
+    max_supersteps: 20
+    nodes:
+      collect:
+        uses: operation:retro-collect
+        outputs:
+          - project:qa/retro/${params.retro_id}/context.json
+        retry: never
+        timeout: local-operation
+      propose:
+        uses: skill:aa-retro
+        agent: aa-doc-author
+        outputs:
+          - project:qa/retro/${params.retro_id}/proposals.json
+          - project:qa/retro/${params.retro_id}/retro-summary.md
+        retry: agent-transient
+        timeout: agent
+      accept:
+        uses: operation:retro-accept
+        outputs:
+          - project:qa/retro/${params.retro_id}/proposals.json
+          - project:qa/retro/${params.retro_id}/review-queue.md
+        retry: never
+        timeout: local-operation
+    edges:
+      - {from: START, to: collect}
+      - {from: collect, to: END, when: "params.retro_dry_run == true or node('collect').value.signal_count == 0"}
+      - {from: collect, to: propose, when: "params.retro_dry_run == false and node('collect').value.signal_count > 0"}
+      - {from: propose, to: accept}
+      - {from: accept, to: END}
 
   intake:
     max_supersteps: 30
@@ -368,12 +430,17 @@ graphs:
       review-cycle:
         uses: graph:api-plan-cycle
 
+      # Hard precondition, evaluated before codegen: an attached gate on `codegen`
+      # can only report after the suite was already generated.
+      codegen-precheck:
+        uses: builtin:gate
+        with: {gate: api-codegen-precondition-gate}
+
       codegen:
         uses: skill:aa-api-codegen
         agent: aa-test-author
         when: "params.run_mode in ['full','api-only','codegen-only']"
         outputs: [change:codegen/api-codegen-summary.md]
-        gate: api-codegen-precondition-gate
         retry: agent-transient
         timeout: agent
 
@@ -381,9 +448,15 @@ graphs:
       - {from: START, to: plan, when: "params.run_mode != 'codegen-only'"}
       - {from: START, to: review-cycle, when: "params.run_mode == 'codegen-only'"}
       - {from: plan, to: review-cycle}
-      - {from: review-cycle, to: codegen, when: "params.run_mode in ['full','api-only','codegen-only']"}
+      - {from: review-cycle, to: codegen-precheck, when: "params.run_mode in ['full','api-only','codegen-only']"}
       - {from: review-cycle, to: END, when: "params.run_mode in ['plan-only','review-plan']"}
       - {from: codegen, to: END}
+
+    routes:
+      - from: codegen-precheck
+        select: "node('codegen-precheck').gate.verdict"
+        cases: {pass: codegen, stop: STOP}
+        default: STOP
 
   api-plan-cycle:
     max_supersteps: 20
@@ -479,12 +552,15 @@ graphs:
       review-cycle:
         uses: graph:e2e-plan-cycle
 
+      codegen-precheck:
+        uses: builtin:gate
+        with: {gate: e2e-codegen-precondition-gate}
+
       codegen:
         uses: skill:aa-e2e-codegen
         agent: aa-test-author
         when: "params.run_mode in ['full','e2e-only','codegen-only']"
         outputs: [change:codegen/e2e-codegen-summary.md]
-        gate: e2e-codegen-precondition-gate
         retry: agent-transient
         timeout: agent
 
@@ -492,9 +568,15 @@ graphs:
       - {from: START, to: plan, when: "params.run_mode != 'codegen-only'"}
       - {from: START, to: review-cycle, when: "params.run_mode == 'codegen-only'"}
       - {from: plan, to: review-cycle}
-      - {from: review-cycle, to: codegen, when: "params.run_mode in ['full','e2e-only','codegen-only']"}
+      - {from: review-cycle, to: codegen-precheck, when: "params.run_mode in ['full','e2e-only','codegen-only']"}
       - {from: review-cycle, to: END, when: "params.run_mode in ['plan-only','review-plan']"}
       - {from: codegen, to: END}
+
+    routes:
+      - from: codegen-precheck
+        select: "node('codegen-precheck').gate.verdict"
+        cases: {pass: codegen, stop: STOP}
+        default: STOP
 
   e2e-plan-cycle:
     max_supersteps: 20
@@ -593,6 +675,10 @@ graphs:
       # empty-scope `skip` (layer selected but no cases) straight to END,
       # bypassing codegen. gate() is only resolvable inside a builtin:gate
       # node — never in a node/edge `when` — so the branch cannot inline it.
+      # This routed node is also the codegen precondition: `pass` is the sole
+      # edge into codegen, which is exactly what fuzz-codegen-precondition-gate
+      # asserts, so attaching that gate to `codegen` only duplicated the check
+      # after the fact.
       codegen-gate:
         uses: builtin:gate
         with: {gate: fuzz-plan-review-gate}
@@ -602,7 +688,6 @@ graphs:
         agent: aa-test-author
         when: "params.run_mode in ['full','codegen-only']"
         outputs: [change:codegen/fuzz-codegen-summary.md]
-        gate: fuzz-codegen-precondition-gate
         retry: agent-transient
         timeout: agent
 
@@ -684,6 +769,10 @@ graphs:
       # empty-scope `skip` (layer selected but no cases) straight to END,
       # bypassing codegen. gate() is only resolvable inside a builtin:gate
       # node — never in a node/edge `when` — so the branch cannot inline it.
+      # This routed node is also the codegen precondition: `pass` is the sole
+      # edge into codegen, which is exactly what
+      # performance-codegen-precondition-gate asserts, so attaching that gate to
+      # `codegen` only duplicated the check after the fact.
       codegen-gate:
         uses: builtin:gate
         with: {gate: performance-plan-review-gate}
@@ -693,7 +782,6 @@ graphs:
         agent: aa-test-author
         when: "params.run_mode in ['full','codegen-only']"
         outputs: [change:codegen/performance-codegen-summary.md]
-        gate: performance-codegen-precondition-gate
         retry: agent-transient
         timeout: agent
 

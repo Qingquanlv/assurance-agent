@@ -1,4 +1,4 @@
-"""统一成功收尾：output 校验 → attached gate 求值 → 冻结 gate_report。
+"""统一成功收尾：output 校验 → blob 摄入 → attached gate 求值 → 冻结 gate_report。
 
 handler 只负责业务副作用；本模块在 NodeRunner 成功路径上补齐 NodeDef.outputs /
 NodeDef.gate 合同，使 operation / skill / subgraph 与 builtin:gate 共享同一套
@@ -16,16 +16,28 @@ import yaml
 from pydantic import ValidationError
 
 from assurance_agent.artifacts.registry import match_artifact
+from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
+from assurance_agent.workflow.graph.checkpoint import fold_invocation_events
+from assurance_agent.workflow.graph.frozen_output import (
+    FrozenOutput,
+    candidate_value_map,
+    frozen_outputs_wire,
+)
+from assurance_agent.workflow.graph.subgraph_exports import SubgraphExportError, apply_subgraph_exports
+from assurance_agent.workflow.graph.ingest import ingest_from_write_set
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
     RuntimeContext,
     TaskResult,
 )
+from assurance_agent.workflow.graph.node_history import build_node_results_for_gate
 from assurance_agent.workflow.graph.schema_v2 import NodeDef
+from assurance_agent.workflow.graph.compiler import canonical_digest
 from assurance_agent.workflow.graph.task_runner import task_failure
 from assurance_agent.workflow.graph.workspace import TaskWorkspace, TreeStore, WorkspaceError
 from assurance_agent.workflow.orchestration.gates import (
+    FrozenGateReport,
     GateError,
     GateEvaluationContext,
     check_gate_in_view,
@@ -55,6 +67,22 @@ def finalize_task_result(
             result=result,
             workspace=workspace,
             outputs=outputs,
+        )
+        if result.status != "succeeded":
+            return result
+        result = _ingest_frozen_outputs(
+            store=store,
+            task=task,
+            result=result,
+            outputs=outputs,
+        )
+        if result.status != "succeeded":
+            return result
+        result = _apply_subgraph_exports(
+            compiled=compiled,
+            task=task,
+            result=result,
+            context=context,
         )
         if result.status != "succeeded":
             return result
@@ -118,25 +146,77 @@ def _ensure_outputs_frozen(
     )
 
 
+def _ingest_frozen_outputs(
+    *,
+    store: TreeStore,
+    task: ExecutableTask,
+    result: TaskResult,
+    outputs: tuple[str, ...],
+) -> TaskResult:
+    """Blob 摄入 → ``frozen_outputs`` wire map + ``candidate_outputs`` value map。"""
+    frozen: dict[str, FrozenOutput] = {}
+    if result.write_set_id is not None and outputs:
+        try:
+            frozen = ingest_from_write_set(
+                store,
+                write_set_id=result.write_set_id,
+                output_paths=outputs,
+            )
+        except (ValueError, WorkspaceError) as exc:
+            return task_failure("invalid_output", str(exc))
+    wire = frozen_outputs_wire(frozen)
+    candidate = candidate_value_map(frozen)
+    return result.model_copy(update={"frozen_outputs": wire, "candidate_outputs": candidate})
+
+
+def _apply_subgraph_exports(
+    *,
+    compiled: CompiledWorkflow,
+    task: ExecutableTask,
+    result: TaskResult,
+    context: RuntimeContext,
+) -> TaskResult:
+    if not task.target.startswith("graph:"):
+        return result
+    graph = compiled.graphs.get(task.graph_id)
+    if graph is None:
+        return result
+    node = graph.nodes.get(task.node_id)
+    if node is None or not node.exports:
+        return result
+    child_graph_id = task.target.split(":", 1)[1]
+    child_invocation_id = canonical_digest({"parent_task_id": task.task_id, "graph_id": child_graph_id})
+    try:
+        # Nested subgraph events are written to the single per-change ledger
+        # (context.change_dir), not the parent task's private workspace — the
+        # subgraph runs in-process and commits graph_invocation_started there
+        # before this parent task finalizes. Folding workspace.change_dir would
+        # miss the child's start event and fail closed with a spurious
+        # LedgerIntegrityError (mirrors scheduler's context.change_dir folds).
+        child_projection = fold_invocation_events(
+            child_invocation_id,
+            read_events_strict(context.change_dir),
+        )
+        exported = apply_subgraph_exports(
+            child_projection=child_projection,
+            child_graph_id=child_graph_id,
+            export_defs=node.exports,
+        )
+    except (LedgerIntegrityError, SubgraphExportError) as exc:
+        return task_failure("invalid_output", str(exc))
+    wire = dict(result.frozen_outputs)
+    wire.update(frozen_outputs_wire(exported))
+    candidate = dict(result.candidate_outputs)
+    candidate.update(candidate_value_map(exported))
+    return result.model_copy(update={"frozen_outputs": wire, "candidate_outputs": candidate})
+
+
 def _validate_registry_outputs(
     *,
     workspace: TaskWorkspace,
     outputs: tuple[str, ...],
 ) -> TaskResult | None:
-    """Validate declared ``change:`` file outputs against their registry model.
-
-    Gate expressions read artifact fields (e.g. a plan review's
-    ``required_capabilities``) straight from the file, while freeze only checks
-    the file exists — so a skill that omits a gate-critical field slips through
-    and dead-ends at a terminal ``stop``. Running the artifact-registry pydantic
-    model here converts that into an ``invalid_output`` task failure that the
-    node's retry policy can recover from, surfacing the exact contract breach.
-
-    Scope: single-file ``change:`` outputs whose registry spec is
-    ``must_compat`` (the engine-enforced contract grade). ``versioned`` specs
-    stay advisory and directory outputs (e.g. ``change:cases/``) are not
-    expanded here.
-    """
+    """Validate declared ``change:`` file outputs against their registry model."""
     for output in outputs:
         root, _, rest = output.partition(":")
         if root != "change" or not rest or rest.endswith("/"):
@@ -147,7 +227,7 @@ def _validate_registry_outputs(
         try:
             raw = (workspace.change_dir / rest).read_text(encoding="utf-8")
         except OSError:
-            continue  # existence is enforced by freeze; skip unreadable here
+            continue
         is_yaml = rest.endswith((".yaml", ".yml"))
         try:
             data = yaml.safe_load(raw) if is_yaml else json.loads(raw)
@@ -174,6 +254,17 @@ def _attach_gate_report(
     gate_id: str,
 ) -> TaskResult:
     state_values = _state_values_for_gate(workspace.change_dir, result)
+    node_results: dict[str, object] = {}
+    try:
+        projection = fold_invocation_events(task.invocation_id, read_events_strict(workspace.change_dir))
+        node_results = build_node_results_for_gate(projection, graph_id=task.graph_id)
+    except LedgerIntegrityError:
+        node_results = {}
+    own_payload: dict[str, object] = {"status": "succeeded"}
+    if result.candidate_outputs:
+        own_payload["outputs"] = dict(result.candidate_outputs)
+    node_results = {**node_results, task.node_id: own_payload}
+    overrides = _candidate_artifact_overrides(result.candidate_outputs, task, compiled)
     eval_context = GateEvaluationContext(
         project_root=workspace.project_root,
         repo_root=workspace.repo_root,
@@ -181,12 +272,69 @@ def _attach_gate_report(
         change_id=context.change_id,
         params=context.params,
         state_values=state_values,
-        node_results={},
+        node_results=node_results,
+        artifact_overrides=overrides,
     )
     try:
-        report = check_gate_in_view(compiled.schema.gates, gate_id, eval_context)
+        candidate_report = check_gate_in_view(compiled.schema.gates, gate_id, eval_context)
+        disk_report = check_gate_in_view(
+            compiled.schema.gates,
+            gate_id,
+            GateEvaluationContext(
+                project_root=workspace.project_root,
+                repo_root=workspace.repo_root,
+                change_dir=workspace.change_dir,
+                change_id=context.change_id,
+                params=context.params,
+                state_values=state_values,
+                node_results=node_results,
+            ),
+        )
     except GateError as exc:
         return task_failure("contract", str(exc))
+    drift = _gate_reports_differ(candidate_report, disk_report)
+    if drift is not None:
+        return task_failure("contract", f"gate dual-run mismatch: {drift}")
+    return result.model_copy(update={"gate_report": _gate_report_dict(candidate_report)})
+
+
+def _candidate_artifact_overrides(
+    candidate_outputs: Mapping[str, object],
+    task: ExecutableTask,
+    compiled: CompiledWorkflow,
+) -> dict[str, object]:
+    """Map gate read paths to in-memory candidate values for this task's outputs."""
+    if not candidate_outputs:
+        return {}
+    graph = compiled.graphs.get(task.graph_id)
+    if graph is None:
+        return {}
+    node = graph.nodes.get(task.node_id)
+    if node is None:
+        return {}
+    overrides: dict[str, object] = {}
+    for output in node.definition.outputs:
+        root, _, rest = output.partition(":")
+        if root != "change" or not rest or rest.endswith("/"):
+            continue
+        symbol = rest.replace("/", "_").replace(".", "_")
+        value = candidate_outputs.get(symbol)
+        if value is not None:
+            overrides[rest] = value
+    return overrides
+
+
+def _gate_reports_differ(candidate: FrozenGateReport, disk: FrozenGateReport) -> str | None:
+    if candidate.verdict != disk.verdict:
+        return f"verdict {candidate.verdict.value} vs {disk.verdict.value}"
+    if candidate.matched_rule != disk.matched_rule:
+        return f"matched_rule {candidate.matched_rule!r} vs {disk.matched_rule!r}"
+    if candidate.reason != disk.reason:
+        return f"reason {candidate.reason!r} vs {disk.reason!r}"
+    return None
+
+
+def _gate_report_dict(report: FrozenGateReport) -> dict[str, object]:
     gate_report: dict[str, object] = {
         "gate_id": report.gate_id,
         "verdict": report.verdict.value,
@@ -197,7 +345,7 @@ def _attach_gate_report(
     }
     if report.details is not None:
         gate_report["details"] = dict(report.details)
-    return result.model_copy(update={"gate_report": gate_report})
+    return gate_report
 
 
 def _state_values_for_gate(change_dir: Path, result: TaskResult) -> dict[str, Any]:

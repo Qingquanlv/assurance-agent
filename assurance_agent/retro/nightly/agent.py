@@ -13,6 +13,10 @@ def build_retro_proposal_prompt(retro_id: str) -> str:
         "Call skill(name='aa-retro'). "
         f"Read qa/retro/{retro_id}/context.json. "
         f"Write qa/retro/{retro_id}/proposals.json and qa/retro/{retro_id}/retro-summary.md. "
+        "Every proposal MUST include machine fields finding_kind, apply_kind, and a structured "
+        "payload (prompt_rule→payload.body; workflow_bug→IssueDraftPayload; "
+        "domain_knowledge→L2 delta with mode:delta). Natural-language problem/proposed_change "
+        "are not enough by themselves. "
         "Do not modify SKILL.md files, the workflow schema, .aa/memory, or project source files."
     )
 

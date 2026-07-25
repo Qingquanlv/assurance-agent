@@ -127,11 +127,23 @@ class InterruptDef(_FrozenModel):
     actions: list[Literal["fix_and_proceed", "accept_risk", "stop"]]
 
 
+class EvidenceRef(_FrozenModel):
+    node: str
+    symbol: str
+    task_key: str | None = None
+
+
+class ExportDef(_FrozenModel):
+    from_: str = Field(alias="from")
+    output: str
+
+
 class NodeDef(_FrozenModel):
     uses: str
     agent: str | None = None
     when: str | None = None
     outputs: list[str] = Field(default_factory=list)
+    evidence: dict[str, EvidenceRef] = Field(default_factory=dict)
     gate: str | None = None
     retry: str | None = None
     timeout: str | None = None
@@ -168,6 +180,7 @@ class GraphDef(_FrozenModel):
     nodes: dict[str, NodeDef]
     edges: list[EdgeDef] = Field(default_factory=list)
     routes: list[RouteDef] = Field(default_factory=list)
+    exports: dict[str, ExportDef] = Field(default_factory=dict)
 
 
 class WorkflowSchemaV2(_FrozenModel):

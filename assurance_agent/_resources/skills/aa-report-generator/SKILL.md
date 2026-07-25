@@ -69,9 +69,14 @@ Before running `aa report generate --change <change-id>`, run `aa --version` and
 
 ## CLI Invocation
 
+Run each command **directly in the shell** (or via the agent's shell tool). Do **not** wrap them in a temporary script file.
+
 ```bash
+aa --version
 aa report generate --change <change-id>
 ```
+
+**Write sandbox (fail closed):** this node may only write under `qa/changes/<change-id>/report/**`. Creating helper files anywhere else — including project-root scratch scripts such as `.tmp_aa_report.sh`, `tmp_*.sh`, or any other `.sh` / scratch path — is a **forbidden write** and will fail the task even when the CLI already wrote a valid report. Prefer quoting/escaping in a single shell invocation over inventing a wrapper script.
 
 ## Inputs (read by the CLI)
 
@@ -146,3 +151,4 @@ The CLI emits a deterministic baseline `risk_level`, `risk_rationale`, and `reco
 - Do **not** run report generation before `inspect` has produced `quality-gate-result.json`.
 - Do **not** fabricate report files; if the CLI fails to write them, set `phases.report.status = failed` and report the failure.
 - Do **not** invoke MCP as a substitute for the CLI.
+- Do **not** create temporary shell scripts or other scratch files (e.g. `.tmp_aa_report.sh`) to invoke the CLI — run `aa --version` and `aa report generate` as direct shell commands only. Authorized writes are limited to `change:report/**`.

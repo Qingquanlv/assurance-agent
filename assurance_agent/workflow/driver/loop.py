@@ -105,7 +105,7 @@ def run_workflow_loop(
             driver.parent_session_id = parent_session_id
         owns_lock = True
     else:
-        guard = evaluate_start_guard(change_dir)
+        guard = evaluate_start_guard(change_dir, entrypoint)
         if not guard.allowed:
             return LoopResult(EXIT_ERROR, guard.reason or "start refused")
         driver = create_initial_driver_state(
@@ -169,7 +169,7 @@ def run_workflow_loop(
             explicit_schema=explicit_schema,
         )
         context = runtime_context_for(project_root, change_id, params, parent_session_id)
-        latest = bundle.runtime.latest_root_invocation()
+        latest = bundle.runtime.latest_root_invocation(entrypoint)
         result = (
             bundle.runtime.run(bundle.compiled, entrypoint, context)
             if latest is None

@@ -46,6 +46,7 @@ from assurance_agent.workflow.core.graph_events import (
 )
 from assurance_agent.workflow.core.progression import transaction
 from assurance_agent.workflow.execution.tree_hash import sha256_file
+from assurance_agent.workflow.graph.migrate_events import migrate_events_for_fold
 from assurance_agent.workflow.graph.models import (
     CompiledGraph,
     CompiledWorkflow,
@@ -59,6 +60,7 @@ from assurance_agent.workflow.graph.models import (
     TaskProjection,
     WorkflowStateProjection,
 )
+from assurance_agent.workflow.graph.node_history import GenerationFoldState
 from assurance_agent.workflow.graph.schema_v2 import NodeDef
 from assurance_agent.workflow.orchestration.gates import (
     GateEvaluationContext,
@@ -545,6 +547,54 @@ def _require_task(tasks: dict[str, TaskProjection], event: _AttemptOutcomeEvent)
     return prev
 
 
+@dataclass(frozen=True)
+class _TaskStartMeta:
+    generation_ordinal: int | None
+    task_key: str | None
+    fan_out_child: bool
+    fan_out_aggregate: bool
+
+
+def _task_start_meta(
+    event: TaskAttemptStartedEvent,
+    fan_outs: dict[str, FanOutExpansion],
+    generation: GenerationFoldState,
+) -> _TaskStartMeta:
+    expansion = fan_outs.get(event.node_id)
+    generation_ordinal = generation.task_generation.get(event.task_id)
+    fan_out_child = False
+    fan_out_aggregate = False
+    task_key: str | None = None
+    if expansion is not None and event.task_id in expansion.task_ids:
+        fan_out_child = True
+        index = expansion.task_ids.index(event.task_id)
+        task_key = expansion.task_keys[index]
+        generation_ordinal = generation_ordinal or generation.task_generation.get(event.task_id)
+    else:
+        history = generation.node_histories.get(
+            f"{generation.checkpoint_ns}\x1f{generation.graph_id}\x1f{event.node_id}"
+        )
+        if history is not None:
+            for gen in history.generations_by_ordinal.values():
+                if gen.aggregate_task_id == event.task_id:
+                    fan_out_aggregate = True
+                    generation_ordinal = gen.generation_ordinal
+                    task_key = "__aggregate__"
+                    break
+            if generation_ordinal is None and history.latest_generation_ordinal >= 0:
+                latest = history.generations_by_ordinal.get(history.latest_generation_ordinal)
+                if latest is not None and (
+                    latest.aggregate_task_id is None or latest.aggregate_task_id == event.task_id
+                ):
+                    generation_ordinal = latest.generation_ordinal
+    return _TaskStartMeta(
+        generation_ordinal=generation_ordinal,
+        task_key=task_key,
+        fan_out_child=fan_out_child,
+        fan_out_aggregate=fan_out_aggregate,
+    )
+
+
 def _imported_task_id(event: TaskImportedEvent, fan_outs: dict[str, FanOutExpansion]) -> str:
     """导入事件的 task ID：fan-out child 复用 expansion 冻结的 ID，否则按 structural path 派生。"""
     if event.task_key is not None:
@@ -563,6 +613,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
     未配对的 ``graph_resumed``、重复 ``budget_consumed``（按
     ``(invocation_id, budget_id, consumption_id)`` 去重）都是完整性失败。
     """
+    events = migrate_events_for_fold(events)
     started: GraphInvocationStartedEvent | None = None
     event_seq = 0
     supersteps = 0
@@ -576,6 +627,8 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
     interrupts: dict[str, InterruptProjection] = {}
     terminal: Literal["completed", "stopped", "failed"] | None = None
     terminal_reason: str | None = None
+    generation = GenerationFoldState()
+    current_superstep_task_ids: list[str] = []
 
     for raw in events:
         if raw.get("source") != "graph":
@@ -598,31 +651,48 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                 )
             started = event
             current_tree_id = event.root_tree_id
-        elif isinstance(event, (NodeActivatedEvent, NodeSkippedEvent)):
-            pass  # node 级摘要由 task 投影派生；activation 不进入持久投影
+            generation.invocation_id = event.invocation_id
+            generation.checkpoint_ns = event.checkpoint_ns
+            generation.graph_id = event.graph_id
+            generation.structural_path = event.structural_path
+        elif isinstance(event, NodeActivatedEvent):
+            generation.apply_node_activated(event)
+        elif isinstance(event, NodeSkippedEvent):
+            generation.apply_node_skipped(event)
         elif isinstance(event, FanOutExpandedEvent):
-            fan_outs[event.node_id] = FanOutExpansion(
+            expansion = FanOutExpansion(
                 items=tuple(event.items),
                 task_keys=tuple(event.task_keys),
                 task_ids=tuple(event.task_ids),
                 source_reads_sha256=dict(event.source_reads_sha256),
             )
+            fan_outs[event.node_id] = expansion
+            generation.apply_fan_out_expanded(event, expansion=expansion)
         elif isinstance(event, SuperstepPlannedEvent):
             supersteps += 1
+            current_superstep_task_ids = list(event.task_ids)
         elif isinstance(event, TaskAttemptStartedEvent):
+            meta = _task_start_meta(event, fan_outs, generation)
             prev = tasks.get(event.task_id)
             tasks[event.task_id] = TaskProjection(
                 task_id=event.task_id,
                 node_id=event.node_id,
                 status="running",
+                generation_ordinal=meta.generation_ordinal,
+                task_key=meta.task_key,
+                fan_out_child=meta.fan_out_child,
+                fan_out_aggregate=meta.fan_out_aggregate,
                 attempts_used=max(prev.attempts_used if prev else 0, event.attempt_number),
                 latest_attempt_id=event.attempt_id,
                 write_set_id=prev.write_set_id if prev else None,
                 outputs_sha256=prev.outputs_sha256 if prev else {},
+                frozen_outputs=dict(prev.frozen_outputs) if prev else {},
+                outputs_committed=prev.outputs_committed if prev else False,
                 gate_report=prev.gate_report if prev else None,
                 state_updates=prev.state_updates if prev else {},
                 lease_expires_at=event.lease_expires_at,
             )
+            generation.apply_task_started(event, tasks=tasks, fan_outs=fan_outs)
         elif isinstance(event, TaskAttemptSucceededEvent):
             prev = _require_task(tasks, event)
             tasks[event.task_id] = prev.model_copy(
@@ -631,6 +701,8 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                     "latest_attempt_id": event.attempt_id,
                     "write_set_id": event.write_set_id,
                     "outputs_sha256": dict(event.outputs_sha256),
+                    "frozen_outputs": dict(event.frozen_outputs),
+                    "outputs_committed": False,
                     "gate_report": event.gate_report,
                     "state_updates": dict(event.state_updates),
                     "value": event.value,
@@ -639,6 +711,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                     "next_retry_at": None,
                 }
             )
+            generation.apply_task_outcome(event, tasks=tasks, fan_outs=fan_outs)
         elif isinstance(event, TaskAttemptStoppedEvent):
             prev = _require_task(tasks, event)
             value = event.value
@@ -654,6 +727,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                     "next_retry_at": None,
                 }
             )
+            generation.apply_task_outcome(event, tasks=tasks, fan_outs=fan_outs)
         elif isinstance(event, TaskAttemptFailedEvent):
             prev = _require_task(tasks, event)
             tasks[event.task_id] = prev.model_copy(
@@ -665,11 +739,13 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                     "next_retry_at": event.next_retry_at,
                 }
             )
+            generation.apply_task_outcome(event, tasks=tasks, fan_outs=fan_outs)
         elif isinstance(event, TaskAttemptAbandonedEvent):
             prev = _require_task(tasks, event)
             tasks[event.task_id] = prev.model_copy(
                 update={"status": "abandoned", "latest_attempt_id": event.attempt_id}
             )
+            generation.apply_task_outcome(event, tasks=tasks, fan_outs=fan_outs)
         elif isinstance(event, BudgetConsumedEvent):
             key = (event.budget_id, event.consumption_id)
             if key in seen_consumptions:
@@ -697,6 +773,9 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                 for task_id, task in list(tasks.items()):
                     if task.node_id == event.node_id and task.status == "succeeded":
                         tasks[task_id] = task.model_copy(update={"status": "interrupted"})
+            # §5.5：interrupt 落在本图某代时，驱动 NodeGeneration.status=interrupted。
+            if started is not None and event.checkpoint_ns == started.checkpoint_ns:
+                generation.apply_graph_interrupted(event.node_id)
         elif isinstance(event, GraphResumedEvent):
             pending = interrupts.get(event.interrupt_id)
             if pending is None:
@@ -707,6 +786,12 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
             interrupts[event.interrupt_id] = pending.model_copy(update={"resolved_action": event.action})
         elif isinstance(event, SuperstepCommittedEvent):
             # sibling state 直到 Update（commit）才可见：state_values 只在这里推进。
+            generation.apply_outputs_commit(list(event.committed_task_ids), tasks)
+            for task_id in current_superstep_task_ids:
+                task = tasks.get(task_id)
+                if task is not None and task.status == "succeeded":
+                    tasks[task_id] = task.model_copy(update={"outputs_committed": True})
+            current_superstep_task_ids = []
             latest_checkpoint_id = event.checkpoint_id
             current_tree_id = event.target_tree_id
             state_values = dict(event.state_values)
@@ -727,11 +812,18 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                 outputs_sha256=dict(event.outputs_sha256),
                 gate_report=event.gate_report,
             )
+            generation.apply_imported_task(
+                graph_id=event.graph_id,
+                node_id=event.node_id,
+                task_id=task_id,
+            )
         elif isinstance(event, CheckpointImportedEvent):
             pass  # fixture 导入记录不改动任务/预算投影
 
     if started is None:
         raise LedgerIntegrityError(f"no graph_invocation_started event for invocation {invocation_id}")
+    generation.finalize_legacy_fan_out_generations(fan_outs, tasks)
+    ir_digest = started.ir_digest or started.graph_digest
     return GraphProjection(
         invocation_id=started.invocation_id,
         entrypoint=started.entrypoint,
@@ -740,6 +832,9 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
         parent_task_id=started.parent_task_id,
         structural_path=started.structural_path,
         graph_digest=started.graph_digest,
+        event_schema_version=started.event_schema_version,
+        ir_digest=ir_digest,
+        ingest_catalog_digest=started.ingest_catalog_digest,
         contract_digests=dict(started.contract_digests),
         params=dict(started.params),
         root_tree_id=started.root_tree_id,
@@ -751,6 +846,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
         tasks=tasks,
         budgets=budgets,
         fan_out_expansions=fan_outs,
+        node_histories=generation.node_histories,
         interrupts=interrupts,
         terminal=terminal,
         terminal_reason=terminal_reason,
@@ -833,13 +929,20 @@ class CheckpointStore:
         self._repair_workflow_state(projection)
         return projection
 
-    def latest_root_invocation(self) -> str | None:
-        """严格 ledger 中最近一次无 parent 的 root ``graph_invocation_started``。"""
+    def latest_root_invocation(self, entrypoint: str | None = None) -> str | None:
+        """严格 ledger 中最近一次无 parent 的 root ``graph_invocation_started``。
+
+        ``entrypoint`` 非空时只看该 entrypoint 的 invocation：同一 change 上
+        standalone entrypoint（``archive``/``retro``）与主 ``full`` 图各自独立成
+        invocation，不该互相当成「已在跑/已完成」。
+        """
         latest: str | None = None
         for raw in read_events_strict(self._change_dir):
             if raw.get("source") != "graph" or raw.get("type") != "graph_invocation_started":
                 continue
             if raw.get("parent_invocation_id") is not None:
+                continue
+            if entrypoint is not None and raw.get("entrypoint") != entrypoint:
                 continue
             invocation_id = raw.get("invocation_id")
             if isinstance(invocation_id, str):

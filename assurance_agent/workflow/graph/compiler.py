@@ -45,10 +45,12 @@ from assurance_agent.workflow.graph.contracts import (
 )
 from assurance_agent.workflow.graph.models import (
     CompiledEntrypoint,
+    CompiledExport,
     CompiledGraph,
     CompiledNode,
     CompiledWorkflow,
 )
+from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 from assurance_agent.workflow.graph.schema_v2 import (
     GraphDef,
     NodeDef,
@@ -96,22 +98,25 @@ def compile_workflow(
     errors.extend(_validate_state_writers(schema))
     errors.extend(_validate_subgraph_recursion(schema))
     errors.extend(_validate_bounded_sccs(schema))
+    errors.extend(_validate_exports(schema))
     if contracts is not None:
         errors.extend(_validate_contract_usage(schema, contracts))
     if errors:
         raise CompileError("workflow v2 compile failed:\n  - " + "\n  - ".join(errors))
     footprints, node_claims = _graph_footprints(schema, contracts)
     graphs = {
-        graph_id: _compile_graph(graph_id, graph, footprints[graph_id], node_claims[graph_id])
+        graph_id: _compile_graph(schema, graph_id, graph, footprints[graph_id], node_claims[graph_id])
         for graph_id, graph in schema.graphs.items()
     }
     canonical = schema.model_dump(mode="json", by_alias=True, exclude_none=True)
+    catalog_digest = validate_catalog_runtime().digest
     return CompiledWorkflow(
         schema=schema,
         digest=canonical_digest(canonical),
         entrypoints=_compile_entrypoints(schema),
         graphs=graphs,
         contract_digests=_referenced_contract_digests(schema, contracts) if contracts is not None else {},
+        ingest_catalog_digest=catalog_digest,
     )
 
 
@@ -255,11 +260,13 @@ def _check_uses(loc: str, node: NodeDef, schema: WorkflowSchemaV2) -> list[str]:
     return errors
 
 
-def _check_output_path(loc: str, output: str, node: NodeDef) -> list[str]:
+def _check_output_path(
+    loc: str, output: str, node: NodeDef, *, param_names: frozenset[str] = frozenset()
+) -> list[str]:
     errors: list[str] = []
     if not output.startswith(_PATH_ROOTS):
         return [f"{loc} output '{output}' must be rooted in change:/project:/repo:"]
-    allowed_vars = {"context.change_id"}
+    allowed_vars = {"context.change_id"} | {f"params.{name}" for name in param_names}
     if node.fan_out is not None:
         allowed_vars.add(node.fan_out.item_as)
     for match in _TEMPLATE.finditer(output):
@@ -385,7 +392,7 @@ def _validate_graph_refs(schema: WorkflowSchemaV2) -> list[str]:
             if gate_id is not None and gate_id not in schema.gates:
                 errors.append(f"{loc} references unknown gate '{gate_id}'")
             for output in node.outputs:
-                errors.extend(_check_output_path(loc, output, node))
+                errors.extend(_check_output_path(loc, output, node, param_names=frozenset(schema.params)))
             if node.join is not None:
                 for src in node.join.sources:
                     if src not in graph.nodes:
@@ -1024,7 +1031,30 @@ def _condensation_order(
     return [sccs[i] for i in order]
 
 
+def _validate_exports(schema: WorkflowSchemaV2) -> list[str]:
+    errors: list[str] = []
+    for graph_id, graph in schema.graphs.items():
+        for symbol, spec in graph.exports.items():
+            if spec.from_ not in graph.nodes:
+                errors.append(f"graph '{graph_id}' export '{symbol}' references unknown node '{spec.from_}'")
+    return errors
+
+
+def _compiled_exports(schema: WorkflowSchemaV2, node: NodeDef) -> tuple[CompiledExport, ...]:
+    if not node.uses.startswith("graph:"):
+        return ()
+    target_id = node.uses.split(":", 1)[1]
+    target = schema.graphs.get(target_id)
+    if target is None:
+        return ()
+    return tuple(
+        CompiledExport(symbol=symbol, from_node=spec.from_, output=spec.output)
+        for symbol, spec in sorted(target.exports.items())
+    )
+
+
 def _compile_graph(
+    schema: WorkflowSchemaV2,
     graph_id: str,
     graph: GraphDef,
     footprint: ResourceClaims,
@@ -1048,6 +1078,7 @@ def _compile_graph(
             outgoing=tuple(edge for edge in graph.edges if edge.from_ == nid),
             routes=tuple(route for route in graph.routes if route.from_ == nid),
             resources=node_claims.get(nid, unknown_claims()),
+            exports=_compiled_exports(schema, node),
         )
         for nid, node in graph.nodes.items()
     }

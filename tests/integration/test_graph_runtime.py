@@ -221,6 +221,8 @@ def test_minimal_graph_run_and_fresh_status(tmp_path: Path) -> None:
     assert [event["type"] for event in events].count("task_attempt_started") == 1
     assert [event["type"] for event in events].count("task_attempt_succeeded") == 1
     assert events[-1]["type"] == "graph_completed"
+    started = next(e for e in events if e.get("type") == "graph_invocation_started")
+    assert started.get("event_schema_version") == 3
 
     fresh_runtime = _build_runtime(project, compiled, contracts)
     assert fresh_runtime.status(result.invocation_id).model_dump() == result.status.model_dump()

@@ -31,10 +31,12 @@ from assurance_agent.workflow.core.state import read_state, state_file, state_gu
 LOCK_FILENAME = ".progression.lock"
 _RUNTIME_REL_PREFIX = ".graph-runtime/"
 _RESERVED_RELS = frozenset({"events.jsonl", "workflow-state.yaml", LOCK_FILENAME})
-_DEFAULT_LOCK_TIMEOUT_S = 0.5
+# Shared with lease registry; nested subgraphs + 50ms test heartbeats can contend.
+_DEFAULT_LOCK_TIMEOUT_S = 5.0
 _LOCK_POLL_S = 0.01
 
 # Process-local locks keyed by resolved change_dir path.
+# Also used by workflow.graph.leases so lease/progression serialize before fcntl.
 _THREAD_LOCKS: dict[str, threading.Lock] = {}
 _THREAD_LOCKS_GUARD = threading.Lock()
 
@@ -68,7 +70,8 @@ class ProgressionLockTimeout(ProgressionError):
     """Could not acquire the per-change advisory lock before the deadline."""
 
 
-def _thread_lock_for(change_dir: Path) -> threading.Lock:
+def thread_lock_for(change_dir: Path) -> threading.Lock:
+    """Process-local mutex for a change_dir (shared by progression + leases)."""
     key = str(change_dir.resolve())
     with _THREAD_LOCKS_GUARD:
         lock = _THREAD_LOCKS.get(key)
@@ -76,6 +79,10 @@ def _thread_lock_for(change_dir: Path) -> threading.Lock:
             lock = threading.Lock()
             _THREAD_LOCKS[key] = lock
         return lock
+
+
+def _thread_lock_for(change_dir: Path) -> threading.Lock:
+    return thread_lock_for(change_dir)
 
 
 def _lock_path(change_dir: Path) -> Path:
@@ -301,5 +308,6 @@ __all__ = [
     "ProgressionTxn",
     "commit_tree_pointer",
     "transaction",
+    "thread_lock_for",
     "LOCK_FILENAME",
 ]

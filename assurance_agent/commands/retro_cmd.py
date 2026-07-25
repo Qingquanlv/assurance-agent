@@ -502,9 +502,7 @@ def _register_export_commands(retro: click.Group) -> None:
             click.echo(f"Error: retro run not found: {retro_id}", err=True)
             raise SystemExit(1)
         try:
-            outcomes = export_proposals(
-                retro_dir, apply_kind="issue_export", overwrite=overwrite, actor="aa"
-            )
+            outcomes = export_proposals(retro_dir, apply_kind="issue_export", overwrite=overwrite, actor="aa")
         except (ExportConflictError, ExportIneligibleError, AaError) as err:
             click.echo(f"Error: {err}", err=True)
             raise SystemExit(1) from err

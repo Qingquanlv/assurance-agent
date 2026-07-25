@@ -67,23 +67,44 @@ class AgentHandler:
         allowed = tuple(_display_path(path) for path in claims.authorization_writes)
         skill = task.target.partition(":")[2]
         link_host_task_paths(workspace, context)
+        prompt = build_node_prompt(
+            skill,
+            task.node_id,
+            context.change_id,
+            allowed_writes=allowed,
+            item=_fan_out_item(task),
+            workspace_root=str(Path(workspace.root)),
+            memory_root=Path(workspace.project_root),
+            prior_failure=task.prior_failure,
+            prior_error_kind=task.prior_error_kind,
+            evidence=task.resolved_evidence or None,
+        )
+        if skill == "aa-retro":
+            rid = context.params.get("retro_id")
+            if isinstance(rid, str) and rid.strip():
+                # Keep the prompt here (not via assurance_agent.retro) so graph
+                # stays below the retro layer in .importlinter.
+                prompt = (
+                    prompt
+                    + " "
+                    + (
+                        "Call skill(name='aa-retro'). "
+                        f"Read qa/retro/{rid}/context.json. "
+                        f"Write qa/retro/{rid}/proposals.json and qa/retro/{rid}/retro-summary.md. "
+                        "Every proposal MUST include machine fields finding_kind, apply_kind, and a structured "
+                        "payload (prompt_rule→payload.body; workflow_bug→IssueDraftPayload; "
+                        "domain_knowledge→L2 delta with mode:delta). Natural-language problem/proposed_change "
+                        "are not enough by themselves. "
+                        "Do not modify SKILL.md files, the workflow schema, .aa/memory, or project source files."
+                    )
+                )
         request = AgentRequest(
             target=task.target,
             node_id=task.node_id,
             change_id=context.change_id,
             workspace_root=Path(workspace.root),
             allowed_writes=allowed,
-            prompt=build_node_prompt(
-                skill,
-                task.node_id,
-                context.change_id,
-                allowed_writes=allowed,
-                item=_fan_out_item(task),
-                workspace_root=str(Path(workspace.root)),
-                memory_root=Path(workspace.project_root),
-                prior_failure=task.prior_failure,
-                prior_error_kind=task.prior_error_kind,
-            ),
+            prompt=prompt,
             timeout_seconds=task.timeout_policy.run_seconds,
             reconnect_session_id=context.parent_session_id,
             agent=agent_for_skill(skill),

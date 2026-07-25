@@ -30,6 +30,7 @@ Use this skill when asked to analyze `qa/retro/<retro-id>/context.json` and prop
 - Do not repeat proposals that are equivalent to recent `rejected` proposals.
 - For observations similar to recent `needs_rework` proposals, incorporate the `rework_note` and materially revise the proposal instead of resubmitting the same text.
 - Every proposal **must** include machine fields `finding_kind`, `apply_kind`, and structured `payload` (see Three-Track Routing below). Natural-language `problem` / `proposed_change` are for humans; export and apply use `payload`.
+- **Write gate:** after you finish, nightly `collect` runs `accept_proposals`, which rewrites `proposals.json` into the canonical three-track shape. Entries that cannot be routed (missing/unknown `apply_kind`, or `domain_knowledge` without a real L2 `payload`) fail the collect — same fail-closed role as graph `invalid_output`. Do not omit `finding_kind` / `payload` and rely on prose alone.
 
 ## Required Analysis Order
 
@@ -155,6 +156,24 @@ Use an existing eval suite only (required for `memory_append` proposals):
 Never invent suite names such as `workflow-inspect-codegen`.
 
 ## Output: proposals.json
+
+Machine fields are mandatory on every entry. A minimal valid memory proposal is:
+
+```json
+{
+  "id": "RETRO-001",
+  "finding_kind": "prompt_rule",
+  "apply_kind": "memory_append",
+  "payload": { "body": "<exact rule text to append>" },
+  "target": ".aa/memory/aa-<skill>.md",
+  "eval_suite": "workflow-<suite>",
+  "evidence_ids": ["RET-…#…"],
+  "problem": "<human summary>",
+  "status": "proposed"
+}
+```
+
+Full multi-track example:
 
 ```json
 {

@@ -143,6 +143,27 @@ def test_capture_rejects_symlink_escaping_root(tmp_path: Path) -> None:
         _store(project).capture(project)
 
 
+def test_symlinked_host_runtime_dirs_are_excluded_not_rejected(tmp_path: Path) -> None:
+    """``link_host_task_paths`` reattaches ``.venv``/``node_modules`` as symlinks to the
+    host copy; being excluded roots they must be skipped, not treated as escapes."""
+    project = _make_project(tmp_path)
+    host_venv = tmp_path / "host" / ".venv"
+    host_venv.mkdir(parents=True)
+    (host_venv / "pyvenv.cfg").write_text("home = /usr\n", encoding="utf-8")
+    store = _store(project)
+    base_tree = store.capture(project)
+    workspace = _backend(project).create(task_id="task-a", base_tree_id=base_tree, store=store)
+    os.symlink(host_venv, workspace.project_root / ".venv")
+    os.symlink(host_venv, workspace.project_root / "node_modules")
+    (workspace.project_root / "tests" / "api" / "test_a.py").write_text("edited\n", encoding="utf-8")
+
+    write_set = store.freeze_write_set(workspace, claims=_claims("repo:tests/api/**"))
+    assert [entry.logical_path for entry in write_set.entries] == ["project:tests/api/test_a.py"]
+
+    os.symlink(host_venv, project / ".venv")
+    assert store.capture(project) == base_tree
+
+
 def test_capture_preserves_executable_mode(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     script = project / "app" / "run.sh"

@@ -1,0 +1,333 @@
+diff --git a/assurance_agent/workflow/graph/planner.py b/assurance_agent/workflow/graph/planner.py
+index 024b471..e31b002 100644
+--- a/assurance_agent/workflow/graph/planner.py
++++ b/assurance_agent/workflow/graph/planner.py
+@@ -69,11 +69,17 @@ from assurance_agent.workflow.core.graph_events import (
+     SuperstepPlannedEvent,
+ )
+ from assurance_agent.workflow.graph.compiler import canonical_digest
++from assurance_agent.workflow.graph.node_history import (
++    committed_node_outputs,
++    fan_out_aggregate_task_id,
++    node_history_key,
++)
+ from assurance_agent.workflow.graph.contracts import (
+     ContractError,
+     ResourceClaims,
+     ResourcePath,
+ )
++from assurance_agent.workflow.graph.evidence import EvidenceResolutionError, resolve_evidence_bindings
+ from assurance_agent.workflow.graph.models import (
+     ArtifactReader,
+     BudgetConsumption,
+@@ -403,11 +409,25 @@ def _build_scope(
+             return {}
+         if outcome.status == "skipped":
+             return {"status": "skipped"}
++        outputs = committed_node_outputs(
++            projection.node_histories,
++            checkpoint_ns=projection.checkpoint_ns,
++            graph_id=graph.graph_id,
++            node_id=node_id,
++        )
+         task = outcome.task
+         if task is None:
+-            # fan-out node 全部由冻结 child 组成：解决后只暴露状态，不代理某个 child。
+-            return {"status": "succeeded"} if outcome.status == "succeeded" else {}
+-        payload: dict[str, object] = {"status": task.status}
++            if outcome.status != "succeeded":
++                return {}
++            payload: dict[str, object] = {"status": "succeeded"}
++            if outputs is not None:
++                payload["outputs"] = outputs
++            return payload
++        payload = {"status": task.status}
++        if task.value is not None:
++            payload["value"] = task.value
++        if outputs is not None:
++            payload["outputs"] = outputs
+         if task.gate_report is not None:
+             payload["gate"] = task.gate_report
+             if "value" in task.gate_report:
+@@ -794,7 +814,15 @@ def _seed_fan_out(
+             )
+         return _Outcome(status="unresolved"), [], None
+     _validate_expansion_shape(graph, expansion, nid)
+-    frozen_ids = set(expansion.task_ids)
++    aggregate_id = fan_out_aggregate_task_id(
++        invocation_id=projection.invocation_id,
++        checkpoint_ns=projection.checkpoint_ns,
++        structural_path=projection.structural_path,
++        graph_id=graph.graph_id,
++        node_id=nid,
++        child_count=len(expansion.task_ids),
++    )
++    frozen_ids = set(expansion.task_ids) | {aggregate_id}
+     unknown = sorted(task.task_id for task in node_tasks if task.task_id not in frozen_ids)
+     if unknown:
+         raise PlanError(
+@@ -863,6 +891,33 @@ def _seed_fan_out(
+         # 全部成功：reducer 契约与 child value 类型在这里 fail-closed 校验。
+         _reduce_fan_out(compiled, graph, projection, nid, fan_out.reduce, expansion)
+     if settled:
++        if not expansion.task_ids:
++            key = node_history_key(projection.checkpoint_ns, graph.graph_id, nid)
++            history = projection.node_histories.get(key)
++            if history is not None:
++                gen = history.generations_by_ordinal.get(history.latest_generation_ordinal)
++                if gen is not None and gen.outputs_committed:
++                    return _Outcome(status="succeeded"), retry, None
++            return _Outcome(status="unresolved"), retry, None
++        aggregate_id = fan_out_aggregate_task_id(
++            invocation_id=projection.invocation_id,
++            checkpoint_ns=projection.checkpoint_ns,
++            structural_path=projection.structural_path,
++            graph_id=graph.graph_id,
++            node_id=nid,
++            child_count=len(expansion.task_ids),
++        )
++        aggregate = by_id.get(aggregate_id) or projection.tasks.get(aggregate_id)
++        if aggregate is None or aggregate.status != "succeeded":
++            if aggregate is not None:
++                return _Outcome(status="unresolved", task=aggregate), retry, None
++            return _Outcome(status="unresolved"), retry, None
++        key = node_history_key(projection.checkpoint_ns, graph.graph_id, nid)
++        history = projection.node_histories.get(key)
++        if history is not None:
++            gen = history.generations_by_ordinal.get(history.latest_generation_ordinal)
++            if gen is None or not gen.outputs_committed:
++                return _Outcome(status="unresolved", task=aggregate), retry, None
+         return _Outcome(status="succeeded"), retry, None
+     if missing:
+         representative = None  # 有缺失 child：交给 _decide_fan_out 重放/补建
+@@ -902,12 +957,52 @@ def _decide_fan_out(
+         for index, task_id in enumerate(expansion.task_ids):
+             if task_id not in projection.tasks:
+                 ready.append(_build_fan_out_task(compiled, graph, projection, context, nid, expansion, index))
++        if all(
++            projection.tasks.get(task_id) is not None and projection.tasks[task_id].status == "succeeded"
++            for task_id in expansion.task_ids
++        ):
++            aggregate_id = fan_out_aggregate_task_id(
++                invocation_id=projection.invocation_id,
++                checkpoint_ns=projection.checkpoint_ns,
++                structural_path=projection.structural_path,
++                graph_id=graph.graph_id,
++                node_id=nid,
++                child_count=len(expansion.task_ids),
++            )
++            aggregate = projection.tasks.get(aggregate_id)
++            if aggregate is None or aggregate.status not in ("succeeded", "running"):
++                ready.append(
++                    _build_fan_out_aggregate_task(compiled, graph, projection, context, nid, expansion)
++                )
+         return
+     if definition.when is not None and not _satisfied(definition.when, scope, nid):
+         _emit_skip(graph, projection, source_reads, events, nid, definition.when)
+         outcomes[nid] = _Outcome(status="skipped")
+         return
+     expansion, children = _expand_fan_out(compiled, graph, projection, context, scope, source_reads, nid)
++    generation_ordinal = _next_generation_ordinal(projection, graph.graph_id, nid)
++    task_ordinal = sum(1 for task in projection.tasks.values() if task.node_id == nid)
++    events.append(
++        NodeActivatedEvent(
++            type="node_activated",
++            invocation_id=projection.invocation_id,
++            checkpoint_ns=projection.checkpoint_ns,
++            graph_id=graph.graph_id,
++            node_id=nid,
++            generation_ordinal=generation_ordinal,
++            activation_id=canonical_digest(
++                {
++                    "invocation_id": projection.invocation_id,
++                    "checkpoint_ns": projection.checkpoint_ns,
++                    "graph_id": graph.graph_id,
++                    "node_id": nid,
++                    "ordinal": task_ordinal,
++                }
++            ),
++            input_sha256=canonical_digest({"tokens": [], "fan_out": True}),
++            source_reads_sha256=dict(sorted(source_reads.items())),
++        )
++    )
+     # 展开必须先于任何 child 启动冻结在严格事务中（runtime 先持久化事件再分发）。
+     events.append(
+         FanOutExpandedEvent(
+@@ -916,6 +1011,7 @@ def _decide_fan_out(
+             checkpoint_ns=projection.checkpoint_ns,
+             graph_id=graph.graph_id,
+             node_id=nid,
++            generation_ordinal=generation_ordinal,
+             source_reads_sha256=dict(sorted(expansion.source_reads_sha256.items())),
+             items=list(expansion.items),
+             task_keys=list(expansion.task_keys),
+@@ -1374,8 +1470,9 @@ def _activate(
+     nid: str,
+     tokens: list[str],
+ ) -> ExecutableTask:
+-    ordinal = sum(1 for task in projection.tasks.values() if task.node_id == nid)
+-    task = _build_task(compiled, graph, projection, context, nid, ordinal)
++    task_ordinal = sum(1 for task in projection.tasks.values() if task.node_id == nid)
++    generation_ordinal = _next_generation_ordinal(projection, graph.graph_id, nid)
++    task = _build_task(compiled, graph, projection, context, nid, task_ordinal)
+     events.append(
+         NodeActivatedEvent(
+             type="node_activated",
+@@ -1383,13 +1480,14 @@ def _activate(
+             checkpoint_ns=projection.checkpoint_ns,
+             graph_id=graph.graph_id,
+             node_id=nid,
++            generation_ordinal=generation_ordinal,
+             activation_id=canonical_digest(
+                 {
+                     "invocation_id": projection.invocation_id,
+                     "checkpoint_ns": projection.checkpoint_ns,
+                     "graph_id": graph.graph_id,
+                     "node_id": nid,
+-                    "ordinal": ordinal,
++                    "ordinal": task_ordinal,
+                 }
+             ),
+             input_sha256=canonical_digest({"tokens": sorted(tokens), "task_input_sha256": task.input_sha256}),
+@@ -1407,6 +1505,7 @@ def _emit_skip(
+     nid: str,
+     expression: str,
+ ) -> None:
++    generation_ordinal = _next_generation_ordinal(projection, graph.graph_id, nid)
+     events.append(
+         NodeSkippedEvent(
+             type="node_skipped",
+@@ -1414,6 +1513,7 @@ def _emit_skip(
+             checkpoint_ns=projection.checkpoint_ns,
+             graph_id=graph.graph_id,
+             node_id=nid,
++            generation_ordinal=generation_ordinal,
+             expression=expression,
+             input_sha256=canonical_digest({"expression": expression, "tokens": []}),
+             source_reads_sha256=dict(sorted(source_reads.items())),
+@@ -1440,6 +1540,10 @@ def _build_task(
+     }
+     retry_policy = _retry_policy(compiled, definition)
+     task_id = _task_id(projection, graph.graph_id, nid, ordinal, None)
++    try:
++        evidence_bindings = resolve_evidence_bindings(projection, definition)
++    except EvidenceResolutionError as exc:
++        raise PlanError(str(exc)) from exc
+     return ExecutableTask(
+         task_id=task_id,
+         invocation_id=projection.invocation_id,
+@@ -1457,6 +1561,7 @@ def _build_task(
+         resources=_task_resources(compiled, graph, nid),
+         task_key=None,
+         budget=_budget_mark(definition, projection, task_id),
++        evidence_bindings=evidence_bindings,
+         prior_failure=prior_failure,
+         prior_error_kind=prior_error_kind,
+     )
+@@ -1502,6 +1607,10 @@ def _build_fan_out_task(
+             definition.resources, fan_out.item_as, item, context, nid
+         )
+     retry_policy = _retry_policy(compiled, definition)
++    try:
++        evidence_bindings = resolve_evidence_bindings(projection, definition)
++    except EvidenceResolutionError as exc:
++        raise PlanError(str(exc)) from exc
+     return ExecutableTask(
+         task_id=task_id,
+         invocation_id=projection.invocation_id,
+@@ -1519,11 +1628,62 @@ def _build_fan_out_task(
+         resources=_task_resources(compiled, graph, nid),
+         task_key=display_key,
+         budget=_budget_mark(definition, projection, task_id),
++        evidence_bindings=evidence_bindings,
+         prior_failure=prior_failure,
+         prior_error_kind=prior_error_kind,
+     )
+ 
+ 
++def _build_fan_out_aggregate_task(
++    compiled: CompiledWorkflow,
++    graph: CompiledGraph,
++    projection: GraphProjection,
++    context: RuntimeContext,
++    nid: str,
++    expansion: FanOutExpansion,
++) -> ExecutableTask:
++    """Fan-out 全部 child 成功后的 synthetic aggregate（side-effect-free）。"""
++    task_id = fan_out_aggregate_task_id(
++        invocation_id=projection.invocation_id,
++        checkpoint_ns=projection.checkpoint_ns,
++        structural_path=projection.structural_path,
++        graph_id=graph.graph_id,
++        node_id=nid,
++        child_count=len(expansion.task_ids),
++    )
++    expected = _task_id(projection, graph.graph_id, nid, len(expansion.task_ids), "__aggregate__")
++    if task_id != expected:
++        raise PlanError(
++            f"node '{nid}' fan_out aggregate task ID drifted from frozen expansion (ledger integrity)"
++        )
++    definition = graph.nodes[nid].definition
++    retry_policy = _retry_policy(compiled, definition)
++    input_payload: dict[str, object] = {
++        "with": {},
++        "context": {"change_id": context.change_id},
++        "outputs": [],
++        "fan_out_aggregate": True,
++    }
++    return ExecutableTask(
++        task_id=task_id,
++        invocation_id=projection.invocation_id,
++        checkpoint_ns=projection.checkpoint_ns,
++        graph_id=graph.graph_id,
++        node_id=nid,
++        structural_path=projection.structural_path,
++        input=input_payload,
++        input_sha256=canonical_digest(input_payload),
++        contract_digest=compiled.contract_digests.get("builtin:join", ""),
++        retryable_errors=(),
++        retry_policy=retry_policy,
++        timeout_policy=_timeout_policy(compiled, definition),
++        target="builtin:join",
++        resources=ResourceClaims(),
++        task_key="__aggregate__",
++        budget=None,
++    )
++
++
+ # ---------------------------------------------------------------------------
+ # 小工具
+ 
+@@ -1552,6 +1712,14 @@ def _task_id(
+     )
+ 
+ 
++def _next_generation_ordinal(projection: GraphProjection, graph_id: str, node_id: str) -> int:
++    key = node_history_key(projection.checkpoint_ns, graph_id, node_id)
++    history = projection.node_histories.get(key)
++    if history is None:
++        return 0
++    return history.latest_generation_ordinal + 1
++
++
+ def _superstep_id(projection: GraphProjection) -> str:
+     return canonical_digest(
+         {
+@@ -1604,7 +1772,16 @@ def _node_has_task(projection: GraphProjection, nid: str) -> bool:
+ 
+ 
+ def _succeeded_count(projection: GraphProjection, nid: str) -> int:
+-    return sum(1 for task in projection.tasks.values() if task.node_id == nid and task.status == "succeeded")
++    expansion = projection.fan_out_expansions.get(nid)
++    child_ids = set(expansion.task_ids) if expansion is not None else set()
++    return sum(
++        1
++        for task in projection.tasks.values()
++        if task.node_id == nid
++        and task.status == "succeeded"
++        and task.task_id not in child_ids
++        and not task.fan_out_child
++    )
+ 
+ 
+ def _same_cyclic_scc(graph: CompiledGraph, left: str, right: str) -> bool:

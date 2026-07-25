@@ -15,7 +15,6 @@ from assurance_agent.retro.export import (
 )
 from assurance_agent.retro.promotions import (
     application_event,
-    append_promotion_events,
     proposal_exported_event,
     proposal_states,
     read_promotion_events,

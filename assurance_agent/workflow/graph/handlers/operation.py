@@ -38,6 +38,7 @@ from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext
 from assurance_agent.workflow.graph.task_runner import task_failure, task_with
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.orchestration.operations import BASELINE_REL, HEAL_STATUSES
+from assurance_agent.workflow.graph.handlers.retro_ops import retro_accept, retro_collect
 
 OperationResult = TaskResult
 OperationFn = Callable[[ExecutableTask, TaskWorkspace, RuntimeContext], OperationResult]
@@ -329,6 +330,8 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:allocate-healing-attempt": operation_allocate_healing_attempt,
         "operation:record-healing-status": operation_record_healing_status,
         "operation:stop": stop_operation,
+        "operation:retro-collect": retro_collect,
+        "operation:retro-accept": retro_accept,
     }
 
 

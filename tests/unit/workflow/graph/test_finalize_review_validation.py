@@ -51,9 +51,7 @@ _BASE_API_REVIEW = {
 def test_api_plan_review_missing_required_capabilities_is_invalid_output(tmp_path: Path) -> None:
     ws = _workspace(tmp_path)
     _write(ws, "review/api-plan-review.json", dict(_BASE_API_REVIEW))
-    result = _validate_registry_outputs(
-        workspace=ws, outputs=("change:review/api-plan-review.json",)
-    )
+    result = _validate_registry_outputs(workspace=ws, outputs=("change:review/api-plan-review.json",))
     assert result is not None
     assert result.status == "failed"
     assert result.error_kind == "invalid_output"
@@ -63,9 +61,7 @@ def test_api_plan_review_missing_required_capabilities_is_invalid_output(tmp_pat
 def test_api_plan_review_empty_required_capabilities_is_invalid_output(tmp_path: Path) -> None:
     ws = _workspace(tmp_path)
     _write(ws, "review/api-plan-review.json", {**_BASE_API_REVIEW, "required_capabilities": []})
-    result = _validate_registry_outputs(
-        workspace=ws, outputs=("change:review/api-plan-review.json",)
-    )
+    result = _validate_registry_outputs(workspace=ws, outputs=("change:review/api-plan-review.json",))
     assert result is not None
     assert result.error_kind == "invalid_output"
 
@@ -77,10 +73,7 @@ def test_api_plan_review_with_capabilities_passes(tmp_path: Path) -> None:
         "review/api-plan-review.json",
         {**_BASE_API_REVIEW, "required_capabilities": ["auth.api_admin_token"]},
     )
-    assert (
-        _validate_registry_outputs(workspace=ws, outputs=("change:review/api-plan-review.json",))
-        is None
-    )
+    assert _validate_registry_outputs(workspace=ws, outputs=("change:review/api-plan-review.json",)) is None
 
 
 def test_non_plan_review_without_capabilities_passes(tmp_path: Path) -> None:
@@ -91,10 +84,7 @@ def test_non_plan_review_without_capabilities_passes(tmp_path: Path) -> None:
         "review/case-review.json",
         {"schema_version": "1.0", "review_type": "case", "decision": "pass", "findings": []},
     )
-    assert (
-        _validate_registry_outputs(workspace=ws, outputs=("change:review/case-review.json",))
-        is None
-    )
+    assert _validate_registry_outputs(workspace=ws, outputs=("change:review/case-review.json",)) is None
 
 
 def test_invalid_json_review_is_invalid_output(tmp_path: Path) -> None:
@@ -102,9 +92,7 @@ def test_invalid_json_review_is_invalid_output(tmp_path: Path) -> None:
     path = ws.change_dir / "review" / "api-plan-review.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{ not json", encoding="utf-8")
-    result = _validate_registry_outputs(
-        workspace=ws, outputs=("change:review/api-plan-review.json",)
-    )
+    result = _validate_registry_outputs(workspace=ws, outputs=("change:review/api-plan-review.json",))
     assert result is not None
     assert result.error_kind == "invalid_output"
 

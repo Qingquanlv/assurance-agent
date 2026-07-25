@@ -11,6 +11,8 @@ def test_build_retro_proposal_prompt_references_skill_and_retro_id() -> None:
     assert "aa-retro" in prompt
     assert "qa/retro/retro-20260716-000000/context.json" in prompt
     assert "qa/retro/retro-20260716-000000/proposals.json" in prompt
+    assert "finding_kind" in prompt
+    assert "payload" in prompt
 
 
 def test_run_agent_appends_prompt_as_trailing_argv(tmp_path: Path) -> None:

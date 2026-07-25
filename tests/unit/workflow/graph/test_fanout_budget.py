@@ -32,12 +32,16 @@ from assurance_agent.workflow.graph.models import (
     ExecutableTask,
     FanOutExpansion,
     GraphProjection,
+    NodeGeneration,
+    NodeHistory,
     ResolvedArtifact,
     RuntimeContext,
     TaskProjection,
 )
+from assurance_agent.workflow.graph.node_history import fan_out_aggregate_task_id, node_history_key
 from assurance_agent.workflow.graph.planner import (
     PlanError,
+    _build_fan_out_aggregate_task,
     fan_out_state_updates,
     plan_superstep,
 )
@@ -235,6 +239,7 @@ def _projection(
     current_tree_id: str = "tree-0",
     budgets: dict[str, int] | None = None,
     fan_out_expansions: dict[str, FanOutExpansion] | None = None,
+    node_histories: dict[str, NodeHistory] | None = None,
 ) -> GraphProjection:
     return GraphProjection(
         invocation_id="inv-1",
@@ -250,6 +255,50 @@ def _projection(
         tasks={task.task_id: task for task in tasks or []},
         budgets=budgets or {},
         fan_out_expansions=fan_out_expansions or {},
+        node_histories=node_histories or {},
+    )
+
+
+def _fan_out_committed_histories(
+    projection: GraphProjection,
+    node_id: str,
+    expansion: FanOutExpansion,
+    *,
+    graph_id: str = "main",
+) -> dict[str, NodeHistory]:
+    aggregate_id = fan_out_aggregate_task_id(
+        invocation_id=projection.invocation_id,
+        checkpoint_ns=projection.checkpoint_ns,
+        structural_path=projection.structural_path,
+        graph_id=graph_id,
+        node_id=node_id,
+        child_count=len(expansion.task_ids),
+    )
+    key = node_history_key(projection.checkpoint_ns, graph_id, node_id)
+    generation = NodeGeneration(
+        generation_ordinal=0,
+        status="succeeded",
+        outputs_committed=True,
+        frozen_outputs={},
+        aggregate_task_id=aggregate_id,
+    )
+    return {key: NodeHistory(latest_generation_ordinal=0, generations_by_ordinal={0: generation})}
+
+
+def _aggregate_task(
+    compiled: CompiledWorkflow,
+    tmp_path: Path,
+    expansion: FanOutExpansion,
+    *,
+    node_id: str = "per-module",
+) -> ExecutableTask:
+    return _build_fan_out_aggregate_task(
+        compiled,
+        compiled.graphs["main"],
+        _projection(compiled),
+        _context(tmp_path),
+        node_id,
+        expansion,
     )
 
 
@@ -452,11 +501,24 @@ def test_fan_out_fold_projects_frozen_expansion(tmp_path: Path) -> None:
             _started(),
             {
                 "source": "graph",
+                "type": "node_activated",
+                "invocation_id": "inv-1",
+                "checkpoint_ns": "inv-1",
+                "graph_id": "main",
+                "node_id": "per-module",
+                "generation_ordinal": 0,
+                "activation_id": "act-fo-0",
+                "input_sha256": "in-fo",
+                "source_reads_sha256": {"change:explore/advisory.json": "sha-1"},
+            },
+            {
+                "source": "graph",
                 "type": "fan_out_expanded",
                 "invocation_id": "inv-1",
                 "checkpoint_ns": "inv-1",
                 "graph_id": "main",
                 "node_id": "per-module",
+                "generation_ordinal": 0,
                 "source_reads_sha256": {"change:explore/advisory.json": "sha-1"},
                 "items": ["menu", "order"],
                 "task_keys": ["menu", "order"],
@@ -500,10 +562,23 @@ def test_fan_out_reduce_waits_for_all_children_and_uses_frozen_item_order(tmp_pa
         fan_out_expansions={"per-module": expansion},
     )
     plan = _plan(compiled, projection, tmp_path)
-    assert [task.node_id for task in plan.tasks] == ["report"]
+    assert len(plan.tasks) == 1
+    assert plan.tasks[0].node_id == "per-module"
+    assert plan.tasks[0].task_key == "__aggregate__"
 
     updates = fan_out_state_updates(compiled, projection)
     assert updates == [("reduce:main:per-module", {"generated_cases": ["m1", "m2", "o1"]})]
+
+    aggregate = _aggregate_task(compiled, tmp_path, expansion)
+    committed = _projection(
+        compiled,
+        current_tree_id="tree-1",
+        tasks=[*tasks, _task(aggregate, "succeeded", fan_out_aggregate=True, task_key="__aggregate__")],
+        fan_out_expansions={"per-module": expansion},
+        node_histories=_fan_out_committed_histories(_projection(compiled), "per-module", expansion),
+    )
+    followup = _plan(compiled, committed, tmp_path)
+    assert [task.node_id for task in followup.tasks] == ["report"]
 
 
 def test_fan_out_reduce_stays_pending_while_child_in_flight(tmp_path: Path) -> None:
@@ -634,8 +709,25 @@ def test_fan_out_empty_items_resolves_without_children(tmp_path: Path) -> None:
         fan_out_expansions={"per-module": _frozen_expansion(expanded[0])},
     )
     followup = _plan(compiled, resumed, tmp_path, artifacts)
-    assert [task.node_id for task in followup.tasks] == ["report"]
+    assert len(followup.tasks) == 1
+    assert followup.tasks[0].node_id == "per-module"
+    assert followup.tasks[0].task_key == "__aggregate__"
     assert fan_out_state_updates(compiled, resumed) == [("reduce:main:per-module", {"generated_cases": []})]
+
+    expansion = _frozen_expansion(expanded[0])
+    aggregate = _aggregate_task(compiled, tmp_path, expansion)
+    committed = _projection(
+        compiled,
+        current_tree_id="tree-1",
+        tasks=[
+            _task(gen, "succeeded"),
+            _task(aggregate, "succeeded", fan_out_aggregate=True, task_key="__aggregate__"),
+        ],
+        fan_out_expansions={"per-module": expansion},
+        node_histories=_fan_out_committed_histories(_projection(compiled), "per-module", expansion),
+    )
+    report_plan = _plan(compiled, committed, tmp_path, artifacts)
+    assert [task.node_id for task in report_plan.tasks] == ["report"]
 
 
 # ---------------------------------------------------------------------------

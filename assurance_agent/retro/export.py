@@ -151,13 +151,9 @@ def export_proposal(
         return ExportOutcome(proposal.id, target, "noop", source_sha256)
 
     if state in EXPORT_TERMINAL_STATES:
-        raise ExportIneligibleError(
-            f"proposal {proposal.id} is terminal ({state}) and cannot be exported"
-        )
+        raise ExportIneligibleError(f"proposal {proposal.id} is terminal ({state}) and cannot be exported")
     if state not in EXPORT_ELIGIBLE_STATES and state != "exported":
-        raise ExportIneligibleError(
-            f"proposal {proposal.id} state={state!r} is not eligible for export"
-        )
+        raise ExportIneligibleError(f"proposal {proposal.id} state={state!r} is not eligible for export")
     if existing_hash is not None and existing_hash != source_sha256:
         if not overwrite:
             raise ExportConflictError(
@@ -165,9 +161,7 @@ def export_proposal(
                 f"{existing_hash} differs from source {source_sha256}"
             )
         if state not in EXPORT_ELIGIBLE_STATES:
-            raise ExportIneligibleError(
-                f"proposal {proposal.id} state={state!r} cannot be overwritten"
-            )
+            raise ExportIneligibleError(f"proposal {proposal.id} state={state!r} cannot be overwritten")
 
     from assurance_agent.retro.promotions import utc_now_iso
 

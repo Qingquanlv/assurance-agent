@@ -53,7 +53,5 @@ class Review(BaseModel):
             )
         for index, item in enumerate(caps):
             if not isinstance(item, str) or not item.strip():
-                raise ValueError(
-                    f"required_capabilities[{index}] must be a non-empty leaf key string"
-                )
+                raise ValueError(f"required_capabilities[{index}] must be a non-empty leaf key string")
         return self

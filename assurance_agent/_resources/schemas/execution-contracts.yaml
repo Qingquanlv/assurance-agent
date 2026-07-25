@@ -480,3 +480,38 @@ contracts:
       - project:qa/archive/**
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
+
+  # ---- retro workflow -------------------------------------------------------
+  operation:retro-collect:
+    handler: operation
+    reads:
+      - project:qa/archive/**
+      - project:qa/changes/**
+      - project:qa/retro/**
+    writes:
+      - project:qa/retro/**
+    authorization_writes:
+      - project:qa/retro/**
+    retryable_errors: []
+
+  operation:retro-accept:
+    handler: operation
+    reads:
+      - project:qa/retro/**
+    writes:
+      - project:qa/retro/**
+    authorization_writes:
+      - project:qa/retro/**
+    retryable_errors: []
+
+  skill:aa-retro:
+    handler: agent
+    reads:
+      - project:qa/retro/**
+      - project:qa/archive/**
+    writes:
+      - project:qa/retro/**
+    authorization_writes:
+      - project:qa/retro/**
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
+    reconnect: true

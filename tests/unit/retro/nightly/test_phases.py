@@ -27,6 +27,19 @@ def test_has_required_evidence(tmp_path: Path) -> None:
     assert has_required_evidence(root) is False
 
 
+def test_archived_evidence_needs_no_coordinator_files(tmp_path: Path) -> None:
+    """`aa-archive` can never copy events.jsonl / workflow-state.yaml — both names are
+    excluded from tree capture, so no write-set carries them. Demanding them from an
+    archived snapshot rejects every archived change, which is where terminal evidence
+    lives once the active change dir is cleaned."""
+    change_dir = tmp_path / "qa" / "archive" / "CH-1"
+    (change_dir / "inspect").mkdir(parents=True)
+    (change_dir / "inspect" / "failure-analysis.json").write_text("{}", encoding="utf-8")
+
+    assert has_required_evidence(change_dir, "archive") is True
+    assert has_required_evidence(change_dir, "unarchived") is False
+
+
 def test_enumerate_candidates_skips_consumed_and_non_terminal(tmp_path: Path) -> None:
     write_aa_config(tmp_path)
     make_archived_change(tmp_path, "CH-A", failures=[])

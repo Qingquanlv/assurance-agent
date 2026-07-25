@@ -34,18 +34,19 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.events import read_events_strict
 from assurance_agent.workflow.core.graph_events import TaskAttemptAbandonedEvent
-from assurance_agent.workflow.core.progression import LOCK_FILENAME, transaction
+from assurance_agent.workflow.core.progression import (
+    LOCK_FILENAME,
+    thread_lock_for,
+    transaction,
+)
 from assurance_agent.workflow.graph.checkpoint import fold_invocation_events
 from assurance_agent.workflow.graph.models import ExecutableTask, GraphProjection
 from assurance_agent.workflow.graph.schema_v2 import RetryPolicyDef
 
 RUNNING_TASKS_FILENAME = "running-tasks.json"
-_LOCK_TIMEOUT_S = 0.5
+# Keep in lockstep with progression._DEFAULT_LOCK_TIMEOUT_S (shared fcntl file).
+_LOCK_TIMEOUT_S = 5.0
 _LOCK_POLL_S = 0.01
-
-# 进程本地锁按 resolved change_dir 路径归档（与 progression 同协议）。
-_THREAD_LOCKS: dict[str, threading.Lock] = {}
-_THREAD_LOCKS_GUARD = threading.Lock()
 
 
 class LeaseError(AaError):
@@ -226,25 +227,16 @@ def new_lease(
     )
 
 
-def _thread_lock_for(change_dir: Path) -> threading.Lock:
-    key = str(change_dir.resolve())
-    with _THREAD_LOCKS_GUARD:
-        lock = _THREAD_LOCKS.get(key)
-        if lock is None:
-            lock = threading.Lock()
-            _THREAD_LOCKS[key] = lock
-        return lock
-
-
 @contextmanager
 def _lease_lock(change_dir: Path) -> Iterator[None]:
     """进程本地锁 + ``.progression.lock`` fcntl 排他锁（与 strict 事务互斥）。
 
-    绝不在 progression transaction 内调用 registry 方法：fcntl flock 不跨
-    open file description 重入，嵌套只会在锁超时后失败。
+    与 ``progression.transaction`` 共用 ``thread_lock_for``，避免两套进程内
+    锁各放行一个线程后在 fcntl 上互撞。绝不在 progression transaction 内调用
+    registry 方法：fcntl flock 不跨 open file description 重入。
     """
     change_dir.mkdir(parents=True, exist_ok=True)
-    thread_lock = _thread_lock_for(change_dir)
+    thread_lock = thread_lock_for(change_dir)
     if not thread_lock.acquire(timeout=_LOCK_TIMEOUT_S):
         raise LeaseError(f"lease thread lock timeout for {change_dir}")
     lock_fd: int | None = None
@@ -576,13 +568,18 @@ def heartbeat_while(
 
     def _loop() -> None:
         while not stop.wait(interval):
-            now = clock.now()
-            registry.heartbeat(
-                task_id,
-                attempt_id,
-                at=now.isoformat(),
-                lease_expires_at=(now + timedelta(seconds=extension)).isoformat(),
-            )
+            try:
+                now = clock.now()
+                registry.heartbeat(
+                    task_id,
+                    attempt_id,
+                    at=now.isoformat(),
+                    lease_expires_at=(now + timedelta(seconds=extension)).isoformat(),
+                )
+            except LeaseError:
+                # Best-effort liveness: never fail the running task because a
+                # nested subgraph briefly holds the shared progression lock.
+                continue
 
     thread = threading.Thread(
         target=_loop,

@@ -110,11 +110,28 @@ def test_start_guard_running_alive_refused(tmp_path: Path) -> None:
 
 
 def test_start_guard_graph_completed_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ds, "_latest_graph_terminal", lambda _change_dir: ("inv-1", "completed"))
+    monkeypatch.setattr(ds, "_latest_graph_terminal", lambda *_a: ("inv-1", "completed"))
     _write_state(tmp_path, status="completed")
     guard = evaluate_start_guard(tmp_path)
     assert guard.allowed is False
     assert guard.reason is not None and "already completed" in guard.reason
+
+
+def test_start_guard_completed_main_graph_allows_standalone_entrypoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """archive/retro run after the main graph completed, so scope the guard per entrypoint."""
+
+    def _terminal(_change_dir: Path, entrypoint: str | None = None) -> tuple[str | None, str | None]:
+        if entrypoint in (None, "full"):
+            return "inv-1", "completed"
+        return None, None
+
+    monkeypatch.setattr(ds, "_latest_graph_terminal", _terminal)
+    _write_state(tmp_path, status="completed")
+    assert evaluate_start_guard(tmp_path, "full").allowed is False
+    assert evaluate_start_guard(tmp_path, "archive").allowed is True
+    assert evaluate_start_guard(tmp_path, "retro").allowed is True
 
 
 def test_stale_driver_completed_without_graph_allows_start(tmp_path: Path) -> None:

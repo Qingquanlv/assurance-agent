@@ -215,14 +215,8 @@ def read_events(change_dir: Path) -> list[dict[str, object]]:
     return out
 
 
-def read_events_strict(change_dir: Path) -> list[dict[str, object]]:
-    """Fail-closed 读取：每行必须是合法 JSON dict，seq 严格 1..N 连续。
-
-    仅剥离 ledger 信封键 ``seq``/``ts`` 后，把每个 ``source == "graph"`` 的
-    payload 过 graph-event adapter 校验（未知 type、未声明字段即完整性失败）；
-    返回值保留原始 dict（含信封键），projection 得以保留事件序号。
-    首个违规即抛 ``LedgerIntegrityError``（带行号/seq 上下文）。
-    """
+def read_events_raw(change_dir: Path) -> list[dict[str, object]]:
+    """Fail-closed 读取 ledger 行：JSON + seq 连续；**不**校验 graph payload。"""
     file = _events_file(change_dir)
     if not file.exists():
         return []
@@ -242,14 +236,25 @@ def read_events_strict(change_dir: Path) -> list[dict[str, object]]:
         seq = value.get("seq")
         if not isinstance(seq, int) or isinstance(seq, bool) or seq != expected_seq:
             raise LedgerIntegrityError(f"{file} line {line_no}: expected seq {expected_seq}, got {seq!r}")
-        if value.get("source") == "graph":
-            payload = {k: v for k, v in value.items() if k not in _LEDGER_ENVELOPE_KEYS}
-            try:
-                GRAPH_EVENT_ADAPTER.validate_python(payload)
-            except ValidationError as exc:
-                raise LedgerIntegrityError(f"{file} line {line_no}: invalid graph event: {exc}") from exc
         out.append(value)
     return out
+
+
+def read_events_strict(change_dir: Path) -> list[dict[str, object]]:
+    """Fail-closed 读取：seq 校验 → v1→v2 migrate → graph payload 校验。"""
+    from assurance_agent.workflow.core.migrate_events import migrate_events_for_fold
+
+    events = migrate_events_for_fold(read_events_raw(change_dir))
+    file = _events_file(change_dir)
+    for line_no, value in enumerate(events, start=1):
+        if value.get("source") != "graph":
+            continue
+        payload = {k: v for k, v in value.items() if k not in _LEDGER_ENVELOPE_KEYS}
+        try:
+            GRAPH_EVENT_ADAPTER.validate_python(payload)
+        except ValidationError as exc:
+            raise LedgerIntegrityError(f"{file} line {line_no}: invalid graph event: {exc}") from exc
+    return events
 
 
 def next_seq(change_dir: Path) -> int:

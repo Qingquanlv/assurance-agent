@@ -32,6 +32,8 @@ EXPECTED_GRAPHS = {
     "workflow",
     "intake-workflow",
     "execute-workflow",
+    "archive-workflow",
+    "retro-workflow",
     "intake",
     "case-review-cycle",
     "assurance",
@@ -79,6 +81,9 @@ EXPECTED_CONTRACTS = {
     "operation:allocate-healing-attempt",
     "operation:record-healing-status",
     "operation:stop",
+    "operation:retro-collect",
+    "operation:retro-accept",
+    "skill:aa-retro",
     "builtin:join",
     "builtin:gate",
     "builtin:interrupt",
@@ -220,7 +225,38 @@ def test_canonical_v2_compiles_with_all_targets() -> None:
     contracts = load_execution_contracts(Path.cwd())
     compiled = compile_workflow(schema, contracts)
     assert set(compiled.graphs) == EXPECTED_GRAPHS
-    assert set(compiled.entrypoints) == {"full", "intake", "execute", "case"}
+    assert set(compiled.entrypoints) == {"full", "intake", "execute", "case", "archive", "retro"}
+
+
+def test_archive_entrypoint_and_subgraph() -> None:
+    compiled, _ = _load_compiled()
+    assert "archive" in compiled.entrypoints
+    assert compiled.entrypoints["archive"].graph_id == "archive-workflow"
+    assert compiled.entrypoints["archive"].param_overrides.get("auto_archive") is True
+    parent = compiled.graphs["workflow"].nodes["archive"]
+    assert parent.definition.uses == "graph:archive-workflow"
+    graph = compiled.graphs["archive-workflow"]
+    arch = graph.nodes["archive"]
+    assert arch.definition.uses == "skill:aa-archive"
+
+
+def test_archive_gate_blocks_before_evidence_is_copied() -> None:
+    """The gate must precede the skill and route stop to STOP.
+
+    An attached gate on ``archive`` evaluates only after the node succeeded, and
+    the node declares the archive dir as a required output — so a stop verdict
+    would be recorded while the evidence was already copied and committed.
+    """
+    compiled, _ = _load_compiled()
+    graph = compiled.schema.graphs["archive-workflow"]
+    assert graph.nodes["archive"].gate is None
+    assert graph.nodes["precheck"].uses == "builtin:gate"
+    assert graph.nodes["precheck"].with_ == {"gate": "archive-gate"}
+    assert [(e.from_, e.to) for e in graph.edges] == [("START", "precheck"), ("archive", "END")]
+    route = next(r for r in graph.routes if r.from_ == "precheck")
+    assert route.select == "node('precheck').gate.verdict"
+    assert route.cases == {"pass": "archive", "stop": "STOP"}
+    assert route.default == "STOP"
 
 
 def test_packaged_contracts_cover_exact_targets() -> None:
@@ -545,6 +581,50 @@ def test_gate_routes_exhaustive_or_fail_closed_and_interrupts_routed() -> None:
             assert set(node.interrupt.actions) <= routed, f"{graph_id}/{nid}"
 
 
+def test_attached_gate_verdicts_reach_control_flow() -> None:
+    """A gate whose verdict no route reads cannot block anything.
+
+    The gate still runs and still freezes a ``gate_report``, so the ledger shows a
+    ``stop`` verdict while the node's write-set commits regardless — silent by
+    construction. Every attached gate in the canonical schema must therefore have a
+    route selecting its verdict.
+    """
+    compiled, _ = _load_compiled()
+    unrouted: set[tuple[str, str]] = set()
+    for graph_id, graph in compiled.schema.graphs.items():
+        for nid, node in graph.nodes.items():
+            if node.gate is None:
+                continue
+            # Either the literal verdict selector or a helper selector (e.g.
+            # ``plan_review_route('review')``) that reads this node's result.
+            if any(
+                route.from_ == nid and (f"node('{nid}')" in route.select or f"('{nid}')" in route.select)
+                for route in graph.routes
+            ):
+                continue
+            unrouted.add((graph_id, nid))
+    assert unrouted == set()
+
+
+def test_codegen_is_reachable_only_through_a_gate_route() -> None:
+    """Codegen must sit behind a routed gate, never on a plain edge.
+
+    An edge into ``codegen`` cannot express a precondition: ``when`` has no access to
+    ``gate()``, so a direct ``review-cycle -> codegen`` edge generates the suite no
+    matter what the plan review said.
+    """
+    compiled, _ = _load_compiled()
+    for graph_id in ("api-branch", "e2e-branch", "fuzz-branch", "performance-branch"):
+        graph = compiled.schema.graphs[graph_id]
+        assert not [e for e in graph.edges if e.to == "codegen"], graph_id
+        gates_into_codegen = {
+            route.from_ for route in graph.routes if "codegen" in set(route.cases.values()) | {route.default}
+        }
+        assert gates_into_codegen, graph_id
+        for nid in gates_into_codegen:
+            assert graph.nodes[nid].uses == "builtin:gate", f"{graph_id}/{nid}"
+
+
 def test_all_node_targets_resolve_without_unknown_resources() -> None:
     compiled, contracts = _load_compiled()
     for graph_id, graph in compiled.schema.graphs.items():
@@ -585,6 +665,16 @@ def test_codegen_write_claims_are_disjoint_across_suites() -> None:
     run_tests = contracts.contracts["operation:run-tests"]
     assert "repo:test-runtime" in run_tests.exclusive
     assert any(r.startswith("repo:tests/") for r in run_tests.reads)
+
+
+def test_retro_entrypoint_topology() -> None:
+    compiled, _ = _load_compiled()
+    assert compiled.entrypoints["retro"].graph_id == "retro-workflow"
+    g = compiled.graphs["retro-workflow"]
+    assert set(g.nodes) >= {"collect", "propose", "accept"}
+    assert g.nodes["collect"].definition.uses == "operation:retro-collect"
+    assert g.nodes["propose"].definition.uses == "skill:aa-retro"
+    assert g.nodes["accept"].definition.uses == "operation:retro-accept"
 
 
 def test_schema_and_contract_digests_stable_across_two_loads() -> None:
