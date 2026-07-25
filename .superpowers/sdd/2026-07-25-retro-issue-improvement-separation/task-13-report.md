@@ -2,7 +2,7 @@
 
 **Status:** DONE  
 **Base:** `4ccacc7`  
-**Commit:** `96b485e` (`96b485e4106a8a285e3bb76c27234ff02d871e1f`)
+**Commits:** `96b485e` (acceptance/docs/guards) · `343b6be` (report SHA)
 
 ## Deliverables
 
@@ -59,3 +59,19 @@
 - [x] Fingerprint merge across Retro IDs via `improvement_evidence_linked`
 - [x] Knowledge export never mutates L1 before promote
 - [x] All listed gates green
+
+## Review fixes (post-`343b6be`)
+
+Closed the three Important findings from `task-13-review.md` so Quality can Approve.
+
+1. **Scenario 1 — real Issue ops create `product_bug`**  
+   Path chosen: direct product `collect_observations` → scripted analyze artifacts → `reconcile_issues` (not hand-written `problems.json`; not full agent GraphRuntime). Asserts `problem_detected` + `product_bug` classification, no `qa/retro/**` / `qa/improvements/**`, plus packaged full-closure topology excludes Retro/Improvement graphs and ops.
+
+2. **AST walk guard — Name-bound `qa/retro` roots**  
+   `_QaRetroWalkVisitor` resolves in-function Name bindings (and chained `qa` then `retro` assignments). Requires both path segments (or `"qa/retro"`) to avoid false positives on `qa/changes` / `qa/cases`. Exposed `scan_qa_retro_walks()` with synthetic Name-bound / chained unit pins.
+
+3. **Scenario 6 — empty `verification_scope` negative pin**  
+   Resolved + `human_confirmed` Problem with empty `verification_scope` (via `model_construct`) raises `verified resolution scope`; L1 bytes unchanged.
+
+**Focused gate:**  
+`uv run pytest tests/unit/retro/test_no_historical_retro_reads.py tests/integration/test_retro_issue_improvement_acceptance.py -q` → **12 passed**

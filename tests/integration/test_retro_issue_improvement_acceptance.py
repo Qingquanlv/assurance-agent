@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -24,7 +25,16 @@ from assurance_agent.artifacts.models.improvements import (
     ImprovementState,
     ImprovementVerification,
 )
-from assurance_agent.artifacts.models.issues import Problem, ProblemProjection
+from assurance_agent.artifacts.models.issues import (
+    AffectedSurface,
+    FingerprintInputs,
+    IssueCandidate,
+    IssueCandidateDocument,
+    IssueCandidateProposed,
+    Problem,
+    ProblemProjection,
+    ProblemResolution,
+)
 from assurance_agent.retro.accept_stage import run_retro_accept
 from assurance_agent.retro.candidates import context_sha256
 from assurance_agent.retro.types import (
@@ -40,8 +50,13 @@ from assurance_agent.retro.types import (
     WorkflowRetroSignals,
 )
 from assurance_agent.workflow.graph.compiler import compile_workflow
-from assurance_agent.workflow.graph.contracts import load_execution_contracts
-from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
+from assurance_agent.workflow.graph.contracts import ResourceClaims, load_execution_contracts
+from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext
+from assurance_agent.workflow.graph.schema_v2 import (
+    RetryPolicyDef,
+    TimeoutPolicyDef,
+    parse_workflow_v2,
+)
 from assurance_agent.workflow.improvements.events import (
     IMPROVEMENT_EVENT_ADAPTER,
     read_improvement_events,
@@ -59,12 +74,18 @@ from assurance_agent.workflow.improvements.memory_delivery import (
     MemoryPatchDelivery,
     sha256_bytes,
 )
+from assurance_agent.workflow.issues.operations import (
+    collect_observations_operation,
+    reconcile_issues_operation,
+)
 from assurance_agent.workflow.issues.projection import dump_projection
 from tests.helpers_aa import write_aa_config
 
 INTENT = "Preserve pytest E lines when classifying failures"
 TARGET_WORKFLOW = "assurance_agent/workflow/inspect"
 TARGET_MEMORY = ".aa/memory/aa-run.md"
+_SCENARIO1_CHANGE_ID = "CH-S1-PRODUCT"
+_SCENARIO1_BATCH_ID = "20260726-010000"
 
 
 def _load_packaged_schema():
@@ -282,16 +303,196 @@ def _passing_runner():
     return eval_runner
 
 
-# ---------------------------------------------------------------------------
-# Scenario 1 — full workflow creates product_bug; never invokes Retro
-# ---------------------------------------------------------------------------
+class _IssueOpWorkspace:
+    """Minimal workspace for direct issue operation invocation."""
+
+    def __init__(self, change_dir: Path, project_root: Path) -> None:
+        self.change_dir = change_dir
+        self.project_root = project_root
 
 
-def test_scenario_1_full_workflow_product_bug_never_invokes_retro(tmp_path: Path) -> None:
-    schema = _load_packaged_schema()
-    contracts = load_execution_contracts(Path("."))
-    compiled = compile_workflow(schema, contracts)
+def _issue_op_task(*, node_id: str, target: str) -> ExecutableTask:
+    return ExecutableTask(
+        task_id=f"task-{node_id}",
+        invocation_id="inv-s1",
+        checkpoint_ns="ns-s1",
+        graph_id="inspect-with-issues",
+        node_id=node_id,
+        structural_path=node_id,
+        input={},
+        input_sha256="0" * 64,
+        contract_digest="0" * 64,
+        retryable_errors=("timeout", "transport", "conflict"),
+        retry_policy=RetryPolicyDef(max_attempts=1),
+        timeout_policy=TimeoutPolicyDef(run_seconds=300, heartbeat_seconds=60),
+        target=target,
+        resources=ResourceClaims(),
+    )
 
+
+def _setup_failed_execution(change_dir: Path, *, change_id: str, batch_id: str) -> None:
+    """Seed a minimal failed API batch so collect_observations emits abnormals."""
+    execution_dir = change_dir / "execution"
+    runs_dir = execution_dir / "runs" / batch_id
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    (execution_dir / "execution-manifest.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1.0",
+                "change_id": change_id,
+                "batch_id": batch_id,
+                "selected_targets": {"api": True, "e2e": False, "fuzz": False, "performance": False},
+                "result_files": {"api": f"runs/{batch_id}/api-result.json"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (runs_dir / "api-result.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "change_id": change_id,
+                "batch_id": batch_id,
+                "target": "api",
+                "status": "failed",
+                "command": "pytest tests/api",
+                "source": {"framework": "pytest", "raw_log": ""},
+                "total": 1,
+                "passed": 0,
+                "failed": 1,
+                "skipped": 0,
+                "cases": [
+                    {
+                        "case_id": "API-DEPT-NEG-001",
+                        "status": "failed",
+                        "file": "tests/api/test_dept.py",
+                        "test_name": "test_empty_name_returns_500",
+                        "duration_ms": 12,
+                        "message": "HTTP 500 from POST /api/v1/dept",
+                        "raw_log_ref": "",
+                        "trace": "",
+                        "screenshot": "",
+                        "video": "",
+                    }
+                ],
+                "unmapped_tests": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _write_product_bug_candidates(change_dir: Path, *, change_id: str) -> None:
+    """Scripted analyze step: materialize product_bug candidates from live observations."""
+    obs_doc = json.loads((change_dir / "inspect" / "observations.json").read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (change_dir / "inspect" / "issue-evidence-manifest.json").read_text(encoding="utf-8")
+    )
+    observations = obs_doc.get("observations") or []
+    assert observations, "collect_observations must emit at least one observation"
+    candidates = [
+        IssueCandidate(
+            candidate_id=f"CAND-{idx:03d}",
+            observation_ids=[obs["observation_id"]],
+            proposed=IssueCandidateProposed(
+                title="Dept create returns HTTP 500 for empty name",
+                classification="product_bug",
+                severity="high",
+                root_cause_hypothesis="Backend validation missing for empty department name",
+            ),
+            affected_surface=AffectedSurface(kind="endpoint", value="POST /api/v1/dept"),
+            fingerprint_inputs=FingerprintInputs(
+                surface="post /api/v1/dept",
+                symptom="http_500_internal_server_error",
+            ),
+            possible_problem_ids=[],
+            confidence=0.9,
+            recommended_action="confirm and track",
+        )
+        for idx, obs in enumerate(observations, start=1)
+    ]
+    doc = IssueCandidateDocument(
+        schema_version="1.0",
+        change_id=change_id,
+        batch_id=str(manifest["batch_id"]),
+        evidence_bundle_digest=str(manifest["digest"]),
+        candidates=candidates,
+    )
+    inspect_dir = change_dir / "inspect"
+    (inspect_dir / "issue-candidates.json").write_bytes(dump_projection(doc))
+    candidate_digest = "sha256:" + hashlib.sha256(
+        (inspect_dir / "issue-candidates.json").read_bytes()
+    ).hexdigest()
+    (inspect_dir / "issue-analysis-status.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "change_id": change_id,
+                "batch_id": manifest["batch_id"],
+                "status": "completed",
+                "evidence_bundle_digest": manifest["digest"],
+                "candidate_count": len(candidates),
+                "candidate_digest": candidate_digest,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _drive_issue_ops_create_product_bug(project: Path) -> list[Problem]:
+    """Create a product_bug via real collect → analyze artifacts → reconcile ops.
+
+    Chosen path (documented for Task 13): direct product issue operations that
+    mirror inspect-with-issues, not a full agent-backed GraphRuntime run and not
+    a hand-written problems.json seed. The packaged full-graph topology assert
+    separately proves Retro/Improvement are unreachable from ``full``.
+    """
+    change_dir = project / "qa" / "changes" / _SCENARIO1_CHANGE_ID
+    change_dir.mkdir(parents=True, exist_ok=True)
+    (project / "qa" / "issues").mkdir(parents=True, exist_ok=True)
+    _setup_failed_execution(
+        change_dir, change_id=_SCENARIO1_CHANGE_ID, batch_id=_SCENARIO1_BATCH_ID
+    )
+
+    workspace = _IssueOpWorkspace(change_dir, project)
+    context = RuntimeContext(
+        project_root=project,
+        repo_root=project,
+        change_dir=change_dir,
+        change_id=_SCENARIO1_CHANGE_ID,
+        params={"run_mode": "full", "run_tests": True},
+    )
+
+    collect = collect_observations_operation(
+        _issue_op_task(node_id="collect-observations", target="operation:collect-observations"),
+        workspace,  # type: ignore[arg-type]
+        context,
+    )
+    assert collect.status == "succeeded", collect.error
+    assert isinstance(collect.value, dict)
+    assert int(collect.value["abnormal_count"]) >= 1
+
+    _write_product_bug_candidates(change_dir, change_id=_SCENARIO1_CHANGE_ID)
+
+    reconcile = reconcile_issues_operation(
+        _issue_op_task(node_id="reconcile-issues", target="operation:reconcile-issues"),
+        workspace,  # type: ignore[arg-type]
+        context,
+    )
+    assert reconcile.status == "succeeded", reconcile.error
+    assert isinstance(reconcile.value, dict)
+    assert reconcile.value["reconcile_status"] == "completed"
+
+    projection = ProblemProjection.model_validate(
+        json.loads((project / "qa" / "issues" / "problems.json").read_text(encoding="utf-8"))
+    )
+    return list(projection.problems)
+
+
+def _assert_full_closure_excludes_retro_improvement(schema: Any) -> set[str]:
     reachable = _reachable_graphs(schema, "full")
     forbidden = {
         "retro-workflow",
@@ -304,7 +505,6 @@ def test_scenario_1_full_workflow_product_bug_never_invokes_retro(tmp_path: Path
     assert reachable.isdisjoint(forbidden)
     assert "inspect-with-issues" in reachable
 
-    # Full closure must not host Retro/Improvement delivery ops as nodes.
     uses: set[str] = set()
     for gid in reachable:
         for node in schema.graphs[gid].nodes.values():
@@ -312,17 +512,38 @@ def test_scenario_1_full_workflow_product_bug_never_invokes_retro(tmp_path: Path
     assert "operation:retro-collect" not in uses
     assert "operation:reconcile-improvements" not in uses
     assert "skill:aa-retro" not in uses
+    return reachable
 
-    # Runtime path: seed a product_bug Problem without any Retro artifacts.
+
+# ---------------------------------------------------------------------------
+# Scenario 1 — full workflow creates product_bug; never invokes Retro
+# ---------------------------------------------------------------------------
+
+
+def test_scenario_1_full_workflow_product_bug_never_invokes_retro(tmp_path: Path) -> None:
+    schema = _load_packaged_schema()
+    contracts = load_execution_contracts(Path("."))
+    compiled = compile_workflow(schema, contracts)
+
+    _assert_full_closure_excludes_retro_improvement(schema)
+
+    # Runtime path: drive real Issue collect → analyze → reconcile (product code
+    # materializes product_bug). Full GraphRuntime/agent is heavier; ops path is
+    # the accepted minimum for this acceptance gate.
     project = tmp_path / "proj"
     write_aa_config(project)
-    problem = _problem(classification="product_bug", status="detected")
-    problems_bytes = _seed_problems(project, problem)
+    assert not (project / "qa" / "issues" / "problems.json").exists()
+
+    problems = _drive_issue_ops_create_product_bug(project)
+    product_bugs = [p for p in problems if p.assessment.classification == "product_bug"]
+    assert product_bugs, "expected product_bug Problem from reconcile_issues_operation"
+    events_text = (project / "qa" / "issues" / "events.jsonl").read_text(encoding="utf-8")
+    assert "problem_detected" in events_text
+    assert product_bugs[0].problem_id in events_text
+
+    # Full workflow never invokes Retro / Improvement — no artifacts written.
     assert not (project / "qa" / "retro").exists()
     assert not (project / "qa" / "improvements").exists()
-    loaded = json.loads((project / "qa" / "issues" / "problems.json").read_text(encoding="utf-8"))
-    assert loaded["problems"][0]["assessment"]["classification"] == "product_bug"
-    assert (project / "qa" / "issues" / "problems.json").read_bytes() == problems_bytes
     # Packaged entrypoint exists but is independent of full.
     assert "retro" in compiled.entrypoints
     assert compiled.entrypoints["full"].graph_id == "workflow"
@@ -601,6 +822,27 @@ def test_scenario_6_knowledge_export_requires_verified_problem_and_preserves_l1(
         status="resolved",
         authority="human_confirmed",
     )
+    # Bypass model min_length so we can pin the eligibility gate on empty scope.
+    assert resolved.resolution is not None
+    empty_scope = Problem.model_construct(
+        problem_id=resolved.problem_id,
+        fingerprint=resolved.fingerprint,
+        title=resolved.title,
+        assessment=resolved.assessment,
+        status=resolved.status,
+        first_seen=resolved.first_seen,
+        last_seen=resolved.last_seen,
+        occurrences=list(resolved.occurrences),
+        version=resolved.version,
+        resolution=ProblemResolution.model_construct(
+            resolved_at=resolved.resolution.resolved_at,
+            change_id=resolved.resolution.change_id,
+            batch_id=resolved.resolution.batch_id,
+            disposition=resolved.resolution.disposition,
+            verification_scope=[],
+            evidence_digest=resolved.resolution.evidence_digest,
+        ),
+    )
 
     store = ProjectImprovementStore(project)
     imp_id = "IMP-KNOW00000000000001"
@@ -667,6 +909,11 @@ def test_scenario_6_knowledge_export_requires_verified_problem_and_preserves_l1(
 
     with pytest.raises(ImprovementDeliveryError, match="eligibility|status|resolved"):
         delivery.export(improvement, problems={"PROB-K": unresolved})
+    assert (project / ".aa" / "data-knowledge.yaml").read_bytes() == l1_before
+    assert not (project / "qa" / "improvements" / "knowledge-delta").exists()
+
+    with pytest.raises(ImprovementDeliveryError, match="verified resolution scope"):
+        delivery.export(improvement, problems={"PROB-K": empty_scope})
     assert (project / ".aa" / "data-knowledge.yaml").read_bytes() == l1_before
     assert not (project / "qa" / "improvements" / "knowledge-delta").exists()
 
