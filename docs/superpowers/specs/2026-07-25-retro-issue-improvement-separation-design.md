@@ -1,10 +1,11 @@
 # Retro / Issue Separation and Improvement Lifecycle Design
 
 - 日期：2026-07-25
-- 状态：待书面评审
+- 状态：已批准（2026-07-25）
 - 范围：Issue 与 Retro 的职责拆分、只读历史查询 Interface、Retro evidence、Improvement Proposal 生命周期、clean-cut 兼容策略
 - 关联设计：[Issue Lifecycle and Cross-Change Problem Tracking Design](./2026-07-25-issue-lifecycle-design.md)
-- 关联计划：[Issue Lifecycle and Problem Ledger Implementation Plan](../plans/2026-07-25-issue-lifecycle-and-problem-ledger.md)
+- 实施计划：[Retro / Issue Separation and Improvement Lifecycle Implementation Plan](../plans/2026-07-25-retro-issue-improvement-separation.md)
+- 基础计划：[Issue Lifecycle and Problem Ledger Implementation Plan](../plans/2026-07-25-issue-lifecycle-and-problem-ledger.md)
 
 ---
 
