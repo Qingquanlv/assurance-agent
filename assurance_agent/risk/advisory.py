@@ -11,7 +11,9 @@ from typing import Any
 from pydantic import ValidationError
 
 from assurance_agent.artifacts.models import Advisory
-from assurance_agent.risk.context import RiskContext
+from assurance_agent.risk.context import EvidenceEntry, RiskContext
+
+Confidence = str  # "high" | "medium" | "low"
 
 _CAP_RANK = {"high": 3, "medium": 2, "low": 1}
 _OQ_STATUSES = {"unanswered", "answered", "deferred"}
@@ -145,6 +147,12 @@ def _check_mode_consistency(advisory: dict, interaction_mode: str | None, errors
             errors.append(f"{oq_id}: autonomous run forbids answered_via {via}")
 
 
+def _evidence_confidence_cap(ev: EvidenceEntry) -> Confidence:
+    if ev.type == "historical_issue":
+        return "high" if ev.projection_digest is not None else "low"
+    return "high"
+
+
 def _check_confidence_items(context: RiskContext, items: Any, label: str, errors: list[str]) -> None:
     if not isinstance(items, list):
         return
@@ -156,7 +164,7 @@ def _check_confidence_items(context: RiskContext, items: Any, label: str, errors
         if ev is None:
             return False
         if ev.type == "historical_issue":
-            return _cap_rank(ev.parse_confidence_cap) >= _cap_rank("high")
+            return ev.projection_digest is not None
         if ev.type == "test_pass_rate":
             return ev.below_fail_threshold is True
         if ev.type == "code_change":
@@ -173,7 +181,7 @@ def _check_confidence_items(context: RiskContext, items: Any, label: str, errors
                 errors.append(f"{label}: confidence high requires non-empty evidence_ids")
             if context.staleness.get("stale") is True:
                 errors.append(f"{label}: confidence high forbidden when staleness.stale is true")
-            caps = [evidence_by_id[i].parse_confidence_cap or "high" for i in ev_ids]
+            caps = [_evidence_confidence_cap(evidence_by_id[i]) for i in ev_ids]
             if caps and all(_cap_rank(c) <= _cap_rank("low") for c in caps):
                 errors.append(f"{label}: confidence high cannot rely only on low-cap evidence")
             if ev_ids and not any(qualifies_high(i) for i in ev_ids):
@@ -210,7 +218,7 @@ def validate_advisory(
             )
 
     evidence_by_id = {e.id: e for e in context.evidence}
-    known_issue_ids = {h.id for h in context.historical_issues}
+    known_issue_ids = {h.problem_id for h in context.historical_issues}
     affected = set(context.impact.affected_case_ids) | set(known_case_ids)
 
     for ev_id in _collect_evidence_ids(advisory):

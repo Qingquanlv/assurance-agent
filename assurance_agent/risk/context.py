@@ -8,6 +8,7 @@ batch，附 legacy execution/ 回退），不走 M5 的 execution-evidence prima
 完整性检查。generated_at 支持注入（now 参数）以便 golden 测试确定性。
 """
 
+import hashlib
 import json
 import re
 import subprocess
@@ -15,11 +16,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
+from assurance_agent.artifacts.models.issues import Problem, ProblemProjection
 from assurance_agent.change_location import archive_root
 from assurance_agent.config import ConfigNotFoundError
 from assurance_agent.risk.safety import RiskSafetyError, resolve_requirement_path
+from assurance_agent.workflow.issues.projection import dump_projection
 
 Confidence = str  # "high" | "medium" | "low"
 _CONF_RANK = {"high": 3, "medium": 2, "low": 1}
@@ -62,13 +65,24 @@ class TestHealthEntry(BaseModel):
 
 
 class HistoricalIssue(BaseModel):
-    id: str
-    source_change_id: str
-    module: str
-    endpoint: str | None = None
-    severity: str | None = None
-    status: str | None = None
+    problem_id: str
+    classification: str
+    status: str
+    severity: str
+    affected_surface: dict[str, str] | None = None
+    first_seen_change_id: str
+    first_seen_occurrence_id: str
+    last_seen_change_id: str
+    last_seen_occurrence_id: str
+    occurrence_count: int
     evidence_id: str
+    module: str | None = None
+    endpoint: str | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def id(self) -> str:
+        return self.problem_id
 
 
 class EvidenceEntry(BaseModel):
@@ -84,8 +98,8 @@ class EvidenceEntry(BaseModel):
     confidence: Confidence | None = None
     changed_files: list[str] | None = None
     source: str
-    parse_source: str | None = None
-    parse_confidence_cap: Confidence | None = None
+    projection_digest: str | None = None
+    occurrence_ids: list[str] | None = None
 
 
 class ImpactBlock(BaseModel):
@@ -439,163 +453,95 @@ def _recent_fail_case_ids(batches: list[dict], layer: str) -> list[str]:
     return out
 
 
-# ---------- historical issues ----------
-_SOURCE_RANK = {
-    "known_product_issues_json": 4,
-    "known_product_issues_frontmatter": 3,
-    "archive_summary_kpi_table": 2,
-    "known_product_issues_regex": 1,
-}
-
-
-def _cap_for_source(source: str) -> Confidence:
-    if source in ("known_product_issues_json", "known_product_issues_frontmatter"):
-        return "high"
-    if source == "archive_summary_kpi_table":
-        return "medium"
-    return "low"
-
-
-def _normalize_issue_severity(raw: str | None) -> str | None:
-    if not raw:
-        return None
-    normalized = raw.strip().lower()
-    if normalized in ("critical", "major"):
-        return "high"
-    if normalized == "minor":
-        return "medium"
-    return None
-
-
+# ---------- structured problem projection ----------
 def _sanitize_evidence_token(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9]+", "-", value).upper()
 
 
-def _historical_issue_evidence_id(source_change_id: str, issue_id: str) -> str:
-    return (
-        "EV-HIST-ISSUE-"
-        + _sanitize_evidence_token(source_change_id)
-        + "-"
-        + _sanitize_evidence_token(issue_id)
-    )
+def _problem_evidence_id(problem_id: str) -> str:
+    return "EV-PROBLEM-" + _sanitize_evidence_token(problem_id)
 
 
-def _parse_known_product_issues_md(text: str, source_path: str) -> list[dict]:
-    found: list[dict] = []
-    for block in re.split(r"(?=^## )", text, flags=re.MULTILINE):
-        heading = re.match(r"^## (?P<id>[A-Z]{2,}-\S+)", block, re.MULTILINE)
-        if not heading:
-            continue
-        fields: dict[str, str] = {}
-        for match in re.finditer(
-            r"^-\s*(?P<key>module|endpoint|severity|status)\s*:\s*(?P<value>.+)\s*$",
-            block,
-            re.IGNORECASE | re.MULTILINE,
-        ):
-            key = match.group("key").lower()
-            value = match.group("value").strip()
-            if key == "endpoint":
-                value = value.strip("`")
-            fields[key] = value
-        module = fields.get("module")
-        if not module:
-            continue
-        found.append(
-            {
-                "id": heading.group("id"),
-                "module": module,
-                "endpoint": fields.get("endpoint"),
-                "severity": _normalize_issue_severity(fields.get("severity")),
-                "status": fields.get("status"),
-                "parse_source": "known_product_issues_regex",
-                "source_path": source_path,
-            }
-        )
-    return found
+def _projection_digest(projection: ProblemProjection) -> str:
+    return "sha256:" + hashlib.sha256(dump_projection(projection)).hexdigest()
 
 
-def _collect_issues_from_archive(archive_path: Path) -> list[dict]:
-    found: list[dict] = []
-    source_change_id = archive_path.name
-    json_path = archive_path / "known-product-issues.json"
-    if json_path.is_file():
-        try:
-            data = json.loads(json_path.read_text(encoding="utf-8"))
-            for item in data.get("issues", []) if isinstance(data, dict) else []:
-                if (
-                    isinstance(item, dict)
-                    and isinstance(item.get("id"), str)
-                    and isinstance(item.get("module"), str)
-                ):
-                    found.append(
-                        {
-                            "id": item["id"],
-                            "source_change_id": source_change_id,
-                            "module": item["module"],
-                            "endpoint": item.get("endpoint")
-                            if isinstance(item.get("endpoint"), str)
-                            else None,
-                            "severity": item.get("severity")
-                            if isinstance(item.get("severity"), str)
-                            else None,
-                            "status": item.get("status") if isinstance(item.get("status"), str) else None,
-                            "parse_source": "known_product_issues_json",
-                            "source_path": str(json_path),
-                        }
-                    )
-        except (json.JSONDecodeError, OSError):
-            pass
-    md_path = archive_path / "known-product-issues.md"
-    if md_path.is_file():
-        try:
-            parsed = _parse_known_product_issues_md(md_path.read_text(encoding="utf-8"), str(md_path))
-            for item in parsed:
-                item["source_change_id"] = source_change_id
-                found.append(item)
-        except OSError:
-            pass
-    return found
+def _is_merge_alias(problem: Problem) -> bool:
+    resolution = problem.resolution
+    return resolution is not None and resolution.disposition.startswith("merged_into:")
 
 
-def _merge_historical_issues(archive_paths: list[Path]) -> tuple[list[HistoricalIssue], list[EvidenceEntry]]:
-    by_key: dict[str, dict] = {}
-    for archive_path in archive_paths:
-        for issue in _collect_issues_from_archive(archive_path):
-            key = f"{issue['source_change_id']}:{issue['id']}"
-            existing = by_key.get(key)
-            if (
-                existing is None
-                or _SOURCE_RANK[issue["parse_source"]] > _SOURCE_RANK[existing["parse_source"]]
-            ):
-                by_key[key] = issue
+def _derive_surface_conveniences(
+    affected_surface: dict[str, str] | None,
+) -> tuple[str | None, str | None]:
+    if not affected_surface:
+        return None, None
+    kind = affected_surface.get("kind")
+    value = affected_surface.get("value")
+    if not isinstance(value, str) or not value:
+        return None, None
+    if kind == "module":
+        return value, None
+    if kind == "endpoint":
+        return None, value
+    return None, None
+
+
+def _load_problem_projection(
+    project_root: Path,
+) -> tuple[ProblemProjection | None, str | None]:
+    path = project_root / "qa" / "issues" / "problems.json"
+    if not path.is_file():
+        return None, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return ProblemProjection.model_validate(data), None
+    except (json.JSONDecodeError, OSError, ValueError) as exc:
+        return None, f"corrupt_problems_projection: {path}: {exc}"
+
+
+def _problems_to_historical_issues(
+    projection: ProblemProjection,
+) -> tuple[list[HistoricalIssue], list[EvidenceEntry]]:
+    digest = _projection_digest(projection)
+    source = "qa/issues/problems.json"
     issues: list[HistoricalIssue] = []
     evidence: list[EvidenceEntry] = []
-    for issue in by_key.values():
-        ev_id = _historical_issue_evidence_id(issue["source_change_id"], issue["id"])
+    for problem in projection.problems:
+        if _is_merge_alias(problem):
+            continue
+        module, endpoint = _derive_surface_conveniences(None)
+        ev_id = _problem_evidence_id(problem.problem_id)
         issues.append(
             HistoricalIssue(
-                id=issue["id"],
-                source_change_id=issue["source_change_id"],
-                module=issue["module"],
-                endpoint=issue.get("endpoint"),
-                severity=issue.get("severity"),
-                status=issue.get("status"),
+                problem_id=problem.problem_id,
+                classification=problem.assessment.classification,
+                status=problem.status,
+                severity=problem.assessment.severity,
+                affected_surface=None,
+                first_seen_change_id=problem.first_seen.change_id,
+                first_seen_occurrence_id=problem.first_seen.occurrence_id,
+                last_seen_change_id=problem.last_seen.change_id,
+                last_seen_occurrence_id=problem.last_seen.occurrence_id,
+                occurrence_count=len(problem.occurrences),
                 evidence_id=ev_id,
+                module=module,
+                endpoint=endpoint,
             )
         )
         evidence.append(
             EvidenceEntry(
                 id=ev_id,
                 type="historical_issue",
-                module=issue["module"],
-                endpoint=issue.get("endpoint"),
-                issue_id=issue["id"],
-                source=issue["source_path"],
-                parse_source=issue["parse_source"],
-                parse_confidence_cap=_cap_for_source(issue["parse_source"]),
+                module=module,
+                endpoint=endpoint,
+                issue_id=problem.problem_id,
+                source=source,
+                projection_digest=digest,
+                occurrence_ids=list(problem.occurrences),
             )
         )
-    issues.sort(key=lambda h: (h.source_change_id, h.id))
+    issues.sort(key=lambda h: h.problem_id)
     evidence.sort(key=lambda e: e.id)
     return issues, evidence
 
@@ -688,8 +634,16 @@ def build_risk_context(
                 )
             )
 
-    hist_issues, hist_evidence = _merge_historical_issues([a["archive_path"] for a in archives])
-    evidence.extend(hist_evidence)
+    projection, corrupt_reason = _load_problem_projection(project_root)
+    if corrupt_reason:
+        degraded_reasons.append(corrupt_reason)
+        hist_issues: list[HistoricalIssue] = []
+    elif projection is None or not projection.problems:
+        degraded_reasons.append("no_history: qa/issues/problems.json is missing or empty")
+        hist_issues = []
+    else:
+        hist_issues, hist_evidence = _problems_to_historical_issues(projection)
+        evidence.extend(hist_evidence)
 
     newest_ms = archives[0]["archived_at_ms"] if archives else None
     oldest_ms = archives[-1]["archived_at_ms"] if archives else None
@@ -702,8 +656,6 @@ def build_risk_context(
         degraded_reasons.append("no_diff: no changed files vs diff base")
     if not all_cases:
         degraded_reasons.append("no_cases: qa/cases is empty or missing")
-    if not hist_issues:
-        degraded_reasons.append("no_history: no historical issues parsed from archives")
 
     case_signals = [
         CaseSignal(
