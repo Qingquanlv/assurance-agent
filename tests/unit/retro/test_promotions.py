@@ -160,67 +160,118 @@ def test_effective_review_decisions_last_wins() -> None:
 
 
 def test_knowledge_proposal_acceptance_leaves_data_knowledge_untouched(tmp_path: Path) -> None:
-    """Retro accept validates domain_knowledge proposals but never writes L1 knowledge."""
-    from tests.helpers_aa import write_aa_config
-    from tests.unit.retro.archive_fixtures import make_archived_change
-    from tests.unit.retro.issue_fixtures import write_change_occurrence_detected, write_project_problem_lifecycle
-
-    write_aa_config(tmp_path)
-    root = make_archived_change(tmp_path, "CH-1", failures=[{"classification": "assertion"}])
-    issue_evidence = write_change_occurrence_detected(root, change_id="CH-1")
-    write_project_problem_lifecycle(tmp_path, change_id="CH-1")
-
-    from assurance_agent.retro.collect_stage import run_retro_collect
+    """Retro accept reconciles domain_knowledge Candidates but never writes L1 knowledge."""
+    from assurance_agent.artifacts.models.data_knowledge import DataKnowledgeProposal
+    from assurance_agent.artifacts.models.improvements import (
+        DeliveryKind,
+        ImprovementCandidate,
+        ImprovementCandidateDocument,
+        ImprovementKind,
+        ImprovementSourceRefs,
+        ImprovementVerification,
+    )
     from assurance_agent.retro.accept_stage import run_retro_accept
+    from assurance_agent.retro.candidates import context_sha256
+    from assurance_agent.retro.types import (
+        EvalRetroSignals,
+        IssueRetroSignals,
+        RetroContext,
+        RetroIntegrity,
+        RetroSelectionSnapshot,
+        RetroSignalSet,
+        RetroSourceDescriptor,
+        RetroSourceManifest,
+        RetroWindow,
+        WorkflowRetroSignals,
+    )
     from assurance_agent.workflow.core.templates import build_data_knowledge_yaml
 
-    run_retro_collect(tmp_path, retro_id="retro-test", is_terminal=lambda _d, _c: True)
+    context = RetroContext(
+        retro_id="retro-test",
+        generated_at="2026-07-25T00:00:00Z",
+        window=RetroWindow(
+            selection=RetroSelectionSnapshot(mode="change_ids", requested_change_ids=("CH-1",)),
+            change_ids=("CH-1",),
+        ),
+        source_manifest=RetroSourceManifest(
+            issue_slice_sha256="sha256:slice",
+            issue_sources=(
+                RetroSourceDescriptor(
+                    kind="change_issue_ledger",
+                    change_id="CH-1",
+                    sha256="sha256:issue",
+                    evidence_ids=("PROB-1",),
+                ),
+            ),
+            workflow_sources=(),
+            eval_sources=(),
+        ),
+        integrity=RetroIntegrity(status="complete"),
+        signals=RetroSignalSet(
+            issue=IssueRetroSignals(),
+            workflow=WorkflowRetroSignals(),
+            eval=EvalRetroSignals(),
+        ),
+        signal_count=0,
+    )
     retro_dir = tmp_path / "qa" / "retro" / "retro-test"
-    context = json.loads((retro_dir / "context.json").read_text())
-    resolved_id = next(
-        signal["evidence_ids"][0]
-        for signal in context["signals"]["problem_resolutions"]
-        if signal["outcome"] == "resolved"
+    retro_dir.mkdir(parents=True, exist_ok=True)
+    (retro_dir / "context.json").write_text(
+        json.dumps(context.model_dump(mode="json"), sort_keys=True) + "\n",
+        encoding="utf-8",
     )
 
     knowledge_path = tmp_path / ".aa" / "data-knowledge.yaml"
     knowledge_path.parent.mkdir(parents=True, exist_ok=True)
     knowledge_path.write_text(build_data_knowledge_yaml(), encoding="utf-8")
     before = knowledge_path.read_text(encoding="utf-8")
-    issues_before = (tmp_path / "qa" / "issues" / "events.jsonl").read_text(encoding="utf-8")
+    issues_dir = tmp_path / "qa" / "issues"
+    issues_dir.mkdir(parents=True, exist_ok=True)
+    issues_path = issues_dir / "events.jsonl"
+    issues_path.write_text("", encoding="utf-8")
+    issues_before = issues_path.read_text(encoding="utf-8")
 
-    (retro_dir / "proposals.json").write_text(
-        json.dumps(
-            {
-                "proposals": [
+    document = ImprovementCandidateDocument(
+        retro_id=context.retro_id,
+        context_sha256=context_sha256(context),
+        candidates=(
+            ImprovementCandidate(
+                candidate_id="IMP-CAND-KNOW",
+                kind=ImprovementKind.DOMAIN_KNOWLEDGE,
+                delivery=DeliveryKind.KNOWLEDGE_DELTA,
+                source_refs=ImprovementSourceRefs(problem_ids=("PROB-1",)),
+                target=".aa/data-knowledge.yaml",
+                rationale="resolved product bug exposed missing auth capability",
+                proposed_change="Add admin token auth helper notes",
+                knowledge_delta=DataKnowledgeProposal.model_validate(
                     {
-                        "id": "P-KNOW",
-                        "finding_kind": "domain_knowledge",
-                        "apply_kind": "knowledge_delta",
-                        "payload": {
-                            "schema_version": "1",
-                            "mode": "delta",
-                            "based_on_l1_version": 1,
-                            "auth": {
-                                "api_admin_token": {
-                                    "method": "token",
-                                    "notes": "retro discovered admin token helper",
-                                }
-                            },
+                        "schema_version": "1",
+                        "mode": "delta",
+                        "auth": {
+                            "api_admin_token": {
+                                "method": "token",
+                                "notes": "retro discovered admin token helper",
+                            }
                         },
-                        "problem": "resolved product bug exposed missing auth capability",
-                        "evidence_ids": [resolved_id, issue_evidence],
                     }
-                ]
-            }
+                ),
+                verification=ImprovementVerification(
+                    suites=("workflow-full",),
+                    success_criteria="Knowledge delta stages without L1 write",
+                ),
+                risk="low",
+                confidence="high",
+            ),
         ),
+    )
+    (retro_dir / "proposal-candidates.json").write_text(
+        json.dumps(document.model_dump(mode="json"), sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    (retro_dir / "retro-summary.md").write_text("# summary\n", encoding="utf-8")
 
-    proposals = run_retro_accept(tmp_path, retro_id="retro-test", min_evidence=1)
+    receipt = run_retro_accept(tmp_path, retro_id="retro-test")
 
-    assert len(proposals) == 1
-    assert proposals[0].finding_kind == "domain_knowledge"
+    assert receipt.result == "accepted"
+    assert len(receipt.improvement_ids) == 1
     assert knowledge_path.read_text(encoding="utf-8") == before
-    assert (tmp_path / "qa" / "issues" / "events.jsonl").read_text(encoding="utf-8") == issues_before
+    assert issues_path.read_text(encoding="utf-8") == issues_before

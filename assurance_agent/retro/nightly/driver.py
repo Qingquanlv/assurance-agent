@@ -102,11 +102,11 @@ def collect_nightly(
     agent_exit = agent_runner(options.agent, retro_dir)
     if agent_exit != 0:
         return NIGHTLY_FAILURE
-    if not (retro_dir / "proposals.json").exists():
+    if not (retro_dir / "proposal-candidates.json").exists():
         return NIGHTLY_FAILURE
 
     try:
-        proposals = run_retro_accept(
+        receipt = run_retro_accept(
             sut,
             retro_id=retro_id,
             min_evidence=options.min_evidence,
@@ -115,7 +115,10 @@ def collect_nightly(
     except AaError:
         return NIGHTLY_FAILURE
 
-    if not proposals:
+    if receipt.result == "failed":
+        return NIGHTLY_FAILURE
+    if not receipt.improvement_ids and not receipt.event_ids:
+        # Empty accepted batch (no candidates / no new Improvement events).
         return NIGHTLY_NOOP
 
     return NIGHTLY_OK

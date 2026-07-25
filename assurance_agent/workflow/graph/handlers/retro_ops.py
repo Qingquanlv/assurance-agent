@@ -58,7 +58,7 @@ def retro_collect(task: ExecutableTask, workspace: TaskWorkspace, context: Runti
 
 
 def retro_accept(task: ExecutableTask, workspace: TaskWorkspace, context: RuntimeContext) -> TaskResult:
-    """Validate proposals, write ``review-queue.md``, and mark the retro stage complete."""
+    """Reconcile Candidates into the Improvement Ledger and write accept receipt."""
     retro_id = context.params.get("retro_id")
     if not isinstance(retro_id, str) or not retro_id.strip():
         return task_failure("invalid_input", "params.retro_id must be a non-empty string")
@@ -68,7 +68,7 @@ def retro_accept(task: ExecutableTask, workspace: TaskWorkspace, context: Runtim
     except (TypeError, ValueError):
         min_evidence_int = 2
     try:
-        proposals = run_retro_accept(
+        receipt = run_retro_accept(
             workspace.project_root,
             retro_id=retro_id,
             min_evidence=min_evidence_int,
@@ -77,7 +77,11 @@ def retro_accept(task: ExecutableTask, workspace: TaskWorkspace, context: Runtim
         return task_failure("invalid_output", str(err))
     return TaskResult(
         status="succeeded",
-        value={"proposal_count": len(proposals)},
+        value={
+            "result": receipt.result,
+            "improvement_count": len(receipt.improvement_ids),
+            "candidate_batch_digest": receipt.candidate_batch_digest,
+        },
     )
 
 
