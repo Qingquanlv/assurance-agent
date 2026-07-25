@@ -63,17 +63,34 @@ def _ts_in_closed_range(ts: str, since: str | None, until: str | None) -> bool:
     return True
 
 
-def _parse_report(path: Path, *, run_id_fallback: str) -> tuple[EvalReportRecord | None, str | None]:
+def _started_at_hint(payload: object) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    started_at = payload.get("started_at")
+    if isinstance(started_at, str) and started_at:
+        return started_at
+    return None
+
+
+def _parse_report(
+    path: Path, *, run_id_fallback: str
+) -> tuple[EvalReportRecord | None, str | None, str | None]:
+    """Return ``(record, error_reason, started_at_hint)``.
+
+    ``started_at_hint`` is populated when a timestamp is recoverable even if the
+    report is otherwise corrupt, so out-of-window dirt can be ignored.
+    """
     try:
         raw = path.read_bytes()
     except OSError:
-        return None, f"eval_report_missing:{run_id_fallback}"
+        return None, f"eval_report_missing:{run_id_fallback}", None
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return None, f"eval_report_corrupt:{run_id_fallback}"
+        return None, f"eval_report_corrupt:{run_id_fallback}", None
+    hint = _started_at_hint(payload)
     if not isinstance(payload, dict):
-        return None, f"eval_report_corrupt:{run_id_fallback}"
+        return None, f"eval_report_corrupt:{run_id_fallback}", hint
     run_id = payload.get("run_id") or run_id_fallback
     try:
         record = EvalReportRecord(
@@ -85,8 +102,8 @@ def _parse_report(path: Path, *, run_id_fallback: str) -> tuple[EvalReportRecord
             sha256=_sha256_bytes(raw),
         )
     except (KeyError, TypeError, ValidationError):
-        return None, f"eval_report_corrupt:{run_id_fallback}"
-    return record, None
+        return None, f"eval_report_corrupt:{run_id_fallback}", hint
+    return record, None, record.started_at
 
 
 def _build_slice(
@@ -125,14 +142,24 @@ class FileEvalHistoryReader:
 
         reports: list[EvalReportRecord] = []
         reasons: list[str] = []
+        unbounded = window.since is None and window.until is None
         for run_path in sorted(p for p in root.iterdir() if p.is_dir()):
             report_path = run_path / "report.json"
             if not report_path.is_file():
-                reasons.append(f"eval_report_missing:{run_path.name}")
+                # Missing report has no resolvable timestamp; only selected
+                # (unbounded) windows treat it as an integrity defect.
+                if unbounded:
+                    reasons.append(f"eval_report_missing:{run_path.name}")
                 continue
-            record, error = _parse_report(report_path, run_id_fallback=run_path.name)
+            record, error, started_hint = _parse_report(
+                report_path, run_id_fallback=run_path.name
+            )
             if error is not None:
-                reasons.append(error)
+                if started_hint is not None:
+                    if _ts_in_closed_range(started_hint, window.since, window.until):
+                        reasons.append(error)
+                elif unbounded:
+                    reasons.append(error)
                 continue
             assert record is not None
             if not _ts_in_closed_range(record.started_at, window.since, window.until):
@@ -140,7 +167,7 @@ class FileEvalHistoryReader:
             reports.append(record)
 
         # Empty directory that exists with zero reports is a complete empty set.
-        # Missing/corrupt individual reports keep concrete incomplete reasons.
+        # Only in-window missing/corrupt reports keep concrete incomplete reasons.
         return _build_slice(reports, reasons)
 
 
@@ -163,4 +190,12 @@ class InMemoryEvalHistoryReader:
         # Preserve original incomplete reasons when replaying the same source set.
         if filtered == self._slice.reports:
             return self._slice
-        return _build_slice(filtered, self._slice.integrity.reasons)
+        # Narrowed windows must not inherit out-of-window per-run integrity dirt.
+        kept_run_ids = {report.run_id for report in filtered}
+        reasons = tuple(
+            reason
+            for reason in self._slice.integrity.reasons
+            if reason == "eval_runs_missing"
+            or any(run_id in reason for run_id in kept_run_ids)
+        )
+        return _build_slice(filtered, reasons)

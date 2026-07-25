@@ -9,12 +9,15 @@ from pathlib import Path
 
 import yaml
 
+import pytest
+
 from assurance_agent.retro.window import RetroWindowSelection, resolve_retro_window
 from assurance_agent.retro.workflow_history import (
     InMemoryWorkflowHistoryReader,
     LedgerWorkflowHistoryReader,
     TerminalChangeRef,
     WorkflowEvidenceSlice,
+    WorkflowHistoryIntegrityError,
 )
 from tests.helpers_aa import write_aa_config
 
@@ -220,3 +223,54 @@ def test_in_memory_list_terminal_changes_sorted() -> None:
         )
     )
     assert [t.change_id for t in reader.list_terminal_changes()] == ["RET-1", "RET-2"]
+
+
+def test_malformed_ledger_jsonl_raises_integrity_error(tmp_path: Path) -> None:
+    """Corrupt workflow ledger must hard-fail; never soft-skip bad lines as complete."""
+    write_aa_config(tmp_path)
+    change_dir = tmp_path / "qa" / "archive" / "RET-BAD"
+    change_dir.mkdir(parents=True)
+    (change_dir / "events.jsonl").write_text(
+        json.dumps(
+            {
+                "seq": 1,
+                "ts": "2026-07-01T00:00:00Z",
+                "source": "graph",
+                "type": "graph_invocation_started",
+                "invocation_id": "inv-RET-BAD",
+                "entrypoint": "full",
+                "graph_id": "main",
+                "graph_digest": "sha256:" + "a" * 64,
+                "contract_digests": {},
+                "params": {},
+                "params_sha256": "sha256:" + "b" * 64,
+                "root_tree_id": "tree-1",
+                "max_parallel_tasks": 1,
+                "checkpoint_ns": "inv-RET-BAD",
+                "structural_path": "/",
+            }
+        )
+        + "\n{not-json\n",
+        encoding="utf-8",
+    )
+    reader = LedgerWorkflowHistoryReader(tmp_path)
+    with pytest.raises(WorkflowHistoryIntegrityError, match="RET-BAD"):
+        reader.list_terminal_changes()
+    window = resolve_retro_window(
+        RetroWindowSelection(change_ids=("RET-BAD",), last=None),
+        workflow_history=InMemoryWorkflowHistoryReader.from_terminals(
+            (TerminalChangeRef(change_id="RET-BAD", terminal_ts="2026-07-01T00:00:00Z"),)
+        ),
+    )
+    with pytest.raises(WorkflowHistoryIntegrityError, match="RET-BAD"):
+        reader.read_window(window)
+
+
+def test_non_utf8_ledger_raises_integrity_error(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
+    change_dir = tmp_path / "qa" / "archive" / "RET-BIN"
+    change_dir.mkdir(parents=True)
+    (change_dir / "events.jsonl").write_bytes(b"\xff\xfe not utf-8\n")
+    reader = LedgerWorkflowHistoryReader(tmp_path)
+    with pytest.raises(WorkflowHistoryIntegrityError, match="RET-BIN"):
+        reader.list_terminal_changes()

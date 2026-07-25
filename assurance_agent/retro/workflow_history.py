@@ -17,8 +17,10 @@ from assurance_agent.change_location import (
     changes_root,
     resolve_change,
 )
+from assurance_agent.exceptions import AaError
 from assurance_agent.retro.nightly.utils import list_dir_names
 from assurance_agent.retro.types import RetroIntegrity, RetroSourceDescriptor
+from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
 
 if TYPE_CHECKING:
     from assurance_agent.retro.window import ResolvedRetroWindow
@@ -26,6 +28,10 @@ if TYPE_CHECKING:
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
 _TERMINAL_TYPES = frozenset({"graph_completed", "graph_stopped", "graph_failed"})
 _PUSHBACK_VERDICTS = frozenset({"needs_fix", "fail", "blocked", "stop"})
+
+
+class WorkflowHistoryIntegrityError(AaError):
+    """Raised when a Change workflow ledger is corrupt or unreadable."""
 
 
 class TerminalChangeRef(BaseModel):
@@ -124,22 +130,25 @@ def _event_evidence_id(change_id: str, event: Mapping[str, object]) -> str | Non
     return None
 
 
-def _read_events_bytes(path: Path) -> tuple[bytes, list[dict[str, object]]]:
-    if not path.is_file():
+def _read_ledger_strict(change_id: str, change_dir: Path) -> tuple[bytes, list[dict[str, object]]]:
+    """Strict envelope read; never soft-skips malformed JSONL lines."""
+    events_path = change_dir / "events.jsonl"
+    if not events_path.is_file():
         return b"", []
-    data = path.read_bytes()
-    events: list[dict[str, object]] = []
+    try:
+        data = events_path.read_bytes()
+    except OSError as exc:
+        raise WorkflowHistoryIntegrityError(
+            f"workflow_ledger_corrupt:{change_id}: {exc}"
+        ) from exc
     if not data:
-        return data, events
-    for line in data.decode("utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            parsed = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict):
-            events.append(parsed)
+        return data, []
+    try:
+        events = read_events_strict(change_dir)
+    except (LedgerIntegrityError, UnicodeDecodeError) as exc:
+        raise WorkflowHistoryIntegrityError(
+            f"workflow_ledger_corrupt:{change_id}: {exc}"
+        ) from exc
     return data, events
 
 
@@ -196,9 +205,9 @@ def _extract_from_change(
     str | None,
 ]:
     events_path = change_dir / "events.jsonl"
-    data, events = _read_events_bytes(events_path)
     if not events_path.is_file():
         return None, [], [], [], [], f"workflow_source_missing:{change_id}"
+    data, events = _read_ledger_strict(change_id, change_dir)
 
     ledger_sha = _sha256_bytes(data)
     gate_verdicts: list[GateVerdictRecord] = []
@@ -326,7 +335,7 @@ class LedgerWorkflowHistoryReader:
                 loc = resolve_change(self._root, change_id, prefer="archive")
             except ChangeNotFoundError:
                 continue
-            data, events = _read_events_bytes(loc.path / "events.jsonl")
+            data, events = _read_ledger_strict(change_id, loc.path)
             archived = loc.source == "archive"
             ref = _terminal_from_events(
                 change_id,

@@ -119,3 +119,65 @@ def test_run_id_is_source_reference(tmp_path: Path) -> None:
     slice_ = FileEvalHistoryReader(tmp_path).read_window(window)
     assert slice_.sources[0].evidence_ids == ("run-ref",)
     assert "run-ref" in slice_.resolvable_ids()
+
+
+def test_corrupt_report_outside_window_does_not_mark_incomplete(tmp_path: Path) -> None:
+    """Out-of-window dirty runs must not poison integrity for the selected window."""
+    _write_report(tmp_path, "run-in", started_at="2026-07-02T00:00:00Z")
+    # Valid JSON but schema-corrupt; started_at is resolvable and outside the window.
+    stale = tmp_path / "eval" / "out" / "runs" / "run-stale-bad"
+    stale.mkdir(parents=True)
+    (stale / "report.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run-stale-bad",
+                "started_at": "2020-01-01T00:00:00Z",
+                "suite": "workflow-case",
+                # missing required verdict → corrupt
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Completely unreadable garbage also outside any selected window.
+    garbage = tmp_path / "eval" / "out" / "runs" / "run-garbage"
+    garbage.mkdir(parents=True)
+    (garbage / "report.json").write_text("{not-json", encoding="utf-8")
+    # Missing report.json under an old run dir.
+    (tmp_path / "eval" / "out" / "runs" / "run-missing-old").mkdir(parents=True)
+
+    window = resolve_retro_window(
+        RetroWindowSelection(since="2026-07-01T00:00:00Z", until="2026-07-03T00:00:00Z", last=None),
+        workflow_history=InMemoryWorkflowHistoryReader.from_terminals(
+            (TerminalChangeRef(change_id="RET-1", terminal_ts="2026-07-02T00:00:00Z"),)
+        ),
+    )
+    slice_ = FileEvalHistoryReader(tmp_path).read_window(window)
+    assert tuple(r.run_id for r in slice_.reports) == ("run-in",)
+    assert slice_.integrity.status == "complete"
+    assert slice_.integrity.reasons == ()
+
+
+def test_corrupt_report_inside_window_marks_incomplete(tmp_path: Path) -> None:
+    _write_report(tmp_path, "run-ok", started_at="2026-07-02T00:00:00Z")
+    bad = tmp_path / "eval" / "out" / "runs" / "run-bad-in"
+    bad.mkdir(parents=True)
+    (bad / "report.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run-bad-in",
+                "started_at": "2026-07-02T12:00:00Z",
+                "suite": "workflow-case",
+            }
+        ),
+        encoding="utf-8",
+    )
+    window = resolve_retro_window(
+        RetroWindowSelection(since="2026-07-01T00:00:00Z", until="2026-07-03T00:00:00Z", last=None),
+        workflow_history=InMemoryWorkflowHistoryReader.from_terminals(
+            (TerminalChangeRef(change_id="RET-1", terminal_ts="2026-07-02T00:00:00Z"),)
+        ),
+    )
+    slice_ = FileEvalHistoryReader(tmp_path).read_window(window)
+    assert tuple(r.run_id for r in slice_.reports) == ("run-ok",)
+    assert slice_.integrity.status == "incomplete"
+    assert any("run-bad-in" in reason for reason in slice_.integrity.reasons)
