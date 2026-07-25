@@ -115,6 +115,14 @@ class ProjectPublicationStore:
     ) -> None:
         root = self._prepare_root()
         requested = set(tokens)
+        # Prepare-before-commit crashes leave prepared markers with no durable
+        # checkpoint. Abandon those orphans under the caller's exclusive lock so
+        # later owners are not permanently blocked; committed-but-unacked markers
+        # remain and continue to serialize overlapping tokens.
+        self._abandon_orphaned_prepared(
+            tokens,
+            keep_publication_id=allowed_publication_id,
+        )
         for path in sorted(root.glob("*.json")):
             publication, status = self._load(path)
             if status != "prepared" or publication.publication_id == allowed_publication_id:
@@ -126,6 +134,58 @@ class ProjectPublicationStore:
                     f"synchronized project resource {token} has an unacknowledged publication",
                     token=token,
                 )
+
+    def _abandon_orphaned_prepared(
+        self,
+        tokens: Sequence[str],
+        *,
+        keep_publication_id: str | None,
+    ) -> None:
+        root = self._prepare_root()
+        requested = set(tokens)
+        for path in sorted(root.glob("*.json")):
+            publication, status = self._load(path)
+            if status != "prepared":
+                continue
+            if publication.publication_id == keep_publication_id:
+                continue
+            if not requested.intersection(publication.tokens):
+                continue
+            if self._has_committed_checkpoint(publication.publication_id):
+                continue
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                continue
+            try:
+                directory_fd = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            except OSError as exc:
+                raise ProjectPublicationError(
+                    f"failed to abandon orphaned publication marker: {path}"
+                ) from exc
+
+    def _has_committed_checkpoint(self, publication_id: str) -> bool:
+        changes_root = self._project_root / "qa" / "changes"
+        if not changes_root.is_dir():
+            return False
+        for change_dir in changes_root.iterdir():
+            if not change_dir.is_dir() or change_dir.is_symlink():
+                continue
+            checkpoint = (
+                change_dir / ".graph-runtime" / "checkpoints" / f"{publication_id}.json"
+            )
+            try:
+                if checkpoint.is_symlink():
+                    continue
+                if checkpoint.is_file():
+                    return True
+            except OSError:
+                continue
+        return False
 
     def prepare(self, publication: ProjectPublication) -> Literal["prepared", "applied"]:
         path = self._path(publication.publication_id)

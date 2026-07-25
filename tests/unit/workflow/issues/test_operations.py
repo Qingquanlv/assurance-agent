@@ -976,6 +976,32 @@ def _make_candidates_doc(
     inspect_dir = change_dir / "inspect"
     inspect_dir.mkdir(parents=True, exist_ok=True)
     (inspect_dir / "issue-candidates.json").write_bytes(dump_projection(doc))
+    _make_evidence_manifest(change_dir, batch_id, evidence_digest)
+
+
+def _make_evidence_manifest(change_dir: Path, batch_id: str, evidence_digest: str) -> None:
+    """Write inspect/issue-evidence-manifest.json pinned to the candidate digest."""
+    from assurance_agent.artifacts.models.issues import (
+        IssueEvidenceManifest,
+        IssueEvidenceManifestEntry,
+    )
+    from assurance_agent.workflow.issues.projection import dump_projection
+
+    doc = IssueEvidenceManifest(
+        schema_version="1.0",
+        change_id=change_dir.name,
+        batch_id=batch_id,
+        digest=evidence_digest,
+        entries=[
+            IssueEvidenceManifestEntry(
+                path=f"execution/runs/{batch_id}/api-result.json",
+                digest="sha256:" + "1" * 64,
+            )
+        ],
+    )
+    inspect_dir = change_dir / "inspect"
+    inspect_dir.mkdir(parents=True, exist_ok=True)
+    (inspect_dir / "issue-evidence-manifest.json").write_bytes(dump_projection(doc))
 
 
 def _make_reconcile_task() -> ExecutableTask:
@@ -1122,6 +1148,63 @@ def test_reconcile_missing_candidates_returns_invalid_input(tmp_path: Path) -> N
 
     _make_observations_doc(change_dir, batch_id, ["OBS-001"])
     # No candidates file written
+
+    task = _make_reconcile_task()
+    workspace = _FakeReconcileWorkspace(change_dir, project_root)
+    context = _make_context(change_dir)
+
+    result = reconcile_issues_operation(task, workspace, context)  # type: ignore[arg-type]
+
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_input"
+
+
+def test_reconcile_missing_evidence_manifest_returns_invalid_input(tmp_path: Path) -> None:
+    """Missing trusted evidence manifest → task failure with invalid_input."""
+    from assurance_agent.workflow.issues.operations import reconcile_issues_operation
+
+    change_dir = tmp_path / "CH-rec-no-manifest"
+    project_root = tmp_path / "project"
+    batch_id = "BATCH-001"
+    evidence_digest = "sha256:" + "m" * 64
+
+    _make_observations_doc(change_dir, batch_id, ["OBS-001"])
+    # Write candidates without the matching manifest helper.
+    from assurance_agent.artifacts.models.issues import (
+        AffectedSurface,
+        FingerprintInputs,
+        IssueCandidate,
+        IssueCandidateDocument,
+        IssueCandidateProposed,
+    )
+    from assurance_agent.workflow.issues.projection import dump_projection
+
+    doc = IssueCandidateDocument(
+        schema_version="1.0",
+        change_id=change_dir.name,
+        batch_id=batch_id,
+        evidence_bundle_digest=evidence_digest,
+        candidates=[
+            IssueCandidate(
+                candidate_id="CAND-001",
+                observation_ids=["OBS-001"],
+                proposed=IssueCandidateProposed(
+                    title="Issue",
+                    classification="product_bug",
+                    severity="high",
+                    root_cause_hypothesis="Unhandled exception",
+                ),
+                affected_surface=AffectedSurface(kind="endpoint", value="GET /api/v1/item"),
+                fingerprint_inputs=FingerprintInputs(surface="endpoint", symptom="http 500"),
+                possible_problem_ids=[],
+                confidence=0.8,
+                recommended_action="investigate",
+            )
+        ],
+    )
+    inspect_dir = change_dir / "inspect"
+    inspect_dir.mkdir(parents=True, exist_ok=True)
+    (inspect_dir / "issue-candidates.json").write_bytes(dump_projection(doc))
 
     task = _make_reconcile_task()
     workspace = _FakeReconcileWorkspace(change_dir, project_root)

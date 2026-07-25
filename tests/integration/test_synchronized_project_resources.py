@@ -305,6 +305,46 @@ def test_publication_identity_preserves_committed_write_set_order(tmp_path: Path
     assert store.prepare(publication) == "applied"
 
 
+def test_assert_no_prepared_abandons_uncommitted_publication(tmp_path: Path) -> None:
+    """Prepare-before-commit crash leaves an orphan marker; later owners must not be blocked forever."""
+    from assurance_agent.workflow.graph.project_locks import (
+        ProjectPublication,
+        ProjectPublicationStore,
+        ProjectResourceConflict,
+    )
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "qa" / "changes" / "CH-A").mkdir(parents=True)
+    orphan = ProjectPublication(
+        publication_id="a" * 64,
+        invocation_id="inv-orphan",
+        write_set_ids=("b" * 64,),
+        tokens=("project:issue-registry",),
+    )
+    store = ProjectPublicationStore(project)
+    assert store.prepare(orphan) == "prepared"
+
+    # No checkpoint under any change → orphan is abandoned, not a permanent conflict.
+    store.assert_no_prepared(("project:issue-registry",))
+
+    successor = ProjectPublication(
+        publication_id="c" * 64,
+        invocation_id="inv-b",
+        write_set_ids=("d" * 64,),
+        tokens=("project:issue-registry",),
+    )
+    assert store.prepare(successor) == "prepared"
+
+    # Committed-but-unacked publications must still block overlapping tokens.
+    change = project / "qa" / "changes" / "CH-A"
+    checkpoint = change / ".graph-runtime" / "checkpoints" / f"{'c' * 64}.json"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("{}", encoding="utf-8")
+    with pytest.raises(ProjectResourceConflict, match="unacknowledged publication"):
+        store.assert_no_prepared(("project:issue-registry",))
+
+
 def test_project_resource_locks_exclude_two_real_processes(tmp_path: Path) -> None:
     try:
         from assurance_agent.workflow.graph.project_locks import ProjectResourceLockManager

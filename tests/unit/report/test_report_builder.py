@@ -250,6 +250,69 @@ def test_generate_report_failed_analysis_yields_unknown_issue_risk(tmp_path: Pat
     assert result.report.final_status == "PASS"
 
 
+def test_generate_report_failed_reconcile_status_yields_unknown_without_snapshot(
+    tmp_path: Path,
+) -> None:
+    """Semantic reconcile rejection is fail-visible even when no canonical snapshot exists."""
+    import json
+
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    inspect_dir = change_dir / "inspect"
+    inspect_dir.mkdir(parents=True, exist_ok=True)
+    (inspect_dir / "issue-reconcile-status.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "change_id": "CH-1",
+                "batch_id": "20260715-000000",
+                "status": "failed",
+                "evidence_bundle_digest": "sha256:" + "a" * 64,
+                "error": "unknown observation_id",
+            }
+        ),
+        encoding="utf-8",
+    )
+    inspect_change(tmp_path, change_id)
+    result = generate_report(tmp_path, change_id)
+    assert result.report.issues is not None
+    assert result.report.issues.issue_risk == "unknown"
+    assert result.report.issues.analysis_status == "failed"
+    assert result.report.final_status == "PASS"
+
+
+def test_generate_report_missing_analysis_status_is_not_treated_as_completed(
+    tmp_path: Path,
+) -> None:
+    """A snapshot without analysis_status must not collapse to clear/completed."""
+    import json
+
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    issues_dir = change_dir / "issues"
+    issues_dir.mkdir(parents=True, exist_ok=True)
+    (issues_dir / "snapshot.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "change_id": "CH-1",
+                "authoritative_batch_id": "20260715-000000",
+                "observations": [],
+                "occurrences": [],
+                "analysis_status": None,
+                "project_sync_status": "completed",
+                "batches": ["20260715-000000"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    inspect_change(tmp_path, change_id)
+    result = generate_report(tmp_path, change_id)
+    assert result.report.issues is not None
+    assert result.report.issues.issue_risk == "unknown"
+    assert result.report.issues.analysis_status == "failed"
+
+
 def test_generate_report_issue_section_in_markdown(tmp_path: Path) -> None:
     change_id = _seed_change(tmp_path, _api(None), _cov())
     change_dir = tmp_path / "qa" / "changes" / "CH-1"

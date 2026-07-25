@@ -674,6 +674,47 @@ def test_applied_marker_prevents_stale_replay_after_later_change_advances_resour
     assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version": 3}\n'
 
 
+def test_prepared_publication_before_commit_does_not_permanently_block_later_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Crash after prepare and before checkpoint commit must not permanently lock tokens."""
+    import assurance_agent.workflow.graph.scheduler as sched_mod
+
+    project = _two_change_project(tmp_path)
+    compiled, contracts = _sync_compiled()
+    runtime_a = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        node_runner=_op_runner(_versioned_sync_ops(2)),
+        change_id="CH-A",
+    )
+
+    def crash_before_commit(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise _InjectedCrash("after publication prepare before checkpoint commit")
+
+    monkeypatch.setattr(sched_mod, "commit_tree_pointer", crash_before_commit)
+    with pytest.raises(_InjectedCrash, match="before checkpoint commit"):
+        runtime_a.run(compiled, "full", _context(project, change_id="CH-A"))
+    monkeypatch.undo()
+
+    events_a = read_events_strict(project / "qa/changes/CH-A")
+    assert not any(event.get("type") == "superstep_committed" for event in events_a)
+    assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version": 1}\n'
+
+    runtime_b = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        node_runner=_op_runner(_versioned_sync_ops(3)),
+        change_id="CH-B",
+    )
+    result_b = runtime_b.run(compiled, "full", _context(project, change_id="CH-B"))
+    assert result_b.exit_code == 0
+    assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version": 3}\n'
+
+
 def test_prepared_publication_blocks_later_change_after_apply_before_ack_crash(
     tmp_path: Path,
 ) -> None:

@@ -5,6 +5,8 @@ events are created.  A single invalid candidate rejects the entire batch
 (all-or-nothing).
 
 Semantic validation rejects a batch when any candidate has:
+- a change_id / batch_id / evidence digest that disagrees with the trusted
+  evidence manifest or runtime change context
 - an unknown Observation ID (not in the supplied observations document)
 - a duplicate candidate_id within the batch
 - a duplicate deterministic occurrence_id within the batch
@@ -24,8 +26,10 @@ Event derivation rules (applied only after full validation passes):
 Public API:
     ReconciliationValidationError
     ReconciliationPlan
-    plan_reconciliation(candidates, observations, change_snapshot, problems)
-        -> ReconciliationPlan
+    plan_reconciliation(
+        candidates, observations, change_snapshot, problems, *,
+        manifest, expected_change_id,
+    ) -> ReconciliationPlan
 """
 
 from __future__ import annotations
@@ -38,6 +42,7 @@ from datetime import datetime, timezone
 from assurance_agent.artifacts.models.issues import (
     IssueAnalysisStatus,
     IssueCandidateDocument,
+    IssueEvidenceManifest,
     IssueOccurrence,
     OccurrenceAnalysis,
     ObservationDocument,
@@ -169,17 +174,78 @@ def _make_occurrence(
 # ---------------------------------------------------------------------------
 
 
+def _validate_trusted_inputs(
+    *,
+    expected_change_id: str,
+    candidates_doc: IssueCandidateDocument,
+    observations: ObservationDocument,
+    manifest: IssueEvidenceManifest,
+) -> list[str]:
+    """Compare LLM-authored candidates against collector-owned trusted boundaries."""
+    errors: list[str] = []
+    if candidates_doc.change_id != expected_change_id:
+        errors.append(
+            f"candidate change_id {candidates_doc.change_id!r} does not match "
+            f"runtime change_id {expected_change_id!r}"
+        )
+    if observations.change_id != expected_change_id:
+        errors.append(
+            f"observations change_id {observations.change_id!r} does not match "
+            f"runtime change_id {expected_change_id!r}"
+        )
+    if manifest.change_id != expected_change_id:
+        errors.append(
+            f"evidence manifest change_id {manifest.change_id!r} does not match "
+            f"runtime change_id {expected_change_id!r}"
+        )
+    if candidates_doc.batch_id != manifest.batch_id:
+        errors.append(
+            f"candidate batch_id {candidates_doc.batch_id!r} does not match "
+            f"evidence manifest batch_id {manifest.batch_id!r}"
+        )
+    if observations.batch_id != manifest.batch_id:
+        errors.append(
+            f"observations batch_id {observations.batch_id!r} does not match "
+            f"evidence manifest batch_id {manifest.batch_id!r}"
+        )
+    if candidates_doc.evidence_bundle_digest != manifest.digest:
+        errors.append(
+            f"candidate evidence_bundle_digest {candidates_doc.evidence_bundle_digest!r} "
+            f"does not match evidence manifest digest {manifest.digest!r}"
+        )
+    for obs in observations.observations:
+        if obs.change_id != expected_change_id:
+            errors.append(
+                f"observation {obs.observation_id!r}: change_id {obs.change_id!r} "
+                f"does not match runtime change_id {expected_change_id!r}"
+            )
+        if obs.batch_id != manifest.batch_id:
+            errors.append(
+                f"observation {obs.observation_id!r}: batch_id {obs.batch_id!r} "
+                f"does not match evidence manifest batch_id {manifest.batch_id!r}"
+            )
+    return errors
+
+
 def _validate_candidate_batch(
     candidates_doc: IssueCandidateDocument,
     observations: ObservationDocument,
     problems: ProblemProjection,
+    *,
+    manifest: IssueEvidenceManifest,
+    expected_change_id: str,
 ) -> None:
     """Validate the complete candidate batch; raises ``ReconciliationValidationError``
     if any semantic constraint is violated.
 
     Does NOT modify any mutable state (pure function).
     """
-    errors: list[str] = []
+    errors: list[str] = _validate_trusted_inputs(
+        expected_change_id=expected_change_id,
+        candidates_doc=candidates_doc,
+        observations=observations,
+        manifest=manifest,
+    )
 
     known_obs_ids: set[str] = {obs.observation_id for obs in observations.observations}
     existing_problem_ids: set[str] = {p.problem_id for p in problems.problems}
@@ -487,6 +553,9 @@ def plan_reconciliation(
     observations: ObservationDocument,
     change_snapshot: ChangeIssueSnapshot,
     problems: ProblemProjection,
+    *,
+    manifest: IssueEvidenceManifest,
+    expected_change_id: str,
 ) -> ReconciliationPlan:
     """Validate the candidate batch then derive immutable Occurrence/Problem events.
 
@@ -499,7 +568,14 @@ def plan_reconciliation(
     emission order.  The caller is responsible for appending to both stores in
     the same task write-set.
     """
-    _validate_candidate_batch(candidates, observations, problems)
+    del change_snapshot  # reserved for future watermark / authoritative-batch checks
+    _validate_candidate_batch(
+        candidates,
+        observations,
+        problems,
+        manifest=manifest,
+        expected_change_id=expected_change_id,
+    )
 
     ts = _utc_now()
     batch_digest = _batch_candidate_digest(candidates)

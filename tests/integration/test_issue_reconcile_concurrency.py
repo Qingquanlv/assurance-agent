@@ -39,6 +39,8 @@ from assurance_agent.artifacts.models.issues import (
     IssueCandidate,
     IssueCandidateDocument,
     IssueCandidateProposed,
+    IssueEvidenceManifest,
+    IssueEvidenceManifestEntry,
     Observation,
     ObservationDocument,
     ObservationSource,
@@ -147,7 +149,26 @@ def _do_one_reconcile(
         batches=[batch_id],
     )
 
-    plan = plan_reconciliation(candidates_doc, observations, change_snapshot, projection)
+    manifest = IssueEvidenceManifest(
+        schema_version="1.0",
+        change_id=change_id,
+        batch_id=batch_id,
+        digest=evidence_digest,
+        entries=[
+            IssueEvidenceManifestEntry(
+                path=f"execution/runs/{batch_id}/api-result.json",
+                digest="sha256:" + "1" * 64,
+            )
+        ],
+    )
+    plan = plan_reconciliation(
+        candidates_doc,
+        observations,
+        change_snapshot,
+        projection,
+        manifest=manifest,
+        expected_change_id=change_id,
+    )
 
     # Append to Change store
     change_store = ChangeIssueStore(change_dir)
@@ -368,7 +389,26 @@ def test_idempotent_replay_does_not_duplicate_problems() -> None:
         )
 
         # Build the plan ONCE with fixed inputs (empty projection)
-        plan = plan_reconciliation(candidates_doc, observations, change_snapshot, empty_problems)
+        manifest = IssueEvidenceManifest(
+            schema_version="1.0",
+            change_id=change_id,
+            batch_id=batch_id,
+            digest=evidence_digest,
+            entries=[
+                IssueEvidenceManifestEntry(
+                    path=f"execution/runs/{batch_id}/api-result.json",
+                    digest="sha256:" + "1" * 64,
+                )
+            ],
+        )
+        plan = plan_reconciliation(
+            candidates_doc,
+            observations,
+            change_snapshot,
+            empty_problems,
+            manifest=manifest,
+            expected_change_id=change_id,
+        )
 
         # First append to stores
         change_store = ChangeIssueStore(change_dir)

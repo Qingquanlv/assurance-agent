@@ -36,6 +36,7 @@ from assurance_agent.artifacts.models.issues import (
     ChangeIssueSnapshot,
     IssueCandidateDocument,
     IssueAnalysisStatus,
+    IssueEvidenceManifest,
     IssueReconcileStatus,
     ObservationDocument,
     ProblemProjection,
@@ -531,10 +532,14 @@ def reconcile_issues_operation(
 
     Reads (all from workspace):
         change:inspect/issue-candidates.json
-        change:inspect/issue-evidence-manifest.json
+        change:inspect/issue-evidence-manifest.json  (trusted boundary)
         change:inspect/observations.json
         change:issues/snapshot.json   (optional — missing means empty snapshot)
         project:qa/issues/problems.json (synchronized; optional — missing means empty)
+
+    Trusted-input checks (against runtime change_id + evidence manifest):
+        candidates/observations change_id, batch_id, and evidence_bundle_digest
+        must match the collector-owned manifest before any ledger writes.
 
     Writes on success (atomic, same task write-set):
         change:inspect/issue-reconcile-status.json  (status: completed)
@@ -571,6 +576,17 @@ def reconcile_issues_operation(
     observations_path = inspect_dir / "observations.json"
     try:
         observations = _load_json_model(observations_path, ObservationDocument, "reconcile-issues")
+    except (FileNotFoundError, ValueError) as exc:
+        return task_failure("invalid_input", str(exc))
+
+    # ------------------------------------------------------------------
+    # 2b. Load trusted evidence manifest (collector-owned boundary)
+    # ------------------------------------------------------------------
+    manifest_path = inspect_dir / "issue-evidence-manifest.json"
+    try:
+        evidence_manifest = _load_json_model(
+            manifest_path, IssueEvidenceManifest, "reconcile-issues"
+        )
     except (FileNotFoundError, ValueError) as exc:
         return task_failure("invalid_input", str(exc))
 
@@ -614,7 +630,14 @@ def reconcile_issues_operation(
     evidence_bundle_digest = candidates_doc.evidence_bundle_digest
 
     try:
-        plan = plan_reconciliation(candidates_doc, observations, change_snapshot, problems)
+        plan = plan_reconciliation(
+            candidates_doc,
+            observations,
+            change_snapshot,
+            problems,
+            manifest=evidence_manifest,
+            expected_change_id=change_id,
+        )
     except ReconciliationValidationError as exc:
         # Semantic failure: write failed reconcile-status; return success
         reconcile_status = IssueReconcileStatus(

@@ -32,6 +32,8 @@ from assurance_agent.artifacts.models.issues import (
     IssueCandidateDocument,
     IssueCandidateProposed,
     IssueClassification,
+    IssueEvidenceManifest,
+    IssueEvidenceManifestEntry,
     IssueSeverity,
     Observation,
     ObservationDocument,
@@ -156,6 +158,63 @@ def _empty_snapshot(change_id: str = "CH-001", batch_id: str = "BATCH-001") -> C
     )
 
 
+def _make_manifest(
+    change_id: str = "CH-001",
+    batch_id: str = "BATCH-001",
+    digest: str = "sha256:" + "a" * 64,
+) -> IssueEvidenceManifest:
+    return IssueEvidenceManifest(
+        schema_version="1.0",
+        change_id=change_id,
+        batch_id=batch_id,
+        digest=digest,
+        entries=[
+            IssueEvidenceManifestEntry(
+                path="execution/manifest.json",
+                digest="sha256:" + "b" * 64,
+            )
+        ],
+    )
+
+
+def _plan(
+    candidates_doc: IssueCandidateDocument,
+    obs: ObservationDocument,
+    snapshot: ChangeIssueSnapshot | None = None,
+    problems: ProblemProjection | None = None,
+    *,
+    manifest: IssueEvidenceManifest | None = None,
+    expected_change_id: str | None = None,
+) -> ReconciliationPlan:
+    change_id = expected_change_id or candidates_doc.change_id
+    batch_id = candidates_doc.batch_id
+    # Align fixture observations with the candidate batch unless the caller is
+    # deliberately exercising the trusted-input boundary (custom manifest /
+    # expected_change_id).
+    if (
+        manifest is None
+        and expected_change_id is None
+        and (obs.change_id != change_id or obs.batch_id != batch_id)
+    ):
+        obs = ObservationDocument(
+            schema_version="1.0",
+            change_id=change_id,
+            batch_id=batch_id,
+            observations=[
+                item.model_copy(update={"change_id": change_id, "batch_id": batch_id})
+                for item in obs.observations
+            ],
+        )
+    return plan_reconciliation(
+        candidates_doc,
+        obs,
+        snapshot if snapshot is not None else _empty_snapshot(change_id, batch_id),
+        problems if problems is not None else _empty_problems(),
+        manifest=manifest or _make_manifest(change_id, batch_id, candidates_doc.evidence_bundle_digest),
+        expected_change_id=change_id,
+    )
+
+
 def _make_existing_problem(
     *,
     surface_value: str = "GET /api/v1/users",
@@ -218,7 +277,7 @@ def test_new_candidate_creates_problem_detected() -> None:
     cand = _make_candidate("CAND-001", ["OBS-001"])
     candidates_doc = _make_candidate_doc([cand])
 
-    plan = plan_reconciliation(candidates_doc, obs, _empty_snapshot(), _empty_problems())
+    plan = _plan(candidates_doc, obs, _empty_snapshot(), _empty_problems())
 
     assert isinstance(plan, ReconciliationPlan)
     assert plan.occurrence_count == 1
@@ -240,7 +299,7 @@ def test_issue_analysis_completed_is_first_change_event() -> None:
     cand = _make_candidate("CAND-001", ["OBS-001"])
     candidates_doc = _make_candidate_doc([cand])
 
-    plan = plan_reconciliation(candidates_doc, obs, _empty_snapshot(), _empty_problems())
+    plan = _plan(candidates_doc, obs, _empty_snapshot(), _empty_problems())
 
     assert plan.change_events[0].type == "issue_analysis_completed"
 
@@ -254,7 +313,7 @@ def test_exact_fingerprint_match_links_occurrence() -> None:
     existing = _make_existing_problem(status="detected", version=1)
     problems = _problems_with(existing)
 
-    plan = plan_reconciliation(
+    plan = _plan(
         candidates_doc, obs, _empty_snapshot(change_id="CH-002", batch_id="BATCH-002"), problems
     )
 
@@ -276,7 +335,7 @@ def test_exact_fingerprint_resolved_triggers_regression() -> None:
     existing = _make_existing_problem(status="resolved", version=2)
     problems = _problems_with(existing)
 
-    plan = plan_reconciliation(
+    plan = _plan(
         candidates_doc, obs, _empty_snapshot(change_id="CH-003", batch_id="BATCH-003"), problems
     )
 
@@ -311,7 +370,7 @@ def test_possible_problem_ids_with_no_exact_match_emits_merge_suggested() -> Non
     )
     candidates_doc = _make_candidate_doc([cand], change_id="CH-004", batch_id="BATCH-004")
 
-    plan = plan_reconciliation(
+    plan = _plan(
         candidates_doc, obs, _empty_snapshot(change_id="CH-004", batch_id="BATCH-004"), problems
     )
 
@@ -327,7 +386,7 @@ def test_two_candidates_same_fingerprint_first_detected_second_linked() -> None:
     cand_b = _make_candidate("CAND-B", ["OBS-B"])  # same surface+symptom = same fingerprint
     candidates_doc = _make_candidate_doc([cand_a, cand_b], change_id="CH-005", batch_id="BATCH-005")
 
-    plan = plan_reconciliation(
+    plan = _plan(
         candidates_doc, obs, _empty_snapshot(change_id="CH-005", batch_id="BATCH-005"), _empty_problems()
     )
 
@@ -352,7 +411,7 @@ def test_two_candidates_different_fingerprints_creates_two_problems() -> None:
     cand_y = _make_candidate("CAND-Y", ["OBS-Y"], surface_value="POST /api/v1/orders", symptom="server error")
     candidates_doc = _make_candidate_doc([cand_x, cand_y], change_id="CH-006", batch_id="BATCH-006")
 
-    plan = plan_reconciliation(
+    plan = _plan(
         candidates_doc, obs, _empty_snapshot(change_id="CH-006", batch_id="BATCH-006"), _empty_problems()
     )
 
@@ -370,7 +429,7 @@ def test_empty_candidate_list_emits_only_analysis_completed() -> None:
     obs = _make_observations("OBS-CLEAN")
     candidates_doc = _make_candidate_doc([])
 
-    plan = plan_reconciliation(candidates_doc, obs, _empty_snapshot(), _empty_problems())
+    plan = _plan(candidates_doc, obs, _empty_snapshot(), _empty_problems())
 
     assert plan.occurrence_count == 0
     assert len(plan.change_events) == 1
@@ -384,8 +443,8 @@ def test_candidate_digest_is_stable() -> None:
     cand = _make_candidate("CAND-001", ["OBS-001"])
     candidates_doc = _make_candidate_doc([cand])
 
-    plan1 = plan_reconciliation(candidates_doc, obs, _empty_snapshot(), _empty_problems())
-    plan2 = plan_reconciliation(candidates_doc, obs, _empty_snapshot(), _empty_problems())
+    plan1 = _plan(candidates_doc, obs, _empty_snapshot(), _empty_problems())
+    plan2 = _plan(candidates_doc, obs, _empty_snapshot(), _empty_problems())
 
     assert plan1.candidate_digest == plan2.candidate_digest
     assert plan1.candidate_digest.startswith("sha256:")
@@ -397,8 +456,8 @@ def test_idempotency_same_idempotency_keys() -> None:
     cand = _make_candidate("CAND-001", ["OBS-001"])
     candidates_doc = _make_candidate_doc([cand])
 
-    plan1 = plan_reconciliation(candidates_doc, obs, _empty_snapshot(), _empty_problems())
-    plan2 = plan_reconciliation(candidates_doc, obs, _empty_snapshot(), _empty_problems())
+    plan1 = _plan(candidates_doc, obs, _empty_snapshot(), _empty_problems())
+    plan2 = _plan(candidates_doc, obs, _empty_snapshot(), _empty_problems())
 
     idem1 = {e.idempotency_key for e in plan1.change_events} | {
         e.idempotency_key for e in plan1.problem_events
@@ -416,7 +475,7 @@ def test_occurrence_id_is_stable_and_unique() -> None:
     cand_b = _make_candidate("CAND-B", ["OBS-002"], surface_value="POST /api/v1/orders", symptom="500 error")
     candidates_doc = _make_candidate_doc([cand_a, cand_b])
 
-    plan = plan_reconciliation(candidates_doc, obs, _empty_snapshot(), _empty_problems())
+    plan = _plan(candidates_doc, obs, _empty_snapshot(), _empty_problems())
 
     from assurance_agent.workflow.issues.events import (
         OccurrenceDetectedEvent,
@@ -438,7 +497,7 @@ def test_problem_id_prefix_is_prob() -> None:
     cand = _make_candidate("CAND-001", ["OBS-001"])
     candidates_doc = _make_candidate_doc([cand])
 
-    plan = plan_reconciliation(candidates_doc, obs, _empty_snapshot(), _empty_problems())
+    plan = _plan(candidates_doc, obs, _empty_snapshot(), _empty_problems())
 
     detected = [e for e in plan.problem_events if e.type == "problem_detected"]
     assert all(e.problem_id.startswith("PROB-") for e in detected)
@@ -450,7 +509,7 @@ def test_occurrence_links_correct_problem_id() -> None:
     cand = _make_candidate("CAND-001", ["OBS-001"])
     candidates_doc = _make_candidate_doc([cand])
 
-    plan = plan_reconciliation(candidates_doc, obs, _empty_snapshot(), _empty_problems())
+    plan = _plan(candidates_doc, obs, _empty_snapshot(), _empty_problems())
 
     detected_problem = next(e for e in plan.problem_events if e.type == "problem_detected")
     detected_change = next(e for e in plan.change_events if e.type == "occurrence_detected")
@@ -468,7 +527,7 @@ def test_regression_resets_problem_version() -> None:
     existing = _make_existing_problem(status="resolved", version=3)
     problems = _problems_with(existing)
 
-    plan = plan_reconciliation(
+    plan = _plan(
         candidates_doc, obs, _empty_snapshot(change_id="CH-REG", batch_id="BATCH-REG"), problems
     )
 
@@ -485,7 +544,7 @@ def test_occurrence_linked_has_correct_expected_version() -> None:
     existing = _make_existing_problem(status="triaged", version=4)
     problems = _problems_with(existing)
 
-    plan = plan_reconciliation(
+    plan = _plan(
         candidates_doc, obs, _empty_snapshot(change_id="CH-LINK", batch_id="BATCH-LINK"), problems
     )
 
@@ -505,7 +564,7 @@ def test_validation_rejects_unknown_observation_id() -> None:
     candidates_doc = _make_candidate_doc([cand])
 
     with pytest.raises(ReconciliationValidationError) as exc_info:
-        plan_reconciliation(candidates_doc, obs, _empty_snapshot(), _empty_problems())
+        _plan(candidates_doc, obs, _empty_snapshot(), _empty_problems())
 
     assert any("OBS-UNKNOWN" in e for e in exc_info.value.errors)
 
@@ -518,7 +577,7 @@ def test_validation_rejects_duplicate_candidate_id() -> None:
     candidates_doc = _make_candidate_doc([cand_a, cand_b])
 
     with pytest.raises(ReconciliationValidationError) as exc_info:
-        plan_reconciliation(candidates_doc, obs, _empty_snapshot(), _empty_problems())
+        _plan(candidates_doc, obs, _empty_snapshot(), _empty_problems())
 
     assert any("SAME-ID" in e for e in exc_info.value.errors)
 
@@ -530,7 +589,7 @@ def test_validation_rejects_unknown_possible_problem_id() -> None:
     candidates_doc = _make_candidate_doc([cand])
 
     with pytest.raises(ReconciliationValidationError) as exc_info:
-        plan_reconciliation(candidates_doc, obs, _empty_snapshot(), _empty_problems())
+        _plan(candidates_doc, obs, _empty_snapshot(), _empty_problems())
 
     assert any("PROB-nonexistent" in e for e in exc_info.value.errors)
 
@@ -560,7 +619,7 @@ def test_validation_rejects_incomplete_fingerprint_inputs_empty_symptom() -> Non
     candidates_doc = _make_candidate_doc([cand])
 
     with pytest.raises(ReconciliationValidationError) as exc_info:
-        plan_reconciliation(candidates_doc, obs, _empty_snapshot(), _empty_problems())
+        _plan(candidates_doc, obs, _empty_snapshot(), _empty_problems())
 
     assert exc_info.value.errors  # at least one error
 
@@ -573,7 +632,7 @@ def test_validation_all_or_nothing_valid_before_invalid() -> None:
     candidates_doc = _make_candidate_doc([cand_good, cand_bad])
 
     with pytest.raises(ReconciliationValidationError):
-        plan_reconciliation(candidates_doc, obs, _empty_snapshot(), _empty_problems())
+        _plan(candidates_doc, obs, _empty_snapshot(), _empty_problems())
 
 
 def test_validation_all_or_nothing_invalid_before_valid() -> None:
@@ -586,7 +645,7 @@ def test_validation_all_or_nothing_invalid_before_valid() -> None:
     candidates_doc = _make_candidate_doc([cand_bad, cand_good])
 
     with pytest.raises(ReconciliationValidationError):
-        plan_reconciliation(candidates_doc, obs, _empty_snapshot(), _empty_problems())
+        _plan(candidates_doc, obs, _empty_snapshot(), _empty_problems())
 
 
 def test_validation_multiple_errors_collected() -> None:
@@ -597,7 +656,7 @@ def test_validation_multiple_errors_collected() -> None:
     candidates_doc = _make_candidate_doc([cand_a, cand_b])
 
     with pytest.raises(ReconciliationValidationError) as exc_info:
-        plan_reconciliation(candidates_doc, obs, _empty_snapshot(), _empty_problems())
+        _plan(candidates_doc, obs, _empty_snapshot(), _empty_problems())
 
     assert len(exc_info.value.errors) >= 2
 
@@ -612,7 +671,7 @@ def test_duplicate_occurrence_id_from_identical_candidates() -> None:
     candidates_doc = _make_candidate_doc([cand_dup_a, cand_dup_b])
 
     with pytest.raises(ReconciliationValidationError):
-        plan_reconciliation(candidates_doc, obs, _empty_snapshot(), _empty_problems())
+        _plan(candidates_doc, obs, _empty_snapshot(), _empty_problems())
 
 
 # ---------------------------------------------------------------------------
@@ -634,7 +693,7 @@ def test_no_merge_suggestion_on_exact_fingerprint_link() -> None:
     )
     candidates_doc = _make_candidate_doc([cand], change_id="CH-EXACT", batch_id="BATCH-EXACT")
 
-    plan = plan_reconciliation(
+    plan = _plan(
         candidates_doc, obs, _empty_snapshot(change_id="CH-EXACT", batch_id="BATCH-EXACT"), problems
     )
 
@@ -653,9 +712,47 @@ def test_analysis_completed_has_correct_candidate_count() -> None:
     ]
     candidates_doc = _make_candidate_doc(cands)
 
-    plan = plan_reconciliation(candidates_doc, obs, _empty_snapshot(), _empty_problems())
+    plan = _plan(candidates_doc, obs, _empty_snapshot(), _empty_problems())
 
     completed = plan.change_events[0]
     assert completed.type == "issue_analysis_completed"
     assert completed.analysis_status.candidate_count == 2
     assert completed.analysis_status.status == "completed"
+
+
+def test_validation_rejects_forged_change_id() -> None:
+    """Candidate document change_id must match the trusted runtime change_id."""
+    obs = _make_observations("OBS-001")
+    candidates_doc = _make_candidate_doc(
+        [_make_candidate("CAND-001", ["OBS-001"])],
+        change_id="CH-FORGED",
+    )
+    with pytest.raises(ReconciliationValidationError) as exc_info:
+        _plan(candidates_doc, obs, expected_change_id="CH-001")
+    assert any("change_id" in e for e in exc_info.value.errors)
+
+
+def test_validation_rejects_digest_mismatch_against_manifest() -> None:
+    """Candidate evidence_bundle_digest must equal the trusted manifest digest."""
+    obs = _make_observations("OBS-001")
+    candidates_doc = _make_candidate_doc(
+        [_make_candidate("CAND-001", ["OBS-001"])],
+        evidence_bundle_digest="sha256:" + "c" * 64,
+    )
+    manifest = _make_manifest(digest="sha256:" + "a" * 64)
+    with pytest.raises(ReconciliationValidationError) as exc_info:
+        _plan(candidates_doc, obs, manifest=manifest)
+    assert any("evidence_bundle_digest" in e for e in exc_info.value.errors)
+
+
+def test_validation_rejects_batch_id_mismatch_against_manifest() -> None:
+    """Candidate/observation batch_id must match the trusted manifest batch."""
+    obs = _make_observations("OBS-001", batch_id="BATCH-OTHER")
+    candidates_doc = _make_candidate_doc(
+        [_make_candidate("CAND-001", ["OBS-001"])],
+        batch_id="BATCH-OTHER",
+    )
+    manifest = _make_manifest(batch_id="BATCH-001")
+    with pytest.raises(ReconciliationValidationError) as exc_info:
+        _plan(candidates_doc, obs, manifest=manifest)
+    assert any("batch_id" in e for e in exc_info.value.errors)

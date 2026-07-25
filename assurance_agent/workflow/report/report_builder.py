@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from assurance_agent.artifacts.models import (
     ChangeIssueSnapshot,
     FailureAnalysis,
+    IssueReconcileStatus,
     IssueReport,
     ProblemProjection,
     QualityGateResult,
@@ -113,19 +114,61 @@ def generate_report(project_root: Path, change_id: str) -> GenerateReportResult:
 def _derive_issue_report(change_base: Path, project_root: Path) -> IssueReport | None:
     """Load Change Issue snapshot and Project Problem projection; derive IssueReport.
 
-    Returns None when no Issue data exists (no snapshot file). Never raises; a
-    corrupt/missing file yields ``unknown`` risk rather than an exception.
-    Reading a 1.0 report does not look up any legacy Issue Markdown files.
+    Returns None when no Issue data exists (no snapshot and no reconcile status).
+    Never raises; a corrupt/missing file yields ``unknown`` risk rather than an
+    exception. Reading a 1.0 report does not look up any legacy Issue Markdown files.
+
+    Failed ``issue-reconcile-status.json`` is fail-visible even when the canonical
+    snapshot was never written: archive/report must not treat that as clear.
     """
+    reconcile_status = _load(
+        change_base / "inspect" / "issue-reconcile-status.json",
+        IssueReconcileStatus,
+    )
     snapshot = _load(change_base / "issues" / "snapshot.json", ChangeIssueSnapshot)
-    if snapshot is None:
+    if snapshot is None and reconcile_status is None:
         return None
 
     problems_path = project_root / "qa" / "issues" / "problems.json"
     projection = _load(problems_path, ProblemProjection)
 
+    if snapshot is None:
+        # Semantic rejection / incomplete reconcile with no canonical analysis.
+        return IssueReport(
+            analysis_status="failed",
+            project_sync_status="pending",
+            total_occurrences=0,
+            counts_by_status={},
+            counts_by_classification={},
+            counts_by_severity={},
+            new_count=0,
+            repeated_count=0,
+            regressed_count=0,
+            resolved_count=0,
+            accepted_risk_count=0,
+            not_an_issue_count=0,
+            issue_risk="unknown",
+            issue_risk_rationale=(
+                "Issue reconciliation failed or incomplete"
+                if reconcile_status is not None and reconcile_status.status == "failed"
+                else "Issue analysis failed or incomplete"
+            ),
+        )
+
+    if reconcile_status is not None and reconcile_status.status == "failed":
+        analysis_status_val = "failed"
+        project_sync_status_val = snapshot.project_sync_status
+        return _build_issue_report(
+            snapshot,
+            projection,
+            analysis_status_val,
+            project_sync_status_val,
+            "unknown",
+            "Issue reconciliation failed or incomplete",
+        )
+
     analysis_status_val = (
-        snapshot.analysis_status.status if snapshot.analysis_status is not None else "completed"
+        snapshot.analysis_status.status if snapshot.analysis_status is not None else "failed"
     )
     project_sync_status_val = snapshot.project_sync_status
 
