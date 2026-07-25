@@ -39,6 +39,7 @@ from assurance_agent.workflow.graph.task_runner import task_failure, task_with
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.orchestration.operations import BASELINE_REL, HEAL_STATUSES
 from assurance_agent.workflow.graph.handlers.retro_ops import retro_accept, retro_collect
+from assurance_agent.workflow.issues.operations import collect_observations_operation
 
 OperationResult = TaskResult
 OperationFn = Callable[[ExecutableTask, TaskWorkspace, RuntimeContext], OperationResult]
@@ -332,6 +333,7 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:stop": stop_operation,
         "operation:retro-collect": retro_collect,
         "operation:retro-accept": retro_accept,
+        "operation:collect-observations": collect_observations_operation,
     }
 
 

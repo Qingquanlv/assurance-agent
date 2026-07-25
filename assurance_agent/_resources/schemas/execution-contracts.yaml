@@ -481,6 +481,28 @@ contracts:
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
+  # ---- issue lifecycle -----------------------------------------------------
+  operation:collect-observations:
+    handler: operation
+    reads:
+      - change:execution/**
+      - change:cases/**
+      - change:facts/**
+      - change:review/**
+      - change:healing/**
+      - change:codegen/**
+    writes:
+      - change:inspect/observations.json
+      - change:inspect/issue-evidence-manifest.json
+      - change:issues/events.jsonl
+      - change:issues/snapshot.json
+    authorization_writes:
+      - change:inspect/observations.json
+      - change:inspect/issue-evidence-manifest.json
+      - change:issues/events.jsonl
+      - change:issues/snapshot.json
+    retryable_errors: [timeout, transport]
+
   # ---- retro workflow -------------------------------------------------------
   operation:retro-collect:
     handler: operation
