@@ -679,3 +679,31 @@ contracts:
     exclusive:
       - project:improvement-registry
     retryable_errors: [conflict, transport]
+
+  operation:load-improvement-review-context:
+    handler: operation
+    reads:
+      - project:qa/improvements/improvements.json
+      - project:qa/improvements/review-queue.json
+    writes:
+      - change:improvement-review/**
+    authorization_writes:
+      - change:improvement-review/**
+    retryable_errors: []
+
+  operation:apply-improvement-review:
+    handler: operation
+    reads:
+      - change:improvement-review/**
+      - project:qa/improvements/**
+    writes:
+      - change:improvement-review/**
+      - project:qa/improvements/**
+    authorization_writes:
+      - change:improvement-review/**
+      - project:qa/improvements/**
+    synchronized:
+      - project:qa/improvements/**
+    exclusive:
+      - project:improvement-registry
+    retryable_errors: [conflict, transport]

@@ -141,6 +141,45 @@ class ImprovementReviewQueue(BaseModel):
     improvement_ids: tuple[str, ...]
 
 
+class ImprovementReviewAdvice(BaseModel):
+    """Delivery-specific display-only advice for human Improvement review.
+
+    Never fed into canonical ledger events; apply must ignore these fields.
+    """
+
+    model_config = _FROZEN
+
+    delivery: DeliveryKind
+    checklist: tuple[str, ...] = ()
+    memory_patch_path: str | None = None
+    change_draft_outline: str | None = None
+    knowledge_delta_summary: str | None = None
+
+
+class ImprovementReviewContext(BaseModel):
+    """Immutable review-session snapshot bound to one Improvement.
+
+    Holds Improvement identity and proposal fields only. Source refs are
+    immutable IDs; Problem snapshots are never expanded into writable fields.
+    """
+
+    model_config = _FROZEN
+
+    improvement_id: str = Field(min_length=1)
+    expected_improvement_version: int = Field(ge=1)
+    state: ImprovementState
+    kind: ImprovementKind
+    delivery: DeliveryKind
+    source_refs: ImprovementSourceRefs
+    target: str = Field(min_length=1)
+    proposed_change: str = Field(min_length=1)
+    verification: ImprovementVerification
+    risk: Literal["low", "medium", "high"]
+    confidence: Literal["low", "medium", "high"]
+    allowed_actions: tuple[str, ...]
+    advice: ImprovementReviewAdvice
+
+
 class ImprovementCandidateDocument(BaseModel):
     model_config = _FROZEN
 

@@ -43,6 +43,8 @@ params:
   until: {type: str, default: ""}
   problem_id: {type: str, default: ""}
   review_id: {type: str, default: ""}
+  improvement_id: {type: str, default: ""}
+  improvement_review_id: {type: str, default: ""}
 
 entrypoints:
   full:
@@ -76,6 +78,10 @@ entrypoints:
   issue-reconcile:
     graph: issue-reconcile-workflow
     restart: repeatable
+  improvement-review:
+    graph: improvement-review-workflow
+    restart: repeatable
+    allow: "params.improvement_id != '' and params.improvement_review_id != ''"
 
 policies:
   retry:
@@ -1112,6 +1118,53 @@ graphs:
           stop: complete-exhausted
           reject: complete-failed
         default: complete-failed
+
+  # ---- improvement-review-workflow: human Improvement review (repeatable) -
+  improvement-review-workflow:
+    # Non-blocking, repeatable human review of a single Improvement.
+    # load-improvement writes the review context; human-interrupt captures
+    # the decision; apply-review appends the canonical event to the project
+    # Improvement ledger only (never qa/issues/**).
+    max_supersteps: 6
+    nodes:
+      load-improvement:
+        uses: operation:load-improvement-review-context
+        retry: never
+        timeout: local-operation
+
+      human-interrupt:
+        uses: builtin:interrupt
+        interrupt:
+          reason: "Review improvement and take action"
+          checkpoint: improvement-review
+          bind: audited_gate_read
+          actions:
+            - approve
+            - reject
+            - request_rework
+            - supersede
+            - stop
+
+      apply-review:
+        uses: operation:apply-improvement-review
+        retry: project-sync
+        timeout: cli
+
+    edges:
+      - {from: START, to: load-improvement}
+      - {from: load-improvement, to: human-interrupt}
+      - {from: apply-review, to: END}
+
+    routes:
+      - from: human-interrupt
+        select: "resume.action"
+        cases:
+          approve: apply-review
+          reject: apply-review
+          request_rework: apply-review
+          supersede: apply-review
+          stop: STOP
+        default: STOP
 
   # ---- issue-review-workflow: human Problem review (repeatable) --------
   issue-review-workflow:

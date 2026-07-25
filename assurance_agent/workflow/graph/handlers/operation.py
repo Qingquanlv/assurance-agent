@@ -43,6 +43,10 @@ from assurance_agent.workflow.graph.handlers.retro_ops import (
     retro_accept,
     retro_collect,
 )
+from assurance_agent.workflow.improvements.review import (
+    apply_improvement_review_operation,
+    load_improvement_review_context_operation,
+)
 from assurance_agent.workflow.issues.operations import (
     apply_problem_review_operation,
     collect_observations_operation,
@@ -354,6 +358,8 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:reconcile-issues": reconcile_issues_operation,
         "operation:load-problem-review-context": load_problem_review_context_operation,
         "operation:apply-problem-review": apply_problem_review_operation,
+        "operation:load-improvement-review-context": load_improvement_review_context_operation,
+        "operation:apply-improvement-review": apply_improvement_review_operation,
     }
 
 
