@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-import assurance_agent.workflow.graph.runtime  # noqa: F401 — install Task 12 planner patches
 from assurance_agent.workflow.graph.compiler import canonical_digest, compile_workflow, resolve_params
 from assurance_agent.workflow.core.graph_events import NodeSkippedEvent
 from assurance_agent.workflow.graph.contracts import (
@@ -577,12 +576,29 @@ def test_healing_completion_and_interrupt_terminals() -> None:
         "complete-not-needed",
         "complete-resolved",
         "complete-exhausted",
+        "complete-skipped",
         "complete-failed",
     ):
         assert healing.nodes[status_node].uses == "operation:record-healing-status"
     interrupt = healing.nodes["safety-interrupt"].interrupt
     assert interrupt is not None
     assert set(interrupt.actions) == {"fix_and_proceed", "accept_risk", "stop"}
+
+
+def test_healing_empty_proposal_is_skipped_not_failed() -> None:
+    """No safe proposal is a valid manual outcome, not an operational healing failure."""
+    compiled, _ = _load_compiled()
+    healing = compiled.schema.graphs["healing"]
+
+    skipped = healing.nodes["complete-skipped"]
+    assert skipped.uses == "operation:record-healing-status"
+    assert skipped.with_ == {"status": "skipped"}
+    false_edge = next(
+        edge
+        for edge in healing.edges
+        if edge.from_ == "proposal-eligible" and edge.when == "node('proposal-eligible').value == false"
+    )
+    assert false_edge.to == "complete-skipped"
 
 
 # ---------------------------------------------------------------------------

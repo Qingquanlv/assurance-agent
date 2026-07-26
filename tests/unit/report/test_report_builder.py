@@ -228,6 +228,165 @@ def _seed_empty_problem_projection(project_root: Path) -> None:
     )
 
 
+def _issue_occurrence(occurrence_id: str, problem_id: str) -> dict[str, object]:
+    return {
+        "occurrence_id": occurrence_id,
+        "change_id": "CH-1",
+        "batch_id": "20260715-000000",
+        "observation_ids": [f"OBS-{occurrence_id}"],
+        "problem_id": problem_id,
+        "provisional_assessment": {
+            "classification": "product_bug",
+            "severity": "high",
+            "authority": "llm_provisional",
+            "root_cause_hypothesis": "hand-checked test hypothesis",
+        },
+        "analysis": {
+            "evidence_bundle_digest": "sha256:evidence",
+            "analyzer": "test-analyzer",
+            "prompt_version": "1.0",
+            "candidate_digest": "sha256:candidate",
+        },
+    }
+
+
+def _problem(
+    problem_id: str,
+    *,
+    first_change_id: str,
+    first_occurrence_id: str,
+    current_occurrence_id: str,
+) -> dict[str, object]:
+    occurrences = (
+        [current_occurrence_id]
+        if first_occurrence_id == current_occurrence_id
+        else [first_occurrence_id, current_occurrence_id]
+    )
+    return {
+        "problem_id": problem_id,
+        "fingerprint": {"version": "1", "digest": f"sha256:{problem_id}"},
+        "title": f"Problem {problem_id}",
+        "assessment": {
+            "classification": "product_bug",
+            "severity": "high",
+            "authority": "llm_provisional",
+            "root_cause_hypothesis": "hand-checked test hypothesis",
+        },
+        "status": "detected",
+        "first_seen": {
+            "change_id": first_change_id,
+            "occurrence_id": first_occurrence_id,
+        },
+        "last_seen": {
+            "change_id": "CH-1",
+            "occurrence_id": current_occurrence_id,
+        },
+        "occurrences": occurrences,
+        "verification_request": None,
+        "resolution": None,
+        "version": len(occurrences),
+    }
+
+
+def test_generate_report_distinguishes_new_and_repeated_occurrences(tmp_path: Path) -> None:
+    """An exact-link recurrence must not be reported as a newly created Problem."""
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    change_dir = tmp_path / "qa" / "changes" / change_id
+    new_occ = _issue_occurrence("OCC-new", "PROB-new")
+    repeated_occ = _issue_occurrence("OCC-repeat", "PROB-repeat")
+    _seed_issue_snapshot(
+        change_dir,
+        occurrences=[new_occ, repeated_occ],
+    )
+    problems_dir = tmp_path / "qa" / "issues"
+    problems_dir.mkdir(parents=True, exist_ok=True)
+    (problems_dir / "problems.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "generated_at": "2026-07-25T10:00:00Z",
+                "problems": [
+                    _problem(
+                        "PROB-new",
+                        first_change_id="CH-1",
+                        first_occurrence_id="OCC-new",
+                        current_occurrence_id="OCC-new",
+                    ),
+                    _problem(
+                        "PROB-repeat",
+                        first_change_id="CH-older",
+                        first_occurrence_id="OCC-old",
+                        current_occurrence_id="OCC-repeat",
+                    ),
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    inspect_change(tmp_path, change_id)
+
+    result = generate_report(tmp_path, change_id)
+
+    assert result.report.issues is not None
+    assert result.report.issues.total_occurrences == 2
+    assert result.report.issues.new_count == 1
+    assert result.report.issues.repeated_count == 1
+
+
+def test_generate_report_counts_regression_separately_from_recurrence(tmp_path: Path) -> None:
+    """A problem_regressed event must not inflate the repeated occurrence count."""
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    change_dir = tmp_path / "qa" / "changes" / change_id
+    regressed_occ = _issue_occurrence("OCC-regressed", "PROB-regressed")
+    _seed_issue_snapshot(change_dir, occurrences=[regressed_occ])
+    problems_dir = tmp_path / "qa" / "issues"
+    problems_dir.mkdir(parents=True, exist_ok=True)
+    (problems_dir / "problems.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "generated_at": "2026-07-25T10:00:00Z",
+                "problems": [
+                    _problem(
+                        "PROB-regressed",
+                        first_change_id="CH-older",
+                        first_occurrence_id="OCC-old",
+                        current_occurrence_id="OCC-regressed",
+                    )
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (problems_dir / "events.jsonl").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "seq": 1,
+                "event_id": "EVT-regressed",
+                "idempotency_key": "problem_regressed:PROB-regressed:OCC-regressed",
+                "ts": "2026-07-25T10:00:00Z",
+                "evidence_digest": "sha256:evidence",
+                "problem_id": "PROB-regressed",
+                "expected_problem_version": 2,
+                "type": "problem_regressed",
+                "occurrence_id": "OCC-regressed",
+                "change_id": "CH-1",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    inspect_change(tmp_path, change_id)
+
+    result = generate_report(tmp_path, change_id)
+
+    assert result.report.issues is not None
+    assert result.report.issues.new_count == 0
+    assert result.report.issues.repeated_count == 0
+    assert result.report.issues.regressed_count == 1
+
+
 def test_generate_report_emits_schema_version_11(tmp_path: Path) -> None:
     change_id = _seed_change(tmp_path, _api(None), _cov())
     inspect_change(tmp_path, change_id)

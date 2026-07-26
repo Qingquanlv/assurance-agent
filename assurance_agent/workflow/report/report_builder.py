@@ -27,6 +27,11 @@ from assurance_agent.artifacts.models import (
 from assurance_agent.change_location import resolve_change
 from assurance_agent.workflow.core.events import Ledger
 from assurance_agent.workflow.execution.evidence import load_execution_evidence
+from assurance_agent.workflow.issues.events import (
+    LedgerIntegrityError,
+    ProblemRegressedEvent,
+    read_problem_events,
+)
 from assurance_agent.workflow.report.quality_score import ScoreDimension, compute_quality_score
 
 _NO_DATA = "No data"
@@ -47,6 +52,21 @@ _ACTIVE_PROBLEM_STATUSES = frozenset(
 _SEVERITY_RANK: dict[str, int] = {"critical": 4, "high": 3, "medium": 2, "low": 1}
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
+
+
+def _regressed_occurrence_ids(project_root: Path, change_id: str) -> set[str]:
+    events_path = project_root / "qa" / "issues" / "events.jsonl"
+    if not events_path.is_file():
+        return set()
+    try:
+        events = read_problem_events(events_path)
+    except (OSError, LedgerIntegrityError):
+        return set()
+    return {
+        event.occurrence_id
+        for event in events
+        if isinstance(event, ProblemRegressedEvent) and event.change_id == change_id
+    }
 
 
 class GenerateReportResult(BaseModel):
@@ -207,11 +227,14 @@ def _derive_issue_report(change_base: Path, project_root: Path) -> IssueReport |
     active_severities: list[str] = []
     new_count = repeated_count = regressed_count = 0
     resolved_count = accepted_risk_count = not_an_issue_count = 0
+    linked_problems = {
+        prob.problem_id: prob
+        for prob in projection.problems
+        if any(occ_id in change_occ_ids for occ_id in prob.occurrences)
+    }
+    regressed_occurrence_ids = _regressed_occurrence_ids(project_root, snapshot.change_id)
 
-    for prob in projection.problems:
-        # Only consider problems where at least one occurrence belongs to this change.
-        if not any(occ_id in change_occ_ids for occ_id in prob.occurrences):
-            continue
+    for prob in linked_problems.values():
         st = prob.status
         counts_by_status[st] = counts_by_status.get(st, 0) + 1
         cls = prob.assessment.classification
@@ -227,8 +250,19 @@ def _derive_issue_report(change_base: Path, project_root: Path) -> IssueReport |
         elif st == "resolved":
             resolved_count += 1
 
-    # Summarize occurrences vs earlier batches.
-    new_count = len(snapshot.occurrences)
+    # A Problem is new only for the occurrence that created it. Exact links to
+    # any existing Problem (including an earlier batch of the same Change) are
+    # repeated occurrences.
+    for occurrence in snapshot.occurrences:
+        problem = linked_problems.get(occurrence.problem_id)
+        if problem is None:
+            continue
+        if occurrence.occurrence_id in regressed_occurrence_ids:
+            regressed_count += 1
+        elif problem.first_seen.occurrence_id == occurrence.occurrence_id:
+            new_count += 1
+        else:
+            repeated_count += 1
 
     if not active_severities:
         issue_risk = "clear"

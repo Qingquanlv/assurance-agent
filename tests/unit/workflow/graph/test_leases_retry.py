@@ -33,7 +33,7 @@ from assurance_agent.workflow.graph.leases import (
     recover_running_tasks,
     retry_delay_seconds,
 )
-from assurance_agent.workflow.graph.models import ExecutableTask, GraphProjection
+from assurance_agent.workflow.graph.models import ExecutableTask, GraphProjection, TaskProjection
 from assurance_agent.workflow.graph.schema_v2 import BackoffDef, RetryPolicyDef, TimeoutPolicyDef
 
 T0 = datetime(2026, 7, 19, 12, 0, 0, tzinfo=timezone.utc)
@@ -258,6 +258,33 @@ def test_fresh_task_starts_attempt_one(tmp_path: Path) -> None:
     projection = _project(change)
     decision = next_attempt_decision(task=_task(), projection=projection, now=T0)
     assert decision == AttemptDecision(kind="start", attempt_number=1)
+
+
+def test_resolved_interrupt_restarts_same_task_at_next_attempt() -> None:
+    task = _task()
+    interrupted = TaskProjection(
+        task_id=task.task_id,
+        node_id=task.node_id,
+        status="interrupted",
+        attempts_used=1,
+        latest_attempt_id=f"{task.task_id}-a1",
+    )
+    projection = GraphProjection(
+        invocation_id="inv-1",
+        entrypoint="full",
+        checkpoint_ns="inv-1",
+        structural_path="main",
+        graph_digest="gd-1",
+        contract_digests={},
+        params={},
+        root_tree_id="tree-0",
+        current_tree_id="tree-0",
+        tasks={task.task_id: interrupted},
+    )
+
+    decision = next_attempt_decision(task=task, projection=projection, now=T0)
+
+    assert decision == AttemptDecision(kind="start", attempt_number=2)
 
 
 def test_error_retries_only_when_in_policy_and_contract(tmp_path: Path) -> None:

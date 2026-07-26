@@ -26,7 +26,13 @@ from assurance_agent.workflow.graph.models import (
     RuntimeContext,
     TaskResult,
 )
-from assurance_agent.workflow.graph.runtime import GraphRuntime
+from assurance_agent.workflow.graph.planner import PlanError
+from assurance_agent.workflow.graph import runtime as runtime_mod
+from assurance_agent.workflow.graph.runtime import (
+    GraphDefinitionChanged,
+    GraphRuntime,
+    GraphRuntimeError,
+)
 from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
 from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner, build_default_node_runner
@@ -304,6 +310,41 @@ def test_minimal_graph_run_and_fresh_status(tmp_path: Path) -> None:
 
     fresh_runtime = _build_runtime(project, compiled, contracts)
     assert fresh_runtime.status(result.invocation_id).model_dump() == result.status.model_dump()
+
+
+def test_runtime_maps_structured_plan_error_without_reading_its_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _make_project(tmp_path)
+    compiled, contracts = _minimal_compiled()
+    runtime = _build_runtime(project, compiled, contracts)
+
+    def reject_plan(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise PlanError("compiled pins drifted", error_kind="graph_definition_changed")
+
+    monkeypatch.setattr(runtime_mod, "plan_superstep", reject_plan)
+
+    with pytest.raises(GraphDefinitionChanged, match="compiled pins drifted"):
+        runtime.run(compiled, "full", _context(project))
+
+
+def test_runtime_does_not_infer_plan_error_kind_from_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _make_project(tmp_path)
+    compiled, contracts = _minimal_compiled()
+    runtime = _build_runtime(project, compiled, contracts)
+
+    def reject_plan(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise PlanError("graph_definition_changed appeared in ordinary diagnostics")
+
+    monkeypatch.setattr(runtime_mod, "plan_superstep", reject_plan)
+
+    with pytest.raises(GraphRuntimeError) as caught:
+        runtime.run(compiled, "full", _context(project))
+    assert type(caught.value) is GraphRuntimeError
 
 
 def test_crash_after_attempt_started_abandons_and_retries(tmp_path: Path) -> None:

@@ -86,7 +86,7 @@ def _sha256_text(text: str) -> str:
 
 
 def _sha256_path(path: Path) -> str:
-    """SHA-256 of redacted file text; returns empty-string digest if unreadable."""
+    """SHA-256 of redacted file text; unreadable evidence is a hard failure."""
     try:
         raw = path.read_bytes()
         try:
@@ -95,8 +95,8 @@ def _sha256_path(path: Path) -> str:
             # Binary file (e.g. video): hash raw bytes, no redaction needed.
             return _sha256_bytes(raw)
         return _sha256_text(text)
-    except OSError:
-        return _sha256_bytes(b"")
+    except OSError as exc:
+        raise EvidenceError(f"referenced evidence file unreadable: {path}") from exc
 
 
 def _utc_now() -> str:
@@ -114,6 +114,58 @@ def _is_workaround_skip(message: str) -> bool:
 # Prefix for "sha256:<hex>" format used in digest fields.
 def _fmt_digest(hex_digest: str) -> str:
     return f"sha256:{hex_digest}"
+
+
+def _normalize_evidence_ref(ref: str, *, change_dir: Path, change_id: str) -> str:
+    """Return a durable Change-relative evidence ref and require its target to exist."""
+    clean_ref, anchor, fragment = ref.partition("#")
+    normalized_input = clean_ref.replace("\\", "/")
+    task_marker = f"/qa/changes/{change_id}/"
+
+    if task_marker in normalized_input:
+        relative = Path(normalized_input.rsplit(task_marker, 1)[1])
+    else:
+        path = Path(clean_ref)
+        if path.is_absolute():
+            try:
+                relative = path.relative_to(change_dir)
+            except ValueError as exc:
+                raise EvidenceError(
+                    f"referenced evidence path is outside Change workspace: {clean_ref}"
+                ) from exc
+        else:
+            relative = path
+
+    if relative.is_absolute() or ".." in relative.parts:
+        raise EvidenceError(f"invalid referenced evidence path: {clean_ref}")
+    relative_ref = relative.as_posix()
+    evidence_path = change_dir / relative
+    if not evidence_path.is_file():
+        raise EvidenceError(f"referenced evidence file missing: {relative_ref}")
+    resolved_change_dir = change_dir.resolve()
+    try:
+        resolved_evidence = evidence_path.resolve(strict=True)
+        resolved_evidence.relative_to(resolved_change_dir)
+    except ValueError as exc:
+        raise EvidenceError(
+            f"referenced evidence path resolves outside Change workspace: {relative_ref}"
+        ) from exc
+    except OSError as exc:
+        raise EvidenceError(f"referenced evidence file unreadable: {relative_ref}") from exc
+    return f"{relative_ref}{anchor}{fragment}" if anchor else relative_ref
+
+
+def _normalize_observation_evidence(
+    observations: list[Observation], *, change_dir: Path, change_id: str
+) -> list[Observation]:
+    normalized: list[Observation] = []
+    for observation in observations:
+        refs = [
+            _normalize_evidence_ref(ref, change_dir=change_dir, change_id=change_id)
+            for ref in observation.evidence_refs
+        ]
+        normalized.append(observation.model_copy(update={"evidence_refs": list(dict.fromkeys(refs))}))
+    return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -674,9 +726,7 @@ def collect_observations(
             continue
         rel = manifest.result_files.get(target_name)
         if not rel:
-            raise EvidenceError(
-                f"selected {target_name} result path missing from execution manifest"
-            )
+            raise EvidenceError(f"selected {target_name} result path missing from execution manifest")
         abs_path = execution_dir / rel
         if not abs_path.is_file():
             raise EvidenceError(f"selected {target_name} result file missing: {rel}")
@@ -740,18 +790,14 @@ def collect_observations(
     if manifest.selected_targets.performance:
         perf_rel = manifest.result_files.get("performance")
         if not perf_rel:
-            raise EvidenceError(
-                "selected performance result path missing from execution manifest"
-            )
+            raise EvidenceError("selected performance result path missing from execution manifest")
         else:
             perf_path = execution_dir / perf_rel
             if not perf_path.is_file():
                 raise EvidenceError(f"selected performance result file missing: {perf_rel}")
             else:
                 try:
-                    perf_data = PerformanceResult.model_validate_json(
-                        perf_path.read_text(encoding="utf-8")
-                    )
+                    perf_data = PerformanceResult.model_validate_json(perf_path.read_text(encoding="utf-8"))
                     if perf_data.batch_id != batch_id or perf_data.change_id != change_id:
                         raise ValueError("identity mismatch with execution manifest")
                     observations.extend(
@@ -805,7 +851,16 @@ def collect_observations(
     )
 
     # ------------------------------------------------------------------
-    # 8. Build evidence manifest
+    # 8. Normalize evidence references before freezing Observations
+    # ------------------------------------------------------------------
+    observations = _normalize_observation_evidence(
+        observations,
+        change_dir=change_dir,
+        change_id=change_id,
+    )
+
+    # ------------------------------------------------------------------
+    # 9. Build evidence manifest
     # ------------------------------------------------------------------
     ev_manifest = _build_evidence_manifest(
         change_id=change_id,

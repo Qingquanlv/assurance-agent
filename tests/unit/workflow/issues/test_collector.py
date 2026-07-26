@@ -19,6 +19,7 @@ Coverage:
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -481,6 +482,14 @@ def test_traces_screenshots_videos_in_evidence_refs(tmp_path: Path) -> None:
             ),
         ],
     )
+    for rel, content in (
+        ("execution/runs/20260725-100007/traces/api.zip", b"trace"),
+        ("execution/runs/20260725-100007/screenshots/api.png", b"screenshot"),
+        ("execution/runs/20260725-100007/videos/api.mp4", b"video"),
+    ):
+        artifact = change_dir / rel
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(content)
 
     result = collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
 
@@ -489,6 +498,102 @@ def test_traces_screenshots_videos_in_evidence_refs(tmp_path: Path) -> None:
     assert any("traces" in r for r in obs.evidence_refs)
     assert any("screenshots" in r for r in obs.evidence_refs)
     assert any("videos" in r for r in obs.evidence_refs)
+
+
+def test_task_workspace_evidence_ref_is_normalized_to_canonical_change_path(
+    tmp_path: Path,
+) -> None:
+    """Moving execution out of a task workspace must not leave dead evidence links."""
+    change_id = "CH-normalize-task-ref"
+    change_dir = tmp_path / change_id
+    batch_id = "20260725-100007"
+    canonical_rel = f"execution/runs/{batch_id}/raw/api.log"
+    canonical_log = change_dir / canonical_rel
+    canonical_log.parent.mkdir(parents=True, exist_ok=True)
+    canonical_log.write_text("canonical api evidence\n", encoding="utf-8")
+    stale_task_ref = change_dir / ".graph-runtime/tasks/task-123/qa/changes" / change_id / canonical_rel
+    _write_manifest(change_dir, batch_id=batch_id)
+    _write_api_result(
+        change_dir,
+        batch_id,
+        cases=[
+            _make_case(
+                "API-001",
+                "failed",
+                message="AssertionError: expected 4xx, received 500",
+                raw_log_ref=str(stale_task_ref),
+            )
+        ],
+        status="failed",
+    )
+
+    result = collect_observations(
+        change_dir,
+        change_id,
+        clock=lambda: "2026-07-25T10:00:00Z",
+    )
+
+    assert result.observations[0].evidence_refs == [
+        f"execution/runs/{batch_id}/api-result.json",
+        canonical_rel,
+    ]
+    manifest_entry = next(entry for entry in result.manifest.entries if entry.path == canonical_rel)
+    expected_digest = hashlib.sha256(b"canonical api evidence\n").hexdigest()
+    assert manifest_entry.digest == f"sha256:{expected_digest}"
+
+
+def test_missing_declared_case_evidence_is_a_hard_failure(tmp_path: Path) -> None:
+    """A missing evidence file must not be frozen as the empty-file digest."""
+    change_id = "CH-missing-case-evidence"
+    change_dir = tmp_path / change_id
+    batch_id = "20260725-100007"
+    _write_manifest(change_dir, batch_id=batch_id)
+    _write_api_result(
+        change_dir,
+        batch_id,
+        cases=[
+            _make_case(
+                "API-001",
+                "failed",
+                message="AssertionError: expected 4xx, received 500",
+                raw_log_ref="execution/runs/20260725-100007/raw/missing.log",
+            )
+        ],
+        status="failed",
+    )
+
+    with pytest.raises(EvidenceError, match="referenced evidence file missing"):
+        collect_observations(change_dir, change_id)
+
+
+def test_symlinked_evidence_cannot_escape_change_workspace(tmp_path: Path) -> None:
+    """A Change-relative ref must not hash a symlink target outside the Change."""
+    change_id = "CH-symlink-escape"
+    change_dir = tmp_path / change_id
+    batch_id = "20260725-100007"
+    outside_log = tmp_path / "outside-api.log"
+    outside_log.write_text("outside evidence\n", encoding="utf-8")
+    escaped_rel = f"execution/runs/{batch_id}/raw/api.log"
+    escaped_log = change_dir / escaped_rel
+    escaped_log.parent.mkdir(parents=True, exist_ok=True)
+    escaped_log.symlink_to(outside_log)
+    _write_manifest(change_dir, batch_id=batch_id)
+    _write_api_result(
+        change_dir,
+        batch_id,
+        cases=[
+            _make_case(
+                "API-001",
+                "failed",
+                message="AssertionError: expected 4xx, received 500",
+                raw_log_ref=escaped_rel,
+            )
+        ],
+        status="failed",
+    )
+
+    with pytest.raises(EvidenceError, match="outside Change workspace"):
+        collect_observations(change_dir, change_id)
 
 
 # ---------------------------------------------------------------------------

@@ -1409,8 +1409,9 @@ def test_pending_interrupt_outranks_ready_tasks(tmp_path: Path) -> None:
 def test_graph_digest_drift_fails_closed(tmp_path: Path) -> None:
     compiled = _compile(DIAMOND)
     projection = _projection(compiled, graph_digest="0" * 64)
-    with pytest.raises(PlanError, match="graph_definition_changed"):
+    with pytest.raises(PlanError, match="graph_definition_changed") as caught:
         _plan(compiled, projection, tmp_path)
+    assert caught.value.error_kind == "graph_definition_changed"
 
 
 def test_checkpoint_id_tracks_latest_or_bootstrap(tmp_path: Path) -> None:

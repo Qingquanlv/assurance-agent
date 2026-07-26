@@ -736,6 +736,7 @@ class Scheduler:
                             task=task,
                             interrupt=result.interrupt,
                             event_schema_version=schema_version,
+                            checkpoint_ns=result.interrupt.checkpoint_ns,
                         )
                     )
             return _SettledAttempt(task_id=task.task_id, status="interrupted", write_set_id=write_set_id)
@@ -755,6 +756,9 @@ class Scheduler:
         result: TaskResult,
         workspace: TaskWorkspace,
     ) -> str | None:
+        if result.status == "interrupted" and result.write_set_id is None:
+            # Nested interrupts publish an audited view, not a partial task write-set.
+            return None
         if result.write_set_id is not None:
             return result.write_set_id
         if self._is_side_effect_free(task):

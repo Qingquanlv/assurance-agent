@@ -142,7 +142,10 @@ def next_attempt_decision(
     if proj.status == "running":
         # 未到期 attempt 绝不重复执行；orphan 由恢复分类（adopt/wait/abandon）处理。
         return AttemptDecision(kind="wait", reason="attempt still running; recovery classification owns it")
-    if proj.status in ("succeeded", "interrupted"):
+    if proj.status == "interrupted":
+        # 人工决策解除 interrupt 后，planner 会重建同一个 task；attempt 编号继续递增。
+        return AttemptDecision(kind="start", attempt_number=max(proj.attempts_used, 1) + 1)
+    if proj.status == "succeeded":
         raise ValueError(
             f"next_attempt_decision requires a pending/failed/abandoned task; {task.task_id} is {proj.status}"
         )

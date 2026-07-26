@@ -113,8 +113,15 @@ from assurance_agent.workflow.orchestration.dsl import (
 )
 
 
+PlanErrorKind = Literal["plan_error", "graph_definition_changed"]
+
+
 class PlanError(AaError):
-    """Plan 阶段 fail closed：结构危险、输入损坏或 reducer 契约被破坏。"""
+    """Plan 阶段 fail closed，并携带供 runtime 判别的稳定错误类型。"""
+
+    def __init__(self, message: str, *, error_kind: PlanErrorKind = "plan_error") -> None:
+        super().__init__(message)
+        self.error_kind = error_kind
 
 
 _DEFAULT_RETRY = RetryPolicyDef(max_attempts=1)
@@ -201,10 +208,14 @@ def plan_superstep(
     if projection.graph_digest != compiled.digest:
         raise PlanError(
             "graph_definition_changed: projection digest "
-            f"{projection.graph_digest} != compiled digest {compiled.digest}"
+            f"{projection.graph_digest} != compiled digest {compiled.digest}",
+            error_kind="graph_definition_changed",
         )
     if projection.contract_digests != compiled.contract_digests:
-        raise PlanError("graph_definition_changed: contract digests drifted from compiled pinning")
+        raise PlanError(
+            "graph_definition_changed: contract digests drifted from compiled pinning",
+            error_kind="graph_definition_changed",
+        )
     if projection.supersteps >= graph.max_supersteps:
         return result(
             terminal="fail",
@@ -380,10 +391,13 @@ def _reduce(reducer: str, current: object, value: object) -> object:
 
 def _resolve_graph(compiled: CompiledWorkflow, projection: GraphProjection) -> CompiledGraph:
     if projection.parent_invocation_id is not None:
-        raise PlanError(
-            "nested subgraph invocations are planned by the child runtime (Task 12); "
-            f"invocation {projection.invocation_id} has parent {projection.parent_invocation_id}"
-        )
+        graph = compiled.graphs.get(projection.entrypoint)
+        if graph is None:
+            raise PlanError(
+                f"child invocation {projection.invocation_id} references unknown graph "
+                f"'{projection.entrypoint}'"
+            )
+        return graph
     entrypoint = compiled.entrypoints.get(projection.entrypoint)
     if entrypoint is None:
         raise PlanError(f"projection references unknown entrypoint '{projection.entrypoint}'")
@@ -411,6 +425,9 @@ def _build_scope(
         "params": dict(projection.params),
         "state": dict(projection.state_values),
     }
+    resume_action = _latest_resolved_resume_action(projection)
+    if resume_action is not None:
+        variables["resume"] = {"action": resume_action}
     reads: dict[str, str] = {}
     for symbol in sorted(graph.artifact_symbols):
         logical_path = graph.artifact_symbols[symbol]
@@ -445,6 +462,60 @@ def _build_scope(
 
 # ---------------------------------------------------------------------------
 # outcome seeding 与 token 传递
+
+
+def _latest_resolved_resume_action(projection: GraphProjection) -> str | None:
+    resolved = [
+        interrupt
+        for interrupt in projection.interrupts.values()
+        if interrupt.resolved_action is not None and interrupt.checkpoint_ns == projection.checkpoint_ns
+    ]
+    if not resolved:
+        return None
+    return sorted(resolved, key=lambda item: item.interrupt_id)[-1].resolved_action
+
+
+def _node_interrupt_resolved(projection: GraphProjection, node_id: str) -> bool:
+    return any(
+        interrupt.node_id == node_id and interrupt.resolved_action is not None
+        for interrupt in projection.interrupts.values()
+    )
+
+
+def _imported_task_id(structural_path: str, node_id: str) -> str:
+    return f"{structural_path}:{node_id}"
+
+
+def _root_invocation_id(projection: GraphProjection) -> str:
+    head, _, _ = projection.checkpoint_ns.partition("/")
+    return head or projection.invocation_id
+
+
+def _overlay_imported_outcomes(
+    graph: CompiledGraph,
+    projection: GraphProjection,
+    context: RuntimeContext,
+    outcomes: dict[str, _Outcome],
+    retry: list[ExecutableTask],
+) -> list[ExecutableTask]:
+    """Honor root ``task_imported`` records inside nested subgraph projections."""
+    from assurance_agent.workflow.graph.checkpoint import project_invocation
+
+    root_id = _root_invocation_id(projection)
+    root_projection = (
+        projection if root_id == projection.invocation_id else project_invocation(context.change_dir, root_id)
+    )
+    imported_nodes: set[str] = set()
+    for nid in graph.declaration_order:
+        imported = root_projection.tasks.get(_imported_task_id(projection.structural_path, nid))
+        if imported is None or imported.status != "succeeded":
+            continue
+        outcome = outcomes.get(nid)
+        if outcome is None or outcome.status == "succeeded":
+            continue
+        outcomes[nid] = _Outcome(status="succeeded", task=imported)
+        imported_nodes.add(nid)
+    return [task for task in retry if task.node_id not in imported_nodes]
 
 
 def _seed_outcomes(
@@ -499,7 +570,21 @@ def _seed_outcomes(
             elif isinstance(latest.value, str) and latest.value.strip():
                 reason = latest.value
             return outcomes, retry, f"__graph_stop__:{reason}"
-        if latest.status in ("running", "pending", "interrupted"):
+        if latest.status == "interrupted":
+            outcomes[nid] = _Outcome(status="unresolved", task=latest)
+            if _node_interrupt_resolved(projection, nid):
+                retry.append(
+                    _build_task(
+                        compiled,
+                        graph,
+                        projection,
+                        context,
+                        nid,
+                        max(len(node_tasks) - 1, 0),
+                    )
+                )
+            continue
+        if latest.status in ("running", "pending"):
             # wave 仍在飞行：交由 lease/scheduler 对账，planner 不重复执行。
             outcomes[nid] = _Outcome(status="unresolved", task=latest)
             continue
@@ -608,6 +693,7 @@ def _seed_outcomes(
                 prior_error_kind=latest.error_kind if latest.status == "failed" else None,
             )
         )
+    retry = _overlay_imported_outcomes(graph, projection, context, outcomes, retry)
     return outcomes, retry, None
 
 
@@ -2166,6 +2252,7 @@ def _has_inflight(outcomes: dict[str, _Outcome]) -> bool:
 
 __all__ = [
     "PlanError",
+    "PlanErrorKind",
     "apply_state_updates",
     "fan_out_state_updates",
     "plan_superstep",

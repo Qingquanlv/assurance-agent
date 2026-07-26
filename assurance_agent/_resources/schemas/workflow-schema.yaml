@@ -1092,6 +1092,11 @@ graphs:
         with: {status: exhausted}
         retry: never
 
+      complete-skipped:
+        uses: operation:record-healing-status
+        with: {status: skipped}
+        retry: never
+
       complete-failed:
         uses: operation:record-healing-status
         with: {status: failed}
@@ -1101,7 +1106,7 @@ graphs:
       - {from: START, to: entry}
       - {from: proposal, to: proposal-eligible}
       - {from: proposal-eligible, to: allocate, when: "node('proposal-eligible').value == true"}
-      - {from: proposal-eligible, to: complete-failed, when: "node('proposal-eligible').value == false"}
+      - {from: proposal-eligible, to: complete-skipped, when: "node('proposal-eligible').value == false"}
       - {from: allocate, to: fix-api}
       - {from: allocate, to: fix-e2e}
       - {from: fix-api, to: fixer-join}
@@ -1112,6 +1117,7 @@ graphs:
       - {from: complete-not-needed, to: END}
       - {from: complete-resolved, to: END}
       - {from: complete-exhausted, to: END}
+      - {from: complete-skipped, to: END}
       - {from: complete-failed, to: END}
 
     routes:
