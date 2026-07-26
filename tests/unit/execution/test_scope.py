@@ -41,6 +41,7 @@ def test_extracts_unique_paths_from_mapping_table(tmp_path: Path) -> None:
 def test_ignores_paths_outside_mapping_section(tmp_path: Path) -> None:
     _write_plan(tmp_path, "api", _PLAN)
     paths = resolve_test_paths(tmp_path, "api")
+    assert paths is not None
     assert "tests/api/adapters/dept.py" not in paths
     assert "tests/testdata/domain/dept.py" not in paths
 

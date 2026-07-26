@@ -207,9 +207,6 @@ def _plan(
                 for item in obs.observations
             ],
         )
-    extra: dict[str, object] = {}
-    if verification_evidence is not None:
-        extra["verification_evidence"] = verification_evidence
     return plan_reconciliation(
         candidates_doc,
         obs,
@@ -217,7 +214,7 @@ def _plan(
         problems if problems is not None else _empty_problems(),
         manifest=manifest or _make_manifest(change_id, batch_id, candidates_doc.evidence_bundle_digest),
         expected_change_id=change_id,
-        **extra,
+        verification_evidence=verification_evidence,
     )
 
 
