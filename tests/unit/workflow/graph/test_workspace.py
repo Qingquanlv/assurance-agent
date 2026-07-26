@@ -135,9 +135,9 @@ def test_capture_keeps_change_issue_ledger_but_excludes_change_coordinator_ledge
     store.materialize(tree, dest)
 
     assert not (dest / "qa" / "changes" / "CH-1" / "events.jsonl").exists()
-    assert (
-        dest / "qa" / "changes" / "CH-1" / "issues" / "events.jsonl"
-    ).read_text(encoding="utf-8") == '{"type":"observation_recorded"}\n'
+    assert (dest / "qa" / "changes" / "CH-1" / "issues" / "events.jsonl").read_text(
+        encoding="utf-8"
+    ) == '{"type":"observation_recorded"}\n'
     assert not (dest / "qa" / "issues" / "events.jsonl").exists()
     assert (dest / ".graph-runtime" / "tree.json").exists()
     assert not (dest / ".graph-runtime" / "objects").exists()

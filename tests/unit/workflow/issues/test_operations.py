@@ -1221,9 +1221,7 @@ def test_reconcile_uses_authoritative_execution_to_resolve_pending_problem(tmp_p
     )
 
     assert result.status == "succeeded"
-    problems = json.loads(
-        (project_root / "qa" / "issues" / "problems.json").read_text(encoding="utf-8")
-    )
+    problems = json.loads((project_root / "qa" / "issues" / "problems.json").read_text(encoding="utf-8"))
     resolved = next(problem for problem in problems["problems"] if problem["problem_id"] == pid)
     assert resolved["status"] == "resolved"
     assert resolved["resolution"]["batch_id"] == batch_id
