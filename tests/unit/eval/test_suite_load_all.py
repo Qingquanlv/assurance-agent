@@ -47,3 +47,12 @@ def test_suite_dataset_has_samples(suite_name: str) -> None:
     samples = load_dataset(dataset_path)
     assert len(samples) >= 1
     assert all(sample.suite == suite_name for sample in samples)
+
+
+@pytest.mark.parametrize("suite_name", SUITE_NAMES)
+def test_workflow_suite_uses_entrypoint_contract(suite_name: str) -> None:
+    suite, _ = load_suite(REPO_ROOT, suite_name)
+    if suite.executor.get("type") != "workflow-run":
+        return
+    assert "scope" not in suite.executor
+    assert isinstance(suite.executor.get("entrypoint"), str)

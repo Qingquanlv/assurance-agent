@@ -43,6 +43,7 @@ from assurance_agent.workflow.core.graph_events import (
     TaskAttemptStoppedEvent,
     TaskAttemptSucceededEvent,
     TaskImportedEvent,
+    TaskRecoveryRoutedEvent,
 )
 from assurance_agent.workflow.core.progression import transaction
 from assurance_agent.workflow.execution.tree_hash import sha256_file
@@ -56,6 +57,7 @@ from assurance_agent.workflow.graph.models import (
     ImportedBudget,
     ImportedTask,
     InterruptProjection,
+    RecoveryProjection,
     RuntimeContext,
     TaskProjection,
     WorkflowStateProjection,
@@ -625,6 +627,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
     seen_consumptions: set[tuple[str, str]] = set()
     fan_outs: dict[str, FanOutExpansion] = {}
     interrupts: dict[str, InterruptProjection] = {}
+    recoveries: dict[str, RecoveryProjection] = {}
     terminal: Literal["completed", "stopped", "failed"] | None = None
     terminal_reason: str | None = None
     generation = GenerationFoldState()
@@ -740,6 +743,48 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                 }
             )
             generation.apply_task_outcome(event, tasks=tasks, fan_outs=fan_outs)
+        elif isinstance(event, TaskRecoveryRoutedEvent):
+            if (
+                started is None
+                or event.checkpoint_ns != started.checkpoint_ns
+                or event.graph_id != started.graph_id
+            ):
+                raise LedgerIntegrityError(
+                    f"task_recovery_routed canonical identity does not match invocation {invocation_id}"
+                )
+            failed = tasks.get(event.task_id)
+            if failed is None:
+                raise LedgerIntegrityError(
+                    f"task_recovery_routed references unknown task {event.task_id} "
+                    f"in invocation {invocation_id}"
+                )
+            if event.task_id in recoveries:
+                raise LedgerIntegrityError(
+                    f"duplicate task recovery route for task {event.task_id} in invocation {invocation_id}"
+                )
+            if (
+                failed.status != "failed"
+                or failed.node_id != event.node_id
+                or failed.generation_ordinal != event.generation_ordinal
+            ):
+                raise LedgerIntegrityError(
+                    f"task_recovery_routed node/generation does not match failed task "
+                    f"{event.task_id} in invocation {invocation_id}"
+                )
+            if failed.error_kind != event.error_kind or failed.error != event.message:
+                raise LedgerIntegrityError(
+                    f"task_recovery_routed error context does not match failed task "
+                    f"{event.task_id} in invocation {invocation_id}"
+                )
+            recoveries[event.task_id] = RecoveryProjection(
+                task_id=event.task_id,
+                node_id=event.node_id,
+                generation_ordinal=event.generation_ordinal,
+                error_kind=event.error_kind,
+                message=event.message,
+                via=event.via,
+                continue_to=event.continue_to,
+            )
         elif isinstance(event, TaskAttemptAbandonedEvent):
             prev = _require_task(tasks, event)
             tasks[event.task_id] = prev.model_copy(
@@ -848,6 +893,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
         fan_out_expansions=fan_outs,
         node_histories=generation.node_histories,
         interrupts=interrupts,
+        recoveries=recoveries,
         terminal=terminal,
         terminal_reason=terminal_reason,
     )

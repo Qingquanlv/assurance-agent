@@ -38,6 +38,20 @@ params:
   retro_last: {type: int, default: 10}
   retro_min_evidence: {type: int, default: 2}
   retro_dry_run: {type: bool, default: false}
+  change_ids: {type: list, default: []}
+  since: {type: str, default: ""}
+  until: {type: str, default: ""}
+  problem_id: {type: str, default: ""}
+  review_id: {type: str, default: ""}
+  improvement_id: {type: str, default: ""}
+  improvement_review_id: {type: str, default: ""}
+  delivery_action: {type: str, default: ""}
+  delivery_actor: {type: str, default: ""}
+  delivery_reason: {type: str, default: ""}
+  artifact_digest: {type: str, default: ""}
+  expected_target_sha256: {type: str, default: ""}
+  expected_applied_digest: {type: str, default: ""}
+  expected_l1_digest: {type: str, default: ""}
 
 entrypoints:
   full:
@@ -61,6 +75,44 @@ entrypoints:
       auto_archive: true
   retro:
     graph: retro-workflow
+  issue-review:
+    graph: issue-review-workflow
+    restart: repeatable
+    allow: "params.problem_id != '' and params.review_id != ''"
+  issue-analyze:
+    graph: issue-analyze-workflow
+    restart: repeatable
+  issue-reconcile:
+    graph: issue-reconcile-workflow
+    restart: repeatable
+  improvement-review:
+    graph: improvement-review-workflow
+    restart: repeatable
+    allow: "params.improvement_id != '' and params.improvement_review_id != ''"
+  improvement-evaluate:
+    graph: improvement-evaluate-workflow
+    restart: repeatable
+    allow: "params.improvement_id != ''"
+    with:
+      delivery_action: evaluate
+  improvement-export:
+    graph: improvement-export-workflow
+    restart: repeatable
+    allow: "params.improvement_id != ''"
+    with:
+      delivery_action: export
+  improvement-apply:
+    graph: improvement-apply-workflow
+    restart: repeatable
+    allow: "params.improvement_id != ''"
+    with:
+      delivery_action: apply
+  improvement-rollback:
+    graph: improvement-rollback-workflow
+    restart: repeatable
+    allow: "params.improvement_id != ''"
+    with:
+      delivery_action: rollback
 
 policies:
   retry:
@@ -86,6 +138,22 @@ policies:
     never:
       max_attempts: 1
       retry_on: []
+    llm-default:
+      max_attempts: 3
+      retry_on: [timeout, transport, rate_limit, invalid_output]
+      backoff:
+        initial_seconds: 2
+        multiplier: 2
+        max_seconds: 30
+        jitter: true
+    project-sync:
+      max_attempts: 3
+      retry_on: [conflict, transport]
+      backoff:
+        initial_seconds: 1
+        multiplier: 2
+        max_seconds: 15
+        jitter: true
 
   timeout:
     agent:
@@ -189,33 +257,51 @@ graphs:
   retro-workflow:
     max_supersteps: 20
     nodes:
-      collect:
+      collect-retro-evidence:
         uses: operation:retro-collect
         outputs:
           - project:qa/retro/${params.retro_id}/context.json
+        resources:
+          writes:
+            - project:qa/retro/${params.retro_id}/context.json
         retry: never
         timeout: local-operation
-      propose:
+      propose-improvements:
         uses: skill:aa-retro
         agent: aa-doc-author
         outputs:
-          - project:qa/retro/${params.retro_id}/proposals.json
+          - project:qa/retro/${params.retro_id}/proposal-candidates.json
           - project:qa/retro/${params.retro_id}/retro-summary.md
+        resources:
+          reads:
+            - project:qa/retro/${params.retro_id}/context.json
+          writes:
+            - project:qa/retro/${params.retro_id}/proposal-candidates.json
+            - project:qa/retro/${params.retro_id}/retro-summary.md
         retry: agent-transient
         timeout: agent
-      accept:
-        uses: operation:retro-accept
+      reconcile-improvements:
+        uses: operation:reconcile-improvements
         outputs:
-          - project:qa/retro/${params.retro_id}/proposals.json
+          - project:qa/retro/${params.retro_id}/accept-status.json
           - project:qa/retro/${params.retro_id}/review-queue.md
+        resources:
+          reads:
+            - project:qa/retro/${params.retro_id}/context.json
+            - project:qa/retro/${params.retro_id}/proposal-candidates.json
+            - project:qa/improvements/**
+          writes:
+            - project:qa/retro/${params.retro_id}/accept-status.json
+            - project:qa/retro/${params.retro_id}/review-queue.md
+            - project:qa/improvements/**
         retry: never
         timeout: local-operation
     edges:
-      - {from: START, to: collect}
-      - {from: collect, to: END, when: "params.retro_dry_run == true or node('collect').value.signal_count == 0"}
-      - {from: collect, to: propose, when: "params.retro_dry_run == false and node('collect').value.signal_count > 0"}
-      - {from: propose, to: accept}
-      - {from: accept, to: END}
+      - {from: START, to: collect-retro-evidence}
+      - {from: collect-retro-evidence, to: END, when: "params.retro_dry_run == true or node('collect-retro-evidence').value.signal_count == 0"}
+      - {from: collect-retro-evidence, to: propose-improvements, when: "params.retro_dry_run == false and node('collect-retro-evidence').value.signal_count > 0"}
+      - {from: propose-improvements, to: reconcile-improvements}
+      - {from: reconcile-improvements, to: END}
 
   intake:
     max_supersteps: 30
@@ -364,25 +450,20 @@ graphs:
         retry: cli-transient
         timeout: cli
 
-      inspect:
-        uses: operation:inspect
-        outputs:
-          - change:inspect/failure-analysis.json
-          - change:inspect/quality-gate-result.json
-        retry: cli-transient
-        timeout: cli
+      inspect-with-issues:
+        uses: graph:inspect-with-issues
 
       healing:
         uses: graph:healing
 
       report:
-        uses: skill:aa-report-generator
-        agent: aa-reporter
+        uses: operation:generate-report
         outputs:
           - change:report/quality-report.json
+          - change:report/quality-report.md
           - change:report/executive-summary.md
-        retry: agent-transient
-        timeout: agent
+        retry: never
+        timeout: local-operation
 
     edges:
       - {from: START, to: fact-baseline, when: "params.run_mode != 'codegen-only'"}
@@ -407,8 +488,8 @@ graphs:
       - {from: performance, to: generation-join}
       - {from: generation-join, to: execution, when: "params.run_tests == true"}
       - {from: generation-join, to: END, when: "params.run_tests == false"}
-      - {from: execution, to: inspect}
-      - {from: inspect, to: healing}
+      - {from: execution, to: inspect-with-issues}
+      - {from: inspect-with-issues, to: healing}
       - {from: healing, to: report}
       - {from: report, to: END}
 
@@ -842,6 +923,78 @@ graphs:
           stop: STOP
         default: STOP
 
+  inspect-with-issues:
+    # Runs after every authoritative execution batch (initial run and every
+    # healing rerun). Keeps operation:inspect first so failure-analysis /
+    # quality-gate artifacts remain authoritative, then collects Observations
+    # and optionally invokes the LLM analyzer before reconciling Issues.
+    max_supersteps: 15
+    nodes:
+      inspect:
+        uses: operation:inspect
+        outputs:
+          - change:inspect/failure-analysis.json
+          - change:inspect/quality-gate-result.json
+        retry: cli-transient
+        timeout: cli
+
+      collect-observations:
+        uses: operation:collect-observations
+        retry: never
+        timeout: local-operation
+
+      analyze-issues:
+        uses: skill:aa-issue-analyzer
+        agent: aa-reporter
+        outputs:
+          - change:inspect/issue-candidates.json
+          - change:inspect/issue-analysis-status.json
+        retry: llm-default
+        timeout: agent
+        recover:
+          errors: [timeout, transport, rate_limit, invalid_output]
+          via: record-analysis-failure
+          continue_to: inspect-complete
+
+      record-empty-analysis:
+        uses: operation:record-empty-issue-analysis
+        retry: never
+        timeout: local-operation
+
+      reconcile-issues:
+        uses: operation:reconcile-issues
+        retry: project-sync
+        timeout: cli
+        recover:
+          errors: [conflict, transport]
+          via: record-project-sync-pending
+          continue_to: inspect-complete
+
+      record-analysis-failure:
+        uses: operation:record-issue-analysis-failure
+        retry: never
+        timeout: local-operation
+
+      record-project-sync-pending:
+        uses: operation:record-project-sync-pending
+        retry: never
+        timeout: local-operation
+
+      inspect-complete:
+        uses: operation:no-op
+
+    edges:
+      - {from: START, to: inspect}
+      - {from: inspect, to: collect-observations}
+      - {from: collect-observations, to: analyze-issues,
+         when: "node('collect-observations').value.abnormal_count > 0"}
+      - {from: collect-observations, to: record-empty-analysis,
+         when: "node('collect-observations').value.abnormal_count == 0"}
+      - {from: record-empty-analysis, to: reconcile-issues}
+      - {from: analyze-issues, to: reconcile-issues}
+      - {from: reconcile-issues, to: inspect-complete}
+      - {from: inspect-complete, to: END}
+
   healing:
     max_supersteps: 50
     budgets:
@@ -917,13 +1070,8 @@ graphs:
         retry: cli-transient
         timeout: cli
 
-      reinspect:
-        uses: operation:inspect
-        outputs:
-          - change:inspect/failure-analysis.json
-          - change:inspect/quality-gate-result.json
-        retry: cli-transient
-        timeout: cli
+      inspect-with-issues:
+        uses: graph:inspect-with-issues
 
       decide:
         uses: builtin:gate
@@ -944,6 +1092,11 @@ graphs:
         with: {status: exhausted}
         retry: never
 
+      complete-skipped:
+        uses: operation:record-healing-status
+        with: {status: skipped}
+        retry: never
+
       complete-failed:
         uses: operation:record-healing-status
         with: {status: failed}
@@ -953,17 +1106,18 @@ graphs:
       - {from: START, to: entry}
       - {from: proposal, to: proposal-eligible}
       - {from: proposal-eligible, to: allocate, when: "node('proposal-eligible').value == true"}
-      - {from: proposal-eligible, to: complete-failed, when: "node('proposal-eligible').value == false"}
+      - {from: proposal-eligible, to: complete-skipped, when: "node('proposal-eligible').value == false"}
       - {from: allocate, to: fix-api}
       - {from: allocate, to: fix-e2e}
       - {from: fix-api, to: fixer-join}
       - {from: fix-e2e, to: fixer-join}
       - {from: fixer-join, to: safety}
-      - {from: rerun, to: reinspect}
-      - {from: reinspect, to: decide}
+      - {from: rerun, to: inspect-with-issues}
+      - {from: inspect-with-issues, to: decide}
       - {from: complete-not-needed, to: END}
       - {from: complete-resolved, to: END}
       - {from: complete-exhausted, to: END}
+      - {from: complete-skipped, to: END}
       - {from: complete-failed, to: END}
 
     routes:
@@ -1001,6 +1155,292 @@ graphs:
           stop: complete-exhausted
           reject: complete-failed
         default: complete-failed
+
+  # ---- improvement-evaluate-workflow: memory_patch eval only -------------
+  improvement-evaluate-workflow:
+    max_supersteps: 4
+    nodes:
+      load-improvement-delivery:
+        uses: operation:load-improvement-delivery
+        retry: never
+        timeout: local-operation
+      evaluate-memory:
+        uses: operation:evaluate-memory-improvement
+        retry: never
+        timeout: cli
+    edges:
+      - {from: START, to: load-improvement-delivery}
+      - {from: evaluate-memory, to: END}
+    routes:
+      - from: load-improvement-delivery
+        select: "node('load-improvement-delivery').value.delivery"
+        cases:
+          memory_patch: evaluate-memory
+        default: STOP
+
+  # ---- improvement-export-workflow: change_draft | knowledge_delta --------
+  improvement-export-workflow:
+    max_supersteps: 4
+    nodes:
+      load-improvement-delivery:
+        uses: operation:load-improvement-delivery
+        retry: never
+        timeout: local-operation
+      export-change:
+        uses: operation:export-change-improvement
+        retry: project-sync
+        timeout: cli
+      export-knowledge:
+        uses: operation:export-knowledge-improvement
+        retry: project-sync
+        timeout: cli
+    edges:
+      - {from: START, to: load-improvement-delivery}
+      - {from: export-change, to: END}
+      - {from: export-knowledge, to: END}
+    routes:
+      - from: load-improvement-delivery
+        select: "node('load-improvement-delivery').value.delivery"
+        cases:
+          change_draft: export-change
+          knowledge_delta: export-knowledge
+        default: STOP
+
+  # ---- improvement-apply-workflow: memory apply | record external apply --
+  improvement-apply-workflow:
+    max_supersteps: 4
+    nodes:
+      load-improvement-delivery:
+        uses: operation:load-improvement-delivery
+        retry: never
+        timeout: local-operation
+      apply-memory:
+        uses: operation:apply-memory-improvement
+        retry: project-sync
+        timeout: cli
+      record-change-applied:
+        uses: operation:record-change-improvement-applied
+        retry: project-sync
+        timeout: cli
+      record-knowledge-applied:
+        uses: operation:record-knowledge-improvement-applied
+        retry: project-sync
+        timeout: cli
+    edges:
+      - {from: START, to: load-improvement-delivery}
+      - {from: apply-memory, to: END}
+      - {from: record-change-applied, to: END}
+      - {from: record-knowledge-applied, to: END}
+    routes:
+      - from: load-improvement-delivery
+        select: "node('load-improvement-delivery').value.delivery"
+        cases:
+          memory_patch: apply-memory
+          change_draft: record-change-applied
+          knowledge_delta: record-knowledge-applied
+        default: STOP
+
+  # ---- improvement-rollback-workflow: applied memory_patch only ----------
+  improvement-rollback-workflow:
+    max_supersteps: 4
+    nodes:
+      load-improvement-delivery:
+        uses: operation:load-improvement-delivery
+        retry: never
+        timeout: local-operation
+      rollback-memory:
+        uses: operation:rollback-memory-improvement
+        retry: project-sync
+        timeout: cli
+    edges:
+      - {from: START, to: load-improvement-delivery}
+      - {from: rollback-memory, to: END}
+    routes:
+      - from: load-improvement-delivery
+        select: "node('load-improvement-delivery').value.delivery"
+        cases:
+          memory_patch: rollback-memory
+        default: STOP
+
+  # ---- improvement-review-workflow: human Improvement review (repeatable) -
+  improvement-review-workflow:
+    # Non-blocking, repeatable human review of a single Improvement.
+    # load-improvement writes the review context; human-interrupt captures
+    # the decision; apply-review appends the canonical event to the project
+    # Improvement ledger only (never qa/issues/**).
+    max_supersteps: 6
+    nodes:
+      load-improvement:
+        uses: operation:load-improvement-review-context
+        retry: never
+        timeout: local-operation
+
+      human-interrupt:
+        uses: builtin:interrupt
+        interrupt:
+          reason: "Review improvement and take action"
+          checkpoint: improvement-review
+          bind: audited_gate_read
+          actions:
+            - approve
+            - reject
+            - request_rework
+            - supersede
+            - stop
+
+      apply-review:
+        uses: operation:apply-improvement-review
+        retry: project-sync
+        timeout: cli
+
+    edges:
+      - {from: START, to: load-improvement}
+      - {from: load-improvement, to: human-interrupt}
+      - {from: apply-review, to: END}
+
+    routes:
+      - from: human-interrupt
+        select: "resume.action"
+        cases:
+          approve: apply-review
+          reject: apply-review
+          request_rework: apply-review
+          supersede: apply-review
+          stop: STOP
+        default: STOP
+
+  # ---- issue-review-workflow: human Problem review (repeatable) --------
+  issue-review-workflow:
+    # Non-blocking, repeatable human review of a single Problem.
+    # load-problem writes the review context; triage-advisor writes advice
+    # (display-only); human-interrupt captures the decision; apply-review
+    # appends the canonical event to the project Problem ledger.
+    max_supersteps: 6
+    nodes:
+      load-problem:
+        uses: operation:load-problem-review-context
+        retry: never
+        timeout: local-operation
+
+      triage-advisor:
+        uses: skill:aa-issue-triage-advisor
+        agent: aa-reporter
+        outputs:
+          - change:issue-review/**
+        retry: llm-default
+        timeout: agent
+
+      human-interrupt:
+        uses: builtin:interrupt
+        interrupt:
+          reason: "Review problem and take action"
+          checkpoint: review
+          bind: audited_gate_read
+          actions:
+            - confirm_assessment
+            - mark_not_an_issue
+            - accept_risk
+            - start_work
+            - confirm_link
+            - merge
+            - reopen
+            - submit_resolution
+            - stop
+
+      apply-review:
+        uses: operation:apply-problem-review
+        retry: project-sync
+        timeout: cli
+
+    edges:
+      - {from: START, to: load-problem}
+      - {from: load-problem, to: triage-advisor}
+      - {from: triage-advisor, to: human-interrupt}
+      - {from: apply-review, to: END}
+
+    routes:
+      - from: human-interrupt
+        select: "resume.action"
+        cases:
+          confirm_assessment: apply-review
+          mark_not_an_issue: apply-review
+          accept_risk: apply-review
+          start_work: apply-review
+          confirm_link: apply-review
+          merge: apply-review
+          reopen: apply-review
+          submit_resolution: apply-review
+          stop: STOP
+        default: STOP
+
+  # ---- issue-analyze-workflow: retry analyzer without re-collecting -----
+  issue-analyze-workflow:
+    # Reruns the LLM analyzer against the latest existing Observation/evidence
+    # digest and then reconciles on success.  Never re-collects evidence.
+    # Repeatable: can be retried as many times as needed after analysis failure.
+    max_supersteps: 8
+    nodes:
+      analyze-issues:
+        uses: skill:aa-issue-analyzer
+        agent: aa-reporter
+        outputs:
+          - change:inspect/issue-candidates.json
+          - change:inspect/issue-analysis-status.json
+        retry: llm-default
+        timeout: agent
+        recover:
+          errors: [timeout, transport, rate_limit, invalid_output]
+          via: record-analysis-failure
+          continue_to: END
+
+      record-analysis-failure:
+        uses: operation:record-issue-analysis-failure
+        retry: never
+        timeout: local-operation
+
+      reconcile-issues:
+        uses: operation:reconcile-issues
+        retry: project-sync
+        timeout: cli
+        recover:
+          errors: [conflict, transport]
+          via: record-project-sync-pending
+          continue_to: END
+
+      record-project-sync-pending:
+        uses: operation:record-project-sync-pending
+        retry: never
+        timeout: local-operation
+
+    edges:
+      - {from: START, to: analyze-issues}
+      - {from: analyze-issues, to: reconcile-issues}
+      - {from: reconcile-issues, to: END}
+
+  # ---- issue-reconcile-workflow: idempotent reconcile retry --------------
+  issue-reconcile-workflow:
+    # Reruns only operation:reconcile-issues for the latest pinned
+    # candidate/evidence digest.  Idempotent retry path for project_sync_pending.
+    # Never calls the LLM.
+    max_supersteps: 4
+    nodes:
+      reconcile-issues:
+        uses: operation:reconcile-issues
+        retry: project-sync
+        timeout: cli
+        recover:
+          errors: [conflict, transport]
+          via: record-project-sync-pending
+          continue_to: END
+
+      record-project-sync-pending:
+        uses: operation:record-project-sync-pending
+        retry: never
+        timeout: local-operation
+
+    edges:
+      - {from: START, to: reconcile-issues}
+      - {from: reconcile-issues, to: END}
 
 gates:
   registry-gate:

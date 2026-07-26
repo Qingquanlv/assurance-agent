@@ -8,7 +8,6 @@ from pathlib import Path
 import yaml
 
 from assurance_agent.knowledge.promote import promote_knowledge
-from assurance_agent.retro.export import export_proposals
 from assurance_agent.workflow.orchestration.dsl import Scope, evaluate, parse_expression
 from assurance_agent.workflow.orchestration.gates import (
     GateEvaluationContext,
@@ -16,7 +15,6 @@ from assurance_agent.workflow.orchestration.gates import (
 )
 from assurance_agent.workflow.orchestration.schema import normalize_gates
 from tests.helpers_aa import write_aa_config
-from tests.unit.retro.proposal_fixtures import knowledge_proposal
 
 FIXTURES = Path(__file__).resolve().parents[1] / "artifacts" / "fixtures" / "data_knowledge"
 
@@ -58,22 +56,31 @@ GATES = normalize_gates(
 )
 
 
-def test_export_knowledge_then_promote_from_merges_auth_leaf(tmp_path: Path) -> None:
+def test_improvement_l2_knowledge_then_promote_from_merges_auth_leaf(tmp_path: Path) -> None:
+    """L2 Improvement knowledge-delta → promote merges auth leaf into L1."""
     write_aa_config(tmp_path)
     _write(tmp_path, ".aa/data-knowledge.yaml", (FIXTURES / "l1_valid.yaml").read_text(encoding="utf-8"))
 
-    retro_dir = tmp_path / "qa" / "retro" / "retro-chain"
-    retro_dir.mkdir(parents=True)
-    proposal = knowledge_proposal()
-    retro_dir.joinpath("proposals.json").write_text(
-        json.dumps({"proposals": [proposal.model_dump(mode="json")]}, indent=2),
+    exported_path = tmp_path / "qa" / "improvements" / "knowledge-delta" / "IMP-KNOW.proposal.yaml"
+    exported_path.parent.mkdir(parents=True, exist_ok=True)
+    exported_path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1",
+                "mode": "delta",
+                "based_on_l1_version": 1,
+                "auth": {
+                    "api_admin_token": {
+                        "method": "token",
+                        "notes": "improvement discovered admin token helper",
+                    }
+                },
+            },
+            sort_keys=True,
+            allow_unicode=True,
+        ),
         encoding="utf-8",
     )
-
-    outcomes = export_proposals(retro_dir, apply_kind="knowledge_delta")
-    assert len(outcomes) == 1
-    exported_path = outcomes[0].target_path
-    assert exported_path.name.endswith(".proposal.yaml")
 
     outcome = promote_knowledge(tmp_path, proposal_path=exported_path, yes=True)
     assert outcome.changed is True

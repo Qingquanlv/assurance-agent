@@ -56,3 +56,33 @@ def test_anomaly_needs_fact_baseline_context() -> None:
         message="anomaly-7 detected", log_excerpt="fact-baseline: documented", target="api"
     )
     assert with_ctx.category == "known_product_issue"
+
+
+def test_assertion_outweighs_fixture_names_in_pytest_failure_context() -> None:
+    """A fixture argument in pytest output must not make a product assertion auto-fixable."""
+    result = classify_failure(
+        message=(
+            "factory_make_dept = <function factory_make_dept>\n"
+            "AssertionError: closure ancestor remained under the old parent"
+        ),
+        log_excerpt="",
+        target="api",
+    )
+
+    assert result.category == "assertion_failure"
+    assert result.fix_proposal_eligible is False
+
+
+def test_fuzz_server_500_outweighs_schemathesis_runner_name() -> None:
+    """Mentioning Schemathesis must not hide a product 5xx from generated input."""
+    result = classify_failure(
+        message=(
+            "schemathesis generated example failed: "
+            "AssertionError: received 500 Internal Server Error; UNIQUE constraint failed"
+        ),
+        log_excerpt="",
+        target="fuzz",
+    )
+
+    assert result.category == "business_logic_failure"
+    assert result.fix_proposal_eligible is False

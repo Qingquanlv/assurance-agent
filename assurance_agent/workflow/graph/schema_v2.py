@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from assurance_agent import resources
 from assurance_agent.exceptions import AaError
@@ -49,6 +49,7 @@ class EntrypointDef(_FrozenModel):
     graph: str
     allow: str | None = None
     with_: dict[str, object] = Field(default_factory=dict, alias="with")
+    restart: Literal["once", "repeatable"] = "once"
 
 
 class BackoffDef(_FrozenModel):
@@ -124,7 +125,16 @@ class InterruptDef(_FrozenModel):
     reason: str
     checkpoint: str
     bind: Literal["audited_gate_read"]
-    actions: list[Literal["fix_and_proceed", "accept_risk", "stop"]]
+    actions: list[str] = Field(min_length=1)
+
+    @field_validator("actions")
+    @classmethod
+    def actions_are_unique_and_nonblank(cls, actions: list[str]) -> list[str]:
+        if any(not action.strip() for action in actions):
+            raise ValueError("interrupt.actions must not contain blank values")
+        if len(set(actions)) != len(actions):
+            raise ValueError("interrupt.actions must be unique")
+        return actions
 
 
 class EvidenceRef(_FrozenModel):
@@ -136,6 +146,20 @@ class EvidenceRef(_FrozenModel):
 class ExportDef(_FrozenModel):
     from_: str = Field(alias="from")
     output: str
+
+
+class RecoverDef(_FrozenModel):
+    """Fallback taken only after the recovering node exhausts its normal retry policy."""
+
+    errors: list[ErrorKind] = Field(min_length=1)
+    via: str
+    continue_to: str
+
+    @model_validator(mode="after")
+    def unique_errors(self) -> "RecoverDef":
+        if len(set(self.errors)) != len(self.errors):
+            raise ValueError("recover.errors must be unique")
+        return self
 
 
 class NodeDef(_FrozenModel):
@@ -154,6 +178,7 @@ class NodeDef(_FrozenModel):
     fan_out: FanOutDef | None = None
     budget: BudgetUseDef | None = None
     interrupt: InterruptDef | None = None
+    recover: RecoverDef | None = None
 
 
 class EdgeDef(_FrozenModel):

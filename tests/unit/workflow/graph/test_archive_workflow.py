@@ -44,6 +44,12 @@ class FakeArchiver:
         archive_dir = request.workspace_root / "qa" / "archive" / CHANGE_ID
         archive_dir.mkdir(parents=True, exist_ok=True)
         (archive_dir / "archive-summary.md").write_text("# archived\n", encoding="utf-8")
+        # Copy issues/** when present in the source change directory.
+        issues_src = request.workspace_root / "qa" / "changes" / CHANGE_ID / "issues"
+        if issues_src.is_dir():
+            import shutil
+
+            shutil.copytree(issues_src, archive_dir / "issues", dirs_exist_ok=True)
         return AgentResult(ok=True)
 
 
@@ -174,3 +180,85 @@ def test_archive_runs_the_archiver_when_the_gate_passes(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.reason
     assert (project / "qa" / "archive" / CHANGE_ID / "archive-summary.md").is_file()
+
+
+def _seed_change_with_issues(
+    tmp_path: Path,
+    *,
+    final_status: str,
+    healing_status: str,
+    issue_risk: str | None = None,
+) -> Path:
+    """Seed a change directory that also has issues/snapshot.json."""
+    project = _seed_change(tmp_path, final_status=final_status, healing_status=healing_status)
+    change = project / "qa" / "changes" / CHANGE_ID
+    issues_dir = change / "issues"
+    issues_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_payload: dict = {
+        "schema_version": "1.0",
+        "change_id": CHANGE_ID,
+        "authoritative_batch_id": "b1",
+        "observations": [],
+        "occurrences": [],
+        "analysis_status": {
+            "schema_version": "1.0",
+            "change_id": CHANGE_ID,
+            "batch_id": "b1",
+            "status": "completed" if issue_risk != "unknown" else "failed",
+            "evidence_bundle_digest": "abc123",
+            "candidate_count": 0,
+        },
+        "project_sync_status": "completed",
+        "batches": ["b1"],
+    }
+    (issues_dir / "snapshot.json").write_text(json.dumps(snapshot_payload), encoding="utf-8")
+    (issues_dir / "events.jsonl").write_text("", encoding="utf-8")
+    return project
+
+
+def test_archive_copies_issues_directory_when_present(tmp_path: Path) -> None:
+    """Archive copies issues/** to the archive directory."""
+    project = _seed_change_with_issues(tmp_path, final_status="PASS", healing_status="not_needed")
+    compiled, contracts = _compile_canonical()
+    runtime = _build_runtime(project, compiled, contracts, FakeArchiver())
+
+    result = runtime.run(compiled, "archive", _context(project))
+
+    assert result.exit_code == 0, result.reason
+    archived_issues = project / "qa" / "archive" / CHANGE_ID / "issues"
+    assert archived_issues.is_dir(), "issues/** must be copied to archive"
+    assert (archived_issues / "snapshot.json").is_file()
+
+
+def test_archive_does_not_block_on_open_issues(tmp_path: Path) -> None:
+    """A critical open Problem must not stop archive — Issue state never blocks."""
+    project = _seed_change_with_issues(tmp_path, final_status="PASS", healing_status="not_needed")
+    compiled, contracts = _compile_canonical()
+    runtime = _build_runtime(project, compiled, contracts, FakeArchiver())
+
+    # Archive must complete successfully even when issue snapshot exists with open risk.
+    result = runtime.run(compiled, "archive", _context(project))
+    assert result.exit_code == 0, result.reason
+
+
+def test_archive_does_not_block_on_unknown_issue_risk(tmp_path: Path) -> None:
+    """Unknown Issue risk (e.g. failed analysis) must not stop archive."""
+    project = _seed_change_with_issues(
+        tmp_path, final_status="PASS", healing_status="not_needed", issue_risk="unknown"
+    )
+    compiled, contracts = _compile_canonical()
+    runtime = _build_runtime(project, compiled, contracts, FakeArchiver())
+
+    result = runtime.run(compiled, "archive", _context(project))
+    assert result.exit_code == 0, result.reason
+
+
+def test_existing_execution_fail_gate_still_stops_archive_when_issues_present(tmp_path: Path) -> None:
+    """Non-Issue precheck gates (execution FAIL) must still stop archive."""
+    project = _seed_change_with_issues(tmp_path, final_status="FAIL", healing_status="failed")
+    compiled, contracts = _compile_canonical()
+    runtime = _build_runtime(project, compiled, contracts, NeverCalledInvoker())
+
+    result = runtime.run(compiled, "archive", _context(project))
+    assert result.status.status == "stopped", result.reason
+    assert not (project / "qa" / "archive").exists()

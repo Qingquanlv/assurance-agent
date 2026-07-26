@@ -17,16 +17,17 @@ aa init --yes
 # 2) 环境自检（frontend/backend 为占位空目录，可能是 warning，正常）。
 aa doctor
 
-# 3) 对预置变更计算确定性工作流状态（Scheme E dispatch）。
+# 3) 对预置变更投影确定性工作流状态（GraphStatus）。
+#    种子变更尚未启动任何图，此处输出 {"status": null}。
 aa status --change CH-DEMO-001 --next --json
 ```
 
-`aa status --json` 输出 `WorkflowStatus`：`phases`、`next_dispatch`、`terminal`（`null`=运行中）。退出码：`0` running/completed、`20` stopped、`30` needs_human_review；`40` 表示命令或数据错误。
+`aa status --json` 输出 `GraphStatus`：`status`（`null`＝未启动）、`pending_tasks`、`pending_interrupts`、`terminal_reason` 等。退出码：`0` running/completed、`20` stopped、`30` interrupted（待人工）、`40` failed；命令或数据错误退出 `1`。
 
 ## 下一步
 
 把 `proposal.md` 换成真实需求，接一个 OpenCode server，即可用 driver 跑完整流水线：
 
 ```bash
-aa workflow run --change CH-DEMO-001 --scope full --adapter opencode --server http://127.0.0.1:4096
+aa workflow run --change CH-DEMO-001 --entrypoint full --adapter opencode --server http://127.0.0.1:4096
 ```

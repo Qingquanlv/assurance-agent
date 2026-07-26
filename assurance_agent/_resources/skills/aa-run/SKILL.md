@@ -60,11 +60,7 @@ Do not rely on prior conversation context.
    - **Primary mode:** CLI writes canonical `execution-manifest.yaml` (map-shaped `result_files` + `selected_targets`) to both `runs/<batch-id>/` and latest pointer. Skill **verifies** it — do not overwrite CLI paths.
    - **Skill extended format (optional augment):** After verifying CLI batch files exist, skill may rewrite the latest pointer with `primary_runner`, `layer_results`, `warnings`, `final_status` — but `primary_runner.result_files` **must** list every batch file path under `execution/runs/<batch-id>/` for each selected target.
    - **Fallback mode:** skill writes manifest with `fallback_runner.used: true`.
-4. Snapshot known product issues if the change-level record exists:
-   - Read `qa/changes/<change-id>/known-product-issues.md` (source of truth; created before codegen by human/reviewer workflow; codegen may append implementation notes only when already acknowledged)
-   - Copy into `qa/changes/<change-id>/execution/runs/<batch-id>/known-product-issues.md`
-   - Copy into `qa/changes/<change-id>/execution/known-product-issues.md` (latest pointer)
-5. Update `workflow-state.yaml`:
+4. Update `workflow-state.yaml`:
    - Set `phases.execution.status` = `PASS | PASS_WITH_WARNINGS | FAIL | SKIPPED`
    - Set `phases.execution.batch_id` = resolved `batch_id` from CLI output (not guessed)
    - If `final_status == PASS_WITH_WARNINGS`, downstream workflow final status must be `completed_with_warnings`, not `completed`
@@ -84,7 +80,7 @@ This skill **does not synthesize normalised result files itself**. It invokes th
 **Primary mode (CLI):**
 
 - The CLI (`aa run`) is the trusted execution layer for normalised `api-result.json` / `e2e-result.json` / `fuzz-result.json` / `performance-result.json` / `coverage-result.json` / `summary.md` / `quality-gate-result.json`.
-- The CLI writes `execution-manifest.yaml` (canonical map format) in primary mode. The skill reads and verifies it, may augment the latest pointer with extended metadata, snapshots `known-product-issues.md`, and reports.
+- The CLI writes `execution-manifest.yaml` (canonical map format) in primary mode. The skill reads and verifies it, may augment the latest pointer with extended metadata, and reports.
 
 **Fallback mode (direct pytest):**
 
@@ -340,7 +336,6 @@ qa/changes/<change-id>/execution/
 ├── summary.md                   ← latest (CLI-owned; skill verifies, does not rewrite)
 ├── execution-manifest.yaml      ← latest pointer (CLI-written in primary mode)
 ├── run-summary-note.md          ← optional skill-owned fallback note
-├── known-product-issues.md      ← snapshot of change-level record (if present)
 └── runs/
     └── <batch-id>/               ← resolved from CLI output, not guessed
         ├── api-result.json       ← if selected_targets.api (primary mode only)
@@ -351,7 +346,6 @@ qa/changes/<change-id>/execution/
         ├── quality-gate-result.json ← always (primary mode)
         ├── summary.md            ← primary mode only
         ├── execution-manifest.yaml
-        ├── known-product-issues.md   ← per-run snapshot (if present)
         └── raw/
             ├── api.log           ← fallback or CLI raw output
             ├── e2e.log
@@ -413,10 +407,6 @@ selected_targets:
   fuzz: true | false
   performance: true | false
 
-known_product_issues:
-  present: true | false
-  file: qa/changes/<change-id>/known-product-issues.md
-
 final_status: PASS | PASS_WITH_WARNINGS | FAIL | SKIPPED
 warnings:
   - <warning>
@@ -433,12 +423,10 @@ Manifest rule:
 **PASS:**
 
 - All selected test targets passed.
-- No known product issues.
 - No fallback runner used after a primary failure.
 
 **PASS_WITH_WARNINGS:**
 
-- Tests passed but `known-product-issues.md` exists.
 - Primary runner failed/skipped but the fallback runner passed.
 - A partial target was skipped with an explicit non-blocking reason.
 - A coverage gap exists, i.e. `coverage-result.json.status == PASS_WITH_WARNINGS` (line/branch below threshold) **and** `coverage.gate_mode == warn` (default). When `gate_mode == block`, below-threshold coverage maps to **FAIL** instead.
@@ -457,8 +445,6 @@ Manifest rule:
 - Codegen not done for the requested test type.
 - Execution intentionally skipped with an explicit reason.
 
-When known product issues exist, the result must be `PASS_WITH_WARNINGS`, never a clean `PASS`.
-
 **Workflow-level note:** When `phases.execution.status == PASS_WITH_WARNINGS`, the orchestrator's final workflow status must be `completed_with_warnings`, not `completed`.
 
 ## Steps
@@ -470,53 +456,20 @@ When known product issues exist, the result must be `PASS_WITH_WARNINGS`, never 
 5. Resolve `batch_id` (see **Batch ID Resolution**).
 6. Read result files per **selected_targets** — do not fail on absent unselected target files.
 7. If primary mode: read `execution/summary.md` (CLI-owned). If fallback: do not expect normalised result files.
-8. Read `qa/changes/<change-id>/known-product-issues.md` (if present) and snapshot into execution folder.
-9. Verify CLI-owned `summary.md` includes known-product-issues block if applicable — if missing, record warning in `execution-manifest.yaml`; do **not** rewrite `summary.md`.
-10. Write `execution-manifest.yaml` (per-run + latest pointer) with `selected_targets`, primary/fallback runner, and `final_status`.
-11. Present a brief summary to the user (final status, counts, fallback mode if used).
-12. Update `workflow-state.yaml`: set `phases.execution.status`, `phases.execution.batch_id` (resolved, not guessed).
-13. Do **not** generate `failure-analysis.json` — that is the job of `aa-inspect`.
+8. Write `execution-manifest.yaml` (per-run + latest pointer) with `selected_targets`, primary/fallback runner, and `final_status`.
+9. Present a brief summary to the user (final status, counts, fallback mode if used).
+10. Update `workflow-state.yaml`: set `phases.execution.status`, `phases.execution.batch_id` (resolved, not guessed).
+11. Do **not** generate `failure-analysis.json` — that is the job of `aa-inspect`.
 
-## Known Product Issues During Execution
+## Workarounds and Issue Lifecycle Boundary
 
-A passing test suite does not always mean the product has no issues.
+A passing test suite does not always mean the product has no issues. Workaround tests, xfails, and coverage gaps are captured as **execution evidence** and reconciled by the Issue subgraph (`inspect-with-issues`) into the Change Issue Ledger and Project Problem Ledger.
 
-If execution or test diagnostics reveal a real product bug that was worked around during codegen, record it in execution outputs.
-
-Examples:
-
-- A direct endpoint returns 500, but the test uses a list/search endpoint as workaround.
-- A UI flow is skipped due to a known product issue.
-- A backend bug is observed but not fixed in this workflow.
-
-Codegen skills do **not** create the first acknowledgment of endpoint coverage gaps. The change-level record is created by human + reviewer workflow before codegen pass; codegen may append implementation notes only.
-
-`aa-run` must read this file if present and snapshot it into execution:
-
-```text
-qa/changes/<change-id>/execution/runs/<batch-id>/known-product-issues.md   ← execution snapshot
-qa/changes/<change-id>/execution/known-product-issues.md                   ← latest pointer
-```
-
-Path semantics:
-
-- **Source of truth:** `qa/changes/<change-id>/known-product-issues.md`
-- **Execution snapshot:** `qa/changes/<change-id>/execution/runs/<batch-id>/known-product-issues.md`
+`aa-run` does **not** read or write legacy known-product issue Markdown/JSON files. Issue risk is derived later from structured Issue projections — it does **not** change execution `final_status` by itself.
 
 **summary.md boundary:**
 
 - `execution/summary.md` is **CLI-owned**. The skill **must not** rewrite it.
-- The CLI **should** include a known-product-issues status block when the source file exists:
-
-```yaml
-final_status: PASS_WITH_WARNINGS
-known_product_issues:
-  count: <N>
-  source: qa/changes/<change-id>/known-product-issues.md
-  snapshot: qa/changes/<change-id>/execution/runs/<batch-id>/known-product-issues.md
-```
-
-- The skill **verifies** this block after primary CLI run. If missing, record a warning in `execution-manifest.yaml` — do **not** patch `summary.md`.
 - Optionally write skill-owned notes to `execution/run-summary-note.md` (fallback mode or verification gaps).
 
 ### Valid Execution Status Values
@@ -527,8 +480,6 @@ PASS_WITH_WARNINGS
 FAIL
 SKIPPED
 ```
-
-If known product issues exist, **do not** report the execution as `PASS`, `clean_pass`, `fully_passed`, or `no_risk` — use `PASS_WITH_WARNINGS`.
 
 ## Hard Rules
 
@@ -549,6 +500,5 @@ If known product issues exist, **do not** report the execution as `PASS`, `clean
 - Do **not** rewrite CLI-owned `execution/summary.md` — verify only; warn in manifest if expected block missing.
 - If the CLI returns failed, advise the user to run `aa report inspect --change <change-id>`.
 - Do **not** invoke MCP as a substitute for the CLI.
-- `aa-run` snapshots `known-product-issues.md` into `execution/`; it does not author the source-of-truth file.
-- If `known-product-issues.md` exists, always set execution `final_status` to `PASS_WITH_WARNINGS`, never `PASS`.
+- Do **not** read or generate legacy known-product issue Markdown/JSON files.
 - If `final_status == PASS_WITH_WARNINGS`, downstream workflow status must be `completed_with_warnings`, not `completed`.

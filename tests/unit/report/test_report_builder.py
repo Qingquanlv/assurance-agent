@@ -1,4 +1,7 @@
+import json
 from pathlib import Path
+
+import pytest
 
 from tests.helpers_aa import write_aa_config
 
@@ -177,3 +180,357 @@ def test_generate_report_known_product_issue_is_product_defect(tmp_path: Path) -
     assert len(result.report.defects.product) == 1
     assert result.report.defects.product[0].category == "known_product_issue"
     assert len(result.report.defects.test) == 0
+
+
+# ---- Issue risk / schema 1.1 tests -----------------------------------------
+
+
+def _seed_issue_snapshot(
+    change_dir: Path, *, analysis_status: str = "completed", occurrences: list | None = None
+) -> None:
+    """Write a minimal issues/snapshot.json for testing."""
+    import json
+
+    issues_dir = change_dir / "issues"
+    issues_dir.mkdir(parents=True, exist_ok=True)
+    snapshot = {
+        "schema_version": "1.0",
+        "change_id": "CH-1",
+        "authoritative_batch_id": "20260715-000000",
+        "observations": [],
+        "occurrences": occurrences or [],
+        "analysis_status": {
+            "schema_version": "1.0",
+            "change_id": "CH-1",
+            "batch_id": "20260715-000000",
+            "status": analysis_status,
+            "evidence_bundle_digest": "abc123",
+            "candidate_count": 0,
+        },
+        "project_sync_status": "completed",
+        "batches": ["20260715-000000"],
+    }
+    (issues_dir / "snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
+
+
+def _seed_empty_problem_projection(project_root: Path) -> None:
+    problems_dir = project_root / "qa" / "issues"
+    problems_dir.mkdir(parents=True, exist_ok=True)
+    (problems_dir / "problems.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "generated_at": "2026-07-25T10:00:00Z",
+                "problems": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _issue_occurrence(occurrence_id: str, problem_id: str) -> dict[str, object]:
+    return {
+        "occurrence_id": occurrence_id,
+        "change_id": "CH-1",
+        "batch_id": "20260715-000000",
+        "observation_ids": [f"OBS-{occurrence_id}"],
+        "problem_id": problem_id,
+        "provisional_assessment": {
+            "classification": "product_bug",
+            "severity": "high",
+            "authority": "llm_provisional",
+            "root_cause_hypothesis": "hand-checked test hypothesis",
+        },
+        "analysis": {
+            "evidence_bundle_digest": "sha256:evidence",
+            "analyzer": "test-analyzer",
+            "prompt_version": "1.0",
+            "candidate_digest": "sha256:candidate",
+        },
+    }
+
+
+def _problem(
+    problem_id: str,
+    *,
+    first_change_id: str,
+    first_occurrence_id: str,
+    current_occurrence_id: str,
+) -> dict[str, object]:
+    occurrences = (
+        [current_occurrence_id]
+        if first_occurrence_id == current_occurrence_id
+        else [first_occurrence_id, current_occurrence_id]
+    )
+    return {
+        "problem_id": problem_id,
+        "fingerprint": {"version": "1", "digest": f"sha256:{problem_id}"},
+        "title": f"Problem {problem_id}",
+        "assessment": {
+            "classification": "product_bug",
+            "severity": "high",
+            "authority": "llm_provisional",
+            "root_cause_hypothesis": "hand-checked test hypothesis",
+        },
+        "status": "detected",
+        "first_seen": {
+            "change_id": first_change_id,
+            "occurrence_id": first_occurrence_id,
+        },
+        "last_seen": {
+            "change_id": "CH-1",
+            "occurrence_id": current_occurrence_id,
+        },
+        "occurrences": occurrences,
+        "verification_request": None,
+        "resolution": None,
+        "version": len(occurrences),
+    }
+
+
+def test_generate_report_distinguishes_new_and_repeated_occurrences(tmp_path: Path) -> None:
+    """An exact-link recurrence must not be reported as a newly created Problem."""
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    change_dir = tmp_path / "qa" / "changes" / change_id
+    new_occ = _issue_occurrence("OCC-new", "PROB-new")
+    repeated_occ = _issue_occurrence("OCC-repeat", "PROB-repeat")
+    _seed_issue_snapshot(
+        change_dir,
+        occurrences=[new_occ, repeated_occ],
+    )
+    problems_dir = tmp_path / "qa" / "issues"
+    problems_dir.mkdir(parents=True, exist_ok=True)
+    (problems_dir / "problems.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "generated_at": "2026-07-25T10:00:00Z",
+                "problems": [
+                    _problem(
+                        "PROB-new",
+                        first_change_id="CH-1",
+                        first_occurrence_id="OCC-new",
+                        current_occurrence_id="OCC-new",
+                    ),
+                    _problem(
+                        "PROB-repeat",
+                        first_change_id="CH-older",
+                        first_occurrence_id="OCC-old",
+                        current_occurrence_id="OCC-repeat",
+                    ),
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    inspect_change(tmp_path, change_id)
+
+    result = generate_report(tmp_path, change_id)
+
+    assert result.report.issues is not None
+    assert result.report.issues.total_occurrences == 2
+    assert result.report.issues.new_count == 1
+    assert result.report.issues.repeated_count == 1
+
+
+def test_generate_report_counts_regression_separately_from_recurrence(tmp_path: Path) -> None:
+    """A problem_regressed event must not inflate the repeated occurrence count."""
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    change_dir = tmp_path / "qa" / "changes" / change_id
+    regressed_occ = _issue_occurrence("OCC-regressed", "PROB-regressed")
+    _seed_issue_snapshot(change_dir, occurrences=[regressed_occ])
+    problems_dir = tmp_path / "qa" / "issues"
+    problems_dir.mkdir(parents=True, exist_ok=True)
+    (problems_dir / "problems.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "generated_at": "2026-07-25T10:00:00Z",
+                "problems": [
+                    _problem(
+                        "PROB-regressed",
+                        first_change_id="CH-older",
+                        first_occurrence_id="OCC-old",
+                        current_occurrence_id="OCC-regressed",
+                    )
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (problems_dir / "events.jsonl").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "seq": 1,
+                "event_id": "EVT-regressed",
+                "idempotency_key": "problem_regressed:PROB-regressed:OCC-regressed",
+                "ts": "2026-07-25T10:00:00Z",
+                "evidence_digest": "sha256:evidence",
+                "problem_id": "PROB-regressed",
+                "expected_problem_version": 2,
+                "type": "problem_regressed",
+                "occurrence_id": "OCC-regressed",
+                "change_id": "CH-1",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    inspect_change(tmp_path, change_id)
+
+    result = generate_report(tmp_path, change_id)
+
+    assert result.report.issues is not None
+    assert result.report.issues.new_count == 0
+    assert result.report.issues.repeated_count == 0
+    assert result.report.issues.regressed_count == 1
+
+
+def test_generate_report_emits_schema_version_11(tmp_path: Path) -> None:
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    inspect_change(tmp_path, change_id)
+    result = generate_report(tmp_path, change_id)
+    assert result.report.schema_version == "1.1"
+
+
+def test_generate_report_no_issue_snapshot_yields_none_issues(tmp_path: Path) -> None:
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    inspect_change(tmp_path, change_id)
+    result = generate_report(tmp_path, change_id)
+    # No issues/snapshot.json → issues field is None
+    assert result.report.issues is None
+    # final_status unchanged
+    assert result.report.final_status == "PASS"
+
+
+def test_generate_report_no_occurrences_yields_clear_issue_risk(tmp_path: Path) -> None:
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    _seed_issue_snapshot(change_dir, analysis_status="completed", occurrences=[])
+    _seed_empty_problem_projection(tmp_path)
+    inspect_change(tmp_path, change_id)
+    result = generate_report(tmp_path, change_id)
+    assert result.report.issues is not None
+    assert result.report.issues.issue_risk == "clear"
+    # execution final_status must not be changed by Issue risk
+    assert result.report.final_status == "PASS"
+
+
+@pytest.mark.parametrize("projection_payload", [None, "not-json"])
+def test_generate_report_missing_or_corrupt_problem_projection_yields_unknown(
+    tmp_path: Path,
+    projection_payload: str | None,
+) -> None:
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    _seed_issue_snapshot(change_dir, analysis_status="completed", occurrences=[])
+    if projection_payload is not None:
+        problems_dir = tmp_path / "qa" / "issues"
+        problems_dir.mkdir(parents=True, exist_ok=True)
+        (problems_dir / "problems.json").write_text(projection_payload, encoding="utf-8")
+    inspect_change(tmp_path, change_id)
+
+    result = generate_report(tmp_path, change_id)
+
+    assert result.report.issues is not None
+    assert result.report.issues.issue_risk == "unknown"
+    assert "Problem projection" in result.report.issues.issue_risk_rationale
+
+
+def test_generate_report_failed_analysis_yields_unknown_issue_risk(tmp_path: Path) -> None:
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    _seed_issue_snapshot(change_dir, analysis_status="failed")
+    inspect_change(tmp_path, change_id)
+    result = generate_report(tmp_path, change_id)
+    assert result.report.issues is not None
+    assert result.report.issues.issue_risk == "unknown"
+    assert result.report.issues.analysis_status == "failed"
+    # execution final_status unchanged
+    assert result.report.final_status == "PASS"
+
+
+def test_generate_report_failed_reconcile_status_yields_unknown_without_snapshot(
+    tmp_path: Path,
+) -> None:
+    """Semantic reconcile rejection is fail-visible even when no canonical snapshot exists."""
+    import json
+
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    inspect_dir = change_dir / "inspect"
+    inspect_dir.mkdir(parents=True, exist_ok=True)
+    (inspect_dir / "issue-reconcile-status.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "change_id": "CH-1",
+                "batch_id": "20260715-000000",
+                "status": "failed",
+                "evidence_bundle_digest": "sha256:" + "a" * 64,
+                "error": "unknown observation_id",
+            }
+        ),
+        encoding="utf-8",
+    )
+    inspect_change(tmp_path, change_id)
+    result = generate_report(tmp_path, change_id)
+    assert result.report.issues is not None
+    assert result.report.issues.issue_risk == "unknown"
+    assert result.report.issues.analysis_status == "failed"
+    assert result.report.final_status == "PASS"
+
+
+def test_generate_report_missing_analysis_status_is_not_treated_as_completed(
+    tmp_path: Path,
+) -> None:
+    """A snapshot without analysis_status must not collapse to clear/completed."""
+    import json
+
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    issues_dir = change_dir / "issues"
+    issues_dir.mkdir(parents=True, exist_ok=True)
+    (issues_dir / "snapshot.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "change_id": "CH-1",
+                "authoritative_batch_id": "20260715-000000",
+                "observations": [],
+                "occurrences": [],
+                "analysis_status": None,
+                "project_sync_status": "completed",
+                "batches": ["20260715-000000"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    inspect_change(tmp_path, change_id)
+    result = generate_report(tmp_path, change_id)
+    assert result.report.issues is not None
+    assert result.report.issues.issue_risk == "unknown"
+    assert result.report.issues.analysis_status == "failed"
+
+
+def test_generate_report_issue_section_in_markdown(tmp_path: Path) -> None:
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    _seed_issue_snapshot(change_dir, analysis_status="completed", occurrences=[])
+    _seed_empty_problem_projection(tmp_path)
+    inspect_change(tmp_path, change_id)
+    generate_report(tmp_path, change_id)
+    md = (tmp_path / "qa" / "changes" / "CH-1" / "report" / "quality-report.md").read_text()
+    assert "## Issue Risk" in md
+    assert "**Issue Risk**: clear" in md
+
+
+def test_generate_report_issue_risk_in_exec_summary(tmp_path: Path) -> None:
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    _seed_issue_snapshot(change_dir, analysis_status="failed")
+    inspect_change(tmp_path, change_id)
+    generate_report(tmp_path, change_id)
+    exec_summary = (tmp_path / "qa" / "changes" / "CH-1" / "report" / "executive-summary.md").read_text()
+    assert "**Issue Risk**: unknown" in exec_summary

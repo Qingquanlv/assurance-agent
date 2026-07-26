@@ -40,7 +40,6 @@ from assurance_agent.workflow.graph.compiler import canonical_digest, resolve_pa
 from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog
 from assurance_agent.workflow.graph.leases import (
-    AttemptDecision,
     Clock,
     LeaseRegistry,
     SystemLivenessProbe,
@@ -119,215 +118,6 @@ def _build_invocation_started(
         parent_task_id=parent_task_id,
         structural_path=structural_path,
     )
-
-
-def _install_task12_runtime_patches() -> None:
-    """Task 12 patches for planner/leases/scheduler (kept in runtime commit face)."""
-    from assurance_agent.workflow.graph import leases as leases_mod
-    from assurance_agent.workflow.graph import planner as planner_mod
-    from assurance_agent.workflow.graph import scheduler as scheduler_mod
-    from assurance_agent.workflow.graph.scheduler import Scheduler
-    from assurance_agent.workflow.orchestration.dsl import Scope as DslScope
-
-    if getattr(leases_mod, "_aa_task12_interrupted_patch", False):
-        return
-
-    original_decision = leases_mod.next_attempt_decision
-
-    def next_attempt_decision(
-        *,
-        task: ExecutableTask,
-        projection: GraphProjection,
-        now: datetime,
-    ) -> AttemptDecision:
-        proj = projection.tasks.get(task.task_id)
-        if proj is not None and proj.status == "interrupted":
-            return AttemptDecision(kind="start", attempt_number=max(proj.attempts_used, 1) + 1)
-        return original_decision(task=task, projection=projection, now=now)
-
-    leases_mod.next_attempt_decision = next_attempt_decision
-    scheduler_mod.next_attempt_decision = next_attempt_decision
-
-    original_freeze = Scheduler._freeze_if_needed
-
-    def _freeze_if_needed(self, task, result, workspace):  # type: ignore[no-untyped-def]
-        if result.status == "interrupted" and result.write_set_id is None:
-            return None
-        return original_freeze(self, task, result, workspace)
-
-    Scheduler._freeze_if_needed = _freeze_if_needed  # type: ignore[method-assign]
-
-    original_persist = Scheduler._persist_result
-
-    def _persist_result(self, *, prepared, plan, context, result, workspace):  # type: ignore[no-untyped-def]
-        if (
-            result.status == "interrupted"
-            and result.interrupt is not None
-            and result.interrupt.checkpoint_ns != prepared.task.checkpoint_ns
-        ):
-            from assurance_agent.workflow.core.graph_events import TaskAttemptSucceededEvent
-            from assurance_agent.workflow.core.progression import transaction
-            from assurance_agent.workflow.graph.resume_wire import build_graph_interrupted_event
-            from assurance_agent.workflow.graph.scheduler import _SettledAttempt
-
-            task = prepared.task
-            write_set_id = self._freeze_if_needed(task, result, workspace)
-            schema_version = self._checkpoints.project(task.invocation_id).event_schema_version
-            with transaction(context.change_dir) as txn:
-                txn.append_strict(
-                    TaskAttemptSucceededEvent(
-                        type="task_attempt_succeeded",
-                        invocation_id=task.invocation_id,
-                        checkpoint_ns=task.checkpoint_ns,
-                        superstep_id=plan.superstep_id,
-                        task_id=task.task_id,
-                        attempt_id=prepared.attempt_id,
-                        write_set_id=write_set_id,
-                        outputs_sha256=dict(result.outputs_sha256),
-                        gate_report=result.gate_report,
-                        state_updates=dict(result.state_updates),
-                        value=result.value,
-                    )
-                )
-                txn.append_strict(
-                    build_graph_interrupted_event(
-                        task=task,
-                        interrupt=result.interrupt,
-                        event_schema_version=schema_version,
-                        checkpoint_ns=result.interrupt.checkpoint_ns,
-                    )
-                )
-            return _SettledAttempt(task_id=task.task_id, status="interrupted", write_set_id=write_set_id)
-        return original_persist(
-            self,
-            prepared=prepared,
-            plan=plan,
-            context=context,
-            result=result,
-            workspace=workspace,
-        )
-
-    Scheduler._persist_result = _persist_result  # type: ignore[method-assign]
-
-    def _resolve_graph(compiled: CompiledWorkflow, projection: GraphProjection):
-        if projection.parent_invocation_id is not None:
-            graph = compiled.graphs.get(projection.entrypoint)
-            if graph is None:
-                raise planner_mod.PlanError(
-                    f"child invocation {projection.invocation_id} references unknown graph "
-                    f"'{projection.entrypoint}'"
-                )
-            return graph
-        entrypoint = compiled.entrypoints.get(projection.entrypoint)
-        if entrypoint is None:
-            raise planner_mod.PlanError(f"projection references unknown entrypoint '{projection.entrypoint}'")
-        graph = compiled.graphs.get(entrypoint.graph_id)
-        if graph is None:
-            raise planner_mod.PlanError(f"entrypoint '{projection.entrypoint}' references unknown graph")
-        return graph
-
-    def _latest_resolved_resume_action(projection: GraphProjection) -> str | None:
-        resolved = [
-            interrupt
-            for interrupt in projection.interrupts.values()
-            if interrupt.resolved_action is not None and interrupt.checkpoint_ns == projection.checkpoint_ns
-        ]
-        if not resolved:
-            return None
-        return sorted(resolved, key=lambda item: item.interrupt_id)[-1].resolved_action
-
-    def _node_interrupt_resolved(projection: GraphProjection, node_id: str) -> bool:
-        return any(
-            interrupt.node_id == node_id and interrupt.resolved_action is not None
-            for interrupt in projection.interrupts.values()
-        )
-
-    original_build_scope = planner_mod._build_scope
-
-    def _build_scope(graph, projection, artifacts, outcomes):  # type: ignore[no-untyped-def]
-        scope, reads = original_build_scope(graph, projection, artifacts, outcomes)
-        action = _latest_resolved_resume_action(projection)
-        if action is None:
-            return scope, reads
-        variables = dict(scope._vars)
-        variables["resume"] = {"action": action}
-        return (
-            DslScope(variables, node_result=scope.node_result),
-            reads,
-        )
-
-    original_seed = planner_mod._seed_outcomes
-
-    def _imported_task_id(structural_path: str, node_id: str) -> str:
-        return f"{structural_path}:{node_id}"
-
-    def _root_invocation_id(projection: GraphProjection) -> str:
-        head, _, _ = projection.checkpoint_ns.partition("/")
-        return head or projection.invocation_id
-
-    def _overlay_imported_outcomes(
-        graph,
-        projection: GraphProjection,
-        context: RuntimeContext,
-        outcomes,
-        retry,
-    ):
-        """Honor root ``task_imported`` records inside nested subgraph projections."""
-        from assurance_agent.workflow.graph.checkpoint import project_invocation
-
-        root_id = _root_invocation_id(projection)
-        if root_id == projection.invocation_id:
-            root_projection = projection
-        else:
-            root_projection = project_invocation(context.change_dir, root_id)
-        filtered_retry = list(retry)
-        for nid in graph.declaration_order:
-            imported = root_projection.tasks.get(_imported_task_id(projection.structural_path, nid))
-            if imported is None or imported.status != "succeeded":
-                continue
-            outcome = outcomes.get(nid)
-            if outcome is None:
-                continue
-            if outcome.status == "succeeded":
-                continue
-            outcomes[nid] = planner_mod._Outcome(status="succeeded", task=imported)
-            filtered_retry = [task for task in filtered_retry if task.node_id != nid]
-        return filtered_retry
-
-    def _seed_outcomes(compiled, graph, projection, context):  # type: ignore[no-untyped-def]
-        outcomes, retry, fail_reason = original_seed(compiled, graph, projection, context)
-        if fail_reason is None:
-            retry = _overlay_imported_outcomes(graph, projection, context, outcomes, retry)
-        if fail_reason is not None:
-            return outcomes, retry, fail_reason
-        for nid, outcome in list(outcomes.items()):
-            task = outcome.task
-            if task is None or task.status != "interrupted":
-                continue
-            if _node_interrupt_resolved(projection, nid):
-                outcomes[nid] = planner_mod._Outcome(status="unresolved", task=task)
-                node_task_count = sum(1 for item in projection.tasks.values() if item.node_id == nid)
-                retry.append(
-                    planner_mod._build_task(
-                        compiled,
-                        graph,
-                        projection,
-                        context,
-                        nid,
-                        max(node_task_count - 1, 0),
-                    )
-                )
-            else:
-                outcomes[nid] = planner_mod._Outcome(status="unresolved", task=task)
-        return outcomes, retry, fail_reason
-
-    planner_mod._resolve_graph = _resolve_graph
-    planner_mod._build_scope = _build_scope
-    planner_mod._seed_outcomes = _seed_outcomes
-    leases_mod._aa_task12_interrupted_patch = True  # type: ignore[attr-defined]
-
-
-_install_task12_runtime_patches()
 
 
 class GraphRuntimeError(AaError):
@@ -593,6 +383,11 @@ class GraphRuntime:
     def latest_root_invocation(self, entrypoint: str | None = None) -> str | None:
         return self._checkpoints.latest_root_invocation(entrypoint)
 
+    def invocation_terminal(self, invocation_id: str) -> str | None:
+        """Return the terminal status of an invocation, or None if still active."""
+        proj = self._try_project(invocation_id)
+        return proj.terminal if proj is not None else None
+
     def run_child(
         self,
         parent_task: ExecutableTask,
@@ -715,6 +510,25 @@ class GraphRuntime:
         entrypoint: str,
         context: RuntimeContext,
     ) -> RunResult:
+        # --- Entrypoint restart policy safety net ---
+        # For "once" entrypoints, refuse if this entrypoint has a completed
+        # invocation.  loop.py enforces this earlier; this is a secondary guard
+        # for callers that invoke run() directly without going through the driver.
+        ep = compiled.entrypoints.get(entrypoint)
+        if ep is not None and ep.restart == "once":
+            scoped_latest = self.latest_root_invocation(entrypoint)
+            if scoped_latest is not None:
+                try:
+                    scoped_proj = self._checkpoints.project(scoped_latest)
+                except LedgerIntegrityError as exc:
+                    raise GraphIntegrityError(str(exc)) from exc
+                if scoped_proj.terminal is not None:
+                    raise GraphRuntimeError(
+                        f"entrypoint '{entrypoint}' already completed "
+                        f"(invocation {scoped_latest}); refuse restart"
+                    )
+
+        # --- Active invocation guard (any entrypoint) ---
         latest = self.latest_root_invocation()
         if latest is not None:
             try:
@@ -866,7 +680,7 @@ class GraphRuntime:
         pending = projection.interrupts.get(command.interrupt_id)
         if pending is None or pending.resolved_action is not None:
             raise GraphRuntimeError(f"interrupt {command.interrupt_id} is not pending")
-        if command.action not in pending.actions and command.action != "stop":
+        if command.action not in pending.actions:
             raise GraphRuntimeError(
                 f"action {command.action!r} not allowed for interrupt {command.interrupt_id}"
             )
@@ -918,12 +732,15 @@ class GraphRuntime:
                     reason=command.reason,
                     who=command.who,
                     audited_reads_sha256=audited,
+                    payload=command.payload,
                 )
                 for index, invocation_id in enumerate(resume_invocation_ids):
                     if index == 0:
                         txn.append_strict(resumed)
                     else:
-                        txn.append_strict(resumed.model_copy(update={"invocation_id": invocation_id}))
+                        txn.append_strict(
+                            resumed.model_copy(update={"invocation_id": invocation_id, "payload": {}})
+                        )
             if command.action == "stop":
                 txn.append_strict(
                     GraphTerminalEvent(
@@ -1024,7 +841,7 @@ class GraphRuntime:
                 plan = plan_superstep(compiled, projection, context, artifacts)  # type: ignore[arg-type]
             except PlanError as exc:
                 message = str(exc)
-                if "graph_definition_changed" in message:
+                if exc.error_kind == "graph_definition_changed":
                     raise GraphDefinitionChanged(message) from exc
                 raise GraphRuntimeError(message) from exc
 
@@ -1174,9 +991,21 @@ class GraphRuntime:
         projection: GraphProjection,
         context: RuntimeContext,
     ) -> None:
-        prev, target = self._last_committed_tree_edge(projection)
+        prev, target, publication_id, write_set_ids = self._last_committed_tree_edge(projection)
         if target is None:
             return
+        if publication_id is None:
+            raise GraphRuntimeError("committed tree edge lacks checkpoint identity")
+        try:
+            if self._scheduler.repair_committed_write_sets(
+                context=context,
+                invocation_id=projection.invocation_id,
+                publication_id=publication_id,
+                write_set_ids=write_set_ids,
+            ):
+                return
+        except (SchedulerError, WorkspaceError) as exc:
+            raise GraphRuntimeError(f"failed to repair materialization: {exc}") from exc
         try:
             current = self._objects.capture(context.project_root, repo_root=context.repo_root)
         except WorkspaceError:
@@ -1189,10 +1018,15 @@ class GraphRuntime:
         except WorkspaceError as exc:
             raise GraphRuntimeError(f"failed to repair materialization: {exc}") from exc
 
-    def _last_committed_tree_edge(self, projection: GraphProjection) -> tuple[str | None, str | None]:
+    def _last_committed_tree_edge(
+        self,
+        projection: GraphProjection,
+    ) -> tuple[str | None, str | None, str | None, tuple[str, ...]]:
         cursor = projection.root_tree_id
         last_prev: str | None = None
         last_target: str | None = None
+        last_publication_id: str | None = None
+        last_write_set_ids: tuple[str, ...] = ()
         for raw in read_events_strict(self._checkpoints._change_dir):  # noqa: SLF001
             if raw.get("source") != "graph" or raw.get("invocation_id") != projection.invocation_id:
                 continue
@@ -1202,8 +1036,16 @@ class GraphRuntime:
             if isinstance(target_tree, str):
                 last_prev = cursor
                 last_target = target_tree
+                raw_checkpoint_id = raw.get("checkpoint_id")
+                last_publication_id = raw_checkpoint_id if isinstance(raw_checkpoint_id, str) else None
+                raw_ids = raw.get("write_set_ids")
+                last_write_set_ids = tuple(
+                    value
+                    for value in (raw_ids if isinstance(raw_ids, list) else [])
+                    if isinstance(value, str)
+                )
                 cursor = target_tree
-        return last_prev, last_target
+        return last_prev, last_target, last_publication_id, last_write_set_ids
 
     def _retry_pending_update(self, projection: GraphProjection, context: RuntimeContext) -> None:
         planned = self._last_uncommitted_plan(projection.invocation_id)

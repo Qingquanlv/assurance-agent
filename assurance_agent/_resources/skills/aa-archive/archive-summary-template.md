@@ -47,15 +47,15 @@ Batch ID: `{batch_id}` (full results: `execution/runs/{batch_id}/`)
 | E2E Plan Review | PASS / N/A |
 | Inspect | done / partial / not_run |
 
-## Known Product Issues
+## Issue Risk
 
-<!-- Fill in if archive_status == archived_with_warnings, otherwise write "None" -->
+<!-- Fill in from report/quality-report.json issues section; write "None" when issues is absent or issue_risk == "clear" -->
 
-| ID | Module | Endpoint | Workaround | Coverage Gap | Status |
-|---|---|---|---|---|---|
-| {KPI-001} | {module} | {METHOD /path} | {description} | open | open |
+issue_risk: {unknown|critical|high|medium|low|clear}
+issue_risk_rationale: {rationale from quality-report.json}
+open_problem_count: {count of active Problems linked to this Change}
 
-Source: `qa/changes/{change_id}/known-product-issues.md` (snapshots in `execution/` and `inspect/`)
+Source: `qa/changes/{change_id}/report/quality-report.json` (issues section) and `qa/issues/problems.json`
 
 ## Archived Artifacts
 
@@ -64,6 +64,8 @@ Source: `qa/changes/{change_id}/known-product-issues.md` (snapshots in `executio
 - `qa/archive/{change_id}/review/`
 - `qa/archive/{change_id}/execution/`
 - `qa/archive/{change_id}/inspect/`
+- `qa/archive/{change_id}/issues/` (if present)
+- `qa/archive/{change_id}/report/` (if present)
 - `qa/archive/{change_id}/workflow-state.yaml`
 - `qa/archive/{change_id}/events.jsonl`
 - `qa/archive/{change_id}/healing/`

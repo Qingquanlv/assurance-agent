@@ -1,6 +1,6 @@
 ---
 name: aa-inspect
-description: "AA M5: Inspect execution results and classify test failures via `aa report inspect --change <change-id>`. Use when tests have failed and the user wants to understand why. Classifies failures into categories (locator, assertion, environment, etc.) and writes inspect/failure-analysis.json, failure-summary.md, and inspect/known-product-issues.md. Never classifies failures without the CLI."
+description: "AA M5: Inspect execution results and classify test failures via `aa report inspect --change <change-id>`. Use when tests have failed and the user wants to understand why. Classifies failures into categories (locator, assertion, environment, etc.) and writes inspect/failure-analysis.json, failure-summary.md, and inspect/quality-gate-result.json. Never classifies failures without the CLI."
 ---
 
 ## Per-Skill Memory
@@ -32,10 +32,9 @@ Do not rely on prior conversation context.
    - Latest pointer files under `execution/*.json` are fallback/compatibility only and must not override manifest batch files.
    - The CLI (`aa run`) writes all batch result files listed above — see `aa-run` skill **Output Files**. The inspect CLI normalises both CLI map-shaped manifests and skill extended manifests (`primary_runner.result_files[]`).
    - In fallback partial mode with no normalised results, skip this requirement and use raw logs / manifest / `run-summary-note.md` instead.
-6. Read `execution/known-product-issues.md` if present (execution snapshot — do not overwrite).
-7. Run **AA CLI Identity Check** before primary inspect (see below).
-8. If any required input for the chosen inspect mode is missing, stop and report.
-9. Use files as the sole source of truth.
+6. Run **AA CLI Identity Check** before primary inspect (see below).
+7. If any required input for the chosen inspect mode is missing, stop and report.
+8. Use files as the sole source of truth.
 
 **After completing work (primary mode — CLI succeeded):**
 
@@ -48,7 +47,7 @@ Do not rely on prior conversation context.
    - `phases.inspect.inspect_mode = primary`
    - `phases.inspect.classification_performed = true`
    - `phases.execution.status` change only under **Status Update Rules**
-   - Inspect-discovered issues appended to `phases.inspect.known_product_issues` (not change-level record unless promoted)
+   - Inspect-discovered `known_product_issue` / `coverage_gap` classifications recorded in `phases.inspect` metadata only — Issue lifecycle authority belongs to the Issue subgraph, not inspect artifacts
 
 **After completing work (fallback partial mode):**
 
@@ -82,7 +81,7 @@ Inspect execution results and artifacts for a specific change, classify failures
 
 **Fallback partial mode:** The skill may summarize raw artifacts but **must not** assign failure categories or write `failure-analysis.json`.
 
-**Never:** Fabricate categories, overwrite `execution/known-product-issues.md` with inspect discoveries, or promote inspect findings to change-level records without explicit permission.
+**Never:** Fabricate categories or promote inspect findings into canonical Issue/Problem lifecycle state without the Issue reconciler/review workflow.
 
 ## Assertion Expectation Reclassification
 
@@ -218,7 +217,7 @@ MCP is optional and must not replace the CLI execution chain.
 6. Reads associated `case.yaml` and test source files.
 7. Classifies each failure into a defined category.
 8. Populates `coverage_gaps[]` in `failure-analysis.json` from the coverage result's low-coverage files (never a Fix Proposal source).
-9. Writes `inspect/failure-analysis.json`, `failure-summary.md`, `inspect/quality-gate-result.json`, and (if applicable) `inspect/known-product-issues.md`.
+9. Writes `inspect/failure-analysis.json`, `failure-summary.md`, and `inspect/quality-gate-result.json`.
 
 ## failure-analysis.json Schema
 
@@ -354,42 +353,18 @@ Examples:
 - Test validates behavior through an alternate endpoint because the direct endpoint is broken.
 - Product behavior is incorrect but not blocking the remaining test suite.
 
-### Directory Semantics (Known Product Issues)
+### Issue Lifecycle Boundary
 
-| Path | Role |
-|------|------|
-| `qa/changes/<change-id>/known-product-issues.md` | **Change-level** source of truth (human/reviewer before codegen; codegen append-only) |
-| `execution/known-product-issues.md` | **Execution snapshot** copied from change-level record by `aa-run` |
-| `inspect/known-product-issues.md` | **Inspect analysis output** for inspect-discovered or confirmed issues |
+Inspect classifies failures into execution-evidence categories including `known_product_issue` and `coverage_gap`. These labels are **classification hints only** — they do not create Problems, mutate Ledgers, or change execution `final_status` by themselves.
 
 Hard rules:
 
-- `execution/known-product-issues.md` is the execution snapshot from change-level known issues — **do not overwrite** with inspect-discovered issues.
-- `inspect/known-product-issues.md` holds inspect analysis output; new findings wait for **promotion** — do not replace execution snapshot.
-- Inspect must **not** directly modify `qa/changes/<change-id>/known-product-issues.md` unless promotion is allowed (see below).
+- Inspect artifacts (`failure-analysis.json`, `failure-summary.md`) are execution evidence, not canonical Issue lifecycle state.
+- Do **not** read or write legacy known-product issue Markdown/JSON files.
+- Product bugs and coverage gaps discovered during inspect are reconciled later by `inspect-with-issues` into Observations/Occurrences and the Project Problem Ledger.
+- `known_product_issue` and `coverage_gap` must **not** enter Fix Proposal — require product fix or human Problem review.
 
-### Known Product Issue Promotion Rule
-
-`aa-inspect` may write:
-
-- `qa/changes/<change-id>/inspect/known-product-issues.md`
-
-It must **not** directly modify:
-
-- `qa/changes/<change-id>/known-product-issues.md`
-
-unless:
-
-- `.aa/config.yaml` has `allow_inspect_promote_known_issues: true`, or
-- the user explicitly confirms promotion.
-
-If promotion is **not** allowed:
-
-- Mark the issue as `requires_promotion: true` in `failure-analysis.json` / `inspect/known-product-issues.md`
-- Set or keep execution status as `PASS_WITH_WARNINGS` if evidence supports it
-- Ask human/orchestrator to promote the inspect finding into the change-level record
-
-If known product issues exist, the workflow final summary must **not** say `no risk`, `fully clean`, or `clean pass`.
+If inspect confirms product-risk signals, the workflow summary must **not** claim `no risk` or `clean pass` — Issue risk is reported separately after Issue analysis.
 
 ## Output Files (read after CLI completes)
 
@@ -398,7 +373,6 @@ qa/changes/<change-id>/inspect/           ← primary analysis outputs (source o
 ├── failure-analysis.json                ← primary mode only (CLI-written)
 ├── failure-summary.md
 ├── quality-gate-result.json             ← unified gate conclusion (M1; CLI-written)
-├── known-product-issues.md              ← inspect analysis (if issues found; not change-level)
 ├── inspection-partial.json              ← fallback partial mode only
 └── inspection-error.json              ← primary CLI failed / outputs missing
 
@@ -430,22 +404,15 @@ If the CLI completes but required primary output is missing (`inspect/failure-an
 7. Verify outputs per mode (primary → `failure-analysis.json`; partial → `inspection-partial.json`).
 8. Read `inspect/failure-analysis.json` (primary) or `inspect/inspection-partial.json` (partial).
 9. Read `inspect/failure-summary.md`.
-10. Read `inspect/known-product-issues.md` if present — do **not** overwrite `execution/known-product-issues.md`.
-11. Present summary to user (category breakdown in primary mode; raw summary in partial mode).
-12. Report the state delta per mode (see Context Contract **After completing work** — orchestrator applies it to `workflow-state.yaml` when dispatched).
-13. Do **not** generate fix proposals in this skill — eligible failures are consumed by downstream healing skills.
+10. Present summary to user (category breakdown in primary mode; raw summary in partial mode).
+11. Report the state delta per mode (see Context Contract **After completing work** — orchestrator applies it to `workflow-state.yaml` when dispatched).
+12. Do **not** generate fix proposals in this skill — eligible failures are consumed by downstream healing skills.
 
 ## Status Update Rules
 
 ### Primary mode
 
-`aa-inspect` may only update `phases.execution.status` under these conditions:
-
-- `PASS` → `PASS_WITH_WARNINGS`: allowed when `known_product_issue` or `coverage_gap` is confirmed in `failure-analysis.json` and documented in `inspect/known-product-issues.md` (promotion to change-level record still requires **Known Product Issue Promotion Rule**).
-- `FAIL` → `FAIL`: never change a FAIL status — inspection clarifies category but cannot clear it.
-- Any status → `PASS`: **forbidden**.
-- `PASS_WITH_WARNINGS` → `PASS`: **forbidden**.
-- Reclassifying a failure as `known_product_issue` to avoid `FAIL`: **forbidden** unless evidence is in `failure-analysis.json` and inspect output — not by overwriting execution snapshot alone.
+`aa-inspect` must **not** change `phases.execution.status` based on Issue/Problem state. Execution status reflects test outcomes only; Issue risk is computed separately.
 
 Set `phases.inspect.status = done`, `inspect_mode = primary`, `classification_performed = true`.
 
@@ -471,11 +438,9 @@ If `final_status == PASS_WITH_WARNINGS`, downstream workflow status must be `com
 - Always read `execution/execution-manifest.yaml` before inspecting.
 - If `fallback_runner.used == true` and `normalised_results_available == false`, primary inspect cannot run — use partial fallback or STOP.
 - Only require normalised result files for selected targets in **primary** mode.
-- Do **not** overwrite `execution/known-product-issues.md` with inspect discoveries.
-- Do **not** modify change-level `known-product-issues.md` without promotion permission.
+- Do **not** read or write legacy known-product issue Markdown/JSON files.
 - Environment failures must **not** enter a Fix Proposal pipeline.
 - `known_product_issue` and `coverage_gap` must **not** enter Fix Proposal — require product fix.
-- If known product issues exist, never report overall result as `no risk`, `clean`, or `PASS` — use `PASS_WITH_WARNINGS`.
 - In fallback partial mode: no `failure-analysis.json`, no categories, `phases.inspect.status = partial`.
 
 ---
@@ -667,7 +632,6 @@ qa/changes/<change-id>/plans/**
 qa/changes/<change-id>/review/**
 qa/changes/<change-id>/healing/**
 qa/changes/<change-id>/execution/execution-manifest.yaml   (must not update)
-qa/changes/<change-id>/execution/known-product-issues.md   (must not overwrite execution snapshot)
 ```
 
 If the orchestrator (`aa-workflow`) detects that `aa-inspect` modified any forbidden path during Phase 9 or Phase 13, it must:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,29 @@ L1_PATH = L1_REL_PATH
 
 class KnowledgePromoteError(AaError):
     pass
+
+
+def l1_sha256(project_root: Path) -> str:
+    """Return the SHA-256 digest of the current L1 data-knowledge document."""
+    path = project_root / L1_PATH
+    if not path.is_file():
+        raise KnowledgePromoteError(f"{L1_PATH} not found under {project_root}")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def assert_l1_sha256(project_root: Path, expected: str) -> None:
+    """Raise when the live L1 digest does not match ``expected``."""
+    actual = l1_sha256(project_root)
+    if actual != expected:
+        raise KnowledgePromoteError(f"L1 digest mismatch: expected {expected}, found {actual}")
+
+
+def validate_improvement_knowledge_proposal(path: Path) -> None:
+    """Validate an Improvement-exported L2 proposal via existing semantic rules."""
+    result = validate_proposal(path, rel=path.name)
+    if not result.ok:
+        detail = "; ".join(result.errors)
+        raise KnowledgePromoteError(f"invalid L2 proposal {path}: {detail}")
 
 
 @dataclass(frozen=True)

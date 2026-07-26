@@ -10,7 +10,7 @@ regression:
     requirement_f1: {direction: higher_is_better, max_regression: 0.0}
 executor:
   type: workflow-run
-  scope: case
+  entrypoint: case
   run_mode: case-only
   timeout_seconds: 600
   expected_outputs:

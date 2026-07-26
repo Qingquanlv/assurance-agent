@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0",
+  "fixture": "vue_fastapi_admin",
+  "description": "Deterministic vue-fastapi-admin acceptance scenarios without live model calls.",
+  "batches": {
+    "initial": {
+      "batch_id": "20260725-120000",
+      "scenarios": [
+        "HTTP 500 on dept create becomes product_bug without pre-existing marker",
+        "skipped workaround test produces workaround Observation",
+        "API and fuzz failures share one exact fingerprint",
+        "assertion typo failure stays distinct test_bug Problem"
+      ]
+    },
+    "healing": {
+      "batch_id": "20260725-130000",
+      "scenarios": [
+        "authoritative verification batch with all targets passing"
+      ]
+    }
+  }
+}

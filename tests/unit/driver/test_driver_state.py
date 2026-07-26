@@ -109,18 +109,18 @@ def test_start_guard_running_alive_refused(tmp_path: Path) -> None:
     assert guard.reason is not None and "already running" in guard.reason
 
 
-def test_start_guard_graph_completed_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_start_guard_graph_completed_allowed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Completed-invocation refusal lives in GraphRuntime / loop restart policy."""
     monkeypatch.setattr(ds, "_latest_graph_terminal", lambda *_a: ("inv-1", "completed"))
     _write_state(tmp_path, status="completed")
     guard = evaluate_start_guard(tmp_path)
-    assert guard.allowed is False
-    assert guard.reason is not None and "already completed" in guard.reason
+    assert guard.allowed is True
 
 
-def test_start_guard_completed_main_graph_allows_standalone_entrypoint(
+def test_start_guard_completed_main_graph_allows_all_entrypoints_at_driver(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """archive/retro run after the main graph completed, so scope the guard per entrypoint."""
+    """Driver start guard no longer scopes completed refusal per entrypoint."""
 
     def _terminal(_change_dir: Path, entrypoint: str | None = None) -> tuple[str | None, str | None]:
         if entrypoint in (None, "full"):
@@ -129,7 +129,7 @@ def test_start_guard_completed_main_graph_allows_standalone_entrypoint(
 
     monkeypatch.setattr(ds, "_latest_graph_terminal", _terminal)
     _write_state(tmp_path, status="completed")
-    assert evaluate_start_guard(tmp_path, "full").allowed is False
+    assert evaluate_start_guard(tmp_path, "full").allowed is True
     assert evaluate_start_guard(tmp_path, "archive").allowed is True
     assert evaluate_start_guard(tmp_path, "retro").allowed is True
 

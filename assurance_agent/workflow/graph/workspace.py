@@ -27,7 +27,7 @@ import json
 import os
 import shutil
 import subprocess
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -204,9 +204,41 @@ def _is_excluded_rel(rel: str) -> bool:
     parts = [part for part in rel.split("/") if part and part != "."]
     if not parts:
         return False
+    # Change Issue ledgers are canonical domain data, not the change-dir graph
+    # coordinator ledger.  They must participate in capture/freeze/apply so a
+    # later execution batch can replay all Observations and Occurrences.
+    if (
+        len(parts) >= 5
+        and parts[-4] == "changes"
+        and parts[-2:] == ["issues", "events.jsonl"]
+    ):
+        return False
     if _is_excluded_name(parts[-1]):
         return True
     return any(part in _EXCLUDED_DIRS for part in parts[:-1] or parts)
+
+
+def _is_synchronized_ledger_rel(
+    roots: Mapping[str, str],
+    rel: str,
+    synchronized: Sequence[ResourcePath],
+) -> bool:
+    """Project ledger JSONL under synchronized prefixes must still publish.
+
+    Basename ``events.jsonl`` is globally capture-excluded (change-dir coordinator),
+    but ``qa/issues/events.jsonl`` / ``qa/improvements/events.jsonl`` are canonical
+    ledgers and must ride synchronized write-sets.
+    """
+    if not synchronized:
+        return False
+    parts = [part for part in rel.split("/") if part and part != "."]
+    if not parts or parts[-1] != "events.jsonl":
+        return False
+    try:
+        logical = ResourcePath.parse(_canonical_logical(roots, rel))
+    except WorkspaceError:
+        return False
+    return logical.root == "project" and any(path_covers(prefix, logical) for prefix in synchronized)
 
 
 def _walk(root: Path, *, keep_change_dir: Path | None = None) -> dict[str, _Entry]:
@@ -222,7 +254,7 @@ def _walk(root: Path, *, keep_change_dir: Path | None = None) -> dict[str, _Entr
         with os.scandir(directory) as children:
             for child in children:
                 rel = f"{prefix}{child.name}"
-                if _is_excluded_name(child.name):
+                if _is_excluded_rel(rel):
                     continue
                 # Sibling qa/changes/<other-id>/ must not enter this change's tree —
                 # the loop keeps multiple in-flight change dirs under one SUT.
@@ -266,9 +298,26 @@ def _install_file(path: Path, data: bytes, executable: bool) -> None:
     """temp-file + os.replace 落盘并固定 mode；apply 阶段的最小写入单元。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.parent / f"{path.name}.tmp.{os.getpid()}"
-    tmp.write_bytes(data)
-    os.replace(tmp, path)
-    os.chmod(path, 0o755 if executable else 0o644)
+    try:
+        tmp.write_bytes(data)
+        # The replacement must publish content and mode as one filesystem state.
+        # Otherwise a crash after replace leaves content-at-target with mode-at-base,
+        # which is neither side of the replay comparison.
+        os.chmod(tmp, 0o755 if executable else 0o644)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _same_file_content(left: _Entry | None, right: _Entry | None) -> bool:
+    """Whether two entries differ, if at all, only in executable mode."""
+    return (
+        left is not None
+        and right is not None
+        and left.kind == "file"
+        and right.kind == "file"
+        and left.sha256 == right.sha256
+    )
 
 
 def _prune_empty_parents(path: Path, stop: Path) -> None:
@@ -279,6 +328,112 @@ def _prune_empty_parents(path: Path, stop: Path) -> None:
         except OSError:
             return
         parent = parent.parent
+
+
+def _validated_synchronized_paths(
+    paths: Sequence[ResourcePath | str],
+) -> tuple[ResourcePath, ...]:
+    validated: dict[str, ResourcePath] = {}
+    for value in paths:
+        path = ResourcePath.parse(value) if isinstance(value, str) else value
+        if path.root != "project":
+            raise WorkspaceError(f"synchronized path must use the project root: {path.root}:{path.pattern}")
+        wildcard_segments = [segment for segment in path.segments if "*" in segment]
+        if wildcard_segments and not (wildcard_segments == ["**"] and path.segments[-1] == "**"):
+            raise WorkspaceError(
+                f"synchronized path must be a concrete file or directory prefix: {path.pattern}"
+            )
+        validated[path.pattern] = path
+    return tuple(validated[key] for key in sorted(validated))
+
+
+def _matches_synchronized_path(
+    roots: Mapping[str, str],
+    rel: str,
+    synchronized: Sequence[ResourcePath],
+) -> bool:
+    prefix = roots.get("project")
+    if prefix is None:
+        raise WorkspaceError("tree manifest missing project logical root")
+    prefix = _assert_safe_prefix(prefix)
+    if prefix == ".":
+        logical_rel = rel
+    elif rel.startswith(f"{prefix}/"):
+        logical_rel = rel[len(prefix) + 1 :]
+    else:
+        return False
+    logical = ResourcePath.parse(f"project:{logical_rel}")
+    return any(path_covers(path, logical) for path in synchronized)
+
+
+def _capture_synchronized_entries(
+    project_root: Path,
+    roots: Mapping[str, str],
+    synchronized: Sequence[ResourcePath],
+) -> dict[str, _Entry]:
+    captured: dict[str, _Entry] = {}
+    for path in synchronized:
+        rel_pattern = _physical_for(roots, path)
+        if path.segments[-1] == "**":
+            directory_rel = rel_pattern.removesuffix("/**")
+            directory = project_root / directory_rel
+            if not _is_within(directory.parent.resolve(), project_root):
+                raise WorkspaceError(f"synchronized directory escapes project root: {path.pattern}")
+            if directory.is_symlink():
+                raise WorkspaceError(f"synchronized directory cannot be a symlink: {path.pattern}")
+            if not directory.exists():
+                continue
+            if not directory.is_dir():
+                raise WorkspaceError(f"synchronized prefix is not a directory: {path.pattern}")
+            for child_rel, entry in _walk(directory).items():
+                captured[f"{directory_rel}/{child_rel}"] = entry
+            # Ledger JSONL is basename-excluded from _walk; include it for live overlay.
+            events_rel = f"{directory_rel}/events.jsonl" if directory_rel else "events.jsonl"
+            events_entry = _entry_at(project_root, events_rel)
+            if events_entry is not None:
+                captured[events_rel] = events_entry
+            continue
+        entry = _entry_at(project_root, rel_pattern)
+        if entry is not None:
+            captured[rel_pattern] = entry
+    return captured
+
+
+def _synchronized_ledger_entries(
+    workspace_root: Path,
+    roots: Mapping[str, str],
+    synchronized: Sequence[ResourcePath],
+) -> dict[str, _Entry]:
+    """Collect workspace ``events.jsonl`` files under synchronized project prefixes."""
+    found: dict[str, _Entry] = {}
+    for path in synchronized:
+        if path.root != "project" or path.segments[-1] != "**":
+            continue
+        directory_rel = path.pattern.removesuffix("/**")
+        events_rel = f"{directory_rel}/events.jsonl" if directory_rel else "events.jsonl"
+        physical = _physical_for(roots, ResourcePath.parse(f"project:{events_rel}"))
+        entry = _entry_at(workspace_root, physical)
+        if entry is not None:
+            found[physical] = entry
+    return found
+
+
+def _entry_at(project_root: Path, rel: str) -> _Entry | None:
+    target = project_root / rel
+    if not _is_within(target.parent.resolve(), project_root):
+        raise WorkspaceError(f"targeted path escapes project root: {rel}")
+    if target.is_symlink():
+        link_target = os.readlink(target)
+        if not _is_within((target.parent / link_target).resolve(), project_root):
+            raise WorkspaceError(f"targeted symlink escapes project root: {rel}")
+        return _Entry(kind="symlink", sha256=hashlib.sha256(link_target.encode()).hexdigest())
+    if not target.exists():
+        return None
+    if not target.is_file():
+        raise WorkspaceError(f"targeted write-set path is not a file: {rel}")
+    data = target.read_bytes()
+    executable = bool(target.stat(follow_symlinks=False).st_mode & 0o100)
+    return _Entry(kind="file", sha256=hashlib.sha256(data).hexdigest(), executable=executable)
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +457,8 @@ class WriteSet(BaseModel):
     base_tree_id: str
     entries: tuple[WriteEntry, ...]
     outputs_sha256: dict[str, str]
+    synchronized_paths: tuple[str, ...] = ()
+    project_exclusive_tokens: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +560,30 @@ class TreeStore:
             raise ValueError(f"artifact is not valid JSON: {logical_path}") from exc
         return ResolvedArtifact(value=value, reads_sha256={logical_path: entry.sha256})
 
+    def filter_tree(self, tree_id: str, claims: ResourceClaims) -> str:
+        """Return a tree id that omits sibling Retro runs pinned out of scope.
+
+        When task claims name concrete ``project:qa/retro/<id>/...`` paths,
+        other ``qa/retro/<sibling>/`` entries are dropped from the materialized
+        workspace. The freeze/merge ``base_tree_id`` stays the full overlay tree
+        — callers must not rebind it to this filtered id.
+        """
+        manifest = self._load_tree(tree_id)
+        claimed_retro_ids = _claimed_retro_run_ids(claims)
+        if not claimed_retro_ids:
+            return tree_id
+        entries = {
+            rel: entry
+            for rel, entry in manifest.entries.items()
+            if not _is_omitted_retro_sibling(manifest.roots, rel, claimed_retro_ids)
+        }
+        if entries == manifest.entries:
+            return tree_id
+        raw = _canonical_json(_tree_payload(manifest.roots, entries))
+        filtered_id = hashlib.sha256(raw).hexdigest()
+        self._write_object(filtered_id, raw)
+        return filtered_id
+
     def materialize(self, tree_id: str, dest: Path) -> None:
         """把 tree 物化到空目录 ``dest``，并写入 ``.graph-runtime/tree.json`` 元数据。"""
         manifest = self._load_tree(tree_id)
@@ -443,9 +624,19 @@ class TreeStore:
         """
         base = self._load_tree(workspace.base_tree_id)
         current = _walk(workspace.root)
+        # Synchronized project ledgers keep events.jsonl out of ordinary capture
+        # but must still enter the write-set for targeted publication.
+        if claims.synchronized:
+            for rel, entry in _synchronized_ledger_entries(
+                workspace.root, base.roots, claims.synchronized
+            ).items():
+                current[rel] = entry
+        claimed_retro_ids = _claimed_retro_run_ids(claims)
         entries: list[WriteEntry] = []
         for rel in sorted(set(base.entries) | set(current)):
-            if _is_excluded_rel(rel):
+            if _is_excluded_rel(rel) and not _is_synchronized_ledger_rel(
+                base.roots, rel, claims.synchronized
+            ):
                 # Runtime side-effects may still sit in older base trees; never
                 # promote them into write-sets once they are capture-excluded.
                 continue
@@ -453,11 +644,27 @@ class TreeStore:
             after = current.get(rel)
             if before == after:
                 continue
+            # Sibling Retro dirs were intentionally not materialized; absence is
+            # not a delete against the full freeze/merge base tree.
+            if (
+                after is None
+                and before is not None
+                and _is_omitted_retro_sibling(base.roots, rel, claimed_retro_ids)
+            ):
+                continue
             if (before is not None and before.kind == "symlink") or (
                 after is not None and after.kind == "symlink"
             ):
                 raise WorkspaceError(f"changed symlink rejected: {rel}")
             logical = _canonical_logical(base.roots, rel)
+            logical_path = ResourcePath.parse(logical)
+            if (
+                claims.synchronized
+                and logical_path.root == "project"
+                and not any(path_covers(prefix, logical_path) for prefix in claims.synchronized)
+                and not _is_declared_aliased_repo_test_write(base.roots, rel, claims)
+            ):
+                raise WorkspaceError(f"synchronized write outside declared prefixes: {logical}")
             if not _is_authorized(base.roots, rel, claims):
                 raise WorkspaceError(f"forbidden write outside authorization_writes: {logical}")
             if after is None:
@@ -491,6 +698,10 @@ class TreeStore:
             "entries": [entry.model_dump(mode="json") for entry in entries],
             "kind": "write_set",
             "outputs_sha256": outputs_sha256,
+            "project_exclusive_tokens": sorted(
+                token for token in claims.exclusive if claims.synchronized and token.startswith("project:")
+            ),
+            "synchronized_paths": sorted(f"{path.root}:{path.pattern}" for path in claims.synchronized),
             "task_id": workspace.task_id,
             "version": 1,
         }
@@ -503,6 +714,14 @@ class TreeStore:
             base_tree_id=workspace.base_tree_id,
             entries=tuple(entries),
             outputs_sha256=outputs_sha256,
+            synchronized_paths=tuple(sorted(f"{path.root}:{path.pattern}" for path in claims.synchronized)),
+            project_exclusive_tokens=tuple(
+                sorted(
+                    token
+                    for token in claims.exclusive
+                    if claims.synchronized and token.startswith("project:")
+                )
+            ),
         )
 
     def _freeze_outputs(
@@ -604,6 +823,133 @@ class TreeStore:
         self._write_object(target_tree_id, raw)
         return target_tree_id
 
+    def overlay_synchronized_paths(
+        self,
+        base_tree_id: str,
+        project_root: Path,
+        paths: Sequence[ResourcePath],
+    ) -> str:
+        """Replace only declared synchronized paths in ``base_tree_id`` from the live root."""
+        synchronized = _validated_synchronized_paths(paths)
+        if not synchronized:
+            return base_tree_id
+        project_root = project_root.resolve()
+        if not project_root.is_dir():
+            raise WorkspaceError(f"project root is not a directory: {project_root}")
+        base = self._load_tree(base_tree_id)
+        live = _capture_synchronized_entries(project_root, base.roots, synchronized)
+        entries = dict(base.entries)
+        for rel in sorted(set(base.entries) | set(live)):
+            if not _matches_synchronized_path(base.roots, rel, synchronized):
+                continue
+            current = live.get(rel)
+            if current is None:
+                entries.pop(rel, None)
+                continue
+            source = project_root / rel
+            data = source.read_bytes() if current.kind == "file" else os.readlink(source).encode("utf-8")
+            if hashlib.sha256(data).hexdigest() != current.sha256:
+                raise WorkspaceError(f"synchronized path changed during overlay: {rel}")
+            self._write_object(current.sha256, data)
+            entries[rel] = current
+        raw = _canonical_json(_tree_payload(base.roots, entries))
+        overlay_tree_id = hashlib.sha256(raw).hexdigest()
+        self._write_object(overlay_tree_id, raw)
+        return overlay_tree_id
+
+    def apply_write_sets_to_synchronized_paths(
+        self,
+        project_root: Path,
+        write_sets: Iterable[WriteSet],
+        paths: Sequence[ResourcePath],
+    ) -> None:
+        """Apply only write-set entries, validating against their live-overlay base tree.
+
+        Synchronized entries therefore compare with the locked live state captured by
+        ``overlay_synchronized_paths``; every other entry compares with the invocation
+        snapshot retained in that same overlay tree. Unrelated canonical paths are never
+        walked or materialized.
+        """
+        synchronized = _validated_synchronized_paths(paths)
+        if not synchronized:
+            raise WorkspaceError("targeted synchronized apply requires synchronized paths")
+        ordered = sorted(write_sets, key=lambda write_set: write_set.task_id)
+        if not ordered:
+            return
+        base_ids = {write_set.base_tree_id for write_set in ordered}
+        if len(base_ids) != 1:
+            raise WorkspaceError("write-sets do not share one synchronized overlay base tree")
+        base = self._load_tree(ordered[0].base_tree_id)
+        project_root = project_root.resolve()
+        if not project_root.is_dir():
+            raise WorkspaceError(f"project root is not a directory: {project_root}")
+
+        touched: dict[str, str] = {}
+        writes: list[tuple[str, _Entry]] = []
+        deletes: list[str] = []
+        for write_set in ordered:
+            for entry in write_set.entries:
+                previous = touched.get(entry.logical_path)
+                if previous is not None:
+                    raise WorkspaceError(
+                        f"overlapping sibling write-sets at {entry.logical_path}: "
+                        f"{previous} vs {write_set.task_id}"
+                    )
+                touched[entry.logical_path] = write_set.task_id
+                logical = ResourcePath.parse(entry.logical_path)
+                if any("*" in segment for segment in logical.segments):
+                    raise WorkspaceError(f"write-set entry must be a concrete path: {entry.logical_path}")
+                rel = _physical_for(base.roots, logical)
+                before = base.entries.get(rel)
+                before_sha = before.sha256 if before is not None else None
+                if entry.before_sha256 != before_sha:
+                    scope = (
+                        "synchronized live overlay"
+                        if logical.root == "project"
+                        and any(path_covers(prefix, logical) for prefix in synchronized)
+                        else "invocation base"
+                    )
+                    raise WorkspaceError(
+                        f"write-set entry {entry.logical_path} before_sha256 disagrees with {scope}"
+                    )
+                if entry.operation == "delete":
+                    if entry.after_sha256 is not None or entry.blob_sha256 is not None:
+                        raise WorkspaceError(
+                            f"delete write-set entry carries after content: {entry.logical_path}"
+                        )
+                    wanted = None
+                else:
+                    if entry.after_sha256 is None or entry.blob_sha256 != entry.after_sha256:
+                        raise WorkspaceError(
+                            f"write-set entry missing matching content hash: {entry.logical_path}"
+                        )
+                    self._read_object(entry.after_sha256)
+                    wanted = _Entry(
+                        kind="file",
+                        sha256=entry.after_sha256,
+                        executable=entry.executable,
+                    )
+                actual = _entry_at(project_root, rel)
+                if actual == wanted:
+                    continue
+                if _same_file_content(actual, wanted):
+                    assert wanted is not None
+                    writes.append((rel, wanted))
+                    continue
+                if actual != before:
+                    raise WorkspaceError(f"canonical workspace drift at targeted path {entry.logical_path}")
+                if wanted is None:
+                    deletes.append(rel)
+                else:
+                    writes.append((rel, wanted))
+
+        for rel, wanted in sorted(writes):
+            _install_file(project_root / rel, self._read_object(wanted.sha256), wanted.executable)
+        for rel in sorted(deletes):
+            victim = project_root / rel
+            victim.unlink(missing_ok=True)
+            _prune_empty_parents(victim, project_root)
+
     def apply_tree(self, project_root: Path, target_tree_id: str, *, base_tree_id: str) -> None:
         """把 canonical root 从 base tree 幂等推进到 target tree。
 
@@ -639,6 +985,10 @@ class TreeStore:
                 continue
             if actual == wanted:
                 continue  # 已物化（重放/幂等）
+            if _same_file_content(actual, wanted):
+                assert wanted is not None
+                writes.append((rel, wanted))
+                continue
             if actual != before:
                 raise WorkspaceError(f"canonical workspace drift at {rel}")
             if wanted is None:
@@ -693,6 +1043,90 @@ def _is_authorized(roots: Mapping[str, str], rel: str, claims: ResourceClaims) -
         if any(path_covers(authorization, claim) for authorization in claims.authorization_writes):
             return True
     return False
+
+
+def _is_declared_aliased_repo_test_write(
+    roots: Mapping[str, str],
+    rel: str,
+    claims: ResourceClaims,
+) -> bool:
+    """Return whether an aliased physical path is an authorized repo test write.
+
+    ``project`` and ``repo`` may intentionally point at the same SUT root.  The
+    canonical logical name is then ``project`` by lexical tie-break, but a graph
+    footprint can still legitimately own the path through a narrower
+    ``repo:tests/**`` claim.  This exception is deliberately limited to that
+    execution-contract namespace: a broad ``repo:**`` claim must not turn into
+    a general bypass of synchronized project scope.  Require both a write claim
+    and authorization so a broad read or authorization alone is insufficient.
+    """
+    if roots.get("repo") != roots.get("project"):
+        return False
+    for name, logical in _resolutions(roots, rel):
+        if name != "repo":
+            continue
+        path = ResourcePath.parse(f"{name}:{logical}")
+        if not path.segments or path.segments[0] != "tests":
+            continue
+        if any(path_covers(write, path) for write in claims.writes) and any(
+            path_covers(authorization, path) for authorization in claims.authorization_writes
+        ):
+            return True
+    return False
+
+
+def _entry_covered_by_claims(
+    roots: Mapping[str, str],
+    rel: str,
+    claims: ResourceClaims,
+) -> bool:
+    """True when a physical tree entry is in the task's declared read/write scope."""
+    bounds = (*claims.reads, *claims.writes, *claims.authorization_writes)
+    if not bounds:
+        return True
+    for name, logical in _resolutions(roots, rel):
+        path = ResourcePath.parse(f"{name}:{logical}")
+        if any(path_covers(bound, path) for bound in bounds):
+            return True
+    return False
+
+
+def _claimed_retro_run_ids(claims: ResourceClaims) -> frozenset[str]:
+    """Concrete ``qa/retro/<id>`` run ids pinned by task read/write claims."""
+    ids: set[str] = set()
+    for bound in (*claims.reads, *claims.writes, *claims.authorization_writes):
+        if bound.root != "project":
+            continue
+        segments = bound.segments
+        if (
+            len(segments) >= 3
+            and segments[0] == "qa"
+            and segments[1] == "retro"
+            and segments[2] not in ("*", "**")
+        ):
+            ids.add(segments[2])
+    return frozenset(ids)
+
+
+def _is_omitted_retro_sibling(
+    roots: Mapping[str, str],
+    rel: str,
+    claimed_retro_ids: frozenset[str],
+) -> bool:
+    """True for ``qa/retro/<other>/...`` entries when claims pin specific run ids."""
+    if not claimed_retro_ids:
+        return False
+    try:
+        logical = ResourcePath.parse(_canonical_logical(roots, rel))
+    except WorkspaceError:
+        return False
+    if logical.root != "project":
+        return False
+    segments = logical.segments
+    if len(segments) < 3 or segments[0] != "qa" or segments[1] != "retro":
+        return False
+    run_id = segments[2]
+    return run_id not in claimed_retro_ids and run_id not in ("*", "**")
 
 
 def _physical_for(roots: Mapping[str, str], logical: ResourcePath) -> str:
@@ -773,13 +1207,17 @@ class WorkspaceBackend:
         base_tree_id: str,
         store: TreeStore,
         side_effect_free: bool = False,
+        claims: ResourceClaims | None = None,
     ) -> TaskWorkspace:
         _assert_safe_task_id(task_id)
         root = self._tasks_root / task_id
         if root.exists():
             shutil.rmtree(root)
         root.mkdir(parents=True)
-        store.materialize(base_tree_id, root)
+        # Materialize a sibling-omitted view when claims pin a Retro run, but
+        # keep freeze/merge base_tree_id on the full overlay/invocation tree.
+        materialize_tree = store.filter_tree(base_tree_id, claims) if claims is not None else base_tree_id
+        store.materialize(materialize_tree, root)
         self._init_convenience_git(root, side_effect_free=side_effect_free)
         return TaskWorkspace.from_materialized_root(task_id, root, base_tree_id)
 

@@ -51,6 +51,16 @@ class AgentInvoker(Protocol):
 
 _PRIOR_FAILURE_KINDS = frozenset({"invalid_output", "forbidden_write"})
 _PRIOR_FAILURE_MAX_CHARS = 800
+_OUTPUT_CONTRACT_REMINDERS = {
+    "aa-api-plan-reviewer": (
+        " OUTPUT CONTRACT: api-plan-review.json must include "
+        "required_capabilities as a non-empty list of concrete leaf keys."
+    ),
+    "aa-e2e-plan-reviewer": (
+        " OUTPUT CONTRACT: plan-review.json must include required_capabilities "
+        "as a non-empty list of concrete leaf keys."
+    ),
+}
 
 
 def build_node_prompt(
@@ -117,6 +127,7 @@ def build_node_prompt(
         evidence_clause = (
             f" FROZEN UPSTREAM EVIDENCE (authoritative; do not re-derive from disk):\n{rendered}\n"
         )
+    output_contract_clause = _OUTPUT_CONTRACT_REMINDERS.get(skill, "")
     return (
         f"Call skill(name='{skill}'). Operate strictly on change_id='{change_id}'. "
         f"Authorized write paths: {allowed}. Produce only node {node_id}'s declared outputs. "
@@ -136,6 +147,7 @@ def build_node_prompt(
         + cwd_clause
         + memory_clause
         + evidence_clause
+        + output_contract_clause
         + failure_clause
         + (f" Fan-out item: {item}." if item is not None else "")
     )

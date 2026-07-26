@@ -19,13 +19,18 @@ from assurance_agent.workflow.core.graph_events import (
     NodeActivatedEvent,
     NodeSkippedEvent,
     SuperstepPlannedEvent,
+    TaskRecoveryRoutedEvent,
 )
 from assurance_agent.workflow.graph.compiler import compile_workflow
+from assurance_agent.workflow.graph.contracts import ResourcePath
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
     GraphProjection,
     InterruptProjection,
+    NodeGeneration,
+    NodeHistory,
+    RecoveryProjection,
     ResolvedArtifact,
     RuntimeContext,
     TaskProjection,
@@ -35,7 +40,7 @@ from assurance_agent.workflow.graph.planner import (
     apply_state_updates,
     plan_superstep,
 )
-from assurance_agent.workflow.graph.schema_v2 import StateDef, parse_workflow_v2
+from assurance_agent.workflow.graph.schema_v2 import EdgeDef, StateDef, parse_workflow_v2
 
 DIAMOND = """
 schema_version: "2"
@@ -344,6 +349,35 @@ graphs:
       - {from: a, to: END}
 """
 
+RECOVERY_GRAPH = """
+schema_version: "2"
+name: planner-recovery
+entrypoints:
+  full: {graph: main}
+policies:
+  retry:
+    transient: {max_attempts: 2, retry_on: [timeout]}
+graphs:
+  main:
+    max_supersteps: 8
+    nodes:
+      analyzer:
+        uses: operation:analyzer
+        retry: transient
+        recover:
+          errors: [timeout]
+          via: fallback
+          continue_to: recovered
+      fallback: {uses: operation:fallback}
+      normal: {uses: operation:normal}
+      recovered: {uses: operation:recovered}
+    edges:
+      - {from: START, to: analyzer}
+      - {from: analyzer, to: normal}
+      - {from: normal, to: END}
+      - {from: recovered, to: END}
+"""
+
 PRIORITY_GRAPH = """
 schema_version: "2"
 name: planner-priority
@@ -410,6 +444,8 @@ def _projection(
     current_tree_id: str = "tree-0",
     latest_checkpoint_id: str | None = None,
     interrupts: dict[str, InterruptProjection] | None = None,
+    recoveries: dict[str, RecoveryProjection] | None = None,
+    node_histories: dict[str, NodeHistory] | None = None,
     terminal: str | None = None,
     terminal_reason: str | None = None,
     graph_digest: str | None = None,
@@ -429,6 +465,8 @@ def _projection(
         state_values=state_values or {},
         tasks={task.task_id: task for task in tasks or []},
         interrupts=interrupts or {},
+        recoveries=recoveries or {},
+        node_histories=node_histories or {},
         terminal=terminal,  # type: ignore[arg-type]
         terminal_reason=terminal_reason,
     )
@@ -659,6 +697,12 @@ def test_cycle_fix_edge_reactivates_review(tmp_path: Path) -> None:
     assert rereview.terminal is None
     assert [task.node_id for task in rereview.tasks] == ["review"]
     assert rereview.tasks[0].task_id != review_0.task_id
+    review_activation = next(
+        event
+        for event in rereview.strict_events
+        if isinstance(event, NodeActivatedEvent) and event.node_id == "review"
+    )
+    assert review_activation.generation_ordinal == 1
 
     # 第二代 review pass → END（即使上一代 fix 仍是 succeeded）。
     review_1 = rereview.tasks[0]
@@ -1004,6 +1048,297 @@ def test_failed_retryable_task_carries_prior_failure_feedback(tmp_path: Path) ->
     assert "schema validation" in retry_task.prior_failure
 
 
+def _recovery_projection(source: ExecutableTask) -> RecoveryProjection:
+    return RecoveryProjection(
+        task_id=source.task_id,
+        node_id=source.node_id,
+        generation_ordinal=0,
+        error_kind="timeout",
+        message="analyzer timed out",
+        via="fallback",
+        continue_to="recovered",
+    )
+
+
+def test_exhausted_allowed_failure_emits_recovery_and_schedules_fallback(tmp_path: Path) -> None:
+    compiled = _compile(RECOVERY_GRAPH)
+    analyzer = _initial_tasks(compiled, tmp_path)["analyzer"]
+    failed = _task(
+        analyzer,
+        "failed",
+        generation_ordinal=0,
+        error_kind="timeout",
+        error="analyzer timed out",
+        attempts_used=2,
+        write_set_id="failed-analyzer-write-set",
+    )
+
+    plan = _plan(compiled, _projection(compiled, tasks=[failed]), tmp_path)
+
+    assert [task.node_id for task in plan.tasks] == ["fallback"]
+    routed = [event for event in plan.strict_events if isinstance(event, TaskRecoveryRoutedEvent)]
+    assert len(routed) == 1
+    assert routed[0].task_id == analyzer.task_id
+    assert routed[0].error_kind == "timeout"
+    assert routed[0].message == "analyzer timed out"
+    recovery = plan.tasks[0].recovery
+    assert recovery is not None
+    assert recovery.source_task_id == analyzer.task_id
+    assert recovery.source_node_id == "analyzer"
+    assert recovery.attempts_used == 2
+    assert recovery.error_kind == "timeout"
+    assert recovery.message == "analyzer timed out"
+    assert recovery.recovery_event == routed[0]
+    assert failed.status == "failed"
+    assert failed.outputs_committed is False
+    assert all(getattr(event, "type", None) != "superstep_committed" for event in plan.strict_events)
+
+
+def test_persisted_recovery_replays_exactly_one_deterministic_fallback(tmp_path: Path) -> None:
+    compiled = _compile(RECOVERY_GRAPH)
+    analyzer = _initial_tasks(compiled, tmp_path)["analyzer"]
+    failed = _task(
+        analyzer,
+        "failed",
+        generation_ordinal=0,
+        error_kind="timeout",
+        error="analyzer timed out",
+        attempts_used=2,
+    )
+    recovery = _recovery_projection(analyzer)
+    projection = _projection(
+        compiled,
+        tasks=[failed],
+        recoveries={analyzer.task_id: recovery},
+    )
+
+    first = _plan(compiled, projection, tmp_path)
+    replay = _plan(compiled, projection, tmp_path)
+
+    assert first == replay
+    assert len(first.tasks) == 1
+    assert first.tasks[0].node_id == "fallback"
+    assert first.tasks[0].recovery is not None
+    assert not any(isinstance(event, TaskRecoveryRoutedEvent) for event in first.strict_events)
+
+
+def test_corrupt_recovery_projection_fails_closed(tmp_path: Path) -> None:
+    compiled = _compile(RECOVERY_GRAPH)
+    analyzer = _initial_tasks(compiled, tmp_path)["analyzer"]
+    failed = _task(
+        analyzer,
+        "failed",
+        generation_ordinal=0,
+        error_kind="timeout",
+        error="analyzer timed out",
+        attempts_used=2,
+    )
+    corrupt = _recovery_projection(analyzer).model_copy(update={"via": "normal"})
+
+    plan = _plan(
+        compiled,
+        _projection(
+            compiled,
+            tasks=[failed],
+            recoveries={analyzer.task_id: corrupt},
+        ),
+        tmp_path,
+    )
+
+    assert plan.terminal == "fail"
+    assert plan.reason is not None and "recovery projection" in plan.reason
+    assert plan.tasks == ()
+
+
+def test_successful_fallback_delivers_only_frozen_recovery_continuation(tmp_path: Path) -> None:
+    compiled = _compile(RECOVERY_GRAPH)
+    analyzer = _initial_tasks(compiled, tmp_path)["analyzer"]
+    failed = _task(
+        analyzer,
+        "failed",
+        generation_ordinal=0,
+        error_kind="timeout",
+        error="analyzer timed out",
+        attempts_used=2,
+    )
+    recovery = _recovery_projection(analyzer)
+    recovery_projection = _projection(
+        compiled,
+        tasks=[failed],
+        recoveries={analyzer.task_id: recovery},
+    )
+    fallback = _plan(compiled, recovery_projection, tmp_path).tasks[0]
+
+    after_fallback = _projection(
+        compiled,
+        tasks=[failed, _task(fallback, "succeeded", generation_ordinal=0)],
+        recoveries={analyzer.task_id: recovery},
+    )
+    plan = _plan(compiled, after_fallback, tmp_path)
+
+    assert [task.node_id for task in plan.tasks] == ["recovered"]
+    assert all(task.node_id != "normal" for task in plan.tasks)
+
+
+def test_active_recovery_via_ignores_ordinary_successor(tmp_path: Path) -> None:
+    compiled = _compile(RECOVERY_GRAPH)
+    graph = compiled.graphs["main"]
+    fallback = graph.nodes["fallback"].model_copy(
+        update={"outgoing": (EdgeDef.model_validate({"from": "fallback", "to": "normal"}),)}
+    )
+    compiled = compiled.model_copy(
+        update={
+            "graphs": {
+                **compiled.graphs,
+                "main": graph.model_copy(update={"nodes": {**graph.nodes, "fallback": fallback}}),
+            }
+        }
+    )
+    analyzer = _initial_tasks(compiled, tmp_path)["analyzer"]
+    failed = _task(
+        analyzer,
+        "failed",
+        generation_ordinal=0,
+        error_kind="timeout",
+        error="analyzer timed out",
+        attempts_used=2,
+    )
+    recovery = _recovery_projection(analyzer)
+    routed = _projection(
+        compiled,
+        tasks=[failed],
+        recoveries={analyzer.task_id: recovery},
+    )
+    fallback_task = _plan(compiled, routed, tmp_path).tasks[0]
+
+    plan = _plan(
+        compiled,
+        _projection(
+            compiled,
+            tasks=[failed, _task(fallback_task, "succeeded", generation_ordinal=0)],
+            recoveries={analyzer.task_id: recovery},
+        ),
+        tmp_path,
+    )
+
+    assert [task.node_id for task in plan.tasks] == ["recovered"]
+
+
+def test_skipped_recovery_continuation_is_not_redelivered(tmp_path: Path) -> None:
+    compiled = _compile(
+        RECOVERY_GRAPH.replace(
+            "recovered: {uses: operation:recovered}",
+            'recovered: {uses: operation:recovered, when: "false"}\n      blocker: {uses: operation:blocker}',
+        )
+        .replace(
+            "- {from: START, to: analyzer}",
+            "- {from: START, to: analyzer}\n      - {from: START, to: blocker}",
+        )
+        .replace(
+            "- {from: recovered, to: END}",
+            "- {from: recovered, to: END}\n      - {from: blocker, to: END}",
+        )
+    )
+    initial = _initial_tasks(compiled, tmp_path)
+    analyzer = initial["analyzer"]
+    blocker = _task(initial["blocker"], "running", generation_ordinal=0)
+    failed = _task(
+        analyzer,
+        "failed",
+        generation_ordinal=0,
+        error_kind="timeout",
+        error="analyzer timed out",
+        attempts_used=2,
+    )
+    recovery = _recovery_projection(analyzer)
+    routed = _projection(
+        compiled,
+        tasks=[failed, blocker],
+        recoveries={analyzer.task_id: recovery},
+    )
+    fallback = next(task for task in _plan(compiled, routed, tmp_path).tasks if task.node_id == "fallback")
+    fallback_done = _task(fallback, "succeeded", generation_ordinal=0)
+
+    first = _plan(
+        compiled,
+        _projection(
+            compiled,
+            tasks=[failed, blocker, fallback_done],
+            recoveries={analyzer.task_id: recovery},
+        ),
+        tmp_path,
+    )
+    assert [event.node_id for event in first.strict_events if isinstance(event, NodeSkippedEvent)] == [
+        "recovered"
+    ]
+
+    replay = _plan(
+        compiled,
+        _projection(
+            compiled,
+            tasks=[failed, blocker, fallback_done],
+            recoveries={analyzer.task_id: recovery},
+            node_histories={
+                "inv-1\x1fmain\x1frecovered": NodeHistory(
+                    latest_generation_ordinal=0,
+                    generations_by_ordinal={
+                        0: NodeGeneration(
+                            generation_ordinal=0,
+                            status="skipped",
+                            reached=True,
+                        )
+                    },
+                )
+            },
+        ),
+        tmp_path,
+    )
+
+    assert not any(
+        isinstance(event, NodeSkippedEvent) and event.node_id == "recovered" for event in replay.strict_events
+    )
+
+
+def test_normal_success_uses_ordinary_edge_and_never_activates_recovery_via(tmp_path: Path) -> None:
+    compiled = _compile(RECOVERY_GRAPH)
+    analyzer = _initial_tasks(compiled, tmp_path)["analyzer"]
+    projection = _projection(
+        compiled,
+        tasks=[_task(analyzer, "succeeded", generation_ordinal=0)],
+    )
+
+    plan = _plan(compiled, projection, tmp_path)
+
+    assert [task.node_id for task in plan.tasks] == ["normal"]
+    assert all(task.node_id != "fallback" for task in plan.tasks)
+    assert not any(isinstance(event, TaskRecoveryRoutedEvent) for event in plan.strict_events)
+
+
+@pytest.mark.parametrize("error_kind", ["forbidden_write", "contract"])
+def test_hard_failure_never_enters_recovery(tmp_path: Path, error_kind: str) -> None:
+    compiled = _compile(RECOVERY_GRAPH)
+    analyzer = _initial_tasks(compiled, tmp_path)["analyzer"]
+    projection = _projection(
+        compiled,
+        tasks=[
+            _task(
+                analyzer,
+                "failed",
+                generation_ordinal=0,
+                error_kind=error_kind,
+                error="hard failure",
+                attempts_used=2,
+            )
+        ],
+    )
+
+    plan = _plan(compiled, projection, tmp_path)
+
+    assert plan.terminal == "fail"
+    assert plan.tasks == ()
+    assert not any(isinstance(event, TaskRecoveryRoutedEvent) for event in plan.strict_events)
+
+
 @pytest.mark.parametrize(
     ("status", "overrides"),
     [
@@ -1074,8 +1409,9 @@ def test_pending_interrupt_outranks_ready_tasks(tmp_path: Path) -> None:
 def test_graph_digest_drift_fails_closed(tmp_path: Path) -> None:
     compiled = _compile(DIAMOND)
     projection = _projection(compiled, graph_digest="0" * 64)
-    with pytest.raises(PlanError, match="graph_definition_changed"):
+    with pytest.raises(PlanError, match="graph_definition_changed") as caught:
         _plan(compiled, projection, tmp_path)
+    assert caught.value.error_kind == "graph_definition_changed"
 
 
 def test_checkpoint_id_tracks_latest_or_bootstrap(tmp_path: Path) -> None:
@@ -1177,3 +1513,173 @@ def test_edge_when_can_read_node_value_signal_count(tmp_path: Path) -> None:
     activated_node_ids = {task.node_id for task in plan.tasks}
     assert "next" not in activated_node_ids
     assert plan.terminal == "end"
+
+
+def _planned_retro_agent_task(tmp_path: Path, *, retro_id: str):
+    """Plan the propose-improvements node from the packaged retro-workflow."""
+    from assurance_agent.workflow.graph.compiler import compile_workflow, resolve_params
+    from assurance_agent.workflow.graph.contracts import load_execution_contracts
+    from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
+
+    schema = load_workflow_v2(Path.cwd(), Path("assurance_agent/_resources/schemas/workflow-schema.yaml"))
+    contracts = load_execution_contracts(Path.cwd())
+    compiled = compile_workflow(schema, contracts)
+    params = resolve_params(
+        compiled.schema,
+        {
+            "retro_id": retro_id,
+            "retro_dry_run": False,
+            "retro_last": 10,
+        },
+    )
+    # Seed collect as succeeded with signals so propose is planned.
+    collect_proj = GraphProjection(
+        invocation_id="inv-retro",
+        entrypoint="retro",
+        checkpoint_ns="inv-retro",
+        structural_path="retro-workflow",
+        graph_digest=compiled.digest,
+        contract_digests=dict(compiled.contract_digests),
+        params=params,
+        root_tree_id="tree-0",
+        current_tree_id="tree-0",
+        tasks={},
+    )
+    context = RuntimeContext(
+        project_root=tmp_path,
+        repo_root=tmp_path,
+        change_dir=tmp_path / "change",
+        change_id="RETRO-RUN",
+        params=params,
+    )
+
+    class _Empty:
+        def read_json(self, tree_id: str, logical_path: str):
+            raise KeyError(logical_path)
+
+    # Activate collect first, then mark it succeeded with signal_count>0.
+    plan0 = plan_superstep(compiled, collect_proj, context, _Empty())
+    collect_task = next(t for t in plan0.tasks if t.node_id == "collect-retro-evidence")
+    after_collect = GraphProjection(
+        invocation_id="inv-retro",
+        entrypoint="retro",
+        checkpoint_ns="inv-retro",
+        structural_path="retro-workflow",
+        graph_digest=compiled.digest,
+        contract_digests=dict(compiled.contract_digests),
+        params=params,
+        root_tree_id="tree-0",
+        current_tree_id="tree-0",
+        supersteps=1,
+        tasks={
+            collect_task.task_id: TaskProjection(
+                task_id=collect_task.task_id,
+                node_id="collect-retro-evidence",
+                status="succeeded",
+                attempts_used=1,
+                latest_attempt_id=f"{collect_task.task_id}-a1",
+                value={"retro_id": retro_id, "signal_count": 1},
+            )
+        },
+    )
+    plan1 = plan_superstep(compiled, after_collect, context, _Empty())
+    propose = next(t for t in plan1.tasks if t.node_id == "propose-improvements")
+    return propose
+
+
+def test_retro_agent_can_only_read_current_context(tmp_path: Path) -> None:
+    task = _planned_retro_agent_task(tmp_path, retro_id="retro-current")
+    assert tuple((path.root, path.pattern) for path in task.resources.reads) == (
+        ("project", "qa/retro/retro-current/context.json"),
+    )
+    assert all("retro-other" not in path.pattern for path in task.resources.reads)
+    assert all("qa/issues" not in path.pattern for path in task.resources.reads)
+    assert all(path.pattern != "qa/retro/**" for path in task.resources.reads)
+    write_patterns = {path.pattern for path in task.resources.writes}
+    assert write_patterns == {
+        "qa/retro/retro-current/proposal-candidates.json",
+        "qa/retro/retro-current/retro-summary.md",
+    }
+
+
+def test_retro_reconcile_claims_are_synchronized_and_exclusive(tmp_path: Path) -> None:
+    from assurance_agent.workflow.graph.compiler import compile_workflow, resolve_params
+    from assurance_agent.workflow.graph.contracts import load_execution_contracts
+    from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
+
+    schema = load_workflow_v2(Path.cwd(), Path("assurance_agent/_resources/schemas/workflow-schema.yaml"))
+    contracts = load_execution_contracts(Path.cwd())
+    compiled = compile_workflow(schema, contracts)
+    params = resolve_params(
+        compiled.schema,
+        {"retro_id": "retro-current", "retro_dry_run": False, "retro_last": 10},
+    )
+    context = RuntimeContext(
+        project_root=tmp_path,
+        repo_root=tmp_path,
+        change_dir=tmp_path / "change",
+        change_id="RETRO-RUN",
+        params=params,
+    )
+
+    class _Empty:
+        def read_json(self, tree_id: str, logical_path: str):
+            raise KeyError(logical_path)
+
+    # Walk collect → propose → reconcile activations.
+    projection = GraphProjection(
+        invocation_id="inv-retro",
+        entrypoint="retro",
+        checkpoint_ns="inv-retro",
+        structural_path="retro-workflow",
+        graph_digest=compiled.digest,
+        contract_digests=dict(compiled.contract_digests),
+        params=params,
+        root_tree_id="tree-0",
+        current_tree_id="tree-0",
+        tasks={},
+    )
+    plan0 = plan_superstep(compiled, projection, context, _Empty())
+    collect = next(t for t in plan0.tasks if t.node_id == "collect-retro-evidence")
+    projection = projection.model_copy(
+        update={
+            "supersteps": 1,
+            "tasks": {
+                collect.task_id: TaskProjection(
+                    task_id=collect.task_id,
+                    node_id="collect-retro-evidence",
+                    status="succeeded",
+                    attempts_used=1,
+                    latest_attempt_id=f"{collect.task_id}-a1",
+                    value={"retro_id": "retro-current", "signal_count": 1},
+                )
+            },
+        }
+    )
+    plan1 = plan_superstep(compiled, projection, context, _Empty())
+    propose = next(t for t in plan1.tasks if t.node_id == "propose-improvements")
+    projection = projection.model_copy(
+        update={
+            "supersteps": 2,
+            "tasks": {
+                **projection.tasks,
+                propose.task_id: TaskProjection(
+                    task_id=propose.task_id,
+                    node_id="propose-improvements",
+                    status="succeeded",
+                    attempts_used=1,
+                    latest_attempt_id=f"{propose.task_id}-a1",
+                ),
+            },
+        }
+    )
+    plan2 = plan_superstep(compiled, projection, context, _Empty())
+    reconcile = next(t for t in plan2.tasks if t.node_id == "reconcile-improvements")
+    assert ResourcePath.parse("project:qa/improvements/**") in reconcile.resources.synchronized
+    assert ResourcePath.parse("project:qa/retro/**") in reconcile.resources.synchronized
+    assert "project:improvement-registry" in reconcile.resources.exclusive
+    assert all("qa/issues" not in p.pattern for p in reconcile.resources.writes)
+    # Narrowed to the current run — no sibling Retro wildcard materialization.
+    assert all(
+        "retro-other" not in p.pattern and p.pattern != "qa/retro/**" for p in reconcile.resources.reads
+    )

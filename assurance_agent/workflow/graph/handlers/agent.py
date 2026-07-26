@@ -89,13 +89,12 @@ class AgentHandler:
                     + " "
                     + (
                         "Call skill(name='aa-retro'). "
-                        f"Read qa/retro/{rid}/context.json. "
-                        f"Write qa/retro/{rid}/proposals.json and qa/retro/{rid}/retro-summary.md. "
-                        "Every proposal MUST include machine fields finding_kind, apply_kind, and a structured "
-                        "payload (prompt_rule→payload.body; workflow_bug→IssueDraftPayload; "
-                        "domain_knowledge→L2 delta with mode:delta). Natural-language problem/proposed_change "
-                        "are not enough by themselves. "
-                        "Do not modify SKILL.md files, the workflow schema, .aa/memory, or project source files."
+                        f"Read only qa/retro/{rid}/context.json. "
+                        f"Write qa/retro/{rid}/proposal-candidates.json and "
+                        f"qa/retro/{rid}/retro-summary.md. "
+                        "Set schema_version='2' and pin context_sha256. Do not read any other Retro run, "
+                        "qa/issues, raw archive, qa/improvements, memory, data knowledge, "
+                        "or project source files."
                     )
                 )
         request = AgentRequest(
@@ -133,7 +132,9 @@ class AgentHandler:
         return node.definition if node is not None else None
 
     def _claims(self, task: ExecutableTask, node_def: NodeDef) -> ResourceClaims:
-        """per-node contract claim；fan-out child 按冻结展开的 resources 收窄授权。"""
+        """Prefer planner-narrowed ``task.resources``; fall back to catalog claims."""
+        if task.resources.reads or task.resources.writes or task.resources.authorization_writes:
+            return task.resources
         claims = self._contracts.claims_for(node_def)
         payload = task.input
         if isinstance(payload, Mapping):
@@ -145,6 +146,7 @@ class AgentHandler:
                     claims = ResourceClaims(
                         reads=claims.reads,
                         writes=claims.writes,
+                        synchronized=claims.synchronized,
                         exclusive=claims.exclusive,
                         authorization_writes=narrowed,
                     )

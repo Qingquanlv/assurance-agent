@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0",
+  "change_id": "CH-VFA-ACCEPT",
+  "batch_id": "20260725-130000",
+  "target": "fuzz",
+  "status": "passed",
+  "command": "uv run pytest tests/fuzz/test_dept_fuzz.py",
+  "source": {
+    "framework": "pytest",
+    "raw_log": "execution/runs/20260725-130000/raw/fuzz.log"
+  },
+  "total": 1,
+  "passed": 1,
+  "failed": 0,
+  "skipped": 0,
+  "cases": [
+    {
+      "case_id": "TC_FUZZ_DEPT_500",
+      "status": "passed",
+      "file": "tests/fuzz/test_dept_fuzz.py",
+      "test_name": "test_fuzz_dept_empty_name_server_error",
+      "duration_ms": 110,
+      "message": "",
+      "raw_log_ref": "execution/runs/20260725-130000/raw/fuzz.log",
+      "trace": "",
+      "screenshot": "",
+      "video": ""
+    }
+  ],
+  "unmapped_tests": []
+}

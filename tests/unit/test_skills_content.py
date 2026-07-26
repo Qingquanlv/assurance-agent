@@ -95,14 +95,15 @@ def _load_field_allowlist() -> set[str]:
     return entries
 
 
-def test_thirty_two_skills_present() -> None:
+def test_thirty_four_skills_present() -> None:
     names = _skill_names()
-    # aa-test-infra-bootstrap was removed (test-infra scaffold is now a fixture
-    # prerequisite, not a skill), taking the packaged skill count 33 -> 32.
-    assert len(names) == 32
+    # Issue lifecycle adds aa-issue-analyzer + aa-issue-triage-advisor (32 -> 34).
+    assert len(names) == 34
     assert "writing-skills" in names
     assert "aa-workflow" in names
     assert "aa-dashboard" in names
+    assert "aa-issue-analyzer" in names
+    assert "aa-issue-triage-advisor" in names
     assert not any(n.startswith("aws-") for n in names)
 
 
@@ -163,3 +164,35 @@ def test_agents_preserve_permission_floor() -> None:
         text = resources.read_text("opencode", "agents", name)
         assert allow_gate.search(text) is None, name
         assert allow_state.search(text) is None, name
+
+
+def test_aa_retro_skill_is_current_run_candidate_boundary() -> None:
+    """aa-retro must emit schema-v2 candidates from current-run context only."""
+    text = resources.read_text("skills", "aa-retro", "SKILL.md")
+    assert "proposal-candidates.json" in text
+    assert "schema_version" in text
+    assert "context_sha256" in text
+    assert "Read only" in text or "Required (only)" in text
+    for kind in (
+        "prompt_improvement",
+        "fixture_improvement",
+        "test_improvement",
+        "workflow_improvement",
+        "domain_knowledge",
+    ):
+        assert kind in text
+    for delivery in ("memory_patch", "change_draft", "knowledge_delta"):
+        assert delivery in text
+    # Legacy proposal vocabulary and broad historical reads are forbidden.
+    assert "proposals.json" not in text
+    assert "finding_kind" not in text
+    assert "apply_kind" not in text
+    assert "workflow_bug" not in text
+    assert "issue_export" not in text
+    assert "promotions.json" not in text
+    assert "qa/issues/**" not in text and "qa/issues/" not in text
+    assert "qa/archive" not in text
+    assert "schemas/workflow-schema.yaml" not in text
+    assert "problems.json" not in text
+    assert "events.jsonl" not in text
+    assert "Optional read-only context" not in text

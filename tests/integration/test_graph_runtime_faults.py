@@ -258,3 +258,228 @@ def test_acceptance_schema_digest_drift_refuses_resume(tmp_path: Path) -> None:
     )
     with pytest.raises(GraphDefinitionChanged, match="digest"):
         runtime.resume(invocation_id)
+
+
+def _build_recovery_runtime(
+    project: Path,
+    *,
+    analyzer_error: str,
+    fallback_calls: list[object],
+):
+    from assurance_agent.workflow.graph.compiler import compile_workflow
+    from assurance_agent.workflow.graph.contracts import parse_execution_contracts
+    from assurance_agent.workflow.graph.handlers.operation import OperationHandler, default_operations
+    from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
+    from assurance_agent.workflow.graph.runtime import GraphRuntime
+    from assurance_agent.workflow.graph.scheduler import Scheduler
+    from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
+    from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
+    from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
+    from tests.integration._graph_fault_worker import FakeClock
+
+    contracts = parse_execution_contracts(
+        """
+schema_version: "1"
+contracts:
+  operation:analyzer:
+    handler: operation
+    side_effect_free: false
+    writes: ["repo:tests/api/**"]
+    authorization_writes: ["repo:tests/api/**"]
+    retryable_errors: [timeout]
+  operation:fallback: {handler: operation, side_effect_free: true}
+  operation:recovered: {handler: operation, side_effect_free: true}
+"""
+    )
+    compiled = compile_workflow(
+        parse_workflow_v2(
+            """
+schema_version: "2"
+name: runtime-recovery
+entrypoints:
+  full: {graph: main}
+policies:
+  retry:
+    analyzer-retry:
+      max_attempts: 2
+      retry_on: [timeout]
+      backoff: {initial_seconds: 0.01, multiplier: 1.0, max_seconds: 0.01, jitter: false}
+graphs:
+  main:
+    max_supersteps: 8
+    nodes:
+      analyzer:
+        uses: operation:analyzer
+        outputs: ["repo:tests/api/analyzer.py"]
+        retry: analyzer-retry
+        recover:
+          errors: [timeout]
+          via: fallback
+          continue_to: recovered
+      fallback: {uses: operation:fallback}
+      recovered: {uses: operation:recovered}
+    edges:
+      - {from: START, to: analyzer}
+      - {from: analyzer, to: END}
+      - {from: recovered, to: END}
+"""
+        ),
+        contracts,
+    )
+    change = project / "qa" / "changes" / "CH-1"
+    store = TreeStore(change)
+    checkpoints = CheckpointStore(change)
+    workspaces = WorkspaceBackend(change)
+    clock = FakeClock()
+    ops = default_operations()
+
+    def analyze(task: ExecutableTask, workspace, context: RuntimeContext) -> TaskResult:
+        marker = workspace.project_root / "tests" / "api" / "analyzer.py"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("failed analyzer output\n", encoding="utf-8")
+        return TaskResult(
+            status="failed",
+            error_kind=analyzer_error,  # type: ignore[arg-type]
+            error="analyzer timed out" if analyzer_error == "timeout" else "forbidden analyzer write",
+        )
+
+    def fallback(task: ExecutableTask, workspace, context: RuntimeContext) -> TaskResult:
+        fallback_calls.append(task.recovery)
+        assert task.recovery is not None
+        assert task.recovery.error_kind == "timeout"
+        assert task.recovery.message == "analyzer timed out"
+        return TaskResult(status="succeeded")
+
+    def recovered(task: ExecutableTask, workspace, context: RuntimeContext) -> TaskResult:
+        return TaskResult(status="succeeded")
+
+    ops.update(
+        {
+            "operation:analyzer": analyze,
+            "operation:fallback": fallback,
+            "operation:recovered": recovered,
+        }
+    )
+    handler = OperationHandler(ops)
+    runner = HandlerNodeRunner({target: handler for target in ops})
+    scheduler = Scheduler(
+        checkpoints=checkpoints,
+        object_store=store,
+        clock=clock,
+        workspace_backend=workspaces,
+        node_runner=runner,
+        max_parallel_tasks=1,
+        contracts=contracts,
+    )
+    runtime = GraphRuntime(
+        checkpoint_store=checkpoints,
+        object_store=store,
+        workspace_backend=workspaces,
+        contracts=contracts,
+        node_runner=runner,
+        scheduler=scheduler,
+        schema_resolver=lambda _digest: compiled,
+        clock=clock,
+    )
+    return runtime, compiled, scheduler, change
+
+
+def test_recovery_event_survives_crash_before_fallback_dispatch(tmp_path: Path) -> None:
+    class SimulatedCrash(RuntimeError):
+        pass
+
+    project = _project(tmp_path)
+    fallback_calls: list[object] = []
+    runtime, compiled, scheduler, change = _build_recovery_runtime(
+        project,
+        analyzer_error="timeout",
+        fallback_calls=fallback_calls,
+    )
+    original_execute = scheduler.execute
+    crashed = False
+
+    def crash_before_fallback(plan, projection, context):  # type: ignore[no-untyped-def]
+        nonlocal crashed
+        if not crashed and any(task.node_id == "fallback" for task in plan.tasks):
+            crashed = True
+            assert len(projection.recoveries) == 1
+            raise SimulatedCrash("after recovery event, before fallback dispatch")
+        return original_execute(plan, projection, context)
+
+    scheduler.execute = crash_before_fallback  # type: ignore[method-assign]
+    from assurance_agent.workflow.graph.models import RuntimeContext
+
+    context = RuntimeContext(
+        project_root=project,
+        repo_root=project,
+        change_dir=change,
+        change_id="CH-1",
+    )
+    with pytest.raises(SimulatedCrash):
+        runtime.run(compiled, "full", context)
+
+    invocation_id = CheckpointStore(change).latest_root_invocation("full")
+    assert invocation_id is not None
+    crashed_projection = project_invocation(change, invocation_id)
+    assert len(crashed_projection.recoveries) == 1
+    assert [
+        task.attempts_used for task in crashed_projection.tasks.values() if task.node_id == "analyzer"
+    ] == [2]
+    assert not any(task.node_id == "fallback" for task in crashed_projection.tasks.values())
+    assert not (project / "tests" / "api" / "analyzer.py").exists()
+
+    resumed, _compiled, _scheduler, _change = _build_recovery_runtime(
+        project,
+        analyzer_error="timeout",
+        fallback_calls=fallback_calls,
+    )
+    result = resumed.resume(invocation_id)
+
+    assert result.status.status == "completed"
+    assert len(fallback_calls) == 1
+    recovery = fallback_calls[0]
+    assert recovery is not None
+    assert recovery.error_kind == "timeout"  # type: ignore[union-attr]
+    assert recovery.message == "analyzer timed out"  # type: ignore[union-attr]
+    final = project_invocation(change, invocation_id)
+    analyzer = next(task for task in final.tasks.values() if task.node_id == "analyzer")
+    assert analyzer.status == "failed"
+    assert analyzer.outputs_committed is False
+    assert not (project / "tests" / "api" / "analyzer.py").exists()
+    events = read_events_strict(change)
+    assert sum(event.get("type") == "task_recovery_routed" for event in events) == 1
+    assert (
+        sum(
+            event.get("type") == "task_attempt_started" and event.get("node_id") == "fallback"
+            for event in events
+        )
+        == 1
+    )
+
+
+def test_forbidden_write_failure_does_not_enter_recovery(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    fallback_calls: list[object] = []
+    runtime, compiled, _scheduler, change = _build_recovery_runtime(
+        project,
+        analyzer_error="forbidden_write",
+        fallback_calls=fallback_calls,
+    )
+    from assurance_agent.workflow.graph.models import RuntimeContext
+
+    result = runtime.run(
+        compiled,
+        "full",
+        RuntimeContext(
+            project_root=project,
+            repo_root=project,
+            change_dir=change,
+            change_id="CH-1",
+        ),
+    )
+
+    assert result.status.status == "failed"
+    assert fallback_calls == []
+    projection = project_invocation(change, result.invocation_id)
+    assert projection.recoveries == {}
+    assert not (project / "tests" / "api" / "analyzer.py").exists()

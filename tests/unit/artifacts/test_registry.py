@@ -6,11 +6,17 @@ def test_registry_covers_every_expected_artifact_type() -> None:
         "advisory",
         "apply_summary",
         "case_yaml",
+        "change_issue_snapshot",
         "data_knowledge_proposal",
         "execution_manifest",
         "fact_baseline",
         "failure_analysis",
         "fix_proposal",
+        "issue_analysis_status",
+        "issue_candidate_document",
+        "issue_evidence_manifest",
+        "issue_reconcile_status",
+        "observation_document",
         "qa_yaml",
         "quality_gate_result",
         "quality_report",
@@ -19,7 +25,7 @@ def test_registry_covers_every_expected_artifact_type() -> None:
         "workflow_state",
     }
     assert {spec.artifact_type for spec in REGISTRY} == expected
-    assert len(REGISTRY) == 14
+    assert len(REGISTRY) == 20
 
 
 def test_case_yaml_matches_nested_and_direct_paths() -> None:
@@ -73,3 +79,25 @@ def test_compat_grades_match_spec_4a() -> None:
     assert grades["workflow_state"] == "versioned"
     assert grades["execution_manifest"] == "versioned"
     assert grades["quality_report"] == "versioned"
+    assert grades["observation_document"] == "versioned"
+    assert grades["issue_evidence_manifest"] == "versioned"
+    assert grades["issue_candidate_document"] == "versioned"
+    assert grades["issue_analysis_status"] == "versioned"
+    assert grades["issue_reconcile_status"] == "versioned"
+    assert grades["change_issue_snapshot"] == "versioned"
+
+
+def test_issue_artifact_patterns_match_exact_paths() -> None:
+    issue_specs = {
+        "observation_document": "inspect/observations.json",
+        "issue_evidence_manifest": "inspect/issue-evidence-manifest.json",
+        "issue_candidate_document": "inspect/issue-candidates.json",
+        "issue_analysis_status": "inspect/issue-analysis-status.json",
+        "issue_reconcile_status": "inspect/issue-reconcile-status.json",
+        "change_issue_snapshot": "issues/snapshot.json",
+    }
+    for artifact_type, path in issue_specs.items():
+        spec = match_artifact(path)
+        assert spec is not None and spec.artifact_type == artifact_type, path
+    assert match_artifact("issues/events.jsonl") is None
+    assert match_artifact("qa/issues/problems.json") is None

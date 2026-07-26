@@ -13,10 +13,14 @@
 #   3. Verify completion with deterministic `aa workflow status`.
 #   4. Archive via GraphRuntime: `aa workflow run --entrypoint archive`
 #      (skill:aa-archive + archive-gate; not a free-form agent prompt).
-#   5. Retro via GraphRuntime: `aa workflow run --entrypoint retro`
-#      (operation:retro-collect → skill:aa-retro → operation:retro-accept).
-#      Legacy `aa retro nightly collect` / free-form proposal prompts remain
-#      behind USE_WORKFLOW_RETRO=false / DO_RETRO=true.
+#   5. Retro closed loop (Improvement separation):
+#      Preferred: `aa workflow run --entrypoint retro`
+#        collect-retro-evidence → propose-improvements → reconcile-improvements
+#      Fallback (USE_WORKFLOW_RETRO=false): `aa retro --last N` (same graph via CLI;
+#        shell Change RETRO-RUN-<retro-id>, AA_RETRO_AGENT_CMD=cursor-agent).
+#      Artifacts: context.json, proposal-candidates.json, accept-status.json,
+#      retro-summary.md, review-queue.md, plus qa/improvements/*.
+#      Legacy `aa retro nightly` / free-form proposals.json prompts are gone.
 #
 # Process-group hard timeout (run_with_hard_timeout.py) wraps driver / archive /
 # retro runs so leftover SUT dev servers started by cursor-agent do not strand
@@ -28,7 +32,8 @@
 #   CURSOR_MODEL=cursor-grok-4.5-high-fast ./benchmark/run-workflow-loop-cursor.sh
 #   CURSOR_MAX_WORKFLOW_ATTEMPTS=4 ./benchmark/run-workflow-loop-cursor.sh
 #   DO_ARCHIVE=false DO_NIGHTLY_COLLECT=false ./benchmark/run-workflow-loop-cursor.sh
-#   USE_WORKFLOW_ARCHIVE=false USE_WORKFLOW_RETRO=false  # legacy agent/CLI paths
+#   USE_WORKFLOW_ARCHIVE=false              # legacy free-form archive prompt
+#   USE_WORKFLOW_RETRO=false               # use `aa retro` CLI instead of workflow entrypoint
 #   RESUME_RUNSTAMP=20260713-113457 ./benchmark/run-workflow-loop-cursor.sh
 #   DAEMON=1 ./benchmark/run-workflow-loop-cursor.sh   # detach + write PID/log symlinks
 #
@@ -38,12 +43,18 @@ set -uo pipefail
 # Paths & config
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOOP_HELPERS="$SCRIPT_DIR/cursor-loop-helpers.sh"
+if [ ! -f "$LOOP_HELPERS" ]; then
+  printf 'ERROR: missing %s\n' "$LOOP_HELPERS" >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+source "$LOOP_HELPERS"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Python migration: skills are synced INTO the SUT project by `aa skill refresh`.
 AA_SKILLS_ROOT="${AA_SKILLS_ROOT:-$PROJECT_ROOT/skills}"
 # SCRIPT_DIR = <aa-repo>/benchmark/vue-fastapi-admin/benchmark → repo root is ../../..
 AA_REPO_ROOT="${AA_REPO_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
-NIGHTLY_CLI="${NIGHTLY_CLI:-aa retro nightly}"
 RESUME_LOG_DIR="${RESUME_LOG_DIR:-$SCRIPT_DIR/resume-logs}"
 AUTO_DECIDE_BENCHMARK="${AUTO_DECIDE_BENCHMARK:-true}"
 # When set, log non-terminal / needs-human stalls (does not mutate state).
@@ -58,16 +69,16 @@ RUN_MODE="${RUN_MODE:-full}"
 RUN_TESTS="${RUN_TESTS:-true}"
 FORCE_CONTINUE="${FORCE_CONTINUE:-false}"
 DO_ARCHIVE="${DO_ARCHIVE:-true}"
-DO_RETRO="${DO_RETRO:-false}"
-DO_RETRO_PROPOSALS="${DO_RETRO_PROPOSALS:-true}"
+# End-of-loop Retro closed loop (env name kept for backcompat with DO_NIGHTLY_COLLECT).
 DO_NIGHTLY_COLLECT="${DO_NIGHTLY_COLLECT:-true}"
-# Prefer GraphRuntime entrypoints (archive-workflow / retro-workflow). Set false
-# to fall back to free-form cursor archive prompt / `aa retro nightly collect`.
+DO_RETRO_COLLECT="${DO_RETRO_COLLECT:-$DO_NIGHTLY_COLLECT}"
+# Prefer GraphRuntime entrypoints. Archive false → free-form cursor prompt.
+# Retro false → `aa retro` CLI (same graph; not the deleted nightly driver).
 USE_WORKFLOW_ARCHIVE="${USE_WORKFLOW_ARCHIVE:-true}"
 USE_WORKFLOW_RETRO="${USE_WORKFLOW_RETRO:-true}"
 ARCHIVE_ENTRYPOINT="${ARCHIVE_ENTRYPOINT:-archive}"
 RETRO_ENTRYPOINT="${RETRO_ENTRYPOINT:-retro}"
-RETRO_ID="${RETRO_ID:-}"                 # empty → ensure_retro_params generates
+RETRO_ID="${RETRO_ID:-}"                 # empty → ensure_retro_params / aa retro generate
 RETRO_LAST="${RETRO_LAST:-10}"
 RETRO_MIN_EVIDENCE="${RETRO_MIN_EVIDENCE:-2}"
 RETRO_DRY_RUN="${RETRO_DRY_RUN:-false}"
@@ -76,7 +87,6 @@ RETRO_DRY_RUN="${RETRO_DRY_RUN:-false}"
 DO_EVAL_REGRESSION="${DO_EVAL_REGRESSION:-true}"
 EVAL_REGRESSION_SUITES="${EVAL_REGRESSION_SUITES:-workflow-run,classification-unit,safety-lite,eval-smoke,case-generation,workflow-case,workflow-api-codegen,workflow-e2e-codegen,workflow-fuzz-codegen,workflow-performance-codegen,workflow-full}"
 EVAL_ENGINE_ROOT="${EVAL_ENGINE_ROOT:-$AA_REPO_ROOT}"   # holds eval/suites + eval/baselines
-RETRO_SINCE_DAYS="${RETRO_SINCE_DAYS:-7}"
 STEP_TIMEOUT="${STEP_TIMEOUT:-5400}"
 STATUS_POLL_INTERVAL="${STATUS_POLL_INTERVAL:-120}"
 
@@ -118,13 +128,6 @@ export E2E_FRONTEND_URL="${E2E_FRONTEND_URL:-http://127.0.0.1:3100}"
 # Both env names are set because generated fuzz files vary in which they read.
 export QA_FUZZ_SCHEMA_MODE="${QA_FUZZ_SCHEMA_MODE:-uri}"
 export FUZZ_SCHEMA_MODE="${FUZZ_SCHEMA_MODE:-uri}"
-
-# Full agent argv prefix for headless driver + nightly (prompt appended last).
-if [ -z "${CURSOR_NIGHTLY_AGENT:-}" ]; then
-  CURSOR_NIGHTLY_AGENT="$CURSOR_AGENT_BIN --print --output-format $CURSOR_OUTPUT_FORMAT --workspace $PROJECT_ROOT --trust"
-  [ "$CURSOR_AGENT_FORCE" = "true" ] && CURSOR_NIGHTLY_AGENT="$CURSOR_NIGHTLY_AGENT --force"
-  [ -n "$CURSOR_MODEL" ] && CURSOR_NIGHTLY_AGENT="$CURSOR_NIGHTLY_AGENT --model $CURSOR_MODEL"
-fi
 
 # Default: one item only, so a first end-to-end smoke can finish before scaling up.
 # Override with e.g.:
@@ -240,7 +243,10 @@ clean_generated_artifacts() {
     abspath="$PROJECT_ROOT/$target"
     if [ -e "$abspath" ]; then
       log "clean: removing $target/ (generated benchmark artifacts)"
-      rm -rf "$abspath"
+      if ! remove_generated_artifact_tree "$abspath"; then
+        log "ERROR: clean failed for $target/ after restoring owner write permissions"
+        exit 1
+      fi
     else
       log "clean: $target/ absent - nothing to remove"
     fi
@@ -392,7 +398,7 @@ print(json.dumps({
 cursor_agent_cmd_prefix() {
   # Do NOT pin --workspace to PROJECT_ROOT here. HeadlessAdapter.invoke rewrites
   # or injects --workspace to the task-private materialized root so freeze/repair
-  # see agent writes. Archive / nightly helpers below still pass PROJECT_ROOT.
+  # see agent writes. Legacy archive prompt / `aa retro` show still use PROJECT_ROOT.
   local cmd="$CURSOR_AGENT_BIN --print --output-format $CURSOR_OUTPUT_FORMAT --trust"
   [ "$CURSOR_AGENT_FORCE" = "true" ] && cmd="$cmd --force"
   [ -n "$CURSOR_MODEL" ] && cmd="$cmd --model $CURSOR_MODEL"
@@ -482,7 +488,7 @@ run_driver() {
   fi
 }
 
-# One-shot cursor-agent prompt (legacy archive / legacy retro proposals only).
+# One-shot cursor-agent prompt (legacy archive path only).
 # $1=logfile $2=prompt
 run_cursor_agent() {
   local logf="$1" prompt="$2"
@@ -570,54 +576,44 @@ run_archive_stage() {
 # Prefer an archived change from this run; else any completed row change_id.
 # ROW_RESULTS fields: change_id|terminal|detail|archived=yes|no
 retro_shell_change_id() {
-  local cid term detail archive_field archived
-  for row in "${ROW_RESULTS[@]+"${ROW_RESULTS[@]}"}"; do
-    IFS='|' read -r cid term detail archive_field <<<"$row"
-    archived="${archive_field#archived=}"
-    if [ "$archived" = "yes" ] && [ -d "qa/changes/$cid" ]; then
-      printf '%s' "$cid"
-      return 0
-    fi
-  done
-  for row in "${ROW_RESULTS[@]+"${ROW_RESULTS[@]}"}"; do
-    IFS='|' read -r cid term detail archive_field <<<"$row"
-    if [ "$term" = "completed" ] && [ -d "qa/changes/$cid" ]; then
-      printf '%s' "$cid"
-      return 0
-    fi
-  done
-  # Fall back: newest active change dir (session shell only).
-  local newest
-  newest="$(ls -1d qa/changes/*/ 2>/dev/null | sort | tail -1 || true)"
-  if [ -n "$newest" ]; then
-    basename "$newest"
-    return 0
-  fi
-  return 1
+  select_retro_shell_change_id "$PROJECT_ROOT/qa/changes" "${ROW_RESULTS[@]+"${ROW_RESULTS[@]}"}"
 }
 
-# Capture artifacts from the newest qa/retro/retro-* after a collect/entrypoint run.
+# Capture artifacts from one qa/retro/<id> (or newest retro-* after a collect).
 # $1=min_epoch: reject dirs older than the retro stage, so a previous run's retro
 # is never reported as this run's output (qa/retro/ survives clean_generated_artifacts).
-# Sets: retro_id signal_count change_count nightly_review_queue (caller-owned vars).
+# $2=optional exact retro_id (skip ls when known from CLI JSON).
+# Sets: retro_id signal_count change_count retro_review_queue improvement_count.
 capture_latest_retro_artifacts() {
   local min_epoch="${1:-0}"
-  local latest_retro
-  latest_retro="$(ls -1d qa/retro/retro-* 2>/dev/null | sort | tail -1 || true)"
+  local want_id="${2:-}"
+  local latest_retro=""
+  if [ -n "$want_id" ] && [ -d "qa/retro/$want_id" ]; then
+    latest_retro="qa/retro/$want_id"
+  else
+    latest_retro="$(ls -1d qa/retro/retro-* 2>/dev/null | sort | tail -1 || true)"
+  fi
   [ -n "$latest_retro" ] || return 1
   python3 -c 'import os,sys; raise SystemExit(0 if os.path.getmtime(sys.argv[1]) >= float(sys.argv[2]) else 1)' \
     "$latest_retro" "$min_epoch" || return 1
+  retro_artifacts_complete "$latest_retro" "$RETRO_DRY_RUN" || return 1
   retro_id="$(basename "$latest_retro")"
   if [ -f "$latest_retro/context.json" ]; then
     signal_count="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("signal_count",""))' "$latest_retro/context.json" 2>/dev/null || true)"
-    change_count="$(python3 -c 'import json,sys; w=json.load(open(sys.argv[1])).get("window",{}); print(w.get("change_count",""))' "$latest_retro/context.json" 2>/dev/null || true)"
+    change_count="$(python3 -c 'import json,sys; w=json.load(open(sys.argv[1])).get("window") or {}; ids=w.get("change_ids") or []; print(len(ids) if isinstance(ids,list) else "")' "$latest_retro/context.json" 2>/dev/null || true)"
   fi
-  [ -f "$latest_retro/proposals.json" ] && cp "$latest_retro/proposals.json" "$RUN_DIR/proposals.json"
+  [ -f "$latest_retro/proposal-candidates.json" ] && cp "$latest_retro/proposal-candidates.json" "$RUN_DIR/proposal-candidates.json"
+  [ -f "$latest_retro/accept-status.json" ] && cp "$latest_retro/accept-status.json" "$RUN_DIR/accept-status.json"
   [ -f "$latest_retro/retro-summary.md" ] && cp "$latest_retro/retro-summary.md" "$RUN_DIR/retro-summary.md"
   if [ -f "$latest_retro/review-queue.md" ]; then
-    nightly_review_queue="$latest_retro/review-queue.md"
+    retro_review_queue="$latest_retro/review-queue.md"
     cp "$latest_retro/review-queue.md" "$RUN_DIR/review-queue.md"
   fi
+  if [ -f "qa/improvements/improvements.json" ]; then
+    cp "qa/improvements/improvements.json" "$RUN_DIR/improvements.json"
+    improvement_count="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(len(d.get("improvements") or {}))' "$RUN_DIR/improvements.json" 2>/dev/null || true)"
+  fi
+  [ -f "qa/improvements/review-queue.json" ] && cp "qa/improvements/review-queue.json" "$RUN_DIR/improvement-review-queue.json"
   return 0
 }
 
@@ -752,27 +748,14 @@ Instructions:
 EOF
 }
 
-retro_proposals_prompt() {
-  local retro_id="$1"
-  cat <<EOF
-Generate retro proposals for benchmark retro id ${retro_id}.
-
-Instructions:
-1. Load and follow:
-   ${AA_SKILLS_ROOT}/aa-retro/SKILL.md
-2. Read qa/retro/${retro_id}/context.json.
-3. Write qa/retro/${retro_id}/proposals.json and
-   qa/retro/${retro_id}/retro-summary.md.
-4. Do not modify skill files or .aa/memory files.
-EOF
-}
-
-# Cross-change retro via GraphRuntime entrypoint (preferred) or legacy nightly CLI.
-# Uses a shell change_id only as RuntimeContext; writes project:qa/retro/**.
-run_nightly_collect() {
-  local collect_log="$RUN_DIR/nightly-collect.log"
+# Cross-change Retro closed loop via GraphRuntime entrypoint (preferred) or `aa retro` CLI.
+# Writes project:qa/retro/<id>/** and reconciles into qa/improvements/**.
+# Sets RETRO_CLI_ID when the CLI path returns a known retro_id (JSON).
+run_retro_collect() {
+  local collect_log="$RUN_DIR/retro-collect.log"
   local collect_exit=0
   local shell_cid=""
+  RETRO_CLI_ID=""
 
   if [ "$USE_WORKFLOW_RETRO" = "true" ]; then
     if ! shell_cid="$(retro_shell_change_id)"; then
@@ -787,19 +770,23 @@ run_nightly_collect() {
     return "$collect_exit"
   fi
 
-  log "stage 3/3 retro-nightly collect --sut $PROJECT_ROOT (legacy CLI) ..."
-  if command -v "$AA_BIN" >/dev/null 2>&1 && "$AA_BIN" retro nightly --help >/dev/null 2>&1; then
-    # shellcheck disable=SC2086
-    "$AA_BIN" retro nightly collect \
-      --sut "$PROJECT_ROOT" \
-      --agent "$CURSOR_NIGHTLY_AGENT" \
-      >"$collect_log" 2>&1
-    collect_exit=$?
-  else
-    log "nightly collect: aa retro nightly not available"
-    collect_exit=40
-  fi
+  log "stage 3/3 retro via aa retro CLI --last $RETRO_LAST ..."
+  local agent_cmd
+  agent_cmd="$(cursor_agent_cmd_prefix)"
+  local -a retro_cmd=(
+    "$AA_BIN" retro
+    --last "$RETRO_LAST"
+    --json
+  )
+  [ -n "$RETRO_ID" ] && retro_cmd+=(--retro-id "$RETRO_ID")
+  [ "$RETRO_DRY_RUN" = "true" ] && retro_cmd+=(--dry-run)
+  : >"$collect_log"
+  AA_RETRO_AGENT_CMD="$agent_cmd" "${retro_cmd[@]}" >"$collect_log" 2>&1
+  collect_exit=$?
   cat "$collect_log" >>"$LOOP_LOG" || true
+  if [ "$collect_exit" -eq 0 ]; then
+    RETRO_CLI_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("retro_id",""))' "$collect_log" 2>/dev/null || true)"
+  fi
   return "$collect_exit"
 }
 
@@ -809,6 +796,7 @@ run_nightly_collect() {
 # Populates EVAL_ROWS / EVAL_WORST for the summary.
 declare -a EVAL_ROWS=()
 EVAL_WORST="pass"
+EVAL_GATE_EXIT=0
 run_eval_regression() {
   local eval_log="$RUN_DIR/eval-regression.log"
   : >"$eval_log"
@@ -817,34 +805,46 @@ run_eval_regression() {
     return 0
   fi
   log "stage: eval regression suites=[$EVAL_REGRESSION_SUITES] engine=$EVAL_ENGINE_ROOT sut=$PROJECT_ROOT"
-  local worst="pass"
   local -a suites=()
+  local -a verdicts=()
   IFS=',' read -ra suites <<<"$EVAL_REGRESSION_SUITES"
-  local suite out rid verdict
+  local suite out rid verdict regression_verdict run_exit regression_exit
   for suite in "${suites[@]}"; do
     suite="$(echo "$suite" | xargs)"
     [ -n "$suite" ] || continue
-    set +e
+    run_exit=0
     out="$(cd "$EVAL_ENGINE_ROOT" && AA_EVAL_FAKE_ADAPTER=1 "$AA_BIN" eval run \
-      --suite "$suite" --sut-dir "$PROJECT_ROOT" --json 2>>"$eval_log")"
-    set +e
+      --suite "$suite" --sut-dir "$PROJECT_ROOT" --json 2>>"$eval_log")" || run_exit=$?
     printf '%s\n' "$out" >>"$eval_log" || true
     rid="$(printf '%s' "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("run_id",""))' 2>/dev/null || true)"
     verdict="$(printf '%s' "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("verdict",""))' 2>/dev/null || true)"
-    [ -n "$verdict" ] || verdict="error"
-    log "eval[$suite]: verdict=$verdict run_id=${rid:-n/a}"
-    if [ -n "$rid" ]; then
+    if [ "$run_exit" -ne 0 ] || [ -z "$verdict" ]; then
+      verdict="error"
+    fi
+    if [ "$verdict" != "error" ] && [ -n "$rid" ]; then
+      regression_exit=0
+      regression_verdict="$(cd "$EVAL_ENGINE_ROOT" && python3 -m assurance_agent.eval.regression_gate \
+        --engine-root "$EVAL_ENGINE_ROOT" --sut-root "$PROJECT_ROOT" --run "$rid" \
+        2>>"$eval_log")" || regression_exit=$?
+      if [ "$regression_exit" -ne 0 ] || [ -z "$regression_verdict" ]; then
+        verdict="error"
+      else
+        verdict="$regression_verdict"
+      fi
       ( cd "$EVAL_ENGINE_ROOT" && "$AA_BIN" eval compare --baseline main \
         --run "$rid" --sut-dir "$PROJECT_ROOT" >>"$eval_log" 2>&1 ) || true
     fi
-    case "$verdict" in
-      pass | pass_with_warnings) ;;
-      *) worst="$verdict" ;;
-    esac
+    log "eval[$suite]: verdict=$verdict run_id=${rid:-n/a}"
+    verdicts+=("$verdict")
     EVAL_ROWS+=("$suite|$verdict|${rid:-n/a}")
   done
-  EVAL_WORST="$worst"
-  return 0
+  EVAL_WORST="$(cd "$EVAL_ENGINE_ROOT" && python3 -c \
+    'from assurance_agent.eval.regression_gate import worst_verdict; import sys; print(worst_verdict(sys.argv[1:]))' \
+    "${verdicts[@]}")" || EVAL_WORST="error"
+  EVAL_GATE_EXIT="$(cd "$EVAL_ENGINE_ROOT" && python3 -c \
+    'from assurance_agent.eval.regression_gate import gate_exit_code; import sys; print(gate_exit_code(sys.argv[1:]))' \
+    "${verdicts[@]}")" || EVAL_GATE_EXIT=1
+  return "$EVAL_GATE_EXIT"
 }
 
 # ---------------------------------------------------------------------------
@@ -878,17 +878,12 @@ if [ ! -d "$AA_SKILLS_ROOT" ]; then
     log "WARN: aa skill refresh failed - archive/retro prompts may miss SKILL.md"
 fi
 
-if [ "$DO_RETRO" = "true" ] && [ "$DO_NIGHTLY_COLLECT" = "true" ]; then
-  log "WARN: DO_RETRO and DO_NIGHTLY_COLLECT both true — using legacy DO_RETRO only"
-  DO_NIGHTLY_COLLECT="false"
-fi
-
 log "cursor benchmark loop start - runstamp=$RUNSTAMP items=${#BENCHMARK_ITEMS[@]}${RESUME_RUNSTAMP:+ (resume)}"
 log "project_root=$PROJECT_ROOT run_mode=$RUN_MODE run_tests=$RUN_TESTS test_types=$TEST_TYPES"
 log "driver: adapter=headless entrypoint=$DRIVER_ENTRYPOINT max_healing=$MAX_HEALING_ATTEMPTS"
 log "cursor_agent=$CURSOR_AGENT_BIN model=${CURSOR_MODEL:-default} max_attempts=$CURSOR_MAX_WORKFLOW_ATTEMPTS"
 log "do_archive=$DO_ARCHIVE use_workflow_archive=$USE_WORKFLOW_ARCHIVE entrypoint=$ARCHIVE_ENTRYPOINT"
-log "do_nightly_collect=$DO_NIGHTLY_COLLECT use_workflow_retro=$USE_WORKFLOW_RETRO entrypoint=$RETRO_ENTRYPOINT do_retro=$DO_RETRO"
+log "do_retro_collect=$DO_RETRO_COLLECT use_workflow_retro=$USE_WORKFLOW_RETRO entrypoint=$RETRO_ENTRYPOINT"
 log "retro_params: id=${RETRO_ID:-auto} last=$RETRO_LAST min_evidence=$RETRO_MIN_EVIDENCE dry_run=$RETRO_DRY_RUN"
 log "auto_decide=$AUTO_DECIDE_BENCHMARK recover_healing=$RECOVER_HEALING_DEADLOCK"
 
@@ -902,7 +897,6 @@ fi
 ensure_test_infra
 
 declare -a ROW_RESULTS=()
-declare -a RETRO_CHANGE_IDS=()
 item_idx=0
 total_items=${#BENCHMARK_ITEMS[@]}
 
@@ -1011,9 +1005,6 @@ PYASSERT
   if [ "$workflow_kind" != "completed" ]; then
     log "[$change_id] workflow not complete - skip archive"
     ROW_RESULTS+=("$change_id|$workflow_kind|${workflow_reason:-final_status=$final_status}|archived=no")
-    if [ "$workflow_kind" = "stopped" ] && [ "$DO_RETRO" = "true" ]; then
-      RETRO_CHANGE_IDS+=("$change_id")
-    fi
     continue
   fi
 
@@ -1030,88 +1021,55 @@ PYASSERT
   fi
 
   ROW_RESULTS+=("$change_id|completed|final_status=$final_status|archived=$archived")
-  if [ "$DO_RETRO" = "true" ]; then
-    RETRO_CHANGE_IDS+=("$change_id")
-  fi
 done
 
 retro_id=""
 signal_count=""
 change_count=""
-nightly_collect_exit=""
-nightly_review_queue=""
-if [ "$DO_NIGHTLY_COLLECT" = "true" ]; then
+improvement_count=""
+retro_collect_exit=""
+retro_collect_closed="false"
+retro_review_queue=""
+RETRO_CLI_ID=""
+if [ "$DO_RETRO_COLLECT" = "true" ]; then
   retro_stage_epoch="$(python3 -c 'import time; print(time.time())')"
-  run_nightly_collect
-  nightly_collect_exit=$?
-  # 0 = workflow completed (incl. zero-signal END) or legacy OK
-  # 10 = no-op (legacy nightly / no shell change for entrypoint)
-  # 20 = workflow stopped (archive-gate style); treat as soft failure for retro
-  if [ "$nightly_collect_exit" = "0" ] || [ "$nightly_collect_exit" = "10" ]; then
-    if capture_latest_retro_artifacts "$retro_stage_epoch"; then
-      if [ "$nightly_collect_exit" = "10" ]; then
+  run_retro_collect
+  retro_collect_exit=$?
+  # 0 = workflow/CLI completed (incl. zero-signal END)
+  # 10 = skipped because no shell change (not a closed Retro result)
+  # 20 = workflow stopped (failure)
+  if [ "$retro_collect_exit" = "0" ] || [ "$retro_collect_exit" = "10" ]; then
+    if capture_latest_retro_artifacts "$retro_stage_epoch" "${RETRO_CLI_ID:-}"; then
+      if [ "$retro_collect_exit" = "10" ]; then
         log "retro collect: no-op (exit 10) retro_id=${retro_id:-n/a}"
       else
-        log "retro collect complete: mode=$([ "$USE_WORKFLOW_RETRO" = "true" ] && echo workflow || echo nightly) retro_id=${retro_id:-unknown} signal_count=${signal_count:-?} change_count=${change_count:-?}"
+        retro_collect_closed="true"
+        log "retro collect complete: mode=$([ "$USE_WORKFLOW_RETRO" = "true" ] && echo workflow || echo aa-retro-cli) retro_id=${retro_id:-unknown} signal_count=${signal_count:-?} change_count=${change_count:-?} improvements=${improvement_count:-0}"
         # An empty window while change dirs exist on disk means candidate
         # enumeration rejected everything — a structural failure that otherwise
         # exits 0 and looks like "nothing to retro about".
         if [ "${change_count:-}" = "0" ]; then
           on_disk="$(ls -1d qa/changes/*/ qa/archive/*/ 2>/dev/null | wc -l | tr -d ' ')"
           if [ "${on_disk:-0}" != "0" ]; then
-            log "retro WARN: empty window (change_count=0) but $on_disk change dir(s) on disk — every candidate was rejected (check qa/retro/_state.json watermark, terminality and evidence completeness)"
+            log "retro WARN: empty window (change_count=0) but $on_disk change dir(s) on disk — check terminality / Issue integrity / evidence completeness"
           fi
         fi
       fi
     else
-      if [ "$nightly_collect_exit" = "10" ]; then
+      if [ "$retro_collect_exit" = "10" ]; then
         log "retro collect: no-op (exit 10, no retro dir from this run)"
       else
         log "retro collect: exit 0 but no retro dir written by this run"
       fi
     fi
   else
-    log "retro collect failed (exit $nightly_collect_exit, see nightly-collect.log)"
-    capture_latest_retro_artifacts "$retro_stage_epoch" || true
-  fi
-elif [ "$DO_RETRO" = "true" ]; then
-  retro_id="retro-${RUNSTAMP}"
-  retro_json="$RUN_DIR/retro.json"
-  if [ "${#RETRO_CHANGE_IDS[@]}" -eq 0 ]; then
-    log "legacy retro skipped - no terminal changes"
-    retro_id=""
-  else
-    retro_cmd=("$AA_BIN" retro --retro-id "$retro_id" --json)
-    for cid in "${RETRO_CHANGE_IDS[@]}"; do
-      snapshot_unarchived_evidence "$retro_id" "$cid"
-      retro_cmd+=(--change "$cid")
-    done
-    log "stage 3/4 aa retro --retro-id $retro_id --change ${RETRO_CHANGE_IDS[*]} ..."
-    if "${retro_cmd[@]}" >"$retro_json" 2>>"$LOOP_LOG"; then
-      retro_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("retro_id",""))' "$retro_json" 2>/dev/null)"
-      signal_count="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("signal_count",""))' "$retro_json" 2>/dev/null)"
-      change_count="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("change_count",""))' "$retro_json" 2>/dev/null)"
-      log "retro aggregated: retro_id=$retro_id change_count=$change_count signal_count=$signal_count"
-    else
-      log "aa retro failed (see loop.log)"
-    fi
-  fi
-
-  if [ "$DO_RETRO_PROPOSALS" = "true" ] && [ -n "$retro_id" ]; then
-    rp_log="$RUN_DIR/retro-proposals.cursor.jsonl"
-    log "stage 4/4 cursor aa-retro proposals for $retro_id ..."
-    if run_cursor_agent "$rp_log" "$(retro_proposals_prompt "$retro_id")"; then
-      [ -f "qa/retro/${retro_id}/proposals.json" ] && cp "qa/retro/${retro_id}/proposals.json" "$RUN_DIR/proposals.json"
-      [ -f "qa/retro/${retro_id}/retro-summary.md" ] && cp "qa/retro/${retro_id}/retro-summary.md" "$RUN_DIR/retro-summary.md"
-      log "retro proposals generated (see qa/retro/${retro_id}/)"
-    else
-      log "cursor retro proposals exited non-zero (see $(basename "$rp_log"))"
-    fi
+    log "retro collect failed (exit $retro_collect_exit, see retro-collect.log)"
+    capture_latest_retro_artifacts "$retro_stage_epoch" "${RETRO_CLI_ID:-}" || true
   fi
 fi
 
 if [ "$DO_EVAL_REGRESSION" = "true" ]; then
-  run_eval_regression
+  run_eval_regression || EVAL_GATE_EXIT=$?
 fi
 
 {
@@ -1123,8 +1081,7 @@ fi
   echo "- driver entrypoint: \`$DRIVER_ENTRYPOINT\` max healing attempts: \`$MAX_HEALING_ATTEMPTS\`"
   echo "- max workflow attempts: \`$CURSOR_MAX_WORKFLOW_ATTEMPTS\`"
   echo "- archive: \`DO_ARCHIVE=$DO_ARCHIVE\` via \`$([ "$USE_WORKFLOW_ARCHIVE" = "true" ] && echo "workflow:$ARCHIVE_ENTRYPOINT" || echo "legacy-cursor-prompt")\`"
-  echo "- retro collect: \`DO_NIGHTLY_COLLECT=$DO_NIGHTLY_COLLECT\` via \`$([ "$USE_WORKFLOW_RETRO" = "true" ] && echo "workflow:$RETRO_ENTRYPOINT" || echo "aa-retro-nightly")\` (exit: \`${nightly_collect_exit:-n/a}\`)"
-  echo "- legacy retro: \`$DO_RETRO\`"
+  echo "- retro collect: \`DO_RETRO_COLLECT=$DO_RETRO_COLLECT\` via \`$([ "$USE_WORKFLOW_RETRO" = "true" ] && echo "workflow:$RETRO_ENTRYPOINT" || echo "aa-retro-cli")\` (exit: \`${retro_collect_exit:-n/a}\`)"
   echo
   echo "## Workflow results"
   echo
@@ -1135,26 +1092,31 @@ fi
     echo "| \`$cid\` | $term | $detail | $archive |"
   done
   echo
-  echo "## Retro"
+  echo "## Retro → Improvements"
   echo
   if [ -n "$retro_id" ]; then
     echo "- retro_id: \`$retro_id\`"
     echo "- change_count (window): \`$change_count\`"
     echo "- signal_count: \`$signal_count\`"
-    [ -f "$RUN_DIR/proposals.json" ] && echo "- proposals: \`benchmark/runs/$RUNSTAMP-cursor/proposals.json\`"
+    echo "- improvements (ledger): \`${improvement_count:-0}\`"
+    [ -f "$RUN_DIR/proposal-candidates.json" ] && echo "- candidates: \`benchmark/runs/$RUNSTAMP-cursor/proposal-candidates.json\`"
+    [ -f "$RUN_DIR/accept-status.json" ] && echo "- accept status: \`benchmark/runs/$RUNSTAMP-cursor/accept-status.json\`"
     [ -f "$RUN_DIR/retro-summary.md" ] && echo "- summary: \`benchmark/runs/$RUNSTAMP-cursor/retro-summary.md\`"
-    [ -n "$nightly_review_queue" ] && echo "- review queue: \`benchmark/runs/$RUNSTAMP-cursor/review-queue.md\`"
+    [ -n "${retro_review_queue:-}" ] && echo "- retro review queue: \`benchmark/runs/$RUNSTAMP-cursor/review-queue.md\`"
+    [ -f "$RUN_DIR/improvements.json" ] && echo "- improvements projection: \`benchmark/runs/$RUNSTAMP-cursor/improvements.json\`"
+    [ -f "$RUN_DIR/improvement-review-queue.json" ] && echo "- improvement review queue: \`benchmark/runs/$RUNSTAMP-cursor/improvement-review-queue.json\`"
   else
     echo "- (retro disabled, no-op, or failed)"
   fi
-  if [ "$DO_NIGHTLY_COLLECT" = "true" ] && [ -n "$nightly_collect_exit" ] && [ "$nightly_collect_exit" != "0" ] && [ "$nightly_collect_exit" != "10" ]; then
-    echo "- nightly collect log: \`benchmark/runs/$RUNSTAMP-cursor/nightly-collect.log\`"
+  if [ "$DO_RETRO_COLLECT" = "true" ] && [ -n "$retro_collect_exit" ] && [ "$retro_collect_exit" != "0" ] && [ "$retro_collect_exit" != "10" ]; then
+    echo "- retro collect log: \`benchmark/runs/$RUNSTAMP-cursor/retro-collect.log\`"
   fi
   if [ "$DO_EVAL_REGRESSION" = "true" ]; then
     echo
     echo "## Eval regression (deterministic golden-sample gate)"
     echo
     echo "- worst verdict: \`$EVAL_WORST\`"
+    echo "- gate exit: \`$EVAL_GATE_EXIT\`"
     if [ "${#EVAL_ROWS[@]}" -gt 0 ]; then
       echo
       echo "| suite | verdict | run_id |"
@@ -1171,7 +1133,7 @@ fi
   echo
   echo "- driver logs: \`benchmark/runs/$RUNSTAMP-cursor/*.workflow.attempt-*.cursor.log\`"
   echo "- archive logs: \`benchmark/runs/$RUNSTAMP-cursor/*.archive.workflow.log\` (or \`*.archive.cursor.jsonl\` if legacy)"
-  echo "- retro collect log: \`benchmark/runs/$RUNSTAMP-cursor/nightly-collect.log\`"
+  echo "- retro collect log: \`benchmark/runs/$RUNSTAMP-cursor/retro-collect.log\`"
   echo "- status snapshots: \`benchmark/runs/$RUNSTAMP-cursor/*.status.json\`"
   echo "- loop log: \`benchmark/runs/$RUNSTAMP-cursor/loop.log\`"
 } >"$SUMMARY"
@@ -1180,3 +1142,15 @@ log "cursor benchmark loop done - summary: $SUMMARY"
 rm -f "$TRACK_PID_FILE"
 echo
 cat "$SUMMARY"
+
+if [ "$EVAL_GATE_EXIT" -ne 0 ]; then
+  log "ERROR: eval regression gate failed (worst verdict: $EVAL_WORST)"
+  exit "$EVAL_GATE_EXIT"
+fi
+
+if ! benchmark_result_exit_code \
+  "$DO_ARCHIVE" "$DO_RETRO_COLLECT" "${retro_collect_exit:-0}" "$retro_collect_closed" \
+  "${ROW_RESULTS[@]+"${ROW_RESULTS[@]}"}"; then
+  log "ERROR: benchmark result gate failed (workflow/archive/retro result is not closed)"
+  exit 1
+fi

@@ -201,6 +201,95 @@ def test_parse_rejects_invalid_registries(text: str, message: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# synchronized project resources
+
+
+def test_synchronized_project_path_parses_and_propagates_to_claims() -> None:
+    catalog = parse_execution_contracts(
+        """schema_version: "1"
+contracts:
+  operation:update-issues:
+    handler: operation
+    reads: [project:qa/issues/**]
+    writes: [project:qa/issues/**]
+    authorization_writes: [project:qa/issues/**]
+    synchronized: [project:qa/issues/**]
+    exclusive: [project:issue-registry]
+"""
+    )
+
+    claims = catalog.claims_for(NodeDef(uses="operation:update-issues"))
+
+    assert catalog.contracts["operation:update-issues"].synchronized == ("project:qa/issues/**",)
+    assert claims.synchronized == (ResourcePath.parse("project:qa/issues/**"),)
+    ordinary_writer = ResourceClaims(writes=(ResourcePath.parse("project:qa/issues/ISSUE-1.yaml"),))
+    assert claims_conflict(claims, ordinary_writer) is True
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (
+            "reads: [repo:qa/issues/**]\n"
+            "    synchronized: [repo:qa/issues/**]\n"
+            "    exclusive: [project:issue-registry]",
+            "project root",
+        ),
+        (
+            "reads: [project:qa/problems/**]\n"
+            "    synchronized: [project:qa/issues/**]\n"
+            "    exclusive: [project:issue-registry]",
+            "covered by reads",
+        ),
+        (
+            "reads: [project:qa/issues/**]\n"
+            "    authorization_writes: [project:qa/issues/**]\n"
+            "    synchronized: [project:qa/issues/**]\n"
+            "    exclusive: [project:issue-registry]",
+            "covered by writes",
+        ),
+        (
+            "reads: [project:qa/issues/**]\n"
+            "    writes: [project:qa/issues/**]\n"
+            "    synchronized: [project:qa/issues/**]\n"
+            "    exclusive: [project:issue-registry]",
+            "authorization_writes",
+        ),
+        (
+            "reads: [project:qa/*]\n"
+            "    synchronized: [project:qa/*]\n"
+            "    exclusive: [project:issue-registry]",
+            "concrete file or directory prefix",
+        ),
+        (
+            "reads: [project:qa/issues/**]\n"
+            "    synchronized: [project:qa/issues/**]\n"
+            "    exclusive: [repo:issue-registry]",
+            "project exclusive token",
+        ),
+        (
+            "reads: [project:qa/issues/**]\n"
+            "    synchronized: [project:qa/issues/**]\n"
+            '    exclusive: ["project:"]',
+            "project exclusive token",
+        ),
+        (
+            "reads: [project:qa/issues/]\n"
+            "    synchronized: [project:qa/issues/]\n"
+            "    exclusive: [project:issue-registry]",
+            "directory prefix",
+        ),
+    ],
+)
+def test_synchronized_project_path_contract_invariants(body: str, message: str) -> None:
+    text = (
+        f'schema_version: "1"\ncontracts:\n  operation:update-issues:\n    handler: operation\n    {body}\n'
+    )
+    with pytest.raises(ContractError, match=message):
+        parse_execution_contracts(text)
+
+
+# ---------------------------------------------------------------------------
 # claims_for 合成
 
 
@@ -584,3 +673,52 @@ def test_packaged_contracts_compile_minimal_fixture(tmp_path: Path) -> None:
     assert set(compiled.contract_digests) == {"operation:no-op"}
     # no-op 是 side_effect_free，无写范围 → footprint 为空 claims
     assert compiled.graphs["main"].resource_footprint == ResourceClaims()
+
+
+def test_narrow_claims_rejects_expanded_read_outside_static_bounds() -> None:
+    from assurance_agent.workflow.graph.contracts import narrow_claims
+
+    base = ResourceClaims(
+        reads=(ResourcePath.parse("project:qa/retro/*/context.json"),),
+        writes=(ResourcePath.parse("project:qa/retro/*/proposal-candidates.json"),),
+        authorization_writes=(ResourcePath.parse("project:qa/retro/*/proposal-candidates.json"),),
+    )
+    with pytest.raises(ContractError, match="expanded read exceeds"):
+        narrow_claims(
+            base,
+            reads=(ResourcePath.parse("project:qa/issues/problems.json"),),
+            writes=(),
+            outputs=(),
+        )
+
+
+def test_retro_closed_loop_contracts_are_least_privilege() -> None:
+    catalog = load_execution_contracts(Path.cwd())
+    assert "operation:retro-accept" not in catalog.contracts
+    collect = catalog.contracts["operation:retro-collect"]
+    agent = catalog.contracts["skill:aa-retro"]
+    reconcile = catalog.contracts["operation:reconcile-improvements"]
+
+    assert "project:qa/issues/**" in collect.reads
+    assert "project:qa/retro/**" not in collect.reads
+    assert collect.writes == ("project:qa/retro/*/context.json",)
+
+    assert agent.reads == ("project:qa/retro/*/context.json",)
+    assert "project:qa/issues/**" not in agent.reads
+    assert "project:qa/retro/**" not in agent.reads
+    assert "project:qa/archive/**" not in agent.reads
+    assert set(agent.writes) == {
+        "project:qa/retro/*/proposal-candidates.json",
+        "project:qa/retro/*/retro-summary.md",
+    }
+
+    assert "project:qa/improvements/**" in reconcile.reads
+    assert "project:qa/improvements/**" in reconcile.writes
+    assert "project:qa/retro/**" in reconcile.reads
+    assert set(reconcile.synchronized) == {
+        "project:qa/improvements/**",
+        "project:qa/retro/**",
+    }
+    assert "project:improvement-registry" in reconcile.exclusive
+    assert "project:qa/issues/**" not in reconcile.writes
+    assert "project:qa/issues/**" not in reconcile.authorization_writes

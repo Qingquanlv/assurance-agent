@@ -35,7 +35,7 @@ Do not rely on prior conversation context.
 **After completing work:**
 
 1. Write generated fuzz test files per `fuzz-codegen-plan.md` Target Files:
-   - `tests/fuzz/test_<module>_fuzz.py` (required path — runner discovers `tests/fuzz/`)
+   - `tests/fuzz/test_<module>_fuzz.py` (required path — list it under the plan's `Target Files`; the runner executes only mapped `test_*.py` files for this change)
    - `tests/fuzz/strategies/<module>.py` (when the plan maps reusable value strategies)
    - `tests/fuzz/adapters/<module>.py` (only for mapped stateful setup/cleanup)
    - `tests/testdata/domain/<entity>.py` (only when absent and marked `create-if-missing`)
@@ -74,7 +74,7 @@ def test_tc_menu_fuzz_001__menu_create(case):
 - **The test function name MUST be prefixed with the normalized case_id** (lowercase case_id + `__` + description): `test_<case_id lowercase>__<description>`. e.g. case_id `TC_MENU_FUZZ_001` → `def test_tc_menu_fuzz_001__menu_create(case)`. This is the **only mandatory traceability marker** (not a comment/docstring); `aa run` recovers the case_id from the function name (case-insensitive).
 - **Default to `from_url` against the live SUT** (`settings.base_url`) with `case.call()`. This fuzzes the same running SUT + real DB that the seed/cleanup adapters target, so results are consistent. **Do NOT default to `from_asgi`/`from app import app`**: importing the app boots its lifespan in-process (e.g. aerich `init_db → migrate`, which writes `migrations/**` and would trip the execution write-set guard) and binds the fuzzed app to the sandbox DB instead of the seeded real DB. Only use `from_asgi` when the plan *explicitly* requires in-process transport; if you gate on an env var, use exactly `QA_FUZZ_SCHEMA_MODE` (default = `uri`).
 - Pass auth via the plan's strategy (reuse fixtures / data-knowledge). Never hardcode real tokens.
-- Output exactly to `tests/fuzz/test_<module>_fuzz.py` so the CLI runner discovers it.
+- Output exactly to `tests/fuzz/test_<module>_fuzz.py` and keep it listed under `fuzz-codegen-plan.md` `Target Files`, so the CLI runner scopes execution to this change. Legacy plans without a parseable `Target Files` section retain full `tests/fuzz/` discovery as a compatibility fallback.
 - Put reusable pure value generation in `tests/fuzz/strategies/`. Put persistent setup/cleanup in `tests/fuzz/adapters/`; never create state inside a Hypothesis strategy.
 - Never import `tests/api/adapters/` or `tests/e2e/adapters/`. Reuse shared domain code only through the mapped fuzz adapter.
 - When a schemathesis-parametrized test consumes **function-scoped** pytest fixtures for fixed setup context (seeded role/dept/user, cleanup trackers), Hypothesis raises `FailedHealthCheck: function_scoped_fixture` because the fixture is not reset per generated input. That is expected here — the seed is stable context while the body is fuzzed — so suppress **only** that one health check:

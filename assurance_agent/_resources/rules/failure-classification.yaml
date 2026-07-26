@@ -9,7 +9,7 @@ patterns:
   fact_baseline: "fact-baseline"
   locator: "locator|selector|element not found|no element|waiting for selector|unable to find element|strict mode violation|ambiguous|getbytext|getbyrole|getbylabel|getbyplaceholder|getbytestid"
   wait_strategy: "timed? ?out|timeout exceeded|exceeded.*ms|waitfor|networkidle|domcontentloaded|load.*event"
-  fuzz_configuration: "schemathesis|openapi|schema.*not found|failed to load schema|cannot fetch schema|invalid schema|no api definition|hypothesis.*could not|unsatisfied|failed health check|filtered out|base url"
+  fuzz_configuration: "schema.*not found|failed to load schema|cannot fetch schema|invalid schema|no api definition|hypothesis.*could not|unsatisfied|failed health check|filtered out|base url"
   fuzz_stateful: "stateful|state machine|apistatemachine|sequence|transition|link|rule .* failed"
   test_data: "fixture|test data|seed|database.*empty|no.*record|not found.*user|not found.*product|not found.*order|factory|invalid data|missing.*field|required.*field"
   assertion: "assertionerror|assert.*expected|expected.*received|to equal|to be|tobecalled|tohavetext|tohavevalue|statuscode.*expected|response.*expected"
@@ -30,8 +30,8 @@ pipelines:
       - {category: environment_failure, match: environment}
       - {category: locator_failure, target: [e2e], match: locator}
       - {category: wait_strategy_failure, target: [e2e], match: wait_strategy}
-      - {category: test_data_failure, match: test_data}
       - {category: assertion_failure, match: assertion}
+      - {category: test_data_failure, match: test_data}
       - {category: business_logic_failure, match: business_logic}
       - {category: test_code_error, match: test_code}
       - {category: case_semantic_failure, match: case_semantic}

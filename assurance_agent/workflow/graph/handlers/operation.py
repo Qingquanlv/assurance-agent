@@ -34,11 +34,43 @@ from assurance_agent.config import load_config
 from assurance_agent.workflow.execution.evidence import EvidenceError
 from assurance_agent.workflow.execution.runner import run_change
 from assurance_agent.workflow.report.inspector import inspect_change
+from assurance_agent.workflow.report.report_builder import generate_report
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
 from assurance_agent.workflow.graph.task_runner import task_failure, task_with
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.orchestration.operations import BASELINE_REL, HEAL_STATUSES
-from assurance_agent.workflow.graph.handlers.retro_ops import retro_accept, retro_collect
+from assurance_agent.workflow.graph.handlers.retro_ops import (
+    reconcile_improvements,
+    retro_accept,
+    retro_collect,
+)
+from assurance_agent.workflow.improvements.change_delivery import (
+    export_change_improvement_operation,
+    record_change_improvement_applied_operation,
+)
+from assurance_agent.workflow.improvements.knowledge_delivery import (
+    export_knowledge_improvement_operation,
+    record_knowledge_improvement_applied_operation,
+)
+from assurance_agent.workflow.improvements.memory_delivery import (
+    apply_memory_improvement_operation,
+    evaluate_memory_improvement_operation,
+    load_improvement_delivery_operation,
+    rollback_memory_improvement_operation,
+)
+from assurance_agent.workflow.improvements.review import (
+    apply_improvement_review_operation,
+    load_improvement_review_context_operation,
+)
+from assurance_agent.workflow.issues.operations import (
+    apply_problem_review_operation,
+    collect_observations_operation,
+    load_problem_review_context_operation,
+    record_empty_issue_analysis_operation,
+    record_issue_analysis_failure_operation,
+    record_project_sync_pending_operation,
+    reconcile_issues_operation,
+)
 
 OperationResult = TaskResult
 OperationFn = Callable[[ExecutableTask, TaskWorkspace, RuntimeContext], OperationResult]
@@ -177,6 +209,25 @@ def inspect_operation(
             "batch_id": result.analysis.batch_id,
             "final_status": result.analysis.final_status,
             "status": result.analysis.status,
+        },
+    )
+
+
+def generate_report_operation(
+    task: ExecutableTask, workspace: TaskWorkspace, context: RuntimeContext
+) -> OperationResult:
+    """Generate the schema-1.1 report deterministically inside the task workspace."""
+    try:
+        result = generate_report(workspace.project_root, context.change_id)
+    except (EvidenceError, FileNotFoundError, OSError, ValueError) as err:
+        return task_failure("invalid_input", str(err))
+    return TaskResult(
+        status="succeeded",
+        value={
+            "batch_id": result.report.batch_id,
+            "final_status": result.report.final_status,
+            "schema_version": result.report.schema_version,
+            "issue_risk": result.report.issues.issue_risk if result.report.issues else None,
         },
     )
 
@@ -327,11 +378,31 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:skill-registry-check": skill_registry_check,
         "operation:run-tests": run_tests,
         "operation:inspect": inspect_operation,
+        "operation:generate-report": generate_report_operation,
         "operation:allocate-healing-attempt": operation_allocate_healing_attempt,
         "operation:record-healing-status": operation_record_healing_status,
         "operation:stop": stop_operation,
         "operation:retro-collect": retro_collect,
+        "operation:reconcile-improvements": reconcile_improvements,
+        # Compatibility alias for older unit tests (not in execution contracts).
         "operation:retro-accept": retro_accept,
+        "operation:collect-observations": collect_observations_operation,
+        "operation:record-empty-issue-analysis": record_empty_issue_analysis_operation,
+        "operation:record-issue-analysis-failure": record_issue_analysis_failure_operation,
+        "operation:record-project-sync-pending": record_project_sync_pending_operation,
+        "operation:reconcile-issues": reconcile_issues_operation,
+        "operation:load-problem-review-context": load_problem_review_context_operation,
+        "operation:apply-problem-review": apply_problem_review_operation,
+        "operation:load-improvement-review-context": load_improvement_review_context_operation,
+        "operation:apply-improvement-review": apply_improvement_review_operation,
+        "operation:load-improvement-delivery": load_improvement_delivery_operation,
+        "operation:evaluate-memory-improvement": evaluate_memory_improvement_operation,
+        "operation:apply-memory-improvement": apply_memory_improvement_operation,
+        "operation:rollback-memory-improvement": rollback_memory_improvement_operation,
+        "operation:export-change-improvement": export_change_improvement_operation,
+        "operation:record-change-improvement-applied": record_change_improvement_applied_operation,
+        "operation:export-knowledge-improvement": export_knowledge_improvement_operation,
+        "operation:record-knowledge-improvement-applied": record_knowledge_improvement_applied_operation,
     }
 
 

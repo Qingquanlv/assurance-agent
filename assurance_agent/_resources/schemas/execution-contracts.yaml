@@ -78,6 +78,21 @@ contracts:
       - change:inspect/**
     retryable_errors: [timeout, transport]
 
+  operation:generate-report:
+    handler: operation
+    reads:
+      - change:inspect/**
+      - change:execution/**
+      - change:review/**
+      - change:healing/**
+      - change:issues/snapshot.json
+      - project:qa/issues/problems.json
+    writes:
+      - change:report/**
+    authorization_writes:
+      - change:report/**
+    retryable_errors: []
+
   operation:allocate-healing-attempt:
     handler: operation
     reads:
@@ -462,6 +477,8 @@ contracts:
       - change:execution/**
       - change:review/**
       - change:healing/**
+      - change:issues/snapshot.json
+      - project:qa/issues/problems.json
     writes:
       - change:report/**
     authorization_writes:
@@ -474,12 +491,162 @@ contracts:
     reads:
       - change:**
       - project:qa/changes/**
+      - project:qa/issues/problems.json
     writes:
       - project:qa/archive/**
     authorization_writes:
       - project:qa/archive/**
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
+
+  # ---- issue lifecycle -----------------------------------------------------
+  skill:aa-issue-analyzer:
+    handler: agent
+    reads:
+      - change:inspect/observations.json
+      - change:inspect/issue-evidence-manifest.json
+      - change:execution/**
+      - change:cases/**
+      - change:facts/**
+      - change:review/**
+      - change:healing/**
+      - change:codegen/**
+      - project:qa/issues/problems.json
+      - project:qa/issues/review-queue.json
+    writes:
+      - change:inspect/issue-candidates.json
+      - change:inspect/issue-analysis-status.json
+    authorization_writes:
+      - change:inspect/issue-candidates.json
+      - change:inspect/issue-analysis-status.json
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
+    reconnect: true
+
+  skill:aa-issue-triage-advisor:
+    handler: agent
+    reads:
+      - project:qa/issues/problems.json
+      - project:qa/issues/review-queue.json
+      - change:issues/snapshot.json
+    writes:
+      - change:issue-review/**
+    authorization_writes:
+      - change:issue-review/**
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
+    reconnect: true
+
+  operation:collect-observations:
+    handler: operation
+    reads:
+      - change:execution/**
+      - change:cases/**
+      - change:facts/**
+      - change:review/**
+      - change:healing/**
+      - change:codegen/**
+    writes:
+      - change:inspect/observations.json
+      - change:inspect/issue-evidence-manifest.json
+      - change:issues/events.jsonl
+      - change:issues/snapshot.json
+    authorization_writes:
+      - change:inspect/observations.json
+      - change:inspect/issue-evidence-manifest.json
+      - change:issues/events.jsonl
+      - change:issues/snapshot.json
+    retryable_errors: [timeout, transport]
+
+  operation:record-empty-issue-analysis:
+    handler: operation
+    reads:
+      - change:inspect/issue-evidence-manifest.json
+    writes:
+      - change:inspect/issue-candidates.json
+      - change:inspect/issue-analysis-status.json
+    authorization_writes:
+      - change:inspect/issue-candidates.json
+      - change:inspect/issue-analysis-status.json
+    retryable_errors: []
+
+  operation:record-issue-analysis-failure:
+    handler: operation
+    reads:
+      - change:inspect/issue-evidence-manifest.json
+    writes:
+      - change:inspect/issue-candidates.json
+      - change:inspect/issue-analysis-status.json
+      - change:issues/events.jsonl
+      - change:issues/snapshot.json
+    authorization_writes:
+      - change:inspect/issue-candidates.json
+      - change:inspect/issue-analysis-status.json
+      - change:issues/events.jsonl
+      - change:issues/snapshot.json
+    retryable_errors: []
+
+  operation:record-project-sync-pending:
+    handler: operation
+    reads:
+      - change:inspect/issue-evidence-manifest.json
+      - change:inspect/issue-candidates.json
+    writes:
+      - change:issues/events.jsonl
+      - change:issues/snapshot.json
+    authorization_writes:
+      - change:issues/events.jsonl
+      - change:issues/snapshot.json
+    retryable_errors: []
+
+  operation:reconcile-issues:
+    handler: operation
+    reads:
+      - change:inspect/**
+      - change:issues/**
+      - project:qa/issues/**
+    writes:
+      - change:inspect/issue-reconcile-status.json
+      - change:issues/events.jsonl
+      - change:issues/snapshot.json
+      - project:qa/issues/**
+    authorization_writes:
+      - change:inspect/issue-reconcile-status.json
+      - change:issues/events.jsonl
+      - change:issues/snapshot.json
+      - project:qa/issues/**
+    synchronized:
+      - project:qa/issues/**
+    exclusive:
+      - project:issue-registry
+    retryable_errors: [conflict, transport]
+
+  operation:load-problem-review-context:
+    handler: operation
+    reads:
+      - project:qa/issues/problems.json
+      - project:qa/issues/review-queue.json
+    writes:
+      - change:issue-review/**
+    authorization_writes:
+      - change:issue-review/**
+    retryable_errors: []
+
+  operation:apply-problem-review:
+    handler: operation
+    reads:
+      - change:issue-review/**
+      - change:execution/**
+      - project:qa/issues/**
+    writes:
+      - change:issue-review/**
+      - project:qa/issues/**
+    authorization_writes:
+      - change:issue-review/**
+      - project:qa/issues/**
+    synchronized:
+      - project:qa/issues/**
+    exclusive:
+      - project:issue-registry
+    retryable_errors: [conflict, transport]
 
   # ---- retro workflow -------------------------------------------------------
   operation:retro-collect:
@@ -487,31 +654,214 @@ contracts:
     reads:
       - project:qa/archive/**
       - project:qa/changes/**
-      - project:qa/retro/**
+      - project:qa/issues/**
+      - project:eval/**
     writes:
-      - project:qa/retro/**
+      - project:qa/retro/*/context.json
     authorization_writes:
-      - project:qa/retro/**
-    retryable_errors: []
-
-  operation:retro-accept:
-    handler: operation
-    reads:
-      - project:qa/retro/**
-    writes:
-      - project:qa/retro/**
-    authorization_writes:
-      - project:qa/retro/**
+      - project:qa/retro/*/context.json
     retryable_errors: []
 
   skill:aa-retro:
     handler: agent
     reads:
-      - project:qa/retro/**
-      - project:qa/archive/**
+      - project:qa/retro/*/context.json
     writes:
-      - project:qa/retro/**
+      - project:qa/retro/*/proposal-candidates.json
+      - project:qa/retro/*/retro-summary.md
     authorization_writes:
-      - project:qa/retro/**
+      - project:qa/retro/*/proposal-candidates.json
+      - project:qa/retro/*/retro-summary.md
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
+
+  operation:reconcile-improvements:
+    handler: operation
+    # Static bounds: qa/retro/** covers current-run receipt writes under the
+    # synchronized publication rule; planner narrow_claims replaces reads/writes
+    # with concrete ${params.retro_id} paths so sibling runs stay out of scope.
+    reads:
+      - project:qa/retro/**
+      - project:qa/improvements/**
+    writes:
+      - project:qa/retro/**
+      - project:qa/improvements/**
+    authorization_writes:
+      - project:qa/retro/**
+      - project:qa/improvements/**
+    synchronized:
+      - project:qa/improvements/**
+      - project:qa/retro/**
+    exclusive:
+      - project:improvement-registry
+    retryable_errors: [conflict, transport]
+
+  operation:load-improvement-review-context:
+    handler: operation
+    reads:
+      - project:qa/improvements/improvements.json
+      - project:qa/improvements/review-queue.json
+    writes:
+      - change:improvement-review/**
+    authorization_writes:
+      - change:improvement-review/**
+    retryable_errors: []
+
+  operation:apply-improvement-review:
+    handler: operation
+    reads:
+      - change:improvement-review/**
+      - project:qa/improvements/**
+    writes:
+      - change:improvement-review/**
+      - project:qa/improvements/**
+    authorization_writes:
+      - change:improvement-review/**
+      - project:qa/improvements/**
+    synchronized:
+      - project:qa/improvements/**
+    exclusive:
+      - project:improvement-registry
+    retryable_errors: [conflict, transport]
+
+  # ---- Improvement delivery (Task 11): narrow per-delivery targets --------
+  operation:load-improvement-delivery:
+    handler: operation
+    reads:
+      - project:qa/improvements/improvements.json
+    writes:
+      - change:improvement-delivery/**
+    authorization_writes:
+      - change:improvement-delivery/**
+    retryable_errors: []
+
+  operation:evaluate-memory-improvement:
+    handler: operation
+    reads:
+      - project:qa/improvements/**
+      - project:.aa/memory/**
+      - project:eval/**
+    writes:
+      - project:qa/improvements/**
+      - project:eval/**
+    authorization_writes:
+      - project:qa/improvements/events.jsonl
+      - project:qa/improvements/improvements.json
+      - project:qa/improvements/review-queue.json
+      - project:eval/**
+    synchronized:
+      - project:qa/improvements/**
+    exclusive:
+      - project:improvement-registry
+    retryable_errors: [conflict, transport]
+
+  operation:apply-memory-improvement:
+    handler: operation
+    reads:
+      - project:qa/improvements/**
+      - project:.aa/memory/**
+    writes:
+      - project:qa/improvements/**
+      - project:.aa/memory/**
+    authorization_writes:
+      - project:qa/improvements/events.jsonl
+      - project:qa/improvements/improvements.json
+      - project:qa/improvements/review-queue.json
+      - project:.aa/memory/**
+    synchronized:
+      - project:qa/improvements/**
+    exclusive:
+      - project:improvement-registry
+    retryable_errors: [conflict, transport]
+
+  operation:rollback-memory-improvement:
+    handler: operation
+    reads:
+      - project:qa/improvements/**
+      - project:.aa/memory/**
+    writes:
+      - project:qa/improvements/**
+      - project:.aa/memory/**
+    authorization_writes:
+      - project:qa/improvements/events.jsonl
+      - project:qa/improvements/improvements.json
+      - project:qa/improvements/review-queue.json
+      - project:.aa/memory/**
+    synchronized:
+      - project:qa/improvements/**
+    exclusive:
+      - project:improvement-registry
+    retryable_errors: [conflict, transport]
+
+  operation:export-change-improvement:
+    handler: operation
+    reads:
+      - project:qa/improvements/**
+    writes:
+      - project:qa/improvements/**
+      - project:qa/improvements/drafts/**
+    authorization_writes:
+      - project:qa/improvements/events.jsonl
+      - project:qa/improvements/improvements.json
+      - project:qa/improvements/review-queue.json
+      - project:qa/improvements/drafts/**
+    synchronized:
+      - project:qa/improvements/**
+    exclusive:
+      - project:improvement-registry
+    retryable_errors: [conflict, transport]
+
+  operation:record-change-improvement-applied:
+    handler: operation
+    reads:
+      - project:qa/improvements/**
+      - project:qa/improvements/drafts/**
+    writes:
+      - project:qa/improvements/**
+    authorization_writes:
+      - project:qa/improvements/events.jsonl
+      - project:qa/improvements/improvements.json
+      - project:qa/improvements/review-queue.json
+    synchronized:
+      - project:qa/improvements/**
+    exclusive:
+      - project:improvement-registry
+    retryable_errors: [conflict, transport]
+
+  operation:export-knowledge-improvement:
+    handler: operation
+    reads:
+      - project:qa/improvements/**
+      - project:qa/retro/*/context.json
+      - project:qa/issues/**
+    writes:
+      - project:qa/improvements/**
+      - project:qa/improvements/knowledge-delta/**
+    authorization_writes:
+      - project:qa/improvements/events.jsonl
+      - project:qa/improvements/improvements.json
+      - project:qa/improvements/review-queue.json
+      - project:qa/improvements/knowledge-delta/**
+    synchronized:
+      - project:qa/improvements/**
+    exclusive:
+      - project:improvement-registry
+    retryable_errors: [conflict, transport]
+
+  operation:record-knowledge-improvement-applied:
+    handler: operation
+    reads:
+      - project:qa/improvements/**
+      - project:qa/improvements/knowledge-delta/**
+      - repo:.aa/data-knowledge.yaml
+    writes:
+      - project:qa/improvements/**
+    authorization_writes:
+      - project:qa/improvements/events.jsonl
+      - project:qa/improvements/improvements.json
+      - project:qa/improvements/review-queue.json
+    synchronized:
+      - project:qa/improvements/**
+    exclusive:
+      - project:improvement-registry
+    retryable_errors: [conflict, transport]

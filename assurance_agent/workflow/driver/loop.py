@@ -170,6 +170,27 @@ def run_workflow_loop(
         )
         context = runtime_context_for(project_root, change_id, params, parent_session_id)
         latest = bundle.runtime.latest_root_invocation(entrypoint)
+
+        # Determine whether to start fresh or resume based on the entrypoint's
+        # restart policy.  ``once`` entrypoints that have already completed
+        # receive a clear EXIT_ERROR rather than silently re-returning completed.
+        # ``repeatable`` entrypoints start a new invocation after each completion.
+        if latest is not None:
+            ep = bundle.compiled.entrypoints.get(entrypoint)
+            restart_policy = ep.restart if ep is not None else "once"
+            latest_terminal = bundle.runtime.invocation_terminal(latest)
+            if latest_terminal is not None:
+                # There is a previous completed/failed/stopped invocation.
+                if restart_policy == "once":
+                    return finish(
+                        EXIT_ERROR,
+                        f"graph already completed (invocation {latest}); refuse restart",
+                        "failed",
+                    )
+                else:
+                    # repeatable: start a fresh invocation instead of resuming.
+                    latest = None
+
         result = (
             bundle.runtime.run(bundle.compiled, entrypoint, context)
             if latest is None

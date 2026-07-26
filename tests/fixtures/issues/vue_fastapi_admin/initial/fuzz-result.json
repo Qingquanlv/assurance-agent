@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0",
+  "change_id": "CH-VFA-ACCEPT",
+  "batch_id": "20260725-120000",
+  "target": "fuzz",
+  "status": "failed",
+  "command": "uv run pytest tests/fuzz/test_dept_fuzz.py",
+  "source": {
+    "framework": "pytest",
+    "raw_log": "execution/runs/20260725-120000/raw/fuzz.log"
+  },
+  "total": 1,
+  "passed": 0,
+  "failed": 1,
+  "skipped": 0,
+  "cases": [
+    {
+      "case_id": "TC_FUZZ_DEPT_500",
+      "status": "failed",
+      "file": "tests/fuzz/test_dept_fuzz.py",
+      "test_name": "test_fuzz_dept_empty_name_server_error",
+      "duration_ms": 256,
+      "message": "HTTP 500 Internal Server Error on POST /api/v1/dept",
+      "raw_log_ref": "execution/runs/20260725-120000/raw/fuzz.log",
+      "trace": "",
+      "screenshot": "",
+      "video": ""
+    }
+  ],
+  "unmapped_tests": []
+}

@@ -13,8 +13,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Literal
@@ -47,6 +48,7 @@ from assurance_agent.workflow.graph.compiler import canonical_digest
 from assurance_agent.workflow.graph.contracts import (
     ExecutionContractCatalog,
     ResourceClaims,
+    ResourcePath,
     claims_conflict,
 )
 from assurance_agent.workflow.graph.leases import (
@@ -67,6 +69,15 @@ from assurance_agent.workflow.graph.models import (
     WaveResult,
 )
 from assurance_agent.workflow.graph.planner import apply_state_updates
+from assurance_agent.workflow.graph.project_locks import (
+    ProjectLockPathError,
+    ProjectLockManager,
+    ProjectPublication,
+    ProjectPublicationError,
+    ProjectPublicationStore,
+    ProjectResourceConflict,
+    ProjectResourceLockManager,
+)
 from assurance_agent.workflow.graph.schema_v2 import StateDef
 from assurance_agent.workflow.graph.task_runner import NodeRunner
 from assurance_agent.workflow.graph.workspace import (
@@ -111,6 +122,31 @@ def _resources_conflict(left: ResourceClaims, right: ResourceClaims) -> bool:
     return claims_conflict(left, right)
 
 
+def _synchronized_paths_for_wave(
+    wave: Sequence[ExecutableTask],
+) -> tuple[ResourcePath, ...]:
+    return tuple(
+        sorted(
+            {path for task in wave for path in task.resources.synchronized},
+            key=lambda path: (path.root, path.pattern),
+        )
+    )
+
+
+def _project_lock_tokens_for_wave(wave: Sequence[ExecutableTask]) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                token
+                for task in wave
+                if task.resources.synchronized
+                for token in task.resources.exclusive
+                if token.startswith("project:")
+            }
+        )
+    )
+
+
 @dataclass
 class _PreparedAttempt:
     task: ExecutableTask
@@ -144,7 +180,11 @@ class Scheduler:
         contracts: ExecutionContractCatalog | None = None,
         state_defs: Mapping[str, StateDef] | None = None,
         lease_registry: LeaseRegistry | None = None,
+        project_lock_manager: ProjectLockManager | None = None,
+        project_lock_timeout_seconds: float = 5.0,
     ) -> None:
+        if project_lock_timeout_seconds < 0:
+            raise ValueError("project_lock_timeout_seconds must be non-negative")
         self._checkpoints = checkpoints
         self._objects = object_store
         self._clock = clock or SystemClock()
@@ -154,6 +194,53 @@ class Scheduler:
         self._contracts = contracts
         self._state_defs = dict(state_defs or {})
         self._leases = lease_registry
+        self._project_locks = project_lock_manager
+        self._project_lock_timeout_seconds = project_lock_timeout_seconds
+        self._project_lock_scope_owner = object()
+        self._active_project_lock_scopes: set[object] = set()
+
+    @contextmanager
+    def _project_lock_scope(
+        self,
+        context: RuntimeContext,
+        tokens: Sequence[str],
+    ) -> Iterator[RuntimeContext]:
+        """Acquire canonical project tokens once per nested runtime call stack.
+
+        Graph nodes carry descendant footprints so the outermost scheduler can
+        reserve every project token before materializing its task workspace.
+        Descendant schedulers must therefore reuse that live reservation rather
+        than opening a second, self-conflicting ``flock`` handle.
+        """
+        ordered = tuple(sorted(set(tokens)))
+        inherited_scope = context.inherited_project_lock_scope(self._project_lock_scope_owner)
+        if inherited_scope is not None and inherited_scope[0] in self._active_project_lock_scopes:
+            _, inherited_tokens = inherited_scope
+            inherited = frozenset(inherited_tokens)
+            missing = sorted(set(ordered) - inherited)
+            if missing:
+                raise SchedulerError(
+                    "nested synchronized wave requested tokens outside its ancestor footprint: "
+                    + ", ".join(missing)
+                )
+            yield context
+            return
+
+        manager = self._project_locks or ProjectResourceLockManager(
+            context.project_root,
+            clock=self._clock,
+        )
+        with manager.acquire(ordered, timeout_seconds=self._project_lock_timeout_seconds):
+            nonce = object()
+            self._active_project_lock_scopes.add(nonce)
+            try:
+                yield context.with_project_lock_scope(
+                    self._project_lock_scope_owner,
+                    nonce,
+                    ordered,
+                )
+            finally:
+                self._active_project_lock_scopes.discard(nonce)
 
     def execute(
         self,
@@ -163,8 +250,62 @@ class Scheduler:
     ) -> WaveResult:
         if self._workspaces is None or self._runner is None:
             raise SchedulerError("Scheduler requires workspace_backend and node_runner")
-        leases = self._leases or LeaseRegistry(context.change_dir)
         wave = select_wave(plan.tasks, max_parallel_tasks=self._max_parallel_tasks)
+        synchronized_paths = _synchronized_paths_for_wave(wave)
+        if not synchronized_paths:
+            return self._execute_wave(
+                plan,
+                projection,
+                context,
+                wave=wave,
+                base_tree_id=projection.current_tree_id,
+                synchronized_paths=(),
+            )
+
+        tokens = _project_lock_tokens_for_wave(wave)
+        if not tokens:
+            raise SchedulerError("synchronized wave has no project:* exclusive token")
+        try:
+            with self._project_lock_scope(context, tokens) as locked_context:
+                ProjectPublicationStore(locked_context.project_root).assert_no_prepared(tokens)
+                overlay_tree_id = self._objects.overlay_synchronized_paths(
+                    projection.current_tree_id,
+                    locked_context.project_root,
+                    synchronized_paths,
+                )
+                return self._execute_wave(
+                    plan,
+                    projection,
+                    locked_context,
+                    wave=wave,
+                    base_tree_id=overlay_tree_id,
+                    synchronized_paths=synchronized_paths,
+                )
+        except ProjectResourceConflict as exc:
+            return self._persist_project_lock_conflict(
+                plan=plan,
+                projection=projection,
+                context=context,
+                wave=wave,
+                message=str(exc),
+                blocked_token=exc.token,
+            )
+        except ProjectLockPathError as exc:
+            raise SchedulerError(str(exc)) from None
+        except ProjectPublicationError as exc:
+            raise SchedulerError(str(exc)) from None
+
+    def _execute_wave(
+        self,
+        plan: PlanResult,
+        projection: GraphProjection,
+        context: RuntimeContext,
+        *,
+        wave: tuple[ExecutableTask, ...],
+        base_tree_id: str,
+        synchronized_paths: tuple[ResourcePath, ...],
+    ) -> WaveResult:
+        leases = self._leases or LeaseRegistry(context.change_dir)
 
         succeeded: list[str] = []
         failed: list[str] = []
@@ -199,7 +340,19 @@ class Scheduler:
                 if stop_submitting:
                     break
 
-                prepared = self._begin_attempt(task, plan, projection, context, leases)
+                if synchronized_paths:
+                    prepared = self._begin_attempt(
+                        task,
+                        plan,
+                        projection,
+                        context,
+                        leases,
+                        base_tree_id=base_tree_id,
+                    )
+                else:
+                    # Preserve the legacy call shape for fault-injection wrappers and
+                    # ordinary Change-local execution.
+                    prepared = self._begin_attempt(task, plan, projection, context, leases)
                 if prepared is None:
                     decision = next_attempt_decision(task=task, projection=projection, now=self._clock.now())
                     if decision.kind == "wait" and decision.next_retry_at is not None:
@@ -252,6 +405,8 @@ class Scheduler:
                     projection=projection,
                     context=context,
                     succeeded_ids=succeeded,
+                    base_tree_id=base_tree_id,
+                    synchronized_paths=synchronized_paths,
                 )
             except (WorkspaceError, ProgressionError, SchedulerError, ValueError):
                 # Update 失败：保留 pending write-set，不推断成功物化。
@@ -265,6 +420,84 @@ class Scheduler:
             stopped=tuple(stopped),
             pending_write_set_ids=tuple(pending_writes),
             retry_at=min(retry_ats) if retry_ats else None,
+        )
+
+    def _persist_project_lock_conflict(
+        self,
+        *,
+        plan: PlanResult,
+        projection: GraphProjection,
+        context: RuntimeContext,
+        wave: tuple[ExecutableTask, ...],
+        message: str,
+        blocked_token: str | None,
+    ) -> WaveResult:
+        if blocked_token is None:
+            task = next((candidate for candidate in wave if candidate.resources.synchronized), None)
+        else:
+            task = next(
+                (
+                    candidate
+                    for candidate in wave
+                    if candidate.resources.synchronized and blocked_token in candidate.resources.exclusive
+                ),
+                None,
+            )
+        if task is None:
+            detail = f" for token {blocked_token}" if blocked_token is not None else ""
+            raise SchedulerError(f"project lock conflict{detail} without an owning synchronized task")
+        decision = next_attempt_decision(task=task, projection=projection, now=self._clock.now())
+        if decision.kind != "start" or decision.attempt_number is None:
+            retry_at = decision.next_retry_at if decision.kind == "wait" else None
+            failed = (task.task_id,) if decision.kind in ("failed", "exhausted") else ()
+            return WaveResult(
+                superstep_id=plan.superstep_id,
+                failed=failed,
+                retry_at=retry_at,
+            )
+
+        attempt_number = decision.attempt_number
+        attempt_id = f"{task.task_id}-a{attempt_number}"
+        started_at = self._clock.now()
+        lease_seconds = max(
+            task.timeout_policy.heartbeat_seconds * 3.0,
+            task.timeout_policy.heartbeat_seconds + 1.0,
+        )
+        lease_expires_at = (started_at + timedelta(seconds=lease_seconds)).isoformat()
+        with transaction(context.change_dir) as txn:
+            txn.append_strict(
+                TaskAttemptStartedEvent(
+                    type="task_attempt_started",
+                    invocation_id=task.invocation_id,
+                    checkpoint_ns=task.checkpoint_ns,
+                    superstep_id=plan.superstep_id,
+                    task_id=task.task_id,
+                    attempt_id=attempt_id,
+                    node_id=task.node_id,
+                    input_sha256=task.input_sha256,
+                    graph_digest=projection.graph_digest,
+                    contract_digest=task.contract_digest,
+                    attempt_number=attempt_number,
+                    lease_expires_at=lease_expires_at,
+                    started_at=started_at.isoformat(),
+                )
+            )
+        settled = self._persist_failure(
+            prepared=_PreparedAttempt(
+                task=task,
+                attempt_id=attempt_id,
+                attempt_number=attempt_number,
+                workspace=None,
+            ),
+            plan=plan,
+            context=context,
+            error_kind="conflict",
+            message=message,
+        )
+        return WaveResult(
+            superstep_id=plan.superstep_id,
+            failed=(task.task_id,),
+            retry_at=settled.retry_at,
         )
 
     @staticmethod
@@ -301,6 +534,8 @@ class Scheduler:
         projection: GraphProjection,
         context: RuntimeContext,
         leases: LeaseRegistry,
+        *,
+        base_tree_id: str | None = None,
     ) -> _PreparedAttempt | None:
         assert self._workspaces is not None
         existing = projection.tasks.get(task.task_id)
@@ -351,9 +586,10 @@ class Scheduler:
 
         workspace = self._workspaces.create(
             task_id=task.task_id,
-            base_tree_id=projection.current_tree_id,
+            base_tree_id=base_tree_id or projection.current_tree_id,
             store=self._objects,
             side_effect_free=self._is_side_effect_free(task),
+            claims=task.resources,
         )
         leases.upsert(
             new_lease(
@@ -500,6 +736,7 @@ class Scheduler:
                             task=task,
                             interrupt=result.interrupt,
                             event_schema_version=schema_version,
+                            checkpoint_ns=result.interrupt.checkpoint_ns,
                         )
                     )
             return _SettledAttempt(task_id=task.task_id, status="interrupted", write_set_id=write_set_id)
@@ -519,6 +756,9 @@ class Scheduler:
         result: TaskResult,
         workspace: TaskWorkspace,
     ) -> str | None:
+        if result.status == "interrupted" and result.write_set_id is None:
+            # Nested interrupts publish an audited view, not a partial task write-set.
+            return None
         if result.write_set_id is not None:
             return result.write_set_id
         if self._is_side_effect_free(task):
@@ -643,7 +883,10 @@ class Scheduler:
         projection: GraphProjection,
         context: RuntimeContext,
         succeeded_ids: list[str],
+        base_tree_id: str | None = None,
+        synchronized_paths: tuple[ResourcePath, ...] = (),
     ) -> list[str]:
+        effective_base_tree_id = base_tree_id or projection.current_tree_id
         live = project_invocation(context.change_dir, projection.invocation_id)
         ordered_ids = sorted(succeeded_ids)
         write_sets = []
@@ -660,13 +903,53 @@ class Scheduler:
             if task_proj.state_updates:
                 state_pairs.append((task_id, task_proj.state_updates))
 
+        recovered_paths = tuple(
+            sorted(
+                {
+                    ResourcePath.parse(path)
+                    for write_set in write_sets
+                    for path in write_set.synchronized_paths
+                },
+                key=lambda path: (path.root, path.pattern),
+            )
+        )
+        if recovered_paths and not synchronized_paths:
+            recovered_tokens = tuple(
+                sorted({token for write_set in write_sets for token in write_set.project_exclusive_tokens})
+            )
+            if not recovered_tokens:
+                raise WorkspaceError("pending synchronized Update lacks project exclusive token metadata")
+            try:
+                with self._project_lock_scope(context, recovered_tokens) as locked_context:
+                    refreshed_base = self._objects.overlay_synchronized_paths(
+                        projection.current_tree_id,
+                        locked_context.project_root,
+                        recovered_paths,
+                    )
+                    if {write_set.base_tree_id for write_set in write_sets} != {refreshed_base}:
+                        raise WorkspaceError(
+                            "synchronized live resource changed before pending Update replay"
+                        )
+                    return self._commit_wave(
+                        plan=plan,
+                        projection=projection,
+                        context=locked_context,
+                        succeeded_ids=succeeded_ids,
+                        base_tree_id=refreshed_base,
+                        synchronized_paths=recovered_paths,
+                    )
+            except ProjectResourceConflict as exc:
+                raise SchedulerError(str(exc)) from None
+            except ProjectLockPathError as exc:
+                raise SchedulerError(str(exc)) from None
+
         committed_task_ids = sorted(commit_eligible)
 
         if write_sets:
             target_tree_id = self._objects.merge_write_sets(write_sets)
             committed_ids = [ws.write_set_id for ws in sorted(write_sets, key=lambda item: item.task_id)]
         else:
-            target_tree_id = projection.current_tree_id
+            target_tree_id = effective_base_tree_id
             committed_ids = []
 
         next_state = apply_state_updates(self._state_defs, live.state_values, state_pairs)
@@ -691,6 +974,35 @@ class Scheduler:
             state_values=next_state,
             committed_task_ids=committed_task_ids,
         )
+        publication: ProjectPublication | None = None
+        publication_store: ProjectPublicationStore | None = None
+        publication_status: Literal["prepared", "applied"] | None = None
+        if synchronized_paths:
+            publication_tokens = tuple(
+                sorted({token for write_set in write_sets for token in write_set.project_exclusive_tokens})
+            )
+            if not publication_tokens:
+                raise SchedulerError("synchronized Update lacks project publication tokens")
+            publication = ProjectPublication(
+                publication_id=checkpoint_id,
+                invocation_id=projection.invocation_id,
+                write_set_ids=tuple(committed_ids),
+                tokens=publication_tokens,
+            )
+            publication_store = ProjectPublicationStore(context.project_root)
+            try:
+                publication_store.assert_no_prepared(
+                    publication_tokens,
+                    allowed_publication_id=checkpoint_id,
+                )
+                # Write-ahead reservation closes the commit/apply/ack crash windows:
+                # later owners cannot advance these tokens until this publication is
+                # durably acknowledged after exact targeted apply.
+                publication_status = publication_store.prepare(publication)
+            except (ProjectLockPathError, ProjectPublicationError) as exc:
+                raise SchedulerError(str(exc)) from None
+            except ProjectResourceConflict as exc:
+                raise SchedulerError(str(exc)) from None
         tentative = live.model_copy(
             update={
                 "latest_checkpoint_id": checkpoint_id,
@@ -708,12 +1020,85 @@ class Scheduler:
             txn.set_workflow_state_projection(render_workflow_state_yaml(tentative))
 
         if write_sets:
-            self._objects.apply_tree(
-                context.project_root,
-                target_tree_id,
-                base_tree_id=projection.current_tree_id,
-            )
+            if synchronized_paths:
+                assert publication is not None
+                assert publication_store is not None
+                if publication_status != "applied":
+                    self._objects.apply_write_sets_to_synchronized_paths(
+                        context.project_root,
+                        write_sets,
+                        synchronized_paths,
+                    )
+                    publication_store.acknowledge(publication)
+            else:
+                self._objects.apply_tree(
+                    context.project_root,
+                    target_tree_id,
+                    base_tree_id=effective_base_tree_id,
+                )
         return committed_ids
+
+    def repair_committed_write_sets(
+        self,
+        *,
+        context: RuntimeContext,
+        invocation_id: str,
+        publication_id: str,
+        write_set_ids: Sequence[str],
+    ) -> bool:
+        """Replay one committed synchronized publication under its durable lock metadata.
+
+        ``superstep_committed`` is intentionally durable before canonical publication.
+        A recovery loop therefore cannot infer completion from the tree pointer and must
+        replay the exact write-set entries. The operation is idempotent for fully and
+        partially published Updates and never walks or repairs unrelated live paths.
+        """
+        write_sets = [self._objects.load_write_set(write_set_id) for write_set_id in write_set_ids]
+        synchronized_paths = tuple(
+            sorted(
+                {
+                    ResourcePath.parse(path)
+                    for write_set in write_sets
+                    for path in write_set.synchronized_paths
+                },
+                key=lambda path: (path.root, path.pattern),
+            )
+        )
+        if not synchronized_paths:
+            return False
+        tokens = tuple(
+            sorted({token for write_set in write_sets for token in write_set.project_exclusive_tokens})
+        )
+        if not tokens:
+            raise SchedulerError("committed synchronized Update lacks project lock metadata")
+        publication = ProjectPublication(
+            publication_id=publication_id,
+            invocation_id=invocation_id,
+            write_set_ids=tuple(write_set_ids),
+            tokens=tokens,
+        )
+        try:
+            with self._project_lock_scope(context, tokens) as locked_context:
+                publication_store = ProjectPublicationStore(locked_context.project_root)
+                publication_store.assert_no_prepared(
+                    tokens,
+                    allowed_publication_id=publication_id,
+                )
+                publication_status = publication_store.prepare(publication)
+                if publication_status != "applied":
+                    self._objects.apply_write_sets_to_synchronized_paths(
+                        locked_context.project_root,
+                        write_sets,
+                        synchronized_paths,
+                    )
+                    publication_store.acknowledge(publication)
+        except ProjectResourceConflict as exc:
+            raise SchedulerError(str(exc)) from None
+        except ProjectLockPathError as exc:
+            raise SchedulerError(str(exc)) from None
+        except ProjectPublicationError as exc:
+            raise SchedulerError(str(exc)) from None
+        return True
 
     def _is_side_effect_free(self, task: ExecutableTask) -> bool:
         if self._contracts is not None:

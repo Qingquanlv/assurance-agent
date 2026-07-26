@@ -4,10 +4,12 @@ from pathlib import Path
 
 from assurance_agent.artifacts.models import CoverageThreshold
 from assurance_agent.workflow.execution import runners
+from assurance_agent.workflow.execution.exec_config import PerfConfig
 from assurance_agent.workflow.execution.runners import (
     build_scenario_verdicts,
     parse_coverage_result,
     parse_locust_stats,
+    run_performance_target,
     run_pytest_target,
 )
 
@@ -101,7 +103,9 @@ def test_run_pytest_target_scoped_to_test_paths(tmp_path: Path, monkeypatch) -> 
     assert "tests/api" not in captured_args[0]
 
 
-def test_run_pytest_target_missing_mapped_files_skipped_no_subprocess(tmp_path: Path, monkeypatch) -> None:
+def test_run_pytest_target_missing_mapped_files_fails_closed_no_subprocess(
+    tmp_path: Path, monkeypatch
+) -> None:
     (tmp_path / "tests" / "api").mkdir(parents=True)
 
     def boom(*a, **k):
@@ -117,8 +121,79 @@ def test_run_pytest_target_missing_mapped_files_skipped_no_subprocess(tmp_path: 
         test_dir="tests/api",
         test_paths=["tests/api/test_missing.py"],
     )
-    assert result.status == "skipped"
-    assert "test_missing.py" in result.unmapped_tests[0].message
+    assert result.status == "failed"
+    assert result.total == 1
+    assert result.failed == 1
+    assert "test_missing.py" in result.cases[0].message
+
+
+def test_run_pytest_target_partial_mapping_fails_closed_no_subprocess(tmp_path: Path, monkeypatch) -> None:
+    api_dir = tmp_path / "tests" / "api"
+    api_dir.mkdir(parents=True)
+    (api_dir / "test_dept.py").write_text("", encoding="utf-8")
+
+    def boom(*args, **kwargs):
+        raise AssertionError("subprocess must not run against a partial mapped file set")
+
+    monkeypatch.setattr(runners.subprocess, "run", boom)
+    result = run_pytest_target(
+        project_root=tmp_path,
+        batch_dir=tmp_path / "batch",
+        change_id="CH-1",
+        batch_id="b1",
+        target="api",
+        test_dir="tests/api",
+        test_paths=["tests/api/test_dept.py", "tests/api/test_missing.py"],
+    )
+
+    assert result.status == "failed"
+    assert "test_missing.py" in result.cases[0].message
+
+
+def test_run_pytest_target_scoped_empty_fails_closed_no_subprocess(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "tests" / "fuzz").mkdir(parents=True)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("subprocess must not run for a scoped-empty current plan")
+
+    monkeypatch.setattr(runners.subprocess, "run", boom)
+    result = run_pytest_target(
+        project_root=tmp_path,
+        batch_dir=tmp_path / "batch",
+        change_id="CH-1",
+        batch_id="b1",
+        target="fuzz",
+        test_dir="tests/fuzz",
+        test_paths=[],
+    )
+
+    assert result.status == "failed"
+    assert result.failed == 1
+    assert "no executable test_*.py" in result.cases[0].message
+
+
+def test_run_pytest_target_rejects_traversal_without_subprocess(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "tests" / "fuzz").mkdir(parents=True)
+    outside = tmp_path / "tests" / "api"
+    outside.mkdir()
+    (outside / "test_history.py").write_text("", encoding="utf-8")
+
+    def boom(*args, **kwargs):
+        raise AssertionError("subprocess must not run for an escaped mapped path")
+
+    monkeypatch.setattr(runners.subprocess, "run", boom)
+    result = run_pytest_target(
+        project_root=tmp_path,
+        batch_dir=tmp_path / "batch",
+        change_id="CH-1",
+        batch_id="b1",
+        target="fuzz",
+        test_dir="tests/fuzz",
+        test_paths=["tests/fuzz/../api/test_history.py"],
+    )
+
+    assert result.status == "failed"
+    assert "test_history.py" in result.cases[0].message
 
 
 def test_run_pytest_target_missing_dir_is_skipped_no_subprocess(tmp_path: Path, monkeypatch) -> None:
@@ -237,3 +312,95 @@ def test_build_scenario_verdicts_accepts_dict_endpoint() -> None:
     assert len(verdicts) == 1
     assert verdicts[0].endpoint == "GET /api/v1/user/list"
     assert verdicts[0].verdict == "PASS"
+
+
+def test_run_performance_target_only_executes_change_mapped_locustfiles(tmp_path: Path, monkeypatch) -> None:
+    perf_dir = tmp_path / "tests" / "perf"
+    perf_dir.mkdir(parents=True)
+    dept = perf_dir / "locustfile_dept.py"
+    user = perf_dir / "locustfile_user.py"
+    dept.write_text("", encoding="utf-8")
+    user.write_text("", encoding="utf-8")
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    change_dir.mkdir(parents=True)
+    monkeypatch.setattr(
+        runners,
+        "load_perf_scenarios",
+        lambda _change_dir: [
+            {
+                "capability": "dept-list",
+                "endpoint": "/api/v1/dept/list",
+                "thresholds": {"p95_ms": 500, "error_rate_max": 0.01},
+            }
+        ],
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        prefix = Path(args[args.index("--csv") + 1])
+        prefix.with_name(prefix.name + "_stats.csv").write_text(
+            "Type,Name,Request Count,Failure Count,Median Response Time,95%\nGET,dept-list,10,0,20,30\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(runners.subprocess, "run", fake_run)
+
+    result = run_performance_target(
+        project_root=tmp_path,
+        change_dir=change_dir,
+        batch_dir=tmp_path / "batch",
+        change_id="CH-1",
+        batch_id="b1",
+        perf_config=PerfConfig(enabled=True),
+        test_paths=["tests/perf/locustfile_dept.py"],
+    )
+
+    assert result.status == "PASS"
+    assert len(calls) == 1
+    assert str(dept) in calls[0]
+    assert str(user) not in calls[0]
+
+
+def test_run_performance_target_fails_closed_when_any_mapped_locustfile_is_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    perf_dir = tmp_path / "tests" / "perf"
+    perf_dir.mkdir(parents=True)
+    (perf_dir / "locustfile_dept.py").write_text("", encoding="utf-8")
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    change_dir.mkdir(parents=True)
+    monkeypatch.setattr(
+        runners,
+        "load_perf_scenarios",
+        lambda _change_dir: [
+            {
+                "capability": "dept-list",
+                "endpoint": "/api/v1/dept/list",
+                "thresholds": {"p95_ms": 500, "error_rate_max": 0.01},
+            }
+        ],
+    )
+
+    def boom(*args, **kwargs):
+        raise AssertionError("Locust must not run against a partial mapped file set")
+
+    monkeypatch.setattr(runners.subprocess, "run", boom)
+
+    result = run_performance_target(
+        project_root=tmp_path,
+        change_dir=change_dir,
+        batch_dir=tmp_path / "batch",
+        change_id="CH-1",
+        batch_id="b1",
+        perf_config=PerfConfig(enabled=True),
+        test_paths=[
+            "tests/perf/locustfile_dept.py",
+            "tests/perf/locustfile_missing.py",
+        ],
+    )
+
+    assert result.available is True
+    assert result.status == "FAIL"
+    assert "locustfile_missing.py" in (tmp_path / "batch/raw/performance.log").read_text()

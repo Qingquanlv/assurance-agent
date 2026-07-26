@@ -311,6 +311,26 @@ def _agent_handler(project: Path, invoker: RecordingInvoker) -> AgentHandler:
     )
 
 
+def _synchronized_agent_handler(project: Path, invoker: RecordingInvoker) -> AgentHandler:
+    catalog = parse_execution_contracts(
+        'schema_version: "1"\n'
+        "contracts:\n"
+        "  skill:aa-explore:\n"
+        "    handler: agent\n"
+        "    reads: [project:qa/issues/**]\n"
+        "    writes: [project:qa/**]\n"
+        "    authorization_writes: [project:qa/**]\n"
+        "    synchronized: [project:qa/issues/**]\n"
+        "    exclusive: [project:issue-registry]\n"
+    )
+    return AgentHandler(
+        invoker,
+        _store(project),
+        contracts=catalog,
+        compiled=_compiled(_AGENT_GRAPH),
+    )
+
+
 def test_agent_handler_builds_workspace_request_and_freezes(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     workspace = _workspace(project)
@@ -338,6 +358,96 @@ def test_agent_handler_builds_workspace_request_and_freezes(tmp_path: Path) -> N
     # "discover" the canonical project root and resolve outputs outside the sandbox.
     assert str(workspace.root) in request.prompt
     assert "IS this task's project root" in request.prompt
+
+
+def test_aa_retro_agent_prompt_is_current_run_only(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    workspace = _workspace(project)
+    invoker = RecordingInvoker(write="qa/retro/retro-1/proposal-candidates.json")
+    catalog = parse_execution_contracts(
+        'schema_version: "1"\n'
+        "contracts:\n"
+        "  skill:aa-retro:\n"
+        "    handler: agent\n"
+        "    writes: [project:qa/retro/**]\n"
+        "    authorization_writes: [project:qa/retro/**]\n"
+    )
+    graph = """
+    main:
+      max_supersteps: 5
+      nodes:
+        propose:
+          uses: skill:aa-retro
+          outputs: [project:qa/retro/retro-1/proposal-candidates.json]
+      edges:
+        - {from: START, to: propose}
+        - {from: propose, to: END}
+    """
+    handler = AgentHandler(
+        invoker,
+        _store(project),
+        contracts=catalog,
+        compiled=_compiled(graph),
+    )
+    result = handler.execute(
+        _task("skill:aa-retro", node_id="propose"),
+        workspace,
+        _context(project, params={"retro_id": "retro-1"}),
+    )
+    assert result.status == "succeeded"
+    prompt = invoker.requests[0].prompt
+    assert "Read only qa/retro/retro-1/context.json" in prompt
+    assert "proposal-candidates.json" in prompt
+    assert "schema_version='2'" in prompt
+    assert "proposals.json" not in prompt
+    assert "finding_kind" not in prompt
+    assert "Do not read any other Retro run" in prompt
+
+
+def test_agent_fan_out_preserves_synchronized_claims_in_frozen_write_set(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    workspace = _workspace(project)
+    invoker = RecordingInvoker(write="qa/issues/ISSUE-2.json")
+    handler = _synchronized_agent_handler(project, invoker)
+    task = _task(
+        "skill:aa-explore",
+        node_id="explore",
+        input_payload={
+            "resources": {"writes": ["project:qa/issues/**"]},
+            "outputs": ["project:qa/issues/ISSUE-2.json"],
+        },
+    )
+
+    result = handler.execute(task, workspace, _context(project))
+
+    assert result.status == "succeeded"
+    assert result.write_set_id is not None
+    write_set = _store(project).load_write_set(result.write_set_id)
+    assert write_set.synchronized_paths == ("project:qa/issues/**",)
+    assert write_set.project_exclusive_tokens == ("project:issue-registry",)
+
+
+def test_agent_fan_out_cannot_narrow_authorization_outside_synchronized_prefix(
+    tmp_path: Path,
+) -> None:
+    project = _make_project(tmp_path)
+    workspace = _workspace(project)
+    invoker = RecordingInvoker(write="qa/other/result.json")
+    handler = _synchronized_agent_handler(project, invoker)
+    task = _task(
+        "skill:aa-explore",
+        node_id="explore",
+        input_payload={
+            "resources": {"writes": ["project:qa/other/**"]},
+            "outputs": ["project:qa/other/result.json"],
+        },
+    )
+
+    result = handler.execute(task, workspace, _context(project))
+
+    assert result.status == "failed"
+    assert result.error_kind == "forbidden_write"
+    assert "synchronized write outside declared prefixes" in (result.error or "")
 
 
 def test_build_node_prompt_pins_absolute_workspace_root() -> None:
@@ -403,6 +513,8 @@ def test_agent_for_skill_routes_every_workflow_skill() -> None:
         "aa-inspect": "aa-reviewer",
         "aa-report-generator": "aa-reporter",
         "aa-archive": "aa-archiver",
+        "aa-issue-analyzer": "aa-doc-author",
+        "aa-issue-triage-advisor": "aa-doc-author",
     }
     for skill, agent in expected.items():
         assert agent_for_skill(skill) == agent, skill
@@ -468,9 +580,32 @@ def test_default_operations_registry_has_exact_keys() -> None:
         "operation:allocate-healing-attempt",
         "operation:record-healing-status",
         "operation:inspect",
+        "operation:generate-report",
         "operation:stop",
         "operation:retro-collect",
-        "operation:retro-accept",
+        "operation:reconcile-improvements",
+        "operation:retro-accept",  # half-cutover alias
+        "operation:collect-observations",
+        "operation:record-empty-issue-analysis",
+        "operation:record-issue-analysis-failure",
+        "operation:record-project-sync-pending",
+        # Issue lifecycle (Task 9-11)
+        "operation:reconcile-issues",
+        # Issue review (Task 12)
+        "operation:load-problem-review-context",
+        "operation:apply-problem-review",
+        # Improvement review (retro/improvement separation Task 10)
+        "operation:load-improvement-review-context",
+        "operation:apply-improvement-review",
+        # Improvement delivery (retro/improvement separation Task 11)
+        "operation:load-improvement-delivery",
+        "operation:evaluate-memory-improvement",
+        "operation:apply-memory-improvement",
+        "operation:rollback-memory-improvement",
+        "operation:export-change-improvement",
+        "operation:record-change-improvement-applied",
+        "operation:export-knowledge-improvement",
+        "operation:record-knowledge-improvement-applied",
     }
 
 

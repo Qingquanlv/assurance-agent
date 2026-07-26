@@ -11,10 +11,11 @@ GraphProjection 等）是 strict ledger 的纯函数输出，frozen + extra="for
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Literal, Protocol, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
+from assurance_agent.workflow.core.graph_events import TaskRecoveryRoutedEvent
 from assurance_agent.workflow.core.graph_types import ErrorKind
 from assurance_agent.workflow.graph.contracts import ResourceClaims
 from assurance_agent.workflow.graph.schema_v2 import (
@@ -34,7 +35,7 @@ class CompiledNode(BaseModel):
     node_id: str
     declaration_index: int
     topology_rank: int
-    definition: NodeDef
+    definition: NodeDef  # Includes the optional, validated recovery declaration.
     incoming: tuple[EdgeDef, ...]
     outgoing: tuple[EdgeDef, ...]
     routes: tuple[RouteDef, ...]
@@ -63,6 +64,7 @@ class CompiledEntrypoint(BaseModel):
     graph_id: str
     allow_expr: Expr | None
     param_overrides: dict[str, object]
+    restart: str = "once"  # "once" | "repeatable"
 
 
 class CompiledWorkflow(BaseModel):
@@ -81,12 +83,38 @@ class CompiledWorkflow(BaseModel):
 
 class RuntimeContext(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
+    _project_lock_scope_owner: object | None = PrivateAttr(default=None)
+    _project_lock_scope_nonce: object | None = PrivateAttr(default=None)
+    _held_project_lock_tokens: tuple[str, ...] = PrivateAttr(default=())
+
     project_root: Path
     repo_root: Path
     change_dir: Path
     change_id: str
     params: dict[str, object] = Field(default_factory=dict)
     parent_session_id: str | None = None
+
+    def inherited_project_lock_scope(
+        self,
+        owner: object,
+    ) -> tuple[object, tuple[str, ...]] | None:
+        """Return the opaque acquisition nonce and tokens to their scheduler."""
+        if self._project_lock_scope_owner is not owner or self._project_lock_scope_nonce is None:
+            return None
+        return self._project_lock_scope_nonce, self._held_project_lock_tokens
+
+    def with_project_lock_scope(
+        self,
+        owner: object,
+        nonce: object,
+        tokens: tuple[str, ...],
+    ) -> Self:
+        """Copy this context with a process-local, non-serializable lock lease."""
+        locked = self.model_copy()
+        locked._project_lock_scope_owner = owner
+        locked._project_lock_scope_nonce = nonce
+        locked._held_project_lock_tokens = tokens
+        return locked
 
 
 class ResolvedArtifact(BaseModel):
@@ -131,6 +159,19 @@ class CompiledExport(BaseModel):
     output: str
 
 
+class RecoveryContext(BaseModel):
+    """Frozen typed context delivered only to a dedicated recovery operation."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    source_task_id: str
+    source_node_id: str
+    generation_ordinal: int
+    error_kind: ErrorKind
+    message: str
+    attempts_used: int
+    recovery_event: TaskRecoveryRoutedEvent
+
+
 class ExecutableTask(BaseModel):
     """一次逻辑 node invocation 的可执行单元；retry 时 task_id 不变。"""
 
@@ -160,6 +201,7 @@ class ExecutableTask(BaseModel):
     # injects contract-violation kinds into the prompt so the agent can fix them.
     prior_failure: str | None = None
     prior_error_kind: ErrorKind | None = None
+    recovery: RecoveryContext | None = None
     # Execution-time resolved evidence values keyed by declared alias. Injected
     # by the scheduler from committed producer frozen_outputs; kept off the input
     # payload so input_sha256 / task_id stay stable (mirrors prior_failure).
@@ -286,6 +328,17 @@ class InterruptProjection(BaseModel):
     resolved_action: str | None = None
 
 
+class RecoveryProjection(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    task_id: str
+    node_id: str
+    generation_ordinal: int
+    error_kind: ErrorKind
+    message: str
+    via: str
+    continue_to: str
+
+
 # ---- task 执行结果（TaskHandler → NodeRunner → scheduler 的唯一返回通道）----
 
 
@@ -337,6 +390,7 @@ class GraphProjection(BaseModel):
     fan_out_expansions: dict[str, FanOutExpansion] = Field(default_factory=dict)
     node_histories: dict[str, NodeHistory] = Field(default_factory=dict)
     interrupts: dict[str, InterruptProjection] = Field(default_factory=dict)
+    recoveries: dict[str, RecoveryProjection] = Field(default_factory=dict)
     terminal: Literal["completed", "stopped", "failed"] | None = None
     terminal_reason: str | None = None
 
@@ -367,13 +421,20 @@ class WorkflowStateProjection(BaseModel):
 class ResumeCommand(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     interrupt_id: str
-    action: Literal["fix_and_proceed", "accept_risk", "stop"]
+    action: str = Field(min_length=1)
     reason: str
     who: str
     # Optional structured resume payload, forwarded onto the first-layer
     # graph_resumed event verbatim. Payload-model validation (payload_model_id /
     # payload_model_schema_digest) is a later increment; passthrough only for now.
     payload: dict[str, object] = Field(default_factory=dict)
+
+    @field_validator("action")
+    @classmethod
+    def action_is_nonblank(cls, action: str) -> str:
+        if not action.strip():
+            raise ValueError("action must not be blank")
+        return action
 
 
 class GraphStatus(BaseModel):

@@ -1,7 +1,7 @@
 """v1 packaged happy-path loop tests retired in Task 15.
 
-Covered by ``tests/integration/test_cli_workflow_v2.py`` (minimal GraphRuntime run)
-and Task 16 eval migration.
+Covered by ``tests/integration/test_cli_workflow_v2.py`` (minimal GraphRuntime run),
+Task 16 eval migration, and ``tests/integration/test_issue_lifecycle_acceptance.py``.
 """
 
 from __future__ import annotations

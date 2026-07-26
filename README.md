@@ -2,7 +2,7 @@
 
 **assurance-agent** 是一套面向 AI 驱动 QA 工作流的 **确定性 CLI（`aa`）+ Skill 套件**，宿主为 OpenCode。它把测试基础设施脚手架、Explore 研判、Case 设计、Fact Baseline、测试规划、代码生成、执行、质量门禁、失败归因、Healing 与质量报告串成一条**可审计、可追踪、可重放**的流水线。
 
-核心信条：**CLI 只做确定性调度（状态机、gate 裁决、Quality Score），推理由宿主 Agent（OpenCode）里的 skill 完成。** 编排采用 Scheme E（subagent-dispatch）：`aa status --next --json` 输出下一批可调度阶段（含 `agent` / `skill` / `kind`），gate 与 workflow-state 写入由 CLI 独占。
+核心信条：**CLI 只做确定性调度（graph 状态机、gate 裁决、Quality Score），推理由宿主 Agent（OpenCode）里的 skill 完成。** 编排由 GraphRuntime（schema v2）驱动：CLI 按声明式 graph schema 做 Plan → Execute → Update 调度，`aa status --next --json` 输出 ledger 投影的待办（pending tasks / pending interrupts），gate 裁决与 `events.jsonl` 写入由 CLI 独占。
 
 > 这是 TypeScript 版 `assurance-workflow-skills` 的 Python 净室重写：命令名由 `aws` 改为 `aa`，项目配置目录由 `.aws` 改为 `.aa`，技能前缀由 `aws-*` 改为 `aa-*`，构建链从 npm 换成 uv。
 
@@ -70,17 +70,17 @@ skills/                        # 同步的 aa-* skill 套件
 一个变更（change）从 `explore` 走到 `report`，每阶段落结构化产物到 `qa/changes/<change-id>/`；CLI 用确定性状态机推进：
 
 ```bash
-aa status  --change <id> --next --json          # 下一批可调度阶段（Scheme E dispatch）
-aa gate    check --change <id> --phase <phase>  # 单阶段 gate 裁决
-aa run     --change <id>                         # 执行测试（写 execution/runs/<batch-id>/）
-aa report  inspect  --change <id>               # 失败分类 + quality-gate-result.json
-aa report  generate --change <id>               # Quality Score + 报告三件套
+aa status  --change <id> --next --json              # ledger 投影的待办（pending tasks / interrupts）
+aa gate    check --change <id> --node-path <path>   # 读取该节点冻结的 gate 报告（不重裁）
+aa run     --change <id>                            # 执行测试（写 execution/runs/<batch-id>/）
+aa report  inspect  --change <id>                   # 失败分类 + quality-gate-result.json
+aa report  generate --change <id>                   # Quality Score + 报告三件套
 aa workflow run --change <id> --entrypoint full --adapter opencode --server http://127.0.0.1:4096
 ```
 
 `aa workflow run` 是完整的确定性 driver（主循环 + gate + 状态推进），不是 `status --next` 的别名。
 
-编排 schema 支持三个可选增强词汇（默认打包 schema 未使用，语义见 `docs/schemas.md`「编排扩展词汇」）：phase 级 `retry` 重试策略、`fan_out` 动态子相位展开（map/join）、可注册 loop kind。恢复语义：主循环每个迭代边界即 checkpoint，重跑 `aa workflow run` 自动从最近边界继续（`aa workflow status` 可见 checkpoint 段）。
+编排 schema（v2）的节点级词汇——`retry`/`timeout` 命名策略、`budget` 业务预算、`fan_out` 动态展开、`routes` 多路分派、`interrupt` 人工中断（语义见 `docs/schemas.md`「Workflow schema v2 编排词汇」）。恢复语义：ledger（`events.jsonl`）是唯一权威，重跑 `aa workflow run` 即从 ledger 重投影续跑（`aa status` / `aa workflow status` 可见 checkpoint 与 event_seq）。
 
 ---
 
@@ -94,8 +94,8 @@ aa workflow run --change <id> --entrypoint full --adapter opencode --server http
 | `aa doctor [--json]` | 环境与配置自检；有 error 退出 1 |
 | `aa config print` | 原样打印 `.aa/config.yaml` |
 | `aa validate --change <id> [--phase <p>] [--artifact <rel>] [--json]` | 确定性校验 change 产物；退出码 0 通过 / 1 失败、缺失或零注册产物 / 2 用法错误 |
-| `aa status --change <id> [--next] [--json]` | 各阶段状态与下一批 dispatch；退出码 0 running/completed / 20 stopped / 30 needs_human_review / 40 error |
-| `aa gate check --change <id> --phase <p> [--json]` | 单阶段 gate 四态裁决；退出码 0 pass/enter/exit/skip / 30 needs_fix/needs_human_review/continue / 40 reject/stop |
+| `aa status --change <id> [--next] [--json]` | GraphStatus 投影（pending tasks / interrupts / next retry）；`--next` 只打印待办；退出码 0 running/completed / 20 stopped / 30 interrupted / 40 failed（命令或数据错误为 1） |
+| `aa gate check --change <id> --node-path <p> [--json]` | 返回该节点 ledger 冻结的 gate 报告（拒绝重裁可变文件）；退出码 0 pass/enter/exit/skip / 30 needs_fix/needs_human_review/continue / 40 reject/stop |
 | `aa state ...` | 非图进度辅助（如 configure）；禁止用 apply/heal 伪造进度 |
 | `aa decide --change <id> ...` | 非图策略决定（如 `allow_test_changes`）；图内人工裁决走 `workflow resume --interrupt` |
 | `aa risk context --change <id> [--project-dir <root>]` | 聚合 diff / cases / archive → `explore/context.json` |
@@ -111,33 +111,33 @@ aa workflow run --change <id> --entrypoint full --adapter opencode --server http
 | `aa workflow import-checkpoint --change <id> --manifest <path>` | 校验后导入 fixture/benchmark checkpoint |
 | `aa skill refresh [--sync-agents] [--dry-run]` | 同步 skills 到 `skills/`（始终）；`--sync-agents` 追加 `.opencode/{agents,tools,plugins}` |
 | `aa eval run\|plan\|report ...` | AI Eval 框架（权威文档 `docs/eval.md`） |
-| `aa retro --retro-id <id> --change <id>... [--json]` | 回顾聚合；`--json` stdout 含 `retro_id`/`signal_count`/`change_count` |
-| `aa retro nightly collect --sut <dir> --agent <cmd>` | nightly 回顾驱动；退出码 0 成功 / 10 no-op / 其他失败 |
-| `aa retro export-issues\|export-knowledge --retro-id <id> [--overwrite]` | 物化 issue draft / L2 knowledge delta |
+| `aa retro [--change <id>... \| --since/--until \| --last N] [--retro-id <id>] [--dry-run] [--json]` | 触发独立 Retro 图；写当前 run 的 `qa/retro/<id>/context.json`（及 propose/reconcile 产物） |
+| `aa retro show --retro-id <id> [--json]` | 只读展示一个显式当前 run（不扫描其他 Retro） |
+| `aa improvement list [--state\|--kind\|--delivery] [--json]` | 从 Project Improvement Ledger 列出 Improvements |
+| `aa improvement show --id <id> [--json]` | 展示单个 Improvement 投影 + 事件时间线 |
 | `aa knowledge validate [--project-dir] [--change <id>] [--proposal <path>]` | 校验 L1/L2 data-knowledge 产物 |
 | `aa knowledge promote [--project-dir] (--change <id> \| --from <path>) [--yes] [--force]` | 将 L2 proposal merge 进 L1 |
 
 ---
 
-## 工作流阶段一览
+## 工作流入口（entrypoints）一览
 
-| 阶段 | Skill | Agent | 说明 |
-|---|---|---|---|
-| 1.1 | — | 编排器 | Skill Registry Check + `execution_mode` 探测 |
-| 1.2 | `aa-explore` | `aa-doc-author` | 历史上下文 + 浅读源码 + 研判 `advisory.json` |
-| 2.1 | `aa-case-design` | `aa-doc-author` | Case 增量设计 |
-| 2.2 | `aa-case-reviewer` | `aa-reviewer` | Case 审查 |
-| 2.3 | `aa-case-fixer` | `aa-doc-author` | Case 自动修复（条件触发） |
-| 2.4 | `aa-fact-baseline` | `aa-doc-author` | 产品/环境事实基线 |
-| 2.5 | — | 编排器 | Layer Scan（确定 api / e2e / fuzz / performance scope） |
-| 3–6 | `aa-*-plan` / `*-reviewer` / `*-codegen` | 见 schema | 按 `test_types` 裁剪 |
-| 7 | `aa-run`（CLI） | — | 测试执行 |
-| 8 | `aa-inspect` | `aa-reviewer` | 失败分类 + Quality Gate |
-| 9–12 | Healing skills | `aa-test-author` 等 | 可选自愈循环（≤ `max_healing_attempts`） |
-| 13 | `aa-report-generator` | `aa-reporter` | 质量报告（非 gating） |
-| 14 | — | 编排器 | 归档资格建议（不自动归档） |
+打包 schema（v2）声明以下入口（`aa workflow run --entrypoint <name>`）：
 
-正式 DAG 定义见打包的 `workflow-schema.yaml`（解析顺序见 `docs/schemas.md`）。每个测试脚本必须与 `case.yaml` 的 Case ID 绑定（规范：`TC_MODULE_001`，下划线大写）。
+| Entrypoint | 图 | 说明 |
+|---|---|---|
+| `full` | workflow | 全流程：bootstrap → intake → assurance（`params.auto_archive=true` 时续 archive） |
+| `intake` | intake-workflow | bootstrap + intake：explore → case-design → case-review-cycle |
+| `case` | intake-workflow | intake 快捷入口（`with run_mode=case-only`） |
+| `execute` | execute-workflow | bootstrap + assurance：fact-baseline → 四层分支 → 执行 → inspect → healing → report |
+| `archive` | archive-workflow | 归档 precheck gate + `aa-archive` |
+| `retro` | retro-workflow | 独立 Retro：collect → propose → reconcile |
+| `issue-review` / `issue-analyze` / `issue-reconcile` | issue-* | Issue 生命周期（`restart: repeatable`） |
+| `improvement-review` / `-evaluate` / `-export` / `-apply` / `-rollback` | improvement-* | Improvement 交付生命周期（`restart: repeatable`） |
+
+`assurance` 图内部按 `test_types` / `run_mode` 裁剪：fact-baseline 之后 api / e2e / fuzz / performance 四个分支并行（各为 plan → review-cycle → codegen），join 后执行测试，再经 inspect-with-issues → healing → report。每个测试脚本必须与 `case.yaml` 的 Case ID 绑定（规范：`TC_MODULE_001`，下划线大写）。
+
+正式 DAG 定义见打包的 `workflow-schema.yaml`（解析顺序见 `docs/schemas.md`）；自定义图与节点词汇见 `docs/schemas.md`「Workflow schema v2 编排词汇」。
 
 ---
 
@@ -146,8 +146,9 @@ aa workflow run --change <id> --entrypoint full --adapter opencode --server http
 ```
 qa/changes/<change-id>/
 ├── proposal.md
-├── workflow-state.yaml        ← 阶段状态机 + params（原子写 + state hash 校验）
-├── events.jsonl               ← append-only 审计流（strict / best-effort 双模式）
+├── workflow-state.yaml        ← ledger 投影的人工/报告视图（运行时决策不读它）
+├── events.jsonl               ← append-only ledger（strict / best-effort 双模式，唯一权威）
+├── driver.json                ← 非权威进程指针（锁 + 最近已知图位置）
 ├── explore/{context.json, advisory.json}
 ├── cases/<module>/case.yaml
 ├── facts/fact-baseline.json
@@ -192,7 +193,7 @@ aa skill refresh --dry-run       # 只报告将变更的文件，不落盘
 
 ## 资源分发
 
-`schemas/`、`skills/`、`.opencode/` 是运行时资源，唯一源在包内 `assurance_agent/_resources/`，随 wheel/sdist 分发。任何模块只经 `assurance_agent/resources.py`（`importlib.resources`）访问，禁止源码仓库相对路径。workflow schema 解析顺序：项目 `.aa/workflow-schema.yaml` → 项目 `schemas/workflow-schema.yaml` → 包内默认；显式 `--schema` 覆盖是排他的（路径缺失即报错，不回退）。
+`schemas/`、`skills/`、`.opencode/` 是运行时资源，唯一源在包内 `assurance_agent/_resources/`，随 wheel/sdist 分发。任何模块只经 `assurance_agent/resources.py`（`importlib.resources`）访问，禁止源码仓库相对路径。workflow schema 解析顺序：项目 `.aa/workflow-schema.yaml` → 项目 `schemas/workflow-schema.yaml` → 包内默认；显式 `--schema` 覆盖是排他的（路径缺失即报错，不回退）。项目级覆盖（自定义图、节点与 execution contracts）的编写指南见 `docs/schemas.md`「Workflow schema v2 编排词汇」。
 
 ---
 
@@ -217,13 +218,15 @@ bash scripts/packaging_smoke_test.sh   # 构建 wheel + 全新环境安装 + 源
 |---|---|
 | `assurance_agent/commands/` | 每个子命令一个模块（只做参数解析与输出） |
 | `assurance_agent/artifacts/` | 产物 pydantic 契约 + 路径注册表 + `aa validate` |
-| `assurance_agent/workflow/orchestration/` | schema 加载、DSL 解释器、DAG 引擎（含 fan-out 展开）、gate 路由、loop registry（healing / review_fix 投影器） |
+| `assurance_agent/workflow/graph/` | GraphRuntime：schema v2 编译、Plan/Execute/Update superstep 调度、checkpoint/ledger、handlers |
+| `assurance_agent/workflow/orchestration/` | gate 裁决、DSL 解释器、共享 schema 模型（graph 包单向复用其语义） |
 | `assurance_agent/workflow/core/` | workflow-state、events、case ID、技能同步 |
 | `assurance_agent/workflow/driver/` | `aa workflow run` 主循环、headless/opencode adapter、detached、lock、resume |
 | `assurance_agent/workflow/execution/` | pytest / playwright / schemathesis / locust runner |
 | `assurance_agent/workflow/report/` | 失败分类、Quality Score、报告生成 |
 | `assurance_agent/risk/` | Explore context 聚合与 advisory 校验 |
-| `assurance_agent/eval/` `assurance_agent/retro/` | AI Eval 框架、回顾聚合与 nightly driver |
+| `assurance_agent/eval/` | AI Eval 框架 |
+| `assurance_agent/retro/` `assurance_agent/workflow/improvements/` | 独立 Retro 证据收集 + Project Improvement Ledger |
 | `assurance_agent/_resources/` | 运行时资源唯一源（schemas / skills / opencode） |
 
 ---

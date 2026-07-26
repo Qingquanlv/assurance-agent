@@ -6,7 +6,8 @@
 
 | 机器契约 | 适用对象 | 用途 |
 |---|---|---|
-| `schemas/workflow-schema.yaml` | 工作流 phases / gates / loops / params | 随 CLI 分发的运行期编排契约，可被项目 schema 覆盖 |
+| `schemas/workflow-schema.yaml` | 工作流 entrypoints / graphs / gates / params / policies（schema v2） | 随 CLI 分发的运行期编排契约，可被项目 schema 覆盖 |
+| `schemas/execution-contracts.yaml` | 节点 target（`skill:*` / `operation:*` / `builtin:*`） | 资源 claim、写授权与可重试错误的执行契约目录，可被项目 `.aa/execution-contracts.yaml` 整体覆盖 |
 | `schemas/explore-advisory.schema.json` | `qa/changes/<id>/explore/advisory.json` | Explore advisory 产物的 JSON Schema 参考 |
 | `schemas/explore-context.schema.json` | `qa/changes/<id>/explore/context.json` | 聚合 explore context 产物的 JSON Schema 参考 |
 
@@ -22,19 +23,47 @@ JSON Schema 文件是给非 Python 消费者的参考。运行期产物校验由
 
 显式 `--schema` 覆盖是**排他**的：路径缺失即报错，不回退到隐式候选。
 
-## 编排扩展词汇（retry / fan_out / loop kind）
+## Workflow schema v2 编排词汇
 
-以下词汇为可选增强，默认打包 schema 未使用；语义由 `assurance_agent/workflow/orchestration/` 实现，此处只描述用户可见行为。
+打包 schema 为 `schema_version: "2"`。根级键仅允许 `schema_version` / `name` / `params` / `entrypoints` / `policies` / `graphs` / `gates`；v1 的 `phases:` / `loops:` 在加载期即被拒绝。语义由 `assurance_agent/workflow/graph/`（GraphRuntime）实现，此处只描述用户可见行为；字段约束以 `workflow/graph/schema_v2.py` 的 pydantic 模型为准。
 
-**phase `retry`**——声明式重试策略（`max_attempts` / `backoff_seconds`）。只对**派发调用**（adapter / CLI 执行）的瞬时失败重试，每次重试用全新签名 attempt id；结果提交（state apply）失败永不重试。schema 的 per-phase 策略优先，driver 全局 `max_phase_attempts` 仅作 skill 相位的下限。编排器内置相位禁止声明。
+- **params**——类型化运行参数（`enum` / `list` / `bool` / `int` / `str` + `default`），invocation 级可覆盖，未声明的 param 直接拒绝。
+- **entrypoints**——图的入口：`graph` 指定目标图；`allow` DSL 在启动前裁决 params；`with` 固化 param 覆盖；`restart: once|repeatable` 决定完成后能否再跑。
+- **policies**——命名 `retry`（`max_attempts` / `retry_on` / `backoff`）与 `timeout`（`run_seconds` / `heartbeat_seconds`）策略，node 按名引用；`scheduler.max_parallel_tasks` 控制同一 superstep 的并行上限。
+- **graphs**——拓扑主体：`nodes` + `edges`（可带 `when`）+ `routes`（DSL `select` 多路分派 + `cases`/`default`）+ `state`（带 reducer）/ `budgets` / `exports`；图可嵌套（node `uses: graph:<id>`）。
+- **gates**——声明式裁决定义；node 用 `gate:` 在成功提交后裁决，或用 `builtin:gate` 节点做前置裁决。
 
-**phase `fan_out`**——动态 fan-out（map/join 语义）。`each` 是对全局 evidence 作用域求值的 DSL 表达式，必须产出 `list[str]`（元素须为文件系统安全的路径段，数量受 `max_items` 约束，默认 32 / 上限 128）。引擎在每次 `compute_status` 投影时把 base 相位展开为 `<base>[<item>]` 子相位（`produces` 中的 `{item}` 模板逐项替换）；下游相位以 base id `requires` 即自动获得对全部子相位的 join（`requires_mode` 语义不变）。契约失败均 fail closed：上游完成后 `each` 仍非 `list[str]`（或元素不安全）→ 相位 `stopped`；`each` 为空列表 → base 视为 done（无工作）。v1 限制：fan-out 相位不得挂 gate / loop / repair_of，不得 require 另一个 fan-out 相位（map 由子相位承担，裁决留给下游汇聚相位）。driver 对子相位串行派发，prompt 中绑定 item。
+节点（NodeDef）词汇速查：
 
-**loop kind registry**——`loops:` 的 `kind` 不再由引擎特判：每种 kind 是注册到 `loop_registry` 的投影器（内置 `healing` / `review_fix`），引擎只消费统一的 `LoopSnapshot` 协议（dispatch / block_members / control_actions / terminal）。新增 loop kind = 注册一个投影器，无需改引擎。
+| 字段 | 作用 |
+|---|---|
+| `uses` | 执行体：`skill:<name>`（agent 推理）、`operation:<name>`（进程内确定性操作）、`builtin:join\|gate\|interrupt`、`graph:<id>`（子图） |
+| `agent` | skill 节点使用的 subagent 角色 |
+| `when` | DSL 条件，不满足则跳过该节点 |
+| `outputs` | 声明产物路径（`change:` / `project:` / `repo:` 前缀） |
+| `gate` | 节点成功提交后求值的 gate |
+| `retry` / `timeout` | 引用 policies 中的命名策略 |
+| `with` | 静态参数，原样进 task input（operation 唯一的参数化通道） |
+| `resources` | `reads` / `writes` / `exclusive` 资源声明，供并行冲突判定与写授权收窄 |
+| `evidence` | 引用上游节点已冻结输出作为本节点输入证据 |
+| `state_writes` | 把 task value 写入图 state（按声明的 reducer 合并） |
+| `join` | `builtin:join` 的汇聚声明（`all` / `all_active` / `any`） |
+| `fan_out` | 运行期按 DSL 求值 `items` 动态展开 child task（map），可配 `reduce` 汇聚；展开即冻结，源漂移 fail closed |
+| `budget` | 业务预算消耗（如 fix 次数上限），耗尽路由到 `exhausted_to` 节点 |
+| `interrupt` | `builtin:interrupt` 的人工中断声明：`actions` 列表，`resume` 时由人选择并续跑 |
+| `recover` | retry 耗尽后的降级路径：经 `via` operation 记录后 `continue_to` 指定节点 |
 
-## Checkpoint 与恢复语义
+**DSL**——`allow` / `when` / `select` / gate 表达式共用一套白名单 AST 解释器（非 `eval`，有长度/深度上限）：`len` / `defined` / `file_exists` / `gate(id)` / `node(id)` / `capabilities_present(review, dk)` / `plan_review_route(node)` / `any` / `all` / `count`；比较运算仅 `==` `!=` `<` `<=` `>` `>=` `in` `not in`。
 
-主循环每个**迭代边界即 checkpoint**：每提交一个相位结果或控制动作，`driver.json` 的 `iteration` 递增并落盘（`last_checkpoint_at` 记录时间）。checkpoint 实体是 `workflow-state.yaml` + `events.jsonl`（状态与审计流），`driver.json` 只是 checkpoint 指针。恢复不需要快照回读——`compute_status` 是对（schema、产物、state、events）的纯投影，重跑 `aa workflow run --change <id>` 即从最近迭代边界重投影继续；`iteration` 计数跨 run 累积（属于 change，而非单次运行）。`aa workflow status` 展示 checkpoint 段与恢复提示。
+**执行体目录与自定义**——`schemas/execution-contracts.yaml` 是全部 `skill:*` / `operation:*` / `builtin:*` target 的唯一目录：每条声明 handler、资源 claim、写授权（`authorization_writes`）与可重试错误；未登记的 target 编译期报错，写范围不可推导的保守为 `global:exclusive`。自定义路径：
+
+- **换图/改图（零引擎代码）**：项目放 `.aa/workflow-schema.yaml`（或 `schemas/workflow-schema.yaml`）即可整体替换拓扑；运行中改图会产生新 digest，旧 invocation 拒绝普通 resume（fail closed）。
+- **新增 skill 节点（零引擎代码）**：skill 文件 + contracts 加条目，node 声明 `uses: skill:<name>` 与 `agent:`。
+- **新增 operation（需改引擎，三步）**：`workflow/graph/handlers/operation.py` 的 `default_operations()` 注册 callable → contracts 加条目 → schema 中 `uses: operation:<name>`。operation 的参数经 node `with:` 传入，由函数自行校验。
+
+## Checkpoint 与恢复语义（schema v2）
+
+权威状态只有 `events.jsonl`（append-only ledger）；`workflow-state.yaml` 是从 ledger 投影的人工/报告视图，运行时决策从不读它；`driver.json` 只是非权威进程指针（锁 + 最近已知的 `invocation_id` / `checkpoint_id` / `event_seq`）。主循环按 superstep（Plan → Execute → Update）推进：每次提交的 `checkpoint_id` 是 canonical digest，恢复不读快照——重跑 `aa workflow run --change <id>` 即从 ledger 重投影、跳过已成功 task 继续。运行中途修改 schema YAML 会触发 digest 漂移并在下一 superstep 中止（`GraphDefinitionChanged`，exit 40），已提交的 ledger 不受影响。`aa status` / `aa workflow status` 均从 ledger 投影 GraphStatus。
 
 ## 校验 change 产物
 
@@ -73,26 +102,63 @@ aa knowledge promote [--project-dir] (--change <id> | --from <proposal-path>) [-
 - API/E2E plan-review gate 通过 `required_capabilities[]`（review JSON 中的 leaf dotted keys）与 L1 做 pre-codegen 能力校验；缺 leaf → `needs_human_review` + **knowledge-remediation** checkpoint（人工 promote 后 `fix_and_proceed` 重跑 review）。
 - Fuzz/Performance plan-review gate 读 review JSON 的 `layer_applicable`：被 proposal 选中但无对应 `type:Fuzz`/`type:Performance` case（空 scope）时 reviewer 置 `layer_applicable: false` → gate 走 `skip`（分支结束、codegen 跳过），而非硬 `reject` 拖垮整条并行链。缺失该字段时按原 `pass`/`reject` 语义处理。
 
-## Retro 三轨与 memory
+## Retro（schema-v2）与 Improvement lifecycle
 
-Retro proposal 用 `finding_kind` / `apply_kind` 分流：
+Retro 是**独立入口**（`aa workflow run --entrypoint retro` / `aa retro`），不挂在 full workflow 上。当前 run 只读写 `qa/retro/<retro-id>/`；生产路径不扫描、不迁移、不消费历史 Retro 目录。
 
-| finding_kind | apply_kind | 落点 |
+### 当前 run 产物
+
+| 文件 | 写入方 | 说明 |
 |---|---|---|
-| `prompt_rule` | `memory_append` | `.aa/memory/<skill>.md`（经 promote → eval → apply） |
-| `workflow_bug` | `issue_export` | `qa/retro/<id>/issue-drafts/<proposal-id>.yaml` |
-| `domain_knowledge` | `knowledge_delta` | `qa/retro/<id>/knowledge-delta/<proposal-id>.proposal.yaml` |
+| `qa/retro/<id>/context.json` | `operation:retro-collect` | schema_version `"2"`：冻结 window、`source_manifest`、signals、integrity |
+| `qa/retro/<id>/proposal-candidates.json` | `skill:aa-retro` | Candidate 批（非权威）；须 pin `context_sha256` |
+| `qa/retro/<id>/retro-summary.md` | `skill:aa-retro` | 人类摘要 |
+| `qa/retro/<id>/accept-status.json` | `operation:reconcile-improvements` | 批级 receipt（accepted/failed + digests/event ids） |
+| `qa/retro/<id>/review-queue.md` | reconcile | 指向本批 canonical Improvement IDs |
 
-```text
-aa retro export-issues --retro-id <id> [--overwrite]
-aa retro export-knowledge --retro-id <id> [--overwrite]
-```
+### Window 选择
 
-导出物化后，`knowledge_delta` 经 `aa knowledge promote --from <path> --yes` 合入 L1。运行时 memory 由 `load_skill_memory(project_root, skill)` 注入 graph v2 / legacy prompt（8 KiB 上限，过滤 `deprecated:` 行）。
+互斥：`--change`（显式 Change 集） / `--since`+`--until`（时间窗） / `--last N`（默认 10）。`--dry-run` 只 collect，跳过 propose/reconcile。
 
-## Known product issues（跨 change 历史）
+### Improvement kinds 与 deliveries
 
-归档根目录 `qa/archive/<change-id>/known-product-issues.md`（现有 markdown 模板）由 `risk/context.py` 解析为 `historical_issues`；去重 key 为 `<source_change_id>:<id>`，evidence ID 为 `EV-HIST-ISSUE-<change>-<id>`。`known_product_issue` 分类在 quality report 中归入 product 缺陷桶。
+| kind | 允许的 delivery |
+|---|---|
+| `prompt_improvement` | `memory_patch` |
+| `fixture_improvement` / `test_improvement` | `memory_patch` 或 `change_draft` |
+| `workflow_improvement` | `change_draft` |
+| `domain_knowledge` | `knowledge_delta` |
+
+Project Improvement Ledger（唯一权威）：
+
+| 路径 | 角色 |
+|---|---|
+| `qa/improvements/events.jsonl` | 追加事件 |
+| `qa/improvements/improvements.json` | 确定性投影 |
+| `qa/improvements/review-queue.json` | 待审队列 |
+
+独立入口：`improvement-review` / `improvement-evaluate` / `improvement-export` / `improvement-apply` / `improvement-rollback`。CLI 读模型：`aa improvement list|show`（只读投影，不扫 `qa/retro/`）。
+
+Delivery 落点：
+
+- `memory_patch` → `.aa/memory/<skill>.md`（evaluate → apply/rollback；运行时 `load_skill_memory` 注入，8 KiB 上限，过滤 `deprecated:`）
+- `change_draft` → `qa/improvements/drafts/<id>.md`（人工落地 Change 后 `record-*-applied`）
+- `knowledge_delta` → `qa/improvements/knowledge-delta/<id>.proposal.yaml`（**不**写 L1；合入 L1 仍走 `aa knowledge promote`，且要求引用的 Problem 已 `resolved` + `human_confirmed` + 有 verification scope）
+
+已删除的旧路径（无生产读/写）：`aa retro nightly`、`export-issues` / `export-knowledge`、`qa/retro/_state.json`、`cross-run-report.json`、per-run `promotions.json` / `issue-drafts/**`、枚举 `workflow_bug` / `issue_export`。
+
+## Issue lifecycle (Change Issue Ledger + Project Problem Ledger)
+
+Issue lifecycle replaces the retired Markdown/JSON known-product side channel. Canonical state lives in two append-only Ledgers and their deterministic projections:
+
+| Scope | Ledger | Projection | Role |
+|---|---|---|---|
+| Change | `qa/changes/<id>/issues/events.jsonl` | `qa/changes/<id>/issues/snapshot.json` | Immutable Observations and Occurrences for one Change |
+| Project | `qa/issues/events.jsonl` | `qa/issues/problems.json`, `qa/issues/review-queue.json` | Cross-Change Problem identity, lifecycle, and human review queue |
+
+Only deterministic reconciler/review apply operations append Ledger events. Inspect/classifier artifacts (`inspect/failure-analysis.json`) and the legacy `known_product_issue` execution label are **classification hints only** — they do not read or write legacy known-product issue files and do not mutate Problems by themselves.
+
+Risk context reads structured Problems from `qa/issues/problems.json` (not archived Markdown/JSON). Reports separate execution `final_status` from Issue risk (`report/quality-report.json` schema 1.1 `issues` section). Open or unknown Issues never block archive; they affect archive status wording only.
 
 ## Quality Score 与 Quality Gate
 

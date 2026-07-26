@@ -6,7 +6,6 @@ import re
 
 import pytest
 
-import assurance_agent.workflow.graph.runtime  # noqa: F401 — install Task 12 planner patches
 from assurance_agent.workflow.graph.runtime import ensure_retro_params
 
 

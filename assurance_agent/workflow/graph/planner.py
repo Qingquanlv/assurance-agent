@@ -67,12 +67,14 @@ from assurance_agent.workflow.core.graph_events import (
     NodeActivatedEvent,
     NodeSkippedEvent,
     SuperstepPlannedEvent,
+    TaskRecoveryRoutedEvent,
 )
 from assurance_agent.workflow.graph.compiler import canonical_digest
 from assurance_agent.workflow.graph.contracts import (
     ContractError,
     ResourceClaims,
     ResourcePath,
+    narrow_claims,
 )
 from assurance_agent.workflow.graph.models import (
     ArtifactReader,
@@ -83,6 +85,7 @@ from assurance_agent.workflow.graph.models import (
     FanOutExpansion,
     GraphProjection,
     PlanResult,
+    RecoveryContext,
     RuntimeContext,
     TaskProjection,
 )
@@ -110,8 +113,15 @@ from assurance_agent.workflow.orchestration.dsl import (
 )
 
 
+PlanErrorKind = Literal["plan_error", "graph_definition_changed"]
+
+
 class PlanError(AaError):
-    """Plan 阶段 fail closed：结构危险、输入损坏或 reducer 契约被破坏。"""
+    """Plan 阶段 fail closed，并携带供 runtime 判别的稳定错误类型。"""
+
+    def __init__(self, message: str, *, error_kind: PlanErrorKind = "plan_error") -> None:
+        super().__init__(message)
+        self.error_kind = error_kind
 
 
 _DEFAULT_RETRY = RetryPolicyDef(max_attempts=1)
@@ -139,6 +149,7 @@ class _Outcome:
     status: Literal["succeeded", "skipped", "unresolved"]
     task: TaskProjection | None = None
     reached: bool = True
+    recovery_event: TaskRecoveryRoutedEvent | None = None
 
 
 class _StopResolution(Exception):
@@ -154,6 +165,14 @@ class _Delivery:
     stop_reason: str | None
     fail_reason: str | None
     rerouted: dict[str, str]
+
+
+@dataclass(frozen=True)
+class _RecoveryDelivery:
+    """Pinned recovery route plus the failed source used to type fallback input."""
+
+    event: TaskRecoveryRoutedEvent
+    source: TaskProjection
 
 
 # ---------------------------------------------------------------------------
@@ -189,10 +208,14 @@ def plan_superstep(
     if projection.graph_digest != compiled.digest:
         raise PlanError(
             "graph_definition_changed: projection digest "
-            f"{projection.graph_digest} != compiled digest {compiled.digest}"
+            f"{projection.graph_digest} != compiled digest {compiled.digest}",
+            error_kind="graph_definition_changed",
         )
     if projection.contract_digests != compiled.contract_digests:
-        raise PlanError("graph_definition_changed: contract digests drifted from compiled pinning")
+        raise PlanError(
+            "graph_definition_changed: contract digests drifted from compiled pinning",
+            error_kind="graph_definition_changed",
+        )
     if projection.supersteps >= graph.max_supersteps:
         return result(
             terminal="fail",
@@ -214,8 +237,17 @@ def plan_superstep(
         # integrity/runtime FAIL：最高优先级；不完整的 wave 保持 pending。
         return result(terminal="fail", reason=fail_reason)
 
+    recovery_events, recovery_deliveries = _recovery_metadata(projection, outcomes)
+
     scope, source_reads = _build_scope(graph, projection, artifacts, outcomes)
-    delivery = _deliver_tokens(compiled, graph, projection, scope, outcomes)
+    delivery = _deliver_tokens(
+        compiled,
+        graph,
+        projection,
+        scope,
+        outcomes,
+        recovery_deliveries,
+    )
 
     # 终局优先级：FAIL > STOP > pending interrupt > retry pending > completed。
     # 高优先级结果一旦出现即不再决策/Plan 新 task（activation 决策是纯函数，
@@ -231,7 +263,7 @@ def plan_superstep(
     if pending_interrupt is not None:
         return result(terminal="interrupt", reason=f"interrupt {pending_interrupt} is pending")
 
-    events: list[BaseModel] = []
+    events: list[BaseModel] = list(recovery_events)
     ready: list[ExecutableTask] = []
     _decide_nodes(
         compiled,
@@ -242,11 +274,13 @@ def plan_superstep(
         source_reads,
         delivery,
         outcomes,
+        recovery_deliveries,
         events,
         ready,
     )
 
     ready.extend(retry_tasks)
+    ready = [_attach_recovery_context(task, recovery_deliveries) for task in ready]
     child_order = _fan_out_child_order(projection, events)
     ready.sort(key=lambda task: _task_sort_key(graph, task, child_order))
     if ready:
@@ -357,10 +391,13 @@ def _reduce(reducer: str, current: object, value: object) -> object:
 
 def _resolve_graph(compiled: CompiledWorkflow, projection: GraphProjection) -> CompiledGraph:
     if projection.parent_invocation_id is not None:
-        raise PlanError(
-            "nested subgraph invocations are planned by the child runtime (Task 12); "
-            f"invocation {projection.invocation_id} has parent {projection.parent_invocation_id}"
-        )
+        graph = compiled.graphs.get(projection.entrypoint)
+        if graph is None:
+            raise PlanError(
+                f"child invocation {projection.invocation_id} references unknown graph "
+                f"'{projection.entrypoint}'"
+            )
+        return graph
     entrypoint = compiled.entrypoints.get(projection.entrypoint)
     if entrypoint is None:
         raise PlanError(f"projection references unknown entrypoint '{projection.entrypoint}'")
@@ -388,6 +425,9 @@ def _build_scope(
         "params": dict(projection.params),
         "state": dict(projection.state_values),
     }
+    resume_action = _latest_resolved_resume_action(projection)
+    if resume_action is not None:
+        variables["resume"] = {"action": resume_action}
     reads: dict[str, str] = {}
     for symbol in sorted(graph.artifact_symbols):
         logical_path = graph.artifact_symbols[symbol]
@@ -424,16 +464,76 @@ def _build_scope(
 # outcome seeding 与 token 传递
 
 
+def _latest_resolved_resume_action(projection: GraphProjection) -> str | None:
+    resolved = [
+        interrupt
+        for interrupt in projection.interrupts.values()
+        if interrupt.resolved_action is not None and interrupt.checkpoint_ns == projection.checkpoint_ns
+    ]
+    if not resolved:
+        return None
+    return sorted(resolved, key=lambda item: item.interrupt_id)[-1].resolved_action
+
+
+def _node_interrupt_resolved(projection: GraphProjection, node_id: str) -> bool:
+    return any(
+        interrupt.node_id == node_id and interrupt.resolved_action is not None
+        for interrupt in projection.interrupts.values()
+    )
+
+
+def _imported_task_id(structural_path: str, node_id: str) -> str:
+    return f"{structural_path}:{node_id}"
+
+
+def _root_invocation_id(projection: GraphProjection) -> str:
+    head, _, _ = projection.checkpoint_ns.partition("/")
+    return head or projection.invocation_id
+
+
+def _overlay_imported_outcomes(
+    graph: CompiledGraph,
+    projection: GraphProjection,
+    context: RuntimeContext,
+    outcomes: dict[str, _Outcome],
+    retry: list[ExecutableTask],
+) -> list[ExecutableTask]:
+    """Honor root ``task_imported`` records inside nested subgraph projections."""
+    from assurance_agent.workflow.graph.checkpoint import project_invocation
+
+    root_id = _root_invocation_id(projection)
+    root_projection = (
+        projection if root_id == projection.invocation_id else project_invocation(context.change_dir, root_id)
+    )
+    imported_nodes: set[str] = set()
+    for nid in graph.declaration_order:
+        imported = root_projection.tasks.get(_imported_task_id(projection.structural_path, nid))
+        if imported is None or imported.status != "succeeded":
+            continue
+        outcome = outcomes.get(nid)
+        if outcome is None or outcome.status == "succeeded":
+            continue
+        outcomes[nid] = _Outcome(status="succeeded", task=imported)
+        imported_nodes.add(nid)
+    return [task for task in retry if task.node_id not in imported_nodes]
+
+
 def _seed_outcomes(
     compiled: CompiledWorkflow,
     graph: CompiledGraph,
     projection: GraphProjection,
     context: RuntimeContext,
-) -> tuple[dict[str, _Outcome], list[ExecutableTask], str | None]:
+) -> tuple[
+    dict[str, _Outcome],
+    list[ExecutableTask],
+    str | None,
+]:
     """把投影中的 task 结局折叠成各 node 当前代 outcome；同时收集 retry 重计划。
 
-    返回 ``(outcomes, retry_tasks, fail_reason)``。非重试失败或 retry/abandon
-    耗尽的 task 产生 fail_reason（integrity/runtime FAIL，终局最高优先级）。
+    保持 runtime overlay 所依赖的 ``(outcomes, retry_tasks, fail_reason)`` 边界；
+    recovery event 暂存于源 outcome，overlay 后再提取为 durable event/delivery。
+    只有 retry 真正耗尽且 error kind 在编译后的 recover allowlist 内时才建立
+    recovery；源 task 始终保持 failed 且不遍历普通出边。
     """
     tasks_by_node: dict[str, list[TaskProjection]] = {}
     for task in projection.tasks.values():
@@ -441,6 +541,7 @@ def _seed_outcomes(
 
     outcomes: dict[str, _Outcome] = {}
     retry: list[ExecutableTask] = []
+    recovery_vias: dict[str, str] = {}
     for nid in graph.declaration_order:
         node_tasks = tasks_by_node.get(nid, [])
         definition = graph.nodes[nid].definition
@@ -469,18 +570,96 @@ def _seed_outcomes(
             elif isinstance(latest.value, str) and latest.value.strip():
                 reason = latest.value
             return outcomes, retry, f"__graph_stop__:{reason}"
-        if latest.status in ("running", "pending", "interrupted"):
+        if latest.status == "interrupted":
+            outcomes[nid] = _Outcome(status="unresolved", task=latest)
+            if _node_interrupt_resolved(projection, nid):
+                retry.append(
+                    _build_task(
+                        compiled,
+                        graph,
+                        projection,
+                        context,
+                        nid,
+                        max(len(node_tasks) - 1, 0),
+                    )
+                )
+            continue
+        if latest.status in ("running", "pending"):
             # wave 仍在飞行：交由 lease/scheduler 对账，planner 不重复执行。
             outcomes[nid] = _Outcome(status="unresolved", task=latest)
             continue
         policy = _retry_policy(compiled, definition)
         if latest.status == "failed":
+            exhausted = latest.attempts_used >= policy.max_attempts
             retryable = (
-                latest.error_kind is not None
-                and latest.error_kind in policy.retry_on
-                and latest.attempts_used < policy.max_attempts
+                latest.error_kind is not None and latest.error_kind in policy.retry_on and not exhausted
             )
             if not retryable:
+                recovery_def = definition.recover
+                if (
+                    exhausted
+                    and recovery_def is not None
+                    and latest.error_kind is not None
+                    and latest.error_kind in recovery_def.errors
+                ):
+                    persisted = projection.recoveries.get(latest.task_id)
+                    if persisted is not None:
+                        if (
+                            persisted.task_id != latest.task_id
+                            or persisted.node_id != nid
+                            or persisted.generation_ordinal != (latest.generation_ordinal or 0)
+                            or persisted.error_kind != latest.error_kind
+                            or persisted.message != (latest.error or "task failed")
+                            or persisted.via != recovery_def.via
+                            or persisted.continue_to != recovery_def.continue_to
+                        ):
+                            return (
+                                outcomes,
+                                retry,
+                                f"recovery projection for task {latest.task_id} does not match "
+                                "the failed task or compiled recovery route",
+                            )
+                        recovery_event = TaskRecoveryRoutedEvent(
+                            type="task_recovery_routed",
+                            invocation_id=projection.invocation_id,
+                            checkpoint_ns=projection.checkpoint_ns,
+                            graph_id=graph.graph_id,
+                            node_id=persisted.node_id,
+                            generation_ordinal=persisted.generation_ordinal,
+                            task_id=persisted.task_id,
+                            error_kind=persisted.error_kind,
+                            message=persisted.message,
+                            via=persisted.via,
+                            continue_to=persisted.continue_to,
+                        )
+                    else:
+                        recovery_event = TaskRecoveryRoutedEvent(
+                            type="task_recovery_routed",
+                            invocation_id=projection.invocation_id,
+                            checkpoint_ns=projection.checkpoint_ns,
+                            graph_id=graph.graph_id,
+                            node_id=nid,
+                            generation_ordinal=latest.generation_ordinal or 0,
+                            task_id=latest.task_id,
+                            error_kind=latest.error_kind,
+                            message=latest.error or "task failed",
+                            via=recovery_def.via,
+                            continue_to=recovery_def.continue_to,
+                        )
+                    previous_task_id = recovery_vias.get(recovery_event.via)
+                    if previous_task_id is not None and previous_task_id != recovery_event.task_id:
+                        return (
+                            outcomes,
+                            retry,
+                            f"recovery via node '{recovery_event.via}' received multiple failed sources",
+                        )
+                    recovery_vias[recovery_event.via] = recovery_event.task_id
+                    outcomes[nid] = _Outcome(
+                        status="unresolved",
+                        task=latest,
+                        recovery_event=recovery_event,
+                    )
+                    continue
                 detail = f": {latest.error}" if latest.error else ""
                 return (
                     outcomes,
@@ -514,7 +693,50 @@ def _seed_outcomes(
                 prior_error_kind=latest.error_kind if latest.status == "failed" else None,
             )
         )
+    retry = _overlay_imported_outcomes(graph, projection, context, outcomes, retry)
     return outcomes, retry, None
+
+
+def _recovery_metadata(
+    projection: GraphProjection,
+    outcomes: Mapping[str, _Outcome],
+) -> tuple[list[TaskRecoveryRoutedEvent], dict[str, _RecoveryDelivery]]:
+    """Extract recovery effects after runtime's imported-outcome overlay wrapper."""
+    events: list[TaskRecoveryRoutedEvent] = []
+    deliveries: dict[str, _RecoveryDelivery] = {}
+    for outcome in outcomes.values():
+        event = outcome.recovery_event
+        source = outcome.task
+        if event is None or source is None:
+            continue
+        deliveries[event.via] = _RecoveryDelivery(event=event, source=source)
+        if event.task_id not in projection.recoveries:
+            events.append(event)
+    events.sort(key=lambda event: (event.node_id, event.task_id))
+    return events, deliveries
+
+
+def _attach_recovery_context(
+    task: ExecutableTask,
+    deliveries: Mapping[str, _RecoveryDelivery],
+) -> ExecutableTask:
+    recovery = deliveries.get(task.node_id)
+    if recovery is None:
+        return task
+    event = recovery.event
+    return task.model_copy(
+        update={
+            "recovery": RecoveryContext(
+                source_task_id=event.task_id,
+                source_node_id=event.node_id,
+                generation_ordinal=event.generation_ordinal,
+                error_kind=event.error_kind,
+                message=event.message,
+                attempts_used=recovery.source.attempts_used,
+                recovery_event=event,
+            )
+        }
+    )
 
 
 def _deliver_tokens(
@@ -523,6 +745,7 @@ def _deliver_tokens(
     projection: GraphProjection,
     scope: Scope,
     outcomes: dict[str, _Outcome],
+    recovery_deliveries: Mapping[str, _RecoveryDelivery],
 ) -> _Delivery:
     """求值所有已成功 node 的出边与 route，冻结选中 token 与终局标记。
 
@@ -534,6 +757,7 @@ def _deliver_tokens(
     """
     selected: dict[str, list[str]] = {}
     rerouted: dict[str, str] = {}
+    active_recovery_vias = frozenset(recovery_deliveries)
     end_reached = False
     stop_reason: str | None = None
     fail_reason: str | None = None
@@ -570,7 +794,7 @@ def _deliver_tokens(
             if edge.when is None or _satisfied(edge.when, scope, edge.to):
                 deliver(edge.to, "edge:START")
     for nid in graph.declaration_order:
-        if outcomes[nid].status != "succeeded":
+        if outcomes[nid].status != "succeeded" or nid in active_recovery_vias:
             continue
         for edge in graph.nodes[nid].outgoing:
             if edge.when is not None and not _satisfied(edge.when, scope, nid):
@@ -588,7 +812,7 @@ def _deliver_tokens(
 
     # Phase 3: routes（跳过即将再激活的 src，避免 stale needs_fix 再次拉起 fix）。
     for nid in graph.declaration_order:
-        if outcomes[nid].status != "succeeded" or nid in reopen:
+        if outcomes[nid].status != "succeeded" or nid in reopen or nid in active_recovery_vias:
             continue
         for route in graph.nodes[nid].routes:
             try:
@@ -602,6 +826,25 @@ def _deliver_tokens(
             ):
                 continue
             deliver(target, descriptor)
+
+    # Recovery routes are ledger-pinned control flow, not ordinary edges. The
+    # failed source never succeeds, so only the dedicated via task may release
+    # the frozen continuation.
+    for via, recovery in sorted(recovery_deliveries.items()):
+        if outcomes[via].status == "succeeded" and (
+            recovery.event.continue_to not in graph.nodes
+            or not _node_has_task_or_settled_generation(
+                projection,
+                graph.graph_id,
+                recovery.event.continue_to,
+            )
+        ):
+            deliver(
+                recovery.event.continue_to,
+                f"recovery:{recovery.event.task_id}:{via}",
+            )
+        elif outcomes[via].task is None:
+            deliver(via, f"recovery:{recovery.event.task_id}")
 
     return _Delivery(
         selected=selected,
@@ -625,14 +868,36 @@ def _decide_nodes(
     source_reads: dict[str, str],
     delivery: _Delivery,
     outcomes: dict[str, _Outcome],
+    recovery_deliveries: Mapping[str, _RecoveryDelivery],
     events: list[BaseModel],
     ready: list[ExecutableTask],
 ) -> None:
     """按拓扑序对每个尚无当前代结局的 node 做恰好一次激活/跳过决策。"""
+    dedicated_recovery_nodes = {
+        node.definition.recover.via for node in graph.nodes.values() if node.definition.recover is not None
+    }
+    recovery_continuation_sources: dict[str, list[str]] = {}
+    for source_id, node in graph.nodes.items():
+        recovery = node.definition.recover
+        if recovery is not None and recovery.continue_to in graph.nodes:
+            recovery_continuation_sources.setdefault(recovery.continue_to, []).append(source_id)
     for nid in sorted(graph.nodes, key=lambda n: graph.nodes[n].topology_rank):
         cnode = graph.nodes[nid]
         definition = cnode.definition
         tokens = delivery.selected.get(nid, [])
+        if nid in dedicated_recovery_nodes and nid not in recovery_deliveries:
+            # A dedicated fallback has no ordinary incoming control flow. It is
+            # neither activated nor structurally skipped until a failed source
+            # creates (or replays) its pinned recovery route.
+            continue
+        if not tokens and any(
+            outcomes[source_id].status == "unresolved"
+            for source_id in recovery_continuation_sources.get(nid, [])
+        ):
+            # A continuation has a synthetic incoming dependency from recovery.
+            # Do not freeze a structural skip while its recoverable source (or
+            # dedicated fallback) can still deliver the pinned continuation.
+            continue
         if outcomes[nid].task is not None and outcomes[nid].status == "unresolved":
             continue  # task 在飞行/重试中：不重放决策
         if outcomes[nid].status in ("succeeded", "skipped"):
@@ -1465,6 +1730,7 @@ def _activate(
             checkpoint_ns=projection.checkpoint_ns,
             graph_id=graph.graph_id,
             node_id=nid,
+            generation_ordinal=ordinal,
             activation_id=canonical_digest(
                 {
                     "invocation_id": projection.invocation_id,
@@ -1503,6 +1769,31 @@ def _emit_skip(
     )
 
 
+def _narrow_task_resources(
+    compiled: CompiledWorkflow,
+    graph: CompiledGraph,
+    nid: str,
+    *,
+    expanded_resources: dict[str, list[str]] | None,
+    expanded_outputs: list[str],
+) -> ResourceClaims:
+    """Apply ``narrow_claims`` when the node declares concrete resource templates."""
+    base = _task_resources(compiled, graph, nid)
+    if expanded_resources is None:
+        return base
+    try:
+        reads = (
+            tuple(ResourcePath.parse(value) for value in expanded_resources["reads"])
+            if expanded_resources["reads"]
+            else base.reads
+        )
+        writes = tuple(ResourcePath.parse(value) for value in expanded_resources["writes"])
+        outputs = tuple(ResourcePath.parse(value) for value in expanded_outputs)
+        return narrow_claims(base, reads=reads, writes=writes, outputs=outputs)
+    except ContractError as exc:
+        raise PlanError(f"node '{nid}' resource narrowing: {exc}") from exc
+
+
 def _build_task(
     compiled: CompiledWorkflow,
     graph: CompiledGraph,
@@ -1515,11 +1806,16 @@ def _build_task(
     prior_error_kind: ErrorKind | None = None,
 ) -> ExecutableTask:
     definition = graph.nodes[nid].definition
+    expanded_outputs = [_expand_static_output(o, context, nid) for o in definition.outputs]
     input_payload: dict[str, object] = {
         "with": dict(definition.with_),
         "context": {"change_id": context.change_id},
-        "outputs": [_expand_static_output(o, context, nid) for o in definition.outputs],
+        "outputs": expanded_outputs,
     }
+    expanded_resources: dict[str, list[str]] | None = None
+    if definition.resources is not None:
+        expanded_resources = _expand_resources(definition.resources, "__none__", None, context, nid)
+        input_payload["resources"] = expanded_resources
     retry_policy = _retry_policy(compiled, definition)
     task_id = _task_id(projection, graph.graph_id, nid, ordinal, None)
     return ExecutableTask(
@@ -1536,7 +1832,13 @@ def _build_task(
         retry_policy=retry_policy,
         timeout_policy=_timeout_policy(compiled, definition),
         target=definition.uses,
-        resources=_task_resources(compiled, graph, nid),
+        resources=_narrow_task_resources(
+            compiled,
+            graph,
+            nid,
+            expanded_resources=expanded_resources,
+            expanded_outputs=expanded_outputs,
+        ),
         task_key=None,
         budget=_budget_mark(definition, projection, task_id),
         prior_failure=prior_failure,
@@ -1621,18 +1923,19 @@ def _build_fan_out_task(
         raise PlanError(
             f"node '{nid}' fan_out child {index} task ID drifted from the frozen expansion (ledger integrity)"
         )
+    expanded_outputs = [
+        _expand_output(output, fan_out.item_as, item, context, nid) for output in definition.outputs
+    ]
     input_payload: dict[str, object] = {
         "with": _expand_templates(dict(definition.with_), fan_out.item_as, item, context, nid),
         "context": {"change_id": context.change_id},
-        "outputs": [
-            _expand_output(output, fan_out.item_as, item, context, nid) for output in definition.outputs
-        ],
+        "outputs": expanded_outputs,
         "fan_out": {"item_as": fan_out.item_as, "item": item, "task_key": display_key},
     }
+    expanded_resources: dict[str, list[str]] | None = None
     if definition.resources is not None:
-        input_payload["resources"] = _expand_resources(
-            definition.resources, fan_out.item_as, item, context, nid
-        )
+        expanded_resources = _expand_resources(definition.resources, fan_out.item_as, item, context, nid)
+        input_payload["resources"] = expanded_resources
     retry_policy = _retry_policy(compiled, definition)
     return ExecutableTask(
         task_id=task_id,
@@ -1648,7 +1951,13 @@ def _build_fan_out_task(
         retry_policy=retry_policy,
         timeout_policy=_timeout_policy(compiled, definition),
         target=definition.uses,
-        resources=_task_resources(compiled, graph, nid),
+        resources=_narrow_task_resources(
+            compiled,
+            graph,
+            nid,
+            expanded_resources=expanded_resources,
+            expanded_outputs=expanded_outputs,
+        ),
         task_key=display_key,
         budget=_budget_mark(definition, projection, task_id),
         prior_failure=prior_failure,
@@ -1733,6 +2042,26 @@ def _latest_task(
 
 def _node_has_task(projection: GraphProjection, nid: str) -> bool:
     return any(task.node_id == nid for task in projection.tasks.values())
+
+
+def _node_has_task_or_settled_generation(
+    projection: GraphProjection,
+    graph_id: str,
+    nid: str,
+) -> bool:
+    if _node_has_task(projection, nid):
+        return True
+    history = projection.node_histories.get(node_history_key(projection.checkpoint_ns, graph_id, nid))
+    if history is None or history.latest_generation_ordinal < 0:
+        return False
+    generation = history.generations_by_ordinal.get(history.latest_generation_ordinal)
+    return generation is not None and generation.status in (
+        "skipped",
+        "succeeded",
+        "failed",
+        "abandoned",
+        "stopped",
+    )
 
 
 def _succeeded_count(projection: GraphProjection, nid: str) -> int:
@@ -1923,6 +2252,7 @@ def _has_inflight(outcomes: dict[str, _Outcome]) -> bool:
 
 __all__ = [
     "PlanError",
+    "PlanErrorKind",
     "apply_state_updates",
     "fan_out_state_updates",
     "plan_superstep",

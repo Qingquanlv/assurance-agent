@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -112,6 +113,32 @@ def test_capture_is_deterministic_and_excludes_runtime_dirs(tmp_path: Path) -> N
     assert not (dest / "db.sqlite3").exists()
     assert not (dest / "db.sqlite3-wal").exists()
     # workspace 内的 .graph-runtime/tree.json 是物化元数据，不参与 diff。
+
+
+def test_capture_keeps_change_issue_ledger_but_excludes_change_coordinator_ledger(
+    tmp_path: Path,
+) -> None:
+    project = _make_project(tmp_path)
+    change = project / "qa" / "changes" / "CH-1"
+    (change / "events.jsonl").write_text('{"type":"coordinator"}\n', encoding="utf-8")
+    issue_ledger = change / "issues" / "events.jsonl"
+    issue_ledger.parent.mkdir(parents=True)
+    issue_ledger.write_text('{"type":"observation_recorded"}\n', encoding="utf-8")
+    project_issue_ledger = project / "qa" / "issues" / "events.jsonl"
+    project_issue_ledger.parent.mkdir(parents=True)
+    project_issue_ledger.write_text('{"type":"problem_detected"}\n', encoding="utf-8")
+
+    store = _store(project)
+    tree = store.capture(project)
+    dest = tmp_path / "captured"
+    dest.mkdir()
+    store.materialize(tree, dest)
+
+    assert not (dest / "qa" / "changes" / "CH-1" / "events.jsonl").exists()
+    assert (
+        dest / "qa" / "changes" / "CH-1" / "issues" / "events.jsonl"
+    ).read_text(encoding="utf-8") == '{"type":"observation_recorded"}\n'
+    assert not (dest / "qa" / "issues" / "events.jsonl").exists()
     assert (dest / ".graph-runtime" / "tree.json").exists()
     assert not (dest / ".graph-runtime" / "objects").exists()
 
@@ -581,7 +608,289 @@ def test_apply_tree_converges_after_partial_failure(tmp_path: Path, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
+# synchronized live overlays / targeted apply
+
+
+def _synchronized_issue_claims() -> ResourceClaims:
+    synchronized = (ResourcePath.parse("project:qa/issues/**"),)
+    return ResourceClaims(
+        reads=synchronized,
+        writes=(*synchronized, ResourcePath.parse("change:results/**")),
+        synchronized=synchronized,
+        exclusive=("project:issue-registry",),
+        authorization_writes=(*synchronized, ResourcePath.parse("change:results/**")),
+    )
+
+
+def test_synchronized_overlay_and_targeted_apply_preserve_unrelated_live_tree(
+    tmp_path: Path,
+) -> None:
+    project = _make_project(tmp_path)
+    issue = project / "qa" / "issues" / "ISSUE-1.json"
+    issue.parent.mkdir(parents=True)
+    issue.write_text('{"version":1}\n', encoding="utf-8")
+    store = _store(project)
+    invocation_tree = store.capture(project)
+
+    issue.write_text('{"version":2}\n', encoding="utf-8")
+    (project / "app" / "source.py").write_text("live version 2\n", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("must not be traversed\n", encoding="utf-8")
+    os.symlink(outside, project / "app" / "unrelated-live-link")
+    synchronized = (ResourcePath.parse("project:qa/issues/**"),)
+    overlay_tree = store.overlay_synchronized_paths(invocation_tree, project, synchronized)
+    workspace = _backend(project).create(task_id="update-issue", base_tree_id=overlay_tree, store=store)
+
+    assert (workspace.project_root / "qa/issues/ISSUE-1.json").read_text() == '{"version":2}\n'
+    assert (workspace.project_root / "app/source.py").read_text() == "app base\n"
+    assert not (workspace.project_root / "app/unrelated-live-link").exists()
+    (workspace.project_root / "qa/issues/ISSUE-1.json").write_text('{"version":3}\n', encoding="utf-8")
+    result = workspace.change_dir / "results" / "update.json"
+    result.parent.mkdir(parents=True)
+    result.write_text('{"updated":true}\n', encoding="utf-8")
+    write_set = store.freeze_write_set(workspace, claims=_synchronized_issue_claims())
+    issue_entry = next(
+        entry for entry in write_set.entries if entry.logical_path == "project:qa/issues/ISSUE-1.json"
+    )
+    assert issue_entry.before_sha256 == hashlib.sha256(b'{"version":2}\n').hexdigest()
+
+    store.apply_write_sets_to_synchronized_paths(project, (write_set,), synchronized)
+
+    assert issue.read_text() == '{"version":3}\n'
+    assert (project / "qa/changes/CH-1/results/update.json").read_text() == '{"updated":true}\n'
+    assert (project / "app/source.py").read_text() == "live version 2\n"
+    # Replaying an already-applied targeted update is a no-op.
+    store.apply_write_sets_to_synchronized_paths(project, (write_set,), synchronized)
+
+
+def test_synchronized_targeted_apply_converges_after_partial_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _make_project(tmp_path)
+    issue = project / "qa" / "issues" / "ISSUE-1.json"
+    issue.parent.mkdir(parents=True)
+    issue.write_text('{"version":1}\n', encoding="utf-8")
+    store = _store(project)
+    invocation_tree = store.capture(project)
+    issue.write_text('{"version":2}\n', encoding="utf-8")
+    synchronized = (ResourcePath.parse("project:qa/issues/**"),)
+    overlay_tree = store.overlay_synchronized_paths(invocation_tree, project, synchronized)
+    workspace = _backend(project).create(task_id="update-issue", base_tree_id=overlay_tree, store=store)
+    (workspace.project_root / "qa/issues/ISSUE-1.json").write_text('{"version":3}\n', encoding="utf-8")
+    result = workspace.change_dir / "results" / "update.json"
+    result.parent.mkdir(parents=True)
+    result.write_text('{"updated":true}\n', encoding="utf-8")
+    write_set = store.freeze_write_set(workspace, claims=_synchronized_issue_claims())
+
+    install = workspace_mod._install_file
+    calls = 0
+
+    def fail_second(path: Path, data: bytes, executable: bool) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("simulated targeted apply interruption")
+        install(path, data, executable)
+
+    monkeypatch.setattr(workspace_mod, "_install_file", fail_second)
+    with pytest.raises(OSError, match="targeted apply interruption"):
+        store.apply_write_sets_to_synchronized_paths(project, (write_set,), synchronized)
+    monkeypatch.setattr(workspace_mod, "_install_file", install)
+
+    store.apply_write_sets_to_synchronized_paths(project, (write_set,), synchronized)
+    assert issue.read_text() == '{"version":3}\n'
+    assert (project / "qa/changes/CH-1/results/update.json").read_text() == '{"updated":true}\n'
+
+
+def test_synchronized_targeted_apply_repairs_content_published_before_executable_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _make_project(tmp_path)
+    issue = project / "qa/issues/ISSUE-1.json"
+    issue.parent.mkdir(parents=True)
+    issue.write_text("version 1\n", encoding="utf-8")
+    issue.chmod(0o644)
+    store = _store(project)
+    invocation_tree = store.capture(project)
+    synchronized = (ResourcePath.parse("project:qa/issues/**"),)
+    overlay_tree = store.overlay_synchronized_paths(invocation_tree, project, synchronized)
+    workspace = _backend(project).create(task_id="update-issue", base_tree_id=overlay_tree, store=store)
+    workspace_issue = workspace.project_root / "qa/issues/ISSUE-1.json"
+    workspace_issue.write_text("version 2\n", encoding="utf-8")
+    workspace_issue.chmod(0o755)
+    write_set = store.freeze_write_set(workspace, claims=_synchronized_issue_claims())
+    real_install = workspace_mod._install_file
+
+    def publish_content_then_crash(path: Path, data: bytes, executable: bool) -> None:
+        assert executable is True
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        path.chmod(0o644)
+        raise OSError("simulated crash after replace before chmod")
+
+    monkeypatch.setattr(workspace_mod, "_install_file", publish_content_then_crash)
+    with pytest.raises(OSError, match="after replace before chmod"):
+        store.apply_write_sets_to_synchronized_paths(project, (write_set,), synchronized)
+    monkeypatch.setattr(workspace_mod, "_install_file", real_install)
+    assert issue.read_text() == "version 2\n"
+    assert issue.stat().st_mode & 0o100 == 0
+
+    store.apply_write_sets_to_synchronized_paths(project, (write_set,), synchronized)
+
+    assert issue.read_text() == "version 2\n"
+    assert issue.stat().st_mode & 0o100
+
+
+def test_synchronized_freeze_rejects_project_write_outside_declared_prefix(
+    tmp_path: Path,
+) -> None:
+    project = _make_project(tmp_path)
+    issue = project / "qa" / "issues" / "ISSUE-1.json"
+    issue.parent.mkdir(parents=True)
+    issue.write_text('{"version":1}\n', encoding="utf-8")
+    store = _store(project)
+    invocation_tree = store.capture(project)
+    synchronized = (ResourcePath.parse("project:qa/issues/**"),)
+    overlay_tree = store.overlay_synchronized_paths(invocation_tree, project, synchronized)
+    workspace = _backend(project).create(task_id="update-issue", base_tree_id=overlay_tree, store=store)
+    (workspace.project_root / "app/source.py").write_text("unauthorized synchronized write\n")
+    claims = ResourceClaims(
+        reads=synchronized,
+        writes=(*synchronized, ResourcePath.parse("project:app/**")),
+        synchronized=synchronized,
+        exclusive=("project:issue-registry",),
+        authorization_writes=(*synchronized, ResourcePath.parse("project:app/**")),
+    )
+
+    with pytest.raises(WorkspaceError, match="synchronized write outside declared prefixes"):
+        store.freeze_write_set(workspace, claims=claims)
+
+
+def test_synchronized_freeze_allows_repo_write_when_project_and_repo_roots_alias(
+    tmp_path: Path,
+) -> None:
+    """A repo-scoped test edit must not be reclassified as an unsynchronized project edit."""
+    project = _make_project(tmp_path)
+    issue = project / "qa" / "issues" / "ISSUE-1.json"
+    issue.parent.mkdir(parents=True)
+    issue.write_text('{"version":1}\n', encoding="utf-8")
+    store = _store(project)
+    invocation_tree = store.capture(project, repo_root=project)
+    synchronized = (ResourcePath.parse("project:qa/issues/**"),)
+    overlay_tree = store.overlay_synchronized_paths(invocation_tree, project, synchronized)
+    workspace = _backend(project).create(task_id="assurance", base_tree_id=overlay_tree, store=store)
+    (workspace.project_root / "tests/api/test_a.py").write_text("generated\n", encoding="utf-8")
+    claims = ResourceClaims(
+        reads=synchronized,
+        writes=(*synchronized, ResourcePath.parse("repo:tests/api/**")),
+        synchronized=synchronized,
+        exclusive=("project:issue-registry",),
+        authorization_writes=(*synchronized, ResourcePath.parse("repo:tests/api/**")),
+    )
+
+    write_set = store.freeze_write_set(workspace, claims=claims)
+
+    assert [entry.logical_path for entry in write_set.entries] == ["project:tests/api/test_a.py"]
+
+
+def test_synchronized_freeze_does_not_accept_repo_authorization_without_repo_write_claim(
+    tmp_path: Path,
+) -> None:
+    """An aliased authorization alone must not weaken synchronized write isolation."""
+    project = _make_project(tmp_path)
+    issue = project / "qa" / "issues" / "ISSUE-1.json"
+    issue.parent.mkdir(parents=True)
+    issue.write_text('{"version":1}\n', encoding="utf-8")
+    store = _store(project)
+    invocation_tree = store.capture(project, repo_root=project)
+    synchronized = (ResourcePath.parse("project:qa/issues/**"),)
+    overlay_tree = store.overlay_synchronized_paths(invocation_tree, project, synchronized)
+    workspace = _backend(project).create(task_id="assurance", base_tree_id=overlay_tree, store=store)
+    (workspace.project_root / "tests/api/test_a.py").write_text("generated\n", encoding="utf-8")
+    claims = ResourceClaims(
+        reads=synchronized,
+        writes=synchronized,
+        synchronized=synchronized,
+        exclusive=("project:issue-registry",),
+        authorization_writes=(*synchronized, ResourcePath.parse("repo:tests/api/**")),
+    )
+
+    with pytest.raises(WorkspaceError, match="synchronized write outside declared prefixes"):
+        store.freeze_write_set(workspace, claims=claims)
+
+
+def test_synchronized_freeze_rejects_non_test_repo_write_when_roots_alias(
+    tmp_path: Path,
+) -> None:
+    """The alias exception is only for the repo test namespaces used by assurance."""
+    project = _make_project(tmp_path)
+    issue = project / "qa" / "issues" / "ISSUE-1.json"
+    issue.parent.mkdir(parents=True)
+    issue.write_text('{"version":1}\n', encoding="utf-8")
+    store = _store(project)
+    invocation_tree = store.capture(project, repo_root=project)
+    synchronized = (ResourcePath.parse("project:qa/issues/**"),)
+    overlay_tree = store.overlay_synchronized_paths(invocation_tree, project, synchronized)
+    workspace = _backend(project).create(task_id="assurance", base_tree_id=overlay_tree, store=store)
+    (workspace.project_root / "app/source.py").write_text("unauthorized alias write\n", encoding="utf-8")
+    claims = ResourceClaims(
+        reads=synchronized,
+        writes=(*synchronized, ResourcePath.parse("repo:**")),
+        synchronized=synchronized,
+        exclusive=("project:issue-registry",),
+        authorization_writes=(*synchronized, ResourcePath.parse("repo:**")),
+    )
+
+    with pytest.raises(WorkspaceError, match="synchronized write outside declared prefixes"):
+        store.freeze_write_set(workspace, claims=claims)
+
+
+# ---------------------------------------------------------------------------
 # task-local git 便利索引
+
+
+def test_workspace_create_does_not_materialize_sibling_retro_dirs(tmp_path: Path) -> None:
+    """Narrow read claims must keep sibling Retro runs out of the task workspace."""
+    project = _make_project(tmp_path)
+    current = project / "qa" / "retro" / "retro-current"
+    sibling = project / "qa" / "retro" / "retro-other"
+    current.mkdir(parents=True)
+    sibling.mkdir(parents=True)
+    (current / "context.json").write_text('{"retro_id":"retro-current"}\n', encoding="utf-8")
+    (sibling / "context.json").write_text('{"retro_id":"retro-other"}\n', encoding="utf-8")
+    (sibling / "secret.md").write_text("leak\n", encoding="utf-8")
+    store = _store(project)
+    tree_id = store.capture(project)
+    claims = ResourceClaims(
+        reads=(ResourcePath.parse("project:qa/retro/retro-current/context.json"),),
+        writes=(
+            ResourcePath.parse("project:qa/retro/retro-current/proposal-candidates.json"),
+            ResourcePath.parse("project:qa/retro/retro-current/retro-summary.md"),
+        ),
+        authorization_writes=(
+            ResourcePath.parse("project:qa/retro/retro-current/proposal-candidates.json"),
+            ResourcePath.parse("project:qa/retro/retro-current/retro-summary.md"),
+        ),
+    )
+
+    workspace = _backend(project).create(
+        task_id="propose",
+        base_tree_id=tree_id,
+        store=store,
+        claims=claims,
+    )
+
+    assert (workspace.project_root / "qa/retro/retro-current/context.json").is_file()
+    assert not (workspace.project_root / "qa/retro/retro-other").exists()
+    assert not (workspace.project_root / "qa/retro/retro-other/secret.md").exists()
+    # Freeze/merge base stays the full overlay tree; sibling omission is materialization-only.
+    assert workspace.base_tree_id == tree_id
+    # Unclaimed project paths remain in the invocation-base snapshot.
+    assert (workspace.project_root / "app/source.py").is_file()
+    write_set = store.freeze_write_set(workspace, claims=claims)
+    assert write_set.base_tree_id == tree_id
+    assert write_set.entries == ()
 
 
 @pytest.mark.skipif(_GIT is None, reason="git binary not available")

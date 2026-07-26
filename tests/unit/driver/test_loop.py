@@ -56,14 +56,26 @@ def _run_result(exit_code: int, status: str, reason: str) -> RunResult:
     )
 
 
-def _patch_bundle(monkeypatch: pytest.MonkeyPatch, *, latest: str | None, result: RunResult) -> MagicMock:
+def _patch_bundle(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    latest: str | None,
+    result: RunResult,
+    latest_terminal: str | None = None,
+    restart: str = "once",
+) -> MagicMock:
     runtime = MagicMock()
     runtime.latest_root_invocation.return_value = latest
+    runtime.invocation_terminal.return_value = latest_terminal
     runtime.run.return_value = result
     runtime.resume.return_value = result
+    entrypoint = MagicMock()
+    entrypoint.restart = restart
+    compiled = MagicMock()
+    compiled.entrypoints.get.return_value = entrypoint
     bundle = MagicMock()
     bundle.runtime = runtime
-    bundle.compiled = MagicMock()
+    bundle.compiled = compiled
     monkeypatch.setattr(loop_mod, "build_graph_runtime", lambda **_kwargs: bundle)
     monkeypatch.setattr(
         loop_mod,
@@ -102,7 +114,10 @@ def test_completed_path_exit_0(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 def test_resume_when_invocation_exists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _prepare(tmp_path)
     runtime = _patch_bundle(
-        monkeypatch, latest="inv-existing", result=_run_result(EXIT_COMPLETED, "completed", "done")
+        monkeypatch,
+        latest="inv-existing",
+        latest_terminal=None,  # still active → resume
+        result=_run_result(EXIT_COMPLETED, "completed", "done"),
     )
     result = run_workflow_loop(
         project_root=tmp_path,
@@ -113,6 +128,27 @@ def test_resume_when_invocation_exists(tmp_path: Path, monkeypatch: pytest.Monke
     assert result.exit_code == EXIT_COMPLETED
     runtime.run.assert_not_called()
     runtime.resume.assert_called_once_with("inv-existing")
+
+
+def test_once_entrypoint_refuses_completed_restart(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _prepare(tmp_path)
+    runtime = _patch_bundle(
+        monkeypatch,
+        latest="inv-done",
+        latest_terminal="completed",
+        restart="once",
+        result=_run_result(EXIT_COMPLETED, "completed", "done"),
+    )
+    result = run_workflow_loop(
+        project_root=tmp_path,
+        change_id="CH-1",
+        entrypoint="full",
+        adapter=NeverCalledInvoker(),
+    )
+    assert result.exit_code == EXIT_ERROR
+    assert result.reason is not None and "already completed" in result.reason
+    runtime.run.assert_not_called()
+    runtime.resume.assert_not_called()
 
 
 def test_stopped_path_exit_20(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
