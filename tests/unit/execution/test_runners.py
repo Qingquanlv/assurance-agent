@@ -103,7 +103,9 @@ def test_run_pytest_target_scoped_to_test_paths(tmp_path: Path, monkeypatch) -> 
     assert "tests/api" not in captured_args[0]
 
 
-def test_run_pytest_target_missing_mapped_files_skipped_no_subprocess(tmp_path: Path, monkeypatch) -> None:
+def test_run_pytest_target_missing_mapped_files_fails_closed_no_subprocess(
+    tmp_path: Path, monkeypatch
+) -> None:
     (tmp_path / "tests" / "api").mkdir(parents=True)
 
     def boom(*a, **k):
@@ -119,8 +121,79 @@ def test_run_pytest_target_missing_mapped_files_skipped_no_subprocess(tmp_path: 
         test_dir="tests/api",
         test_paths=["tests/api/test_missing.py"],
     )
-    assert result.status == "skipped"
-    assert "test_missing.py" in result.unmapped_tests[0].message
+    assert result.status == "failed"
+    assert result.total == 1
+    assert result.failed == 1
+    assert "test_missing.py" in result.cases[0].message
+
+
+def test_run_pytest_target_partial_mapping_fails_closed_no_subprocess(tmp_path: Path, monkeypatch) -> None:
+    api_dir = tmp_path / "tests" / "api"
+    api_dir.mkdir(parents=True)
+    (api_dir / "test_dept.py").write_text("", encoding="utf-8")
+
+    def boom(*args, **kwargs):
+        raise AssertionError("subprocess must not run against a partial mapped file set")
+
+    monkeypatch.setattr(runners.subprocess, "run", boom)
+    result = run_pytest_target(
+        project_root=tmp_path,
+        batch_dir=tmp_path / "batch",
+        change_id="CH-1",
+        batch_id="b1",
+        target="api",
+        test_dir="tests/api",
+        test_paths=["tests/api/test_dept.py", "tests/api/test_missing.py"],
+    )
+
+    assert result.status == "failed"
+    assert "test_missing.py" in result.cases[0].message
+
+
+def test_run_pytest_target_scoped_empty_fails_closed_no_subprocess(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "tests" / "fuzz").mkdir(parents=True)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("subprocess must not run for a scoped-empty current plan")
+
+    monkeypatch.setattr(runners.subprocess, "run", boom)
+    result = run_pytest_target(
+        project_root=tmp_path,
+        batch_dir=tmp_path / "batch",
+        change_id="CH-1",
+        batch_id="b1",
+        target="fuzz",
+        test_dir="tests/fuzz",
+        test_paths=[],
+    )
+
+    assert result.status == "failed"
+    assert result.failed == 1
+    assert "no executable test_*.py" in result.cases[0].message
+
+
+def test_run_pytest_target_rejects_traversal_without_subprocess(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "tests" / "fuzz").mkdir(parents=True)
+    outside = tmp_path / "tests" / "api"
+    outside.mkdir()
+    (outside / "test_history.py").write_text("", encoding="utf-8")
+
+    def boom(*args, **kwargs):
+        raise AssertionError("subprocess must not run for an escaped mapped path")
+
+    monkeypatch.setattr(runners.subprocess, "run", boom)
+    result = run_pytest_target(
+        project_root=tmp_path,
+        batch_dir=tmp_path / "batch",
+        change_id="CH-1",
+        batch_id="b1",
+        target="fuzz",
+        test_dir="tests/fuzz",
+        test_paths=["tests/fuzz/../api/test_history.py"],
+    )
+
+    assert result.status == "failed"
+    assert "test_history.py" in result.cases[0].message
 
 
 def test_run_pytest_target_missing_dir_is_skipped_no_subprocess(tmp_path: Path, monkeypatch) -> None:
@@ -241,9 +314,7 @@ def test_build_scenario_verdicts_accepts_dict_endpoint() -> None:
     assert verdicts[0].verdict == "PASS"
 
 
-def test_run_performance_target_only_executes_change_mapped_locustfiles(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_run_performance_target_only_executes_change_mapped_locustfiles(tmp_path: Path, monkeypatch) -> None:
     perf_dir = tmp_path / "tests" / "perf"
     perf_dir.mkdir(parents=True)
     dept = perf_dir / "locustfile_dept.py"
@@ -269,8 +340,7 @@ def test_run_performance_target_only_executes_change_mapped_locustfiles(
         calls.append(args)
         prefix = Path(args[args.index("--csv") + 1])
         prefix.with_name(prefix.name + "_stats.csv").write_text(
-            "Type,Name,Request Count,Failure Count,Median Response Time,95%\n"
-            "GET,dept-list,10,0,20,30\n",
+            "Type,Name,Request Count,Failure Count,Median Response Time,95%\nGET,dept-list,10,0,20,30\n",
             encoding="utf-8",
         )
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")

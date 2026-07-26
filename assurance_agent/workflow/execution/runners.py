@@ -17,6 +17,7 @@ from assurance_agent.artifacts.models import CoverageThreshold, PerformanceScena
 from assurance_agent.workflow.execution.exec_config import PerfConfig
 from assurance_agent.workflow.execution.pytest_parser import parse_pytest_json
 from assurance_agent.workflow.execution.results import (
+    CaseResult,
     CoverageResult,
     PerformanceResult,
     PytestTarget,
@@ -56,16 +57,43 @@ def run_pytest_target(
     log_path = raw_dir / f"{target}.log"
     report_path = raw_dir / f"{target}-report.json"
 
-    if test_paths:
+    if test_paths is not None:
         # Change-scoped run: only the files this change's codegen plan mapped,
         # never the shared tests/<target>/ tree (which holds every other change's tests too).
-        existing = [p for p in test_paths if (project_root / p).is_file()]
-        if not existing:
-            source = ResultSource(framework="pytest", raw_log=str(log_path), report_json=str(report_path))
-            reason = f"Mapped test file(s) not found: {', '.join(test_paths)} — {target} SKIPPED."
-            command = f"uv run pytest {' '.join(test_paths)}"
-            return _skipped_target(change_id, batch_id, target, command, source, reason)
-        pytest_targets = existing
+        source = ResultSource(framework="pytest", raw_log=str(log_path), report_json=str(report_path))
+        command = f"uv run pytest {' '.join(test_paths)}".rstrip()
+        if not test_paths:
+            return _failed_target(
+                change_id,
+                batch_id,
+                target,
+                command,
+                source,
+                f"Scoped {target} plan contains no executable test_*.py mapping.",
+            )
+
+        test_root = (project_root / test_dir).resolve()
+        invalid: list[str] = []
+        for relative in test_paths:
+            relative_path = Path(relative)
+            candidate = (project_root / relative_path).resolve()
+            if not (
+                candidate.is_relative_to(test_root)
+                and candidate.is_file()
+                and relative_path.name.startswith("test_")
+                and relative_path.suffix == ".py"
+            ):
+                invalid.append(relative)
+        if invalid:
+            return _failed_target(
+                change_id,
+                batch_id,
+                target,
+                command,
+                source,
+                "Mapped test file(s) are missing or invalid: " + ", ".join(sorted(set(invalid))) + ".",
+            )
+        pytest_targets = test_paths
     else:
         if not (project_root / test_dir).exists():
             source = ResultSource(framework="pytest", raw_log=str(log_path), report_json=str(report_path))
@@ -116,8 +144,6 @@ def _skipped_target(
     source: ResultSource,
     reason: str,
 ) -> TargetResult:
-    from assurance_agent.workflow.execution.results import CaseResult
-
     return TargetResult(
         change_id=change_id,
         batch_id=batch_id,
@@ -141,6 +167,42 @@ def _skipped_target(
                 raw_log_ref=source.raw_log,
             )
         ],
+    )
+
+
+def _failed_target(
+    change_id: str,
+    batch_id: str,
+    target: PytestTarget,
+    command: str,
+    source: ResultSource,
+    reason: str,
+) -> TargetResult:
+    log_path = Path(source.raw_log)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(reason, encoding="utf-8")
+    case = CaseResult(
+        case_id="",
+        status="failed",
+        file="",
+        test_name=reason,
+        duration_ms=0,
+        message=reason,
+        raw_log_ref=source.raw_log,
+    )
+    return TargetResult(
+        change_id=change_id,
+        batch_id=batch_id,
+        target=target,
+        status="failed",
+        command=command,
+        source=source,
+        total=1,
+        passed=0,
+        failed=1,
+        skipped=0,
+        cases=[case],
+        unmapped_tests=[],
     )
 
 
@@ -241,15 +303,13 @@ def run_performance_target(
     if not scenarios:
         return skipped("No type:Performance cases with thresholds found — performance SKIPPED.")
     perf_dir = project_root / "tests" / "perf"
-    if test_paths:
+    if test_paths is not None:
         resolved_perf_dir = perf_dir.resolve()
         locustfiles = []
         invalid_locustfiles: list[str] = []
         for relative in test_paths:
             relative_path = Path(relative)
-            if not (
-                relative_path.name.startswith("locustfile") and relative_path.suffix == ".py"
-            ):
+            if not (relative_path.name.startswith("locustfile") and relative_path.suffix == ".py"):
                 continue
             candidate = (project_root / relative).resolve()
             if candidate.parent != resolved_perf_dir or not candidate.is_file():

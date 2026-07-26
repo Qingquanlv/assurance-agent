@@ -46,12 +46,12 @@ def test_ignores_paths_outside_mapping_section(tmp_path: Path) -> None:
 
 
 def test_returns_empty_when_plan_missing(tmp_path: Path) -> None:
-    assert resolve_test_paths(tmp_path, "api") == []
+    assert resolve_test_paths(tmp_path, "api") is None
 
 
 def test_returns_empty_when_no_mapping_section(tmp_path: Path) -> None:
     _write_plan(tmp_path, "e2e", "# E2E Codegen Plan\n\nNo mapping table here.\n")
-    assert resolve_test_paths(tmp_path, "e2e") == []
+    assert resolve_test_paths(tmp_path, "e2e") is None
 
 
 def test_multiple_target_files_sorted_and_deduped(tmp_path: Path) -> None:
@@ -91,3 +91,43 @@ def test_performance_paths_come_from_target_files_section(tmp_path: Path) -> Non
         "tests/perf/adapters/dept_seed.py",
         "tests/perf/locustfile_dept.py",
     ]
+
+
+def test_fuzz_paths_come_from_target_files_and_exclude_support_modules(tmp_path: Path) -> None:
+    text = """# Fuzz Codegen Plan
+
+## Target Files
+
+| Path | Policy |
+|------|--------|
+| `tests/fuzz/test_dept_fuzz.py` | retarget |
+| `tests/fuzz/strategies/dept.py` | reuse |
+| `tests/fuzz/adapters/dept.py` | reuse |
+| `tests/testdata/domain/dept.py` | reuse |
+"""
+    _write_plan(tmp_path, "fuzz", text)
+
+    assert resolve_test_paths(tmp_path, "fuzz") == ["tests/fuzz/test_dept_fuzz.py"]
+
+
+def test_fuzz_parseable_target_files_without_a_test_is_scoped_empty(tmp_path: Path) -> None:
+    _write_plan(
+        tmp_path,
+        "fuzz",
+        "## Target Files\n\n- `tests/fuzz/strategies/dept.py`\n- `tests/fuzz/adapters/dept.py`\n",
+    )
+
+    assert resolve_test_paths(tmp_path, "fuzz") == []
+
+
+def test_fuzz_rejects_traversal_and_nested_test_paths(tmp_path: Path) -> None:
+    _write_plan(
+        tmp_path,
+        "fuzz",
+        "## Target Files\n\n"
+        "- `tests/fuzz/test_dept_fuzz.py`\n"
+        "- `tests/fuzz/../api/test_history.py`\n"
+        "- `tests/fuzz/nested/test_history.py`\n",
+    )
+
+    assert resolve_test_paths(tmp_path, "fuzz") == ["tests/fuzz/test_dept_fuzz.py"]
