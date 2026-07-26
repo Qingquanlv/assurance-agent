@@ -13,6 +13,7 @@ from assurance_agent.change_location import ChangeNotFoundError, resolve_change
 from assurance_agent.identifiers import UnsafeIdentifierError
 from assurance_agent.workflow.driver.adapter import DriverError
 from assurance_agent.workflow.driver.driver_state import (
+    driver_status_for_graph,
     evaluate_start_guard,
     project_graph_pointer,
     read_driver_state,
@@ -373,15 +374,7 @@ def workflow_resume(
                 invocation_id=result.invocation_id,
                 checkpoint_id=result.status.checkpoint_id,
                 event_seq=result.status.event_seq,
-                status=(
-                    "completed"
-                    if result.status.status == "completed"
-                    else "paused"
-                    if result.status.status == "interrupted"
-                    else "failed"
-                    if result.status.status in {"stopped", "failed"}
-                    else "running"
-                ),
+                status=driver_status_for_graph(result.status.status),
             ),
         )
 

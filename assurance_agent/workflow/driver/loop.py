@@ -27,6 +27,7 @@ from assurance_agent.workflow.driver.driver_state import (
     DriverStatus,
     acquire_lock,
     create_initial_driver_state,
+    driver_status_for_graph,
     evaluate_start_guard,
     now_iso,
     project_graph_pointer,
@@ -64,14 +65,7 @@ def build_driver_telemetry(event_type: str, run_id: str, **extra: object) -> dic
     return event
 
 
-def _driver_status_for(graph_status: str) -> DriverStatus:
-    if graph_status == "completed":
-        return "completed"
-    if graph_status == "interrupted":
-        return "paused"
-    if graph_status in {"stopped", "failed"}:
-        return "failed"
-    return "running"
+_driver_status_for = driver_status_for_graph
 
 
 def run_workflow_loop(

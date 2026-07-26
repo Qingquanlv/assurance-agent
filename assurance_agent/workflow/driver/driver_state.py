@@ -180,6 +180,16 @@ def _latest_graph_terminal(change_dir: Path, entrypoint: str | None = None) -> t
         return None, None
 
 
+def driver_status_for_graph(graph_status: str) -> DriverStatus:
+    if graph_status == "completed":
+        return "completed"
+    if graph_status == "interrupted":
+        return "paused"
+    if graph_status in {"stopped", "failed"}:
+        return "failed"
+    return "running"
+
+
 def evaluate_start_guard(change_dir: Path, entrypoint: str | None = None) -> StartGuard:
     """Refuse duplicate live processes; resume otherwise.
 
