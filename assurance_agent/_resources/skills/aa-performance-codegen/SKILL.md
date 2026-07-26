@@ -80,7 +80,8 @@ def _verify_sut_ready(environment, **_kwargs):
     if resp.status_code != 200:
         environment.runner.quit()
         raise SystemExit(
-            f"SUT not ready at {base_url}: GET /openapi.json -> "
+            f"SUT not ready at {base_url} ({settings.base_url_source}): "
+            "GET /openapi.json -> "
             f"HTTP {resp.status_code}"
         )
 
@@ -104,11 +105,11 @@ class MenuListUser(HttpUser):
 - Output exactly to `tests/perf/locustfile_<module>.py`.
 - Run bulk setup as a separate pre-load phase through `tests/perf/adapters/`; never initialize an ORM/session from a Locust user or task.
 - The adapter must write a generated-data manifest and provide idempotent cleanup. It must not import API/E2E/Fuzz adapters.
-- `performance-codegen-plan.md` is a codegen guidance artifact, not the runner's execution target list. Phase 8 `aa-run` discovers executable Locust files via `tests/perf/locustfile*.py` and reads thresholds/load from selected `type: Performance` cases.
+- `performance-codegen-plan.md` is also the runner's change-scope contract. Its `Target Files` section MUST list every Locust file generated for this change. Phase 8 `aa-run` executes only those mapped `tests/perf/locustfile*.py` files and reads thresholds/load from selected `type: Performance` cases.
 
 ## Runner discovery contract (aa-run)
 
-Phase 8 `aa-run` does **not** read `performance-codegen-plan.md` for execution targets. It discovers locustfiles via glob `tests/perf/locustfile*.py`, applies load/thresholds from selected Performance cases, and writes `performance-result.json`. Emit locustfiles under `tests/perf/` so this cross-skill contract holds.
+Phase 8 `aa-run` reads the `Target Files` section of `performance-codegen-plan.md` and executes only the mapped `tests/perf/locustfile*.py` files for the current change. It applies load/thresholds from selected Performance cases and writes `performance-result.json`. Emit every generated locustfile under `tests/perf/` and list it under `Target Files` so this cross-skill contract holds. Legacy changes whose plan is absent or has no parseable `Target Files` section retain full `tests/perf/locustfile*.py` discovery as a compatibility fallback.
 
 ## Test Failure Integrity
 

@@ -124,6 +124,7 @@ def run_change(
             change_id=change_id,
             batch_id=batch_id,
             perf_config=perf_config,
+            test_paths=resolve_test_paths(change_dir, "performance"),
         )
         if selected.performance
         else None

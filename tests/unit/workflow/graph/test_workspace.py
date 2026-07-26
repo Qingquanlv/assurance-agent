@@ -741,6 +741,85 @@ def test_synchronized_freeze_rejects_project_write_outside_declared_prefix(
         store.freeze_write_set(workspace, claims=claims)
 
 
+def test_synchronized_freeze_allows_repo_write_when_project_and_repo_roots_alias(
+    tmp_path: Path,
+) -> None:
+    """A repo-scoped test edit must not be reclassified as an unsynchronized project edit."""
+    project = _make_project(tmp_path)
+    issue = project / "qa" / "issues" / "ISSUE-1.json"
+    issue.parent.mkdir(parents=True)
+    issue.write_text('{"version":1}\n', encoding="utf-8")
+    store = _store(project)
+    invocation_tree = store.capture(project, repo_root=project)
+    synchronized = (ResourcePath.parse("project:qa/issues/**"),)
+    overlay_tree = store.overlay_synchronized_paths(invocation_tree, project, synchronized)
+    workspace = _backend(project).create(task_id="assurance", base_tree_id=overlay_tree, store=store)
+    (workspace.project_root / "tests/api/test_a.py").write_text("generated\n", encoding="utf-8")
+    claims = ResourceClaims(
+        reads=synchronized,
+        writes=(*synchronized, ResourcePath.parse("repo:tests/api/**")),
+        synchronized=synchronized,
+        exclusive=("project:issue-registry",),
+        authorization_writes=(*synchronized, ResourcePath.parse("repo:tests/api/**")),
+    )
+
+    write_set = store.freeze_write_set(workspace, claims=claims)
+
+    assert [entry.logical_path for entry in write_set.entries] == ["project:tests/api/test_a.py"]
+
+
+def test_synchronized_freeze_does_not_accept_repo_authorization_without_repo_write_claim(
+    tmp_path: Path,
+) -> None:
+    """An aliased authorization alone must not weaken synchronized write isolation."""
+    project = _make_project(tmp_path)
+    issue = project / "qa" / "issues" / "ISSUE-1.json"
+    issue.parent.mkdir(parents=True)
+    issue.write_text('{"version":1}\n', encoding="utf-8")
+    store = _store(project)
+    invocation_tree = store.capture(project, repo_root=project)
+    synchronized = (ResourcePath.parse("project:qa/issues/**"),)
+    overlay_tree = store.overlay_synchronized_paths(invocation_tree, project, synchronized)
+    workspace = _backend(project).create(task_id="assurance", base_tree_id=overlay_tree, store=store)
+    (workspace.project_root / "tests/api/test_a.py").write_text("generated\n", encoding="utf-8")
+    claims = ResourceClaims(
+        reads=synchronized,
+        writes=synchronized,
+        synchronized=synchronized,
+        exclusive=("project:issue-registry",),
+        authorization_writes=(*synchronized, ResourcePath.parse("repo:tests/api/**")),
+    )
+
+    with pytest.raises(WorkspaceError, match="synchronized write outside declared prefixes"):
+        store.freeze_write_set(workspace, claims=claims)
+
+
+def test_synchronized_freeze_rejects_non_test_repo_write_when_roots_alias(
+    tmp_path: Path,
+) -> None:
+    """The alias exception is only for the repo test namespaces used by assurance."""
+    project = _make_project(tmp_path)
+    issue = project / "qa" / "issues" / "ISSUE-1.json"
+    issue.parent.mkdir(parents=True)
+    issue.write_text('{"version":1}\n', encoding="utf-8")
+    store = _store(project)
+    invocation_tree = store.capture(project, repo_root=project)
+    synchronized = (ResourcePath.parse("project:qa/issues/**"),)
+    overlay_tree = store.overlay_synchronized_paths(invocation_tree, project, synchronized)
+    workspace = _backend(project).create(task_id="assurance", base_tree_id=overlay_tree, store=store)
+    (workspace.project_root / "app/source.py").write_text("unauthorized alias write\n", encoding="utf-8")
+    claims = ResourceClaims(
+        reads=synchronized,
+        writes=(*synchronized, ResourcePath.parse("repo:**")),
+        synchronized=synchronized,
+        exclusive=("project:issue-registry",),
+        authorization_writes=(*synchronized, ResourcePath.parse("repo:**")),
+    )
+
+    with pytest.raises(WorkspaceError, match="synchronized write outside declared prefixes"):
+        store.freeze_write_set(workspace, claims=claims)
+
+
 # ---------------------------------------------------------------------------
 # task-local git 便利索引
 

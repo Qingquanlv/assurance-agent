@@ -1,10 +1,10 @@
 """Resolve the exact test files a change owns, scoped from its codegen plan.
 
-Each `qa/changes/<change-id>/plans/<target>-codegen-plan.md` documents a
-"Test Function Mapping" table (`| Case ID | Test Function | Target File |`)
-listing the concrete test file(s) generated for that change. `aa run` must
-execute only those files — never the whole shared `tests/<target>/` tree,
-which also contains every other change's tests.
+Each `qa/changes/<change-id>/plans/<target>-codegen-plan.md` documents the
+concrete test file(s) generated for that change. API/E2E/Fuzz use the
+"Test Function Mapping" section; Performance uses "Target Files". `aa run`
+must execute only those files — never the whole shared `tests/<target>/`
+tree, which also contains every other change's tests.
 
 If a plan is absent or has no parseable mapping table, callers fall back to
 running the full `test_dir` (existing behaviour) — this module never widens
@@ -31,7 +31,10 @@ def resolve_test_paths(change_dir: Path, target: str) -> list[str]:
         text = plan_path.read_text(encoding="utf-8")
     except OSError:
         return []
-    section = _extract_section(text, "Test Function Mapping")
+    section = _extract_section(
+        text,
+        "Target Files" if target == "performance" else "Test Function Mapping",
+    )
     if section is None:
         return []
     paths = {m.group(1) for m in _BACKTICK_PATH_RE.finditer(section)}

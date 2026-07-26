@@ -653,6 +653,7 @@ class TreeStore:
                 claims.synchronized
                 and logical_path.root == "project"
                 and not any(path_covers(prefix, logical_path) for prefix in claims.synchronized)
+                and not _is_declared_aliased_repo_test_write(base.roots, rel, claims)
             ):
                 raise WorkspaceError(f"synchronized write outside declared prefixes: {logical}")
             if not _is_authorized(base.roots, rel, claims):
@@ -1031,6 +1032,36 @@ def _is_authorized(roots: Mapping[str, str], rel: str, claims: ResourceClaims) -
     for name, logical in _resolutions(roots, rel):
         claim = ResourcePath.parse(f"{name}:{logical}")
         if any(path_covers(authorization, claim) for authorization in claims.authorization_writes):
+            return True
+    return False
+
+
+def _is_declared_aliased_repo_test_write(
+    roots: Mapping[str, str],
+    rel: str,
+    claims: ResourceClaims,
+) -> bool:
+    """Return whether an aliased physical path is an authorized repo test write.
+
+    ``project`` and ``repo`` may intentionally point at the same SUT root.  The
+    canonical logical name is then ``project`` by lexical tie-break, but a graph
+    footprint can still legitimately own the path through a narrower
+    ``repo:tests/**`` claim.  This exception is deliberately limited to that
+    execution-contract namespace: a broad ``repo:**`` claim must not turn into
+    a general bypass of synchronized project scope.  Require both a write claim
+    and authorization so a broad read or authorization alone is insufficient.
+    """
+    if roots.get("repo") != roots.get("project"):
+        return False
+    for name, logical in _resolutions(roots, rel):
+        if name != "repo":
+            continue
+        path = ResourcePath.parse(f"{name}:{logical}")
+        if not path.segments or path.segments[0] != "tests":
+            continue
+        if any(path_covers(write, path) for write in claims.writes) and any(
+            path_covers(authorization, path) for authorization in claims.authorization_writes
+        ):
             return True
     return False
 

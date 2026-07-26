@@ -38,6 +38,13 @@ set -uo pipefail
 # Paths & config
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOOP_HELPERS="$SCRIPT_DIR/cursor-loop-helpers.sh"
+if [ ! -f "$LOOP_HELPERS" ]; then
+  printf 'ERROR: missing %s\n' "$LOOP_HELPERS" >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+source "$LOOP_HELPERS"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Python migration: skills are synced INTO the SUT project by `aa skill refresh`.
 AA_SKILLS_ROOT="${AA_SKILLS_ROOT:-$PROJECT_ROOT/skills}"
@@ -240,7 +247,10 @@ clean_generated_artifacts() {
     abspath="$PROJECT_ROOT/$target"
     if [ -e "$abspath" ]; then
       log "clean: removing $target/ (generated benchmark artifacts)"
-      rm -rf "$abspath"
+      if ! remove_generated_artifact_tree "$abspath"; then
+        log "ERROR: clean failed for $target/ after restoring owner write permissions"
+        exit 1
+      fi
     else
       log "clean: $target/ absent - nothing to remove"
     fi
@@ -570,30 +580,7 @@ run_archive_stage() {
 # Prefer an archived change from this run; else any completed row change_id.
 # ROW_RESULTS fields: change_id|terminal|detail|archived=yes|no
 retro_shell_change_id() {
-  local cid term detail archive_field archived
-  for row in "${ROW_RESULTS[@]+"${ROW_RESULTS[@]}"}"; do
-    IFS='|' read -r cid term detail archive_field <<<"$row"
-    archived="${archive_field#archived=}"
-    if [ "$archived" = "yes" ] && [ -d "qa/changes/$cid" ]; then
-      printf '%s' "$cid"
-      return 0
-    fi
-  done
-  for row in "${ROW_RESULTS[@]+"${ROW_RESULTS[@]}"}"; do
-    IFS='|' read -r cid term detail archive_field <<<"$row"
-    if [ "$term" = "completed" ] && [ -d "qa/changes/$cid" ]; then
-      printf '%s' "$cid"
-      return 0
-    fi
-  done
-  # Fall back: newest active change dir (session shell only).
-  local newest
-  newest="$(ls -1d qa/changes/*/ 2>/dev/null | sort | tail -1 || true)"
-  if [ -n "$newest" ]; then
-    basename "$newest"
-    return 0
-  fi
-  return 1
+  select_retro_shell_change_id "$PROJECT_ROOT/qa/changes" "${ROW_RESULTS[@]+"${ROW_RESULTS[@]}"}"
 }
 
 # Capture artifacts from the newest qa/retro/retro-* after a collect/entrypoint run.
@@ -607,6 +594,7 @@ capture_latest_retro_artifacts() {
   [ -n "$latest_retro" ] || return 1
   python3 -c 'import os,sys; raise SystemExit(0 if os.path.getmtime(sys.argv[1]) >= float(sys.argv[2]) else 1)' \
     "$latest_retro" "$min_epoch" || return 1
+  retro_artifacts_complete "$latest_retro" "$RETRO_DRY_RUN" || return 1
   retro_id="$(basename "$latest_retro")"
   if [ -f "$latest_retro/context.json" ]; then
     signal_count="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("signal_count",""))' "$latest_retro/context.json" 2>/dev/null || true)"
@@ -1052,6 +1040,7 @@ retro_id=""
 signal_count=""
 change_count=""
 nightly_collect_exit=""
+nightly_collect_closed="false"
 nightly_review_queue=""
 if [ "$DO_NIGHTLY_COLLECT" = "true" ]; then
   retro_stage_epoch="$(python3 -c 'import time; print(time.time())')"
@@ -1065,6 +1054,7 @@ if [ "$DO_NIGHTLY_COLLECT" = "true" ]; then
       if [ "$nightly_collect_exit" = "10" ]; then
         log "retro collect: no-op (exit 10) retro_id=${retro_id:-n/a}"
       else
+        nightly_collect_closed="true"
         log "retro collect complete: mode=$([ "$USE_WORKFLOW_RETRO" = "true" ] && echo workflow || echo nightly) retro_id=${retro_id:-unknown} signal_count=${signal_count:-?} change_count=${change_count:-?}"
         # An empty window while change dirs exist on disk means candidate
         # enumeration rejected everything — a structural failure that otherwise
@@ -1198,4 +1188,11 @@ cat "$SUMMARY"
 if [ "$EVAL_GATE_EXIT" -ne 0 ]; then
   log "ERROR: eval regression gate failed (worst verdict: $EVAL_WORST)"
   exit "$EVAL_GATE_EXIT"
+fi
+
+if ! benchmark_result_exit_code \
+  "$DO_ARCHIVE" "$DO_NIGHTLY_COLLECT" "${nightly_collect_exit:-0}" "$nightly_collect_closed" \
+  "${ROW_RESULTS[@]+"${ROW_RESULTS[@]}"}"; then
+  log "ERROR: benchmark result gate failed (workflow/archive/retro result is not closed)"
+  exit 1
 fi

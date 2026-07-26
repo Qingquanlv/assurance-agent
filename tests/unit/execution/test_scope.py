@@ -67,3 +67,27 @@ def test_multiple_target_files_sorted_and_deduped(tmp_path: Path) -> None:
 """
     _write_plan(tmp_path, "api", text)
     assert resolve_test_paths(tmp_path, "api") == ["tests/api/test_a.py", "tests/api/test_b.py"]
+
+
+def test_performance_paths_come_from_target_files_section(tmp_path: Path) -> None:
+    text = """# Performance Codegen Plan
+
+## Target Files
+
+| File | Purpose |
+|------|---------|
+| `tests/perf/locustfile_dept.py` | selected load test |
+| `tests/perf/adapters/dept_seed.py` | setup helper |
+
+## Task Mapping
+
+| Capability | Target File |
+|------------|-------------|
+| dept-list | `tests/perf/locustfile_unrelated.py` |
+"""
+    _write_plan(tmp_path, "performance", text)
+
+    assert resolve_test_paths(tmp_path, "performance") == [
+        "tests/perf/adapters/dept_seed.py",
+        "tests/perf/locustfile_dept.py",
+    ]

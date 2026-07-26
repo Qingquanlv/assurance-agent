@@ -204,6 +204,7 @@ def run_performance_target(
     change_id: str,
     batch_id: str,
     perf_config: PerfConfig,
+    test_paths: list[str] | None = None,
 ) -> PerformanceResult:
     raw_dir = batch_dir / _RAW
     log_path = raw_dir / "performance.log"
@@ -221,13 +222,53 @@ def run_performance_target(
             source={"raw_log": str(log_path)},
         )
 
+    def failed_contract(reason: str) -> PerformanceResult:
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(reason, encoding="utf-8")
+        return PerformanceResult(
+            change_id=change_id,
+            batch_id=batch_id,
+            available=True,
+            status="FAIL",
+            scenarios=[],
+            command="",
+            source={"raw_log": str(log_path)},
+        )
+
     if not perf_config.enabled:
         return skipped("Performance disabled in .aa/config.yaml (performance.enabled=false).")
     scenarios = load_perf_scenarios(change_dir)
     if not scenarios:
         return skipped("No type:Performance cases with thresholds found — performance SKIPPED.")
     perf_dir = project_root / "tests" / "perf"
-    locustfiles = sorted(perf_dir.glob("locustfile*.py")) if perf_dir.is_dir() else []
+    if test_paths:
+        resolved_perf_dir = perf_dir.resolve()
+        locustfiles = []
+        invalid_locustfiles: list[str] = []
+        for relative in test_paths:
+            relative_path = Path(relative)
+            if not (
+                relative_path.name.startswith("locustfile") and relative_path.suffix == ".py"
+            ):
+                continue
+            candidate = (project_root / relative).resolve()
+            if candidate.parent != resolved_perf_dir or not candidate.is_file():
+                invalid_locustfiles.append(relative)
+                continue
+            locustfiles.append(candidate)
+        if invalid_locustfiles:
+            return failed_contract(
+                "Mapped performance locustfile(s) are missing or invalid: "
+                + ", ".join(sorted(set(invalid_locustfiles)))
+                + "."
+            )
+        locustfiles = sorted(set(locustfiles))
+        if not locustfiles:
+            return failed_contract(
+                "Performance Target Files contains no executable tests/perf/locustfile*.py mapping."
+            )
+    else:
+        locustfiles = sorted(perf_dir.glob("locustfile*.py")) if perf_dir.is_dir() else []
     if not locustfiles:
         return skipped("No locustfiles under tests/perf/ — performance SKIPPED.")
 

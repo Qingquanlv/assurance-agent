@@ -135,4 +135,18 @@ def test_build_node_prompt_skips_transient_prior_failure() -> None:
         prior_error_kind="timeout",
     )
     assert "PRIOR ATTEMPT FAILED" not in prompt
+
+
+def test_plan_reviewer_prompt_frontloads_nonempty_required_capabilities_contract() -> None:
+    for skill in ("aa-api-plan-reviewer", "aa-e2e-plan-reviewer"):
+        prompt = build_node_prompt(
+            skill,
+            "review",
+            "CH-1",
+            allowed_writes=["change:review/**"],
+        )
+
+        assert "required_capabilities" in prompt
+        assert "non-empty" in prompt
+        assert prompt.index("required_capabilities") > prompt.index("Produce only node")
     assert "timed out waiting for model" not in prompt
