@@ -207,11 +207,7 @@ def _is_excluded_rel(rel: str) -> bool:
     # Change Issue ledgers are canonical domain data, not the change-dir graph
     # coordinator ledger.  They must participate in capture/freeze/apply so a
     # later execution batch can replay all Observations and Occurrences.
-    if (
-        len(parts) >= 5
-        and parts[-4] == "changes"
-        and parts[-2:] == ["issues", "events.jsonl"]
-    ):
+    if len(parts) >= 5 and parts[-4] == "changes" and parts[-2:] == ["issues", "events.jsonl"]:
         return False
     if _is_excluded_name(parts[-1]):
         return True

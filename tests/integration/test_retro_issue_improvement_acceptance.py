@@ -421,9 +421,9 @@ def _write_product_bug_candidates(change_dir: Path, *, change_id: str) -> None:
     )
     inspect_dir = change_dir / "inspect"
     (inspect_dir / "issue-candidates.json").write_bytes(dump_projection(doc))
-    candidate_digest = "sha256:" + hashlib.sha256(
-        (inspect_dir / "issue-candidates.json").read_bytes()
-    ).hexdigest()
+    candidate_digest = (
+        "sha256:" + hashlib.sha256((inspect_dir / "issue-candidates.json").read_bytes()).hexdigest()
+    )
     (inspect_dir / "issue-analysis-status.json").write_text(
         json.dumps(
             {
@@ -453,9 +453,7 @@ def _drive_issue_ops_create_product_bug(project: Path) -> list[Problem]:
     change_dir = project / "qa" / "changes" / _SCENARIO1_CHANGE_ID
     change_dir.mkdir(parents=True, exist_ok=True)
     (project / "qa" / "issues").mkdir(parents=True, exist_ok=True)
-    _setup_failed_execution(
-        change_dir, change_id=_SCENARIO1_CHANGE_ID, batch_id=_SCENARIO1_BATCH_ID
-    )
+    _setup_failed_execution(change_dir, change_id=_SCENARIO1_CHANGE_ID, batch_id=_SCENARIO1_BATCH_ID)
 
     workspace = _IssueOpWorkspace(change_dir, project)
     context = RuntimeContext(

@@ -108,11 +108,7 @@ class _QaRetroWalkVisitor(ast.NodeVisitor):
                         return True
                     if value in {"qa", "retro"}:
                         tokens.add(value)
-                if (
-                    isinstance(child, ast.Name)
-                    and child.id in self._bindings
-                    and child.id not in seen
-                ):
+                if isinstance(child, ast.Name) and child.id in self._bindings and child.id not in seen:
                     seen.add(child.id)
                     stack.append(self._bindings[child.id])
         return "qa" in tokens and "retro" in tokens
