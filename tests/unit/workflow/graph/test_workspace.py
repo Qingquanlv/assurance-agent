@@ -113,6 +113,32 @@ def test_capture_is_deterministic_and_excludes_runtime_dirs(tmp_path: Path) -> N
     assert not (dest / "db.sqlite3").exists()
     assert not (dest / "db.sqlite3-wal").exists()
     # workspace 内的 .graph-runtime/tree.json 是物化元数据，不参与 diff。
+
+
+def test_capture_keeps_change_issue_ledger_but_excludes_change_coordinator_ledger(
+    tmp_path: Path,
+) -> None:
+    project = _make_project(tmp_path)
+    change = project / "qa" / "changes" / "CH-1"
+    (change / "events.jsonl").write_text('{"type":"coordinator"}\n', encoding="utf-8")
+    issue_ledger = change / "issues" / "events.jsonl"
+    issue_ledger.parent.mkdir(parents=True)
+    issue_ledger.write_text('{"type":"observation_recorded"}\n', encoding="utf-8")
+    project_issue_ledger = project / "qa" / "issues" / "events.jsonl"
+    project_issue_ledger.parent.mkdir(parents=True)
+    project_issue_ledger.write_text('{"type":"problem_detected"}\n', encoding="utf-8")
+
+    store = _store(project)
+    tree = store.capture(project)
+    dest = tmp_path / "captured"
+    dest.mkdir()
+    store.materialize(tree, dest)
+
+    assert not (dest / "qa" / "changes" / "CH-1" / "events.jsonl").exists()
+    assert (
+        dest / "qa" / "changes" / "CH-1" / "issues" / "events.jsonl"
+    ).read_text(encoding="utf-8") == '{"type":"observation_recorded"}\n'
+    assert not (dest / "qa" / "issues" / "events.jsonl").exists()
     assert (dest / ".graph-runtime" / "tree.json").exists()
     assert not (dest / ".graph-runtime" / "objects").exists()
 

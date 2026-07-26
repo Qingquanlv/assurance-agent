@@ -46,6 +46,7 @@ from assurance_agent.artifacts.models.issues import (
     ObservationSource,
 )
 from assurance_agent.workflow.execution.evidence import EvidenceError
+from assurance_agent.workflow.execution.results import CoverageResult, PerformanceResult, TargetResult
 from assurance_agent.workflow.issues.identity import (
     ObservationIdentityInput,
     observation_id,
@@ -350,7 +351,12 @@ def _collect_performance_signals(
     scenarios: list[dict] = raw_data.get("scenarios") or []
     if scenarios:
         for idx, scenario in enumerate(scenarios):
-            scenario_name = str(scenario.get("name") or scenario.get("scenario_id") or f"scenario_{idx}")
+            scenario_name = str(
+                scenario.get("name")
+                or scenario.get("scenario_id")
+                or scenario.get("capability")
+                or f"scenario_{idx}"
+            )
             verdict = scenario.get("verdict") or scenario.get("status") or "unknown"
             if str(verdict).upper() in ("PASS", "SKIPPED"):
                 continue
@@ -668,21 +674,32 @@ def collect_observations(
             continue
         rel = manifest.result_files.get(target_name)
         if not rel:
-            continue
+            raise EvidenceError(
+                f"selected {target_name} result path missing from execution manifest"
+            )
         abs_path = execution_dir / rel
         if not abs_path.is_file():
-            # Missing result file is an integrity issue but don't block collection.
-            incomplete_signals.append(f"{target_name} result file missing: {rel}")
-            continue
+            raise EvidenceError(f"selected {target_name} result file missing: {rel}")
         try:
             raw_data = json.loads(abs_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            incomplete_signals.append(f"cannot parse {target_name} result: {exc}")
-            continue
+            raise EvidenceError(f"cannot parse selected {target_name} result: {exc}") from exc
+        try:
+            target_result = TargetResult.model_validate(raw_data)
+        except ValueError as exc:
+            raise EvidenceError(f"invalid selected {target_name} result: {exc}") from exc
+        if (
+            target_result.target != target_name
+            or target_result.batch_id != batch_id
+            or target_result.change_id != change_id
+        ):
+            raise EvidenceError(
+                f"invalid selected {target_name} result: identity mismatch with execution manifest"
+            )
         result_rel = f"execution/{rel}"
         observations.extend(
             _collect_from_target_result(
-                raw_data=raw_data,
+                raw_data=target_result.model_dump(mode="json"),
                 target=target_name,
                 batch_id=batch_id,
                 change_id=change_id,
@@ -698,42 +715,56 @@ def collect_observations(
         cov_rel = manifest.result_files.get("coverage")
         if cov_rel:
             cov_path = execution_dir / cov_rel
-            if cov_path.is_file():
+            if not cov_path.is_file():
+                raise EvidenceError(f"declared coverage result file missing: {cov_rel}")
+            else:
                 try:
-                    cov_data = json.loads(cov_path.read_text(encoding="utf-8"))
+                    cov_data = CoverageResult.model_validate_json(cov_path.read_text(encoding="utf-8"))
+                    if cov_data.batch_id != batch_id or cov_data.change_id != change_id:
+                        raise ValueError("identity mismatch with execution manifest")
                     observations.extend(
                         _collect_coverage_signals(
-                            raw_data=cov_data,
+                            raw_data=cov_data.model_dump(mode="json"),
                             batch_id=batch_id,
                             change_id=change_id,
                             observed_at=observed_at,
                             result_rel=f"execution/{cov_rel}",
                         )
                     )
-                except (OSError, json.JSONDecodeError):
-                    pass
+                except (OSError, ValueError) as exc:
+                    raise EvidenceError(f"invalid declared coverage result: {exc}") from exc
 
     # ------------------------------------------------------------------
     # 4. Performance signals
     # ------------------------------------------------------------------
     if manifest.selected_targets.performance:
         perf_rel = manifest.result_files.get("performance")
-        if perf_rel:
+        if not perf_rel:
+            raise EvidenceError(
+                "selected performance result path missing from execution manifest"
+            )
+        else:
             perf_path = execution_dir / perf_rel
-            if perf_path.is_file():
+            if not perf_path.is_file():
+                raise EvidenceError(f"selected performance result file missing: {perf_rel}")
+            else:
                 try:
-                    perf_data = json.loads(perf_path.read_text(encoding="utf-8"))
+                    perf_data = PerformanceResult.model_validate_json(
+                        perf_path.read_text(encoding="utf-8")
+                    )
+                    if perf_data.batch_id != batch_id or perf_data.change_id != change_id:
+                        raise ValueError("identity mismatch with execution manifest")
                     observations.extend(
                         _collect_performance_signals(
-                            raw_data=perf_data,
+                            raw_data=perf_data.model_dump(mode="json"),
                             batch_id=batch_id,
                             change_id=change_id,
                             observed_at=observed_at,
                             result_rel=f"execution/{perf_rel}",
                         )
                     )
-                except (OSError, json.JSONDecodeError):
-                    pass
+                except (OSError, ValueError) as exc:
+                    raise EvidenceError(f"invalid selected performance result: {exc}") from exc
 
     # ------------------------------------------------------------------
     # 5. Plan/review warnings

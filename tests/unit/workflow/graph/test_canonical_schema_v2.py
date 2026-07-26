@@ -90,6 +90,7 @@ EXPECTED_CONTRACTS = {
     "operation:skill-registry-check",
     "operation:run-tests",
     "operation:inspect",
+    "operation:generate-report",
     "operation:allocate-healing-attempt",
     "operation:record-healing-status",
     "operation:stop",
@@ -790,6 +791,17 @@ def test_assurance_uses_inspect_with_issues_subgraph() -> None:
     edge_pairs = {(e.from_, e.to) for e in assurance.edges}
     assert ("execution", "inspect-with-issues") in edge_pairs
     assert ("inspect-with-issues", "healing") in edge_pairs
+
+
+def test_assurance_report_uses_deterministic_report_operation() -> None:
+    compiled, _ = _load_compiled()
+    report = compiled.schema.graphs["assurance"].nodes["report"]
+    assert report.uses == "operation:generate-report"
+    assert set(report.outputs) == {
+        "change:report/quality-report.json",
+        "change:report/quality-report.md",
+        "change:report/executive-summary.md",
+    }
 
 
 def test_healing_uses_inspect_with_issues_subgraph() -> None:

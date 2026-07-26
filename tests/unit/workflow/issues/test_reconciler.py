@@ -43,6 +43,7 @@ from assurance_agent.artifacts.models.issues import (
     ProblemProjection,
     ProblemResolution,
     ProblemSeenRef,
+    ProblemVerificationRequest,
 )
 from assurance_agent.workflow.issues.identity import (
     problem_fingerprint,
@@ -185,6 +186,7 @@ def _plan(
     *,
     manifest: IssueEvidenceManifest | None = None,
     expected_change_id: str | None = None,
+    verification_evidence: dict[str, object] | None = None,
 ) -> ReconciliationPlan:
     change_id = expected_change_id or candidates_doc.change_id
     batch_id = candidates_doc.batch_id
@@ -205,6 +207,9 @@ def _plan(
                 for item in obs.observations
             ],
         )
+    extra: dict[str, object] = {}
+    if verification_evidence is not None:
+        extra["verification_evidence"] = verification_evidence
     return plan_reconciliation(
         candidates_doc,
         obs,
@@ -212,6 +217,7 @@ def _plan(
         problems if problems is not None else _empty_problems(),
         manifest=manifest or _make_manifest(change_id, batch_id, candidates_doc.evidence_bundle_digest),
         expected_change_id=change_id,
+        **extra,
     )
 
 
@@ -429,6 +435,111 @@ def test_empty_candidate_list_emits_only_analysis_completed() -> None:
     assert len(plan.change_events) == 1
     assert plan.change_events[0].type == "issue_analysis_completed"
     assert len(plan.problem_events) == 0
+
+
+def test_later_complete_authoritative_batch_resolves_verification_pending_problem() -> None:
+    pending = _make_existing_problem(status="verification_pending", version=2).model_copy(
+        update={
+            "verification_request": ProblemVerificationRequest(
+                requested_at="2026-07-25T09:00:00Z",
+                change_id="CH-fix",
+                batch_id="20260725-090000",
+                linked_fix_disposition="PR-42",
+                verification_scope=["test-case-1"],
+                evidence_digest="sha256:" + "c" * 64,
+            )
+        }
+    )
+    batch_id = "20260725-100000"
+    doc = _make_candidate_doc([], batch_id=batch_id)
+    observations = _make_observations(batch_id=batch_id)
+
+    plan = _plan(
+        doc,
+        observations,
+        snapshot=_empty_snapshot(batch_id="BATCH-FIX"),
+        problems=_problems_with(pending),
+        verification_evidence={
+            "batch_id": batch_id,
+            "selected_targets": ["api"],
+            "passed_targets": ["api"],
+            "executed_cases": ["test-case-1"],
+            "passed_cases": ["test-case-1"],
+            "evidence_digest": "sha256:" + "d" * 64,
+        },
+    )
+
+    resolved = [event for event in plan.problem_events if event.type == "problem_resolved"]
+    assert len(resolved) == 1
+    assert resolved[0].problem_id == pending.problem_id
+    assert resolved[0].expected_problem_version == pending.version
+    assert resolved[0].batch_id == batch_id
+    assert resolved[0].disposition == "PR-42"
+
+
+def test_earlier_batch_cannot_resolve_verification_pending_problem() -> None:
+    pending = _make_existing_problem(status="verification_pending", version=2).model_copy(
+        update={
+            "verification_request": ProblemVerificationRequest(
+                requested_at="2026-07-25T10:00:00Z",
+                change_id="CH-fix",
+                batch_id="20260725-100000",
+                linked_fix_disposition="PR-42",
+                verification_scope=["test-case-1"],
+                evidence_digest="sha256:" + "c" * 64,
+            )
+        }
+    )
+    batch_id = "20260725-090000"
+    plan = _plan(
+        _make_candidate_doc([], batch_id=batch_id),
+        _make_observations(batch_id=batch_id),
+        snapshot=_empty_snapshot(batch_id="20260725-100000"),
+        problems=_problems_with(pending),
+        verification_evidence={
+            "batch_id": batch_id,
+            "selected_targets": ["api"],
+            "passed_targets": ["api"],
+            "executed_cases": ["test-case-1"],
+            "passed_cases": ["test-case-1"],
+            "evidence_digest": "sha256:" + "d" * 64,
+        },
+    )
+
+    assert not [event for event in plan.problem_events if event.type == "problem_resolved"]
+
+
+def test_conflicting_case_outcomes_cannot_resolve_verification_pending_problem() -> None:
+    pending = _make_existing_problem(status="verification_pending", version=2).model_copy(
+        update={
+            "verification_request": ProblemVerificationRequest(
+                requested_at="2026-07-25T09:00:00Z",
+                change_id="CH-fix",
+                batch_id="20260725-090000",
+                linked_fix_disposition="PR-42",
+                verification_scope=["test-case-1"],
+                evidence_digest="sha256:" + "c" * 64,
+            )
+        }
+    )
+    batch_id = "20260725-100000"
+    plan = _plan(
+        _make_candidate_doc([], batch_id=batch_id),
+        _make_observations(batch_id=batch_id),
+        snapshot=_empty_snapshot(batch_id="20260725-090000"),
+        problems=_problems_with(pending),
+        verification_evidence={
+            "batch_id": batch_id,
+            "selected_targets": ["api"],
+            "passed_targets": ["api"],
+            "executed_cases": ["test-case-1"],
+            "passed_cases": ["test-case-1"],
+            "failed_cases": ["test-case-1"],
+            "evidence_digest": "sha256:" + "d" * 64,
+        },
+    )
+
+    assert not [event for event in plan.problem_events if event.type == "problem_resolved"]
 
 
 def test_candidate_digest_is_stable() -> None:

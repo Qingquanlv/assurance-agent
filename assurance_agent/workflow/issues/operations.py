@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -41,7 +42,7 @@ from assurance_agent.artifacts.models.issues import (
     ObservationDocument,
     ProblemProjection,
 )
-from assurance_agent.workflow.execution.evidence import EvidenceError
+from assurance_agent.workflow.execution.evidence import EvidenceError, load_execution_evidence
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
 from assurance_agent.workflow.graph.task_runner import task_failure
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
@@ -55,6 +56,7 @@ from assurance_agent.workflow.issues.ledger import ChangeIssueStore, ProjectProb
 from assurance_agent.workflow.issues.projection import dump_projection
 from assurance_agent.workflow.issues.reconciler import (
     ReconciliationValidationError,
+    VerificationEvidence,
     plan_reconciliation,
 )
 from assurance_agent.workflow.issues.review import (
@@ -90,6 +92,82 @@ def _canonical_json(model_dict: object) -> bytes:
     return (json.dumps(model_dict, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode(
         "utf-8"
     )
+
+
+def _authoritative_verification_evidence(change_dir: Path) -> VerificationEvidence | None:
+    """Load complete selected-target/case outcomes for deterministic resolution."""
+    try:
+        execution = load_execution_evidence(change_dir / "execution")
+    except EvidenceError:
+        return None
+    if execution.integrity_issues:
+        return None
+
+    selected_targets = {
+        name
+        for name in ("api", "e2e", "fuzz", "performance")
+        if bool(getattr(execution.selected_targets, name))
+    }
+    passed_targets: set[str] = set()
+    executed_cases: set[str] = set()
+    passed_cases: set[str] = set()
+    failed_cases: set[str] = set()
+    digest_payload: dict[str, object] = {
+        "manifest": execution.manifest.model_dump(mode="json"),
+        "results": {},
+    }
+    results_payload = digest_payload["results"]
+    assert isinstance(results_payload, dict)
+
+    for target in ("api", "e2e", "fuzz"):
+        result = getattr(execution, target)
+        if result is None:
+            continue
+        results_payload[target] = result.model_dump(mode="json")
+        if result.status == "passed":
+            passed_targets.add(target)
+        for case in [*result.cases, *result.unmapped_tests]:
+            if case.case_id:
+                executed_cases.add(case.case_id)
+                if case.status == "passed":
+                    passed_cases.add(case.case_id)
+                else:
+                    failed_cases.add(case.case_id)
+
+    if execution.performance is not None:
+        results_payload["performance"] = execution.performance.model_dump(mode="json")
+        if execution.performance.status == "PASS":
+            passed_targets.add("performance")
+
+    verification_digest = "sha256:" + hashlib.sha256(_canonical_json(digest_payload)).hexdigest()
+    return VerificationEvidence(
+        batch_id=execution.batch_id,
+        selected_targets=frozenset(selected_targets),
+        passed_targets=frozenset(passed_targets),
+        executed_cases=frozenset(executed_cases),
+        passed_cases=frozenset(passed_cases),
+        failed_cases=frozenset(failed_cases),
+        evidence_digest=verification_digest,
+    )
+
+
+def _validate_resolution_batch(change_dir: Path, payload: Mapping[str, object]) -> str | None:
+    """Return an error unless submit_resolution pins a complete authoritative batch."""
+    change_id = payload.get("change_id")
+    batch_id = payload.get("batch_id")
+    if change_id != change_dir.name:
+        return "submit_resolution change_id must match the reviewed Change"
+    if not isinstance(batch_id, str) or not batch_id.strip():
+        return "submit_resolution batch_id must be non-empty"
+    try:
+        evidence = load_execution_evidence(change_dir / "execution")
+    except EvidenceError as exc:
+        return f"submit_resolution batch is not authoritative: {exc}"
+    if evidence.batch_id != batch_id.strip():
+        return "submit_resolution batch_id must match the authoritative execution manifest"
+    if evidence.integrity_issues:
+        return "submit_resolution batch has incomplete or corrupt execution evidence"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -626,6 +704,7 @@ def reconcile_issues_operation(
     # ------------------------------------------------------------------
     batch_id = candidates_doc.batch_id
     evidence_bundle_digest = candidates_doc.evidence_bundle_digest
+    verification_evidence = _authoritative_verification_evidence(change_dir)
 
     try:
         plan = plan_reconciliation(
@@ -635,6 +714,7 @@ def reconcile_issues_operation(
             problems,
             manifest=evidence_manifest,
             expected_change_id=change_id,
+            verification_evidence=verification_evidence,
         )
     except ReconciliationValidationError as exc:
         # Semantic failure: write failed reconcile-status; return success
@@ -910,6 +990,10 @@ def apply_problem_review_operation(
     # ------------------------------------------------------------------
     # 5. Validate the action and obtain typed events
     # ------------------------------------------------------------------
+    if action == "submit_resolution":
+        resolution_error = _validate_resolution_batch(workspace.change_dir, payload)
+        if resolution_error is not None:
+            return task_failure("invalid_input", f"apply-problem-review: {resolution_error}")
     try:
         problem_events = validate_review_action(
             review_ctx,

@@ -697,6 +697,12 @@ def test_cycle_fix_edge_reactivates_review(tmp_path: Path) -> None:
     assert rereview.terminal is None
     assert [task.node_id for task in rereview.tasks] == ["review"]
     assert rereview.tasks[0].task_id != review_0.task_id
+    review_activation = next(
+        event
+        for event in rereview.strict_events
+        if isinstance(event, NodeActivatedEvent) and event.node_id == "review"
+    )
+    assert review_activation.generation_ordinal == 1
 
     # 第二代 review pass → END（即使上一代 fix 仍是 succeeded）。
     review_1 = rereview.tasks[0]

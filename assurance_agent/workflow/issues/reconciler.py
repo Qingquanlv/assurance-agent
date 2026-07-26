@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -60,6 +61,7 @@ from assurance_agent.workflow.issues.events import (
     ProblemMergeSuggestedEvent,
     ProblemOccurrenceLinkedEvent,
     ProblemRegressedEvent,
+    ProblemResolvedEvent,
 )
 from assurance_agent.workflow.issues.identity import (
     occurrence_id as compute_occurrence_id,
@@ -107,6 +109,43 @@ class ReconciliationPlan:
     problem_events: tuple[ProblemEvent, ...]
     candidate_digest: str
     occurrence_count: int
+
+
+@dataclass(frozen=True)
+class VerificationEvidence:
+    """Authoritative execution facts used to close verification-pending Problems."""
+
+    batch_id: str
+    selected_targets: frozenset[str]
+    passed_targets: frozenset[str]
+    executed_cases: frozenset[str]
+    passed_cases: frozenset[str]
+    failed_cases: frozenset[str]
+    evidence_digest: str
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> "VerificationEvidence":
+        def _strings(key: str) -> frozenset[str]:
+            raw = value.get(key, ())
+            if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+                raise ValueError(f"verification_evidence.{key} must be a sequence")
+            return frozenset(str(item) for item in raw if str(item).strip())
+
+        batch_id = value.get("batch_id")
+        digest = value.get("evidence_digest")
+        if not isinstance(batch_id, str) or not batch_id.strip():
+            raise ValueError("verification_evidence.batch_id must be non-empty")
+        if not isinstance(digest, str) or not digest.strip():
+            raise ValueError("verification_evidence.evidence_digest must be non-empty")
+        return cls(
+            batch_id=batch_id,
+            selected_targets=_strings("selected_targets"),
+            passed_targets=_strings("passed_targets"),
+            executed_cases=_strings("executed_cases"),
+            passed_cases=_strings("passed_cases"),
+            failed_cases=_strings("failed_cases"),
+            evidence_digest=digest,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -543,6 +582,83 @@ def _derive_reconciliation_events(
     return change_events, problem_events
 
 
+def _verification_scope_passed(scope: Sequence[str], evidence: VerificationEvidence) -> bool:
+    for item in scope:
+        normalized = item.strip()
+        target = normalized.removeprefix("target:")
+        if target in {"api", "e2e", "fuzz", "performance"}:
+            if target not in evidence.selected_targets or target not in evidence.passed_targets:
+                return False
+            continue
+        if (
+            normalized not in evidence.executed_cases
+            or normalized not in evidence.passed_cases
+            or normalized in evidence.failed_cases
+        ):
+            return False
+    return True
+
+
+def _is_later_execution_batch(candidate_batch_id: str, request_batch_id: str) -> bool:
+    """Compare authoritative timestamp batch IDs; unparseable IDs never auto-close."""
+    try:
+        candidate = datetime.strptime(candidate_batch_id, "%Y%m%d-%H%M%S")
+        requested = datetime.strptime(request_batch_id, "%Y%m%d-%H%M%S")
+    except ValueError:
+        return False
+    return candidate > requested
+
+
+def _derive_resolution_events(
+    *,
+    candidates_doc: IssueCandidateDocument,
+    problems: ProblemProjection,
+    evidence: VerificationEvidence | None,
+    ts: str,
+) -> list[ProblemEvent]:
+    if evidence is None or evidence.batch_id != candidates_doc.batch_id:
+        return []
+
+    observed_fingerprints = {
+        problem_fingerprint(
+            affected_surface=candidate.affected_surface,
+            fingerprint_inputs=candidate.fingerprint_inputs,
+        ).digest
+        for candidate in candidates_doc.candidates
+    }
+    events: list[ProblemEvent] = []
+    for problem in problems.problems:
+        request = problem.verification_request
+        if problem.status != "verification_pending" or request is None:
+            continue
+        if not _is_later_execution_batch(evidence.batch_id, request.batch_id):
+            continue
+        if problem.fingerprint.digest in observed_fingerprints:
+            continue
+        if not _verification_scope_passed(request.verification_scope, evidence):
+            continue
+        idem = f"problem_resolved:{problem.problem_id}:{evidence.batch_id}:{evidence.evidence_digest}"
+        events.append(
+            ProblemResolvedEvent(
+                schema_version="1.0",
+                seq=1,
+                event_id=_event_id(idem),
+                idempotency_key=idem,
+                ts=ts,
+                evidence_digest=evidence.evidence_digest,
+                problem_id=problem.problem_id,
+                expected_problem_version=problem.version,
+                type="problem_resolved",
+                resolved_at=ts,
+                change_id=candidates_doc.change_id,
+                batch_id=evidence.batch_id,
+                disposition=request.linked_fix_disposition,
+                verification_scope=request.verification_scope,
+            )
+        )
+    return events
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -556,6 +672,7 @@ def plan_reconciliation(
     *,
     manifest: IssueEvidenceManifest,
     expected_change_id: str,
+    verification_evidence: VerificationEvidence | Mapping[str, object] | None = None,
 ) -> ReconciliationPlan:
     """Validate the candidate batch then derive immutable Occurrence/Problem events.
 
@@ -568,7 +685,6 @@ def plan_reconciliation(
     emission order.  The caller is responsible for appending to both stores in
     the same task write-set.
     """
-    del change_snapshot  # reserved for future watermark / authoritative-batch checks
     _validate_candidate_batch(
         candidates,
         observations,
@@ -580,11 +696,27 @@ def plan_reconciliation(
     ts = _utc_now()
     batch_digest = _batch_candidate_digest(candidates)
 
+    resolved_verification: VerificationEvidence | None
+    if verification_evidence is None:
+        resolved_verification = None
+    elif isinstance(verification_evidence, VerificationEvidence):
+        resolved_verification = verification_evidence
+    else:
+        resolved_verification = VerificationEvidence.from_mapping(verification_evidence)
+
     change_events, problem_events = _derive_reconciliation_events(
         candidates_doc=candidates,
         problems=problems,
         ts=ts,
         batch_candidate_digest=batch_digest,
+    )
+    problem_events.extend(
+        _derive_resolution_events(
+            candidates_doc=candidates,
+            problems=problems,
+            evidence=resolved_verification,
+            ts=ts,
+        )
     )
 
     return ReconciliationPlan(

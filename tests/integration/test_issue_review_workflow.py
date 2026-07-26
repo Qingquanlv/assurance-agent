@@ -263,5 +263,6 @@ class TestOperationRegistration:
         contracts_yaml = resources.read_text("schemas", "execution-contracts.yaml")
         catalog = parse_execution_contracts(contracts_yaml)
         contract = catalog.contracts["operation:apply-problem-review"]
+        assert "change:execution/**" in contract.reads
         assert "project:qa/issues/**" in contract.synchronized
         assert "project:issue-registry" in contract.exclusive

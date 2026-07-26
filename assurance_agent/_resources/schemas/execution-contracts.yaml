@@ -78,6 +78,21 @@ contracts:
       - change:inspect/**
     retryable_errors: [timeout, transport]
 
+  operation:generate-report:
+    handler: operation
+    reads:
+      - change:inspect/**
+      - change:execution/**
+      - change:review/**
+      - change:healing/**
+      - change:issues/snapshot.json
+      - project:qa/issues/problems.json
+    writes:
+      - change:report/**
+    authorization_writes:
+      - change:report/**
+    retryable_errors: []
+
   operation:allocate-healing-attempt:
     handler: operation
     reads:
@@ -619,6 +634,7 @@ contracts:
     handler: operation
     reads:
       - change:issue-review/**
+      - change:execution/**
       - project:qa/issues/**
     writes:
       - change:issue-review/**

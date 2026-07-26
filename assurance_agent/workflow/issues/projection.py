@@ -36,6 +36,7 @@ from assurance_agent.artifacts.models.issues import (
     ProblemFingerprint,
     ProblemProjection,
     ProblemResolution,
+    ProblemVerificationRequest,
     ProblemReviewQueue,
     ProblemReviewQueueEntry,
     ProblemSeenRef,
@@ -72,6 +73,7 @@ class _ProblemState:
     first_seen: ProblemSeenRef
     last_seen: ProblemSeenRef
     occurrences: list[str]
+    verification_request: ProblemVerificationRequest | None
     resolution: ProblemResolution | None
     version: int
     merged_into: str | None = None
@@ -228,6 +230,7 @@ def project_problems(events: Sequence[ProblemEvent]) -> ProblemProjection:
                 first_seen=first_ref,
                 last_seen=first_ref,
                 occurrences=[event.occurrence_id],
+                verification_request=None,
                 resolution=None,
                 version=1,
             )
@@ -274,6 +277,14 @@ def project_problems(events: Sequence[ProblemEvent]) -> ProblemProjection:
             state = states[pid]
             _assert_version(state, event.expected_problem_version)
             state.status = "verification_pending"
+            state.verification_request = ProblemVerificationRequest(
+                requested_at=event.ts,
+                change_id=event.change_id,
+                batch_id=event.batch_id,
+                linked_fix_disposition=event.linked_fix_disposition,
+                verification_scope=event.verification_scope,
+                evidence_digest=event.evidence_digest,
+            )
             state.version += 1
 
         elif isinstance(event, ProblemResolvedEvent):
@@ -291,6 +302,7 @@ def project_problems(events: Sequence[ProblemEvent]) -> ProblemProjection:
                 evidence_digest=event.evidence_digest,
             )
             state.status = "resolved"
+            state.verification_request = None
             state.version += 1
 
         elif isinstance(event, ProblemMarkedNotAnIssueEvent):
@@ -300,6 +312,7 @@ def project_problems(events: Sequence[ProblemEvent]) -> ProblemProjection:
             state = states[pid]
             _assert_version(state, event.expected_problem_version)
             state.status = "not_an_issue"
+            state.verification_request = None
             state.version += 1
 
         elif isinstance(event, ProblemRiskAcceptedEvent):
@@ -309,6 +322,7 @@ def project_problems(events: Sequence[ProblemEvent]) -> ProblemProjection:
             state = states[pid]
             _assert_version(state, event.expected_problem_version)
             state.status = "accepted_risk"
+            state.verification_request = None
             state.version += 1
 
         elif isinstance(event, ProblemReopenedEvent):
@@ -318,6 +332,7 @@ def project_problems(events: Sequence[ProblemEvent]) -> ProblemProjection:
             state = states[pid]
             _assert_version(state, event.expected_problem_version)
             state.status = "detected"
+            state.verification_request = None
             state.version += 1
 
         elif isinstance(event, ProblemRegressedEvent):
@@ -332,6 +347,7 @@ def project_problems(events: Sequence[ProblemEvent]) -> ProblemProjection:
                 occurrence_id=event.occurrence_id,
             )
             state.status = "detected"
+            state.verification_request = None
             state.resolution = None
             state.version += 1
 
@@ -354,6 +370,7 @@ def project_problems(events: Sequence[ProblemEvent]) -> ProblemProjection:
                 evidence_digest=event.evidence_digest,
             )
             state.status = "resolved"
+            state.verification_request = None
             state.version += 1
 
     problems: list[Problem] = []
@@ -374,6 +391,7 @@ def project_problems(events: Sequence[ProblemEvent]) -> ProblemProjection:
                 first_seen=state.first_seen,
                 last_seen=state.last_seen,
                 occurrences=state.occurrences,
+                verification_request=state.verification_request,
                 resolution=state.resolution,
                 version=state.version,
             )

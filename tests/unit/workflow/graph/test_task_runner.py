@@ -580,6 +580,7 @@ def test_default_operations_registry_has_exact_keys() -> None:
         "operation:allocate-healing-attempt",
         "operation:record-healing-status",
         "operation:inspect",
+        "operation:generate-report",
         "operation:stop",
         "operation:retro-collect",
         "operation:reconcile-improvements",

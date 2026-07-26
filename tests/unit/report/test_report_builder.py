@@ -1,4 +1,7 @@
+import json
 from pathlib import Path
+
+import pytest
 
 from tests.helpers_aa import write_aa_config
 
@@ -210,6 +213,21 @@ def _seed_issue_snapshot(
     (issues_dir / "snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
 
 
+def _seed_empty_problem_projection(project_root: Path) -> None:
+    problems_dir = project_root / "qa" / "issues"
+    problems_dir.mkdir(parents=True, exist_ok=True)
+    (problems_dir / "problems.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "generated_at": "2026-07-25T10:00:00Z",
+                "problems": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_generate_report_emits_schema_version_11(tmp_path: Path) -> None:
     change_id = _seed_change(tmp_path, _api(None), _cov())
     inspect_change(tmp_path, change_id)
@@ -231,12 +249,34 @@ def test_generate_report_no_occurrences_yields_clear_issue_risk(tmp_path: Path) 
     change_id = _seed_change(tmp_path, _api(None), _cov())
     change_dir = tmp_path / "qa" / "changes" / "CH-1"
     _seed_issue_snapshot(change_dir, analysis_status="completed", occurrences=[])
+    _seed_empty_problem_projection(tmp_path)
     inspect_change(tmp_path, change_id)
     result = generate_report(tmp_path, change_id)
     assert result.report.issues is not None
     assert result.report.issues.issue_risk == "clear"
     # execution final_status must not be changed by Issue risk
     assert result.report.final_status == "PASS"
+
+
+@pytest.mark.parametrize("projection_payload", [None, "not-json"])
+def test_generate_report_missing_or_corrupt_problem_projection_yields_unknown(
+    tmp_path: Path,
+    projection_payload: str | None,
+) -> None:
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    _seed_issue_snapshot(change_dir, analysis_status="completed", occurrences=[])
+    if projection_payload is not None:
+        problems_dir = tmp_path / "qa" / "issues"
+        problems_dir.mkdir(parents=True, exist_ok=True)
+        (problems_dir / "problems.json").write_text(projection_payload, encoding="utf-8")
+    inspect_change(tmp_path, change_id)
+
+    result = generate_report(tmp_path, change_id)
+
+    assert result.report.issues is not None
+    assert result.report.issues.issue_risk == "unknown"
+    assert "Problem projection" in result.report.issues.issue_risk_rationale
 
 
 def test_generate_report_failed_analysis_yields_unknown_issue_risk(tmp_path: Path) -> None:
@@ -319,6 +359,7 @@ def test_generate_report_issue_section_in_markdown(tmp_path: Path) -> None:
     change_id = _seed_change(tmp_path, _api(None), _cov())
     change_dir = tmp_path / "qa" / "changes" / "CH-1"
     _seed_issue_snapshot(change_dir, analysis_status="completed", occurrences=[])
+    _seed_empty_problem_projection(tmp_path)
     inspect_change(tmp_path, change_id)
     generate_report(tmp_path, change_id)
     md = (tmp_path / "qa" / "changes" / "CH-1" / "report" / "quality-report.md").read_text()

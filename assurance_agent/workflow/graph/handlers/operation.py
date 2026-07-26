@@ -34,6 +34,7 @@ from assurance_agent.config import load_config
 from assurance_agent.workflow.execution.evidence import EvidenceError
 from assurance_agent.workflow.execution.runner import run_change
 from assurance_agent.workflow.report.inspector import inspect_change
+from assurance_agent.workflow.report.report_builder import generate_report
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
 from assurance_agent.workflow.graph.task_runner import task_failure, task_with
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
@@ -212,6 +213,25 @@ def inspect_operation(
     )
 
 
+def generate_report_operation(
+    task: ExecutableTask, workspace: TaskWorkspace, context: RuntimeContext
+) -> OperationResult:
+    """Generate the schema-1.1 report deterministically inside the task workspace."""
+    try:
+        result = generate_report(workspace.project_root, context.change_id)
+    except (EvidenceError, FileNotFoundError, OSError, ValueError) as err:
+        return task_failure("invalid_input", str(err))
+    return TaskResult(
+        status="succeeded",
+        value={
+            "batch_id": result.report.batch_id,
+            "final_status": result.report.final_status,
+            "schema_version": result.report.schema_version,
+            "issue_risk": result.report.issues.issue_risk if result.report.issues else None,
+        },
+    )
+
+
 def run_tests(task: ExecutableTask, workspace: TaskWorkspace, context: RuntimeContext) -> OperationResult:
     """在 task 私有 workspace 中执行测试并发布 execution evidence（不 spawn ``aa run``）。
 
@@ -358,6 +378,7 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:skill-registry-check": skill_registry_check,
         "operation:run-tests": run_tests,
         "operation:inspect": inspect_operation,
+        "operation:generate-report": generate_report_operation,
         "operation:allocate-healing-attempt": operation_allocate_healing_attempt,
         "operation:record-healing-status": operation_record_healing_status,
         "operation:stop": stop_operation,

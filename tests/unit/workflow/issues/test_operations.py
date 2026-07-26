@@ -28,11 +28,31 @@ import yaml
 from assurance_agent.workflow.graph.handlers.operation import default_operations
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext
 from assurance_agent.workflow.issues.operations import (
+    _authoritative_verification_evidence,
+    _validate_resolution_batch,
     collect_observations_operation,
     record_empty_issue_analysis_operation,
     record_issue_analysis_failure_operation,
     record_project_sync_pending_operation,
 )
+
+
+def test_authoritative_verification_evidence_preserves_conflicting_case_outcomes(
+    tmp_path: Path,
+) -> None:
+    change_dir = tmp_path / "CH-conflicting-cases"
+    batch_id = "20260725-150000"
+    _setup_execution(
+        change_dir,
+        batch_id,
+        cases=[_make_case("API-VERIFY-001", "passed"), _make_case("API-VERIFY-001", "failed")],
+    )
+
+    evidence = _authoritative_verification_evidence(change_dir)
+
+    assert evidence is not None
+    assert "API-VERIFY-001" in evidence.passed_cases
+    assert "API-VERIFY-001" in evidence.failed_cases
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +160,27 @@ def _make_case(case_id: str, status: str, message: str = "") -> dict:
     }
 
 
+def test_submit_resolution_batch_must_match_authoritative_execution(tmp_path: Path) -> None:
+    change_dir = tmp_path / "CH-resolution"
+    batch_id = "20260725-150000"
+    _setup_execution(change_dir, batch_id, cases=[_make_case("API-VERIFY-001", "passed")])
+
+    assert (
+        _validate_resolution_batch(
+            change_dir,
+            {"change_id": change_dir.name, "batch_id": "20260725-140000"},
+        )
+        is not None
+    )
+    assert (
+        _validate_resolution_batch(
+            change_dir,
+            {"change_id": change_dir.name, "batch_id": batch_id},
+        )
+        is None
+    )
+
+
 # ---------------------------------------------------------------------------
 # Test: registered in default_operations
 # ---------------------------------------------------------------------------
@@ -178,6 +219,21 @@ def test_writes_four_required_files(tmp_path: Path) -> None:
     assert (change_dir / "inspect" / "issue-evidence-manifest.json").is_file()
     assert (change_dir / "issues" / "events.jsonl").is_file()
     assert (change_dir / "issues" / "snapshot.json").is_file()
+
+
+def test_missing_selected_result_returns_typed_invalid_input(tmp_path: Path) -> None:
+    change_dir = tmp_path / "CH-ops-missing-result"
+    _setup_execution(change_dir, "20260725-110000")
+    (change_dir / "execution" / "runs" / "20260725-110000" / "api-result.json").unlink()
+
+    result = collect_observations_operation(
+        _make_task(),
+        _FakeTaskWorkspace(change_dir),  # type: ignore[arg-type]
+        _make_context(change_dir),
+    )
+
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_input"
 
 
 # ---------------------------------------------------------------------------
@@ -1074,6 +1130,104 @@ def test_reconcile_creates_occurrences_and_problems(tmp_path: Path) -> None:
     assert (project_root / "qa" / "issues" / "events.jsonl").is_file()
     assert (project_root / "qa" / "issues" / "problems.json").is_file()
     assert (project_root / "qa" / "issues" / "review-queue.json").is_file()
+
+
+def test_reconcile_uses_authoritative_execution_to_resolve_pending_problem(tmp_path: Path) -> None:
+    from assurance_agent.artifacts.models.issues import (
+        AffectedSurface,
+        ChangeIssueSnapshot,
+        FingerprintInputs,
+    )
+    from assurance_agent.workflow.issues.events import (
+        ProblemDetectedEvent,
+        ProblemVerificationRequestedEvent,
+    )
+    from assurance_agent.workflow.issues.identity import problem_fingerprint, problem_id
+    from assurance_agent.workflow.issues.ledger import ProjectProblemStore
+    from assurance_agent.workflow.issues.operations import reconcile_issues_operation
+    from assurance_agent.workflow.issues.projection import dump_projection
+
+    change_id = "CH-rec-resolve"
+    change_dir = tmp_path / change_id
+    project_root = tmp_path / "project"
+    batch_id = "20260725-150000"
+    evidence_digest = "sha256:" + "e" * 64
+    scope = "API-VERIFY-001"
+
+    _setup_execution(change_dir, batch_id, cases=[_make_case(scope, "passed")])
+    _make_observations_doc(change_dir, batch_id, [])
+    _make_candidates_doc(change_dir, batch_id, [], evidence_digest)
+    snapshot = ChangeIssueSnapshot(
+        schema_version="1.0",
+        change_id=change_id,
+        authoritative_batch_id="20260725-140000",
+        observations=[],
+        occurrences=[],
+        analysis_status=None,
+        project_sync_status="completed",
+        batches=["20260725-140000"],
+    )
+    issues_dir = change_dir / "issues"
+    issues_dir.mkdir(parents=True, exist_ok=True)
+    (issues_dir / "snapshot.json").write_bytes(dump_projection(snapshot))
+
+    fingerprint = problem_fingerprint(
+        affected_surface=AffectedSurface(kind="endpoint", value="GET /api/v1/verify"),
+        fingerprint_inputs=FingerprintInputs(surface="endpoint", symptom="returns http 500"),
+    )
+    pid = problem_id(fingerprint)
+    project_events = [
+        ProblemDetectedEvent(
+            schema_version="1.0",
+            seq=1,
+            event_id="EVT-detected",
+            idempotency_key="detected",
+            ts="2026-07-25T13:00:00Z",
+            evidence_digest="sha256:" + "a" * 64,
+            problem_id=pid,
+            expected_problem_version=0,
+            type="problem_detected",
+            occurrence_id="OCC-prior",
+            change_id=change_id,
+            batch_id="20260725-130000",
+            fingerprint=fingerprint,
+            title="Verification target",
+            classification="product_bug",
+            severity="high",
+            root_cause_hypothesis="Unhandled error",
+        ),
+        ProblemVerificationRequestedEvent(
+            schema_version="1.0",
+            seq=1,
+            event_id="EVT-verify",
+            idempotency_key="verify",
+            ts="2026-07-25T14:00:00Z",
+            evidence_digest="sha256:" + "b" * 64,
+            problem_id=pid,
+            expected_problem_version=1,
+            type="problem_verification_requested",
+            verification_scope=[scope],
+            linked_fix_disposition="PR-42",
+            change_id=change_id,
+            batch_id="20260725-140000",
+        ),
+    ]
+    ProjectProblemStore(project_root).append_and_rebuild(project_events)
+
+    result = reconcile_issues_operation(
+        _make_reconcile_task(),
+        _FakeReconcileWorkspace(change_dir, project_root),  # type: ignore[arg-type]
+        _make_context(change_dir),
+    )
+
+    assert result.status == "succeeded"
+    problems = json.loads(
+        (project_root / "qa" / "issues" / "problems.json").read_text(encoding="utf-8")
+    )
+    resolved = next(problem for problem in problems["problems"] if problem["problem_id"] == pid)
+    assert resolved["status"] == "resolved"
+    assert resolved["resolution"]["batch_id"] == batch_id
+    assert resolved["resolution"]["verification_scope"] == [scope]
 
 
 def test_reconcile_status_completed_on_success(tmp_path: Path) -> None:

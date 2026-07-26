@@ -204,6 +204,15 @@ def _is_excluded_rel(rel: str) -> bool:
     parts = [part for part in rel.split("/") if part and part != "."]
     if not parts:
         return False
+    # Change Issue ledgers are canonical domain data, not the change-dir graph
+    # coordinator ledger.  They must participate in capture/freeze/apply so a
+    # later execution batch can replay all Observations and Occurrences.
+    if (
+        len(parts) >= 5
+        and parts[-4] == "changes"
+        and parts[-2:] == ["issues", "events.jsonl"]
+    ):
+        return False
     if _is_excluded_name(parts[-1]):
         return True
     return any(part in _EXCLUDED_DIRS for part in parts[:-1] or parts)
@@ -245,7 +254,7 @@ def _walk(root: Path, *, keep_change_dir: Path | None = None) -> dict[str, _Entr
         with os.scandir(directory) as children:
             for child in children:
                 rel = f"{prefix}{child.name}"
-                if _is_excluded_name(child.name):
+                if _is_excluded_rel(rel):
                     continue
                 # Sibling qa/changes/<other-id>/ must not enter this change's tree —
                 # the loop keeps multiple in-flight change dirs under one SUT.

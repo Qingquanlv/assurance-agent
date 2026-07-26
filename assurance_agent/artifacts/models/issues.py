@@ -247,6 +247,17 @@ class ProblemResolution(BaseModel):
     evidence_digest: NonEmptyStr
 
 
+class ProblemVerificationRequest(BaseModel):
+    model_config = _FROZEN
+
+    requested_at: NonEmptyStr
+    change_id: NonEmptyStr
+    batch_id: NonEmptyStr
+    linked_fix_disposition: NonEmptyStr
+    verification_scope: list[NonEmptyStr] = Field(min_length=1)
+    evidence_digest: NonEmptyStr
+
+
 class Problem(BaseModel):
     model_config = _FROZEN
 
@@ -258,6 +269,7 @@ class Problem(BaseModel):
     first_seen: ProblemSeenRef
     last_seen: ProblemSeenRef
     occurrences: list[NonEmptyStr] = Field(min_length=1)
+    verification_request: ProblemVerificationRequest | None = None
     resolution: ProblemResolution | None = None
     version: int = Field(ge=1)
 

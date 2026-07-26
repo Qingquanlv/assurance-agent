@@ -457,13 +457,13 @@ graphs:
         uses: graph:healing
 
       report:
-        uses: skill:aa-report-generator
-        agent: aa-reporter
+        uses: operation:generate-report
         outputs:
           - change:report/quality-report.json
+          - change:report/quality-report.md
           - change:report/executive-summary.md
-        retry: agent-transient
-        timeout: agent
+        retry: never
+        timeout: local-operation
 
     edges:
       - {from: START, to: fact-baseline, when: "params.run_mode != 'codegen-only'"}

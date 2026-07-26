@@ -501,6 +501,10 @@ class TestProjectProblems:
         p = proj.problems[0]
         assert p.status == "verification_pending"
         assert p.version == 2
+        assert p.verification_request is not None
+        assert p.verification_request.verification_scope == ["API-TEST-001"]
+        assert p.verification_request.linked_fix_disposition == "PR-42"
+        assert p.verification_request.batch_id == "B-003"
 
     def test_resolved_sets_resolution(self) -> None:
         events = [

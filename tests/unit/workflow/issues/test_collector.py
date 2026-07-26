@@ -166,6 +166,114 @@ def test_corrupt_execution_manifest_raises(tmp_path: Path) -> None:
         collect_observations(change_dir, "CH-001")
 
 
+def test_selected_target_missing_result_is_a_hard_evidence_failure(
+    tmp_path: Path,
+) -> None:
+    change_id = "CH-missing-result"
+    change_dir = tmp_path / change_id
+    batch_id = "20260725-095959"
+    _write_manifest(change_dir, batch_id=batch_id)
+
+    with pytest.raises(EvidenceError, match="result file missing"):
+        collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
+
+
+def test_selected_target_missing_manifest_result_path_is_a_hard_evidence_failure(
+    tmp_path: Path,
+) -> None:
+    change_id = "CH-missing-result-path"
+    change_dir = tmp_path / change_id
+    batch_id = "20260725-095959"
+    _write_manifest(change_dir, batch_id=batch_id)
+    manifest_path = change_dir / "execution" / "execution-manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest["result_files"].pop("api")
+    manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+
+    with pytest.raises(EvidenceError, match="result path missing"):
+        collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
+
+
+def test_parseable_but_malformed_target_result_is_a_hard_evidence_failure(tmp_path: Path) -> None:
+    change_id = "CH-malformed-result"
+    change_dir = tmp_path / change_id
+    batch_id = "20260725-095959"
+    _write_manifest(change_dir, batch_id=batch_id)
+    result_path = change_dir / "execution" / "runs" / batch_id / "api-result.json"
+    result_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(EvidenceError, match="invalid selected api result"):
+        collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
+
+
+@pytest.mark.parametrize("payload", [None, "not-json", "{}"])
+def test_selected_performance_missing_corrupt_or_malformed_is_a_hard_evidence_failure(
+    tmp_path: Path,
+    payload: str | None,
+) -> None:
+    change_id = "CH-bad-performance"
+    change_dir = tmp_path / change_id
+    batch_id = "20260725-095959"
+    targets = {"api": False, "e2e": False, "fuzz": False, "performance": True}
+    _write_manifest(change_dir, batch_id=batch_id, targets=targets)
+    perf_path = change_dir / "execution" / "runs" / batch_id / "performance-result.json"
+    if payload is not None:
+        perf_path.write_text(payload, encoding="utf-8")
+
+    with pytest.raises(EvidenceError, match="performance result"):
+        collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
+
+
+def test_performance_result_with_malformed_scenario_is_a_hard_evidence_failure(
+    tmp_path: Path,
+) -> None:
+    change_id = "CH-malformed-performance-scenario"
+    change_dir = tmp_path / change_id
+    batch_id = "20260725-095959"
+    targets = {"api": False, "e2e": False, "fuzz": False, "performance": True}
+    _write_manifest(change_dir, batch_id=batch_id, targets=targets)
+    perf_path = change_dir / "execution" / "runs" / batch_id / "performance-result.json"
+    perf_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "change_id": change_id,
+                "batch_id": batch_id,
+                "kind": "performance",
+                "available": True,
+                "status": "PASS",
+                "scenarios": [{}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(EvidenceError, match="invalid selected performance result"):
+        collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
+
+
+@pytest.mark.parametrize("payload", [None, "not-json", "{}"])
+def test_declared_coverage_missing_corrupt_or_malformed_is_a_hard_evidence_failure(
+    tmp_path: Path,
+    payload: str | None,
+) -> None:
+    change_id = "CH-bad-coverage"
+    change_dir = tmp_path / change_id
+    batch_id = "20260725-095959"
+    _write_manifest(change_dir, batch_id=batch_id)
+    _write_api_result(change_dir, batch_id)
+    manifest_path = change_dir / "execution" / "execution-manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest["result_files"]["coverage"] = f"runs/{batch_id}/coverage-result.json"
+    manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    coverage_path = change_dir / "execution" / "runs" / batch_id / "coverage-result.json"
+    if payload is not None:
+        coverage_path.write_text(payload, encoding="utf-8")
+
+    with pytest.raises(EvidenceError, match="coverage result"):
+        collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
+
+
 # ---------------------------------------------------------------------------
 # Test: clean batch (no abnormal signals)
 # ---------------------------------------------------------------------------
@@ -478,8 +586,24 @@ def test_performance_signal_observation_produced(tmp_path: Path) -> None:
         "available": True,
         "status": "FAIL",
         "scenarios": [
-            {"name": "dept_list_p99", "verdict": "FAIL"},
-            {"name": "user_login_p99", "verdict": "PASS"},
+            {
+                "capability": "dept_list_p99",
+                "endpoint": "GET /departments",
+                "measured_p95_ms": 800.0,
+                "threshold_p95_ms": 500.0,
+                "measured_error_rate": 0.0,
+                "threshold_error_rate_max": 0.01,
+                "verdict": "FAIL",
+            },
+            {
+                "capability": "user_login_p99",
+                "endpoint": "POST /login",
+                "measured_p95_ms": 100.0,
+                "threshold_p95_ms": 500.0,
+                "measured_error_rate": 0.0,
+                "threshold_error_rate_max": 0.01,
+                "verdict": "PASS",
+            },
         ],
         "command": "locust",
         "source": {},

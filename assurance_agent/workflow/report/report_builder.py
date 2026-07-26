@@ -189,6 +189,16 @@ def _derive_issue_report(change_base: Path, project_root: Path) -> IssueReport |
             issue_risk_rationale,
         )
 
+    if projection is None:
+        return _build_issue_report(
+            snapshot,
+            projection,
+            analysis_status_val,
+            project_sync_status_val,
+            "unknown",
+            "Project Problem projection is missing or corrupt",
+        )
+
     # Aggregate counts from problems linked to this change's occurrences.
     change_occ_ids = {occ.occurrence_id for occ in snapshot.occurrences}
     counts_by_status: dict[str, int] = {}
@@ -198,25 +208,24 @@ def _derive_issue_report(change_base: Path, project_root: Path) -> IssueReport |
     new_count = repeated_count = regressed_count = 0
     resolved_count = accepted_risk_count = not_an_issue_count = 0
 
-    if projection is not None:
-        for prob in projection.problems:
-            # Only consider problems where at least one occurrence belongs to this change.
-            if not any(occ_id in change_occ_ids for occ_id in prob.occurrences):
-                continue
-            st = prob.status
-            counts_by_status[st] = counts_by_status.get(st, 0) + 1
-            cls = prob.assessment.classification
-            counts_by_classification[cls] = counts_by_classification.get(cls, 0) + 1
-            sev = prob.assessment.severity
-            if st in _ACTIVE_PROBLEM_STATUSES:
-                counts_by_severity[sev] = counts_by_severity.get(sev, 0) + 1
-                active_severities.append(sev)
-            if st == "accepted_risk":
-                accepted_risk_count += 1
-            elif st == "not_an_issue":
-                not_an_issue_count += 1
-            elif st == "resolved":
-                resolved_count += 1
+    for prob in projection.problems:
+        # Only consider problems where at least one occurrence belongs to this change.
+        if not any(occ_id in change_occ_ids for occ_id in prob.occurrences):
+            continue
+        st = prob.status
+        counts_by_status[st] = counts_by_status.get(st, 0) + 1
+        cls = prob.assessment.classification
+        counts_by_classification[cls] = counts_by_classification.get(cls, 0) + 1
+        sev = prob.assessment.severity
+        if st in _ACTIVE_PROBLEM_STATUSES:
+            counts_by_severity[sev] = counts_by_severity.get(sev, 0) + 1
+            active_severities.append(sev)
+        if st == "accepted_risk":
+            accepted_risk_count += 1
+        elif st == "not_an_issue":
+            not_an_issue_count += 1
+        elif st == "resolved":
+            resolved_count += 1
 
     # Summarize occurrences vs earlier batches.
     new_count = len(snapshot.occurrences)

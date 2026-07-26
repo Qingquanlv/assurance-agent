@@ -1644,6 +1644,7 @@ def _activate(
             checkpoint_ns=projection.checkpoint_ns,
             graph_id=graph.graph_id,
             node_id=nid,
+            generation_ordinal=ordinal,
             activation_id=canonical_digest(
                 {
                     "invocation_id": projection.invocation_id,
