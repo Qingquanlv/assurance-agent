@@ -161,16 +161,19 @@ def test_rejects_scope_flag() -> None:
 
 
 def test_workflow_status_json(monkeypatch: pytest.MonkeyPatch) -> None:
-    runtime = MagicMock()
-    runtime.latest_root_invocation.return_value = "inv-1"
-    runtime.status.return_value = _status("interrupted", pending_tasks=("main:first",))
-    monkeypatch.setattr(wf, "build_graph_runtime", lambda **_k: MagicMock(runtime=runtime, compiled=None))
+    from assurance_agent.commands import status_cmd
+
+    gs = _status("interrupted", pending_tasks=("main:first",))
+    monkeypatch.setattr(status_cmd, "read_latest_graph_status", lambda *a, **k: gs)
     with CliRunner().isolated_filesystem():
         write_aa_config(Path.cwd())
         (Path("qa/changes/CH-1")).mkdir(parents=True)
-        result = CliRunner().invoke(main, ["workflow", "status", "--change", "CH-1", "--json"])
-        assert result.exit_code == 0
-        doc = json.loads(result.output)
+        alias = CliRunner().invoke(main, ["workflow", "status", "--change", "CH-1", "--json"])
+        direct = CliRunner().invoke(main, ["status", "--change", "CH-1", "--json"])
+        assert alias.exit_code == direct.exit_code
+        assert alias.stdout == direct.stdout
+        assert "deprecated" in alias.stderr
+        doc = json.loads(alias.stdout)
         assert doc["status"] == "interrupted"
         assert doc["pending_tasks"] == ["main:first"]
 
@@ -403,9 +406,12 @@ def test_real_minimal_run_completes(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         ],
     )
     assert result.exit_code == EXIT_COMPLETED, result.output
-    status = CliRunner().invoke(main, ["workflow", "status", "--change", "CH-1", "--json"])
-    assert status.exit_code == 0
-    doc = json.loads(status.output)
+    alias = CliRunner().invoke(main, ["workflow", "status", "--change", "CH-1", "--json"])
+    direct = CliRunner().invoke(main, ["status", "--change", "CH-1", "--json"])
+    assert alias.exit_code == direct.exit_code == 0
+    assert alias.stdout == direct.stdout
+    assert "deprecated" in alias.stderr
+    doc = json.loads(alias.stdout)
     assert doc["status"] == "completed"
     assert doc["entrypoint"] == "full"
 
@@ -421,22 +427,18 @@ def test_top_level_status_next_json(monkeypatch: pytest.MonkeyPatch) -> None:
         actions=("accept_risk", "fix_and_proceed", "stop"),
         audited_reads_sha256={},
     )
-    runtime = MagicMock()
-    runtime.latest_root_invocation.return_value = "inv-1"
-    runtime.status.return_value = _status(
+    gs = _status(
         "interrupted",
         pending_tasks=("main:first",),
         pending_interrupts=(interrupt,),
     )
-    monkeypatch.setattr(
-        status_mod, "build_graph_runtime", lambda **_k: MagicMock(runtime=runtime, compiled=None)
-    )
+    monkeypatch.setattr(status_mod, "read_latest_graph_status", lambda *a, **k: gs)
     with CliRunner().isolated_filesystem():
         write_aa_config(Path.cwd())
         (Path("qa/changes/CH-1")).mkdir(parents=True)
         result = CliRunner().invoke(main, ["status", "--change", "CH-1", "--next", "--json"])
         assert result.exit_code == EXIT_HUMAN_REVIEW
-        doc = json.loads(result.output)
+        doc = json.loads(result.stdout)
         assert doc["pending_tasks"] == ["main:first"]
         assert doc["pending_interrupts"][0]["interrupt_id"] == "INT-1"
 

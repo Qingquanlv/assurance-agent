@@ -395,57 +395,22 @@ def workflow_resume(
     raise SystemExit(result.exit_code)
 
 
-@workflow_group.command("status")
+@workflow_group.command("status", hidden=True)
 @click.option("--change", "change_id", required=True, help="Change ID under qa/changes/.")
+@click.option("--next", "next_only", is_flag=True, help="Print only pending work.")
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable JSON output.")
-def workflow_status(change_id: str, as_json: bool) -> None:
-    """Show GraphStatus for the latest root invocation (ledger, not driver.json)."""
-    project_root = Path.cwd()
-    try:
-        resolve_change(project_root, change_id)
-    except (UnsafeIdentifierError, ChangeNotFoundError) as err:
-        click.secho(str(err), fg="red")
-        raise SystemExit(EXIT_ERROR) from err
+def workflow_status(change_id: str, next_only: bool, as_json: bool) -> None:
+    """Deprecated alias of `aa status` (kept for one release)."""
+    click.secho(
+        "warning: `aa workflow status` is deprecated; use `aa status --change <id> [--next] [--json]`. "
+        "Behavior changes: exit codes mirror graph state (0/20/30/40), and the no-invocation "
+        'payload is unified to {"status": null, "invocation_id": null}.',
+        fg="yellow",
+        err=True,
+    )
+    from assurance_agent.commands.status_cmd import _run_status
 
-    adapter = HeadlessAdapter(agent_cmd="true", cwd=project_root)
-    try:
-        bundle = build_graph_runtime(
-            project_root=project_root,
-            change_id=change_id,
-            adapter=adapter,
-        )
-        latest = bundle.runtime.latest_root_invocation()
-        if latest is None:
-            payload = {"status": None, "invocation_id": None}
-            if as_json:
-                click.echo(json.dumps(payload, indent=2))
-            else:
-                click.echo("no graph invocation found (workflow not started)")
-            raise SystemExit(0)
-        status = bundle.runtime.status(latest)
-    except GraphRuntimeError as err:
-        click.secho(str(err), fg="red")
-        raise SystemExit(EXIT_ERROR) from err
-
-    if as_json:
-        click.echo(json.dumps(status.model_dump(mode="json"), indent=2))
-    else:
-        click.echo(f"invocation_id:     {status.invocation_id}")
-        click.echo(f"entrypoint:        {status.entrypoint}")
-        click.echo(f"status:            {status.status}")
-        click.echo(f"checkpoint_id:     {status.checkpoint_id}")
-        click.echo(f"event_seq:         {status.event_seq}")
-        click.echo(f"pending_tasks:     {', '.join(status.pending_tasks) or '(none)'}")
-        interrupts = ", ".join(i.interrupt_id for i in status.pending_interrupts) or "(none)"
-        click.echo(f"pending_interrupts:{interrupts}")
-        if status.terminal_reason:
-            click.echo(f"terminal_reason:   {status.terminal_reason}")
-        if status.status in {"interrupted", "failed", "stopped"}:
-            click.echo(
-                f"resume:            re-run `aa workflow resume --change {change_id}` "
-                "to advance from the ledger"
-            )
-    raise SystemExit(0)
+    raise SystemExit(_run_status(change_id, next_only=next_only, as_json=as_json))
 
 
 @workflow_group.command("import-checkpoint")
