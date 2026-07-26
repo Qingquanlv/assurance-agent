@@ -31,7 +31,7 @@ aa workflow run --change <change-id> --entrypoint execute
    - no unanswered explore open questions
    - `tests/config.py`, `tests/conftest.py`, `tests/schema_validation.py` conformant
 4. If the run is stuck, follow **`skills/aa-workflow/FALLBACK-RUNBOOK.md`**:
-   inspect `aa workflow status`, plain-resume expired leases, resolve listed interrupts, or
+   inspect `aa status`, plain-resume expired leases, resolve listed interrupts, or
    run validated checkpoint import. Never delete events, edit checkpoints, or mark tasks
    complete from bare files.
 5. Explore / case-design / case-review / case-fix stay out of scope for this entrypoint.

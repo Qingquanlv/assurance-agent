@@ -33,5 +33,5 @@ A registered projector for a `loops:` entry (`healing`, `review_fix`), consumed 
 _Avoid_: hardcoded loop, special-case loop
 
 **Checkpoint**:
-A driver main-loop iteration boundary (one committed phase outcome or control action); the checkpoint payload is `workflow-state.yaml` + `events.jsonl`, `driver.json` is only the pointer (`iteration` accumulates across runs of the same change).
+A driver main-loop boundary (one committed phase outcome or control action); the checkpoint payload is `workflow-state.yaml` + `events.jsonl`, `driver.json` is only the non-authoritative process pointer (`invocation_id` / `checkpoint_id` / `event_seq`).
 _Avoid_: snapshot, savepoint (recovery is re-projection, not snapshot restore)

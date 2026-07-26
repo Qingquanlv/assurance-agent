@@ -48,7 +48,7 @@ Deep per-phase contracts: load `aa-explore`, `aa-case-design`,
 
 ## Orchestration
 
-Prefer GraphRuntime (`aa workflow run` / `aa workflow status` / `aa workflow resume`).
+Prefer GraphRuntime (`aa workflow run` / `aa status` / `aa workflow resume`).
 `aa status --change <id> --next --json` projects next work; only intake-scope nodes are
 dispatched under `entrypoint: case|intake`. The **Intake Runbook** below is the ordered
 checklist the interactive agent walks when clarifying with the user — artifact production
@@ -66,7 +66,7 @@ Phase 1.2 — Explore              (INLINE in primary agent when interactive)
   → write explore/advisory.json (open_questions answered_via: aa-intake, with user confirmation)
   → aa risk validate-advisory: FAILS interactive intake if OQs were
     answered via explore / auto_default or lack user-confirmation metadata
-  → ledger: GraphRuntime commits explore — then aa workflow status / aa status
+  → ledger: GraphRuntime commits explore — then aa status
 
 Phase 2.1 — Case Design
   → dispatch aa-case-design; interaction_mode: interactive → clarify + get EXPLICIT user approval
@@ -74,18 +74,18 @@ Phase 2.1 — Case Design
   → outputs .qa.yaml (incl. approval.approved_by: user / approved_approach / approved_at),
     proposal.md, cases/<module>/case.yaml
   → case-design-gate will NOT mark cases done without .qa.yaml.approval
-  → ledger: GraphRuntime commits case-design — then aa workflow status / aa status
+  → ledger: GraphRuntime commits case-design — then aa status
 
 Phase 2.2 — Case Review (initial)
   → dispatch aa-case-reviewer → review/case-review.json   (reviewer JSON is the release gate)
   → aa gate check --phase case-review --change <id> --json      ← REQUIRED for local evidence
-  → ledger: GraphRuntime commits case-review + gate — then aa workflow status / aa status
+  → ledger: GraphRuntime commits case-review + gate — then aa status
 
 Phase 2.3 — Case Fix loop (if gate needs_fix)
   → for each attempt (max = max_case_fix_attempts):
       aa-case-fixer → aa-case-reviewer → aa gate check
       pass → exit loop ; reject / human_review_required → see Human Review below ; exhausted → STOP
-  → ledger: GraphRuntime commits each re-review — then aa workflow status / aa status
+  → ledger: GraphRuntime commits each re-review — then aa status
 ```
 
 ### Human Review (intake scope) — no hand-written pass
