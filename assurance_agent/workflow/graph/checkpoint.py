@@ -949,11 +949,38 @@ def dump_checkpoint_snapshot(projection: GraphProjection) -> bytes:
     return (payload + "\n").encode("utf-8")
 
 
+def latest_root_invocation_id(
+    events: list[dict[str, object]], entrypoint: str | None = None
+) -> str | None:
+    """严格 ledger 中最近一次无 parent 的 root ``graph_invocation_started``。
+
+    ``entrypoint`` 非空时只看该 entrypoint 的 invocation：同一 change 上
+    standalone entrypoint（``archive``/``retro``）与主 ``full`` 图各自独立成
+    invocation，不该互相当成「已在跑/已完成」。
+    """
+    latest: str | None = None
+    for raw in events:
+        if raw.get("source") != "graph" or raw.get("type") != "graph_invocation_started":
+            continue
+        if raw.get("parent_invocation_id") is not None:
+            continue
+        if entrypoint is not None and raw.get("entrypoint") != entrypoint:
+            continue
+        invocation_id = raw.get("invocation_id")
+        if isinstance(invocation_id, str):
+            latest = invocation_id
+    return latest
+
+
 class CheckpointStore:
     """checkpoint snapshot 缓存：snapshot 仅是性能缓存，ledger 才是权威。"""
 
     def __init__(self, change_dir: Path) -> None:
         self._change_dir = change_dir
+
+    @property
+    def change_dir(self) -> Path:
+        return self._change_dir
 
     def write(self, projection: GraphProjection) -> Path:
         rel = checkpoint_snapshot_relpath(projection)
@@ -982,18 +1009,7 @@ class CheckpointStore:
         standalone entrypoint（``archive``/``retro``）与主 ``full`` 图各自独立成
         invocation，不该互相当成「已在跑/已完成」。
         """
-        latest: str | None = None
-        for raw in read_events_strict(self._change_dir):
-            if raw.get("source") != "graph" or raw.get("type") != "graph_invocation_started":
-                continue
-            if raw.get("parent_invocation_id") is not None:
-                continue
-            if entrypoint is not None and raw.get("entrypoint") != entrypoint:
-                continue
-            invocation_id = raw.get("invocation_id")
-            if isinstance(invocation_id, str):
-                latest = invocation_id
-        return latest
+        return latest_root_invocation_id(read_events_strict(self._change_dir), entrypoint)
 
     def _repair_workflow_state(self, projection: GraphProjection) -> None:
         """缺失或损坏的 ``workflow-state.yaml`` 只能从 ledger 投影重建，绝不反向推断。"""
@@ -1036,6 +1052,7 @@ __all__ = [
     "checkpoint_snapshot_relpath",
     "dump_checkpoint_snapshot",
     "fold_invocation_events",
+    "latest_root_invocation_id",
     "parse_import_manifest",
     "project_invocation",
     "project_workflow_state",
