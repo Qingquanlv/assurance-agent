@@ -39,15 +39,26 @@ typed artifacts + Graph object params
 
 **Files:**
 - Create: `assurance_agent/artifacts/models/retro_batch.py`
+- Modify: `assurance_agent/artifacts/canonical.py`（当前工作树已有，先固化为共享 API）
 - Modify: `assurance_agent/artifacts/models/retro_v3.py`
 - Modify: `assurance_agent/artifacts/models/__init__.py`
 - Modify: `assurance_agent/artifacts/registry.py`
+- Modify: `assurance_agent/retro/candidates.py`
+- Modify: `assurance_agent/workflow/improvements/projection.py`
+- Modify: `assurance_agent/workflow/improvements/ledger.py`
+- Modify: `assurance_agent/workflow/improvements/review.py`
+- Modify: `assurance_agent/workflow/graph/workspace.py`（只加 parity 保护与保留原因，不迁移 tree encoder）
 - Modify: `assurance_agent/workflow/graph/schema_v2.py`
 - Modify: `assurance_agent/workflow/graph/compiler.py`
 - Test: `tests/unit/artifacts/test_retro_batch_models.py`
+- Create: `tests/unit/artifacts/test_canonical.py`
 - Test: `tests/unit/artifacts/test_registry.py`
 - Test: `tests/unit/workflow/graph/test_schema_v2.py`
 - Test: `tests/unit/workflow/graph/test_compiler.py`
+- Test: `tests/unit/retro/test_candidates.py`
+- Test: `tests/unit/workflow/improvements/test_projection.py`
+- Test: `tests/unit/workflow/improvements/test_ledger.py`
+- Test: `tests/unit/workflow/improvements/test_review.py`
 
 **Interfaces:**
 
@@ -100,14 +111,17 @@ class RetroInvocationResult(BaseModel):
 ```
 
 - `RetroWindow` 增加 `batch_scope: RetroBatchScope | None = None`；`RetroContextV3.window` 原样冻结该对象。
+- `RetroSourceDescriptor.kind` 增加 `batch_manifest` 与 `retro_pipeline_failure`，使 synthetic gap/failure ID 能进入现有 `ImprovementSourceRefs.workflow_evidence_ids` 的可解析 namespace；不为 Review Subject 另造 source-ref 类型。
 - `ParamDef.type` 增加 `"object"`。compiler 只接受 JSON-compatible mapping，拒绝 list/scalar；default 也执行同一验证。
 - Registry 注册 `qa/retro/<retro-id>/window.json`、`pipeline-failure.json`、`retro-status.json` 和 `qa/improvements/outbox/<retro-id>.json` 的 path-specific schema。`technical_failure` 只存在于无法落盘时返回给调用方的 `RetroInvocationResult`，绝不能写进 `retro-status.json`。
+- 当前工作树已有 `artifacts/canonical.py`，但 `retro/candidates.py`、Improvement projection/ledger/review 仍有同格式实现。先用 byte-parity tests 把这些“sorted keys + compact separators + 单尾换行”的调用迁到 `canonical_json_bytes/sha256_bytes`。`workflow/graph/workspace.py` 的 tree-object bytes **没有尾换行且决定 tree ID**，明确保留本地 encoder，不做行为迁移。
 
 - [ ] **Step 1: 写模型失败测试。** 覆盖未知 status、重复成员、非 canonical 排序、`complete` 携带 partial member、空 batch ID、failure 中原始 exception payload、failure document 的排序/去重，以及持久化 status 拒绝 `technical_failure`。
-- [ ] **Step 2: 写 Graph 参数失败测试。** `type: object` 接受 mapping/default；字符串、数组和包含非 JSON 值的 mapping 在 compile 时失败。
-- [ ] **Step 3: 运行** `uv run pytest tests/unit/artifacts/test_retro_batch_models.py tests/unit/artifacts/test_registry.py tests/unit/workflow/graph/test_schema_v2.py tests/unit/workflow/graph/test_compiler.py -v`；预期因模型和 `object` param 尚不存在而 FAIL。
-- [ ] **Step 4: 实现模型、model validators、registry 与 compiler 支持。** canonical 排序定义为按 `change_id` 升序，错误消息包含稳定 reason code，不包含整个输入对象。
-- [ ] **Step 5: 重跑定向测试和全局质量门禁并通过。** Commit：`git commit -m "feat: add retro batch and closure artifacts"`。
+- [ ] **Step 2: 写 canonical helper parity 测试。** 固定 projection/candidate/review/ledger fixture 在迁移前后 bytes 与 digest 完全一致；单独锁定 workspace tree encoder 无尾换行、tree ID 不变。
+- [ ] **Step 3: 写 Graph 参数失败测试。** `type: object` 接受 mapping/default；字符串、数组和包含非 JSON 值的 mapping 在 compile 时失败。
+- [ ] **Step 4: 运行** `uv run pytest tests/unit/artifacts/test_retro_batch_models.py tests/unit/artifacts/test_canonical.py tests/unit/artifacts/test_registry.py tests/unit/workflow/graph/test_schema_v2.py tests/unit/workflow/graph/test_compiler.py tests/unit/retro/test_candidates.py tests/unit/workflow/improvements/test_projection.py tests/unit/workflow/improvements/test_ledger.py tests/unit/workflow/improvements/test_review.py -v`；预期因新模型/`object` param/parity migration 尚不存在而 FAIL。
+- [ ] **Step 5: 实现模型、共享 canonical helper 迁移、registry 与 compiler 支持。** canonical 排序定义为按 `change_id` 升序，错误消息包含稳定 reason code，不包含整个输入对象；workspace tree encoder 保持独立并补说明。
+- [ ] **Step 6: 重跑定向测试和全局质量门禁并通过。** Commit：`git commit -m "feat: add retro batch and closure artifacts"`。
 
 ---
 
@@ -125,16 +139,20 @@ class RetroInvocationResult(BaseModel):
 **Interfaces:**
 
 ```python
-@dataclass(frozen=True)
-class RetroWindowSelection:
+class RetroWindowSelection(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
     change_ids: tuple[str, ...] = ()
-    since: datetime | None = None
-    until: datetime | None = None
+    since: str | None = None
+    until: str | None = None
     last: int | None = None
     batch_scope: RetroBatchScope | None = None
 
 def validate_batch_selection(selection: RetroWindowSelection) -> RetroBatchScope | None:
     """Validate identity equality and ordering before any evidence read."""
+
+class BatchScopeContractError(AaError):
+    error_kind: Literal["batch_scope_invalid"] = "batch_scope_invalid"
+    reason_code: str
 
 def resolve_retro_window(
     project_root: Path,
@@ -144,14 +162,16 @@ def resolve_retro_window(
 ```
 
 - Batch mode requires `change_ids == tuple(member.change_id for member in members)` byte-for-byte after canonical validation. It is mutually exclusive with `last/since/until`.
+- `RetroWindowSelection` 保持现有 frozen Pydantic model 与 `model_validator`；只把隐式 `last=10` 改为 `None` 并加入 batch field，不改成 dataclass。`selection_from_options()` 的人工 `last` 由 CLI 明确传入。
+- `RetroSelectionSnapshot.mode` 继续使用现有 `"change_ids"`，不新增平行 `"batch"` mode；`RetroWindow.batch_scope is not None` 是自动 Batch 与人工显式 Change 集合的权威区别。
 - Resolution never drops a missing or non-terminal member. It records availability downgrade from manifest `complete` to observed `partial/absent`; it never upgrades manifest availability.
 - Runtime only fills a safe `retro_id`; it must not manufacture `retro_last=10`, infer directories or synthesize Batch membership.
 - Workflow schema adds `batch_scope: {type: object, default: {}}` and passes it unchanged to `retro-collect-v3`.
 
-- [ ] **Step 1: 写失败测试。** 两个显式 members（一个 archived terminal、一个 missing/running）都出现在 resolved window；旧 Change 不混入；11 个成员不截断；集合不一致转为 `BatchScopeContractError`；manifest availability 只允许降级。
+- [ ] **Step 1: 写失败测试。** 两个显式 members（一个 archived terminal、一个 missing/running）都出现在 resolved window；旧 Change 不混入；11 个成员不截断；snapshot mode 为 `change_ids` 且 window 保留完整 batch scope；集合不一致抛带 `error_kind=batch_scope_invalid` 的 `BatchScopeContractError`；manifest availability 只允许降级。
 - [ ] **Step 2: 运行** `uv run pytest tests/unit/retro/test_window.py tests/unit/workflow/graph/test_retro_ops.py tests/unit/workflow/graph/test_retro_workflow.py -v`；预期 FAIL。
 - [ ] **Step 3: 实现 Batch parser、validator 与 exact selection。** 保持人工 `--change/--last/--since/--until` 的现有路径不变。
-- [ ] **Step 4: 更新 Graph params 与 handler。** 为 contract failure 返回结构化 `error_kind=batch_scope_invalid`，不从 exception message 子串推断错误类型。
+- [ ] **Step 4: 更新 Graph params 与 handler。** 为 contract failure 返回结构化 `error_kind=batch_scope_invalid`，不从 exception message 子串推断错误类型；Task 6/8 必须捕获该类型并转入 batch-contract fallback，Task 2 本身不得把它当正常 collect 结果。
 - [ ] **Step 5: 通过测试与质量门禁。** Commit：`git commit -m "feat: bind retro windows to explicit batch scope"`。
 
 ---
@@ -175,7 +195,7 @@ class IssueWindowSelection(BaseModel):
     change_ids: tuple[str, ...]
     allow_member_gaps: bool = False
 
-class BatchMemberEvidenceGap(BaseModel):
+class BatchMemberEvidenceGapSignal(_SignalBase):
     signal_type: Literal["batch_member_evidence_gap"]
     change_id: str
     execution_status: str
@@ -185,19 +205,19 @@ class BatchMemberEvidenceGap(BaseModel):
         "ledger_corrupt", "digest_drift", "projection_missing",
         "projection_corrupt",
     ]
-    source_refs: tuple[str, ...] = ()
 ```
 
 - `allow_member_gaps=False` 保留人工/旧调用方的 strict 行为；Batch collect 传 `True`。
 - 每个 Change 独立捕获 missing/corrupt/digest errors，拒绝消费该 member 的不可信 domain 内容，并继续其它 member/domain。
 - project Problem ledger 缺失或损坏时 Issue domain 整体 incomplete，但 Workflow/Eval 仍继续。
 - `running/not_started` 不读取可能仍在写入的 Change ledger，直接生成 gap。
+- 每个 gap 的稳定 `signal_id` 同时写入 `source_refs.workflow_evidence_ids`，由 Batch manifest 的 `RetroSourceDescriptor.evidence_ids` 解析；把该类加入现有 `Signal` discriminated union，不创建第二套 source-ref shape。
 - `RetroContext.integrity.reasons` 使用稳定格式 `batch_member_evidence_gap:<change-id>:<execution-status>:<domain>:<reason-code>`。
 
 - [ ] **Step 1: 写失败测试。** complete+missing+corrupt 三成员中完整 member 仍生成 evidence；missing/corrupt 各生成稳定 gap；strict mode 仍抛原异常；running member 的 ledger 即使存在也不读取。
 - [ ] **Step 2: 运行** `uv run pytest tests/unit/workflow/issues/test_history.py tests/unit/retro/test_workflow_history.py tests/unit/retro/test_slices.py -v`；预期 FAIL。
 - [ ] **Step 3: 为 Issue reader 添加 opt-in tolerant mode。** 不在 reader 中吞掉 project-wide IO permission error；该类错误交给 Supervisor。
-- [ ] **Step 4: 为 Workflow reader 添加逐成员隔离并在 slices 层统一物化 gap。** 排序键为 `(change_id, domain, reason_code)`，相同 gap 幂等去重。
+- [ ] **Step 4: 为 Workflow reader 添加逐成员隔离并在 slices 层统一物化 gap signal。** 排序键为 `(change_id, domain, reason_code)`，相同 gap 幂等去重；Agent 只补充领域分析，collect 产生的 deterministic gap signals 在 assemble 时不可被 Agent 输出覆盖。
 - [ ] **Step 5: 通过测试与质量门禁。** Commit：`git commit -m "feat: collect partial retro batch evidence"`。
 
 ---
@@ -226,27 +246,30 @@ class EvalRunProjection(BaseModel):
     schema_version: Literal["1"]
     run_id: str
     suite: str
-    verdict: str
-    started_at: datetime
-    completed_at: datetime
+    verdict: EvalVerdict
+    started_at: str
+    completed_at: str
     source_change_ids: tuple[str, ...]
     failure_signature: str | None
     sample_ids: tuple[str, ...]
     raw_report_sha256: str
 
+class EvalProjectionConflict(AaError):
+    run_id: str
+
 def write_run_report(
     run_dir: Path,
     manifest: RunManifest,
-    metrics: RunMetrics,
-    gate: GateResult,
+    metrics: SuiteMetrics,
+    gate: EvalGateResult,
     *,
     projection_root: Path | None = None,
-) -> Path:
+) -> None:
     """Write raw report and, when supplied, immutable qa/eval projection."""
 ```
 
 - projection path 是 `<sut>/qa/eval/runs/<run-id>/report.json`。
-- 同一 run ID 相同 canonical bytes 是 replay；不同 bytes 抛 `ArtifactConflictError`。
+- 同一 run ID 相同 canonical bytes 是 replay；不同 bytes 抛本 Task 明确定义的 `EvalProjectionConflict`。
 - `failure_signature` 只由稳定 failure kind/sample IDs 派生，不复制日志或异常文本。
 - Batch mode 只读取 `source_change_ids` 与 Batch members 相交的 projection；空关联 benchmark metrics 不参与 Retro。
 - execution contract 从 `project:eval/**` 改为只读/同步 `project:qa/eval/**`。
@@ -282,9 +305,11 @@ def _is_top_level_issue_ledger(rel: PurePosixPath) -> bool:
 
 - `_is_excluded_rel` 只有命中上述 exact shape 才覆盖 `qa/changes/**`/`qa/archive/**` 排除规则。
 - 位于 `eval/**`、task workspace、sample SUT 或任意 excluded ancestor 下的同名 suffix 继续 excluded。
-- baseline overlay、task materialization 和 write-set freeze 共用同一个 predicate。
+- 将现有仅覆盖 `qa/changes/...` 的例外扩展到 `qa/archive/...` 是 design §9 明确要求的 capture 可见性扩展，不是 incidental cleanup；两类合法路径分别加测试。
+- `_walk()` 在 capture 与 freeze 的 current-tree 重扫中使用该 predicate。`materialize()` 不重新执行 predicate，只物化已经过滤的 tree manifest；测试应证明 excluded path 从未进入 manifest，因此也不会被 materialize。synchronized ledger overlay 保持独立例外。
+- 真实 project-root `_walk()` 会先剪枝顶层 `eval/`，因此嵌套 Eval SUT false positive 在当前遍历入口是潜在风险而非稳定复现；本 Task 修的是 predicate 本身，并用直接 predicate/tree fixture 锁定，raw Eval read removal 由 Task 4 完成。
 
-- [ ] **Step 1: 写参数化失败测试。** 两个合法顶层路径可见；`eval/out/runs/R/samples/S/sut/qa/changes/C/issues/events.jsonl`、`nested/qa/changes/...` 和多一层目录均不可见；freeze 不把 excluded 文件判为未授权删除。
+- [ ] **Step 1: 写参数化失败测试。** `qa/changes/...` 与新增的 `qa/archive/...` 两个合法顶层路径可见；直接 predicate/tree fixture 中的 `eval/out/runs/R/samples/S/sut/qa/changes/C/issues/events.jsonl`、`nested/qa/changes/...` 和多一层目录均不可见；freeze 不把 excluded 文件判为未授权删除；materialize 只复现 manifest 内容。
 - [ ] **Step 2: 运行** `uv run pytest tests/unit/workflow/graph/test_workspace.py tests/unit/workflow/graph/test_read_isolation.py tests/unit/eval/test_eval_import_replay.py -v`；预期至少嵌套 SUT case FAIL。
 - [ ] **Step 3: 用 exact predicate 替换 suffix 判断。** 不增加 Retro write 权限。
 - [ ] **Step 4: 通过测试与质量门禁。** Commit：`git commit -m "fix: scope issue ledger workspace exception"`。
@@ -295,6 +320,7 @@ def _is_top_level_issue_ledger(rel: PurePosixPath) -> bool:
 
 **Files:**
 - Create: `assurance_agent/retro/fallback.py`
+- Modify: `assurance_agent/artifacts/models/retro_v3.py`
 - Modify: `assurance_agent/retro/assemble.py`
 - Modify: `assurance_agent/retro/candidates.py`
 - Modify: `assurance_agent/workflow/retro_outputs.py`
@@ -308,25 +334,28 @@ def _is_top_level_issue_ledger(rel: PurePosixPath) -> bool:
 ```python
 def candidate_from_evidence_gaps(
     *, retro_id: str, batch_scope: RetroBatchScope,
-    gaps: Sequence[BatchMemberEvidenceGap], context_sha256: str,
+    gaps: Sequence[BatchMemberEvidenceGapSignal], context_sha256: str,
 ) -> ImprovementCandidateV3:
     """Build one stable workflow_improvement without an LLM call."""
 
 def candidate_from_pipeline_failure(
     failure: RetroPipelineFailure,
-    *, context_sha256: str | None,
+    *, context_sha256: str,
 ) -> ImprovementCandidateV3:
     """Target assurance-agent:retro:<stage>; intent uses stage + error_kind."""
 ```
 
 - 所有 member 在 Issue/Workflow/Eval 都无领域 evidence 时不调三个 analyzer Agent，直接产生 evidence-gap Candidate。
+- collect/assemble 之前失败时，Supervisor 先物化三个 canonical empty typed slices（共享同一 batch/window、integrity incomplete、source descriptor 指向 failure envelope），再构造最小但 schema-valid 的 `RetroContextV3`：三个 domain status 为 failed，并携带一个 `RetroPipelineFailureSignal`。已有可信 context 时复用并附加 failure signal。因而所有 fallback Candidate 都有真实 slice digests 和非空 `context_sha256`，可继续使用现有 reconciler/`ImprovementAcceptStatus`。
+- 对 `batch_scope_invalid` 不把非法 manifest 重新包装成可信 `RetroBatchScope`；fallback window 使用 `mode="change_ids"`、空 trusted Change 集合和 `batch_scope=None`，只在 failure envelope 中保留通过安全标识校验的 optional batch ID/reason code。
 - pipeline failure Candidate 的 fingerprint 输入不使用自由 message；`message_fingerprint` 只用于审计。
 - incomplete context 继续允许 `prompt_improvement`、`fixture_improvement`、`test_improvement`、`workflow_improvement`，只禁止 `domain_knowledge`。
 - proposer invalid output、assemble failure 和 analyzer exhausted failure 均使用同一 typed envelope；不递归启动 Retro。
+- 将 `RetroPipelineFailureSignal` 加入现有 `Signal` discriminated union，字段包含稳定 `failure_id/stage/error_kind`；fallback Candidate 的 `signal_ids` 与 `ImprovementSourceRefs.workflow_evidence_ids` 均引用该 signal/failure namespace，满足 `ImprovementCandidateV3` 的既有追溯约束。
 
-- [ ] **Step 1: 写失败测试。** 全 absent 产生一个 deterministic workflow Candidate 且 analyzer 调用数为零；相同 stage/error kind、不同 message 得到同一 intent/fingerprint；incomplete process Candidate 可接受，domain knowledge 被拒绝。
+- [ ] **Step 1: 写失败测试。** 全 absent 产生一个 deterministic workflow Candidate 且 analyzer 调用数为零；collect 前 failure 生成三个可验 digest 的 empty slices、合法 context 和非空 context digest；相同 stage/error kind、不同 message 得到同一 intent/fingerprint；incomplete process Candidate 可接受，domain knowledge 被拒绝。
 - [ ] **Step 2: 运行** `uv run pytest tests/unit/retro/test_fallback.py tests/unit/retro/test_assemble.py tests/unit/workflow/graph/test_retro_ops.py -v`；预期 FAIL。
-- [ ] **Step 3: 实现纯 fallback builder。** 固定 target、rationale、verification suite 和 success criteria；source refs 只引用 gap/failure artifact。
+- [ ] **Step 3: 实现纯 fallback builder。** 固定 target、rationale、verification suite 和 success criteria；`BatchScopeContractError` 生成 `batch_contract` stage、`batch_scope_invalid` kind 的 envelope/Candidate。gap/failure 先获得稳定 evidence ID，并经 Task 1 扩展的 `RetroSourceDescriptor` 进入现有 `ImprovementSourceRefs`，禁止无来源 Candidate。
 - [ ] **Step 4: 接入 assemble/handler 的 no-agent 与 failure 分支。** 原有健康零信号 NOOP 仍保持 NOOP；只有 evidence gap 或 pipeline failure 才产生 fallback Candidate。
 - [ ] **Step 5: 通过测试与质量门禁。** Commit：`git commit -m "feat: create deterministic retro fallback candidates"`。
 
@@ -350,26 +379,28 @@ class ImprovementOutboxEntry(BaseModel):
     schema_version: Literal["1"]
     retro_id: str
     candidate_sha256: str
-    context_sha256: str | None
+    context_sha256: str
+    context: RetroContextV3
     candidate: ImprovementCandidateV3
     pipeline_failure: RetroPipelineFailure | None
 
 def enqueue_reconcile(project_root: Path, entry: ImprovementOutboxEntry) -> Path:
     """Atomically persist immutable pending reconcile work."""
 
-def drain_reconcile_outbox(project_root: Path) -> tuple[ImprovementAcceptReceipt, ...]:
+def drain_reconcile_outbox(project_root: Path) -> tuple[ImprovementAcceptStatus, ...]:
     """Under registry locking, reconcile sorted entries exactly once."""
 ```
 
-- 每轮 Retro collect 前 drain，按 outbox filename 排序。
+- 复用现有 `reconciler.py` 的 `ImprovementAcceptStatus`，不引入第二种 receipt。其权威字段保持 `result/improvement_ids/event_ids`，并保留现有 `retro_id/context_sha256/candidate_batch_digest/idempotency_key/error`；Auto Review selector 根据本次 operation 明确返回的 accepted statuses 中 `improvement_ids` 重读 projection，status 本身不复制 subject/version。
+- 每轮 Retro collect 前 drain，按 outbox filename 排序。entry 自包含已校验 context/candidate，drain 不回读历史 `qa/retro/**`。
 - ledger lock/temporary IO failure 写 outbox 并把 Retro result 设为 `pending_reconcile`。
-- 成功 drain 后记录 receipt，再删除或标记 outbox；重放不得产生第二组 proposal/evidence-link events。
+- 成功 drain 后记录 `ImprovementAcceptStatus`，再删除或标记 outbox；重放不得产生第二组 proposal/evidence-link events。
 - candidate schema/ref/fingerprint contract error 不是临时 ledger failure；它转成 `reconcile_contract_error` pipeline failure Candidate，且只允许一次 fallback，避免递归。
 
 - [ ] **Step 1: 写失败测试。** ledger 暂不可写时 outbox 原子落盘；下一轮 drain 只产生一组 events；在 commit 后 crash、清理前重放仍幂等；两个 outbox 按稳定顺序处理。
 - [ ] **Step 2: 运行** `uv run pytest tests/unit/workflow/improvements/test_outbox.py tests/unit/workflow/improvements/test_reconciler.py tests/integration/test_retro_improvement_workflow.py -v`；预期 FAIL。
 - [ ] **Step 3: 实现 outbox model/store/drain。** 复用现有 Improvement registry lock 和 reconciler，不复制 fingerprint 计算。
-- [ ] **Step 4: 接入 Retro handler 和 status 输入。** outbox 成功 drain 的 proposal 必须进入本轮 receipt，供后续 Auto Review selector 使用。
+- [ ] **Step 4: 接入 Retro handler 和 status 输入。** 正常 reconcile status 与本轮成功 drain 返回的 `ImprovementAcceptStatus` 分开保留、合并为显式 status tuple 交给后续 Auto Review selector；不得通过扫描 accept-status 文件或 review queue 重建“本轮”集合。
 - [ ] **Step 5: 通过测试与质量门禁。** Commit：`git commit -m "feat: add durable improvement reconcile outbox"`。
 
 ---
@@ -397,24 +428,26 @@ class RetroInvocation:
     project_root: Path
     shell_change_id: str
     retro_id: str
-    params: Mapping[str, JsonValue]
+    params: Mapping[str, object]
 
 def run_retro_supervised(
     invocation: RetroInvocation,
     *, graph_runner: GraphRunner,
-) -> RetroRunStatus:
+    preflight_failure: RetroPipelineFailure | None = None,
+) -> RetroInvocationResult:
     """Run Graph, compensate outer failures, and always attempt status persistence."""
 ```
 
 - Graph 内每个 analyzer 用 settled recovery node；collect/assemble/propose/reconcile 失败先写 `pipeline-failure.json`，走 deterministic fallback/reconcile，再写 status。
 - Graph 外 compile/dispatch/workspace-freeze/finalize error 由 Supervisor 使用结构化 exception kind 生成相同 envelope。不得用 `"graph_definition_changed" in message` 一类子串判断。
+- Supervisor 是 phase-aware：补偿前先读取并校验当前 `retro-status.json`。若 inner Retro status 已 final，则后续 selector/fanout/summarize 的失败属于 `post_retro_auto_review`，不得改写 `pipeline-failure.json`、outbox 或 `retro-status.json`，只交给 Auto Review batch recovery/命令结果。只有 status 尚不存在时才执行 Retro fallback。
 - `retro-status.result`：无 gap/failure/outbox 为 `completed`；有 gap/fallback 为 `completed_with_gaps`；仍有 outbox 为 `pending_reconcile`。连 status/outbox 都不可写时不伪造 status 文件，只由 invocation result 返回 `technical_failure`。
 - `commands/retro_cmd.py` 和 `commands/workflow_cmd.py` 的 retro entrypoint 都调用同一 Supervisor，不 monkey-patch planner/scheduler/runtime。
 
 - [ ] **Step 1: 写 Graph 拓扑失败测试。** collect forbidden_write、analyzer timeout、assemble exception、proposer invalid output、reconcile lock failure 都能抵达 status node；健康路径仍一次 reconcile。
-- [ ] **Step 2: 写 Supervisor 失败测试。** compile error、dispatch error、freeze error 各自形成 envelope+fallback；structured `error_kind` 改 message 后不改变路由；完全只读项目返回 technical_failure。
+- [ ] **Step 2: 写 Supervisor 失败测试。** status 前的 compile/dispatch/freeze error 各自形成 envelope+fallback；structured `error_kind` 改 message 后不改变路由；parsed manifest contract error 可作为 `preflight_failure` 进入同一 fallback；status final 后模拟 selector/fanout/summarize dispatch failure，断言 status 与 pipeline-failure bytes 不变；完全只读项目返回 technical_failure。
 - [ ] **Step 3: 运行** `uv run pytest tests/unit/retro/test_supervisor.py tests/unit/workflow/graph/test_retro_workflow.py tests/unit/workflow/graph/test_task_runner.py tests/integration/test_retro_cli.py -v`；预期 FAIL。
-- [ ] **Step 4: 实现 status/failure operations 与 Graph recovery edges。** 每条 edge 明确 `when`/`else`，settled join 等待成功或 recovery terminal node。
+- [ ] **Step 4: 实现 status/failure operations 与 Graph recovery。** 使用现有 `recover: {errors, via, continue_to}` 表达 exhausted failure；普通 route 使用互补 `when` 或既有 default route，不引入 DSL 中不存在的 `else`。settled join 等待成功节点或 recovery 的 `continue_to` terminal node。
 - [ ] **Step 5: 实现窄接口 Supervisor 并接入两个命令。** 它只调用 Graph runner、fallback reconciler 和固定 artifact writer。
 - [ ] **Step 6: 通过测试与质量门禁。** Commit：`git commit -m "feat: always finalize retro pipeline failures"`。
 
@@ -436,11 +469,11 @@ aa retro --change <id>... | --last <n> | --since <ts> [--until <ts>]
 ```
 
 - `--batch-manifest` 与 `--change/--last/--since/--until` 互斥。
-- manifest 读取后构造 exact `change_ids` 和 `batch_scope`，调用 Task 8 Supervisor。
+- manifest 读取后构造 exact `change_ids` 和 `batch_scope`，调用 Task 8 Supervisor。文件不存在/不可读属于无法取得任何 Batch document 的 CLI invocation error；JSON 已解析但 schema、排序、唯一性、status/集合约束失败时，构造 `batch_scope_invalid` preflight failure 并走 deterministic fallback，不作为入口阻断。
 - 自动路径不提供 manifest 时不回退 `last=10`；这是调用方 contract error。
 - JSON output 至少包含 retro ID、batch ID、status result、Improvement IDs、outbox ID 和 failure IDs；secret/error raw payload 不输出。
 
-- [ ] **Step 1: 写 CLI 失败测试。** 合法 manifest 成功；集合重复/乱序/status 不一致得到稳定非零错误；和 `--last` 混用拒绝；缺成员 workspace 仍返回 completed_with_gaps；自动调用无 manifest 不会隐式选历史。
+- [ ] **Step 1: 写 CLI 失败测试。** 合法 manifest 成功；已解析 manifest 的集合重复/乱序/status 不一致各自得到 `completed_with_gaps`、一个 stable batch-contract process Candidate 和零领域 Agent；文件缺失及和 `--last` 混用得到稳定非零 invocation error；缺成员 workspace 仍返回 completed_with_gaps；自动调用无 manifest 不会隐式选历史。
 - [ ] **Step 2: 运行** `uv run pytest tests/integration/test_retro_cli.py -v`；预期 FAIL。
 - [ ] **Step 3: 实现 option、manifest loader 与 JSON renderer。** 人工模式兼容现有命令。
 - [ ] **Step 4: 更新 schema 文档与帮助快照。** 明确 shell Change 不属于 Batch membership。

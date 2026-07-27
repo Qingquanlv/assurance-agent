@@ -4,13 +4,13 @@
 
 **Goal:** 实现设计 `docs/superpowers/specs/2026-07-27-improvement-automatic-review-design.md`：对本轮 Retro 新生成、证据完整的低风险 process Improvement 执行只读自动审查，并且只有确定性 Graph Gate 与锁内 apply 同时通过时才执行 `proposed -> approved`；其它结论留在人工 review queue。
 
-**Architecture:** Improvement reconciler 在 proposal/evidence-link 时发布内容寻址的 immutable Review Subject，并把 digest 绑定到 Ledger event。只读 `aa-improvement-reviewer` 仅消费一个 frozen subject、输出 typed assessment。workflow validator 机械构造 gate input，named Gate fail-closed 地计算 auto eligibility，apply 在 registry lock 内重读 projection/subject/assessment 并写 strict event。外层 `retro-orchestration-workflow` 只 fan-out 本轮 receipt 指向的 proposed Improvement；每个 child failure 自行记录，Retro 已完成的 status 不回滚，也没有任何 delivery edge。
+**Architecture:** Improvement reconciler 在 proposal/evidence-link 时发布内容寻址的 immutable Review Subject，并把 digest 绑定到 Ledger event。只读 `aa-improvement-reviewer` 仅消费一个 frozen subject、输出 typed assessment。workflow validator 机械构造 gate input，named Gate fail-closed 地计算 auto eligibility，apply 在 registry lock 内重读 projection/subject/assessment 并写 strict event。外层 `retro-orchestration-workflow` 只 fan-out 本轮显式 `ImprovementAcceptStatus` 指向的 proposed Improvement；每个 child failure 自行记录，Retro 已完成的 status 不回滚，也没有任何 delivery edge。
 
 **Tech Stack:** Python 3.11、uv、Pydantic v2、JSONL Improvement event ledger、YAML Graph DSL、skill registry、Click CLI、pytest、ruff、pyright、import-linter。
 
 ## Global Constraints
 
-- 本计划依赖 `docs/superpowers/plans/2026-07-27-retro-explicit-batch-scope.md` 的 typed receipt/outbox drain、`retro-status.json` finalizer 与 canonical Supervisor 入口。Task 1–6 可独立完成；本计划 Task 7 的外层 Retro 串联必须在 Retro 批次计划 Task 7–9 完成后实施。
+- 本计划复用现有 `reconciler.py::ImprovementAcceptStatus`，不定义平行 receipt。Task 1 可独立开始；Task 2–6 依赖 Retro 批次计划 Task 1 固化共享 canonical helper 与 gap/failure source namespace；Task 7 额外依赖 Retro 批次计划 Task 7–9 的 outbox drain、`retro-status.json` finalizer 与 phase-aware Supervisor。
 - 当前工作树含未提交的 Retro v3 与 Improvement reconciler 改动。实施前先建立可恢复 checkpoint；禁止从 bare `HEAD` 建 worktree 后漏掉当前 reviewed changes。
 - Skill 没有授权能力：不得输出或写入 `auto_eligible`、Ledger state、delivery event；它只能写当前 review ID 的 `assessment.json` 和 `summary.md`。
 - 系统绝不自动 `reject`、`request_rework`、`supersede`、evaluate、export、apply、rollback。Reviewer 的 `reject` 只记录为 `reject_advice`。
@@ -28,7 +28,7 @@
 Retro proposer
   -> Improvement reconciler + immutable Review Subject
   -> retro-status final
-  -> selector(current receipts only)
+  -> selector(current ImprovementAcceptStatus values only)
   -> read-only reviewer
   -> deterministic Gate
        eligible -> locked auto-approval event
@@ -93,8 +93,13 @@ class ImprovementAutoReviewStatus(BaseModel):
     schema_version: Literal["1"]
     review_id: str
     improvement_id: str
-    result: Literal["approved", "escalated", "review_error", "stale", "idempotent"]
+    result: Literal["approved", "escalated", "review_error", "stale"]
     ledger_event_id: str | None
+    replayed: bool = False
+
+class AutoReviewBatchError(BaseModel):
+    stage: Literal["selector", "fan_out", "summarize"]
+    error_kind: str
 
 class ImprovementAutoReviewBatchSummary(BaseModel):
     schema_version: Literal["1"]
@@ -104,10 +109,12 @@ class ImprovementAutoReviewBatchSummary(BaseModel):
     escalated: int
     errors: int
     stale: int
+    orchestration_errors: tuple[AutoReviewBatchError, ...] = ()
 ```
 
 - `ImprovementProjection` 增加默认字段：`review_subject_sha256: str | None = None`、`approval_source: Literal["none", "human", "automatic"] = "none"`、`last_auto_review: LastAutoReview | None = None`。
 - Registry 注册 content-addressed subject、每个 review 的 assessment/gate-input/status 与每轮 Retro 的 Auto Review batch summary；`summary.md` 只做展示，不参与 schema/Gate。
+- 每个 child 无论首次执行或幂等重放都归入四个 semantic result 之一；`replayed=true` 只表示没有追加第二条 event。因此 `approved + escalated + errors + stale == len(review_ids)` 始终成立，外层 selector/fan-out/summarize 错误单列在 `orchestration_errors`，不伪造 child review ID。
 - `ImprovementProposedEvent` 与 `ImprovementEvidenceLinkedEvent` 增加可选 `review_subject_sha256`，保持旧事件 replay。
 - 新 strict events：`ImprovementAutoReviewApprovedEvent` 和 `ImprovementAutoReviewRecordedEvent`；未知 extra fields 拒绝。
 - auto-approved fold 将 state 设为 `approved`、source 设为 `automatic`；recorded 只更新 audit 字段并增加 version；human approval 设为 `human`；离开 approved 后 active source 重置为 `none`。
@@ -134,20 +141,27 @@ class ImprovementAutoReviewBatchSummary(BaseModel):
 **Interfaces:**
 
 ```python
+class ImprovementReviewProvenance(BaseModel):
+    retro_id: str
+    candidate_id: str
+    context_sha256: str
+    candidate_batch_digest: str
+
 class ImprovementReviewSubject(BaseModel):
     schema_version: Literal["1"]
     improvement_id: str
     kind: ImprovementKind
-    delivery: ImprovementDelivery
+    delivery: DeliveryKind
     target: str
     rationale: str
     proposed_change: str
     verification: ImprovementVerification
-    risk: ImprovementRisk
-    confidence: ImprovementConfidence
-    source_refs: Mapping[str, SourceReference]
-    signal_evidence: tuple[SignalEvidence, ...]
-    source_manifest: Mapping[str, SourceManifestEntry]
+    risk: Literal["low", "medium", "high"]
+    confidence: Literal["low", "medium", "high"]
+    source_refs: ImprovementSourceRefs
+    signal_evidence: tuple[Signal, ...]
+    source_manifest: RetroSourceManifestV3
+    pipeline_failures: tuple[RetroPipelineFailure, ...] = ()
     provenance: ImprovementReviewProvenance
 
 def build_review_subject(
@@ -165,7 +179,8 @@ def publish_review_subject(
     """Write qa/improvements/review-subjects/<digest>.json immutably."""
 ```
 
-- `signal_evidence` 只含 Candidate `signal_ids` 指向的 signals；gap/failure Candidate 只含其结构化 envelope。
+- 字段直接映射现有模型：`kind/delivery/source_refs/verification` 来自 `ImprovementCandidateV3`；risk/confidence 保持 Candidate 已有 Literal；`signal_evidence` 使用 `retro_v3.Signal`；`source_manifest` 使用 `RetroSourceManifestV3`。builder 保留三个 slice digest，但只保留 `evidence_ids` 与 `candidate.source_refs.all_ids()` 相交的 `RetroSourceDescriptor`；不创建 `SourceReference/SignalEvidence/SourceManifestEntry` 平行类型。
+- `signal_evidence` 只含 Candidate `signal_ids` 指向的 signals；gap signal 已属于 `Signal` union；pipeline-failure Candidate 额外在 `pipeline_failures` 放入其 typed `RetroPipelineFailure` envelope。
 - Subject 不复制无关 signal、raw log、Eval sample/SUT、secret、review timestamp 或 ledger version。
 - reconciler 在 Improvement registry lock 内先发布 subject，再 append proposal/evidence-link event，并在 event 上写 digest。
 - Subject 写成功但 ledger append 失败允许 orphan；相同重试必须引用相同 bytes。Ledger 不得引用缺失或 digest 不匹配 subject。
@@ -174,7 +189,7 @@ def publish_review_subject(
 - [ ] **Step 1: 写失败测试。** 相同 semantic input 在不同 ledger version/time 下 digest 相同；一个引用 signal 改变后 digest 改变；无关 signal 改变不影响 digest；source ref 无法解析时 reconcile 在写 event 前失败。
 - [ ] **Step 2: 写顺序/原子性测试。** 观测 publish 发生在 append 前；append failure 留下安全 orphan；不同 bytes 写同 digest 冲突；event 从不引用不存在 subject。
 - [ ] **Step 3: 运行** `uv run pytest tests/unit/workflow/improvements/test_review_subject.py tests/unit/workflow/improvements/test_reconciler.py tests/unit/workflow/improvements/test_reconcile_v3.py -v`；预期 FAIL。
-- [ ] **Step 4: 实现 subject builder/store 并接入 reconciliation plan。** 复用共享 canonical SHA helper，禁止在第四处复制序列化逻辑。
+- [ ] **Step 4: 实现 subject builder/store 并接入 reconciliation plan。** 依赖 Retro 批次计划 Task 1 已用 parity tests 固化的 `artifacts.canonical.canonical_json_bytes/sha256_bytes`；本 Task 只调用共享 API，不再复制 serializer。若该依赖 commit 尚未存在，先完成它而不是在本 Task 临时定义 helper。
 - [ ] **Step 5: 通过测试与质量门禁。** Commit：`git commit -m "feat: freeze improvement review subjects during reconcile"`。
 
 ---
@@ -240,12 +255,20 @@ def complete_improvement_reviewer_outputs(
 **Interfaces:**
 
 ```python
-def resolve_view_path(
+def expand_gate_read_template(
     template: str,
-    *, change_id: str,
-    params: Mapping[str, JsonValue],
-) -> PurePosixPath:
-    """Expand <change-id> and allowlisted ${params.<name>} scalar path segments."""
+    *,
+    params: Mapping[str, object],
+) -> str:
+    """Expand allowlisted ${params.<name>} scalar path segments."""
+
+def resolve_view_path(
+    context: GateEvaluationContext,
+    rel: str,
+    *,
+    params: Mapping[str, object] | None = None,
+) -> Path:
+    """Extend the existing view resolver after safe param expansion."""
 
 class AutoReviewGateInput(BaseModel):
     schema_version: Literal["1"]
@@ -282,7 +305,8 @@ def build_auto_review_gate_input(
 
 - validator 写 `qa/improvements/reviews/<review-id>/gate-input.json`；Reviewer contract 没有该路径的 write permission。
 - named Gate 读取 dynamic review path，显式 AND 所有 eligibility facts。它不信任 assessment 自报 risk/confidence/eligibility。
-- path params 只接受单个安全 segment：非空 ASCII/identifier-digest 字符集，拒绝 `/`、`\\`、`.`、`..`、percent traversal 和未声明 param。
+- `gates.py` 已有 `resolve_view_path(context, rel)`；本 Task 扩展其签名并增加独立的 `expand_gate_read_template()`，不是在同一模块新增第二个同名函数。v1 `resolve_change_path()` 与没有 params 的现有调用保持 byte-for-byte 路径语义。
+- path params 只接受单个安全 segment：review ID 使用既有 ID 字符集，digest 必须精确匹配 `sha256:<64-lowercase-hex>`；拒绝 `/`、`\\`、`.`、`..`、percent traversal、任意其它 colon 用法和未声明 param。subject 文件名沿用完整 prefixed digest，与 artifact 字段一致。
 - Gate pass 后 apply 仍锁内重做 version/subject/digest/terminal-review 校验，避免 TOCTOU。
 
 - [ ] **Step 1: 写 path resolution 失败测试。** 正常 review/digest 展开；slash、dotdot、absolute、missing param、list/object param 全拒绝；现有 static paths 与 `<change-id>` 行为不变。
@@ -318,8 +342,8 @@ class AutoReviewItem(BaseModel):
     attempt: int
 
 def select_auto_review_items(
-    projection: ImprovementProjection,
-    receipts: Sequence[ImprovementAcceptReceipt],
+    projection: ImprovementLedgerProjection,
+    accept_statuses: Sequence[ImprovementAcceptStatus],
     *, policy_version: str = "1",
 ) -> tuple[AutoReviewItem, ...]:
     """Select current receipts only; never scan the review queue."""
@@ -328,21 +352,21 @@ def apply_auto_review_result(
     project_root: Path,
     item: AutoReviewItem,
     *, gate_verdict: Literal["auto_approve", "record"],
-) -> AutoReviewApplyResult:
+) -> ImprovementAutoReviewStatus:
     """Lock, reread, validate all bindings, then append at most one event."""
 ```
 
-- selector 只接受本轮 accept/drain receipts 指向、当前 `proposed`、有 subject 且同 subject/policy 无 non-error terminal assessment 的 Improvement。
+- selector 只展开本轮 operation 显式传入、`result == "accepted"` 的 `ImprovementAcceptStatus.improvement_ids`，再从 `ImprovementLedgerProjection.improvements` 重读当前 subject/version；只接受当前 `proposed`、有 subject 且同 subject/policy 无 non-error terminal assessment 的 Improvement。`event_ids` 用于审计但不承担 improvement→subject 映射。
 - dry-run、零 Candidate、尚未 drain 的 pending outbox 返回空 tuple。
 - `decision=reject` 映射 `reject_advice`；changes_requested/needs_human_review 保持对应 audit verdict；Reviewer/subject/validator failure 映射 `review_error`。
 - stale apply 不写 decision event；写 review-local status `stale`。如果新 subject 仍 proposed，可由后续显式 selection 创建新 review。
-- 同一 `improvement_id+subject+policy+attempt` 并发只允许一条 canonical terminal event；另一方得到 idempotent 或 stale。
+- 同一 `improvement_id+subject+policy+attempt` 并发只允许一条 canonical terminal event；另一方若找到相同 event，返回同一 semantic result 且 `replayed=true`，否则为 `stale`。
 
-- [ ] **Step 1: 写 selector 失败测试。** current receipt、old queue item、old proposal no subject、dry-run、pending outbox、已审同 subject、新 subject、显式 retry 各自覆盖。
+- [ ] **Step 1: 写 selector 失败测试。** 直接构造现有 `ImprovementAcceptStatus`，覆盖 accepted/failed、current status、old queue item、old proposal no subject、dry-run、pending outbox、已审同 subject、新 subject、显式 retry；本 Task 不依赖 outbox 类型或 Batch Task 7 才能编译。
 - [ ] **Step 2: 写 apply 并发/映射失败测试。** pass eligible 自动批准；reject 不写 reject event；changes requested 不进 needs_rework；stale version/digest drift 保持 proposed；两个并发 apply 仅一条 event。
 - [ ] **Step 3: 运行** `uv run pytest tests/unit/workflow/improvements/test_auto_review.py tests/unit/workflow/graph/test_retro_ops.py tests/unit/workflow/improvements/test_projection.py -v`；预期 FAIL。
 - [ ] **Step 4: 实现纯 selector 和 synchronized operations。** registry lock 内重建 projection，event 使用 expected version 和稳定 idempotency key。
-- [ ] **Step 5: 实现 review-local `status.json`。** result 为 `approved|escalated|review_error|stale|idempotent`，不成为 Ledger authority。
+- [ ] **Step 5: 实现 review-local `status.json`。** result 只允许 `approved|escalated|review_error|stale`；幂等重放设置 `replayed=true` 并沿用原 semantic result，不成为 Ledger authority。
 - [ ] **Step 6: 通过测试与质量门禁。** Commit：`git commit -m "feat: apply bounded improvement auto review decisions"`。
 
 ---
@@ -362,7 +386,8 @@ def apply_auto_review_result(
 **Graph:**
 
 ```text
-load-improvement-auto-review
+graph:improvement-auto-review-cycle
+  load-review-subject
   -> agent:aa-improvement-reviewer
   -> validate-improvement-review-assessment
   -> improvement-auto-review-gate
@@ -371,7 +396,7 @@ load-improvement-auto-review
   agent/validation failure -> record-review-error -> write-review-status -> END
 ```
 
-- 新 repeatable entrypoint `improvement-auto-review` 必须显式接收 `improvement_id`、`subject_sha256`、`expected_improvement_version`、`review_id`、`policy_version`、`attempt`。
+- Graph ID 明确为 `improvement-auto-review-cycle`；新 repeatable entrypoint `improvement-auto-review` 指向该 graph，并显式接收 `improvement_id`、`subject_sha256`、`expected_improvement_version`、`review_id`、`policy_version`、`attempt`。节点名与 design 统一为 `load-review-subject`。
 - retry 只有在上一结果 `review_error` 时允许 attempt 增加；同 attempt 重放幂等。普通 selector 固定 attempt 1。
 - child Graph 没有 human interrupt；所有 recovery edge 都落到 status terminal。
 - execution contract 将 Agent 的窄 read/write 与 apply 的 `project:qa/improvements/**` synchronized/exclusive 权限分离。
@@ -410,12 +435,15 @@ retro-orchestration-workflow
 
 - `retro-workflow` 必须先写 final `retro-status.json`；selector 不能在此节点前运行。
 - fanout item 是明确 `{improvement_id, subject_sha256, expected_improvement_version, review_id, policy_version, attempt}`，不得扫描全局 queue/目录。
-- `pending_reconcile` 且 outbox 未 drain、dry-run、NOOP 返回空 fanout；outbox 在本轮成功 drain 后其 receipt 可被 selector 接手。
+- selector 输入是 inner graph 明确输出的正常 reconcile `ImprovementAcceptStatus` 加本轮 drain statuses；`pending_reconcile` 且 outbox 未 drain、dry-run、NOOP 返回空 fanout。
 - child timeout/invalid/conflict 在 child 内收口，parent summary 计数但不改变 `retro-status.result`。
+- 这是 `workflow-schema.yaml` 的首个生产 fan-out：声明 `max_items: 128`、`completion: all`。`all` 是安全的，因为 Task 6 保证每个 child 的 agent/validation/apply failure 都 recovery 到 `write-review-status -> END`；超过 128 时 selector fail-closed 为 `selector_capacity_exceeded`，不启动部分 fan-out，全部 Improvement 保持 proposed 并在 batch summary 的 `orchestration_errors` 留痕。
+- selector、fan-out shell 和 summarize 节点各自使用现有 `recover: {errors, via, continue_to}` 收口到 `summarize-auto-review-batch`；若 GraphRuntime 在 recovery 外失败，Retro Task 8 的 phase-aware Supervisor 发现 `retro-status.json` 已 final 后不得触碰 Retro status/pipeline-failure/outbox，只返回 post-Retro orchestration error。summary 无法写入时命令可报告技术错误，但 Retro status bytes 不变。
+- Batch summary 对每个 child 只计入 `approved/escalated/errors/stale` 一类；幂等重放按原 semantic result 计数，四类合计必须等于 `len(review_ids)`。
 - canonical `retro` entrypoint 指向 outer graph；inner `retro-workflow` 仍可作为受测子图，但 CLI/Benchmark 不手工串 shell 命令。
 
-- [ ] **Step 1: 写顺序失败测试。** 观测 retro status 写入先于 selector；Reviewer 失败后 status bytes/digest 不变；两个 receipts 生成两个明确 child items。
-- [ ] **Step 2: 写空选择失败测试。** dry-run、zero candidate、pending outbox、old queue item、old proposal no subject 均不启动 Agent；drain receipt 启动一次。
+- [ ] **Step 1: 写顺序与状态输入失败测试。** 观测 retro status 写入先于 selector；Reviewer 失败后 status bytes/digest 不变；两个 `ImprovementAcceptStatus` 生成两个明确 child items；failed status 与旧 queue item不进入 selector。
+- [ ] **Step 2: 写空选择、预算与 post-status failure 测试。** dry-run、zero candidate、pending outbox、old proposal no subject 均不启动 Agent；drain status 启动一次；129 items 不产生部分 fan-out而记录 capacity error；selector、fan-out dispatch、summarize 各自失败时 Retro status 和 pipeline-failure bytes 均不变。
 - [ ] **Step 3: 运行** `uv run pytest tests/integration/test_retro_auto_review_orchestration.py tests/unit/workflow/graph/test_retro_workflow.py tests/unit/workflow/graph/test_canonical_schema_v2.py -v`；预期 FAIL。
 - [ ] **Step 4: 实现 selector operation、fanout mapping 和 batch summary。** summary path 使用当前 Retro ID，作为链接信息而非 Retro integrity/signal。
 - [ ] **Step 5: 切换 canonical retro entrypoint 到 outer graph。** 删除 CLI/Benchmark 中任何显式 review 串联代码。
@@ -532,7 +560,7 @@ aa improvement auto-review <improvement-id> --attempt <n> [--json]
 
 ## Completion Criteria
 
-- 本轮 Retro receipt 指向的 eligible process Improvement 能自动从 proposed 进入 approved。
+- 本轮 Retro `ImprovementAcceptStatus.improvement_ids` 指向的 eligible process Improvement 能自动从 proposed 进入 approved。
 - Reviewer 永远不能直接改变 Ledger；Gate 不信任 Skill 自报 eligibility；apply 在锁内重新验证 stale/digest/policy。
 - 非 pass、knowledge、风险/置信度/验证不足、歧义、错误和 stale 全部保持 proposed 并留在人工队列。
 - 相同 subject/policy 不无限复审；只有 review_error 允许显式新 attempt，新 evidence 通过新 subject 重新审查。
