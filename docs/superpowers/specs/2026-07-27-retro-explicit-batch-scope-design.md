@@ -1,9 +1,11 @@
 # Retro 显式批次窗口与证据隔离设计
 
-- Status: Proposed
+- Status: Design approved
 - Date: 2026-07-27
 - Scope: 自动 Retro 的批次选择、部分批次语义、Graph evidence snapshot、Benchmark 串联与 Improvement reconcile
-- Related: `docs/specs/2026-07-26-retro-v3-signal-analysis.md`
+- Related:
+  - `docs/specs/2026-07-26-retro-v3-signal-analysis.md`
+  - `docs/superpowers/specs/2026-07-27-improvement-automatic-review-design.md`
 
 ## 1. 问题
 
@@ -110,7 +112,7 @@ Orchestrator BatchManifest
   -> accept-status + review queue
 ```
 
-`reconcile-improvements` 或 durable pending outbox 是自动 Retro 的闭环终点。新 Improvement 必须以 `proposed` 写入全局 review queue；相同 fingerprint 不创建第二条 Improvement，而是追加新批 evidence。后续人工 review、delivery、evaluation 仍由独立 Improvement lifecycle entrypoint 处理，Retro 不自动批准或落地修改。
+`reconcile-improvements` 或 durable pending outbox 是 Retro pipeline 自身的闭环终点。新 Improvement 必须先以 `proposed` 写入全局 review queue；相同 fingerprint 不创建第二条 Improvement，而是追加新批 evidence。`retro-status.json` 写定后，外层 Graph 可以按照独立的 Improvement Auto Review 设计，对本轮 receipt 指向的 `proposed` Improvement 执行失败隔离的自动审查。Retro proposer/reconciler 本身不批准 Improvement，Auto Review 也不自动触发 delivery 或 evaluation。
 
 ### 6.1 Retro 自失败 fallback
 
@@ -208,7 +210,8 @@ Retro 结果是改进观测结果，不是 Full/archive 的前置或后置 gate�
 ## 13. 非目标
 
 - 不改变 Problem fingerprint 或 Improvement fingerprint。
-- 不自动批准、交付或评估 Improvement。
+- Retro proposer/reconciler 不自动批准 Improvement；批准权只存在于独立的 Improvement Auto Review/Human Review lifecycle。
+- 不自动交付或评估 Improvement。
 - 不迁移、不读取历史 `qa/retro/**`。
 - 不将 Benchmark Eval metrics 变成产品 gate。
 - 不通过扩大 authorization write scope 修复 workspace false positive。
