@@ -649,18 +649,141 @@ contracts:
     retryable_errors: [conflict, transport]
 
   # ---- retro workflow -------------------------------------------------------
-  operation:retro-collect:
+  operation:retro-collect-v3:
     handler: operation
     reads:
       - project:qa/archive/**
       - project:qa/changes/**
       - project:qa/issues/**
-      - project:eval/**
+      - project:qa/eval/**
+    writes:
+      # Publication synchronizes the Retro prefix; node resources and
+      # authorization_writes narrow actual writes to the current run.
+      - project:qa/retro/**
+    authorization_writes:
+      - project:qa/retro/*/window.json
+      - project:qa/retro/*/evidence/**
+    synchronized:
+      - project:qa/archive/**
+      - project:qa/changes/**
+      - project:qa/issues/**
+      - project:qa/eval/**
+      - project:qa/retro/**
+    exclusive:
+      - project:retro-evidence-snapshot
+    retryable_errors: []
+
+  operation:drain-improvement-outbox:
+    handler: operation
+    reads:
+      - project:qa/improvements/**
+    writes:
+      - project:qa/improvements/**
+    authorization_writes:
+      - project:qa/improvements/**
+    synchronized:
+      - project:qa/improvements/**
+    exclusive:
+      - project:improvement-registry
+    retryable_errors: [conflict]
+
+  operation:assemble-retro-context-v3:
+    handler: operation
+    reads:
+      - project:qa/retro/*/window.json
+      - project:qa/retro/*/evidence/**
+      - project:qa/retro/*/signals/**
     writes:
       - project:qa/retro/*/context.json
+      - project:qa/retro/*/proposal-candidates.json
+      - project:qa/retro/*/retro-summary.md
     authorization_writes:
       - project:qa/retro/*/context.json
+      - project:qa/retro/*/proposal-candidates.json
+      - project:qa/retro/*/retro-summary.md
     retryable_errors: []
+
+  operation:retro-evidence-gap-fallback:
+    handler: operation
+    reads:
+      - project:qa/retro/**
+    writes:
+      - project:qa/retro/**
+    authorization_writes:
+      - project:qa/retro/*/signals/**
+      - project:qa/retro/*/context.json
+      - project:qa/retro/*/proposal-candidates.json
+      - project:qa/retro/*/retro-summary.md
+    synchronized:
+      - project:qa/retro/**
+    exclusive:
+      - project:retro-evidence-gap-fallback
+    retryable_errors: []
+
+  operation:record-retro-pipeline-failure:
+    handler: operation
+    reads:
+      - project:qa/retro/**
+      - project:qa/improvements/outbox/**
+    writes:
+      - project:qa/retro/**
+      - project:qa/improvements/outbox/**
+    authorization_writes:
+      - project:qa/retro/**
+      - project:qa/improvements/outbox/**
+    exclusive:
+      - project:retro-pipeline-failure
+    retryable_errors: []
+
+  operation:finalize-retro-status:
+    handler: operation
+    reads:
+      - project:qa/retro/**
+      - project:qa/improvements/outbox/**
+    writes:
+      - project:qa/retro/*/retro-status.json
+    authorization_writes:
+      - project:qa/retro/*/retro-status.json
+    exclusive:
+      - project:retro-status
+    retryable_errors: []
+
+  operation:record-analysis-failed:
+    handler: operation
+    reads:
+      - project:qa/retro/*/evidence/**
+    writes:
+      - project:qa/retro/*/signals/**
+    authorization_writes:
+      - project:qa/retro/*/signals/**
+    retryable_errors: []
+
+  skill:aa-retro-issue-analysis:
+    handler: agent
+    reads: [project:qa/retro/*/evidence/issue-slice.json]
+    writes: [project:qa/retro/*/signals/issue.json]
+    authorization_writes: [project:qa/retro/*/signals/issue.json]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
+    reconnect: true
+    read_isolation: declared_only
+
+  skill:aa-retro-workflow-analysis:
+    handler: agent
+    reads: [project:qa/retro/*/evidence/workflow-slice.json]
+    writes: [project:qa/retro/*/signals/workflow.json]
+    authorization_writes: [project:qa/retro/*/signals/workflow.json]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
+    reconnect: true
+    read_isolation: declared_only
+
+  skill:aa-retro-eval-analysis:
+    handler: agent
+    reads: [project:qa/retro/*/evidence/eval-slice.json]
+    writes: [project:qa/retro/*/signals/eval.json]
+    authorization_writes: [project:qa/retro/*/signals/eval.json]
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
+    reconnect: true
+    read_isolation: declared_only
 
   skill:aa-retro:
     handler: agent
@@ -674,6 +797,7 @@ contracts:
       - project:qa/retro/*/retro-summary.md
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
+    read_isolation: declared_only
 
   operation:reconcile-improvements:
     handler: operation
@@ -694,7 +818,7 @@ contracts:
       - project:qa/retro/**
     exclusive:
       - project:improvement-registry
-    retryable_errors: [conflict, transport]
+    retryable_errors: []
 
   operation:load-improvement-review-context:
     handler: operation
@@ -705,6 +829,84 @@ contracts:
       - change:improvement-review/**
     authorization_writes:
       - change:improvement-review/**
+    retryable_errors: []
+
+  operation:load-review-subject:
+    handler: operation
+    side_effect_free: true
+    reads: [project:qa/improvements/review-subjects/*.json]
+    retryable_errors: [invalid_input, conflict]
+
+  skill:aa-improvement-reviewer:
+    handler: agent
+    reads: [project:qa/improvements/review-subjects/*]
+    writes:
+      - project:qa/improvements/reviews/*/assessment.json
+      - project:qa/improvements/reviews/*/summary.md
+    authorization_writes:
+      - project:qa/improvements/reviews/*/assessment.json
+      - project:qa/improvements/reviews/*/summary.md
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
+    reconnect: true
+    read_isolation: declared_only
+
+  operation:validate-improvement-review-assessment:
+    handler: operation
+    reads:
+      - project:qa/improvements/events.jsonl
+      - project:qa/improvements/review-subjects/*.json
+      - project:qa/improvements/reviews/*/assessment.json
+    writes: [project:qa/improvements/reviews/*/gate-input.json]
+    authorization_writes: [project:qa/improvements/reviews/*/gate-input.json]
+    retryable_errors: []
+
+  operation:record-improvement-auto-review-error:
+    handler: operation
+    reads: [project:qa/improvements/**]
+    writes: [project:qa/improvements/**]
+    authorization_writes: [project:qa/improvements/**]
+    synchronized: [project:qa/improvements/**]
+    exclusive: [project:improvement-registry]
+    retryable_errors: []
+
+  operation:apply-improvement-auto-review:
+    handler: operation
+    reads: [project:qa/improvements/**]
+    writes: [project:qa/improvements/**]
+    authorization_writes: [project:qa/improvements/**]
+    synchronized: [project:qa/improvements/**]
+    exclusive: [project:improvement-registry]
+    retryable_errors: []
+
+  operation:select-current-retro-auto-review-items:
+    handler: operation
+    reads:
+      - project:qa/retro/*/accept-status.json
+      - project:qa/improvements/**
+    writes: [project:qa/retro/*/auto-review-selection.json]
+    authorization_writes: [project:qa/retro/*/auto-review-selection.json]
+    retryable_errors: []
+
+  operation:summarize-auto-review-batch:
+    handler: operation
+    reads:
+      - project:qa/improvements/reviews/*/status.json
+      - project:qa/retro/*/auto-review-selection.json
+    writes: [project:qa/retro/*/auto-review-summary.json]
+    authorization_writes: [project:qa/retro/*/auto-review-summary.json]
+    retryable_errors: []
+
+  operation:record-auto-review-orchestration-error:
+    handler: operation
+    reads:
+      - project:qa/improvements/reviews/*/status.json
+      - project:qa/retro/*/auto-review-selection.json
+    writes:
+      - project:qa/retro/*/auto-review-selection.json
+      - project:qa/retro/*/auto-review-summary.json
+    authorization_writes:
+      - project:qa/retro/*/auto-review-selection.json
+      - project:qa/retro/*/auto-review-summary.json
     retryable_errors: []
 
   operation:apply-improvement-review:

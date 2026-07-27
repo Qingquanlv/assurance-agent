@@ -95,15 +95,18 @@ def _load_field_allowlist() -> set[str]:
     return entries
 
 
-def test_thirty_four_skills_present() -> None:
+def test_thirty_eight_skills_present() -> None:
     names = _skill_names()
-    # Issue lifecycle adds aa-issue-analyzer + aa-issue-triage-advisor (32 -> 34).
-    assert len(names) == 34
+    # Retro v3 analyzers plus the bounded Improvement reviewer.
+    assert len(names) == 38
     assert "writing-skills" in names
     assert "aa-workflow" in names
     assert "aa-dashboard" in names
     assert "aa-issue-analyzer" in names
     assert "aa-issue-triage-advisor" in names
+    assert "aa-retro-issue-analysis" in names
+    assert "aa-retro-workflow-analysis" in names
+    assert "aa-retro-eval-analysis" in names
     assert not any(n.startswith("aws-") for n in names)
 
 
@@ -172,6 +175,7 @@ def test_aa_retro_skill_is_current_run_candidate_boundary() -> None:
     assert "proposal-candidates.json" in text
     assert "schema_version" in text
     assert "context_sha256" in text
+    assert "signal_ids" in text
     assert "Read only" in text or "Required (only)" in text
     for kind in (
         "prompt_improvement",

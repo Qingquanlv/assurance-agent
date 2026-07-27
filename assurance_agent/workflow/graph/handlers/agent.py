@@ -33,6 +33,20 @@ from assurance_agent.workflow.graph.schema_v2 import NodeDef
 from assurance_agent.workflow.graph.task_runner import task_failure
 from assurance_agent.workflow.graph.handlers.operation import link_host_task_paths
 from assurance_agent.workflow.graph.workspace import TaskWorkspace, TreeStore, WorkspaceError
+from assurance_agent.workflow.issues.analyzer_output import (
+    IssueAnalyzerOutputError,
+    complete_issue_analyzer_outputs,
+)
+from assurance_agent.workflow.improvements.reviewer_output import (
+    ImprovementReviewerOutputError,
+    complete_improvement_reviewer_outputs,
+)
+from assurance_agent.workflow.retro_outputs import (
+    CandidateOutputError,
+    SignalInvalidError,
+    complete_candidate_outputs,
+    complete_signal_outputs,
+)
 
 
 class AgentHandler:
@@ -79,24 +93,6 @@ class AgentHandler:
             prior_error_kind=task.prior_error_kind,
             evidence=task.resolved_evidence or None,
         )
-        if skill == "aa-retro":
-            rid = context.params.get("retro_id")
-            if isinstance(rid, str) and rid.strip():
-                # Keep the prompt here (not via assurance_agent.retro) so graph
-                # stays below the retro layer in .importlinter.
-                prompt = (
-                    prompt
-                    + " "
-                    + (
-                        "Call skill(name='aa-retro'). "
-                        f"Read only qa/retro/{rid}/context.json. "
-                        f"Write qa/retro/{rid}/proposal-candidates.json and "
-                        f"qa/retro/{rid}/retro-summary.md. "
-                        "Set schema_version='2' and pin context_sha256. Do not read any other Retro run, "
-                        "qa/issues, raw archive, qa/improvements, memory, data knowledge, "
-                        "or project source files."
-                    )
-                )
         request = AgentRequest(
             target=task.target,
             node_id=task.node_id,
@@ -106,14 +102,56 @@ class AgentHandler:
             prompt=prompt,
             timeout_seconds=task.timeout_policy.run_seconds,
             reconnect_session_id=context.parent_session_id,
-            agent=agent_for_skill(skill),
+            # The schema binding is the workflow author's explicit capability
+            # choice. Name-based routing exists only for legacy/omitted bindings.
+            agent=node_def.agent or agent_for_skill(skill),
         )
-        result = self._invoker.invoke(request)
+        try:
+            result = self._invoker.invoke(request)
+        except Exception as exc:  # adapter/plugin boundary must become a typed Graph failure
+            return task_failure("internal", f"{type(exc).__name__}: {exc}")
         if not result.ok:
             return task_failure(
                 result.error_kind or "internal",
                 result.error or f"agent invocation failed for {task.target}",
             )
+        try:
+            complete_issue_analyzer_outputs(workspace.change_dir, outputs)
+            complete_signal_outputs(workspace.project_root, outputs)
+            complete_candidate_outputs(workspace.project_root, outputs)
+            if skill == "aa-improvement-reviewer":
+                review_id = str(context.params.get("review_id", ""))
+                improvement_id = str(context.params.get("improvement_id", ""))
+                subject_sha256 = str(context.params.get("subject_sha256", ""))
+                raw_expected_version = context.params.get("expected_improvement_version")
+                expected_version = (
+                    raw_expected_version
+                    if isinstance(raw_expected_version, int) and not isinstance(raw_expected_version, bool)
+                    else 0
+                )
+                review_dir = workspace.project_root / "qa" / "improvements" / "reviews" / review_id
+                complete_improvement_reviewer_outputs(
+                    subject_path=workspace.project_root
+                    / "qa"
+                    / "improvements"
+                    / "review-subjects"
+                    / f"{subject_sha256}.json",
+                    assessment_path=review_dir / "assessment.json",
+                    summary_path=review_dir / "summary.md",
+                    expected_review_id=review_id,
+                    expected_improvement_id=improvement_id,
+                    expected_version=expected_version,
+                    expected_subject_sha256=subject_sha256,
+                )
+        except (
+            IssueAnalyzerOutputError,
+            SignalInvalidError,
+            CandidateOutputError,
+            ImprovementReviewerOutputError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            return task_failure("invalid_output", str(exc))
         try:
             write_set = self._store.freeze_write_set(workspace, claims=claims, outputs=outputs)
         except WorkspaceError as exc:

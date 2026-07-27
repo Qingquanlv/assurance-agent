@@ -20,8 +20,10 @@ from collections.abc import Sequence
 
 from pydantic import BaseModel
 
+from assurance_agent.artifacts.canonical import canonical_json_bytes
 from assurance_agent.artifacts.models.improvements import (
     ImprovementLedgerProjection,
+    LastAutoReview,
     ImprovementProjection,
     ImprovementReviewQueue,
     ImprovementSourceRefs,
@@ -29,6 +31,8 @@ from assurance_agent.artifacts.models.improvements import (
 )
 from assurance_agent.workflow.improvements.events import (
     ImprovementAppliedEvent,
+    ImprovementAutoReviewApprovedEvent,
+    ImprovementAutoReviewRecordedEvent,
     ImprovementEvalCompletedEvent,
     ImprovementEvalRequestedEvent,
     ImprovementEvent,
@@ -112,11 +116,16 @@ def _with_version(
     state: ImprovementState | None = None,
     source_refs: ImprovementSourceRefs | None = None,
     proposed_by_retro_ids: tuple[str, ...] | None = None,
+    approval_source: str | None = None,
+    last_auto_review: LastAutoReview | None = None,
     last_event_id: str,
 ) -> ImprovementProjection:
     target_state = state if state is not None else current.state
     if target_state is not current.state:
         assert_improvement_transition(current.state, target_state)
+    active_approval_source = approval_source or current.approval_source
+    if current.state is ImprovementState.APPROVED and target_state is not ImprovementState.APPROVED:
+        active_approval_source = "none"
     return current.model_copy(
         update={
             "state": target_state,
@@ -126,6 +135,8 @@ def _with_version(
             ),
             "version": current.version + 1,
             "last_event_id": last_event_id,
+            "approval_source": active_approval_source,
+            "last_auto_review": last_auto_review or current.last_auto_review,
         }
     )
 
@@ -153,6 +164,7 @@ def _apply_event(current: ImprovementProjection | None, event: ImprovementEvent)
             proposed_by_retro_ids=(event.retro_id,),
             supersedes=event.supersedes,
             last_event_id=event.event_id,
+            review_subject_sha256=event.review_subject_sha256,
         )
 
     if current is None:
@@ -168,10 +180,45 @@ def _apply_event(current: ImprovementProjection | None, event: ImprovementEvent)
             source_refs=_union_source_refs(current.source_refs, event.source_refs),
             proposed_by_retro_ids=retros,
             last_event_id=event.event_id,
+        ).model_copy(
+            update={"review_subject_sha256": event.review_subject_sha256 or current.review_subject_sha256}
         )
 
     if isinstance(event, ImprovementReviewApprovedEvent):
-        return _with_version(current, state=ImprovementState.APPROVED, last_event_id=event.event_id)
+        return _with_version(
+            current,
+            state=ImprovementState.APPROVED,
+            approval_source="human",
+            last_event_id=event.event_id,
+        )
+
+    if isinstance(event, ImprovementAutoReviewApprovedEvent):
+        return _with_version(
+            current,
+            state=ImprovementState.APPROVED,
+            approval_source="automatic",
+            last_auto_review=LastAutoReview(
+                review_id=event.review_id,
+                subject_sha256=event.subject_sha256,
+                assessment_sha256=event.assessment_sha256,
+                policy_version=event.policy_version,
+                verdict="auto_approved",
+            ),
+            last_event_id=event.event_id,
+        )
+
+    if isinstance(event, ImprovementAutoReviewRecordedEvent):
+        return _with_version(
+            current,
+            last_auto_review=LastAutoReview(
+                review_id=event.review_id,
+                subject_sha256=event.subject_sha256,
+                assessment_sha256=event.assessment_sha256,
+                policy_version=event.policy_version,
+                verdict=event.verdict,
+            ),
+            last_event_id=event.event_id,
+        )
 
     if isinstance(event, ImprovementReviewRejectedEvent):
         return _with_version(current, state=ImprovementState.REJECTED, last_event_id=event.event_id)
@@ -247,7 +294,4 @@ def project_improvement_review_queue(
 
 def dump_projection(model: BaseModel) -> bytes:
     """Serialize a projection model as canonical JSON bytes."""
-    data = model.model_dump(mode="json")
-    return (json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode(
-        "utf-8"
-    )
+    return canonical_json_bytes(model)

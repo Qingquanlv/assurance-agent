@@ -33,6 +33,8 @@ EXPECTED_GRAPHS = {
     "execute-workflow",
     "archive-workflow",
     "retro-workflow",
+    "retro-orchestration-workflow",
+    "improvement-auto-review-cycle",
     "intake",
     "case-review-cycle",
     "assurance",
@@ -93,9 +95,26 @@ EXPECTED_CONTRACTS = {
     "operation:allocate-healing-attempt",
     "operation:record-healing-status",
     "operation:stop",
-    "operation:retro-collect",
+    "operation:retro-collect-v3",
+    "operation:drain-improvement-outbox",
+    "operation:assemble-retro-context-v3",
+    "operation:retro-evidence-gap-fallback",
+    "operation:record-retro-pipeline-failure",
+    "operation:finalize-retro-status",
+    "operation:record-analysis-failed",
     "operation:reconcile-improvements",
+    "operation:load-review-subject",
+    "operation:validate-improvement-review-assessment",
+    "operation:apply-improvement-auto-review",
+    "operation:record-improvement-auto-review-error",
+    "operation:record-auto-review-orchestration-error",
+    "operation:select-current-retro-auto-review-items",
+    "operation:summarize-auto-review-batch",
+    "skill:aa-improvement-reviewer",
     "skill:aa-retro",
+    "skill:aa-retro-issue-analysis",
+    "skill:aa-retro-workflow-analysis",
+    "skill:aa-retro-eval-analysis",
     "builtin:join",
     "builtin:gate",
     "builtin:interrupt",
@@ -267,6 +286,7 @@ def test_canonical_v2_compiles_with_all_targets() -> None:
         "case",
         "archive",
         "retro",
+        "improvement-auto-review",
         # Issue review entrypoints (Task 12)
         "issue-review",
         "issue-analyze",
@@ -760,14 +780,32 @@ def _full_graph_closure(schema) -> list:
 def test_retro_graph_is_independent_and_closed() -> None:
     compiled, _ = _load_compiled()
     schema = compiled.schema
-    assert compiled.entrypoints["retro"].graph_id == "retro-workflow"
+    assert compiled.entrypoints["retro"].graph_id == "retro-orchestration-workflow"
     retro = schema.graphs["retro-workflow"]
     assert tuple(retro.nodes) == (
+        "drain-reconcile-outbox",
         "collect-retro-evidence",
+        "recover-collect-failure",
+        "analyze-issue",
+        "evidence-gap-fallback",
+        "record-issue-analysis-failed",
+        "issue-settled",
+        "analyze-workflow",
+        "record-workflow-analysis-failed",
+        "workflow-settled",
+        "analyze-eval",
+        "record-eval-analysis-failed",
+        "eval-settled",
+        "analysis-join",
+        "assemble-retro-context",
+        "recover-assemble-failure",
         "propose-improvements",
+        "recover-propose-failure",
         "reconcile-improvements",
+        "recover-reconcile-failure",
+        "finalize-retro-status",
     )
-    assert retro.nodes["collect-retro-evidence"].uses == "operation:retro-collect"
+    assert retro.nodes["collect-retro-evidence"].uses == "operation:retro-collect-v3"
     assert retro.nodes["propose-improvements"].uses == "skill:aa-retro"
     assert retro.nodes["reconcile-improvements"].uses == "operation:reconcile-improvements"
     full_targets = {node.uses for graph in _full_graph_closure(schema) for node in graph.nodes.values()}
@@ -776,21 +814,18 @@ def test_retro_graph_is_independent_and_closed() -> None:
 
 def test_retro_entrypoint_topology() -> None:
     compiled, _ = _load_compiled()
-    assert compiled.entrypoints["retro"].graph_id == "retro-workflow"
+    assert compiled.entrypoints["retro"].graph_id == "retro-orchestration-workflow"
     g = compiled.graphs["retro-workflow"]
-    assert set(g.nodes) == {
-        "collect-retro-evidence",
-        "propose-improvements",
-        "reconcile-improvements",
-    }
-    assert g.nodes["collect-retro-evidence"].definition.uses == "operation:retro-collect"
+    assert g.nodes["collect-retro-evidence"].definition.uses == "operation:retro-collect-v3"
     assert g.nodes["propose-improvements"].definition.uses == "skill:aa-retro"
     assert g.nodes["reconcile-improvements"].definition.uses == "operation:reconcile-improvements"
     schema_graph = compiled.schema.graphs["retro-workflow"]
-    collect_edges = [e for e in schema_graph.edges if e.from_ == "collect-retro-evidence"]
-    assert any(e.to == "END" and e.when for e in collect_edges)
-    assert any(e.to == "propose-improvements" and e.when for e in collect_edges)
-    assert any(e.when and "retro_dry_run" in e.when and "signal_count" in e.when for e in collect_edges)
+    assemble_edges = [e for e in schema_graph.edges if e.from_ == "assemble-retro-context"]
+    assert any(e.to == "finalize-retro-status" and e.when for e in assemble_edges)
+    assert any(e.to == "propose-improvements" and e.when for e in assemble_edges)
+    join = g.nodes["analysis-join"].definition.join
+    assert join is not None
+    assert join.sources == ["issue-settled", "workflow-settled", "eval-settled"]
 
 
 # ---------------------------------------------------------------------------
@@ -940,10 +975,10 @@ def test_inspect_with_issues_retry_policies_declared() -> None:
     assert iwi.nodes["reconcile-issues"].retry == "project-sync"
 
 
-def test_inspect_with_issues_recovery_kinds_match_contracts(
+def test_inspect_with_issues_recovery_is_independent_from_retryability(
     tmp_path: Path,
 ) -> None:
-    """Recovery error kinds must be a subset of the contract's retryable_errors."""
+    """Hard failures may recover without being mislabeled retryable."""
     compiled, contracts = _load_compiled()
     g = compiled.schema.graphs["inspect-with-issues"]
     for nid, node in g.nodes.items():
@@ -953,11 +988,7 @@ def test_inspect_with_issues_recovery_kinds_match_contracts(
         if contract_target.startswith("graph:"):
             continue
         contract = contracts.contracts[contract_target]
-        unsupported = set(node.recover.errors) - set(contract.retryable_errors)
-        assert not unsupported, (
-            f"inspect-with-issues/{nid} recovery errors {unsupported} "
-            f"not in {contract_target}.retryable_errors"
-        )
+        assert not {"auth", "forbidden_write", "contract"} & set(contract.retryable_errors)
 
 
 def test_schema_and_contract_digests_stable_across_two_loads() -> None:

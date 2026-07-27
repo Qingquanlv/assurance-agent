@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from assurance_agent.workflow.driver.adapter import DriverError
 from assurance_agent.workflow.graph.checkpoint import CheckpointStore
+from assurance_agent.workflow.graph.models import GraphLifecycleStatus
 
 DriverStatus = Literal["running", "paused", "completed", "failed"]
 
@@ -180,14 +181,16 @@ def _latest_graph_terminal(change_dir: Path, entrypoint: str | None = None) -> t
         return None, None
 
 
-def driver_status_for_graph(graph_status: str) -> DriverStatus:
+def driver_status_for_graph(graph_status: GraphLifecycleStatus) -> DriverStatus:
     if graph_status == "completed":
         return "completed"
     if graph_status == "interrupted":
         return "paused"
-    if graph_status in {"stopped", "failed"}:
+    if graph_status == "stopped" or graph_status == "failed":
         return "failed"
-    return "running"
+    if graph_status == "running":
+        return "running"
+    raise ValueError(f"unknown graph status: {graph_status!r}")
 
 
 def evaluate_start_guard(change_dir: Path, entrypoint: str | None = None) -> StartGuard:

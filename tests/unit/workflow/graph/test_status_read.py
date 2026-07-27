@@ -1,4 +1,5 @@
 """只读状态查询路径：纯函数、单一快照、零写入、集合构成冻结。"""
+
 from pathlib import Path
 
 from assurance_agent.workflow.core.events import read_events_strict
@@ -81,57 +82,78 @@ def seed_ledger(change_dir: Path, events: list) -> None:
 
 
 def seed_completed(change_dir: Path, invocation_id: str = INV) -> None:
-    seed_ledger(change_dir, [
-        _started(invocation_id),
-        GraphTerminalEvent(
-            type="graph_completed", invocation_id=invocation_id,
-            checkpoint_ns=invocation_id, reason="done",
-        ),
-    ])
+    seed_ledger(
+        change_dir,
+        [
+            _started(invocation_id),
+            GraphTerminalEvent(
+                type="graph_completed",
+                invocation_id=invocation_id,
+                checkpoint_ns=invocation_id,
+                reason="done",
+            ),
+        ],
+    )
 
 
 def seed_write_sets(change_dir: Path) -> None:
     """一个已提交 write-set（ws-committed）与一个悬挂 write-set（ws-dangling）。"""
-    seed_ledger(change_dir, [
-        _started(),
-        # node_activated required so fold can bind generation for committed_task_ids
-        # (post-main generation fold; brief fixture omitted this).
-        NodeActivatedEvent(
-            type="node_activated",
-            invocation_id=INV,
-            checkpoint_ns=INV,
-            graph_id="workflow",
-            node_id="n",
-            generation_ordinal=0,
-            activation_id="n-g0",
-            input_sha256="in",
-            source_reads_sha256={},
-        ),
-        SuperstepPlannedEvent(
-            type="superstep_planned", invocation_id=INV, checkpoint_ns=INV,
-            superstep_id="ss-1", checkpoint_id="cp-1", task_ids=["t-1", "t-2"],
-        ),
-        _attempt_started("t-1", "a-1"),
-        _attempt_started("t-2", "a-2"),
-        _attempt_succeeded("t-1", "a-1", "ws-committed"),
-        _attempt_succeeded("t-2", "a-2", "ws-dangling"),
-        SuperstepCommittedEvent(
-            type="superstep_committed", invocation_id=INV, checkpoint_ns=INV,
-            superstep_id="ss-1", checkpoint_id="cp-1",
-            write_set_ids=["ws-committed"], target_tree_id="tree",
-            state_values={}, committed_task_ids=["t-1"],
-        ),
-        GraphTerminalEvent(
-            type="graph_completed", invocation_id=INV, checkpoint_ns=INV, reason="done",
-        ),
-    ])
+    seed_ledger(
+        change_dir,
+        [
+            _started(),
+            # node_activated required so fold can bind generation for committed_task_ids
+            # (post-main generation fold; brief fixture omitted this).
+            NodeActivatedEvent(
+                type="node_activated",
+                invocation_id=INV,
+                checkpoint_ns=INV,
+                graph_id="workflow",
+                node_id="n",
+                generation_ordinal=0,
+                activation_id="n-g0",
+                input_sha256="in",
+                source_reads_sha256={},
+            ),
+            SuperstepPlannedEvent(
+                type="superstep_planned",
+                invocation_id=INV,
+                checkpoint_ns=INV,
+                superstep_id="ss-1",
+                checkpoint_id="cp-1",
+                task_ids=["t-1", "t-2"],
+            ),
+            _attempt_started("t-1", "a-1"),
+            _attempt_started("t-2", "a-2"),
+            _attempt_succeeded("t-1", "a-1", "ws-committed"),
+            _attempt_succeeded("t-2", "a-2", "ws-dangling"),
+            SuperstepCommittedEvent(
+                type="superstep_committed",
+                invocation_id=INV,
+                checkpoint_ns=INV,
+                superstep_id="ss-1",
+                checkpoint_id="cp-1",
+                write_set_ids=["ws-committed"],
+                target_tree_id="tree",
+                state_values={},
+                committed_task_ids=["t-1"],
+            ),
+            GraphTerminalEvent(
+                type="graph_completed",
+                invocation_id=INV,
+                checkpoint_ns=INV,
+                reason="done",
+            ),
+        ],
+    )
 
 
 def tree_snapshot(root: Path) -> dict[str, tuple[int, int]]:
     """relpath -> (size, mtime_ns)，只读性断言用。"""
     return {
         str(p.relative_to(root)): (p.stat().st_size, p.stat().st_mtime_ns)
-        for p in sorted(root.rglob("*")) if p.is_file()
+        for p in sorted(root.rglob("*"))
+        if p.is_file()
     }
 
 
@@ -194,9 +216,15 @@ def test_pending_tasks_membership_frozen() -> None:
         return TaskProjection(task_id=tid, node_id="n", status=status, **kw)  # type: ignore[arg-type]
 
     proj = GraphProjection(
-        invocation_id=INV, entrypoint="full", checkpoint_ns=INV,
-        structural_path=INV, graph_digest="dg", contract_digests={},
-        params={}, root_tree_id="t", current_tree_id="t",
+        invocation_id=INV,
+        entrypoint="full",
+        checkpoint_ns=INV,
+        structural_path=INV,
+        graph_digest="dg",
+        contract_digests={},
+        params={},
+        root_tree_id="t",
+        current_tree_id="t",
         tasks={
             "t-failed": task("t-failed", "failed"),
             "t-failed-retry": task("t-failed-retry", "failed", next_retry_at="2030-01-01T00:00:00Z"),

@@ -1,13 +1,20 @@
-"""Unit tests for operation:retro-collect and operation:retro-accept handlers."""
+"""Unit tests for Retro v3 collection and Improvement reconcile handlers."""
 
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
-
-from assurance_agent.workflow.graph.handlers.retro_ops import retro_accept, retro_collect
+from assurance_agent.artifacts.models.retro_batch import RetroPipelineFailure
+from assurance_agent.workflow.graph.handlers.retro_ops import (
+    _selection_from_params,
+    reconcile_improvements,
+    retro_accept,
+    retro_collect_v3,
+)
+from assurance_agent.retro.candidates import CandidateBatchInvalid, CandidateValidationError
+from assurance_agent.retro.fallback import materialize_pipeline_failure_fallback
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext
 from assurance_agent.workflow.graph.schema_v2 import RetryPolicyDef, TimeoutPolicyDef
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
@@ -56,38 +63,6 @@ def _make_task(target: str) -> ExecutableTask:
         target=target,
         resources=ResourceClaims(),
     )
-
-
-def _write_context_json(retro_dir: Path, retro_id: str) -> None:
-    """Write a minimal valid RetroContext to retro_dir/context.json.
-
-    Carries evidence ``ev-1`` because accept refuses proposals citing evidence the
-    context never collected.
-    """
-    retro_dir.mkdir(parents=True, exist_ok=True)
-    ctx = {
-        "retro_id": retro_id,
-        "generated_at": "2026-07-25T00:00:00Z",
-        "window": {"change_count": 1, "change_ids": ["CH-1"], "change_sources": []},
-        "signals": {
-            "failure_distribution": [
-                {"category": "assertion", "count": 1, "changes": ["CH-1"], "evidence_ids": ["ev-1"]}
-            ],
-            "gate_pushback": [],
-            "healing_efficiency": {"attempts": 0, "applied": 0, "success_rate": 0.0, "evidence_ids": []},
-            "human_decisions": [],
-            "reclassifications": [],
-            "skill_execution": [],
-            "eval_trend": [],
-        },
-        "signal_count": 1,
-    }
-    (retro_dir / "context.json").write_text(json.dumps(ctx), encoding="utf-8")
-
-
-# ---------------------------------------------------------------------------
-# retro-collect
-# ---------------------------------------------------------------------------
 
 
 def _write_terminal_archived_change(
@@ -143,80 +118,88 @@ def _write_terminal_archived_change(
     return root
 
 
-def test_retro_collect_op_writes_context_and_value(tmp_path: Path) -> None:
+def test_retro_collect_v3_writes_window_and_three_typed_slices(tmp_path: Path) -> None:
     workspace = _make_workspace(tmp_path)
-    context = _make_context(workspace, params={"retro_id": "retro-001", "retro_last": 5})
-    task = _make_task("operation:retro-collect")
-
-    result = retro_collect(task, workspace, context)
-
-    assert result.status == "succeeded"
-    assert isinstance(result.value, dict)
-    assert isinstance(result.value["signal_count"], int)
-    assert result.value["retro_id"] == "retro-001"
-    context_file = workspace.project_root / "qa" / "retro" / "retro-001" / "context.json"
-    assert context_file.exists()
-    payload = json.loads(context_file.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "2"
-
-
-def test_retro_collect_op_scans_host_root_not_task_workspace(tmp_path: Path) -> None:
-    """Workflow/Issue evidence is read from the host root; context.json lands in workspace."""
-    host = tmp_path / "host"
-    _write_terminal_archived_change(host, "CH-ARCHIVED")
-    workspace = _make_workspace(tmp_path)
+    _write_terminal_archived_change(workspace.project_root, "CH-ARCHIVED")
+    host = tmp_path / "host-v3"
+    host.mkdir()
+    write_aa_config(host)
     context = RuntimeContext(
         project_root=host,
         repo_root=host,
         change_dir=host / "qa" / "changes" / "CH-1",
         change_id="CH-1",
-        params={"retro_id": "retro-host-001", "retro_last": 10},
+        params={"retro_id": "retro-v3", "retro_last": 10},
     )
 
-    result = retro_collect(_make_task("operation:retro-collect"), workspace, context)
+    result = retro_collect_v3(_make_task("operation:retro-collect-v3"), workspace, context)
 
-    assert result.status == "succeeded"
-    assert isinstance(result.value, dict)
-    written = workspace.project_root / "qa" / "retro" / "retro-host-001" / "context.json"
-    assert written.is_file(), "context.json must land in the workspace to be frozen"
-    payload = json.loads(written.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "2"
-    assert payload["window"]["change_ids"] == ["CH-ARCHIVED"]
-    assert payload["signal_count"] >= 1  # gate pushback from host ledger
-    assert not (host / "qa" / "retro" / "retro-host-001").exists()
+    assert result.status == "succeeded", result.error
+    retro_dir = workspace.project_root / "qa/retro/retro-v3"
+    assert json.loads((retro_dir / "window.json").read_text())["change_ids"] == ["CH-ARCHIVED"]
+    for domain in ("issue", "workflow", "eval"):
+        payload = json.loads((retro_dir / "evidence" / f"{domain}-slice.json").read_text())
+        assert payload["schema_version"] == "3"
+        assert payload["domain"] == domain
 
 
-def test_retro_collect_op_missing_retro_id_is_invalid_input(tmp_path: Path) -> None:
+def test_retro_params_preserve_explicit_batch_scope() -> None:
+    batch_scope = {
+        "batch_id": "batch-1",
+        "status": "incomplete",
+        "members": [
+            {
+                "change_id": "CH-1",
+                "execution_status": "completed",
+                "evidence_availability": "complete",
+            },
+            {
+                "change_id": "CH-2",
+                "execution_status": "running",
+                "evidence_availability": "partial",
+            },
+        ],
+    }
+    selection = _selection_from_params({"change_ids": ["CH-1", "CH-2"], "batch_scope": batch_scope})
+    assert selection.change_ids == ("CH-1", "CH-2")
+    assert selection.batch_scope is not None
+    assert selection.batch_scope.model_dump(mode="json") == {
+        "schema_version": "1",
+        **batch_scope,
+    }
+
+
+def test_retro_collect_reports_structured_batch_contract_failure(tmp_path: Path) -> None:
     workspace = _make_workspace(tmp_path)
-    context = _make_context(workspace, params={})
-    task = _make_task("operation:retro-collect")
-
-    result = retro_collect(task, workspace, context)
-
-    assert result.status == "failed"
-    assert result.error_kind == "invalid_input"
-
-
-def test_retro_collect_op_maps_issue_history_integrity_to_invalid_input(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Product path: IssueHistoryIntegrityError → invalid_input (not a replaced op)."""
-    from assurance_agent.workflow.issues.history import IssueHistoryIntegrityError
-
-    def _boom(*_a: object, **_k: object) -> object:
-        raise IssueHistoryIntegrityError("corrupt Issue Ledger")
-
-    monkeypatch.setattr(
-        "assurance_agent.workflow.graph.handlers.retro_ops.run_retro_collect",
-        _boom,
+    host = tmp_path / "host-batch-contract"
+    host.mkdir()
+    write_aa_config(host)
+    context = RuntimeContext(
+        project_root=host,
+        repo_root=host,
+        change_dir=host / "qa" / "changes" / "CH-1",
+        change_id="CH-1",
+        params={
+            "retro_id": "retro-invalid-batch",
+            "change_ids": ["CH-2"],
+            "batch_scope": {
+                "batch_id": "batch-1",
+                "status": "complete",
+                "members": [
+                    {
+                        "change_id": "CH-1",
+                        "execution_status": "completed",
+                        "evidence_availability": "complete",
+                    }
+                ],
+            },
+        },
     )
-    workspace = _make_workspace(tmp_path)
-    context = _make_context(workspace, params={"retro_id": "retro-corrupt", "retro_last": 5})
-    result = retro_collect(_make_task("operation:retro-collect"), workspace, context)
+
+    result = retro_collect_v3(_make_task("operation:retro-collect-v3"), workspace, context)
 
     assert result.status == "failed"
-    assert result.error_kind == "invalid_input"
-    assert "corrupt Issue Ledger" in (result.error or "")
+    assert result.error_kind == "batch_scope_invalid"
 
 
 # ---------------------------------------------------------------------------
@@ -365,3 +348,38 @@ def test_retro_accept_op_failed_receipt_is_invalid_output(tmp_path: Path) -> Non
     assert result.error_kind == "invalid_output"
     status = json.loads((retro_dir / "accept-status.json").read_text(encoding="utf-8"))
     assert status["result"] == "failed"
+
+
+def test_reconcile_contract_error_is_not_hidden_as_pending(tmp_path: Path, monkeypatch) -> None:
+    workspace = _make_workspace(tmp_path)
+    retro_id = "retro-contract-error"
+    materialize_pipeline_failure_fallback(
+        workspace.project_root,
+        failure=RetroPipelineFailure(
+            failure_id="FAIL-contract",
+            retro_id=retro_id,
+            stage="reconcile",
+            node_id="reconcile-improvements",
+            error_kind="invalid_output",
+            message_fingerprint="sha256:" + "a" * 64,
+            occurred_at=datetime.now(timezone.utc),
+        ),
+        batch_scope=None,
+    )
+
+    def fail_contract(_project_root: Path):
+        raise CandidateBatchInvalid((CandidateValidationError(code="candidate_contract_failed"),))
+
+    monkeypatch.setattr(
+        "assurance_agent.workflow.graph.handlers.retro_ops.drain_reconcile_outbox",
+        fail_contract,
+    )
+
+    result = reconcile_improvements(
+        _make_task("operation:reconcile-improvements"),
+        workspace,
+        _make_context(workspace, params={"retro_id": retro_id}),
+    )
+
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_output"

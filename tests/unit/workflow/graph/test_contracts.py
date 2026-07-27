@@ -695,13 +695,25 @@ def test_narrow_claims_rejects_expanded_read_outside_static_bounds() -> None:
 def test_retro_closed_loop_contracts_are_least_privilege() -> None:
     catalog = load_execution_contracts(Path.cwd())
     assert "operation:retro-accept" not in catalog.contracts
-    collect = catalog.contracts["operation:retro-collect"]
+    collect = catalog.contracts["operation:retro-collect-v3"]
     agent = catalog.contracts["skill:aa-retro"]
     reconcile = catalog.contracts["operation:reconcile-improvements"]
 
     assert "project:qa/issues/**" in collect.reads
     assert "project:qa/retro/**" not in collect.reads
-    assert collect.writes == ("project:qa/retro/*/context.json",)
+    assert collect.writes == ("project:qa/retro/**",)
+    assert set(collect.authorization_writes) == {
+        "project:qa/retro/*/window.json",
+        "project:qa/retro/*/evidence/**",
+    }
+    assert set(collect.synchronized) == {
+        "project:qa/archive/**",
+        "project:qa/changes/**",
+        "project:qa/issues/**",
+        "project:qa/eval/**",
+        "project:qa/retro/**",
+    }
+    assert collect.exclusive == ("project:retro-evidence-snapshot",)
 
     assert agent.reads == ("project:qa/retro/*/context.json",)
     assert "project:qa/issues/**" not in agent.reads
@@ -711,6 +723,11 @@ def test_retro_closed_loop_contracts_are_least_privilege() -> None:
         "project:qa/retro/*/proposal-candidates.json",
         "project:qa/retro/*/retro-summary.md",
     }
+    assert agent.read_isolation == "declared_only"
+    for domain in ("issue", "workflow", "eval"):
+        analyzer = catalog.contracts[f"skill:aa-retro-{domain}-analysis"]
+        assert analyzer.read_isolation == "declared_only"
+        assert len(analyzer.reads) == 1
 
     assert "project:qa/improvements/**" in reconcile.reads
     assert "project:qa/improvements/**" in reconcile.writes

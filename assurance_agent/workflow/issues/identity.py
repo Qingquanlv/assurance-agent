@@ -10,14 +10,17 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
 from assurance_agent.artifacts.models.issues import (
     AffectedSurface,
     FingerprintInputs,
+    IssueCandidateDocument,
     IssueSeverity,
     ProblemFingerprint,
+    ProblemFingerprintPreimage,
 )
 
 DIGEST_PREFIX_LENGTH = 16
@@ -49,6 +52,27 @@ def _digest_prefix(full_hex: str) -> str:
 
 def _format_sha256_digest(full_hex: str) -> str:
     return f"sha256:{full_hex}"
+
+
+def candidate_document_digest(
+    candidates: IssueCandidateDocument | Mapping[str, object],
+) -> str:
+    """Digest the authored JSON document after key-order/format normalization only."""
+    payload = (
+        candidates.model_dump(mode="json")
+        if isinstance(candidates, IssueCandidateDocument)
+        else dict(candidates)
+    )
+    canonical = (
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+    return _format_sha256_digest(hashlib.sha256(canonical.encode("utf-8")).hexdigest())
 
 
 def _normalize_tokens(value: str, *, field: str) -> str:
@@ -167,9 +191,11 @@ def problem_fingerprint(
         fingerprint_inputs=fingerprint_inputs,
         version=version,
     )
+    preimage = ProblemFingerprintPreimage.model_validate(canonical)
     return ProblemFingerprint(
         version=version,
         digest=_format_sha256_digest(_canonical_sha256(canonical)),
+        preimage=preimage,
     )
 
 

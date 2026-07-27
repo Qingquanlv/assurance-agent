@@ -33,6 +33,13 @@ from assurance_agent.retro.candidates import (
     validate_candidate_document,
 )
 from assurance_agent.retro.types import RetroContext
+from assurance_agent.artifacts.models.retro_v3 import (
+    ImprovementCandidateV3,
+    ImprovementCandidateDocumentV3,
+    RetroContextV3,
+)
+from assurance_agent.artifacts.models.improvement_outbox import ImprovementOutboxEntry
+from assurance_agent.artifacts.models.retro_batch import RetroPipelineFailure
 from assurance_agent.workflow.graph.project_locks import ProjectResourceLockManager
 from assurance_agent.workflow.improvements.events import (
     ImprovementEvent,
@@ -51,6 +58,10 @@ from assurance_agent.workflow.improvements.ledger import (
     atomic_write_json,
 )
 from assurance_agent.workflow.improvements.projection import project_improvements
+from assurance_agent.workflow.improvements.review_subject import (
+    build_review_subject,
+    publish_review_subject,
+)
 
 _LOCK_TOKEN = "project:improvement-registry"
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
@@ -62,6 +73,7 @@ class ImprovementReconciliationPlan(BaseModel):
     retro_id: str
     candidate_batch_digest: str
     idempotency_key: str
+    improvement_ids: tuple[str, ...] = ()
     events: tuple[ImprovementEvent, ...] = ()
 
 
@@ -110,6 +122,7 @@ def plan_link_or_propose(
     context_digest: str,
     candidate_batch_digest: str,
     ts: str,
+    review_subject_sha256: str | None = None,
 ) -> list[ImprovementEvent]:
     """Derive propose and/or evidence-link events for one Candidate."""
     fingerprint = improvement_fingerprint(candidate)
@@ -136,6 +149,7 @@ def plan_link_or_propose(
                 candidate_id=candidate.candidate_id,
                 context_sha256=context_digest,
                 candidate_batch_digest=candidate_batch_digest,
+                review_subject_sha256=review_subject_sha256,
             )
         ]
 
@@ -169,6 +183,7 @@ def plan_link_or_propose(
             context_sha256=context_digest,
             candidate_batch_digest=candidate_batch_digest,
             supersedes=candidate.supersedes,
+            review_subject_sha256=review_subject_sha256,
         )
     )
 
@@ -194,9 +209,11 @@ def plan_link_or_propose(
 
 
 def reconcile_improvement_candidates(
-    candidates: ImprovementCandidateDocument,
-    context: RetroContext,
+    candidates: ImprovementCandidateDocument | ImprovementCandidateDocumentV3,
+    context: RetroContext | RetroContextV3,
     current: ImprovementLedgerProjection,
+    *,
+    pipeline_failures: tuple[RetroPipelineFailure, ...] = (),
 ) -> ImprovementReconciliationPlan:
     """Validate a Candidate batch and derive deterministic ledger events."""
     validate_candidate_document(context, candidates)
@@ -205,9 +222,21 @@ def reconcile_improvement_candidates(
     context_digest = context_sha256(context)
     ts = context.generated_at
     events: list[ImprovementEvent] = []
+    improvement_ids: set[str] = set()
     for ordinal, candidate in enumerate(candidates.candidates):
         fingerprint = improvement_fingerprint(candidate)
         existing = current.by_fingerprint.get(fingerprint)
+        improvement_id = existing or improvement_id_for_fingerprint(fingerprint)
+        improvement_ids.add(improvement_id)
+        subject_sha256 = None
+        if isinstance(candidate, ImprovementCandidateV3) and isinstance(context, RetroContextV3):
+            _, subject_sha256, _ = build_review_subject(
+                candidate,
+                context,
+                improvement_id=improvement_id,
+                candidate_batch_digest=batch_digest,
+                pipeline_failures=pipeline_failures,
+            )
         events.extend(
             plan_link_or_propose(
                 candidate,
@@ -220,14 +249,42 @@ def reconcile_improvement_candidates(
                 context_digest=context_digest,
                 candidate_batch_digest=batch_digest,
                 ts=ts,
+                review_subject_sha256=subject_sha256,
             )
         )
     return ImprovementReconciliationPlan(
         retro_id=context.retro_id,
         candidate_batch_digest=batch_digest,
         idempotency_key=key,
+        improvement_ids=tuple(sorted(improvement_ids)),
         events=tuple(events),
     )
+
+
+def _publish_review_subjects(
+    project_root: Path,
+    candidates: ImprovementCandidateDocument | ImprovementCandidateDocumentV3,
+    context: RetroContext | RetroContextV3,
+    current: ImprovementLedgerProjection,
+    *,
+    pipeline_failures: tuple[RetroPipelineFailure, ...] = (),
+) -> None:
+    if not isinstance(candidates, ImprovementCandidateDocumentV3) or not isinstance(context, RetroContextV3):
+        return
+    batch_digest = candidate_batch_digest(candidates)
+    for candidate in candidates.candidates:
+        fingerprint = improvement_fingerprint(candidate)
+        improvement_id = current.by_fingerprint.get(fingerprint) or improvement_id_for_fingerprint(
+            fingerprint
+        )
+        _, subject_sha256, subject_bytes = build_review_subject(
+            candidate,
+            context,
+            improvement_id=improvement_id,
+            candidate_batch_digest=batch_digest,
+            pipeline_failures=pipeline_failures,
+        )
+        publish_review_subject(project_root, subject_sha256, subject_bytes)
 
 
 def _batch_events(events: list[ImprovementEvent], *, batch_key: str) -> list[ImprovementEvent]:
@@ -243,8 +300,13 @@ def _receipt_from_events(
     batch_digest: str,
     idempotency_key: str,
     events: list[ImprovementEvent],
+    improvement_ids: tuple[str, ...] | None = None,
 ) -> ImprovementAcceptStatus:
-    improvement_ids = tuple(sorted({event.improvement_id for event in events}))
+    canonical_ids = (
+        improvement_ids
+        if improvement_ids is not None
+        else tuple(sorted({event.improvement_id for event in events}))
+    )
     event_ids = tuple(event.event_id for event in events)
     return ImprovementAcceptStatus(
         retro_id=retro_id,
@@ -252,7 +314,7 @@ def _receipt_from_events(
         candidate_batch_digest=batch_digest,
         idempotency_key=idempotency_key,
         result="accepted",
-        improvement_ids=improvement_ids,
+        improvement_ids=canonical_ids,
         event_ids=event_ids,
     )
 
@@ -338,13 +400,21 @@ def run_improvement_reconcile(project_root: Path, *, retro_id: str) -> Improveme
         raise AaError(f"context.json missing: {context_path}")
 
     try:
-        context = RetroContext.model_validate(json.loads(context_path.read_text(encoding="utf-8")))
+        context_raw = json.loads(context_path.read_text(encoding="utf-8"))
+        context = (
+            RetroContextV3.model_validate(context_raw)
+            if isinstance(context_raw, dict) and context_raw.get("schema_version") == "3"
+            else RetroContext.model_validate(context_raw)
+        )
     except Exception as exc:
         raise AaError(f"context.json invalid: {context_path}: {exc}") from exc
 
     context_digest = context_sha256(context)
     try:
-        candidates = read_candidate_document(retro_dir)
+        candidates = read_candidate_document(
+            retro_dir,
+            expected_schema="3" if isinstance(context, RetroContextV3) else "2",
+        )
     except CandidateBatchInvalid as exc:
         # Schema-invalid documents never reach semantic validate; still write a
         # failed current-run receipt with a stable raw-file digest.
@@ -376,18 +446,23 @@ def run_improvement_reconcile(project_root: Path, *, retro_id: str) -> Improveme
         existing = read_improvement_events(store.root / "events.jsonl")
         prior = _batch_events(existing, batch_key=key)
         if prior:
+            current = project_improvements(existing)
+            _publish_review_subjects(project_root, candidates, context, current)
+            plan = reconcile_improvement_candidates(candidates, context, current)
             status = _receipt_from_events(
                 retro_id=retro_id,
                 context_digest=context_digest,
                 batch_digest=batch_digest,
                 idempotency_key=key,
                 events=prior,
+                improvement_ids=plan.improvement_ids,
             )
             _write_accept_status(retro_dir, status)
             _write_review_queue_md(retro_dir, retro_id=retro_id, improvement_ids=status.improvement_ids)
             return status
 
         current = project_improvements(existing)
+        _publish_review_subjects(project_root, candidates, context, current)
         plan = reconcile_improvement_candidates(candidates, context, current)
         if plan.events:
             store.append_and_rebuild(plan.events)
@@ -398,7 +473,52 @@ def run_improvement_reconcile(project_root: Path, *, retro_id: str) -> Improveme
             batch_digest=batch_digest,
             idempotency_key=plan.idempotency_key,
             events=list(plan.events),
+            improvement_ids=plan.improvement_ids,
         )
         _write_accept_status(retro_dir, status)
         _write_review_queue_md(retro_dir, retro_id=retro_id, improvement_ids=status.improvement_ids)
         return status
+
+
+def reconcile_outbox_entry(project_root: Path, entry: ImprovementOutboxEntry) -> ImprovementAcceptStatus:
+    """Reconcile one self-contained outbox entry without reading Retro history."""
+    context = entry.context
+    candidates = ImprovementCandidateDocumentV3(
+        retro_id=entry.retro_id,
+        context_sha256=entry.context_sha256,
+        candidates=(entry.candidate,),
+    )
+    validate_candidate_document(context, candidates)
+    batch_digest = candidate_batch_digest(candidates)
+    key = f"{entry.retro_id}:{batch_digest}"
+    locks = ProjectResourceLockManager(project_root)
+    with locks.acquire((_LOCK_TOKEN,), timeout_seconds=30.0):
+        store = ProjectImprovementStore(project_root)
+        existing = read_improvement_events(store.root / "events.jsonl")
+        prior = _batch_events(existing, batch_key=key)
+        current = project_improvements(existing)
+        pipeline_failures = (entry.pipeline_failure,) if entry.pipeline_failure is not None else ()
+        _publish_review_subjects(
+            project_root,
+            candidates,
+            context,
+            current,
+            pipeline_failures=pipeline_failures,
+        )
+        plan = reconcile_improvement_candidates(
+            candidates,
+            context,
+            current,
+            pipeline_failures=pipeline_failures,
+        )
+        if not prior and plan.events:
+            store.append_and_rebuild(plan.events)
+            prior = list(plan.events)
+        return _receipt_from_events(
+            retro_id=entry.retro_id,
+            context_digest=entry.context_sha256,
+            batch_digest=batch_digest,
+            idempotency_key=key,
+            events=prior,
+            improvement_ids=plan.improvement_ids,
+        )

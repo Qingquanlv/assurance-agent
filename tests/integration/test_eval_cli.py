@@ -201,6 +201,10 @@ def test_eval_report_json(monkeypatch) -> None:
                 "run",
                 "--suite",
                 "workflow-case",
+                "--change",
+                "RET-user-1",
+                "--change",
+                "RET-role-1",
                 "--sut-dir",
                 str(project_root / "sut"),
                 "--output",
@@ -224,3 +228,4 @@ def test_eval_report_json(monkeypatch) -> None:
         report = json.loads(result.output)
         assert report["run_id"] == run_id
         assert report["verdict"] == "pass"
+        assert report["source_change_ids"] == ["RET-user-1", "RET-role-1"]

@@ -32,11 +32,16 @@ if TYPE_CHECKING:
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
 _TERMINAL_TYPES = frozenset({"graph_completed", "graph_stopped", "graph_failed"})
+_CHANGE_TERMINAL_ENTRYPOINTS = frozenset({"full", "execute"})
 _PUSHBACK_VERDICTS = frozenset({"needs_fix", "fail", "blocked", "stop"})
 
 
 class WorkflowHistoryIntegrityError(AaError):
     """Raised when a Change workflow ledger is corrupt or unreadable."""
+
+
+def _batch_gap_reason(change_id: str, status: str, reason_code: str) -> str:
+    return f"batch_member_evidence_gap:{change_id}:{status}:workflow:{reason_code}"
 
 
 class TerminalChangeRef(BaseModel):
@@ -60,6 +65,7 @@ class GateVerdictRecord(BaseModel):
     gate: str
     verdict: str
     reason: str | None = None
+    cause: str | None = None
     evidence_id: str
 
 
@@ -87,6 +93,7 @@ class SkillLoadedFalseRecord(BaseModel):
 
     change_id: str
     phase: str
+    expected_skill: str | None = None
     evidence_id: str
 
 
@@ -96,7 +103,10 @@ class WorkflowTaskFailureRecord(BaseModel):
     model_config = _FROZEN
 
     change_id: str
+    task_id: str | None = None
+    attempt_id: str | None = None
     node_id: str
+    ts: str | None = None
     error_kind: ErrorKind
     message: str
     recovered: bool
@@ -132,7 +142,12 @@ class WorkflowEvidenceSlice(BaseModel):
 
 @runtime_checkable
 class WorkflowHistoryReader(Protocol):
-    def list_terminal_changes(self) -> tuple[TerminalChangeRef, ...]: ...
+    def list_terminal_changes(
+        self,
+        change_ids: tuple[str, ...] | None = None,
+        *,
+        tolerate_member_errors: bool = False,
+    ) -> tuple[TerminalChangeRef, ...]: ...
 
     def discover_change_ids(self) -> frozenset[str]: ...
 
@@ -153,6 +168,16 @@ def _event_seq(event: Mapping[str, object]) -> int | None:
 def _event_evidence_id(change_id: str, event: Mapping[str, object]) -> str | None:
     seq = _event_seq(event)
     return f"{change_id}#seq{seq}" if seq is not None else None
+
+
+def _gate_cause(value: object) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    details = value.get("details")
+    if not isinstance(details, Mapping):
+        return None
+    cause = details.get("cause")
+    return cause if isinstance(cause, str) and cause else None
 
 
 def _read_ledger_strict(change_id: str, change_dir: Path) -> tuple[bytes, list[dict[str, object]]]:
@@ -180,9 +205,18 @@ def _terminal_from_events(
     *,
     archived: bool,
 ) -> TerminalChangeRef | None:
+    root_change_invocations = {
+        invocation_id
+        for event in events
+        for invocation_id in (event.get("invocation_id"),)
+        if event.get("type") == "graph_invocation_started"
+        and isinstance(invocation_id, str)
+        and not event.get("parent_invocation_id")
+        and event.get("entrypoint") in _CHANGE_TERMINAL_ENTRYPOINTS
+    }
     terminal_event: Mapping[str, object] | None = None
     for event in events:
-        if event.get("type") in _TERMINAL_TYPES:
+        if event.get("type") in _TERMINAL_TYPES and event.get("invocation_id") in root_change_invocations:
             terminal_event = event
     if terminal_event is not None:
         ts = terminal_event.get("ts")
@@ -269,6 +303,34 @@ def _extract_from_change(
                     gate=str(event.get("gate", "unknown")),
                     verdict=verdict,
                     reason=reason if isinstance(reason, str) else None,
+                    cause=_gate_cause(event),
+                    evidence_id=eid,
+                )
+            )
+            evidence_ids.append(eid)
+        elif event_type == "task_attempt_succeeded":
+            gate_report = event.get("gate_report")
+            if not isinstance(gate_report, Mapping) or eid is None:
+                continue
+            gate_id = gate_report.get("gate_id")
+            verdict = gate_report.get("verdict")
+            if (
+                not isinstance(gate_id, str)
+                or not gate_id
+                or not isinstance(verdict, str)
+                or verdict not in _PUSHBACK_VERDICTS
+            ):
+                continue
+            reason = gate_report.get("reason")
+            gate_verdicts.append(
+                GateVerdictRecord(
+                    change_id=change_id,
+                    seq=int(event["seq"]),  # type: ignore[arg-type]
+                    ts=str(event.get("ts", "")),
+                    gate=gate_id,
+                    verdict=verdict,
+                    reason=reason if isinstance(reason, str) else None,
+                    cause=_gate_cause(gate_report),
                     evidence_id=eid,
                 )
             )
@@ -324,10 +386,17 @@ def _extract_from_change(
         eid = _event_evidence_id(change_id, event)
         if not isinstance(node_id, str) or eid is None:
             continue
+        raw_attempt_id = event.get("attempt_id")
+        attempt_id = raw_attempt_id if isinstance(raw_attempt_id, str) else None
+        raw_ts = event.get("ts")
+        failure_ts = raw_ts if isinstance(raw_ts, str) else None
         task_failures.append(
             WorkflowTaskFailureRecord(
                 change_id=change_id,
+                task_id=task_id,
+                attempt_id=attempt_id,
                 node_id=node_id,
+                ts=failure_ts,
                 error_kind=event["error_kind"],  # type: ignore[arg-type]
                 message=str(event.get("message", "task failed")),
                 recovered=task_id in recovered_task_ids,
@@ -375,10 +444,16 @@ def _extract_from_change(
                     if phase_state.get("skill_loaded") is not False:
                         continue
                     eid = f"{change_id}#workflow-state:{phase}"
+                    skill_path = phase_state.get("skill_md_path")
+                    expected_skill = None
+                    if isinstance(skill_path, str) and skill_path.strip():
+                        path = Path(skill_path)
+                        expected_skill = path.parent.name if path.name == "SKILL.md" else path.stem
                     skill_loaded_false.append(
                         SkillLoadedFalseRecord(
                             change_id=change_id,
                             phase=str(phase),
+                            expected_skill=expected_skill,
                             evidence_id=eid,
                         )
                     )
@@ -424,14 +499,25 @@ class LedgerWorkflowHistoryReader:
             ids.update(_list_dir_names(active))
         return frozenset(ids)
 
-    def list_terminal_changes(self) -> tuple[TerminalChangeRef, ...]:
+    def list_terminal_changes(
+        self,
+        change_ids: tuple[str, ...] | None = None,
+        *,
+        tolerate_member_errors: bool = False,
+    ) -> tuple[TerminalChangeRef, ...]:
         refs: list[TerminalChangeRef] = []
-        for change_id in sorted(self.discover_change_ids()):
+        selected = self.discover_change_ids() if change_ids is None else frozenset(change_ids)
+        for change_id in sorted(selected):
             try:
                 loc = resolve_change(self._root, change_id, prefer="archive")
             except ChangeNotFoundError:
                 continue
-            data, events = _read_ledger_strict(change_id, loc.path)
+            try:
+                data, events = _read_ledger_strict(change_id, loc.path)
+            except WorkflowHistoryIntegrityError:
+                if not tolerate_member_errors:
+                    raise
+                continue
             archived = loc.source == "archive"
             ref = _terminal_from_events(
                 change_id,
@@ -452,24 +538,48 @@ class LedgerWorkflowHistoryReader:
         skill_loaded_false: list[SkillLoadedFalseRecord] = []
         task_failures: list[WorkflowTaskFailureRecord] = []
         reasons: list[str] = []
+        statuses = (
+            {member.change_id: member.execution_status for member in window.batch_scope.members}
+            if window.batch_scope is not None
+            else {}
+        )
 
         for change_id in window.change_ids:
+            status = statuses.get(change_id, "failed")
+            if window.batch_scope is not None and status in {"running", "not_started"}:
+                reason_code = "non_terminal" if status == "running" else "workspace_missing"
+                reasons.append(_batch_gap_reason(change_id, status, reason_code))
+                continue
             try:
                 loc = resolve_change(self._root, change_id, prefer="archive")
             except ChangeNotFoundError:
-                reasons.append(f"workflow_source_missing:{change_id}")
+                reasons.append(
+                    _batch_gap_reason(change_id, status, "workspace_missing")
+                    if window.batch_scope is not None
+                    else f"workflow_source_missing:{change_id}"
+                )
                 continue
-            (
-                source,
-                gates,
-                allocations,
-                applies,
-                skills,
-                failures,
-                error,
-            ) = _extract_from_change(change_id, loc.path)
+            try:
+                (
+                    source,
+                    gates,
+                    allocations,
+                    applies,
+                    skills,
+                    failures,
+                    error,
+                ) = _extract_from_change(change_id, loc.path)
+            except WorkflowHistoryIntegrityError:
+                if window.batch_scope is None:
+                    raise
+                reasons.append(_batch_gap_reason(change_id, status, "ledger_corrupt"))
+                continue
             if error is not None:
-                reasons.append(error)
+                reasons.append(
+                    _batch_gap_reason(change_id, status, "ledger_missing")
+                    if window.batch_scope is not None
+                    else error
+                )
                 continue
             if source is not None:
                 sources.append(source)
@@ -543,8 +653,17 @@ class InMemoryWorkflowHistoryReader:
     def discover_change_ids(self) -> frozenset[str]:
         return self._known
 
-    def list_terminal_changes(self) -> tuple[TerminalChangeRef, ...]:
-        return self._terminals
+    def list_terminal_changes(
+        self,
+        change_ids: tuple[str, ...] | None = None,
+        *,
+        tolerate_member_errors: bool = False,
+    ) -> tuple[TerminalChangeRef, ...]:
+        del tolerate_member_errors
+        if change_ids is None:
+            return self._terminals
+        selected = frozenset(change_ids)
+        return tuple(item for item in self._terminals if item.change_id in selected)
 
     def read_window(self, window: ResolvedRetroWindow) -> WorkflowEvidenceSlice:
         if self._slice is not None and self._slice.change_ids == window.change_ids:

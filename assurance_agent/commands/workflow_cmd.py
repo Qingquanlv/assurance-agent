@@ -11,6 +11,7 @@ import yaml
 
 from assurance_agent.change_location import ChangeNotFoundError, resolve_change
 from assurance_agent.identifiers import UnsafeIdentifierError
+from assurance_agent.retro.supervisor import RetroInvocation, run_retro_supervised
 from assurance_agent.workflow.driver.adapter import DriverError
 from assurance_agent.workflow.driver.driver_state import (
     driver_status_for_graph,
@@ -33,6 +34,7 @@ from assurance_agent.workflow.driver.workflow_start import start_workflow_detach
 from assurance_agent.workflow.graph.checkpoint import CheckpointImportError, parse_import_manifest
 from assurance_agent.workflow.graph.models import ResumeCommand
 from assurance_agent.workflow.graph.runtime import GraphRuntimeError
+from assurance_agent.workflow.graph.runtime import ensure_retro_params
 
 
 @click.group("workflow")
@@ -171,6 +173,38 @@ def _run_or_detach(
         click.secho(started.message, fg="green")
         raise SystemExit(EXIT_COMPLETED)
     adapter = _build_adapter(adapter_name, project_root, server, directory, model, parent_session, agent_cmd)
+    if entrypoint == "retro":
+        retro_params = ensure_retro_params(parsed_params)
+        retro_id = str(retro_params["retro_id"])
+        result_holder = None
+
+        def graph_runner(invocation: RetroInvocation):  # noqa: ANN202
+            nonlocal result_holder
+            result_holder = run_workflow_loop(
+                project_root=invocation.project_root,
+                change_id=invocation.shell_change_id,
+                entrypoint="retro",
+                adapter=adapter,
+                params=dict(invocation.params),
+                parent_session_id=parent_session,
+                adopt_lock_token=adopt_lock,
+            )
+            return result_holder
+
+        supervised = run_retro_supervised(
+            RetroInvocation(
+                project_root=project_root,
+                shell_change_id=change_id,
+                retro_id=retro_id,
+                params=retro_params,
+            ),
+            graph_runner=graph_runner,
+        )
+        if supervised.status is None:
+            click.secho("Retro supervision failed", fg="red")
+            raise SystemExit(EXIT_ERROR)
+        click.secho(supervised.status.result, fg="green")
+        raise SystemExit(EXIT_COMPLETED)
     result = run_workflow_loop(
         project_root=project_root,
         change_id=change_id,

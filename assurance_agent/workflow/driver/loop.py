@@ -65,9 +65,6 @@ def build_driver_telemetry(event_type: str, run_id: str, **extra: object) -> dic
     return event
 
 
-_driver_status_for = driver_status_for_graph
-
-
 def run_workflow_loop(
     *,
     project_root: Path,
@@ -195,7 +192,7 @@ def run_workflow_loop(
             invocation_id=result.invocation_id,
             checkpoint_id=result.status.checkpoint_id,
             event_seq=result.status.event_seq,
-            status=_driver_status_for(result.status.status),
+            status=driver_status_for_graph(result.status.status),
         )
         return finish(result.exit_code, result.reason, active.status)
     except GraphRuntimeError as err:

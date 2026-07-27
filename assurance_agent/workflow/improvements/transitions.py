@@ -24,6 +24,8 @@ _ALLOWED: dict[ImprovementState, frozenset[ImprovementState]] = {
         {
             ImprovementState.EVALUATING,
             ImprovementState.EXPORTED,
+            ImprovementState.REJECTED,
+            ImprovementState.NEEDS_REWORK,
             ImprovementState.SUPERSEDED,
         }
     ),

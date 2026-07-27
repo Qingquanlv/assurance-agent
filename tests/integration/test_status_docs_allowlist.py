@@ -8,6 +8,7 @@ tests/ 不扫描——别名断言合法引用该命令名。
 - EXEMPT_LINES：按「文件 → 精确行正则」豁免单行；
 除此之外的任何命中都失败。文件不按后缀过滤，UTF-8 能解码即扫。
 """
+
 import re
 from pathlib import Path
 

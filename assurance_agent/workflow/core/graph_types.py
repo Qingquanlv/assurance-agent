@@ -16,5 +16,6 @@ ErrorKind = Literal[
     "invalid_output",
     "forbidden_write",
     "contract",
+    "batch_scope_invalid",
     "internal",
 ]

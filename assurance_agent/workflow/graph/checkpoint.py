@@ -489,6 +489,7 @@ def _reevaluate_gate(
         params=context.params,
         state_values=dict(state_values) if state_values is not None else _state_values_from_change(context),
         node_results=dict(node_results) if node_results is not None else {},
+        audit_events_dir=context.change_dir,
     )
     report = check_gate_in_view(compiled.schema.gates, gate_id, eval_context)
     if report.verdict.value != task.gate.verdict:
@@ -619,6 +620,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
     started: GraphInvocationStartedEvent | None = None
     event_seq = 0
     supersteps = 0
+    current_superstep_task_ids: list[str] = []
     current_tree_id = ""
     latest_checkpoint_id: str | None = None
     state_values: dict[str, object] = {}
@@ -631,7 +633,6 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
     terminal: Literal["completed", "stopped", "failed"] | None = None
     terminal_reason: str | None = None
     generation = GenerationFoldState()
-    current_superstep_task_ids: list[str] = []
 
     for raw in events:
         if raw.get("source") != "graph":
@@ -832,7 +833,12 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
         elif isinstance(event, SuperstepCommittedEvent):
             # sibling state 直到 Update（commit）才可见：state_values 只在这里推进。
             generation.apply_outputs_commit(list(event.committed_task_ids), tasks)
-            for task_id in current_superstep_task_ids:
+            # Recovery may close an earlier mixed-result wave and commit its
+            # successful siblings together with the recovery task.  Mark the
+            # IDs declared by the commit event, not merely the tasks planned
+            # in the latest wave, or their old write-sets will be merged again
+            # and can regress the current tree pointer.
+            for task_id in set(current_superstep_task_ids) | set(event.committed_task_ids):
                 task = tasks.get(task_id)
                 if task is not None and task.status == "succeeded":
                     tasks[task_id] = task.model_copy(update={"outputs_committed": True})
@@ -949,9 +955,7 @@ def dump_checkpoint_snapshot(projection: GraphProjection) -> bytes:
     return (payload + "\n").encode("utf-8")
 
 
-def latest_root_invocation_id(
-    events: list[dict[str, object]], entrypoint: str | None = None
-) -> str | None:
+def latest_root_invocation_id(events: list[dict[str, object]], entrypoint: str | None = None) -> str | None:
     """严格 ledger 中最近一次无 parent 的 root ``graph_invocation_started``。
 
     ``entrypoint`` 非空时只看该 entrypoint 的 invocation：同一 change 上

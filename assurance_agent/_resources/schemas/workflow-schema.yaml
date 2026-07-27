@@ -39,6 +39,7 @@ params:
   retro_min_evidence: {type: int, default: 2}
   retro_dry_run: {type: bool, default: false}
   change_ids: {type: list, default: []}
+  batch_scope: {type: object, default: {}}
   since: {type: str, default: ""}
   until: {type: str, default: ""}
   problem_id: {type: str, default: ""}
@@ -52,6 +53,10 @@ params:
   expected_target_sha256: {type: str, default: ""}
   expected_applied_digest: {type: str, default: ""}
   expected_l1_digest: {type: str, default: ""}
+  subject_sha256: {type: str, default: ""}
+  expected_improvement_version: {type: int, default: 0}
+  policy_version: {type: str, default: "1"}
+  attempt: {type: int, default: 1}
 
 entrypoints:
   full:
@@ -74,7 +79,11 @@ entrypoints:
     with:
       auto_archive: true
   retro:
-    graph: retro-workflow
+    graph: retro-orchestration-workflow
+  improvement-auto-review:
+    graph: improvement-auto-review-cycle
+    restart: repeatable
+    allow: "params.improvement_id != '' and params.review_id != '' and params.subject_sha256 != '' and params.expected_improvement_version > 0"
   issue-review:
     graph: issue-review-workflow
     restart: repeatable
@@ -255,15 +264,183 @@ graphs:
         default: STOP
 
   retro-workflow:
-    max_supersteps: 20
+    max_supersteps: 40
     nodes:
+      drain-reconcile-outbox:
+        uses: operation:drain-improvement-outbox
+        resources:
+          reads:
+            - project:qa/improvements/**
+          writes:
+            - project:qa/improvements/**
+          synchronized:
+            - project:qa/improvements/**
+          exclusive:
+            - project:improvement-registry
+        retry: never
+        timeout: local-operation
       collect-retro-evidence:
-        uses: operation:retro-collect
+        uses: operation:retro-collect-v3
+        outputs:
+          - project:qa/retro/${params.retro_id}/window.json
+          - project:qa/retro/${params.retro_id}/evidence/issue-slice.json
+          - project:qa/retro/${params.retro_id}/evidence/workflow-slice.json
+          - project:qa/retro/${params.retro_id}/evidence/eval-slice.json
+        resources:
+          writes:
+            - project:qa/retro/${params.retro_id}/window.json
+            - project:qa/retro/${params.retro_id}/evidence/**
+          synchronized:
+            - project:qa/archive/**
+            - project:qa/changes/**
+            - project:qa/issues/**
+            - project:qa/eval/**
+            - project:qa/retro/${params.retro_id}/**
+        retry: never
+        timeout: local-operation
+        recover:
+          errors: [conflict, timeout, transport, rate_limit, auth, invalid_input, invalid_output, forbidden_write, contract, batch_scope_invalid, internal]
+          via: recover-collect-failure
+          continue_to: reconcile-improvements
+      recover-collect-failure:
+        uses: operation:record-retro-pipeline-failure
+        with: {stage: collect}
+        resources:
+          writes:
+            - project:qa/retro/${params.retro_id}/**
+        retry: never
+        timeout: local-operation
+      analyze-issue:
+        uses: skill:aa-retro-issue-analysis
+        agent: aa-doc-author
+        outputs:
+          - project:qa/retro/${params.retro_id}/signals/issue.json
+        resources:
+          reads:
+            - project:qa/retro/${params.retro_id}/evidence/issue-slice.json
+          writes:
+            - project:qa/retro/${params.retro_id}/signals/issue.json
+        recover:
+          errors: [timeout, transport, rate_limit, invalid_output]
+          via: record-issue-analysis-failed
+          continue_to: issue-settled
+        retry: agent-transient
+        timeout: agent
+      evidence-gap-fallback:
+        uses: operation:retro-evidence-gap-fallback
+        outputs:
+          - project:qa/retro/${params.retro_id}/signals/issue.json
+          - project:qa/retro/${params.retro_id}/signals/workflow.json
+          - project:qa/retro/${params.retro_id}/signals/eval.json
+          - project:qa/retro/${params.retro_id}/context.json
+          - project:qa/retro/${params.retro_id}/proposal-candidates.json
+          - project:qa/retro/${params.retro_id}/retro-summary.md
+        resources:
+          reads:
+            - project:qa/retro/${params.retro_id}/window.json
+            - project:qa/retro/${params.retro_id}/evidence/**
+          writes:
+            - project:qa/retro/${params.retro_id}/signals/**
+            - project:qa/retro/${params.retro_id}/context.json
+            - project:qa/retro/${params.retro_id}/proposal-candidates.json
+            - project:qa/retro/${params.retro_id}/retro-summary.md
+        retry: never
+        timeout: local-operation
+      record-issue-analysis-failed:
+        uses: operation:record-analysis-failed
+        with: {domain: issue}
+        outputs:
+          - project:qa/retro/${params.retro_id}/signals/issue.json
+        resources:
+          reads:
+            - project:qa/retro/${params.retro_id}/evidence/issue-slice.json
+          writes:
+            - project:qa/retro/${params.retro_id}/signals/issue.json
+      issue-settled: {uses: operation:no-op}
+      analyze-workflow:
+        uses: skill:aa-retro-workflow-analysis
+        agent: aa-doc-author
+        outputs:
+          - project:qa/retro/${params.retro_id}/signals/workflow.json
+        resources:
+          reads:
+            - project:qa/retro/${params.retro_id}/evidence/workflow-slice.json
+          writes:
+            - project:qa/retro/${params.retro_id}/signals/workflow.json
+        recover:
+          errors: [timeout, transport, rate_limit, invalid_output]
+          via: record-workflow-analysis-failed
+          continue_to: workflow-settled
+        retry: agent-transient
+        timeout: agent
+      record-workflow-analysis-failed:
+        uses: operation:record-analysis-failed
+        with: {domain: workflow}
+        outputs:
+          - project:qa/retro/${params.retro_id}/signals/workflow.json
+        resources:
+          reads:
+            - project:qa/retro/${params.retro_id}/evidence/workflow-slice.json
+          writes:
+            - project:qa/retro/${params.retro_id}/signals/workflow.json
+      workflow-settled: {uses: operation:no-op}
+      analyze-eval:
+        uses: skill:aa-retro-eval-analysis
+        agent: aa-doc-author
+        outputs:
+          - project:qa/retro/${params.retro_id}/signals/eval.json
+        resources:
+          reads:
+            - project:qa/retro/${params.retro_id}/evidence/eval-slice.json
+          writes:
+            - project:qa/retro/${params.retro_id}/signals/eval.json
+        recover:
+          errors: [timeout, transport, rate_limit, invalid_output]
+          via: record-eval-analysis-failed
+          continue_to: eval-settled
+        retry: agent-transient
+        timeout: agent
+      record-eval-analysis-failed:
+        uses: operation:record-analysis-failed
+        with: {domain: eval}
+        outputs:
+          - project:qa/retro/${params.retro_id}/signals/eval.json
+        resources:
+          reads:
+            - project:qa/retro/${params.retro_id}/evidence/eval-slice.json
+          writes:
+            - project:qa/retro/${params.retro_id}/signals/eval.json
+      eval-settled: {uses: operation:no-op}
+      analysis-join:
+        uses: builtin:join
+        join:
+          sources: [issue-settled, workflow-settled, eval-settled]
+          mode: all_active
+      assemble-retro-context:
+        uses: operation:assemble-retro-context-v3
         outputs:
           - project:qa/retro/${params.retro_id}/context.json
         resources:
+          reads:
+            - project:qa/retro/${params.retro_id}/window.json
+            - project:qa/retro/${params.retro_id}/evidence/**
+            - project:qa/retro/${params.retro_id}/signals/**
           writes:
             - project:qa/retro/${params.retro_id}/context.json
+            - project:qa/retro/${params.retro_id}/proposal-candidates.json
+            - project:qa/retro/${params.retro_id}/retro-summary.md
+        retry: never
+        timeout: local-operation
+        recover:
+          errors: [conflict, timeout, transport, rate_limit, auth, invalid_input, invalid_output, forbidden_write, contract, batch_scope_invalid, internal]
+          via: recover-assemble-failure
+          continue_to: reconcile-improvements
+      recover-assemble-failure:
+        uses: operation:record-retro-pipeline-failure
+        with: {stage: assemble}
+        resources:
+          writes:
+            - project:qa/retro/${params.retro_id}/**
         retry: never
         timeout: local-operation
       propose-improvements:
@@ -280,11 +457,20 @@ graphs:
             - project:qa/retro/${params.retro_id}/retro-summary.md
         retry: agent-transient
         timeout: agent
+        recover:
+          errors: [conflict, timeout, transport, rate_limit, auth, invalid_input, invalid_output, forbidden_write, contract, batch_scope_invalid, internal]
+          via: recover-propose-failure
+          continue_to: reconcile-improvements
+      recover-propose-failure:
+        uses: operation:record-retro-pipeline-failure
+        with: {stage: propose}
+        resources:
+          writes:
+            - project:qa/retro/${params.retro_id}/**
+        retry: never
+        timeout: local-operation
       reconcile-improvements:
         uses: operation:reconcile-improvements
-        outputs:
-          - project:qa/retro/${params.retro_id}/accept-status.json
-          - project:qa/retro/${params.retro_id}/review-queue.md
         resources:
           reads:
             - project:qa/retro/${params.retro_id}/context.json
@@ -296,12 +482,159 @@ graphs:
             - project:qa/improvements/**
         retry: never
         timeout: local-operation
+        recover:
+          errors: [conflict, timeout, transport, rate_limit, auth, invalid_input, invalid_output, forbidden_write, contract, batch_scope_invalid, internal]
+          via: recover-reconcile-failure
+          continue_to: finalize-retro-status
+      recover-reconcile-failure:
+        uses: operation:record-retro-pipeline-failure
+        with: {stage: reconcile}
+        resources:
+          writes:
+            - project:qa/retro/${params.retro_id}/**
+            - project:qa/improvements/outbox/**
+        retry: never
+        timeout: local-operation
+      finalize-retro-status:
+        uses: operation:finalize-retro-status
+        resources:
+          reads:
+            - project:qa/retro/${params.retro_id}/**
+            - project:qa/improvements/outbox/**
+          writes:
+            - project:qa/retro/${params.retro_id}/retro-status.json
+        retry: never
+        timeout: local-operation
     edges:
-      - {from: START, to: collect-retro-evidence}
-      - {from: collect-retro-evidence, to: END, when: "params.retro_dry_run == true or node('collect-retro-evidence').value.signal_count == 0"}
-      - {from: collect-retro-evidence, to: propose-improvements, when: "params.retro_dry_run == false and node('collect-retro-evidence').value.signal_count > 0"}
+      - {from: START, to: drain-reconcile-outbox}
+      - {from: drain-reconcile-outbox, to: collect-retro-evidence}
+      - {from: collect-retro-evidence, to: evidence-gap-fallback, when: "node('collect-retro-evidence').value.all_domain_evidence_absent == true"}
+      - {from: collect-retro-evidence, to: analyze-issue, when: "node('collect-retro-evidence').value.all_domain_evidence_absent == false"}
+      - {from: collect-retro-evidence, to: analyze-workflow, when: "node('collect-retro-evidence').value.all_domain_evidence_absent == false"}
+      - {from: collect-retro-evidence, to: analyze-eval, when: "node('collect-retro-evidence').value.all_domain_evidence_absent == false"}
+      - {from: analyze-issue, to: issue-settled}
+      - {from: analyze-workflow, to: workflow-settled}
+      - {from: analyze-eval, to: eval-settled}
+      - {from: issue-settled, to: analysis-join}
+      - {from: workflow-settled, to: analysis-join}
+      - {from: eval-settled, to: analysis-join}
+      - {from: analysis-join, to: assemble-retro-context}
+      - {from: evidence-gap-fallback, to: reconcile-improvements}
+      - {from: assemble-retro-context, to: finalize-retro-status, when: "params.retro_dry_run == true or node('assemble-retro-context').value.signal_count == 0"}
+      - {from: assemble-retro-context, to: propose-improvements, when: "params.retro_dry_run == false and node('assemble-retro-context').value.signal_count > 0"}
       - {from: propose-improvements, to: reconcile-improvements}
-      - {from: reconcile-improvements, to: END}
+      - {from: reconcile-improvements, to: finalize-retro-status}
+      - {from: finalize-retro-status, to: END}
+
+  improvement-auto-review-cycle:
+    max_supersteps: 20
+    nodes:
+      load-review-subject:
+        uses: operation:load-review-subject
+        recover:
+          errors: [invalid_input, invalid_output, conflict, internal]
+          via: record-review-error
+          continue_to: END
+      review-improvement:
+        uses: skill:aa-improvement-reviewer
+        agent: aa-reviewer
+        resources:
+          reads:
+            - project:qa/improvements/review-subjects/${params.subject_sha256}.json
+        outputs:
+          - project:qa/improvements/reviews/${params.review_id}/assessment.json
+          - project:qa/improvements/reviews/${params.review_id}/summary.md
+        retry: agent-transient
+        timeout: agent
+        recover:
+          errors: [conflict, timeout, transport, rate_limit, auth, invalid_input, invalid_output, forbidden_write, contract, batch_scope_invalid, internal]
+          via: record-review-error
+          continue_to: END
+      validate-improvement-review-assessment:
+        uses: operation:validate-improvement-review-assessment
+        outputs:
+          - project:qa/improvements/reviews/${params.review_id}/gate-input.json
+        recover:
+          errors: [invalid_output]
+          via: record-review-error
+          continue_to: END
+      improvement-auto-review-gate:
+        uses: builtin:gate
+        with:
+          expression: "node('validate-improvement-review-assessment').value.auto_approve == true"
+      apply-auto-approval:
+        uses: operation:apply-improvement-auto-review
+        with: {verdict: auto_approve}
+        recover:
+          errors: [invalid_input, invalid_output, conflict, internal]
+          via: record-review-error
+          continue_to: END
+      record-auto-review:
+        uses: operation:apply-improvement-auto-review
+        with: {verdict: record}
+        recover:
+          errors: [invalid_input, invalid_output, conflict, internal]
+          via: record-review-error
+          continue_to: END
+      record-review-error:
+        uses: operation:record-improvement-auto-review-error
+    edges:
+      - {from: START, to: load-review-subject}
+      - {from: load-review-subject, to: review-improvement}
+      - {from: review-improvement, to: validate-improvement-review-assessment}
+      - {from: validate-improvement-review-assessment, to: improvement-auto-review-gate}
+      - {from: apply-auto-approval, to: END}
+      - {from: record-auto-review, to: END}
+    routes:
+      - from: improvement-auto-review-gate
+        select: "node('improvement-auto-review-gate').value"
+        cases: {"true": apply-auto-approval, "false": record-auto-review}
+        default: record-auto-review
+
+  retro-orchestration-workflow:
+    max_supersteps: 16
+    nodes:
+      run-retro:
+        uses: graph:retro-workflow
+      select-current-retro-auto-review-items:
+        uses: operation:select-current-retro-auto-review-items
+        recover:
+          errors: [invalid_input, invalid_output, conflict, contract, internal]
+          via: record-auto-review-orchestration-error
+          continue_to: END
+      auto-review-items:
+        uses: graph:improvement-auto-review-cycle
+        fan_out:
+          items: "node('select-current-retro-auto-review-items').value.items"
+          item_as: review_item
+          key: "${review_item.review_id}"
+          max_items: 128
+          completion: all
+        with:
+          improvement_id: "${review_item.improvement_id}"
+          subject_sha256: "${review_item.subject_sha256}"
+          expected_improvement_version: "${review_item.expected_improvement_version}"
+          review_id: "${review_item.review_id}"
+          policy_version: "${review_item.policy_version}"
+          attempt: "${review_item.attempt}"
+        recover:
+          errors: [invalid_input, invalid_output, conflict, contract, internal]
+          via: record-auto-review-orchestration-error
+          continue_to: END
+      summarize-auto-review-batch:
+        uses: operation:summarize-auto-review-batch
+        recover:
+          errors: [invalid_input, invalid_output, conflict, internal]
+          via: record-auto-review-orchestration-error
+          continue_to: END
+      record-auto-review-orchestration-error:
+        uses: operation:record-auto-review-orchestration-error
+    edges:
+      - {from: START, to: run-retro}
+      - {from: run-retro, to: select-current-retro-auto-review-items}
+      - {from: select-current-retro-auto-review-items, to: auto-review-items}
+      - {from: auto-review-items, to: summarize-auto-review-batch}
+      - {from: summarize-auto-review-batch, to: END}
 
   intake:
     max_supersteps: 30
@@ -1661,6 +1994,10 @@ gates:
     missing_file_is: stop
     invalid_json: stop
     missing_field_is: stop
+    causes:
+      archive.execution_failed: "execution.final_status == 'FAIL'"
+      archive.healing_unsettled: "healing.status in ['applied','exhausted','failed']"
+      archive.batch_mismatch: "failure_analysis.source_batch_id != execution.batch_id"
     pass_when: >
       params.auto_archive == true
       and case_review.decision == 'pass'

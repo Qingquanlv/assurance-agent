@@ -261,6 +261,7 @@ class NodeGeneration(BaseModel):
     frozen_outputs: dict[str, object] = Field(default_factory=dict)
     outputs_committed: bool = False
     gate_report: dict[str, object] | None = None
+    value: object = None
     fan_out_expansion_id: str | None = None
 
 
@@ -437,11 +438,14 @@ class ResumeCommand(BaseModel):
         return action
 
 
+GraphLifecycleStatus = Literal["running", "interrupted", "completed", "stopped", "failed"]
+
+
 class GraphStatus(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     invocation_id: str
     entrypoint: str
-    status: Literal["running", "interrupted", "completed", "stopped", "failed"]
+    status: GraphLifecycleStatus
     checkpoint_id: str | None
     event_seq: int
     superstep: int

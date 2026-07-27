@@ -206,6 +206,7 @@ def test_duplicate_refs_cause_no_event(context: RetroContext, candidate: Improve
     document = _document(context, candidate)
     plan = reconcile_improvement_candidates(document, context, current)
     assert plan.events == ()
+    assert plan.improvement_ids == tuple(current.improvements)
 
 
 def test_explicit_supersedes_emits_proposed_and_superseded(

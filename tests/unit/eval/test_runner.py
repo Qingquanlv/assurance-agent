@@ -210,6 +210,7 @@ def test_run_suite_end_to_end_pass_and_persists_calibration(tmp_path: Path, monk
         suite_file=suite_file,
         project_root=project_root,
         sut_dir=sut,
+        change_ids=("RET-user-1", "RET-role-1"),
         calibrate=True,
         adapter_factory=lambda sut_dir, **_: GreenAdapter(sut_dir),
         runtime_factory=_completed_runtime_factory(),
@@ -219,6 +220,12 @@ def test_run_suite_end_to_end_pass_and_persists_calibration(tmp_path: Path, monk
     assert (run_dir / "metrics.json").exists()
     assert (run_dir / "gate-result.json").exists()
     assert (run_dir / "report.json").exists()
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    report = json.loads((run_dir / "report.json").read_text())
+    assert manifest["change_ids"] == ["RET-user-1", "RET-role-1"]
+    assert report["source_change_ids"] == ["RET-user-1", "RET-role-1"]
+    projection = json.loads((sut / "qa/eval/runs" / run_id / "report.json").read_text())
+    assert projection["source_change_ids"] == ["RET-user-1", "RET-role-1"]
     judge = run_dir / "samples/WC-001/attempt-0/judge-result.json"
     assert json.loads(judge.read_text())["label"] == "covered"
 

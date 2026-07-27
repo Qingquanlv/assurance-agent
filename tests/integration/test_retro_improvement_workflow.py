@@ -1,394 +1,130 @@
-"""End-to-end Retro → Improvement closed-loop workflow assertions."""
+"""End-to-end Retro v3 → Improvement closed-loop assertions."""
 
 from __future__ import annotations
 
+import hashlib
 import json
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-from assurance_agent import resources
-from assurance_agent.retro.candidates import context_sha256
-from assurance_agent.retro.types import (
-    EvalRetroSignals,
-    IssueRetroSignals,
-    RetroContext,
-    RetroIntegrity,
-    RetroSelectionSnapshot,
-    RetroSignalSet,
-    RetroSourceDescriptor,
-    RetroSourceManifest,
-    RetroWindow,
-    WorkflowRetroSignals,
-)
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
-from assurance_agent.workflow.graph.checkpoint import CheckpointStore
-from assurance_agent.workflow.graph.compiler import compile_workflow
-from assurance_agent.workflow.graph.contracts import load_execution_contracts
-from assurance_agent.workflow.graph.handlers.operation import (
-    OperationHandler,
-    default_operations,
-)
-from assurance_agent.workflow.graph.models import (
-    CompiledWorkflow,
-    ExecutableTask,
-    RuntimeContext,
-    TaskResult,
-)
-from assurance_agent.workflow.graph.runtime import GraphRuntime
-from assurance_agent.workflow.graph.scheduler import Scheduler
-from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
-from assurance_agent.workflow.graph.task_runner import (
-    HandlerNodeRunner,
-    build_default_node_runner,
-)
-from assurance_agent.workflow.graph.workspace import TaskWorkspace, TreeStore, WorkspaceBackend
 from assurance_agent.workflow.issues.history import IssueHistoryIntegrityError
-from tests.helpers_aa import write_aa_config
-
-T0 = datetime(2026, 7, 25, 0, 0, 0, tzinfo=timezone.utc)
-
-
-class NeverCalledInvoker:
-    def invoke(self, request: AgentRequest) -> AgentResult:
-        raise AssertionError(f"AgentInvoker must not be called; target={request.target}")
-
-
-class RecordingInvoker:
-    def __init__(self) -> None:
-        self.calls: list[str] = []
-
-    def invoke(self, request: AgentRequest) -> AgentResult:
-        self.calls.append(request.target)
-        raise AssertionError("agent should not run for this scenario")
+from tests.unit.workflow.graph.test_retro_workflow import (
+    EmptyAnalysisInvoker,
+    FakeRetroAgent,
+    _build_runtime,
+    _compile_canonical,
+    _fake_retro_collect_with_signal,
+    _make_project,
+    _retro_context,
+    _v2_context,
+)
 
 
-class CandidateAgent:
-    def __init__(
-        self,
-        retro_id: str,
-        *,
-        context: RetroContext,
-        candidates: list[dict] | None = None,
-        invalid: bool = False,
-    ) -> None:
-        self._retro_id = retro_id
-        self._context = context
-        self._candidates = candidates
-        self._invalid = invalid
-        self.calls = 0
+class _PassingImprovementReviewer(FakeRetroAgent):
+    """Runs the normal Retro agents and emits one bound Auto Review assessment."""
 
     def invoke(self, request: AgentRequest) -> AgentResult:
-        self.calls += 1
-        retro_dir = request.workspace_root / "qa" / "retro" / self._retro_id
-        # Sibling Retro dirs must not be present in the agent workspace.
-        sibling = request.workspace_root / "qa" / "retro" / "retro-other"
-        assert not sibling.exists(), "sibling Retro run must not be materialized"
-        retro_dir.mkdir(parents=True, exist_ok=True)
-        if self._invalid:
-            (retro_dir / "proposal-candidates.json").write_text("{not-json\n", encoding="utf-8")
-        else:
-            document = {
-                "schema_version": "2",
-                "retro_id": self._retro_id,
-                "context_sha256": context_sha256(self._context),
-                "candidates": self._candidates
-                or [
-                    {
-                        "candidate_id": "IMP-CAND-1",
-                        "kind": "workflow_improvement",
-                        "delivery": "change_draft",
-                        "source_refs": {"problem_ids": ["PROB-1"]},
-                        "target": "assurance_agent/workflow/inspect",
-                        "rationale": "Repeated truncation across changes",
-                        "proposed_change": "Preserve pytest E lines when classifying failures",
-                        "verification": {
-                            "suites": ["workflow-full"],
-                            "success_criteria": "No truncation Observation",
-                        },
-                        "risk": "low",
-                        "confidence": "high",
-                    }
-                ],
-            }
-            (retro_dir / "proposal-candidates.json").write_text(
-                json.dumps(document, sort_keys=True) + "\n", encoding="utf-8"
+        if request.target != "skill:aa-improvement-reviewer":
+            return super().invoke(request)
+        subjects = tuple((request.workspace_root / "qa/improvements/review-subjects").glob("*.json"))
+        if not subjects:
+            raise AssertionError(
+                f"review subject missing; writes={request.allowed_writes}; "
+                f"json={tuple(request.workspace_root.rglob('*.json'))}"
             )
-        (retro_dir / "retro-summary.md").write_text("# summary\n", encoding="utf-8")
+        subject_path = subjects[0]
+        subject = json.loads(subject_path.read_text(encoding="utf-8"))
+        identity = f"{subject['improvement_id']}:{subject_path.stem}:1:1"
+        review_id = "AUTO-" + hashlib.sha256(identity.encode()).hexdigest()[:24]
+        assessment_path = (
+            request.workspace_root / "qa" / "improvements" / "reviews" / review_id / "assessment.json"
+        )
+        assessment_path.parent.mkdir(parents=True, exist_ok=True)
+        assessment_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "review_type": "improvement",
+                    "review_id": review_id,
+                    "improvement_id": subject["improvement_id"],
+                    "expected_improvement_version": 1,
+                    "subject_sha256": subject_path.stem,
+                    "decision": "pass",
+                    "findings": [],
+                    "evidence_traceability": "complete",
+                    "scope_readiness": "ready",
+                    "verification_readiness": "ready",
+                    "delivery_safety": "ready",
+                    "human_review_required": False,
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (assessment_path.parent / "summary.md").write_text(
+            "# Improvement review\n\nEligible for bounded automatic approval.\n",
+            encoding="utf-8",
+        )
         return AgentResult(ok=True)
 
 
-class FakeClock:
-    def __init__(self, start: datetime = T0) -> None:
-        self._now = start
-        self._mono = 0.0
-
-    def now(self) -> datetime:
-        return self._now
-
-    def monotonic(self) -> float:
-        return self._mono
-
-    def sleep(self, seconds: float) -> None:
-        self._now += timedelta(seconds=seconds)
-        self._mono += seconds
-
-
-def _make_project(tmp_path: Path) -> Path:
-    project = tmp_path / "proj"
-    (project / "qa" / "changes" / "RETRO-RUN").mkdir(parents=True)
-    write_aa_config(project)
-    # Sibling Retro run that must never enter the agent workspace.
-    other = project / "qa" / "retro" / "retro-other"
-    other.mkdir(parents=True)
-    (other / "context.json").write_text('{"retro_id":"retro-other"}\n', encoding="utf-8")
-    return project
-
-
-def _compile() -> tuple[CompiledWorkflow, object]:
-    text = resources.read_text("schemas", "workflow-schema.yaml")
-    contracts = load_execution_contracts(Path("."))
-    return compile_workflow(parse_workflow_v2(text), contracts), contracts
-
-
-def _runtime(
-    project: Path,
-    compiled: CompiledWorkflow,
-    contracts: object,
-    invoker: object,
-    *,
-    extra_ops: dict | None = None,
-) -> GraphRuntime:
-    change_dir = project / "qa" / "changes" / "RETRO-RUN"
-    store = TreeStore(change_dir)
-    checkpoints = CheckpointStore(change_dir)
-    workspaces = WorkspaceBackend(change_dir)
-    clock = FakeClock()
-    holder: dict[str, GraphRuntime] = {}
-
-    def run_child(task, graph_id, workspace, context):  # type: ignore[no-untyped-def]
-        return holder["rt"].run_child(task, graph_id, workspace, context)
-
-    node_runner = build_default_node_runner(
-        invoker,  # type: ignore[arg-type]
-        store,
-        contracts,  # type: ignore[arg-type]
-        compiled=compiled,
-        run_child=run_child,
-    )
-    if extra_ops:
-        op_handler = OperationHandler({**default_operations(), **extra_ops})
-        assert isinstance(node_runner, HandlerNodeRunner)
-        node_runner._handlers.update(  # noqa: SLF001
-            {target: op_handler for target in extra_ops}
-        )
-    state_defs: dict = {}
-    for graph in compiled.schema.graphs.values():
-        state_defs.update(dict(graph.state))
-    scheduler = Scheduler(
-        checkpoints=checkpoints,
-        object_store=store,
-        clock=clock,
-        workspace_backend=workspaces,
-        node_runner=node_runner,
-        max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
-        contracts=contracts,  # type: ignore[arg-type]
-        state_defs=state_defs,
-    )
-    schemas = {compiled.digest: compiled}
-    runtime = GraphRuntime(
-        checkpoint_store=checkpoints,
-        object_store=store,
-        workspace_backend=workspaces,
-        contracts=contracts,  # type: ignore[arg-type]
-        node_runner=node_runner,
-        scheduler=scheduler,
-        schema_resolver=lambda digest: schemas[digest],
-        clock=clock,
-    )
-    holder["rt"] = runtime
-    return runtime
-
-
-def _ctx(project: Path, retro_id: str) -> RuntimeContext:
-    return RuntimeContext(
-        project_root=project,
-        repo_root=project,
-        change_dir=project / "qa" / "changes" / "RETRO-RUN",
-        change_id="RETRO-RUN",
-        params={
-            "retro_id": retro_id,
-            "retro_dry_run": False,
-            "retro_last": 10,
-            "retro_min_evidence": 1,
-        },
-    )
-
-
-def _v2_context(retro_id: str, *, incomplete: bool = False) -> RetroContext:
-    return RetroContext(
-        retro_id=retro_id,
-        generated_at="2026-07-25T00:00:00Z",
-        window=RetroWindow(
-            selection=RetroSelectionSnapshot(mode="change_ids", requested_change_ids=("CH-1",)),
-            change_ids=("CH-1",),
-        ),
-        source_manifest=RetroSourceManifest(
-            issue_slice_sha256="sha256:slice",
-            issue_sources=(
-                RetroSourceDescriptor(
-                    kind="change_issue_ledger",
-                    change_id="CH-1",
-                    sha256="sha256:issue",
-                    evidence_ids=("PROB-1",),
-                ),
-            ),
-            workflow_sources=(),
-            eval_sources=(),
-        ),
-        integrity=RetroIntegrity(
-            status="incomplete" if incomplete else "complete",
-            reasons=("analysis_failed",) if incomplete else (),
-        ),
-        signals=RetroSignalSet(
-            issue=IssueRetroSignals(),
-            workflow=WorkflowRetroSignals(),
-            eval=EvalRetroSignals(),
-        ),
-        signal_count=1,
-    )
-
-
-def _stub_collect(
-    ctx: RetroContext,
-) -> object:
-    def _fn(
-        task: ExecutableTask,
-        workspace: TaskWorkspace,
-        context: RuntimeContext,
-    ) -> TaskResult:
-        retro_id = str(context.params.get("retro_id", ""))
-        retro_dir = workspace.project_root / "qa" / "retro" / retro_id
-        retro_dir.mkdir(parents=True, exist_ok=True)
-        (retro_dir / "context.json").write_text(
-            json.dumps(ctx.model_dump(mode="json"), sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        return TaskResult(
-            status="succeeded",
-            value={"retro_id": retro_id, "signal_count": ctx.signal_count},
-        )
-
-    return _fn
-
-
-def test_zero_signal_never_invokes_agent(tmp_path: Path) -> None:
+def test_zero_signal_runs_all_analyzers_and_writes_noop_receipt(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
-    compiled, contracts = _compile()
-    invoker = RecordingInvoker()
-    runtime = _runtime(project, compiled, contracts, invoker)
-    result = runtime.run(compiled, "retro", _ctx(project, "retro-zero"))
-    assert result.exit_code == 0
-    assert invoker.calls == []
-    assert not (project / "qa/retro/retro-zero/proposal-candidates.json").exists()
+    compiled, contracts = _compile_canonical()
+    runtime = _build_runtime(project, compiled, contracts, EmptyAnalysisInvoker())
+
+    result = runtime.run(compiled, "retro", _retro_context(project, "retro-zero"))
+
+    assert result.exit_code == 0, result.reason
+    retro_dir = project / "qa/retro/retro-zero"
+    assert json.loads((retro_dir / "context.json").read_text())["signal_count"] == 0
+    assert json.loads((retro_dir / "proposal-candidates.json").read_text())["candidates"] == []
+    assert "no_actionable_signals" in (retro_dir / "retro-summary.md").read_text()
 
 
-def test_corrupt_issue_ledger_fails_before_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Integrity errors surface via real retro_collect → invalid_input, before aa-retro."""
-
-    def _boom(*_a: object, **_k: object) -> object:
+def test_corrupt_issue_ledger_recovers_to_pipeline_improvement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _boom(*_args: object, **_kwargs: object) -> object:
         raise IssueHistoryIntegrityError("corrupt Issue Ledger")
 
     monkeypatch.setattr(
-        "assurance_agent.workflow.graph.handlers.retro_ops.run_retro_collect",
+        "assurance_agent.workflow.graph.handlers.retro_ops.materialize_slices",
         _boom,
     )
     project = _make_project(tmp_path)
-    compiled, contracts = _compile()
-    invoker = RecordingInvoker()
-    runtime = _runtime(project, compiled, contracts, invoker)
-    result = runtime.run(compiled, "retro", _ctx(project, "retro-corrupt"))
-    assert result.status.status == "failed"
-    assert invoker.calls == []
+    compiled, contracts = _compile_canonical()
+    runtime = _build_runtime(project, compiled, contracts, EmptyAnalysisInvoker())
+
+    result = runtime.run(compiled, "retro", _retro_context(project, "retro-corrupt"))
+
+    assert result.status.status == "completed"
+    retro_dir = project / "qa/retro/retro-corrupt"
+    assert (retro_dir / "pipeline-failure.json").is_file()
+    assert json.loads((retro_dir / "retro-status.json").read_text())["result"] == "completed_with_gaps"
+    assert (project / "qa/improvements/events.jsonl").is_file()
 
 
-def test_incomplete_issue_context_allows_process_improvements_only(tmp_path: Path) -> None:
-    """Amendment 2A: incomplete Issue integrity blocks only domain_knowledge."""
-    project = _make_project(tmp_path)
-    retro_id = "retro-incomplete"
-    compiled, contracts = _compile()
-    ctx = _v2_context(retro_id, incomplete=True)
-    assert ctx.allows_domain_knowledge is False
-    process = {
-        "candidate_id": "IMP-CAND-P",
-        "kind": "workflow_improvement",
-        "delivery": "change_draft",
-        "source_refs": {"problem_ids": ["PROB-1"]},
-        "target": "assurance_agent/workflow/inspect",
-        "rationale": "Process improvement still allowed",
-        "proposed_change": "Tighten inspect truncation handling",
-        "verification": {
-            "suites": ["workflow-full"],
-            "success_criteria": "No truncation Observation",
-        },
-        "risk": "low",
-        "confidence": "high",
-    }
-    invoker = CandidateAgent(retro_id, context=ctx, candidates=[process])
-    runtime = _runtime(
-        project,
-        compiled,
-        contracts,
-        invoker,
-        extra_ops={"operation:retro-collect": _stub_collect(ctx)},
-    )
-    result = runtime.run(compiled, "retro", _ctx(project, retro_id))
-    assert result.exit_code == 0, result.reason
-    assert invoker.calls == 1
-    status = json.loads((project / "qa/retro" / retro_id / "accept-status.json").read_text(encoding="utf-8"))
-    assert status["result"] == "accepted"
-    assert len(status["improvement_ids"]) == 1
-
-
-def test_invalid_candidate_batch_writes_no_project_improvements(tmp_path: Path) -> None:
-    project = _make_project(tmp_path)
-    retro_id = "retro-invalid"
-    compiled, contracts = _compile()
-    ctx = _v2_context(retro_id)
-    invoker = CandidateAgent(retro_id, context=ctx, invalid=True)
-    runtime = _runtime(
-        project,
-        compiled,
-        contracts,
-        invoker,
-        extra_ops={"operation:retro-collect": _stub_collect(ctx)},
-    )
-    result = runtime.run(compiled, "retro", _ctx(project, retro_id))
-    assert result.status.status == "failed"
-    assert not (project / "qa/improvements/events.jsonl").exists()
-    # Failed receipt may still exist in the current run.
-    receipt = project / "qa/retro" / retro_id / "accept-status.json"
-    if receipt.is_file():
-        assert json.loads(receipt.read_text(encoding="utf-8"))["result"] == "failed"
-
-
-def test_successful_run_produces_five_artifacts_and_one_improvement(tmp_path: Path) -> None:
+def test_successful_v3_run_proposes_and_reconciles_improvement(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     retro_id = "retro-success"
-    compiled, contracts = _compile()
-    ctx = _v2_context(retro_id)
-    invoker = CandidateAgent(retro_id, context=ctx)
-    runtime = _runtime(
+    compiled, contracts = _compile_canonical()
+    invoker = FakeRetroAgent(retro_id, context=_v2_context(retro_id))
+    runtime = _build_runtime(
         project,
         compiled,
         contracts,
         invoker,
-        extra_ops={"operation:retro-collect": _stub_collect(ctx)},
+        extra_ops={"operation:retro-collect-v3": _fake_retro_collect_with_signal},
     )
-    result = runtime.run(compiled, "retro", _ctx(project, retro_id))
+
+    result = runtime.run(compiled, "retro", _retro_context(project, retro_id))
+
     assert result.exit_code == 0, result.reason
-    retro_dir = project / "qa" / "retro" / retro_id
+    retro_dir = project / "qa/retro" / retro_id
     for name in (
         "context.json",
         "proposal-candidates.json",
@@ -397,7 +133,100 @@ def test_successful_run_produces_five_artifacts_and_one_improvement(tmp_path: Pa
         "review-queue.md",
     ):
         assert (retro_dir / name).is_file(), name
-    status = json.loads((retro_dir / "accept-status.json").read_text(encoding="utf-8"))
-    assert status["result"] == "accepted"
-    assert len(status["improvement_ids"]) == 1
+    assert json.loads((retro_dir / "context.json").read_text())["schema_version"] == "3"
+    assert json.loads((retro_dir / "proposal-candidates.json").read_text())["schema_version"] == "3"
+    assert json.loads((retro_dir / "accept-status.json").read_text())["result"] == "accepted"
     assert (project / "qa/improvements/events.jsonl").is_file()
+
+
+def test_eligible_current_retro_improvement_is_automatically_approved(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    retro_id = "retro-auto-approved"
+    compiled, contracts = _compile_canonical()
+    invoker = _PassingImprovementReviewer(retro_id, context=_v2_context(retro_id))
+    runtime = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        invoker,
+        extra_ops={"operation:retro-collect-v3": _fake_retro_collect_with_signal},
+    )
+
+    result = runtime.run(compiled, "retro", _retro_context(project, retro_id))
+
+    assert result.exit_code == 0, result.reason
+    projection = json.loads((project / "qa/improvements/improvements.json").read_text())
+    improvement = next(iter(projection["improvements"].values()))
+    assert improvement["state"] == "approved"
+    assert improvement["approval_source"] == "automatic"
+    summary = json.loads((project / "qa/retro" / retro_id / "auto-review-summary.json").read_text())
+    assert summary["approved"] == 1
+    assert summary["review_ids"]
+
+
+class _InvalidProposer(FakeRetroAgent):
+    def invoke(self, request: AgentRequest) -> AgentResult:
+        if request.target != "skill:aa-retro":
+            return super().invoke(request)
+        retro_dir = request.workspace_root / "qa/retro" / self._retro_id  # noqa: SLF001
+        (retro_dir / "proposal-candidates.json").write_text("{not-json\n", encoding="utf-8")
+        (retro_dir / "retro-summary.md").write_text("# invalid\n", encoding="utf-8")
+        return AgentResult(ok=True)
+
+
+def test_invalid_v3_candidate_recovers_to_pipeline_improvement(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    retro_id = "retro-invalid"
+    compiled, contracts = _compile_canonical()
+    invoker = _InvalidProposer(retro_id, context=_v2_context(retro_id))
+    runtime = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        invoker,
+        extra_ops={"operation:retro-collect-v3": _fake_retro_collect_with_signal},
+    )
+
+    result = runtime.run(compiled, "retro", _retro_context(project, retro_id))
+
+    assert result.status.status == "completed"
+    retro_dir = project / "qa/retro" / retro_id
+    assert (retro_dir / "pipeline-failure.json").is_file()
+    assert json.loads((retro_dir / "retro-status.json").read_text())["result"] == "completed_with_gaps"
+    assert (project / "qa/improvements/events.jsonl").is_file()
+
+
+def test_temporary_reconcile_failure_leaves_durable_outbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _make_project(tmp_path)
+    retro_id = "retro-pending"
+    compiled, contracts = _compile_canonical()
+    invoker = FakeRetroAgent(retro_id, context=_v2_context(retro_id))
+    runtime = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        invoker,
+        extra_ops={"operation:retro-collect-v3": _fake_retro_collect_with_signal},
+    )
+    calls = 0
+
+    def fail_second_drain(_root: Path):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ()
+        raise OSError("registry temporarily unavailable")
+
+    monkeypatch.setattr(
+        "assurance_agent.workflow.graph.handlers.retro_ops.drain_reconcile_outbox",
+        fail_second_drain,
+    )
+
+    result = runtime.run(compiled, "retro", _retro_context(project, retro_id))
+
+    assert result.exit_code == 0, result.reason
+    pending = tuple((project / "qa/improvements/outbox/pending").glob("*.json"))
+    assert len(pending) == 1
+    assert not (project / "qa/improvements/events.jsonl").exists()

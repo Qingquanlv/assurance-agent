@@ -25,7 +25,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from assurance_agent import resources
-from assurance_agent.retro.candidates import context_sha256
 from assurance_agent.retro.types import (
     EvalRetroSignals,
     IssueRetroSignals,
@@ -65,15 +64,41 @@ from tests.helpers_aa import write_aa_config
 T0 = datetime(2026, 7, 25, 0, 0, 0, tzinfo=timezone.utc)
 
 
-class NeverCalledInvoker:
-    """Asserts that no agent node is ever invoked."""
+class EmptyAnalysisInvoker:
+    """Allows the three mandatory analyzers, but rejects proposer invocation."""
 
     def invoke(self, request: AgentRequest) -> AgentResult:
-        raise AssertionError(f"AgentInvoker must not be called; target={request.target}")
+        if not request.target.startswith("skill:aa-retro-") or request.target == "skill:aa-retro":
+            raise AssertionError(f"unexpected agent target={request.target}")
+        domain = request.target.removeprefix("skill:aa-retro-").removesuffix("-analysis")
+        retro_dir = next((request.workspace_root / "qa/retro").iterdir())
+        (retro_dir / "signals").mkdir(parents=True, exist_ok=True)
+        (retro_dir / "signals" / f"{domain}.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "3",
+                    "retro_id": retro_dir.name,
+                    "domain": domain,
+                    "analysis_status": "ok",
+                    "failure_reason": None,
+                    "analyzer": request.target.removeprefix("skill:"),
+                    "signals": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return AgentResult(ok=True)
+
+
+class OneDomainFailingInvoker(EmptyAnalysisInvoker):
+    def invoke(self, request: AgentRequest) -> AgentResult:
+        if request.target == "skill:aa-retro-workflow-analysis":
+            return AgentResult(ok=False, error_kind="invalid_output", error="bad workflow draft")
+        return super().invoke(request)
 
 
 class FakeRetroAgent:
-    """Writes schema-v2 proposal-candidates.json into the task workspace."""
+    """Writes v3 domain drafts and one v3 Candidate draft."""
 
     def __init__(self, retro_id: str, *, context: RetroContext) -> None:
         self._retro_id = retro_id
@@ -82,16 +107,50 @@ class FakeRetroAgent:
     def invoke(self, request: AgentRequest) -> AgentResult:
         retro_dir = request.workspace_root / "qa" / "retro" / self._retro_id
         retro_dir.mkdir(parents=True, exist_ok=True)
+        if request.target.startswith("skill:aa-retro-"):
+            domain = request.target.removeprefix("skill:aa-retro-").removesuffix("-analysis")
+            signals = []
+            if domain == "issue":
+                signals = [
+                    {
+                        "signal_id": "SIG-1",
+                        "signal_type": "issue_pattern",
+                        "summary": "Repeated workflow gap",
+                        "occurrence_count": 2,
+                        "recommended_change": "Preserve failure evidence",
+                        "source_refs": {"problem_ids": ["PROB-1"]},
+                        "confidence": "high",
+                        "pattern_kind": "workflow_gap",
+                        "affected_surface": {"kind": "workflow", "value": "inspect"},
+                        "symptom": "truncated failures",
+                    }
+                ]
+            (retro_dir / "signals").mkdir(parents=True, exist_ok=True)
+            (retro_dir / "signals" / f"{domain}.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "3",
+                        "retro_id": self._retro_id,
+                        "domain": domain,
+                        "analysis_status": "ok",
+                        "failure_reason": None,
+                        "analyzer": request.target.removeprefix("skill:"),
+                        "signals": signals,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return AgentResult(ok=True)
         document = {
-            "schema_version": "2",
+            "schema_version": "3",
             "retro_id": self._retro_id,
-            "context_sha256": context_sha256(self._context),
             "candidates": [
                 {
                     "candidate_id": "IMP-CAND-1",
                     "kind": "workflow_improvement",
                     "delivery": "change_draft",
                     "source_refs": {"problem_ids": ["PROB-1"]},
+                    "signal_ids": ["SIG-1"],
                     "target": "assurance_agent/workflow/inspect",
                     "rationale": "Repeated truncation across changes",
                     "proposed_change": "Preserve pytest E lines when classifying failures",
@@ -223,6 +282,12 @@ def _retro_context(
     )
 
 
+def test_canonical_schema_exposes_batch_scope_without_implicit_membership() -> None:
+    schema = parse_workflow_v2(resources.read_text("schemas", "workflow-schema.yaml"))
+    assert schema.params["batch_scope"].type == "object"
+    assert schema.params["batch_scope"].default == {}
+
+
 def _v2_context(retro_id: str, *, incomplete: bool = False) -> RetroContext:
     return RetroContext(
         retro_id=retro_id,
@@ -262,18 +327,49 @@ def _fake_retro_collect_with_signal(
     workspace: TaskWorkspace,
     context: RuntimeContext,
 ) -> TaskResult:
-    """Stub retro-collect that returns signal_count=1 without scanning for candidates."""
+    """Stub v3 collect with one resolvable Issue evidence ID."""
     retro_id = str(context.params.get("retro_id", ""))
     retro_dir = workspace.project_root / "qa" / "retro" / retro_id
     retro_dir.mkdir(parents=True, exist_ok=True)
-    ctx = _v2_context(retro_id)
-    (retro_dir / "context.json").write_text(
-        json.dumps(ctx.model_dump(mode="json"), sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    window = {
+        "selection": {"mode": "change_ids", "requested_change_ids": ["CH-SEED-1"]},
+        "change_ids": ["CH-SEED-1"],
+        "since": None,
+        "until": None,
+        "project_event_through": None,
+    }
+    (retro_dir / "evidence").mkdir(parents=True, exist_ok=True)
+    (retro_dir / "window.json").write_text(json.dumps(window), encoding="utf-8")
+    for domain in ("issue", "workflow", "eval"):
+        sources = []
+        if domain == "issue":
+            sources = [
+                {
+                    "kind": "project_problem_ledger",
+                    "sha256": "sha256:issue",
+                    "evidence_ids": ["PROB-1"],
+                }
+            ]
+        payload = {
+            "schema_version": "3",
+            "retro_id": retro_id,
+            "domain": domain,
+            "window": window,
+            "sources": sources,
+            "integrity": {"status": "complete", "reasons": []},
+            "entries": [],
+        }
+        (retro_dir / "evidence" / f"{domain}-slice.json").write_text(json.dumps(payload), encoding="utf-8")
     return TaskResult(
         status="succeeded",
-        value={"retro_id": retro_id, "signal_count": 1},
+        value={
+            "retro_id": retro_id,
+            "issue_count": 1,
+            "workflow_count": 0,
+            "eval_count": 0,
+            "gap_count": 0,
+            "all_domain_evidence_absent": False,
+        },
     )
 
 
@@ -282,7 +378,7 @@ def test_retro_workflow_dry_run_stops_after_collect(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     retro_id = "retro-dry-001"
     compiled, contracts = _compile_canonical()
-    runtime = _build_runtime(project, compiled, contracts, NeverCalledInvoker())
+    runtime = _build_runtime(project, compiled, contracts, EmptyAnalysisInvoker())
     context = _retro_context(project, retro_id, dry_run=True)
 
     result = runtime.run(compiled, "retro", context)
@@ -300,7 +396,7 @@ def test_retro_workflow_zero_signals_ends_without_propose(tmp_path: Path) -> Non
     project = _make_project(tmp_path)
     retro_id = "retro-noop-001"
     compiled, contracts = _compile_canonical()
-    runtime = _build_runtime(project, compiled, contracts, NeverCalledInvoker())
+    runtime = _build_runtime(project, compiled, contracts, EmptyAnalysisInvoker())
     context = _retro_context(project, retro_id, dry_run=False)
 
     result = runtime.run(compiled, "retro", context)
@@ -312,7 +408,7 @@ def test_retro_workflow_zero_signals_ends_without_propose(tmp_path: Path) -> Non
     ctx_data = json.loads(context_file.read_text(encoding="utf-8"))
     assert ctx_data.get("signal_count") == 0
     candidates = project / "qa" / "retro" / retro_id / "proposal-candidates.json"
-    assert not candidates.exists(), "proposal-candidates.json must NOT exist when signal_count==0"
+    assert candidates.exists(), "zero-signal runs must write a deterministic empty receipt"
 
 
 def test_retro_workflow_reconcile_accepts_candidates(tmp_path: Path) -> None:
@@ -322,7 +418,7 @@ def test_retro_workflow_reconcile_accepts_candidates(tmp_path: Path) -> None:
     compiled, contracts = _compile_canonical()
     ctx = _v2_context(retro_id)
     invoker = FakeRetroAgent(retro_id, context=ctx)
-    extra_ops = {"operation:retro-collect": _fake_retro_collect_with_signal}
+    extra_ops = {"operation:retro-collect-v3": _fake_retro_collect_with_signal}
     runtime = _build_runtime(project, compiled, contracts, invoker, extra_ops=extra_ops)
     context = _retro_context(project, retro_id, dry_run=False)
 
@@ -338,3 +434,56 @@ def test_retro_workflow_reconcile_accepts_candidates(tmp_path: Path) -> None:
     status = json.loads((retro_dir / "accept-status.json").read_text(encoding="utf-8"))
     assert status["result"] == "accepted"
     assert (project / "qa" / "improvements" / "events.jsonl").is_file()
+
+
+def test_failed_analyzer_recovers_through_domain_settled_join(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    retro_id = "retro-recovery-001"
+    compiled, contracts = _compile_canonical()
+    runtime = _build_runtime(project, compiled, contracts, OneDomainFailingInvoker())
+
+    result = runtime.run(compiled, "retro", _retro_context(project, retro_id))
+
+    assert result.exit_code == 0, result.reason
+    retro_dir = project / "qa/retro" / retro_id
+    workflow_signal = json.loads((retro_dir / "signals/workflow.json").read_text())
+    assert workflow_signal["analysis_status"] == "failed"
+    assert "invalid_output" in workflow_signal["failure_reason"]
+    context = json.loads((retro_dir / "context.json").read_text())
+    assert context["domain_status"]["workflow"]["status"] == "failed"
+    assert "analysis_incomplete" in (retro_dir / "retro-summary.md").read_text()
+
+
+def test_all_absent_batch_uses_no_agent_and_reconciles_fallback(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    retro_id = "retro-all-absent"
+    compiled, contracts = _compile_canonical()
+    runtime = _build_runtime(project, compiled, contracts, EmptyAnalysisInvoker())
+    context = _retro_context(project, retro_id).model_copy(
+        update={
+            "params": {
+                "retro_id": retro_id,
+                "retro_dry_run": False,
+                "retro_min_evidence": 1,
+                "change_ids": ["CH-MISSING"],
+                "batch_scope": {
+                    "batch_id": "batch-absent",
+                    "status": "incomplete",
+                    "members": [
+                        {
+                            "change_id": "CH-MISSING",
+                            "execution_status": "failed",
+                            "evidence_availability": "absent",
+                        }
+                    ],
+                },
+            }
+        }
+    )
+
+    result = runtime.run(compiled, "retro", context)
+
+    assert result.exit_code == 0, result.reason
+    proposal = json.loads((project / f"qa/retro/{retro_id}/proposal-candidates.json").read_text())
+    assert len(proposal["candidates"]) == 1
+    assert proposal["candidates"][0]["kind"] == "workflow_improvement"

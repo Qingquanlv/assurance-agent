@@ -532,7 +532,7 @@ def _seed_outcomes(
 
     保持 runtime overlay 所依赖的 ``(outcomes, retry_tasks, fail_reason)`` 边界；
     recovery event 暂存于源 outcome，overlay 后再提取为 durable event/delivery。
-    只有 retry 真正耗尽且 error kind 在编译后的 recover allowlist 内时才建立
+    retry 耗尽或 error kind 本就不可重试，且命中 recover allowlist 时才建立
     recovery；源 task 始终保持 failed 且不遍历普通出边。
     """
     tasks_by_node: dict[str, list[TaskProjection]] = {}
@@ -591,13 +591,14 @@ def _seed_outcomes(
         policy = _retry_policy(compiled, definition)
         if latest.status == "failed":
             exhausted = latest.attempts_used >= policy.max_attempts
+            terminal_for_policy = exhausted or latest.error_kind not in policy.retry_on
             retryable = (
                 latest.error_kind is not None and latest.error_kind in policy.retry_on and not exhausted
             )
             if not retryable:
                 recovery_def = definition.recover
                 if (
-                    exhausted
+                    terminal_for_policy
                     and recovery_def is not None
                     and latest.error_kind is not None
                     and latest.error_kind in recovery_def.errors
@@ -1310,7 +1311,7 @@ def _resolve_template(
     *,
     path: bool,
 ) -> object:
-    """解析 ``${<item_as>}``、``${context.change_id}`` 与 ``${params.<name>}`` 模板；其它变量一律拒绝。
+    """解析 item、item mapping 字段、context 与 params 模板；其它变量一律拒绝。
 
     整串恰好一个模板时返回原值（标量/结构化 item 均可）；复合串把各模板替换为
     display 字符串。``path=True`` 时每个替换值必须是安全 path segment。
@@ -1323,21 +1324,29 @@ def _resolve_template(
             value = context.params.get(pname)
             if not isinstance(value, str) or not value.strip():
                 raise PlanError(f"node '{nid}' template '${{{var}}}' requires a non-empty string param")
+            if pname.endswith("sha256") and re.fullmatch(r"sha256:[0-9a-f]{64}", value):
+                continue
             try:
                 assert_path_segment_safe(value, label=f"params.{pname}")
             except UnsafeIdentifierError as err:
                 raise PlanError(f"node '{nid}' template '${{{var}}}': {err}") from err
             continue
-        if var not in (item_as, "context.change_id"):
-            raise PlanError(
-                f"node '{nid}' template '${{{var}}}' is not '${{{item_as}}}' or '${{context.change_id}}'"
-            )
+        is_item_field = var.startswith(f"{item_as}.") and len(var) > len(item_as) + 1
+        if var not in (item_as, "context.change_id") and not is_item_field:
+            raise PlanError(f"node '{nid}' template '${{{var}}}' is not an allowed item/context template")
     if not matches:
         return template
 
     def value_of(var: str) -> object:
         if var.startswith("params."):
             return context.params[var.removeprefix("params.")]
+        if var.startswith(f"{item_as}."):
+            field = var.removeprefix(f"{item_as}.")
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", field):
+                raise PlanError(f"node '{nid}' fan_out item field is unsafe: {field!r}")
+            if not isinstance(item, Mapping) or field not in item:
+                raise PlanError(f"node '{nid}' fan_out item has no field {field!r}")
+            return item[field]
         return item if var == item_as else context.change_id
 
     if len(matches) == 1 and matches[0].span() == (0, len(template)):
@@ -1461,8 +1470,13 @@ def _expand_resources(
     展开结果随 task input 传递；逐 child 收窄与 contract 授权校验随
     scheduler/handler 侧的 contract 注入演进（Task 9/10）。
     """
-    expanded: dict[str, list[str]] = {"reads": [], "writes": [], "exclusive": []}
-    for field in ("reads", "writes"):
+    expanded: dict[str, list[str]] = {
+        "reads": [],
+        "writes": [],
+        "synchronized": [],
+        "exclusive": [],
+    }
+    for field in ("reads", "writes", "synchronized"):
         for claim in getattr(resources, field):
             resolved = _resolve_template(claim, item_as, item, context, nid, path=True)
             if not isinstance(resolved, str):
@@ -1788,8 +1802,19 @@ def _narrow_task_resources(
             else base.reads
         )
         writes = tuple(ResourcePath.parse(value) for value in expanded_resources["writes"])
+        synchronized = (
+            tuple(ResourcePath.parse(value) for value in expanded_resources["synchronized"])
+            if expanded_resources["synchronized"]
+            else None
+        )
         outputs = tuple(ResourcePath.parse(value) for value in expanded_outputs)
-        return narrow_claims(base, reads=reads, writes=writes, outputs=outputs)
+        return narrow_claims(
+            base,
+            reads=reads,
+            writes=writes,
+            outputs=outputs,
+            synchronized=synchronized,
+        )
     except ContractError as exc:
         raise PlanError(f"node '{nid}' resource narrowing: {exc}") from exc
 
@@ -2192,9 +2217,15 @@ def _resolve_route(route: RouteDef, scope: Scope, src: str) -> tuple[str, str]:
         label = evaluate(parse_expression(route.select), scope)
     except DslError as exc:
         raise PlanError(f"route from '{src}' select failed to evaluate: {exc}") from exc
-    chosen: str | None = None
-    if label is not MISSING and isinstance(label, str):
-        chosen = route.cases.get(label)
+    case_label: str | None = None
+    if isinstance(label, bool):
+        # YAML/JSON case keys are strings, while DSL predicates naturally return
+        # booleans. Keep the wire spelling canonical instead of forcing every
+        # producer to turn a boolean decision into presentation text.
+        case_label = "true" if label else "false"
+    elif label is not MISSING and isinstance(label, str):
+        case_label = label
+    chosen = route.cases.get(case_label) if case_label is not None else None
     if chosen is None:
         if route.default is not None:
             return route.default, f"route:{src}:default"
@@ -2202,7 +2233,7 @@ def _resolve_route(route: RouteDef, scope: Scope, src: str) -> tuple[str, str]:
             f"route from '{src}' select resolved to no declared case and has no "
             "default; failing closed to STOP"
         )
-    return chosen, f"route:{src}:{label}"
+    return chosen, f"route:{src}:{case_label}"
 
 
 def _retry_policy(compiled: CompiledWorkflow, definition: NodeDef) -> RetryPolicyDef:

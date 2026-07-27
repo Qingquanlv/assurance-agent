@@ -35,6 +35,7 @@ from assurance_agent.workflow.issues.operations import (
     record_issue_analysis_failure_operation,
     record_project_sync_pending_operation,
 )
+from assurance_agent.workflow.issues.identity import candidate_document_digest
 
 
 def test_authoritative_verification_evidence_preserves_conflicting_case_outcomes(
@@ -629,6 +630,11 @@ def test_record_empty_writes_completed_candidates_and_status(tmp_path: Path) -> 
     assert status["status"] == "completed"
     assert status["candidate_count"] == 0
     assert status["evidence_bundle_digest"] == evidence_digest
+    from assurance_agent.artifacts.models.issues import IssueCandidateDocument
+
+    assert status["candidate_digest"] == candidate_document_digest(
+        IssueCandidateDocument.model_validate(candidates)
+    )
 
 
 def test_record_empty_fails_without_manifest(tmp_path: Path) -> None:
@@ -874,7 +880,12 @@ def test_record_sync_pending_appends_event(tmp_path: Path) -> None:
     assert event["type"] == "project_sync_pending"
     assert event["change_id"] == change_id
     assert "candidate_digest" in event
-    assert event["candidate_digest"].startswith("sha256:")
+    from assurance_agent.artifacts.models.issues import IssueCandidateDocument
+
+    candidate_doc = IssueCandidateDocument.model_validate_json(
+        (change_dir / "inspect" / "issue-candidates.json").read_bytes()
+    )
+    assert event["candidate_digest"] == candidate_document_digest(candidate_doc)
 
 
 def test_record_sync_pending_fails_without_manifest(tmp_path: Path) -> None:

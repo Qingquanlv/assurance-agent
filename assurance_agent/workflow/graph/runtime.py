@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -362,10 +362,16 @@ class GraphRuntime:
         child_invocation_id = canonical_digest({"parent_task_id": parent_task.task_id, "graph_id": graph_id})
         checkpoint_ns = f"{parent_task.checkpoint_ns}/{parent_task.node_id}/{child_invocation_id}"
         structural_path = f"{parent_task.structural_path}/{parent_task.node_id}/{graph_id}"
+        child_params = dict(context.params)
+        if isinstance(parent_task.input, Mapping):
+            bound = parent_task.input.get("with")
+            if isinstance(bound, Mapping):
+                child_params.update({str(key): value for key, value in bound.items()})
         child_context = context.model_copy(
             update={
                 "project_root": workspace.project_root,
                 "repo_root": workspace.repo_root,
+                "params": child_params,
             }
         )
         existing = self._try_project(child_invocation_id)
@@ -1045,9 +1051,7 @@ class GraphRuntime:
         return last_plan
 
     def _pending_write_sets(self, invocation_id: str) -> tuple[str, ...]:
-        return _pending_write_sets_fn(
-            read_events_strict(self._checkpoints.change_dir), invocation_id
-        )
+        return _pending_write_sets_fn(read_events_strict(self._checkpoints.change_dir), invocation_id)
 
     @staticmethod
     def _earliest_retry_at(projection: GraphProjection) -> datetime | None:

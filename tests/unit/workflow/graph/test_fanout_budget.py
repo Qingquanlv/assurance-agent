@@ -468,6 +468,26 @@ def test_fan_out_non_json_items_fail_closed(tmp_path: Path) -> None:
         _plan(compiled, projection, tmp_path)
 
 
+def test_fan_out_mapping_fields_expand_into_key_with_and_paths(tmp_path: Path) -> None:
+    text = (
+        FANOUT_PARAMS_GRAPH.replace('key: "${module}"', 'key: "${module.id}"')
+        .replace('module: "${module}"', 'module: "${module.value}"')
+        .replace("cases/${module}/case.yaml", "cases/${module.id}/case.yaml")
+    )
+    compiled = _compile(text)
+    projection = _projection(
+        compiled,
+        params={"modules": [{"id": "review-1", "value": "IMP-1"}]},
+    )
+
+    plan = _plan(compiled, projection, tmp_path)
+
+    assert plan.tasks[0].task_key == "review-1"
+    payload = cast(dict[str, object], plan.tasks[0].input)
+    assert cast(dict[str, object], payload["with"])["module"] == "IMP-1"
+    assert payload["outputs"] == ["change:cases/review-1/case.yaml"]
+
+
 @pytest.mark.parametrize("bad", ["../evil", "a/b", ".", "..", "", "a\\b"])
 def test_fan_out_unsafe_path_keys_fail_closed(tmp_path: Path, bad: str) -> None:
     compiled = _compile(FANOUT_GRAPH)

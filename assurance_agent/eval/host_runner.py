@@ -54,6 +54,7 @@ def build_eval_runner(engine_root: Path, sut_root: Path):
         sut_dir: Path | None = None,
         engine_root: Path | None = None,
         extra_memory_dir: Path | None = None,
+        source_change_ids: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         from assurance_agent.eval.baseline import read_baseline, read_run_manifest
         from assurance_agent.eval.metrics import read_metrics
@@ -81,6 +82,7 @@ def build_eval_runner(engine_root: Path, sut_root: Path):
             fixtures_root=resolved_sut / "eval-fixtures",
             extra_memory_dir=extra_memory_dir,
             repeat=suite_obj.regression.repeat if suite_obj.regression is not None else 1,
+            change_ids=source_change_ids,
         )
         manifest = read_run_manifest(run_dir_for(resolved_sut, run_id))
         metrics: dict[str, Any] = {}

@@ -3,6 +3,7 @@
 与 CheckpointStore.project() 的区别：本模块不修 snapshot、不写 workflow-state.yaml，
 供 CLI 只读查询使用；runtime 写路径继续用 CheckpointStore（修缓存是其本职）。
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -49,9 +50,7 @@ def graph_status_from_projection(
     running = tuple(sorted(task_id for task_id, task in projection.tasks.items() if task.status == "running"))
     pending = tuple(
         sorted(
-            task_id
-            for task_id, task in projection.tasks.items()
-            if task.status in ("failed", "abandoned")
+            task_id for task_id, task in projection.tasks.items() if task.status in ("failed", "abandoned")
         )
     )
     retry_ats = [task.next_retry_at for task in projection.tasks.values() if task.next_retry_at is not None]

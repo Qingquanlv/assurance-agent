@@ -20,6 +20,15 @@ _Avoid_: unarchived (retro evidence-lifecycle wording; map at the retro adapter)
 A Change whose directory exists under the configured `qa.archive` path; read-oriented evidence source for retro and history sampling.
 _Avoid_: completed change (completion is a workflow status, not a directory role)
 
+**Retro evidence slice**:
+An immutable, typed, run-scoped projection of Issue, Workflow, or Eval evidence for one resolved Retro window. It is analysis input, not a new Ledger and not historical Retro output.
+
+**Retro signal**:
+A domain analyzer's validated pattern claim whose references resolve only inside its evidence slice. Runtime code supplies the slice digest; analyzers do not author integrity fields.
+
+**Retro context**:
+The mechanically assembled v3 envelope containing the three domain statuses, source manifest, integrity result, and all validated signals for one Retro run. Improvement Candidates must reference both context signals and immutable source evidence.
+
 **Ledger**:
 The append-only event log for a Change (`events.jsonl`), queried through one interface for sequence-aware lookups (filter / latest by type and attributes).
 _Avoid_: event store, event bus, audit log (when meaning the query seam over `events.jsonl`)

@@ -102,6 +102,22 @@ class ImprovementCandidate(BaseModel):
         return self
 
 
+class LastAutoReview(BaseModel):
+    model_config = _FROZEN
+
+    review_id: str = Field(min_length=1)
+    subject_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    assessment_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    policy_version: str = Field(min_length=1)
+    verdict: Literal[
+        "auto_approved",
+        "changes_requested",
+        "needs_human_review",
+        "reject_advice",
+        "review_error",
+    ]
+
+
 class ImprovementProjection(BaseModel):
     model_config = _FROZEN
 
@@ -123,6 +139,9 @@ class ImprovementProjection(BaseModel):
     proposed_by_retro_ids: tuple[str, ...]
     supersedes: str | None = None
     last_event_id: str
+    review_subject_sha256: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    approval_source: Literal["none", "human", "automatic"] = "none"
+    last_auto_review: LastAutoReview | None = None
 
 
 class ImprovementLedgerProjection(BaseModel):

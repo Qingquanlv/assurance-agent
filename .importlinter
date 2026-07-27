@@ -24,13 +24,10 @@ layers =
     assurance_agent.commands
     assurance_agent.retro
     assurance_agent.workflow
-# Graph entrypoints host retro-collect/accept as operations and inject retro_id /
-# aa-retro prompt text. Those are intentional seams until stages are inverted under
-# workflow; keep them listed so new workflow→retro edges stay fail-closed.
+# Graph entrypoints invoke Retro through one narrow stage facade. Keep that
+# intentional seam explicit so every new workflow→retro edge remains fail-closed.
 ignore_imports =
-    assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.accept_stage
-    assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.collect_stage
-    assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.window
+    assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.stages
     # Improvement reconciler validates Candidates against RetroContext (Task 8/9 seam).
     assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.types
     assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.candidates
@@ -43,11 +40,9 @@ type = independence
 modules =
     assurance_agent.eval
     assurance_agent.retro
-# Transitive eval → workflow → retro_ops → retro (same intentional seams as above).
+# Transitive eval → workflow → retro_ops → the same intentional facade seam.
 ignore_imports =
-    assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.accept_stage
-    assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.collect_stage
-    assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.window
+    assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.stages
     assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.types
     assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.candidates
     assurance_agent.workflow.improvements.knowledge_delivery -> assurance_agent.retro.types

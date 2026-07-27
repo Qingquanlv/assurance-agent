@@ -143,6 +143,35 @@ def test_capture_keeps_change_issue_ledger_but_excludes_change_coordinator_ledge
     assert not (dest / ".graph-runtime" / "objects").exists()
 
 
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("qa/changes/CH-1/issues/events.jsonl", True),
+        ("qa/archive/CH-OLD/issues/events.jsonl", True),
+        ("nested/qa/changes/CH-1/issues/events.jsonl", False),
+        ("qa/changes/extra/CH-1/issues/events.jsonl", False),
+        ("eval/out/runs/R/samples/S/sut/qa/changes/CH-1/issues/events.jsonl", False),
+    ],
+)
+def test_top_level_issue_ledger_predicate_is_exact(path: str, expected: bool) -> None:
+    assert workspace_mod._is_top_level_issue_ledger(path) is expected
+
+
+def test_capture_keeps_archived_issue_ledger(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    ledger = project / "qa/archive/CH-OLD/issues/events.jsonl"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text('{"type":"observation_recorded"}\n', encoding="utf-8")
+    store = _store(project)
+    tree = store.capture(project)
+    dest = tmp_path / "captured-archive"
+    dest.mkdir()
+
+    store.materialize(tree, dest)
+
+    assert (dest / "qa/archive/CH-OLD/issues/events.jsonl").read_bytes() == ledger.read_bytes()
+
+
 def test_tree_store_read_json_by_logical_path(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     change = project / "qa" / "changes" / "CH-1"
@@ -663,6 +692,34 @@ def test_synchronized_overlay_and_targeted_apply_preserve_unrelated_live_tree(
     store.apply_write_sets_to_synchronized_paths(project, (write_set,), synchronized)
 
 
+def test_synchronized_overlay_captures_nested_change_ledgers(tmp_path: Path) -> None:
+    """A Retro snapshot must retain sibling workflow and Issue ledgers."""
+    project = _make_project(tmp_path)
+    sibling = project / "qa" / "changes" / "CH-2"
+    (sibling / "issues").mkdir(parents=True)
+    (sibling / "events.jsonl").write_text('{"seq":1}\n', encoding="utf-8")
+    (sibling / "issues" / "events.jsonl").write_text('{"seq":1}\n', encoding="utf-8")
+    store = _store(project)
+    invocation_tree = store.capture(project)
+
+    synchronized = (ResourcePath.parse("project:qa/changes/**"),)
+    overlay_tree = store.overlay_synchronized_paths(invocation_tree, project, synchronized)
+    workspace = _backend(project).create(
+        task_id="collect-retro",
+        base_tree_id=overlay_tree,
+        store=store,
+    )
+
+    assert (workspace.project_root / "qa/changes/CH-2/events.jsonl").is_file()
+    assert (workspace.project_root / "qa/changes/CH-2/issues/events.jsonl").is_file()
+    claims = ResourceClaims(
+        reads=synchronized,
+        synchronized=synchronized,
+        exclusive=("project:retro-evidence-snapshot",),
+    )
+    assert store.freeze_write_set(workspace, claims=claims).entries == ()
+
+
 def test_synchronized_targeted_apply_converges_after_partial_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -891,6 +948,56 @@ def test_workspace_create_does_not_materialize_sibling_retro_dirs(tmp_path: Path
     write_set = store.freeze_write_set(workspace, claims=claims)
     assert write_set.base_tree_id == tree_id
     assert write_set.entries == ()
+
+
+def test_read_isolated_workspace_materializes_only_claimed_inputs_and_skill_support(
+    tmp_path: Path,
+) -> None:
+    """The Retro proposer must not see mutable ledgers, app code, auth, or memory."""
+    project = _make_project(tmp_path)
+    current = project / "qa" / "retro" / "retro-current"
+    current.mkdir(parents=True)
+    (current / "context.json").write_text('{"retro_id":"retro-current"}\n', encoding="utf-8")
+    for rel in (
+        "qa/archive/CH-OLD/result.json",
+        "qa/issues/events.jsonl",
+        "qa/improvements/events.jsonl",
+        ".aa/memory/aa-run.md",
+        ".auth/token",
+    ):
+        path = project / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("must not be visible\n", encoding="utf-8")
+    skill = project / "skills" / "aa-retro" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("retro instructions\n", encoding="utf-8")
+    store = _store(project)
+    tree_id = store.capture(project)
+    claims = ResourceClaims(
+        reads=(ResourcePath.parse("project:qa/retro/retro-current/context.json"),),
+        writes=(ResourcePath.parse("project:qa/retro/retro-current/proposal-candidates.json"),),
+        authorization_writes=(ResourcePath.parse("project:qa/retro/retro-current/proposal-candidates.json"),),
+    )
+
+    workspace = _backend(project).create(
+        task_id="propose",
+        base_tree_id=tree_id,
+        store=store,
+        claims=claims,
+        declared_reads_only=True,
+        skill_name="aa-retro",
+    )
+
+    assert (workspace.project_root / "qa/retro/retro-current/context.json").is_file()
+    assert (workspace.project_root / "skills/aa-retro/SKILL.md").is_file()
+    assert not (workspace.project_root / "qa/archive").exists()
+    assert not (workspace.project_root / "qa/issues").exists()
+    assert not (workspace.project_root / "qa/improvements").exists()
+    assert not (workspace.project_root / ".aa/memory").exists()
+    assert not (workspace.project_root / ".auth").exists()
+    assert not (workspace.project_root / "app").exists()
+    # Paths omitted by read isolation are not interpreted as mass deletions.
+    assert store.freeze_write_set(workspace, claims=claims).entries == ()
 
 
 @pytest.mark.skipif(_GIT is None, reason="git binary not available")

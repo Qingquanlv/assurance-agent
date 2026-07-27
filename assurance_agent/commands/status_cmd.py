@@ -1,4 +1,5 @@
 """aa status — 从 ledger 投影 GraphStatus（纯只读：不构建 runtime、不编译 schema、零写入）。"""
+
 from __future__ import annotations
 
 import json
@@ -40,10 +41,8 @@ def _print_guidance(change_id: str, status: GraphStatus) -> None:
                 f"--interrupt {interrupt.interrupt_id} --action <{'|'.join(interrupt.actions)}> --reason <text>"
             )
     elif status.status in {"failed", "stopped"}:
-        click.echo(
-            f"terminal: {status.status} — {status.terminal_reason or '(no reason)'}"
-            "；invocation 已终局，resume 不会推进；请诊断后新开 change/invocation"
-        )
+        # terminal line already printed in _print_human; guidance is next-action only
+        click.echo("invocation 已终局，resume 不会推进；请诊断后新开 change/invocation")
     else:
         click.echo(
             f"resume: re-run `aa workflow run --change {change_id} --entrypoint {status.entrypoint}` "
@@ -53,12 +52,18 @@ def _print_guidance(change_id: str, status: GraphStatus) -> None:
 
 def _print_next(status: GraphStatus, as_json: bool) -> None:
     if as_json:
-        click.echo(json.dumps({
-            "pending_tasks": list(status.pending_tasks),
-            "pending_interrupts": [i.model_dump(mode="json") for i in status.pending_interrupts],
-            "status": status.status,
-            "terminal_reason": status.terminal_reason,
-        }, indent=2, ensure_ascii=False))
+        click.echo(
+            json.dumps(
+                {
+                    "pending_tasks": list(status.pending_tasks),
+                    "pending_interrupts": [i.model_dump(mode="json") for i in status.pending_interrupts],
+                    "status": status.status,
+                    "terminal_reason": status.terminal_reason,
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
         return
     if status.pending_tasks:
         for task_id in status.pending_tasks:
@@ -80,7 +85,9 @@ def _print_human(change_id: str, status: GraphStatus) -> None:
     click.echo(f"  event_seq  : {status.event_seq}")
     click.echo(f"  pending    : {', '.join(status.pending_tasks) or '(none)'}")
     for interrupt in status.pending_interrupts:
-        click.echo(f"  interrupt  : {interrupt.interrupt_id} @ {interrupt.node_id} actions={list(interrupt.actions)}")
+        click.echo(
+            f"  interrupt  : {interrupt.interrupt_id} @ {interrupt.node_id} actions={list(interrupt.actions)}"
+        )
     if status.terminal_reason and status.status in {"completed", "failed", "stopped"}:
         color = "green" if status.status == "completed" else "red"
         click.echo("  terminal   : " + click.style(f"{status.status} — {status.terminal_reason}", fg=color))

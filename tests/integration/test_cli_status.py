@@ -5,6 +5,7 @@ CLI 行为用 monkeypatch read_latest_graph_status 构造 GraphStatus（沿既�
 注意 Click 8.4：result.output 混合 stdout+stderr——JSON 断言用 result.stdout，
 错误文案断言用 result.stderr。
 """
+
 import json
 from pathlib import Path
 
@@ -20,10 +21,19 @@ from tests.unit.workflow.graph.test_status_read import INV, seed_completed, tree
 
 def make_status(**over: object) -> GraphStatus:
     base: dict[str, object] = dict(
-        invocation_id=INV, entrypoint="full", status="running", checkpoint_id="cp-1",
-        event_seq=3, superstep=1, running_tasks=(), pending_tasks=(),
-        pending_write_sets=(), pending_interrupts=(), next_retry_at=None,
-        budgets={}, terminal_reason=None,
+        invocation_id=INV,
+        entrypoint="full",
+        status="running",
+        checkpoint_id="cp-1",
+        event_seq=3,
+        superstep=1,
+        running_tasks=(),
+        pending_tasks=(),
+        pending_write_sets=(),
+        pending_interrupts=(),
+        next_retry_at=None,
+        budgets={},
+        terminal_reason=None,
     )
     base.update(over)
     return GraphStatus(**base)  # type: ignore[arg-type]
@@ -81,8 +91,11 @@ def test_running_exit_0_and_plain_resume_hint(project, monkeypatch) -> None:
 
 def test_interrupted_exit_30_with_interrupt_detail(project, monkeypatch) -> None:
     interrupt = InterruptProjection(
-        interrupt_id="int-1", checkpoint_ns="ns", node_id="human-review",
-        checkpoint="case-review-gate", actions=("fix_and_proceed", "stop"),
+        interrupt_id="int-1",
+        checkpoint_ns="ns",
+        node_id="human-review",
+        checkpoint="case-review-gate",
+        actions=("fix_and_proceed", "stop"),
         audited_reads_sha256={},
     )
     patch_status(monkeypatch, make_status(status="interrupted", pending_interrupts=(interrupt,)))

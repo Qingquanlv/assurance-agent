@@ -16,6 +16,7 @@ import yaml
 from pydantic import ValidationError
 
 from assurance_agent.artifacts.registry import match_artifact
+from assurance_agent.artifacts.models.issues import IssueAnalysisStatus, IssueCandidateDocument
 from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
 from assurance_agent.workflow.graph.checkpoint import fold_invocation_events
 from assurance_agent.workflow.graph.frozen_output import (
@@ -42,6 +43,7 @@ from assurance_agent.workflow.orchestration.gates import (
     GateEvaluationContext,
     check_gate_in_view,
 )
+from assurance_agent.workflow.issues.identity import candidate_document_digest
 
 
 def finalize_task_result(
@@ -216,16 +218,19 @@ def _validate_registry_outputs(
     workspace: TaskWorkspace,
     outputs: tuple[str, ...],
 ) -> TaskResult | None:
-    """Validate declared ``change:`` file outputs against their registry model."""
+    """Validate declared project/change file outputs against their registry model."""
+    validated: dict[str, Any] = {}
+    authored: dict[str, Any] = {}
     for output in outputs:
         root, _, rest = output.partition(":")
-        if root != "change" or not rest or rest.endswith("/"):
+        if root not in {"change", "project"} or not rest or rest.endswith("/"):
             continue
         spec = match_artifact(rest)
         if spec is None or spec.compat != "must_compat":
             continue
         try:
-            raw = (workspace.change_dir / rest).read_text(encoding="utf-8")
+            output_root = workspace.change_dir if root == "change" else workspace.project_root
+            raw = (output_root / rest).read_text(encoding="utf-8")
         except OSError:
             continue
         is_yaml = rest.endswith((".yaml", ".yml"))
@@ -235,11 +240,22 @@ def _validate_registry_outputs(
             kind = "YAML" if is_yaml else "JSON"
             return task_failure("invalid_output", f"output '{output}' is not valid {kind}: {exc}")
         try:
-            spec.model.model_validate(data)
+            authored[output] = data
+            validated[output] = spec.model.model_validate(data)
         except ValidationError as exc:
             return task_failure(
                 "invalid_output",
                 f"output '{output}' failed {spec.artifact_type} schema validation: {exc}",
+            )
+    candidate = validated.get("change:inspect/issue-candidates.json")
+    analysis_status = validated.get("change:inspect/issue-analysis-status.json")
+    if isinstance(candidate, IssueCandidateDocument) and isinstance(analysis_status, IssueAnalysisStatus):
+        expected = candidate_document_digest(authored["change:inspect/issue-candidates.json"])
+        if analysis_status.candidate_digest != expected:
+            return task_failure(
+                "invalid_output",
+                "output 'change:inspect/issue-analysis-status.json' candidate_digest "
+                f"must equal canonical issue-candidates digest {expected!r}",
             )
     return None
 
@@ -274,6 +290,7 @@ def _attach_gate_report(
         state_values=state_values,
         node_results=node_results,
         artifact_overrides=overrides,
+        audit_events_dir=context.change_dir,
     )
     try:
         candidate_report = check_gate_in_view(compiled.schema.gates, gate_id, eval_context)
@@ -288,6 +305,7 @@ def _attach_gate_report(
                 params=context.params,
                 state_values=state_values,
                 node_results=node_results,
+                audit_events_dir=context.change_dir,
             ),
         )
     except GateError as exc:

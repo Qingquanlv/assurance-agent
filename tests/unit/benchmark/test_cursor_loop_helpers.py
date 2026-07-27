@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shlex
 import stat
 import subprocess
@@ -17,6 +18,54 @@ def _run_helper(tmp_path: Path, command: str) -> subprocess.CompletedProcess[str
         capture_output=True,
         text=True,
         check=False,
+    )
+
+
+def _install_fake_aa(tmp_path: Path) -> Path:
+    fake = tmp_path / "fake-aa"
+    fake.write_text(
+        """#!/usr/bin/env bash
+set -u
+printf '%s\\n' "$*" >>"$AA_FAKE_CALL_LOG"
+if [ "${1:-}" != "eval" ] || [ "${2:-}" != "run" ]; then
+  exit 99
+fi
+shift 2
+suite=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--suite" ]; then
+    suite="$2"
+    shift 2
+    continue
+  fi
+  shift
+done
+case "$suite" in
+  suite-a) verdict="fail" ;;
+  suite-b) verdict="pass" ;;
+  *) verdict="inconclusive" ;;
+esac
+printf '{"run_id":"run-%s","verdict":"%s"}\\n' "$suite" "$verdict"
+""",
+        encoding="utf-8",
+    )
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+    return fake
+
+
+def _collect_eval_command(tmp_path: Path, suites: str) -> str:
+    fake = _install_fake_aa(tmp_path)
+    engine = tmp_path / "engine"
+    sut = tmp_path / "sut"
+    engine.mkdir()
+    sut.mkdir()
+    call_log = tmp_path / "aa-calls.log"
+    eval_log = tmp_path / "eval.log"
+    return (
+        f"AA_FAKE_CALL_LOG={shlex.quote(str(call_log))} "
+        f"collect_benchmark_eval_rows {shlex.quote(str(fake))} "
+        f"{shlex.quote(str(engine))} {shlex.quote(str(sut))} "
+        f"{shlex.quote(suites)} {shlex.quote(str(eval_log))}"
     )
 
 
@@ -56,6 +105,56 @@ def test_benchmark_gate_fails_when_any_workflow_row_failed(tmp_path: Path) -> No
     )
 
     assert result.returncode == 1
+
+
+def test_benchmark_eval_collects_absolute_verdicts_without_regression_commands(
+    tmp_path: Path,
+) -> None:
+    result = _run_helper(tmp_path, _collect_eval_command(tmp_path, "suite-a,suite-b"))
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        "suite-a|fail|run-suite-a",
+        "suite-b|pass|run-suite-b",
+    ]
+    assert (tmp_path / "aa-calls.log").read_text(encoding="utf-8").splitlines() == [
+        f"eval run --suite suite-a --sut-dir {tmp_path / 'sut'} --json",
+        f"eval run --suite suite-b --sut-dir {tmp_path / 'sut'} --json",
+    ]
+
+
+def test_benchmark_eval_setting_prefers_new_name_and_falls_back_to_legacy(
+    tmp_path: Path,
+) -> None:
+    preferred = _run_helper(tmp_path, "benchmark_eval_setting true false default")
+    legacy = _run_helper(tmp_path, "benchmark_eval_setting '' false true")
+    defaulted = _run_helper(tmp_path, "benchmark_eval_setting '' '' true")
+
+    assert preferred.stdout == "true"
+    assert legacy.stdout == "false"
+    assert defaulted.stdout == "true"
+
+
+def test_benchmark_gate_ignores_failed_eval_metric_row(tmp_path: Path) -> None:
+    collect = _collect_eval_command(tmp_path, "suite-a")
+    result = _run_helper(
+        tmp_path,
+        f'row="$({collect})" && '
+        'test "$row" = "suite-a|fail|run-suite-a" && '
+        "benchmark_result_exit_code true true 0 true "
+        "'RET-current|completed|final_status=PASS|archived=yes'",
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_persisted_workflow_terminals_stop_outer_attempts(tmp_path: Path) -> None:
+    for terminal in ("completed", "stopped", "failed"):
+        result = _run_helper(tmp_path, f"workflow_attempts_should_stop {terminal}")
+        assert result.returncode == 0, terminal
+
+    running = _run_helper(tmp_path, "workflow_attempts_should_stop running")
+    assert running.returncode == 1
 
 
 def test_benchmark_gate_passes_completed_archived_workflow_and_successful_retro(tmp_path: Path) -> None:
@@ -142,3 +241,24 @@ def test_retro_artifact_contract_requires_full_positive_signal_receipt(tmp_path:
 
     assert missing_receipt.returncode == 1
     assert complete.returncode == 0, complete.stderr
+
+
+def test_latest_retro_selection_uses_current_run_mtime_not_lexicographic_id(
+    tmp_path: Path,
+) -> None:
+    retro_root = tmp_path / "qa" / "retro"
+    # Historical Cursor IDs may encode local time and sort after a newer UTC ID.
+    stale_but_lexically_later = retro_root / "retro-20260726-223933-cursor"
+    current_but_lexically_earlier = retro_root / "retro-20260726-170349"
+    stale_but_lexically_later.mkdir(parents=True)
+    current_but_lexically_earlier.mkdir()
+    os.utime(stale_but_lexically_later, (100.0, 100.0))
+    os.utime(current_but_lexically_earlier, (200.0, 200.0))
+
+    result = _run_helper(
+        tmp_path,
+        'select_latest_retro_dir "$PWD/qa/retro" 150 ""',
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == str(current_but_lexically_earlier)

@@ -82,10 +82,13 @@ RETRO_ID="${RETRO_ID:-}"                 # empty → ensure_retro_params / aa re
 RETRO_LAST="${RETRO_LAST:-10}"
 RETRO_MIN_EVIDENCE="${RETRO_MIN_EVIDENCE:-2}"
 RETRO_DRY_RUN="${RETRO_DRY_RUN:-false}"
-# Deterministic eval regression gate (golden-sample replay; catches engine
-# regressions that break scoring/evidence integrity on a known-good run).
-DO_EVAL_REGRESSION="${DO_EVAL_REGRESSION:-true}"
-EVAL_REGRESSION_SUITES="${EVAL_REGRESSION_SUITES:-workflow-run,classification-unit,safety-lite,eval-smoke,case-generation,workflow-case,workflow-api-codegen,workflow-e2e-codegen,workflow-fuzz-codegen,workflow-performance-codegen,workflow-full}"
+# Benchmark-local deterministic Eval metrics. New names take precedence while
+# the legacy regression names remain accepted during configuration migration.
+DO_BENCHMARK_EVAL="$(benchmark_eval_setting "${DO_BENCHMARK_EVAL-}" "${DO_EVAL_REGRESSION-}" true)"
+BENCHMARK_EVAL_SUITES="$(benchmark_eval_setting \
+  "${BENCHMARK_EVAL_SUITES-}" \
+  "${EVAL_REGRESSION_SUITES-}" \
+  "workflow-run,classification-unit,safety-lite,eval-smoke,case-generation,workflow-case,workflow-api-codegen,workflow-e2e-codegen,workflow-fuzz-codegen,workflow-performance-codegen,workflow-full")"
 EVAL_ENGINE_ROOT="${EVAL_ENGINE_ROOT:-$AA_REPO_ROOT}"   # holds eval/suites + eval/baselines
 STEP_TIMEOUT="${STEP_TIMEOUT:-5400}"
 STATUS_POLL_INTERVAL="${STATUS_POLL_INTERVAL:-120}"
@@ -588,14 +591,7 @@ capture_latest_retro_artifacts() {
   local min_epoch="${1:-0}"
   local want_id="${2:-}"
   local latest_retro=""
-  if [ -n "$want_id" ] && [ -d "qa/retro/$want_id" ]; then
-    latest_retro="qa/retro/$want_id"
-  else
-    latest_retro="$(ls -1d qa/retro/retro-* 2>/dev/null | sort | tail -1 || true)"
-  fi
-  [ -n "$latest_retro" ] || return 1
-  python3 -c 'import os,sys; raise SystemExit(0 if os.path.getmtime(sys.argv[1]) >= float(sys.argv[2]) else 1)' \
-    "$latest_retro" "$min_epoch" || return 1
+  latest_retro="$(select_latest_retro_dir "qa/retro" "$min_epoch" "$want_id")" || return 1
   retro_artifacts_complete "$latest_retro" "$RETRO_DRY_RUN" || return 1
   retro_id="$(basename "$latest_retro")"
   if [ -f "$latest_retro/context.json" ]; then
@@ -790,61 +786,26 @@ run_retro_collect() {
   return "$collect_exit"
 }
 
-# Deterministic eval regression gate. Runs golden-sample suites via the fake
-# adapter (no cursor-agent, no live SUT) and compares to the approved baseline.
-# Suites resolve from EVAL_ENGINE_ROOT/eval; the SUT under test is $PROJECT_ROOT.
-# Populates EVAL_ROWS / EVAL_WORST for the summary.
-declare -a EVAL_ROWS=()
-EVAL_WORST="pass"
-EVAL_GATE_EXIT=0
-run_eval_regression() {
-  local eval_log="$RUN_DIR/eval-regression.log"
+# Deterministic benchmark metrics over golden fixtures. This is observational:
+# suite verdicts are reported but do not alter the workflow/archive/retro gate.
+declare -a BENCHMARK_EVAL_ROWS=()
+run_benchmark_eval() {
+  local eval_log="$RUN_DIR/benchmark-eval.log"
+  local row suite verdict run_id
   : >"$eval_log"
   if [ ! -d "$EVAL_ENGINE_ROOT/eval/suites" ]; then
-    log "eval regression: no eval/suites under $EVAL_ENGINE_ROOT — skipped"
+    log "benchmark eval: no eval/suites under $EVAL_ENGINE_ROOT — skipped"
     return 0
   fi
-  log "stage: eval regression suites=[$EVAL_REGRESSION_SUITES] engine=$EVAL_ENGINE_ROOT sut=$PROJECT_ROOT"
-  local -a suites=()
-  local -a verdicts=()
-  IFS=',' read -ra suites <<<"$EVAL_REGRESSION_SUITES"
-  local suite out rid verdict regression_verdict run_exit regression_exit
-  for suite in "${suites[@]}"; do
-    suite="$(echo "$suite" | xargs)"
-    [ -n "$suite" ] || continue
-    run_exit=0
-    out="$(cd "$EVAL_ENGINE_ROOT" && AA_EVAL_FAKE_ADAPTER=1 "$AA_BIN" eval run \
-      --suite "$suite" --sut-dir "$PROJECT_ROOT" --json 2>>"$eval_log")" || run_exit=$?
-    printf '%s\n' "$out" >>"$eval_log" || true
-    rid="$(printf '%s' "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("run_id",""))' 2>/dev/null || true)"
-    verdict="$(printf '%s' "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("verdict",""))' 2>/dev/null || true)"
-    if [ "$run_exit" -ne 0 ] || [ -z "$verdict" ]; then
-      verdict="error"
-    fi
-    if [ "$verdict" != "error" ] && [ -n "$rid" ]; then
-      regression_exit=0
-      regression_verdict="$(cd "$EVAL_ENGINE_ROOT" && python3 -m assurance_agent.eval.regression_gate \
-        --engine-root "$EVAL_ENGINE_ROOT" --sut-root "$PROJECT_ROOT" --run "$rid" \
-        2>>"$eval_log")" || regression_exit=$?
-      if [ "$regression_exit" -ne 0 ] || [ -z "$regression_verdict" ]; then
-        verdict="error"
-      else
-        verdict="$regression_verdict"
-      fi
-      ( cd "$EVAL_ENGINE_ROOT" && "$AA_BIN" eval compare --baseline main \
-        --run "$rid" --sut-dir "$PROJECT_ROOT" >>"$eval_log" 2>&1 ) || true
-    fi
-    log "eval[$suite]: verdict=$verdict run_id=${rid:-n/a}"
-    verdicts+=("$verdict")
-    EVAL_ROWS+=("$suite|$verdict|${rid:-n/a}")
-  done
-  EVAL_WORST="$(cd "$EVAL_ENGINE_ROOT" && python3 -c \
-    'from assurance_agent.eval.regression_gate import worst_verdict; import sys; print(worst_verdict(sys.argv[1:]))' \
-    "${verdicts[@]}")" || EVAL_WORST="error"
-  EVAL_GATE_EXIT="$(cd "$EVAL_ENGINE_ROOT" && python3 -c \
-    'from assurance_agent.eval.regression_gate import gate_exit_code; import sys; print(gate_exit_code(sys.argv[1:]))' \
-    "${verdicts[@]}")" || EVAL_GATE_EXIT=1
-  return "$EVAL_GATE_EXIT"
+  log "stage: benchmark eval metrics suites=[$BENCHMARK_EVAL_SUITES] engine=$EVAL_ENGINE_ROOT sut=$PROJECT_ROOT"
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    BENCHMARK_EVAL_ROWS+=("$row")
+    IFS='|' read -r suite verdict run_id <<<"$row"
+    log "benchmark-eval[$suite]: verdict=$verdict run_id=$run_id"
+  done < <(collect_benchmark_eval_rows \
+    "$AA_BIN" "$EVAL_ENGINE_ROOT" "$PROJECT_ROOT" "$BENCHMARK_EVAL_SUITES" "$eval_log")
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -885,6 +846,7 @@ log "cursor_agent=$CURSOR_AGENT_BIN model=${CURSOR_MODEL:-default} max_attempts=
 log "do_archive=$DO_ARCHIVE use_workflow_archive=$USE_WORKFLOW_ARCHIVE entrypoint=$ARCHIVE_ENTRYPOINT"
 log "do_retro_collect=$DO_RETRO_COLLECT use_workflow_retro=$USE_WORKFLOW_RETRO entrypoint=$RETRO_ENTRYPOINT"
 log "retro_params: id=${RETRO_ID:-auto} last=$RETRO_LAST min_evidence=$RETRO_MIN_EVIDENCE dry_run=$RETRO_DRY_RUN"
+log "do_benchmark_eval=$DO_BENCHMARK_EVAL suites=[$BENCHMARK_EVAL_SUITES]"
 log "auto_decide=$AUTO_DECIDE_BENCHMARK recover_healing=$RECOVER_HEALING_DEADLOCK"
 
 setup_run_tracking
@@ -952,6 +914,12 @@ for item in "${BENCHMARK_ITEMS[@]}"; do
     continue
   fi
 
+  if [ "$workflow_kind" = "failed" ]; then
+    log "[$change_id] already failed — persisted terminal cannot be restarted"
+    ROW_RESULTS+=("$change_id|failed|$(terminal_reason "$change_id")|archived=no")
+    continue
+  fi
+
   recover_dead_end "$change_id" || true
   workflow_kind="$(terminal_kind "$change_id")"
 
@@ -968,7 +936,7 @@ for item in "${BENCHMARK_ITEMS[@]}"; do
     workflow_reason="$(terminal_reason "$change_id")"
     log "[$change_id] aa status terminal=$workflow_kind${workflow_reason:+ reason=$workflow_reason}"
 
-    if [ "$workflow_kind" = "completed" ] || [ "$workflow_kind" = "stopped" ]; then
+    if workflow_attempts_should_stop "$workflow_kind"; then
       python3 - "$change_id" <<'PYASSERT' || true
 import json, sys
 from pathlib import Path
@@ -1068,8 +1036,8 @@ if [ "$DO_RETRO_COLLECT" = "true" ]; then
   fi
 fi
 
-if [ "$DO_EVAL_REGRESSION" = "true" ]; then
-  run_eval_regression || EVAL_GATE_EXIT=$?
+if [ "$DO_BENCHMARK_EVAL" = "true" ]; then
+  run_benchmark_eval
 fi
 
 {
@@ -1111,22 +1079,21 @@ fi
   if [ "$DO_RETRO_COLLECT" = "true" ] && [ -n "$retro_collect_exit" ] && [ "$retro_collect_exit" != "0" ] && [ "$retro_collect_exit" != "10" ]; then
     echo "- retro collect log: \`benchmark/runs/$RUNSTAMP-cursor/retro-collect.log\`"
   fi
-  if [ "$DO_EVAL_REGRESSION" = "true" ]; then
+  if [ "$DO_BENCHMARK_EVAL" = "true" ]; then
     echo
-    echo "## Eval regression (deterministic golden-sample gate)"
+    echo "## Benchmark Eval Metrics (deterministic golden fixtures)"
     echo
-    echo "- worst verdict: \`$EVAL_WORST\`"
-    echo "- gate exit: \`$EVAL_GATE_EXIT\`"
-    if [ "${#EVAL_ROWS[@]}" -gt 0 ]; then
+    if [ "${#BENCHMARK_EVAL_ROWS[@]}" -gt 0 ]; then
       echo
       echo "| suite | verdict | run_id |"
       echo "|---|---|---|"
-      for row in "${EVAL_ROWS[@]}"; do
+      for row in "${BENCHMARK_EVAL_ROWS[@]}"; do
         IFS='|' read -r es ev er <<<"$row"
         echo "| \`$es\` | $ev | \`$er\` |"
       done
     fi
-    echo "- log: \`benchmark/runs/$RUNSTAMP-cursor/eval-regression.log\`"
+    echo "- metrics: \`eval/out/runs/<run_id>/metrics.json\`"
+    echo "- log: \`benchmark/runs/$RUNSTAMP-cursor/benchmark-eval.log\`"
   fi
   echo
   echo "## Artifacts"
@@ -1142,11 +1109,6 @@ log "cursor benchmark loop done - summary: $SUMMARY"
 rm -f "$TRACK_PID_FILE"
 echo
 cat "$SUMMARY"
-
-if [ "$EVAL_GATE_EXIT" -ne 0 ]; then
-  log "ERROR: eval regression gate failed (worst verdict: $EVAL_WORST)"
-  exit "$EVAL_GATE_EXIT"
-fi
 
 if ! benchmark_result_exit_code \
   "$DO_ARCHIVE" "$DO_RETRO_COLLECT" "${retro_collect_exit:-0}" "$retro_collect_closed" \

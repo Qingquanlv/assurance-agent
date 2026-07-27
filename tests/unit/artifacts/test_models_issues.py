@@ -353,6 +353,7 @@ def test_problem_review_queue_wraps_entries() -> None:
             "entries": [
                 {
                     "entry_id": "REV-001",
+                    "problem_id": "PROB-source",
                     "change_id": "RET-dept-management",
                     "occurrence_id": "OCC-def456",
                     "candidate_id": "CAND-001",
@@ -363,6 +364,7 @@ def test_problem_review_queue_wraps_entries() -> None:
             ],
         }
     )
+    assert model.entries[0].problem_id == "PROB-source"
     assert model.entries[0].possible_problem_ids == ["PROB-other"]
 
 

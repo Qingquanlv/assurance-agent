@@ -590,6 +590,9 @@ class Scheduler:
             store=self._objects,
             side_effect_free=self._is_side_effect_free(task),
             claims=task.resources,
+            declared_reads_only=self._uses_declared_read_isolation(task),
+            skill_name=(task.target.partition(":")[2] if task.target.startswith("skill:") else None),
+            initialize_git=self._requires_convenience_git(task),
         )
         leases.upsert(
             new_lease(
@@ -888,7 +891,20 @@ class Scheduler:
     ) -> list[str]:
         effective_base_tree_id = base_tree_id or projection.current_tree_id
         live = project_invocation(context.change_dir, projection.invocation_id)
-        ordered_ids = sorted(succeeded_ids)
+        # A recovery node can run in a later planner wave while successful
+        # siblings from the failed wave still own uncommitted write-sets.  The
+        # successful recovery closes that atomic boundary, so commit every
+        # successful, uncommitted task together.  Restricting this to the
+        # current ``succeeded_ids`` strands sibling write-sets and lets the
+        # graph observe task success without observing its artifacts.
+        ordered_ids = sorted(
+            set(succeeded_ids)
+            | {
+                task_id
+                for task_id, task in live.tasks.items()
+                if task.status == "succeeded" and not task.outputs_committed
+            }
+        )
         write_sets = []
         state_pairs: list[tuple[str, Mapping[str, object]]] = []
         commit_eligible: list[str] = []
@@ -1107,6 +1123,24 @@ class Scheduler:
                 return contract.side_effect_free
         claims = task.resources
         return not claims.writes and not claims.exclusive and not claims.authorization_writes
+
+    def _uses_declared_read_isolation(self, task: ExecutableTask) -> bool:
+        if self._contracts is None:
+            return False
+        contract = self._contracts.contracts.get(task.target)
+        return contract is not None and contract.read_isolation == "declared_only"
+
+    def _requires_convenience_git(self, task: ExecutableTask) -> bool:
+        """Only agent handlers need a task-local ``git diff`` baseline.
+
+        Unknown targets keep the historical fail-closed behavior. Compiled
+        production workflows always provide a matching execution contract.
+        """
+        if self._contracts is not None:
+            contract = self._contracts.contracts.get(task.target)
+            if contract is not None:
+                return contract.handler == "agent"
+        return True
 
 
 def _task_outputs(task: ExecutableTask) -> tuple[str, ...]:

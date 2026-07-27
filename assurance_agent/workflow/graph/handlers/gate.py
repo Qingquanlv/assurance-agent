@@ -14,6 +14,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
+from pathlib import Path
 
 from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
 from assurance_agent.workflow.graph.checkpoint import fold_invocation_events
@@ -31,6 +33,7 @@ from assurance_agent.workflow.orchestration.gates import (
     GateError,
     GateEvaluationContext,
     check_gate_in_view,
+    expand_gate_read_template,
     resolve_view_path,
 )
 
@@ -46,7 +49,7 @@ class GateHandler:
         context: RuntimeContext,
     ) -> TaskResult:
         params = task_with(task)
-        node_results = _node_results_for_gate(task, workspace)
+        node_results = _node_results_for_gate(task, context.change_dir)
         eval_context = GateEvaluationContext(
             project_root=workspace.project_root,
             repo_root=workspace.repo_root,
@@ -55,6 +58,7 @@ class GateHandler:
             params=context.params,
             state_values={},
             node_results=node_results,
+            audit_events_dir=context.change_dir,
         )
         gate_id = params.get("gate")
         if isinstance(gate_id, str):
@@ -93,7 +97,7 @@ class GateHandler:
             result = eval_context.node_results.get(node_id)
             return result if isinstance(result, dict) else {}
 
-        symbols = _load_artifact_symbols(self._compiled, task, workspace)
+        symbols = _load_artifact_symbols(self._compiled, task, workspace, params=eval_context.params)
         scope = Scope(
             {
                 **symbols,
@@ -120,6 +124,8 @@ def _load_artifact_symbols(
     compiled: CompiledWorkflow,
     task: ExecutableTask,
     workspace: TaskWorkspace,
+    *,
+    params: Mapping[str, object],
 ) -> dict[str, object]:
     """按 compiled graph 的 artifact symbol 表从 task workspace 读 JSON；坏读按 MISSING 省略。"""
     graph = compiled.graphs.get(task.graph_id)
@@ -132,7 +138,11 @@ def _load_artifact_symbols(
     }
     variables: dict[str, object] = {}
     for symbol in sorted(graph.artifact_symbols):
-        root, _, rest = graph.artifact_symbols[symbol].partition(":")
+        try:
+            logical_path = expand_gate_read_template(graph.artifact_symbols[symbol], params=params)
+        except GateError:
+            continue
+        root, _, rest = logical_path.partition(":")
         base = roots.get(root)
         if base is None:
             continue
@@ -143,9 +153,9 @@ def _load_artifact_symbols(
     return variables
 
 
-def _node_results_for_gate(task: ExecutableTask, workspace: TaskWorkspace) -> dict[str, object]:
+def _node_results_for_gate(task: ExecutableTask, audit_events_dir: Path) -> dict[str, object]:
     try:
-        projection = fold_invocation_events(task.invocation_id, read_events_strict(workspace.change_dir))
+        projection = fold_invocation_events(task.invocation_id, read_events_strict(audit_events_dir))
         return build_node_results_for_gate(projection, graph_id=task.graph_id)
     except LedgerIntegrityError:
         return {}

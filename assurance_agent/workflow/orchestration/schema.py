@@ -61,6 +61,7 @@ class GateDef(BaseModel):
     id: str
     reads: list[ReadEntry] = Field(default_factory=list)
     rules: list[GateRule] = Field(default_factory=list)
+    causes: dict[str, str] = Field(default_factory=dict)
     invalid_json: Verdict | None = None
     missing_field_is: Verdict | None = None
     missing_file_is: Verdict | None = None
@@ -108,10 +109,25 @@ def _normalize_gate(gate_id: str, raw: dict[str, object]) -> GateDef:
         except ValueError as exc:
             raise SchemaError(f"gate '{gate_id}' {field} unknown verdict '{value}'") from exc
 
+    raw_causes = raw.get("causes")
+    if raw_causes is None:
+        causes: dict[str, str] = {}
+    elif isinstance(raw_causes, dict):
+        causes = {}
+        for cause, expression in raw_causes.items():
+            cause_name = str(cause).strip()
+            expression_text = str(expression).strip()
+            if not cause_name or not expression_text:
+                raise SchemaError(f"gate '{gate_id}' causes must use non-empty names and expressions")
+            causes[cause_name] = expression_text
+    else:
+        raise SchemaError(f"gate '{gate_id}' causes must be a mapping")
+
     return GateDef(
         id=gate_id,
         reads=_normalize_reads(raw.get("reads")),
         rules=rules,
+        causes=causes,
         invalid_json=optional_verdict("invalid_json"),
         missing_field_is=optional_verdict("missing_field_is"),
         missing_file_is=optional_verdict("missing_file_is"),

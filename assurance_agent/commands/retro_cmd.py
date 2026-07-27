@@ -8,12 +8,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import click
+from pydantic import ValidationError
 
+from assurance_agent.artifacts.canonical import canonical_json_bytes, sha256_bytes
+from assurance_agent.artifacts.models.retro_batch import RetroBatchScope, RetroPipelineFailure
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import UnsafeIdentifierError, assert_path_segment_safe
+from assurance_agent.retro.supervisor import RetroInvocation, run_retro_supervised
 from assurance_agent.workflow.driver.headless_adapter import HeadlessAdapter
 from assurance_agent.workflow.driver.loop import (
-    EXIT_COMPLETED,
     EXIT_ERROR,
     run_workflow_loop,
 )
@@ -42,6 +45,7 @@ def _build_params(
     until: str | None,
     last: int | None,
     dry_run: bool,
+    batch_scope: RetroBatchScope | None = None,
 ) -> dict[str, object]:
     params: dict[str, object] = {
         "retro_id": retro_id,
@@ -49,13 +53,14 @@ def _build_params(
     }
     if changes:
         params["change_ids"] = list(changes)
-        params["retro_last"] = 10  # unused when change_ids set; satisfy schema default
+        if batch_scope is not None:
+            params["batch_scope"] = batch_scope.model_dump(mode="json")
     elif since is not None or until is not None:
         params["since"] = since or ""
         params["until"] = until or ""
-        params["retro_last"] = 10
     else:
-        params["retro_last"] = last if last is not None else 10
+        if last is not None:
+            params["retro_last"] = last
     return ensure_retro_params(params)
 
 
@@ -113,6 +118,7 @@ def _run_retro_graph(
     retro_id: str | None,
     dry_run: bool,
     as_json: bool,
+    batch_manifest: Path | None = None,
 ) -> None:
     if since and changes:
         click.echo("Error: --since and --change are mutually exclusive", err=True)
@@ -126,12 +132,47 @@ def _run_retro_graph(
             err=True,
         )
         raise SystemExit(2)
+    if batch_manifest is not None and (changes or since is not None or until is not None or last is not None):
+        click.echo(
+            "Error: --batch-manifest is mutually exclusive with --change/--last/--since/--until",
+            err=True,
+        )
+        raise SystemExit(2)
+    if batch_manifest is None and not changes and since is None and until is None and last is None:
+        click.echo("Error: an explicit Retro window or --batch-manifest is required", err=True)
+        raise SystemExit(2)
 
+    batch_scope: RetroBatchScope | None = None
+    preflight_failure: RetroPipelineFailure | None = None
     try:
         resolved_id = (
             retro_id.strip() if isinstance(retro_id, str) and retro_id.strip() else _generate_retro_id()
         )
         assert_path_segment_safe(resolved_id, label="retro id")
+        if batch_manifest is not None:
+            try:
+                manifest_raw = batch_manifest.read_text(encoding="utf-8")
+                manifest_payload = json.loads(manifest_raw)
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as err:
+                raise AaError(f"cannot read Batch manifest: {err}") from err
+            try:
+                batch_scope = RetroBatchScope.model_validate(manifest_payload)
+                changes = tuple(member.change_id for member in batch_scope.members)
+            except ValidationError as err:
+                identity = {
+                    "retro_id": resolved_id,
+                    "stage": "batch_contract",
+                    "error_kind": "batch_scope_invalid",
+                }
+                preflight_failure = RetroPipelineFailure(
+                    failure_id="FAIL-"
+                    + sha256_bytes(canonical_json_bytes(identity)).removeprefix("sha256:")[:24],
+                    retro_id=resolved_id,
+                    stage="batch_contract",
+                    error_kind="batch_scope_invalid",
+                    message_fingerprint=sha256_bytes(str(err).encode("utf-8")),
+                    occurred_at=datetime.now(timezone.utc),
+                )
         params = _build_params(
             retro_id=resolved_id,
             changes=changes,
@@ -139,6 +180,7 @@ def _run_retro_graph(
             until=until,
             last=last,
             dry_run=dry_run,
+            batch_scope=batch_scope,
         )
         resolved_id = str(params["retro_id"])
         shell_id = _ensure_shell_change(project_root, resolved_id)
@@ -148,23 +190,48 @@ def _run_retro_graph(
 
     agent_cmd = os.environ.get("AA_RETRO_AGENT_CMD", "cursor-agent --print")
     adapter = HeadlessAdapter(agent_cmd=agent_cmd, cwd=project_root)
-    result = run_workflow_loop(
-        project_root=project_root,
-        change_id=shell_id,
-        entrypoint="retro",
-        adapter=adapter,
-        params=params,
+    loop_result = None
+
+    def graph_runner(invocation: RetroInvocation):  # noqa: ANN202
+        nonlocal loop_result
+        loop_result = run_workflow_loop(
+            project_root=invocation.project_root,
+            change_id=invocation.shell_change_id,
+            entrypoint="retro",
+            adapter=adapter,
+            params=dict(invocation.params),
+        )
+        return loop_result
+
+    supervised = run_retro_supervised(
+        RetroInvocation(
+            project_root=project_root,
+            shell_change_id=shell_id,
+            retro_id=resolved_id,
+            params=params,
+        ),
+        graph_runner=graph_runner,
+        preflight_failure=preflight_failure,
     )
-    if result.exit_code != EXIT_COMPLETED:
-        click.echo(result.reason, err=True)
-        raise SystemExit(result.exit_code if result.exit_code else EXIT_ERROR)
+    if supervised.result == "technical_failure" or supervised.status is None:
+        reason = getattr(loop_result, "reason", "Retro supervision failed")
+        click.echo(reason, err=True)
+        raise SystemExit(EXIT_ERROR)
 
     summary = {
         "retro_id": resolved_id,
         "dry_run": dry_run,
-        "status": "completed",
-        "reason": result.reason,
+        "status": supervised.status.result,
+        "reason": getattr(loop_result, "reason", supervised.status.result),
     }
+    summary.update(
+        {
+            "batch_id": supervised.status.batch_id,
+            "improvement_ids": list(supervised.status.improvement_ids),
+            "outbox_id": supervised.status.outbox_id,
+            "failure_ids": list(supervised.status.failure_ids),
+        }
+    )
     context_path = project_root / "qa" / "retro" / resolved_id / "context.json"
     if context_path.is_file():
         try:
@@ -182,7 +249,7 @@ def _run_retro_graph(
         click.echo(f"signal_count: {summary['signal_count']}")
     if "change_count" in summary:
         click.echo(f"change_count: {summary['change_count']}")
-    click.echo(result.reason)
+    click.echo(summary["reason"])
 
 
 def register_retro(main_group: click.Group) -> None:
@@ -190,12 +257,22 @@ def register_retro(main_group: click.Group) -> None:
     @click.option("--since", default=None, help="Include Changes with terminal ts at/after this ISO time")
     @click.option("--until", default=None, help="Include Changes with terminal ts at/before this ISO time")
     @click.option("--change", "changes", multiple=True, help="Explicit Change id (repeatable)")
-    @click.option("--last", type=int, default=None, help="Last N terminal Changes (default: 10)")
+    @click.option("--last", type=int, default=None, help="Explicit last N terminal Changes")
+    @click.option(
+        "--batch-manifest",
+        type=click.Path(path_type=Path, dir_okay=False),
+        default=None,
+        help="Explicit Retro Batch manifest JSON",
+    )
     @click.option("--retro-id", "retro_id", default=None, help="Retro id for the current run")
-    @click.option("--dry-run", is_flag=True, help="Collect only; skip propose/reconcile")
+    @click.option(
+        "--dry-run",
+        is_flag=True,
+        help="Collect and analyze evidence; skip propose/reconcile",
+    )
     @click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON")
     @click.pass_context
-    def retro(ctx, since, until, changes, last, retro_id, dry_run, as_json) -> None:
+    def retro(ctx, since, until, changes, last, batch_manifest, retro_id, dry_run, as_json) -> None:
         """Trigger the canonical Retro graph or show one current run."""
         if ctx.invoked_subcommand is not None:
             return
@@ -208,6 +285,7 @@ def register_retro(main_group: click.Group) -> None:
             retro_id=retro_id,
             dry_run=dry_run,
             as_json=as_json,
+            batch_manifest=batch_manifest,
         )
 
     @retro.command("show")
