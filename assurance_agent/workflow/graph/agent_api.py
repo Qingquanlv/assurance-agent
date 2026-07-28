@@ -52,13 +52,35 @@ class AgentInvoker(Protocol):
 _PRIOR_FAILURE_KINDS = frozenset({"invalid_output", "forbidden_write"})
 _PRIOR_FAILURE_MAX_CHARS = 800
 _OUTPUT_CONTRACT_REMINDERS = {
+    "aa-retro": (
+        " OUTPUT CONTRACT: proposal-candidates.json must be an "
+        "ImprovementCandidateDocumentDraftV3 with document-root schema_version '3', "
+        "retro_id, and candidates; omit context_sha256 because the runtime inserts it. "
+        "Every candidate must include signal_ids; never emit legacy intent_key."
+    ),
+    "aa-retro-issue-analysis": (
+        " ANALYSIS ONLY: write only the declared signal artifact; never implement "
+        "a recommended change or edit project source, tests, skills, or configuration."
+    ),
+    "aa-retro-workflow-analysis": (
+        " ANALYSIS ONLY: write only the declared signal artifact; never implement "
+        "a recommended change or edit project source, tests, skills, or configuration."
+    ),
+    "aa-retro-eval-analysis": (
+        " ANALYSIS ONLY: write only the declared signal artifact; never implement "
+        "a recommended change or edit project source, tests, skills, or configuration."
+    ),
     "aa-api-plan-reviewer": (
         " OUTPUT CONTRACT: api-plan-review.json must include "
-        "required_capabilities as a non-empty list of concrete leaf keys."
+        "required_capabilities as a non-empty list of fully qualified C4 leaf keys; "
+        "use auth.*, accounts.*, entities.*, capabilities.domain_factories.*, "
+        "capabilities.adapters.*, or capabilities.cleanup.* exactly as rooted in L1."
     ),
     "aa-e2e-plan-reviewer": (
         " OUTPUT CONTRACT: plan-review.json must include required_capabilities "
-        "as a non-empty list of concrete leaf keys."
+        "as a non-empty list of fully qualified C4 leaf keys; use auth.*, accounts.*, "
+        "entities.*, capabilities.domain_factories.*, capabilities.adapters.*, or "
+        "capabilities.cleanup.* exactly as rooted in L1."
     ),
 }
 

@@ -122,6 +122,20 @@ def test_no_aws_residue_in_skills_and_opencode() -> None:
     assert offenders == [], f"aws residue found: {offenders[:20]}"
 
 
+def test_api_plan_skills_reject_legacy_data_knowledge_path() -> None:
+    for skill_name in ("aa-api-plan", "aa-api-plan-reviewer"):
+        text = resources.read_text("skills", skill_name, "SKILL.md")
+        assert "only formal L1 path" in text, skill_name
+        assert "alternate hidden-directory path" in text, skill_name
+
+
+def test_api_plan_preserves_assert_ideal_status_contracts() -> None:
+    text = resources.read_text("skills", "aa-api-plan", "SKILL.md")
+    assert "never narrow, drop, or reinterpret" in text
+    assert "assert_ideal HTTP status expectations" in text
+    assert "stop and escalate" in text
+
+
 def test_cross_skill_references_resolve() -> None:
     valid = _skill_names() | _agent_names() | AA_REF_ALLOWLIST
     offenders: list[str] = []

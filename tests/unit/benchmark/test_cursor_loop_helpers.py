@@ -246,6 +246,32 @@ def test_benchmark_gate_fails_when_any_workflow_row_failed(tmp_path: Path) -> No
     assert result.returncode == 1
 
 
+def test_archive_runs_only_for_completed_green_execution(tmp_path: Path) -> None:
+    for final_status in ("PASS", "PASS_WITH_WARNINGS"):
+        eligible = _run_helper(
+            tmp_path,
+            f"benchmark_should_run_archive true completed {final_status}",
+        )
+        assert eligible.returncode == 0, final_status
+
+    for command in (
+        "benchmark_should_run_archive true completed FAIL",
+        "benchmark_should_run_archive true failed PASS",
+        "benchmark_should_run_archive false completed PASS",
+    ):
+        ineligible = _run_helper(tmp_path, command)
+        assert ineligible.returncode == 1, command
+
+
+def test_benchmark_gate_fails_completed_execution_with_failed_test_status(tmp_path: Path) -> None:
+    result = _run_helper(
+        tmp_path,
+        "benchmark_result_exit_code false 'RET-current|completed|final_status=FAIL|archive=disabled'",
+    )
+
+    assert result.returncode == 1
+
+
 def test_benchmark_eval_collects_absolute_verdicts_without_regression_commands(
     tmp_path: Path,
 ) -> None:

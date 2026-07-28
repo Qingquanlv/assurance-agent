@@ -148,5 +148,40 @@ def test_plan_reviewer_prompt_frontloads_nonempty_required_capabilities_contract
 
         assert "required_capabilities" in prompt
         assert "non-empty" in prompt
+        assert "fully qualified C4 leaf keys" in prompt
+        assert "capabilities.adapters" in prompt
         assert prompt.index("required_capabilities") > prompt.index("Produce only node")
     assert "timed out waiting for model" not in prompt
+
+
+def test_retro_analyzer_prompt_frontloads_analysis_only_contract() -> None:
+    for skill in (
+        "aa-retro-issue-analysis",
+        "aa-retro-workflow-analysis",
+        "aa-retro-eval-analysis",
+    ):
+        prompt = build_node_prompt(
+            skill,
+            "analyze",
+            "RETRO-RUN-1",
+            allowed_writes=["project:qa/retro/retro-1/signals/domain.json"],
+        )
+
+        assert "ANALYSIS ONLY" in prompt
+        assert "never implement a recommended change" in prompt
+        assert "write only the declared signal artifact" in prompt
+
+
+def test_retro_proposer_prompt_frontloads_v3_draft_contract() -> None:
+    prompt = build_node_prompt(
+        "aa-retro",
+        "propose-improvements",
+        "RETRO-RUN-1",
+        allowed_writes=["project:qa/retro/retro-1/proposal-candidates.json"],
+    )
+
+    assert "ImprovementCandidateDocumentDraftV3" in prompt
+    assert "schema_version '3'" in prompt
+    assert "omit context_sha256" in prompt
+    assert "include signal_ids" in prompt
+    assert "never emit legacy intent_key" in prompt

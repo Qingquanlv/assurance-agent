@@ -151,14 +151,7 @@ class FileEvalHistoryReader:
         if not root.is_dir():
             if window.batch_scope is None:
                 return _build_slice((), ("eval_runs_missing",))
-            return _build_slice(
-                (),
-                tuple(
-                    f"batch_member_evidence_gap:{member.change_id}:"
-                    f"{member.execution_status}:eval:projection_missing"
-                    for member in window.batch_scope.members
-                ),
-            )
+            return _build_slice((), ())
 
         reports: list[EvalReportRecord] = []
         reasons: list[str] = []

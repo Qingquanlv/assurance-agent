@@ -13,6 +13,7 @@ Before producing output, check whether `.aa/memory/aa-api-plan-reviewer.md` exis
 - Require plan mappings to `capabilities.domain_factories` and `capabilities.adapters.api` in `.aa/data-knowledge.yaml`.
 - Reject shared factories containing pytest/HTTP/event-loop bridging, API adapters placed in another layer, or a plan that rewrites an existing shared factory instead of reusing it.
 - A missing shared capability may be `create-if-missing` for the first active codegen layer; conflicting creators are `severity: high` and make codegen `not_ready`.
+- Treat `.aa/data-knowledge.yaml` as the only formal L1 path. Any alternate hidden-directory path for `data-knowledge.yaml` is a blocking, mechanically auto-fixable finding: replace it with `.aa/data-knowledge.yaml`, remove any alternate-path proposal, and recompute readiness from the actual `.aa/` file.
 
 ## Context Contract
 

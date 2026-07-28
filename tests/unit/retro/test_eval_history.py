@@ -97,13 +97,42 @@ def test_time_range_filters_started_at_closed(tmp_path: Path) -> None:
     assert tuple(r.run_id for r in slice_.reports) == ("run-in",)
 
 
-def test_missing_eval_runs_is_incomplete_not_fake_complete(tmp_path: Path) -> None:
+def test_missing_eval_runs_is_incomplete_without_explicit_batch_scope(tmp_path: Path) -> None:
     window = _empty_window()
     slice_ = FileEvalHistoryReader(tmp_path).read_window(window)
     assert slice_.reports == ()
     assert slice_.integrity.status == "incomplete"
     assert slice_.integrity.reasons
     assert any("eval" in reason for reason in slice_.integrity.reasons)
+
+
+def test_batch_without_eval_run_has_complete_empty_eval_evidence(tmp_path: Path) -> None:
+    scope = RetroBatchScope.model_validate(
+        {
+            "batch_id": "batch-1",
+            "status": "complete",
+            "members": [
+                {
+                    "change_id": "RET-1",
+                    "execution_status": "completed",
+                    "evidence_availability": "complete",
+                }
+            ],
+        }
+    )
+    history = InMemoryWorkflowHistoryReader.from_terminals(
+        (TerminalChangeRef(change_id="RET-1", terminal_ts="2026-07-02T00:00:00Z"),)
+    )
+    window = resolve_retro_window(
+        RetroWindowSelection(change_ids=("RET-1",), batch_scope=scope),
+        workflow_history=history,
+    )
+
+    slice_ = FileEvalHistoryReader(tmp_path).read_window(window)
+
+    assert slice_.reports == ()
+    assert slice_.integrity.status == "complete"
+    assert slice_.integrity.reasons == ()
 
 
 def test_corrupt_report_records_concrete_reason(tmp_path: Path) -> None:
