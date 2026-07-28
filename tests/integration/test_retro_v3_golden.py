@@ -15,14 +15,11 @@ from tests.unit.workflow.graph.test_retro_workflow import (
     _retro_context,
 )
 
-_BENCHMARK = Path(__file__).resolve().parents[2] / "benchmark" / "vue-fastapi-admin"
-# The live qa/changes directories are intentionally ephemeral. This frozen Eval
-# SUT snapshot captured the same real User/Role run before benchmark cleanup;
-# the fixture installer copies only its qa/changes evidence into the isolated
-# test project, so the Retro runtime itself never reads raw eval/out history.
-_CHANGE_FIXTURE_ROOT = (
-    _BENCHMARK / "eval/out/runs/eval-20260727-f1db3ee6/samples/WC-001/attempt-0/sut/qa/changes"
-)
+# Committed snapshot of the User/Role benchmark evidence. The live
+# benchmark/vue-fastapi-admin/qa tree is gitignored, so CI cannot read it;
+# this fixture is the only source the golden installer may copy from.
+_FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "retro_v3_golden"
+_CHANGE_FIXTURE_ROOT = _FIXTURE_ROOT / "qa" / "changes"
 _CHANGE_IDS = (
     "RET-user-management-20260727-094743-cursor",
     "RET-role-management-20260727-094743-cursor",
@@ -85,7 +82,7 @@ def _seed_structured_archive_cause(events_path: Path) -> None:
 
 def _install_benchmark_fixture(project: Path) -> None:
     _copy_file(
-        _BENCHMARK / "qa" / "issues" / "events.jsonl",
+        _FIXTURE_ROOT / "qa" / "issues" / "events.jsonl",
         project / "qa" / "issues" / "events.jsonl",
     )
     for change_id in _CHANGE_IDS:
@@ -97,7 +94,7 @@ def _install_benchmark_fixture(project: Path) -> None:
 
     # A real legacy report with no source_change_ids exercises the production
     # explicit-change filter; it must not enter the slice or degrade integrity.
-    source_run = _BENCHMARK / "eval" / "out" / "runs" / _UNRELATED_EVAL_RUN
+    source_run = _FIXTURE_ROOT / "eval" / "out" / "runs" / _UNRELATED_EVAL_RUN
     target_run = project / "eval" / "out" / "runs" / _UNRELATED_EVAL_RUN
     _copy_file(source_run / "report.json", target_run / "report.json")
     # An explicit empty compact-projection catalog is complete; the unrelated
