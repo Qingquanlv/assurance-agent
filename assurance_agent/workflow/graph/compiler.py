@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from collections.abc import Mapping
 
@@ -174,6 +175,12 @@ def _check_param_value(name: str, definition: ParamDef, value: object) -> list[s
         if not isinstance(value, str):
             return [f"param '{name}' value {value!r} must be str"]
         return []
+    if definition.type == "object":
+        if not isinstance(value, dict):
+            return [f"param '{name}' value {value!r} must be an object"]
+        if not _is_json_compatible(value):
+            return [f"param '{name}' value must be JSON-compatible"]
+        return []
     # list
     if not isinstance(value, list):
         return [f"param '{name}' value {value!r} must be a list"]
@@ -187,6 +194,18 @@ def _check_param_value(name: str, definition: ParamDef, value: object) -> list[s
     if definition.unique and len({repr(item) for item in value}) != len(value):
         errors.append(f"param '{name}' values must be unique")
     return errors
+
+
+def _is_json_compatible(value: object) -> bool:
+    if value is None or isinstance(value, (str, bool, int)):
+        return True
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, list):
+        return all(_is_json_compatible(item) for item in value)
+    if isinstance(value, dict):
+        return all(isinstance(key, str) and _is_json_compatible(item) for key, item in value.items())
+    return False
 
 
 def _validate_params_and_entrypoints(schema: WorkflowSchemaV2) -> list[str]:
@@ -270,7 +289,13 @@ def _check_output_path(
     if node.fan_out is not None:
         allowed_vars.add(node.fan_out.item_as)
     for match in _TEMPLATE.finditer(output):
-        if match.group(1) not in allowed_vars:
+        variable = match.group(1)
+        item_field = (
+            node.fan_out is not None
+            and variable.startswith(f"{node.fan_out.item_as}.")
+            and len(variable) > len(node.fan_out.item_as) + 1
+        )
+        if variable not in allowed_vars and not item_field:
             errors.append(f"{loc} output '{output}' uses unknown template '${{{match.group(1)}}}'")
     concrete = _TEMPLATE.sub("item", output)
     _, _, rest = concrete.partition(":")
@@ -869,8 +894,8 @@ def _validate_contract_usage(schema: WorkflowSchemaV2, catalog: ExecutionContrac
             if node.agent is not None and prefix != "skill":
                 errors.append(f"{loc} declares agent '{node.agent}' but uses '{uses}' which is not skill:*")
             errors.extend(_check_authorization_narrowing(loc, node, contract))
+            errors.extend(_check_synchronized_narrowing(loc, node, contract))
             errors.extend(_check_retry_kinds(loc, node, schema, contract))
-            errors.extend(_check_recovery_kinds(loc, node, contract))
     return errors
 
 
@@ -894,6 +919,28 @@ def _check_authorization_narrowing(loc: str, node: NodeDef, contract: ExecutionC
     return errors
 
 
+def _check_synchronized_narrowing(
+    loc: str,
+    node: NodeDef,
+    contract: ExecutionContract,
+) -> list[str]:
+    """Node synchronized templates may only narrow the static contract bounds."""
+    declared = node.resources
+    if declared is None or not declared.synchronized:
+        return []
+    bounds = tuple(ResourcePath.parse(value) for value in contract.synchronized)
+    errors: list[str] = []
+    for value in declared.synchronized:
+        try:
+            claim = ResourcePath.parse(normalize_claim_pattern(value))
+        except ContractError as exc:
+            errors.append(f"{loc}: {exc}")
+            continue
+        if not any(path_covers(bound, claim) for bound in bounds):
+            errors.append(f"{loc} resources.synchronized '{value}' expands beyond '{contract.target}'")
+    return errors
+
+
 def _check_retry_kinds(
     loc: str,
     node: NodeDef,
@@ -912,20 +959,6 @@ def _check_retry_kinds(
             f"{loc} retry policy '{node.retry}' kinds not retryable for "
             f"'{contract.target}': {', '.join(unsupported)}"
         ]
-    return []
-
-
-def _check_recovery_kinds(
-    loc: str,
-    node: NodeDef,
-    contract: ExecutionContract,
-) -> list[str]:
-    """Recovery is available only for kinds the target contract permits retrying."""
-    if node.recover is None:
-        return []
-    unsupported = sorted(set(node.recover.errors) - set(contract.retryable_errors))
-    if unsupported:
-        return [f"{loc} recovery kinds not retryable for '{contract.target}': {', '.join(unsupported)}"]
     return []
 
 

@@ -109,6 +109,7 @@ def run_suite(
     runtime_factory: Callable[..., object] | None = None,
     fixtures_root: Path | None = None,
     extra_memory_dir: Path | None = None,
+    change_ids: tuple[str, ...] = (),
 ) -> tuple[str, EvalGateResult]:
     if repeat < 1:
         raise ValueError("repeat must be >= 1")
@@ -137,6 +138,7 @@ def run_suite(
         repeat=repeat,
         regression_policy_sha256=regression_policy_sha256(suite.regression),
         memory_overlay_sha256=overlay_sha256,
+        change_ids=tuple(dict.fromkeys(change_ids)),
         started_at=_now(),
     )
 
@@ -250,7 +252,7 @@ def run_suite(
     (run_dir / "manifest.json").write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
     write_metrics(run_dir, metrics)
     write_gate_result(run_dir, gate)
-    write_run_report(run_dir, manifest, metrics, gate)
+    write_run_report(run_dir, manifest, metrics, gate, projection_root=sut_dir)
     return run_id, gate
 
 
@@ -262,6 +264,7 @@ def run_plan(
     adapter_factory: Callable[..., object] | None = None,
     runtime_factory: Callable[..., object] | None = None,
     extra_memory_dir: Path | None = None,
+    change_ids: tuple[str, ...] = (),
 ) -> tuple[str, list[EvalGateResult]]:
     plan = read_plan(plan_path)
     batch_id = _new_run_id("batch")
@@ -275,6 +278,7 @@ def run_plan(
             adapter_factory=adapter_factory,
             runtime_factory=runtime_factory,
             extra_memory_dir=extra_memory_dir,
+            change_ids=change_ids,
         )
         results.append(gate)
     return batch_id, results

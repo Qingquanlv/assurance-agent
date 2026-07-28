@@ -1,12 +1,25 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
 
+from assurance_agent.artifacts.canonical import canonical_json_bytes, sha256_bytes
+from assurance_agent.artifacts.models.eval_projection import EvalRunProjection
 from assurance_agent.eval.paths import reports_dir, runs_dir
 from assurance_agent.eval.types import EvalGateResult, RunManifest, SuiteMetrics
+from assurance_agent.exceptions import AaError
+
+
+class EvalProjectionConflict(AaError):
+    """An immutable Eval projection already exists with different bytes."""
+
+    def __init__(self, run_id: str) -> None:
+        self.run_id = run_id
+        super().__init__(f"Eval projection conflict for run {run_id}")
+
 
 _VERDICT_CLASS = {
     "pass": "verdict-pass",
@@ -26,7 +39,9 @@ _VERDICT_LABEL = {
 
 def _build_report(manifest: RunManifest, metrics: SuiteMetrics, gate: EvalGateResult) -> dict:
     return {
+        "schema_version": "2",
         "run_id": manifest.run_id,
+        "source_change_ids": list(manifest.change_ids),
         "suite": manifest.suite,
         "verdict": gate.verdict,
         "started_at": manifest.started_at,
@@ -269,13 +284,59 @@ def _render_md(report: dict) -> str:
 
 
 def write_run_report(
-    run_dir: Path, manifest: RunManifest, metrics: SuiteMetrics, gate: EvalGateResult
+    run_dir: Path,
+    manifest: RunManifest,
+    metrics: SuiteMetrics,
+    gate: EvalGateResult,
+    *,
+    projection_root: Path | None = None,
 ) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     report = _build_report(manifest, metrics, gate)
-    (run_dir / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    raw_report = json.dumps(report, indent=2).encode("utf-8")
+    (run_dir / "report.json").write_bytes(raw_report)
     (run_dir / "report.html").write_text(_render_html(report), encoding="utf-8")
     (run_dir / "report.md").write_text(_render_md(report), encoding="utf-8")
+    if projection_root is None:
+        return
+    failure_signature = None
+    if gate.verdict not in {"pass", "pass_with_warnings"}:
+        failure_kinds = tuple(
+            sorted(
+                {
+                    item.split(":", 1)[0].strip()
+                    for item in (*gate.hard_gate_failures, *gate.threshold_failures)
+                }
+            )
+        )
+        failure_signature = sha256_bytes(
+            canonical_json_bytes(
+                {
+                    "verdict": gate.verdict,
+                    "failure_kinds": failure_kinds,
+                    "sample_ids": tuple(sorted(manifest.selected_sample_ids)),
+                }
+            )
+        )
+    projection = EvalRunProjection(
+        run_id=manifest.run_id,
+        suite=manifest.suite,
+        verdict=gate.verdict,
+        started_at=manifest.started_at,
+        completed_at=manifest.completed_at or manifest.started_at,
+        source_change_ids=tuple(dict.fromkeys(manifest.change_ids)),
+        failure_signature=failure_signature,
+        sample_ids=tuple(sorted(set(manifest.selected_sample_ids))),
+        raw_report_sha256="sha256:" + hashlib.sha256(raw_report).hexdigest(),
+    )
+    projection_path = projection_root / "qa" / "eval" / "runs" / manifest.run_id / "report.json"
+    canonical = canonical_json_bytes(projection)
+    if projection_path.is_file():
+        if projection_path.read_bytes() != canonical:
+            raise EvalProjectionConflict(manifest.run_id)
+        return
+    projection_path.parent.mkdir(parents=True, exist_ok=True)
+    projection_path.write_bytes(canonical)
 
 
 def generate_trend_report(

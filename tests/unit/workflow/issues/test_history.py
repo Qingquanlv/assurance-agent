@@ -599,6 +599,20 @@ def test_in_memory_missing_selected_change_raises_integrity_error(
         InMemoryIssueHistoryReader.from_events(typed_events).read_window(selection)
 
 
+def test_in_memory_batch_tolerates_missing_member_and_keeps_complete_member(
+    typed_events: IssueTypedEvents,
+) -> None:
+    slice_ = InMemoryIssueHistoryReader.from_events(typed_events).read_window(
+        IssueWindowSelection(
+            change_ids=(CHANGE_ID, "RET-MISSING"),
+            allow_member_gaps=True,
+            member_execution_statuses=((CHANGE_ID, "completed"), ("RET-MISSING", "failed")),
+        )
+    )
+    assert tuple(item.change_id for item in slice_.occurrences) == (CHANGE_ID,)
+    assert "batch_member_evidence_gap:RET-MISSING:failed:issue:workspace_missing" in slice_.integrity.reasons
+
+
 def test_malformed_jsonl_raises_integrity_error(tmp_path: Path) -> None:
     write_aa_config(tmp_path)
     change_root = tmp_path / "qa/archive" / CHANGE_ID

@@ -363,6 +363,34 @@ def test_resolve_params_validates_overrides_and_cross_constraints() -> None:
     assert resolved["run_mode"] == "api-only"
 
 
+def test_resolve_params_validates_object_defaults_and_overrides() -> None:
+    schema = parse_workflow_v2(
+        _wf(
+            """
+            main:
+              max_supersteps: 5
+              nodes:
+                a: {uses: operation:a}
+              edges:
+                - {from: START, to: a}
+                - {from: a, to: END}
+            """,
+            header=(
+                "params:\n"
+                '  batch_scope: {type: object, default: {schema_version: "1"}}\n'
+                "entrypoints:\n"
+                "  full: {graph: main}\n"
+            ),
+        )
+    )
+
+    assert resolve_params(schema, {})["batch_scope"] == {"schema_version": "1"}
+    assert resolve_params(schema, {"batch_scope": {"batch_id": "B-1"}})["batch_scope"] == {"batch_id": "B-1"}
+    for invalid in ([], "not-an-object", 1, {"bad": object()}):
+        with pytest.raises(CompileError, match="object|JSON"):
+            resolve_params(schema, {"batch_scope": invalid})
+
+
 _RECOVERY_GRAPH = """
 main:
   max_supersteps: 5
@@ -464,7 +492,7 @@ def test_ordinary_route_cannot_target_recovery_node() -> None:
 
 
 @pytest.mark.parametrize("error", ["forbidden_write", "contract", "internal"])
-def test_recovery_errors_must_be_retryable_by_the_execution_contract(error: str) -> None:
+def test_recovery_errors_need_not_be_retryable_by_the_execution_contract(error: str) -> None:
     catalog = ExecutionContractCatalog(
         contracts={
             "skill:aa-issue-analyzer": ExecutionContract(
@@ -479,8 +507,7 @@ def test_recovery_errors_must_be_retryable_by_the_execution_contract(error: str)
     raw = yaml.safe_load(text)
     raw["graphs"]["main"]["nodes"]["inspect"]["recover"]["errors"] = [error]
 
-    with pytest.raises(CompileError, match="recovery kinds not retryable"):
-        compile_workflow(parse_workflow_v2(yaml.safe_dump(raw, sort_keys=False)), catalog)
+    compile_workflow(parse_workflow_v2(yaml.safe_dump(raw, sort_keys=False)), catalog)
 
 
 def test_subgraph_recovery_has_stable_digest() -> None:

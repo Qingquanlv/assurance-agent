@@ -29,7 +29,7 @@ import shutil
 import subprocess
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -199,6 +199,16 @@ def _is_excluded_name(name: str) -> bool:
     return name.startswith(".coverage.")
 
 
+def _is_top_level_issue_ledger(rel: str | PurePosixPath) -> bool:
+    parts = PurePosixPath(rel).parts
+    return (
+        len(parts) == 5
+        and parts[0] == "qa"
+        and parts[1] in {"changes", "archive"}
+        and parts[3:] == ("issues", "events.jsonl")
+    )
+
+
 def _is_excluded_rel(rel: str) -> bool:
     """True when any path segment is an excluded dir or the basename is excluded."""
     parts = [part for part in rel.split("/") if part and part != "."]
@@ -207,7 +217,7 @@ def _is_excluded_rel(rel: str) -> bool:
     # Change Issue ledgers are canonical domain data, not the change-dir graph
     # coordinator ledger.  They must participate in capture/freeze/apply so a
     # later execution batch can replay all Observations and Occurrences.
-    if len(parts) >= 5 and parts[-4] == "changes" and parts[-2:] == ["issues", "events.jsonl"]:
+    if _is_top_level_issue_ledger(rel):
         return False
     if _is_excluded_name(parts[-1]):
         return True
@@ -366,6 +376,8 @@ def _capture_synchronized_entries(
     project_root: Path,
     roots: Mapping[str, str],
     synchronized: Sequence[ResourcePath],
+    *,
+    active_change_dir: Path | None = None,
 ) -> dict[str, _Entry]:
     captured: dict[str, _Entry] = {}
     for path in synchronized:
@@ -388,6 +400,22 @@ def _capture_synchronized_entries(
             events_entry = _entry_at(project_root, events_rel)
             if events_entry is not None:
                 captured[events_rel] = events_entry
+            # The normal tree walk excludes every events.jsonl basename because
+            # the active Change coordinator mutates its ledger during execution.
+            # A synchronized Retro snapshot still needs immutable sibling Change
+            # workflow and Issue ledgers, so capture those two known locations
+            # explicitly while keeping the active coordinator ledger excluded.
+            if directory_rel in {"qa/changes", "qa/archive"}:
+                active = active_change_dir.resolve() if active_change_dir is not None else None
+                for change_dir in sorted(path for path in directory.iterdir() if path.is_dir()):
+                    for suffix in (Path("events.jsonl"), Path("issues/events.jsonl")):
+                        ledger = change_dir / suffix
+                        if active is not None and ledger.resolve() == (active / suffix).resolve():
+                            continue
+                        ledger_rel = ledger.relative_to(project_root).as_posix()
+                        ledger_entry = _entry_at(project_root, ledger_rel)
+                        if ledger_entry is not None:
+                            captured[ledger_rel] = ledger_entry
             continue
         entry = _entry_at(project_root, rel_pattern)
         if entry is not None:
@@ -411,6 +439,20 @@ def _synchronized_ledger_entries(
         entry = _entry_at(workspace_root, physical)
         if entry is not None:
             found[physical] = entry
+        if directory_rel in {"qa/changes", "qa/archive"}:
+            directory = workspace_root / _physical_for(
+                roots,
+                ResourcePath.parse(f"project:{directory_rel}"),
+            )
+            if not directory.is_dir():
+                continue
+            for change_dir in sorted(item for item in directory.iterdir() if item.is_dir()):
+                for suffix in (Path("events.jsonl"), Path("issues/events.jsonl")):
+                    ledger = change_dir / suffix
+                    ledger_rel = ledger.relative_to(workspace_root).as_posix()
+                    ledger_entry = _entry_at(workspace_root, ledger_rel)
+                    if ledger_entry is not None:
+                        found[ledger_rel] = ledger_entry
     return found
 
 
@@ -556,23 +598,40 @@ class TreeStore:
             raise ValueError(f"artifact is not valid JSON: {logical_path}") from exc
         return ResolvedArtifact(value=value, reads_sha256={logical_path: entry.sha256})
 
-    def filter_tree(self, tree_id: str, claims: ResourceClaims) -> str:
-        """Return a tree id that omits sibling Retro runs pinned out of scope.
+    def filter_tree(
+        self,
+        tree_id: str,
+        claims: ResourceClaims,
+        *,
+        declared_reads_only: bool = False,
+        skill_name: str | None = None,
+    ) -> str:
+        """Return the task's materializable read view without changing its merge base.
 
         When task claims name concrete ``project:qa/retro/<id>/...`` paths,
         other ``qa/retro/<sibling>/`` entries are dropped from the materialized
-        workspace. The freeze/merge ``base_tree_id`` stays the full overlay tree
-        — callers must not rebind it to this filtered id.
+        workspace. With ``declared_reads_only``, every entry outside declared
+        contract/node reads is removed as well; ``skills/<skill_name>/**`` remains
+        visible so the selected agent can load its own bundle. The freeze/merge
+        ``base_tree_id`` stays the full overlay tree — callers must not rebind it
+        to this filtered id.
         """
         manifest = self._load_tree(tree_id)
         claimed_retro_ids = _claimed_retro_run_ids(claims)
-        if not claimed_retro_ids:
+        if not claimed_retro_ids and not declared_reads_only:
             return tree_id
-        entries = {
-            rel: entry
-            for rel, entry in manifest.entries.items()
-            if not _is_omitted_retro_sibling(manifest.roots, rel, claimed_retro_ids)
-        }
+        entries = {}
+        for rel, entry in manifest.entries.items():
+            if _is_omitted_retro_sibling(manifest.roots, rel, claimed_retro_ids):
+                continue
+            if declared_reads_only and not _entry_visible_to_declared_skill(
+                manifest.roots,
+                rel,
+                claims,
+                skill_name,
+            ):
+                continue
+            entries[rel] = entry
         if entries == manifest.entries:
             return tree_id
         raw = _canonical_json(_tree_payload(manifest.roots, entries))
@@ -619,6 +678,11 @@ class TreeStore:
         变化的 symlink 一律拒绝；声明的 output 必须是存在的具体文件。
         """
         base = self._load_tree(workspace.base_tree_id)
+        materialized = (
+            self._load_tree(workspace.materialized_tree_id)
+            if workspace.materialized_tree_id is not None
+            else base
+        )
         current = _walk(workspace.root)
         # Synchronized project ledgers keep events.jsonl out of ordinary capture
         # but must still enter the write-set for targeted publication.
@@ -645,7 +709,10 @@ class TreeStore:
             if (
                 after is None
                 and before is not None
-                and _is_omitted_retro_sibling(base.roots, rel, claimed_retro_ids)
+                and (
+                    rel not in materialized.entries
+                    or _is_omitted_retro_sibling(base.roots, rel, claimed_retro_ids)
+                )
             ):
                 continue
             if (before is not None and before.kind == "symlink") or (
@@ -833,7 +900,12 @@ class TreeStore:
         if not project_root.is_dir():
             raise WorkspaceError(f"project root is not a directory: {project_root}")
         base = self._load_tree(base_tree_id)
-        live = _capture_synchronized_entries(project_root, base.roots, synchronized)
+        live = _capture_synchronized_entries(
+            project_root,
+            base.roots,
+            synchronized,
+            active_change_dir=self._change_dir,
+        )
         entries = dict(base.entries)
         for rel in sorted(set(base.entries) | set(live)):
             if not _matches_synchronized_path(base.roots, rel, synchronized):
@@ -977,6 +1049,19 @@ class TreeStore:
             actual = current.get(rel)
             if before == wanted:
                 if actual != before:
+                    # ``_walk(..., keep_change_dir=...)`` intentionally omits
+                    # sibling Change trees. A synchronized read snapshot may
+                    # carry those immutable entries through the committed tree;
+                    # unchanged siblings are not canonical drift merely because
+                    # the ordinary walker does not revisit them.
+                    if (
+                        actual is None
+                        and change_prefix is not None
+                        and rel.startswith("qa/changes/")
+                        and rel != change_prefix
+                        and not rel.startswith(f"{change_prefix}/")
+                    ):
+                        continue
                     raise WorkspaceError(f"canonical workspace drift at {rel}")
                 continue
             if actual == wanted:
@@ -1087,6 +1172,23 @@ def _entry_covered_by_claims(
     return False
 
 
+def _entry_visible_to_declared_skill(
+    roots: Mapping[str, str],
+    rel: str,
+    claims: ResourceClaims,
+    skill_name: str | None,
+) -> bool:
+    """Keep only declared reads plus the target skill's instruction bundle."""
+    support_prefixes = (f"skills/{skill_name}/",) if skill_name else ()
+    for name, logical in _resolutions(roots, rel):
+        path = ResourcePath.parse(f"{name}:{logical}")
+        if any(path_covers(read, path) for read in claims.reads):
+            return True
+        if name == "project" and any(logical.startswith(prefix) for prefix in support_prefixes):
+            return True
+    return False
+
+
 def _claimed_retro_run_ids(claims: ResourceClaims) -> frozenset[str]:
     """Concrete ``qa/retro/<id>`` run ids pinned by task read/write claims."""
     ids: set[str] = set()
@@ -1145,12 +1247,19 @@ class TaskWorkspace:
     repo_root: Path
     change_dir: Path
     base_tree_id: str
+    materialized_tree_id: str | None = None
 
     def cleanup(self) -> None:
         shutil.rmtree(self.root, ignore_errors=True)
 
     @classmethod
-    def from_materialized_root(cls, task_id: str, root: Path, base_tree_id: str) -> "TaskWorkspace":
+    def from_materialized_root(
+        cls,
+        task_id: str,
+        root: Path,
+        base_tree_id: str,
+        materialized_tree_id: str | None = None,
+    ) -> "TaskWorkspace":
         """从物化 root 的 tree manifest 解析逻辑 project/repo/change root。
 
         manifest 缺失、root 未声明、root 目录不存在或解析到物化 root 之外，
@@ -1184,6 +1293,7 @@ class TaskWorkspace:
             repo_root=resolve_logical("repo"),
             change_dir=resolve_logical("change"),
             base_tree_id=base_tree_id,
+            materialized_tree_id=materialized_tree_id,
         )
 
 
@@ -1204,6 +1314,9 @@ class WorkspaceBackend:
         store: TreeStore,
         side_effect_free: bool = False,
         claims: ResourceClaims | None = None,
+        declared_reads_only: bool = False,
+        skill_name: str | None = None,
+        initialize_git: bool = True,
     ) -> TaskWorkspace:
         _assert_safe_task_id(task_id)
         root = self._tasks_root / task_id
@@ -1212,10 +1325,25 @@ class WorkspaceBackend:
         root.mkdir(parents=True)
         # Materialize a sibling-omitted view when claims pin a Retro run, but
         # keep freeze/merge base_tree_id on the full overlay/invocation tree.
-        materialize_tree = store.filter_tree(base_tree_id, claims) if claims is not None else base_tree_id
+        materialize_tree = (
+            store.filter_tree(
+                base_tree_id,
+                claims,
+                declared_reads_only=declared_reads_only,
+                skill_name=skill_name,
+            )
+            if claims is not None
+            else base_tree_id
+        )
         store.materialize(materialize_tree, root)
-        self._init_convenience_git(root, side_effect_free=side_effect_free)
-        return TaskWorkspace.from_materialized_root(task_id, root, base_tree_id)
+        if initialize_git:
+            self._init_convenience_git(root, side_effect_free=side_effect_free)
+        return TaskWorkspace.from_materialized_root(
+            task_id,
+            root,
+            base_tree_id,
+            materialized_tree_id=materialize_tree,
+        )
 
     @staticmethod
     def _init_convenience_git(root: Path, *, side_effect_free: bool) -> None:

@@ -76,6 +76,7 @@ def eval_group() -> None:
 @click.option("--fail-on-verdict", is_flag=True, help="Exit 1 when verdict is not pass")
 @click.option("--calibrate", is_flag=True, help="Run judge calibration (records only)")
 @click.option("--extra-memory-dir", help="Overlay .aa/memory files into SUT workspaces")
+@click.option("--change", "change_ids", multiple=True, help="Source Change ID (repeatable)")
 @click.option("--sut-dir", help="Override SUT checkout directory")
 def eval_run(
     suite_name,
@@ -87,6 +88,7 @@ def eval_run(
     fail_on_verdict,
     calibrate,
     extra_memory_dir,
+    change_ids,
     sut_dir,
 ) -> None:
     project_root = Path.cwd()
@@ -114,6 +116,7 @@ def eval_run(
                 calibrate=calibrate,
                 adapter_factory=adapter_factory,
                 extra_memory_dir=overlay,
+                change_ids=tuple(change_ids),
             )
             _print_run(output_mode, as_json, run_id, gate.verdict)
             if fail_on_verdict and gate.verdict in _FAILING:
@@ -125,6 +128,7 @@ def eval_run(
                 sut_dir=sut,
                 adapter_factory=adapter_factory,
                 extra_memory_dir=overlay,
+                change_ids=tuple(change_ids),
             )
             worst = _worst_verdict([g.verdict for g in gates])
             _print_run(output_mode, as_json, batch_id, worst, key="batch_id")

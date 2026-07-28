@@ -29,7 +29,7 @@ Do not rely on prior conversation context.
 1. Write archived artifacts to `qa/archive/<change-id>/`.
 2. Merge case delta into `qa/cases/<module>/case.yaml`.
 3. Archive status is committed by the **archive graph node** (GraphRuntime). Never hand-edit
-   `workflow-state.yaml`, never run `aa workflow status`, and never write ledger/checkpoint files.
+   `workflow-state.yaml` and never write ledger/checkpoint files.
    Report the intended archive outcome in your final message; the graph node records it.
 
 ---
@@ -196,8 +196,7 @@ Read `final_status` from result JSON when present; otherwise derive from `workfl
 ### Step 4: Archive Process Artifacts
 
 > **Order matters:** produce archive artifacts first; the **archive graph node**
-> commits archive status to the ledger. Never run
-> `aa workflow status --phase archive` (removed) and never hand-edit
+> commits archive status to the ledger. Never hand-edit
 > `workflow-state.yaml` to mark archive done before copying evidence.
 
 Copy (do not move) the following to `qa/archive/<change-id>/`:

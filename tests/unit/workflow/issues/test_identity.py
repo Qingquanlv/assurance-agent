@@ -7,10 +7,12 @@ from assurance_agent.artifacts.models.issues import (
     AffectedSurface,
     FingerprintInputs,
     ProblemFingerprint,
+    ProblemFingerprintPreimage,
 )
 from assurance_agent.workflow.issues.identity import (
     DIGEST_PREFIX_LENGTH,
     ObservationIdentityInput,
+    candidate_document_digest,
     fingerprint_digest_for_version,
     occurrence_id,
     observation_id,
@@ -229,3 +231,71 @@ def test_problem_fingerprint_canonical_key_order_is_stable() -> None:
         }
     )
     assert fingerprint.digest == expected_digest
+
+
+def test_problem_fingerprint_exposes_verified_canonical_preimage_for_future_reuse() -> None:
+    fingerprint = problem_fingerprint(
+        affected_surface=AffectedSurface(kind="endpoint", value="post  /api/v1/dept/"),
+        fingerprint_inputs=FingerprintInputs(
+            surface="ignored duplicate surface",
+            symptom="Closure Not Rebuilt On Reparent",
+            qualifiers=["reparent", "dept closure"],
+        ),
+    )
+
+    assert fingerprint.preimage == ProblemFingerprintPreimage(
+        version="1",
+        surface_kind="endpoint",
+        surface_identity="POST /api/v1/dept",
+        symptom="closure_not_rebuilt_on_reparent",
+        qualifiers=["dept_closure", "reparent"],
+    )
+
+
+def test_problem_fingerprint_rejects_preimage_that_does_not_match_digest() -> None:
+    with pytest.raises(ValueError, match="preimage"):
+        ProblemFingerprint(
+            version="1",
+            digest="sha256:" + "a" * 64,
+            preimage=ProblemFingerprintPreimage(
+                version="1",
+                surface_kind="endpoint",
+                surface_identity="POST /api/v1/dept",
+                symptom="http_500",
+                qualifiers=[],
+            ),
+        )
+
+
+def test_candidate_document_digest_hashes_authored_json_without_inserting_defaults() -> None:
+    authored = {
+        "schema_version": "1.0",
+        "change_id": "CH-1",
+        "batch_id": "B-1",
+        "evidence_bundle_digest": "sha256:evidence",
+        "candidates": [
+            {
+                "candidate_id": "CAND-1",
+                "observation_ids": ["OBS-1"],
+                "proposed": {
+                    "title": "Endpoint fails",
+                    "classification": "product_bug",
+                    "severity": "high",
+                    "root_cause_hypothesis": "Unhandled input",
+                },
+                "affected_surface": {"kind": "endpoint", "value": "POST /api/items"},
+                "fingerprint_inputs": {"surface": "POST /api/items", "symptom": "http_500"},
+                "possible_problem_ids": [],
+                "confidence": 1,
+                "recommended_action": "investigate",
+            }
+        ],
+    }
+    expected = (
+        "sha256:"
+        + hashlib.sha256(
+            (json.dumps(authored, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        ).hexdigest()
+    )
+
+    assert candidate_document_digest(authored) == expected

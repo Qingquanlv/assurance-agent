@@ -9,37 +9,16 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from assurance_agent.artifacts.models.improvements import ImprovementSourceRefs
 
+# 共享 window/source 模型的唯一定义在 artifacts/models/retro_v3.py（分层：
+# retro → artifacts 为既有方向）；此处 re-export 保持既有 import 路径。
+from assurance_agent.artifacts.models.retro_v3 import (  # noqa: F401
+    RetroIntegrity,
+    RetroSelectionSnapshot,
+    RetroSourceDescriptor,
+    RetroWindow,
+)
+
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
-
-
-class RetroSelectionSnapshot(BaseModel):
-    model_config = _FROZEN
-
-    mode: Literal["change_ids", "time_range", "last"]
-    requested_change_ids: tuple[str, ...] = ()
-    requested_since: str | None = None
-    requested_until: str | None = None
-    requested_last: int | None = None
-
-
-class RetroWindow(BaseModel):
-    model_config = _FROZEN
-
-    selection: RetroSelectionSnapshot
-    change_ids: tuple[str, ...]
-    since: str | None = None
-    until: str | None = None
-    project_event_through: str | None = None
-
-
-class RetroSourceDescriptor(BaseModel):
-    model_config = _FROZEN
-
-    kind: Literal["change_issue_ledger", "project_problem_ledger", "workflow_ledger", "eval_run"]
-    change_id: str | None = None
-    head_event_id: str | None = None
-    sha256: str
-    evidence_ids: tuple[str, ...] = ()
 
 
 class RetroSourceManifest(BaseModel):
@@ -53,13 +32,6 @@ class RetroSourceManifest(BaseModel):
     def resolvable_ids(self) -> frozenset[str]:
         sources = (*self.issue_sources, *self.workflow_sources, *self.eval_sources)
         return frozenset(chain.from_iterable(source.evidence_ids for source in sources))
-
-
-class RetroIntegrity(BaseModel):
-    model_config = _FROZEN
-
-    status: Literal["complete", "incomplete"]
-    reasons: tuple[str, ...] = ()
 
 
 class RetroSignal(BaseModel):

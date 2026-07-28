@@ -64,6 +64,7 @@ from assurance_agent.workflow.issues.events import (
     ProblemResolvedEvent,
 )
 from assurance_agent.workflow.issues.identity import (
+    candidate_document_digest,
     occurrence_id as compute_occurrence_id,
     problem_fingerprint,
     problem_id as compute_problem_id,
@@ -169,10 +170,8 @@ def _per_candidate_digest(candidate_data: dict) -> str:
 
 
 def _batch_candidate_digest(candidates_doc: IssueCandidateDocument) -> str:
-    """Return a batch-level SHA-256 digest from the canonical IssueCandidateDocument."""
-    data = candidates_doc.model_dump(mode="json")
-    canonical = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
-    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    """Compatibility wrapper around the public candidate document digest contract."""
+    return candidate_document_digest(candidates_doc)
 
 
 def _make_occurrence(
@@ -673,6 +672,7 @@ def plan_reconciliation(
     manifest: IssueEvidenceManifest,
     expected_change_id: str,
     verification_evidence: VerificationEvidence | Mapping[str, object] | None = None,
+    candidate_digest: str | None = None,
 ) -> ReconciliationPlan:
     """Validate the candidate batch then derive immutable Occurrence/Problem events.
 
@@ -694,7 +694,7 @@ def plan_reconciliation(
     )
 
     ts = _utc_now()
-    batch_digest = _batch_candidate_digest(candidates)
+    batch_digest = candidate_digest or _batch_candidate_digest(candidates)
 
     resolved_verification: VerificationEvidence | None
     if verification_evidence is None:

@@ -9,11 +9,15 @@ what happened to the ``*-codegen-precondition-gate`` family.
 
 from __future__ import annotations
 
+import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 
+import pytest
 import yaml
 
+from assurance_agent.workflow.core.events import LedgerIntegrityError, append_event_strict
 from assurance_agent.workflow.orchestration.gates import GateEvaluationContext, check_gate_in_view
 from assurance_agent.workflow.orchestration.schema import normalize_gates
 
@@ -27,6 +31,7 @@ GATES = normalize_gates(
     missing_field_is: stop
     missing_file_is: stop
     reject_when: "leaf.decision == 'reject'"
+    needs_human_review_when: "leaf.decision == 'needs_human_review'"
     pass_when: "leaf.decision == 'pass'"
   referring-gate:
     reads: []
@@ -70,6 +75,98 @@ def test_reference_is_readjudicated_when_no_node_froze_it(tmp_path: Path) -> Non
     report = check_gate_in_view(GATES, "referring-gate", context)
 
     assert report.verdict.value == "pass"
+
+
+def test_reference_readjudication_applies_anchored_accept_risk(tmp_path: Path) -> None:
+    """Parent hard gates must see a decision accepted inside the review subgraph."""
+    context = _context(tmp_path)
+    _write_leaf(context, "needs_human_review")
+    review_path = context.change_dir / "review" / "leaf.json"
+    coordinator_dir = tmp_path / "coordinator" / "CH-1"
+    coordinator_dir.mkdir(parents=True)
+    review_sha256 = hashlib.sha256(review_path.read_bytes()).hexdigest()
+    append_event_strict(
+        coordinator_dir,
+        {
+            "source": "graph",
+            "type": "graph_interrupted",
+            "invocation_id": "review-invocation",
+            "checkpoint_ns": "root/review-cycle/review-invocation",
+            "interrupt_id": "interrupt-1",
+            "node_id": "human-review",
+            "checkpoint": "leaf-gate",
+            "actions": ["accept_risk", "stop"],
+            "audited_reads_sha256": {"review/leaf.json": review_sha256},
+        },
+    )
+    append_event_strict(
+        coordinator_dir,
+        {
+            "source": "graph",
+            "type": "graph_resumed",
+            "invocation_id": "root-invocation",
+            "checkpoint_ns": "root-invocation",
+            "interrupt_id": "interrupt-1",
+            "action": "accept_risk",
+            "reason": "benchmark accepted risk",
+            "who": "benchmark",
+            "audited_reads_sha256": {"review/leaf.json": review_sha256},
+            "payload": {},
+        },
+    )
+    context = replace(context, audit_events_dir=coordinator_dir)
+
+    report = check_gate_in_view(GATES, "referring-gate", context)
+
+    assert report.verdict.value == "pass"
+
+    _write_leaf(context, "reject")
+    drifted = check_gate_in_view(GATES, "referring-gate", context)
+    assert drifted.verdict.value == "stop"
+
+
+def test_reference_readjudication_rejects_corrupt_authoritative_ledger(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    _write_leaf(context, "needs_human_review")
+    review_path = context.change_dir / "review" / "leaf.json"
+    coordinator_dir = tmp_path / "coordinator" / "CH-1"
+    coordinator_dir.mkdir(parents=True)
+    review_sha256 = hashlib.sha256(review_path.read_bytes()).hexdigest()
+    append_event_strict(
+        coordinator_dir,
+        {
+            "source": "graph",
+            "type": "graph_interrupted",
+            "invocation_id": "review-invocation",
+            "checkpoint_ns": "root/review-cycle/review-invocation",
+            "interrupt_id": "interrupt-1",
+            "node_id": "human-review",
+            "checkpoint": "leaf-gate",
+            "actions": ["accept_risk", "stop"],
+            "audited_reads_sha256": {"review/leaf.json": review_sha256},
+        },
+    )
+    append_event_strict(
+        coordinator_dir,
+        {
+            "source": "graph",
+            "type": "graph_resumed",
+            "invocation_id": "root-invocation",
+            "checkpoint_ns": "root-invocation",
+            "interrupt_id": "interrupt-1",
+            "action": "accept_risk",
+            "reason": "benchmark accepted risk",
+            "who": "benchmark",
+            "audited_reads_sha256": {"review/leaf.json": review_sha256},
+            "payload": {},
+        },
+    )
+    with (coordinator_dir / "events.jsonl").open("a", encoding="utf-8") as stream:
+        stream.write("{corrupt-json\n")
+    context = replace(context, audit_events_dir=coordinator_dir)
+
+    with pytest.raises(LedgerIntegrityError):
+        check_gate_in_view(GATES, "referring-gate", context)
 
 
 def test_frozen_node_outcome_wins_over_readjudication(tmp_path: Path) -> None:

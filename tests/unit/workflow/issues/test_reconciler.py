@@ -49,6 +49,7 @@ from assurance_agent.workflow.issues.identity import (
     problem_fingerprint,
     problem_id,
 )
+from assurance_agent.workflow.issues.projection import project_problems
 from assurance_agent.workflow.issues.reconciler import (
     ReconciliationPlan,
     ReconciliationValidationError,
@@ -603,6 +604,18 @@ def test_problem_id_prefix_is_prob() -> None:
 
     detected = [e for e in plan.problem_events if e.type == "problem_detected"]
     assert all(e.problem_id.startswith("PROB-") for e in detected)
+
+
+def test_new_problem_event_persists_fingerprint_preimage_for_analyzer_reuse() -> None:
+    obs = _make_observations("OBS-001")
+    cand = _make_candidate("CAND-001", ["OBS-001"])
+
+    plan = _plan(_make_candidate_doc([cand]), obs, _empty_snapshot(), _empty_problems())
+
+    detected = next(e for e in plan.problem_events if e.type == "problem_detected")
+    assert detected.fingerprint.preimage is not None
+    projected = project_problems(plan.problem_events)
+    assert projected.problems[0].fingerprint.preimage == detected.fingerprint.preimage
 
 
 def test_occurrence_links_correct_problem_id() -> None:

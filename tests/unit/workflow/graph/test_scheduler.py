@@ -18,7 +18,12 @@ from pydantic import ValidationError
 from assurance_agent.workflow.core.events import append_event_strict, read_events_strict
 from assurance_agent.workflow.core.graph_types import ErrorKind
 from assurance_agent.workflow.graph.checkpoint import CheckpointStore, project_invocation
-from assurance_agent.workflow.graph.contracts import ResourceClaims, ResourcePath
+from assurance_agent.workflow.graph.contracts import (
+    ExecutionContract,
+    ExecutionContractCatalog,
+    ResourceClaims,
+    ResourcePath,
+)
 from assurance_agent.workflow.graph.models import (
     ExecutableTask,
     GraphProjection,
@@ -318,6 +323,49 @@ def test_non_conflicting_tasks_overlap(tmp_path: Path) -> None:
     a0, a1 = intervals["task-a"]
     b0, b1 = intervals["task-b"]
     assert a0 < b1 and b0 < a1, "monotonic intervals must overlap"
+
+
+def test_operation_workspace_skips_agent_only_git_index(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    change = project / "qa" / "changes" / "CH-1"
+    store = TreeStore(change)
+    tree_id = store.capture(project)
+    _seed_invocation(change, tree_id)
+
+    target = "operation:test"
+
+    def operation_handler(task, workspace, context) -> TaskResult:
+        assert not (workspace.root / ".git").exists()
+        output = workspace.project_root / "tests" / "api" / "operation.py"
+        output.write_text("operation\n", encoding="utf-8")
+        return TaskResult(status="succeeded")
+
+    task = _task(
+        "operation-task",
+        target=target,
+        writes=("repo:tests/api/**",),
+        input_payload={"with": {}, "outputs": ["repo:tests/api/operation.py"]},
+    )
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=_ScriptedRunner({task.task_id: operation_handler}),
+        contracts=ExecutionContractCatalog(
+            contracts={
+                target: ExecutionContract(
+                    target=target,
+                    handler="operation",
+                    writes=("repo:tests/api/**",),
+                    authorization_writes=("repo:tests/api/**",),
+                )
+            }
+        ),
+    )
+
+    result = scheduler.execute(_plan(task), _projection(change, tree_id), _context(project))
+
+    assert result.succeeded == (task.task_id,)
 
 
 def test_success_then_transient_fail_resume_only_retries_failed(tmp_path: Path) -> None:

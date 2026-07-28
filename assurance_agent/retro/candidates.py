@@ -1,14 +1,15 @@
-"""Strict schema-v2 Improvement Candidate read/digest/whole-batch validation."""
+"""Strict Improvement Candidate read/digest/whole-batch validation."""
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from pydantic import ValidationError
 
+from assurance_agent.artifacts.canonical import canonical_json_bytes, sha256_bytes
 from assurance_agent.artifacts.models.improvements import (
     DeliveryKind,
     ImprovementCandidate,
@@ -16,6 +17,11 @@ from assurance_agent.artifacts.models.improvements import (
     ImprovementKind,
 )
 from assurance_agent.exceptions import AaError
+from assurance_agent.artifacts.models.retro_v3 import (
+    ImprovementCandidateDocumentV3,
+    ImprovementCandidateV3,
+    RetroContextV3,
+)
 from assurance_agent.retro.types import RetroContext
 from assurance_agent.workflow.improvements.identity import improvement_fingerprint
 
@@ -52,18 +58,16 @@ class CandidateBatchInvalid(AaError):
         super().__init__(f"candidate batch invalid: {codes}")
 
 
-def _canonical_json_bytes(payload: object) -> bytes:
-    return (json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode(
-        "utf-8"
-    )
+RetroContextAny = RetroContext | RetroContextV3
+CandidateDocumentAny = ImprovementCandidateDocument | ImprovementCandidateDocumentV3
 
 
-def context_sha256(context: RetroContext) -> str:
-    return "sha256:" + hashlib.sha256(_canonical_json_bytes(context.model_dump(mode="json"))).hexdigest()
+def context_sha256(context: RetroContextAny) -> str:
+    return sha256_bytes(canonical_json_bytes(context))
 
 
-def candidate_batch_digest(document: ImprovementCandidateDocument) -> str:
-    return "sha256:" + hashlib.sha256(_canonical_json_bytes(document.model_dump(mode="json"))).hexdigest()
+def candidate_batch_digest(document: CandidateDocumentAny) -> str:
+    return sha256_bytes(canonical_json_bytes(document))
 
 
 def _parse_errors(err: ValidationError) -> list[CandidateValidationError]:
@@ -92,7 +96,11 @@ def _parse_errors(err: ValidationError) -> list[CandidateValidationError]:
     return errors or [CandidateValidationError(code="invalid_candidate", message=str(err))]
 
 
-def read_candidate_document(retro_dir: Path) -> ImprovementCandidateDocument:
+def read_candidate_document(
+    retro_dir: Path,
+    *,
+    expected_schema: Literal["2", "3"] | None = None,
+) -> CandidateDocumentAny:
     path = retro_dir / CANDIDATE_DOCUMENT_NAME
     if not path.is_file():
         raise AaError(f"{CANDIDATE_DOCUMENT_NAME} missing: {path}")
@@ -101,14 +109,28 @@ def read_candidate_document(retro_dir: Path) -> ImprovementCandidateDocument:
     except json.JSONDecodeError as err:
         raise AaError(f"{path} is not valid JSON: {err}") from err
     try:
+        actual_schema = raw.get("schema_version") if isinstance(raw, dict) else None
+        if expected_schema is not None and actual_schema != expected_schema:
+            raise CandidateBatchInvalid(
+                (
+                    CandidateValidationError(
+                        code="candidate_schema_mismatch",
+                        message=f"expected schema {expected_schema}, got {actual_schema}",
+                    ),
+                )
+            )
+        if actual_schema == "3":
+            return ImprovementCandidateDocumentV3.model_validate(raw)
         return ImprovementCandidateDocument.model_validate(raw)
+    except CandidateBatchInvalid:
+        raise
     except ValidationError as err:
         raise CandidateBatchInvalid(tuple(_parse_errors(err))) from err
 
 
 def validate_knowledge_eligibility(
     candidate: ImprovementCandidate,
-    context: RetroContext,
+    context: RetroContextAny,
 ) -> list[CandidateValidationError]:
     errors: list[CandidateValidationError] = []
     if candidate.kind is not ImprovementKind.DOMAIN_KNOWLEDGE:
@@ -176,18 +198,33 @@ def validate_knowledge_eligibility(
 
 
 def validate_candidate_document(
-    context: RetroContext,
-    document: ImprovementCandidateDocument,
+    context: RetroContextAny,
+    document: CandidateDocumentAny,
 ) -> None:
     errors: list[CandidateValidationError] = []
     if document.retro_id != context.retro_id:
         errors.append(CandidateValidationError(code="retro_id_mismatch"))
+    if isinstance(context, RetroContextV3) and not isinstance(document, ImprovementCandidateDocumentV3):
+        errors.append(CandidateValidationError(code="candidate_schema_mismatch"))
     if document.context_sha256 != context_sha256(context):
         errors.append(CandidateValidationError(code="context_digest_mismatch"))
 
     seen_ids: set[str] = set()
     seen_fingerprints: dict[str, str] = {}
     resolvable = context.source_manifest.resolvable_ids()
+    signal_ids = (
+        {
+            signal.signal_id
+            for domain_signals in (
+                context.signals.issue,
+                context.signals.workflow,
+                context.signals.eval,
+            )
+            for signal in domain_signals
+        }
+        if isinstance(context, RetroContextV3)
+        else set()
+    )
 
     for candidate in document.candidates:
         if candidate.candidate_id in seen_ids:
@@ -222,6 +259,17 @@ def validate_candidate_document(
                     ids=tuple(sorted(unknown)),
                 )
             )
+        if isinstance(document, ImprovementCandidateDocumentV3):
+            assert isinstance(candidate, ImprovementCandidateV3)
+            unknown_signals = set(candidate.signal_ids) - signal_ids
+            if unknown_signals:
+                errors.append(
+                    CandidateValidationError(
+                        code="unknown_signal_id",
+                        candidate_id=candidate.candidate_id,
+                        ids=tuple(sorted(unknown_signals)),
+                    )
+                )
         errors.extend(validate_knowledge_eligibility(candidate, context))
 
     if errors:

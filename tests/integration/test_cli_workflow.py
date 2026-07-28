@@ -99,56 +99,48 @@ def test_workflow_run_opencode_requires_server_exit_40() -> None:
         assert "--server is required" in result.output
 
 
-def test_workflow_status_json_no_invocation() -> None:
+def test_workflow_status_alias_warns_and_matches_aa_status() -> None:
     with CliRunner().isolated_filesystem():
         write_aa_config(Path.cwd())
         (Path("qa/changes/CH-1")).mkdir(parents=True)
-        result = CliRunner().invoke(main, ["workflow", "status", "--change", "CH-1", "--json"])
-        assert result.exit_code == 0
-        doc = json.loads(result.output)
-        assert doc["status"] is None
-        assert doc["invocation_id"] is None
+        alias = CliRunner().invoke(main, ["workflow", "status", "--change", "CH-1", "--json"])
+        direct = CliRunner().invoke(main, ["status", "--change", "CH-1", "--json"])
+        assert alias.exit_code == direct.exit_code == 0
+        assert alias.stdout == direct.stdout  # 逐字节等价（不含 stderr warning）
+        assert json.loads(alias.stdout) == {"status": None, "invocation_id": None}
+        assert "deprecated" in alias.stderr
 
 
-def test_workflow_status_json_from_ledger(monkeypatch) -> None:
-    status = GraphStatus(
-        invocation_id="inv-9",
-        entrypoint="full",
-        status="completed",
-        checkpoint_id="cp-9",
-        event_seq=4,
-        superstep=2,
-        running_tasks=(),
-        pending_tasks=(),
-        pending_write_sets=(),
-        pending_interrupts=(),
-        next_retry_at=None,
-        budgets={},
-        terminal_reason="done",
-    )
-
-    class _RT:
-        def latest_root_invocation(self):
-            return "inv-9"
-
-        def status(self, invocation_id):
-            assert invocation_id == "inv-9"
-            return status
+def test_workflow_status_alias_supports_next(monkeypatch) -> None:
+    from assurance_agent.commands import status_cmd
 
     monkeypatch.setattr(
-        wf,
-        "build_graph_runtime",
-        lambda **kwargs: type("B", (), {"runtime": _RT(), "compiled": None})(),
+        status_cmd,
+        "read_latest_graph_status",
+        lambda *a, **k: GraphStatus(
+            invocation_id="inv-9",
+            entrypoint="full",
+            status="completed",
+            checkpoint_id="cp-9",
+            event_seq=4,
+            superstep=2,
+            running_tasks=(),
+            pending_tasks=(),
+            pending_write_sets=(),
+            pending_interrupts=(),
+            next_retry_at=None,
+            budgets={},
+            terminal_reason="done",
+        ),
     )
     with CliRunner().isolated_filesystem():
         write_aa_config(Path.cwd())
         (Path("qa/changes/CH-1")).mkdir(parents=True)
-        result = CliRunner().invoke(main, ["workflow", "status", "--change", "CH-1", "--json"])
-        assert result.exit_code == 0
-        doc = json.loads(result.output)
-        assert doc["invocation_id"] == "inv-9"
-        assert doc["status"] == "completed"
-        assert "driver" not in doc
+        alias = CliRunner().invoke(main, ["workflow", "status", "--change", "CH-1", "--next", "--json"])
+        direct = CliRunner().invoke(main, ["status", "--change", "CH-1", "--next", "--json"])
+        assert alias.exit_code == direct.exit_code == 0
+        assert alias.stdout == direct.stdout
+        assert "deprecated" in alias.stderr
 
 
 def test_workflow_run_detach_success_exit_0(monkeypatch) -> None:

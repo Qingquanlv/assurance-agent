@@ -169,7 +169,11 @@ def test_allowed_kind_delivery_matrix_passes_batch_validation(context: RetroCont
 def test_duplicate_candidate_ids_reject_whole_batch(
     context: RetroContext, valid_candidate: ImprovementCandidate
 ) -> None:
-    twin = valid_candidate.model_copy(update={"proposed_change": "Different intent but same candidate_id"})
+    twin = valid_candidate.model_copy(
+        update={
+            "proposed_change": "Different intent but same candidate_id",
+        }
+    )
     document = ImprovementCandidateDocument(
         retro_id=context.retro_id,
         context_sha256=context_sha256(context),

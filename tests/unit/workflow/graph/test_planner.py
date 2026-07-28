@@ -22,7 +22,11 @@ from assurance_agent.workflow.core.graph_events import (
     TaskRecoveryRoutedEvent,
 )
 from assurance_agent.workflow.graph.compiler import compile_workflow
-from assurance_agent.workflow.graph.contracts import ResourcePath
+from assurance_agent.workflow.graph.contracts import (
+    ExecutionContract,
+    ExecutionContractCatalog,
+    ResourcePath,
+)
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
@@ -148,6 +152,30 @@ graphs:
           pass: END
           needs_fix: fix
         default: STOP
+"""
+
+BOOLEAN_ROUTE_GRAPH = """
+schema_version: "2"
+name: planner-boolean-route
+entrypoints:
+  full: {graph: main}
+graphs:
+  main:
+    max_supersteps: 8
+    nodes:
+      decide: {uses: operation:decide-op}
+      approved: {uses: operation:approved-op}
+      rejected: {uses: operation:rejected-op}
+    edges:
+      - {from: START, to: decide}
+      - {from: approved, to: END}
+      - {from: rejected, to: END}
+    routes:
+      - from: decide
+        select: "node('decide').value"
+        cases:
+          "true": approved
+          "false": rejected
 """
 
 CYCLE_GRAPH = """
@@ -666,6 +694,17 @@ def test_route_selects_case_default_and_fail_closed(tmp_path: Path) -> None:
     closed = _plan(no_default, missing, tmp_path)
     assert closed.terminal == "stop"
     assert closed.tasks == ()
+
+
+@pytest.mark.parametrize(("value", "expected"), [(True, "approved"), (False, "rejected")])
+def test_route_normalizes_boolean_labels(value: bool, expected: str, tmp_path: Path) -> None:
+    compiled = _compile(BOOLEAN_ROUTE_GRAPH)
+    decide = _initial_tasks(compiled, tmp_path)["decide"]
+    projection = _projection(compiled, tasks=[_task(decide, "succeeded", value=value)])
+
+    plan = _plan(compiled, projection, tmp_path)
+
+    assert [task.node_id for task in plan.tasks] == [expected]
 
 
 def test_cycle_fix_edge_reactivates_review(tmp_path: Path) -> None:
@@ -1414,6 +1453,49 @@ def test_graph_digest_drift_fails_closed(tmp_path: Path) -> None:
     assert caught.value.error_kind == "graph_definition_changed"
 
 
+def test_sha256_param_is_allowed_as_one_content_addressed_path_segment(tmp_path: Path) -> None:
+    schema = parse_workflow_v2(
+        """
+schema_version: "2"
+name: sha-path-test
+params:
+  subject_sha256: {type: str, default: ""}
+entrypoints: {main: {graph: main}}
+graphs:
+  main:
+    max_supersteps: 4
+    nodes:
+      read:
+        uses: operation:no-op
+        resources:
+          reads: ["project:qa/review-subjects/${params.subject_sha256}.json"]
+    edges: [{from: START, to: read}, {from: read, to: END}]
+"""
+    )
+    compiled = compile_workflow(
+        schema,
+        ExecutionContractCatalog(
+            contracts={
+                "operation:no-op": ExecutionContract(
+                    target="operation:no-op",
+                    handler="operation",
+                    reads=("project:qa/review-subjects/*",),
+                    side_effect_free=True,
+                )
+            }
+        ),
+    )
+    digest = "sha256:" + "a" * 64
+    projection = _projection(compiled, params={"subject_sha256": digest}).model_copy(
+        update={"entrypoint": "main", "contract_digests": compiled.contract_digests}
+    )
+
+    context = _context(tmp_path).model_copy(update={"params": {"subject_sha256": digest}})
+    task = plan_superstep(compiled, projection, context, _FakeArtifacts()).tasks[0]
+
+    assert task.resources.reads[0].pattern.endswith(f"/{digest}.json")
+
+
 def test_checkpoint_id_tracks_latest_or_bootstrap(tmp_path: Path) -> None:
     compiled = _compile(DIAMOND)
     bootstrap = _plan(compiled, _projection(compiled), tmp_path)
@@ -1515,8 +1597,12 @@ def test_edge_when_can_read_node_value_signal_count(tmp_path: Path) -> None:
     assert plan.terminal == "end"
 
 
-def _planned_retro_agent_task(tmp_path: Path, *, retro_id: str):
-    """Plan the propose-improvements node from the packaged retro-workflow."""
+def _planned_retro_tasks(
+    tmp_path: Path,
+    *,
+    retro_id: str,
+) -> tuple[ExecutableTask, ExecutableTask]:
+    """Walk the packaged v3 topology and return proposer/reconciler tasks."""
     from assurance_agent.workflow.graph.compiler import compile_workflow, resolve_params
     from assurance_agent.workflow.graph.contracts import load_execution_contracts
     from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
@@ -1532,10 +1618,9 @@ def _planned_retro_agent_task(tmp_path: Path, *, retro_id: str):
             "retro_last": 10,
         },
     )
-    # Seed collect as succeeded with signals so propose is planned.
-    collect_proj = GraphProjection(
+    projection = GraphProjection(
         invocation_id="inv-retro",
-        entrypoint="retro",
+        entrypoint="retro-workflow",
         checkpoint_ns="inv-retro",
         structural_path="retro-workflow",
         graph_digest=compiled.digest,
@@ -1544,6 +1629,7 @@ def _planned_retro_agent_task(tmp_path: Path, *, retro_id: str):
         root_tree_id="tree-0",
         current_tree_id="tree-0",
         tasks={},
+        parent_invocation_id="outer-retro",
     )
     context = RuntimeContext(
         project_root=tmp_path,
@@ -1557,38 +1643,65 @@ def _planned_retro_agent_task(tmp_path: Path, *, retro_id: str):
         def read_json(self, tree_id: str, logical_path: str):
             raise KeyError(logical_path)
 
-    # Activate collect first, then mark it succeeded with signal_count>0.
-    plan0 = plan_superstep(compiled, collect_proj, context, _Empty())
-    collect_task = next(t for t in plan0.tasks if t.node_id == "collect-retro-evidence")
-    after_collect = GraphProjection(
-        invocation_id="inv-retro",
-        entrypoint="retro",
-        checkpoint_ns="inv-retro",
-        structural_path="retro-workflow",
-        graph_digest=compiled.digest,
-        contract_digests=dict(compiled.contract_digests),
-        params=params,
-        root_tree_id="tree-0",
-        current_tree_id="tree-0",
-        supersteps=1,
-        tasks={
-            collect_task.task_id: TaskProjection(
-                task_id=collect_task.task_id,
-                node_id="collect-retro-evidence",
+    reader = _Empty()
+
+    def advance(
+        current: GraphProjection,
+        tasks: tuple[ExecutableTask, ...],
+        *,
+        values: dict[str, object] | None = None,
+    ) -> GraphProjection:
+        updates = {
+            task.task_id: TaskProjection(
+                task_id=task.task_id,
+                node_id=task.node_id,
                 status="succeeded",
                 attempts_used=1,
-                latest_attempt_id=f"{collect_task.task_id}-a1",
-                value={"retro_id": retro_id, "signal_count": 1},
+                latest_attempt_id=f"{task.task_id}-a1",
+                outputs_committed=True,
+                value=(values or {}).get(task.node_id),
             )
-        },
+            for task in tasks
+        }
+        return current.model_copy(
+            update={
+                "supersteps": current.supersteps + 1,
+                "tasks": {**current.tasks, **updates},
+            }
+        )
+
+    expected_waves = (
+        {"drain-reconcile-outbox"},
+        {"collect-retro-evidence"},
+        {"analyze-issue", "analyze-workflow", "analyze-eval"},
+        {"issue-settled", "workflow-settled", "eval-settled"},
+        {"analysis-join"},
+        {"assemble-retro-context"},
     )
-    plan1 = plan_superstep(compiled, after_collect, context, _Empty())
-    propose = next(t for t in plan1.tasks if t.node_id == "propose-improvements")
-    return propose
+    for expected in expected_waves:
+        plan = plan_superstep(compiled, projection, context, reader)
+        assert {task.node_id for task in plan.tasks} == expected
+        if expected == {"collect-retro-evidence"}:
+            synchronized = {path.pattern for path in plan.tasks[0].resources.synchronized}
+            assert f"qa/retro/{retro_id}/**" in synchronized
+            assert "qa/retro/**" not in synchronized
+        values: dict[str, object] | None = None
+        if "collect-retro-evidence" in expected:
+            values = {"collect-retro-evidence": {"all_domain_evidence_absent": False}}
+        elif "assemble-retro-context" in expected:
+            values = {"assemble-retro-context": {"retro_id": retro_id, "signal_count": 1}}
+        projection = advance(projection, plan.tasks, values=values)
+
+    propose_plan = plan_superstep(compiled, projection, context, reader)
+    propose = next(task for task in propose_plan.tasks if task.node_id == "propose-improvements")
+    projection = advance(projection, propose_plan.tasks)
+    reconcile_plan = plan_superstep(compiled, projection, context, reader)
+    reconcile = next(task for task in reconcile_plan.tasks if task.node_id == "reconcile-improvements")
+    return propose, reconcile
 
 
 def test_retro_agent_can_only_read_current_context(tmp_path: Path) -> None:
-    task = _planned_retro_agent_task(tmp_path, retro_id="retro-current")
+    task, _ = _planned_retro_tasks(tmp_path, retro_id="retro-current")
     assert tuple((path.root, path.pattern) for path in task.resources.reads) == (
         ("project", "qa/retro/retro-current/context.json"),
     )
@@ -1603,78 +1716,7 @@ def test_retro_agent_can_only_read_current_context(tmp_path: Path) -> None:
 
 
 def test_retro_reconcile_claims_are_synchronized_and_exclusive(tmp_path: Path) -> None:
-    from assurance_agent.workflow.graph.compiler import compile_workflow, resolve_params
-    from assurance_agent.workflow.graph.contracts import load_execution_contracts
-    from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
-
-    schema = load_workflow_v2(Path.cwd(), Path("assurance_agent/_resources/schemas/workflow-schema.yaml"))
-    contracts = load_execution_contracts(Path.cwd())
-    compiled = compile_workflow(schema, contracts)
-    params = resolve_params(
-        compiled.schema,
-        {"retro_id": "retro-current", "retro_dry_run": False, "retro_last": 10},
-    )
-    context = RuntimeContext(
-        project_root=tmp_path,
-        repo_root=tmp_path,
-        change_dir=tmp_path / "change",
-        change_id="RETRO-RUN",
-        params=params,
-    )
-
-    class _Empty:
-        def read_json(self, tree_id: str, logical_path: str):
-            raise KeyError(logical_path)
-
-    # Walk collect → propose → reconcile activations.
-    projection = GraphProjection(
-        invocation_id="inv-retro",
-        entrypoint="retro",
-        checkpoint_ns="inv-retro",
-        structural_path="retro-workflow",
-        graph_digest=compiled.digest,
-        contract_digests=dict(compiled.contract_digests),
-        params=params,
-        root_tree_id="tree-0",
-        current_tree_id="tree-0",
-        tasks={},
-    )
-    plan0 = plan_superstep(compiled, projection, context, _Empty())
-    collect = next(t for t in plan0.tasks if t.node_id == "collect-retro-evidence")
-    projection = projection.model_copy(
-        update={
-            "supersteps": 1,
-            "tasks": {
-                collect.task_id: TaskProjection(
-                    task_id=collect.task_id,
-                    node_id="collect-retro-evidence",
-                    status="succeeded",
-                    attempts_used=1,
-                    latest_attempt_id=f"{collect.task_id}-a1",
-                    value={"retro_id": "retro-current", "signal_count": 1},
-                )
-            },
-        }
-    )
-    plan1 = plan_superstep(compiled, projection, context, _Empty())
-    propose = next(t for t in plan1.tasks if t.node_id == "propose-improvements")
-    projection = projection.model_copy(
-        update={
-            "supersteps": 2,
-            "tasks": {
-                **projection.tasks,
-                propose.task_id: TaskProjection(
-                    task_id=propose.task_id,
-                    node_id="propose-improvements",
-                    status="succeeded",
-                    attempts_used=1,
-                    latest_attempt_id=f"{propose.task_id}-a1",
-                ),
-            },
-        }
-    )
-    plan2 = plan_superstep(compiled, projection, context, _Empty())
-    reconcile = next(t for t in plan2.tasks if t.node_id == "reconcile-improvements")
+    _, reconcile = _planned_retro_tasks(tmp_path, retro_id="retro-current")
     assert ResourcePath.parse("project:qa/improvements/**") in reconcile.resources.synchronized
     assert ResourcePath.parse("project:qa/retro/**") in reconcile.resources.synchronized
     assert "project:improvement-registry" in reconcile.resources.exclusive

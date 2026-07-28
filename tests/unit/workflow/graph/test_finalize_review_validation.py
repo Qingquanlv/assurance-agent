@@ -16,6 +16,7 @@ import yaml
 
 from assurance_agent.workflow.graph.finalize import _validate_registry_outputs
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
+from assurance_agent.workflow.issues.identity import candidate_document_digest
 
 
 def _workspace(tmp_path: Path) -> TaskWorkspace:
@@ -38,6 +39,33 @@ def _write(ws: TaskWorkspace, rel: str, payload: object) -> None:
         path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
     else:
         path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_project_candidate_document_is_validated_at_agent_boundary(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    path = ws.project_root / "qa" / "retro" / "retro-1" / "proposal-candidates.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "2",
+                "retro_id": "retro-1",
+                "context_sha256": "sha256:context",
+                "candidates": [{"candidate_id": "IMP-CAND-1"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _validate_registry_outputs(
+        workspace=ws,
+        outputs=("project:qa/retro/retro-1/proposal-candidates.json",),
+    )
+
+    assert result is not None
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_output"
+    assert "improvement_candidate_document" in (result.error or "")
 
 
 _BASE_API_REVIEW = {
@@ -152,6 +180,142 @@ def test_qa_yaml_must_compat_missing_targets_is_invalid_output(tmp_path: Path) -
     assert result is not None
     assert result.error_kind == "invalid_output"
     assert "targets" in (result.error or "")
+
+
+def test_issue_candidate_with_unknown_surface_kind_is_invalid_output(tmp_path: Path) -> None:
+    """Analyzer output is rejected before reconcile when its enum violates the contract."""
+    ws = _workspace(tmp_path)
+    _write(
+        ws,
+        "inspect/issue-candidates.json",
+        {
+            "schema_version": "1.0",
+            "change_id": "CH-1",
+            "batch_id": "batch-1",
+            "evidence_bundle_digest": "sha256:evidence",
+            "candidates": [
+                {
+                    "candidate_id": "CAND-001",
+                    "observation_ids": ["OBS-001"],
+                    "proposed": {
+                        "title": "Knowledge fixture is missing",
+                        "classification": "workflow_issue",
+                        "severity": "medium",
+                        "root_cause_hypothesis": "The fixture contract is incomplete",
+                    },
+                    "affected_surface": {"kind": "knowledge", "value": "auth.token"},
+                    "fingerprint_inputs": {
+                        "surface": "auth.token",
+                        "symptom": "fixture_missing",
+                    },
+                    "possible_problem_ids": [],
+                    "confidence": 0.9,
+                    "recommended_action": "update the fixture contract",
+                }
+            ],
+        },
+    )
+
+    result = _validate_registry_outputs(
+        workspace=ws,
+        outputs=("change:inspect/issue-candidates.json",),
+    )
+
+    assert result is not None
+    assert result.error_kind == "invalid_output"
+    assert "affected_surface.kind" in (result.error or "")
+
+
+def test_issue_analysis_status_rejects_noncanonical_candidate_digest(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    candidate_document = {
+        "schema_version": "1.0",
+        "change_id": "CH-1",
+        "batch_id": "batch-1",
+        "evidence_bundle_digest": "sha256:evidence",
+        "candidates": [],
+    }
+    _write(ws, "inspect/issue-candidates.json", candidate_document)
+    _write(
+        ws,
+        "inspect/issue-analysis-status.json",
+        {
+            "schema_version": "1.0",
+            "change_id": "CH-1",
+            "batch_id": "batch-1",
+            "status": "completed",
+            "evidence_bundle_digest": "sha256:evidence",
+            "candidate_count": 0,
+            "candidate_digest": "sha256:raw-file-bytes",
+        },
+    )
+
+    result = _validate_registry_outputs(
+        workspace=ws,
+        outputs=(
+            "change:inspect/issue-candidates.json",
+            "change:inspect/issue-analysis-status.json",
+        ),
+    )
+
+    assert result is not None
+    assert result.error_kind == "invalid_output"
+    assert "candidate_digest" in (result.error or "")
+    assert "canonical" in (result.error or "")
+
+
+def test_issue_analysis_status_accepts_authored_json_digest_without_model_defaults(
+    tmp_path: Path,
+) -> None:
+    ws = _workspace(tmp_path)
+    candidate_document = {
+        "schema_version": "1.0",
+        "change_id": "CH-1",
+        "batch_id": "batch-1",
+        "evidence_bundle_digest": "sha256:evidence",
+        "candidates": [
+            {
+                "candidate_id": "CAND-001",
+                "observation_ids": ["OBS-001"],
+                "proposed": {
+                    "title": "Endpoint fails",
+                    "classification": "product_bug",
+                    "severity": "high",
+                    "root_cause_hypothesis": "Unhandled input",
+                },
+                "affected_surface": {"kind": "endpoint", "value": "POST /api/items"},
+                "fingerprint_inputs": {"surface": "POST /api/items", "symptom": "http_500"},
+                "possible_problem_ids": [],
+                "confidence": 1,
+                "recommended_action": "investigate",
+            }
+        ],
+    }
+    _write(ws, "inspect/issue-candidates.json", candidate_document)
+    _write(
+        ws,
+        "inspect/issue-analysis-status.json",
+        {
+            "schema_version": "1.0",
+            "change_id": "CH-1",
+            "batch_id": "batch-1",
+            "status": "completed",
+            "evidence_bundle_digest": "sha256:evidence",
+            "candidate_count": 1,
+            "candidate_digest": candidate_document_digest(candidate_document),
+        },
+    )
+
+    assert (
+        _validate_registry_outputs(
+            workspace=ws,
+            outputs=(
+                "change:inspect/issue-candidates.json",
+                "change:inspect/issue-analysis-status.json",
+            ),
+        )
+        is None
+    )
 
 
 def test_versioned_and_directory_outputs_are_skipped(tmp_path: Path) -> None:

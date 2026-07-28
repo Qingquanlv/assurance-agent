@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Sequence
 from pathlib import Path
@@ -10,6 +9,8 @@ from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from assurance_agent.artifacts.canonical import sha256_bytes
+from assurance_agent.artifacts.models.eval_projection import EvalRunProjection
 from assurance_agent.retro.types import RetroIntegrity, RetroSourceDescriptor
 
 if TYPE_CHECKING:
@@ -28,6 +29,9 @@ class EvalReportRecord(BaseModel):
     verdict: str = Field(min_length=1)
     started_at: str = Field(min_length=1)
     completed_at: str | None = None
+    source_change_ids: tuple[str, ...] | None = None
+    failure_signature: str | None = None
+    sample_ids: tuple[str, ...] = ()
     sha256: str = Field(min_length=1)
 
 
@@ -51,12 +55,8 @@ class EvalHistoryReader(Protocol):
 
 
 def _runs_dir(project_root: Path) -> Path:
-    """Eval report root; local helper avoids retro↔eval package imports."""
-    return project_root / "eval" / "out" / "runs"
-
-
-def _sha256_bytes(data: bytes) -> str:
-    return "sha256:" + hashlib.sha256(data).hexdigest()
+    """Compact Eval projection root; Retro never reads raw ``eval/out``."""
+    return project_root / "qa" / "eval" / "runs"
 
 
 def _ts_in_closed_range(ts: str, since: str | None, until: str | None) -> bool:
@@ -95,17 +95,24 @@ def _parse_report(
     hint = _started_at_hint(payload)
     if not isinstance(payload, dict):
         return None, f"eval_report_corrupt:{run_id_fallback}", hint
-    run_id = payload.get("run_id") or run_id_fallback
+    if payload.get("schema_version") == "2":
+        return None, f"eval_projection_unsupported:{run_id_fallback}", hint
     try:
+        projection = EvalRunProjection.model_validate(payload)
+        if projection.run_id != run_id_fallback:
+            return None, f"eval_report_corrupt:{run_id_fallback}", hint
         record = EvalReportRecord(
-            run_id=str(run_id),
-            suite=str(payload["suite"]),
-            verdict=str(payload["verdict"]),
-            started_at=str(payload["started_at"]),
-            completed_at=str(payload["completed_at"]) if payload.get("completed_at") else None,
-            sha256=_sha256_bytes(raw),
+            run_id=projection.run_id,
+            suite=projection.suite,
+            verdict=projection.verdict,
+            started_at=projection.started_at,
+            completed_at=projection.completed_at,
+            source_change_ids=projection.source_change_ids,
+            failure_signature=projection.failure_signature,
+            sample_ids=projection.sample_ids,
+            sha256=sha256_bytes(raw),
         )
-    except (KeyError, TypeError, ValidationError):
+    except ValidationError:
         return None, f"eval_report_corrupt:{run_id_fallback}", hint
     return record, None, record.started_at
 
@@ -134,7 +141,7 @@ def _build_slice(
 
 
 class FileEvalHistoryReader:
-    """Production adapter over ``eval/out/runs/*/report.json``."""
+    """Production adapter over compact ``qa/eval/runs/*/report.json`` projections."""
 
     def __init__(self, project_root: Path) -> None:
         self._root = project_root
@@ -142,11 +149,22 @@ class FileEvalHistoryReader:
     def read_window(self, window: ResolvedRetroWindow) -> EvalEvidenceSlice:
         root = _runs_dir(self._root)
         if not root.is_dir():
-            return _build_slice((), ("eval_runs_missing",))
+            if window.batch_scope is None:
+                return _build_slice((), ("eval_runs_missing",))
+            return _build_slice(
+                (),
+                tuple(
+                    f"batch_member_evidence_gap:{member.change_id}:"
+                    f"{member.execution_status}:eval:projection_missing"
+                    for member in window.batch_scope.members
+                ),
+            )
 
         reports: list[EvalReportRecord] = []
         reasons: list[str] = []
         unbounded = window.since is None and window.until is None
+        association_required = window.selection.mode in {"change_ids", "last"}
+        selected_change_ids = set(window.change_ids)
         for run_path in sorted(p for p in root.iterdir() if p.is_dir()):
             report_path = run_path / "report.json"
             if not report_path.is_file():
@@ -157,20 +175,40 @@ class FileEvalHistoryReader:
                 continue
             record, error, started_hint = _parse_report(report_path, run_id_fallback=run_path.name)
             if error is not None:
+                if error.startswith("eval_projection_unsupported:"):
+                    continue
                 if started_hint is not None:
                     if _ts_in_closed_range(started_hint, window.since, window.until):
-                        reasons.append(error)
+                        if window.batch_scope is None:
+                            reasons.append(error)
+                        else:
+                            reasons.extend(
+                                f"batch_member_evidence_gap:{member.change_id}:"
+                                f"{member.execution_status}:eval:projection_corrupt"
+                                for member in window.batch_scope.members
+                            )
                 elif unbounded:
-                    reasons.append(error)
+                    if window.batch_scope is None:
+                        reasons.append(error)
+                    else:
+                        reasons.extend(
+                            f"batch_member_evidence_gap:{member.change_id}:"
+                            f"{member.execution_status}:eval:projection_corrupt"
+                            for member in window.batch_scope.members
+                        )
                 continue
             assert record is not None
             if not _ts_in_closed_range(record.started_at, window.since, window.until):
+                continue
+            if association_required and (
+                record.source_change_ids is None or selected_change_ids.isdisjoint(record.source_change_ids)
+            ):
                 continue
             reports.append(record)
 
         # Empty directory that exists with zero reports is a complete empty set.
         # Only in-window missing/corrupt reports keep concrete incomplete reasons.
-        return _build_slice(reports, reasons)
+        return _build_slice(reports, tuple(dict.fromkeys(reasons)))
 
 
 class InMemoryEvalHistoryReader:
@@ -188,6 +226,13 @@ class InMemoryEvalHistoryReader:
             report
             for report in self._slice.reports
             if _ts_in_closed_range(report.started_at, window.since, window.until)
+            and (
+                window.selection.mode == "time_range"
+                or (
+                    report.source_change_ids is not None
+                    and not set(window.change_ids).isdisjoint(report.source_change_ids)
+                )
+            )
         )
         # Preserve original incomplete reasons when replaying the same source set.
         if filtered == self._slice.reports:

@@ -46,8 +46,19 @@ Every candidate you propose **MUST**:
 - Propose a `classification` (`product_bug`, `test_bug`, `test_data_issue`, `environment_issue`, `coverage_gap`, `performance_issue`, `workflow_issue`, `unknown`) — this is a **proposal**, not canonical state.
 - Propose a `severity` (`critical`, `high`, `medium`, `low`) — this is a **proposal**, not canonical state.
 - Include a `root_cause_hypothesis` — descriptive prose about the likely root cause.
-- Include `affected_surface` with `kind` and `value`.
-- Include `fingerprint_inputs` with `surface`, `symptom`, and optional `qualifiers`. Normalize: endpoint methods to uppercase, paths without trailing slash, module names to lowercase tokens, symptom signatures to lowercase underscore tokens.
+- Include `affected_surface` with `kind` and `value`. `kind` MUST be exactly one of:
+  `endpoint`, `module`, `case`, `test`, `workflow`, `environment`, `unknown`.
+  Do not invent narrower kinds such as `knowledge`, `plan`, or `ui`; express that
+  detail in `value` and map process artifacts/configuration to `workflow`, source
+  components to `module`, UI or API routes to `endpoint`, and ambiguous surfaces
+  to `unknown`.
+- Include `fingerprint_inputs` with `surface`, `symptom`, and optional `qualifiers`.
+  The symptom is a stable behavior identity, not a prose summary: use lowercase
+  underscore tokens that describe observable behavior and keep it unchanged
+  when the same behavior recurs. Omit qualifiers by default. Add them only when
+  a stable context fact is required to distinguish two Problems with the same
+  surface and symptom; never use evidence source (`fuzz`, review name, case ID),
+  guessed root cause, implementation helper, or wording variants as qualifiers.
 - Include `possible_problem_ids` — a list of existing Problem IDs from `problems.json` that may match semantically (or empty list if no semantic match).
 - Include a `confidence` score between 0.0 and 1.0.
 - Include a `recommended_action` string.
@@ -93,10 +104,14 @@ Every candidate you propose **MUST**:
   "batch_id": "<batch-id>",
   "status": "completed",
   "evidence_bundle_digest": "<digest from manifest>",
-  "candidate_count": 1,
-  "candidate_digest": "<sha256-of-candidates-file>"
+  "candidate_count": 1
 }
 ```
+
+Do not write `candidate_digest` and do not run a hash command or create a helper
+script, hook, or temporary file to compute it. The runtime computes and inserts
+the canonical digest after validating both declared outputs and before freezing
+the task write-set.
 
 If analysis fails irrecoverably due to unreadable evidence:
 ```json
@@ -121,7 +136,18 @@ If analysis fails irrecoverably due to unreadable evidence:
 ## Problem Projection Use
 
 - Read `qa/issues/problems.json` to find existing Problems whose fingerprints might semantically match a candidate.
-- Populate `possible_problem_ids` with IDs of semantically similar Problems (not exact fingerprint matches — those are handled by the reconciler).
+- When you judge that an observation is the same Problem and that Problem's
+  `fingerprint.preimage` is present, reuse the preimage exactly:
+  - set `affected_surface.kind` from `surface_kind`;
+  - set `affected_surface.value` and `fingerprint_inputs.surface` from
+    `surface_identity`;
+  - set `fingerprint_inputs.symptom` and `qualifiers` from the preimage;
+  - do not add that Problem ID to `possible_problem_ids`.
+  This is the only automatic-link path. Do not paraphrase or enrich a retained
+  preimage—the reconciler must compute the existing digest exactly.
+- If a Problem is only semantically similar, or is a legacy Problem whose
+  fingerprint has no `preimage`, populate `possible_problem_ids` for human
+  merge review. Never force a semantic match into an exact identity.
 - Never set any field asserting that a Problem was created, updated, resolved, or merged.
 
 ## Idempotency

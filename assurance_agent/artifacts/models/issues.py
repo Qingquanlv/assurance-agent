@@ -1,11 +1,17 @@
-"""Issue lifecycle artifact models (versioned).
+"""Issue lifecycle artifact models.
 
 Canonical Change-relative inspect/** and issues/snapshot.json contracts for
 Observation collection, LLM candidate analysis, reconciliation status, and
 Change Issue projections. Project-level qa/issues/*.json models live here but
 are validated by the Issue store, not the Change-relative artifact registry.
+
+The documents retain explicit schema versions. Analyzer-authored candidate and
+analysis-status documents are additionally ``must_compat`` at the workflow
+boundary because the deterministic reconciler consumes their exact fields.
 """
 
+import hashlib
+import json
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -213,11 +219,41 @@ class IssueOccurrence(BaseModel):
     analysis: OccurrenceAnalysis
 
 
+class ProblemFingerprintPreimage(BaseModel):
+    """Canonical identity inputs retained so later analyzers can reuse an exact Problem."""
+
+    model_config = _FROZEN
+
+    version: Literal["1"]
+    surface_kind: AffectedSurfaceKind
+    surface_identity: NonEmptyStr
+    symptom: NonEmptyStr
+    qualifiers: list[NonEmptyStr] = Field(default_factory=list)
+
+
 class ProblemFingerprint(BaseModel):
     model_config = _FROZEN
 
     version: Literal["1"]
     digest: NonEmptyStr
+    preimage: ProblemFingerprintPreimage | None = None
+
+    @model_validator(mode="after")
+    def _preimage_must_match_digest(self) -> "ProblemFingerprint":
+        if self.preimage is None:
+            return self  # Legacy v1 ledger entries did not retain the preimage.
+        if self.preimage.version != self.version:
+            raise ValueError("fingerprint preimage version must match fingerprint version")
+        canonical = json.dumps(
+            self.preimage.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        expected = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        if self.digest != expected:
+            raise ValueError("fingerprint preimage does not match digest")
+        return self
 
 
 class ProblemAssessment(BaseModel):
@@ -305,10 +341,11 @@ class ProblemReviewQueueEntry(BaseModel):
     model_config = _FROZEN
 
     entry_id: NonEmptyStr
+    problem_id: NonEmptyStr
     change_id: NonEmptyStr
     occurrence_id: NonEmptyStr
     candidate_id: NonEmptyStr | None = None
-    possible_problem_ids: list[NonEmptyStr] = Field(min_length=1)
+    possible_problem_ids: list[NonEmptyStr] = Field(default_factory=list)
     reason: NonEmptyStr
     created_at: NonEmptyStr
 

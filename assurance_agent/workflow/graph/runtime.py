@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -35,6 +35,10 @@ from assurance_agent.workflow.graph.checkpoint import (
     CheckpointStore,
     render_workflow_state_yaml,
     validate_import,
+)
+from assurance_agent.workflow.graph.status import (
+    graph_status_from_projection,
+    pending_write_sets as _pending_write_sets_fn,
 )
 from assurance_agent.workflow.graph.compiler import canonical_digest, resolve_params
 from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
@@ -130,54 +134,6 @@ class GraphDefinitionChanged(GraphRuntimeError):
 
 class GraphIntegrityError(GraphRuntimeError):
     """checkpoint/ledger 损坏或因果完整性失败。"""
-
-
-def graph_status_from_projection(
-    projection: GraphProjection,
-    *,
-    pending_write_sets: tuple[str, ...] = (),
-) -> GraphStatus:
-    """从 ledger 投影派生公开 GraphStatus（不读 workflow-state.yaml）。"""
-    pending_interrupts = tuple(
-        interrupt
-        for _, interrupt in sorted(projection.interrupts.items())
-        if interrupt.resolved_action is None
-    )
-    running = tuple(sorted(task_id for task_id, task in projection.tasks.items() if task.status == "running"))
-    pending = tuple(
-        sorted(
-            task_id
-            for task_id, task in projection.tasks.items()
-            if task.status in ("failed", "abandoned")
-            or (task.status == "failed" and task.next_retry_at is not None)
-        )
-    )
-    retry_ats = [task.next_retry_at for task in projection.tasks.values() if task.next_retry_at is not None]
-    if projection.terminal == "completed":
-        status: Literal["running", "interrupted", "completed", "stopped", "failed"] = "completed"
-    elif projection.terminal == "stopped":
-        status = "stopped"
-    elif projection.terminal == "failed":
-        status = "failed"
-    elif pending_interrupts:
-        status = "interrupted"
-    else:
-        status = "running"
-    return GraphStatus(
-        invocation_id=projection.invocation_id,
-        entrypoint=projection.entrypoint,
-        status=status,
-        checkpoint_id=projection.latest_checkpoint_id,
-        event_seq=projection.event_seq,
-        superstep=projection.supersteps,
-        running_tasks=running,
-        pending_tasks=pending,
-        pending_write_sets=pending_write_sets,
-        pending_interrupts=pending_interrupts,
-        next_retry_at=min(retry_ats) if retry_ats else None,
-        budgets=dict(sorted(projection.budgets.items())),
-        terminal_reason=projection.terminal_reason,
-    )
 
 
 class GraphRuntime:
@@ -406,10 +362,16 @@ class GraphRuntime:
         child_invocation_id = canonical_digest({"parent_task_id": parent_task.task_id, "graph_id": graph_id})
         checkpoint_ns = f"{parent_task.checkpoint_ns}/{parent_task.node_id}/{child_invocation_id}"
         structural_path = f"{parent_task.structural_path}/{parent_task.node_id}/{graph_id}"
+        child_params = dict(context.params)
+        if isinstance(parent_task.input, Mapping):
+            bound = parent_task.input.get("with")
+            if isinstance(bound, Mapping):
+                child_params.update({str(key): value for key, value in bound.items()})
         child_context = context.model_copy(
             update={
                 "project_root": workspace.project_root,
                 "repo_root": workspace.repo_root,
+                "params": child_params,
             }
         )
         existing = self._try_project(child_invocation_id)
@@ -1089,22 +1051,7 @@ class GraphRuntime:
         return last_plan
 
     def _pending_write_sets(self, invocation_id: str) -> tuple[str, ...]:
-        succeeded: list[str] = []
-        committed: set[str] = set()
-        for raw in read_events_strict(self._checkpoints._change_dir):  # noqa: SLF001
-            if raw.get("source") != "graph" or raw.get("invocation_id") != invocation_id:
-                continue
-            if raw.get("type") == "task_attempt_succeeded":
-                write_set_id = raw.get("write_set_id")
-                if isinstance(write_set_id, str):
-                    succeeded.append(write_set_id)
-            elif raw.get("type") == "superstep_committed":
-                raw_ids = raw.get("write_set_ids")
-                write_set_ids = raw_ids if isinstance(raw_ids, list) else []
-                for item in write_set_ids:
-                    if isinstance(item, str):
-                        committed.add(item)
-        return tuple(ws for ws in succeeded if ws not in committed)
+        return _pending_write_sets_fn(read_events_strict(self._checkpoints.change_dir), invocation_id)
 
     @staticmethod
     def _earliest_retry_at(projection: GraphProjection) -> datetime | None:

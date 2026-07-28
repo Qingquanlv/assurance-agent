@@ -52,6 +52,7 @@ from assurance_agent.workflow.issues.events import (
     ObservationRecordedEvent,
     ProjectSyncPendingEvent,
 )
+from assurance_agent.workflow.issues.identity import candidate_document_digest
 from assurance_agent.workflow.issues.ledger import ChangeIssueStore, ProjectProblemStore
 from assurance_agent.workflow.issues.projection import dump_projection
 from assurance_agent.workflow.issues.reconciler import (
@@ -310,11 +311,16 @@ def _read_evidence_manifest_info(change_dir: Path) -> tuple[str, str] | None:
 
 
 def _read_candidates_digest(change_dir: Path) -> str | None:
-    """Return SHA-256 digest of inspect/issue-candidates.json if it exists."""
+    """Return the canonical candidate document digest if a valid document exists."""
     candidates_path = change_dir / "inspect" / "issue-candidates.json"
     if not candidates_path.is_file():
         return None
-    return "sha256:" + hashlib.sha256(candidates_path.read_bytes()).hexdigest()
+    try:
+        authored = json.loads(candidates_path.read_text(encoding="utf-8"))
+        IssueCandidateDocument.model_validate(authored)
+    except (OSError, ValueError):
+        return None
+    return candidate_document_digest(authored)
 
 
 _ERROR_KIND_TO_ANALYSIS_REASON: dict[str, str] = {
@@ -379,7 +385,7 @@ def record_empty_issue_analysis_operation(
     candidates_bytes = _empty_candidate_doc(context.change_id, batch_id, evidence_bundle_digest)
     _write_json(inspect_dir / "issue-candidates.json", candidates_bytes)
 
-    candidate_digest = "sha256:" + hashlib.sha256(candidates_bytes).hexdigest()
+    candidate_digest = candidate_document_digest(IssueCandidateDocument.model_validate_json(candidates_bytes))
 
     # Write completed analysis status.
     analysis_status = IssueAnalysisStatus(
@@ -450,7 +456,7 @@ def record_issue_analysis_failure_operation(
     candidates_bytes = _empty_candidate_doc(context.change_id, batch_id, evidence_bundle_digest)
     _write_json(inspect_dir / "issue-candidates.json", candidates_bytes)
 
-    candidate_digest = "sha256:" + hashlib.sha256(candidates_bytes).hexdigest()
+    candidate_digest = candidate_document_digest(IssueCandidateDocument.model_validate_json(candidates_bytes))
 
     # Write failed analysis status.
     analysis_status = IssueAnalysisStatus(
@@ -644,9 +650,11 @@ def reconcile_issues_operation(
     # ------------------------------------------------------------------
     candidates_path = inspect_dir / "issue-candidates.json"
     try:
-        candidates_doc = _load_json_model(candidates_path, IssueCandidateDocument, "reconcile-issues")
-    except (FileNotFoundError, ValueError) as exc:
+        authored_candidates = json.loads(candidates_path.read_text(encoding="utf-8"))
+        candidates_doc = IssueCandidateDocument.model_validate(authored_candidates)
+    except (OSError, ValueError) as exc:
         return task_failure("invalid_input", str(exc))
+    authored_candidate_digest = candidate_document_digest(authored_candidates)
 
     # ------------------------------------------------------------------
     # 2. Load observations document
@@ -715,6 +723,7 @@ def reconcile_issues_operation(
             manifest=evidence_manifest,
             expected_change_id=change_id,
             verification_evidence=verification_evidence,
+            candidate_digest=authored_candidate_digest,
         )
     except ReconciliationValidationError as exc:
         # Semantic failure: write failed reconcile-status; return success

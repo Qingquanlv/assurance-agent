@@ -44,7 +44,7 @@ JSON Schema 文件是给非 Python 消费者的参考。运行期产物校验由
 | `gate` | 节点成功提交后求值的 gate |
 | `retry` / `timeout` | 引用 policies 中的命名策略 |
 | `with` | 静态参数，原样进 task input（operation 唯一的参数化通道） |
-| `resources` | `reads` / `writes` / `exclusive` 资源声明，供并行冲突判定与写授权收窄 |
+| `resources` | `reads` / `writes` / `synchronized` / `exclusive` 资源声明，供并行冲突判定、当前 run 快照收窄与写授权收窄 |
 | `evidence` | 引用上游节点已冻结输出作为本节点输入证据 |
 | `state_writes` | 把 task value 写入图 state（按声明的 reducer 合并） |
 | `join` | `builtin:join` 的汇聚声明（`all` / `all_active` / `any`） |
@@ -63,7 +63,7 @@ JSON Schema 文件是给非 Python 消费者的参考。运行期产物校验由
 
 ## Checkpoint 与恢复语义（schema v2）
 
-权威状态只有 `events.jsonl`（append-only ledger）；`workflow-state.yaml` 是从 ledger 投影的人工/报告视图，运行时决策从不读它；`driver.json` 只是非权威进程指针（锁 + 最近已知的 `invocation_id` / `checkpoint_id` / `event_seq`）。主循环按 superstep（Plan → Execute → Update）推进：每次提交的 `checkpoint_id` 是 canonical digest，恢复不读快照——重跑 `aa workflow run --change <id>` 即从 ledger 重投影、跳过已成功 task 继续。运行中途修改 schema YAML 会触发 digest 漂移并在下一 superstep 中止（`GraphDefinitionChanged`，exit 40），已提交的 ledger 不受影响。`aa status` / `aa workflow status` 均从 ledger 投影 GraphStatus。
+权威状态只有 `events.jsonl`（append-only ledger）；`workflow-state.yaml` 是从 ledger 投影的人工/报告视图，运行时决策从不读它；`driver.json` 只是非权威进程指针（锁 + 最近已知的 `invocation_id` / `checkpoint_id` / `event_seq`）。主循环按 superstep（Plan → Execute → Update）推进：每次提交的 `checkpoint_id` 是 canonical digest，恢复不读快照——重跑 `aa workflow run --change <id>` 即从 ledger 重投影、跳过已成功 task 继续。运行中途修改 schema YAML 会触发 digest 漂移并在下一 superstep 中止（`GraphDefinitionChanged`，exit 40），已提交的 ledger 不受影响。`aa status` 从 ledger 投影 GraphStatus。
 
 ## 校验 change 产物
 
@@ -102,23 +102,33 @@ aa knowledge promote [--project-dir] (--change <id> | --from <proposal-path>) [-
 - API/E2E plan-review gate 通过 `required_capabilities[]`（review JSON 中的 leaf dotted keys）与 L1 做 pre-codegen 能力校验；缺 leaf → `needs_human_review` + **knowledge-remediation** checkpoint（人工 promote 后 `fix_and_proceed` 重跑 review）。
 - Fuzz/Performance plan-review gate 读 review JSON 的 `layer_applicable`：被 proposal 选中但无对应 `type:Fuzz`/`type:Performance` case（空 scope）时 reviewer 置 `layer_applicable: false` → gate 走 `skip`（分支结束、codegen 跳过），而非硬 `reject` 拖垮整条并行链。缺失该字段时按原 `pass`/`reject` 语义处理。
 
-## Retro（schema-v2）与 Improvement lifecycle
+## Retro v3 signal analysis 与 Improvement lifecycle
 
 Retro 是**独立入口**（`aa workflow run --entrypoint retro` / `aa retro`），不挂在 full workflow 上。当前 run 只读写 `qa/retro/<retro-id>/`；生产路径不扫描、不迁移、不消费历史 Retro 目录。
+
+数据流固定为：确定性 reader 解析窗口并物化三份 typed evidence slice → 三个领域 skill 并行分析 issue / workflow / eval → runtime 校验引用并回填 slice digest → operation 机械装配 context v3 → proposer 生成 Candidate draft → runtime 回填 context digest → reconciler 校验完整追溯链并写入 Improvement Ledger。分析 skill 只能看到本域 slice；proposer 只能看到当前 run 的 context。
 
 ### 当前 run 产物
 
 | 文件 | 写入方 | 说明 |
 |---|---|---|
-| `qa/retro/<id>/context.json` | `operation:retro-collect` | schema_version `"2"`：冻结 window、`source_manifest`、signals、integrity |
-| `qa/retro/<id>/proposal-candidates.json` | `skill:aa-retro` | Candidate 批（非权威）；须 pin `context_sha256` |
+| `qa/retro/<id>/window.json` | `operation:retro-collect-v3` | 本轮互斥窗口选择的冻结结果 |
+| `qa/retro/<id>/evidence/{issue,workflow,eval}-slice.json` | `operation:retro-collect-v3` | schema_version `"3"` 的 immutable typed evidence slice |
+| `qa/retro/<id>/signals/{issue,workflow,eval}.json` | 对应领域 skill；失败时由 recovery operation 写入 | schema_version `"3"`；runtime 校验 refs、回填并冻结 `slice_sha256`；失败域显式记录 `analysis_status=failed` |
+| `qa/retro/<id>/context.json` | `operation:assemble-retro-context-v3` | schema_version `"3"`：汇总 source manifest、逐域状态、integrity 与全部合法 signals；不做语义过滤 |
+| `qa/retro/<id>/proposal-candidates.json` | `skill:aa-retro` 或零信号 receipt | schema_version `"3"` Candidate 批（非权威）；每项引用 `signal_ids` 与 immutable `source_refs`，runtime 回填 `context_sha256` |
 | `qa/retro/<id>/retro-summary.md` | `skill:aa-retro` | 人类摘要 |
 | `qa/retro/<id>/accept-status.json` | `operation:reconcile-improvements` | 批级 receipt（accepted/failed + digests/event ids） |
 | `qa/retro/<id>/review-queue.md` | reconcile | 指向本批 canonical Improvement IDs |
+| `qa/retro/<id>/pipeline-failure.json` | Graph recovery / Supervisor | 结构化 stage + error kind；自由错误文本只保留摘要指纹 |
+| `qa/retro/<id>/retro-status.json` | finalizer / Supervisor | `completed` / `completed_with_gaps` / `pending_reconcile` |
+| `qa/improvements/outbox/pending/<id>.json` | reconcile | 自包含 context + Candidate 的 durable pending work；下一轮 Retro collect 前幂等 drain |
 
 ### Window 选择
 
-互斥：`--change`（显式 Change 集） / `--since`+`--until`（时间窗） / `--last N`（默认 10）。`--dry-run` 只 collect，跳过 propose/reconcile。
+互斥：`--batch-manifest <json>`（自动批次的权威 Change 集）/ `--change`（人工显式 Change 集）/ `--since`+`--until`（时间窗）/ `--last N`。入口不再隐式选择 last 10；调用方必须明确窗口。Batch manifest 的 members 必须已排序且唯一，`change_ids` 与 members 顺序逐项相同；缺失、运行中或损坏成员不会被丢弃，而是生成 typed evidence-gap signal。显式 Change 与 last-N 模式只接纳 `source_change_ids` 有交集的 `qa/eval/runs/*/report.json` compact projection；Retro 不读取 raw `eval/out/**`。`--dry-run` 会完成 collect、三域分析和 assemble，只跳过 propose/reconcile。
+
+三个分析域经各自 `*-settled` 节点进入 `all_active` join。某域在 retry 耗尽后由 recovery 写出 typed failed signal document，因此不会把“分析失败”伪装成“零信号”。所有成员的三域证据均 absent 时不调用 analyzer/proposer，而是直接产生 deterministic workflow Improvement。collect / assemble / propose / reconcile 失败由同一 typed pipeline-failure fallback 收口，并最终写 `retro-status.json`；Graph 外 compile/dispatch/freeze/finalize 失败由同一 Supervisor 补偿。已有 final Retro status 后的 Auto Review 失败不得回写这些 Retro 文件。
 
 ### Improvement kinds 与 deliveries
 

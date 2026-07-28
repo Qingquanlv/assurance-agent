@@ -83,6 +83,7 @@ class ImprovementProposedEvent(_BaseImprovementEvent):
     context_sha256: NonEmptyStr
     candidate_batch_digest: NonEmptyStr
     supersedes: NonEmptyStr | None = None
+    review_subject_sha256: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
 
 
 class ImprovementEvidenceLinkedEvent(_BaseImprovementEvent):
@@ -92,6 +93,7 @@ class ImprovementEvidenceLinkedEvent(_BaseImprovementEvent):
     candidate_id: NonEmptyStr
     context_sha256: NonEmptyStr
     candidate_batch_digest: NonEmptyStr
+    review_subject_sha256: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
 
 
 class ImprovementReviewApprovedEvent(_BaseImprovementEvent):
@@ -99,6 +101,25 @@ class ImprovementReviewApprovedEvent(_BaseImprovementEvent):
     who: NonEmptyStr
     reason: NonEmptyStr
     review_id: NonEmptyStr
+
+
+class ImprovementAutoReviewApprovedEvent(_BaseImprovementEvent):
+    type: Literal["improvement_auto_review_approved"]
+    review_id: NonEmptyStr
+    subject_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    assessment_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    policy_version: NonEmptyStr
+    reviewer: Literal["skill:aa-improvement-reviewer"] = "skill:aa-improvement-reviewer"
+
+
+class ImprovementAutoReviewRecordedEvent(_BaseImprovementEvent):
+    type: Literal["improvement_auto_review_recorded"]
+    review_id: NonEmptyStr
+    subject_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    assessment_sha256: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    policy_version: NonEmptyStr
+    verdict: Literal["changes_requested", "needs_human_review", "reject_advice", "review_error"]
+    reason_code: NonEmptyStr
 
 
 class ImprovementReviewRejectedEvent(_BaseImprovementEvent):
@@ -163,6 +184,8 @@ class ImprovementSupersededEvent(_BaseImprovementEvent):
 ImprovementEvent = Annotated[
     ImprovementProposedEvent
     | ImprovementEvidenceLinkedEvent
+    | ImprovementAutoReviewApprovedEvent
+    | ImprovementAutoReviewRecordedEvent
     | ImprovementReviewApprovedEvent
     | ImprovementReviewRejectedEvent
     | ImprovementReworkRequestedEvent

@@ -71,6 +71,19 @@ class IssueHistoryIntegrityError(AaError):
     """Raised when an Issue ledger is corrupt or a projection mismatches events."""
 
 
+class IssueMemberEvidenceError(IssueHistoryIntegrityError):
+    """Structured per-Change failure that Batch collection may isolate."""
+
+    def __init__(self, change_id: str, reason_code: str, message: str) -> None:
+        self.change_id = change_id
+        self.reason_code = reason_code
+        super().__init__(message)
+
+
+def _member_gap_reason(change_id: str, execution_status: str, domain: str, reason_code: str) -> str:
+    return f"batch_member_evidence_gap:{change_id}:{execution_status}:{domain}:{reason_code}"
+
+
 def read_problem_events_from_bytes(data: bytes) -> list[ProblemEvent]:
     """Strictly validate Project Problem events from in-memory ledger bytes."""
     return _read_events_from_bytes(data, PROBLEM_EVENT_ADAPTER)  # type: ignore[return-value]
@@ -431,18 +444,32 @@ class InMemoryIssueHistoryReader:
             read_problem_events_from_bytes(self._problem_ledger_bytes)
         except LedgerIntegrityError as exc:
             raise IssueHistoryIntegrityError(str(exc)) from exc
+        missing: list[str] = []
         for change_id in selection.change_ids:
             if change_id not in self._change_events and change_id not in self._change_ledger_bytes:
-                raise IssueHistoryIntegrityError(
-                    f"change '{change_id}' not found in in-memory issue history bundle"
-                )
-        return build_issue_evidence_slice(
+                if not selection.allow_member_gaps:
+                    raise IssueHistoryIntegrityError(
+                        f"change '{change_id}' not found in in-memory issue history bundle"
+                    )
+                missing.append(change_id)
+        slice_ = build_issue_evidence_slice(
             selection,
             change_events_by_id=self._change_events,
             problem_events=self._problem_events,
             change_ledger_bytes=self._change_ledger_bytes,
             problem_ledger_bytes=self._problem_ledger_bytes,
             all_change_events_by_id=self._change_events,
+        )
+        if not missing:
+            return slice_
+        statuses = dict(selection.member_execution_statuses)
+        reasons = list(slice_.integrity.reasons)
+        reasons.extend(
+            _member_gap_reason(change_id, statuses.get(change_id, "failed"), "issue", "workspace_missing")
+            for change_id in missing
+        )
+        return slice_.model_copy(
+            update={"integrity": IssueHistoryIntegrity(status="incomplete", reasons=tuple(reasons))}
         )
 
 
@@ -469,20 +496,24 @@ class LedgerIssueHistoryReader:
         try:
             loc = resolve_change(self._project_root, change_id, prefer="archive")
         except ChangeNotFoundError as exc:
-            raise IssueHistoryIntegrityError(str(exc)) from exc
+            raise IssueMemberEvidenceError(change_id, "workspace_missing", str(exc)) from exc
         events_path = loc.path / "issues" / "events.jsonl"
+        if not events_path.is_file():
+            return [], b"", loc.path
         try:
             events = read_change_issue_events(events_path)
         except LedgerIntegrityError as exc:
-            raise IssueHistoryIntegrityError(str(exc)) from exc
+            raise IssueMemberEvidenceError(change_id, "ledger_corrupt", str(exc)) from exc
         raw = events_path.read_bytes() if events_path.exists() else b""
         snapshot_path = loc.path / "issues" / "snapshot.json"
         if snapshot_path.exists() and events:
             expected = dump_projection(project_change_issues(events))
             actual = snapshot_path.read_bytes()
             if actual != expected:
-                raise IssueHistoryIntegrityError(
-                    f"change {change_id} issue projection mismatch versus authoritative events"
+                raise IssueMemberEvidenceError(
+                    change_id,
+                    "projection_corrupt",
+                    f"change {change_id} issue projection mismatch versus authoritative events",
                 )
         return events, raw, loc.path
 
@@ -525,8 +556,24 @@ class LedgerIssueHistoryReader:
 
         change_events_by_id: dict[str, list[ChangeIssueEvent]] = {}
         change_ledger_bytes: dict[str, bytes] = {}
+        gap_reasons: list[str] = []
+        statuses = dict(selection.member_execution_statuses)
         for change_id in change_ids:
-            events, raw, _path = self._read_change_ledger(change_id)
+            execution_status = statuses.get(change_id, "failed")
+            if selection.allow_member_gaps and execution_status in {"running", "not_started"}:
+                reason_code = "non_terminal" if execution_status == "running" else "workspace_missing"
+                gap_reasons.append(_member_gap_reason(change_id, execution_status, "issue", reason_code))
+                continue
+            try:
+                events, raw, _path = self._read_change_ledger(change_id)
+            except IssueMemberEvidenceError as exc:
+                if not selection.allow_member_gaps:
+                    raise
+                gap_reasons.append(_member_gap_reason(change_id, execution_status, "issue", exc.reason_code))
+                continue
+            if selection.allow_member_gaps and not raw:
+                gap_reasons.append(_member_gap_reason(change_id, execution_status, "issue", "ledger_missing"))
+                continue
             change_events_by_id[change_id] = events
             change_ledger_bytes[change_id] = raw
 
@@ -540,11 +587,17 @@ class LedgerIssueHistoryReader:
                 catalog[change_id] = events
                 change_ledger_bytes[change_id] = raw
 
-        return build_issue_evidence_slice(
+        slice_ = build_issue_evidence_slice(
             selection,
             change_events_by_id=change_events_by_id,
             problem_events=problem_events,
             change_ledger_bytes=change_ledger_bytes,
             problem_ledger_bytes=problem_bytes,
             all_change_events_by_id=catalog,
+        )
+        if not gap_reasons:
+            return slice_
+        reasons = tuple(dict.fromkeys((*slice_.integrity.reasons, *gap_reasons)))
+        return slice_.model_copy(
+            update={"integrity": IssueHistoryIntegrity(status="incomplete", reasons=reasons)}
         )

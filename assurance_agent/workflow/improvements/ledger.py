@@ -25,6 +25,7 @@ import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
+from assurance_agent.artifacts.canonical import canonical_json_bytes
 from assurance_agent.artifacts.models.improvements import ImprovementLedgerProjection
 from assurance_agent.workflow.improvements.events import (
     ImprovementEvent,
@@ -152,9 +153,7 @@ def atomic_write_json(json_path: Path, data: object) -> None:
     if isinstance(data, (bytes, bytearray)):
         payload = bytes(data)
     else:
-        payload = (json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode(
-            "utf-8"
-        )
+        payload = canonical_json_bytes(data)
 
     json_path.parent.mkdir(parents=True, exist_ok=True)
     dir_path = json_path.parent

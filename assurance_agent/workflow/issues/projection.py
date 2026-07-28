@@ -410,29 +410,61 @@ def project_problems(events: Sequence[ProblemEvent]) -> ProblemProjection:
 
 
 def project_review_queue(events: Sequence[ProblemEvent]) -> ProblemReviewQueue:
-    """Derive the ProblemReviewQueue from merge-suggestion events.
+    """Derive one active human-review request per Problem.
 
-    Each ``problem_merge_suggested`` event creates one queue entry.  Entries
-    are deterministic: the entry_id is derived from the event_id so the same
-    event bytes always produce the same entry.
+    Provisional detected Problems always need assessment review. Semantic merge
+    suggestions are folded into that same request instead of multiplying queue
+    rows. Once a Problem is no longer provisional and has no outstanding merge
+    suggestion, it leaves the queue.
     """
-    from assurance_agent.workflow.issues.events import ProblemMergeSuggestedEvent
+    from assurance_agent.workflow.issues.events import (
+        ProblemDetectedEvent,
+        ProblemMergeSuggestedEvent,
+    )
+
+    projection = project_problems(events)
+    active = {problem.problem_id: problem for problem in projection.problems}
+    detected: dict[str, ProblemDetectedEvent] = {}
+    suggestions: dict[str, list[ProblemMergeSuggestedEvent]] = {}
+    for event in events:
+        if isinstance(event, ProblemDetectedEvent):
+            detected[event.problem_id] = event
+        elif isinstance(event, ProblemMergeSuggestedEvent):
+            suggestions.setdefault(event.problem_id, []).append(event)
 
     entries: list[ProblemReviewQueueEntry] = []
-    for event in events:
-        if isinstance(event, ProblemMergeSuggestedEvent):
-            entry_id = f"QE-{_canonical_id(event.event_id)}"
-            entries.append(
-                ProblemReviewQueueEntry(
-                    entry_id=entry_id,
-                    change_id=event.source_change_id,
-                    occurrence_id=event.source_occurrence_id,
-                    candidate_id=event.candidate_id,
-                    possible_problem_ids=[event.target_problem_id],
-                    reason=event.reason,
-                    created_at=event.ts,
-                )
+    for problem_id in sorted(active):
+        problem = active[problem_id]
+        detection = detected.get(problem_id)
+        if detection is None or problem.status == "resolved":
+            continue
+        possible = sorted({event.target_problem_id for event in suggestions.get(problem_id, [])})
+        provisional = problem.status == "detected" and problem.assessment.authority == "llm_provisional"
+        if not provisional and not possible:
+            continue
+        merge_events = suggestions.get(problem_id, [])
+        candidate_id = next(
+            (event.candidate_id for event in reversed(merge_events) if event.candidate_id is not None),
+            None,
+        )
+        if provisional and possible:
+            reason = "provisional assessment and possible matches require human review"
+        elif provisional:
+            reason = "provisional assessment requires human review"
+        else:
+            reason = "possible matches require human review"
+        entries.append(
+            ProblemReviewQueueEntry(
+                entry_id=f"QE-{_canonical_id(problem_id)}",
+                problem_id=problem_id,
+                change_id=detection.change_id,
+                occurrence_id=detection.occurrence_id,
+                candidate_id=candidate_id,
+                possible_problem_ids=possible,
+                reason=reason,
+                created_at=detection.ts,
             )
+        )
 
     return ProblemReviewQueue(schema_version="1.0", entries=entries)
 

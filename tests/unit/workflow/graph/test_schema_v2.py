@@ -6,10 +6,17 @@ from assurance_agent.workflow.graph.compiler import CompileError, compile_workfl
 from assurance_agent.workflow.graph.schema_v2 import (
     InterruptDef,
     NodeDef,
+    ParamDef,
     SchemaV2Error,
     load_workflow_v2,
     parse_workflow_v2,
 )
+
+
+def test_object_param_schema_is_supported() -> None:
+    definition = ParamDef.model_validate({"type": "object", "default": {"schema_version": "1"}})
+    assert definition.type == "object"
+    assert definition.default == {"schema_version": "1"}
 
 
 def test_minimal_v2_schema_loads() -> None:

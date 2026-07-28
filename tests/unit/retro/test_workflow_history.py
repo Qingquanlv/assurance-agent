@@ -11,6 +11,7 @@ import yaml
 
 import pytest
 
+from assurance_agent.artifacts.models.retro_batch import RetroBatchScope
 from assurance_agent.retro.window import RetroWindowSelection, resolve_retro_window
 from assurance_agent.retro.workflow_history import (
     InMemoryWorkflowHistoryReader,
@@ -297,6 +298,146 @@ def test_last_n_from_ledger_ignores_directory_mtime(tmp_path: Path) -> None:
     assert resolved.change_ids == ("RET-2", "RET-3")
 
 
+def test_list_terminal_changes_ignores_completed_nested_graph_without_root_terminal(
+    tmp_path: Path,
+) -> None:
+    """A completed bootstrap child must not make an interrupted Full run terminal."""
+    write_aa_config(tmp_path)
+    change_id = "RET-INCOMPLETE"
+    change_dir = tmp_path / "qa" / "changes" / change_id
+    change_dir.mkdir(parents=True)
+    events = [
+        {
+            "seq": 1,
+            "ts": "2026-07-01T00:00:00Z",
+            "source": "graph",
+            "type": "graph_invocation_started",
+            "invocation_id": "root-full",
+            "entrypoint": "full",
+            "graph_id": "workflow",
+            "graph_digest": "sha256:" + "a" * 64,
+            "contract_digests": {},
+            "params": {},
+            "params_sha256": "sha256:" + "b" * 64,
+            "root_tree_id": "tree-root",
+            "max_parallel_tasks": 1,
+            "checkpoint_ns": "root-full",
+            "structural_path": "workflow",
+        },
+        {
+            "seq": 2,
+            "ts": "2026-07-01T00:00:01Z",
+            "source": "graph",
+            "type": "graph_invocation_started",
+            "invocation_id": "child-bootstrap",
+            "entrypoint": "bootstrap",
+            "graph_id": "bootstrap",
+            "graph_digest": "sha256:" + "a" * 64,
+            "contract_digests": {},
+            "params": {},
+            "params_sha256": "sha256:" + "b" * 64,
+            "root_tree_id": "tree-child",
+            "max_parallel_tasks": 1,
+            "checkpoint_ns": "root-full/bootstrap/child-bootstrap",
+            "parent_invocation_id": "root-full",
+            "parent_task_id": "task-bootstrap",
+            "structural_path": "workflow/bootstrap/bootstrap",
+        },
+        {
+            "seq": 3,
+            "ts": "2026-07-01T00:00:02Z",
+            "source": "graph",
+            "type": "graph_completed",
+            "invocation_id": "child-bootstrap",
+            "checkpoint_ns": "root-full/bootstrap/child-bootstrap",
+            "reason": "END reached",
+        },
+    ]
+    (change_dir / "events.jsonl").write_text(
+        "\n".join(json.dumps(event) for event in events) + "\n",
+        encoding="utf-8",
+    )
+
+    assert LedgerWorkflowHistoryReader(tmp_path).list_terminal_changes() == ()
+
+
+def test_list_terminal_changes_uses_root_full_terminal_not_later_maintenance_run(
+    tmp_path: Path,
+) -> None:
+    """Standalone Archive/Retro terminals must not reorder a completed Change."""
+    change_dir = _write_terminal_change(
+        tmp_path,
+        "RET-COMPLETE",
+        terminal_ts="2026-07-01T00:00:10Z",
+        under="changes",
+    )
+    events = [json.loads(line) for line in (change_dir / "events.jsonl").read_text().splitlines()]
+    events.extend(
+        [
+            {
+                "seq": 3,
+                "ts": "2026-07-01T00:01:00Z",
+                "source": "graph",
+                "type": "graph_invocation_started",
+                "invocation_id": "archive-root",
+                "entrypoint": "archive",
+                "graph_id": "archive-workflow",
+                "graph_digest": "sha256:" + "a" * 64,
+                "contract_digests": {},
+                "params": {},
+                "params_sha256": "sha256:" + "b" * 64,
+                "root_tree_id": "tree-archive",
+                "max_parallel_tasks": 1,
+                "checkpoint_ns": "archive-root",
+                "structural_path": "archive-workflow",
+            },
+            {
+                "seq": 4,
+                "ts": "2026-07-01T00:01:01Z",
+                "source": "graph",
+                "type": "graph_stopped",
+                "invocation_id": "archive-root",
+                "checkpoint_ns": "archive-root",
+                "reason": "archive gate stop",
+            },
+            {
+                "seq": 5,
+                "ts": "2026-07-01T00:02:00Z",
+                "source": "graph",
+                "type": "graph_invocation_started",
+                "invocation_id": "retro-root",
+                "entrypoint": "retro",
+                "graph_id": "retro-workflow",
+                "graph_digest": "sha256:" + "a" * 64,
+                "contract_digests": {},
+                "params": {},
+                "params_sha256": "sha256:" + "b" * 64,
+                "root_tree_id": "tree-retro",
+                "max_parallel_tasks": 1,
+                "checkpoint_ns": "retro-root",
+                "structural_path": "retro-workflow",
+            },
+            {
+                "seq": 6,
+                "ts": "2026-07-01T00:02:01Z",
+                "source": "graph",
+                "type": "graph_completed",
+                "invocation_id": "retro-root",
+                "checkpoint_ns": "retro-root",
+                "reason": "END reached",
+            },
+        ]
+    )
+    (change_dir / "events.jsonl").write_text(
+        "\n".join(json.dumps(event) for event in events) + "\n",
+        encoding="utf-8",
+    )
+
+    terminal = LedgerWorkflowHistoryReader(tmp_path).list_terminal_changes()[0]
+    assert terminal.terminal_ts == "2026-07-01T00:00:10Z"
+    assert terminal.terminal_event_type == "graph_completed"
+
+
 def test_read_window_extracts_gate_healing_and_skill_drift(tmp_path: Path) -> None:
     _write_terminal_change(
         tmp_path,
@@ -308,7 +449,11 @@ def test_read_window_extracts_gate_healing_and_skill_drift(tmp_path: Path) -> No
         ],
         healing_ops=["op-1"],
         phases={
-            "explore": {"status": "done", "skill_loaded": False},
+            "explore": {
+                "status": "done",
+                "skill_loaded": False,
+                "skill_md_path": "skills/aa-explore/SKILL.md",
+            },
             "inspect": {"status": "done", "skill_loaded": True},
         },
         apply_applied=True,
@@ -332,10 +477,81 @@ def test_read_window_extracts_gate_healing_and_skill_drift(tmp_path: Path) -> No
     assert file_slice.healing_applies[0].applied is True
     assert len(file_slice.skill_loaded_false) == 1
     assert file_slice.skill_loaded_false[0].phase == "explore"
+    assert file_slice.skill_loaded_false[0].expected_skill == "aa-explore"
     assert file_slice.skill_loaded_false[0].evidence_id == "RET-1#workflow-state:explore"
     assert file_slice.integrity.status == "complete"
     assert all(source.kind == "workflow_ledger" for source in file_slice.sources)
     assert file_slice.sources[0].sha256.startswith("sha256:")
+
+
+def test_read_window_extracts_graph_runtime_nested_gate_report(tmp_path: Path) -> None:
+    change_dir = _write_terminal_change(
+        tmp_path,
+        "RET-GATE-REPORT",
+        terminal_ts="2026-07-02T00:00:00Z",
+    )
+    events = [json.loads(line) for line in (change_dir / "events.jsonl").read_text().splitlines()]
+    terminal = events.pop()
+    events.extend(
+        [
+            {
+                "seq": 2,
+                "ts": "2026-07-01T23:59:58Z",
+                "source": "graph",
+                "type": "task_attempt_started",
+                "invocation_id": "inv-RET-GATE-REPORT",
+                "checkpoint_ns": "inv-RET-GATE-REPORT",
+                "superstep_id": "step-gate",
+                "task_id": "task-gate",
+                "attempt_id": "task-gate-a1",
+                "node_id": "precheck",
+                "input_sha256": "sha256:" + "c" * 64,
+                "graph_digest": "sha256:" + "a" * 64,
+                "contract_digest": "sha256:" + "d" * 64,
+                "attempt_number": 1,
+                "lease_expires_at": "2026-07-02T00:01:00Z",
+                "started_at": "2026-07-01T23:59:58Z",
+            },
+            {
+                "seq": 3,
+                "ts": "2026-07-01T23:59:59Z",
+                "source": "graph",
+                "type": "task_attempt_succeeded",
+                "invocation_id": "inv-RET-GATE-REPORT",
+                "checkpoint_ns": "inv-RET-GATE-REPORT",
+                "superstep_id": "step-gate",
+                "task_id": "task-gate",
+                "attempt_id": "task-gate-a1",
+                "gate_report": {
+                    "gate_id": "archive-gate",
+                    "verdict": "stop",
+                    "reason": "execution final_status is FAIL",
+                    "matched_rule": "stop_when",
+                    "details": {"cause": "archive.execution_failed"},
+                    "reads_sha256": {},
+                    "value": "stop",
+                },
+            },
+            {**terminal, "seq": 4},
+        ]
+    )
+    (change_dir / "events.jsonl").write_text(
+        "\n".join(json.dumps(event) for event in events) + "\n",
+        encoding="utf-8",
+    )
+    reader = LedgerWorkflowHistoryReader(tmp_path)
+    window = resolve_retro_window(
+        RetroWindowSelection(change_ids=("RET-GATE-REPORT",), last=None),
+        workflow_history=reader,
+    )
+
+    slice_ = reader.read_window(window)
+
+    assert len(slice_.gate_verdicts) == 1
+    assert slice_.gate_verdicts[0].gate == "archive-gate"
+    assert slice_.gate_verdicts[0].verdict == "stop"
+    assert slice_.gate_verdicts[0].cause == "archive.execution_failed"
+    assert slice_.gate_verdicts[0].evidence_id == "RET-GATE-REPORT#seq3"
 
 
 def test_unrecovered_issue_subgraph_failure_is_evidence_and_marks_incomplete(
@@ -363,6 +579,9 @@ def test_unrecovered_issue_subgraph_failure_is_evidence_and_marks_incomplete(
     assert len(slice_.task_failures) == 1
     failure = slice_.task_failures[0]
     assert failure.node_id == "inspect-with-issues"
+    assert failure.task_id == "task-RET-ISSUE-FAIL"
+    assert failure.attempt_id == "task-RET-ISSUE-FAIL-a1"
+    assert failure.ts == "2026-07-02T00:00:00Z"
     assert failure.error_kind == "conflict"
     assert failure.recovered is False
     assert failure.evidence_id == "RET-ISSUE-FAIL#seq3"
@@ -420,6 +639,67 @@ def test_missing_change_ledger_marks_incomplete(tmp_path: Path) -> None:
     assert slice_.integrity.status == "incomplete"
     assert any("RET-GONE" in reason for reason in slice_.integrity.reasons)
     assert slice_.gate_verdicts == ()
+
+
+def _batch_scope(*members: tuple[str, str, str]) -> RetroBatchScope:
+    return RetroBatchScope.model_validate(
+        {
+            "batch_id": "batch-1",
+            "status": "complete" if all(member[2] == "complete" for member in members) else "incomplete",
+            "members": [
+                {
+                    "change_id": change_id,
+                    "execution_status": execution_status,
+                    "evidence_availability": availability,
+                }
+                for change_id, execution_status, availability in members
+            ],
+        }
+    )
+
+
+def test_batch_running_member_does_not_read_ledger_and_valid_member_survives(
+    tmp_path: Path,
+) -> None:
+    _write_terminal_change(tmp_path, "CH-COMPLETE", terminal_ts="2026-07-01T00:00:00Z")
+    running = tmp_path / "qa" / "changes" / "CH-RUNNING"
+    running.mkdir(parents=True)
+    (running / "events.jsonl").write_text("not-json\n", encoding="utf-8")
+    scope = _batch_scope(
+        ("CH-COMPLETE", "completed", "complete"),
+        ("CH-RUNNING", "running", "partial"),
+    )
+    reader = LedgerWorkflowHistoryReader(tmp_path)
+    resolved = resolve_retro_window(
+        RetroWindowSelection(change_ids=("CH-COMPLETE", "CH-RUNNING"), batch_scope=scope),
+        workflow_history=reader,
+    )
+
+    slice_ = reader.read_window(resolved)
+
+    assert tuple(source.change_id for source in slice_.sources) == ("CH-COMPLETE",)
+    assert "batch_member_evidence_gap:CH-RUNNING:running:workflow:non_terminal" in slice_.integrity.reasons
+
+
+def test_batch_corrupt_member_does_not_discard_complete_member(tmp_path: Path) -> None:
+    _write_terminal_change(tmp_path, "CH-COMPLETE", terminal_ts="2026-07-01T00:00:00Z")
+    corrupt = tmp_path / "qa" / "archive" / "CH-CORRUPT"
+    corrupt.mkdir(parents=True)
+    (corrupt / "events.jsonl").write_text("not-json\n", encoding="utf-8")
+    scope = _batch_scope(
+        ("CH-COMPLETE", "completed", "complete"),
+        ("CH-CORRUPT", "failed", "complete"),
+    )
+    reader = LedgerWorkflowHistoryReader(tmp_path)
+    resolved = resolve_retro_window(
+        RetroWindowSelection(change_ids=("CH-COMPLETE", "CH-CORRUPT"), batch_scope=scope),
+        workflow_history=reader,
+    )
+
+    slice_ = reader.read_window(resolved)
+
+    assert tuple(source.change_id for source in slice_.sources) == ("CH-COMPLETE",)
+    assert any(reason.endswith(":workflow:ledger_corrupt") for reason in slice_.integrity.reasons)
 
 
 def test_in_memory_list_terminal_changes_sorted() -> None:

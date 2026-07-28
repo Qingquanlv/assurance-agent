@@ -780,7 +780,17 @@ class TestProjectReviewQueue:
         queue = project_review_queue([])
         assert queue.entries == []
 
-    def test_merge_suggested_creates_entry(self) -> None:
+    def test_provisional_detected_problem_creates_review_request(self) -> None:
+        queue = project_review_queue([_detected_event(1)])  # type: ignore[list-item]
+
+        assert len(queue.entries) == 1
+        entry = queue.entries[0]
+        assert entry.problem_id == PROB_ID
+        assert entry.occurrence_id == "OCC-1111111111111111"
+        assert entry.possible_problem_ids == []
+        assert entry.reason == "provisional assessment requires human review"
+
+    def test_merge_suggestions_are_aggregated_into_problem_review_request(self) -> None:
         events = [
             _detected_event(1),
             _mk_problem_event(
@@ -795,18 +805,32 @@ class TestProjectReviewQueue:
                 target_problem_id=PROB_ID_B,
                 reason="semantic match",
             ),
+            _mk_problem_event(
+                3,
+                "E3",
+                "I3",
+                PROB_ID,
+                1,
+                type="problem_merge_suggested",
+                source_occurrence_id="OCC-1111111111111111",
+                source_change_id="CH-001",
+                target_problem_id="PROB-third-target",
+                reason="another semantic match",
+            ),
         ]
         queue = project_review_queue(events)  # type: ignore[arg-type]
         assert len(queue.entries) == 1
         entry = queue.entries[0]
+        assert entry.problem_id == PROB_ID
         assert entry.occurrence_id == "OCC-1111111111111111"
-        assert entry.possible_problem_ids == [PROB_ID_B]
-        assert entry.reason == "semantic match"
+        assert entry.possible_problem_ids == [PROB_ID_B, "PROB-third-target"]
+        assert entry.reason == "provisional assessment and possible matches require human review"
 
     def test_entry_id_is_deterministic(self) -> None:
         events = [
+            _detected_event(1),
             _mk_problem_event(
-                1,
+                2,
                 "EVT-FIXED",
                 "IDEM-FIXED",
                 PROB_ID,
@@ -822,8 +846,22 @@ class TestProjectReviewQueue:
         queue2 = project_review_queue(events)  # type: ignore[arg-type]
         assert queue1.entries[0].entry_id == queue2.entries[0].entry_id
 
-    def test_non_merge_events_ignored(self) -> None:
-        events = [_detected_event(1)]
+    def test_human_confirmed_problem_without_merge_suggestion_leaves_queue(self) -> None:
+        events = [
+            _detected_event(1),
+            _mk_problem_event(
+                2,
+                "E2",
+                "I2",
+                PROB_ID,
+                1,
+                type="problem_assessment_confirmed",
+                classification="product_bug",
+                severity="high",
+                reason="confirmed",
+                evidence_refs=["review://REV-1"],
+            ),
+        ]
         queue = project_review_queue(events)  # type: ignore[arg-type]
         assert queue.entries == []
 

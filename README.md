@@ -80,7 +80,7 @@ aa workflow run --change <id> --entrypoint full --adapter opencode --server http
 
 `aa workflow run` 是完整的确定性 driver（主循环 + gate + 状态推进），不是 `status --next` 的别名。
 
-编排 schema（v2）的节点级词汇——`retry`/`timeout` 命名策略、`budget` 业务预算、`fan_out` 动态展开、`routes` 多路分派、`interrupt` 人工中断（语义见 `docs/schemas.md`「Workflow schema v2 编排词汇」）。恢复语义：ledger（`events.jsonl`）是唯一权威，重跑 `aa workflow run` 即从 ledger 重投影续跑（`aa status` / `aa workflow status` 可见 checkpoint 与 event_seq）。
+编排 schema（v2）的节点级词汇——`retry`/`timeout` 命名策略、`budget` 业务预算、`fan_out` 动态展开、`routes` 多路分派、`interrupt` 人工中断（语义见 `docs/schemas.md`「Workflow schema v2 编排词汇」）。恢复语义：ledger（`events.jsonl`）是唯一权威，重跑 `aa workflow run` 即从 ledger 重投影续跑（`aa status` 可见 checkpoint 与 event_seq）。
 
 ---
 
@@ -94,7 +94,7 @@ aa workflow run --change <id> --entrypoint full --adapter opencode --server http
 | `aa doctor [--json]` | 环境与配置自检；有 error 退出 1 |
 | `aa config print` | 原样打印 `.aa/config.yaml` |
 | `aa validate --change <id> [--phase <p>] [--artifact <rel>] [--json]` | 确定性校验 change 产物；退出码 0 通过 / 1 失败、缺失或零注册产物 / 2 用法错误 |
-| `aa status --change <id> [--next] [--json]` | GraphStatus 投影（pending tasks / interrupts / next retry）；`--next` 只打印待办；退出码 0 running/completed / 20 stopped / 30 interrupted / 40 failed（命令或数据错误为 1） |
+| `aa status --change <id> [--next] [--json]` | GraphStatus 投影（pending tasks / interrupts / next retry）；`--next` 只打印待办；退出码 0 running/completed / 20 stopped / 30 interrupted / 40 failed（命令或数据错误为 40） |
 | `aa gate check --change <id> --node-path <p> [--json]` | 返回该节点 ledger 冻结的 gate 报告（拒绝重裁可变文件）；退出码 0 pass/enter/exit/skip / 30 needs_fix/needs_human_review/continue / 40 reject/stop |
 | `aa state ...` | 非图进度辅助（如 configure）；禁止用 apply/heal 伪造进度 |
 | `aa decide --change <id> ...` | 非图策略决定（如 `allow_test_changes`）；图内人工裁决走 `workflow resume --interrupt` |
@@ -106,7 +106,7 @@ aa workflow run --change <id> --entrypoint full --adapter opencode --server http
 | `aa heal ...` | Healing 支持命令（fix-proposal 校验等） |
 | `aa workflow run --change <id> --entrypoint full\|intake\|execute\|case\|archive\|retro --adapter opencode\|headless [...]` | GraphRuntime 主循环；退出码 0 completed / 20 stopped / 30 interrupted / 40 error |
 | `aa workflow run --detach ...` | detached 后台启动（OpenCode `workflow_start`；立刻返回启动成败） |
-| `aa workflow status --change <id>` | GraphStatus（pending tasks / interrupts / retry） |
+| `aa workflow status --change <id>` | deprecated 别名（隐藏，一个版本后移除）；用 `aa status` |
 | `aa workflow resume --change <id> [--interrupt <id> --action <a> --reason <text>]` | 续跑或解决 interrupt |
 | `aa workflow import-checkpoint --change <id> --manifest <path>` | 校验后导入 fixture/benchmark checkpoint |
 | `aa skill refresh [--sync-agents] [--dry-run]` | 同步 skills 到 `skills/`（始终）；`--sync-agents` 追加 `.opencode/{agents,tools,plugins}` |

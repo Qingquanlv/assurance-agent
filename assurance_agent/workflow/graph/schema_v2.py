@@ -38,7 +38,7 @@ class _FrozenModel(BaseModel):
 
 
 class ParamDef(_FrozenModel):
-    type: Literal["enum", "list", "bool", "int", "str"]
+    type: Literal["enum", "list", "object", "bool", "int", "str"]
     values: list[object] | None = None
     min_items: int | None = Field(default=None, ge=0)
     unique: bool = False
@@ -92,6 +92,7 @@ class StateDef(_FrozenModel):
 class ResourceDef(_FrozenModel):
     reads: list[str] = Field(default_factory=list)
     writes: list[str] = Field(default_factory=list)
+    synchronized: list[str] = Field(default_factory=list)
     exclusive: list[str] = Field(default_factory=list)
 
 

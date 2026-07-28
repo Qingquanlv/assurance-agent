@@ -11,8 +11,10 @@ import yaml
 
 from assurance_agent.change_location import ChangeNotFoundError, resolve_change
 from assurance_agent.identifiers import UnsafeIdentifierError
+from assurance_agent.retro.supervisor import RetroInvocation, run_retro_supervised
 from assurance_agent.workflow.driver.adapter import DriverError
 from assurance_agent.workflow.driver.driver_state import (
+    driver_status_for_graph,
     evaluate_start_guard,
     project_graph_pointer,
     read_driver_state,
@@ -32,6 +34,7 @@ from assurance_agent.workflow.driver.workflow_start import start_workflow_detach
 from assurance_agent.workflow.graph.checkpoint import CheckpointImportError, parse_import_manifest
 from assurance_agent.workflow.graph.models import ResumeCommand
 from assurance_agent.workflow.graph.runtime import GraphRuntimeError
+from assurance_agent.workflow.graph.runtime import ensure_retro_params
 
 
 @click.group("workflow")
@@ -170,6 +173,38 @@ def _run_or_detach(
         click.secho(started.message, fg="green")
         raise SystemExit(EXIT_COMPLETED)
     adapter = _build_adapter(adapter_name, project_root, server, directory, model, parent_session, agent_cmd)
+    if entrypoint == "retro":
+        retro_params = ensure_retro_params(parsed_params)
+        retro_id = str(retro_params["retro_id"])
+        result_holder = None
+
+        def graph_runner(invocation: RetroInvocation):  # noqa: ANN202
+            nonlocal result_holder
+            result_holder = run_workflow_loop(
+                project_root=invocation.project_root,
+                change_id=invocation.shell_change_id,
+                entrypoint="retro",
+                adapter=adapter,
+                params=dict(invocation.params),
+                parent_session_id=parent_session,
+                adopt_lock_token=adopt_lock,
+            )
+            return result_holder
+
+        supervised = run_retro_supervised(
+            RetroInvocation(
+                project_root=project_root,
+                shell_change_id=change_id,
+                retro_id=retro_id,
+                params=retro_params,
+            ),
+            graph_runner=graph_runner,
+        )
+        if supervised.status is None:
+            click.secho("Retro supervision failed", fg="red")
+            raise SystemExit(EXIT_ERROR)
+        click.secho(supervised.status.result, fg="green")
+        raise SystemExit(EXIT_COMPLETED)
     result = run_workflow_loop(
         project_root=project_root,
         change_id=change_id,
@@ -373,15 +408,7 @@ def workflow_resume(
                 invocation_id=result.invocation_id,
                 checkpoint_id=result.status.checkpoint_id,
                 event_seq=result.status.event_seq,
-                status=(
-                    "completed"
-                    if result.status.status == "completed"
-                    else "paused"
-                    if result.status.status == "interrupted"
-                    else "failed"
-                    if result.status.status in {"stopped", "failed"}
-                    else "running"
-                ),
+                status=driver_status_for_graph(result.status.status),
             ),
         )
 
@@ -395,57 +422,22 @@ def workflow_resume(
     raise SystemExit(result.exit_code)
 
 
-@workflow_group.command("status")
+@workflow_group.command("status", hidden=True)
 @click.option("--change", "change_id", required=True, help="Change ID under qa/changes/.")
+@click.option("--next", "next_only", is_flag=True, help="Print only pending work.")
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable JSON output.")
-def workflow_status(change_id: str, as_json: bool) -> None:
-    """Show GraphStatus for the latest root invocation (ledger, not driver.json)."""
-    project_root = Path.cwd()
-    try:
-        resolve_change(project_root, change_id)
-    except (UnsafeIdentifierError, ChangeNotFoundError) as err:
-        click.secho(str(err), fg="red")
-        raise SystemExit(EXIT_ERROR) from err
+def workflow_status(change_id: str, next_only: bool, as_json: bool) -> None:
+    """Deprecated alias of `aa status` (kept for one release)."""
+    click.secho(
+        "warning: `aa workflow status` is deprecated; use `aa status --change <id> [--next] [--json]`. "
+        "Behavior changes: exit codes mirror graph state (0/20/30/40), and the no-invocation "
+        'payload is unified to {"status": null, "invocation_id": null}.',
+        fg="yellow",
+        err=True,
+    )
+    from assurance_agent.commands.status_cmd import _run_status
 
-    adapter = HeadlessAdapter(agent_cmd="true", cwd=project_root)
-    try:
-        bundle = build_graph_runtime(
-            project_root=project_root,
-            change_id=change_id,
-            adapter=adapter,
-        )
-        latest = bundle.runtime.latest_root_invocation()
-        if latest is None:
-            payload = {"status": None, "invocation_id": None}
-            if as_json:
-                click.echo(json.dumps(payload, indent=2))
-            else:
-                click.echo("no graph invocation found (workflow not started)")
-            raise SystemExit(0)
-        status = bundle.runtime.status(latest)
-    except GraphRuntimeError as err:
-        click.secho(str(err), fg="red")
-        raise SystemExit(EXIT_ERROR) from err
-
-    if as_json:
-        click.echo(json.dumps(status.model_dump(mode="json"), indent=2))
-    else:
-        click.echo(f"invocation_id:     {status.invocation_id}")
-        click.echo(f"entrypoint:        {status.entrypoint}")
-        click.echo(f"status:            {status.status}")
-        click.echo(f"checkpoint_id:     {status.checkpoint_id}")
-        click.echo(f"event_seq:         {status.event_seq}")
-        click.echo(f"pending_tasks:     {', '.join(status.pending_tasks) or '(none)'}")
-        interrupts = ", ".join(i.interrupt_id for i in status.pending_interrupts) or "(none)"
-        click.echo(f"pending_interrupts:{interrupts}")
-        if status.terminal_reason:
-            click.echo(f"terminal_reason:   {status.terminal_reason}")
-        if status.status in {"interrupted", "failed", "stopped"}:
-            click.echo(
-                f"resume:            re-run `aa workflow resume --change {change_id}` "
-                "to advance from the ledger"
-            )
-    raise SystemExit(0)
+    raise SystemExit(_run_status(change_id, next_only=next_only, as_json=as_json))
 
 
 @workflow_group.command("import-checkpoint")

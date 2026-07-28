@@ -360,10 +360,44 @@ def test_agent_handler_builds_workspace_request_and_freezes(tmp_path: Path) -> N
     assert "IS this task's project root" in request.prompt
 
 
-def test_aa_retro_agent_prompt_is_current_run_only(tmp_path: Path) -> None:
+def test_agent_handler_prefers_explicit_node_agent_over_name_inference(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    invoker = RecordingInvoker(write="qa/changes/CH-1/explore/summary.md")
+    compiled = _compiled(
+        """
+        main:
+          max_supersteps: 5
+          nodes:
+            explore:
+              uses: skill:aa-explore
+              agent: aa-reporter
+              outputs: [change:explore/summary.md]
+          edges:
+            - {from: START, to: explore}
+            - {from: explore, to: END}
+        """
+    )
+    handler = AgentHandler(
+        invoker,
+        _store(project),
+        contracts=_agent_catalog(),
+        compiled=compiled,
+    )
+
+    result = handler.execute(
+        _task("skill:aa-explore", node_id="explore"),
+        _workspace(project),
+        _context(project),
+    )
+
+    assert result.status == "succeeded"
+    assert invoker.requests[0].agent == "aa-reporter"
+
+
+def test_aa_retro_agent_prompt_has_no_v2_runtime_special_case(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     workspace = _workspace(project)
-    invoker = RecordingInvoker(write="qa/retro/retro-1/proposal-candidates.json")
+    invoker = RecordingInvoker(write="qa/retro/retro-1/probe.txt")
     catalog = parse_execution_contracts(
         'schema_version: "1"\n'
         "contracts:\n"
@@ -378,7 +412,7 @@ def test_aa_retro_agent_prompt_is_current_run_only(tmp_path: Path) -> None:
       nodes:
         propose:
           uses: skill:aa-retro
-          outputs: [project:qa/retro/retro-1/proposal-candidates.json]
+          outputs: [project:qa/retro/retro-1/probe.txt]
       edges:
         - {from: START, to: propose}
         - {from: propose, to: END}
@@ -396,12 +430,8 @@ def test_aa_retro_agent_prompt_is_current_run_only(tmp_path: Path) -> None:
     )
     assert result.status == "succeeded"
     prompt = invoker.requests[0].prompt
-    assert "Read only qa/retro/retro-1/context.json" in prompt
-    assert "proposal-candidates.json" in prompt
-    assert "schema_version='2'" in prompt
-    assert "proposals.json" not in prompt
-    assert "finding_kind" not in prompt
-    assert "Do not read any other Retro run" in prompt
+    assert "schema_version='2'" not in prompt
+    assert "Read only qa/retro/retro-1/context.json" not in prompt
 
 
 def test_agent_fan_out_preserves_synchronized_claims_in_frozen_write_set(tmp_path: Path) -> None:
@@ -567,6 +597,87 @@ def test_agent_handler_missing_declared_output_is_invalid_output(tmp_path: Path)
     assert result.error_kind == "invalid_output"
 
 
+def test_issue_analyzer_digest_is_runtime_owned_and_frozen_with_outputs(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    workspace = _workspace(project)
+    candidate_document = {
+        "schema_version": "1.0",
+        "change_id": "CH-1",
+        "batch_id": "batch-1",
+        "evidence_bundle_digest": "sha256:evidence",
+        "candidates": [],
+    }
+
+    class IssueInvoker:
+        def invoke(self, request: AgentRequest) -> AgentResult:
+            inspect_dir = Path(request.workspace_root) / "qa" / "changes" / "CH-1" / "inspect"
+            inspect_dir.mkdir(parents=True, exist_ok=True)
+            (inspect_dir / "issue-candidates.json").write_text(
+                json.dumps(candidate_document), encoding="utf-8"
+            )
+            # The analyzer authors semantic status only. The deterministic digest
+            # is an engine-owned cross-output field and is intentionally omitted.
+            (inspect_dir / "issue-analysis-status.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "change_id": "CH-1",
+                        "batch_id": "batch-1",
+                        "status": "completed",
+                        "evidence_bundle_digest": "sha256:evidence",
+                        "candidate_count": 0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return AgentResult(ok=True)
+
+    catalog = parse_execution_contracts(
+        'schema_version: "1"\n'
+        "contracts:\n"
+        "  skill:aa-issue-analyzer:\n"
+        "    handler: agent\n"
+        "    writes: [change:inspect/issue-candidates.json, "
+        "change:inspect/issue-analysis-status.json]\n"
+        "    authorization_writes: [change:inspect/issue-candidates.json, "
+        "change:inspect/issue-analysis-status.json]\n"
+    )
+    graph = """
+    main:
+      max_supersteps: 5
+      nodes:
+        analyze:
+          uses: skill:aa-issue-analyzer
+          outputs:
+            - change:inspect/issue-candidates.json
+            - change:inspect/issue-analysis-status.json
+      edges:
+        - {from: START, to: analyze}
+        - {from: analyze, to: END}
+    """
+    handler = AgentHandler(
+        IssueInvoker(),
+        _store(project),
+        contracts=catalog,
+        compiled=_compiled(graph),
+    )
+
+    result = handler.execute(
+        _task("skill:aa-issue-analyzer", node_id="analyze"),
+        workspace,
+        _context(project),
+    )
+
+    assert result.status == "succeeded"
+    status = json.loads(
+        (workspace.change_dir / "inspect" / "issue-analysis-status.json").read_text(encoding="utf-8")
+    )
+    from assurance_agent.workflow.issues.identity import candidate_document_digest
+
+    assert status["candidate_digest"] == candidate_document_digest(candidate_document)
+    assert result.outputs_sha256["change:inspect/issue-analysis-status.json"]
+
+
 # ---------------------------------------------------------------------------
 # Step 4：operation handler registry
 # ---------------------------------------------------------------------------
@@ -582,8 +693,21 @@ def test_default_operations_registry_has_exact_keys() -> None:
         "operation:inspect",
         "operation:generate-report",
         "operation:stop",
-        "operation:retro-collect",
+        "operation:retro-collect-v3",
+        "operation:assemble-retro-context-v3",
+        "operation:drain-improvement-outbox",
+        "operation:finalize-retro-status",
+        "operation:record-retro-pipeline-failure",
+        "operation:retro-evidence-gap-fallback",
+        "operation:record-analysis-failed",
         "operation:reconcile-improvements",
+        "operation:load-review-subject",
+        "operation:validate-improvement-review-assessment",
+        "operation:apply-improvement-auto-review",
+        "operation:record-improvement-auto-review-error",
+        "operation:record-auto-review-orchestration-error",
+        "operation:select-current-retro-auto-review-items",
+        "operation:summarize-auto-review-batch",
         "operation:retro-accept",  # half-cutover alias
         "operation:collect-observations",
         "operation:record-empty-issue-analysis",

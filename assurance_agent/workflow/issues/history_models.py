@@ -18,7 +18,7 @@ _FROZEN = ConfigDict(frozen=True, extra="forbid")
 
 IssueSourceKind = Literal["change_issue_ledger", "project_problem_ledger"]
 IssueIntegrityStatus = Literal["complete", "incomplete"]
-IssueIntegrityReason = Literal["analysis_failed", "project_sync_pending"]
+IssueIntegrityReason = str
 
 
 @dataclass(frozen=True)
@@ -30,6 +30,8 @@ class IssueWindowSelection:
     event_since: str | None = None
     event_until: str | None = None
     include_late_review_closure: bool = False
+    allow_member_gaps: bool = False
+    member_execution_statuses: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)

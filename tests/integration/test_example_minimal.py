@@ -37,7 +37,7 @@ def test_example_minimal_runs_end_to_end(tmp_path: Path, monkeypatch: pytest.Mon
     doc = json.loads(status_result.output)
     # No graph invocation yet → null status; after a run the payload is GraphStatus.
     if doc.get("status") is None:
-        assert doc == {"status": None}
+        assert doc == {"status": None, "invocation_id": None}
     else:
         assert "invocation_id" in doc
         assert "pending_tasks" in doc

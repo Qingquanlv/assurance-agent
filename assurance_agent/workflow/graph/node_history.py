@@ -277,11 +277,13 @@ class GenerationFoldState:
             updates: dict[str, object] = {"status": _outcome_status(event)}
             if isinstance(event, TaskAttemptSucceededEvent):
                 updates["frozen_outputs"] = _wire_to_frozen_dict(event.frozen_outputs)
+                updates["value"] = event.value
             self._update_generation(task.node_id, generation_ordinal, **updates)
             return
         updates = {"status": _outcome_status(event)}
         if isinstance(event, TaskAttemptSucceededEvent):
             updates["frozen_outputs"] = _wire_to_frozen_dict(event.frozen_outputs)
+            updates["value"] = event.value
         self._update_generation(task.node_id, generation_ordinal, **updates)
 
     def apply_imported_task(
@@ -465,6 +467,8 @@ def build_node_results_for_gate(
             payload["gate"] = generation.gate_report
             if "value" in generation.gate_report:
                 payload["value"] = generation.gate_report["value"]
+        elif generation.value is not None:
+            payload["value"] = generation.value
         results[node_id] = payload
     return results
 

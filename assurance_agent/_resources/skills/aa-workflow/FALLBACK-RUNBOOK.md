@@ -7,7 +7,6 @@
 
 ```bash
 aa workflow run --change <id> --entrypoint full|intake|execute|case [--params '{...}']
-aa workflow status --change <id> [--json]
 aa workflow resume --change <id>                                 # plain resume / lease abandon
 aa workflow resume --change <id> --interrupt <id> --action <a> --reason <text> [--who <who>]
 aa workflow import-checkpoint --change <id> --manifest <path>
@@ -19,7 +18,7 @@ OpenCode `workflow_start` accepts `entrypoint: full | intake | execute | case` (
 
 ## Operator may
 
-1. Inspect `aa workflow status` / `aa status --json` (pending tasks, pending interrupts, next retry).
+1. Inspect `aa status --json` (pending tasks, pending interrupts, next retry).
 2. Wait until `next_retry_at` and plain-resume an expired attempt (`aa workflow resume`).
 3. Resolve a listed interrupt with `--interrupt` / `--action` / `--reason`.
 4. Run a **validated** checkpoint import (`aa workflow import-checkpoint`) for fixture/benchmark mid-graph entry.

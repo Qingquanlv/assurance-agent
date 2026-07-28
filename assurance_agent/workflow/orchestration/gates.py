@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,7 +17,7 @@ from assurance_agent.exceptions import AaError
 from assurance_agent.knowledge.capabilities import capabilities_present as check_capabilities_present
 from assurance_agent.knowledge.capabilities import compute_missing_capabilities
 from assurance_agent.workflow.core.audit_scope import is_audited_gate_read
-from assurance_agent.workflow.core.events import read_events
+from assurance_agent.workflow.core.events import read_events_strict
 from assurance_agent.workflow.execution.tree_hash import sha256_file
 from assurance_agent.workflow.orchestration.dsl import (
     MISSING,
@@ -30,7 +31,8 @@ from assurance_agent.workflow.orchestration.schema import GateDef, ReadEntry, Ve
 
 
 class _SchemaWithGates(Protocol):
-    gates: dict[str, GateDef]
+    @property
+    def gates(self) -> Mapping[str, GateDef]: ...
 
 
 # Human decisions that can upgrade a `needs_human_review` gate verdict. Mirror of
@@ -236,8 +238,10 @@ def latest_valid_gate_decision(
     schema: _SchemaWithGates,
     gate_id: str,
     loc: ChangeLocation,
+    *,
+    events_dir: Path | None = None,
 ) -> dict[str, object] | None:
-    """Return the latest human_decision that legitimately anchors ``gate_id``.
+    """Return the latest audited human or graph-resume decision for ``gate_id``.
 
     Mirror of TS ``latestValidGateDecision``: the decision must target this gate
     (for ``fixer-safety-gate``, a ``healing.safety`` accept_risk decision also
@@ -251,32 +255,47 @@ def latest_valid_gate_decision(
     audited = {r.path for r in gate.reads if is_audited_gate_read(r.path)}
     if not audited:
         return None
-    events = read_events(loc.path)
-    latest: dict[str, object] | None = None
+    events = read_events_strict(events_dir or loc.path)
+    latest_human: dict[str, object] | None = None
     for event in reversed(events):
         if event.get("source") != "decide" or event.get("type") != "human_decision":
             continue
         checkpoint = event.get("checkpoint")
         if checkpoint == gate_id:
-            latest = event
+            latest_human = event
             break
         if isinstance(checkpoint, str):
             # Special ``healing.safety`` checkpoint also anchors the fixer-safety-gate.
             if gate_id == "fixer-safety-gate" and checkpoint == "healing.safety":
-                latest = event
+                latest_human = event
                 break
+    latest_graph = _latest_graph_gate_decision(events, gate_id)
+    latest = max(
+        (item for item in (latest_human, latest_graph) if item is not None),
+        key=_event_sequence,
+        default=None,
+    )
     if latest is None:
         return None
     if latest.get("action") not in _GATE_DECISION_ACTIONS:
         return None
     reason = latest.get("reason")
     who = latest.get("who")
-    review_file = latest.get("review_file")
-    review_sha = latest.get("review_sha256")
     if not (isinstance(reason, str) and reason.strip()):
         return None
     if not (isinstance(who, str) and who.strip()):
         return None
+    if latest.get("source") == "graph":
+        hashes = latest.get("audited_reads_sha256")
+        if not isinstance(hashes, dict) or not audited.issubset(hashes):
+            return None
+        for rel in audited:
+            expected = hashes.get(rel)
+            if not isinstance(expected, str) or sha256_file(_resolve_path(loc, rel)) != expected:
+                return None
+        return latest
+    review_file = latest.get("review_file")
+    review_sha = latest.get("review_sha256")
     if not (isinstance(review_file, str) and isinstance(review_sha, str)):
         return None
     if review_file not in audited:
@@ -294,16 +313,77 @@ def latest_valid_gate_decision(
     return latest if current == review_sha else None
 
 
+def _event_sequence(event: Mapping[str, object]) -> int:
+    value = event.get("seq")
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _latest_graph_gate_decision(
+    events: list[dict[str, object]],
+    gate_id: str,
+) -> dict[str, object] | None:
+    """Resolve the latest resume group whose interrupt targeted ``gate_id``.
+
+    A v3 resume is emitted once per ancestor invocation. Only the root copy owns
+    the audited hashes, so the copies are treated as one decision keyed by
+    ``interrupt_id`` rather than independently.
+    """
+    interruptions: dict[str, dict[str, object]] = {}
+    for event in events:
+        if event.get("source") != "graph" or event.get("type") != "graph_interrupted":
+            continue
+        checkpoint = event.get("checkpoint")
+        matches = checkpoint == gate_id or (gate_id == "fixer-safety-gate" and checkpoint == "healing.safety")
+        interrupt_id = event.get("interrupt_id")
+        if matches and isinstance(interrupt_id, str):
+            interruptions[interrupt_id] = event
+    latest_resume: dict[str, object] | None = None
+    for event in reversed(events):
+        if event.get("source") != "graph" or event.get("type") != "graph_resumed":
+            continue
+        interrupt_id = event.get("interrupt_id")
+        if isinstance(interrupt_id, str) and interrupt_id in interruptions:
+            latest_resume = event
+            break
+    if latest_resume is None:
+        return None
+    interrupt_id = latest_resume.get("interrupt_id")
+    interrupted = interruptions[str(interrupt_id)]
+    actions = interrupted.get("actions")
+    if not isinstance(actions, list) or latest_resume.get("action") not in actions:
+        return {**latest_resume, "action": "__invalid__"}
+    group = [
+        event
+        for event in events
+        if event.get("source") == "graph"
+        and event.get("type") == "graph_resumed"
+        and event.get("interrupt_id") == interrupt_id
+    ]
+    if any(event.get("action") != latest_resume.get("action") for event in group):
+        return {**latest_resume, "action": "__invalid__"}
+    audited = next(
+        (
+            event.get("audited_reads_sha256")
+            for event in group
+            if isinstance(event.get("audited_reads_sha256"), dict) and event.get("audited_reads_sha256")
+        ),
+        {},
+    )
+    return {**latest_resume, "audited_reads_sha256": audited}
+
+
 def _apply_gate_decision(
     schema: _SchemaWithGates,
     gate_id: str,
     loc: ChangeLocation,
     base_verdict: Verdict,
+    *,
+    events_dir: Path | None = None,
 ) -> tuple[Verdict, str | None]:
     """Apply a valid human decision to a ``needs_human_review`` gate verdict."""
     if base_verdict != Verdict.NEEDS_HUMAN_REVIEW or is_codegen_hard_gate(gate_id):
         return base_verdict, None
-    decision = latest_valid_gate_decision(schema, gate_id, loc)
+    decision = latest_valid_gate_decision(schema, gate_id, loc, events_dir=events_dir)
     if decision is None:
         return base_verdict, None
     action = decision.get("action")
@@ -359,6 +439,9 @@ class GateEvaluationContext:
     state_values: Mapping[str, object]
     node_results: Mapping[str, object]
     artifact_overrides: Mapping[str, object] = field(default_factory=dict)
+    # Coordinator events are intentionally excluded from frozen task trees.
+    # Gate evidence still comes from change_dir; only decisions come from here.
+    audit_events_dir: Path | None = None
 
 
 class FrozenGateReport(BaseModel):
@@ -371,9 +454,38 @@ class FrozenGateReport(BaseModel):
     details: Mapping[str, Any] | None = None
 
 
-def resolve_view_path(context: GateEvaluationContext, rel: str) -> Path:
+def expand_gate_read_template(template: str, *, params: Mapping[str, object]) -> str:
+    """Expand allowlisted scalar `${params.name}` path segments fail-closed."""
+    token = re.compile(r"\$\{params\.([A-Za-z_][A-Za-z0-9_]*)\}")
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        value = params.get(name)
+        if not isinstance(value, (str, int)) or isinstance(value, bool):
+            raise GateError(f"unsafe or missing gate path param: {name}")
+        segment = str(value)
+        digest_ok = re.fullmatch(r"sha256:[0-9a-f]{64}", segment) is not None
+        ordinary_ok = re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", segment) is not None
+        if not (digest_ok or ordinary_ok) or segment in {".", ".."}:
+            raise GateError(f"unsafe gate path param: {name}")
+        return segment
+
+    expanded = token.sub(replace, template)
+    if "${" in expanded or "%2f" in expanded.lower() or "%5c" in expanded.lower():
+        raise GateError("unresolved or encoded traversal in gate path")
+    return expanded
+
+
+def resolve_view_path(
+    context: GateEvaluationContext,
+    rel: str,
+    *,
+    params: Mapping[str, object] | None = None,
+) -> Path:
     """``resolve_change_path`` 的 view 版本：``repo:`` → repo root，``qa/`` → project root，其余 → change dir。"""
-    normalized = rel.replace("<change-id>", context.change_id)
+    normalized = expand_gate_read_template(
+        rel.replace("<change-id>", context.change_id), params=params or context.params
+    )
     if normalized.startswith("repo:"):
         return context.repo_root / normalized[len("repo:") :]
     if normalized.startswith("qa/"):
@@ -527,7 +639,85 @@ def _evaluate_gate_def(
     stack: tuple[str, ...],
     memo: dict[str, str],
 ) -> tuple[Verdict, str | None, str, dict[str, str], dict[str, Any] | None]:
-    """在显式 view 上求值单个 GateDef：返回 (verdict, matched_rule, reason, reads_sha256, details)。
+    """Evaluate a gate in the frozen view, including anchored human decisions."""
+    verdict, matched, reason, reads_sha256, details = _evaluate_gate_def_base(
+        gate,
+        context,
+        gates=gates,
+        stack=stack,
+        memo=memo,
+    )
+    gate_id = stack[-1] if stack else ""
+    schema = _ViewGateSchema(gates=gates)
+    location = ChangeLocation(
+        project_root=context.project_root,
+        change_id=context.change_id,
+        path=context.change_dir,
+        source="changes",
+    )
+    upgraded, action = _apply_gate_decision(
+        schema,
+        gate_id,
+        location,
+        verdict,
+        events_dir=context.audit_events_dir,
+    )
+    final_verdict = verdict if action is None else upgraded
+    final_details = _details_with_stop_cause(
+        gate,
+        context,
+        gates=gates,
+        stack=stack,
+        memo=memo,
+        verdict=final_verdict,
+        details=details,
+    )
+    if action is None:
+        return verdict, matched, reason, reads_sha256, final_details
+    decision_match = f"{matched or 'default'}; human_decision:{action}"
+    return upgraded, decision_match, f"{reason}; human decision {action}", reads_sha256, final_details
+
+
+@dataclass(frozen=True)
+class _ViewGateSchema:
+    gates: Mapping[str, GateDef]
+
+
+def _details_with_stop_cause(
+    gate: GateDef,
+    context: GateEvaluationContext,
+    *,
+    gates: Mapping[str, GateDef],
+    stack: tuple[str, ...],
+    memo: dict[str, str],
+    verdict: Verdict,
+    details: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if verdict != Verdict.STOP or not gate.causes:
+        return details
+    scope = _view_scope(gate, context, gates=gates, stack=stack, memo=memo)
+    cause = next(
+        (
+            name
+            for name, expression in gate.causes.items()
+            if evaluate(parse_expression(expression), scope) is True
+        ),
+        f"{gate.id}.unknown",
+    )
+    merged = dict(details or {})
+    merged["cause"] = cause
+    return merged
+
+
+def _evaluate_gate_def_base(
+    gate: GateDef,
+    context: GateEvaluationContext,
+    *,
+    gates: Mapping[str, GateDef],
+    stack: tuple[str, ...],
+    memo: dict[str, str],
+) -> tuple[Verdict, str | None, str, dict[str, str], dict[str, Any] | None]:
+    """在显式 view 上求值单个 GateDef 的基础规则，不含人工决策升级。
 
     规则求值顺序与 v1 ``_adjudicate_base`` 逐步对齐（声明序 first-true-wins）；
     每个返回路径都冻结当前 audited read hash。

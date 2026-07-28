@@ -9,6 +9,7 @@ def test_registry_covers_every_expected_artifact_type() -> None:
         "change_issue_snapshot",
         "data_knowledge_proposal",
         "execution_manifest",
+        "eval_run_projection_v1",
         "fact_baseline",
         "failure_analysis",
         "fix_proposal",
@@ -16,16 +17,40 @@ def test_registry_covers_every_expected_artifact_type() -> None:
         "issue_candidate_document",
         "issue_evidence_manifest",
         "issue_reconcile_status",
+        "improvement_candidate_document",
+        "improvement_auto_review_assessment_v1",
+        "improvement_auto_review_batch_summary_v1",
+        "improvement_auto_review_status_v1",
+        "improvement_review_subject_v1",
+        "improvement_reconcile_outbox_v1",
         "observation_document",
         "qa_yaml",
         "quality_gate_result",
         "quality_report",
+        "retro_window_v3",
+        "retro_context_v3",
+        "retro_issue_evidence_slice_v3",
+        "retro_workflow_evidence_slice_v3",
+        "retro_eval_evidence_slice_v3",
+        "retro_issue_signal_v3",
+        "retro_pipeline_failure_v1",
+        "retro_run_status_v1",
+        "retro_workflow_signal_v3",
+        "retro_eval_signal_v3",
         "review",
         "safety_check",
         "workflow_state",
     }
     assert {spec.artifact_type for spec in REGISTRY} == expected
-    assert len(REGISTRY) == 20
+    assert len(REGISTRY) == 37
+
+
+def test_retro_closure_artifacts_match_only_their_run_paths() -> None:
+    failure = match_artifact("qa/retro/RETRO-1/pipeline-failure.json")
+    status = match_artifact("qa/retro/RETRO-1/retro-status.json")
+    assert failure is not None and failure.artifact_type == "retro_pipeline_failure_v1"
+    assert status is not None and status.artifact_type == "retro_run_status_v1"
+    assert match_artifact("qa/retro/RETRO-1/nested/retro-status.json") is None
 
 
 def test_case_yaml_matches_nested_and_direct_paths() -> None:
@@ -81,8 +106,8 @@ def test_compat_grades_match_spec_4a() -> None:
     assert grades["quality_report"] == "versioned"
     assert grades["observation_document"] == "versioned"
     assert grades["issue_evidence_manifest"] == "versioned"
-    assert grades["issue_candidate_document"] == "versioned"
-    assert grades["issue_analysis_status"] == "versioned"
+    assert grades["issue_candidate_document"] == "must_compat"
+    assert grades["issue_analysis_status"] == "must_compat"
     assert grades["issue_reconcile_status"] == "versioned"
     assert grades["change_issue_snapshot"] == "versioned"
 

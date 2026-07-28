@@ -20,6 +20,15 @@ _Avoid_: unarchived (retro evidence-lifecycle wording; map at the retro adapter)
 A Change whose directory exists under the configured `qa.archive` path; read-oriented evidence source for retro and history sampling.
 _Avoid_: completed change (completion is a workflow status, not a directory role)
 
+**Retro evidence slice**:
+An immutable, typed, run-scoped projection of Issue, Workflow, or Eval evidence for one resolved Retro window. It is analysis input, not a new Ledger and not historical Retro output.
+
+**Retro signal**:
+A domain analyzer's validated pattern claim whose references resolve only inside its evidence slice. Runtime code supplies the slice digest; analyzers do not author integrity fields.
+
+**Retro context**:
+The mechanically assembled v3 envelope containing the three domain statuses, source manifest, integrity result, and all validated signals for one Retro run. Improvement Candidates must reference both context signals and immutable source evidence.
+
 **Ledger**:
 The append-only event log for a Change (`events.jsonl`), queried through one interface for sequence-aware lookups (filter / latest by type and attributes).
 _Avoid_: event store, event bus, audit log (when meaning the query seam over `events.jsonl`)
@@ -33,5 +42,5 @@ A registered projector for a `loops:` entry (`healing`, `review_fix`), consumed 
 _Avoid_: hardcoded loop, special-case loop
 
 **Checkpoint**:
-A driver main-loop iteration boundary (one committed phase outcome or control action); the checkpoint payload is `workflow-state.yaml` + `events.jsonl`, `driver.json` is only the pointer (`iteration` accumulates across runs of the same change).
+A driver main-loop boundary (one committed phase outcome or control action); the checkpoint payload is `workflow-state.yaml` + `events.jsonl`, `driver.json` is only the non-authoritative process pointer (`invocation_id` / `checkpoint_id` / `event_seq`).
 _Avoid_: snapshot, savepoint (recovery is re-projection, not snapshot restore)

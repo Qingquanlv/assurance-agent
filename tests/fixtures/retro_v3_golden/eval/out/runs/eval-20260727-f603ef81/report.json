@@ -1,0 +1,29 @@
+{
+  "run_id": "eval-20260727-f603ef81",
+  "suite": "case-generation",
+  "verdict": "inconclusive",
+  "started_at": "2026-07-27T03:06:37Z",
+  "completed_at": "2026-07-27T03:06:48Z",
+  "sample_ids": [
+    "CG-001#attempt-0"
+  ],
+  "sample_count": 1,
+  "total_samples": 1,
+  "executed_samples": 1,
+  "target_model": "unknown",
+  "metrics": {},
+  "per_sample": {
+    "CG-001#attempt-0": {}
+  },
+  "hard_gate_failures": [],
+  "threshold_failures": [
+    "hallucination_rate: missing",
+    "schema_valid_rate: missing",
+    "path_coverage_rate: missing",
+    "risk_coverage_rate: missing",
+    "traceability_rate: missing",
+    "requirement_f1: missing"
+  ],
+  "warnings": [],
+  "inconclusive_count": 6
+}

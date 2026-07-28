@@ -116,6 +116,7 @@ class RunManifest(BaseModel):
     repeat: int = 1
     regression_policy_sha256: str | None = None
     memory_overlay_sha256: str | None = None
+    change_ids: tuple[str, ...] = ()
     started_at: str
     completed_at: str | None = None
 

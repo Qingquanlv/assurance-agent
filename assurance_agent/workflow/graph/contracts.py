@@ -169,6 +169,7 @@ def narrow_claims(
     reads: tuple[ResourcePath, ...],
     writes: tuple[ResourcePath, ...],
     outputs: tuple[ResourcePath, ...],
+    synchronized: tuple[ResourcePath, ...] | None = None,
 ) -> ResourceClaims:
     """Replace broad static claims with concrete expanded current-run paths.
 
@@ -183,11 +184,16 @@ def narrow_claims(
         any(path_covers(bound, item) for bound in base.authorization_writes) for item in requested_writes
     ):
         raise ContractError("expanded write exceeds the static execution contract")
+    concrete_synchronized = base.synchronized if synchronized is None else synchronized
+    if not all(
+        any(path_covers(bound, item) for bound in base.synchronized) for item in concrete_synchronized
+    ):
+        raise ContractError("expanded synchronized path exceeds the static execution contract")
     concrete_writes = tuple(dict.fromkeys((*writes, *outputs)))
     return ResourceClaims(
         reads=reads,
         writes=concrete_writes,
-        synchronized=base.synchronized,
+        synchronized=concrete_synchronized,
         exclusive=base.exclusive,
         authorization_writes=concrete_writes,
     )
@@ -209,6 +215,7 @@ class ExecutionContract(BaseModel):
     retryable_errors: tuple[ErrorKind, ...] = ()
     side_effect_free: bool = False
     reconnect: bool = False
+    read_isolation: Literal["declared_only"] | None = None
 
 
 class ExecutionContractCatalog(BaseModel):
@@ -291,9 +298,9 @@ def _validate_catalog_paths(catalog: ExecutionContractCatalog) -> None:
                     f"contract '{key}' synchronized path must be a concrete file or directory prefix: "
                     f"{path.pattern}"
                 )
-            if not any(path_covers(read, path) for read in reads):
+            if not any(path_covers(bound, path) for bound in (*reads, *writes)):
                 raise ContractError(
-                    f"contract '{key}' synchronized path must be covered by reads: {path.pattern}"
+                    f"contract '{key}' synchronized path must be covered by reads or writes: {path.pattern}"
                 )
             can_write = any(paths_intersect(path, claim) for claim in (*writes, *authorization))
             if can_write and not any(path_covers(write, path) for write in writes):

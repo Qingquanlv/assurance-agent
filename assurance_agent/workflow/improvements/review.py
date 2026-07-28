@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
+from assurance_agent.artifacts.canonical import canonical_json_bytes
 from assurance_agent.artifacts.models.improvements import (
     DeliveryKind,
     ImprovementLedgerProjection,
@@ -220,6 +221,14 @@ def validate_improvement_review_action(
             f"improvement {projection.improvement_id!r} is in terminal state "
             f"{projection.state.value}; review actions are not allowed"
         )
+    if (
+        projection.state is ImprovementState.APPROVED
+        and action in {"reject", "request_rework"}
+        and projection.approval_source != "automatic"
+    ):
+        raise ReviewValidationError(
+            "only an audited human decision may override an automatic approval before delivery"
+        )
 
     target = _ACTION_TARGET[action]
     try:
@@ -309,12 +318,6 @@ def validate_improvement_review_action(
 # ---------------------------------------------------------------------------
 
 
-def _canonical_json(model_dict: object) -> bytes:
-    return (json.dumps(model_dict, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode(
-        "utf-8"
-    )
-
-
 def _write_json(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
@@ -399,7 +402,7 @@ def load_improvement_review_context_operation(
     }
     review_dir = workspace.change_dir / "improvement-review" / review_id
     review_dir.mkdir(parents=True, exist_ok=True)
-    _write_json(review_dir / "context.json", _canonical_json(context_doc))
+    _write_json(review_dir / "context.json", canonical_json_bytes(context_doc))
 
     return TaskResult(
         status="succeeded",
@@ -530,7 +533,7 @@ def apply_improvement_review_operation(
         "events_appended": 1,
         "event_ids": [event.event_id],
     }
-    _write_json(review_dir / "apply-receipt.json", _canonical_json(receipt))
+    _write_json(review_dir / "apply-receipt.json", canonical_json_bytes(receipt))
 
     return TaskResult(
         status="succeeded",

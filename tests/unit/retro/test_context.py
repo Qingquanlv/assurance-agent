@@ -401,6 +401,7 @@ def _eval_slice() -> EvalEvidenceSlice:
                 verdict="pass",
                 started_at="2026-07-25T08:00:00Z",
                 sha256="sha256:" + "c" * 64,
+                source_change_ids=("RET-1",),
             ),
         ),
         sources=(),
@@ -695,6 +696,8 @@ def test_missing_workflow_source_is_degraded_not_fabricated(readers: _Readers) -
     # No fabricated zero-valued workflow signals when sources are degraded/empty.
     assert context.signals.workflow.healing_efficiency == ()
     assert context.signals.workflow.gate_pushback == ()
+    # v2 replay preserves its historical issue-only eligibility rule: a
+    # degraded workflow source does not block domain knowledge.
     assert context.allows_domain_knowledge is True
 
 

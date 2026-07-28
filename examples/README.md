@@ -22,7 +22,7 @@ aa doctor
 aa status --change CH-DEMO-001 --next --json
 ```
 
-`aa status --json` 输出 `GraphStatus`：`status`（`null`＝未启动）、`pending_tasks`、`pending_interrupts`、`terminal_reason` 等。退出码：`0` running/completed、`20` stopped、`30` interrupted（待人工）、`40` failed；命令或数据错误退出 `1`。
+`aa status --json` 输出 `GraphStatus`：`status`（`null`＝未启动）、`pending_tasks`、`pending_interrupts`、`terminal_reason` 等。退出码：`0` running/completed、`20` stopped、`30` interrupted（待人工）、`40` failed；命令或数据错误退出 `40`。
 
 ## 下一步
 

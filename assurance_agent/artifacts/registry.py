@@ -1,4 +1,4 @@
-"""Change-relative artifact path -> pydantic model registry (spec 4a).
+"""Declared artifact path -> pydantic model registry (spec 4a).
 
 Globs mirror ARTIFACT_SPECS in the TS source src/schema/index.ts, plus
 healing/fixer-safety-check.json (read by fixer-safety-gate; the plan-series
@@ -20,6 +20,8 @@ from assurance_agent.artifacts.models import (
     CaseYaml,
     ChangeIssueSnapshot,
     DataKnowledgeProposal,
+    EvalEvidenceSlice,
+    EvalRunProjection,
     ExecutionManifest,
     FactBaseline,
     FailureAnalysis,
@@ -27,13 +29,26 @@ from assurance_agent.artifacts.models import (
     IssueAnalysisStatus,
     IssueCandidateDocument,
     IssueEvidenceManifest,
+    IssueEvidenceSlice,
     IssueReconcileStatus,
+    ImprovementCandidateDocumentV3,
+    ImprovementAutoReviewAssessment,
+    ImprovementAutoReviewBatchSummary,
+    ImprovementAutoReviewStatus,
+    ImprovementReviewSubject,
+    ImprovementOutboxEntry,
     ObservationDocument,
     QaYaml,
     QualityGateResult,
     QualityReport,
+    RetroContextV3,
+    RetroPipelineFailureDocument,
+    RetroRunStatus,
+    RetroWindow,
     Review,
     SafetyCheck,
+    SignalDocumentV3,
+    WorkflowEvidenceSlice,
     WorkflowState,
 )
 
@@ -48,6 +63,109 @@ class ArtifactSpec(BaseModel):
 
 
 REGISTRY: list[ArtifactSpec] = [
+    ArtifactSpec(
+        artifact_type="improvement_review_subject_v1",
+        pattern="qa/improvements/review-subjects/*.json",
+        model=ImprovementReviewSubject,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="improvement_auto_review_assessment_v1",
+        pattern="qa/improvements/reviews/*/assessment.json",
+        model=ImprovementAutoReviewAssessment,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="improvement_auto_review_status_v1",
+        pattern="qa/improvements/reviews/*/status.json",
+        model=ImprovementAutoReviewStatus,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="improvement_auto_review_batch_summary_v1",
+        pattern="qa/retro/*/auto-review-summary.json",
+        model=ImprovementAutoReviewBatchSummary,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="improvement_reconcile_outbox_v1",
+        pattern="qa/improvements/outbox/pending/*.json",
+        model=ImprovementOutboxEntry,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="eval_run_projection_v1",
+        pattern="qa/eval/runs/*/report.json",
+        model=EvalRunProjection,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="improvement_candidate_document",
+        pattern="qa/retro/*/proposal-candidates.json",
+        model=ImprovementCandidateDocumentV3,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="retro_context_v3",
+        pattern="qa/retro/*/context.json",
+        model=RetroContextV3,
+        compat="must_compat",
+    ),
+    # Retro v3 current-run window and typed evidence slices.
+    ArtifactSpec(
+        artifact_type="retro_window_v3",
+        pattern="qa/retro/*/window.json",
+        model=RetroWindow,
+        compat="versioned",
+    ),
+    ArtifactSpec(
+        artifact_type="retro_pipeline_failure_v1",
+        pattern="qa/retro/*/pipeline-failure.json",
+        model=RetroPipelineFailureDocument,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="retro_run_status_v1",
+        pattern="qa/retro/*/retro-status.json",
+        model=RetroRunStatus,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="retro_issue_evidence_slice_v3",
+        pattern="qa/retro/*/evidence/issue-slice.json",
+        model=IssueEvidenceSlice,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="retro_workflow_evidence_slice_v3",
+        pattern="qa/retro/*/evidence/workflow-slice.json",
+        model=WorkflowEvidenceSlice,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="retro_eval_evidence_slice_v3",
+        pattern="qa/retro/*/evidence/eval-slice.json",
+        model=EvalEvidenceSlice,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="retro_issue_signal_v3",
+        pattern="qa/retro/*/signals/issue.json",
+        model=SignalDocumentV3,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="retro_workflow_signal_v3",
+        pattern="qa/retro/*/signals/workflow.json",
+        model=SignalDocumentV3,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="retro_eval_signal_v3",
+        pattern="qa/retro/*/signals/eval.json",
+        model=SignalDocumentV3,
+        compat="must_compat",
+    ),
     ArtifactSpec(
         artifact_type="case_yaml", pattern="cases/**/case.yaml", model=CaseYaml, compat="must_compat"
     ),
@@ -86,13 +204,13 @@ REGISTRY: list[ArtifactSpec] = [
         artifact_type="issue_candidate_document",
         pattern="inspect/issue-candidates.json",
         model=IssueCandidateDocument,
-        compat="versioned",
+        compat="must_compat",
     ),
     ArtifactSpec(
         artifact_type="issue_analysis_status",
         pattern="inspect/issue-analysis-status.json",
         model=IssueAnalysisStatus,
-        compat="versioned",
+        compat="must_compat",
     ),
     ArtifactSpec(
         artifact_type="issue_reconcile_status",
@@ -173,7 +291,7 @@ def _pattern_regex(pattern: str) -> re.Pattern[str]:
 
 
 def match_artifact(relpath: str) -> ArtifactSpec | None:
-    """Return the first registry spec whose glob matches the change-relative path."""
+    """Return the first registry spec whose glob matches its root-relative path."""
     norm = relpath.replace("\\", "/")
     for spec in REGISTRY:
         if _pattern_regex(spec.pattern).match(norm):

@@ -159,6 +159,22 @@ def test_run_retro_accept_retry_rebuilds_same_receipt(tmp_path: Path) -> None:
     assert (tmp_path / "qa" / "improvements" / "events.jsonl").read_bytes() == first_events
 
 
+def test_run_retro_accept_exact_duplicate_still_receipts_canonical_improvement(
+    tmp_path: Path,
+) -> None:
+    _setup_retro(tmp_path, retro_id="retro-first")
+    first = run_retro_accept(tmp_path, retro_id="retro-first")
+    repeated_context = _context(retro_id="retro-repeat")
+    _setup_retro(tmp_path, retro_id="retro-repeat", context=repeated_context)
+
+    repeated = run_retro_accept(tmp_path, retro_id="retro-repeat")
+
+    assert repeated.improvement_ids == first.improvement_ids
+    assert repeated.event_ids == ()
+    queue = (tmp_path / "qa" / "retro" / "retro-repeat" / "review-queue.md").read_text()
+    assert first.improvement_ids[0] in queue
+
+
 def test_run_retro_accept_invalid_batch_writes_failed_receipt_only(tmp_path: Path) -> None:
     retro_dir, _ctx, _document = _setup_retro(
         tmp_path,

@@ -960,5 +960,5 @@ def test_packaged_graph_inspect_before_decide_and_report() -> None:
         assert name not in full_reachable
 
     # Retro / Improvement entrypoints exist but are independent.
-    assert _entrypoint_graph(schema, "retro") == "retro-workflow"
+    assert _entrypoint_graph(schema, "retro") == "retro-orchestration-workflow"
     assert "improvement-review" in schema.entrypoints
