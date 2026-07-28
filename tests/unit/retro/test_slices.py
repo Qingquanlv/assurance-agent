@@ -8,7 +8,10 @@ from typing import cast
 import pytest
 
 from assurance_agent.artifacts.models.retro_batch import RetroBatchScope
-from assurance_agent.artifacts.models.retro_v3 import BatchMemberEvidenceGapSignal
+from assurance_agent.artifacts.models.retro_v3 import (
+    BatchMemberEvidenceGapSignal,
+    TaskFailureSignal,
+)
 from assurance_agent.retro.eval_history import EvalHistoryReader
 from assurance_agent.retro.slices import RetroSliceImmutableError, materialize_slices
 from assurance_agent.retro.types import RetroIntegrity, RetroSourceDescriptor
@@ -152,6 +155,47 @@ class _GapWorkflowReader(_WorkflowReader):
         return result
 
 
+class _HardFailureWorkflowReader(_WorkflowReader):
+    def read_window(self, window):
+        result = super().read_window(window)
+        result.task_failures = (
+            NS(
+                evidence_id="CH-1#seq230",
+                change_id="CH-1",
+                task_id="task-analyze",
+                attempt_id="attempt-1",
+                node_id="analyze-issues",
+                error_kind="forbidden_write",
+                message="forbidden write outside authorization_writes",
+                recovered=False,
+                ts="2026-07-01T00:00:03Z",
+            ),
+            NS(
+                evidence_id="CH-1#seq232",
+                change_id="CH-1",
+                task_id="task-inspect",
+                attempt_id="attempt-1",
+                node_id="inspect-with-issues",
+                error_kind="internal",
+                message="issue subgraph failed",
+                recovered=False,
+                ts="2026-07-01T00:00:04Z",
+            ),
+            NS(
+                evidence_id="CH-1#seq234",
+                change_id="CH-1",
+                task_id="task-assurance",
+                attempt_id="attempt-1",
+                node_id="assurance",
+                error_kind="internal",
+                message="inspect subgraph failed",
+                recovered=False,
+                ts="2026-07-01T00:00:05Z",
+            ),
+        )
+        return result
+
+
 def _materialize(tmp_path: Path):
     return materialize_slices(
         tmp_path,
@@ -239,3 +283,26 @@ def test_batch_member_gaps_become_stable_resolvable_deterministic_signals(
     assert workflow_gap.reason_code == "ledger_corrupt"
     assert issue_gap.signal_id in bundle.issue.resolvable_ids()
     assert workflow_gap.signal_id in bundle.workflow.resolvable_ids()
+
+
+def test_unrecovered_contract_failure_becomes_one_deterministic_root_signal(
+    tmp_path: Path,
+) -> None:
+    bundle = materialize_slices(
+        tmp_path,
+        retro_id="retro-hard-failure",
+        selection=RetroWindowSelection(change_ids=("CH-1",), last=None),
+        issue_history=cast(IssueHistoryReader, _IssueReader()),
+        workflow_history=cast(WorkflowHistoryReader, _HardFailureWorkflowReader()),
+        eval_history=cast(EvalHistoryReader, _EvalReader()),
+        write_root=tmp_path,
+    )
+
+    assert len(bundle.workflow.deterministic_signals) == 1
+    signal = bundle.workflow.deterministic_signals[0]
+    assert isinstance(signal, TaskFailureSignal)
+    assert signal.node_id == "analyze-issues"
+    assert signal.error_kind == "forbidden_write"
+    assert signal.occurrence_count == 1
+    assert signal.source_refs.workflow_evidence_ids == ("CH-1#seq230",)
+    assert set(signal.source_refs.workflow_evidence_ids) <= bundle.workflow.resolvable_ids()

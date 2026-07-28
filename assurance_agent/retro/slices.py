@@ -22,6 +22,7 @@ from assurance_agent.artifacts.models.retro_v3 import (
     RetroWindow,
     SkillDriftEvidenceEntry,
     TaskFailureEvidenceEntry,
+    TaskFailureSignal,
     WorkflowEvidenceSlice,
 )
 from assurance_agent.artifacts.models.improvements import ImprovementSourceRefs
@@ -69,6 +70,8 @@ _GapReason = Literal[
     "projection_missing",
     "projection_corrupt",
 ]
+_CONTRACT_ROOT_ERROR_KINDS = frozenset({"auth", "forbidden_write", "contract"})
+_DETERMINISTIC_FAILURE_KINDS = _CONTRACT_ROOT_ERROR_KINDS | {"internal"}
 
 
 def _batch_gap_signals(
@@ -127,6 +130,48 @@ def _batch_gap_signals(
 def _message_fingerprint(message: str) -> str:
     normalized = re.sub(r"\s+", " ", message).strip()
     return sha256_bytes(normalized.encode("utf-8"))
+
+
+def _task_failure_signals(
+    entries: tuple[TaskFailureEvidenceEntry, ...],
+) -> tuple[TaskFailureSignal, ...]:
+    by_change: dict[str, list[TaskFailureEvidenceEntry]] = {}
+    for entry in entries:
+        if not entry.recovered and entry.error_kind in _DETERMINISTIC_FAILURE_KINDS:
+            by_change.setdefault(entry.change_id, []).append(entry)
+
+    selected: list[TaskFailureEvidenceEntry] = []
+    for failures in by_change.values():
+        contract_roots = [entry for entry in failures if entry.error_kind in _CONTRACT_ROOT_ERROR_KINDS]
+        selected.extend(contract_roots or failures)
+
+    grouped: dict[tuple[str, str, str], list[TaskFailureEvidenceEntry]] = {}
+    for entry in selected:
+        key = (entry.node_id, entry.error_kind, entry.message_fingerprint)
+        grouped.setdefault(key, []).append(entry)
+
+    signals: list[TaskFailureSignal] = []
+    for (node_id, error_kind, message_fingerprint), failures in sorted(grouped.items()):
+        evidence_ids = tuple(sorted({entry.evidence_id for entry in failures}))
+        identity = ":".join((node_id, error_kind, message_fingerprint))
+        signal_id = "TASK-FAILURE-" + sha256_bytes(identity.encode("utf-8")).removeprefix("sha256:")[:24]
+        signals.append(
+            TaskFailureSignal(
+                signal_id=signal_id,
+                summary=f"Unrecovered {error_kind} failure at {node_id}",
+                occurrence_count=len(evidence_ids),
+                recommended_change=(
+                    f"Eliminate the unrecovered {error_kind} failure at {node_id}; align the "
+                    "operation contract and runtime behavior, then add regression coverage."
+                ),
+                source_refs=ImprovementSourceRefs(workflow_evidence_ids=evidence_ids),
+                confidence="high",
+                node_id=node_id,
+                error_kind=error_kind,
+                message_fingerprint=message_fingerprint,
+            )
+        )
+    return tuple(signals)
 
 
 def _expected_skill(phase: str, declared: str | None) -> str:
@@ -305,12 +350,15 @@ def _workflow_slice(
         for source in source_slice.sources
     )
     gap_signals, gap_sources = _batch_gap_signals(window, source_slice.integrity, domain="workflow")
+    failure_signals = _task_failure_signals(
+        tuple(entry for entry in ordered if isinstance(entry, TaskFailureEvidenceEntry))
+    )
     return WorkflowEvidenceSlice(
         retro_id=retro_id,
         window=window,
         sources=(*sources, *gap_sources),
         integrity=_integrity(window_integrity, source_slice.integrity),
-        deterministic_signals=gap_signals,
+        deterministic_signals=(*gap_signals, *failure_signals),
         entries=ordered,
     )
 

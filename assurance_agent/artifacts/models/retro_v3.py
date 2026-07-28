@@ -203,6 +203,13 @@ class EvalEvidenceEntry(BaseModel):
     sample_ids: tuple[str, ...] = ()
 
 
+class TaskFailureSignal(_SignalBase):
+    signal_type: Literal["task_failure"] = "task_failure"
+    node_id: NonEmptyStr
+    error_kind: NonEmptyStr
+    message_fingerprint: NonEmptyStr
+
+
 class _SliceBase(BaseModel):
     model_config = _FROZEN
 
@@ -211,7 +218,9 @@ class _SliceBase(BaseModel):
     window: RetroWindow
     sources: tuple[RetroSourceDescriptor, ...] = ()
     integrity: RetroIntegrity = Field(default_factory=lambda: RetroIntegrity(status="complete"))
-    deterministic_signals: tuple[BatchMemberEvidenceGapSignal | RetroPipelineFailureSignal, ...] = ()
+    deterministic_signals: tuple[
+        BatchMemberEvidenceGapSignal | RetroPipelineFailureSignal | TaskFailureSignal, ...
+    ] = ()
 
     def resolvable_ids(self) -> frozenset[str]:
         """signal source_refs 的可解析命名空间（来自 slice manifest）。"""
@@ -247,13 +256,6 @@ class GatePushbackSignal(_SignalBase):
     signal_type: Literal["gate_pushback"] = "gate_pushback"
     gate_id: NonEmptyStr
     cause: NonEmptyStr
-
-
-class TaskFailureSignal(_SignalBase):
-    signal_type: Literal["task_failure"] = "task_failure"
-    node_id: NonEmptyStr
-    error_kind: NonEmptyStr
-    message_fingerprint: NonEmptyStr
 
 
 class HealingSignal(_SignalBase):

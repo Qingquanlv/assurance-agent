@@ -13,11 +13,9 @@
 #   3. Verify completion with deterministic `aa workflow status`.
 #   4. Archive via GraphRuntime: `aa workflow run --entrypoint archive`
 #      (skill:aa-archive + archive-gate; not a free-form agent prompt).
-#   5. Retro closed loop (Improvement separation):
-#      Preferred: `aa workflow run --entrypoint retro`
-#        collect-retro-evidence → propose-improvements → reconcile-improvements
-#      Fallback (USE_WORKFLOW_RETRO=false): `aa retro --last N` (same graph via CLI;
-#        shell Change RETRO-RUN-<retro-id>, AA_RETRO_AGENT_CMD=cursor-agent).
+#   5. After every item settles, run one explicit Batch Retro through
+#      `aa retro --batch-manifest ...`. Failed/stopped/timed-out items remain
+#      members and become typed evidence gaps instead of blocking analysis.
 #      Artifacts: context.json, proposal-candidates.json, accept-status.json,
 #      retro-summary.md, review-queue.md, plus qa/improvements/*.
 #      Legacy `aa retro nightly` / free-form proposals.json prompts are gone.
@@ -31,9 +29,7 @@
 #   ./benchmark/run-workflow-loop-cursor.sh
 #   CURSOR_MODEL=cursor-grok-4.5-high-fast ./benchmark/run-workflow-loop-cursor.sh
 #   CURSOR_MAX_WORKFLOW_ATTEMPTS=4 ./benchmark/run-workflow-loop-cursor.sh
-#   DO_ARCHIVE=false DO_NIGHTLY_COLLECT=false ./benchmark/run-workflow-loop-cursor.sh
 #   USE_WORKFLOW_ARCHIVE=false              # legacy free-form archive prompt
-#   USE_WORKFLOW_RETRO=false               # use `aa retro` CLI instead of workflow entrypoint
 #   RESUME_RUNSTAMP=20260713-113457 ./benchmark/run-workflow-loop-cursor.sh
 #   DAEMON=1 ./benchmark/run-workflow-loop-cursor.sh   # detach + write PID/log symlinks
 #
@@ -69,18 +65,10 @@ RUN_MODE="${RUN_MODE:-full}"
 RUN_TESTS="${RUN_TESTS:-true}"
 FORCE_CONTINUE="${FORCE_CONTINUE:-false}"
 DO_ARCHIVE="${DO_ARCHIVE:-true}"
-# End-of-loop Retro closed loop (env name kept for backcompat with DO_NIGHTLY_COLLECT).
-DO_NIGHTLY_COLLECT="${DO_NIGHTLY_COLLECT:-true}"
-DO_RETRO_COLLECT="${DO_RETRO_COLLECT:-$DO_NIGHTLY_COLLECT}"
-# Prefer GraphRuntime entrypoints. Archive false → free-form cursor prompt.
-# Retro false → `aa retro` CLI (same graph; not the deleted nightly driver).
+# Prefer the GraphRuntime archive entrypoint. Retro has one canonical CLI path.
 USE_WORKFLOW_ARCHIVE="${USE_WORKFLOW_ARCHIVE:-true}"
-USE_WORKFLOW_RETRO="${USE_WORKFLOW_RETRO:-true}"
 ARCHIVE_ENTRYPOINT="${ARCHIVE_ENTRYPOINT:-archive}"
-RETRO_ENTRYPOINT="${RETRO_ENTRYPOINT:-retro}"
-RETRO_ID="${RETRO_ID:-}"                 # empty → ensure_retro_params / aa retro generate
-RETRO_LAST="${RETRO_LAST:-10}"
-RETRO_MIN_EVIDENCE="${RETRO_MIN_EVIDENCE:-2}"
+RETRO_ID="${RETRO_ID:-}"
 RETRO_DRY_RUN="${RETRO_DRY_RUN:-false}"
 # Benchmark-local deterministic Eval metrics. New names take precedence while
 # the legacy regression names remain accepted during configuration migration.
@@ -148,6 +136,8 @@ SESSION_STAMP="$(date +%Y%m%d-%H%M%S)"
 RUNSTAMP="${RESUME_RUNSTAMP:-$SESSION_STAMP}"
 RUN_DIR="$SCRIPT_DIR/runs/$RUNSTAMP-cursor"
 mkdir -p "$RUN_DIR" "$RESUME_LOG_DIR"
+RETRO_ID="${RETRO_ID:-retro-${RUNSTAMP}-cursor}"
+BATCH_MANIFEST="$RUN_DIR/batch-manifest.json"
 LOOP_LOG="$RUN_DIR/loop.log"
 SUMMARY="$RUN_DIR/loop-summary.md"
 TRACK_LOG="$RESUME_LOG_DIR/cursor-loop-${SESSION_STAMP}.log"
@@ -514,20 +504,7 @@ archive_params_json() {
   python3 -c 'import json; print(json.dumps({"auto_archive": True}))'
 }
 
-retro_params_json() {
-  RETRO_ID="$RETRO_ID" RETRO_LAST="$RETRO_LAST" \
-  RETRO_MIN_EVIDENCE="$RETRO_MIN_EVIDENCE" RETRO_DRY_RUN="$RETRO_DRY_RUN" \
-  python3 -c '
-import json, os
-print(json.dumps({
-    "retro_id": os.environ.get("RETRO_ID") or "",
-    "retro_last": int(os.environ.get("RETRO_LAST") or "10"),
-    "retro_min_evidence": int(os.environ.get("RETRO_MIN_EVIDENCE") or "2"),
-    "retro_dry_run": os.environ.get("RETRO_DRY_RUN", "false") == "true",
-}))'
-}
-
-# GraphRuntime entrypoint run (archive / retro). $1=logfile $2=change_id $3=entrypoint $4=params_json
+# GraphRuntime entrypoint run for per-Change operations such as archive.
 run_workflow_entrypoint() {
   local logf="$1" change_id="$2" entrypoint="$3" params="$4"
   local agent_cmd
@@ -575,23 +552,11 @@ run_archive_stage() {
   run_cursor_agent "$ar_log" "$(archive_prompt "$change_id")"
 }
 
-# Pick a change_id that still exists under qa/changes/ to shell the retro entrypoint.
-# Prefer an archived change from this run; else any completed row change_id.
-# ROW_RESULTS fields: change_id|terminal|detail|archived=yes|no
-retro_shell_change_id() {
-  select_retro_shell_change_id "$PROJECT_ROOT/qa/changes" "${ROW_RESULTS[@]+"${ROW_RESULTS[@]}"}"
-}
-
-# Capture artifacts from one qa/retro/<id> (or newest retro-* after a collect).
-# $1=min_epoch: reject dirs older than the retro stage, so a previous run's retro
-# is never reported as this run's output (qa/retro/ survives clean_generated_artifacts).
-# $2=optional exact retro_id (skip ls when known from CLI JSON).
+# Capture artifacts from the exact Retro ID bound to this benchmark Batch.
 # Sets: retro_id signal_count change_count retro_review_queue improvement_count.
-capture_latest_retro_artifacts() {
-  local min_epoch="${1:-0}"
-  local want_id="${2:-}"
-  local latest_retro=""
-  latest_retro="$(select_latest_retro_dir "qa/retro" "$min_epoch" "$want_id")" || return 1
+capture_retro_artifacts() {
+  local want_id="$1"
+  local latest_retro="qa/retro/$want_id"
   retro_artifacts_complete "$latest_retro" "$RETRO_DRY_RUN" || return 1
   retro_id="$(basename "$latest_retro")"
   if [ -f "$latest_retro/context.json" ]; then
@@ -600,6 +565,8 @@ capture_latest_retro_artifacts() {
   fi
   [ -f "$latest_retro/proposal-candidates.json" ] && cp "$latest_retro/proposal-candidates.json" "$RUN_DIR/proposal-candidates.json"
   [ -f "$latest_retro/accept-status.json" ] && cp "$latest_retro/accept-status.json" "$RUN_DIR/accept-status.json"
+  [ -f "$latest_retro/retro-status.json" ] && cp "$latest_retro/retro-status.json" "$RUN_DIR/retro-status.json"
+  [ -f "$latest_retro/auto-review-summary.json" ] && cp "$latest_retro/auto-review-summary.json" "$RUN_DIR/auto-review-summary.json"
   [ -f "$latest_retro/retro-summary.md" ] && cp "$latest_retro/retro-summary.md" "$RUN_DIR/retro-summary.md"
   if [ -f "$latest_retro/review-queue.md" ]; then
     retro_review_queue="$latest_retro/review-queue.md"
@@ -703,22 +670,6 @@ else:
 PY
 }
 
-snapshot_unarchived_evidence() {
-  local retro_id="$1" change_id="$2"
-  local src="qa/changes/${change_id}"
-  local dst="qa/retro/${retro_id}/evidence/${change_id}"
-  [ -d "$src" ] || return 0
-  [ -d "qa/archive/${change_id}" ] && return 0
-
-  mkdir -p "$dst"
-  for rel in "events.jsonl" "workflow-state.yaml" "inspect/failure-analysis.json" "healing"; do
-    if [ -e "$src/$rel" ]; then
-      mkdir -p "$dst/$(dirname "$rel")"
-      cp -R "$src/$rel" "$dst/$rel"
-    fi
-  done
-}
-
 execution_final_status() {
   local change_id="$1"
   local manifest="qa/changes/${change_id}/execution/execution-manifest.yaml"
@@ -744,50 +695,39 @@ Instructions:
 EOF
 }
 
-# Cross-change Retro closed loop via GraphRuntime entrypoint (preferred) or `aa retro` CLI.
-# Writes project:qa/retro/<id>/** and reconciles into qa/improvements/**.
-# Sets RETRO_CLI_ID when the CLI path returns a known retro_id (JSON).
+# Cross-change Retro closed loop through the canonical explicit Batch CLI.
 run_retro_collect() {
   local collect_log="$RUN_DIR/retro-collect.log"
   local collect_exit=0
-  local shell_cid=""
-  RETRO_CLI_ID=""
-
-  if [ "$USE_WORKFLOW_RETRO" = "true" ]; then
-    if ! shell_cid="$(retro_shell_change_id)"; then
-      log "retro entrypoint: no shell change_id under qa/changes/ — skipped"
-      return 10
-    fi
-    log "stage 3/3 retro via workflow --entrypoint $RETRO_ENTRYPOINT (shell=$shell_cid) ..."
-    : >"$collect_log"
-    run_workflow_entrypoint "$collect_log" "$shell_cid" "$RETRO_ENTRYPOINT" "$(retro_params_json)"
-    collect_exit=$?
-    cat "$collect_log" >>"$LOOP_LOG" || true
-    return "$collect_exit"
-  fi
-
-  log "stage 3/3 retro via aa retro CLI --last $RETRO_LAST ..."
+  log "stage 3/3 retro via explicit Batch manifest=$BATCH_MANIFEST ..."
   local agent_cmd
   agent_cmd="$(cursor_agent_cmd_prefix)"
-  local -a retro_cmd=(
-    "$AA_BIN" retro
-    --last "$RETRO_LAST"
-    --json
-  )
-  [ -n "$RETRO_ID" ] && retro_cmd+=(--retro-id "$RETRO_ID")
-  [ "$RETRO_DRY_RUN" = "true" ] && retro_cmd+=(--dry-run)
   : >"$collect_log"
-  AA_RETRO_AGENT_CMD="$agent_cmd" "${retro_cmd[@]}" >"$collect_log" 2>&1
+  run_batch_retro \
+    "$AA_BIN" "$BATCH_MANIFEST" "$RETRO_ID" "$agent_cmd" "$RETRO_DRY_RUN" "$collect_log"
   collect_exit=$?
   cat "$collect_log" >>"$LOOP_LOG" || true
-  if [ "$collect_exit" -eq 0 ]; then
-    RETRO_CLI_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("retro_id",""))' "$collect_log" 2>/dev/null || true)"
-  fi
   return "$collect_exit"
 }
 
+record_item_result() {
+  local change_id="$1" terminal="$2" detail="$3" archive_field="$4"
+  local evidence_path="qa/changes/$change_id/events.jsonl"
+  local batch_status availability outcome
+  if [ -s "qa/archive/$change_id/events.jsonl" ]; then
+    evidence_path="qa/archive/$change_id/events.jsonl"
+  fi
+  outcome="$(retro_batch_member_outcome "$terminal" "$evidence_path")"
+  IFS='|' read -r batch_status availability <<<"$outcome"
+  update_retro_batch_member "$BATCH_MANIFEST" "$change_id" "$batch_status" "$availability" || {
+    log "ERROR: failed to update Batch member $change_id ($batch_status/$availability)"
+    exit 1
+  }
+  ROW_RESULTS+=("$change_id|$terminal|$detail|$archive_field")
+}
+
 # Deterministic benchmark metrics over golden fixtures. This is observational:
-# suite verdicts are reported but do not alter the workflow/archive/retro gate.
+# suite verdicts are reported but do not alter the workflow/archive gate.
 declare -a BENCHMARK_EVAL_ROWS=()
 run_benchmark_eval() {
   local eval_log="$RUN_DIR/benchmark-eval.log"
@@ -844,12 +784,22 @@ log "project_root=$PROJECT_ROOT run_mode=$RUN_MODE run_tests=$RUN_TESTS test_typ
 log "driver: adapter=headless entrypoint=$DRIVER_ENTRYPOINT max_healing=$MAX_HEALING_ATTEMPTS"
 log "cursor_agent=$CURSOR_AGENT_BIN model=${CURSOR_MODEL:-default} max_attempts=$CURSOR_MAX_WORKFLOW_ATTEMPTS"
 log "do_archive=$DO_ARCHIVE use_workflow_archive=$USE_WORKFLOW_ARCHIVE entrypoint=$ARCHIVE_ENTRYPOINT"
-log "do_retro_collect=$DO_RETRO_COLLECT use_workflow_retro=$USE_WORKFLOW_RETRO entrypoint=$RETRO_ENTRYPOINT"
-log "retro_params: id=${RETRO_ID:-auto} last=$RETRO_LAST min_evidence=$RETRO_MIN_EVIDENCE dry_run=$RETRO_DRY_RUN"
+log "retro: canonical_batch_cli id=$RETRO_ID manifest=$BATCH_MANIFEST dry_run=$RETRO_DRY_RUN"
 log "do_benchmark_eval=$DO_BENCHMARK_EVAL suites=[$BENCHMARK_EVAL_SUITES]"
 log "auto_decide=$AUTO_DECIDE_BENCHMARK recover_healing=$RECOVER_HEALING_DEADLOCK"
 
 setup_run_tracking
+
+declare -a BATCH_CHANGE_IDS=()
+for item in "${BENCHMARK_ITEMS[@]}"; do
+  base_id="${item%%:*}"
+  BATCH_CHANGE_IDS+=("${base_id}-${RUNSTAMP}-cursor")
+done
+if ! initialize_retro_batch_manifest "$BATCH_MANIFEST" "$RUNSTAMP" "${BATCH_CHANGE_IDS[@]}"; then
+  log "ERROR: Batch manifest identity/membership mismatch: $BATCH_MANIFEST"
+  exit 1
+fi
+log "retro_batch: id=$RUNSTAMP manifest=$BATCH_MANIFEST members=${#BATCH_CHANGE_IDS[@]}"
 
 if [ -n "${RESUME_RUNSTAMP:-}" ] && [ "$CLEAN_ARTIFACTS" = "true" ]; then
   log "resume mode: skip clean (preserve in-flight changes)"
@@ -873,13 +823,14 @@ for item in "${BENCHMARK_ITEMS[@]}"; do
   log "[$item_idx/$total_items] item=$base_id change_id=$change_id"
   if [ ! -f "$req_file" ]; then
     log "SKIP $change_id - requirement file not found: $req_rel"
-    ROW_RESULTS+=("$change_id|SKIP|requirement file missing|archived=no")
+    record_item_result "$change_id" "not_started" "requirement file missing" "archived=no"
     continue
   fi
 
   requirement="$(cat "$req_file")"
   workflow_kind="running"
   workflow_reason=""
+  driver_exit=0
   attempt=1
 
   if [ -d "qa/changes/$change_id" ]; then
@@ -904,19 +855,19 @@ for item in "${BENCHMARK_ITEMS[@]}"; do
       fi
       log "[$change_id] archive done (archived=$archived)"
     fi
-    ROW_RESULTS+=("$change_id|completed|final_status=$final_status|archived=$archived")
+    record_item_result "$change_id" "completed" "final_status=$final_status" "archived=$archived"
     continue
   fi
 
   if [ "$workflow_kind" = "stopped" ]; then
     log "[$change_id] already stopped — skip driver"
-    ROW_RESULTS+=("$change_id|stopped|$(terminal_reason "$change_id")|archived=no")
+    record_item_result "$change_id" "stopped" "$(terminal_reason "$change_id")" "archived=no"
     continue
   fi
 
   if [ "$workflow_kind" = "failed" ]; then
     log "[$change_id] already failed — persisted terminal cannot be restarted"
-    ROW_RESULTS+=("$change_id|failed|$(terminal_reason "$change_id")|archived=no")
+    record_item_result "$change_id" "failed" "$(terminal_reason "$change_id")" "archived=no"
     continue
   fi
 
@@ -926,17 +877,23 @@ for item in "${BENCHMARK_ITEMS[@]}"; do
   while [ "$attempt" -le "$CURSOR_MAX_WORKFLOW_ATTEMPTS" ]; do
     wf_log="$RUN_DIR/${change_id}.workflow.attempt-${attempt}.cursor.log"
     log "[$change_id] stage 1/2 driver workflow attempt $attempt/$CURSOR_MAX_WORKFLOW_ATTEMPTS (adapter=headless/cursor-agent) ..."
+    driver_exit=0
     if run_driver "$wf_log" "$change_id"; then
       log "[$change_id] driver attempt $attempt exited 0 (completed)"
     else
-      log "[$change_id] driver attempt $attempt exited non-zero (see $(basename "$wf_log"))"
+      driver_exit=$?
+      log "[$change_id] driver attempt $attempt exited $driver_exit (see $(basename "$wf_log"))"
     fi
 
     workflow_kind="$(terminal_kind "$change_id")"
     workflow_reason="$(terminal_reason "$change_id")"
+    if [ "$driver_exit" -eq 124 ] && ! workflow_attempts_should_stop "$workflow_kind"; then
+      workflow_kind="hard_timeout"
+      workflow_reason="STEP_TIMEOUT=${STEP_TIMEOUT}s"
+    fi
     log "[$change_id] aa status terminal=$workflow_kind${workflow_reason:+ reason=$workflow_reason}"
 
-    if workflow_attempts_should_stop "$workflow_kind"; then
+    if workflow_attempts_should_stop "$workflow_kind" || [ "$workflow_kind" = "hard_timeout" ]; then
       python3 - "$change_id" <<'PYASSERT' || true
 import json, sys
 from pathlib import Path
@@ -972,7 +929,8 @@ PYASSERT
 
   if [ "$workflow_kind" != "completed" ]; then
     log "[$change_id] workflow not complete - skip archive"
-    ROW_RESULTS+=("$change_id|$workflow_kind|${workflow_reason:-final_status=$final_status}|archived=no")
+    record_item_result \
+      "$change_id" "$workflow_kind" "${workflow_reason:-final_status=$final_status}" "archived=no"
     continue
   fi
 
@@ -988,52 +946,30 @@ PYASSERT
     fi
   fi
 
-  ROW_RESULTS+=("$change_id|completed|final_status=$final_status|archived=$archived")
+  record_item_result "$change_id" "completed" "final_status=$final_status" "archived=$archived"
 done
 
-retro_id=""
+retro_id="$RETRO_ID"
 signal_count=""
 change_count=""
 improvement_count=""
+retro_result="technical_failure"
+retro_batch_id="$RUNSTAMP"
+retro_improvement_ids=""
+retro_outbox_id=""
 retro_collect_exit=""
-retro_collect_closed="false"
 retro_review_queue=""
-RETRO_CLI_ID=""
-if [ "$DO_RETRO_COLLECT" = "true" ]; then
-  retro_stage_epoch="$(python3 -c 'import time; print(time.time())')"
-  run_retro_collect
-  retro_collect_exit=$?
-  # 0 = workflow/CLI completed (incl. zero-signal END)
-  # 10 = skipped because no shell change (not a closed Retro result)
-  # 20 = workflow stopped (failure)
-  if [ "$retro_collect_exit" = "0" ] || [ "$retro_collect_exit" = "10" ]; then
-    if capture_latest_retro_artifacts "$retro_stage_epoch" "${RETRO_CLI_ID:-}"; then
-      if [ "$retro_collect_exit" = "10" ]; then
-        log "retro collect: no-op (exit 10) retro_id=${retro_id:-n/a}"
-      else
-        retro_collect_closed="true"
-        log "retro collect complete: mode=$([ "$USE_WORKFLOW_RETRO" = "true" ] && echo workflow || echo aa-retro-cli) retro_id=${retro_id:-unknown} signal_count=${signal_count:-?} change_count=${change_count:-?} improvements=${improvement_count:-0}"
-        # An empty window while change dirs exist on disk means candidate
-        # enumeration rejected everything — a structural failure that otherwise
-        # exits 0 and looks like "nothing to retro about".
-        if [ "${change_count:-}" = "0" ]; then
-          on_disk="$(ls -1d qa/changes/*/ qa/archive/*/ 2>/dev/null | wc -l | tr -d ' ')"
-          if [ "${on_disk:-0}" != "0" ]; then
-            log "retro WARN: empty window (change_count=0) but $on_disk change dir(s) on disk — check terminality / Issue integrity / evidence completeness"
-          fi
-        fi
-      fi
-    else
-      if [ "$retro_collect_exit" = "10" ]; then
-        log "retro collect: no-op (exit 10, no retro dir from this run)"
-      else
-        log "retro collect: exit 0 but no retro dir written by this run"
-      fi
-    fi
-  else
-    log "retro collect failed (exit $retro_collect_exit, see retro-collect.log)"
-    capture_latest_retro_artifacts "$retro_stage_epoch" "${RETRO_CLI_ID:-}" || true
-  fi
+run_retro_collect
+retro_collect_exit=$?
+if capture_retro_artifacts "$RETRO_ID"; then
+  retro_status_file="$RUN_DIR/retro-status.json"
+  retro_result="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("result","technical_failure"))' "$retro_status_file")"
+  retro_batch_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("batch_id") or "")' "$retro_status_file")"
+  retro_improvement_ids="$(python3 -c 'import json,sys; print(",".join(json.load(open(sys.argv[1])).get("improvement_ids") or []))' "$retro_status_file")"
+  retro_outbox_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("outbox_id") or "")' "$retro_status_file")"
+  log "retro complete: result=$retro_result retro_id=$retro_id batch_id=$retro_batch_id signal_count=${signal_count:-?} change_count=${change_count:-?}"
+else
+  log "retro technical failure: exit=$retro_collect_exit status artifact missing/invalid (see retro-collect.log)"
 fi
 
 if [ "$DO_BENCHMARK_EVAL" = "true" ]; then
@@ -1049,7 +985,8 @@ fi
   echo "- driver entrypoint: \`$DRIVER_ENTRYPOINT\` max healing attempts: \`$MAX_HEALING_ATTEMPTS\`"
   echo "- max workflow attempts: \`$CURSOR_MAX_WORKFLOW_ATTEMPTS\`"
   echo "- archive: \`DO_ARCHIVE=$DO_ARCHIVE\` via \`$([ "$USE_WORKFLOW_ARCHIVE" = "true" ] && echo "workflow:$ARCHIVE_ENTRYPOINT" || echo "legacy-cursor-prompt")\`"
-  echo "- retro collect: \`DO_RETRO_COLLECT=$DO_RETRO_COLLECT\` via \`$([ "$USE_WORKFLOW_RETRO" = "true" ] && echo "workflow:$RETRO_ENTRYPOINT" || echo "aa-retro-cli")\` (exit: \`${retro_collect_exit:-n/a}\`)"
+  echo "- retro: \`aa retro --batch-manifest\` (exit: \`${retro_collect_exit:-n/a}\`)"
+  echo "- batch manifest: \`benchmark/runs/$RUNSTAMP-cursor/batch-manifest.json\`"
   echo
   echo "## Workflow results"
   echo
@@ -1060,23 +997,41 @@ fi
     echo "| \`$cid\` | $term | $detail | $archive |"
   done
   echo
+  echo "## Retro Batch"
+  echo
+  echo "| change_id | execution_status | evidence_availability |"
+  echo "|---|---|---|"
+  python3 - "$BATCH_MANIFEST" <<'PY'
+import json
+import sys
+
+payload = json.load(open(sys.argv[1], encoding="utf-8"))
+for member in payload["members"]:
+    print(
+        f"| `{member['change_id']}` | {member['execution_status']} | "
+        f"{member['evidence_availability']} |"
+    )
+PY
+  echo
   echo "## Retro → Improvements"
   echo
-  if [ -n "$retro_id" ]; then
-    echo "- retro_id: \`$retro_id\`"
-    echo "- change_count (window): \`$change_count\`"
-    echo "- signal_count: \`$signal_count\`"
-    echo "- improvements (ledger): \`${improvement_count:-0}\`"
-    [ -f "$RUN_DIR/proposal-candidates.json" ] && echo "- candidates: \`benchmark/runs/$RUNSTAMP-cursor/proposal-candidates.json\`"
-    [ -f "$RUN_DIR/accept-status.json" ] && echo "- accept status: \`benchmark/runs/$RUNSTAMP-cursor/accept-status.json\`"
-    [ -f "$RUN_DIR/retro-summary.md" ] && echo "- summary: \`benchmark/runs/$RUNSTAMP-cursor/retro-summary.md\`"
-    [ -n "${retro_review_queue:-}" ] && echo "- retro review queue: \`benchmark/runs/$RUNSTAMP-cursor/review-queue.md\`"
-    [ -f "$RUN_DIR/improvements.json" ] && echo "- improvements projection: \`benchmark/runs/$RUNSTAMP-cursor/improvements.json\`"
-    [ -f "$RUN_DIR/improvement-review-queue.json" ] && echo "- improvement review queue: \`benchmark/runs/$RUNSTAMP-cursor/improvement-review-queue.json\`"
-  else
-    echo "- (retro disabled, no-op, or failed)"
-  fi
-  if [ "$DO_RETRO_COLLECT" = "true" ] && [ -n "$retro_collect_exit" ] && [ "$retro_collect_exit" != "0" ] && [ "$retro_collect_exit" != "10" ]; then
+  echo "- retro_id: \`$retro_id\`"
+  echo "- batch_id: \`${retro_batch_id:-$RUNSTAMP}\`"
+  echo "- result: \`$retro_result\`"
+  echo "- change_count (window): \`${change_count:-0}\`"
+  echo "- signal_count: \`${signal_count:-0}\`"
+  echo "- improvement_ids: \`${retro_improvement_ids:-none}\`"
+  echo "- outbox_id: \`${retro_outbox_id:-none}\`"
+  echo "- improvements (ledger): \`${improvement_count:-0}\`"
+  [ -f "$RUN_DIR/retro-status.json" ] && echo "- status: \`benchmark/runs/$RUNSTAMP-cursor/retro-status.json\`"
+  [ -f "$RUN_DIR/proposal-candidates.json" ] && echo "- candidates: \`benchmark/runs/$RUNSTAMP-cursor/proposal-candidates.json\`"
+  [ -f "$RUN_DIR/accept-status.json" ] && echo "- accept status: \`benchmark/runs/$RUNSTAMP-cursor/accept-status.json\`"
+  [ -f "$RUN_DIR/auto-review-summary.json" ] && echo "- auto review: \`benchmark/runs/$RUNSTAMP-cursor/auto-review-summary.json\`"
+  [ -f "$RUN_DIR/retro-summary.md" ] && echo "- summary: \`benchmark/runs/$RUNSTAMP-cursor/retro-summary.md\`"
+  [ -n "${retro_review_queue:-}" ] && echo "- retro review queue: \`benchmark/runs/$RUNSTAMP-cursor/review-queue.md\`"
+  [ -f "$RUN_DIR/improvements.json" ] && echo "- improvements projection: \`benchmark/runs/$RUNSTAMP-cursor/improvements.json\`"
+  [ -f "$RUN_DIR/improvement-review-queue.json" ] && echo "- improvement review queue: \`benchmark/runs/$RUNSTAMP-cursor/improvement-review-queue.json\`"
+  if [ "$retro_collect_exit" != "0" ]; then
     echo "- retro collect log: \`benchmark/runs/$RUNSTAMP-cursor/retro-collect.log\`"
   fi
   if [ "$DO_BENCHMARK_EVAL" = "true" ]; then
@@ -1111,8 +1066,8 @@ echo
 cat "$SUMMARY"
 
 if ! benchmark_result_exit_code \
-  "$DO_ARCHIVE" "$DO_RETRO_COLLECT" "${retro_collect_exit:-0}" "$retro_collect_closed" \
+  "$DO_ARCHIVE" \
   "${ROW_RESULTS[@]+"${ROW_RESULTS[@]}"}"; then
-  log "ERROR: benchmark result gate failed (workflow/archive/retro result is not closed)"
+  log "ERROR: benchmark result gate failed (workflow/archive result is not closed)"
   exit 1
 fi
