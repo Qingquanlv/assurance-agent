@@ -52,6 +52,18 @@ contracts:
       - change:registry/**
     retryable_errors: []
 
+  operation:verify-plan-mechanical:
+    handler: operation
+    reads:
+      - change:plans/**
+      - change:cases/**
+      - repo:.aa/data-knowledge.yaml
+    writes:
+      - change:review/*-plan-checks.json
+    authorization_writes:
+      - change:review/*-plan-checks.json
+    retryable_errors: []
+
   operation:run-tests:
     handler: operation
     reads:

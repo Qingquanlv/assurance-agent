@@ -878,6 +878,11 @@ graphs:
       fix_attempts:
         limit: "params.max_plan_fix_attempts"
     nodes:
+      mechanical-plan-checks:
+        uses: operation:verify-plan-mechanical
+        with: {layer: api}
+        outputs: [change:review/api-plan-checks.json]
+
       review:
         uses: skill:aa-api-plan-reviewer
         agent: aa-reviewer
@@ -918,8 +923,9 @@ graphs:
         with: {reason: "api plan fix attempts exhausted"}
 
     edges:
-      - {from: START, to: review}
-      - {from: fix, to: review}
+      - {from: START, to: mechanical-plan-checks}
+      - {from: mechanical-plan-checks, to: review}
+      - {from: fix, to: mechanical-plan-checks}
       - {from: exhausted, to: STOP}
 
     routes:

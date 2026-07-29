@@ -6,6 +6,8 @@ operation 是进程内函数调用，绝不 spawn ``aa`` 子进程（无 subproc
 - ``operation:skill-registry-check``：healing 所需 skill 与参数的注册表检查；
   写出 ``registry/skill-registry-check.json``（供 attached ``registry-gate``），
   value 含 ``healing_available`` / ``status``；output 与 gate 冻结由 runner finalize；
+- ``operation:verify-plan-mechanical``：对 plan 跑确定性 check，写出
+  ``review/<layer>-plan-checks.json``；check 失败不构成 task 失败；
 - ``operation:run-tests``：直接调用 ``workflow.execution.runner.run_change``，
   project/change 路径 remap 到 task 私有 workspace；
 - ``operation:inspect``：直接调用 ``workflow.report.inspector.inspect_change``，
@@ -39,6 +41,7 @@ from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext
 from assurance_agent.workflow.graph.task_runner import task_failure, task_with
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.orchestration.operations import BASELINE_REL, HEAL_STATUSES
+from assurance_agent.workflow.graph.handlers.plan_checks import verify_plan_mechanical
 from assurance_agent.workflow.graph.handlers.retro_ops import (
     apply_improvement_auto_review,
     assemble_retro_context_v3,
@@ -389,6 +392,7 @@ def default_operations() -> dict[str, OperationFn]:
     return {
         "operation:no-op": no_op,
         "operation:skill-registry-check": skill_registry_check,
+        "operation:verify-plan-mechanical": verify_plan_mechanical,
         "operation:run-tests": run_tests,
         "operation:inspect": inspect_operation,
         "operation:generate-report": generate_report_operation,

@@ -89,6 +89,7 @@ EXPECTED_CONTRACTS = {
     "skill:aa-archive",
     "operation:no-op",
     "operation:skill-registry-check",
+    "operation:verify-plan-mechanical",
     "operation:run-tests",
     "operation:inspect",
     "operation:generate-report",
