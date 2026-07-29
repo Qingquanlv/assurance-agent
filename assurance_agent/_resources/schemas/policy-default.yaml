@@ -1,0 +1,10 @@
+# 组织边界常量表。这里只声明「什么必须停、什么必须人批」，
+# 绝不描述流程步骤或节点顺序——那是 workflow-schema.yaml 的职责。
+#
+# 每个字段都必须有 gate 表达式消费（tests/unit/workflow/orchestration/
+# test_plan_check_gate.py::test_every_policy_field_has_a_runtime_consumer 守着）。
+# 默认值与迁移前的硬编码字面量逐条等价，因此默认行为不变。
+version: 1
+human_review_risk_levels: [high, critical]
+force_continue_allowed: true
+plan_check_action: warn
