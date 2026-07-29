@@ -19,10 +19,15 @@ from assurance_agent.artifacts.models.trace import (
     TraceProjection,
     TraceRow,
     TraceSource,
+    TraceTestRef,
     UnmappedTest,
 )
 from assurance_agent.change_location import resolve_change
 from assurance_agent.evidence.case_doc import EvidenceCaseEntry, load_case_entries
+from assurance_agent.evidence.tree_scan import TreeScanResult, scan_test_tree
+
+_TREE_DIGEST_SOURCE = "tests/#tree-digest"
+_DEGRADED_ONLY_GAP = "mapped_test_missing_from_tree"
 
 _FOLD_VIEW_SOURCE = "execution/execution-manifest.yaml#fold-view"
 _MANIFEST_PATH = "execution/execution-manifest.yaml"
@@ -160,14 +165,23 @@ def fold_trace(
             )
         )
 
+    tree = scan_test_tree(project_root)
+    sources.append(TraceSource(path=_TREE_DIGEST_SOURCE, exists=True, sha256=tree.tree_digest))
+    _compare_test_files_sha256(current_view, tree, gaps)
+
     executions_by_case = _index_executions(entries, batches)
     rows = tuple(
-        _build_row(entry, executions_by_case.get(entry.case_id, ()), current_view)
+        _build_row(
+            entry,
+            executions_by_case.get(entry.case_id, ()),
+            current_view,
+            tree,
+            gaps,
+        )
         for entry in sorted(entries, key=lambda item: item.case_id)
     )
     unmapped = _collect_unmapped_tests(batches, current_view.batch_id)
-
-    integrity: Literal["complete", "degraded", "incomplete"] = "complete" if not gaps else "incomplete"
+    integrity = _derive_integrity(gaps, rows)
     return TraceProjection(
         change_id=change_id,
         phase="execution",
@@ -178,6 +192,39 @@ def fold_trace(
         gaps=tuple(sorted(gaps, key=_gap_sort_key)),
         integrity=integrity,
     )
+
+
+def _compare_test_files_sha256(
+    current: _CurrentBatchView,
+    tree: TreeScanResult,
+    gaps: list[TraceGap],
+) -> None:
+    if not current.manifest_exists:
+        # Disk/injection view absent → Task 3 already emitted manifest_missing.
+        return
+    if dict(tree.file_sha256) != dict(current.test_files_sha256):
+        gaps.append(
+            TraceGap(
+                code="tests_tree_digest_mismatch",
+                source=_TREE_DIGEST_SOURCE,
+                batch_id=current.batch_id or None,
+                detail="per-file test_files_sha256 differs from current tree scan",
+            )
+        )
+
+
+def _derive_integrity(
+    gaps: list[TraceGap],
+    rows: tuple[TraceRow, ...],
+) -> Literal["complete", "degraded", "incomplete"]:
+    if not rows:
+        return "incomplete"
+    if not gaps:
+        return "complete"
+    codes = {gap.code for gap in gaps}
+    if codes == {_DEGRADED_ONLY_GAP}:
+        return "degraded"
+    return "incomplete"
 
 
 def _gap_sort_key(gap: TraceGap) -> tuple[str, str, str, str, str]:
@@ -535,27 +582,67 @@ def _build_row(
     entry: EvidenceCaseEntry,
     executions: tuple[_CaseExecution, ...],
     current: _CurrentBatchView,
+    tree: TreeScanResult,
+    gaps: list[TraceGap],
 ) -> TraceRow:
     target = _CASE_TYPE_TO_TARGET[entry.type]
     latest = _pick_latest(executions)
     freshest_pass = _pick_freshest_pass(executions)
     presence = _presence_in_current_batch(entry, executions, current, target)
-    coverage_state: Literal["covered", "uncovered", "not_required"] = (
-        "not_required" if not entry.automation_required else "uncovered"
-    )
-    atemporal = _atemporal_kinds(entry, latest)
+    covering, coverage_state = _coverage_for_entry(entry, tree)
+    if entry.automation_required and latest is not None:
+        _maybe_mapped_test_missing(entry, latest, tree, gaps)
+    atemporal = _atemporal_kinds(entry, latest, coverage_state)
     return TraceRow(
         case_id=entry.case_id,
         module=entry.module,
         case_type=entry.type,
         automation_required=entry.automation_required,
         assertions=entry.assertions,
-        covering_tests=(),
+        covering_tests=covering,
         coverage_state=coverage_state,
         latest_execution=_to_trace_execution(latest),
         freshest_pass=_to_trace_execution(freshest_pass),
         presence_in_current_batch=presence,
         atemporal_kinds_present=atemporal,
+    )
+
+
+def _coverage_for_entry(
+    entry: EvidenceCaseEntry,
+    tree: TreeScanResult,
+) -> tuple[tuple[TraceTestRef, ...], Literal["covered", "uncovered", "not_required"]]:
+    if not entry.automation_required:
+        return (), "not_required"
+    if entry.type == "Performance":
+        if entry.perf_capability and entry.perf_capability in tree.perf_capabilities:
+            return (), "covered"
+        return (), "uncovered"
+    covering = tree.case_refs.get(entry.case_id, ())
+    if covering:
+        return covering, "covered"
+    return (), "uncovered"
+
+
+def _maybe_mapped_test_missing(
+    entry: EvidenceCaseEntry,
+    latest: _CaseExecution,
+    tree: TreeScanResult,
+    gaps: list[TraceGap],
+) -> None:
+    """Emit gap when latest mapped pytest test disappeared from the current tree."""
+    if entry.type == "Performance":
+        return
+    if entry.case_id in tree.case_ids:
+        return
+    gaps.append(
+        TraceGap(
+            code="mapped_test_missing_from_tree",
+            source=_TREE_DIGEST_SOURCE,
+            batch_id=latest.batch_id,
+            target=latest.target,
+            detail=f"case {entry.case_id} mapped in {latest.batch_id} missing from current tests tree",
+        )
     )
 
 
@@ -613,8 +700,11 @@ def _target_selected(selected: SelectedTargets, target: str) -> bool:
 def _atemporal_kinds(
     entry: EvidenceCaseEntry,
     latest: _CaseExecution | None,
+    coverage_state: Literal["covered", "uncovered", "not_required"],
 ) -> tuple[str, ...]:
     kinds: list[str] = []
+    if coverage_state == "covered":
+        kinds.append("covered")
     if entry.type == "Fuzz" and latest is not None and latest.target == "fuzz":
         if latest.status in ("passed", "failed"):
             kinds.append("fuzz_run")
