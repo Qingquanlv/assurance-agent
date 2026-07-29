@@ -1831,6 +1831,10 @@ gates:
       not defined(api_plan_review.required_capabilities)
       or api_plan_review.required_capabilities == null
       or len(api_plan_review.required_capabilities) == 0
+      or (
+        node('mechanical-plan-checks').status == 'succeeded'
+        and not defined(api_plan_checks.status)
+      )
     needs_fix_when: "api_plan_review.decision == 'needs_fix' and api_plan_review.auto_fix_allowed == true"
     needs_human_review_when: >
       (

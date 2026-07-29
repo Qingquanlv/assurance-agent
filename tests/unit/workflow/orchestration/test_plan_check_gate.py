@@ -1,82 +1,193 @@
-"""check 报事实、policy 定处置：同一份 evidence 在不同 policy 下走不同 verdict。"""
+"""The packaged API plan-review gate consumes mechanical-check evidence."""
 
-from assurance_agent.workflow.orchestration.dsl import Scope, evaluate, parse_expression
+from __future__ import annotations
 
-REJECT_WHEN = (
-    "api_plan_review.decision == 'reject' "
-    "or api_plan_review.codegen_readiness == 'not_ready' "
-    "or (defined(api_plan_checks.status) "
-    "and api_plan_checks.status == 'fail' and policy.plan_check_action == 'block')"
-)
-HUMAN_WHEN = (
-    "defined(api_plan_checks.status) "
-    "and api_plan_checks.status == 'fail' and policy.plan_check_action == 'require_human'"
-)
+from dataclasses import fields, is_dataclass
+from pathlib import Path
 
+import pytest
 
-def _scope(check_status: str, action: str) -> Scope:
-    return Scope(
-        {
-            "api_plan_review": {"decision": "pass", "codegen_readiness": "ready"},
-            "api_plan_checks": {"status": check_status},
-            "policy": {"plan_check_action": action},
-        }
-    )
+from assurance_agent.artifacts.models.policy import Policy
+from assurance_agent.workflow.graph.compiler import compile_workflow
+from assurance_agent.workflow.graph.contracts import load_execution_contracts
+from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
+from assurance_agent.workflow.orchestration.dsl import Ident, Member, parse_expression
+from assurance_agent.workflow.orchestration.gates import GateEvaluationContext, check_gate_in_view
+from assurance_agent.workflow.orchestration.schema import GateDef, Verdict
 
 
-def _scope_without_checks(action: str) -> Scope:
-    """Checks 产物缺失（recover 路径、历史 change 目录）时的 fail-open 语义。"""
-    return Scope(
-        {
-            "api_plan_review": {"decision": "pass", "codegen_readiness": "ready"},
-            "api_plan_checks": None,
-            "policy": {"plan_check_action": action},
-        }
-    )
+def _gate() -> GateDef:
+    return load_workflow_v2(Path.cwd()).gates["api-plan-review-gate"]
 
 
-def test_warn_policy_lets_a_failing_check_through() -> None:
-    assert evaluate(parse_expression(REJECT_WHEN), _scope("fail", "warn")) is False
-    assert evaluate(parse_expression(HUMAN_WHEN), _scope("fail", "warn")) is False
+def test_packaged_gate_can_read_its_own_cycle_producer() -> None:
+    compiled = compile_workflow(load_workflow_v2(Path.cwd()), load_execution_contracts(Path.cwd()))
+
+    assert compiled.schema.gates["api-plan-review-gate"] == _gate()
 
 
-def test_block_policy_rejects_a_failing_check() -> None:
-    assert evaluate(parse_expression(REJECT_WHEN), _scope("fail", "block")) is True
-
-
-def test_require_human_policy_routes_to_human_review() -> None:
-    assert evaluate(parse_expression(HUMAN_WHEN), _scope("fail", "require_human")) is True
-    assert evaluate(parse_expression(REJECT_WHEN), _scope("fail", "require_human")) is False
-
-
-def test_passing_check_is_inert_under_every_policy() -> None:
-    for action in ("warn", "block", "require_human"):
-        assert evaluate(parse_expression(REJECT_WHEN), _scope("pass", action)) is False
-        assert evaluate(parse_expression(HUMAN_WHEN), _scope("pass", action)) is False
-
-
-def test_absent_check_artifact_yields_false_not_missing() -> None:
-    """defined() 守卫把缺失 evidence 压成 False，而不是 MISSING。"""
-    for action in ("warn", "block", "require_human"):
-        assert evaluate(parse_expression(REJECT_WHEN), _scope_without_checks(action)) is False
-        assert evaluate(parse_expression(HUMAN_WHEN), _scope_without_checks(action)) is False
-
-
-def test_schema_gate_wires_the_check_artifact() -> None:
-    from assurance_agent import resources
-
-    text = resources.read_text("schemas", "workflow-schema.yaml")
-    assert "review/api-plan-checks.json, as: api_plan_checks" in text
-    assert "policy.plan_check_action == 'block'" in text
-
-
-def test_every_policy_field_has_a_runtime_consumer() -> None:
-    """Each policy field has a gate expression that consumes it."""
-    from assurance_agent import resources
-    from assurance_agent.artifacts.models.policy import Policy
-
-    schema = resources.read_text("schemas", "workflow-schema.yaml")
-    unconsumed = {
-        name for name in Policy.model_fields if name != "version" and f"policy.{name}" not in schema
+def _review(**overrides: object) -> dict[str, object]:
+    review = {
+        "decision": "pass",
+        "codegen_readiness": "ready",
+        "required_capabilities": ["auth.api_admin_token"],
+        "auto_fix_allowed": False,
+        "human_review_required": False,
+        "risk_level": "low",
     }
-    assert unconsumed == set()
+    review.update(overrides)
+    return review
+
+
+def _data_knowledge() -> dict[str, object]:
+    return {
+        "version": 1,
+        "accounts": {},
+        "auth": {"api_admin_token": {"method": "token"}},
+        "entities": {},
+        "capabilities": {
+            "domain_factories": {},
+            "adapters": {"api": {}, "e2e": {}, "fuzz": {}, "performance": {}},
+            "cleanup": {},
+        },
+    }
+
+
+def _context(
+    tmp_path: Path,
+    *,
+    action: str,
+    checks: object | None = None,
+    review: dict[str, object] | None = None,
+    node_results: dict[str, object] | None = None,
+) -> GateEvaluationContext:
+    policy_path = tmp_path / ".aa" / "policy.yaml"
+    policy_path.parent.mkdir(parents=True)
+    policy_path.write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "human_review_risk_levels: [high, critical]",
+                "force_continue_allowed: true",
+                f"plan_check_action: {action}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    overrides: dict[str, object] = {
+        "review/api-plan-review.json": review or _review(),
+        "repo:.aa/data-knowledge.yaml": _data_knowledge(),
+    }
+    if checks is not None:
+        overrides["review/api-plan-checks.json"] = checks
+    return GateEvaluationContext(
+        project_root=tmp_path,
+        repo_root=tmp_path,
+        change_dir=tmp_path / "qa" / "changes" / "CH-1",
+        change_id="CH-1",
+        params={"force_continue": False},
+        state_values={},
+        node_results=node_results or {},
+        artifact_overrides=overrides,
+    )
+
+
+def _adjudicate(
+    tmp_path: Path,
+    *,
+    action: str,
+    checks: object | None = None,
+    review: dict[str, object] | None = None,
+    node_results: dict[str, object] | None = None,
+):
+    return check_gate_in_view(
+        {"api-plan-review-gate": _gate()},
+        "api-plan-review-gate",
+        _context(
+            tmp_path,
+            action=action,
+            checks=checks,
+            review=review,
+            node_results=node_results,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("action", "expected"),
+    [("warn", Verdict.PASS), ("block", Verdict.REJECT), ("require_human", Verdict.NEEDS_HUMAN_REVIEW)],
+)
+def test_packaged_gate_routes_failing_check_by_policy(tmp_path: Path, action: str, expected: Verdict) -> None:
+    report = _adjudicate(tmp_path, action=action, checks={"status": "fail"})
+
+    assert report.gate_id == "api-plan-review-gate"
+    assert report.verdict == expected
+
+
+@pytest.mark.parametrize("action", ["warn", "block", "require_human"])
+def test_packaged_gate_keeps_passing_checks_inert(tmp_path: Path, action: str) -> None:
+    assert _adjudicate(tmp_path, action=action, checks={"status": "pass"}).verdict == Verdict.PASS
+
+
+@pytest.mark.parametrize("action", ["block", "require_human"])
+def test_missing_checks_remain_compatible_without_a_current_producer(tmp_path: Path, action: str) -> None:
+    """Historical/imported views have no frozen mechanical producer result."""
+    assert _adjudicate(tmp_path, action=action).verdict == Verdict.PASS
+
+
+@pytest.mark.parametrize("checks", [None, {}])
+def test_current_producer_requires_a_check_status(tmp_path: Path, checks: object | None) -> None:
+    report = _adjudicate(
+        tmp_path,
+        action="warn",
+        checks=checks,
+        node_results={"mechanical-plan-checks": {"status": "succeeded"}},
+    )
+
+    assert report.verdict == Verdict.STOP
+    assert report.matched_rule is not None and report.matched_rule.startswith("stop_when:")
+
+
+def test_existing_needs_fix_precedes_a_blocking_check(tmp_path: Path) -> None:
+    report = _adjudicate(
+        tmp_path,
+        action="block",
+        checks={"status": "fail"},
+        review=_review(decision="needs_fix", auto_fix_allowed=True),
+    )
+
+    assert report.verdict == Verdict.NEEDS_FIX
+    assert report.matched_rule is not None and report.matched_rule.startswith("needs_fix_when:")
+
+
+def _policy_fields(expression: object) -> set[str]:
+    if isinstance(expression, Member):
+        direct = (
+            {expression.prop}
+            if isinstance(expression.obj, Ident) and expression.obj.name == "policy"
+            else set()
+        )
+    else:
+        direct = set()
+    if not is_dataclass(expression):
+        return direct
+    for field in fields(expression):
+        value = getattr(expression, field.name)
+        if isinstance(value, tuple):
+            for item in value:
+                direct.update(_policy_fields(item))
+        else:
+            direct.update(_policy_fields(value))
+    return direct
+
+
+def test_every_policy_field_has_a_parsed_runtime_consumer() -> None:
+    consumed = {
+        name
+        for gate in load_workflow_v2(Path.cwd()).gates.values()
+        for rule in gate.rules
+        for name in _policy_fields(parse_expression(rule.expr))
+    }
+
+    assert consumed == set(Policy.model_fields) - {"version"}

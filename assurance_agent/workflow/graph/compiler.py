@@ -644,14 +644,20 @@ def _validate_expressions(schema: WorkflowSchemaV2) -> list[str]:
             )
     for gate in schema.gates.values():
         aliases = {entry.alias for entry in gate.reads}
+        owning_node_sets = [
+            set(graph.nodes)
+            for graph in schema.graphs.values()
+            if any(node.gate == gate.id for node in graph.nodes.values())
+        ]
+        gate_node_ids = set.intersection(*owning_node_sets) if owning_node_sets else set()
         for rule in gate.rules:
             errors.extend(
                 _check_expression(
                     f"gate '{gate.id}'.{rule.field}",
                     rule.expr,
                     allowed_idents={"params", "state", "policy"} | aliases,
-                    allow_node=False,
-                    node_ids=set(),
+                    allow_node=bool(owning_node_sets),
+                    node_ids=gate_node_ids,
                     schema=schema,
                 )
             )
