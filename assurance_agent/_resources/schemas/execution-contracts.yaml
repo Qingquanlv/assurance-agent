@@ -224,7 +224,8 @@ contracts:
       - change:review/api-plan-review.json
       - change:review/api-plan-review-summary.md
     authorization_writes:
-      - change:review/**
+      - change:review/api-plan-review.json
+      - change:review/api-plan-review-summary.md
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 

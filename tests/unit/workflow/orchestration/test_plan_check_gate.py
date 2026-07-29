@@ -130,6 +130,92 @@ def test_packaged_gate_keeps_passing_checks_inert(tmp_path: Path, action: str) -
     assert _adjudicate(tmp_path, action=action, checks={"status": "pass"}).verdict == Verdict.PASS
 
 
+@pytest.mark.parametrize(
+    ("review", "expected_verdict", "expected_target"),
+    [
+        (
+            _review(
+                decision="pass",
+                codegen_readiness="ready",
+                auto_fix_allowed=False,
+                human_review_required=False,
+                next_action="continue",
+            ),
+            Verdict.PASS,
+            "END",
+        ),
+        (
+            _review(
+                decision="needs_fix",
+                codegen_readiness="not_ready",
+                auto_fix_allowed=True,
+                human_review_required=False,
+                next_action="run_api_plan_fixer",
+            ),
+            Verdict.NEEDS_FIX,
+            "fix",
+        ),
+        (
+            _review(
+                decision="needs_human_review",
+                codegen_readiness="not_ready",
+                auto_fix_allowed=False,
+                human_review_required=True,
+                next_action="human_review",
+            ),
+            Verdict.NEEDS_HUMAN_REVIEW,
+            "human-review",
+        ),
+        (
+            _review(
+                decision="reject",
+                codegen_readiness="not_ready",
+                auto_fix_allowed=False,
+                human_review_required=True,
+                next_action="stop",
+            ),
+            Verdict.REJECT,
+            "STOP",
+        ),
+    ],
+    ids=("pass", "needs-fix", "needs-human-review", "reject"),
+)
+def test_packaged_gate_routes_every_documented_reviewer_decision(
+    tmp_path: Path,
+    review: dict[str, object],
+    expected_verdict: Verdict,
+    expected_target: str,
+) -> None:
+    report = _adjudicate(tmp_path, action="warn", checks={"status": "pass"}, review=review)
+    route = next(
+        route
+        for route in load_workflow_v2(Path.cwd()).graphs["api-plan-cycle"].routes
+        if route.from_ == "review"
+    )
+
+    assert report.verdict == expected_verdict
+    assert route.cases[report.verdict.value] == expected_target
+
+
+def test_explicit_reject_precedes_otherwise_matching_human_review_policy(tmp_path: Path) -> None:
+    report = _adjudicate(
+        tmp_path,
+        action="require_human",
+        checks={"status": "fail"},
+        review=_review(
+            decision="reject",
+            codegen_readiness="not_ready",
+            auto_fix_allowed=False,
+            human_review_required=True,
+            risk_level="critical",
+            next_action="stop",
+        ),
+    )
+
+    assert report.verdict == Verdict.REJECT
+    assert report.matched_rule is not None and report.matched_rule.startswith("reject_when:")
+
+
 @pytest.mark.parametrize("action", ["block", "require_human"])
 def test_missing_checks_remain_compatible_without_a_current_producer(tmp_path: Path, action: str) -> None:
     """Historical/imported views have no frozen mechanical producer result."""
