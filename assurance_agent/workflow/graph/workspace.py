@@ -609,9 +609,12 @@ class TreeStore:
         rel: str,
     ) -> bytes:
         current = rel
-        visited: set[str] = set()
+        visited_states: set[str] = set()
         hops = 0
         while True:
+            if current in visited_states:
+                raise WorkspaceError(f"tree symlink cycle while resolving: {current}")
+            visited_states.add(current)
             parts = PurePosixPath(current).parts
             followed = False
             for index in range(1, len(parts) + 1):
@@ -624,15 +627,12 @@ class TreeStore:
                     if index != len(parts):
                         raise NotADirectoryError(current)
                     return data
-                if prefix in visited:
-                    raise WorkspaceError(f"tree symlink cycle at {prefix}")
                 if hops >= _MAX_TREE_SYMLINK_HOPS:
                     raise WorkspaceError(f"too many symlink hops while resolving tree path: {rel}")
                 try:
                     target = data.decode("utf-8")
                 except UnicodeDecodeError as exc:
                     raise WorkspaceError(f"tree symlink target is not UTF-8: {prefix}") from exc
-                visited.add(prefix)
                 hops += 1
                 resolved = _resolve_tree_symlink(prefix, target)
                 current = PurePosixPath(resolved, *parts[index:]).as_posix()

@@ -110,6 +110,21 @@ def test_symlink_cycle_fails_closed_with_a_domain_error(tmp_path: Path) -> None:
         TreeStore(change).read_bytes(tree_id, "project:.aa/policy.yaml")
 
 
+def test_revisiting_a_symlink_with_a_new_suffix_is_not_a_cycle(tmp_path: Path) -> None:
+    change = tmp_path / "project" / "qa" / "changes" / "CH-1"
+    change.mkdir(parents=True)
+    tree_id = _write_tree(
+        change,
+        [
+            ("a", "symlink", b"b"),
+            ("b/x", "symlink", b"../a/y"),
+            ("b/y", "file", b"resolved\n"),
+        ],
+    )
+
+    assert TreeStore(change).read_bytes(tree_id, "project:a/x") == b"resolved\n"
+
+
 def test_long_symlink_chain_stops_at_the_documented_hop_bound(tmp_path: Path) -> None:
     change = tmp_path / "project" / "qa" / "changes" / "CH-1"
     change.mkdir(parents=True)
