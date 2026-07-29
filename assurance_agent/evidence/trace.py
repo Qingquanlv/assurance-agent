@@ -1122,12 +1122,6 @@ def _file_source(rel: str, path: Path) -> TraceSource:
     return TraceSource(path=rel, exists=True, sha256=digest)
 
 
-def _json_source(rel: str, payload: BaseModel) -> TraceSource:
-    text = payload.model_dump_json(indent=2)
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    return TraceSource(path=rel, exists=True, sha256=digest)
-
-
 def _enrich_reconciled(
     project_root: Path,
     change_dir: Path,
