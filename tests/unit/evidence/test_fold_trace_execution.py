@@ -248,11 +248,11 @@ def _fold_view_digest(
     return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
-def test_reconciled_phase_is_rejected(tmp_path: Path) -> None:
+def test_reconciled_phase_is_accepted(tmp_path: Path) -> None:
     change_dir = _setup_project(tmp_path)
     _write_api_case(change_dir)
-    with pytest.raises(NotImplementedError):
-        fold_trace(tmp_path, CHANGE_ID, phase="reconciled")
+    projection = fold_trace(tmp_path, CHANGE_ID, phase="reconciled")
+    assert projection.phase == "reconciled"
 
 
 def test_manifest_missing_when_current_is_none(tmp_path: Path) -> None:
