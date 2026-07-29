@@ -38,11 +38,22 @@ def load_policy(project_root: Path) -> Policy:
     path = project_root / POLICY_REL_PATH
     if path.exists():
         try:
-            text = path.read_text(encoding="utf-8")
+            data = path.read_bytes()
         except OSError as err:
             raise PolicyError(f"cannot read {path}: {err}") from err
-        return _parse(text, str(path))
-    return _parse(resources.read_text(*_DEFAULT_RESOURCE), "packaged policy-default.yaml")
+        return load_policy_bytes(data, origin=str(path))
+    return load_policy_bytes(None, origin=str(path))
+
+
+def load_policy_bytes(data: bytes | None, *, origin: str) -> Policy:
+    """Parse captured policy bytes; absence selects the packaged default."""
+    if data is None:
+        return _parse(resources.read_text(*_DEFAULT_RESOURCE), "packaged policy-default.yaml")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as err:
+        raise PolicyError(f"{origin} is not valid UTF-8: {err}") from err
+    return _parse(text, origin)
 
 
 def policy_digest(policy: Policy) -> str:

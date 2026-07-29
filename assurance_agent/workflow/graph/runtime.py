@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from assurance_agent.artifacts.policy import load_policy, policy_digest
+from assurance_agent.artifacts.policy import load_policy, load_policy_bytes, policy_digest
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
 from assurance_agent.workflow.core.exit_codes import (
@@ -78,6 +78,7 @@ from assurance_agent.workflow.orchestration.dsl import Scope, is_satisfied
 _SCHEMA_DIR = ".graph-runtime/schemas"
 _CONTRACT_DIR = ".graph-runtime/contracts"
 _CATALOG_DIR = ".graph-runtime/ingest-catalogs"
+_POLICY_LOGICAL_PATH = "project:.aa/policy.yaml"
 
 
 def _ingest_catalog_digest(compiled: CompiledWorkflow) -> str:
@@ -85,6 +86,15 @@ def _ingest_catalog_digest(compiled: CompiledWorkflow) -> str:
     if digest:
         return digest
     return validate_catalog_runtime().digest
+
+
+def _policy_digest_from_tree(store: TreeStore, tree_id: str) -> str:
+    try:
+        data = store.read_bytes(tree_id, _POLICY_LOGICAL_PATH)
+    except FileNotFoundError:
+        data = None
+    policy = load_policy_bytes(data, origin=f"tree {tree_id}:{_POLICY_LOGICAL_PATH}")
+    return policy_digest(policy)
 
 
 def _build_invocation_started(
@@ -223,7 +233,7 @@ class GraphRuntime:
         invocation_id = str(uuid4())
         checkpoint_ns = invocation_id
         bound = context.model_copy(update={"params": params})
-        digest = policy_digest(load_policy(context.project_root))
+        digest = _policy_digest_from_tree(self._objects, root_tree_id)
         started = _build_invocation_started(
             invocation_id=invocation_id,
             entrypoint=manifest.entrypoint,
@@ -537,7 +547,7 @@ class GraphRuntime:
         max_parallel = compiled.schema.policies.scheduler.max_parallel_tasks
         graph_id = entry.graph_id
 
-        digest = policy_digest(load_policy(context.project_root))
+        digest = _policy_digest_from_tree(self._objects, root_tree_id)
         started = _build_invocation_started(
             invocation_id=invocation_id,
             entrypoint=entrypoint,

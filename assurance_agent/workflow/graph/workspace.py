@@ -583,20 +583,27 @@ class TreeStore:
     def _load_tree(self, tree_id: str) -> _TreeManifest:
         return _parse_tree(self._read_object(tree_id))
 
-    def read_json(self, tree_id: str, logical_path: str) -> ResolvedArtifact:
-        """Read a JSON artifact from a committed tree by logical path (change:/project:/repo:)."""
+    def read_bytes(self, tree_id: str, logical_path: str) -> bytes:
+        """Read hash-verified file bytes from a committed tree by logical path."""
         logical = ResourcePath.parse(logical_path)
         manifest = self._load_tree(tree_id)
         rel = _physical_for(manifest.roots, logical)
         entry = manifest.entries.get(rel)
         if entry is None or entry.kind != "file":
             raise FileNotFoundError(logical_path)
-        data = self._read_object(entry.sha256)
+        return self._read_object(entry.sha256)
+
+    def read_json(self, tree_id: str, logical_path: str) -> ResolvedArtifact:
+        """Read a JSON artifact from a committed tree by logical path (change:/project:/repo:)."""
+        data = self.read_bytes(tree_id, logical_path)
         try:
             value = json.loads(data.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ValueError(f"artifact is not valid JSON: {logical_path}") from exc
-        return ResolvedArtifact(value=value, reads_sha256={logical_path: entry.sha256})
+        return ResolvedArtifact(
+            value=value,
+            reads_sha256={logical_path: hashlib.sha256(data).hexdigest()},
+        )
 
     def filter_tree(
         self,
