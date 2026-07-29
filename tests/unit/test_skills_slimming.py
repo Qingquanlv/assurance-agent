@@ -35,6 +35,25 @@ PLAN_TABLES = {
 }
 
 
+def _markdown_clauses(text: str) -> list[str]:
+    clauses: list[str] = []
+    for line in text.splitlines():
+        normalized = re.sub(r"^\s*(?:[-*+]|\d+[.)])\s+", "", line).strip()
+        clauses.extend(
+            clause.strip() for clause in re.split(r"(?:[.!?](?=\s|$)|;)", normalized) if clause.strip()
+        )
+    return clauses
+
+
+def _has_unnegated_match(pattern: re.Pattern[str], clause: str) -> bool:
+    for match in pattern.finditer(clause):
+        prefix = clause[max(0, match.start() - 48) : match.start()]
+        if re.search(r"\b(?:not|never)\s+(?:\w+\s+){0,2}$", prefix, re.IGNORECASE):
+            continue
+        return True
+    return False
+
+
 def _assert_reviewer_risk_routing_is_policy_neutral(text: str) -> None:
     outputs = text[text.index("## Outputs") : text.index("## Boundaries")]
     risk_line = next(line for line in outputs.splitlines() if "`risk_level` is a fact" in line)
@@ -73,59 +92,91 @@ def _assert_reviewer_risk_routing_is_policy_neutral(text: str) -> None:
         r"low|medium|high|critical|minor|major)\b",
         re.IGNORECASE,
     )
-    routing_terms = re.compile(
-        r"(?:\bdecisions?\b|\bneeds[_ -]?fix\b|\bfix requests?\b|"
-        r"\bauto(?:matic)?[-_ ]fix(?:er|able|ed|es|ing)?\b|"
-        r"\bpass(?:es|ed|ing)?\b|\breject(?:s|ed|ing|ion)?\b|"
-        r"\bhuman[-_ ]reviews?(?:[-_ ]required)?\b|`human_review_required`|"
-        r"\b(?:codegen[-_ ]?)?readiness\b|\bnot[-_ ]ready\b|"
-        r"\bready(?:[-_ ]with[-_ ]warnings)?\b|\brout(?:e|es|ed|ing)\b)",
+    routing_relation = re.compile(
+        r"\b(?:determin(?:e|es|ed|ing)|control(?:s|led|ling)?|map(?:s|ped|ping)?|"
+        r"rout(?:e|es|ed|ing)|set(?:s|ting)?|driv(?:e|es|en|ing)|"
+        r"dictat(?:e|es|ed|ing)|trigger(?:s|ed|ing)?|requir(?:e|es|ed|ing)|"
+        r"invok(?:e|es|ed|ing)|block(?:s|ed|ing)?)\b",
         re.IGNORECASE,
     )
-    routed_risk_paragraphs = [
-        paragraph
-        for paragraph in re.split(r"\n\s*\n", unchecked)
-        if risk_terms.search(paragraph) and routing_terms.search(paragraph)
-    ]
-    assert not routed_risk_paragraphs, routed_risk_paragraphs
+    routing_outcome = re.compile(
+        r"(?:\bdecisions?\b|\bneeds[_ -]?fix\b|\bfix requests?\b|"
+        r"\bauto(?:matic)?[-_ ]fix(?:er|able|ed|es|ing)?\b|"
+        r"\bhuman[-_ ]reviews?(?:[-_ ]required)?\b|`human_review_required`|"
+        r"\b(?:codegen[-_ ]?)?readiness\b|\bnot[-_ ]ready\b|"
+        r"\bready(?:[-_ ]with[-_ ]warnings)?\b|\bnext[_ -]?actions?\b|"
+        r"\bcode generation\b|`?run_api_plan_fixer`?|\b(?:stop|continue|pass|reject)\b)",
+        re.IGNORECASE,
+    )
+    direct_outcome = re.compile(
+        r"\b(?:findings?\s+|(?:may|must|should|shall|can|will)\s+)"
+        r"(?:pass(?:es|ed|ing)?|reject(?:s|ed|ing)?|continue(?:s|d|ing)?|stop(?:s|ped|ping)?)\b",
+        re.IGNORECASE,
+    )
+    routed_risk_clauses = []
+    for clause in _markdown_clauses(unchecked):
+        if not risk_terms.search(clause) or not routing_outcome.search(clause):
+            continue
+        if _has_unnegated_match(routing_relation, clause) or direct_outcome.search(clause):
+            routed_risk_clauses.append(clause)
+    assert not routed_risk_clauses, routed_risk_clauses
 
 
 def _assert_reviewer_does_not_reapply_shared_factory_policy(reviewer: str) -> None:
     shared_factory_subject = re.compile(
-        r"(?:`shared_factory`|shared[-_ ]+(?:factor(?:y|ies)|capabilit(?:y|ies)))",
+        r"(?:`shared_factory`|shared[-_ ]+(?:factor(?:y|ies)|capabilit(?:y|ies))|"
+        r"(?:local|private|new)\s+factor(?:y|ies))",
         re.IGNORECASE,
     )
     policy_action = re.compile(
         r"\b(?:re[- ]?us(?:e|ed|es|ing)|us(?:e|ed|es|ing)|"
         r"re[- ]?writ(?:e|es|ing|ten)|"
         r"duplicat(?:e|ed|es|ing|ion)|cop(?:y|ied|ies|ying)|clon(?:e|ed|es|ing)|"
-        r"creat(?:e|ed|es|ing)|replac(?:e|ed|es|ing)|private|local|new)\b",
+        r"creat(?:e|ed|es|ing)|replac(?:e|ed|es|ing)|modif(?:y|ied|ies|ying)|"
+        r"build(?:s|ing)?|built|prefer(?:s|red|ring)?|private|local|new)\b",
         re.IGNORECASE,
     )
     policy_language = re.compile(
-        r"(?:^|[.!?]\s+)(?:(?:do\s+not|don't)\s+)?(?:reuse|re-use|rewrite|re-write|duplicate|"
-        r"copy|clone|create|replace|prefer|use)\b|"
+        r"(?:^|,\s+)(?:(?:do\s+not|don't)\s+)?(?:reuse|re-use|rewrite|re-write|duplicate|"
+        r"copy|clone|create|replace|modify|build|prefer|use)\b|"
         r"\b(?:must|should|shall|never|always|prefer|avoid|instead|rather than|only when|"
         r"required|prohibited|forbidden|precedes?|takes? precedence)\b|"
-        r"\b(?:is|are|be)\s+(?:reused|rewritten|duplicated|copied|cloned|created|replaced)\b",
+        r"\b(?:is|are|be)\s+(?:reused|rewritten|duplicated|copied|cloned|created|replaced|"
+        r"modified|built|preferred)\b",
         re.IGNORECASE,
     )
-    adjudicated_evidence = re.compile(
-        r"(?:the\s+)?\balready[- ]adjudicated\b.{0,80}`shared_factory`\s+finding\s+"
-        r"(?:says|reports|records|describes)\b[^.\n]*\.",
+    adjudicated_finding = r"(?:the\s+)?already[- ]adjudicated\b.{0,80}`shared_factory`\s+finding\b"
+    reported_reuse = (
+        r"(?:the|a|an|this|that|its)\s+shared[-_ ]+"
+        r"(?:factor(?:y|ies)|capabilit(?:y|ies))\s+should\s+be\s+reused"
+    )
+    factual_evidence = re.compile(
+        rf"^(?:according to\s+{adjudicated_finding},\s+{reported_reuse}|"
+        rf"{adjudicated_finding}\s+(?:says|reports|records|describes|indicates)\s+"
+        rf"{reported_reuse}|"
+        rf"treat\s+{adjudicated_finding}\s+as\s+(?:immutable\s+)?"
+        r"PlanCheckDocument\s+evidence)$",
         re.IGNORECASE,
     )
-    unchecked_paragraphs = (
-        adjudicated_evidence.sub("", paragraph).strip() for paragraph in re.split(r"\n\s*\n", reviewer)
-    )
-    stale_policy_paragraphs = [
-        paragraph
-        for paragraph in unchecked_paragraphs
-        if shared_factory_subject.search(paragraph)
-        and policy_action.search(paragraph)
-        and policy_language.search(paragraph)
-    ]
-    assert not stale_policy_paragraphs, stale_policy_paragraphs
+    pronoun_subject = re.compile(r"^(?:it|they|them|this|these)\b", re.IGNORECASE)
+    stale_policy_clauses = []
+    previous_shared_context = False
+    for clause in _markdown_clauses(reviewer):
+        if factual_evidence.fullmatch(clause):
+            previous_shared_context = True
+            continue
+
+        has_explicit_subject = bool(shared_factory_subject.search(clause))
+        has_contextual_subject = previous_shared_context and bool(pronoun_subject.search(clause))
+        if (
+            (has_explicit_subject or has_contextual_subject)
+            and policy_action.search(clause)
+            and policy_language.search(clause)
+        ):
+            stale_policy_clauses.append(clause)
+        previous_shared_context = has_explicit_subject
+
+    assert not stale_policy_clauses, stale_policy_clauses
 
 
 def test_pilot_skills_use_exactly_the_five_section_manifest_structure() -> None:
@@ -252,6 +303,22 @@ def test_reviewer_reports_risk_fact_without_hard_coding_policy_routing() -> None
             "Validate the written artifact before completing the review.",
             " Major risk findings route to needs_fix.",
         ),
+        (
+            "Validate the written artifact before completing the review.",
+            " High risk sets next_action to stop.",
+        ),
+        (
+            "Validate the written artifact before completing the review.",
+            " Critical findings block code generation.",
+        ),
+        (
+            "Validate the written artifact before completing the review.",
+            " A major grade invokes run_api_plan_fixer.",
+        ),
+        (
+            "Validate the written artifact before completing the review.",
+            " Low severity may continue.",
+        ),
     ),
 )
 def test_risk_routing_guard_rejects_policy_mutations_anywhere(anchor: str, routing_rule: str) -> None:
@@ -261,6 +328,28 @@ def test_risk_routing_guard_rejects_policy_mutations_anywhere(anchor: str, routi
 
     with pytest.raises(AssertionError):
         _assert_reviewer_risk_routing_is_policy_neutral(mutated)
+
+
+@pytest.mark.parametrize(
+    "neutral_statement",
+    (
+        "Risk does not determine codegen readiness.",
+        "High risk does not require human review.",
+        "Report risk and codegen readiness independently.",
+    ),
+)
+def test_risk_routing_guard_allows_policy_neutral_statements(
+    neutral_statement: str,
+) -> None:
+    text = resources.read_text("skills", "aa-api-plan-reviewer", "SKILL.md")
+    mutated = text.replace(
+        "Validate the written artifact before completing the review.",
+        "Validate the written artifact before completing the review. " + neutral_statement,
+        1,
+    )
+    assert mutated != text
+
+    _assert_reviewer_risk_routing_is_policy_neutral(mutated)
 
 
 def test_reviewer_never_writes_or_reports_a_workflow_state_delta() -> None:
@@ -311,8 +400,23 @@ def test_migration_completeness_keeps_reviewer_semantics_and_moves_only_mechanis
         "Don't duplicate shared factories in local test modules.",
         "Do not rewrite declared shared capabilities.",
         "Create a private factory only when no shared capability exists.",
+        "- Reuse an existing shared factory.",
+        "- Do not duplicate shared factories.",
+        "Do not modify shared capabilities.",
+        "A shared factory is preferred over local setup.",
+        "Build a local factory for the reviewer.",
         "The already-adjudicated `shared_factory` finding says the shared capability "
         "should be reused. Reuse an existing shared factory in the reviewer.",
+        "The already-adjudicated `shared_factory` finding says the shared capability "
+        "should be reused. It must be reused by the reviewer.",
+        "The already-adjudicated `shared_factory` finding says the shared capability "
+        "should be reused; it must be reused by the reviewer.",
+        "The already-adjudicated `shared_factory` finding says the shared capability "
+        "should be reused.\n- It must be reused by the reviewer.",
+        "According to the already-adjudicated `shared_factory` finding, reuse an existing "
+        "shared factory in the reviewer.",
+        "According to the already-adjudicated `shared_factory` finding, the shared capability "
+        "should be reused, so reuse it in the reviewer.",
     ),
 )
 def test_shared_factory_guard_rejects_reviewer_policy_mutations(stale_rule: str) -> None:
@@ -328,6 +432,9 @@ def test_shared_factory_guard_rejects_reviewer_policy_mutations(stale_rule: str)
     (
         "Treat the already-adjudicated `shared_factory` finding as immutable PlanCheckDocument evidence.",
         "The already-adjudicated `shared_factory` finding says the shared capability should be reused.",
+        "According to the already-adjudicated `shared_factory` finding, the shared capability "
+        "should be reused.",
+        "The already-adjudicated `shared_factory` finding indicates the shared capability should be reused.",
     ),
 )
 def test_shared_factory_guard_allows_already_adjudicated_factual_evidence(
