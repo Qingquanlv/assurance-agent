@@ -123,10 +123,14 @@ def test_no_aws_residue_in_skills_and_opencode() -> None:
 
 
 def test_mechanised_plan_rules_live_in_the_runtime_not_the_skill_prose() -> None:
-    """L1 路径与 assert_ideal 的强制点已从 SKILL.md 迁到确定性 check。"""
+    """L1 路径、shared factory 与 assert_ideal 已从散文迁到确定性 check。"""
     from assurance_agent.verification.checks.registry import PLAN_CHECKS
 
-    assert {check.__name__ for check in PLAN_CHECKS} >= {"check_l1_path", "check_assert_ideal"}
+    assert {check.__name__ for check in PLAN_CHECKS} >= {
+        "check_l1_path",
+        "check_shared_factory",
+        "check_assert_ideal",
+    }
 
 
 def test_cross_skill_references_resolve() -> None:

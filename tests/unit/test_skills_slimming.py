@@ -98,7 +98,7 @@ def test_reviewer_consumes_plan_check_document_as_facts_without_policy_adjudicat
     assert "according to their runtime policy action" not in inputs
 
 
-def test_reviewer_restores_every_gate_consumed_field_and_exact_state_delta() -> None:
+def test_reviewer_restores_every_gate_consumed_field() -> None:
     text = resources.read_text("skills", "aa-api-plan-reviewer", "SKILL.md")
     outputs = text[text.index("## Outputs") : text.index("## Boundaries")]
     for field in (
@@ -115,9 +115,26 @@ def test_reviewer_restores_every_gate_consumed_field_and_exact_state_delta() -> 
         "`reject` | `not_ready` | `false` | `true`",
     ):
         assert mapping in outputs
-    assert "`phases.api_plan_review.status`" in outputs
-    assert "`phases.api_plan_review.gate_file`" in outputs
-    assert "`review/api-plan-review.json`" in outputs
+
+
+def test_reviewer_reports_risk_fact_without_hard_coding_policy_routing() -> None:
+    text = resources.read_text("skills", "aa-api-plan-reviewer", "SKILL.md")
+    outputs = text[text.index("## Outputs") : text.index("## Boundaries")]
+    assert "`risk_level` is a fact" in outputs
+    assert "`policy.human_review_risk_levels`" in outputs
+    assert "downstream gate" in outputs.lower()
+    assert "High/critical risk" not in outputs
+
+
+def test_reviewer_never_writes_or_reports_a_workflow_state_delta() -> None:
+    text = resources.read_text("skills", "aa-api-plan-reviewer", "SKILL.md")
+    outputs = text[text.index("## Outputs") : text.index("## Boundaries")]
+    boundaries = text[text.index("## Boundaries") : text.index("## Domain Notes")]
+    assert "graph coordinator" in outputs.lower()
+    assert "ledger" in outputs.lower()
+    assert "no `workflow-state.yaml` state delta" in outputs
+    assert "Do not write or propose updates to `workflow-state.yaml`" in boundaries
+    assert "inline mode apply" not in text.lower()
 
 
 def test_reviewer_retains_unmechanised_test_function_name_verification() -> None:
@@ -128,6 +145,8 @@ def test_reviewer_retains_unmechanised_test_function_name_verification() -> None
 
 
 def test_migration_completeness_keeps_reviewer_semantics_and_moves_only_mechanised_rules() -> None:
+    from assurance_agent.verification.checks.registry import PLAN_CHECKS
+
     reviewer = resources.read_text("skills", "aa-api-plan-reviewer", "SKILL.md")
     for responsibility in (
         "assertion traceability",
@@ -141,3 +160,4 @@ def test_migration_completeness_keeps_reviewer_semantics_and_moves_only_mechanis
         "never narrow, drop, or reinterpret",
     ):
         assert mechanised not in reviewer, mechanised
+    assert "check_shared_factory" in {check.__name__ for check in PLAN_CHECKS}

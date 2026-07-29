@@ -52,17 +52,19 @@ Always emit the gate-consumed fields `codegen_readiness`, `auto_fix_allowed`, `h
 | `needs_human_review` | `not_ready` | `false` | `true` | `human_review` |
 | `reject` | `not_ready` | `false` | `true` | `stop` |
 
-Always set `risk_level` to exactly `low`, `medium`, `high`, or `critical`. A fix request contains only low/medium mechanically safe findings and a non-empty auto-fix plan. High/critical risk, product uncertainty, and unacknowledged coverage gaps require human review. A pass has no blockers or blocking review items and includes non-empty required capability leaves.
+Always set `risk_level` to exactly `low`, `medium`, `high`, or `critical`; `risk_level` is a fact, not a routing instruction. The downstream gate applies `policy.human_review_risk_levels`; the reviewer must not hard-code that policy. A fix request contains only low/medium mechanically safe findings and a non-empty auto-fix plan. Base the decision on the underlying semantic condition: product uncertainty and unacknowledged coverage gaps require human review, while a pass has no blockers or blocking review items and includes non-empty required capability leaves.
 
 The Markdown summary mirrors the verdict, risk, readiness, coverage, assertion traceability, blockers, needs review, findings, auto-fix plan, and next action in readable form. It must not contradict the JSON.
 
-Report the exact state delta: `phases.api_plan_review.status` = `pass | needs_fix | needs_human_review | reject` and `phases.api_plan_review.gate_file` = `review/api-plan-review.json`. In inline mode apply it to `workflow-state.yaml`; as a dispatched subagent report it for the orchestrator to apply. A chat conclusion never substitutes for either output.
+The reviewer emits no `workflow-state.yaml` state delta. The graph coordinator records the task and gate outcome in the ledger and rebuilds the `workflow-state.yaml` compatibility projection; the review JSON remains the gate's evidence source. A chat conclusion never substitutes for either review output.
 
 ## Boundaries
 
 Write only the two review outputs listed in Outputs.
 
 Do not modify plan files, case files, source code, tests, knowledge files, or memory files.
+
+Do not write or propose updates to `workflow-state.yaml`; the graph coordinator owns its ledger-derived projection.
 
 Do not invent endpoints, methods, auth, schemas, factories, adapters, cleanup, or product intent.
 
