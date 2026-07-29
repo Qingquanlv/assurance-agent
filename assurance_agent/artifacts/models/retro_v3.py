@@ -400,7 +400,17 @@ class ImprovementCandidateV3(ImprovementCandidate):
 class ImprovementCandidateDocumentDraftV3(BaseModel):
     """proposer 产出；``extra="forbid"`` 使 ``context_sha256`` 出现即 invalid（runtime 回填）。"""
 
-    model_config = _FROZEN
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        json_schema_extra={
+            "prompt_notes": [
+                "omit context_sha256 because the runtime inserts it",
+                "every candidate must include signal_ids",
+                "never emit legacy intent_key",
+            ]
+        },
+    )
 
     schema_version: Literal["3"] = "3"
     retro_id: NonEmptyStr

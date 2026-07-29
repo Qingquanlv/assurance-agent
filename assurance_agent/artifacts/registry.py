@@ -31,6 +31,7 @@ from assurance_agent.artifacts.models import (
     IssueEvidenceManifest,
     IssueEvidenceSlice,
     IssueReconcileStatus,
+    ImprovementCandidateDocumentDraftV3,
     ImprovementCandidateDocumentV3,
     ImprovementAutoReviewAssessment,
     ImprovementAutoReviewBatchSummary,
@@ -41,6 +42,7 @@ from assurance_agent.artifacts.models import (
     QaYaml,
     QualityGateResult,
     QualityReport,
+    PlanReview,
     RetroContextV3,
     RetroPipelineFailureDocument,
     RetroRunStatus,
@@ -60,6 +62,9 @@ class ArtifactSpec(BaseModel):
     pattern: str
     model: type[BaseModel]
     compat: Compat
+    # 落盘校验模型与 agent 撰写契约不一致时（如 runtime 回填字段），
+    # prompt 渲染必须用撰写契约，否则会要求模型输出 runtime 自己插入的字段。
+    authoring_model: type[BaseModel] | None = None
 
 
 REGISTRY: list[ArtifactSpec] = [
@@ -104,6 +109,7 @@ REGISTRY: list[ArtifactSpec] = [
         pattern="qa/retro/*/proposal-candidates.json",
         model=ImprovementCandidateDocumentV3,
         compat="must_compat",
+        authoring_model=ImprovementCandidateDocumentDraftV3,
     ),
     ArtifactSpec(
         artifact_type="retro_context_v3",
@@ -246,6 +252,18 @@ REGISTRY: list[ArtifactSpec] = [
         artifact_type="safety_check",
         pattern="healing/fixer-safety-check.json",
         model=SafetyCheck,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="review",
+        pattern="review/api-plan-review.json",
+        model=PlanReview,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="review",
+        pattern="review/plan-review.json",
+        model=PlanReview,
         compat="must_compat",
     ),
     ArtifactSpec(artifact_type="review", pattern="review/*.json", model=Review, compat="must_compat"),

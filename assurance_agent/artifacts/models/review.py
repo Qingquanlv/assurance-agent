@@ -55,3 +55,18 @@ class Review(BaseModel):
             if not isinstance(item, str) or not item.strip():
                 raise ValueError(f"required_capabilities[{index}] must be a non-empty leaf key string")
         return self
+
+
+class PlanReview(Review):
+    """api/e2e plan review：字段与校验完全继承 Review，只额外声明撰写期提示。"""
+
+    model_config = ConfigDict(
+        extra="allow",
+        json_schema_extra={
+            "prompt_notes": [
+                "required_capabilities must be a non-empty list of fully qualified C4 leaf keys",
+                "use auth.*, accounts.*, entities.*, capabilities.domain_factories.*, "
+                "capabilities.adapters.*, or capabilities.cleanup.* exactly as rooted in L1",
+            ]
+        },
+    )
