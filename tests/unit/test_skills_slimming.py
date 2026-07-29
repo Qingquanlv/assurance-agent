@@ -2,6 +2,8 @@
 
 import re
 
+import pytest
+
 from assurance_agent import resources
 
 PILOT = ("aa-api-plan", "aa-api-plan-reviewer")
@@ -31,6 +33,99 @@ PLAN_TABLES = {
     "Cleanup Mapping": "Case ID | Cleanup | Capability",
     "Run Guidance": "Target | Pytest Args | Markers | Environment",
 }
+
+
+def _assert_reviewer_risk_routing_is_policy_neutral(text: str) -> None:
+    outputs = text[text.index("## Outputs") : text.index("## Boundaries")]
+    risk_line = next(line for line in outputs.splitlines() if "`risk_level` is a fact" in line)
+    assert "`policy.human_review_risk_levels`" in risk_line
+    assert "downstream gate" in risk_line.lower()
+    for level in ("low", "medium", "high", "critical"):
+        assert f"`{level}`" in risk_line
+
+    domain = text[text.index("## Domain Notes") :]
+    allowed_contexts = {
+        outputs: (
+            "Always emit the gate-consumed fields `codegen_readiness`, "
+            "`auto_fix_allowed`, `human_review_required`, and `risk_level`",
+            "Always set `risk_level` to exactly `low`, `medium`, `high`, or `critical`; "
+            "`risk_level` is a fact, not a routing instruction.",
+            "The downstream gate applies `policy.human_review_risk_levels`; the reviewer "
+            "must not hard-code that policy.",
+            "The Markdown summary mirrors the verdict, risk, readiness, coverage, assertion "
+            "traceability, blockers, needs review, findings, auto-fix plan, and next action "
+            "in readable form.",
+        ),
+        domain: (
+            "The final response states the verdict, risk, codegen readiness, human-review "
+            "need, auto-fix availability, and both output paths without claiming readiness "
+            "beyond the JSON verdict.",
+        ),
+    }
+    unchecked = text
+    for section, contexts in allowed_contexts.items():
+        for context in contexts:
+            assert section.count(context) == 1, context
+            unchecked = unchecked.replace(context, "", 1)
+
+    risk_terms = re.compile(
+        r"\b(?:risk(?:s|[_ -]?levels?)?|severity|tiers?|levels?|rating|grade|"
+        r"low|medium|high|critical|minor|major)\b",
+        re.IGNORECASE,
+    )
+    routing_terms = re.compile(
+        r"(?:\bdecisions?\b|\bneeds[_ -]?fix\b|\bfix requests?\b|"
+        r"\bauto(?:matic)?[-_ ]fix(?:er|able|ed|es|ing)?\b|"
+        r"\bpass(?:es|ed|ing)?\b|\breject(?:s|ed|ing|ion)?\b|"
+        r"\bhuman[-_ ]reviews?(?:[-_ ]required)?\b|`human_review_required`|"
+        r"\b(?:codegen[-_ ]?)?readiness\b|\bnot[-_ ]ready\b|"
+        r"\bready(?:[-_ ]with[-_ ]warnings)?\b|\brout(?:e|es|ed|ing)\b)",
+        re.IGNORECASE,
+    )
+    routed_risk_paragraphs = [
+        paragraph
+        for paragraph in re.split(r"\n\s*\n", unchecked)
+        if risk_terms.search(paragraph) and routing_terms.search(paragraph)
+    ]
+    assert not routed_risk_paragraphs, routed_risk_paragraphs
+
+
+def _assert_reviewer_does_not_reapply_shared_factory_policy(reviewer: str) -> None:
+    shared_factory_subject = re.compile(
+        r"(?:`shared_factory`|shared[-_ ]+(?:factor(?:y|ies)|capabilit(?:y|ies)))",
+        re.IGNORECASE,
+    )
+    policy_action = re.compile(
+        r"\b(?:re[- ]?us(?:e|ed|es|ing)|us(?:e|ed|es|ing)|"
+        r"re[- ]?writ(?:e|es|ing|ten)|"
+        r"duplicat(?:e|ed|es|ing|ion)|cop(?:y|ied|ies|ying)|clon(?:e|ed|es|ing)|"
+        r"creat(?:e|ed|es|ing)|replac(?:e|ed|es|ing)|private|local|new)\b",
+        re.IGNORECASE,
+    )
+    policy_language = re.compile(
+        r"(?:^|[.!?]\s+)(?:(?:do\s+not|don't)\s+)?(?:reuse|re-use|rewrite|re-write|duplicate|"
+        r"copy|clone|create|replace|prefer|use)\b|"
+        r"\b(?:must|should|shall|never|always|prefer|avoid|instead|rather than|only when|"
+        r"required|prohibited|forbidden|precedes?|takes? precedence)\b|"
+        r"\b(?:is|are|be)\s+(?:reused|rewritten|duplicated|copied|cloned|created|replaced)\b",
+        re.IGNORECASE,
+    )
+    adjudicated_evidence = re.compile(
+        r"(?:the\s+)?\balready[- ]adjudicated\b.{0,80}`shared_factory`\s+finding\s+"
+        r"(?:says|reports|records|describes)\b[^.\n]*\.",
+        re.IGNORECASE,
+    )
+    unchecked_paragraphs = (
+        adjudicated_evidence.sub("", paragraph).strip() for paragraph in re.split(r"\n\s*\n", reviewer)
+    )
+    stale_policy_paragraphs = [
+        paragraph
+        for paragraph in unchecked_paragraphs
+        if shared_factory_subject.search(paragraph)
+        and policy_action.search(paragraph)
+        and policy_language.search(paragraph)
+    ]
+    assert not stale_policy_paragraphs, stale_policy_paragraphs
 
 
 def test_pilot_skills_use_exactly_the_five_section_manifest_structure() -> None:
@@ -119,31 +214,53 @@ def test_reviewer_restores_every_gate_consumed_field() -> None:
 
 def test_reviewer_reports_risk_fact_without_hard_coding_policy_routing() -> None:
     text = resources.read_text("skills", "aa-api-plan-reviewer", "SKILL.md")
-    outputs = text[text.index("## Outputs") : text.index("## Boundaries")]
-    risk_line = next(line for line in outputs.splitlines() if "`risk_level` is a fact" in line)
-    assert "`policy.human_review_risk_levels`" in risk_line
-    assert "downstream gate" in risk_line.lower()
-    for level in ("low", "medium", "high", "critical"):
-        assert f"`{level}`" in risk_line
+    _assert_reviewer_risk_routing_is_policy_neutral(text)
 
-    # Risk levels may be reported only in the factual declaration. Any occurrence
-    # elsewhere can recreate direct or inverse decision routing by severity tier.
-    without_fact = text.replace(risk_line, "")
-    assert re.search(r"\b(low|medium|high|critical)\b", without_fact, re.IGNORECASE) is None
 
-    outputs_routing = outputs[
-        outputs.index("Decision consistency is policy-neutral") : outputs.index("The Markdown summary")
-    ]
-    domain = text[text.index("## Domain Notes") :]
-    domain_routing = domain[
-        domain.index("Choose the semantic disposition") : domain.index("Findings describe")
-    ]
-    routing_terms = re.compile(
-        r"\b(risk(?:_level|s)?|severity|tier|low|medium|high|critical|minor|major)\b",
-        re.IGNORECASE,
-    )
-    assert routing_terms.search(outputs_routing) is None
-    assert routing_terms.search(domain_routing) is None
+@pytest.mark.parametrize(
+    ("anchor", "routing_rule"),
+    (
+        (
+            "the reviewer must not hard-code that policy.",
+            " Major severity findings require human review.",
+        ),
+        (
+            "Validate the written artifact before completing the review.",
+            " Major severity findings require human review.",
+        ),
+        (
+            "Validate the written artifact before completing the review.",
+            " A critical risk routes to `needs_fix`.",
+        ),
+        (
+            "Validate the written artifact before completing the review.",
+            " The minor tier maps to `reject`.",
+        ),
+        (
+            "Validate the written artifact before completing the review.",
+            " The severity level determines the decision.",
+        ),
+        (
+            "Validate the written artifact before completing the review.",
+            " A major risk rating controls codegen readiness.",
+        ),
+        (
+            "Validate the written artifact before completing the review.",
+            " Low risk findings pass automatically.",
+        ),
+        (
+            "Validate the written artifact before completing the review.",
+            " Major risk findings route to needs_fix.",
+        ),
+    ),
+)
+def test_risk_routing_guard_rejects_policy_mutations_anywhere(anchor: str, routing_rule: str) -> None:
+    text = resources.read_text("skills", "aa-api-plan-reviewer", "SKILL.md")
+    mutated = text.replace(anchor, f"{anchor}{routing_rule}", 1)
+    assert mutated != text
+
+    with pytest.raises(AssertionError):
+        _assert_reviewer_risk_routing_is_policy_neutral(mutated)
 
 
 def test_reviewer_never_writes_or_reports_a_workflow_state_delta() -> None:
@@ -181,9 +298,42 @@ def test_migration_completeness_keeps_reviewer_semantics_and_moves_only_mechanis
     ):
         assert mechanised not in reviewer, mechanised
     assert "check_shared_factory" in {check.__name__ for check in PLAN_CHECKS}
-    stale_shared_factory_rule = re.compile(
-        r"(?:existing|declared)\s+shared\s+(?:factor(?:y|ies)|capabilit(?:y|ies)).{0,80}"
-        r"\b(?:reuse|reused|rewrite|rewriting)\b",
-        re.IGNORECASE,
-    )
-    assert stale_shared_factory_rule.search(reviewer) is None
+    _assert_reviewer_does_not_reapply_shared_factory_policy(reviewer)
+
+
+@pytest.mark.parametrize(
+    "stale_rule",
+    (
+        "Shared factory reuse precedes local test setup.",
+        "Reuse an existing shared factory before planning data setup.",
+        "Use an existing shared factory before planning data setup.",
+        "Do not duplicate shared factories in local test modules.",
+        "Don't duplicate shared factories in local test modules.",
+        "Do not rewrite declared shared capabilities.",
+        "Create a private factory only when no shared capability exists.",
+        "The already-adjudicated `shared_factory` finding says the shared capability "
+        "should be reused. Reuse an existing shared factory in the reviewer.",
+    ),
+)
+def test_shared_factory_guard_rejects_reviewer_policy_mutations(stale_rule: str) -> None:
+    reviewer = resources.read_text("skills", "aa-api-plan-reviewer", "SKILL.md")
+    mutated = reviewer.replace("## Domain Notes", f"## Domain Notes\n\n{stale_rule}", 1)
+
+    with pytest.raises(AssertionError):
+        _assert_reviewer_does_not_reapply_shared_factory_policy(mutated)
+
+
+@pytest.mark.parametrize(
+    "factual_evidence",
+    (
+        "Treat the already-adjudicated `shared_factory` finding as immutable PlanCheckDocument evidence.",
+        "The already-adjudicated `shared_factory` finding says the shared capability should be reused.",
+    ),
+)
+def test_shared_factory_guard_allows_already_adjudicated_factual_evidence(
+    factual_evidence: str,
+) -> None:
+    reviewer = resources.read_text("skills", "aa-api-plan-reviewer", "SKILL.md")
+    mutated = reviewer.replace("## Domain Notes", f"## Domain Notes\n\n{factual_evidence}", 1)
+
+    _assert_reviewer_does_not_reapply_shared_factory_policy(mutated)
