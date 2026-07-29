@@ -7,9 +7,32 @@ v1 只做常量，不做规则语言、不做 per-path 匹配、不做继承：g
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 PlanCheckAction = Literal["warn", "block", "require_human"]
+EvidenceKind = Literal["covered", "execution_recent", "fuzz_run", "perf_run", "pass_status"]
+CaseType = Literal["API", "E2E", "Fuzz", "Performance"]
+
+
+def _default_evidence_sufficiency() -> "EvidenceSufficiency":
+    return EvidenceSufficiency(
+        recency_hours=72,
+        required_kinds={
+            "API": ["covered", "execution_recent"],
+            "E2E": ["covered", "execution_recent"],
+            "Fuzz": ["covered", "fuzz_run"],
+            "Performance": ["covered", "perf_run"],
+        },
+        on_insufficient="require_human",
+    )
+
+
+class EvidenceSufficiency(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    recency_hours: int = Field(gt=0)
+    required_kinds: dict[CaseType, list[EvidenceKind]]
+    on_insufficient: PlanCheckAction
 
 # 与 verification/checks 的 CHECK_ID 对齐；policy 不 import checks 以免环依赖。
 KNOWN_PLAN_CHECK_IDS = frozenset({"l1_path", "shared_factory", "assert_ideal", "capability_keys"})
@@ -46,6 +69,7 @@ class Policy(BaseModel):
     coverage_floor: CoverageFloor
     fuzz: FuzzPolicy
     healing: HealingPolicy
+    evidence_sufficiency: EvidenceSufficiency = Field(default_factory=_default_evidence_sufficiency)
 
     @field_validator("plan_checks")
     @classmethod

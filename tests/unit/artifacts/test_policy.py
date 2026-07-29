@@ -30,6 +30,17 @@ healing:
   auth_module: require_human
 """
 
+_DEFAULT_EVIDENCE_SUFFICIENCY = {
+    "recency_hours": 72,
+    "required_kinds": {
+        "API": ["covered", "execution_recent"],
+        "E2E": ["covered", "execution_recent"],
+        "Fuzz": ["covered", "fuzz_run"],
+        "Performance": ["covered", "perf_run"],
+    },
+    "on_insufficient": "require_human",
+}
+
 
 def test_missing_file_falls_back_to_packaged_default(tmp_path: Path) -> None:
     policy = load_policy(tmp_path)
@@ -40,6 +51,7 @@ def test_missing_file_falls_back_to_packaged_default(tmp_path: Path) -> None:
     assert policy.coverage_floor.risk_high == 0.9
     assert policy.fuzz.required_when_endpoint_has_auth is True
     assert policy.healing.auth_module == "require_human"
+    assert policy.evidence_sufficiency.model_dump(mode="json") == _DEFAULT_EVIDENCE_SUFFICIENCY
 
 
 def test_project_file_overrides_the_default(tmp_path: Path) -> None:
@@ -126,3 +138,91 @@ def test_risk_levels_dump_to_a_plain_list_for_the_dsl(tmp_path: Path) -> None:
     dumped = load_policy(tmp_path).model_dump(mode="json")
     assert isinstance(dumped["human_review_risk_levels"], list)
     assert isinstance(dumped["plan_checks"], dict)
+
+
+def test_policy_without_evidence_sufficiency_gets_defaulted(tmp_path: Path) -> None:
+    _write(tmp_path, VALID)
+    policy = load_policy(tmp_path)
+    assert policy.evidence_sufficiency.model_dump(mode="json") == _DEFAULT_EVIDENCE_SUFFICIENCY
+
+
+def test_explicit_evidence_sufficiency_is_validated(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        VALID + "evidence_sufficiency:\n"
+        "  recency_hours: 24\n"
+        "  required_kinds:\n"
+        "    API: [covered]\n"
+        "    E2E: [covered, execution_recent]\n"
+        "    Fuzz: [covered, fuzz_run]\n"
+        "    Performance: [covered, perf_run]\n"
+        "  on_insufficient: warn\n",
+    )
+    policy = load_policy(tmp_path)
+    assert policy.evidence_sufficiency.recency_hours == 24
+    assert policy.evidence_sufficiency.required_kinds["API"] == ["covered"]
+    assert policy.evidence_sufficiency.on_insufficient == "warn"
+
+
+def test_unknown_evidence_kind_is_rejected(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        VALID + "evidence_sufficiency:\n"
+        "  recency_hours: 72\n"
+        "  required_kinds:\n"
+        "    API: [covered, made_up]\n"
+        "    E2E: [covered, execution_recent]\n"
+        "    Fuzz: [covered, fuzz_run]\n"
+        "    Performance: [covered, perf_run]\n"
+        "  on_insufficient: warn\n",
+    )
+    with pytest.raises(PolicyError):
+        load_policy(tmp_path)
+
+
+def test_unknown_on_insufficient_action_is_rejected(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        VALID + "evidence_sufficiency:\n"
+        "  recency_hours: 72\n"
+        "  required_kinds:\n"
+        "    API: [covered, execution_recent]\n"
+        "    E2E: [covered, execution_recent]\n"
+        "    Fuzz: [covered, fuzz_run]\n"
+        "    Performance: [covered, perf_run]\n"
+        "  on_insufficient: shrug\n",
+    )
+    with pytest.raises(PolicyError):
+        load_policy(tmp_path)
+
+
+def test_non_positive_recency_hours_is_rejected(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        VALID + "evidence_sufficiency:\n"
+        "  recency_hours: 0\n"
+        "  required_kinds:\n"
+        "    API: [covered, execution_recent]\n"
+        "    E2E: [covered, execution_recent]\n"
+        "    Fuzz: [covered, fuzz_run]\n"
+        "    Performance: [covered, perf_run]\n"
+        "  on_insufficient: warn\n",
+    )
+    with pytest.raises(PolicyError):
+        load_policy(tmp_path)
+
+
+def test_digest_changes_when_evidence_sufficiency_changes(tmp_path: Path) -> None:
+    baseline = load_policy(tmp_path)
+    _write(
+        tmp_path,
+        VALID + "evidence_sufficiency:\n"
+        "  recency_hours: 48\n"
+        "  required_kinds:\n"
+        "    API: [covered, execution_recent]\n"
+        "    E2E: [covered, execution_recent]\n"
+        "    Fuzz: [covered, fuzz_run]\n"
+        "    Performance: [covered, perf_run]\n"
+        "  on_insufficient: warn\n",
+    )
+    assert policy_digest(load_policy(tmp_path)) != policy_digest(baseline)

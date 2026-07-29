@@ -237,6 +237,24 @@ def _manifest(fixture_digest: str) -> ImportManifest:
     )
 
 
+def test_legacy_policy_yaml_digest_includes_defaulted_evidence_sufficiency(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    _write_policy(project, _POLICY_A)
+    legacy_digest = policy_digest(load_policy(project))
+    _write_policy(
+        project,
+        _POLICY_A + "evidence_sufficiency:\n"
+        "  recency_hours: 48\n"
+        "  required_kinds:\n"
+        "    API: [covered, execution_recent]\n"
+        "    E2E: [covered, execution_recent]\n"
+        "    Fuzz: [covered, fuzz_run]\n"
+        "    Performance: [covered, perf_run]\n"
+        "  on_insufficient: warn\n",
+    )
+    assert policy_digest(load_policy(project)) != legacy_digest
+
+
 def test_root_start_digest_comes_from_the_captured_policy_snapshot(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     _write_policy(project, _POLICY_A)

@@ -1,8 +1,8 @@
 # 组织边界常量表。这里只声明「什么必须停、什么必须人批」，
 # 绝不描述流程步骤或节点顺序——那是 workflow-schema.yaml 的职责。
 #
-# 每个字段都必须有 gate 表达式消费（tests/unit/workflow/orchestration/
-# test_plan_check_gate.py::test_every_policy_field_has_a_runtime_consumer 守着）。
+# 每个字段都必须有 gate 表达式或实名登记的 Python 消费者
+# （tests/unit/workflow/orchestration/test_plan_check_gate.py 守着）。
 # plan_checks 默认全 warn，与 C3b 迁移前全局 plan_check_action: warn 等价。
 version: 1
 human_review_risk_levels: [high, critical]
@@ -19,3 +19,11 @@ fuzz:
   required_when_endpoint_has_auth: true
 healing:
   auth_module: require_human
+evidence_sufficiency:
+  recency_hours: 72
+  required_kinds:
+    API: [covered, execution_recent]
+    E2E: [covered, execution_recent]
+    Fuzz: [covered, fuzz_run]
+    Performance: [covered, perf_run]
+  on_insufficient: require_human

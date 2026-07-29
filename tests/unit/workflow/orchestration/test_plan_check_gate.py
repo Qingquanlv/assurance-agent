@@ -372,12 +372,40 @@ def _policy_fields(expression: object) -> set[str]:
     return direct
 
 
-def test_every_policy_field_has_a_parsed_runtime_consumer() -> None:
-    consumed = {
+# Python-side policy consumers that are not referenced in gate DSL expressions.
+# Each entry must name the runtime symbol and why DSL cannot express the rule.
+REGISTERED_PYTHON_POLICY_CONSUMERS = frozenset(
+    {
+        # evidence.sufficiency.evaluate_sufficiency + runner coverage gate (Task 8/9)
+        "evidence_sufficiency",
+    }
+)
+
+
+def _consumed_policy_fields() -> set[str]:
+    return {
         name
         for gate in load_workflow_v2(Path.cwd()).gates.values()
         for rule in gate.rules
         for name in _policy_fields(parse_expression(rule.expr))
     }
 
-    assert consumed == set(Policy.model_fields) - {"version"}
+
+def test_every_policy_field_has_a_runtime_consumer() -> None:
+    consumed = _consumed_policy_fields()
+    expected = set(Policy.model_fields) - {"version"}
+
+    assert consumed | REGISTERED_PYTHON_POLICY_CONSUMERS == expected
+
+
+def test_registered_python_consumers_must_name_real_policy_fields() -> None:
+    expected = set(Policy.model_fields) - {"version"}
+    assert REGISTERED_PYTHON_POLICY_CONSUMERS <= expected
+
+
+def test_guard_fails_when_a_policy_field_lacks_any_consumer() -> None:
+    consumed = _consumed_policy_fields()
+    expected = set(Policy.model_fields) - {"version"}
+    uncovered = expected - consumed - REGISTERED_PYTHON_POLICY_CONSUMERS
+
+    assert not uncovered, f"policy fields without runtime consumers: {sorted(uncovered)}"
