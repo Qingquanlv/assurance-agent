@@ -40,10 +40,11 @@ def test_registry_covers_every_expected_artifact_type() -> None:
         "retro_eval_signal_v3",
         "review",
         "safety_check",
+        "trace_projection",
         "workflow_state",
     }
     assert {spec.artifact_type for spec in REGISTRY} == expected
-    assert len(REGISTRY) == 40
+    assert len(REGISTRY) == 41
 
 
 def test_retro_closure_artifacts_match_only_their_run_paths() -> None:

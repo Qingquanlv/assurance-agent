@@ -176,6 +176,16 @@ from assurance_agent.artifacts.models.state import (
     WorkflowPhases,
     WorkflowState,
 )
+from assurance_agent.artifacts.models.trace import (
+    TraceExecution,
+    TraceFailure,
+    TraceGap,
+    TraceProjection,
+    TraceRow,
+    TraceSource,
+    TraceTestRef,
+    UnmappedTest,
+)
 
 __all__ = [
     "Advisory",
@@ -315,6 +325,14 @@ __all__ = [
     "SkillDriftSignal",
     "TaskFailureEvidenceEntry",
     "TaskFailureSignal",
+    "TraceExecution",
+    "TraceFailure",
+    "TraceGap",
+    "TraceProjection",
+    "TraceRow",
+    "TraceSource",
+    "TraceTestRef",
+    "UnmappedTest",
     "WorkflowEvidenceEntry",
     "WorkflowEvidenceSlice",
     "Review",
