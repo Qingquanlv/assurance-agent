@@ -353,3 +353,43 @@ def test_require_current_batch_pass_status_requires_executed_presence() -> None:
     assert verdict.sufficient is False
     assert "pass_status" in verdict.missing_kinds
     assert "not_in_current_batch" in verdict.reason_codes
+
+
+def test_require_current_batch_fuzz_run_requires_executed_presence() -> None:
+    latest = _execution(target="fuzz", status="passed", ts=AS_OF - timedelta(hours=1))
+    row = _row(
+        case_id="TC_FUZZ_001",
+        case_type="Fuzz",
+        latest_execution=latest,
+        atemporal_kinds_present=("covered", "fuzz_run"),
+    ).model_copy(update={"presence_in_current_batch": "not_in_current_batch"})
+    report = evaluate_sufficiency(
+        _projection(row),
+        _policy(),
+        as_of=AS_OF,
+        require_current_batch=True,
+    )
+    verdict = report.verdicts[0]
+    assert verdict.sufficient is False
+    assert verdict.missing_kinds == ("fuzz_run",)
+    assert verdict.reason_codes == ("not_in_current_batch",)
+
+
+def test_require_current_batch_perf_run_requires_executed_presence() -> None:
+    latest = _execution(target="performance", status="passed", ts=AS_OF - timedelta(hours=1))
+    row = _row(
+        case_id="TC_PERF_001",
+        case_type="Performance",
+        latest_execution=latest,
+        atemporal_kinds_present=("covered", "perf_run"),
+    ).model_copy(update={"presence_in_current_batch": "not_in_current_batch"})
+    report = evaluate_sufficiency(
+        _projection(row),
+        _policy(),
+        as_of=AS_OF,
+        require_current_batch=True,
+    )
+    verdict = report.verdicts[0]
+    assert verdict.sufficient is False
+    assert verdict.missing_kinds == ("perf_run",)
+    assert verdict.reason_codes == ("not_in_current_batch",)

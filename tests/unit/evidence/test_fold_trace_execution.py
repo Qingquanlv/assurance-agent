@@ -139,7 +139,7 @@ def _write_api_result(
     target: str = "api",
     file_target: str | None = None,
     cases: list[dict[str, object]] | None = None,
-    unmapped: list[dict[str, str]] | None = None,
+    unmapped: list[dict[str, object]] | None = None,
 ) -> None:
     on_disk_target = file_target if file_target is not None else target
     payload = {
@@ -543,7 +543,7 @@ def test_fold_is_deterministic(tmp_path: Path) -> None:
     assert first == second
 
 
-def test_sources_include_case_manifest_results_and_fold_view(tmp_path: Path) -> None:
+def test_sources_include_case_results_and_fold_view(tmp_path: Path) -> None:
     change_dir = _setup_project(tmp_path)
     _write_api_case(change_dir)
     batch_id = "20260729-120000"
@@ -552,8 +552,9 @@ def test_sources_include_case_manifest_results_and_fold_view(tmp_path: Path) -> 
     projection = fold_trace(tmp_path, CHANGE_ID)
     paths = {src.path for src in projection.sources}
     assert "cases/dept/case.yaml" in paths
-    assert "execution/execution-manifest.yaml" in paths
-    assert "execution/runs/20260729-120000/api-result.json" in paths
+    assert "execution/execution-manifest.yaml" not in paths
+    assert f"execution/runs/{batch_id}/execution-manifest.yaml" not in paths
+    assert f"execution/runs/{batch_id}/api-result.json" in paths
     assert "execution/execution-manifest.yaml#fold-view" in paths
 
 
@@ -810,3 +811,82 @@ def test_injected_current_batch_results_merge_with_historical(tmp_path: Path) ->
     assert row.latest_execution.batch_id == current
     assert row.latest_execution.status == "passed"
     assert row.presence_in_current_batch == "executed"
+
+
+def test_missing_batch_dir_emits_result_missing(tmp_path: Path) -> None:
+    change_dir = _setup_project(tmp_path)
+    _write_api_case(change_dir)
+    batch_id = "20260729-120000"
+    _write_manifest(
+        change_dir,
+        batch_id=batch_id,
+        selected=SelectedTargets(api=True, e2e=True, fuzz=False, performance=False),
+        executed_at=EXECUTED_AT,
+    )
+    projection = fold_trace(tmp_path, CHANGE_ID)
+    missing = [gap for gap in projection.gaps if gap.code == "result_missing"]
+    assert {gap.target for gap in missing} == {"api", "e2e"}
+    assert projection.integrity == "incomplete"
+    missing_sources = [
+        src
+        for src in projection.sources
+        if src.path
+        in {
+            f"execution/runs/{batch_id}/api-result.json",
+            f"execution/runs/{batch_id}/e2e-result.json",
+        }
+    ]
+    assert len(missing_sources) == 2
+    assert all(not src.exists for src in missing_sources)
+
+
+def test_corrupt_result_file_emits_corrupt_not_missing(tmp_path: Path) -> None:
+    change_dir = _setup_project(tmp_path)
+    _write_api_case(change_dir)
+    batch_id = "20260729-120000"
+    _write_manifest(change_dir, batch_id=batch_id, executed_at=EXECUTED_AT)
+    batch_dir = change_dir / "execution" / "runs" / batch_id
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    (batch_dir / "api-result.json").write_text("{not valid json", encoding="utf-8")
+
+    projection = fold_trace(tmp_path, CHANGE_ID)
+    assert any(gap.code == "result_corrupt" for gap in projection.gaps)
+    assert not any(gap.code == "result_missing" for gap in projection.gaps)
+    api_source = next(
+        src for src in projection.sources if src.path == f"execution/runs/{batch_id}/api-result.json"
+    )
+    assert api_source.exists is True
+
+
+def test_injected_result_identity_mismatch_emits_gap(tmp_path: Path) -> None:
+    from assurance_agent.evidence.trace import ResultDocument, ResultTestRow
+
+    change_dir = _setup_project(tmp_path)
+    _write_api_case(change_dir)
+    batch_id = "20260729-120000"
+    bad_doc = ResultDocument(
+        change_id="OTHER",
+        batch_id=batch_id,
+        target="api",
+        cases=[
+            ResultTestRow(
+                case_id="TC_DEPT_API_001",
+                status="passed",
+                file="tests/api/test_dept.py",
+                test_name="test_tc_dept_api_001__ok",
+            )
+        ],
+        unmapped_tests=[],
+    )
+    current_input = ExecutionFoldInput(
+        batch_id=batch_id,
+        executed_at=EXECUTED_AT,
+        selected_targets=SelectedTargets(api=True, e2e=False, fuzz=False, performance=False),
+        test_files_sha256={},
+        api=bad_doc,
+    )
+    projection = fold_trace(tmp_path, CHANGE_ID, current=current_input)
+    mismatches = [gap for gap in projection.gaps if gap.code == "result_identity_mismatch"]
+    assert len(mismatches) == 1
+    assert mismatches[0].detail == "change_id mismatch"
+    assert any(gap.code == "result_missing" and gap.target == "api" for gap in projection.gaps)

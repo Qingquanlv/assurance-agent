@@ -54,6 +54,27 @@ def _write_json(path: Path, model: BaseModel) -> None:
     path.write_text(model.model_dump_json(indent=2), encoding="utf-8")
 
 
+def write_batch_result_files(
+    batch_dir: Path,
+    *,
+    api: TargetResult | None,
+    e2e: TargetResult | None,
+    fuzz: TargetResult | None,
+    performance: PerformanceResult | None,
+) -> None:
+    """Write selected target result JSON under runs/<batch>/ before trace fold."""
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    named: list[tuple[str, BaseModel | None]] = [
+        ("api-result.json", api),
+        ("e2e-result.json", e2e),
+        ("fuzz-result.json", fuzz),
+        ("performance-result.json", performance),
+    ]
+    for name, value in named:
+        if value is not None:
+            _write_json(batch_dir / name, value)
+
+
 def publish_execution_evidence(
     *,
     execution_dir: Path,

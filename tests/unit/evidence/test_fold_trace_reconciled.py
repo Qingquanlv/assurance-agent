@@ -387,6 +387,18 @@ def test_merge_alias_missing_target_emits_problem_alias_invalid(tmp_path: Path) 
     assert projection.rows[0].open_problem_ids == ()
 
 
+def test_empty_problems_with_occurrence_emits_problem_alias_invalid(tmp_path: Path) -> None:
+    _seed_reconciled_inputs(
+        tmp_path,
+        observations=[_observation(case_id=CASE_ID, observation_id="OBS-1")],
+        occurrences=[_occurrence(occurrence_id="OCC-1", observation_id="OBS-1", problem_id="PROB-missing")],
+        problems=[],
+    )
+    projection = fold_trace(tmp_path, CHANGE_ID, phase="reconciled")
+    assert any(gap.code == "problem_alias_invalid" for gap in projection.gaps)
+    assert projection.rows[0].open_problem_ids == ()
+
+
 @pytest.mark.parametrize("status", _CLOSED_STATUSES)
 @pytest.mark.parametrize("classification", _CLASSIFICATIONS)
 def test_closed_or_non_product_bug_never_open(

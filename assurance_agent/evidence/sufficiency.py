@@ -174,7 +174,7 @@ def _kind_satisfied(
     recency_hours: int,
     require_current_batch: bool,
 ) -> bool:
-    if require_current_batch and kind in ("execution_recent", "pass_status"):
+    if require_current_batch and kind in ("execution_recent", "pass_status", "fuzz_run", "perf_run"):
         if row.presence_in_current_batch != "executed":
             return False
     if kind == "covered":
@@ -204,7 +204,7 @@ def _reason_for_missing(
     *,
     require_current_batch: bool,
 ) -> str:
-    if require_current_batch and kind in ("execution_recent", "pass_status"):
+    if require_current_batch and kind in ("execution_recent", "pass_status", "fuzz_run", "perf_run"):
         if row.presence_in_current_batch != "executed":
             return "not_in_current_batch"
     if kind == "covered":

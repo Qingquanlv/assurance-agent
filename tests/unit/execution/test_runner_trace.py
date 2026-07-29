@@ -97,6 +97,36 @@ def _run_with_stubs(monkeypatch: pytest.MonkeyPatch, project_root: Path, change_
     return run_change(project_root, change_dir, make_config(), batch_id=BATCH_ID)
 
 
+def test_gate_projection_equals_saved_and_disk_fold(
+    trace_project: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root, change_dir = trace_project
+    gate_projections: list[TraceProjection] = []
+    real_fold = fold_trace
+
+    def track_fold(*args, **kwargs):
+        result = real_fold(*args, **kwargs)
+        if kwargs.get("current") is not None:
+            gate_projections.append(result)
+        return result
+
+    monkeypatch.setattr(runner_mod, "fold_trace", track_fold)
+    _run_with_stubs(monkeypatch, project_root, change_dir)
+
+    assert len(gate_projections) == 1
+    gate_projection = gate_projections[0]
+
+    projection_path = change_dir / "execution" / "runs" / BATCH_ID / "trace-projection.json"
+    saved = TraceProjection.model_validate_json(projection_path.read_text(encoding="utf-8"))
+    from_disk = fold_trace(project_root, CHANGE_ID, current=None)
+
+    gate_bytes = canonical_json_bytes(gate_projection.model_dump(mode="json"))
+    saved_bytes = canonical_json_bytes(saved.model_dump(mode="json"))
+    disk_bytes = canonical_json_bytes(from_disk.model_dump(mode="json"))
+    assert gate_bytes == saved_bytes == disk_bytes
+
+
 def test_saved_projection_matches_disk_fold_after_publish(
     trace_project: tuple[Path, Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -134,7 +164,7 @@ def test_trace_projection_written_under_batch_dir(
     TraceProjection.model_validate_json(path.read_text(encoding="utf-8"))
 
 
-def test_quality_gate_diagnostics_contain_evidence_sufficiency_shadow(
+def test_quality_gate_diagnostics_contain_evidence_sufficiency(
     trace_project: tuple[Path, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

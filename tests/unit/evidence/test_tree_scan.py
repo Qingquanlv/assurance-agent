@@ -156,6 +156,32 @@ def test_fold_marks_covered_and_atemporal_kind(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     scan = scan_test_tree(tmp_path)
+    batch_id = "20260729-120000"
+    runs = change_dir / "execution" / "runs" / batch_id
+    runs.mkdir(parents=True)
+    (runs / "api-result.json").write_text(
+        """
+{
+  "schema_version": "1.0",
+  "change_id": "CH-1",
+  "batch_id": "20260729-120000",
+  "target": "api",
+  "status": "passed",
+  "command": "cmd",
+  "source": {"framework": "pytest", "raw_log": "raw.log"},
+  "total": 1,
+  "passed": 1,
+  "failed": 0,
+  "skipped": 0,
+  "cases": [
+    {"case_id": "TC_DEPT_API_001", "status": "passed", "file": "tests/api/test_dept.py",
+     "test_name": "test_TC_DEPT_API_001__create", "duration_ms": 1, "message": ""}
+  ],
+  "unmapped_tests": []
+}
+""",
+        encoding="utf-8",
+    )
     _write_manifest(change_dir, dict(scan.file_sha256))
     proj = fold_trace(tmp_path, CHANGE_ID, phase="execution")
     row = proj.rows[0]

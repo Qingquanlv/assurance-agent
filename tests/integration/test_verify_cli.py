@@ -15,13 +15,14 @@ from assurance_agent.artifacts.models.policy import EvidenceSufficiency, Policy
 from assurance_agent.artifacts.models.trace import TraceExecution, TraceGap, TraceProjection, TraceRow
 from assurance_agent.artifacts.policy import load_policy, policy_digest
 from assurance_agent.cli import main
-from assurance_agent.commands import verify_cmd
 from assurance_agent.evidence.sufficiency import (
     SufficiencyReport,
     build_evidence_coverage_evaluation,
     evaluate_sufficiency,
 )
 from assurance_agent.evidence.trace import fold_trace
+from assurance_agent.evidence.verify import VERIFY_BLOCKING_GAP_CODES
+from assurance_agent.commands import verify_cmd
 from assurance_agent.workflow.report.quality_gate import build_quality_gate
 from tests.helpers_aa import write_aa_config
 
@@ -31,7 +32,7 @@ EXECUTED_AT = datetime(2026, 7, 29, 12, 0, 0, tzinfo=UTC)
 AS_OF = datetime(2026, 7, 30, 12, 0, 0, tzinfo=UTC)
 CASE_ID = "TC_DEPT_API_001"
 
-RECONCILED_BLOCKING_GAP_CODES = tuple(sorted(verify_cmd.VERIFY_BLOCKING_GAP_CODES))
+RECONCILED_BLOCKING_GAP_CODES = tuple(sorted(VERIFY_BLOCKING_GAP_CODES))
 RECONCILED_INPUT_GAP_CODES = frozenset(
     {
         "failure_analysis_missing",

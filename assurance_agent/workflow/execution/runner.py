@@ -15,12 +15,11 @@ from assurance_agent.evidence.sufficiency import (
     EvidenceCoverageEvaluation,
     build_evidence_coverage_evaluation,
 )
-from assurance_agent.evidence.trace import ExecutionFoldInput, fold_trace
-from assurance_agent.workflow.execution.trace_convert import (
-    performance_document_from_result,
-    result_document_from_target,
+from assurance_agent.evidence.trace import ExecutionFoldInput, canonical_json_bytes, fold_trace
+from assurance_agent.workflow.execution.evidence import (
+    publish_execution_evidence,
+    write_batch_result_files,
 )
-from assurance_agent.workflow.execution.evidence import publish_execution_evidence
 from assurance_agent.workflow.execution.exec_config import load_coverage_config, load_perf_config
 from assurance_agent.workflow.execution.results import CoverageResult
 from assurance_agent.workflow.execution.runners import (
@@ -53,7 +52,7 @@ def _test_dir(config: AaConfig, attr: str, default: str) -> str:
     return _strip(value) if isinstance(value, str) else default
 
 
-def _shadow_evidence_diagnostics(
+def _evidence_diagnostics(
     evaluation: EvidenceCoverageEvaluation,
 ) -> dict:
     payload: dict = {}
@@ -79,6 +78,13 @@ def _evaluate_evidence_coverage(
             error_code="policy_error",
         )
     return build_evidence_coverage_evaluation(projection, policy, as_of=as_of)
+
+
+def _assert_gate_projection_matches_disk_fold(gate_projection, disk_projection) -> None:  # noqa: ANN001
+    gate_bytes = canonical_json_bytes(gate_projection.model_dump(mode="json"))
+    disk_bytes = canonical_json_bytes(disk_projection.model_dump(mode="json"))
+    if gate_bytes != disk_bytes:
+        raise RuntimeError("gate trace projection diverged from post-publish disk fold")
 
 
 def run_change(
@@ -175,19 +181,22 @@ def run_change(
     test_tree = hash_test_tree(project_root)
     now_aware = _now_aware()
     batch_dir.mkdir(parents=True, exist_ok=True)
+    write_batch_result_files(
+        batch_dir,
+        api=api,
+        e2e=e2e,
+        fuzz=fuzz,
+        performance=performance,
+    )
     current = ExecutionFoldInput(
         batch_id=batch_id,
         executed_at=now_aware,
         selected_targets=selected,
         test_files_sha256=test_tree.files,
-        api=result_document_from_target(api) if api is not None else None,
-        e2e=result_document_from_target(e2e) if e2e is not None else None,
-        fuzz=result_document_from_target(fuzz) if fuzz is not None else None,
-        performance=performance_document_from_result(performance) if performance is not None else None,
     )
-    pre_publish_projection = fold_trace(project_root, change_id, phase="execution", current=current)
-    evidence_coverage = _evaluate_evidence_coverage(project_root, pre_publish_projection, as_of=now_aware)
-    diagnostics = _shadow_evidence_diagnostics(evidence_coverage)
+    gate_projection = fold_trace(project_root, change_id, phase="execution", current=current)
+    evidence_coverage = _evaluate_evidence_coverage(project_root, gate_projection, as_of=now_aware)
+    diagnostics = _evidence_diagnostics(evidence_coverage)
 
     quality_gate = build_quality_gate(
         change_id=change_id,
@@ -223,9 +232,10 @@ def run_change(
     )
     disk_projection = fold_trace(project_root, change_id, phase="execution", current=None)
     (batch_dir / "trace-projection.json").write_text(
-        disk_projection.model_dump_json(indent=2),
+        gate_projection.model_dump_json(indent=2),
         encoding="utf-8",
     )
+    _assert_gate_projection_matches_disk_fold(gate_projection, disk_projection)
     return manifest
 
 

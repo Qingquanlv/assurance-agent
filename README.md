@@ -212,22 +212,24 @@ uv run pre-commit run -a      # 本地一键跑 ruff + pyright
 bash scripts/packaging_smoke_test.sh   # 构建 wheel + 全新环境安装 + 源码目录外运行
 ```
 
-分层契约（import-linter）：`cli → commands → artifacts → workflow → config → resources`，禁止反向依赖。
+分层契约（import-linter）：`cli → commands → eval → risk → workflow → verification → evidence → artifacts → config → resources`，禁止反向依赖。
 
 核心模块：
 
 | 目录 | 说明 |
 |---|---|
 | `assurance_agent/commands/` | 每个子命令一个模块（只做参数解析与输出） |
-| `assurance_agent/artifacts/` | 产物 pydantic 契约 + 路径注册表 + `aa validate` |
+| `assurance_agent/eval/` | AI Eval 框架 |
+| `assurance_agent/risk/` | Explore context 聚合与 advisory 校验 |
 | `assurance_agent/workflow/graph/` | GraphRuntime：schema v2 编译、Plan/Execute/Update superstep 调度、checkpoint/ledger、handlers |
 | `assurance_agent/workflow/orchestration/` | gate 裁决、DSL 解释器、共享 schema 模型（graph 包单向复用其语义） |
 | `assurance_agent/workflow/core/` | workflow-state、events、case ID、技能同步 |
 | `assurance_agent/workflow/driver/` | `aa workflow run` 主循环、headless/opencode adapter、detached、lock、resume |
 | `assurance_agent/workflow/execution/` | pytest / playwright / schemathesis / locust runner |
 | `assurance_agent/workflow/report/` | 失败分类、Quality Score、报告生成 |
-| `assurance_agent/risk/` | Explore context 聚合与 advisory 校验 |
-| `assurance_agent/eval/` | AI Eval 框架 |
+| `assurance_agent/verification/` | 契约校验、assert_ideal、plan-check 渲染 |
+| `assurance_agent/evidence/` | trace fold、证据充分性、verify 裁决 |
+| `assurance_agent/artifacts/` | 产物 pydantic 契约 + 路径注册表 + `aa validate` |
 | `assurance_agent/retro/` `assurance_agent/workflow/improvements/` | 独立 Retro 证据收集 + Project Improvement Ledger |
 | `assurance_agent/_resources/` | 运行时资源唯一源（schemas / skills / opencode） |
 

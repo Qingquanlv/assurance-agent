@@ -282,7 +282,6 @@ def _resolve_current_batch(
             manifest_exists=True,
         )
 
-    sources.append(_file_source(_MANIFEST_PATH, manifest_path))
     if not manifest_path.is_file():
         gaps.append(TraceGap(code="manifest_missing", source=_MANIFEST_PATH))
         return _CurrentBatchView(
@@ -395,6 +394,8 @@ def _load_batch_executions(
             if not batch_dir.is_dir():
                 continue
             batch_id = batch_dir.name
+            if current_input is not None and batch_id == current_input.batch_id:
+                continue
             batch = _load_batch_from_disk(
                 batch_dir,
                 change_id,
@@ -406,14 +407,22 @@ def _load_batch_executions(
                 by_batch_id[batch_id] = batch
 
     if current_input is not None:
-        injected = _batch_from_injection(current_input, change_id, extra_gaps, sources)
-        by_batch_id[current_input.batch_id] = injected
-    elif current.batch_id:
-        _emit_result_missing_for_current_batch(
+        merged = _build_current_batch(
             change_dir,
-            current,
+            change_id,
+            current_input,
+            by_batch_id.pop(current_input.batch_id, None),
+            gaps,
+            sources,
+        )
+        by_batch_id[current_input.batch_id] = merged
+    elif current.batch_id:
+        _emit_missing_results_for_selected_targets(
+            change_dir,
+            current.batch_id,
+            current.selected_targets,
             by_batch_id.get(current.batch_id),
-            extra_gaps,
+            gaps,
             sources,
         )
 
@@ -432,7 +441,6 @@ def _load_batch_from_disk(
     manifest_path = batch_dir / "execution-manifest.yaml"
     executed_at = None
     if manifest_path.is_file():
-        sources.append(_file_source(f"execution/runs/{batch_id}/execution-manifest.yaml", manifest_path))
         raw = _read_yaml_mapping(manifest_path)
         if raw is not None:
             executed_at = _parse_executed_at(raw.get("executed_at"))
@@ -474,13 +482,16 @@ def _load_batch_from_disk(
     )
 
 
-def _batch_from_injection(
-    current: ExecutionFoldInput,
+def _build_current_batch(
+    change_dir: Path,
     change_id: str,
+    current: ExecutionFoldInput,
+    disk_batch: _BatchExecution | None,
     gaps: list[TraceGap],
     sources: list[TraceSource],
 ) -> _BatchExecution:
     batch_id = current.batch_id
+    batch_dir = change_dir / "execution" / "runs" / batch_id
     ts, ts_source = _resolve_batch_ts(
         batch_id,
         current.executed_at,
@@ -491,39 +502,64 @@ def _batch_from_injection(
         ts = current.executed_at
         ts_source = "executed_at"
 
+    disk_pytest = disk_batch.pytest if disk_batch is not None else {}
+    disk_perf = disk_batch.performance if disk_batch is not None else None
+
     pytest_docs: dict[str, ResultDocument] = {}
     for target in _PYTEST_TARGETS:
         rel = f"execution/runs/{batch_id}/{target}-result.json"
-        doc = getattr(current, target)
+        path = batch_dir / f"{target}-result.json"
+        injected = getattr(current, target)
+        doc: ResultDocument | None = None
+
+        if injected is not None:
+            doc = _accept_injected_pytest_result(injected, change_id, batch_id, target, rel, gaps)
+            if doc is not None:
+                if path.is_file():
+                    sources.append(_file_source(rel, path))
+                pytest_docs[target] = doc
+                continue
+        elif path.is_file():
+            sources.append(_file_source(rel, path))
+            doc = _load_pytest_result(path, change_id, batch_id, target, rel, gaps)
+            if doc is not None:
+                pytest_docs[target] = doc
+            continue
+        elif target in disk_pytest:
+            doc = disk_pytest[target]
+            if path.is_file():
+                sources.append(_file_source(rel, path))
+
         if doc is not None:
-            sources.append(_json_source(rel, doc))
             pytest_docs[target] = doc
-        elif _target_selected(current.selected_targets, target):
-            gaps.append(
-                TraceGap(
-                    code="result_missing",
-                    source=rel,
-                    batch_id=batch_id,
-                    target=target,
-                )
-            )
-            sources.append(TraceSource(path=rel, exists=False, sha256=None))
+            continue
+
+        if _target_selected(current.selected_targets, target):
+            _append_result_missing(gaps, sources, rel, batch_id, target)
 
     perf_doc: PerformanceResultDocument | None = None
     perf_rel = f"execution/runs/{batch_id}/performance-result.json"
+    perf_path = batch_dir / "performance-result.json"
     if current.performance is not None:
-        sources.append(_json_source(perf_rel, current.performance))
-        perf_doc = current.performance
-    elif current.selected_targets.performance:
-        gaps.append(
-            TraceGap(
-                code="result_missing",
-                source=perf_rel,
-                batch_id=batch_id,
-                target="performance",
-            )
+        perf_doc = _accept_injected_performance_result(
+            current.performance,
+            change_id,
+            batch_id,
+            perf_rel,
+            gaps,
         )
-        sources.append(TraceSource(path=perf_rel, exists=False, sha256=None))
+        if perf_doc is not None and perf_path.is_file():
+            sources.append(_file_source(perf_rel, perf_path))
+    elif perf_path.is_file():
+        sources.append(_file_source(perf_rel, perf_path))
+        perf_doc = _load_performance_result(perf_path, change_id, batch_id, perf_rel, gaps)
+    elif disk_perf is not None:
+        perf_doc = disk_perf
+        if perf_path.is_file():
+            sources.append(_file_source(perf_rel, perf_path))
+
+    if perf_doc is None and current.selected_targets.performance and not perf_path.is_file():
+        _append_result_missing(gaps, sources, perf_rel, batch_id, "performance")
 
     return _BatchExecution(
         batch_id=batch_id,
@@ -534,50 +570,142 @@ def _batch_from_injection(
     )
 
 
-def _emit_result_missing_for_current_batch(
+def _append_result_missing(
+    gaps: list[TraceGap],
+    sources: list[TraceSource],
+    rel: str,
+    batch_id: str,
+    target: str,
+) -> None:
+    gaps.append(
+        TraceGap(
+            code="result_missing",
+            source=rel,
+            batch_id=batch_id,
+            target=target,
+        )
+    )
+    sources.append(TraceSource(path=rel, exists=False, sha256=None))
+
+
+def _emit_missing_results_for_selected_targets(
     change_dir: Path,
-    current: _CurrentBatchView,
+    batch_id: str,
+    selected_targets: SelectedTargets,
     batch: _BatchExecution | None,
     gaps: list[TraceGap],
     sources: list[TraceSource],
 ) -> None:
-    batch_id = current.batch_id
     if not batch_id:
         return
     batch_dir = change_dir / "execution" / "runs" / batch_id
-    if not batch_dir.is_dir() and batch is None:
-        return
 
     for target in _PYTEST_TARGETS:
-        if not _target_selected(current.selected_targets, target):
+        if not _target_selected(selected_targets, target):
             continue
         rel = f"execution/runs/{batch_id}/{target}-result.json"
-        has_result = batch is not None and target in batch.pytest
-        if has_result:
+        path = batch_dir / f"{target}-result.json"
+        if path.is_file():
             continue
+        if batch is not None and target in batch.pytest:
+            continue
+        _append_result_missing(gaps, sources, rel, batch_id, target)
+
+    if selected_targets.performance:
+        perf_rel = f"execution/runs/{batch_id}/performance-result.json"
+        perf_path = batch_dir / "performance-result.json"
+        if perf_path.is_file():
+            return
+        if batch is not None and batch.performance is not None:
+            return
+        _append_result_missing(gaps, sources, perf_rel, batch_id, "performance")
+
+
+def _accept_injected_pytest_result(
+    doc: ResultDocument,
+    change_id: str,
+    batch_id: str,
+    target: str,
+    source: str,
+    gaps: list[TraceGap],
+) -> ResultDocument | None:
+    if doc.change_id != change_id:
         gaps.append(
             TraceGap(
-                code="result_missing",
-                source=rel,
+                code="result_identity_mismatch",
+                source=source,
                 batch_id=batch_id,
                 target=target,
+                detail="change_id mismatch",
             )
         )
-        sources.append(TraceSource(path=rel, exists=False, sha256=None))
-
-    if current.selected_targets.performance:
-        perf_rel = f"execution/runs/{batch_id}/performance-result.json"
-        has_perf = batch is not None and batch.performance is not None
-        if not has_perf:
-            gaps.append(
-                TraceGap(
-                    code="result_missing",
-                    source=perf_rel,
-                    batch_id=batch_id,
-                    target="performance",
-                )
+        return None
+    if doc.batch_id != batch_id:
+        gaps.append(
+            TraceGap(
+                code="result_identity_mismatch",
+                source=source,
+                batch_id=batch_id,
+                target=target,
+                detail="batch_id mismatch",
             )
-            sources.append(TraceSource(path=perf_rel, exists=False, sha256=None))
+        )
+        return None
+    if doc.target != target:
+        gaps.append(
+            TraceGap(
+                code="result_identity_mismatch",
+                source=source,
+                batch_id=batch_id,
+                target=target,
+                detail="target mismatch",
+            )
+        )
+        return None
+    return doc
+
+
+def _accept_injected_performance_result(
+    doc: PerformanceResultDocument,
+    change_id: str,
+    batch_id: str,
+    source: str,
+    gaps: list[TraceGap],
+) -> PerformanceResultDocument | None:
+    if doc.change_id != change_id:
+        gaps.append(
+            TraceGap(
+                code="result_identity_mismatch",
+                source=source,
+                batch_id=batch_id,
+                target="performance",
+                detail="change_id mismatch",
+            )
+        )
+        return None
+    if doc.batch_id != batch_id:
+        gaps.append(
+            TraceGap(
+                code="result_identity_mismatch",
+                source=source,
+                batch_id=batch_id,
+                target="performance",
+                detail="batch_id mismatch",
+            )
+        )
+        return None
+    if doc.kind != "performance":
+        gaps.append(
+            TraceGap(
+                code="result_identity_mismatch",
+                source=source,
+                batch_id=batch_id,
+                target="performance",
+                detail="kind mismatch",
+            )
+        )
+        return None
+    return doc
 
 
 def _load_pytest_result(
@@ -1126,7 +1254,7 @@ def _index_open_problems_by_case(
     problems_by_id: dict[str, Problem],
     gaps: list[TraceGap],
 ) -> dict[str, tuple[str, ...]]:
-    if issues_snapshot is None or not problems_by_id:
+    if issues_snapshot is None:
         return {}
 
     observation_case: dict[str, str] = {}
