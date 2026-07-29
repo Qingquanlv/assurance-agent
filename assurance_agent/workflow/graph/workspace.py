@@ -96,6 +96,7 @@ _EXCLUDED_FILES = frozenset(
 )
 _HEX = frozenset("0123456789abcdef")
 _GIT_TIMEOUT_S = 120
+_MAX_TREE_SYMLINK_HOPS = 40
 
 
 class WorkspaceError(AaError):
@@ -606,23 +607,43 @@ class TreeStore:
         self,
         manifest: _TreeManifest,
         rel: str,
-        *,
-        visited: frozenset[str] = frozenset(),
     ) -> bytes:
-        if rel in visited:
-            raise FileNotFoundError(rel)
-        entry = manifest.entries.get(rel)
-        if entry is None:
-            raise FileNotFoundError(rel)
-        data = self._read_object(entry.sha256)
-        if entry.kind == "file":
-            return data
-        try:
-            target = data.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise WorkspaceError(f"tree symlink target is not UTF-8: {rel}") from exc
-        resolved = _resolve_tree_symlink(rel, target)
-        return self._read_tree_bytes(manifest, resolved, visited=visited | {rel})
+        current = rel
+        visited: set[str] = set()
+        hops = 0
+        while True:
+            parts = PurePosixPath(current).parts
+            followed = False
+            for index in range(1, len(parts) + 1):
+                prefix = PurePosixPath(*parts[:index]).as_posix()
+                entry = manifest.entries.get(prefix)
+                if entry is None:
+                    continue
+                data = self._read_object(entry.sha256)
+                if entry.kind == "file":
+                    if index != len(parts):
+                        raise NotADirectoryError(current)
+                    return data
+                if prefix in visited:
+                    raise WorkspaceError(f"tree symlink cycle at {prefix}")
+                if hops >= _MAX_TREE_SYMLINK_HOPS:
+                    raise WorkspaceError(f"too many symlink hops while resolving tree path: {rel}")
+                try:
+                    target = data.decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise WorkspaceError(f"tree symlink target is not UTF-8: {prefix}") from exc
+                visited.add(prefix)
+                hops += 1
+                resolved = _resolve_tree_symlink(prefix, target)
+                current = PurePosixPath(resolved, *parts[index:]).as_posix()
+                followed = True
+                break
+            if followed:
+                continue
+            directory_prefix = f"{current}/"
+            if any(path.startswith(directory_prefix) for path in manifest.entries):
+                raise IsADirectoryError(current)
+            raise FileNotFoundError(current)
 
     def read_bytes(self, tree_id: str, logical_path: str) -> bytes:
         """Read hash-verified file bytes from a committed tree, following safe symlinks."""

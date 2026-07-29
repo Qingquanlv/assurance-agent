@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from assurance_agent.artifacts.policy import load_policy, load_policy_bytes, policy_digest
+from assurance_agent.artifacts.policy import PolicyError, load_policy, load_policy_bytes, policy_digest
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
 from assurance_agent.workflow.core.exit_codes import (
@@ -89,11 +89,14 @@ def _ingest_catalog_digest(compiled: CompiledWorkflow) -> str:
 
 
 def _policy_digest_from_tree(store: TreeStore, tree_id: str) -> str:
+    origin = f"tree {tree_id}:{_POLICY_LOGICAL_PATH}"
     try:
         data = store.read_bytes(tree_id, _POLICY_LOGICAL_PATH)
     except FileNotFoundError:
         data = None
-    policy = load_policy_bytes(data, origin=f"tree {tree_id}:{_POLICY_LOGICAL_PATH}")
+    except OSError as exc:
+        raise PolicyError(f"cannot read {origin}: {exc}") from exc
+    policy = load_policy_bytes(data, origin=origin)
     return policy_digest(policy)
 
 

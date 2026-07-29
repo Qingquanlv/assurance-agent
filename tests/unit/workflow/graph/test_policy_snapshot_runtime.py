@@ -6,7 +6,9 @@ from collections.abc import Callable
 import json
 from pathlib import Path
 
-from assurance_agent.artifacts.policy import load_policy, policy_digest
+import pytest
+
+from assurance_agent.artifacts.policy import PolicyError, load_policy, policy_digest
 from assurance_agent.eval.fixtures import write_fixture_lock
 from assurance_agent.workflow.core.events import read_events_strict
 from assurance_agent.workflow.graph.checkpoint import CheckpointStore
@@ -436,9 +438,12 @@ def test_missing_captured_policy_uses_the_packaged_default(tmp_path: Path) -> No
 
 def test_symlinked_policy_resolves_inside_the_captured_tree(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
-    target = project / ".aa" / "organization-policy.yaml"
+    target_dir = project / ".aa" / "real-policy-dir"
+    target_dir.mkdir()
+    target = target_dir / "organization-policy.yaml"
     target.write_text(_POLICY_B, encoding="utf-8")
-    (project / ".aa" / "policy.yaml").symlink_to(target.name)
+    (project / ".aa" / "policy-dir").symlink_to(target_dir.name, target_is_directory=True)
+    (project / ".aa" / "policy.yaml").symlink_to("policy-dir/organization-policy.yaml")
     compiled, contracts = _compile(
         """\
   main:
@@ -482,6 +487,42 @@ def test_symlinked_policy_resolves_inside_the_captured_tree(tmp_path: Path) -> N
     frozen_digest = policy_digest(load_policy(snapshot))
     assert observed == [frozen_digest]
     assert started[0]["policy_digest"] == frozen_digest
+
+
+def test_directory_valued_policy_link_fails_like_the_materialized_workspace(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    policy_dir = project / ".aa" / "policy-dir"
+    policy_dir.mkdir()
+    (policy_dir / "marker.txt").write_text("directory\n", encoding="utf-8")
+    (project / ".aa" / "policy.yaml").symlink_to(policy_dir.name, target_is_directory=True)
+    compiled, contracts = _compile(
+        """\
+  main:
+    max_supersteps: 4
+    nodes:
+      observe:
+        uses: operation:observe-policy
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: observe}
+      - {from: observe, to: END}
+"""
+    )
+
+    def observe(
+        task: ExecutableTask,
+        workspace: TaskWorkspace,
+        context: RuntimeContext,
+    ) -> TaskResult:
+        del task, workspace, context
+        return TaskResult(status="succeeded")
+
+    store = TreeStore(_context(project).change_dir)
+    runtime = _runtime(project, compiled, contracts, store, observe)
+
+    with pytest.raises(PolicyError, match="cannot read.*policy.yaml"):
+        runtime.run(compiled, "full", _context(project))
 
 
 def test_child_digest_inherits_the_parent_workspace_snapshot(tmp_path: Path) -> None:
