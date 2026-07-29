@@ -73,6 +73,25 @@ def test_reads_follow_an_intermediate_directory_symlink_like_materialization(
     assert (materialized / ".aa" / "policy-dir" / "policy.json").read_bytes() == payload
 
 
+def test_intermediate_symlink_normalized_to_tree_root_preserves_suffix(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    change = project / "qa" / "changes" / "CH-1"
+    change.mkdir(parents=True)
+    (project / ".aa").mkdir()
+    payload = b"from project root\n"
+    (project / "x").write_bytes(payload)
+    (project / ".aa" / "root").symlink_to("..", target_is_directory=True)
+    store = TreeStore(change)
+    tree_id = store.capture(project)
+    materialized = tmp_path / "materialized"
+    store.materialize(tree_id, materialized)
+
+    assert store.read_bytes(tree_id, "project:.aa/root/x") == payload
+    assert (materialized / ".aa" / "root" / "x").read_bytes() == payload
+
+
 def test_terminal_directory_target_raises_is_a_directory_like_materialization(
     tmp_path: Path,
 ) -> None:

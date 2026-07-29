@@ -163,7 +163,7 @@ def _resolve_tree_symlink(rel: str, target: str) -> str:
             continue
         parts.append(part)
     if not parts:
-        raise FileNotFoundError(rel)
+        return "."
     return PurePosixPath(*parts).as_posix()
 
 
@@ -641,7 +641,7 @@ class TreeStore:
             if followed:
                 continue
             directory_prefix = f"{current}/"
-            if any(path.startswith(directory_prefix) for path in manifest.entries):
+            if current == "." or any(path.startswith(directory_prefix) for path in manifest.entries):
                 raise IsADirectoryError(current)
             raise FileNotFoundError(current)
 

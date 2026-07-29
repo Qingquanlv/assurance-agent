@@ -525,6 +525,41 @@ def test_directory_valued_policy_link_fails_like_the_materialized_workspace(tmp_
         runtime.run(compiled, "full", _context(project))
 
 
+def test_policy_link_to_project_root_fails_like_the_materialized_workspace(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    (project / ".aa" / "policy.yaml").symlink_to("..", target_is_directory=True)
+    compiled, contracts = _compile(
+        """\
+  main:
+    max_supersteps: 4
+    nodes:
+      observe:
+        uses: operation:observe-policy
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: observe}
+      - {from: observe, to: END}
+"""
+    )
+
+    def observe(
+        task: ExecutableTask,
+        workspace: TaskWorkspace,
+        context: RuntimeContext,
+    ) -> TaskResult:
+        del task, workspace, context
+        return TaskResult(status="succeeded")
+
+    store = TreeStore(_context(project).change_dir)
+    runtime = _runtime(project, compiled, contracts, store, observe)
+
+    with pytest.raises(PolicyError, match="cannot read.*policy.yaml"):
+        load_policy(project)
+    with pytest.raises(PolicyError, match="cannot read.*policy.yaml"):
+        runtime.run(compiled, "full", _context(project))
+
+
 def test_child_digest_inherits_the_parent_workspace_snapshot(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     _write_policy(project, _POLICY_A)
