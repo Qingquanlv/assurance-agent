@@ -147,6 +147,25 @@ def _assert_safe_prefix(prefix: object) -> str:
     return prefix
 
 
+def _resolve_tree_symlink(rel: str, target: str) -> str:
+    target_path = PurePosixPath(target)
+    if target_path.is_absolute():
+        raise WorkspaceError(f"tree symlink target is absolute: {rel}")
+    parts = list(PurePosixPath(rel).parent.parts)
+    for part in target_path.parts:
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if not parts:
+                raise WorkspaceError(f"tree symlink escapes materialization root: {rel}")
+            parts.pop()
+            continue
+        parts.append(part)
+    if not parts:
+        raise FileNotFoundError(rel)
+    return PurePosixPath(*parts).as_posix()
+
+
 def _parse_tree(raw: bytes) -> _TreeManifest:
     try:
         payload = json.loads(raw)
@@ -583,15 +602,37 @@ class TreeStore:
     def _load_tree(self, tree_id: str) -> _TreeManifest:
         return _parse_tree(self._read_object(tree_id))
 
+    def _read_tree_bytes(
+        self,
+        manifest: _TreeManifest,
+        rel: str,
+        *,
+        visited: frozenset[str] = frozenset(),
+    ) -> bytes:
+        if rel in visited:
+            raise FileNotFoundError(rel)
+        entry = manifest.entries.get(rel)
+        if entry is None:
+            raise FileNotFoundError(rel)
+        data = self._read_object(entry.sha256)
+        if entry.kind == "file":
+            return data
+        try:
+            target = data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise WorkspaceError(f"tree symlink target is not UTF-8: {rel}") from exc
+        resolved = _resolve_tree_symlink(rel, target)
+        return self._read_tree_bytes(manifest, resolved, visited=visited | {rel})
+
     def read_bytes(self, tree_id: str, logical_path: str) -> bytes:
-        """Read hash-verified file bytes from a committed tree by logical path."""
+        """Read hash-verified file bytes from a committed tree, following safe symlinks."""
         logical = ResourcePath.parse(logical_path)
         manifest = self._load_tree(tree_id)
         rel = _physical_for(manifest.roots, logical)
-        entry = manifest.entries.get(rel)
-        if entry is None or entry.kind != "file":
-            raise FileNotFoundError(logical_path)
-        return self._read_object(entry.sha256)
+        try:
+            return self._read_tree_bytes(manifest, rel)
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(logical_path) from exc
 
     def read_json(self, tree_id: str, logical_path: str) -> ResolvedArtifact:
         """Read a JSON artifact from a committed tree by logical path (change:/project:/repo:)."""
