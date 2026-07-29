@@ -647,7 +647,7 @@ def _validate_expressions(schema: WorkflowSchemaV2) -> list[str]:
         owning_node_sets = [
             set(graph.nodes)
             for graph in schema.graphs.values()
-            if any(node.gate == gate.id for node in graph.nodes.values())
+            if any(_node_gate_id(node) == gate.id for node in graph.nodes.values())
         ]
         gate_node_ids = set.intersection(*owning_node_sets) if owning_node_sets else set()
         for rule in gate.rules:

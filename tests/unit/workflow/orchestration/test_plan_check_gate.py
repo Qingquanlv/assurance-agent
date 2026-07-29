@@ -11,7 +11,7 @@ from assurance_agent.artifacts.models.policy import Policy
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import load_execution_contracts
 from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
-from assurance_agent.workflow.orchestration.dsl import Ident, Member, parse_expression
+from assurance_agent.workflow.orchestration.dsl import Ident, Member, Scope, evaluate, parse_expression
 from assurance_agent.workflow.orchestration.gates import GateEvaluationContext, check_gate_in_view
 from assurance_agent.workflow.orchestration.schema import GateDef, Verdict
 
@@ -134,6 +134,32 @@ def test_packaged_gate_keeps_passing_checks_inert(tmp_path: Path, action: str) -
 def test_missing_checks_remain_compatible_without_a_current_producer(tmp_path: Path, action: str) -> None:
     """Historical/imported views have no frozen mechanical producer result."""
     assert _adjudicate(tmp_path, action=action).verdict == Verdict.PASS
+
+
+@pytest.mark.parametrize(
+    ("field", "action"),
+    [("reject_when", "block"), ("needs_human_review_when", "require_human")],
+)
+def test_packaged_policy_branch_guard_returns_false_for_compatibility_absence(
+    field: str, action: str
+) -> None:
+    rule = next(rule for rule in _gate().rules if rule.field == field)
+    scope = Scope(
+        {
+            "api_plan_review": _review(),
+            "api_plan_checks": None,
+            "data_knowledge": _data_knowledge(),
+            "params": {"force_continue": False},
+            "policy": {
+                "human_review_risk_levels": ["high", "critical"],
+                "force_continue_allowed": True,
+                "plan_check_action": action,
+            },
+        },
+        capabilities_present=lambda _review_doc, _knowledge_doc: True,
+    )
+
+    assert evaluate(parse_expression(rule.expr), scope) is False
 
 
 @pytest.mark.parametrize("checks", [None, {}])

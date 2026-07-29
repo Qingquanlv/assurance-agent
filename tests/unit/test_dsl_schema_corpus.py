@@ -1,6 +1,7 @@
 """Gate expression corpus against packaged schema_version \"2\"."""
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -28,6 +29,20 @@ def fx(b):
 
 def gvfx(v, b):
     return {"gate_verdict": lambda _i, _v=v: _v, "file_exists": lambda _p, _b=b: _b}
+
+
+def node_result_resolver(results):
+    return {"node_result": lambda node_id, _results=results: _results.get(node_id, {})}
+
+
+def _scope(values, resolvers: dict[str, Any]):
+    return Scope(
+        values,
+        file_exists=resolvers.get("file_exists"),
+        gate_verdict=resolvers.get("gate_verdict"),
+        node_result=resolvers.get("node_result", lambda _node_id: {}),
+        capabilities_present=resolvers.get("capabilities_present"),
+    )
 
 
 P_FULL = {
@@ -111,6 +126,24 @@ for _alias, _gid in [
         ),
         ({}, {"capabilities_present": lambda _r, _d: False}, False),
     )
+
+CORPUS["gate:api-plan-review-gate:stop_when"] = (
+    (
+        {
+            "api_plan_review": {"required_capabilities": ["auth.api_admin_token"]},
+            "api_plan_checks": None,
+        },
+        node_result_resolver({"mechanical-plan-checks": {"status": "succeeded"}}),
+    ),
+    (
+        {
+            "api_plan_review": {"required_capabilities": ["auth.api_admin_token"]},
+            "api_plan_checks": None,
+        },
+        {},
+        MISS,
+    ),
+)
 
 for _alias, _gid in [
     ("fuzz_plan_review", "fuzz-plan-review-gate"),
@@ -276,5 +309,5 @@ def test_truth_and_missing_pair(tmp_path: Path, loc: str) -> None:
     expr = _collect(load_workflow_v2(tmp_path).gates)[loc]
     node = parse_expression(expr)
     (tv, tkw), (mv, mkw, mexp) = CORPUS[loc]
-    assert evaluate(node, Scope(tv, **tkw)) is True, f"{loc} 真值路径应为 True：{expr}"
-    assert evaluate(node, Scope(mv, **mkw)) is mexp, f"{loc} missing/否定路径不符：{expr}"
+    assert evaluate(node, _scope(tv, tkw)) is True, f"{loc} 真值路径应为 True：{expr}"
+    assert evaluate(node, _scope(mv, mkw)) is mexp, f"{loc} missing/否定路径不符：{expr}"
