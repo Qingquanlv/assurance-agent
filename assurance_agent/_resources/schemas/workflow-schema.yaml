@@ -949,7 +949,7 @@ graphs:
       - from: knowledge-remediation
         select: "resume.action"
         cases:
-          fix_and_proceed: review
+          fix_and_proceed: mechanical-plan-checks
           accept_risk: END
           stop: STOP
         default: STOP

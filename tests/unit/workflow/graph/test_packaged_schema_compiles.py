@@ -36,3 +36,9 @@ def test_plan_check_node_lives_in_the_review_cycle() -> None:
     assert ("mechanical-plan-checks", "review") in edges
     assert ("fix", "mechanical-plan-checks") in edges
     assert ("fix", "review") not in edges
+
+
+def test_knowledge_remediation_refreshes_plan_check_evidence() -> None:
+    cycle = load_workflow_v2(Path.cwd()).graphs["api-plan-cycle"]
+    remediation_route = next(route for route in cycle.routes if route.from_ == "knowledge-remediation")
+    assert remediation_route.cases["fix_and_proceed"] == "mechanical-plan-checks"
