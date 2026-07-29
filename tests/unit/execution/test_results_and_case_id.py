@@ -1,5 +1,5 @@
 from assurance_agent.artifacts.models import CoverageThreshold, PerformanceScenarioVerdict
-from assurance_agent.workflow.execution.case_id import canonicalize_case_id, extract_case_id
+from assurance_agent.evidence.case_id import canonicalize_case_id, extract_case_id
 from assurance_agent.workflow.execution.results import (
     CaseResult,
     CoverageResult,
