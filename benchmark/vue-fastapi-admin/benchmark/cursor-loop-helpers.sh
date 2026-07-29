@@ -171,6 +171,138 @@ collect_benchmark_eval_rows() {
   return 0
 }
 
+resolve_aa_python_bin() {
+  local aa_bin="$1" override="$2" aa_path shebang interpreter interpreter_name
+  if [ -n "$override" ]; then
+    [ -x "$override" ] || return 1
+    printf '%s' "$override"
+    return 0
+  fi
+  aa_path="$(command -v "$aa_bin" 2>/dev/null)" || return 1
+  shebang="$(sed -n '1p' "$aa_path" 2>/dev/null)"
+  case "$shebang" in
+    '#!'*) interpreter="${shebang#'#!'}" ;;
+    *) return 1 ;;
+  esac
+  [ -x "$interpreter" ] || return 1
+  interpreter_name="$(basename "$interpreter")"
+  case "$interpreter_name" in
+    python|python3|python3.*) ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "$interpreter"
+}
+
+collect_trace_verify_evidence() {
+  local aa_bin="$1" change_id="$2" trace_file="$3" verify_file="$4" log_file="$5"
+  local python_bin="$6"
+  local trace_exit=0 verify_exit=0 summaries trace_summary verify_summary
+  mkdir -p "$(dirname "$trace_file")" "$(dirname "$verify_file")" "$(dirname "$log_file")"
+  : >"$log_file"
+
+  "$aa_bin" trace --change "$change_id" --json >"$trace_file" 2>>"$log_file" || trace_exit=$?
+  "$aa_bin" verify --change "$change_id" --json >"$verify_file" 2>>"$log_file" || verify_exit=$?
+
+  summaries="$("$python_bin" - \
+    "$trace_file" "$verify_file" "$change_id" "$trace_exit" "$verify_exit" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+trace_path = Path(sys.argv[1])
+verify_path = Path(sys.argv[2])
+change_id = sys.argv[3]
+trace_exit = int(sys.argv[4])
+verify_exit = int(sys.argv[5])
+
+
+def load_json_or_write_error(path: Path, command: str, exit_code: int) -> tuple[dict, bool]:
+    try:
+        raw = path.read_text(encoding="utf-8")
+        payload = json.loads(raw)
+        if isinstance(payload, dict):
+            return payload, True
+    except (OSError, TypeError, ValueError):
+        raw = ""
+
+    payload = {
+        "change_id": change_id,
+        "command": command,
+        "error": "invalid_or_missing_json_output",
+        "exit_code": exit_code,
+        "schema_version": "1",
+    }
+    if raw:
+        payload["raw_stdout"] = raw
+    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
+    return payload, False
+
+
+trace, trace_valid = load_json_or_write_error(trace_path, "trace", trace_exit)
+verify, verify_valid = load_json_or_write_error(verify_path, "verify", verify_exit)
+
+if trace_valid:
+    integrity = trace.get("integrity") or "unknown"
+    gaps = trace.get("gaps")
+    print(f"{integrity}|{len(gaps) if isinstance(gaps, list) else -1}")
+else:
+    print("invalid|-1")
+
+if verify_valid:
+    verdict = verify.get("verdict") or "unknown"
+    blocking = verify.get("blocking_gaps")
+    insufficient = verify.get("insufficient")
+    blocking_count = len(blocking) if isinstance(blocking, list) else -1
+    insufficient_count = len(insufficient) if isinstance(insufficient, list) else -1
+    print(f"{verdict}|{blocking_count}|{insufficient_count}")
+else:
+    print("invalid|-1|-1")
+PY
+)"
+  trace_summary="${summaries%%$'\n'*}"
+  verify_summary="${summaries#*$'\n'}"
+  printf '%s|%s|%s|%s|%s' \
+    "$change_id" "$trace_exit" "$trace_summary" "$verify_exit" "$verify_summary"
+  return 0
+}
+
+benchmark_evidence_exit_code() {
+  local enabled="$1"
+  shift
+  local row change_id trace_exit integrity gap_count verify_exit verdict blocking insufficient extra
+  local failed=0
+
+  [ "$enabled" = "true" ] || return 0
+  [ "$#" -gt 0 ] || return 1
+  for row in "$@"; do
+    IFS='|' read -r \
+      change_id trace_exit integrity gap_count verify_exit verdict blocking insufficient extra <<<"$row"
+    if [ -z "$change_id" ] || [ -n "$extra" ] \
+      || ! [[ "$trace_exit" =~ ^[0-9]+$ ]] \
+      || ! [[ "$gap_count" =~ ^[0-9]+$ ]] \
+      || ! [[ "$verify_exit" =~ ^[0-9]+$ ]] \
+      || ! [[ "$blocking" =~ ^[0-9]+$ ]] \
+      || ! [[ "$insufficient" =~ ^[0-9]+$ ]]; then
+      failed=1
+      continue
+    fi
+    case "$integrity" in
+      complete|degraded|incomplete) ;;
+      *) failed=1; continue ;;
+    esac
+    if [ "$trace_exit" != "0" ] || [ "$verify_exit" != "0" ] || [ "$verdict" != "pass" ]; then
+      failed=1
+    fi
+  done
+  return "$failed"
+}
+
 remove_generated_artifact_tree() {
   local target="$1"
   [ -e "$target" ] || return 0

@@ -4,12 +4,14 @@ import json
 import shlex
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 
 _ROOT = Path(__file__).parents[3]
 _HELPERS = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "cursor-loop-helpers.sh"
 _CURSOR_LOOP = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "run-workflow-loop-cursor.sh"
+_BENCHMARK_ENV = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "benchmark.env"
 
 
 def _run_helper(tmp_path: Path, command: str) -> subprocess.CompletedProcess[str]:
@@ -31,6 +33,25 @@ printf '%s\\n' "$*" >>"$AA_FAKE_CALL_LOG"
 if [ "${1:-}" = "retro" ]; then
   printf '{"retro_id":"retro-batch","status":"completed_with_gaps"}\\n'
   exit 0
+fi
+if [ "${1:-}" = "trace" ]; then
+  [ "${AA_FAKE_TRACE_EMPTY:-false}" = "true" ] && exit "${AA_FAKE_TRACE_EXIT:-40}"
+  printf '%s\\n' "${AA_FAKE_TRACE_JSON:-{\\"integrity\\":\\"complete\\",\\"gaps\\":[]}}"
+  exit "${AA_FAKE_TRACE_EXIT:-0}"
+fi
+if [ "${1:-}" = "verify" ]; then
+  verdict="${AA_FAKE_VERIFY_VERDICT:-pass}"
+  if [ "${AA_FAKE_VERIFY_EMPTY:-false}" = "true" ]; then
+    [ "$verdict" = "needs_human" ] && exit 30
+    [ "$verdict" = "pass" ] && exit 0
+    exit 40
+  fi
+  printf '{\\"verdict\\":\\"%s\\",\\"blocking_gaps\\":[],\\"insufficient\\":[]}\\n' "$verdict"
+  case "$verdict" in
+    pass) exit 0 ;;
+    needs_human) exit 30 ;;
+    *) exit 40 ;;
+  esac
 fi
 if [ "${1:-}" != "eval" ] || [ "${2:-}" != "run" ]; then
   exit 99
@@ -298,6 +319,136 @@ def test_benchmark_eval_setting_prefers_new_name_and_falls_back_to_legacy(
     assert preferred.stdout == "true"
     assert legacy.stdout == "false"
     assert defaulted.stdout == "true"
+
+
+def test_trace_verify_collection_persists_json_and_reports_pass(tmp_path: Path) -> None:
+    fake = _install_fake_aa(tmp_path)
+    call_log = tmp_path / "aa-calls.log"
+    trace_path = tmp_path / "trace.json"
+    verify_path = tmp_path / "verify.json"
+    log_path = tmp_path / "evidence.log"
+    command = (
+        "python3() { return 127; }; "
+        f"AA_FAKE_CALL_LOG={shlex.quote(str(call_log))} "
+        f"collect_trace_verify_evidence {shlex.quote(str(fake))} CH-1 "
+        f"{shlex.quote(str(trace_path))} {shlex.quote(str(verify_path))} "
+        f"{shlex.quote(str(log_path))} {shlex.quote(sys.executable)}"
+    )
+
+    result = _run_helper(tmp_path, command)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "CH-1|0|complete|0|0|pass|0|0"
+    assert json.loads(trace_path.read_text(encoding="utf-8"))["integrity"] == "complete"
+    assert json.loads(verify_path.read_text(encoding="utf-8"))["verdict"] == "pass"
+    assert call_log.read_text(encoding="utf-8").splitlines() == [
+        "trace --change CH-1 --json",
+        "verify --change CH-1 --json",
+    ]
+
+
+def test_trace_verify_collection_preserves_nonzero_verify_verdict(tmp_path: Path) -> None:
+    fake = _install_fake_aa(tmp_path)
+    trace_path = tmp_path / "trace.json"
+    verify_path = tmp_path / "verify.json"
+    log_path = tmp_path / "evidence.log"
+    command = (
+        f"AA_FAKE_CALL_LOG={shlex.quote(str(tmp_path / 'aa-calls.log'))} "
+        "AA_FAKE_VERIFY_VERDICT=needs_human "
+        f"collect_trace_verify_evidence {shlex.quote(str(fake))} CH-2 "
+        f"{shlex.quote(str(trace_path))} {shlex.quote(str(verify_path))} "
+        f"{shlex.quote(str(log_path))} {shlex.quote(sys.executable)}"
+    )
+
+    result = _run_helper(tmp_path, command)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "CH-2|0|complete|0|30|needs_human|0|0"
+
+
+def test_trace_verify_collection_wraps_empty_error_outputs_as_json(tmp_path: Path) -> None:
+    fake = _install_fake_aa(tmp_path)
+    trace_path = tmp_path / "trace.json"
+    verify_path = tmp_path / "verify.json"
+    log_path = tmp_path / "evidence.log"
+    command = (
+        f"AA_FAKE_CALL_LOG={shlex.quote(str(tmp_path / 'aa-calls.log'))} "
+        "AA_FAKE_TRACE_EMPTY=true AA_FAKE_TRACE_EXIT=40 "
+        "AA_FAKE_VERIFY_EMPTY=true AA_FAKE_VERIFY_VERDICT=fail "
+        f"collect_trace_verify_evidence {shlex.quote(str(fake))} CH-ERR "
+        f"{shlex.quote(str(trace_path))} {shlex.quote(str(verify_path))} "
+        f"{shlex.quote(str(log_path))} {shlex.quote(sys.executable)}"
+    )
+
+    result = _run_helper(tmp_path, command)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(trace_path.read_text(encoding="utf-8")) == {
+        "change_id": "CH-ERR",
+        "command": "trace",
+        "error": "invalid_or_missing_json_output",
+        "exit_code": 40,
+        "schema_version": "1",
+    }
+    assert json.loads(verify_path.read_text(encoding="utf-8")) == {
+        "change_id": "CH-ERR",
+        "command": "verify",
+        "error": "invalid_or_missing_json_output",
+        "exit_code": 40,
+        "schema_version": "1",
+    }
+
+
+def test_resolve_aa_python_uses_console_script_interpreter(tmp_path: Path) -> None:
+    aa_console = tmp_path / "aa"
+    aa_console.write_text(f"#!{sys.executable}\n", encoding="utf-8")
+    aa_console.chmod(aa_console.stat().st_mode | stat.S_IXUSR)
+
+    result = _run_helper(
+        tmp_path,
+        f"resolve_aa_python_bin {shlex.quote(str(aa_console))} ''",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == sys.executable
+
+
+def test_benchmark_env_preserves_caller_trace_verify_override(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'DO_TRACE_VERIFY=false; source {shlex.quote(str(_BENCHMARK_ENV))}; printf %s "$DO_TRACE_VERIFY"',
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "false"
+
+
+def test_benchmark_evidence_gate_requires_successful_trace_and_verify(tmp_path: Path) -> None:
+    passing = _run_helper(
+        tmp_path,
+        "benchmark_evidence_exit_code true 'CH-1|0|complete|0|0|pass|0|0'",
+    )
+    needs_human = _run_helper(
+        tmp_path,
+        "benchmark_evidence_exit_code true 'CH-1|0|complete|0|30|needs_human|0|1'",
+    )
+    malformed = _run_helper(
+        tmp_path,
+        "benchmark_evidence_exit_code true 'CH-1|0|complete|bogus|0|pass|0|0'",
+    )
+    disabled = _run_helper(tmp_path, "benchmark_evidence_exit_code false")
+
+    assert passing.returncode == 0, passing.stderr
+    assert needs_human.returncode == 1
+    assert malformed.returncode == 1
+    assert disabled.returncode == 0, disabled.stderr
 
 
 def test_benchmark_gate_ignores_failed_eval_metric_row(tmp_path: Path) -> None:
