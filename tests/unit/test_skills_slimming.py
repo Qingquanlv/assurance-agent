@@ -120,10 +120,30 @@ def test_reviewer_restores_every_gate_consumed_field() -> None:
 def test_reviewer_reports_risk_fact_without_hard_coding_policy_routing() -> None:
     text = resources.read_text("skills", "aa-api-plan-reviewer", "SKILL.md")
     outputs = text[text.index("## Outputs") : text.index("## Boundaries")]
-    assert "`risk_level` is a fact" in outputs
-    assert "`policy.human_review_risk_levels`" in outputs
-    assert "downstream gate" in outputs.lower()
-    assert "High/critical risk" not in outputs
+    risk_line = next(line for line in outputs.splitlines() if "`risk_level` is a fact" in line)
+    assert "`policy.human_review_risk_levels`" in risk_line
+    assert "downstream gate" in risk_line.lower()
+    for level in ("low", "medium", "high", "critical"):
+        assert f"`{level}`" in risk_line
+
+    # Risk levels may be reported only in the factual declaration. Any occurrence
+    # elsewhere can recreate direct or inverse decision routing by severity tier.
+    without_fact = text.replace(risk_line, "")
+    assert re.search(r"\b(low|medium|high|critical)\b", without_fact, re.IGNORECASE) is None
+
+    outputs_routing = outputs[
+        outputs.index("Decision consistency is policy-neutral") : outputs.index("The Markdown summary")
+    ]
+    domain = text[text.index("## Domain Notes") :]
+    domain_routing = domain[
+        domain.index("Choose the semantic disposition") : domain.index("Findings describe")
+    ]
+    routing_terms = re.compile(
+        r"\b(risk(?:_level|s)?|severity|tier|low|medium|high|critical|minor|major)\b",
+        re.IGNORECASE,
+    )
+    assert routing_terms.search(outputs_routing) is None
+    assert routing_terms.search(domain_routing) is None
 
 
 def test_reviewer_never_writes_or_reports_a_workflow_state_delta() -> None:
@@ -161,3 +181,9 @@ def test_migration_completeness_keeps_reviewer_semantics_and_moves_only_mechanis
     ):
         assert mechanised not in reviewer, mechanised
     assert "check_shared_factory" in {check.__name__ for check in PLAN_CHECKS}
+    stale_shared_factory_rule = re.compile(
+        r"(?:existing|declared)\s+shared\s+(?:factor(?:y|ies)|capabilit(?:y|ies)).{0,80}"
+        r"\b(?:reuse|reused|rewrite|rewriting)\b",
+        re.IGNORECASE,
+    )
+    assert stale_shared_factory_rule.search(reviewer) is None

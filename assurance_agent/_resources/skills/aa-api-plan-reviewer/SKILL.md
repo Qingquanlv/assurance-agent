@@ -52,7 +52,9 @@ Always emit the gate-consumed fields `codegen_readiness`, `auto_fix_allowed`, `h
 | `needs_human_review` | `not_ready` | `false` | `true` | `human_review` |
 | `reject` | `not_ready` | `false` | `true` | `stop` |
 
-Always set `risk_level` to exactly `low`, `medium`, `high`, or `critical`; `risk_level` is a fact, not a routing instruction. The downstream gate applies `policy.human_review_risk_levels`; the reviewer must not hard-code that policy. A fix request contains only low/medium mechanically safe findings and a non-empty auto-fix plan. Base the decision on the underlying semantic condition: product uncertainty and unacknowledged coverage gaps require human review, while a pass has no blockers or blocking review items and includes non-empty required capability leaves.
+Always set `risk_level` to exactly `low`, `medium`, `high`, or `critical`; `risk_level` is a fact, not a routing instruction. The downstream gate applies `policy.human_review_risk_levels`; the reviewer must not hard-code that policy.
+
+Decision consistency is policy-neutral. Use a fix request only when every blocking defect is safely mechanical, requires no product or scope judgment, and has a complete auto-fix plan. Product uncertainty and unacknowledged coverage gaps require human review. A pass has no blockers or blocking review items, includes non-empty required capability leaves, and is codegen-ready without guessing.
 
 The Markdown summary mirrors the verdict, risk, readiness, coverage, assertion traceability, blockers, needs review, findings, auto-fix plan, and next action in readable form. It must not contradict the JSON.
 
@@ -78,22 +80,22 @@ Do not continue into code generation.
 
 ## Domain Notes
 
-Review every in-scope API automation case against the plan. A plan scenario without a case, an in-scope case without a scenario, or a missing critical assertion is a concrete coverage risk. Compare each approved assertion with the planned status, response, and postcondition intent: equivalent intent is mapped; evidence-backed refinement is narrowed; incompatible intent is contradicted; absent intent is missing. Contradicted intent blocks progress, and missing high-priority intent blocks unless safely restorable from the approved case.
+Review every in-scope API automation case against the plan. A plan scenario without a case, an in-scope case without a scenario, or a missing core assertion is a concrete coverage risk. Compare each approved assertion with the planned status, response, and postcondition intent: equivalent intent is mapped; evidence-backed refinement is narrowed; incompatible intent is contradicted; absent intent is missing. Contradicted intent blocks progress, and missing priority intent blocks unless safely restorable from the approved case.
 
 Verify every `Test Function Mapping` row against its full Case ID. The Test Function must be exactly `test_<case_id_lowercase>__<desc>`: the row's complete lowercase case ID followed by a double underscore and a description. Any mismatch is blocking but mechanically auto-fixable; request a fix and keep codegen `not_ready` until the mapping is corrected.
 
 Confirmed method, path, auth, request shape, response assertions, data setup, and cleanup are prerequisites for codegen. A documented non-blocking assumption may yield readiness with warnings; any unresolved fact that forces product guessing makes the plan not ready. The plan summary's readiness is evidence, not authority: disagree only with an explicit finding.
 
-Review data design by ownership boundary. Domain factories carry business invariants in `tests/testdata/domain/`; API adapters carry pytest lifecycle and transport in `tests/api/adapters/`. Check that setup and cleanup preserve M2M, closure, password, soft-delete, and similar invariants, that existing shared capabilities are reused, and that a missing capability has one unambiguous owner. HTTP setup for a non-create-focused case is a semantic risk unless an explicitly reviewed degradation is justified.
+Review data design by ownership boundary. Domain factories carry business invariants in `tests/testdata/domain/`; API adapters carry pytest lifecycle and transport in `tests/api/adapters/`. Check that setup and cleanup preserve M2M, closure, password, soft-delete, and similar invariants, and that a missing capability has one unambiguous owner. HTTP setup for a non-create-focused case is a semantic risk unless an explicitly reviewed degradation is justified.
 
 Derive required capabilities from every selected case and plan data need. Use fully qualified leaf keys rooted exactly as the formal knowledge layer defines them; include auth, domain-factory, API-adapter, and cleanup leaves needed by codegen. Missing knowledge remains a remediation target and keeps codegen not ready.
 
-An endpoint workaround is a coverage gap, not equivalent direct coverage. Until a human acknowledges its scope, require human review and keep codegen not ready. After explicit acknowledgment, a pass may carry readiness with warnings and at least medium risk, but must continue to record the direct coverage gap downstream.
+An endpoint workaround is a coverage gap, not equivalent direct coverage. Until a human acknowledges its scope, require human review and keep codegen not ready. After explicit acknowledgment, a pass may carry readiness with warnings, but must continue to record the direct coverage gap downstream.
 
 Choose the semantic disposition from the needed intervention:
 
-- Pass only when there are no blockers or blocking review items and codegen can proceed without guessing; non-blocking risks may remain as warnings.
-- Use a fix request only when every blocking defect is safely mechanical, low or medium risk, and has a complete auto-fix plan.
+- Pass only when there are no blockers or blocking review items and codegen can proceed without guessing; non-blocking warnings may remain.
+- Use a fix request only when every blocking defect is safely mechanical, needs no product or scope judgment, and has a complete auto-fix plan.
 - Require human review for product, scope, endpoint, auth, fixture, cleanup, or coverage-gap decisions.
 - Reject missing required plans, wrong-feature plans, or unsafe contradictions that cannot be mechanically restored.
 
