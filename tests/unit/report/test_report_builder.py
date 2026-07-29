@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.helpers_aa import write_aa_config
+from tests.helpers_aa import sufficient_evidence_coverage, write_aa_config
 
 from assurance_agent.artifacts.models import CoverageThreshold, SelectedTargets
 from assurance_agent.workflow.execution.evidence import publish_execution_evidence
@@ -75,7 +75,7 @@ def _seed_change(tmp_path: Path, api: TargetResult, cov: CoverageResult) -> str:
         api=api,
         e2e=None,
         coverage=cov,
-        coverage_gate_mode="warn",
+        evidence_coverage=sufficient_evidence_coverage(),
     )
     publish_execution_evidence(
         execution_dir=change_dir / "execution",

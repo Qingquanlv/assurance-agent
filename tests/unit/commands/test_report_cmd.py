@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from tests.helpers_aa import write_aa_config
+from tests.helpers_aa import sufficient_evidence_coverage, write_aa_config
 
 from click.testing import CliRunner
 
@@ -66,7 +66,7 @@ def _seed(root: Path, failed: bool) -> None:
         api=api,
         e2e=None,
         coverage=cov,
-        coverage_gate_mode="warn",
+        evidence_coverage=sufficient_evidence_coverage(),
     )
     publish_execution_evidence(
         execution_dir=root / "qa" / "changes" / "CH-1" / "execution",

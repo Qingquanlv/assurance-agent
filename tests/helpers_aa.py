@@ -1,9 +1,27 @@
 """Shared project fixtures for tests that resolve Change paths via config."""
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 from assurance_agent.change_location import ChangeLocation, ChangeSource
+from assurance_agent.evidence.sufficiency import EvidenceCoverageEvaluation, SufficiencyReport
 from assurance_agent.workflow.core.templates import InitAnswers, build_config_yaml
+
+
+def sufficient_evidence_coverage(
+    *,
+    action: str = "warn",
+) -> EvidenceCoverageEvaluation:
+    """Stub evidence evaluation for tests that seed execution artifacts only."""
+    return EvidenceCoverageEvaluation(
+        report=SufficiencyReport(
+            as_of=datetime(2026, 7, 30, 12, 0, 0, tzinfo=UTC),
+            recency_hours=72,
+            verdicts=(),
+        ),
+        action=action,  # type: ignore[arg-type]
+        error_code=None,
+    )
 
 
 def write_aa_config(project_root: Path) -> None:

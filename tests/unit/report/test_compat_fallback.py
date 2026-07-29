@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from tests.helpers_aa import write_aa_config
+from tests.helpers_aa import sufficient_evidence_coverage, write_aa_config
 
 import pytest
 
@@ -61,7 +61,12 @@ def _publish(root: Path, batch_id: str, *, failed: bool) -> None:
         status="PASS",
     )
     gate = build_quality_gate(
-        change_id="CH-1", batch_id=batch_id, api=api, e2e=None, coverage=cov, coverage_gate_mode="warn"
+        change_id="CH-1",
+        batch_id=batch_id,
+        api=api,
+        e2e=None,
+        coverage=cov,
+        evidence_coverage=sufficient_evidence_coverage(),
     )
     publish_execution_evidence(
         execution_dir=root / "qa" / "changes" / "CH-1" / "execution",

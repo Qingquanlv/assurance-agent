@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from tests.helpers_aa import write_aa_config
+from tests.helpers_aa import sufficient_evidence_coverage, write_aa_config
 from unittest.mock import patch
 
 from click.testing import CliRunner
@@ -50,7 +50,12 @@ def _publish_failed_batch(root: Path, batch_id: str = "20260715-000001") -> None
         status="PASS",
     )
     gate = build_quality_gate(
-        change_id="CH-1", batch_id=batch_id, api=api, e2e=None, coverage=cov, coverage_gate_mode="warn"
+        change_id="CH-1",
+        batch_id=batch_id,
+        api=api,
+        e2e=None,
+        coverage=cov,
+        evidence_coverage=sufficient_evidence_coverage(),
     )
     publish_execution_evidence(
         execution_dir=root / "qa" / "changes" / "CH-1" / "execution",

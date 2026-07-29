@@ -12,6 +12,7 @@ from assurance_agent.workflow.execution.evidence import (
 )
 from assurance_agent.workflow.execution.results import CoverageResult, ResultSource, TargetResult
 from assurance_agent.workflow.report.quality_gate import build_quality_gate
+from tests.helpers_aa import sufficient_evidence_coverage
 
 
 def make_api(passed: int = 2, failed: int = 0) -> TargetResult:
@@ -52,7 +53,7 @@ def publish(tmp_path: Path, api: TargetResult, cov: CoverageResult):
         api=api_result,
         e2e=None,
         coverage=cov,
-        coverage_gate_mode="warn",
+        evidence_coverage=sufficient_evidence_coverage(),
     )
     manifest = publish_execution_evidence(
         execution_dir=execution_dir,
