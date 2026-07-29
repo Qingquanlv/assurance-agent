@@ -127,6 +127,7 @@ EXPECTED_CONTRACTS = {
     "operation:record-issue-analysis-failure",
     "operation:record-project-sync-pending",
     "operation:reconcile-issues",
+    "operation:materialize-trace-projection",
     # Issue review (Task 12)
     "operation:load-problem-review-context",
     "operation:apply-problem-review",
@@ -887,6 +888,8 @@ def test_inspect_with_issues_subgraph_structure() -> None:
     assert g.nodes["analyze-issues"].uses == "skill:aa-issue-analyzer"
     assert g.nodes["record-empty-analysis"].uses == "operation:record-empty-issue-analysis"
     assert g.nodes["reconcile-issues"].uses == "operation:reconcile-issues"
+    assert g.nodes["materialize-trace-projection"].uses == "operation:materialize-trace-projection"
+    assert set(g.nodes["materialize-trace-projection"].outputs) == {"change:inspect/trace-projection.json"}
     assert g.nodes["record-analysis-failure"].uses == "operation:record-issue-analysis-failure"
     assert g.nodes["record-project-sync-pending"].uses == "operation:record-project-sync-pending"
     assert g.nodes["inspect-complete"].uses == "operation:no-op"
@@ -958,8 +961,10 @@ def test_inspect_with_issues_both_analysis_paths_reach_reconcile() -> None:
     assert ("analyze-issues", "reconcile-issues") in edge_pairs
     # record-empty-analysis -> reconcile-issues
     assert ("record-empty-analysis", "reconcile-issues") in edge_pairs
-    # reconcile-issues -> inspect-complete
-    assert ("reconcile-issues", "inspect-complete") in edge_pairs
+    # reconcile-issues -> materialize-trace-projection -> inspect-complete
+    assert ("reconcile-issues", "materialize-trace-projection") in edge_pairs
+    assert ("materialize-trace-projection", "inspect-complete") in edge_pairs
+    assert ("reconcile-issues", "inspect-complete") not in edge_pairs
     # inspect-complete -> END
     assert ("inspect-complete", "END") in edge_pairs
 

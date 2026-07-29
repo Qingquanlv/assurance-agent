@@ -152,6 +152,22 @@ def test_run_tests_contract_reads_traceability_inputs() -> None:
     assert "project:.aa/policy.yaml" in contract.reads
 
 
+def test_materialize_trace_projection_contract_reads_full_surface() -> None:
+    catalog = load_execution_contracts(Path.cwd())
+    contract = catalog.contracts["operation:materialize-trace-projection"]
+    assert contract.side_effect_free is False
+    assert set(contract.reads) == {
+        "change:cases/**",
+        "change:execution/**",
+        "change:inspect/failure-analysis.json",
+        "change:issues/**",
+        "project:qa/issues/problems.json",
+        "repo:tests/**",
+    }
+    assert contract.writes == ("change:inspect/trace-projection.json",)
+    assert contract.authorization_writes == ("change:inspect/trace-projection.json",)
+
+
 def test_project_local_registry_overrides_packaged(tmp_path: Path) -> None:
     local = tmp_path / ".aa" / "execution-contracts.yaml"
     local.parent.mkdir(parents=True)

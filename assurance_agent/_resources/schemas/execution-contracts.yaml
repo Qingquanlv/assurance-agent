@@ -635,6 +635,21 @@ contracts:
       - project:issue-registry
     retryable_errors: [conflict, transport]
 
+  operation:materialize-trace-projection:
+    handler: operation
+    reads:
+      - change:cases/**
+      - change:execution/**
+      - change:inspect/failure-analysis.json
+      - change:issues/**
+      - project:qa/issues/problems.json
+      - repo:tests/**
+    writes:
+      - change:inspect/trace-projection.json
+    authorization_writes:
+      - change:inspect/trace-projection.json
+    retryable_errors: []
+
   operation:load-problem-review-context:
     handler: operation
     reads:

@@ -12,6 +12,8 @@ operation 是进程内函数调用，绝不 spawn ``aa`` 子进程（无 subproc
   project/change 路径 remap 到 task 私有 workspace；
 - ``operation:inspect``：直接调用 ``workflow.report.inspector.inspect_change``，
   写出 ``inspect/failure-analysis.json`` 与 ``inspect/quality-gate-result.json``；
+- ``operation:materialize-trace-projection``：调用 ``evidence.trace.fold_trace``
+  （``phase=reconciled``），写出权威 ``inspect/trace-projection.json``；
 - ``operation:allocate-healing-attempt``：把 entry-baseline artifact 写进 task
   workspace 并返回 state updates；``budget_consumed`` strict 事件归 scheduler；
 - ``operation:record-healing-status``：返回 healing 终局判定；
@@ -42,6 +44,7 @@ from assurance_agent.workflow.graph.task_runner import task_failure, task_with
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.orchestration.operations import BASELINE_REL, HEAL_STATUSES
 from assurance_agent.workflow.graph.handlers.plan_checks import verify_plan_mechanical
+from assurance_agent.workflow.graph.handlers.trace_projection import materialize_trace_projection
 from assurance_agent.workflow.graph.handlers.retro_ops import (
     apply_improvement_auto_review,
     assemble_retro_context_v3,
@@ -421,6 +424,7 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:record-issue-analysis-failure": record_issue_analysis_failure_operation,
         "operation:record-project-sync-pending": record_project_sync_pending_operation,
         "operation:reconcile-issues": reconcile_issues_operation,
+        "operation:materialize-trace-projection": materialize_trace_projection,
         "operation:load-problem-review-context": load_problem_review_context_operation,
         "operation:apply-problem-review": apply_problem_review_operation,
         "operation:load-improvement-review-context": load_improvement_review_context_operation,

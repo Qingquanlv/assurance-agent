@@ -1319,6 +1319,11 @@ graphs:
         retry: never
         timeout: local-operation
 
+      materialize-trace-projection:
+        uses: operation:materialize-trace-projection
+        outputs:
+          - change:inspect/trace-projection.json
+
       inspect-complete:
         uses: operation:no-op
 
@@ -1331,7 +1336,8 @@ graphs:
          when: "node('collect-observations').value.abnormal_count == 0"}
       - {from: record-empty-analysis, to: reconcile-issues}
       - {from: analyze-issues, to: reconcile-issues}
-      - {from: reconcile-issues, to: inspect-complete}
+      - {from: reconcile-issues, to: materialize-trace-projection}
+      - {from: materialize-trace-projection, to: inspect-complete}
       - {from: inspect-complete, to: END}
 
   healing:

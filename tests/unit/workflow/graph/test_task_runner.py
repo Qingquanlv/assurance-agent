@@ -716,6 +716,7 @@ def test_default_operations_registry_has_exact_keys() -> None:
         "operation:record-project-sync-pending",
         # Issue lifecycle (Task 9-11)
         "operation:reconcile-issues",
+        "operation:materialize-trace-projection",
         # Issue review (Task 12)
         "operation:load-problem-review-context",
         "operation:apply-problem-review",
