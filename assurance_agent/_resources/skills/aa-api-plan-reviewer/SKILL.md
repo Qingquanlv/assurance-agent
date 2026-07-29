@@ -30,7 +30,7 @@ Read when present:
 - existing `tests/api/**`, `tests/testdata/domain/**`, and `tests/api/adapters/**`
 - `qa/changes/<change-id>/review/api-plan-checks.json`
 
-Treat `review/api-plan-checks.json` as already-adjudicated mechanical facts. Carry its findings into the semantic decision according to their runtime policy action; do not rescan plan prose to recompute them.
+Treat `review/api-plan-checks.json` strictly as an immutable `PlanCheckDocument`: its `status`, `checks`, `findings`, and `refs` are facts. Do not recompute them or infer severity from them. Do not infer or apply a policy action. Policy adjudication belongs only to the downstream gate and policy is not a reviewer input.
 
 Read files from disk as the source of truth and include every file actually reviewed in the review evidence.
 
@@ -41,11 +41,22 @@ Write both:
 - `qa/changes/<change-id>/review/api-plan-review.json`
 - `qa/changes/<change-id>/review/api-plan-review-summary.md`
 
-The JSON is the registered gate artifact; its output contract is supplied by the runtime. Populate it with the semantic verdict, concrete downstream risks, case-level assertion traceability, all codegen capability leaves, and an actionable next step. Validate the written artifact before completing the review.
+The JSON is the registered gate artifact; its schema contract is supplied by the runtime. Populate the semantic verdict, concrete downstream risks, case-level assertion traceability, all codegen capability leaves, and an actionable next step. Validate the written artifact before completing the review.
+
+Always emit the gate-consumed fields `codegen_readiness`, `auto_fix_allowed`, `human_review_required`, and `risk_level`, even though compatibility models make them optional. Missing any one sends `missing_field_is` to `stop`. Use this exact consistency map:
+
+| `decision` | `codegen_readiness` | `auto_fix_allowed` | `human_review_required` | `next_action` |
+|---|---|---|---|---|
+| `pass` | `ready` or `ready_with_warnings` | `false` | `false` | `continue` |
+| `needs_fix` | `not_ready` | `true` | `false` | `run_api_plan_fixer` |
+| `needs_human_review` | `not_ready` | `false` | `true` | `human_review` |
+| `reject` | `not_ready` | `false` | `true` | `stop` |
+
+Always set `risk_level` to exactly `low`, `medium`, `high`, or `critical`. A fix request contains only low/medium mechanically safe findings and a non-empty auto-fix plan. High/critical risk, product uncertainty, and unacknowledged coverage gaps require human review. A pass has no blockers or blocking review items and includes non-empty required capability leaves.
 
 The Markdown summary mirrors the verdict, risk, readiness, coverage, assertion traceability, blockers, needs review, findings, auto-fix plan, and next action in readable form. It must not contradict the JSON.
 
-Report the state delta for the API-plan-review phase and its gate file. A chat conclusion never substitutes for either output.
+Report the exact state delta: `phases.api_plan_review.status` = `pass | needs_fix | needs_human_review | reject` and `phases.api_plan_review.gate_file` = `review/api-plan-review.json`. In inline mode apply it to `workflow-state.yaml`; as a dispatched subagent report it for the orchestrator to apply. A chat conclusion never substitutes for either output.
 
 ## Boundaries
 
@@ -66,6 +77,8 @@ Do not continue into code generation.
 ## Domain Notes
 
 Review every in-scope API automation case against the plan. A plan scenario without a case, an in-scope case without a scenario, or a missing critical assertion is a concrete coverage risk. Compare each approved assertion with the planned status, response, and postcondition intent: equivalent intent is mapped; evidence-backed refinement is narrowed; incompatible intent is contradicted; absent intent is missing. Contradicted intent blocks progress, and missing high-priority intent blocks unless safely restorable from the approved case.
+
+Verify every `Test Function Mapping` row against its full Case ID. The Test Function must be exactly `test_<case_id_lowercase>__<desc>`: the row's complete lowercase case ID followed by a double underscore and a description. Any mismatch is blocking but mechanically auto-fixable; request a fix and keep codegen `not_ready` until the mapping is corrected.
 
 Confirmed method, path, auth, request shape, response assertions, data setup, and cleanup are prerequisites for codegen. A documented non-blocking assumption may yield readiness with warnings; any unresolved fact that forces product guessing makes the plan not ready. The plan summary's readiness is evidence, not authority: disagree only with an explicit finding.
 

@@ -6,6 +6,31 @@ from assurance_agent import resources
 
 PILOT = ("aa-api-plan", "aa-api-plan-reviewer")
 SECTIONS = ("## Purpose", "## Inputs", "## Outputs", "## Boundaries", "## Domain Notes")
+PLAN_TABLES = {
+    "Scope": "Case ID | Title",
+    "API Targets": "Case ID | Scenario | Method | Path | Expected",
+    "Auth Strategy": "Case ID | Auth",
+    "Request Strategy": "Case ID | Headers | Body | Params",
+    "Assertion Strategy": "Case ID | Assertions",
+    "Mock Strategy": "Case ID | Dependency | Approach",
+    "Cleanup Strategy": "Case ID | Cleanup",
+    "Output File Candidates": "Case ID | Target File",
+    "Required Data": "Entity | State | Capability",
+    "Capability Mapping": "Need | Capability | Source | Status (found/missing/warning)",
+    "Factory / Boundary Strategy": "Entity | Ring | Preferred method | Notes",
+    "No Data Required Cases": "Case ID | Rationale",
+    "Target Files": "File | Purpose",
+    "Test Function Mapping": "Case ID | Test Function | Target File",
+    "Factory Mapping": "Entity | Shared Module | Function | Ownership | Required By",
+    "Adapter Mapping": "Entity | API Adapter | Transport | Cleanup",
+    "Fixture Mapping": "Fixture | Source Factory | Wrapper Only (yes/no) | Required By",
+    "Helper Mapping": "Helper | Purpose | Required By",
+    "Import Strategy": "Target File | Imports",
+    "Assertion Mapping": "Case ID | Assertions",
+    "Data Setup Mapping": "Case ID | Setup | Capability",
+    "Cleanup Mapping": "Case ID | Cleanup | Capability",
+    "Run Guidance": "Target | Pytest Args | Markers | Environment",
+}
 
 
 def test_pilot_skills_use_exactly_the_five_section_manifest_structure() -> None:
@@ -40,12 +65,12 @@ def test_mechanised_prohibitions_are_gone_from_the_reviewer_prose() -> None:
     assert "never narrow, drop, or reinterpret" not in text
 
 
-def test_api_plan_retains_the_markdown_format_contract_the_checks_parse() -> None:
-    """shared_factory / assert_ideal check 直接解析这些表，列名是运行时接口。"""
+def test_api_plan_retains_each_markdown_table_contract() -> None:
+    """Markdown 未注册；每张表的语义与精确列顺序都是 authoring interface。"""
     text = resources.read_text("skills", "aa-api-plan", "SKILL.md")
     outputs = text[text.index("## Outputs") : text.index("## Boundaries")]
-    for column in ("Case ID", "Shared Module", "Function", "Ownership"):
-        assert column in outputs, column
+    for table, columns in PLAN_TABLES.items():
+        assert f"{table} uses `{columns}`" in outputs, table
     assert "test_<case_id_lowercase>__<desc>" in outputs
 
 
@@ -61,3 +86,58 @@ def test_domain_notes_retain_factory_adapter_and_live_server_knowledge() -> None
     assert "factory" in notes.lower()
     assert "adapter" in notes.lower()
     assert "live-server" in notes.lower()
+
+
+def test_reviewer_consumes_plan_check_document_as_facts_without_policy_adjudication() -> None:
+    text = resources.read_text("skills", "aa-api-plan-reviewer", "SKILL.md")
+    inputs = text[text.index("## Inputs") : text.index("## Outputs")]
+    assert "PlanCheckDocument" in inputs
+    assert "facts" in inputs
+    assert "do not infer or apply a policy action" in inputs.lower()
+    assert "downstream gate" in inputs.lower()
+    assert "according to their runtime policy action" not in inputs
+
+
+def test_reviewer_restores_every_gate_consumed_field_and_exact_state_delta() -> None:
+    text = resources.read_text("skills", "aa-api-plan-reviewer", "SKILL.md")
+    outputs = text[text.index("## Outputs") : text.index("## Boundaries")]
+    for field in (
+        "codegen_readiness",
+        "auto_fix_allowed",
+        "human_review_required",
+        "risk_level",
+    ):
+        assert f"`{field}`" in outputs, field
+    for mapping in (
+        "`pass` | `ready` or `ready_with_warnings` | `false` | `false`",
+        "`needs_fix` | `not_ready` | `true` | `false`",
+        "`needs_human_review` | `not_ready` | `false` | `true`",
+        "`reject` | `not_ready` | `false` | `true`",
+    ):
+        assert mapping in outputs
+    assert "`phases.api_plan_review.status`" in outputs
+    assert "`phases.api_plan_review.gate_file`" in outputs
+    assert "`review/api-plan-review.json`" in outputs
+
+
+def test_reviewer_retains_unmechanised_test_function_name_verification() -> None:
+    text = resources.read_text("skills", "aa-api-plan-reviewer", "SKILL.md")
+    notes = text[text.index("## Domain Notes") :]
+    assert "Test Function Mapping" in notes
+    assert "test_<case_id_lowercase>__<desc>" in notes
+
+
+def test_migration_completeness_keeps_reviewer_semantics_and_moves_only_mechanised_rules() -> None:
+    reviewer = resources.read_text("skills", "aa-api-plan-reviewer", "SKILL.md")
+    for responsibility in (
+        "assertion traceability",
+        "coverage gap",
+        "required capabilities",
+        "Test Function Mapping",
+    ):
+        assert responsibility in reviewer, responsibility
+    for mechanised in (
+        "alternate hidden-directory path",
+        "never narrow, drop, or reinterpret",
+    ):
+        assert mechanised not in reviewer, mechanised

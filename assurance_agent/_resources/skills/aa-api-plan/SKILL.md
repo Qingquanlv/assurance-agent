@@ -43,14 +43,32 @@ Write only below `qa/changes/<change-id>/plans/`:
 | `m3-review-summary.md` | change and loaded cases; API and removed-case counts; generated files; knowledge status; Blockers; Needs Review; Plan Readiness; Codegen Readiness; next reviewer |
 | `data-knowledge.proposal.api.yaml` | only when the formal knowledge file is absent or lacks required leaves; candidate evidence and promotion needs, never invented implementation facts |
 
-The Markdown tables below are runtime interfaces. Keep the column spelling exact.
+The Markdown tables below are authoring interfaces; the runtime checks parse a subset of them. Keep every column name and order exact.
 
 - At least one table in `api-plan.md` must contain `Case ID`, and every in-scope case must appear in a `Case ID` cell as its full case_id such as `TC_USER_API_001`, never a short number such as `008`.
+- Scope uses `Case ID | Title`.
 - API Targets uses `Case ID | Scenario | Method | Path | Expected`. Unknown Method or Path is `TBD` in that row and is also explained under Needs Review or Blockers.
+- Auth Strategy uses `Case ID | Auth`.
+- Request Strategy uses `Case ID | Headers | Body | Params`; method, path, headers, body, and params stay in the plan rather than being written back to the case.
+- Assertion Strategy uses `Case ID | Assertions`.
+- Mock Strategy uses `Case ID | Dependency | Approach`.
+- Cleanup Strategy uses `Case ID | Cleanup`.
+- Output File Candidates uses `Case ID | Target File`.
+- Required Data uses `Entity | State | Capability`.
+- Capability Mapping uses `Need | Capability | Source | Status (found/missing/warning)`.
+- Factory / Boundary Strategy uses `Entity | Ring | Preferred method | Notes` and covers every entity under test.
+- No Data Required Cases uses `Case ID | Rationale`.
+- Target Files uses `File | Purpose`; include each domain factory as `create-if-missing` or `reuse` in its purpose and the corresponding API adapter whenever setup or cleanup needs domain data.
 - Test Function Mapping uses `Case ID | Test Function | Target File`. Every function is named `test_<case_id_lowercase>__<desc>`; the full lowercase case ID and double underscore are mandatory.
 - Factory Mapping uses `Entity | Shared Module | Function | Ownership | Required By`. `Shared Module` names `tests/testdata/domain/<entity>.py`, `Function` names a `make_*` capability, and `Ownership` is `create-if-missing` or `reuse`.
 - Adapter Mapping uses `Entity | API Adapter | Transport | Cleanup`; API Adapter names `tests/api/adapters/<module>.py`, and Transport is `in_process_async`, `http`, or `isolated_worker`.
-- Assertion Mapping uses a full `Case ID` column and preserves every case assertion semantically.
+- Fixture Mapping uses `Fixture | Source Factory | Wrapper Only (yes/no) | Required By`; fixtures only wrap lifecycle or transport.
+- Helper Mapping uses `Helper | Purpose | Required By`.
+- Import Strategy uses `Target File | Imports`.
+- Assertion Mapping uses `Case ID | Assertions` and preserves every case assertion semantically.
+- Data Setup Mapping uses `Case ID | Setup | Capability`.
+- Cleanup Mapping uses `Case ID | Cleanup | Capability`.
+- Run Guidance uses `Target | Pytest Args | Markers | Environment`; it is execution-layer input and is not run during planning.
 
 The plan summary reports all files actually written and the state delta `phases.api_plan.status = done` with those paths in `phases.api_plan.outputs`. The next action is `aa-api-plan-reviewer`; codegen waits for its gate and for the formal knowledge file.
 
