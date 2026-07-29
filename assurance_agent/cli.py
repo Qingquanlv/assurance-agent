@@ -19,6 +19,7 @@ from assurance_agent.commands.workflow_cmd import workflow_group
 from assurance_agent.commands.eval_cmd import eval_group
 from assurance_agent.commands.improvement_cmd import improvement_group
 from assurance_agent.commands.retro_cmd import register_retro
+from assurance_agent.commands.trace_cmd import trace_command
 
 
 @click.group()
@@ -33,6 +34,7 @@ main.add_command(doctor_command)
 main.add_command(config_group)
 main.add_command(validate_command)
 main.add_command(status_command)
+main.add_command(trace_command)
 main.add_command(gate_group)
 main.add_command(state_group)
 main.add_command(decide_command)
