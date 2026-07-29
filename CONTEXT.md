@@ -57,3 +57,7 @@ _Avoid_: snapshot, savepoint (recovery is re-projection, not snapshot restore)
 | Line coverage PASS, required case uncovered in tests tree | PASS | FAIL | `uncovered` / `covered` kind missing |
 
 Migration: set project `.aa/policy.yaml` `evidence_sufficiency.on_insufficient: warn` to soften evidence gaps to `PASS_WITH_WARNINGS` (cannot soften missing projection or policy errors).
+
+## `aa verify` (Task 12)
+
+Read-only reconciled-phase verdict: `fold_trace(..., phase="reconciled")` then `evaluate_sufficiency(..., as_of=aware UTC now)`. Verdict order: blocking gaps or `integrity == incomplete` → fail; non-empty `open_problem_ids` → fail; insufficient × `on_insufficient` (`block`→fail, `require_human`→needs_human, `warn`→pass+warnings); all sufficient → pass with scope (`cases`, `batch`, `policy_digest`, `projection_digest`). `VERIFY_BLOCKING_GAP_CODES` fail-closed even when `on_insufficient: warn`; `mapped_test_missing_from_tree` is sufficiency-only. Exit codes: pass=0, needs_human=30, fail=40.

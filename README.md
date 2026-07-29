@@ -95,6 +95,8 @@ aa workflow run --change <id> --entrypoint full --adapter opencode --server http
 | `aa config print` | 原样打印 `.aa/config.yaml` |
 | `aa validate --change <id> [--phase <p>] [--artifact <rel>] [--json]` | 确定性校验 change 产物；退出码 0 通过 / 1 失败、缺失或零注册产物 / 2 用法错误 |
 | `aa status --change <id> [--next] [--json]` | GraphStatus 投影（pending tasks / interrupts / next retry）；`--next` 只打印待办；退出码 0 running/completed / 20 stopped / 30 interrupted / 40 failed（命令或数据错误为 40） |
+| `aa trace --change <id> [--json] [--type API\|E2E\|Fuzz\|Performance] [--only-gaps]` | 现场 fold execution 相位 trace 投影（只读；与 status 的 ledger 投影分离） |
+| `aa verify --change <id> [--json]` | 现场 fold reconciled 相位投影并裁决证据充分性；退出码 0 pass / 30 needs_human / 40 fail |
 | `aa gate check --change <id> --node-path <p> [--json]` | 返回该节点 ledger 冻结的 gate 报告（拒绝重裁可变文件）；退出码 0 pass/enter/exit/skip / 30 needs_fix/needs_human_review/continue / 40 reject/stop |
 | `aa state ...` | 非图进度辅助（如 configure）；禁止用 apply/heal 伪造进度 |
 | `aa decide --change <id> ...` | 非图策略决定（如 `allow_test_changes`）；图内人工裁决走 `workflow resume --interrupt` |

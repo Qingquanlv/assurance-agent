@@ -202,7 +202,7 @@ def _write_perf_result(
     *,
     change_id: str = CHANGE_ID,
     doc_batch_id: str | None = None,
-    scenarios: list[dict[str, str]] | None = None,
+    scenarios: list[dict[str, str | float]] | None = None,
 ) -> None:
     payload = {
         "schema_version": "1.0",

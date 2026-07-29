@@ -315,4 +315,5 @@ def test_run_change_missing_test_dirs_all_skipped(tmp_path: Path, monkeypatch) -
         encoding="utf-8",
     )
     manifest = run_change(tmp_path, change, make_config())
-    assert manifest.final_status == "SKIPPED"
+    # Task 9: vacuous evidence sufficiency (no cases) yields coverage PASS; functional SKIPPED → final PASS.
+    assert manifest.final_status == "PASS"

@@ -81,6 +81,7 @@ def test_injected_and_disk_fold_byte_equal_after_manifest_publish(
     assert projection_path.is_file()
 
     from_manifest = fold_trace(project_root, CHANGE_ID)
+    assert manifest.executed_at is not None
     reinjected = fold_trace(
         project_root,
         CHANGE_ID,
