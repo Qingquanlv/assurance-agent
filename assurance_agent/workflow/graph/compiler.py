@@ -649,7 +649,7 @@ def _validate_expressions(schema: WorkflowSchemaV2) -> list[str]:
                 _check_expression(
                     f"gate '{gate.id}'.{rule.field}",
                     rule.expr,
-                    allowed_idents={"params", "state"} | aliases,
+                    allowed_idents={"params", "state", "policy"} | aliases,
                     allow_node=False,
                     node_ids=set(),
                     schema=schema,
@@ -675,11 +675,12 @@ def _validate_expressions(schema: WorkflowSchemaV2) -> list[str]:
                 )
             with_expr = node.with_.get("expression")
             if isinstance(with_expr, str):
+                expression_scope = allowed | ({"policy"} if node.uses == "builtin:gate" else set())
                 errors.extend(
                     _check_expression(
                         f"{loc}.with.expression",
                         with_expr,
-                        allowed_idents=allowed,
+                        allowed_idents=expression_scope,
                         allow_node=True,
                         node_ids=node_ids,
                         schema=schema,

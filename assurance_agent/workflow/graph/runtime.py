@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
+from assurance_agent.artifacts.policy import load_policy, policy_digest
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
 from assurance_agent.workflow.core.exit_codes import (
@@ -97,6 +98,7 @@ def _build_invocation_started(
     max_parallel_tasks: int,
     checkpoint_ns: str,
     structural_path: str,
+    policy_digest: str = "",
     parent_invocation_id: str | None = None,
     parent_task_id: str | None = None,
 ) -> GraphInvocationStartedEvent:
@@ -113,6 +115,7 @@ def _build_invocation_started(
         ir_digest=compiled.digest,
         ingest_catalog_digest=catalog_digest,
         contract_digests=dict(compiled.contract_digests),
+        policy_digest=policy_digest,
         params=params,
         params_sha256=canonical_digest(params),
         root_tree_id=root_tree_id,
@@ -220,6 +223,7 @@ class GraphRuntime:
         invocation_id = str(uuid4())
         checkpoint_ns = invocation_id
         bound = context.model_copy(update={"params": params})
+        digest = policy_digest(load_policy(context.project_root))
         started = _build_invocation_started(
             invocation_id=invocation_id,
             entrypoint=manifest.entrypoint,
@@ -230,6 +234,7 @@ class GraphRuntime:
             max_parallel_tasks=schema.schema.policies.scheduler.max_parallel_tasks,
             checkpoint_ns=checkpoint_ns,
             structural_path=entry.graph_id,
+            policy_digest=digest,
         )
 
         imported_task_ids: list[str] = []
@@ -384,6 +389,7 @@ class GraphRuntime:
             # 父 task workspace 已物化；child 继承同一 base tree，避免以 workspace
             # project_root 调用 TreeStore.capture（change_dir 在 workspace 外）。
             root_tree_id = workspace.base_tree_id
+            digest = policy_digest(load_policy(workspace.project_root))
             started = _build_invocation_started(
                 invocation_id=child_invocation_id,
                 entrypoint=graph_id,
@@ -394,6 +400,7 @@ class GraphRuntime:
                 max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
                 checkpoint_ns=checkpoint_ns,
                 structural_path=structural_path,
+                policy_digest=digest,
                 parent_invocation_id=parent_task.invocation_id,
                 parent_task_id=parent_task.task_id,
             )
@@ -530,6 +537,7 @@ class GraphRuntime:
         max_parallel = compiled.schema.policies.scheduler.max_parallel_tasks
         graph_id = entry.graph_id
 
+        digest = policy_digest(load_policy(context.project_root))
         started = _build_invocation_started(
             invocation_id=invocation_id,
             entrypoint=entrypoint,
@@ -540,6 +548,7 @@ class GraphRuntime:
             max_parallel_tasks=max_parallel,
             checkpoint_ns=checkpoint_ns,
             structural_path=graph_id,
+            policy_digest=digest,
         )
         bound = context.model_copy(update={"params": params})
         try:

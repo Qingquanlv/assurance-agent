@@ -1798,7 +1798,11 @@ gates:
       case_review.decision == 'needs_human_review'
       or (
         case_review.human_review_required == true
-        and not (params.force_continue == true and case_review.decision == 'pass')
+        and not (
+          params.force_continue == true
+          and policy.force_continue_allowed == true
+          and case_review.decision == 'pass'
+        )
       )
     reject_when: "case_review.decision == 'reject'"
     pass_when: "case_review.decision == 'pass'"
@@ -1835,9 +1839,10 @@ gates:
       )
       or api_plan_review.decision == 'needs_human_review'
       or (
-        (api_plan_review.human_review_required == true or api_plan_review.risk_level in ['high','critical'])
+        (api_plan_review.human_review_required == true or api_plan_review.risk_level in policy.human_review_risk_levels)
         and not (
           params.force_continue == true
+          and policy.force_continue_allowed == true
           and api_plan_review.decision == 'pass'
           and api_plan_review.codegen_readiness in ['ready','ready_with_warnings']
         )
@@ -1867,9 +1872,10 @@ gates:
       )
       or plan_review.decision == 'needs_human_review'
       or (
-        (plan_review.human_review_required == true or plan_review.risk_level in ['high','critical'])
+        (plan_review.human_review_required == true or plan_review.risk_level in policy.human_review_risk_levels)
         and not (
           params.force_continue == true
+          and policy.force_continue_allowed == true
           and plan_review.decision == 'pass'
           and plan_review.codegen_readiness in ['ready','ready_with_warnings']
         )
@@ -1889,7 +1895,11 @@ gates:
       fuzz_plan_review.decision in ['needs_human_review','changes_requested']
       or (
         fuzz_plan_review.human_review_required == true
-        and not (params.force_continue == true and fuzz_plan_review.decision in ['pass','approved'])
+        and not (
+          params.force_continue == true
+          and policy.force_continue_allowed == true
+          and fuzz_plan_review.decision in ['pass','approved']
+        )
       )
     # Empty-scope skip: the layer was selected but has no applicable cases, so
     # there is nothing to fuzz. Route a graceful skip (branch ends, codegen is
@@ -1907,7 +1917,11 @@ gates:
       performance_plan_review.decision in ['needs_human_review','changes_requested']
       or (
         performance_plan_review.human_review_required == true
-        and not (params.force_continue == true and performance_plan_review.decision in ['pass','approved'])
+        and not (
+          params.force_continue == true
+          and policy.force_continue_allowed == true
+          and performance_plan_review.decision in ['pass','approved']
+        )
       )
     # Empty-scope skip: the layer was selected but has no applicable cases, so
     # there is nothing to load-test. Route a graceful skip (branch ends, codegen

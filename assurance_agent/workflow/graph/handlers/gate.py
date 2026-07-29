@@ -17,6 +17,7 @@ import json
 from collections.abc import Mapping
 from pathlib import Path
 
+from assurance_agent.artifacts.policy import load_policy
 from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
 from assurance_agent.workflow.graph.checkpoint import fold_invocation_events
 from assurance_agent.workflow.graph.models import (
@@ -104,6 +105,7 @@ class GateHandler:
                 "params": dict(eval_context.params),
                 "state": dict(eval_context.state_values),
                 "evidence": dict(task.resolved_evidence),
+                "policy": load_policy(workspace.project_root).model_dump(mode="json"),
             },
             file_exists=lambda rel: resolve_view_path(eval_context, rel).exists(),
             node_result=node_result,
