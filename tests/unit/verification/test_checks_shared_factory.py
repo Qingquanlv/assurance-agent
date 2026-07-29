@@ -59,3 +59,18 @@ def test_create_if_missing_wording_counts_as_reuse() -> None:
 def test_plan_without_factory_mapping_table_passes() -> None:
     ctx = CheckContext(plan_texts={"plans/api-plan.md": "# API Plan\n"}, cases=(), data_knowledge=DK)
     assert check_shared_factory(ctx).status == "pass"
+
+
+def test_matching_columns_outside_factory_mapping_section_are_ignored() -> None:
+    plan = (
+        "## Migration Notes\n\n"
+        "| Shared Module | Function | Ownership |\n"
+        "|---|---|---|\n"
+        "| `tests/testdata/domain/dept.py` | `make_dept` | rewrite |\n"
+    )
+    ctx = CheckContext(
+        plan_texts={"plans/api-codegen-plan.md": plan},
+        cases=(),
+        data_knowledge=DK,
+    )
+    assert check_shared_factory(ctx).status == "pass"

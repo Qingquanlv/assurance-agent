@@ -22,6 +22,16 @@ def test_alternate_hidden_directory_path_fails_with_locator() -> None:
     assert result.findings[0].expected == ".aa/data-knowledge.yaml"
 
 
+def test_nested_and_similarly_named_aa_prefixes_are_not_canonical() -> None:
+    plan = "read `foo/.aa/data-knowledge.yaml`\nread `fake.aa/data-knowledge.yaml`\n"
+    result = check_l1_path(_ctx(plan))
+    assert result.status == "fail"
+    assert tuple(finding.locator for finding in result.findings) == (
+        "plans/api-plan.md:1",
+        "plans/api-plan.md:2",
+    )
+
+
 def test_bare_filename_mention_is_not_flagged() -> None:
     assert check_l1_path(_ctx("promote leaves into data-knowledge.yaml\n")).status == "pass"
 

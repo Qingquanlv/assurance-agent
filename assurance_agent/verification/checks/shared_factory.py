@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import re
+from collections.abc import Iterator, Mapping
 
 from assurance_agent.artifacts.models.plan_checks import CheckEvidence, Finding
 from assurance_agent.verification.checks.base import CheckContext, evidence, table_rows
@@ -11,6 +12,7 @@ CHECK_ID = "shared_factory"
 _MODULE_COLUMN = "shared module"
 _FUNCTION_COLUMN = "function"
 _OWNERSHIP_COLUMN = "ownership"
+_HEADING = re.compile(r"^\s*#{1,6}\s+(?P<title>.+?)\s*#*\s*$")
 
 
 def _declared_symbols(dk: Mapping[str, object]) -> dict[tuple[str, str], str]:
@@ -31,12 +33,25 @@ def _declared_symbols(dk: Mapping[str, object]) -> dict[tuple[str, str], str]:
     return declared
 
 
+def _factory_mapping_rows(text: str) -> Iterator[tuple[int, list[str]]]:
+    in_factory_mapping = False
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        heading = _HEADING.match(line)
+        if heading is not None:
+            in_factory_mapping = heading.group("title").casefold() == "factory mapping"
+            continue
+        if not in_factory_mapping:
+            continue
+        for _, cells in table_rows(line):
+            yield lineno, cells
+
+
 def check_shared_factory(ctx: CheckContext) -> CheckEvidence:
     declared = _declared_symbols(ctx.data_knowledge)
     findings: list[Finding] = []
     for rel in sorted(ctx.plan_texts):
         columns: dict[str, int] | None = None
-        for lineno, cells in table_rows(ctx.plan_texts[rel]):
+        for lineno, cells in _factory_mapping_rows(ctx.plan_texts[rel]):
             lowered = [cell.lower() for cell in cells]
             if _MODULE_COLUMN in lowered and _OWNERSHIP_COLUMN in lowered and _FUNCTION_COLUMN in lowered:
                 columns = {

@@ -17,7 +17,7 @@ def check_l1_path(ctx: CheckContext) -> CheckEvidence:
     for rel in sorted(ctx.plan_texts):
         for lineno, line in enumerate(ctx.plan_texts[rel].splitlines(), start=1):
             for match in _REFERENCE.finditer(line):
-                if match.group("prefix").endswith(".aa/"):
+                if match.group("prefix") == ".aa/":
                     continue
                 findings.append(
                     Finding(locator=f"{rel}:{lineno}", actual=match.group(0), expected=_CANONICAL)
