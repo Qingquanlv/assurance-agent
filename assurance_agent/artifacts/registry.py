@@ -53,6 +53,7 @@ from assurance_agent.artifacts.models import (
     WorkflowEvidenceSlice,
     WorkflowState,
 )
+from assurance_agent.artifacts.models.plan_checks import PlanCheckDocument
 
 Compat = Literal["must_compat", "versioned", "free"]
 
@@ -252,6 +253,12 @@ REGISTRY: list[ArtifactSpec] = [
         artifact_type="safety_check",
         pattern="healing/fixer-safety-check.json",
         model=SafetyCheck,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="plan_check",
+        pattern="review/*-plan-checks.json",
+        model=PlanCheckDocument,
         compat="must_compat",
     ),
     ArtifactSpec(
