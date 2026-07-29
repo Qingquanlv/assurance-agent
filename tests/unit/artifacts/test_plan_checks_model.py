@@ -46,7 +46,7 @@ def test_findings_carry_locators_not_bare_booleans() -> None:
 
 def test_unknown_status_is_rejected() -> None:
     with pytest.raises(ValidationError):
-        CheckEvidence(check_id="l1_path", status="warn")
+        CheckEvidence.model_validate({"check_id": "l1_path", "status": "warn"})
 
 
 def test_registry_binds_plan_checks_before_the_generic_review_glob() -> None:
