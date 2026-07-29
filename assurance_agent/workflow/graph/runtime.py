@@ -208,6 +208,11 @@ class GraphRuntime:
             params = resolve_params(schema.schema, {**entry.param_overrides, **context.params})
         except Exception as exc:
             raise GraphRuntimeError(f"invalid params: {exc}") from exc
+        if manifest.entrypoint == "retro":
+            try:
+                params = ensure_retro_params(params)
+            except Exception as exc:
+                raise GraphRuntimeError(f"invalid retro params: {exc}") from exc
         if entry.allow_expr is not None and not is_satisfied(entry.allow_expr, Scope({"params": params})):
             raise GraphRuntimeError(f"entrypoint '{manifest.entrypoint}' allow expression rejected params")
 

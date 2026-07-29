@@ -66,6 +66,11 @@ contracts:
     side_effect_free: false
     writes: ["change:heal/**"]
     authorization_writes: ["change:heal/**"]
+  operation:retro-write:
+    handler: operation
+    side_effect_free: false
+    writes: ["project:qa/retro/**"]
+    authorization_writes: ["project:qa/retro/**"]
   builtin:gate:
     handler: builtin
     side_effect_free: true
@@ -246,6 +251,39 @@ graphs:
 gates: {}
 """
 
+_RETRO = """\
+schema_version: "2"
+name: import-retro
+params:
+  run_mode: {type: enum, values: [full, retro], default: full}
+  retro_id: {type: str, default: ""}
+entrypoints:
+  full: {graph: main, allow: "params.run_mode == 'full'"}
+  retro:
+    graph: main
+    with: {run_mode: retro}
+    allow: "params.run_mode == 'retro'"
+policies:
+  retry:
+    never: {max_attempts: 1, retry_on: []}
+  timeout:
+    local: {run_seconds: 60, heartbeat_seconds: 10}
+  scheduler: {max_parallel_tasks: 1}
+graphs:
+  main:
+    max_supersteps: 4
+    nodes:
+      write:
+        uses: operation:retro-write
+        outputs: ["project:qa/retro/${params.retro_id}/marker.json"]
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: write}
+      - {from: write, to: END}
+gates: {}
+"""
+
 
 def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -294,9 +332,17 @@ def _ops() -> dict[str, OperationFn]:
         path.write_text("{}", encoding="utf-8")
         return TaskResult(status="succeeded")
 
+    def retro_write(task: ExecutableTask, workspace, context: RuntimeContext) -> TaskResult:
+        del task
+        path = workspace.project_root / "qa/retro" / str(context.params["retro_id"]) / "marker.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n", encoding="utf-8")
+        return TaskResult(status="succeeded")
+
     ops["operation:review"] = review
     ops["operation:case-op"] = case_op
     ops["operation:budget-op"] = budget_op
+    ops["operation:retro-write"] = retro_write
     return ops
 
 
@@ -495,6 +541,32 @@ def test_valid_input_only_import(tmp_path: Path) -> None:
     input_sha = imported["input_sha256"]
     assert isinstance(input_sha, dict)
     assert input_sha["change:plans/api-plan.md"] == plan_hash
+
+
+def test_retro_import_injects_non_empty_retro_id_before_invocation_is_persisted(
+    tmp_path: Path,
+) -> None:
+    project = _make_project(tmp_path)
+    digest = _seed_fixture(project)
+    compiled, contracts = _compile(_RETRO)
+    runtime = _build_runtime(project, compiled, contracts)
+    manifest = _base_manifest(fixture_digest=digest, entrypoint="retro")
+    context = _context(project).model_copy(update={"params": {"run_mode": "retro"}})
+
+    result = runtime.import_checkpoint(compiled, manifest, context)
+
+    events = read_events_strict(_context(project).change_dir)
+    started = next(
+        event
+        for event in events
+        if event["type"] == "graph_invocation_started" and event["invocation_id"] == result.invocation_id
+    )
+    params = started["params"]
+    assert isinstance(params, dict)
+    retro_id = params["retro_id"]
+    assert isinstance(retro_id, str) and retro_id.startswith("retro-")
+    assert (project / "qa/retro" / retro_id / "marker.json").read_text(encoding="utf-8") == "{}\n"
+    assert runtime.invocation_terminal(result.invocation_id) is not None
 
 
 def test_valid_completed_review_gate_import(tmp_path: Path) -> None:

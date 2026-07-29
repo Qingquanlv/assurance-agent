@@ -4,12 +4,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from assurance_agent import resources
 from assurance_agent.commands.workflow_cmd import _ENTRYPOINT_CHOICE
 from assurance_agent.workflow.graph.compiler import compile_workflow
-from assurance_agent.workflow.graph.contracts import load_execution_contracts, parse_execution_contracts
+from assurance_agent.workflow.graph.contracts import (
+    ResourceClaims,
+    ResourcePath,
+    load_execution_contracts,
+    parse_execution_contracts,
+)
 from assurance_agent.workflow.graph.handlers.operation import default_operations
 from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2, parse_workflow_v2
+from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
 
 DELIVERY_OPS = (
     "operation:load-improvement-delivery",
@@ -81,6 +89,56 @@ def test_delivery_contracts_are_narrow_and_separate() -> None:
         assert "project:improvement-registry" in contract.exclusive
         assert "project:qa/improvements/**" not in contract.authorization_writes
         assert ledger_auth <= set(contract.authorization_writes)
+
+
+@pytest.mark.parametrize(
+    "target",
+    (
+        "operation:apply-memory-improvement",
+        "operation:rollback-memory-improvement",
+    ),
+)
+def test_memory_contract_can_freeze_authorized_target_write(
+    tmp_path: Path,
+    target: str,
+) -> None:
+    project = tmp_path / "project"
+    change_dir = project / "qa/changes/CH-1"
+    change_dir.mkdir(parents=True)
+    memory_path = project / ".aa/memory/aa-run.md"
+    memory_path.parent.mkdir(parents=True)
+    memory_path.write_text("before\n", encoding="utf-8")
+
+    catalog = parse_execution_contracts(resources.read_text("schemas/execution-contracts.yaml"))
+    contract = catalog.contracts[target]
+    claims = ResourceClaims(
+        reads=tuple(ResourcePath.parse(path) for path in contract.reads),
+        writes=tuple(ResourcePath.parse(path) for path in contract.writes),
+        synchronized=tuple(ResourcePath.parse(path) for path in contract.synchronized),
+        exclusive=contract.exclusive,
+        authorization_writes=tuple(ResourcePath.parse(path) for path in contract.authorization_writes),
+    )
+    store = TreeStore(change_dir)
+    base_tree_id = store.capture(project)
+    overlay_tree_id = store.overlay_synchronized_paths(
+        base_tree_id,
+        project,
+        claims.synchronized,
+    )
+    workspace = WorkspaceBackend(change_dir).create(
+        task_id=target.replace(":", "-"),
+        base_tree_id=overlay_tree_id,
+        store=store,
+        claims=claims,
+    )
+    (workspace.project_root / ".aa/memory/aa-run.md").write_text(
+        "after\n",
+        encoding="utf-8",
+    )
+
+    write_set = store.freeze_write_set(workspace, claims=claims)
+
+    assert [entry.logical_path for entry in write_set.entries] == ["project:.aa/memory/aa-run.md"]
 
 
 def test_delivery_graphs_load_first_then_branch_on_delivery() -> None:

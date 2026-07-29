@@ -32,6 +32,7 @@ from assurance_agent.workflow.graph.models import (
     TaskResult,
     WaveResult,
 )
+from assurance_agent.workflow.graph.handlers.operation import OperationHandler
 from assurance_agent.workflow.graph.project_locks import ProjectResourceConflict
 from assurance_agent.workflow.graph.scheduler import Scheduler, select_wave
 from assurance_agent.workflow.graph.schema_v2 import (
@@ -40,6 +41,7 @@ from assurance_agent.workflow.graph.schema_v2 import (
     TimeoutPolicyDef,
 )
 from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
+from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
 
 _INV = "inv-1"
 _DIGEST = "g" * 64
@@ -366,6 +368,93 @@ def test_operation_workspace_skips_agent_only_git_index(tmp_path: Path) -> None:
     result = scheduler.execute(_plan(task), _projection(change, tree_id), _context(project))
 
     assert result.succeeded == (task.task_id,)
+
+
+def test_failed_memory_delivery_task_does_not_publish_partial_workspace_writes(
+    tmp_path: Path,
+) -> None:
+    project = _make_project(tmp_path)
+    change = project / "qa/changes/CH-1"
+    memory = project / ".aa/memory/aa-run.md"
+    projection = project / "qa/improvements/improvements.json"
+    memory.parent.mkdir(parents=True)
+    projection.parent.mkdir(parents=True)
+    memory.write_text("# canonical memory\n", encoding="utf-8")
+    projection.write_text('{"state":"evaluating"}\n', encoding="utf-8")
+    canonical_memory = memory.read_bytes()
+    canonical_projection = projection.read_bytes()
+
+    store = TreeStore(change)
+    tree_id = store.capture(project)
+    _seed_invocation(change, tree_id)
+    target = "operation:crashing-memory-delivery"
+    synchronized = (
+        ResourcePath.parse("project:qa/improvements/**"),
+        ResourcePath.parse("project:.aa/memory/**"),
+    )
+    claims = ResourceClaims(
+        writes=synchronized,
+        synchronized=synchronized,
+        exclusive=("project:improvement-registry",),
+        authorization_writes=synchronized,
+    )
+    task = _task(
+        "crashing-memory-delivery",
+        target=target,
+        max_attempts=1,
+        retryable=(),
+        retry_on=[],
+    ).model_copy(update={"resources": claims})
+
+    def crash_after_private_writes(task, workspace, context) -> TaskResult:  # noqa: ANN001
+        del task, context
+        (workspace.project_root / ".aa/memory/aa-run.md").write_text(
+            "# partial memory\n",
+            encoding="utf-8",
+        )
+        (workspace.project_root / "qa/improvements/improvements.json").write_text(
+            '{"state":"applied"}\n',
+            encoding="utf-8",
+        )
+        raise RuntimeError("crash before task success")
+
+    operation_handler = OperationHandler({target: crash_after_private_writes})
+    runner = HandlerNodeRunner({target: operation_handler})
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=runner,
+        contracts=ExecutionContractCatalog(
+            contracts={
+                target: ExecutionContract(
+                    target=target,
+                    handler="operation",
+                    writes=("project:qa/improvements/**", "project:.aa/memory/**"),
+                    synchronized=(
+                        "project:qa/improvements/**",
+                        "project:.aa/memory/**",
+                    ),
+                    exclusive=("project:improvement-registry",),
+                    authorization_writes=(
+                        "project:qa/improvements/**",
+                        "project:.aa/memory/**",
+                    ),
+                )
+            }
+        ),
+    )
+
+    result = scheduler.execute(
+        _plan(task),
+        _projection(change, tree_id),
+        _context(project),
+    )
+
+    assert result.failed == (task.task_id,)
+    assert memory.read_bytes() == canonical_memory
+    assert projection.read_bytes() == canonical_projection
+    assert not (change / ".graph-runtime/tasks" / task.task_id).exists()
 
 
 def test_success_then_transient_fail_resume_only_retries_failed(tmp_path: Path) -> None:

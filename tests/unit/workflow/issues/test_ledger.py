@@ -29,6 +29,7 @@ from assurance_agent.artifacts.models.issues import (
 )
 from assurance_agent.workflow.issues.events import (
     CHANGE_ISSUE_EVENT_ADAPTER,
+    LedgerIntegrityError,
     PROBLEM_EVENT_ADAPTER,
     read_change_issue_events,
     read_problem_events,
@@ -236,6 +237,71 @@ class TestChangeIssueStore:
         assert len(lines) == 1  # no duplicate appended
         assert snap1.change_id == snap2.change_id
 
+    def test_idempotent_retry_ignores_new_envelope_timestamp(self, tmp_path: Path) -> None:
+        store = ChangeIssueStore(tmp_path)
+        first = _obs_event(1, "E1", "IDEM-1")
+        retry = _obs_event(1, "E1", "IDEM-1")
+        retry["ts"] = "2026-07-25T10:00:01Z"
+
+        store.append_and_rebuild(_mk_change_events(first))
+        store.append_and_rebuild(_mk_change_events(retry))
+
+        events_path = tmp_path / "issues/events.jsonl"
+        assert len(events_path.read_text(encoding="utf-8").splitlines()) == 1
+
+    def test_committed_idempotency_key_with_different_payload_is_rejected(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        store = ChangeIssueStore(tmp_path)
+        events_path = tmp_path / "issues/events.jsonl"
+        store.append_and_rebuild(_mk_change_events(_obs_event(1, "E1", "IDEM-1")))
+        before = events_path.read_bytes()
+
+        with pytest.raises(LedgerIntegrityError, match="idempotency conflict"):
+            store.append_and_rebuild(
+                _mk_change_events(
+                    _obs_event(1, "E2", "IDEM-1", OBS_2, "B-002"),
+                )
+            )
+
+        assert events_path.read_bytes() == before
+
+    def test_committed_event_id_with_different_payload_is_rejected(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        store = ChangeIssueStore(tmp_path)
+        events_path = tmp_path / "issues/events.jsonl"
+        store.append_and_rebuild(_mk_change_events(_obs_event(1, "E1", "IDEM-1")))
+        before = events_path.read_bytes()
+
+        with pytest.raises(LedgerIntegrityError, match="duplicate event_id"):
+            store.append_and_rebuild(
+                _mk_change_events(
+                    _obs_event(1, "E1", "IDEM-2", OBS_2, "B-002"),
+                )
+            )
+
+        assert events_path.read_bytes() == before
+
+    def test_incoming_batch_idempotency_conflict_is_rejected_before_append(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        store = ChangeIssueStore(tmp_path)
+        events_path = tmp_path / "issues/events.jsonl"
+
+        with pytest.raises(LedgerIntegrityError, match="idempotency conflict"):
+            store.append_and_rebuild(
+                _mk_change_events(
+                    _obs_event(1, "E1", "IDEM-1"),
+                    _obs_event(1, "E2", "IDEM-1", OBS_2, "B-002"),
+                )
+            )
+
+        assert not events_path.exists()
+
     def test_partial_idempotency_only_new_events_appended(self, tmp_path: Path) -> None:
         store = ChangeIssueStore(tmp_path)
         first_batch = _mk_change_events(_obs_event(1, "E1", "IDEM-1"))
@@ -346,6 +412,69 @@ class TestProjectProblemStore:
         lines = events_path.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 1
         assert proj1.problems[0].version == proj2.problems[0].version
+
+    def test_idempotent_retry_ignores_new_envelope_timestamp(self, tmp_path: Path) -> None:
+        store = ProjectProblemStore(tmp_path)
+        first = _detected_problem_event(1, "E1", "IDEM-1")
+        retry = _detected_problem_event(1, "E1", "IDEM-1")
+        retry["ts"] = "2026-07-25T10:00:01Z"
+
+        store.append_and_rebuild(_mk_problem_events(first))
+        store.append_and_rebuild(_mk_problem_events(retry))
+
+        events_path = tmp_path / "qa/issues/events.jsonl"
+        assert len(events_path.read_text(encoding="utf-8").splitlines()) == 1
+
+    def test_committed_idempotency_key_with_different_payload_is_rejected(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        store = ProjectProblemStore(tmp_path)
+        events_path = tmp_path / "qa/issues/events.jsonl"
+        store.append_and_rebuild(_mk_problem_events(_detected_problem_event(1, "E1", "IDEM-1")))
+        before = events_path.read_bytes()
+        conflicting = _detected_problem_event(1, "E2", "IDEM-1")
+        conflicting["title"] = "Different title"
+
+        with pytest.raises(LedgerIntegrityError, match="idempotency conflict"):
+            store.append_and_rebuild(_mk_problem_events(conflicting))
+
+        assert events_path.read_bytes() == before
+
+    def test_committed_event_id_with_different_payload_is_rejected(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        store = ProjectProblemStore(tmp_path)
+        events_path = tmp_path / "qa/issues/events.jsonl"
+        store.append_and_rebuild(_mk_problem_events(_detected_problem_event(1, "E1", "IDEM-1")))
+        before = events_path.read_bytes()
+        conflicting = _detected_problem_event(1, "E1", "IDEM-2")
+        conflicting["title"] = "Different title"
+
+        with pytest.raises(LedgerIntegrityError, match="duplicate event_id"):
+            store.append_and_rebuild(_mk_problem_events(conflicting))
+
+        assert events_path.read_bytes() == before
+
+    def test_incoming_batch_idempotency_conflict_is_rejected_before_append(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        store = ProjectProblemStore(tmp_path)
+        events_path = tmp_path / "qa/issues/events.jsonl"
+        conflicting = _detected_problem_event(1, "E2", "IDEM-1")
+        conflicting["title"] = "Different title"
+
+        with pytest.raises(LedgerIntegrityError, match="idempotency conflict"):
+            store.append_and_rebuild(
+                _mk_problem_events(
+                    _detected_problem_event(1, "E1", "IDEM-1"),
+                    conflicting,
+                )
+            )
+
+        assert not events_path.exists()
 
     def test_multiple_events_incrementing_version(self, tmp_path: Path) -> None:
         store = ProjectProblemStore(tmp_path)
