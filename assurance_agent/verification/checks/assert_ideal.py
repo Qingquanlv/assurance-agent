@@ -12,13 +12,19 @@ CHECK_ID = "assert_ideal"
 _MARKER = "assert_ideal"
 _REJECTION = re.compile(r"\b(4xx|400|401|403|404|409|422)\b")
 _SERVER_ERROR = re.compile(r"\b(5xx|500|502|503)\b")
-_NEGATION = ("not ", "no ", "never ", "非", "不", "avoid ", "without ")
+_PREFIX_NEGATION = ("not ", "no ", "never ", "非", "不", "avoid ", "without ")
+_SUFFIX_NEGATION = re.compile(r"^\s*(?:(?:is|are|be)\s+)?(?:not|no|never)\b|^\s*(?:非|不)")
 _CASE_TEXT_KEYS = ("title", "objective", "summary")
 
 
-def _is_negated(line: str, start: int) -> bool:
-    window = line[max(0, start - 12) : start].lower()
-    return any(marker in window for marker in _NEGATION)
+def _is_negated(text: str, start: int, end: int) -> bool:
+    prefix = text[max(0, start - 12) : start].lower()
+    suffix = text[end : end + 24].lower()
+    return any(marker in prefix for marker in _PREFIX_NEGATION) or bool(_SUFFIX_NEGATION.match(suffix))
+
+
+def _has_positive_rejection(text: str) -> bool:
+    return any(not _is_negated(text, match.start(), match.end()) for match in _REJECTION.finditer(text))
 
 
 def _case_text(entry: Mapping[str, object]) -> str:
@@ -65,7 +71,7 @@ def check_assert_ideal(ctx: CheckContext) -> CheckEvidence:
             if _MARKER not in row:
                 continue
             for match in _SERVER_ERROR.finditer(row):
-                if not _is_negated(row, match.start()):
+                if not _is_negated(row, match.start(), match.end()):
                     findings.append(
                         Finding(
                             locator=f"{rel}:{lineno}",
@@ -98,7 +104,9 @@ def check_assert_ideal(ctx: CheckContext) -> CheckEvidence:
                     )
                 )
             seen.add(key)
-        if _REJECTION.search(_case_text(entry)) and not any(_REJECTION.search(row) for *_, row in matched):
+        if _has_positive_rejection(_case_text(entry)) and not any(
+            _has_positive_rejection(row) for *_, row in matched
+        ):
             findings.append(
                 Finding(
                     locator=case_id,

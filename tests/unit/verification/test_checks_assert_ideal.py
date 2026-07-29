@@ -45,6 +45,11 @@ def test_negated_500_on_an_assert_ideal_row_passes() -> None:
     assert check_assert_ideal(_ctx(rows)).status == "pass"
 
 
+def test_500_denial_after_the_token_on_an_assert_ideal_row_passes() -> None:
+    rows = BOTH_PRESENT.replace("on dup create", "; 500 is not acceptable")
+    assert check_assert_ideal(_ctx(rows)).status == "pass"
+
+
 def test_assert_ideal_row_expecting_500_fails() -> None:
     rows = BOTH_PRESENT.replace("**assert_ideal HTTP 4xx** on dup create", "assert_ideal HTTP 500")
     result = check_assert_ideal(_ctx(rows))
@@ -77,6 +82,12 @@ def test_narrowed_rejection_expectation_fails_with_case_locator() -> None:
     assert result.status == "fail"
     finding = next(f for f in result.findings if f.locator == "TC_DEPT_API_010")
     assert "4xx" in finding.expected
+
+
+def test_negated_case_rejection_token_does_not_require_a_plan_rejection_token() -> None:
+    cases = ({"added": [_case("TC_DEPT_API_011", "create succeeds", "must not return 400; expect 200")]},)
+    result = check_assert_ideal(_ctx("| TC_DEPT_API_011 | Create | HTTP 200 |\n", cases=cases))
+    assert result.status == "pass"
 
 
 def test_out_of_layer_and_non_automated_cases_are_out_of_scope() -> None:
