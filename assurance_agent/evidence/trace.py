@@ -13,8 +13,11 @@ import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from assurance_agent.artifacts.models import SelectedTargets
+from assurance_agent.artifacts.models.inspect import FailureAnalysis
+from assurance_agent.artifacts.models.issues import ChangeIssueSnapshot, Problem, ProblemProjection
 from assurance_agent.artifacts.models.trace import (
     TraceExecution,
+    TraceFailure,
     TraceGap,
     TraceProjection,
     TraceRow,
@@ -31,6 +34,11 @@ _DEGRADED_ONLY_GAP = "mapped_test_missing_from_tree"
 
 _FOLD_VIEW_SOURCE = "execution/execution-manifest.yaml#fold-view"
 _MANIFEST_PATH = "execution/execution-manifest.yaml"
+_FAILURE_ANALYSIS_PATH = "inspect/failure-analysis.json"
+_ISSUES_SNAPSHOT_PATH = "issues/snapshot.json"
+_PROBLEMS_PATH = "qa/issues/problems.json"
+_MERGE_INTO_PREFIX = "merged_into:"
+_CLOSED_PROBLEM_STATUSES = frozenset({"resolved", "not_an_issue", "accepted_risk"})
 _PYTEST_TARGETS = ("api", "e2e", "fuzz")
 _CASE_TYPE_TO_TARGET: dict[str, Literal["api", "e2e", "fuzz", "performance"]] = {
     "API": "api",
@@ -142,9 +150,6 @@ def fold_trace(
     phase: Literal["execution", "reconciled"] = "execution",
     current: ExecutionFoldInput | None = None,
 ) -> TraceProjection:
-    if phase != "execution":
-        raise NotImplementedError(f"phase {phase!r} is not implemented yet")
-
     change_dir = resolve_change(project_root, change_id).path
     entries, case_gaps = load_case_entries(change_dir)
     gaps: list[TraceGap] = list(case_gaps)
@@ -182,7 +187,7 @@ def fold_trace(
     )
     unmapped = _collect_unmapped_tests(batches, current_view.batch_id)
     integrity = _derive_integrity(gaps, rows)
-    return TraceProjection(
+    execution = TraceProjection(
         change_id=change_id,
         phase="execution",
         authoritative_batch_id=current_view.batch_id,
@@ -192,6 +197,9 @@ def fold_trace(
         gaps=tuple(sorted(gaps, key=_gap_sort_key)),
         integrity=integrity,
     )
+    if phase == "execution":
+        return execution
+    return _enrich_reconciled(project_root, change_dir, execution)
 
 
 def _compare_test_files_sha256(
@@ -828,3 +836,222 @@ def _file_source(rel: str, path: Path) -> TraceSource:
         return TraceSource(path=rel, exists=False, sha256=None)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     return TraceSource(path=rel, exists=True, sha256=digest)
+
+
+def _enrich_reconciled(
+    project_root: Path,
+    change_dir: Path,
+    execution: TraceProjection,
+) -> TraceProjection:
+    gaps = list(execution.gaps)
+    sources = list(execution.sources)
+    failure_analysis = _load_failure_analysis(change_dir, gaps, sources)
+    issues_snapshot = _load_issues_snapshot(change_dir, gaps, sources)
+    problems_projection = _load_problems_projection(project_root, gaps, sources)
+    failures_by_case = _index_failures_by_case(failure_analysis)
+    problems_by_id = (
+        {problem.problem_id: problem for problem in problems_projection.problems}
+        if problems_projection is not None
+        else {}
+    )
+    open_by_case = _index_open_problems_by_case(issues_snapshot, problems_by_id, gaps)
+    rows = tuple(
+        row.model_copy(
+            update={
+                "failures": failures_by_case.get(row.case_id, ()),
+                "open_problem_ids": open_by_case.get(row.case_id, ()),
+            }
+        )
+        for row in execution.rows
+    )
+    integrity = _derive_integrity(gaps, rows)
+    return TraceProjection(
+        change_id=execution.change_id,
+        phase="reconciled",
+        authoritative_batch_id=execution.authoritative_batch_id,
+        sources=tuple(sorted(sources, key=lambda item: item.path)),
+        rows=rows,
+        unmapped_tests=execution.unmapped_tests,
+        gaps=tuple(sorted(gaps, key=_gap_sort_key)),
+        integrity=integrity,
+    )
+
+
+def _load_failure_analysis(
+    change_dir: Path,
+    gaps: list[TraceGap],
+    sources: list[TraceSource],
+) -> FailureAnalysis | None:
+    path = change_dir / _FAILURE_ANALYSIS_PATH
+    sources.append(_file_source(_FAILURE_ANALYSIS_PATH, path))
+    if not path.is_file():
+        gaps.append(TraceGap(code="failure_analysis_missing", source=_FAILURE_ANALYSIS_PATH))
+        return None
+    try:
+        return FailureAnalysis.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValidationError, ValueError) as err:
+        gaps.append(
+            TraceGap(
+                code="failure_analysis_missing",
+                source=_FAILURE_ANALYSIS_PATH,
+                detail=str(err),
+            )
+        )
+        return None
+
+
+def _load_issues_snapshot(
+    change_dir: Path,
+    gaps: list[TraceGap],
+    sources: list[TraceSource],
+) -> ChangeIssueSnapshot | None:
+    path = change_dir / _ISSUES_SNAPSHOT_PATH
+    sources.append(_file_source(_ISSUES_SNAPSHOT_PATH, path))
+    if not path.is_file():
+        gaps.append(TraceGap(code="issues_snapshot_missing", source=_ISSUES_SNAPSHOT_PATH))
+        return None
+    try:
+        return ChangeIssueSnapshot.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValidationError, ValueError) as err:
+        gaps.append(
+            TraceGap(
+                code="issues_snapshot_missing",
+                source=_ISSUES_SNAPSHOT_PATH,
+                detail=str(err),
+            )
+        )
+        return None
+
+
+def _load_problems_projection(
+    project_root: Path,
+    gaps: list[TraceGap],
+    sources: list[TraceSource],
+) -> ProblemProjection | None:
+    path = project_root / _PROBLEMS_PATH
+    sources.append(_file_source(_PROBLEMS_PATH, path))
+    if not path.is_file():
+        gaps.append(TraceGap(code="problems_snapshot_missing", source=_PROBLEMS_PATH))
+        return None
+    try:
+        return ProblemProjection.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValidationError, ValueError) as err:
+        gaps.append(
+            TraceGap(
+                code="problems_snapshot_missing",
+                source=_PROBLEMS_PATH,
+                detail=str(err),
+            )
+        )
+        return None
+
+
+def _index_failures_by_case(
+    failure_analysis: FailureAnalysis | None,
+) -> dict[str, tuple[TraceFailure, ...]]:
+    if failure_analysis is None:
+        return {}
+    grouped: dict[str, list[TraceFailure]] = {}
+    for entry in failure_analysis.failures:
+        grouped.setdefault(entry.case_id, []).append(
+            TraceFailure(category=entry.category, severity=entry.severity)
+        )
+    return {case_id: tuple(items) for case_id, items in grouped.items()}
+
+
+def _index_open_problems_by_case(
+    issues_snapshot: ChangeIssueSnapshot | None,
+    problems_by_id: dict[str, Problem],
+    gaps: list[TraceGap],
+) -> dict[str, tuple[str, ...]]:
+    if issues_snapshot is None or not problems_by_id:
+        return {}
+
+    observation_case: dict[str, str] = {}
+    for observation in issues_snapshot.observations:
+        if observation.case_id is not None:
+            observation_case[observation.observation_id] = observation.case_id
+
+    case_problem_ids: dict[str, list[str]] = {}
+    for occurrence in issues_snapshot.occurrences:
+        for observation_id in occurrence.observation_ids:
+            case_id = observation_case.get(observation_id)
+            if case_id is None:
+                continue
+            case_problem_ids.setdefault(case_id, []).append(occurrence.problem_id)
+
+    out: dict[str, tuple[str, ...]] = {}
+    for case_id, problem_ids in case_problem_ids.items():
+        open_ids = _collect_open_problem_ids(problem_ids, problems_by_id, gaps)
+        if open_ids:
+            out[case_id] = open_ids
+    return out
+
+
+def _collect_open_problem_ids(
+    problem_ids: list[str],
+    problems_by_id: dict[str, Problem],
+    gaps: list[TraceGap],
+) -> tuple[str, ...]:
+    seen_fingerprints: set[str] = set()
+    open_ids: list[str] = []
+    for problem_id in sorted(problem_ids):
+        canonical_id = _resolve_canonical_problem_id(problem_id, problems_by_id, gaps)
+        if canonical_id is None:
+            continue
+        problem = problems_by_id[canonical_id]
+        if problem.status in _CLOSED_PROBLEM_STATUSES:
+            continue
+        if problem.assessment.classification != "product_bug":
+            continue
+        fingerprint = problem.fingerprint.digest
+        if fingerprint in seen_fingerprints:
+            continue
+        seen_fingerprints.add(fingerprint)
+        open_ids.append(canonical_id)
+    return tuple(sorted(open_ids))
+
+
+def _resolve_canonical_problem_id(
+    problem_id: str,
+    problems_by_id: dict[str, Problem],
+    gaps: list[TraceGap],
+) -> str | None:
+    visited: set[str] = set()
+    current = problem_id
+    while True:
+        if current in visited:
+            gaps.append(
+                TraceGap(
+                    code="problem_alias_invalid",
+                    source=_PROBLEMS_PATH,
+                    detail=f"merge alias cycle at {current}",
+                )
+            )
+            return None
+        visited.add(current)
+        problem = problems_by_id.get(current)
+        if problem is None:
+            gaps.append(
+                TraceGap(
+                    code="problem_alias_invalid",
+                    source=_PROBLEMS_PATH,
+                    detail=f"merge alias target missing: {current}",
+                )
+            )
+            return None
+        resolution = problem.resolution
+        if resolution is not None and resolution.disposition.startswith(_MERGE_INTO_PREFIX):
+            target_id = resolution.disposition[len(_MERGE_INTO_PREFIX) :]
+            if not target_id:
+                gaps.append(
+                    TraceGap(
+                        code="problem_alias_invalid",
+                        source=_PROBLEMS_PATH,
+                        detail=f"empty merge alias target from {current}",
+                    )
+                )
+                return None
+            current = target_id
+            continue
+        return current
