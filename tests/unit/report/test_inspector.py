@@ -1,12 +1,24 @@
+from datetime import UTC, datetime
 from pathlib import Path
 
 from tests.helpers_aa import write_aa_config
 
 from assurance_agent.artifacts.models import CoverageThreshold, SelectedTargets
+from assurance_agent.evidence.sufficiency import EvidenceCoverageEvaluation, SufficiencyReport
 from assurance_agent.workflow.execution.evidence import publish_execution_evidence
 from assurance_agent.workflow.execution.results import CaseResult, CoverageResult, ResultSource, TargetResult
 from assurance_agent.workflow.report.inspector import inspect_change
 from assurance_agent.workflow.report.quality_gate import build_quality_gate
+
+_AS_OF = datetime(2026, 7, 30, 12, 0, 0, tzinfo=UTC)
+
+
+def _sufficient_eval() -> EvidenceCoverageEvaluation:
+    return EvidenceCoverageEvaluation(
+        report=SufficiencyReport(as_of=_AS_OF, recency_hours=72, verdicts=()),
+        action="warn",
+        error_code=None,
+    )
 
 
 def _seed_change(tmp_path: Path, api: TargetResult, cov: CoverageResult) -> str:
@@ -19,7 +31,7 @@ def _seed_change(tmp_path: Path, api: TargetResult, cov: CoverageResult) -> str:
         api=api,
         e2e=None,
         coverage=cov,
-        coverage_gate_mode="warn",
+        evidence_coverage=_sufficient_eval(),
     )
     publish_execution_evidence(
         execution_dir=change_dir / "execution",
@@ -136,7 +148,7 @@ def test_inspect_skipped_execution_writes_no_failures(tmp_path: Path) -> None:
     change_id = _seed_change(tmp_path, skipped, skipped_cov)
     result = inspect_change(tmp_path, change_id)
     assert result.analysis.status == "no_failures"
-    assert result.analysis.final_status == "SKIPPED"
+    assert result.analysis.final_status == "PASS"
     assert result.analysis.failures == []
     assert (tmp_path / "qa" / "changes" / "CH-1" / "inspect" / "failure-analysis.json").is_file()
 

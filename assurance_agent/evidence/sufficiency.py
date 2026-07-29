@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from assurance_agent.artifacts.models.policy import EvidenceKind, Policy
+from assurance_agent.artifacts.models.policy import EvidenceKind, PlanCheckAction, Policy
 from assurance_agent.artifacts.models.trace import TraceProjection, TraceRow
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
@@ -35,6 +36,51 @@ class SufficiencyReport(BaseModel):
     @property
     def all_sufficient(self) -> bool:
         return all(verdict.sufficient for verdict in self.verdicts)
+
+
+EvidenceCoverageErrorCode = Literal["evidence_projection_missing", "policy_error"]
+
+
+@dataclass(frozen=True)
+class EvidenceCoverageEvaluation:
+    report: SufficiencyReport | None
+    action: PlanCheckAction | None
+    error_code: EvidenceCoverageErrorCode | None
+
+    def __post_init__(self) -> None:
+        success = self.report is not None and self.action is not None and self.error_code is None
+        failure = self.report is None and self.action is None and self.error_code is not None
+        if not (success or failure):
+            raise ValueError(
+                "EvidenceCoverageEvaluation must be success (report+action, no error) "
+                "or failure (no report/action, has error)"
+            )
+
+
+def build_evidence_coverage_evaluation(
+    projection: TraceProjection | None,
+    policy: Policy | None,
+    *,
+    as_of: datetime,
+) -> EvidenceCoverageEvaluation:
+    if projection is None:
+        return EvidenceCoverageEvaluation(
+            report=None,
+            action=None,
+            error_code="evidence_projection_missing",
+        )
+    if policy is None:
+        return EvidenceCoverageEvaluation(
+            report=None,
+            action=None,
+            error_code="policy_error",
+        )
+    report = evaluate_sufficiency(projection, policy, as_of=as_of)
+    return EvidenceCoverageEvaluation(
+        report=report,
+        action=policy.evidence_sufficiency.on_insufficient,
+        error_code=None,
+    )
 
 
 def evaluate_sufficiency(

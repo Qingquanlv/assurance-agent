@@ -22,6 +22,7 @@ from assurance_agent.workflow.execution.evidence import (
     ExecutionEvidence,
     load_execution_evidence,
 )
+from assurance_agent.evidence.sufficiency import EvidenceCoverageEvaluation
 from assurance_agent.workflow.execution.results import TargetResult
 from assurance_agent.workflow.report.failure_classifier import classify_failure
 
@@ -81,7 +82,11 @@ def inspect_change(
             api=evidence.api,
             e2e=evidence.e2e,
             coverage=evidence.coverage,
-            coverage_gate_mode="warn",
+            evidence_coverage=EvidenceCoverageEvaluation(
+                report=None,
+                action=None,
+                error_code="evidence_projection_missing",
+            ),
             fuzz=evidence.fuzz,
             performance=evidence.performance,
         )

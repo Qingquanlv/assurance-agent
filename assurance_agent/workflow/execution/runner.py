@@ -11,7 +11,10 @@ from pathlib import Path
 from assurance_agent.artifacts.models import ExecutionManifest
 from assurance_agent.artifacts.policy import PolicyError, load_policy
 from assurance_agent.config import AaConfig
-from assurance_agent.evidence.sufficiency import evaluate_sufficiency
+from assurance_agent.evidence.sufficiency import (
+    EvidenceCoverageEvaluation,
+    build_evidence_coverage_evaluation,
+)
 from assurance_agent.evidence.trace import ExecutionFoldInput, fold_trace
 from assurance_agent.workflow.execution.evidence import publish_execution_evidence
 from assurance_agent.workflow.execution.exec_config import load_coverage_config, load_perf_config
@@ -47,17 +50,31 @@ def _test_dir(config: AaConfig, attr: str, default: str) -> str:
 
 
 def _shadow_evidence_diagnostics(
+    evaluation: EvidenceCoverageEvaluation,
+) -> dict:
+    payload: dict = {}
+    if evaluation.error_code == "policy_error":
+        payload["policy_error"] = "invalid or unreadable .aa/policy.yaml"
+    elif evaluation.report is not None:
+        payload.update(evaluation.report.model_dump(mode="json"))
+    return {"evidence_sufficiency": payload}
+
+
+def _evaluate_evidence_coverage(
     project_root: Path,
     projection,
     *,
     as_of: datetime,
-) -> dict:
+) -> EvidenceCoverageEvaluation:
     try:
         policy = load_policy(project_root)
-    except PolicyError as err:
-        return {"evidence_sufficiency": {"policy_error": str(err)}}
-    report = evaluate_sufficiency(projection, policy, as_of=as_of)
-    return {"evidence_sufficiency": report.model_dump(mode="json")}
+    except PolicyError:
+        return EvidenceCoverageEvaluation(
+            report=None,
+            action=None,
+            error_code="policy_error",
+        )
+    return build_evidence_coverage_evaluation(projection, policy, as_of=as_of)
 
 
 def run_change(
@@ -165,7 +182,8 @@ def run_change(
         projection.model_dump_json(indent=2),
         encoding="utf-8",
     )
-    diagnostics = _shadow_evidence_diagnostics(project_root, projection, as_of=now_aware)
+    evidence_coverage = _evaluate_evidence_coverage(project_root, projection, as_of=now_aware)
+    diagnostics = _shadow_evidence_diagnostics(evidence_coverage)
 
     quality_gate = build_quality_gate(
         change_id=change_id,
@@ -173,7 +191,7 @@ def run_change(
         api=api,
         e2e=e2e,
         coverage=coverage,
-        coverage_gate_mode=cov_config.gate_mode,
+        evidence_coverage=evidence_coverage,
         fuzz=fuzz,
         performance=performance,
     )

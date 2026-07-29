@@ -4,8 +4,6 @@ Functional folds api + e2e + fuzz; coverage and performance are separate
 dimensions. final_status is the worst status across active dimensions.
 """
 
-from typing import Literal
-
 from assurance_agent.artifacts.models import (
     CoverageDimension,
     CoverageThreshold,
@@ -16,6 +14,7 @@ from assurance_agent.artifacts.models import (
     QualityGateDimensions,
     QualityGateResult,
 )
+from assurance_agent.evidence.sufficiency import EvidenceCoverageEvaluation
 from assurance_agent.workflow.execution.results import (
     CoverageResult,
     PerformanceResult,
@@ -55,12 +54,31 @@ def _unmapped_count(*results: TargetResult | None) -> int:
     return sum(len(r.unmapped_tests) for r in results if r and r.total > 0)
 
 
-def _coverage_status(coverage: CoverageResult | None, gate_mode: Literal["warn", "block"]) -> GateStatus:
-    if not coverage or not coverage.available:
-        return "SKIPPED"
-    if coverage.status == "PASS":
-        return "PASS"
-    return "FAIL" if gate_mode == "block" else "PASS_WITH_WARNINGS"
+def _coverage_from_evidence(
+    coverage: CoverageResult | None,
+    evidence_coverage: EvidenceCoverageEvaluation,
+) -> CoverageDimension:
+    if evidence_coverage.error_code is not None:
+        status: GateStatus = "FAIL"
+        evidence = {"error_code": evidence_coverage.error_code}
+    elif evidence_coverage.report is not None and evidence_coverage.report.all_sufficient:
+        status = "PASS"
+        evidence = evidence_coverage.report.model_dump(mode="json")
+    elif evidence_coverage.action == "warn":
+        status = "PASS_WITH_WARNINGS"
+        evidence = evidence_coverage.report.model_dump(mode="json") if evidence_coverage.report else None
+    else:
+        status = "FAIL"
+        evidence = evidence_coverage.report.model_dump(mode="json") if evidence_coverage.report else None
+
+    return CoverageDimension(
+        status=status,
+        available=bool(coverage and coverage.available),
+        line_coverage=coverage.line_coverage if coverage else 0.0,
+        branch_coverage=coverage.branch_coverage if coverage else 0.0,
+        threshold=coverage.threshold if coverage else CoverageThreshold(line=0, branch=0),
+        evidence=evidence,
+    )
 
 
 def _non_functional(perf: PerformanceResult | None) -> NonFunctionalDimension | None:
@@ -84,12 +102,13 @@ def build_quality_gate(
     api: TargetResult | None,
     e2e: TargetResult | None,
     coverage: CoverageResult | None,
-    coverage_gate_mode: Literal["warn", "block"],
+    evidence_coverage: EvidenceCoverageEvaluation,
     fuzz: TargetResult | None = None,
     performance: PerformanceResult | None = None,
 ) -> QualityGateResult:
     func_status = _functional_status(api, e2e, fuzz)
-    cov_status = _coverage_status(coverage, coverage_gate_mode)
+    coverage_dim = _coverage_from_evidence(coverage, evidence_coverage)
+    cov_status = coverage_dim.status
     non_functional = _non_functional(performance)
     warnings: list[str] = []
 
@@ -111,14 +130,6 @@ def build_quality_gate(
     )
     if fuzz and fuzz.status != "skipped":
         functional.fuzz = _counts(fuzz)
-
-    coverage_dim = CoverageDimension(
-        status=cov_status,
-        available=bool(coverage and coverage.available),
-        line_coverage=coverage.line_coverage if coverage else 0.0,
-        branch_coverage=coverage.branch_coverage if coverage else 0.0,
-        threshold=coverage.threshold if coverage else CoverageThreshold(line=0, branch=0),
-    )
 
     dimensions = QualityGateDimensions(functional=functional, coverage=coverage_dim)
     gate_statuses: list[GateStatus] = [func_status, cov_status]

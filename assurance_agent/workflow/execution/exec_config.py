@@ -15,6 +15,7 @@ from assurance_agent.config import AaConfig
 
 class CoverageConfig(BaseModel):
     enabled: bool = True
+    # Deprecated (D3): gate_mode no longer adjudicates coverage; use policy.evidence_sufficiency.on_insufficient.
     gate_mode: Literal["warn", "block"] = "warn"
     target_package: str = "app"
     threshold: CoverageThreshold

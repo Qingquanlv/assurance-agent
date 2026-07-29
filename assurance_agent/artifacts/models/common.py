@@ -43,3 +43,4 @@ class CoverageDimension(BaseModel):
     branch_coverage: float
     threshold: CoverageThreshold
     scope: Any = None
+    evidence: dict | None = None

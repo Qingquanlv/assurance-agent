@@ -1,4 +1,4 @@
-"""Runner trace fold injection, shadow diagnostics, and manifest executed_at (Task 8)."""
+"""Runner trace fold injection, shadow diagnostics, and manifest executed_at (Task 8/9)."""
 
 from __future__ import annotations
 
@@ -124,16 +124,31 @@ def test_quality_gate_diagnostics_contain_evidence_sufficiency_shadow(
     assert "verdicts" in shadow
 
 
-def test_final_status_unchanged_by_shadow(
+def test_coverage_dimension_uses_evidence_sufficiency(
+    trace_project: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root, change_dir = trace_project
+    _run_with_stubs(monkeypatch, project_root, change_dir)
+    gate_path = change_dir / "execution" / "runs" / BATCH_ID / "quality-gate-result.json"
+    gate = json.loads(gate_path.read_text(encoding="utf-8"))
+    coverage = gate["dimensions"]["coverage"]
+    assert coverage["evidence"] is not None
+    assert "verdicts" in coverage["evidence"]
+    assert coverage["status"] in {"PASS", "PASS_WITH_WARNINGS", "FAIL"}
+
+
+def test_final_status_reflects_evidence_coverage_with_default_policy(
     trace_project: tuple[Path, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project_root, change_dir = trace_project
     manifest = _run_with_stubs(monkeypatch, project_root, change_dir)
-    assert manifest.final_status == "PASS"
     gate_path = change_dir / "execution" / "runs" / BATCH_ID / "quality-gate-result.json"
     gate = json.loads(gate_path.read_text(encoding="utf-8"))
-    assert gate["final_status"] == "PASS"
+    # Default on_insufficient=require_human: stub execution may leave never_run → FAIL.
+    assert gate["dimensions"]["coverage"]["status"] == gate["final_status"] or gate["final_status"] == "FAIL"
+    assert manifest.final_status == gate["final_status"]
 
 
 def test_manifest_contains_executed_at(
@@ -149,7 +164,7 @@ def test_manifest_contains_executed_at(
     assert manifest.executed_at == EXECUTED_AT
 
 
-def test_policy_error_in_diagnostics_does_not_change_final_status(
+def test_policy_error_fails_closed_on_coverage(
     trace_project: tuple[Path, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -157,8 +172,9 @@ def test_policy_error_in_diagnostics_does_not_change_final_status(
     policy_path = project_root / ".aa" / "policy.yaml"
     policy_path.write_text("not: valid: policy\n", encoding="utf-8")
     manifest = _run_with_stubs(monkeypatch, project_root, change_dir)
-    assert manifest.final_status == "PASS"
+    assert manifest.final_status == "FAIL"
     gate_path = change_dir / "execution" / "runs" / BATCH_ID / "quality-gate-result.json"
     gate = json.loads(gate_path.read_text(encoding="utf-8"))
-    assert gate["final_status"] == "PASS"
+    assert gate["final_status"] == "FAIL"
+    assert gate["dimensions"]["coverage"]["evidence"] == {"error_code": "policy_error"}
     assert "policy_error" in gate["diagnostics"]["evidence_sufficiency"]
