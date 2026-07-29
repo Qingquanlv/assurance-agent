@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from assurance_agent.artifacts.models.plan_checks import PlanCheckDocument
 from assurance_agent.verification.checks.base import CheckContext, CheckFn
+from assurance_agent.verification.checks.assert_ideal import check_assert_ideal
 from assurance_agent.verification.checks.l1_path import check_l1_path
 from assurance_agent.verification.checks.shared_factory import check_shared_factory
 
-PLAN_CHECKS: tuple[CheckFn, ...] = (check_l1_path, check_shared_factory)
+PLAN_CHECKS: tuple[CheckFn, ...] = (check_l1_path, check_shared_factory, check_assert_ideal)
 
 
 def run_plan_checks(ctx: CheckContext) -> PlanCheckDocument:

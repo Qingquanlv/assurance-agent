@@ -18,6 +18,7 @@ class CheckContext:
     plan_texts: Mapping[str, str]
     cases: Sequence[Mapping[str, object]]
     data_knowledge: Mapping[str, object]
+    layer: str = "api"
 
 
 CheckFn = Callable[[CheckContext], CheckEvidence]
@@ -39,7 +40,37 @@ def table_rows(text: str) -> Iterator[tuple[int, list[str]]]:
         stripped = line.strip()
         if not stripped.startswith("|"):
             continue
-        cells = [cell.strip().strip("`").replace("**", "").strip() for cell in stripped.strip("|").split("|")]
-        if cells and all(set(cell) <= {"-", ":"} and cell for cell in cells):
+        cells = _cells(stripped)
+        if _is_separator(cells):
             continue
         yield lineno, cells
+
+
+def _cells(stripped_line: str) -> list[str]:
+    return [cell.strip().strip("`").replace("**", "").strip() for cell in stripped_line.strip("|").split("|")]
+
+
+def _is_separator(cells: list[str]) -> bool:
+    return bool(cells) and all(set(cell) <= {"-", ":"} and cell for cell in cells)
+
+
+def case_id_rows(text: str) -> Iterator[tuple[int, int, str, str]]:
+    """Yield Case ID-table rows as (table index, line number, ID cell, row text)."""
+    table_index = -1
+    case_column: int | None = None
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            case_column = None
+            continue
+        cells = _cells(stripped)
+        if _is_separator(cells):
+            continue
+        lowered = [cell.lower() for cell in cells]
+        if "case id" in lowered:
+            table_index += 1
+            case_column = lowered.index("case id")
+            continue
+        if case_column is None or len(cells) <= case_column:
+            continue
+        yield table_index, lineno, cells[case_column], " ".join(cells)
