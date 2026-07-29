@@ -972,6 +972,7 @@ contracts:
       - project:.aa/memory/**
     synchronized:
       - project:qa/improvements/**
+      - project:.aa/memory/**
     exclusive:
       - project:improvement-registry
     retryable_errors: [conflict, transport]
@@ -991,6 +992,7 @@ contracts:
       - project:.aa/memory/**
     synchronized:
       - project:qa/improvements/**
+      - project:.aa/memory/**
     exclusive:
       - project:improvement-registry
     retryable_errors: [conflict, transport]

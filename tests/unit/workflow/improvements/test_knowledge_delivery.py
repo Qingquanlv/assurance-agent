@@ -296,6 +296,35 @@ def test_knowledge_export_is_hash_idempotent(tmp_path: Path) -> None:
     assert proposal.read_bytes() == before
 
 
+def test_knowledge_export_retry_completes_event_after_proposal_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    improvement = _seed_approved(tmp_path)
+    _seed_l1(tmp_path)
+    delivery = KnowledgeDeltaDelivery(tmp_path)
+
+    def fail_event_append(events: object) -> None:
+        del events
+        raise RuntimeError("crash after proposal write")
+
+    monkeypatch.setattr(delivery.store, "append_and_rebuild", fail_event_append)
+    with pytest.raises(RuntimeError, match="crash after proposal write"):
+        delivery.export(improvement, problems={PROB_ID: _problem()})
+
+    proposal = tmp_path / "qa/improvements/knowledge-delta" / f"{IMP_ID}.proposal.yaml"
+    before = proposal.read_bytes()
+    receipt = KnowledgeDeltaDelivery(tmp_path).export(
+        improvement,
+        problems={PROB_ID: _problem()},
+    )
+
+    ledger = json.loads((tmp_path / "qa/improvements/improvements.json").read_text(encoding="utf-8"))
+    assert receipt.created is False
+    assert proposal.read_bytes() == before
+    assert ledger["improvements"][IMP_ID]["state"] == ImprovementState.EXPORTED.value
+
+
 def test_knowledge_export_conflicts_on_different_bytes_when_exported(tmp_path: Path) -> None:
     improvement = _seed_approved(tmp_path)
     _seed_l1(tmp_path)

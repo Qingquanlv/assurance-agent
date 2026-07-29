@@ -49,6 +49,7 @@ Use this shape:
 
 ```json
 {
+  "schema_version": "1.0",
   "change_id": "<change-id>",
   "generated_at": "<ISO timestamp>",
   "source": "seed_file | db_probe | both | unavailable",
@@ -69,6 +70,8 @@ Use this shape:
   "warnings": []
 }
 ```
+
+For `source = seed_file | db_probe | both`, `schema_version` is required and must be `"1.0"`.
 
 If no seed/init source is readable and no read-only DB probe is configured, still write `fact-baseline.json` with:
 

@@ -236,30 +236,28 @@ class KnowledgeDeltaDelivery:
         )
         digest = _sha256_bytes(payload_bytes)
 
+        created = True
         if path.is_file():
             existing = path.read_bytes()
             if existing == payload_bytes:
                 # Hash-idempotent: identical bytes, no rewrite.
-                return KnowledgeExportReceipt(
-                    sha256=digest,
-                    created=False,
-                    artifact_path=path.relative_to(self.project_root).as_posix(),
-                )
-            if current.state is ImprovementState.EXPORTED:
+                created = False
+            elif current.state is ImprovementState.EXPORTED:
                 raise ImprovementDeliveryConflict(
                     f"knowledge proposal conflict for {current.improvement_id}: "
                     "different bytes while already exported"
                 )
 
-        path.write_bytes(payload_bytes)
+        if created:
+            path.write_bytes(payload_bytes)
         try:
             validate_improvement_knowledge_proposal(path)
         except KnowledgePromoteError as exc:
-            path.unlink(missing_ok=True)
+            if created:
+                path.unlink(missing_ok=True)
             raise ImprovementDeliveryError(f"L2 semantic rejection: {exc}") from exc
 
         rel = path.relative_to(self.project_root).as_posix()
-        created = True
         if current.state is ImprovementState.APPROVED:
             event = ImprovementExportedEvent(
                 schema_version="1.0",

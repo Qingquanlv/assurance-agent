@@ -13,6 +13,7 @@ Before producing output, check whether `.aa/memory/aa-api-plan.md` exists in the
 - API execution glue lives in `tests/api/adapters/`. It is the only API-owned location for pytest fixtures, in-process async calls, or live-server setup transport.
 - Plans must map each data need to one shared domain factory and one API adapter. A shared file is `create-if-missing` and may be created only by the first active codegen layer; later layers reuse it without rewriting it.
 - `.aa/data-knowledge.yaml` must use `capabilities.domain_factories` and `capabilities.adapters.api`; legacy `capabilities.factories` is discovery-only and must be proposed for migration.
+- Treat `.aa/data-knowledge.yaml` as the only formal L1 path. Never invent, require, propose, or migrate to an alternate hidden-directory path for `data-knowledge.yaml`.
 
 ## Context Contract
 
@@ -138,6 +139,7 @@ Must NOT generate:
 6. Filter cases with `type = API` and `automation.required = true` **from `added` and `modified` only**. If none match, stop and report.
    - **Must NOT** generate API plans for cases under `removed`.
    - `removed` entries (case_id / reason only) are for context and archive merge validation, not plan selection.
+   - For authorization and negative cases, never narrow, drop, or reinterpret `assert_ideal HTTP status expectations` unless the case text explicitly authorizes that change. If observed product behavior conflicts with the case contract, stop and escalate instead of rewriting the expected status.
 7. Read `.aa/data-knowledge.yaml`. If missing, generate `plans/data-knowledge.proposal.api.yaml` (must NOT write `.aa/data-knowledge.yaml`) and record warning in `m3-review-summary.md`.
 8. Generate `plans/api-plan.md` (create `plans/` if missing).
 9. Generate `plans/api-test-data-plan.md`.

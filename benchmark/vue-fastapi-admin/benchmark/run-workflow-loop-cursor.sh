@@ -846,7 +846,7 @@ for item in "${BENCHMARK_ITEMS[@]}"; do
     archived="no"
     if [ -d "qa/archive/$change_id" ]; then
       archived="yes"
-    elif [ "$DO_ARCHIVE" = "true" ]; then
+    elif benchmark_should_run_archive "$DO_ARCHIVE" "$workflow_kind" "$final_status"; then
       log "[$change_id] stage 2/2 archive (resume) ..."
       if run_archive_stage "$change_id"; then
         [ -d "qa/archive/${change_id}" ] && archived="yes"
@@ -854,6 +854,9 @@ for item in "${BENCHMARK_ITEMS[@]}"; do
         archived="no (archive-gate stop)"
       fi
       log "[$change_id] archive done (archived=$archived)"
+    elif [ "$DO_ARCHIVE" = "true" ]; then
+      archived="skipped (final_status=$final_status)"
+      log "[$change_id] archive skipped because execution final_status=$final_status"
     fi
     record_item_result "$change_id" "completed" "final_status=$final_status" "archived=$archived"
     continue
@@ -934,7 +937,7 @@ PYASSERT
     continue
   fi
 
-  if [ "$DO_ARCHIVE" = "true" ]; then
+  if benchmark_should_run_archive "$DO_ARCHIVE" "$workflow_kind" "$final_status"; then
     log "[$change_id] stage 2/2 archive ..."
     if run_archive_stage "$change_id"; then
       [ -d "qa/archive/${change_id}" ] && archived="yes"
@@ -944,6 +947,9 @@ PYASSERT
     else
       log "[$change_id] archive exited non-zero"
     fi
+  elif [ "$DO_ARCHIVE" = "true" ]; then
+    archived="skipped (final_status=$final_status)"
+    log "[$change_id] archive skipped because execution final_status=$final_status"
   fi
 
   record_item_result "$change_id" "completed" "final_status=$final_status" "archived=$archived"

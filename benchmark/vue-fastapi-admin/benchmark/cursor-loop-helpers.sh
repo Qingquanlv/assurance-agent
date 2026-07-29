@@ -204,6 +204,16 @@ workflow_attempts_should_stop() {
   esac
 }
 
+benchmark_should_run_archive() {
+  local do_archive="$1" terminal="$2" final_status="$3"
+  [ "$do_archive" = "true" ] || return 1
+  [ "$terminal" = "completed" ] || return 1
+  case "$final_status" in
+    PASS|PASS_WITH_WARNINGS) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 benchmark_result_exit_code() {
   local do_archive="$1"
   shift
@@ -213,6 +223,8 @@ benchmark_result_exit_code() {
   for row in "$@"; do
     IFS='|' read -r cid term detail archive_field <<<"$row"
     if [ "$term" != "completed" ]; then
+      failed=1
+    elif [ "$detail" != "final_status=PASS" ] && [ "$detail" != "final_status=PASS_WITH_WARNINGS" ]; then
       failed=1
     elif [ "$do_archive" = "true" ] && [ "$archive_field" != "archived=yes" ]; then
       failed=1

@@ -26,6 +26,9 @@ import os
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TypeVar
+
+from pydantic import BaseModel
 
 from assurance_agent.artifacts.models.issues import (
     ChangeIssueSnapshot,
@@ -51,24 +54,23 @@ from assurance_agent.workflow.issues.projection import (
 # ---------------------------------------------------------------------------
 
 
-def _read_committed_keys(path: Path) -> set[str]:
-    """Return all idempotency_keys already committed in a ledger file."""
-    if not path.exists():
-        return set()
-    keys: set[str] = set()
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        try:
-            data = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(data, dict):
-            key = data.get("idempotency_key")
-            if isinstance(key, str):
-                keys.add(key)
-    return keys
+_EventT = TypeVar("_EventT", bound=BaseModel)
+
+
+def _canonical_payload_bytes(event: BaseModel) -> bytes:
+    data = dict(event.model_dump(mode="json"))
+    data.pop("seq", None)
+    data.pop("ts", None)
+    return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def _event_identity(event: BaseModel) -> tuple[str, str]:
+    data = event.model_dump(mode="json", include={"event_id", "idempotency_key"})
+    event_id = data.get("event_id")
+    idempotency_key = data.get("idempotency_key")
+    if not isinstance(event_id, str) or not isinstance(idempotency_key, str):
+        raise TypeError("ledger event lacks event_id or idempotency_key")
+    return event_id, idempotency_key
 
 
 def _next_seq(path: Path) -> int:
@@ -148,15 +150,64 @@ def _atomic_write_json(json_path: Path, data: bytes) -> None:
 
 
 def _filter_new_events(
-    all_events: Sequence[object],
-    committed_keys: set[str],
-) -> list[object]:
-    """Return only events whose idempotency_key has not been committed."""
-    return [
-        e
-        for e in all_events
-        if e.idempotency_key not in committed_keys  # type: ignore[union-attr]
-    ]
+    committed: Sequence[_EventT],
+    incoming: Sequence[_EventT],
+) -> list[_EventT]:
+    """Filter semantic retries and reject identity/payload conflicts.
+
+    ``seq`` is assigned by the store and retrying producers generate a fresh
+    envelope ``ts``. Neither field changes the semantic event bound to its
+    deterministic event ID and idempotency key.
+    """
+    from assurance_agent.workflow.issues.events import LedgerIntegrityError
+
+    committed_by_event_id: dict[str, bytes] = {}
+    committed_by_key: dict[str, bytes] = {}
+    for event in committed:
+        event_id, key = _event_identity(event)
+        payload = _canonical_payload_bytes(event)
+        committed_by_event_id[event_id] = payload
+        committed_by_key[key] = payload
+
+    seen_by_event_id: dict[str, bytes] = {}
+    seen_by_key: dict[str, bytes] = {}
+    filtered: list[_EventT] = []
+    for event in incoming:
+        event_id, key = _event_identity(event)
+        payload = _canonical_payload_bytes(event)
+
+        prior_event = committed_by_event_id.get(event_id)
+        if prior_event is not None:
+            if prior_event != payload:
+                raise LedgerIntegrityError(f"duplicate event_id {event_id!r} with different event payload")
+            continue
+
+        prior_key = committed_by_key.get(key)
+        if prior_key is not None:
+            if prior_key != payload:
+                raise LedgerIntegrityError(
+                    f"idempotency conflict for key {key!r}: same key with different event payload"
+                )
+            continue
+
+        batch_event = seen_by_event_id.get(event_id)
+        if batch_event is not None:
+            if batch_event != payload:
+                raise LedgerIntegrityError(f"duplicate event_id {event_id!r} with different event payload")
+            continue
+
+        batch_key = seen_by_key.get(key)
+        if batch_key is not None:
+            if batch_key != payload:
+                raise LedgerIntegrityError(
+                    f"idempotency conflict for key {key!r}: same key with different event payload"
+                )
+            continue
+
+        seen_by_event_id[event_id] = payload
+        seen_by_key[key] = payload
+        filtered.append(event)
+    return filtered
 
 
 # ---------------------------------------------------------------------------
@@ -199,8 +250,8 @@ class ChangeIssueStore:
         if not events:
             raise ValueError("append_and_rebuild requires at least one event")
 
-        committed_keys = _read_committed_keys(self._events_path)
-        new_events = _filter_new_events(events, committed_keys)
+        committed = read_change_issue_events(self._events_path)
+        new_events = _filter_new_events(committed, events)
 
         if new_events:
             # Validate seq continuity won't break; assign fresh seq numbers.
@@ -261,8 +312,8 @@ class ProjectProblemStore:
         if not events:
             raise ValueError("append_and_rebuild requires at least one event")
 
-        committed_keys = _read_committed_keys(self._events_path)
-        new_events = _filter_new_events(events, committed_keys)
+        committed = read_problem_events(self._events_path)
+        new_events = _filter_new_events(committed, events)
 
         if new_events:
             start_seq = _next_seq(self._events_path)
