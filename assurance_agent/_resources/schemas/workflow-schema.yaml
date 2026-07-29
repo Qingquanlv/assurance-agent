@@ -1823,6 +1823,7 @@ gates:
   api-plan-review-gate: &plan-review-gate
     reads:
       - review/api-plan-review.json
+      - { path: review/api-plan-checks.json, as: api_plan_checks }
       - { path: repo:.aa/data-knowledge.yaml, as: data_knowledge }
     invalid_json: stop
     missing_field_is: stop
@@ -1847,7 +1848,19 @@ gates:
           and api_plan_review.codegen_readiness in ['ready','ready_with_warnings']
         )
       )
-    reject_when: "api_plan_review.decision == 'reject' or api_plan_review.codegen_readiness == 'not_ready'"
+      or (
+        defined(api_plan_checks.status)
+        and api_plan_checks.status == 'fail'
+        and policy.plan_check_action == 'require_human'
+      )
+    reject_when: >
+      api_plan_review.decision == 'reject'
+      or api_plan_review.codegen_readiness == 'not_ready'
+      or (
+        defined(api_plan_checks.status)
+        and api_plan_checks.status == 'fail'
+        and policy.plan_check_action == 'block'
+      )
     pass_when: >
       api_plan_review.decision == 'pass'
       and api_plan_review.codegen_readiness in ['ready','ready_with_warnings']
