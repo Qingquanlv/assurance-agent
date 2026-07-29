@@ -1,0 +1,62 @@
+"""L1-declared shared factories may only be reused by code-generation plans."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+
+from assurance_agent.artifacts.models.plan_checks import CheckEvidence, Finding
+from assurance_agent.verification.checks.base import CheckContext, evidence, table_rows
+
+CHECK_ID = "shared_factory"
+_MODULE_COLUMN = "shared module"
+_FUNCTION_COLUMN = "function"
+_OWNERSHIP_COLUMN = "ownership"
+
+
+def _declared_symbols(dk: Mapping[str, object]) -> dict[tuple[str, str], str]:
+    capabilities = dk.get("capabilities")
+    factories = capabilities.get("domain_factories") if isinstance(capabilities, Mapping) else None
+    declared: dict[tuple[str, str], str] = {}
+    if not isinstance(factories, Mapping):
+        return declared
+    for group in factories.values():
+        if not isinstance(group, Mapping):
+            continue
+        for leaf in group.values():
+            symbol = leaf.get("symbol") if isinstance(leaf, Mapping) else None
+            if not isinstance(symbol, str) or "." not in symbol:
+                continue
+            module_dotted, _, function = symbol.rpartition(".")
+            declared[(module_dotted.replace(".", "/") + ".py", function)] = symbol
+    return declared
+
+
+def check_shared_factory(ctx: CheckContext) -> CheckEvidence:
+    declared = _declared_symbols(ctx.data_knowledge)
+    findings: list[Finding] = []
+    for rel in sorted(ctx.plan_texts):
+        columns: dict[str, int] | None = None
+        for lineno, cells in table_rows(ctx.plan_texts[rel]):
+            lowered = [cell.lower() for cell in cells]
+            if _MODULE_COLUMN in lowered and _OWNERSHIP_COLUMN in lowered and _FUNCTION_COLUMN in lowered:
+                columns = {
+                    name: lowered.index(name)
+                    for name in (_MODULE_COLUMN, _FUNCTION_COLUMN, _OWNERSHIP_COLUMN)
+                }
+                continue
+            if columns is None or len(cells) <= max(columns.values()):
+                continue
+            module = cells[columns[_MODULE_COLUMN]]
+            function = cells[columns[_FUNCTION_COLUMN]]
+            ownership = cells[columns[_OWNERSHIP_COLUMN]]
+            symbol = declared.get((module, function))
+            if symbol is None or "reuse" in ownership.lower():
+                continue
+            findings.append(
+                Finding(
+                    locator=f"{rel}:{lineno}",
+                    actual=ownership,
+                    expected=f"reuse the L1-declared factory {symbol}",
+                )
+            )
+    return evidence(CHECK_ID, findings, tuple(ctx.plan_texts))
