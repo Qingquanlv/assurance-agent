@@ -16,6 +16,10 @@ from assurance_agent.evidence.sufficiency import (
     build_evidence_coverage_evaluation,
 )
 from assurance_agent.evidence.trace import ExecutionFoldInput, fold_trace
+from assurance_agent.workflow.execution.trace_convert import (
+    performance_document_from_result,
+    result_document_from_target,
+)
 from assurance_agent.workflow.execution.evidence import publish_execution_evidence
 from assurance_agent.workflow.execution.exec_config import load_coverage_config, load_perf_config
 from assurance_agent.workflow.execution.results import CoverageResult
@@ -176,13 +180,13 @@ def run_change(
         executed_at=now_aware,
         selected_targets=selected,
         test_files_sha256=test_tree.files,
+        api=result_document_from_target(api) if api is not None else None,
+        e2e=result_document_from_target(e2e) if e2e is not None else None,
+        fuzz=result_document_from_target(fuzz) if fuzz is not None else None,
+        performance=performance_document_from_result(performance) if performance is not None else None,
     )
-    projection = fold_trace(project_root, change_id, phase="execution", current=current)
-    (batch_dir / "trace-projection.json").write_text(
-        projection.model_dump_json(indent=2),
-        encoding="utf-8",
-    )
-    evidence_coverage = _evaluate_evidence_coverage(project_root, projection, as_of=now_aware)
+    pre_publish_projection = fold_trace(project_root, change_id, phase="execution", current=current)
+    evidence_coverage = _evaluate_evidence_coverage(project_root, pre_publish_projection, as_of=now_aware)
     diagnostics = _shadow_evidence_diagnostics(evidence_coverage)
 
     quality_gate = build_quality_gate(
@@ -200,7 +204,7 @@ def run_change(
 
     product_tree = hash_product_tree(project_root, load_product_code_roots(project_root))
 
-    return publish_execution_evidence(
+    manifest = publish_execution_evidence(
         execution_dir=execution_dir,
         change_id=change_id,
         batch_id=batch_id,
@@ -217,6 +221,12 @@ def run_change(
         product_tree_sha256=product_tree.aggregate,
         executed_at=now_aware,
     )
+    disk_projection = fold_trace(project_root, change_id, phase="execution", current=None)
+    (batch_dir / "trace-projection.json").write_text(
+        disk_projection.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+    return manifest
 
 
 def _build_summary(change_id, batch_id, api, e2e, fuzz, coverage, performance, gate) -> str:  # noqa: ANN001

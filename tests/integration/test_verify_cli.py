@@ -182,7 +182,15 @@ def _write_policy(project_root: Path, *, on_insufficient: str = "require_human")
         version=1,
         human_review_risk_levels=["high"],
         force_continue_allowed=True,
-        plan_check_action="warn",
+        plan_checks={
+            "l1_path": "warn",
+            "shared_factory": "warn",
+            "assert_ideal": "warn",
+            "capability_keys": "warn",
+        },
+        coverage_floor={"risk_high": 0.9, "risk_medium": 0.7},
+        fuzz={"required_when_endpoint_has_auth": True},
+        healing={"auth_module": "require_human"},
         evidence_sufficiency=EvidenceSufficiency(
             recency_hours=72,
             required_kinds={
@@ -275,7 +283,15 @@ def _policy(*, on_insufficient: str = "require_human") -> Policy:
         version=1,
         human_review_risk_levels=["high"],
         force_continue_allowed=True,
-        plan_check_action="warn",
+        plan_checks={
+            "l1_path": "warn",
+            "shared_factory": "warn",
+            "assert_ideal": "warn",
+            "capability_keys": "warn",
+        },
+        coverage_floor={"risk_high": 0.9, "risk_medium": 0.7},
+        fuzz={"required_when_endpoint_has_auth": True},
+        healing={"auth_module": "require_human"},
         evidence_sufficiency=EvidenceSufficiency(
             recency_hours=72,
             required_kinds={

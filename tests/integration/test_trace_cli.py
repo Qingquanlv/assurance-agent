@@ -169,6 +169,43 @@ def test_all_unmapped_exits_40_with_stable_error(project) -> None:
     assert result.stderr.strip() == trace_cmd.trace_error_all_unmapped(CHANGE_ID)
 
 
+def test_all_unmapped_with_case_rows_but_no_current_execution(project) -> None:
+    runner, root = project
+    write_aa_config(root)
+    change_dir = root / "qa/changes" / CHANGE_ID
+    change_dir.mkdir(parents=True)
+    _write_api_case(change_dir)
+    _write_manifest(change_dir)
+    payload = {
+        "schema_version": "1.0",
+        "change_id": CHANGE_ID,
+        "batch_id": BATCH_ID,
+        "target": "api",
+        "status": "passed",
+        "command": "cmd",
+        "source": {"framework": "pytest", "raw_log": "raw.log"},
+        "total": 1,
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "cases": [],
+        "unmapped_tests": [
+            {
+                "file": "tests/api/x.py",
+                "test_name": "test_orphan",
+                "duration_ms": 1,
+                "message": "",
+            }
+        ],
+    }
+    batch_dir = change_dir / "execution/runs" / BATCH_ID
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    (batch_dir / "api-result.json").write_text(json.dumps(payload), encoding="utf-8")
+    result = runner.invoke(main, ["trace", "--change", CHANGE_ID])
+    assert result.exit_code == 40
+    assert result.stderr.strip() == trace_cmd.trace_error_all_unmapped(CHANGE_ID)
+
+
 def test_json_output_matches_fold_trace(project) -> None:
     runner, root = project
     _seed_happy_path(root)

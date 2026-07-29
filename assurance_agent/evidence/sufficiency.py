@@ -75,7 +75,12 @@ def build_evidence_coverage_evaluation(
             action=None,
             error_code="policy_error",
         )
-    report = evaluate_sufficiency(projection, policy, as_of=as_of)
+    report = evaluate_sufficiency(
+        projection,
+        policy,
+        as_of=as_of,
+        require_current_batch=True,
+    )
     return EvidenceCoverageEvaluation(
         report=report,
         action=policy.evidence_sufficiency.on_insufficient,
@@ -88,13 +93,21 @@ def evaluate_sufficiency(
     policy: Policy,
     *,
     as_of: datetime,
+    require_current_batch: bool = False,
 ) -> SufficiencyReport:
     if as_of.tzinfo is None:
         raise TypeError("as_of must be timezone-aware")
 
     recency_hours = policy.evidence_sufficiency.recency_hours
     verdicts = tuple(
-        _evaluate_row(row, policy, as_of=as_of, recency_hours=recency_hours) for row in projection.rows
+        _evaluate_row(
+            row,
+            policy,
+            as_of=as_of,
+            recency_hours=recency_hours,
+            require_current_batch=require_current_batch,
+        )
+        for row in projection.rows
     )
     return SufficiencyReport(
         as_of=as_of,
@@ -109,6 +122,7 @@ def _evaluate_row(
     *,
     as_of: datetime,
     recency_hours: int,
+    require_current_batch: bool,
 ) -> RowVerdict:
     execution_state = _execution_state(row, as_of=as_of, recency_hours=recency_hours)
     required = policy.evidence_sufficiency.required_kinds[row.case_type]
@@ -116,10 +130,23 @@ def _evaluate_row(
     reasons: list[str] = []
 
     for kind in required:
-        if _kind_satisfied(row, kind, as_of=as_of, recency_hours=recency_hours):
+        if _kind_satisfied(
+            row,
+            kind,
+            as_of=as_of,
+            recency_hours=recency_hours,
+            require_current_batch=require_current_batch,
+        ):
             continue
         missing.append(kind)
-        reasons.append(_reason_for_missing(kind, row, execution_state))
+        reasons.append(
+            _reason_for_missing(
+                kind,
+                row,
+                execution_state,
+                require_current_batch=require_current_batch,
+            )
+        )
 
     return RowVerdict(
         case_id=row.case_id,
@@ -145,7 +172,11 @@ def _kind_satisfied(
     *,
     as_of: datetime,
     recency_hours: int,
+    require_current_batch: bool,
 ) -> bool:
+    if require_current_batch and kind in ("execution_recent", "pass_status"):
+        if row.presence_in_current_batch != "executed":
+            return False
     if kind == "covered":
         return row.coverage_state == "covered"
     if kind == "execution_recent":
@@ -170,7 +201,12 @@ def _reason_for_missing(
     kind: EvidenceKind,
     row: TraceRow,
     execution_state: ExecutionState,
+    *,
+    require_current_batch: bool,
 ) -> str:
+    if require_current_batch and kind in ("execution_recent", "pass_status"):
+        if row.presence_in_current_batch != "executed":
+            return "not_in_current_batch"
     if kind == "covered":
         return "uncovered"
     if kind == "execution_recent":

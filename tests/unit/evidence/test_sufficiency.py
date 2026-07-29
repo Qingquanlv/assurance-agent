@@ -79,7 +79,15 @@ def _policy(**overrides: object) -> Policy:
         version=1,
         human_review_risk_levels=["high"],
         force_continue_allowed=True,
-        plan_check_action="warn",
+        plan_checks={
+            "l1_path": "warn",
+            "shared_factory": "warn",
+            "assert_ideal": "warn",
+            "capability_keys": "warn",
+        },
+        coverage_floor={"risk_high": 0.9, "risk_medium": 0.7},
+        fuzz={"required_when_endpoint_has_auth": True},
+        healing={"auth_module": "require_human"},
         evidence_sufficiency=sufficiency,
     )
 
@@ -289,3 +297,59 @@ def test_all_sufficient_property() -> None:
         as_of=AS_OF,
     )
     assert bad.all_sufficient is False
+
+
+def test_require_current_batch_rejects_stale_presence() -> None:
+    latest = _execution(ts=AS_OF - timedelta(hours=1))
+    row = _row(latest_execution=latest, freshest_pass=latest).model_copy(
+        update={"presence_in_current_batch": "not_in_current_batch"}
+    )
+    report = evaluate_sufficiency(
+        _projection(row),
+        _policy(),
+        as_of=AS_OF,
+        require_current_batch=True,
+    )
+    verdict = report.verdicts[0]
+    assert verdict.sufficient is False
+    assert verdict.missing_kinds == ("execution_recent",)
+    assert verdict.reason_codes == ("not_in_current_batch",)
+
+
+def test_require_current_batch_false_allows_historical_execution() -> None:
+    latest = _execution(ts=AS_OF - timedelta(hours=1))
+    row = _row(latest_execution=latest).model_copy(
+        update={"presence_in_current_batch": "not_in_current_batch"}
+    )
+    report = evaluate_sufficiency(
+        _projection(row),
+        _policy(),
+        as_of=AS_OF,
+        require_current_batch=False,
+    )
+    assert report.verdicts[0].sufficient is True
+
+
+def test_require_current_batch_pass_status_requires_executed_presence() -> None:
+    policy = _policy(
+        required_kinds={
+            "API": ["covered", "execution_recent", "pass_status"],
+            "E2E": ["covered", "execution_recent"],
+            "Fuzz": ["covered", "fuzz_run"],
+            "Performance": ["covered", "perf_run"],
+        }
+    )
+    latest = _execution(ts=AS_OF - timedelta(hours=1))
+    row = _row(latest_execution=latest, freshest_pass=latest).model_copy(
+        update={"presence_in_current_batch": "not_in_current_batch"}
+    )
+    report = evaluate_sufficiency(
+        _projection(row),
+        policy,
+        as_of=AS_OF,
+        require_current_batch=True,
+    )
+    verdict = report.verdicts[0]
+    assert verdict.sufficient is False
+    assert "pass_status" in verdict.missing_kinds
+    assert "not_in_current_batch" in verdict.reason_codes

@@ -5,13 +5,14 @@ v1 只做常量，不做规则语言、不做 per-path 匹配、不做继承：g
 并加入 coverage / fuzz / healing 阶段常量。
 """
 
-from typing import Literal
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 PlanCheckAction = Literal["warn", "block", "require_human"]
 EvidenceKind = Literal["covered", "execution_recent", "fuzz_run", "perf_run", "pass_status"]
 CaseType = Literal["API", "E2E", "Fuzz", "Performance"]
+_REQUIRED_CASE_TYPES: tuple[CaseType, ...] = ("API", "E2E", "Fuzz", "Performance")
 
 
 def _default_evidence_sufficiency() -> "EvidenceSufficiency":
@@ -33,6 +34,14 @@ class EvidenceSufficiency(BaseModel):
     recency_hours: int = Field(gt=0)
     required_kinds: dict[CaseType, list[EvidenceKind]]
     on_insufficient: PlanCheckAction
+
+    @model_validator(mode="after")
+    def _require_all_case_type_keys(self) -> Self:
+        missing = [key for key in _REQUIRED_CASE_TYPES if key not in self.required_kinds]
+        if missing:
+            raise ValueError(f"required_kinds missing keys: {', '.join(missing)}")
+        return self
+
 
 # 与 verification/checks 的 CHECK_ID 对齐；policy 不 import checks 以免环依赖。
 KNOWN_PLAN_CHECK_IDS = frozenset({"l1_path", "shared_factory", "assert_ideal", "capability_keys"})

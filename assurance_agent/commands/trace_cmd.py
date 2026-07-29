@@ -29,6 +29,10 @@ def trace_error_all_unmapped(change_id: str) -> str:
 
 def validate_trace_projection(projection: TraceProjection) -> str | None:
     if projection.rows:
+        if projection.unmapped_tests and not any(
+            row.presence_in_current_batch == "executed" for row in projection.rows
+        ):
+            return trace_error_all_unmapped(projection.change_id)
         return None
     if projection.unmapped_tests:
         return trace_error_all_unmapped(projection.change_id)

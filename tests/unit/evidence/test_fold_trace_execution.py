@@ -698,3 +698,115 @@ removed: []
     assert by_id["TC_REQ_API_001"].coverage_state == "uncovered"
     assert by_id["TC_OPT_API_001"].coverage_state == "not_required"
     assert by_id["TC_REQ_API_001"].covering_tests == ()
+
+
+def test_result_missing_for_selected_target_in_current_batch(tmp_path: Path) -> None:
+    change_dir = _setup_project(tmp_path)
+    _write_api_case(change_dir)
+    batch_id = "20260729-120000"
+    _write_manifest(
+        change_dir,
+        batch_id=batch_id,
+        selected=SelectedTargets(api=True, e2e=True, fuzz=False, performance=False),
+        executed_at=EXECUTED_AT,
+    )
+    _write_api_result(change_dir, batch_id)
+    projection = fold_trace(tmp_path, CHANGE_ID)
+    missing = [gap for gap in projection.gaps if gap.code == "result_missing"]
+    assert len(missing) == 1
+    assert missing[0].target == "e2e"
+    assert missing[0].source == f"execution/runs/{batch_id}/e2e-result.json"
+
+
+def test_historical_batch_missing_target_does_not_emit_result_missing(tmp_path: Path) -> None:
+    change_dir = _setup_project(tmp_path)
+    _write_api_case(change_dir)
+    historical = "20260728-120000"
+    current = "20260729-120000"
+    _write_api_result(change_dir, historical)
+    _write_manifest(
+        change_dir,
+        batch_id=current,
+        selected=SelectedTargets(api=True, e2e=True, fuzz=False, performance=False),
+        executed_at=EXECUTED_AT,
+    )
+    _write_api_result(change_dir, current)
+    projection = fold_trace(tmp_path, CHANGE_ID)
+    missing = [gap for gap in projection.gaps if gap.code == "result_missing"]
+    assert len(missing) == 1
+    assert missing[0].target == "e2e"
+    assert missing[0].batch_id == current
+
+
+def test_unmapped_tests_with_extra_fields_are_not_corrupt(tmp_path: Path) -> None:
+    change_dir = _setup_project(tmp_path)
+    batch_id = "20260729-120000"
+    _write_manifest(change_dir, batch_id=batch_id, executed_at=EXECUTED_AT)
+    _write_api_result(
+        change_dir,
+        batch_id,
+        unmapped=[
+            {
+                "file": "tests/api/x.py",
+                "test_name": "test_orphan",
+                "duration_ms": 12,
+                "message": "boom",
+                "case_id": "",
+            }
+        ],
+    )
+    projection = fold_trace(tmp_path, CHANGE_ID)
+    assert not any(gap.code == "result_corrupt" for gap in projection.gaps)
+    assert len(projection.unmapped_tests) == 1
+    assert projection.unmapped_tests[0].file == "tests/api/x.py"
+    assert projection.unmapped_tests[0].test_name == "test_orphan"
+
+
+def test_injected_current_batch_results_merge_with_historical(tmp_path: Path) -> None:
+    from assurance_agent.evidence.trace import ResultDocument, ResultTestRow
+
+    change_dir = _setup_project(tmp_path)
+    _write_api_case(change_dir)
+    older = "20260728-120000"
+    current = "20260729-120000"
+    _write_api_result(
+        change_dir,
+        older,
+        cases=[
+            {
+                "case_id": "TC_DEPT_API_001",
+                "status": "failed",
+                "file": "f.py",
+                "test_name": "t",
+                "duration_ms": 1,
+                "message": "",
+            }
+        ],
+    )
+    injected_doc = ResultDocument(
+        change_id=CHANGE_ID,
+        batch_id=current,
+        target="api",
+        cases=[
+            ResultTestRow(
+                case_id="TC_DEPT_API_001",
+                status="passed",
+                file="tests/api/test_dept.py",
+                test_name="test_tc_dept_api_001__ok",
+            )
+        ],
+        unmapped_tests=[],
+    )
+    current_input = ExecutionFoldInput(
+        batch_id=current,
+        executed_at=EXECUTED_AT,
+        selected_targets=SelectedTargets(api=True, e2e=False, fuzz=False, performance=False),
+        test_files_sha256={},
+        api=injected_doc,
+    )
+    projection = fold_trace(tmp_path, CHANGE_ID, current=current_input)
+    row = projection.rows[0]
+    assert row.latest_execution is not None
+    assert row.latest_execution.batch_id == current
+    assert row.latest_execution.status == "passed"
+    assert row.presence_in_current_batch == "executed"

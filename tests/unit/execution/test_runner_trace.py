@@ -10,12 +10,12 @@ import pytest
 import yaml
 
 from assurance_agent.artifacts.models.trace import TraceProjection
-from assurance_agent.evidence.trace import ExecutionFoldInput, canonical_json_bytes, fold_trace
+from assurance_agent.evidence.trace import canonical_json_bytes, fold_trace
 from assurance_agent.workflow.execution import runner as runner_mod
 from assurance_agent.workflow.execution import runners as runners_mod
 from assurance_agent.workflow.execution.runner import run_change
 from tests.helpers_aa import write_aa_config
-from tests.unit.execution.test_runner import make_config, stub_pytest_run
+from tests.unit.execution.test_runner import make_config
 
 EXECUTED_AT = datetime(2026, 7, 30, 4, 0, 0, tzinfo=UTC)
 BATCH_ID = "20260730-040000"
@@ -49,6 +49,11 @@ removed: []
 def trace_project(tmp_path: Path) -> tuple[Path, Path]:
     write_aa_config(tmp_path)
     (tmp_path / "tests" / "api").mkdir(parents=True)
+    test_path = tmp_path / "tests" / "api" / "test_dept.py"
+    test_path.write_text(
+        "def test_tc_dept_api_001__ok():\n    assert True\n",
+        encoding="utf-8",
+    )
     change_dir = tmp_path / "qa" / "changes" / CHANGE_ID
     change_dir.mkdir(parents=True)
     (change_dir / "workflow-state.yaml").write_text(
@@ -59,18 +64,40 @@ def trace_project(tmp_path: Path) -> tuple[Path, Path]:
     return tmp_path, change_dir
 
 
+def _stub_api_passed_run(args, **kwargs):
+    import subprocess
+
+    report_file = next(a.split("=", 1)[1] for a in args if a.startswith("--json-report-file="))
+    Path(report_file).parent.mkdir(parents=True, exist_ok=True)
+    Path(report_file).write_text(
+        json.dumps(
+            {
+                "tests": [
+                    {
+                        "nodeid": "tests/api/test_dept.py::test_tc_dept_api_001__ok",
+                        "outcome": "passed",
+                        "call": {
+                            "outcome": "passed",
+                            "duration": 0.0,
+                            "longrepr": "",
+                        },
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+
 def _run_with_stubs(monkeypatch: pytest.MonkeyPatch, project_root: Path, change_dir: Path):
     monkeypatch.setattr(runner_mod, "generate_batch_id", lambda: BATCH_ID)
     monkeypatch.setattr(runner_mod, "_now_aware", lambda: EXECUTED_AT)
-    monkeypatch.setattr(
-        runners_mod.subprocess,
-        "run",
-        stub_pytest_run({"api": "passed"}),
-    )
+    monkeypatch.setattr(runners_mod.subprocess, "run", _stub_api_passed_run)
     return run_change(project_root, change_dir, make_config(), batch_id=BATCH_ID)
 
 
-def test_injected_and_disk_fold_byte_equal_after_manifest_publish(
+def test_saved_projection_matches_disk_fold_after_publish(
     trace_project: tuple[Path, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -80,23 +107,20 @@ def test_injected_and_disk_fold_byte_equal_after_manifest_publish(
     projection_path = change_dir / "execution" / "runs" / BATCH_ID / "trace-projection.json"
     assert projection_path.is_file()
 
-    from_manifest = fold_trace(project_root, CHANGE_ID)
-    assert manifest.executed_at is not None
-    reinjected = fold_trace(
-        project_root,
-        CHANGE_ID,
-        current=ExecutionFoldInput(
-            batch_id=manifest.batch_id,
-            executed_at=manifest.executed_at,
-            selected_targets=manifest.selected_targets,
-            test_files_sha256=manifest.test_files_sha256 or {},
-        ),
-    )
+    saved = TraceProjection.model_validate_json(projection_path.read_text(encoding="utf-8"))
+    from_disk = fold_trace(project_root, CHANGE_ID, current=None)
 
-    disk_bytes = canonical_json_bytes(from_manifest.model_dump(mode="json"))
-    injected_bytes = canonical_json_bytes(reinjected.model_dump(mode="json"))
-    assert injected_bytes == disk_bytes
+    assert canonical_json_bytes(saved.model_dump(mode="json")) == canonical_json_bytes(
+        from_disk.model_dump(mode="json")
+    )
     assert manifest.executed_at == EXECUTED_AT
+
+    executed_rows = [row for row in saved.rows if row.presence_in_current_batch == "executed"]
+    assert executed_rows, "expected at least one row executed in current batch"
+    passed_row = next(row for row in executed_rows if row.latest_execution is not None)
+    assert passed_row.latest_execution is not None
+    assert passed_row.latest_execution.status == "passed"
+    assert passed_row.presence_in_current_batch == "executed"
 
 
 def test_trace_projection_written_under_batch_dir(
