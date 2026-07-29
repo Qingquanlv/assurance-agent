@@ -144,6 +144,14 @@ def test_loads_packaged_registry(tmp_path: Path) -> None:
     assert catalog.contracts["builtin:join"].side_effect_free is True
 
 
+def test_run_tests_contract_reads_traceability_inputs() -> None:
+    catalog = load_execution_contracts(Path.cwd())
+    contract = catalog.contracts["operation:run-tests"]
+    assert "change:cases/**" in contract.reads
+    assert "change:execution/**" in contract.reads
+    assert "project:.aa/policy.yaml" in contract.reads
+
+
 def test_project_local_registry_overrides_packaged(tmp_path: Path) -> None:
     local = tmp_path / ".aa" / "execution-contracts.yaml"
     local.parent.mkdir(parents=True)

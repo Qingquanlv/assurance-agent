@@ -248,6 +248,8 @@ def _resolve_current_batch(
     if current is not None:
         if current.executed_at.tzinfo is None:
             raise TypeError("executed_at must be timezone-aware")
+        if manifest_path.is_file():
+            sources.append(_file_source(_MANIFEST_PATH, manifest_path))
         return _CurrentBatchView(
             batch_id=current.batch_id,
             executed_at=current.executed_at,

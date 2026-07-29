@@ -5,11 +5,14 @@ unselected or missing layer becomes a SKIPPED result and the quality gate
 degrades accordingly.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from assurance_agent.artifacts.models import ExecutionManifest
+from assurance_agent.artifacts.policy import PolicyError, load_policy
 from assurance_agent.config import AaConfig
+from assurance_agent.evidence.sufficiency import evaluate_sufficiency
+from assurance_agent.evidence.trace import ExecutionFoldInput, fold_trace
 from assurance_agent.workflow.execution.evidence import publish_execution_evidence
 from assurance_agent.workflow.execution.exec_config import load_coverage_config, load_perf_config
 from assurance_agent.workflow.execution.results import CoverageResult
@@ -29,6 +32,10 @@ def generate_batch_id() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S")
 
 
+def _now_aware() -> datetime:
+    return datetime.now(UTC)
+
+
 def _strip(rel: str) -> str:
     return rel[2:] if rel.startswith("./") else rel
 
@@ -37,6 +44,20 @@ def _test_dir(config: AaConfig, attr: str, default: str) -> str:
     tests = getattr(config, "tests", None)
     value = getattr(tests, attr, None) if tests is not None else None
     return _strip(value) if isinstance(value, str) else default
+
+
+def _shadow_evidence_diagnostics(
+    project_root: Path,
+    projection,
+    *,
+    as_of: datetime,
+) -> dict:
+    try:
+        policy = load_policy(project_root)
+    except PolicyError as err:
+        return {"evidence_sufficiency": {"policy_error": str(err)}}
+    report = evaluate_sufficiency(projection, policy, as_of=as_of)
+    return {"evidence_sufficiency": report.model_dump(mode="json")}
 
 
 def run_change(
@@ -130,6 +151,22 @@ def run_change(
         else None
     )
 
+    test_tree = hash_test_tree(project_root)
+    now_aware = _now_aware()
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    current = ExecutionFoldInput(
+        batch_id=batch_id,
+        executed_at=now_aware,
+        selected_targets=selected,
+        test_files_sha256=test_tree.files,
+    )
+    projection = fold_trace(project_root, change_id, phase="execution", current=current)
+    (batch_dir / "trace-projection.json").write_text(
+        projection.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+    diagnostics = _shadow_evidence_diagnostics(project_root, projection, as_of=now_aware)
+
     quality_gate = build_quality_gate(
         change_id=change_id,
         batch_id=batch_id,
@@ -140,9 +177,9 @@ def run_change(
         fuzz=fuzz,
         performance=performance,
     )
+    quality_gate = quality_gate.model_copy(update={"diagnostics": diagnostics})
     summary = _build_summary(change_id, batch_id, api, e2e, fuzz, coverage, performance, quality_gate)
 
-    test_tree = hash_test_tree(project_root)
     product_tree = hash_product_tree(project_root, load_product_code_roots(project_root))
 
     return publish_execution_evidence(
@@ -160,6 +197,7 @@ def run_change(
         tests_tree_sha256=test_tree.aggregate,
         test_files_sha256=test_tree.files,
         product_tree_sha256=product_tree.aggregate,
+        executed_at=now_aware,
     )
 
 

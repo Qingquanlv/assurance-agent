@@ -72,6 +72,9 @@ contracts:
       - repo:tests/fuzz/**
       - repo:tests/perf/**
       - change:codegen/**
+      - change:cases/**
+      - change:execution/**
+      - project:.aa/policy.yaml
     writes:
       - change:execution/**
     authorization_writes:

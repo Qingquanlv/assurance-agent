@@ -128,3 +128,4 @@ class QualityGateResult(BaseModel):
     dimensions: QualityGateDimensions
     final_status: GateStatus
     warnings: list[str] | None = None
+    diagnostics: dict | None = None

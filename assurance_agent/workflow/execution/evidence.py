@@ -12,6 +12,7 @@ from pathlib import Path
 
 import yaml
 from pydantic import BaseModel
+from pydantic.types import AwareDatetime
 
 from assurance_agent.artifacts.models import ExecutionManifest, QualityGateResult, SelectedTargets
 from assurance_agent.exceptions import AaError
@@ -69,6 +70,7 @@ def publish_execution_evidence(
     tests_tree_sha256: str | None = None,
     test_files_sha256: dict[str, str] | None = None,
     product_tree_sha256: str | None = None,
+    executed_at: AwareDatetime | None = None,
 ) -> ExecutionManifest:
     batch_dir = execution_dir / "runs" / batch_id
     batch_dir.mkdir(parents=True, exist_ok=True)
@@ -102,6 +104,7 @@ def publish_execution_evidence(
         test_files_sha256=test_files_sha256,
         product_tree_sha256=product_tree_sha256,
         final_status=quality_gate.final_status,
+        executed_at=executed_at,
     )
     (batch_dir / "execution-manifest.yaml").write_text(
         yaml.safe_dump(manifest.model_dump(mode="json"), sort_keys=False), encoding="utf-8"
