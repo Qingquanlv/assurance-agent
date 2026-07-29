@@ -122,18 +122,11 @@ def test_no_aws_residue_in_skills_and_opencode() -> None:
     assert offenders == [], f"aws residue found: {offenders[:20]}"
 
 
-def test_api_plan_skills_reject_legacy_data_knowledge_path() -> None:
-    for skill_name in ("aa-api-plan", "aa-api-plan-reviewer"):
-        text = resources.read_text("skills", skill_name, "SKILL.md")
-        assert "only formal L1 path" in text, skill_name
-        assert "alternate hidden-directory path" in text, skill_name
+def test_mechanised_plan_rules_live_in_the_runtime_not_the_skill_prose() -> None:
+    """L1 路径与 assert_ideal 的强制点已从 SKILL.md 迁到确定性 check。"""
+    from assurance_agent.verification.checks.registry import PLAN_CHECKS
 
-
-def test_api_plan_preserves_assert_ideal_status_contracts() -> None:
-    text = resources.read_text("skills", "aa-api-plan", "SKILL.md")
-    assert "never narrow, drop, or reinterpret" in text
-    assert "assert_ideal HTTP status expectations" in text
-    assert "stop and escalate" in text
+    assert {check.__name__ for check in PLAN_CHECKS} >= {"check_l1_path", "check_assert_ideal"}
 
 
 def test_cross_skill_references_resolve() -> None:
