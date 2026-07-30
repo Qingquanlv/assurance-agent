@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
@@ -37,8 +37,12 @@ from assurance_agent.workflow.graph.definition_pinning import (
     policy_snapshot_relpath,
 )
 from assurance_agent.workflow.graph.models import CompiledWorkflow
-from assurance_agent.workflow.graph.replay_schema import validate_replayable_assurance_schema
+from assurance_agent.workflow.graph.replay_schema import (
+    validate_params_only_expression,
+    validate_replayable_assurance_schema,
+)
 from assurance_agent.workflow.graph.schema_v2 import WorkflowSchemaV2
+from assurance_agent.workflow.orchestration.dsl import Scope, evaluate, parse_expression
 from assurance_agent.workflow.graph.workspace import TreeStore
 from assurance_agent.workflow.orchestration.gate_semantics import gate_semantics_digest
 from assurance_agent.workflow.orchestration.plan_check_replay import (
@@ -73,6 +77,7 @@ ReplayReasonCode = Literal[
 
 _LAYER_CYCLE_GRAPH = {"api": "api-plan-cycle", "e2e": "e2e-plan-cycle"}
 _WIRED_LAYERS = frozenset(_LAYER_CYCLE_GRAPH)
+_ASSURANCE_BRANCH_NODES = ("api", "e2e", "fuzz", "performance")
 _MECHANICAL_NODE = "mechanical-plan-checks"
 _GATE_NODE = "review-gate"
 _SCHEMA_DIR = ".graph-runtime/schemas"
@@ -136,6 +141,12 @@ class FrozenDefinitionBinding:
 
 
 @dataclass(frozen=True, slots=True)
+class LayerSelectionFact:
+    layer: str
+    selected: bool
+
+
+@dataclass(frozen=True, slots=True)
 class BoundLayerReplayInputs:
     layer: str
     params: dict[str, object]
@@ -149,6 +160,84 @@ class BoundLayerReplayInputs:
     mechanical_attempt: CommittedAttempt
     baseline: object
     route: str
+
+
+def validate_pinned_layer_selection(schema: WorkflowSchemaV2) -> tuple[str, ...]:
+    """Validate pinned assurance branch predicates are params-only replayable."""
+    param_names = frozenset(schema.params)
+    errors: list[str] = []
+    assurance = schema.graphs.get("assurance")
+    if assurance is None:
+        return ("graph:assurance: missing assurance graph",)
+    for node_id in _ASSURANCE_BRANCH_NODES:
+        node = assurance.nodes.get(node_id)
+        if node is None:
+            errors.append(f"graph:assurance.nodes.{node_id}: missing branch node")
+            continue
+        when = node.when
+        if not when:
+            errors.append(f"graph:assurance.nodes.{node_id}.when: missing selection predicate")
+            continue
+        errors.extend(
+            validate_params_only_expression(
+                when,
+                param_names,
+                locator=f"graph:assurance.nodes.{node_id}.when",
+            )
+        )
+    return tuple(errors)
+
+
+def evaluate_layer_selection(
+    schema: WorkflowSchemaV2,
+    params: Mapping[str, object],
+) -> tuple[LayerSelectionFact, ...]:
+    """Evaluate pinned assurance branch predicates from frozen params."""
+    selection_errors = validate_pinned_layer_selection(schema)
+    if selection_errors:
+        raise ReplayBindingError("ambiguous_graph_wiring", "; ".join(selection_errors))
+    assurance = schema.graphs["assurance"]
+    facts: list[LayerSelectionFact] = []
+    scope = Scope({"params": dict(params)})
+    for layer in _ASSURANCE_BRANCH_NODES:
+        when = assurance.nodes[layer].when
+        if not when:
+            raise ReplayBindingError("ambiguous_graph_wiring", f"missing when for layer {layer}")
+        expr = parse_expression(when)
+        selected = evaluate(expr, scope) is True
+        facts.append(LayerSelectionFact(layer=layer, selected=selected))
+    return tuple(facts)
+
+
+def assert_layer_selection_evidence(
+    events: Sequence[SequencedEvent],
+    *,
+    assurance_invocation_id: str,
+    selections: Sequence[LayerSelectionFact],
+) -> None:
+    """Require activation/skip events to agree with predicate classification when present."""
+    for fact in selections:
+        observed: bool | None = None
+        for item in events:
+            payload = item.payload
+            if payload.get("invocation_id") != assurance_invocation_id:
+                continue
+            if payload.get("node_id") != fact.layer:
+                continue
+            event_type = payload.get("type")
+            if event_type == "node_activated":
+                observed = True
+                break
+            if event_type == "node_skipped":
+                observed = False
+                break
+        if observed is None:
+            continue
+        if observed != fact.selected:
+            raise ReplayBindingError(
+                "selection_evidence_mismatch",
+                f"layer {fact.layer} predicate/event mismatch",
+            )
 
 
 def normalize_logical_path(path: str) -> str:
@@ -1004,10 +1093,14 @@ __all__ = [
     "BoundLayerReplayInputs",
     "CommittedAttempt",
     "FrozenDefinitionBinding",
+    "LayerSelectionFact",
     "ReplayBindingError",
     "ReplayReasonCode",
     "SequencedEvent",
+    "assert_layer_selection_evidence",
     "bind_replay_definitions",
+    "evaluate_layer_selection",
     "normalize_logical_path",
     "recover_layer_inputs",
+    "validate_pinned_layer_selection",
 ]
