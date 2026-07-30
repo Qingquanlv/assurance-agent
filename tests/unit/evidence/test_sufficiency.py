@@ -6,7 +6,13 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from assurance_agent.artifacts.models.policy import EvidenceSufficiency, Policy
+from assurance_agent.artifacts.models.policy import (
+    CoverageFloor,
+    EvidenceSufficiency,
+    FuzzPolicy,
+    HealingPolicy,
+    Policy,
+)
 from assurance_agent.artifacts.models.trace import TraceExecution, TraceProjection, TraceRow
 from assurance_agent.evidence.sufficiency import evaluate_sufficiency
 
@@ -85,9 +91,9 @@ def _policy(**overrides: object) -> Policy:
             "assert_ideal": "warn",
             "capability_keys": "warn",
         },
-        coverage_floor={"risk_high": 0.9, "risk_medium": 0.7},
-        fuzz={"required_when_endpoint_has_auth": True},
-        healing={"auth_module": "require_human"},
+        coverage_floor=CoverageFloor(risk_high=0.9, risk_medium=0.7),
+        fuzz=FuzzPolicy(required_when_endpoint_has_auth=True),
+        healing=HealingPolicy(auth_module="require_human"),
         evidence_sufficiency=sufficiency,
     )
 

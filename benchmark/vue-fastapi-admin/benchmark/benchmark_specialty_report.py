@@ -168,7 +168,9 @@ def _policy_replay(
     rows: list[dict[str, Any]] = []
 
     for action in _POLICY_ACTIONS:
-        replay_policy = base_policy.model_copy(update={"plan_check_action": action})
+        replay_policy = base_policy.model_copy(
+            update={"plan_checks": dict.fromkeys(base_policy.plan_checks, action)}
+        )
         with tempfile.TemporaryDirectory(prefix="aa-policy-replay-") as raw_temp:
             replay_root = Path(raw_temp)
             policy_path = replay_root / ".aa" / "policy.yaml"
@@ -405,7 +407,7 @@ def collect_report(
                 "source": "project"
                 if (project_root / ".aa" / "policy.yaml").exists()
                 else "packaged_default",
-                "plan_check_action": policy.plan_check_action,
+                "plan_checks": dict(sorted(policy.plan_checks.items())),
                 "digest": policy_digest(policy),
                 "recorded_digest": _recorded_policy_digest(events),
             },
@@ -490,7 +492,7 @@ def render_sections(reports: list[dict[str, Any]]) -> str:
     lines = [
         "## Capability + Contract + Policy",
         "",
-        "| change_id | mechanical | checks | findings | capabilities required/missing | execution contracts | output contracts | prompt audit | policy source/action | digest match |",
+        "| change_id | mechanical | checks | findings | capabilities required/missing | execution contracts | output contracts | prompt audit | policy source/actions | digest match |",
         "|---|---|---|---:|---|---:|---:|---|---|---|",
     ]
     for report in reports:
@@ -504,6 +506,9 @@ def render_sections(reports: list[dict[str, Any]]) -> str:
         )
         current_digest = cap["policy"]["digest"]
         recorded_digest = cap["policy"]["recorded_digest"]
+        policy_actions = ", ".join(
+            f"{check_id}={action}" for check_id, action in sorted(cap["policy"]["plan_checks"].items())
+        )
         lines.append(
             "| `{}` | {} | {} | {} | {}/{} | {} | {} | {} | {}/{} | {} |".format(
                 _cell(report["change_id"]),
@@ -516,7 +521,7 @@ def render_sections(reports: list[dict[str, Any]]) -> str:
                 cap["contracts"]["rendered_output_contract_count"],
                 _cell(cap["contracts"]["prompt_observability"]),
                 _cell(cap["policy"]["source"]),
-                _cell(cap["policy"]["plan_check_action"]),
+                _cell(policy_actions),
                 "yes" if current_digest == recorded_digest else "no",
             )
         )

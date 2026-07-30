@@ -46,6 +46,7 @@ def _install_frozen_item(tmp_path: Path) -> tuple[Path, Path, Path]:
         {
             "schema_version": "1",
             "change_id": change_id,
+            "review_type": "api-plan",
             "decision": "pass",
             "codegen_readiness": "ready",
             "required_capabilities": ["auth.api_admin_token"],
@@ -53,6 +54,8 @@ def _install_frozen_item(tmp_path: Path) -> tuple[Path, Path, Path]:
             "human_review_required": False,
             "risk_level": "low",
             "findings": [],
+            "auto_fix_plan": [],
+            "next_action": "proceed",
         },
     )
     _write_json(
@@ -296,7 +299,12 @@ def test_collect_freezes_capability_policy_replay_and_trace_evidence(tmp_path: P
         "missing": [],
     }
     assert capability["policy"]["source"] == "packaged_default"
-    assert capability["policy"]["plan_check_action"] == "warn"
+    assert capability["policy"]["plan_checks"] == {
+        "assert_ideal": "warn",
+        "capability_keys": "warn",
+        "l1_path": "warn",
+        "shared_factory": "warn",
+    }
     assert capability["policy"]["recorded_digest"] == "policy-frozen"
     assert [(row["action"], row["verdict"]) for row in capability["policy_replay"]] == [
         ("warn", "pass"),
@@ -391,7 +399,8 @@ def test_render_emits_both_specialty_sections_and_policy_matrix(tmp_path: Path) 
     assert "## Capability + Contract + Policy" in rendered.stdout
     assert (
         "| `CH-REPORT-1` | fail | assert_ideal=fail(1), l1_path=pass(0) | 1 | 1/0 | "
-        "0 | 0 | schema_digest_mismatch | packaged_default/warn | no |"
+        "0 | 0 | schema_digest_mismatch | "
+        "packaged_default/assert_ideal=warn, capability_keys=warn, l1_path=warn, shared_factory=warn | no |"
     ) in rendered.stdout
     assert "### Policy Replay Matrix" in rendered.stdout
     assert "| `CH-REPORT-1` | pass | reject | needs_human_review |" in rendered.stdout

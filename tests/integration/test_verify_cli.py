@@ -11,7 +11,13 @@ import yaml
 from click.testing import CliRunner
 
 from assurance_agent.artifacts.models import SelectedTargets
-from assurance_agent.artifacts.models.policy import EvidenceSufficiency, Policy
+from assurance_agent.artifacts.models.policy import (
+    CoverageFloor,
+    EvidenceSufficiency,
+    FuzzPolicy,
+    HealingPolicy,
+    Policy,
+)
 from assurance_agent.artifacts.models.trace import TraceExecution, TraceGap, TraceProjection, TraceRow
 from assurance_agent.artifacts.policy import load_policy, policy_digest
 from assurance_agent.cli import main
@@ -189,9 +195,9 @@ def _write_policy(project_root: Path, *, on_insufficient: str = "require_human")
             "assert_ideal": "warn",
             "capability_keys": "warn",
         },
-        coverage_floor={"risk_high": 0.9, "risk_medium": 0.7},
-        fuzz={"required_when_endpoint_has_auth": True},
-        healing={"auth_module": "require_human"},
+        coverage_floor=CoverageFloor(risk_high=0.9, risk_medium=0.7),
+        fuzz=FuzzPolicy(required_when_endpoint_has_auth=True),
+        healing=HealingPolicy(auth_module="require_human"),
         evidence_sufficiency=EvidenceSufficiency(
             recency_hours=72,
             required_kinds={
@@ -290,9 +296,9 @@ def _policy(*, on_insufficient: str = "require_human") -> Policy:
             "assert_ideal": "warn",
             "capability_keys": "warn",
         },
-        coverage_floor={"risk_high": 0.9, "risk_medium": 0.7},
-        fuzz={"required_when_endpoint_has_auth": True},
-        healing={"auth_module": "require_human"},
+        coverage_floor=CoverageFloor(risk_high=0.9, risk_medium=0.7),
+        fuzz=FuzzPolicy(required_when_endpoint_has_auth=True),
+        healing=HealingPolicy(auth_module="require_human"),
         evidence_sufficiency=EvidenceSufficiency(
             recency_hours=72,
             required_kinds={
