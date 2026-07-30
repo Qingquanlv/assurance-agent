@@ -1101,13 +1101,14 @@ class Scheduler:
                     allowed_publication_id=publication_id,
                 )
                 publication_status = publication_store.prepare(publication)
-                if publication_status != "applied":
-                    self._objects.apply_write_sets_to_synchronized_paths(
-                        locked_context.project_root,
-                        write_sets,
-                        synchronized_paths,
-                    )
-                    publication_store.acknowledge(publication)
+                if publication_status == "applied":
+                    return False
+                self._objects.apply_write_sets_to_synchronized_paths(
+                    locked_context.project_root,
+                    write_sets,
+                    synchronized_paths,
+                )
+                publication_store.acknowledge(publication)
         except ProjectResourceConflict as exc:
             raise SchedulerError(str(exc)) from None
         except ProjectLockPathError as exc:
@@ -1115,6 +1116,39 @@ class Scheduler:
         except ProjectPublicationError as exc:
             raise SchedulerError(str(exc)) from None
         return True
+
+    def commit_pending_write_sets(
+        self,
+        *,
+        plan: PlanResult,
+        projection: GraphProjection,
+        context: RuntimeContext,
+        succeeded_ids: list[str],
+    ) -> bool:
+        """Commit succeeded tasks from an uncommitted superstep; return True when durable progress."""
+        before = {
+            raw.get("superstep_id")
+            for raw in read_events_strict(context.change_dir)
+            if raw.get("source") == "graph"
+            and raw.get("invocation_id") == projection.invocation_id
+            and raw.get("type") == "superstep_committed"
+            and isinstance(raw.get("superstep_id"), str)
+        }
+        self._commit_wave(
+            plan=plan,
+            projection=projection,
+            context=context,
+            succeeded_ids=succeeded_ids,
+        )
+        after = {
+            raw.get("superstep_id")
+            for raw in read_events_strict(context.change_dir)
+            if raw.get("source") == "graph"
+            and raw.get("invocation_id") == projection.invocation_id
+            and raw.get("type") == "superstep_committed"
+            and isinstance(raw.get("superstep_id"), str)
+        }
+        return plan.superstep_id not in before and plan.superstep_id in after
 
     def _is_side_effect_free(self, task: ExecutableTask) -> bool:
         if self._contracts is not None:

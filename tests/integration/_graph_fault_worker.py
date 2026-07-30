@@ -242,11 +242,17 @@ def _install_hooks(runtime, point: str) -> None:  # noqa: ANN001
 
     if point == "sibling_success_before_commit":
         commit_wave_orig = sched._commit_wave  # noqa: SLF001
+        commit_pending_orig = sched.commit_pending_write_sets
+
+        def commit_pending(**kwargs):  # type: ignore[no-untyped-def]
+            _fault_hit("sibling_success_before_commit")
+            return commit_pending_orig(**kwargs)
 
         def commit_wave(**kwargs):  # type: ignore[no-untyped-def]
             _fault_hit("sibling_success_before_commit")
             return commit_wave_orig(**kwargs)
 
+        sched.commit_pending_write_sets = commit_pending  # type: ignore[method-assign]
         sched._commit_wave = commit_wave  # type: ignore[method-assign]  # noqa: SLF001
 
     if point == "budget_success_transaction":
@@ -284,13 +290,13 @@ def _install_hooks(runtime, point: str) -> None:  # noqa: ANN001
         sched_mod.commit_tree_pointer = wrapped_commit_tree  # type: ignore[assignment]
 
     if point == "canonical_materialization":
-        apply_tree_orig = store.apply_tree
+        repair_ordinary_orig = runtime._repair_ordinary_materialization  # noqa: SLF001
 
-        def apply_tree(*args, **kwargs):  # type: ignore[no-untyped-def]
+        def repair_ordinary(projection, context):  # type: ignore[no-untyped-def]
             _fault_hit("canonical_materialization")
-            return apply_tree_orig(*args, **kwargs)
+            return repair_ordinary_orig(projection, context)
 
-        store.apply_tree = apply_tree  # type: ignore[method-assign]
+        runtime._repair_ordinary_materialization = repair_ordinary  # type: ignore[method-assign]  # noqa: SLF001
 
     if point == "checkpoint_snapshot_write":
         write_checkpoint_orig = checkpoints.write

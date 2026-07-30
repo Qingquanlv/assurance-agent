@@ -1005,3 +1005,84 @@ def test_synchronized_pending_update_reacquires_lock_and_replays_without_handler
         (("project:issue-registry", "project:zzz"), 0.25),
         (("project:issue-registry", "project:zzz"), 0.25),
     ]
+
+
+def test_commit_pending_write_sets_replays_uncommitted_superstep(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    change = project / "qa/changes/CH-1"
+    issue = project / "qa/issues/ISSUE-1.json"
+    issue.parent.mkdir(parents=True)
+    issue.write_text('{"version":1}\n', encoding="utf-8")
+    store = TreeStore(change)
+    invocation_tree = store.capture(project)
+    _seed_invocation(change, invocation_tree)
+    calls = 0
+
+    def update_issue(task, workspace, context) -> TaskResult:
+        nonlocal calls
+        calls += 1
+        (workspace.project_root / "qa/issues/ISSUE-1.json").write_text('{"version":2}\n', encoding="utf-8")
+        result = workspace.change_dir / "results/update.json"
+        result.parent.mkdir(parents=True)
+        result.write_text('{"updated":true}\n', encoding="utf-8")
+        return TaskResult(status="succeeded")
+
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=_ScriptedRunner({"update-issue": update_issue}),
+    )
+    plan = _plan(_synchronized_task())
+    projection = _projection(change, invocation_tree)
+    commit_wave = scheduler._commit_wave
+
+    def crash_before_update(**kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("simulated crash before Update")
+
+    scheduler._commit_wave = crash_before_update  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        scheduler.execute(plan, projection, _context(project))
+    scheduler._commit_wave = commit_wave  # type: ignore[method-assign]
+
+    assert calls == 1
+    live = project_invocation(change, _INV)
+    committed = scheduler.commit_pending_write_sets(
+        plan=plan,
+        projection=live,
+        context=_context(project),
+        succeeded_ids=["update-issue"],
+    )
+
+    assert committed is True
+    assert calls == 1
+    assert issue.read_text() == '{"version":2}\n'
+    assert any(event.get("type") == "superstep_committed" for event in read_events_strict(change))
+
+
+def test_commit_pending_write_sets_propagates_errors(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    change = project / "qa/changes/CH-1"
+    store = TreeStore(change)
+    invocation_tree = store.capture(project)
+    _seed_invocation(change, invocation_tree)
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=_ScriptedRunner({}),
+    )
+    plan = _plan(_task("only-task"))
+    projection = _projection(change, invocation_tree)
+
+    def boom(**_kwargs):  # type: ignore[no-untyped-def]
+        raise ValueError("commit refused")
+
+    scheduler._commit_wave = boom  # type: ignore[method-assign]  # noqa: SLF001
+    with pytest.raises(ValueError, match="commit refused"):
+        scheduler.commit_pending_write_sets(
+            plan=plan,
+            projection=projection,
+            context=_context(project),
+            succeeded_ids=["only-task"],
+        )

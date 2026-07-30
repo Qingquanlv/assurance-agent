@@ -66,6 +66,7 @@ from assurance_agent.workflow.graph.models import (
     TaskResult,
 )
 from assurance_agent.workflow.graph.planner import PlanError, plan_superstep
+from assurance_agent.workflow.graph.project_locks import ProjectPublicationStore
 from assurance_agent.workflow.graph.scheduler import Scheduler, SchedulerError
 from assurance_agent.workflow.graph.task_runner import NodeRunner
 from assurance_agent.workflow.graph.workspace import (
@@ -800,25 +801,14 @@ class GraphRuntime:
         artifacts = self._objects
         while True:
             try:
-                projection = self._checkpoints.project(invocation_id)
+                projection = self._reach_recovery_barrier(invocation_id, context)
             except LedgerIntegrityError as exc:
                 raise GraphIntegrityError(str(exc)) from exc
 
-            self._repair_materialization(projection, context)
-            compiled = self._resolve_compiled(projection)
-            self._reconcile_running(projection, context)
-
-            projection = self._checkpoints.project(invocation_id)
             if projection.terminal is not None:
                 return self._result_from_projection(projection)
 
-            pending_writes = self._pending_write_sets(invocation_id)
-            if pending_writes:
-                self._retry_pending_update(projection, context)
-                projection = self._checkpoints.project(invocation_id)
-                if projection.terminal is not None:
-                    return self._result_from_projection(projection)
-                pending_writes = self._pending_write_sets(invocation_id)
+            compiled = self._resolve_compiled(projection)
 
             wait_until = self._earliest_retry_at(projection)
             if wait_until is not None and wait_until > self._clock.now():
@@ -910,11 +900,11 @@ class GraphRuntime:
             return self._result_from_projection(projection)
 
         projection = self._checkpoints.project(invocation_id)
-        if self._pending_write_sets(invocation_id):
-            self._retry_pending_update(projection, context)
+        if self._recovery_work_remains(projection, invocation_id, context):
+            self._reach_recovery_barrier(invocation_id, context)
             projection = self._checkpoints.project(invocation_id)
-            if self._pending_write_sets(invocation_id):
-                raise GraphRuntimeError("cannot terminal while write-sets remain pending")
+            if self._recovery_work_remains(projection, invocation_id, context):
+                raise GraphRuntimeError("cannot terminal while durable recovery work remains")
 
         event_type: Literal["graph_completed", "graph_stopped", "graph_failed"]
         if plan.terminal == "end":
@@ -976,37 +966,136 @@ class GraphRuntime:
             now=self._clock.now(),
         )
 
-    def _repair_materialization(
+    def _reach_recovery_barrier(self, invocation_id: str, context: RuntimeContext) -> GraphProjection:
+        """Reconcile and replay durable updates until no recovery seam reports progress."""
+        while True:
+            projection = self._checkpoints.project(invocation_id)
+            self._reconcile_running(projection, context)
+            projection = self._checkpoints.project(invocation_id)
+
+            progress = False
+            if self._commit_pending_write_sets(projection, context):
+                progress = True
+                projection = self._checkpoints.project(invocation_id)
+            if self._replay_committed_publications(projection, context):
+                progress = True
+                projection = self._checkpoints.project(invocation_id)
+            if self._repair_ordinary_materialization(projection, context):
+                progress = True
+                projection = self._checkpoints.project(invocation_id)
+
+            if not progress and not self._recovery_work_remains(projection, invocation_id, context):
+                return projection
+            if not progress:
+                raise GraphRuntimeError("recovery barrier stalled with durable work remaining")
+
+    def _recovery_work_remains(
+        self,
+        projection: GraphProjection,
+        invocation_id: str,
+        context: RuntimeContext,
+    ) -> bool:
+        if self._pending_write_sets(invocation_id):
+            return True
+        planned = self._last_uncommitted_plan(invocation_id)
+        if planned is not None:
+            succeeded = [
+                task_id for task_id, task in projection.tasks.items() if task.status == "succeeded"
+            ]
+            if succeeded:
+                return True
+        publication_store = ProjectPublicationStore(context.project_root)
+        for publication, status in publication_store.list_publications(invocation_id=invocation_id):
+            if status != "applied":
+                return True
+        return self._ordinary_materialization_drift(projection, context)
+
+    def _commit_pending_write_sets(self, projection: GraphProjection, context: RuntimeContext) -> bool:
+        planned = self._last_uncommitted_plan(projection.invocation_id)
+        if planned is None:
+            return False
+        succeeded = [task_id for task_id, task in projection.tasks.items() if task.status == "succeeded"]
+        if not succeeded:
+            return False
+        plan = PlanResult(
+            superstep_id=planned["superstep_id"],
+            checkpoint_id=planned["checkpoint_id"],
+            tasks=(),
+        )
+        try:
+            return self._scheduler.commit_pending_write_sets(
+                plan=plan,
+                projection=projection,
+                context=context,
+                succeeded_ids=succeeded,
+            )
+        except (WorkspaceError, ProgressionError, SchedulerError, ValueError) as exc:
+            raise GraphRuntimeError(f"failed to commit pending write sets: {exc}") from exc
+
+    def _replay_committed_publications(
         self,
         projection: GraphProjection,
         context: RuntimeContext,
-    ) -> None:
-        prev, target, publication_id, write_set_ids = self._last_committed_tree_edge(projection)
-        if target is None:
-            return
-        if publication_id is None:
-            raise GraphRuntimeError("committed tree edge lacks checkpoint identity")
-        try:
-            if self._scheduler.repair_committed_write_sets(
-                context=context,
-                invocation_id=projection.invocation_id,
-                publication_id=publication_id,
-                write_set_ids=write_set_ids,
-            ):
-                return
-        except (SchedulerError, WorkspaceError) as exc:
-            raise GraphRuntimeError(f"failed to repair materialization: {exc}") from exc
-        try:
-            current = self._objects.capture(context.project_root, repo_root=context.repo_root)
-        except WorkspaceError:
-            return
-        if current == target:
-            return
+    ) -> bool:
+        progress = False
+        for raw in read_events_strict(self._checkpoints._change_dir):  # noqa: SLF001
+            if raw.get("source") != "graph" or raw.get("invocation_id") != projection.invocation_id:
+                continue
+            if raw.get("type") != "superstep_committed":
+                continue
+            raw_checkpoint_id = raw.get("checkpoint_id")
+            publication_id = raw_checkpoint_id if isinstance(raw_checkpoint_id, str) else None
+            raw_ids = raw.get("write_set_ids")
+            write_set_ids = tuple(
+                value for value in (raw_ids if isinstance(raw_ids, list) else []) if isinstance(value, str)
+            )
+            if publication_id is None or not write_set_ids:
+                continue
+            try:
+                if self._scheduler.repair_committed_write_sets(
+                    context=context,
+                    invocation_id=projection.invocation_id,
+                    publication_id=publication_id,
+                    write_set_ids=write_set_ids,
+                ):
+                    progress = True
+            except (SchedulerError, WorkspaceError) as exc:
+                raise GraphRuntimeError(f"failed to replay committed publication: {exc}") from exc
+        return progress
+
+    def _repair_ordinary_materialization(
+        self,
+        projection: GraphProjection,
+        context: RuntimeContext,
+    ) -> bool:
+        if not self._ordinary_materialization_drift(projection, context):
+            return False
+        prev, target, _, write_set_ids = self._last_committed_tree_edge(projection)
+        assert target is not None
         base = prev if prev is not None else projection.root_tree_id
         try:
             self._objects.apply_tree(context.project_root, target, base_tree_id=base)
         except WorkspaceError as exc:
             raise GraphRuntimeError(f"failed to repair materialization: {exc}") from exc
+        return True
+
+    def _ordinary_materialization_drift(
+        self,
+        projection: GraphProjection,
+        context: RuntimeContext,
+    ) -> bool:
+        prev, target, publication_id, write_set_ids = self._last_committed_tree_edge(projection)
+        if target is None or publication_id is None:
+            return False
+        if write_set_ids:
+            write_sets = [self._objects.load_write_set(write_set_id) for write_set_id in write_set_ids]
+            if any(write_set.synchronized_paths for write_set in write_sets):
+                return False
+        try:
+            current = self._objects.capture(context.project_root, repo_root=context.repo_root)
+        except WorkspaceError:
+            return False
+        return current != target
 
     def _last_committed_tree_edge(
         self,
@@ -1036,28 +1125,6 @@ class GraphRuntime:
                 )
                 cursor = target_tree
         return last_prev, last_target, last_publication_id, last_write_set_ids
-
-    def _retry_pending_update(self, projection: GraphProjection, context: RuntimeContext) -> None:
-        planned = self._last_uncommitted_plan(projection.invocation_id)
-        if planned is None:
-            return
-        succeeded = [task_id for task_id, task in projection.tasks.items() if task.status in ("succeeded",)]
-        if not succeeded:
-            return
-        plan = PlanResult(
-            superstep_id=planned["superstep_id"],
-            checkpoint_id=planned["checkpoint_id"],
-            tasks=(),
-        )
-        try:
-            self._scheduler._commit_wave(  # noqa: SLF001
-                plan=plan,
-                projection=projection,
-                context=context,
-                succeeded_ids=succeeded,
-            )
-        except (WorkspaceError, ProgressionError, SchedulerError, ValueError):
-            return
 
     def _last_uncommitted_plan(self, invocation_id: str) -> dict[str, str] | None:
         last_plan: dict[str, str] | None = None

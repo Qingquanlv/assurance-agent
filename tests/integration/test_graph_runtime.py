@@ -843,3 +843,165 @@ def test_crash_after_write_set_freeze_before_success_retries_attempt(tmp_path: P
     events = read_events_strict(change)
     assert any(e.get("type") == "task_attempt_abandoned" for e in events)
     assert [e.get("type") for e in events].count("task_attempt_succeeded") == 1
+
+
+def test_recovery_barrier_orders_reconcile_before_pending_commit_before_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _make_project(tmp_path)
+    compiled, contracts = _write_compiled()
+    runtime = _build_runtime(project, compiled, contracts, node_runner=_op_runner(_write_ops()))
+    order: list[str] = []
+    original_reconcile = runtime._reconcile_running
+    original_commit_pending = runtime._commit_pending_write_sets
+    original_replay = runtime._replay_committed_publications
+    original_repair_ordinary = runtime._repair_ordinary_materialization
+
+    def track_reconcile(projection, context):  # type: ignore[no-untyped-def]
+        order.append("reconcile")
+        return original_reconcile(projection, context)
+
+    def track_commit_pending(projection, context):  # type: ignore[no-untyped-def]
+        order.append("pending_commit")
+        return original_commit_pending(projection, context)
+
+    def track_replay(projection, context):  # type: ignore[no-untyped-def]
+        order.append("replay_publications")
+        return original_replay(projection, context)
+
+    def track_repair_ordinary(projection, context):  # type: ignore[no-untyped-def]
+        order.append("repair_ordinary")
+        return original_repair_ordinary(projection, context)
+
+    def track_plan(*args, **kwargs):  # type: ignore[no-untyped-def]
+        order.append("plan")
+        raise GraphRuntimeError("stop after first plan")
+
+    monkeypatch.setattr(runtime, "_reconcile_running", track_reconcile)
+    monkeypatch.setattr(runtime, "_commit_pending_write_sets", track_commit_pending)
+    monkeypatch.setattr(runtime, "_replay_committed_publications", track_replay)
+    monkeypatch.setattr(runtime, "_repair_ordinary_materialization", track_repair_ordinary)
+    monkeypatch.setattr(runtime_mod, "plan_superstep", track_plan)
+
+    with pytest.raises(GraphRuntimeError, match="stop after first plan"):
+        runtime.run(compiled, "full", _context(project))
+
+    assert "reconcile" in order
+    assert order.index("reconcile") < order.index("plan")
+    assert "pending_commit" in order
+    assert order.index("pending_commit") < order.index("plan")
+    assert "replay_publications" in order
+    assert order.index("replay_publications") < order.index("plan")
+    assert "repair_ordinary" in order
+    assert order.index("repair_ordinary") < order.index("plan")
+
+
+def test_pending_commit_recovery_failure_raises_graph_runtime_error(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    compiled, contracts = _write_compiled()
+    ops = _write_ops()
+    runtime = _build_runtime(project, compiled, contracts, node_runner=_op_runner(ops))
+
+    def crash_commit(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise _InjectedCrash("after task_attempt_succeeded")
+
+    runtime._scheduler._commit_wave = crash_commit  # type: ignore[method-assign]  # noqa: SLF001
+    with pytest.raises(_InjectedCrash):
+        runtime.run(compiled, "full", _context(project))
+
+    change = _context(project).change_dir
+    events = read_events_strict(change)
+    invocation_id = next(
+        str(e["invocation_id"]) for e in events if e.get("type") == "graph_invocation_started"
+    )
+
+    fresh = _build_runtime(project, compiled, contracts, node_runner=_op_runner(ops))
+
+    def refuse_pending(**_kwargs):  # type: ignore[no-untyped-def]
+        raise ValueError("pending commit refused")
+
+    fresh._scheduler.commit_pending_write_sets = refuse_pending  # type: ignore[method-assign]
+    with pytest.raises(GraphRuntimeError, match="pending commit refused"):
+        fresh.resume(invocation_id)
+
+
+def test_recovery_barrier_orders_reconcile_before_pending_commit_before_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _make_project(tmp_path)
+    compiled, contracts = _write_compiled()
+    runtime = _build_runtime(project, compiled, contracts, node_runner=_op_runner(_write_ops()))
+    order: list[str] = []
+    original_reconcile = runtime._reconcile_running
+    original_commit_pending = runtime._commit_pending_write_sets
+    original_replay = runtime._replay_committed_publications
+    original_repair_ordinary = runtime._repair_ordinary_materialization
+
+    def track_reconcile(projection, context):  # type: ignore[no-untyped-def]
+        order.append("reconcile")
+        return original_reconcile(projection, context)
+
+    def track_commit_pending(projection, context):  # type: ignore[no-untyped-def]
+        order.append("pending_commit")
+        return original_commit_pending(projection, context)
+
+    def track_replay(projection, context):  # type: ignore[no-untyped-def]
+        order.append("replay_publications")
+        return original_replay(projection, context)
+
+    def track_repair_ordinary(projection, context):  # type: ignore[no-untyped-def]
+        order.append("repair_ordinary")
+        return original_repair_ordinary(projection, context)
+
+    def track_plan(*args, **kwargs):  # type: ignore[no-untyped-def]
+        order.append("plan")
+        raise GraphRuntimeError("stop after first plan")
+
+    monkeypatch.setattr(runtime, "_reconcile_running", track_reconcile)
+    monkeypatch.setattr(runtime, "_commit_pending_write_sets", track_commit_pending)
+    monkeypatch.setattr(runtime, "_replay_committed_publications", track_replay)
+    monkeypatch.setattr(runtime, "_repair_ordinary_materialization", track_repair_ordinary)
+    monkeypatch.setattr(runtime_mod, "plan_superstep", track_plan)
+
+    with pytest.raises(GraphRuntimeError, match="stop after first plan"):
+        runtime.run(compiled, "full", _context(project))
+
+    assert "reconcile" in order
+    assert order.index("reconcile") < order.index("plan")
+    assert "pending_commit" in order
+    assert order.index("pending_commit") < order.index("plan")
+    assert "replay_publications" in order
+    assert order.index("replay_publications") < order.index("plan")
+    assert "repair_ordinary" in order
+    assert order.index("repair_ordinary") < order.index("plan")
+
+
+def test_pending_commit_recovery_failure_raises_graph_runtime_error(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    compiled, contracts = _write_compiled()
+    ops = _write_ops()
+    runtime = _build_runtime(project, compiled, contracts, node_runner=_op_runner(ops))
+
+    def crash_commit(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise _InjectedCrash("after task_attempt_succeeded")
+
+    runtime._scheduler._commit_wave = crash_commit  # type: ignore[method-assign]  # noqa: SLF001
+    with pytest.raises(_InjectedCrash):
+        runtime.run(compiled, "full", _context(project))
+
+    change = _context(project).change_dir
+    events = read_events_strict(change)
+    invocation_id = next(
+        str(e["invocation_id"]) for e in events if e.get("type") == "graph_invocation_started"
+    )
+
+    fresh = _build_runtime(project, compiled, contracts, node_runner=_op_runner(ops))
+
+    def refuse_pending(**_kwargs):  # type: ignore[no-untyped-def]
+        raise ValueError("pending commit refused")
+
+    fresh._scheduler.commit_pending_write_sets = refuse_pending  # type: ignore[method-assign]
+    with pytest.raises(GraphRuntimeError, match="pending commit refused"):
+        fresh.resume(invocation_id)
