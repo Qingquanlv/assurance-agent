@@ -89,12 +89,15 @@ def _compliant_plan_gate(*, layer: str) -> GateDef:
                     f"and {profile.review_alias}.auto_fix_allowed == true"
                 ),
             ),
+            # Task 11 must preserve explicit-reject-before-human-review when migrating packaged gates.
             GateRule(
                 field="needs_human_review_when",
                 verdict=Verdict.NEEDS_HUMAN_REVIEW,
                 expr=(
+                    f"{profile.review_alias}.decision != 'reject' and ("
                     f"not capabilities_present({profile.review_alias}, data_knowledge) "
                     f"or check_failed({checks_alias}, 'capability_keys')"
+                    f")"
                 ),
             ),
             GateRule(
