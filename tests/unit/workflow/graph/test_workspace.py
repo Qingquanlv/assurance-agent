@@ -16,8 +16,13 @@ from pathlib import Path
 
 import pytest
 
-from assurance_agent.workflow.graph.contracts import ResourceClaims, ResourcePath
 from assurance_agent.workflow.graph import workspace as workspace_mod
+from assurance_agent.workflow.graph.contracts import (
+    ResourceClaims,
+    ResourcePath,
+    load_execution_contracts,
+)
+from assurance_agent.workflow.graph.schema_v2 import NodeDef
 from assurance_agent.workflow.graph.workspace import (
     TaskWorkspace,
     TreeStore,
@@ -280,6 +285,45 @@ def test_freeze_rejects_write_outside_authorization(tmp_path: Path) -> None:
     (workspace.project_root / "app" / "source.py").write_text("changed\n")
     with pytest.raises(WorkspaceError, match="forbidden"):
         store.freeze_write_set(workspace, claims=_claims("repo:tests/api/**"))
+
+
+def test_api_plan_reviewer_freeze_allows_only_its_declared_outputs(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    store = _store(project)
+    backend = _backend(project)
+    canonical_checks = project / "qa" / "changes" / "CH-1" / "review" / "api-plan-checks.json"
+    canonical_checks.parent.mkdir(parents=True)
+    canonical_checks.write_text('{"status":"fail"}\n', encoding="utf-8")
+    base_tree = store.capture(project)
+    outputs = (
+        "change:review/api-plan-review.json",
+        "change:review/api-plan-review-summary.md",
+    )
+    claims = load_execution_contracts(project).claims_for(
+        NodeDef(uses="skill:aa-api-plan-reviewer", outputs=list(outputs))
+    )
+
+    malicious = backend.create(task_id="reviewer-malicious", base_tree_id=base_tree, store=store)
+    checks = malicious.change_dir / "review" / "api-plan-checks.json"
+    checks.write_text('{"status":"pass"}\n', encoding="utf-8")
+
+    with pytest.raises(
+        WorkspaceError,
+        match=r"forbidden write outside authorization_writes: change:review/api-plan-checks\.json",
+    ):
+        store.freeze_write_set(malicious, claims=claims)
+
+    legitimate = backend.create(task_id="reviewer-legitimate", base_tree_id=base_tree, store=store)
+    review_json = legitimate.change_dir / "review" / "api-plan-review.json"
+    review_json.parent.mkdir(parents=True, exist_ok=True)
+    review_json.write_text('{"decision":"pass"}\n', encoding="utf-8")
+    summary = legitimate.change_dir / "review" / "api-plan-review-summary.md"
+    summary.write_text("# API plan review\n", encoding="utf-8")
+
+    write_set = store.freeze_write_set(legitimate, claims=claims, outputs=outputs)
+
+    assert {entry.logical_path for entry in write_set.entries} == set(outputs)
+    assert set(write_set.outputs_sha256) == set(outputs)
 
 
 def test_freeze_rejects_missing_declared_output(tmp_path: Path) -> None:

@@ -24,4 +24,5 @@ def test_aggregate_ignores_errored_samples_in_mean() -> None:
     m = aggregate_scores("run-1", "s", scores)
     assert m.metrics["x"] == 1.0  # 只对成功 sample 求均值
     assert m.sample_count == 2
+    assert m.error_count == 1
     assert "B" in m.per_sample

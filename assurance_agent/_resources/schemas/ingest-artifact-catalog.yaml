@@ -3,7 +3,7 @@ artifacts:
   api_plan_review:
     kind: file_ingest
     model: review@1
-    model_schema_digest: "9b67987bc04a97963be8b671b3aac56b995720ee156887e053294e5c51712ba0"
+    model_schema_digest: "687468f6991c1d09bd75f2471d0dcd94dcb8215f3c5649da1f061dc458d14996"
     path: change:review/api-plan-review.json
     codec: json
     cardinality: one
@@ -13,7 +13,7 @@ artifacts:
   e2e_plan_review:
     kind: file_ingest
     model: review@1
-    model_schema_digest: "9b67987bc04a97963be8b671b3aac56b995720ee156887e053294e5c51712ba0"
+    model_schema_digest: "687468f6991c1d09bd75f2471d0dcd94dcb8215f3c5649da1f061dc458d14996"
     path: change:review/e2e-plan-review.json
     codec: json
     cardinality: one

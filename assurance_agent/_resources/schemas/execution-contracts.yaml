@@ -52,6 +52,18 @@ contracts:
       - change:registry/**
     retryable_errors: []
 
+  operation:verify-plan-mechanical:
+    handler: operation
+    reads:
+      - change:plans/**
+      - change:cases/**
+      - repo:.aa/data-knowledge.yaml
+    writes:
+      - change:review/*-plan-checks.json
+    authorization_writes:
+      - change:review/*-plan-checks.json
+    retryable_errors: []
+
   operation:run-tests:
     handler: operation
     reads:
@@ -212,7 +224,8 @@ contracts:
       - change:review/api-plan-review.json
       - change:review/api-plan-review-summary.md
     authorization_writes:
-      - change:review/**
+      - change:review/api-plan-review.json
+      - change:review/api-plan-review-summary.md
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 

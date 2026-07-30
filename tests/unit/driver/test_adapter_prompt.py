@@ -138,12 +138,16 @@ def test_build_node_prompt_skips_transient_prior_failure() -> None:
 
 
 def test_plan_reviewer_prompt_frontloads_nonempty_required_capabilities_contract() -> None:
-    for skill in ("aa-api-plan-reviewer", "aa-e2e-plan-reviewer"):
+    for skill, output in (
+        ("aa-api-plan-reviewer", "change:review/api-plan-review.json"),
+        ("aa-e2e-plan-reviewer", "change:review/plan-review.json"),
+    ):
         prompt = build_node_prompt(
             skill,
             "review",
             "CH-1",
             allowed_writes=["change:review/**"],
+            outputs=[output],
         )
 
         assert "required_capabilities" in prompt
@@ -154,22 +158,19 @@ def test_plan_reviewer_prompt_frontloads_nonempty_required_capabilities_contract
     assert "timed out waiting for model" not in prompt
 
 
-def test_retro_analyzer_prompt_frontloads_analysis_only_contract() -> None:
-    for skill in (
+def test_retro_analyzer_prompt_bounds_writes_by_contract_not_prose() -> None:
+    """ANALYSIS ONLY 的强制点是 contract authorization_writes（forbidden_write），
+    不是 prompt 散文；SKILL.md 里已有等价的领域边界说明。"""
+    prompt = build_node_prompt(
         "aa-retro-issue-analysis",
-        "aa-retro-workflow-analysis",
-        "aa-retro-eval-analysis",
-    ):
-        prompt = build_node_prompt(
-            skill,
-            "analyze",
-            "RETRO-RUN-1",
-            allowed_writes=["project:qa/retro/retro-1/signals/domain.json"],
-        )
+        "analyze",
+        "RETRO-RUN-1",
+        allowed_writes=["project:qa/retro/retro-1/signals/domain.json"],
+        outputs=["project:qa/retro/retro-1/signals/domain.json"],
+    )
 
-        assert "ANALYSIS ONLY" in prompt
-        assert "never implement a recommended change" in prompt
-        assert "write only the declared signal artifact" in prompt
+    assert "Authorized write paths: project:qa/retro/retro-1/signals/domain.json" in prompt
+    assert "Produce only node analyze's declared outputs" in prompt
 
 
 def test_retro_proposer_prompt_frontloads_v3_draft_contract() -> None:
@@ -178,6 +179,7 @@ def test_retro_proposer_prompt_frontloads_v3_draft_contract() -> None:
         "propose-improvements",
         "RETRO-RUN-1",
         allowed_writes=["project:qa/retro/retro-1/proposal-candidates.json"],
+        outputs=["project:qa/retro/retro-1/proposal-candidates.json"],
     )
 
     assert "ImprovementCandidateDocumentDraftV3" in prompt
@@ -185,3 +187,15 @@ def test_retro_proposer_prompt_frontloads_v3_draft_contract() -> None:
     assert "omit context_sha256" in prompt
     assert "include signal_ids" in prompt
     assert "never emit legacy intent_key" in prompt
+
+
+def test_prompt_has_no_contract_clause_for_unregistered_outputs() -> None:
+    prompt = build_node_prompt(
+        "aa-api-plan",
+        "plan",
+        "CH-1",
+        allowed_writes=["change:plans/**"],
+        outputs=["change:plans/api-plan.md"],
+    )
+
+    assert "OUTPUT CONTRACT" not in prompt

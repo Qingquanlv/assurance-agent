@@ -33,6 +33,7 @@ class GraphInvocationStartedEvent(_GraphEvent):
     ir_digest: str = ""
     ingest_catalog_digest: str = ""
     contract_digests: dict[str, str]
+    policy_digest: str = ""
     params: dict[str, object]
     params_sha256: str
     root_tree_id: str

@@ -37,10 +37,13 @@ imports:
       node: review-cycle
     - path: execute-workflow/assurance/assurance/fuzz/fuzz-branch
       graph: fuzz-branch
+      node: codegen-gate
+      gate: fuzz-plan-review-gate
+    - path: execute-workflow/assurance/assurance/fuzz/fuzz-branch
+      graph: fuzz-branch
       node: codegen
       outputs:
       - change:codegen/fuzz-codegen-summary.md
-      gate: fuzz-codegen-precondition-gate
     - path: execute-workflow/assurance/assurance
       graph: assurance
       node: fuzz

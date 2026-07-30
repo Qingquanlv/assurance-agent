@@ -37,10 +37,13 @@ imports:
       node: review-cycle
     - path: execute-workflow/assurance/assurance/performance/performance-branch
       graph: performance-branch
+      node: codegen-gate
+      gate: performance-plan-review-gate
+    - path: execute-workflow/assurance/assurance/performance/performance-branch
+      graph: performance-branch
       node: codegen
       outputs:
       - change:codegen/performance-codegen-summary.md
-      gate: performance-codegen-precondition-gate
     - path: execute-workflow/assurance/assurance
       graph: assurance
       node: performance

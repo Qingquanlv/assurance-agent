@@ -1,0 +1,36 @@
+{
+  "schema_version": "1",
+  "status": "pass",
+  "checks": [
+    {
+      "check_id": "l1_path",
+      "status": "pass",
+      "findings": [],
+      "refs": [
+        "plans/api-codegen-plan.md",
+        "plans/api-plan.md",
+        "plans/api-test-data-plan.md"
+      ]
+    },
+    {
+      "check_id": "shared_factory",
+      "status": "pass",
+      "findings": [],
+      "refs": [
+        "plans/api-codegen-plan.md",
+        "plans/api-plan.md",
+        "plans/api-test-data-plan.md"
+      ]
+    },
+    {
+      "check_id": "assert_ideal",
+      "status": "pass",
+      "findings": [],
+      "refs": [
+        "plans/api-codegen-plan.md",
+        "plans/api-plan.md",
+        "plans/api-test-data-plan.md"
+      ]
+    }
+  ]
+}

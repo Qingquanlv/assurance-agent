@@ -89,6 +89,7 @@ class SuiteMetrics(BaseModel):
     run_id: str
     suite: str
     sample_count: int
+    error_count: int = 0
     metrics: dict[str, float] = Field(default_factory=dict)
     per_sample: dict[str, dict[str, float]] = Field(default_factory=dict)
 

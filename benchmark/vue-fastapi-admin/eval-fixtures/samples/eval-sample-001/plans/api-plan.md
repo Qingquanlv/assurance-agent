@@ -46,7 +46,7 @@ API automation cases from `added` (12 cases). E2E cases excluded from this plan.
 | TC_APIS_API_009 | Missing path/method/tags on create | POST | `/api/v1/api/create` | HTTP 422; no new row |
 | TC_APIS_API_010 | Invalid MethodType enum | POST | `/api/v1/api/create` | HTTP 422; no new row |
 | TC_APIS_API_011 | Nonexistent id get/update/delete | GET/POST/DELETE | `/api/v1/api/get`, `/api/v1/api/update`, `/api/v1/api/delete` | HTTP 404, `code=404`; non-5xx |
-| TC_APIS_API_012 | Duplicate path+method create probe | POST | `/api/v1/api/create` | Non-5xx; record whether reject or allow duplicates |
+| TC_APIS_API_012 | Duplicate path+method create probe | POST | `/api/v1/api/create` | HTTP 4xx or 200; non-5xx; record whether reject or allow duplicates |
 
 ## Auth Strategy
 
@@ -123,7 +123,7 @@ RBAC note: `/api/v1/api/*` is mounted with `DependPermission` (`app/api/v1/__ini
 | TC_APIS_API_009 | HTTP 422 for omit path, omit method, omit tags; `count_apis_matching` unchanged |
 | TC_APIS_API_010 | HTTP 422 for invalid method; list count unchanged |
 | TC_APIS_API_011 | get/update/delete each HTTP 404 + `code=404` for id `999999999`; status < 500 |
-| TC_APIS_API_012 | second create non-5xx; record count of rows with same path+method (neutral probe) |
+| TC_APIS_API_012 | second create HTTP 4xx or 200; non-5xx; record count of rows with same path+method (neutral probe) |
 
 Schema validation (happy paths): api endpoint schemas registered in `tests/api/conftest.py` `_LOCAL_SCHEMAS`; call `assert_matches_schema` on create/list/get/update/delete/refresh responses.
 

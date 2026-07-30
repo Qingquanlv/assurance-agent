@@ -12,6 +12,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict
 
 from assurance_agent.artifacts.models import WorkflowState
+from assurance_agent.artifacts.policy import load_policy
 from assurance_agent.change_location import ChangeLocation
 from assurance_agent.exceptions import AaError
 from assurance_agent.knowledge.capabilities import capabilities_present as check_capabilities_present
@@ -123,6 +124,7 @@ def build_evidence_scope(
         **alias_docs,
         "params": params,
         "state": _scope_state(state),
+        "policy": load_policy(loc.project_root).model_dump(mode="json"),
     }
     _memo = memo if memo is not None else {}
 
@@ -584,6 +586,7 @@ def _view_scope(
         **alias_docs,
         "params": dict(context.params),
         "state": dict(context.state_values),
+        "policy": load_policy(context.project_root).model_dump(mode="json"),
     }
 
     def file_exists(rel: str) -> bool:

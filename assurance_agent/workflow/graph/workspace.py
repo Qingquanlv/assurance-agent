@@ -96,6 +96,7 @@ _EXCLUDED_FILES = frozenset(
 )
 _HEX = frozenset("0123456789abcdef")
 _GIT_TIMEOUT_S = 120
+_MAX_TREE_SYMLINK_HOPS = 40
 
 
 class WorkspaceError(AaError):
@@ -145,6 +146,25 @@ def _assert_safe_prefix(prefix: object) -> str:
     if prefix.startswith("/") or "\\" in prefix or any(part in ("", ".", "..") for part in parts):
         raise WorkspaceError(f"unsafe tree root prefix: {prefix!r}")
     return prefix
+
+
+def _resolve_tree_symlink(rel: str, target: str) -> str:
+    target_path = PurePosixPath(target)
+    if target_path.is_absolute():
+        raise WorkspaceError(f"tree symlink target is absolute: {rel}")
+    parts = list(PurePosixPath(rel).parent.parts)
+    for part in target_path.parts:
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if not parts:
+                raise WorkspaceError(f"tree symlink escapes materialization root: {rel}")
+            parts.pop()
+            continue
+        parts.append(part)
+    if not parts:
+        return "."
+    return PurePosixPath(*parts).as_posix()
 
 
 def _parse_tree(raw: bytes) -> _TreeManifest:
@@ -583,20 +603,69 @@ class TreeStore:
     def _load_tree(self, tree_id: str) -> _TreeManifest:
         return _parse_tree(self._read_object(tree_id))
 
-    def read_json(self, tree_id: str, logical_path: str) -> ResolvedArtifact:
-        """Read a JSON artifact from a committed tree by logical path (change:/project:/repo:)."""
+    def _read_tree_bytes(
+        self,
+        manifest: _TreeManifest,
+        rel: str,
+    ) -> bytes:
+        current = rel
+        visited_states: set[str] = set()
+        hops = 0
+        while True:
+            if current in visited_states:
+                raise WorkspaceError(f"tree symlink cycle while resolving: {current}")
+            visited_states.add(current)
+            parts = PurePosixPath(current).parts
+            followed = False
+            for index in range(1, len(parts) + 1):
+                prefix = PurePosixPath(*parts[:index]).as_posix()
+                entry = manifest.entries.get(prefix)
+                if entry is None:
+                    continue
+                data = self._read_object(entry.sha256)
+                if entry.kind == "file":
+                    if index != len(parts):
+                        raise NotADirectoryError(current)
+                    return data
+                if hops >= _MAX_TREE_SYMLINK_HOPS:
+                    raise WorkspaceError(f"too many symlink hops while resolving tree path: {rel}")
+                try:
+                    target = data.decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise WorkspaceError(f"tree symlink target is not UTF-8: {prefix}") from exc
+                hops += 1
+                resolved = _resolve_tree_symlink(prefix, target)
+                current = PurePosixPath(resolved, *parts[index:]).as_posix()
+                followed = True
+                break
+            if followed:
+                continue
+            directory_prefix = f"{current}/"
+            if current == "." or any(path.startswith(directory_prefix) for path in manifest.entries):
+                raise IsADirectoryError(current)
+            raise FileNotFoundError(current)
+
+    def read_bytes(self, tree_id: str, logical_path: str) -> bytes:
+        """Read hash-verified file bytes from a committed tree, following safe symlinks."""
         logical = ResourcePath.parse(logical_path)
         manifest = self._load_tree(tree_id)
         rel = _physical_for(manifest.roots, logical)
-        entry = manifest.entries.get(rel)
-        if entry is None or entry.kind != "file":
-            raise FileNotFoundError(logical_path)
-        data = self._read_object(entry.sha256)
+        try:
+            return self._read_tree_bytes(manifest, rel)
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(logical_path) from exc
+
+    def read_json(self, tree_id: str, logical_path: str) -> ResolvedArtifact:
+        """Read a JSON artifact from a committed tree by logical path (change:/project:/repo:)."""
+        data = self.read_bytes(tree_id, logical_path)
         try:
             value = json.loads(data.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ValueError(f"artifact is not valid JSON: {logical_path}") from exc
-        return ResolvedArtifact(value=value, reads_sha256={logical_path: entry.sha256})
+        return ResolvedArtifact(
+            value=value,
+            reads_sha256={logical_path: hashlib.sha256(data).hexdigest()},
+        )
 
     def filter_tree(
         self,

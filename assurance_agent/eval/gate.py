@@ -39,6 +39,9 @@ def compute_gate_result(suite: EvalSuite, manifest: RunManifest, metrics: SuiteM
 
     if not _evidence_ok(manifest, metrics):
         hard_failures.append("evidence_integrity: manifest/metrics cross-check failed")
+    if metrics.error_count:
+        inconclusive += metrics.error_count
+        threshold_failures.append(f"sample_execution_errors: {metrics.error_count}")
 
     for threshold in suite.thresholds:
         if threshold.gate == "observe":

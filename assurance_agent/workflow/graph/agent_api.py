@@ -15,6 +15,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict
 
+from assurance_agent.verification.contract_render import render_output_contract
 from assurance_agent.workflow.core.graph_types import ErrorKind
 from assurance_agent.workflow.skill_memory import load_skill_memory
 
@@ -51,38 +52,6 @@ class AgentInvoker(Protocol):
 
 _PRIOR_FAILURE_KINDS = frozenset({"invalid_output", "forbidden_write"})
 _PRIOR_FAILURE_MAX_CHARS = 800
-_OUTPUT_CONTRACT_REMINDERS = {
-    "aa-retro": (
-        " OUTPUT CONTRACT: proposal-candidates.json must be an "
-        "ImprovementCandidateDocumentDraftV3 with document-root schema_version '3', "
-        "retro_id, and candidates; omit context_sha256 because the runtime inserts it. "
-        "Every candidate must include signal_ids; never emit legacy intent_key."
-    ),
-    "aa-retro-issue-analysis": (
-        " ANALYSIS ONLY: write only the declared signal artifact; never implement "
-        "a recommended change or edit project source, tests, skills, or configuration."
-    ),
-    "aa-retro-workflow-analysis": (
-        " ANALYSIS ONLY: write only the declared signal artifact; never implement "
-        "a recommended change or edit project source, tests, skills, or configuration."
-    ),
-    "aa-retro-eval-analysis": (
-        " ANALYSIS ONLY: write only the declared signal artifact; never implement "
-        "a recommended change or edit project source, tests, skills, or configuration."
-    ),
-    "aa-api-plan-reviewer": (
-        " OUTPUT CONTRACT: api-plan-review.json must include "
-        "required_capabilities as a non-empty list of fully qualified C4 leaf keys; "
-        "use auth.*, accounts.*, entities.*, capabilities.domain_factories.*, "
-        "capabilities.adapters.*, or capabilities.cleanup.* exactly as rooted in L1."
-    ),
-    "aa-e2e-plan-reviewer": (
-        " OUTPUT CONTRACT: plan-review.json must include required_capabilities "
-        "as a non-empty list of fully qualified C4 leaf keys; use auth.*, accounts.*, "
-        "entities.*, capabilities.domain_factories.*, capabilities.adapters.*, or "
-        "capabilities.cleanup.* exactly as rooted in L1."
-    ),
-}
 
 
 def build_node_prompt(
@@ -97,6 +66,7 @@ def build_node_prompt(
     prior_failure: str | None = None,
     prior_error_kind: ErrorKind | None = None,
     evidence: Mapping[str, object] | None = None,
+    outputs: Sequence[str] = (),
 ) -> str:
     """v2 node prompt：列出 contract 授权写范围，不再宣称只能写 change 目录。
 
@@ -149,7 +119,7 @@ def build_node_prompt(
         evidence_clause = (
             f" FROZEN UPSTREAM EVIDENCE (authoritative; do not re-derive from disk):\n{rendered}\n"
         )
-    output_contract_clause = _OUTPUT_CONTRACT_REMINDERS.get(skill, "")
+    output_contract_clause = render_output_contract(outputs)
     return (
         f"Call skill(name='{skill}'). Operate strictly on change_id='{change_id}'. "
         f"Authorized write paths: {allowed}. Produce only node {node_id}'s declared outputs. "

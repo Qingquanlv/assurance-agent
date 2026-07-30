@@ -24,6 +24,7 @@ def test_registry_covers_every_expected_artifact_type() -> None:
         "improvement_review_subject_v1",
         "improvement_reconcile_outbox_v1",
         "observation_document",
+        "plan_check",
         "qa_yaml",
         "quality_gate_result",
         "quality_report",
@@ -42,7 +43,7 @@ def test_registry_covers_every_expected_artifact_type() -> None:
         "workflow_state",
     }
     assert {spec.artifact_type for spec in REGISTRY} == expected
-    assert len(REGISTRY) == 37
+    assert len(REGISTRY) == 40
 
 
 def test_retro_closure_artifacts_match_only_their_run_paths() -> None:

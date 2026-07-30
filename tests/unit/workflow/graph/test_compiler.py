@@ -293,6 +293,68 @@ def test_rejects_unknown_node_in_expression() -> None:
         compile_text(_mutate_fixture(mutation))
 
 
+def test_named_gate_owned_only_by_builtin_gate_can_read_graph_nodes() -> None:
+    compiled = compile_text(
+        _wf(
+            """
+            main:
+              max_supersteps: 5
+              nodes:
+                producer: {uses: operation:produce}
+                check:
+                  uses: builtin:gate
+                  with: {gate: producer-gate}
+              edges:
+                - {from: START, to: producer}
+                - {from: producer, to: check}
+                - {from: check, to: END}
+            """,
+            footer="""
+gates:
+  producer-gate:
+    stop_when: "node('producer').status == 'failed'"
+    pass_when: "true"
+""",
+        )
+    )
+
+    assert compiled.schema.gates["producer-gate"].id == "producer-gate"
+
+
+def test_gate_shared_by_attached_and_builtin_owners_requires_a_common_node() -> None:
+    with pytest.raises(CompileError, match="unknown node.*producer-only"):
+        compile_text(
+            _wf(
+                """
+                main:
+                  max_supersteps: 5
+                  nodes:
+                    producer-only: {uses: operation:produce}
+                    attached: {uses: operation:review, gate: shared-gate}
+                  edges:
+                    - {from: START, to: producer-only}
+                    - {from: producer-only, to: attached}
+                    - {from: attached, to: END}
+                builtin-owner:
+                  max_supersteps: 5
+                  nodes:
+                    check:
+                      uses: builtin:gate
+                      with: {gate: shared-gate}
+                  edges:
+                    - {from: START, to: check}
+                    - {from: check, to: END}
+                """,
+                footer="""
+gates:
+  shared-gate:
+    stop_when: "node('producer-only').status == 'failed'"
+    pass_when: "true"
+""",
+            )
+        )
+
+
 def test_rejects_duplicate_artifact_symbols() -> None:
     with pytest.raises(CompileError, match="duplicate artifact symbol"):
         compile_text(

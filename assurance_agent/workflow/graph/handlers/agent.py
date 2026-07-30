@@ -92,6 +92,7 @@ class AgentHandler:
             prior_failure=task.prior_failure,
             prior_error_kind=task.prior_error_kind,
             evidence=task.resolved_evidence or None,
+            outputs=outputs,
         )
         request = AgentRequest(
             target=task.target,

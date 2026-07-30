@@ -31,6 +31,7 @@ from assurance_agent.artifacts.models import (
     IssueEvidenceManifest,
     IssueEvidenceSlice,
     IssueReconcileStatus,
+    ImprovementCandidateDocumentDraftV3,
     ImprovementCandidateDocumentV3,
     ImprovementAutoReviewAssessment,
     ImprovementAutoReviewBatchSummary,
@@ -41,6 +42,8 @@ from assurance_agent.artifacts.models import (
     QaYaml,
     QualityGateResult,
     QualityReport,
+    PlanReview,
+    PlanReviewAuthoring,
     RetroContextV3,
     RetroPipelineFailureDocument,
     RetroRunStatus,
@@ -48,9 +51,11 @@ from assurance_agent.artifacts.models import (
     Review,
     SafetyCheck,
     SignalDocumentV3,
+    SignalDraftDocument,
     WorkflowEvidenceSlice,
     WorkflowState,
 )
+from assurance_agent.artifacts.models.plan_checks import PlanCheckDocument
 
 Compat = Literal["must_compat", "versioned", "free"]
 
@@ -60,6 +65,9 @@ class ArtifactSpec(BaseModel):
     pattern: str
     model: type[BaseModel]
     compat: Compat
+    # 落盘校验模型与 agent 撰写契约不一致时（如 runtime 回填字段），
+    # prompt 渲染必须用撰写契约，否则会要求模型输出 runtime 自己插入的字段。
+    authoring_model: type[BaseModel] | None = None
 
 
 REGISTRY: list[ArtifactSpec] = [
@@ -104,6 +112,7 @@ REGISTRY: list[ArtifactSpec] = [
         pattern="qa/retro/*/proposal-candidates.json",
         model=ImprovementCandidateDocumentV3,
         compat="must_compat",
+        authoring_model=ImprovementCandidateDocumentDraftV3,
     ),
     ArtifactSpec(
         artifact_type="retro_context_v3",
@@ -153,18 +162,21 @@ REGISTRY: list[ArtifactSpec] = [
         pattern="qa/retro/*/signals/issue.json",
         model=SignalDocumentV3,
         compat="must_compat",
+        authoring_model=SignalDraftDocument,
     ),
     ArtifactSpec(
         artifact_type="retro_workflow_signal_v3",
         pattern="qa/retro/*/signals/workflow.json",
         model=SignalDocumentV3,
         compat="must_compat",
+        authoring_model=SignalDraftDocument,
     ),
     ArtifactSpec(
         artifact_type="retro_eval_signal_v3",
         pattern="qa/retro/*/signals/eval.json",
         model=SignalDocumentV3,
         compat="must_compat",
+        authoring_model=SignalDraftDocument,
     ),
     ArtifactSpec(
         artifact_type="case_yaml", pattern="cases/**/case.yaml", model=CaseYaml, compat="must_compat"
@@ -247,6 +259,26 @@ REGISTRY: list[ArtifactSpec] = [
         pattern="healing/fixer-safety-check.json",
         model=SafetyCheck,
         compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="plan_check",
+        pattern="review/*-plan-checks.json",
+        model=PlanCheckDocument,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="review",
+        pattern="review/api-plan-review.json",
+        model=PlanReview,
+        compat="must_compat",
+        authoring_model=PlanReviewAuthoring,
+    ),
+    ArtifactSpec(
+        artifact_type="review",
+        pattern="review/plan-review.json",
+        model=PlanReview,
+        compat="must_compat",
+        authoring_model=PlanReviewAuthoring,
     ),
     ArtifactSpec(artifact_type="review", pattern="review/*.json", model=Review, compat="must_compat"),
     ArtifactSpec(

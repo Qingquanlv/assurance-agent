@@ -329,6 +329,9 @@ def test_is_path_allowed_codegen_allowlist() -> None:
     assert write_scan.is_path_allowed("tests/api", policy) is True
     assert write_scan.is_path_allowed("tests/e2e/test_y.py", policy) is False
     assert write_scan.is_path_allowed("qa/changes/eval-sample-001/proposal.md", policy) is True
+    assert write_scan.is_path_allowed("qa/.graph-runtime/locks/lease-id", policy) is True
+    assert write_scan.is_path_allowed("qa/.graph-runtime/publications/publication.json", policy) is True
+    assert write_scan.is_path_allowed("qa/.graph-runtime/agent-output.txt", policy) is False
     assert write_scan.is_path_allowed("eval/out/runs/run-1/metrics.json", policy) is True
 
 
