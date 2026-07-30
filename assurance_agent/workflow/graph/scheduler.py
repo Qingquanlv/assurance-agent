@@ -453,7 +453,6 @@ class Scheduler:
         child_projections: Mapping[str, GraphProjection] | None,
     ) -> "SelectedInvocationWave":
         from assurance_agent.workflow.graph.selected_wave import (
-            SelectedInvocationWave,
             assert_same_selected_wave,
             iter_selected_waves,
             preview_selected_wave,
