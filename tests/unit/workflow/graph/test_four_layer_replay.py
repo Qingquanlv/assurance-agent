@@ -11,6 +11,10 @@ from assurance_agent.artifacts.models.assurance import LAYER_NAMES
 from assurance_agent.eval.specialty_models import CapabilityPolicyReplayV2
 from assurance_agent.eval.specialty_replay import collect_capability_policy_replay
 from assurance_agent.workflow.graph.replay_binding import (
+    LayerSelectionFact,
+    ReplayBindingError,
+    SequencedEvent,
+    assert_layer_selection_evidence,
     evaluate_layer_selection,
     validate_pinned_layer_selection,
 )
@@ -138,3 +142,71 @@ def test_collect_capability_policy_replay_definition_failure_returns_incomplete_
 def test_params_only_validator_matches_replay_schema_guard() -> None:
     when = _SCHEMA.graphs["assurance"].nodes["api"].when or ""
     assert validate_params_only_expression(when, frozenset(_SCHEMA.params)) == ()
+
+
+def test_validate_pinned_layer_selection_reports_missing_branch_node() -> None:
+    assurance = _SCHEMA.graphs["assurance"].model_copy(deep=True)
+    nodes = dict(assurance.nodes)
+    del nodes["fuzz"]
+    assurance = assurance.model_copy(update={"nodes": nodes})
+    schema = _SCHEMA.model_copy(update={"graphs": {**_SCHEMA.graphs, "assurance": assurance}})
+    errors = validate_pinned_layer_selection(schema)
+    assert any("fuzz" in error and "missing" in error for error in errors)
+
+
+def test_evaluate_layer_selection_raises_on_topology_incomplete_schema() -> None:
+    assurance = _SCHEMA.graphs["assurance"].model_copy(deep=True)
+    nodes = dict(assurance.nodes)
+    del nodes["performance"]
+    assurance = assurance.model_copy(update={"nodes": nodes})
+    schema = _SCHEMA.model_copy(update={"graphs": {**_SCHEMA.graphs, "assurance": assurance}})
+    with pytest.raises(ReplayBindingError, match="ambiguous_graph_wiring"):
+        evaluate_layer_selection(schema, _PARAMS)
+
+
+def _selection_event(
+    *,
+    seq: int,
+    assurance_inv: str,
+    layer: str,
+    event_type: str,
+) -> SequencedEvent:
+    return SequencedEvent(
+        seq=seq,
+        payload={
+            "type": event_type,
+            "invocation_id": assurance_inv,
+            "node_id": layer,
+        },
+    )
+
+
+def test_assert_layer_selection_evidence_agrees_with_activation() -> None:
+    assurance_inv = "inv-assurance"
+    selections = (LayerSelectionFact(layer="api", selected=True),)
+    events = (_selection_event(seq=1, assurance_inv=assurance_inv, layer="api", event_type="node_activated"),)
+    assert_layer_selection_evidence(events, assurance_invocation_id=assurance_inv, selections=selections)
+
+
+def test_assert_layer_selection_evidence_agrees_with_skip() -> None:
+    assurance_inv = "inv-assurance"
+    selections = (LayerSelectionFact(layer="e2e", selected=False),)
+    events = (_selection_event(seq=1, assurance_inv=assurance_inv, layer="e2e", event_type="node_skipped"),)
+    assert_layer_selection_evidence(events, assurance_invocation_id=assurance_inv, selections=selections)
+
+
+def test_assert_layer_selection_evidence_rejects_predicate_event_mismatch() -> None:
+    assurance_inv = "inv-assurance"
+    selections = (LayerSelectionFact(layer="api", selected=True),)
+    events = (_selection_event(seq=1, assurance_inv=assurance_inv, layer="api", event_type="node_skipped"),)
+    with pytest.raises(ReplayBindingError, match="selection_evidence_mismatch"):
+        assert_layer_selection_evidence(events, assurance_invocation_id=assurance_inv, selections=selections)
+
+
+def test_assert_layer_selection_evidence_allows_missing_events() -> None:
+    assurance_inv = "inv-assurance"
+    selections = (
+        LayerSelectionFact(layer="api", selected=True),
+        LayerSelectionFact(layer="e2e", selected=False),
+    )
+    assert_layer_selection_evidence((), assurance_invocation_id=assurance_inv, selections=selections)

@@ -15,6 +15,8 @@ LayerReplayStatus = Literal["complete", "not_selected", "not_wired", "incomplete
 LayerApplicability = Literal["applicable", "not_applicable"]
 ScenarioAction = Literal["warn", "block", "require_human"]
 _SCENARIO_ACTIONS: tuple[ScenarioAction, ...] = ("warn", "block", "require_human")
+_WIRED_LAYERS = frozenset({"api", "e2e"})
+_UNWIRED_LAYERS = frozenset({"fuzz", "performance"})
 
 
 class DefinitionBinding(BaseModel):
@@ -183,6 +185,7 @@ class CapabilityPolicyReplayV2(BaseModel):
 
     @model_validator(mode="after")
     def _integrity_matches_matrix(self) -> Self:
+        _validate_row_topology(self.rows)
         derived = _derive_integrity(self.definition_binding, self.rows)
         if self.integrity != derived:
             raise ValueError("integrity must match definition binding and row statuses")
@@ -210,26 +213,22 @@ class LegacySpecialtyReportV1(BaseModel):
 SpecialtyReport = SpecialtyReportV2 | LegacySpecialtyReportV1
 
 
+def _validate_row_topology(rows: tuple[LayerRow, ...]) -> None:
+    """Reject structurally impossible layer/status combinations."""
+    for row in rows:
+        if row.layer in _WIRED_LAYERS and row.status == "not_wired":
+            raise ValueError(f"wired layer {row.layer!r} cannot have status not_wired")
+        if row.layer in _UNWIRED_LAYERS and row.status == "complete":
+            raise ValueError(f"unwired layer {row.layer!r} cannot have status complete")
+
+
 def _derive_integrity(
     definition_binding: DefinitionBinding | None,
     rows: tuple[LayerRow, ...],
 ) -> ReplayIntegrity:
     if definition_binding is None:
         return "incomplete"
-    if len(rows) != len(LAYER_NAMES):
-        return "incomplete"
-    for row in rows:
-        if row.status == "incomplete":
-            return "incomplete"
-        if row.status == "complete" and row.layer in {"api", "e2e"}:
-            continue
-        if row.status in {"not_selected", "not_wired"}:
-            continue
-    for row in rows:
-        if row.layer in {"api", "e2e"} and row.status == "complete":
-            continue
-        if row.status in {"not_selected", "not_wired"}:
-            continue
+    if any(row.status == "incomplete" for row in rows):
         return "incomplete"
     return "complete"
 

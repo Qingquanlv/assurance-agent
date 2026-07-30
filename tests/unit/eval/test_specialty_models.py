@@ -228,3 +228,26 @@ def test_load_specialty_report_discriminates_v2_and_v1() -> None:
         }
     )
     assert isinstance(v1, LegacySpecialtyReportV1)
+
+
+def test_build_capability_replay_v2_rejects_wired_layer_not_wired() -> None:
+    rows = _four_complete_rows()
+    rows[0] = {"layer": "api", "case_type": "API", "status": "not_wired", "reason_code": None}
+    with pytest.raises(ValidationError, match="not_wired"):
+        build_capability_replay_v2(definition_binding=_definition_binding(), rows=rows)
+
+
+def test_build_capability_replay_v2_rejects_unwired_layer_complete() -> None:
+    rows = _four_complete_rows()
+    rows[2] = _complete_row("fuzz", case_type="Fuzz")
+    with pytest.raises(ValidationError, match="cannot have status complete"):
+        build_capability_replay_v2(definition_binding=_definition_binding(), rows=rows)
+
+
+def test_build_capability_replay_v2_rejects_false_incomplete_claim() -> None:
+    with pytest.raises(ValidationError, match="integrity"):
+        build_capability_replay_v2(
+            definition_binding=_definition_binding(),
+            rows=_four_complete_rows(),
+            integrity="incomplete",
+        )
