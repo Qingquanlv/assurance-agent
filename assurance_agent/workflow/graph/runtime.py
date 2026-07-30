@@ -894,6 +894,9 @@ class GraphRuntime:
                         typed_lease,
                         context,
                         invocation_id=invocation_id,
+                        compiled=compiled,
+                        artifacts=artifacts,  # type: ignore[arg-type]
+                        child_projections=child_projections,
                     )
                 else:
                     wave = self._scheduler.execute(

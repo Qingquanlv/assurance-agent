@@ -1013,3 +1013,155 @@ def test_recovery_barrier_skips_plan_while_pending_write_sets_remain(
     with pytest.raises(GraphRuntimeError, match="recovery barrier stalled"):
         fresh.resume(invocation_id)
     assert plan_calls == []
+
+
+_NESTED_SYNC_CONTRACTS = """\
+schema_version: "1"
+contracts:
+  operation:sync-knowledge:
+    handler: operation
+    reads: [project:.aa/data-knowledge.yaml]
+    writes: [project:.aa/data-knowledge.yaml]
+    synchronized: [project:.aa/data-knowledge.yaml]
+    exclusive: [project:knowledge-registry]
+    authorization_writes: [project:.aa/data-knowledge.yaml]
+    retryable_errors: []
+  operation:plain:
+    handler: operation
+    side_effect_free: true
+    retryable_errors: []
+"""
+
+_NESTED_SYNC_WORKFLOW = """\
+schema_version: "2"
+name: nested-sync-runtime
+params:
+  run_mode: {type: enum, values: [full], default: full}
+entrypoints:
+  full: {graph: main, allow: "params.run_mode == 'full'"}
+policies:
+  retry:
+    never: {max_attempts: 1, retry_on: []}
+  timeout:
+    local: {run_seconds: 60, heartbeat_seconds: 0.05}
+  scheduler: {max_parallel_tasks: 4}
+graphs:
+  main:
+    max_supersteps: 8
+    nodes:
+      child-run:
+        uses: graph:leaf
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: child-run}
+      - {from: child-run, to: END}
+  leaf:
+    max_supersteps: 8
+    nodes:
+      sync-knowledge:
+        uses: operation:sync-knowledge
+        outputs: [project:.aa/data-knowledge.yaml]
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: sync-knowledge}
+      - {from: sync-knowledge, to: END}
+gates: {}
+"""
+
+
+def _nested_sync_compiled() -> tuple[CompiledWorkflow, object]:
+    contracts = parse_execution_contracts(_NESTED_SYNC_CONTRACTS)
+    compiled = compile_workflow(parse_workflow_v2(_NESTED_SYNC_WORKFLOW), contracts)
+    return compiled, contracts
+
+
+def _nested_sync_project(tmp_path: Path) -> tuple[Path, TreeStore]:
+    project = tmp_path / "proj"
+    change = project / "qa/changes/CH-1"
+    change.mkdir(parents=True)
+    aa = project / ".aa"
+    aa.mkdir()
+    (aa / "data-knowledge.yaml").write_text("snapshot v1\n", encoding="utf-8")
+    write_aa_config(project)
+    store = TreeStore(change)
+    store.capture(project)
+    (aa / "data-knowledge.yaml").write_text("promoted live v2\n", encoding="utf-8")
+    return project, store
+
+
+def test_nested_drive_run_child_single_synchronized_capture(tmp_path: Path) -> None:
+    """Outer _drive → run_child → nested _drive performs exactly one overlay capture."""
+    project, store = _nested_sync_project(tmp_path)
+    compiled, contracts = _nested_sync_compiled()
+    overlay_calls: list[int] = []
+    overlay_many = store.overlay_synchronized_paths_many
+    nested_capture = {"active": False}
+
+    def observed_overlay_many(tree_ids, project_root, paths):
+        if nested_capture["active"]:
+            overlay_calls.append(len(tree_ids))
+        return overlay_many(tree_ids, project_root, paths)
+
+    store.overlay_synchronized_paths_many = observed_overlay_many  # type: ignore[method-assign]
+
+    ops = default_operations()
+
+    def sync_knowledge(task: ExecutableTask, workspace, context: RuntimeContext) -> TaskResult:
+        path = workspace.project_root / ".aa/data-knowledge.yaml"
+        path.write_text("written from nested leaf\n", encoding="utf-8")
+        return TaskResult(status="succeeded")
+
+    ops["operation:sync-knowledge"] = sync_knowledge
+    change = project / "qa/changes/CH-1"
+    checkpoints = CheckpointStore(change)
+    workspaces = WorkspaceBackend(change)
+    clock = SystemClock()
+    holder: dict[str, GraphRuntime] = {}
+
+    def run_child(task, graph_id, workspace, context):  # type: ignore[no-untyped-def]
+        nested_capture["active"] = True
+        try:
+            return holder["rt"].run_child(task, graph_id, workspace, context)
+        finally:
+            nested_capture["active"] = False
+
+    from assurance_agent.workflow.graph.handlers.subgraph import SubgraphHandler
+
+    operation = OperationHandler(ops)
+    node_runner = HandlerNodeRunner(
+        {target: operation for target in ops},
+        namespace_handlers={"graph": SubgraphHandler(run_child)},
+        compiled=compiled,
+        object_store=store,
+    )
+    graph_id = compiled.entrypoints["full"].graph_id
+    state_defs = dict(compiled.schema.graphs[graph_id].state)
+    scheduler = Scheduler(
+        checkpoints=checkpoints,
+        object_store=store,
+        clock=clock,
+        workspace_backend=workspaces,
+        node_runner=node_runner,
+        max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
+        contracts=contracts,
+        state_defs=state_defs,
+    )
+    schemas = {compiled.digest: compiled}
+    runtime = GraphRuntime(
+        checkpoint_store=checkpoints,
+        object_store=store,
+        workspace_backend=workspaces,
+        contracts=contracts,
+        node_runner=node_runner,
+        scheduler=scheduler,
+        schema_resolver=lambda digest: schemas[digest],
+        clock=clock,
+    )
+    holder["rt"] = runtime
+    result = runtime.run(compiled, "full", _context(project))
+
+    assert result.exit_code == 0
+    assert overlay_calls == [1]
+    assert (project / ".aa/data-knowledge.yaml").read_text() == "written from nested leaf\n"

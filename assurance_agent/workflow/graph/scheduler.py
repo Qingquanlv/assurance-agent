@@ -212,7 +212,7 @@ class Scheduler:
         """Select the next executable wave from a planner result."""
         return select_wave(plan.tasks, max_parallel_tasks=self._max_parallel_tasks)
 
-    def reserve_selected_wave(
+    def _finalize_selected_wave_reservation(
         self,
         wave: "SelectedInvocationWave",
         context: RuntimeContext,
@@ -222,16 +222,14 @@ class Scheduler:
         child_projections: Mapping[str, GraphProjection] | None = None,
         inherited_lease: "PreparedWaveLease | None" = None,
     ) -> tuple[RuntimeContext, "PreparedWaveLease"]:
-        """Capture synchronized bytes once, repair, replan-verify, and attach a prepared lease."""
+        """Repair, replan-verify, and attach a prepared lease under an already-held lock scope."""
         from assurance_agent.workflow.core.progression import transaction
         from assurance_agent.workflow.graph.selected_wave import (
             PreparedWaveLease,
             SelectedInvocationWave,
-            assert_same_selected_wave,
             build_prepared_wave_tree,
             flatten_prepared_invocations,
             iter_selected_waves,
-            preview_selected_wave,
         )
 
         assert isinstance(wave, SelectedInvocationWave)
@@ -248,69 +246,98 @@ class Scheduler:
                     )
                 )
 
-        def _finalize(locked_context: RuntimeContext) -> tuple[RuntimeContext, PreparedWaveLease]:
-            tree_ids = self._overlay_tree_ids_for_wave(selected_wave, locked_context)
-            if synchronized_paths and not (inherited_lease is not None and inherited_lease.capture_sealed):
-                ordered_ids = tuple(sorted(tree_ids))
-                overlays = self._objects.overlay_synchronized_paths_many(
-                    ordered_ids,
-                    locked_context.project_root,
-                    synchronized_paths,
-                )
-                tree_overlays = dict(zip(ordered_ids, overlays, strict=True))
-                capture_sealed = True
-            elif inherited_lease is not None:
-                tree_overlays = dict(inherited_lease.tree_overlays)
-                capture_sealed = inherited_lease.capture_sealed
-            else:
-                tree_overlays = {tree_id: tree_id for tree_id in tree_ids}
-                capture_sealed = not synchronized_paths
-
-            for preview_wave in iter_selected_waves(selected_wave):
-                projection = self._checkpoints.project(preview_wave.invocation_id)
-                self._repair_ordinary_materialization(projection, locked_context, tree_overlays)
-
-            verified = self._verify_selected_wave_tree(
-                selected_wave,
-                compiled=compiled,
-                context=locked_context,
-                artifacts=artifacts,
-                child_projections=child_projections,
+        tree_ids = self._overlay_tree_ids_for_wave(selected_wave, context)
+        if synchronized_paths and not (inherited_lease is not None and inherited_lease.capture_sealed):
+            ordered_ids = tuple(sorted(tree_ids))
+            overlays = self._objects.overlay_synchronized_paths_many(
+                ordered_ids,
+                context.project_root,
+                synchronized_paths,
             )
-            for preview_wave in iter_selected_waves(verified):
-                if preview_wave.plan.strict_events:
-                    with transaction(locked_context.change_dir) as txn:
-                        for event in preview_wave.plan.strict_events:
-                            txn.append_strict(event)
+            tree_overlays = dict(zip(ordered_ids, overlays, strict=True))
+            capture_sealed = True
+        elif inherited_lease is not None:
+            tree_overlays = dict(inherited_lease.tree_overlays)
+            capture_sealed = inherited_lease.capture_sealed
+        else:
+            tree_overlays = {tree_id: tree_id for tree_id in tree_ids}
+            capture_sealed = False
 
-            prepared_root = build_prepared_wave_tree(verified, tree_overlays)
-            lease = PreparedWaveLease(
-                lock_tokens=tokens,
-                synchronized_paths=synchronized_paths,
-                tree_overlays=tuple(sorted(tree_overlays.items())),
-                invocations=flatten_prepared_invocations(prepared_root),
-                capture_sealed=capture_sealed,
-            )
-            nonce = object()
-            return locked_context.with_prepared_wave_lease(
-                self._prepared_wave_lease_owner,
-                nonce,
-                lease,
-            ), lease
+        for preview_wave in iter_selected_waves(selected_wave):
+            projection = self._checkpoints.project(preview_wave.invocation_id)
+            self._repair_ordinary_materialization(projection, context, tree_overlays)
 
+        verified = self._verify_selected_wave_tree(
+            selected_wave,
+            compiled=compiled,
+            context=context,
+            artifacts=artifacts,
+            child_projections=child_projections,
+        )
+        for preview_wave in iter_selected_waves(verified):
+            if preview_wave.plan.strict_events:
+                with transaction(context.change_dir) as txn:
+                    for event in preview_wave.plan.strict_events:
+                        txn.append_strict(event)
+
+        prepared_root = build_prepared_wave_tree(verified, tree_overlays)
+        lease = PreparedWaveLease(
+            lock_tokens=tokens,
+            synchronized_paths=synchronized_paths,
+            tree_overlays=tuple(sorted(tree_overlays.items())),
+            invocations=flatten_prepared_invocations(prepared_root),
+            capture_sealed=capture_sealed,
+        )
+        nonce = object()
+        return context.with_prepared_wave_lease(
+            self._prepared_wave_lease_owner,
+            nonce,
+            lease,
+        ), lease
+
+    def reserve_selected_wave(
+        self,
+        wave: "SelectedInvocationWave",
+        context: RuntimeContext,
+        *,
+        compiled: CompiledWorkflow,
+        artifacts: ArtifactReader,
+        child_projections: Mapping[str, GraphProjection] | None = None,
+        inherited_lease: "PreparedWaveLease | None" = None,
+    ) -> tuple[RuntimeContext, "PreparedWaveLease"]:
+        """Capture synchronized bytes once, repair, replan-verify, and attach a prepared lease."""
+        from assurance_agent.workflow.graph.selected_wave import SelectedInvocationWave
+
+        assert isinstance(wave, SelectedInvocationWave)
+        tokens = wave.lock_tokens
+        synchronized_paths = wave.synchronized_paths
         if tokens:
             try:
                 with self._project_lock_scope(context, tokens) as locked_context:
                     if synchronized_paths:
                         ProjectPublicationStore(locked_context.project_root).assert_no_prepared(tokens)
-                    return _finalize(locked_context)
+                    return self._finalize_selected_wave_reservation(
+                        wave,
+                        locked_context,
+                        compiled=compiled,
+                        artifacts=artifacts,
+                        child_projections=child_projections,
+                        inherited_lease=inherited_lease,
+                    )
             except ProjectResourceConflict as exc:
                 raise exc
             except ProjectLockPathError as exc:
                 raise SchedulerError(str(exc)) from None
             except ProjectPublicationError as exc:
                 raise SchedulerError(str(exc)) from None
-        return _finalize(context)
+        return self._finalize_selected_wave_reservation(
+            wave,
+            context,
+            compiled=compiled,
+            artifacts=artifacts,
+            child_projections=child_projections,
+            inherited_lease=inherited_lease,
+        )
 
     def persist_project_lock_conflict(
         self,
@@ -337,8 +364,43 @@ class Scheduler:
         context: RuntimeContext,
         *,
         invocation_id: str,
+        compiled: CompiledWorkflow | None = None,
+        artifacts: ArtifactReader | None = None,
+        child_projections: Mapping[str, GraphProjection] | None = None,
     ) -> WaveResult:
         """Execute one verified prepared invocation without recapturing synchronized bytes."""
+        from assurance_agent.workflow.graph.selected_wave import PreparedWaveLease
+
+        assert isinstance(lease, PreparedWaveLease)
+        tokens = lease.lock_tokens
+
+        def _run(locked_context: RuntimeContext) -> WaveResult:
+            if compiled is not None and artifacts is not None and lease.invocations:
+                self._verify_selected_wave_tree(
+                    lease.invocations[0].preview,
+                    compiled=compiled,
+                    context=locked_context,
+                    artifacts=artifacts,
+                    child_projections=child_projections,
+                )
+            return self._execute_selected_wave_body(
+                lease,
+                locked_context,
+                invocation_id=invocation_id,
+            )
+
+        if tokens:
+            with self._project_lock_scope(context, tokens) as locked_context:
+                return _run(locked_context)
+        return _run(context)
+
+    def _execute_selected_wave_body(
+        self,
+        lease: "PreparedWaveLease",
+        context: RuntimeContext,
+        *,
+        invocation_id: str,
+    ) -> WaveResult:
         from assurance_agent.workflow.graph.selected_wave import PreparedWaveLease
 
         assert isinstance(lease, PreparedWaveLease)
@@ -535,17 +597,44 @@ class Scheduler:
         if self._workspaces is None or self._runner is None:
             raise SchedulerError("Scheduler requires workspace_backend and node_runner")
         if selected_wave is not None and compiled is not None and artifacts is not None:
-            from assurance_agent.workflow.graph.selected_wave import SelectedInvocationWave
+            from assurance_agent.workflow.graph.selected_wave import (
+                SelectedInvocationWave,
+                SelectedWaveDriftError,
+            )
 
             assert isinstance(selected_wave, SelectedInvocationWave)
+            tokens = selected_wave.lock_tokens
+            synchronized_paths = selected_wave.synchronized_paths
             try:
-                locked_context, lease = self.reserve_selected_wave(
+                if tokens:
+                    with self._project_lock_scope(context, tokens) as locked_context:
+                        if synchronized_paths:
+                            ProjectPublicationStore(locked_context.project_root).assert_no_prepared(tokens)
+                        locked_context, lease = self._finalize_selected_wave_reservation(
+                            selected_wave,
+                            locked_context,
+                            compiled=compiled,
+                            artifacts=artifacts,
+                            child_projections=child_projections,
+                            inherited_lease=inherited_lease,
+                        )
+                        return self._execute_selected_wave_body(
+                            lease,
+                            locked_context,
+                            invocation_id=projection.invocation_id,
+                        )
+                locked_context, lease = self._finalize_selected_wave_reservation(
                     selected_wave,
                     context,
                     compiled=compiled,
                     artifacts=artifacts,
                     child_projections=child_projections,
                     inherited_lease=inherited_lease,
+                )
+                return self._execute_selected_wave_body(
+                    lease,
+                    locked_context,
+                    invocation_id=projection.invocation_id,
                 )
             except ProjectResourceConflict as exc:
                 return self.persist_project_lock_conflict(
@@ -555,11 +644,12 @@ class Scheduler:
                     wave=selected_wave.selected_tasks,
                     exc=exc,
                 )
-            return self.execute_selected_wave(
-                lease,
-                locked_context,
-                invocation_id=projection.invocation_id,
-            )
+            except SelectedWaveDriftError:
+                raise
+            except ProjectLockPathError as exc:
+                raise SchedulerError(str(exc)) from None
+            except ProjectPublicationError as exc:
+                raise SchedulerError(str(exc)) from None
 
         wave = self.select(plan)
         synchronized_paths = _synchronized_paths_for_wave(wave)
