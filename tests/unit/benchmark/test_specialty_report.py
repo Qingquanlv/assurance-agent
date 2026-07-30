@@ -8,12 +8,27 @@ import sys
 from pathlib import Path
 
 import pytest
-import yaml
+from pydantic import ValidationError
 
+from assurance_agent.eval.specialty_models import (
+    LegacySpecialtyReportV1,
+    SpecialtyReportV2,
+    load_specialty_report,
+)
+from assurance_agent.verification.profiles import get_layer_assurance_profile
+from assurance_agent.workflow.graph.replay_binding import normalize_logical_path
+from assurance_agent.workflow.graph.workspace import TreeStore
+from tests.unit.workflow.graph.test_replay_binding import (
+    _CHANGE_ID,
+    _ENTRYPOINT,
+    _ROOT_INV,
+    _build_fixture,
+)
 
 _ROOT = Path(__file__).parents[3]
 _REPORTER = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "benchmark_specialty_report.py"
 _HELPERS = _REPORTER.with_name("cursor-loop-helpers.sh")
+_GOLDEN_SHA256 = "78d6d13361ab7210cb1fa57b252e51df3fc3b11c57a438b0a6fe1a64944ce640"
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -21,91 +36,17 @@ def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def _install_frozen_item(tmp_path: Path) -> tuple[Path, Path, Path]:
-    project = tmp_path / "sut"
-    change_id = "CH-REPORT-1"
-    change = project / "qa" / "changes" / change_id
-
-    knowledge = {
-        "version": 1,
-        "accounts": {},
-        "auth": {"api_admin_token": {"method": "token"}},
-        "entities": {},
-        "capabilities": {
-            "domain_factories": {},
-            "adapters": {"api": {}, "e2e": {}, "fuzz": {}, "performance": {}},
-            "cleanup": {},
-        },
-    }
-    knowledge_path = project / ".aa" / "data-knowledge.yaml"
-    knowledge_path.parent.mkdir(parents=True)
-    knowledge_path.write_text(yaml.safe_dump(knowledge), encoding="utf-8")
-
-    _write_json(
-        change / "review" / "api-plan-review.json",
-        {
-            "schema_version": "1",
-            "change_id": change_id,
-            "review_type": "api-plan",
-            "decision": "pass",
-            "codegen_readiness": "ready",
-            "required_capabilities": ["auth.api_admin_token"],
-            "auto_fix_allowed": False,
-            "human_review_required": False,
-            "risk_level": "low",
-            "findings": [],
-            "auto_fix_plan": [],
-            "next_action": "proceed",
-        },
-    )
-    _write_json(
-        change / "review" / "api-plan-checks.json",
-        {
-            "schema_version": "1",
-            "status": "fail",
-            "checks": [
-                {"check_id": "l1_path", "status": "pass", "findings": [], "refs": []},
-                {
-                    "check_id": "assert_ideal",
-                    "status": "fail",
-                    "findings": [
-                        {
-                            "locator": "TC_API_001",
-                            "expected": "4xx rejection",
-                            "actual": "missing token",
-                        }
-                    ],
-                    "refs": ["plans/api-plan.md"],
-                },
-            ],
-        },
-    )
-    events = [
-        {
-            "seq": 1,
-            "type": "graph_invocation_started",
-            "invocation_id": "inv-api-review",
-            "graph_id": "api-plan-cycle",
-            "graph_digest": "graph-frozen",
-            "policy_digest": "policy-frozen",
-        },
-        {
-            "seq": 2,
-            "type": "task_attempt_started",
-            "invocation_id": "inv-api-review",
-            "node_id": "mechanical-plan-checks",
-            "contract_digest": "mechanical-contract",
-        },
-        {
-            "seq": 3,
-            "type": "task_attempt_started",
-            "invocation_id": "inv-api-review",
-            "node_id": "review",
-            "contract_digest": "review-contract",
-        },
-    ]
-    events_path = change / "events.jsonl"
-    events_path.write_text("".join(json.dumps(event) + "\n" for event in events), encoding="utf-8")
+def _install_strict_frozen_item(tmp_path: Path) -> tuple[Path, Path, Path]:
+    fixture = _build_fixture(tmp_path)
+    change_dir = fixture.change_dir
+    store = TreeStore(change_dir)
+    profile = get_layer_assurance_profile("api")
+    tree = fixture.gate_trees["api"]
+    for art in [profile.review_artifact, profile.checks_artifact]:
+        resolved = store.read_json(tree, normalize_logical_path(f"change:{art}"))
+        path = change_dir / art
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(resolved.value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     trace_rows = [
         {
@@ -141,7 +82,7 @@ def _install_frozen_item(tmp_path: Path) -> tuple[Path, Path, Path]:
     ]
     trace = {
         "schema_version": "1",
-        "change_id": change_id,
+        "change_id": _CHANGE_ID,
         "phase": "execution",
         "authoritative_batch_id": "batch-1",
         "integrity": "degraded",
@@ -159,9 +100,6 @@ def _install_frozen_item(tmp_path: Path) -> tuple[Path, Path, Path]:
             }
         ],
     }
-    trace_path = tmp_path / "trace.json"
-    _write_json(trace_path, trace)
-
     reconciled = {
         **trace,
         "phase": "reconciled",
@@ -184,7 +122,9 @@ def _install_frozen_item(tmp_path: Path) -> tuple[Path, Path, Path]:
             trace_rows[1],
         ],
     }
-    _write_json(change / "inspect" / "trace-projection.json", reconciled)
+    trace_path = tmp_path / "trace.json"
+    _write_json(trace_path, trace)
+    _write_json(change_dir / "inspect" / "trace-projection.json", reconciled)
     reconciled_digest = hashlib.sha256(
         json.dumps(reconciled, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -192,7 +132,7 @@ def _install_frozen_item(tmp_path: Path) -> tuple[Path, Path, Path]:
     quality_gate = {
         "final_status": "FAIL",
         "schema_version": "1.0",
-        "change_id": change_id,
+        "change_id": _CHANGE_ID,
         "batch_id": "batch-1",
         "dimensions": {
             "functional": {
@@ -232,14 +172,14 @@ def _install_frozen_item(tmp_path: Path) -> tuple[Path, Path, Path]:
             },
         },
     }
-    _write_json(change / "execution" / "quality-gate-result.json", quality_gate)
+    _write_json(change_dir / "execution" / "quality-gate-result.json", quality_gate)
 
     verify_path = tmp_path / "verify.json"
     _write_json(
         verify_path,
         {
             "verdict": "fail",
-            "change_id": change_id,
+            "change_id": _CHANGE_ID,
             "phase": "reconciled",
             "as_of": "2026-07-30T00:00:00Z",
             "policy_digest": "verify-policy",
@@ -249,14 +189,22 @@ def _install_frozen_item(tmp_path: Path) -> tuple[Path, Path, Path]:
             "insufficient": [],
         },
     )
-    return project, trace_path, verify_path
+    return fixture.project, trace_path, verify_path
 
 
-def test_collect_freezes_capability_policy_replay_and_trace_evidence(tmp_path: Path) -> None:
-    project, trace_path, verify_path = _install_frozen_item(tmp_path)
-    output = tmp_path / "specialty.json"
-
-    result = subprocess.run(
+def _collect_command(
+    *,
+    project: Path,
+    trace_path: Path,
+    verify_path: Path,
+    output: Path,
+    trace_exit: str = "0",
+    verify_exit: str = "40",
+    change_id: str = _CHANGE_ID,
+    root_invocation_id: str = _ROOT_INV,
+    workflow_entrypoint: str = _ENTRYPOINT,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
         [
             sys.executable,
             str(_REPORTER),
@@ -266,15 +214,19 @@ def test_collect_freezes_capability_policy_replay_and_trace_evidence(tmp_path: P
             "--schema-root",
             str(_ROOT),
             "--change-id",
-            "CH-REPORT-1",
+            change_id,
+            "--root-invocation-id",
+            root_invocation_id,
+            "--workflow-entrypoint",
+            workflow_entrypoint,
             "--trace",
             str(trace_path),
             "--verify",
             str(verify_path),
             "--trace-exit",
-            "9",
+            trace_exit,
             "--verify-exit",
-            "40",
+            verify_exit,
             "--output",
             str(output),
         ],
@@ -283,40 +235,70 @@ def test_collect_freezes_capability_policy_replay_and_trace_evidence(tmp_path: P
         check=False,
     )
 
-    assert result.returncode == 0, result.stderr
-    report = json.loads(output.read_text(encoding="utf-8"))
-    capability = report["capability_contract_policy"]
-    assert capability["mechanical_checks"] == {
-        "status": "fail",
-        "finding_count": 1,
-        "by_check": {
-            "assert_ideal": {"status": "fail", "finding_count": 1},
-            "l1_path": {"status": "pass", "finding_count": 0},
-        },
-    }
-    assert capability["capabilities"] == {
-        "required": ["auth.api_admin_token"],
-        "missing": [],
-    }
-    assert capability["policy"]["source"] == "packaged_default"
-    assert capability["policy"]["plan_checks"] == {
-        "assert_ideal": "warn",
-        "capability_keys": "warn",
-        "l1_path": "warn",
-        "shared_factory": "warn",
-    }
-    assert capability["policy"]["recorded_digest"] == "policy-frozen"
-    assert [(row["action"], row["verdict"]) for row in capability["policy_replay"]] == [
+
+def test_collect_freezes_capability_policy_replay_and_trace_evidence(tmp_path: Path) -> None:
+    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
+    output = tmp_path / "specialty.json"
+
+    first = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=output,
+        trace_exit="9",
+        verify_exit="40",
+    )
+    second = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=tmp_path / "specialty-2.json",
+        trace_exit="9",
+        verify_exit="40",
+    )
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    first_bytes = output.read_bytes()
+    second_bytes = (tmp_path / "specialty-2.json").read_bytes()
+    assert first_bytes == second_bytes
+    assert hashlib.sha256(first_bytes).hexdigest() == _GOLDEN_SHA256
+
+    report = load_specialty_report(json.loads(first_bytes.decode("utf-8")))
+    assert isinstance(report, SpecialtyReportV2)
+    assert report.schema_version == "2"
+    capability = report.capability_contract_policy
+    assert capability.semantics == "counterfactual_plan_check_actions/v1"
+    assert capability.integrity == "complete"
+    assert capability.definition_binding is not None
+    assert capability.definition_binding.root_invocation_id == _ROOT_INV
+    assert capability.definition_binding.gate_definition_source == "pinned_schema"
+    assert [row.layer for row in capability.rows] == ["api", "e2e", "fuzz", "performance"]
+    assert [row.status for row in capability.rows] == [
+        "complete",
+        "complete",
+        "not_selected",
+        "not_selected",
+    ]
+
+    api_row = capability.rows[0]
+    assert api_row.status == "complete"
+    assert [item.action for item in api_row.scenarios] == ["warn", "block", "require_human"]
+    assert [(item.action, item.verdict) for item in api_row.scenarios] == [
         ("warn", "pass"),
         ("block", "reject"),
         ("require_human", "needs_human_review"),
     ]
-    assert capability["contracts"]["mechanical_execution_contract_digest"] == "mechanical-contract"
-    assert capability["contracts"]["agent_execution_contract_digests"] == []
-    assert capability["contracts"]["rendered_output_contract_count"] == 0
-    assert capability["contracts"]["prompt_observability"] == "schema_digest_mismatch"
+    assert [item.check_id for item in api_row.mechanical_checks.checks] == [
+        "l1_path",
+        "shared_factory",
+        "assert_ideal",
+        "capability_keys",
+    ]
+    assert api_row.mechanical_checks.status == "fail"
+    assert api_row.mechanical_checks.finding_count == 1
 
-    evidence = report["traceability_evidence"]
+    evidence = report.traceability_evidence
     assert evidence["command_status"] == {"trace_exit": 9, "verify_exit": 40}
     assert evidence["execution_projection"] == {
         "phase": "execution",
@@ -357,34 +339,110 @@ def test_collect_freezes_capability_policy_replay_and_trace_evidence(tmp_path: P
     assert evidence["verify"]["observed_insufficient_count"] == 1
 
 
-def test_render_emits_both_specialty_sections_and_policy_matrix(tmp_path: Path) -> None:
-    project, trace_path, verify_path = _install_frozen_item(tmp_path)
+def test_collect_writes_incomplete_v2_report_for_definition_failure(tmp_path: Path) -> None:
+    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
     output = tmp_path / "specialty.json"
-    collect = subprocess.run(
+
+    result = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=output,
+        root_invocation_id="missing-root",
+    )
+
+    assert result.returncode != 0
+    report = load_specialty_report(json.loads(output.read_text(encoding="utf-8")))
+    assert isinstance(report, SpecialtyReportV2)
+    assert report.schema_version == "2"
+    assert report.capability_contract_policy.integrity == "incomplete"
+    assert report.capability_contract_policy.definition_failure == "root_invocation_unbound"
+    assert report.capability_contract_policy.definition_binding is None
+    assert all(row.status == "incomplete" for row in report.capability_contract_policy.rows)
+    assert list(output.parent.glob(f".{output.name}.*.tmp")) == []
+
+
+def test_collect_incomplete_report_is_byte_stable_and_leaves_no_temp_files(tmp_path: Path) -> None:
+    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
+    output = tmp_path / "specialty-incomplete.json"
+
+    first = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=output,
+        root_invocation_id="missing-root",
+    )
+    second = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=tmp_path / "specialty-incomplete-2.json",
+        root_invocation_id="missing-root",
+    )
+
+    assert first.returncode != 0
+    assert second.returncode != 0
+    assert output.read_bytes() == (tmp_path / "specialty-incomplete-2.json").read_bytes()
+    assert list(output.parent.glob(".*.tmp")) == []
+
+
+def test_v1_report_loads_for_evidence_row_but_rejects_v2_validation(tmp_path: Path) -> None:
+    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
+    v1_output = tmp_path / "legacy-v1.json"
+    _write_json(
+        v1_output,
+        {
+            "schema_version": "1",
+            "change_id": _CHANGE_ID,
+            "capability_contract_policy": {"capabilities": {"required": [], "missing": []}},
+            "traceability_evidence": {
+                "command_status": {"trace_exit": 9, "verify_exit": 40},
+                "execution_projection": {
+                    "integrity": "degraded",
+                    "gap_count": 1,
+                },
+                "verify": {
+                    "verdict": "fail",
+                    "blocking_gap_count": 0,
+                    "reported_insufficient_count": 0,
+                },
+            },
+        },
+    )
+
+    loaded = load_specialty_report(json.loads(v1_output.read_text(encoding="utf-8")))
+    assert isinstance(loaded, LegacySpecialtyReportV1)
+    with pytest.raises(ValidationError):
+        SpecialtyReportV2.model_validate(loaded.model_dump(mode="json"))
+
+    row = subprocess.run(
         [
             sys.executable,
             str(_REPORTER),
-            "collect",
-            "--project-root",
-            str(project),
-            "--schema-root",
-            str(_ROOT),
+            "evidence-row",
             "--change-id",
-            "CH-REPORT-1",
-            "--trace",
-            str(trace_path),
-            "--verify",
-            str(verify_path),
-            "--trace-exit",
-            "0",
-            "--verify-exit",
-            "40",
-            "--output",
-            str(output),
+            _CHANGE_ID,
+            str(v1_output),
         ],
         capture_output=True,
         text=True,
         check=False,
+    )
+    assert row.returncode == 0, row.stderr
+    assert row.stdout == f"{_CHANGE_ID}|9|degraded|1|40|fail|0|0\n"
+
+
+def test_render_emits_both_specialty_sections_and_policy_matrix(tmp_path: Path) -> None:
+    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
+    output = tmp_path / "specialty.json"
+    collect = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=output,
+        trace_exit="0",
+        verify_exit="40",
     )
     assert collect.returncode == 0, collect.stderr
 
@@ -397,54 +455,30 @@ def test_render_emits_both_specialty_sections_and_policy_matrix(tmp_path: Path) 
 
     assert rendered.returncode == 0, rendered.stderr
     assert "## Capability + Contract + Policy" in rendered.stdout
-    assert (
-        "| `CH-REPORT-1` | fail | assert_ideal=fail(1), l1_path=pass(0) | 1 | 1/0 | "
-        "0 | 0 | schema_digest_mismatch | "
-        "packaged_default/assert_ideal=warn, capability_keys=warn, l1_path=warn, shared_factory=warn | no |"
-    ) in rendered.stdout
+    assert f"| `{_CHANGE_ID}` | complete | {_ROOT_INV} |" in rendered.stdout
     assert "### Policy Replay Matrix" in rendered.stdout
-    assert "| `CH-REPORT-1` | pass | reject | needs_human_review |" in rendered.stdout
+    assert f"| `{_CHANGE_ID}` | api | pass | reject | needs_human_review |" in rendered.stdout
     assert "## Traceability / Evidence Projection" in rendered.stdout
-    assert "| `CH-REPORT-1` | execution | batch-1 | degraded | 2 | 2 | 1 | 1 |" in rendered.stdout
+    assert f"| `{_CHANGE_ID}` | execution | batch-1 | degraded | 2 | 2 | 1 | 1 |" in rendered.stdout
     assert (
-        "| `CH-REPORT-1` | 1 | 1 | missing_fuzz_run:1, never_run:1 | PASS | 48.35 | 2.58 | FAIL |"
+        f"| `{_CHANGE_ID}` | 1 | 1 | missing_fuzz_run:1, never_run:1 | PASS | 48.35 | 2.58 | FAIL |"
         in rendered.stdout
     )
     assert "reported insufficient=0; observed insufficient=1" in rendered.stdout
 
 
 def test_collect_rejects_structurally_invalid_trace_instead_of_reporting_zero(tmp_path: Path) -> None:
-    project, trace_path, verify_path = _install_frozen_item(tmp_path)
+    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
     output = tmp_path / "specialty.json"
     trace = json.loads(trace_path.read_text(encoding="utf-8"))
     trace["rows"] = {"not": "a list"}
     _write_json(trace_path, trace)
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(_REPORTER),
-            "collect",
-            "--project-root",
-            str(project),
-            "--schema-root",
-            str(_ROOT),
-            "--change-id",
-            "CH-REPORT-1",
-            "--trace",
-            str(trace_path),
-            "--verify",
-            str(verify_path),
-            "--trace-exit",
-            "0",
-            "--verify-exit",
-            "40",
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    result = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=output,
     )
 
     assert result.returncode != 0
@@ -455,33 +489,15 @@ def test_collect_rejects_structurally_invalid_trace_instead_of_reporting_zero(tm
 def test_frozen_specialty_report_reconstructs_trace_gate_row_without_cli_rerun(
     tmp_path: Path,
 ) -> None:
-    project, trace_path, verify_path = _install_frozen_item(tmp_path)
+    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
     output = tmp_path / "specialty.json"
-    collect = subprocess.run(
-        [
-            sys.executable,
-            str(_REPORTER),
-            "collect",
-            "--project-root",
-            str(project),
-            "--schema-root",
-            str(_ROOT),
-            "--change-id",
-            "CH-REPORT-1",
-            "--trace",
-            str(trace_path),
-            "--verify",
-            str(verify_path),
-            "--trace-exit",
-            "9",
-            "--verify-exit",
-            "40",
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    collect = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=output,
+        trace_exit="9",
+        verify_exit="40",
     )
     assert collect.returncode == 0, collect.stderr
 
@@ -491,7 +507,7 @@ def test_frozen_specialty_report_reconstructs_trace_gate_row_without_cli_rerun(
             str(_REPORTER),
             "evidence-row",
             "--change-id",
-            "CH-REPORT-1",
+            _CHANGE_ID,
             str(output),
         ],
         capture_output=True,
@@ -500,37 +516,17 @@ def test_frozen_specialty_report_reconstructs_trace_gate_row_without_cli_rerun(
     )
 
     assert row.returncode == 0, row.stderr
-    assert row.stdout == "CH-REPORT-1|9|degraded|1|40|fail|0|0\n"
+    assert row.stdout == f"{_CHANGE_ID}|9|degraded|1|40|fail|0|0\n"
 
 
 def test_evidence_row_rejects_report_for_a_different_resume_item(tmp_path: Path) -> None:
-    project, trace_path, verify_path = _install_frozen_item(tmp_path)
+    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
     output = tmp_path / "specialty.json"
-    collect = subprocess.run(
-        [
-            sys.executable,
-            str(_REPORTER),
-            "collect",
-            "--project-root",
-            str(project),
-            "--schema-root",
-            str(_ROOT),
-            "--change-id",
-            "CH-REPORT-1",
-            "--trace",
-            str(trace_path),
-            "--verify",
-            str(verify_path),
-            "--trace-exit",
-            "0",
-            "--verify-exit",
-            "40",
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    collect = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=output,
     )
     assert collect.returncode == 0, collect.stderr
     report = json.loads(output.read_text(encoding="utf-8"))
@@ -543,7 +539,7 @@ def test_evidence_row_rejects_report_for_a_different_resume_item(tmp_path: Path)
             str(_REPORTER),
             "evidence-row",
             "--change-id",
-            "CH-REPORT-1",
+            _CHANGE_ID,
             str(output),
         ],
         capture_output=True,
@@ -592,8 +588,8 @@ def test_collect_rejects_cross_artifact_identity_phase_and_batch_mismatch(
     updates: dict[str, str],
     message: str,
 ) -> None:
-    project, trace_path, verify_path = _install_frozen_item(tmp_path)
-    change = project / "qa" / "changes" / "CH-REPORT-1"
+    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
+    change = project / "qa" / "changes" / _CHANGE_ID
     paths = {
         "review": change / "review" / "api-plan-review.json",
         "trace": trace_path,
@@ -606,31 +602,11 @@ def test_collect_rejects_cross_artifact_identity_phase_and_batch_mismatch(
     _write_json(paths[artifact], payload)
     output = tmp_path / "specialty.json"
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(_REPORTER),
-            "collect",
-            "--project-root",
-            str(project),
-            "--schema-root",
-            str(_ROOT),
-            "--change-id",
-            "CH-REPORT-1",
-            "--trace",
-            str(trace_path),
-            "--verify",
-            str(verify_path),
-            "--trace-exit",
-            "0",
-            "--verify-exit",
-            "40",
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    result = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=output,
     )
 
     assert result.returncode != 0
@@ -667,7 +643,7 @@ def test_resume_reuses_frozen_report_and_rejects_post_archive_collection(tmp_pat
 
 
 def test_cursor_helper_collects_and_renders_real_specialty_report(tmp_path: Path) -> None:
-    project, trace_path, verify_path = _install_frozen_item(tmp_path)
+    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
     output = tmp_path / "specialty.json"
     log = tmp_path / "specialty.log"
     command = " ".join(
@@ -678,13 +654,15 @@ def test_cursor_helper_collects_and_renders_real_specialty_report(tmp_path: Path
             shlex.quote(str(_REPORTER)),
             shlex.quote(str(project)),
             shlex.quote(str(_ROOT)),
-            "CH-REPORT-1",
+            _CHANGE_ID,
             shlex.quote(str(trace_path)),
             shlex.quote(str(verify_path)),
             shlex.quote(str(output)),
             shlex.quote(str(log)),
             "9",
             "40",
+            shlex.quote(_ROOT_INV),
+            shlex.quote(_ENTRYPOINT),
             ";",
             "render_benchmark_specialty_sections",
             shlex.quote(sys.executable),
@@ -702,9 +680,10 @@ def test_cursor_helper_collects_and_renders_real_specialty_report(tmp_path: Path
     )
 
     assert result.returncode == 0, result.stderr
-    report = json.loads(output.read_text(encoding="utf-8"))
-    assert report["change_id"] == "CH-REPORT-1"
-    assert report["traceability_evidence"]["command_status"] == {
+    report = load_specialty_report(json.loads(output.read_text(encoding="utf-8")))
+    assert isinstance(report, SpecialtyReportV2)
+    assert report.change_id == _CHANGE_ID
+    assert report.traceability_evidence["command_status"] == {
         "trace_exit": 9,
         "verify_exit": 40,
     }
