@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from assurance_agent.workflow.graph.compiler import canonical_digest, compile_workflow
 from assurance_agent.workflow.graph.contracts import ResourcePath, parse_execution_contracts
