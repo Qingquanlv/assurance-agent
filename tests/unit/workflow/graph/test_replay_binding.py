@@ -627,32 +627,32 @@ def _build_fixture(tmp_path: Path, *, include_e2e: bool = True, api_applicable: 
         applicable=api_applicable,
     )
 
+    e2e_branch_path = f"{assurance_path}/e2e/e2e-branch"
+    e2e_branch_inv = derive_child_invocation_id_from(f"{assurance_path}:e2e", "e2e-branch")
+    e2e_branch_started = fixture._started(
+        invocation_id=e2e_branch_inv,
+        entrypoint="e2e-branch",
+        graph_id="e2e-branch",
+        structural_path=e2e_branch_path,
+        checkpoint_ns=f"{assurance_started.checkpoint_ns}/e2e/{e2e_branch_inv}",
+        params=dict(_PARAMS),
+        parent_invocation_id=fixture.assurance_inv,
+        parent_task_id=f"{assurance_path}:e2e",
+    )
+    fixture.append(e2e_branch_started.model_dump(mode="json"))
+    e2e_cycle_path = f"{e2e_branch_path}/review-cycle/e2e-plan-cycle"
+    e2e_cycle_started = fixture._started(
+        invocation_id=fixture.e2e_cycle_inv,
+        entrypoint="e2e-plan-cycle",
+        graph_id="e2e-plan-cycle",
+        structural_path=e2e_cycle_path,
+        checkpoint_ns=f"{e2e_branch_started.checkpoint_ns}/review-cycle/{fixture.e2e_cycle_inv}",
+        params=dict(_PARAMS),
+        parent_invocation_id=e2e_branch_inv,
+        parent_task_id=f"{e2e_branch_path}:review-cycle",
+    )
+    fixture.append(e2e_cycle_started.model_dump(mode="json"))
     if include_e2e:
-        e2e_branch_path = f"{assurance_path}/e2e/e2e-branch"
-        e2e_branch_inv = derive_child_invocation_id_from(f"{assurance_path}:e2e", "e2e-branch")
-        e2e_branch_started = fixture._started(
-            invocation_id=e2e_branch_inv,
-            entrypoint="e2e-branch",
-            graph_id="e2e-branch",
-            structural_path=e2e_branch_path,
-            checkpoint_ns=f"{assurance_started.checkpoint_ns}/e2e/{e2e_branch_inv}",
-            params=dict(_PARAMS),
-            parent_invocation_id=fixture.assurance_inv,
-            parent_task_id=f"{assurance_path}:e2e",
-        )
-        fixture.append(e2e_branch_started.model_dump(mode="json"))
-        e2e_cycle_path = f"{e2e_branch_path}/review-cycle/e2e-plan-cycle"
-        e2e_cycle_started = fixture._started(
-            invocation_id=fixture.e2e_cycle_inv,
-            entrypoint="e2e-plan-cycle",
-            graph_id="e2e-plan-cycle",
-            structural_path=e2e_cycle_path,
-            checkpoint_ns=f"{e2e_branch_started.checkpoint_ns}/review-cycle/{fixture.e2e_cycle_inv}",
-            params=dict(_PARAMS),
-            parent_invocation_id=e2e_branch_inv,
-            parent_task_id=f"{e2e_branch_path}:review-cycle",
-        )
-        fixture.append(e2e_cycle_started.model_dump(mode="json"))
         fixture._commit_cycle(
             invocation_id=fixture.e2e_cycle_inv,
             checkpoint_ns=e2e_cycle_started.checkpoint_ns,
@@ -1057,6 +1057,224 @@ def test_recover_layer_inputs_mechanical_producer_unbound(tmp_path: Path) -> Non
 
 def test_normalize_logical_path_strips_trailing_slash() -> None:
     assert normalize_logical_path("change:review/x.json") == normalize_logical_path("change:review/x.json/")
+
+
+def test_bind_replay_definitions_non_terminal_root_rejected(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path)
+    lines = [json.loads(line) for line in fixture.events_path.read_text(encoding="utf-8").splitlines()]
+    rewritten = [
+        json.dumps(payload, sort_keys=True)
+        for payload in lines
+        if not (payload.get("type") in {"graph_completed", "graph_stopped", "graph_failed"} and payload.get("invocation_id") == _ROOT_INV)
+    ]
+    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+    with pytest.raises(ReplayBindingError, match="root_invocation_unbound"):
+        bind_replay_definitions(
+            change_dir=fixture.change_dir,
+            change_id=_CHANGE_ID,
+            root_invocation_id=_ROOT_INV,
+            expected_entrypoint=_ENTRYPOINT,
+        )
+
+
+def test_bind_replay_definitions_missing_branch_wiring(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path)
+    lines = [json.loads(line) for line in fixture.events_path.read_text(encoding="utf-8").splitlines()]
+    filtered = [
+        payload
+        for payload in lines
+        if not (payload.get("type") == "graph_invocation_started" and payload.get("graph_id") == "api-branch")
+    ]
+    rewritten = []
+    for seq, payload in enumerate(filtered, start=1):
+        payload = dict(payload)
+        payload["seq"] = seq
+        rewritten.append(json.dumps(payload, sort_keys=True))
+    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+    with pytest.raises(ReplayBindingError, match="ambiguous_graph_wiring"):
+        bind_replay_definitions(
+            change_dir=fixture.change_dir,
+            change_id=_CHANGE_ID,
+            root_invocation_id=_ROOT_INV,
+            expected_entrypoint=_ENTRYPOINT,
+        )
+
+
+def test_bind_replay_definitions_ambiguous_branch_wiring(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path)
+    assurance_path = "main/assurance/assurance"
+    api_branch_path = f"{assurance_path}/api/api-branch"
+    duplicate = fixture._started(
+        invocation_id="inv-api-branch-dup",
+        entrypoint="api-branch",
+        graph_id="api-branch",
+        structural_path=api_branch_path,
+        checkpoint_ns="dup-api-branch",
+        params=dict(_PARAMS),
+        parent_invocation_id=fixture.assurance_inv,
+        parent_task_id=f"{assurance_path}:api",
+    )
+    fixture.append(duplicate.model_dump(mode="json"))
+    with pytest.raises(ReplayBindingError, match="ambiguous_graph_wiring"):
+        bind_replay_definitions(
+            change_dir=fixture.change_dir,
+            change_id=_CHANGE_ID,
+            root_invocation_id=_ROOT_INV,
+            expected_entrypoint=_ENTRYPOINT,
+        )
+
+
+def test_recover_layer_inputs_baseline_route_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fixture = _build_fixture(tmp_path, include_e2e=False)
+    lines = [json.loads(line) for line in fixture.events_path.read_text(encoding="utf-8").splitlines()]
+    rewritten = []
+    for payload in lines:
+        if payload.get("type") == "task_attempt_succeeded" and payload.get("task_id", "").endswith(":review-gate"):
+            payload = dict(payload)
+            gate_report = dict(payload.get("gate_report") or {})
+            gate_report["verdict"] = "needs_human_review"
+            gate_report["details"] = {"missing_capabilities": ["auth.api_admin_token"]}
+            gate_report["value"] = "needs_human_review"
+            payload["gate_report"] = gate_report
+        rewritten.append(json.dumps(payload, sort_keys=True))
+    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+    binding = bind_replay_definitions(
+        change_dir=fixture.change_dir,
+        change_id=_CHANGE_ID,
+        root_invocation_id=_ROOT_INV,
+        expected_entrypoint=_ENTRYPOINT,
+    )
+    import assurance_agent.workflow.graph.replay_binding as replay_binding
+
+    monkeypatch.setattr(replay_binding, "_assert_baseline_gate", lambda *args, **kwargs: None)
+    with pytest.raises(ReplayBindingError, match="baseline_route_mismatch"):
+        recover_layer_inputs(binding, layer="api", change_dir=fixture.change_dir)
+
+
+def test_recover_layer_inputs_baseline_gate_details_mismatch(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path, include_e2e=False)
+    lines = [json.loads(line) for line in fixture.events_path.read_text(encoding="utf-8").splitlines()]
+    rewritten = []
+    for payload in lines:
+        if payload.get("type") == "task_attempt_succeeded" and payload.get("task_id", "").endswith(":review-gate"):
+            payload = dict(payload)
+            gate_report = dict(payload.get("gate_report") or {})
+            gate_report["details"] = {"missing_capabilities": ["auth.api_admin_token"]}
+            payload["gate_report"] = gate_report
+        rewritten.append(json.dumps(payload, sort_keys=True))
+    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+    binding = bind_replay_definitions(
+        change_dir=fixture.change_dir,
+        change_id=_CHANGE_ID,
+        root_invocation_id=_ROOT_INV,
+        expected_entrypoint=_ENTRYPOINT,
+    )
+    with pytest.raises(ReplayBindingError, match="baseline_gate_mismatch"):
+        recover_layer_inputs(binding, layer="api", change_dir=fixture.change_dir)
+
+
+def test_recover_layer_inputs_ignores_failed_abandoned_gate_attempts(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path, include_e2e=False)
+    api_cycle_path = "main/assurance/assurance/api/api-branch/review-cycle/api-plan-cycle"
+    gate_task = f"{api_cycle_path}:review-gate"
+    failed_attempt = f"{gate_task}-a-failed"
+    abandoned_attempt = f"{gate_task}-a-abandoned"
+    checkpoint_ns = f"ns/{fixture.api_cycle_inv}"
+
+    for attempt_id, verdict in ((failed_attempt, "reject"), (abandoned_attempt, "needs_human_review")):
+        ss = f"{fixture.api_cycle_inv}-ss-{attempt_id}"
+        fixture.append(
+            SuperstepPlannedEvent(
+                type="superstep_planned",
+                invocation_id=fixture.api_cycle_inv,
+                checkpoint_ns=checkpoint_ns,
+                superstep_id=ss,
+                checkpoint_id=f"{fixture.api_cycle_inv}-cp-{attempt_id}",
+                task_ids=[gate_task],
+            ).model_dump(mode="json")
+        )
+        fixture.append(
+            TaskAttemptStartedEvent(
+                type="task_attempt_started",
+                invocation_id=fixture.api_cycle_inv,
+                checkpoint_ns=checkpoint_ns,
+                superstep_id=ss,
+                task_id=gate_task,
+                attempt_id=attempt_id,
+                node_id="review-gate",
+                input_sha256="in",
+                graph_digest=fixture.compiled.digest,  # type: ignore[attr-defined]
+                contract_digest="gate-contract-bad",
+                attempt_number=1,
+                lease_expires_at="2026-07-31T00:00:00Z",
+                started_at="2026-07-31T00:00:00Z",
+            ).model_dump(mode="json")
+        )
+        fixture.append(
+            TaskAttemptSucceededEvent(
+                type="task_attempt_succeeded",
+                invocation_id=fixture.api_cycle_inv,
+                checkpoint_ns=checkpoint_ns,
+                superstep_id=ss,
+                task_id=gate_task,
+                attempt_id=attempt_id,
+                gate_report={
+                    "gate_id": "api-plan-review-gate",
+                    "verdict": verdict,
+                    "matched_rule": "reject_when",
+                    "reason": attempt_id,
+                    "reads_sha256": {},
+                },
+            ).model_dump(mode="json")
+        )
+        fixture.append(
+            SuperstepCommittedEvent(
+                type="superstep_committed",
+                invocation_id=fixture.api_cycle_inv,
+                checkpoint_ns=checkpoint_ns,
+                superstep_id=ss,
+                checkpoint_id=f"{fixture.api_cycle_inv}-cp-{attempt_id}-commit",
+                write_set_ids=[],
+                target_tree_id=fixture.gate_trees["api"],
+                state_values={},
+                committed_task_ids=[gate_task],
+            ).model_dump(mode="json")
+        )
+        if attempt_id == failed_attempt:
+            fixture.append(
+                {
+                    "type": "task_attempt_failed",
+                    "invocation_id": fixture.api_cycle_inv,
+                    "checkpoint_ns": checkpoint_ns,
+                    "superstep_id": ss,
+                    "task_id": gate_task,
+                    "attempt_id": attempt_id,
+                    "error_kind": "contract",
+                    "message": "failed gate",
+                }
+            )
+        else:
+            fixture.append(
+                {
+                    "type": "task_attempt_abandoned",
+                    "invocation_id": fixture.api_cycle_inv,
+                    "checkpoint_ns": checkpoint_ns,
+                    "task_id": gate_task,
+                    "attempt_id": attempt_id,
+                    "reason": "abandoned gate",
+                    "abandoned_at": "2026-07-31T00:00:00Z",
+                }
+            )
+
+    binding = bind_replay_definitions(
+        change_dir=fixture.change_dir,
+        change_id=_CHANGE_ID,
+        root_invocation_id=_ROOT_INV,
+        expected_entrypoint=_ENTRYPOINT,
+    )
+    recovered = recover_layer_inputs(binding, layer="api", change_dir=fixture.change_dir)
+    assert recovered.gate_report["verdict"] == "pass"
+    assert recovered.gate_attempt.contract_digest == "gate-contract-v1"
 
 
 def test_frozen_definition_digests_match_runtime() -> None:

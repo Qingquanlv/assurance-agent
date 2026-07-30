@@ -302,14 +302,14 @@ def recover_layer_inputs(
         params=layer_binding.params,
     )
     _assert_baseline_gate(gate_report, baseline, profile)
-    route = plan_review_route({"gate": gate_report})
-    expected_route = plan_review_route({"gate": _gate_view(gate_report)})
-    if route != expected_route:
+    baseline_route = _route_from_baseline(baseline)
+    recorded_route = plan_review_route({"gate": gate_report})
+    if baseline_route != recorded_route:
         raise ReplayBindingError(
             "baseline_route_mismatch",
-            f"route {route!r} != recorded {expected_route!r}",
+            f"baseline route {baseline_route!r} != recorded {recorded_route!r}",
         )
-    _assert_route_events(binding.sequenced_events, layer_binding, route)
+    _assert_route_events(binding.sequenced_events, layer_binding, recorded_route)
 
     return BoundLayerReplayInputs(
         layer=layer,
@@ -323,7 +323,7 @@ def recover_layer_inputs(
         gate_attempt=gate_attempt,
         mechanical_attempt=mechanical_attempt,
         baseline=baseline,
-        route=route,
+        route=recorded_route,
     )
 
 
@@ -537,7 +537,10 @@ def _bind_layer_invocations(
             structural_path=branch_path,
         )
         if len(branch_matches) != 1:
-            continue
+            raise ReplayBindingError(
+                "ambiguous_graph_wiring",
+                f"expected exactly one {branch_graph} invocation for layer {layer}, found {len(branch_matches)}",
+            )
         branch = branch_matches[0]
         cycle_graph = _LAYER_CYCLE_GRAPH[layer]
         cycle_task_id = f"{branch.structural_path}:review-cycle"
@@ -914,10 +917,26 @@ def _assert_baseline_gate(
             "baseline_gate_mismatch",
             f"verdict {recorded.get('verdict')!r} != {baseline.verdict.value!r}",
         )
+    recorded_value = recorded.get("value")
+    recorded_verdict = recorded.get("verdict")
+    if (
+        recorded_value is not None
+        and recorded_verdict is not None
+        and recorded_value != recorded_verdict
+        and recorded_value != baseline.verdict.value
+    ):
+        raise ReplayBindingError(
+            "baseline_gate_mismatch",
+            f"value {recorded_value!r} != baseline {baseline.verdict.value!r}",
+        )
     if recorded.get("matched_rule") != baseline.matched_rule:
         raise ReplayBindingError("baseline_gate_mismatch", "matched_rule mismatch")
     if recorded.get("reason") != baseline.reason:
         raise ReplayBindingError("baseline_gate_mismatch", "reason mismatch")
+    recorded_details = _normalize_gate_details(recorded.get("details"))
+    baseline_details = _normalize_gate_details(baseline.details)
+    if recorded_details != baseline_details:
+        raise ReplayBindingError("baseline_gate_mismatch", "details mismatch")
     recorded_reads = recorded.get("reads_sha256")
     if not isinstance(recorded_reads, dict):
         raise ReplayBindingError("baseline_gate_mismatch", "reads_sha256 missing")
@@ -928,13 +947,38 @@ def _assert_baseline_gate(
             raise ReplayBindingError("baseline_gate_mismatch", f"reads_sha256 mismatch for {key}")
 
 
-def _gate_view(gate_report: dict[str, object]) -> dict[str, object]:
-    return {
-        "verdict": gate_report.get("verdict"),
-        "matched_rule": gate_report.get("matched_rule"),
-        "reason": gate_report.get("reason"),
-        "details": gate_report.get("details"),
-    }
+def _normalize_gate_details(details: object) -> dict[str, object] | None:
+    if details is None:
+        return None
+    if not isinstance(details, dict):
+        raise ReplayBindingError("baseline_gate_mismatch", "details is not a mapping")
+    normalized: dict[str, object] = {}
+    for key, value in details.items():
+        if key == "missing_capabilities" and isinstance(value, list):
+            sorted_caps = sorted(str(item) for item in value)
+            if sorted_caps:
+                normalized[key] = sorted_caps
+        else:
+            normalized[key] = value
+    return normalized if normalized else None
+
+
+def _route_from_baseline(baseline: object) -> str:
+    from assurance_agent.workflow.orchestration.gates import FrozenGateReport
+
+    if not isinstance(baseline, FrozenGateReport):
+        return "stop"
+    details = dict(baseline.details) if baseline.details is not None else None
+    return plan_review_route(
+        {
+            "gate": {
+                "verdict": baseline.verdict.value,
+                "matched_rule": baseline.matched_rule,
+                "reason": baseline.reason,
+                "details": details,
+            }
+        }
+    )
 
 
 def _assert_route_events(
