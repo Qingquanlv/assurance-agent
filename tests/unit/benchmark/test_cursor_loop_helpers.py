@@ -588,6 +588,21 @@ def test_pin_workflow_root_writes_stable_json_for_new_root(tmp_path: Path) -> No
     }
 
 
+def test_pin_workflow_root_skips_creation_when_started_new_root_false(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    result_file = tmp_path / "workflow-result.json"
+    _write_workflow_result(result_file, started_new_root=False)
+    command = (
+        f"pin_workflow_root_from_result {shlex.quote(str(run_dir))} CH-1 "
+        f"{shlex.quote(str(result_file))} full"
+    )
+
+    result = _run_helper(tmp_path, command)
+
+    assert result.returncode == 0, result.stderr
+    assert not (run_dir / "CH-1.workflow-root.json").exists()
+
+
 def test_pin_workflow_root_rejects_identity_drift(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     result_file = tmp_path / "workflow-result.json"
@@ -646,7 +661,6 @@ def test_read_workflow_root_state_never_calls_aa_status(tmp_path: Path) -> None:
         + "\n",
         encoding="utf-8",
     )
-    fake = _install_fake_aa(tmp_path)
     command = (
         f"AA_FAKE_CALL_LOG={shlex.quote(str(tmp_path / 'aa-calls.log'))} "
         f"read_workflow_root_state {shlex.quote(str(run_dir))} CH-1"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import textwrap
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -64,6 +65,98 @@ _MINIMAL_SCHEMA = textwrap.dedent(
     gates: {}
     """
 )
+
+_SUBGRAPH_MINIMAL_SCHEMA = textwrap.dedent(
+    """\
+    schema_version: "2"
+    name: cli-subgraph-min
+    params:
+      run_mode: {type: enum, values: [full], default: full}
+    entrypoints:
+      full: {graph: main, allow: "params.run_mode == 'full'"}
+    policies:
+      retry:
+        never: {max_attempts: 1, retry_on: []}
+      timeout:
+        local: {run_seconds: 60, heartbeat_seconds: 10}
+      scheduler: {max_parallel_tasks: 2}
+    graphs:
+      main:
+        max_supersteps: 5
+        nodes:
+          spawn:
+            uses: graph:child
+            retry: never
+            timeout: local
+        edges:
+          - {from: START, to: spawn}
+          - {from: spawn, to: END}
+      child:
+        max_supersteps: 5
+        nodes:
+          work:
+            uses: operation:no-op
+            retry: never
+            timeout: local
+        edges:
+          - {from: START, to: work}
+          - {from: work, to: END}
+    gates: {}
+    """
+)
+
+
+def _run_minimal_workflow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    change_id: str = "CH-1",
+    schema: str = _MINIMAL_SCHEMA,
+    entrypoint: str = "full",
+) -> str:
+    write_aa_config(tmp_path)
+    (tmp_path / "qa" / "changes" / change_id).mkdir(parents=True)
+    (tmp_path / ".aa" / "workflow-schema.yaml").write_text(schema, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(
+        main,
+        [
+            "workflow",
+            "run",
+            "--change",
+            change_id,
+            "--entrypoint",
+            entrypoint,
+            "--params",
+            '{"run_mode":"full"}',
+            "--adapter",
+            "headless",
+            "--agent-cmd",
+            "true",
+        ],
+    )
+    assert result.exit_code == EXIT_COMPLETED, result.output
+    status = json.loads(
+        CliRunner().invoke(main, ["workflow", "status", "--change", change_id, "--json"]).stdout
+    )
+    invocation_id = status.get("invocation_id")
+    assert invocation_id
+    return str(invocation_id)
+
+
+def _child_invocation_id(change_dir: Path) -> str:
+    from assurance_agent.workflow.core.events import read_events_strict
+
+    started = [
+        event
+        for event in read_events_strict(change_dir)
+        if event.get("type") == "graph_invocation_started"
+    ]
+    root = next(event for event in started if event.get("parent_invocation_id") is None)
+    child = next(
+        event for event in started if event.get("parent_invocation_id") == root["invocation_id"]
+    )
+    return str(child["invocation_id"])
 
 
 class NeverCalledInvoker:
@@ -277,6 +370,105 @@ def test_workflow_resume_exact_invocation_rejects_mismatched_entrypoint(
         assert result.exit_code == EXIT_ERROR
         assert "entrypoint mismatch" in result.output
         runtime.resume.assert_not_called()
+
+
+def test_workflow_resume_rejects_unknown_invocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _run_minimal_workflow(tmp_path, monkeypatch)
+    result = CliRunner().invoke(
+        main,
+        [
+            "workflow",
+            "resume",
+            "--change",
+            "CH-1",
+            "--invocation",
+            "inv-does-not-exist",
+            "--entrypoint",
+            "full",
+        ],
+    )
+    assert result.exit_code == EXIT_ERROR
+    assert "unknown invocation" in result.output
+
+
+def test_workflow_resume_rejects_non_root_invocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _run_minimal_workflow(tmp_path, monkeypatch, schema=_SUBGRAPH_MINIMAL_SCHEMA)
+    child_id = _child_invocation_id(tmp_path / "qa" / "changes" / "CH-1")
+    result = CliRunner().invoke(
+        main,
+        [
+            "workflow",
+            "resume",
+            "--change",
+            "CH-1",
+            "--invocation",
+            child_id,
+            "--entrypoint",
+            "full",
+        ],
+    )
+    assert result.exit_code == EXIT_ERROR
+    assert "is not a root" in result.output
+
+
+def test_workflow_resume_rejects_wrong_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root_id = _run_minimal_workflow(tmp_path, monkeypatch, change_id="CH-1")
+    change_one = tmp_path / "qa" / "changes" / "CH-1"
+    change_two = tmp_path / "qa" / "changes" / "CH-2"
+    change_two.mkdir(parents=True)
+    for name in ("events.jsonl", ".graph-runtime"):
+        src = change_one / name
+        dst = change_two / name
+        if src.is_dir():
+            shutil.copytree(src, dst)
+        elif src.is_file():
+            dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    result = CliRunner().invoke(
+        main,
+        [
+            "workflow",
+            "resume",
+            "--change",
+            "CH-2",
+            "--invocation",
+            root_id,
+            "--entrypoint",
+            "full",
+        ],
+    )
+    assert result.exit_code == EXIT_ERROR
+    assert "belongs to change" in result.output
+
+
+def test_workflow_resume_rejects_mismatched_entrypoint_with_real_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root_id = _run_minimal_workflow(tmp_path, monkeypatch)
+    result = CliRunner().invoke(
+        main,
+        [
+            "workflow",
+            "resume",
+            "--change",
+            "CH-1",
+            "--invocation",
+            root_id,
+            "--entrypoint",
+            "execute",
+        ],
+    )
+    assert result.exit_code == EXIT_ERROR
+    assert "entrypoint" in result.output
 
 
 def test_workflow_resume_requires_invocation_and_entrypoint_together() -> None:

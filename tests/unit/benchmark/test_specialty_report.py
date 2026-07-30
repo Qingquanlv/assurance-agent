@@ -32,7 +32,80 @@ from tests.unit.workflow.graph.test_replay_binding import (
 _ROOT = Path(__file__).parents[3]
 _REPORTER = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "benchmark_specialty_report.py"
 _HELPERS = _REPORTER.with_name("cursor-loop-helpers.sh")
+_CURSOR_LOOP = _REPORTER.with_name("run-workflow-loop-cursor.sh")
 _GOLDEN_SHA256 = "78d6d13361ab7210cb1fa57b252e51df3fc3b11c57a438b0a6fe1a64944ce640"
+
+
+def _specialty_stage_function_source() -> str:
+    text = _CURSOR_LOOP.read_text(encoding="utf-8")
+    start = text.index("run_specialty_report_stage() {")
+    end = text.index("\nreuse_specialty_report_stage() {", start)
+    return text[start:end].rstrip()
+
+
+def _run_specialty_report_stage(
+    tmp_path: Path,
+    *,
+    change_id: str,
+    project: Path,
+    trace_path: Path,
+    verify_path: Path,
+    trace_exit: str,
+    verify_exit: str,
+    root_invocation_id: str,
+    workflow_entrypoint: str = _ENTRYPOINT,
+) -> subprocess.CompletedProcess[str]:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    trace_file = run_dir / f"{change_id}.trace.json"
+    verify_file = run_dir / f"{change_id}.verify.json"
+    trace_file.write_text(trace_path.read_text(encoding="utf-8"), encoding="utf-8")
+    verify_file.write_text(verify_path.read_text(encoding="utf-8"), encoding="utf-8")
+    if root_invocation_id:
+        state_file = run_dir / f"{change_id}.workflow-root.json"
+        state_file.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "change_id": change_id,
+                    "entrypoint": workflow_entrypoint,
+                    "root_invocation_id": root_invocation_id,
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    evidence_row = f"{change_id}|{trace_exit}|degraded|1|{verify_exit}|fail|0|0"
+    stage_fn = _specialty_stage_function_source()
+    script = f"""
+set -uo pipefail
+source {shlex.quote(str(_HELPERS))}
+RUN_DIR={shlex.quote(str(run_dir))}
+PROJECT_ROOT={shlex.quote(str(project))}
+AA_REPO_ROOT={shlex.quote(str(_ROOT))}
+AA_PYTHON_BIN={shlex.quote(sys.executable)}
+SPECIALTY_REPORT_PY={shlex.quote(str(_REPORTER))}
+DO_SPECIALTY_REPORT=true
+DO_TRACE_VERIFY=true
+DRIVER_ENTRYPOINT={shlex.quote(workflow_entrypoint)}
+declare -a EVIDENCE_ROWS=({shlex.quote(evidence_row)})
+declare -a SPECIALTY_REPORT_FILES=()
+SPECIALTY_REPORT_FAILED=false
+stage_exit=0
+log() {{ printf '%s\\n' "$*"; }}
+{stage_fn}
+run_specialty_report_stage {shlex.quote(change_id)} || stage_exit=$?
+printf 'stage_exit=%s\\n' "$stage_exit"
+printf 'SPECIALTY_REPORT_FAILED=%s\\n' "$SPECIALTY_REPORT_FAILED"
+if ((${{#SPECIALTY_REPORT_FILES[@]}})); then
+  printf 'SPECIALTY_REPORT_FILES=%s\\n' "${{SPECIALTY_REPORT_FILES[@]}}"
+else
+  printf 'SPECIALTY_REPORT_FILES=\\n'
+fi
+exit "$stage_exit"
+"""
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -1150,6 +1223,69 @@ def test_finalize_skips_invalid_report_on_collector_failure(tmp_path: Path) -> N
 
     assert result.returncode == 1
     assert result.stdout.strip() == "registered=false"
+
+
+def test_run_specialty_report_stage_registers_incomplete_v2_and_fails(tmp_path: Path) -> None:
+    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
+    result = _run_specialty_report_stage(
+        tmp_path,
+        change_id=_CHANGE_ID,
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        trace_exit="9",
+        verify_exit="40",
+        root_invocation_id="missing-root",
+    )
+
+    assert result.returncode == 1, result.stderr
+    assert "SPECIALTY_REPORT_FAILED=true" in result.stdout
+    assert "stage_exit=1" in result.stdout
+    files_line = next(line for line in result.stdout.splitlines() if line.startswith("SPECIALTY_REPORT_FILES="))
+    report_path = Path(files_line.removeprefix("SPECIALTY_REPORT_FILES=").strip())
+    assert report_path.is_file()
+    report = load_specialty_report(json.loads(report_path.read_text(encoding="utf-8")))
+    assert isinstance(report, SpecialtyReportV2)
+    assert report.capability_contract_policy.integrity == "incomplete"
+    assert report.capability_contract_policy.definition_failure == "root_invocation_unbound"
+
+    rendered = subprocess.run(
+        [sys.executable, str(_REPORTER), "render", str(report_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    assert "### Layer Assurance Matrix" in rendered.stdout
+    assert "root_invocation_unbound" in rendered.stdout
+
+
+def test_run_specialty_report_stage_skips_invalid_report_on_collector_failure(
+    tmp_path: Path,
+) -> None:
+    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    trace["rows"] = {"not": "a list"}
+    bad_trace = tmp_path / "bad-trace.json"
+    _write_json(bad_trace, trace)
+    result = _run_specialty_report_stage(
+        tmp_path,
+        change_id=_CHANGE_ID,
+        project=project,
+        trace_path=bad_trace,
+        verify_path=verify_path,
+        trace_exit="9",
+        verify_exit="40",
+        root_invocation_id=_ROOT_INV,
+    )
+
+    assert result.returncode == 1, result.stderr
+    assert "SPECIALTY_REPORT_FAILED=true" in result.stdout
+    assert "stage_exit=1" in result.stdout
+    files_line = next(line for line in result.stdout.splitlines() if line.startswith("SPECIALTY_REPORT_FILES="))
+    assert files_line.removeprefix("SPECIALTY_REPORT_FILES=").strip() == ""
+    report_file = tmp_path / "run" / f"{_CHANGE_ID}.specialty-report.json"
+    assert not report_file.exists()
 
 
 def test_cursor_helper_collects_and_renders_real_specialty_report(tmp_path: Path) -> None:
