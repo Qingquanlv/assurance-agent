@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 
+from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.graph.compiler import canonical_digest
 from assurance_agent.workflow.graph.contracts import ResourceClaims, ResourcePath
 from assurance_agent.workflow.graph.models import (
@@ -19,6 +20,10 @@ from assurance_agent.workflow.graph.planner import PlanError, plan_superstep
 from assurance_agent.workflow.graph.scheduler import select_wave
 
 
+class SelectedWaveDriftError(AaError):
+    """Reserved selected wave no longer matches replanned task identity or resources."""
+
+
 @dataclass(frozen=True)
 class SelectedInvocationWave:
     invocation_id: str
@@ -31,9 +36,67 @@ class SelectedInvocationWave:
     identity_digest: str
 
 
+@dataclass(frozen=True)
+class PreparedInvocationWave:
+    preview: SelectedInvocationWave
+    prepared_tree_id: str
+    child_prepared: tuple["PreparedInvocationWave", ...]
+
+
+@dataclass(frozen=True)
+class PreparedWaveLease:
+    lock_tokens: tuple[str, ...]
+    synchronized_paths: tuple[ResourcePath, ...]
+    tree_overlays: tuple[tuple[str, str], ...]
+    invocations: tuple[PreparedInvocationWave, ...]
+    capture_sealed: bool
+
+    def for_invocation(self, invocation_id: str) -> PreparedInvocationWave | None:
+        for prepared in self.invocations:
+            found = _find_prepared(prepared, invocation_id)
+            if found is not None:
+                return found
+        return None
+
+
 def derive_child_invocation_id(parent_task: ExecutableTask, graph_id: str) -> str:
     """Deterministic child invocation ID from parent task identity and subgraph name."""
     return canonical_digest({"parent_task_id": parent_task.task_id, "graph_id": graph_id})
+
+
+def iter_selected_waves(wave: SelectedInvocationWave) -> Iterator[SelectedInvocationWave]:
+    """Depth-first traversal of a previewed invocation tree."""
+    yield wave
+    for child in wave.child_waves:
+        yield from iter_selected_waves(child)
+
+
+def assert_same_selected_wave(
+    expected: SelectedInvocationWave,
+    actual: SelectedInvocationWave | None,
+) -> None:
+    """Fail closed when replanned identity diverges from the reserved preview."""
+    if actual is None:
+        raise SelectedWaveDriftError("replan produced no selected wave")
+    if expected.identity_digest != actual.identity_digest:
+        raise SelectedWaveDriftError(
+            "selected wave identity drifted: "
+            f"expected {expected.identity_digest}, got {actual.identity_digest}"
+        )
+    expected_children = sorted(expected.child_waves, key=lambda item: item.invocation_id)
+    actual_children = sorted(actual.child_waves, key=lambda item: item.invocation_id)
+    if len(expected_children) != len(actual_children):
+        raise SelectedWaveDriftError(
+            "selected wave child count drifted: "
+            f"expected {len(expected_children)}, got {len(actual_children)}"
+        )
+    for expected_child, actual_child in zip(expected_children, actual_children, strict=True):
+        if expected_child.invocation_id != actual_child.invocation_id:
+            raise SelectedWaveDriftError(
+                "selected wave child invocation drifted: "
+                f"expected {expected_child.invocation_id}, got {actual_child.invocation_id}"
+            )
+        assert_same_selected_wave(expected_child, actual_child)
 
 
 def preview_selected_wave(
@@ -86,6 +149,42 @@ def preview_selected_wave(
         synchronized_paths=synchronized_paths,
         identity_digest=identity_digest,
     )
+
+
+def build_prepared_wave_tree(
+    wave: SelectedInvocationWave,
+    tree_overlays: Mapping[str, str],
+) -> PreparedInvocationWave:
+    prepared_tree_id = tree_overlays.get(wave.projection.current_tree_id, wave.projection.current_tree_id)
+    return PreparedInvocationWave(
+        preview=wave,
+        prepared_tree_id=prepared_tree_id,
+        child_prepared=tuple(
+            build_prepared_wave_tree(child, tree_overlays) for child in wave.child_waves
+        ),
+    )
+
+
+def flatten_prepared_invocations(root: PreparedInvocationWave) -> tuple[PreparedInvocationWave, ...]:
+    ordered: list[PreparedInvocationWave] = []
+
+    def walk(prepared: PreparedInvocationWave) -> None:
+        ordered.append(prepared)
+        for child in prepared.child_prepared:
+            walk(child)
+
+    walk(root)
+    return tuple(ordered)
+
+
+def _find_prepared(prepared: PreparedInvocationWave, invocation_id: str) -> PreparedInvocationWave | None:
+    if prepared.preview.invocation_id == invocation_id:
+        return prepared
+    for child in prepared.child_prepared:
+        found = _find_prepared(child, invocation_id)
+        if found is not None:
+            return found
+    return None
 
 
 def _has_uncommitted_succeeded_tasks(projection: GraphProjection) -> bool:
@@ -234,7 +333,14 @@ def _child_waves_for_selected(
 
 
 __all__ = [
+    "PreparedInvocationWave",
+    "PreparedWaveLease",
     "SelectedInvocationWave",
+    "SelectedWaveDriftError",
+    "assert_same_selected_wave",
+    "build_prepared_wave_tree",
     "derive_child_invocation_id",
+    "flatten_prepared_invocations",
+    "iter_selected_waves",
     "preview_selected_wave",
 ]

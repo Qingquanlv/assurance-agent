@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 
 from assurance_agent.workflow.graph.compiler import canonical_digest, compile_workflow
 from assurance_agent.workflow.graph.contracts import ResourcePath, parse_execution_contracts
@@ -20,6 +21,8 @@ from assurance_agent.workflow.graph.planner import plan_superstep
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
 from assurance_agent.workflow.graph.selected_wave import (
     SelectedInvocationWave,
+    SelectedWaveDriftError,
+    assert_same_selected_wave,
     derive_child_invocation_id,
     preview_selected_wave,
 )
@@ -343,3 +346,35 @@ def test_preview_does_not_append_events(tmp_path: Path) -> None:
     _preview(compiled, projection, tmp_path)
     after = json.dumps(projection.model_dump(mode="json"), sort_keys=True)
     assert before == after
+
+
+def test_assert_same_selected_wave_accepts_matching_preview(tmp_path: Path) -> None:
+    compiled = _compile(_LINEAR_GRAPH)
+    projection = _projection(compiled)
+    tasks = _initial_tasks(compiled, tmp_path, projection)
+    prep = _task_projection(tasks["prep"], "succeeded", outputs_committed=True)
+    wave = _preview(compiled, _projection(compiled, tasks=[prep]), tmp_path)
+    assert wave is not None
+    assert_same_selected_wave(wave, wave)
+
+
+def test_assert_same_selected_wave_rejects_identity_drift(tmp_path: Path) -> None:
+    compiled = _compile(_LINEAR_GRAPH)
+    projection = _projection(compiled)
+    tasks = _initial_tasks(compiled, tmp_path, projection)
+    prep = _task_projection(tasks["prep"], "succeeded", outputs_committed=True)
+    wave = _preview(compiled, _projection(compiled, tasks=[prep]), tmp_path)
+    assert wave is not None
+    mutated = SelectedInvocationWave(
+        invocation_id=wave.invocation_id,
+        projection=wave.projection,
+        plan=wave.plan,
+        selected_tasks=wave.selected_tasks,
+        child_waves=wave.child_waves,
+        lock_tokens=wave.lock_tokens,
+        synchronized_paths=wave.synchronized_paths,
+        identity_digest="sha256:" + "c" * 64,
+    )
+    with pytest.raises(SelectedWaveDriftError, match="identity drifted"):
+        assert_same_selected_wave(wave, mutated)
+

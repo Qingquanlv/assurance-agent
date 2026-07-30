@@ -86,6 +86,9 @@ class RuntimeContext(BaseModel):
     _project_lock_scope_owner: object | None = PrivateAttr(default=None)
     _project_lock_scope_nonce: object | None = PrivateAttr(default=None)
     _held_project_lock_tokens: tuple[str, ...] = PrivateAttr(default=())
+    _prepared_wave_lease_owner: object | None = PrivateAttr(default=None)
+    _prepared_wave_lease_nonce: object | None = PrivateAttr(default=None)
+    _prepared_wave_lease: object | None = PrivateAttr(default=None)
 
     project_root: Path
     repo_root: Path
@@ -115,6 +118,25 @@ class RuntimeContext(BaseModel):
         locked._project_lock_scope_nonce = nonce
         locked._held_project_lock_tokens = tokens
         return locked
+
+    def inherited_prepared_wave_lease(self, owner: object) -> object | None:
+        """Return the opaque prepared-wave lease inherited from an ancestor scheduler."""
+        if self._prepared_wave_lease_owner is not owner or self._prepared_wave_lease_nonce is None:
+            return None
+        return self._prepared_wave_lease
+
+    def with_prepared_wave_lease(
+        self,
+        owner: object,
+        nonce: object,
+        lease: object,
+    ) -> Self:
+        """Copy this context with a process-local, non-serializable prepared-wave lease."""
+        prepared = self.model_copy()
+        prepared._prepared_wave_lease_owner = owner
+        prepared._prepared_wave_lease_nonce = nonce
+        prepared._prepared_wave_lease = lease
+        return prepared
 
 
 class ResolvedArtifact(BaseModel):

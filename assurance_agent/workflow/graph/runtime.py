@@ -42,7 +42,11 @@ from assurance_agent.workflow.graph.status import (
     pending_write_sets as _pending_write_sets_fn,
 )
 from assurance_agent.workflow.graph.compiler import canonical_digest, resolve_params
-from assurance_agent.workflow.graph.selected_wave import derive_child_invocation_id
+from assurance_agent.workflow.graph.selected_wave import (
+    derive_child_invocation_id,
+    preview_selected_wave,
+)
+from assurance_agent.workflow.graph.selected_wave import SelectedWaveDriftError
 from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog
 from assurance_agent.workflow.graph.leases import (
@@ -795,6 +799,22 @@ class GraphRuntime:
             parent_session_id=parent_session_id,
         )
 
+    def _child_projections(self, invocation_id: str) -> dict[str, GraphProjection]:
+        projections: dict[str, GraphProjection] = {}
+        for raw in read_events_strict(self._checkpoints._change_dir):  # noqa: SLF001
+            if raw.get("source") != "graph" or raw.get("type") != "graph_invocation_started":
+                continue
+            if raw.get("parent_invocation_id") != invocation_id:
+                continue
+            child_id = raw.get("invocation_id")
+            if not isinstance(child_id, str):
+                continue
+            try:
+                projections[child_id] = self._checkpoints.project(child_id)
+            except LedgerIntegrityError:
+                continue
+        return projections
+
     # ------------------------------------------------------------------ drive
 
     def _drive(self, invocation_id: str, context: RuntimeContext) -> RunResult:
@@ -825,7 +845,33 @@ class GraphRuntime:
                     raise GraphDefinitionChanged(message) from exc
                 raise GraphRuntimeError(message) from exc
 
-            if plan.strict_events:
+            child_projections = self._child_projections(invocation_id)
+            inherited_lease = context.inherited_prepared_wave_lease(
+                self._scheduler._prepared_wave_lease_owner  # noqa: SLF001
+            )
+            from assurance_agent.workflow.graph.selected_wave import PreparedWaveLease
+
+            typed_lease = (
+                inherited_lease
+                if isinstance(inherited_lease, PreparedWaveLease)
+                else None
+            )
+            prepared_entry = (
+                typed_lease.for_invocation(invocation_id) if typed_lease is not None else None
+            )
+            selected = preview_selected_wave(
+                compiled,
+                projection,
+                context,
+                artifacts,  # type: ignore[arg-type]
+                max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
+                child_projections=child_projections,
+            )
+            uses_prepared = (
+                prepared_entry is not None
+                or (selected is not None and selected.synchronized_paths)
+            )
+            if plan.strict_events and not uses_prepared:
                 with transaction(context.change_dir) as txn:
                     for event in plan.strict_events:
                         txn.append_strict(event)
@@ -834,13 +880,34 @@ class GraphRuntime:
                 return self._finish_terminal(invocation_id, context, plan)
 
             if not plan.tasks:
-                if plan.strict_events:
+                if plan.strict_events and uses_prepared:
+                    with transaction(context.change_dir) as txn:
+                        for event in plan.strict_events:
+                            txn.append_strict(event)
                     continue
                 raise GraphRuntimeError("planner returned no tasks and no terminal")
 
-            projection = self._checkpoints.project(invocation_id)
             try:
-                wave = self._scheduler.execute(plan, projection, context)
+                if prepared_entry is not None:
+                    assert typed_lease is not None
+                    wave = self._scheduler.execute_selected_wave(
+                        typed_lease,
+                        context,
+                        invocation_id=invocation_id,
+                    )
+                else:
+                    wave = self._scheduler.execute(
+                        plan,
+                        projection,
+                        context,
+                        selected_wave=selected if uses_prepared else None,
+                        compiled=compiled if uses_prepared else None,
+                        artifacts=artifacts if uses_prepared else None,  # type: ignore[arg-type]
+                        child_projections=child_projections if uses_prepared else None,
+                        inherited_lease=typed_lease,
+                    )
+            except SelectedWaveDriftError as exc:
+                raise GraphRuntimeError(str(exc)) from exc
             except (SchedulerError, ProgressionError, WorkspaceError) as exc:
                 raise GraphRuntimeError(str(exc)) from exc
 
