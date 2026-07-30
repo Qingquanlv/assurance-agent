@@ -102,6 +102,26 @@ aa knowledge promote [--project-dir] (--change <id> | --from <proposal-path>) [-
 - API/E2E plan-review gate 通过 `required_capabilities[]`（review JSON 中的 leaf dotted keys）与 L1 做 pre-codegen 能力校验；缺 leaf → `needs_human_review` + **knowledge-remediation** checkpoint（人工 promote 后 `fix_and_proceed` 重跑 review）。
 - Fuzz/Performance plan-review gate 读 review JSON 的 `layer_applicable`：被 proposal 选中但无对应 `type:Fuzz`/`type:Performance` case（空 scope）时 reviewer 置 `layer_applicable: false` → gate 走 `skip`（分支结束、codegen 跳过），而非硬 `reject` 拖垮整条并行链。缺失该字段时按原 `pass`/`reject` 语义处理。
 
+## Plan check 证据（`review/*-plan-checks.json`，schema v2）
+
+四层机械 check（`l1_path` / `shared_factory` / `assert_ideal` / `capability_keys`，运行顺序由 `assurance_agent/verification/checks/registry.py` 的 `CHECKS_BY_ID` 声明顺序决定）产出的 `PlanCheckDocument`（`assurance_agent/artifacts/models/plan_checks.py`）是版本化产物：
+
+- **version 1**——历史只读格式：无 `layer` / `applicability` 字段，文档级与逐 check 的 `status` 只允许 `pass`/`fail`。可被解析，但生产路径不再写出。
+- **version 2**——`api` / `e2e` / `fuzz` / `performance` 四层统一生产格式：新增 `layer`（`LayerName`）与 `applicability`（`LayerApplicability`：`applicable` + `reason_code` + 排序去重的 `case_ids`）。`checks` 必须**恰好**包含 `PLAN_CHECK_IDS` 中每个已知 check 各一次——多、少、重复或未知 `check_id` 均在模型校验期拒绝（fail closed），不会静默丢弃或吞并。
+
+**check 状态语义**：
+
+- `pass` / `fail`——check 在本层适用且已求值；`fail` 必须携带非空 `findings`，`pass`/`not_applicable` 禁止携带 `findings`。
+- `not_applicable`——check 未求值，`applicability_reason` 二选一，含义不同：
+  - `layer_not_applicable`——**整层**因该 change 在该层无自动化 case 而不适用（`applicability.applicable=False`，运行期空 scope）；此时四个 check 全部 `not_applicable`，下次该层出现自动化 case 时会重新变为适用；
+  - `check_not_in_profile`——层本身适用，但该 check 按**静态 profile**（`assurance_agent/verification/profiles.py` 的 `applicable_check_ids`）在此层被永久排除，与本次 case 集合无关（目前仅 Fuzz/Performance 排除 `assert_ideal`，因为二者无 ideal-result 断言语义）。
+
+区分这两者是关键：前者是运行期事实（会随 case 变化），后者是层的固有能力边界（不会随 case 变化）。`validate_plan_check_document`（`assurance_agent/verification/checks/registry.py`）在 Pydantic 结构校验之外，额外用运行期 profile catalog 校验每个 check 的 `not_applicable` 理由与静态排除表一致——例如把 Fuzz 层的 `assert_ideal` 标成 `pass` 能通过 Pydantic（单看文档结构合法），但会被这一步拒绝，因为「该 check 在该层被静态排除」是 profile catalog 知识，文档自身无法单独表达或验证。
+
+`PlanCheckDocument.status` 由 `applicability`/`checks` 机械推导（层不适用 → `not_applicable`；任一 check `fail` → `fail`；否则 `pass`），文档级校验器拒绝与推导值不一致的手写 `status`，以及 `layer` 与 `applicability.layer` 不一致的文档。全套校验对畸形输入 fail closed：缺失必需字段、check 集合不完整/含未知项、layer 不匹配均在模型构造/解析期抛出，不产出部分有效的文档。
+
+**与 `Review.layer_applicable` 的关系**：Fuzz/Performance 的层级适用性目前仍经由 `review/*-plan-review.json` 的 `layer_applicable` 字段供 plan-review gate 读取（见上文）。本次改动只落地机械 check 证据自身的版本化与 profile 化执行，尚未把 gate/graph 的跨层消费迁移到 `PlanCheckDocument.applicability`；因此 `Review.layer_applicable` 字段**本次不删除**，其消费迁移与运行期只读该字段的移除属于后续依赖计划。
+
 ## Retro v3 signal analysis 与 Improvement lifecycle
 
 Retro 是**独立入口**（`aa workflow run --entrypoint retro` / `aa retro`），不挂在 full workflow 上。当前 run 只读写 `qa/retro/<retro-id>/`；生产路径不扫描、不迁移、不消费历史 Retro 目录。

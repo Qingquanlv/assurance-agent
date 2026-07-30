@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
+from assurance_agent.artifacts.models.assurance import PLAN_CHECK_IDS, LayerName
 from assurance_agent.artifacts.models.plan_checks import CheckEvidence, LayerApplicability, PlanCheckDocument
 from assurance_agent.verification.applicability import derive_layer_applicability
 from assurance_agent.verification.checks.base import CheckContext
@@ -14,6 +17,23 @@ from assurance_agent.verification.checks.registry import (
     run_plan_checks,
     validate_plan_check_document,
 )
+
+_EXPECTED_STATUS_MAP = {
+    "api": {"l1_path": "pass", "shared_factory": "pass", "assert_ideal": "pass", "capability_keys": "pass"},
+    "e2e": {"l1_path": "pass", "shared_factory": "pass", "assert_ideal": "pass", "capability_keys": "pass"},
+    "fuzz": {
+        "l1_path": "pass",
+        "shared_factory": "pass",
+        "assert_ideal": "not_applicable",
+        "capability_keys": "pass",
+    },
+    "performance": {
+        "l1_path": "pass",
+        "shared_factory": "pass",
+        "assert_ideal": "not_applicable",
+        "capability_keys": "pass",
+    },
+}
 
 _EMPTY_DK: dict[str, object] = {"capabilities": {"domain_factories": {}}}
 
@@ -41,7 +61,7 @@ def _plan_texts_for(layer: str) -> dict[str, str]:
     return {path: (case_table if path == main_plan else "# Plan\n") for path in profile.plan_artifacts}
 
 
-def _context_for(layer: str) -> CheckContext:
+def _context_for(layer: LayerName) -> CheckContext:
     profile = get_layer_assurance_profile(layer)
     return CheckContext(
         plan_texts=_plan_texts_for(layer),
@@ -52,7 +72,7 @@ def _context_for(layer: str) -> CheckContext:
     )
 
 
-def _empty_scope_context(layer: str) -> CheckContext:
+def _empty_scope_context(layer: LayerName) -> CheckContext:
     return CheckContext(
         plan_texts={},
         cases=(),
@@ -62,8 +82,22 @@ def _empty_scope_context(layer: str) -> CheckContext:
     )
 
 
+@pytest.mark.parametrize("layer", ["api", "e2e", "fuzz", "performance"])
+def test_canonical_round_trip_serializes_and_parses_exactly(layer: LayerName) -> None:
+    document = run_plan_checks(_context_for(layer))
+
+    round_tripped = PlanCheckDocument.model_validate_json(document.model_dump_json())
+
+    assert round_tripped == document
+    assert round_tripped.schema_version == "2"
+    assert round_tripped.layer == layer
+    assert tuple(item.check_id for item in round_tripped.checks) == PLAN_CHECK_IDS
+    assert all(not item.findings for item in round_tripped.checks)
+    assert {item.check_id: item.status for item in round_tripped.checks} == _EXPECTED_STATUS_MAP[layer]
+
+
 @pytest.mark.parametrize("layer", ["api", "e2e"])
-def test_applicable_layer_with_assert_ideal_passes_every_check(layer: str) -> None:
+def test_applicable_layer_with_assert_ideal_passes_every_check(layer: LayerName) -> None:
     document = run_plan_checks(_context_for(layer))
     assert document.schema_version == "2"
     assert document.layer == layer
@@ -77,7 +111,7 @@ def test_applicable_layer_with_assert_ideal_passes_every_check(layer: str) -> No
 
 
 @pytest.mark.parametrize("layer", ["fuzz", "performance"])
-def test_layers_without_assert_ideal_mark_it_not_in_profile(layer: str) -> None:
+def test_layers_without_assert_ideal_mark_it_not_in_profile(layer: LayerName) -> None:
     document = run_plan_checks(_context_for(layer))
     assert document.status == "pass"
     by_id = {item.check_id: item for item in document.checks}
@@ -158,4 +192,75 @@ def test_validate_plan_check_document_rejects_na_statuses_contradicting_the_prof
         checks=checks,
     )
     with pytest.raises(ValueError):
+        validate_plan_check_document(document, profile)
+
+
+def test_string_automation_flag_raises_a_value_error_in_applicability() -> None:
+    profile = get_layer_assurance_profile("api")
+    cases = [
+        {
+            "added": [
+                {
+                    "case_id": "TC_STRING_FLAG_001",
+                    "type": "API",
+                    "automation": {"required": "true"},
+                }
+            ],
+            "modified": [],
+        }
+    ]
+    with pytest.raises(ValueError, match="automation.required must be a boolean"):
+        derive_layer_applicability(cases, profile)
+
+
+def test_dropping_a_check_from_serialized_version_2_evidence_raises_on_validation() -> None:
+    document = run_plan_checks(_context_for("api"))
+    payload = json.loads(document.model_dump_json())
+    payload["checks"] = payload["checks"][:-1]
+
+    with pytest.raises(ValueError):
+        PlanCheckDocument.model_validate_json(json.dumps(payload))
+
+
+def test_adding_an_unknown_check_to_version_2_evidence_raises_on_validation() -> None:
+    document = run_plan_checks(_context_for("api"))
+    payload = json.loads(document.model_dump_json())
+    payload["checks"].append(
+        {
+            "check_id": "unknown_check",
+            "status": "pass",
+            "findings": [],
+            "refs": [],
+            "applicability_reason": None,
+        }
+    )
+
+    with pytest.raises(ValueError):
+        PlanCheckDocument.model_validate_json(json.dumps(payload))
+
+
+def test_changing_document_layer_without_applicability_layer_raises_on_validation() -> None:
+    document = run_plan_checks(_context_for("api"))
+    payload = json.loads(document.model_dump_json())
+    payload["layer"] = "e2e"
+
+    with pytest.raises(ValueError, match="document layer must match applicability layer"):
+        PlanCheckDocument.model_validate_json(json.dumps(payload))
+
+
+def test_validate_plan_check_document_rejects_pass_for_a_statically_excluded_fuzz_check() -> None:
+    profile = get_layer_assurance_profile("fuzz")
+    applicability = LayerApplicability(
+        layer="fuzz", applicable=True, reason_code="automated_cases_present", case_ids=("TC_X",)
+    )
+    checks = tuple(CheckEvidence(check_id=check_id, status="pass") for check_id in PLAN_CHECK_IDS)
+    document = PlanCheckDocument.model_construct(
+        schema_version="2",
+        layer="fuzz",
+        applicability=applicability,
+        status="pass",
+        checks=checks,
+    )
+
+    with pytest.raises(ValueError, match="assert_ideal"):
         validate_plan_check_document(document, profile)

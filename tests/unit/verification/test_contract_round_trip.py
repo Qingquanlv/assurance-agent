@@ -2,6 +2,7 @@ from pathlib import Path
 
 import yaml
 
+from assurance_agent.artifacts.models.assurance import PLAN_CHECK_IDS
 from assurance_agent.verification.checks.base import CheckContext
 from assurance_agent.verification.checks.registry import run_plan_checks
 
@@ -35,3 +36,8 @@ def test_canonical_api_plan_satisfies_its_mechanical_contract() -> None:
 
     assert document.status == "pass", document.model_dump(mode="json")
     assert all(not check.findings for check in document.checks)
+    assert document.schema_version == "2"
+    assert document.layer == "api"
+    assert document.applicability is not None
+    assert document.applicability.applicable is True
+    assert tuple(item.check_id for item in document.checks) == PLAN_CHECK_IDS
