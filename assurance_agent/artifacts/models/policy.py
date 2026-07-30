@@ -9,10 +9,11 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from assurance_agent.artifacts.models.assurance import CASE_TYPES, KNOWN_PLAN_CHECK_IDS, CaseType
+
 PlanCheckAction = Literal["warn", "block", "require_human"]
 EvidenceKind = Literal["covered", "execution_recent", "fuzz_run", "perf_run", "pass_status"]
-CaseType = Literal["API", "E2E", "Fuzz", "Performance"]
-_REQUIRED_CASE_TYPES: tuple[CaseType, ...] = ("API", "E2E", "Fuzz", "Performance")
+_REQUIRED_CASE_TYPES = CASE_TYPES
 
 
 def _default_evidence_sufficiency() -> "EvidenceSufficiency":
@@ -41,10 +42,6 @@ class EvidenceSufficiency(BaseModel):
         if missing:
             raise ValueError(f"required_kinds missing keys: {', '.join(missing)}")
         return self
-
-
-# 与 verification/checks 的 CHECK_ID 对齐；policy 不 import checks 以免环依赖。
-KNOWN_PLAN_CHECK_IDS = frozenset({"l1_path", "shared_factory", "assert_ideal", "capability_keys"})
 
 
 class CoverageFloor(BaseModel):

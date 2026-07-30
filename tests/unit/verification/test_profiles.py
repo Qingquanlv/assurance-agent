@@ -3,7 +3,7 @@ from typing import cast
 
 import pytest
 
-from assurance_agent.artifacts.models.assurance import PLAN_CHECK_IDS, PlanCheckId
+from assurance_agent.artifacts.models.assurance import KNOWN_PLAN_CHECK_IDS, PLAN_CHECK_IDS, PlanCheckId
 from assurance_agent.verification.profiles import (
     _build_profile_registry,
     get_layer_assurance_profile,
@@ -78,6 +78,11 @@ def test_profiles_expose_the_approved_artifacts_and_gates() -> None:
             "performance-plan-review-gate",
         ),
     ]
+
+
+def test_profile_applicable_checks_are_subset_of_shared_catalog() -> None:
+    for profile in iter_layer_assurance_profiles():
+        assert profile.applicable_check_ids <= KNOWN_PLAN_CHECK_IDS
 
 
 def test_static_check_applicability_matrix() -> None:

@@ -4,6 +4,9 @@ from pathlib import Path
 
 import pytest
 
+import assurance_agent.artifacts.models.assurance as assurance_model
+import assurance_agent.artifacts.models.policy as policy_model
+from assurance_agent.artifacts.models.assurance import KNOWN_PLAN_CHECK_IDS
 from assurance_agent.artifacts.policy import POLICY_REL_PATH, PolicyError, load_policy, policy_digest
 
 
@@ -226,6 +229,15 @@ def test_digest_changes_when_evidence_sufficiency_changes(tmp_path: Path) -> Non
         "  on_insufficient: warn\n",
     )
     assert policy_digest(load_policy(tmp_path)) != policy_digest(baseline)
+
+
+def test_policy_requires_exact_shared_check_catalog(tmp_path: Path) -> None:
+    policy = load_policy(tmp_path)
+    assert set(policy.plan_checks) == KNOWN_PLAN_CHECK_IDS
+
+
+def test_policy_reexports_the_shared_catalog_object() -> None:
+    assert policy_model.KNOWN_PLAN_CHECK_IDS is assurance_model.KNOWN_PLAN_CHECK_IDS
 
 
 def test_missing_required_kinds_key_is_rejected(tmp_path: Path) -> None:
