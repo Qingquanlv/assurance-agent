@@ -147,9 +147,7 @@ def test_validate_plan_check_document_rejects_na_statuses_contradicting_the_prof
         layer="api", applicable=True, reason_code="automated_cases_present", case_ids=("TC_X",)
     )
     checks = tuple(
-        CheckEvidence(
-            check_id=check_id, status="not_applicable", applicability_reason="check_not_in_profile"
-        )
+        CheckEvidence(check_id=check_id, status="not_applicable", applicability_reason="check_not_in_profile")
         for check_id in ("l1_path", "shared_factory", "assert_ideal", "capability_keys")
     )
     document = PlanCheckDocument.model_construct(

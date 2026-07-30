@@ -40,8 +40,7 @@ def run_plan_checks(
         applicability = derive_layer_applicability(ctx.cases, profile)
     elif applicability.layer != profile.layer:
         raise ValueError(
-            f"applicability layer {applicability.layer!r} does not match "
-            f"context layer {profile.layer!r}"
+            f"applicability layer {applicability.layer!r} does not match context layer {profile.layer!r}"
         )
     document = _run_profile_checks(ctx, profile, applicability, CHECKS_BY_ID)
     return validate_plan_check_document(document, profile)
@@ -81,9 +80,7 @@ def _run_profile_checks(
         check_fn = checks_by_id[check_id]
         result = check_fn(ctx)
         if result.check_id != check_id:
-            raise ValueError(
-                f"check registered under {check_id!r} returned check_id {result.check_id!r}"
-            )
+            raise ValueError(f"check registered under {check_id!r} returned check_id {result.check_id!r}")
         checks.append(result)
 
     return PlanCheckDocument.from_checks(layer=profile.layer, applicability=applicability, checks=checks)
@@ -93,9 +90,7 @@ def validate_plan_check_document(
     document: PlanCheckDocument, profile: LayerAssuranceProfile
 ) -> PlanCheckDocument:
     if document.layer != profile.layer:
-        raise ValueError(
-            f"document layer {document.layer!r} does not match profile layer {profile.layer!r}"
-        )
+        raise ValueError(f"document layer {document.layer!r} does not match profile layer {profile.layer!r}")
     applicability = document.applicability
     if applicability is None or applicability.layer != profile.layer:
         raise ValueError("document applicability layer does not match profile layer")
@@ -115,8 +110,7 @@ def validate_plan_check_document(
         if check_id not in profile.applicable_check_ids:
             if check.status != "not_applicable" or check.applicability_reason != "check_not_in_profile":
                 raise ValueError(
-                    f"check {check_id!r} must be not_applicable/check_not_in_profile "
-                    "per the static profile"
+                    f"check {check_id!r} must be not_applicable/check_not_in_profile per the static profile"
                 )
         elif check.status == "not_applicable":
             raise ValueError(f"check {check_id!r} is applicable and must not be not_applicable")
