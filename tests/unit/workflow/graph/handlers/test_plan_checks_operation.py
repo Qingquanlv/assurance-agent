@@ -381,6 +381,47 @@ def test_non_list_bucket_is_invalid_output(workspace: TaskWorkspace) -> None:
     assert result.error_kind == "invalid_output"
 
 
+def test_missing_added_key_is_invalid_output(workspace: TaskWorkspace) -> None:
+    case_path = workspace.change_dir / "cases" / "system" / "dept" / "case.yaml"
+    case_path.write_text(
+        yaml.safe_dump({"schema_version": "1.0", "modified": [], "removed": []}),
+        encoding="utf-8",
+    )
+    result = derive_plan_layer_applicability(_applicability_task("e2e"), workspace, _context())
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_output"
+    assert "missing required key 'added'" in (result.error or "")
+
+
+def test_other_layer_automated_missing_case_id_is_invalid_output(workspace: TaskWorkspace) -> None:
+    case_path = workspace.change_dir / "cases" / "system" / "dept" / "case.yaml"
+    case_path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1.0",
+                "added": [
+                    {
+                        "title": "cross-layer automated",
+                        "status": "active",
+                        "priority": "P1",
+                        "severity": "major",
+                        "type": "API",
+                        "module": "dept",
+                        "automation": {"required": True},
+                    }
+                ],
+                "modified": [],
+                "removed": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = derive_plan_layer_applicability(_applicability_task("e2e"), workspace, _context())
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_output"
+    assert "case_id must be a non-empty string" in (result.error or "")
+
+
 def test_strict_rejection_of_string_automation_required(workspace: TaskWorkspace) -> None:
     case_path = workspace.change_dir / "cases" / "system" / "dept" / "case.yaml"
     case_path.write_text(

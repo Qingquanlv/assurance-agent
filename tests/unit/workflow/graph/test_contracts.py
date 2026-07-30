@@ -155,7 +155,7 @@ def test_run_tests_contract_reads_traceability_inputs() -> None:
 def test_derive_plan_layer_applicability_contract_reads_only_cases() -> None:
     catalog = load_execution_contracts(Path.cwd())
     contract = catalog.contracts["operation:derive-plan-layer-applicability"]
-    assert contract.reads == ("change:cases/**",)
+    assert contract.reads == ("change:cases/**/case.yaml",)
     assert contract.writes == ()
     assert contract.authorization_writes == ()
     assert contract.synchronized == ()

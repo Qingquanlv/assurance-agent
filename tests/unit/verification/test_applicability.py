@@ -126,6 +126,23 @@ def test_missing_automation_required_is_manual_only() -> None:
             [{"added": [{"case_id": "  ", "type": "API", "automation": {"required": True}}], "modified": []}],
             r"cases\[0\]\.added\[0\]\.case_id must be a non-empty string",
         ),
+        (
+            [{"modified": []}],
+            r"cases\[0\] missing required key 'added'",
+        ),
+        (
+            [{"added": []}],
+            r"cases\[0\] missing required key 'modified'",
+        ),
+        (
+            [
+                {
+                    "added": [{"type": "E2E", "automation": {"required": True}}],
+                    "modified": [],
+                }
+            ],
+            r"cases\[0\]\.added\[0\]\.case_id must be a non-empty string",
+        ),
     ],
 )
 def test_malformed_scope_raises_value_error(

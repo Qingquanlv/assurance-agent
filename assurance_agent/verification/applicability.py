@@ -15,8 +15,12 @@ def derive_layer_applicability(
 ) -> LayerApplicability:
     case_ids: set[str] = set()
     for document_index, document in enumerate(cases):
+        if not isinstance(document, Mapping):
+            raise ValueError(f"cases[{document_index}] must be a mapping")
         for bucket in ("added", "modified"):
-            entries = document.get(bucket)
+            if bucket not in document:
+                raise ValueError(f"cases[{document_index}] missing required key '{bucket}'")
+            entries = document[bucket]
             if not isinstance(entries, list):
                 raise ValueError(f"cases[{document_index}].{bucket} must be a list")
             for entry_index, entry in enumerate(entries):
@@ -35,12 +39,12 @@ def derive_layer_applicability(
                     required = automation.get("required", False)
                     if not isinstance(required, bool):
                         raise ValueError(f"{locator}.automation.required must be a boolean")
-                if case_type != profile.case_type or not required:
-                    continue
-                case_id = entry.get("case_id")
-                if not isinstance(case_id, str) or not case_id.strip():
-                    raise ValueError(f"{locator}.case_id must be a non-empty string")
-                case_ids.add(case_id)
+                if required:
+                    case_id = entry.get("case_id")
+                    if not isinstance(case_id, str) or not case_id.strip():
+                        raise ValueError(f"{locator}.case_id must be a non-empty string")
+                    if case_type == profile.case_type:
+                        case_ids.add(case_id)
     ordered = tuple(sorted(case_ids))
     return LayerApplicability(
         layer=profile.layer,

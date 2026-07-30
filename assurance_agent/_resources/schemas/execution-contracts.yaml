@@ -67,7 +67,7 @@ contracts:
   operation:derive-plan-layer-applicability:
     handler: operation
     reads:
-      - change:cases/**
+      - change:cases/**/case.yaml
     side_effect_free: true
     retryable_errors: []
 
