@@ -78,6 +78,117 @@ def test_v2_rejects_layer_mismatched_with_applicability() -> None:
         )
 
 
+def test_v2_inapplicable_layer_rejects_fail_check_via_model_validate() -> None:
+    checks = [
+        CheckEvidence(
+            check_id=check_id,
+            status="not_applicable",
+            applicability_reason="layer_not_applicable",
+        )
+        for check_id in PLAN_CHECK_IDS
+    ]
+    checks[0] = CheckEvidence(
+        check_id=PLAN_CHECK_IDS[0], status="fail", findings=(_finding(),)
+    )
+
+    with pytest.raises(ValidationError):
+        PlanCheckDocument.model_validate(
+            {
+                "schema_version": "2",
+                "layer": "api",
+                "applicability": _api_scope(applicable=False).model_dump(),
+                "status": "not_applicable",
+                "checks": [check.model_dump() for check in checks],
+            }
+        )
+
+
+def test_v2_inapplicable_layer_rejects_pass_check_via_model_validate() -> None:
+    checks = [
+        CheckEvidence(
+            check_id=check_id,
+            status="not_applicable",
+            applicability_reason="layer_not_applicable",
+        )
+        for check_id in PLAN_CHECK_IDS
+    ]
+    checks[0] = CheckEvidence(check_id=PLAN_CHECK_IDS[0], status="pass")
+
+    with pytest.raises(ValidationError):
+        PlanCheckDocument.model_validate(
+            {
+                "schema_version": "2",
+                "layer": "api",
+                "applicability": _api_scope(applicable=False).model_dump(),
+                "status": "not_applicable",
+                "checks": [check.model_dump() for check in checks],
+            }
+        )
+
+
+def test_v2_inapplicable_layer_rejects_wrong_not_applicable_reason() -> None:
+    checks = [
+        CheckEvidence(
+            check_id=check_id,
+            status="not_applicable",
+            applicability_reason="layer_not_applicable",
+        )
+        for check_id in PLAN_CHECK_IDS
+    ]
+    checks[0] = CheckEvidence(
+        check_id=PLAN_CHECK_IDS[0],
+        status="not_applicable",
+        applicability_reason="check_not_in_profile",
+    )
+
+    with pytest.raises(ValidationError):
+        PlanCheckDocument.model_validate(
+            {
+                "schema_version": "2",
+                "layer": "api",
+                "applicability": _api_scope(applicable=False).model_dump(),
+                "status": "not_applicable",
+                "checks": [check.model_dump() for check in checks],
+            }
+        )
+
+
+def test_v2_from_checks_rejects_fail_check_on_inapplicable_layer() -> None:
+    checks = [
+        CheckEvidence(
+            check_id=check_id,
+            status="not_applicable",
+            applicability_reason="layer_not_applicable",
+        )
+        for check_id in PLAN_CHECK_IDS
+    ]
+    checks[0] = CheckEvidence(
+        check_id=PLAN_CHECK_IDS[0], status="fail", findings=(_finding(),)
+    )
+
+    with pytest.raises(ValidationError):
+        PlanCheckDocument.from_checks(
+            layer="api", applicability=_api_scope(applicable=False), checks=checks
+        )
+
+
+def test_v2_from_checks_rejects_pass_check_on_inapplicable_layer() -> None:
+    checks = [
+        CheckEvidence(
+            check_id=check_id,
+            status="not_applicable",
+            applicability_reason="layer_not_applicable",
+        )
+        for check_id in PLAN_CHECK_IDS
+    ]
+    checks[0] = CheckEvidence(check_id=PLAN_CHECK_IDS[0], status="pass")
+
+    with pytest.raises(ValidationError):
+        PlanCheckDocument.from_checks(
+            layer="api", applicability=_api_scope(applicable=False), checks=checks
+        )
+
+
 def test_v2_rejects_aggregate_status_mismatched_with_checks() -> None:
     checks = _checks()
     checks[0] = CheckEvidence(check_id=PLAN_CHECK_IDS[0], status="fail", findings=(_finding(),))

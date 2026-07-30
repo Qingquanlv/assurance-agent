@@ -108,6 +108,15 @@ class PlanCheckDocument(BaseModel):
 
         expected_status: CheckStatus
         if not self.applicability.applicable:
+            if any(
+                check.status != "not_applicable"
+                or check.applicability_reason != "layer_not_applicable"
+                for check in self.checks
+            ):
+                raise ValueError(
+                    "inapplicable layers require every check to be not_applicable "
+                    "with applicability_reason=layer_not_applicable"
+                )
             expected_status = "not_applicable"
         elif any(check.status == "fail" for check in self.checks):
             expected_status = "fail"
