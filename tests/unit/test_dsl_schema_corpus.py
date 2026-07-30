@@ -572,6 +572,26 @@ def test_truth_and_missing_pair(tmp_path: Path, loc: str) -> None:
     assert evaluate(node, _scope(mv, mkw)) is mexp, f"{loc} missing/否定路径不符：{expr}"
 
 
+def test_replayable_gate_builtins_are_semantically_fingerprinted() -> None:
+    from assurance_agent.workflow.graph.replay_schema import _REPLAYABLE_PLAN_BUILTINS
+    from assurance_agent.workflow.orchestration.gate_semantics import discover_replay_semantic_dependencies
+
+    manifest = discover_replay_semantic_dependencies()
+    assert _REPLAYABLE_PLAN_BUILTINS <= {
+        "plan_assurance_state",
+        "capabilities_present",
+        "check_failed",
+        "defined",
+        "len",
+    }
+    required = {
+        "assurance_agent.verification.gate_state.plan_assurance_state",
+        "assurance_agent.knowledge.capabilities.capabilities_present",
+        "assurance_agent.workflow.orchestration.dsl._eval_call",
+    }
+    assert required <= manifest
+
+
 @pytest.mark.parametrize("loc", sorted(BUILTIN_CORPUS))
 def test_builtin_truth_and_missing_pair(loc: str) -> None:
     if loc.endswith(":valid"):
