@@ -83,7 +83,10 @@ qa/changes/<change-id>/proposal.md
 qa/changes/<change-id>/cases/**/*.yaml
 .aa/data-knowledge.yaml
 tests/e2e/**
+qa/changes/<change-id>/review/e2e-plan-checks.json
 ```
+
+When present, treat `review/e2e-plan-checks.json` strictly as an immutable `PlanCheckDocument`: its `status`, `checks`, `findings`, and `refs` are facts. Do not recompute them or infer severity from them. Do not infer or apply a policy action. Policy adjudication belongs only to the downstream gate and policy is not a reviewer input. Never write or modify `review/e2e-plan-checks.json`; the graph mechanical-check operation owns that artifact.
 
 ## Outputs
 
@@ -119,7 +122,18 @@ Do not write `decision == "pass"` when required plan files are absent.
 
 ## Mandatory Output Contract
 
-This skill is a **gate producer**. The workflow cannot advance to `aa-e2e-codegen` without the JSON file this skill writes.
+This skill is a **gate producer**. The workflow cannot advance to `aa-e2e-codegen` without the JSON file this skill writes. The JSON is the registered gate artifact; its schema contract is supplied by the runtime. Populate the semantic verdict, concrete downstream risks, case-level assertion traceability, all codegen capability leaves, and an actionable next step.
+
+Always emit the gate-consumed fields `codegen_readiness`, `auto_fix_allowed`, `human_review_required`, and `risk_level`, even though compatibility models make them optional. Missing any one sends `missing_field_is` to `stop`. Use this exact consistency map:
+
+| `decision` | `codegen_readiness` | `auto_fix_allowed` | `human_review_required` | `next_action` |
+|---|---|---|---|---|
+| `pass` | `ready` or `ready_with_warnings` | `false` | `false` | `continue` |
+| `needs_fix` | `not_ready` | `true` | `false` | `run_e2e_plan_fixer` |
+| `needs_human_review` | `not_ready` | `false` | `true` | `human_review` |
+| `reject` | `not_ready` | `false` | `true` | `stop` |
+
+Always set `risk_level` to exactly `low`, `medium`, `high`, or `critical`; `risk_level` is a fact, not a routing instruction. The downstream gate applies `policy.human_review_risk_levels`; the reviewer must not hard-code that policy.
 
 - You **must** write `qa/changes/<change-id>/review/plan-review.json` as valid JSON with all required fields, including `codegen_readiness`.
 - You **must** write `qa/changes/<change-id>/review/plan-review-summary.md`.
@@ -150,6 +164,7 @@ Review the plan for:
 - Case-to-plan coverage
 - E2E flow correctness
 - Test data setup feasibility
+- Factory Mapping and Adapter Mapping semantic consistency with `.aa/data-knowledge.yaml`
 - Codegen readiness
 - Selector and route confidence
 - Auth and role handling
@@ -157,6 +172,8 @@ Review the plan for:
 - Incremental codegen safety
 - Execution command correctness
 - Missing knowledge and unknowns
+- assertion traceability from approved cases through Assertion Mapping and Test Function Mapping
+- required capabilities as fully qualified C4 leaf keys for codegen
 
 ---
 

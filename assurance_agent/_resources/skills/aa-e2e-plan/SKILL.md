@@ -188,7 +188,7 @@ Do not rely on prior conversation context.
 必须包含：
 
 - **Source** — case 来源文件路径
-- **Scope** — Case ID 和标题列表（仅来自 `added` + `modified`；不含 `removed`）
+- **Scope** — Case ID 和标题列表（仅来自 `added` + `modified`；不含 `removed`）；Scope uses `Case ID | Title`，且每个 in-scope case 必须以 full case_id（如 `TC_USER_E2E_001`）出现在 Case ID 列
 - **User Journey** — 用户路径说明
 - **Route Mapping** — 页面路径、入口页面、目标页面
 - **Natural Steps** — 来自 `case.yaml:steps`
@@ -218,12 +218,12 @@ Selector Strategy 优先级（必须遵守）：
 
 必须包含：
 
-- **Scope** — 需要数据准备的 Case 列表
-- **Required Data** — 表格：Entity \| State \| Capability
+- **Scope** — 需要数据准备的 Case 列表；Scope uses `Case ID | Title`
+- **Required Data** — 表格：Entity \| State \| Capability；Required Data uses `Entity | State | Capability`
 - **Preconditions** — 来自 `case.yaml:preconditions`
 - **Data Setup Strategy** — 优先通过脚本或 API 构造；UI 造数只作为最后 fallback
 - **Data Setup Script Plan** — 脚本路径、输入、输出、cleanup 规划
-- **Capability Mapping** — 表格：Need \| Capability \| Source \| Status（found/missing/warning）
+- **Capability Mapping** — 表格：Need \| Capability \| Source \| Status（found/missing/warning）；Capability Mapping uses `Need | Capability | Source | Status (found/missing/warning)`；Source 引用正式知识库时只能写 `.aa/data-knowledge.yaml`
 - **Runtime Verify Strategy** — UI 步骤前验证数据状态的断言
 - **Login / Auth State Strategy** — storageState 或 per-test login 策略
 - **Cleanup Strategy** — 测试后数据清理
@@ -239,17 +239,19 @@ Selector Strategy 优先级（必须遵守）：
 
 必须包含：
 
-- **Target Files** — 表格：File \| Purpose
-- **Test Function Mapping** — 表格：Case ID \| Test Function \| Target File（仅 `added` + `modified`；不含 `removed`）
-  - **命名（硬规则）：** 每个 Test Function 必须是 `test_<case_id 小写>__<description>` —— 小写 case_id 前缀 + **双下划线**。例：`TC_USER_E2E_001` → `test_tc_user_e2e_001__admin_enters_user_list`。`aa run` 结果解析器依赖该前缀回填 case_id；缺前缀的函数会成为 Unmapped Tests，破坏 MRC/inspect/healing 可追溯链，并使 quality gate 封顶 PASS_WITH_WARNINGS。映射违反此规则的 plan **不具备 codegen 就绪状态**。
-- **Fixture Mapping** — 表格：Fixture \| Source \| Required By
+- **Target Files** — 表格：File \| Purpose；Target Files uses `File | Purpose`；domain factory 文件在 Purpose 中标注 `create-if-missing` 或 `reuse`，需要 domain 数据的 case 必须列出对应 E2E adapter
+- **Test Function Mapping** — 表格：Case ID \| Test Function \| Target File（仅 `added` + `modified`；不含 `removed`）；Test Function Mapping uses `Case ID | Test Function | Target File`
+  - **命名（硬规则）：** 每个 Test Function 必须是 `test_<case_id_lowercase>__<desc>` —— 小写 case_id 前缀 + **双下划线**。例：`TC_USER_E2E_001` → `test_tc_user_e2e_001__admin_enters_user_list`。
+- **Factory Mapping** — 表格：Entity \| Shared Module \| Function \| Ownership \| Required By；Factory Mapping uses `Entity | Shared Module | Function | Ownership | Required By`。当 `.aa/data-knowledge.yaml` 声明 shared domain factory 时必须出现此表。`Shared Module` 命名 `tests/testdata/domain/<entity>.py`，`Function` 命名 `make_*`/`cleanup_*` capability，`Ownership` 对 L1 已声明 symbol 为 `reuse`，仅 L1 未声明 symbol 可用 `create-if-missing`。`reuse` for every symbol already declared by L1 knowledge；`create-if-missing` only when L1 does not declare that shared symbol。runtime `check_shared_factory` 解析此表，plan 阶段不得复制 gate policy。
+- **Adapter Mapping** — 表格：Entity \| E2E Adapter \| Transport \| Cleanup；Adapter Mapping uses `Entity | E2E Adapter | Transport | Cleanup`。E2E Adapter 命名 `tests/e2e/adapters/<module>.py`，Transport 为 `in_process_async`、`http` 或 `isolated_worker`
+- **Fixture Mapping** — 表格：Fixture \| Source Factory \| Wrapper Only (yes/no) \| Required By；Fixture Mapping uses `Fixture | Source Factory | Wrapper Only (yes/no) | Required By`；fixture 只包装 lifecycle/transport
 - **Data Setup Script Mapping** — 表格：Script \| Input \| Output \| Required By
 - **Import Strategy** — 每个文件的 import 模块
 - **Step Mapping** — 来自 `case.yaml:steps` 的 Playwright 步骤映射
 - **Locator Strategy** — 每个交互点的 locator 选择规则（role > label > text > testid > CSS）
-- **Assertion Mapping** — 表格：Case ID \| Assertions
-- **Cleanup Mapping** — 每个 Case 的清理步骤
-- **Run Guidance** — 推荐给 aa-run 的执行命令和参数（此文件本身不执行测试）
+- **Assertion Mapping** — 表格：Case ID \| Assertions；Assertion Mapping uses `Case ID | Assertions`
+- **Cleanup Mapping** — 每个 Case 的清理步骤；Cleanup Mapping uses `Case ID | Cleanup | Capability`
+- **Run Guidance** — 推荐给 aa-run 的执行命令和参数（此文件本身不执行测试）；Run Guidance uses `Target | Pytest Args | Markers | Environment`
 - **Codegen Preconditions** — codegen 开始前必须满足的条件（含 `plan-review.json` `decision == "pass"`；`.aa/data-knowledge.yaml` 必须存在）
 
 ### m4-review-summary.md

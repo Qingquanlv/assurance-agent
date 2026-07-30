@@ -137,13 +137,14 @@ Do not edit:
 ```text
 qa/changes/<change-id>/review/plan-review.json
 qa/changes/<change-id>/review/plan-review-summary.md
+qa/changes/<change-id>/review/e2e-plan-checks.json
 tests/**
 qa/changes/<change-id>/cases/**
 qa/changes/<change-id>/proposal.md
 .aa/data-knowledge.yaml
 ```
 
-Do not directly update `.aa/data-knowledge.yaml`. Only propose updates in `data-knowledge.proposal.e2e.yaml` when authorized by a validated `auto_fix_plan` entry.
+Do not directly update `.aa/data-knowledge.yaml`. Only propose updates in `data-knowledge.proposal.e2e.yaml` when authorized by a validated `auto_fix_plan` entry. Never promote proposal content into L1 during fixer execution.
 
 ---
 
@@ -180,6 +181,7 @@ Allowed operations:
 - Add known assertions from case YAML
 - Add known preconditions from case YAML
 - Add known execution command
+- Repair or restore `e2e-codegen-plan.md` **Factory Mapping** / **Adapter Mapping** rows only when an authorized `auto_fix_plan` entry or validated finding targets that table; copy symbols from `.aa/data-knowledge.yaml` or existing plan evidence — never invent L1 leaves or promote proposal YAML into `.aa/data-knowledge.yaml`
 - Add TODO markers only for already documented non-blocking warnings (see below)
 - Add missing cleanup note if cleanup method is already known
 - Clarify fixture reuse if present in `.aa/data-knowledge.yaml`
@@ -218,7 +220,7 @@ Do not change:
 
 Do not hide unknowns. If something is unknown, make it explicit in the plan as a TODO or human review item — only when the reviewer already classified it as a non-blocking warning.
 
-Do not directly update `.aa/data-knowledge.yaml`. Only propose updates in `data-knowledge.proposal.e2e.yaml` when authorized by a validated `auto_fix_plan` entry.
+Do not directly update `.aa/data-knowledge.yaml`. Only propose updates in `data-knowledge.proposal.e2e.yaml` when authorized by a validated `auto_fix_plan` entry. Never promote proposal content into L1 during fixer execution.
 
 ---
 

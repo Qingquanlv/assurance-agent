@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0",
+  "review_type": "e2e-plan",
+  "change_id": "CH-E2E-CONTRACT-001",
+  "decision": "pass",
+  "risk_level": "low",
+  "codegen_readiness": "ready",
+  "auto_fix_allowed": false,
+  "human_review_required": false,
+  "summary": "Single limited-user denial case mapped with factory-first setup, E2E auth adapter transport, and preserved 4xx expectation.",
+  "reviewed_files": [
+    "plans/e2e-plan.md",
+    "plans/e2e-test-data-plan.md",
+    "plans/e2e-codegen-plan.md",
+    ".aa/data-knowledge.yaml"
+  ],
+  "blockers": [],
+  "findings": [],
+  "needs_review": [],
+  "auto_fix_plan": [],
+  "required_capabilities": [
+    "auth.e2e_limited_user_login",
+    "capabilities.domain_factories.role.make_role",
+    "capabilities.domain_factories.user.make_user",
+    "capabilities.adapters.e2e.auth.seed_limited_user"
+  ],
+  "next_action": "continue",
+  "created_at": "2026-07-31T00:00:00Z"
+}

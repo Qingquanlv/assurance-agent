@@ -1,0 +1,39 @@
+version: 1
+auth:
+  e2e_limited_user_login:
+    method: login
+    symbol: tests.e2e.conftest.e2e_login_limited_user
+    notes: depends on adapters.e2e.auth.seed_limited_user
+capabilities:
+  domain_factories:
+    role:
+      make_role:
+        kind: async_factory
+        symbol: tests.testdata.domain.role.make_role
+        entity: role
+        cleanup_ref: cleanup.role_delete
+      cleanup_role:
+        kind: async_factory
+        symbol: tests.testdata.domain.role.cleanup_role
+        retry_safe: true
+    user:
+      make_user:
+        kind: async_factory
+        symbol: tests.testdata.domain.user.make_user
+        entity: user
+        cleanup_ref: cleanup.user_delete
+      cleanup_user:
+        kind: async_factory
+        symbol: tests.testdata.domain.user.cleanup_user
+        retry_safe: true
+  adapters:
+    e2e:
+      auth:
+        seed_limited_user:
+          kind: isolated_worker
+          symbol: tests.e2e.adapters.auth.e2e_seed_limited_user
+          create-if-missing: true
+        cleanup_limited_user:
+          kind: isolated_worker
+          symbol: tests.e2e.adapters.auth.e2e_cleanup_limited_user
+          create-if-missing: true
