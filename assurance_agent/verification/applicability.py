@@ -23,12 +23,12 @@ def derive_layer_applicability(
                 case_type = entry.get("type")
                 if case_type not in {"API", "E2E", "Fuzz", "Performance"}:
                     raise ValueError(f"{locator}.type is invalid")
-                automation = entry.get("automation")
-                if automation is None:
+                if "automation" not in entry:
                     required = False
-                elif not isinstance(automation, Mapping):
-                    raise ValueError(f"{locator}.automation must be a mapping")
                 else:
+                    automation = entry["automation"]
+                    if not isinstance(automation, Mapping):
+                        raise ValueError(f"{locator}.automation must be a mapping")
                     required = automation.get("required", False)
                     if not isinstance(required, bool):
                         raise ValueError(f"{locator}.automation.required must be a boolean")

@@ -97,6 +97,10 @@ def test_missing_automation_required_is_manual_only() -> None:
             r"cases\[0\]\.added\[0\]\.type is invalid",
         ),
         (
+            [{"added": [{"case_id": "TC", "type": "API", "automation": None}], "modified": []}],
+            r"cases\[0\]\.added\[0\]\.automation must be a mapping",
+        ),
+        (
             [{"added": [{"case_id": "TC", "type": "API", "automation": "true"}], "modified": []}],
             r"cases\[0\]\.added\[0\]\.automation must be a mapping",
         ),
