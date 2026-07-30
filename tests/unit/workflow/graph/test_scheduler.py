@@ -1962,3 +1962,179 @@ def test_execute_selected_wave_fails_on_inactive_branch_synchronized_path_drift(
     started = [e for e in read_events_strict(change) if e.get("type") == "task_attempt_started"]
     assert started == []
 
+
+def test_deferred_child_outer_wave_reserves_footprint_locks_before_run_child(
+    tmp_path: Path,
+) -> None:
+    """Outer graph:* with footprint locks but no child uses prepared path, not legacy execute."""
+    from assurance_agent.workflow.graph.checkpoint import project_invocation
+    from assurance_agent.workflow.graph.planner import plan_superstep
+    from assurance_agent.workflow.graph.selected_wave import (
+        derive_child_invocation_id,
+        preview_selected_wave,
+    )
+
+    nested = """
+  main:
+    max_supersteps: 8
+    nodes:
+      bootstrap:
+        uses: graph:child
+        retry: never
+    edges:
+      - {from: START, to: bootstrap}
+      - {from: bootstrap, to: END}
+  child:
+    max_supersteps: 8
+    nodes:
+      active-sync:
+        uses: operation:sync-knowledge
+        retry: never
+      dormant-sync:
+        uses: operation:inactive-knowledge
+        retry: never
+    edges:
+      - {from: START, to: active-sync}
+      - {from: START, to: dormant-sync, when: "false"}
+      - {from: active-sync, to: END}
+      - {from: dormant-sync, to: END}
+"""
+    compiled, contracts = _compile_nested(nested)
+    project, store, tree_id = _prepare_nested_project(tmp_path, compiled)
+    change = project / "qa/changes/CH-1"
+    projection = project_invocation(change, _INV).model_copy(
+        update={
+            "current_tree_id": tree_id,
+            "root_tree_id": tree_id,
+            "graph_digest": compiled.digest,
+            "contract_digests": dict(compiled.contract_digests),
+        }
+    )
+    context = _context(project)
+    artifacts = _KnowledgeArtifacts()
+    selected = preview_selected_wave(
+        compiled, projection, context, artifacts, max_parallel_tasks=4, child_projections={}
+    )
+    assert selected is not None
+    assert selected.lock_tokens == ("project:inactive-registry", "project:knowledge-registry")
+    assert selected.synchronized_paths == ()
+    assert selected.child_waves == ()
+
+    bootstrap = selected.selected_tasks[0]
+    locks = _TrackingProjectLocks()
+    overlay_calls: list[int] = []
+    overlay_many = store.overlay_synchronized_paths_many
+
+    def observed_overlay_many(tree_ids, project_root, paths):
+        overlay_calls.append(len(tree_ids))
+        return overlay_many(tree_ids, project_root, paths)
+
+    store.overlay_synchronized_paths_many = observed_overlay_many  # type: ignore[method-assign]
+
+    def bootstrap_handler(task, workspace, ctx) -> TaskResult:
+        assert locks.held
+        assert tuple(sorted(locks.calls[-1][0])) == tuple(sorted(selected.lock_tokens))
+        return TaskResult(status="succeeded")
+
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=_ScriptedRunner({bootstrap.task_id: bootstrap_handler}),
+        project_lock_manager=locks,
+        contracts=contracts,
+    )
+
+    def failing_select(*args, **kwargs):
+        raise AssertionError(
+            "legacy execute must not run when selected_wave carries footprint lock_tokens"
+        )
+
+    scheduler.select = failing_select  # type: ignore[method-assign]
+
+    captured_leases: list[object] = []
+    original_finalize = scheduler._finalize_selected_wave_reservation  # noqa: SLF001
+
+    def spy_finalize(*args, **kwargs):
+        locked_context, lease = original_finalize(*args, **kwargs)
+        captured_leases.append(lease)
+        return locked_context, lease
+
+    scheduler._finalize_selected_wave_reservation = spy_finalize  # type: ignore[method-assign]
+
+    plan = plan_superstep(compiled, projection, context, artifacts)
+    result = scheduler.execute(
+        plan,
+        projection,
+        context,
+        selected_wave=selected,
+        compiled=compiled,
+        artifacts=artifacts,
+        child_projections={},
+    )
+    assert result.succeeded == (bootstrap.task_id,)
+    assert len(captured_leases) == 1
+    assert captured_leases[0].capture_sealed is False  # type: ignore[attr-defined]
+    lease = captured_leases[0]
+
+    parent_tasks = {t.node_id: t for t in plan.tasks}
+    child_id = derive_child_invocation_id(parent_tasks["bootstrap"], "child")
+    _seed_child_invocation(
+        change,
+        invocation_id=child_id,
+        parent_invocation_id=_INV,
+        entrypoint="child",
+        compiled=compiled,
+        tree_id=tree_id,
+        structural_path="main/bootstrap/child",
+    )
+    child_projections = {
+        child_id: project_invocation(change, child_id).model_copy(
+            update={
+                "graph_digest": compiled.digest,
+                "contract_digests": dict(compiled.contract_digests),
+            }
+        )
+    }
+    child_selected = preview_selected_wave(
+        compiled,
+        child_projections[child_id],
+        context,
+        artifacts,
+        max_parallel_tasks=4,
+        child_projections={},
+    )
+    assert child_selected is not None
+    child_task_id = child_selected.selected_tasks[0].task_id
+
+    def sync_knowledge(task, workspace, ctx) -> TaskResult:
+        return TaskResult(status="succeeded")
+
+    scheduler._runner = _ScriptedRunner(  # noqa: SLF001
+        {
+            bootstrap.task_id: bootstrap_handler,
+            child_task_id: sync_knowledge,
+        }
+    )
+    child_overlay_before = len(overlay_calls)
+    locked_child, child_lease = scheduler.reserve_selected_wave(
+        child_selected,
+        context,
+        compiled=compiled,
+        artifacts=artifacts,
+        child_projections={},
+        inherited_lease=lease,
+    )
+    assert child_lease.capture_sealed is True
+    assert len(overlay_calls) == child_overlay_before + 1
+
+    child_result = scheduler.execute_selected_wave(
+        child_lease,
+        locked_child,
+        invocation_id=child_id,
+        compiled=compiled,
+        artifacts=artifacts,
+        child_projections={},
+    )
+    assert child_result.succeeded == (child_task_id,)
+

@@ -869,7 +869,7 @@ class GraphRuntime:
             )
             uses_prepared = (
                 prepared_entry is not None
-                or (selected is not None and selected.synchronized_paths)
+                or (selected is not None and (selected.synchronized_paths or selected.lock_tokens))
             )
             if plan.strict_events and not uses_prepared:
                 with transaction(context.change_dir) as txn:
