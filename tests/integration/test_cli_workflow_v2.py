@@ -30,6 +30,7 @@ from assurance_agent.workflow.graph.models import (
     ResumeCommand,
     RunResult,
 )
+from assurance_agent.workflow.graph.runtime import GraphRuntimeError
 from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
 
 _MINIMAL_SCHEMA = textwrap.dedent(
@@ -158,6 +159,139 @@ def test_rejects_scope_flag() -> None:
     with CliRunner().isolated_filesystem():
         result = CliRunner().invoke(main, ["workflow", "run", "--change", "CH-1", "--scope", "full"])
         assert result.exit_code == 2
+
+
+def test_workflow_run_writes_result_json_on_all_outcomes(monkeypatch: pytest.MonkeyPatch) -> None:
+    mapping = [
+        (EXIT_COMPLETED, "done", False),
+        (EXIT_STOPPED, "stopped", False),
+        (EXIT_HUMAN_REVIEW, "interrupt", False),
+        (EXIT_ERROR, "boom", False),
+        (EXIT_ERROR, "drive failed", True),
+    ]
+    for code, reason, started_new_root in mapping:
+        def _loop(
+            *,
+            _code: int = code,
+            _reason: str = reason,
+            _started: bool = started_new_root,
+            on_root_bound=None,
+            **kwargs: object,
+        ) -> LoopResult:
+            if on_root_bound is not None and _started:
+                on_root_bound("inv-bound", "full", True)
+            return LoopResult(
+                _code,
+                _reason,
+                invocation_id="inv-bound" if _started else "inv-resume",
+                started_new_root=_started,
+            )
+
+        monkeypatch.setattr(wf, "run_workflow_loop", _loop)
+        with CliRunner().isolated_filesystem():
+            result_path = Path("workflow-result.json")
+            result = CliRunner().invoke(
+                main,
+                [
+                    "workflow",
+                    "run",
+                    "--change",
+                    "CH-1",
+                    "--entrypoint",
+                    "full",
+                    "--result-json",
+                    str(result_path),
+                ],
+            )
+            assert result.exit_code == code
+            payload = json.loads(result_path.read_text(encoding="utf-8"))
+            assert payload == {
+                "schema_version": "1",
+                "change_id": "CH-1",
+                "entrypoint": "full",
+                "root_invocation_id": "inv-bound" if started_new_root else "inv-resume",
+                "started_new_root": started_new_root,
+            }
+
+
+def test_workflow_resume_exact_invocation_overrides_latest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = MagicMock()
+    runtime.latest_root_invocation.return_value = "inv-latest"
+    runtime.resume.return_value = _run_result(EXIT_COMPLETED, "completed", "resumed")
+    monkeypatch.setattr(wf, "build_graph_runtime", lambda **_k: MagicMock(runtime=runtime, compiled=None))
+    monkeypatch.setattr(wf, "evaluate_start_guard", lambda _p: MagicMock(allowed=True))
+    monkeypatch.setattr(
+        wf,
+        "_validate_root_invocation",
+        lambda *args, **kwargs: None,
+    )
+    with CliRunner().isolated_filesystem():
+        write_aa_config(Path.cwd())
+        (Path("qa/changes/CH-1")).mkdir(parents=True)
+        result = CliRunner().invoke(
+            main,
+            [
+                "workflow",
+                "resume",
+                "--change",
+                "CH-1",
+                "--invocation",
+                "inv-exact",
+                "--entrypoint",
+                "full",
+            ],
+        )
+        assert result.exit_code == EXIT_COMPLETED
+        runtime.resume.assert_called_once_with("inv-exact", None)
+
+
+def test_workflow_resume_exact_invocation_rejects_mismatched_entrypoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = MagicMock()
+    monkeypatch.setattr(wf, "build_graph_runtime", lambda **_k: MagicMock(runtime=runtime, compiled=None))
+    monkeypatch.setattr(wf, "evaluate_start_guard", lambda _p: MagicMock(allowed=True))
+    monkeypatch.setattr(
+        wf,
+        "_validate_root_invocation",
+        lambda *args, **kwargs: (_ for _ in ()).throw(GraphRuntimeError("entrypoint mismatch")),
+    )
+    with CliRunner().isolated_filesystem():
+        write_aa_config(Path.cwd())
+        (Path("qa/changes/CH-1")).mkdir(parents=True)
+        result = CliRunner().invoke(
+            main,
+            [
+                "workflow",
+                "resume",
+                "--change",
+                "CH-1",
+                "--invocation",
+                "inv-exact",
+                "--entrypoint",
+                "execute",
+            ],
+        )
+        assert result.exit_code == EXIT_ERROR
+        assert "entrypoint mismatch" in result.output
+        runtime.resume.assert_not_called()
+
+
+def test_workflow_resume_requires_invocation_and_entrypoint_together() -> None:
+    with CliRunner().isolated_filesystem():
+        only_invocation = CliRunner().invoke(
+            main,
+            ["workflow", "resume", "--change", "CH-1", "--invocation", "inv-1"],
+        )
+        only_entrypoint = CliRunner().invoke(
+            main,
+            ["workflow", "resume", "--change", "CH-1", "--entrypoint", "full"],
+        )
+        assert only_invocation.exit_code == EXIT_ERROR
+        assert only_entrypoint.exit_code == EXIT_ERROR
+        assert "must be provided together" in only_invocation.output
 
 
 def test_workflow_status_json(monkeypatch: pytest.MonkeyPatch) -> None:

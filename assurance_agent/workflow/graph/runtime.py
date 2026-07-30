@@ -181,7 +181,26 @@ class GraphRuntime:
         entrypoint: str,
         context: RuntimeContext,
     ) -> RunResult:
-        return self._start_and_drive(schema, entrypoint, context)
+        invocation_id = self.start_invocation(schema, entrypoint, context)
+        return self.drive_started(invocation_id)
+
+    def start_invocation(
+        self,
+        compiled: CompiledWorkflow,
+        entrypoint: str,
+        context: RuntimeContext,
+    ) -> str:
+        """Validate params and atomically commit graph_invocation_started (+ pin defs)."""
+        return self._start_invocation(compiled, entrypoint, context)
+
+    def drive_started(self, invocation_id: str) -> RunResult:
+        """Drive an already-started root invocation to completion or interrupt."""
+        try:
+            projection = self._checkpoints.project(invocation_id)
+        except LedgerIntegrityError as exc:
+            raise GraphIntegrityError(str(exc)) from exc
+        context = self._context_for(projection)
+        return self._drive(invocation_id, context)
 
     def resume(
         self,
@@ -509,12 +528,12 @@ class GraphRuntime:
 
     # ------------------------------------------------------------------ start
 
-    def _start_and_drive(
+    def _start_invocation(
         self,
         compiled: CompiledWorkflow,
         entrypoint: str,
         context: RuntimeContext,
-    ) -> RunResult:
+    ) -> str:
         # --- Entrypoint restart policy safety net ---
         # For "once" entrypoints, refuse if this entrypoint has a completed
         # invocation.  loop.py enforces this earlier; this is a secondary guard
@@ -584,7 +603,6 @@ class GraphRuntime:
             structural_path=graph_id,
             binding=binding,
         )
-        bound = context.model_copy(update={"params": params})
         try:
             with transaction(context.change_dir) as txn:
                 txn.append_strict(started)
@@ -605,7 +623,7 @@ class GraphRuntime:
             if "duplicate" in str(exc).lower():
                 raise GraphRuntimeError(f"duplicate invocation start: {invocation_id}") from exc
             raise
-        return self._drive(invocation_id, bound)
+        return invocation_id
 
     def _stage_pinned_definitions(
         self,

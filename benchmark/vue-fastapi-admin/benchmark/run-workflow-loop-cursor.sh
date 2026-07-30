@@ -471,29 +471,33 @@ run_hard_timeout() {
 # $1=logfile $2=change_id
 run_driver() {
   local logf="$1" change_id="$2"
-  local params agent_cmd
+  local params agent_cmd result_json root_state root_id root_entrypoint
   params="$(driver_params_json)"
   agent_cmd="$(cursor_agent_cmd_prefix)"
-  local has_invocation="false"
-  if "$AA_BIN" workflow status --change "$change_id" --json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("status") else 1)'; then
-    has_invocation="true"
-  fi
-  if [ "$has_invocation" = "true" ]; then
-    # resume has no --params (params are pinned on the invocation); only adapter/agent.
+  result_json="$RUN_DIR/${change_id}.workflow-result.json"
+  if root_state="$(read_workflow_root_state "$RUN_DIR" "$change_id" 2>/dev/null)"; then
+    IFS='|' read -r root_id root_entrypoint <<<"$root_state"
     run_hard_timeout "$logf" "$change_id" \
       "$AA_BIN" workflow resume \
       --change "$change_id" \
+      --invocation "$root_id" \
+      --entrypoint "$root_entrypoint" \
       --adapter headless \
       --agent-cmd "$agent_cmd"
-  else
-    run_hard_timeout "$logf" "$change_id" \
-      "$AA_BIN" workflow run \
-      --change "$change_id" \
-      --entrypoint "$DRIVER_ENTRYPOINT" \
-      --adapter headless \
-      --params "$params" \
-      --agent-cmd "$agent_cmd"
+    return $?
   fi
+  run_hard_timeout "$logf" "$change_id" \
+    "$AA_BIN" workflow run \
+    --change "$change_id" \
+    --entrypoint "$DRIVER_ENTRYPOINT" \
+    --adapter headless \
+    --params "$params" \
+    --agent-cmd "$agent_cmd" \
+    --result-json "$result_json"
+  local driver_exit=$?
+  pin_workflow_root_from_result "$RUN_DIR" "$change_id" "$result_json" "$DRIVER_ENTRYPOINT" \
+    || log "[$change_id] WARN: workflow root not pinned from $(basename "$result_json")"
+  return "$driver_exit"
 }
 
 # One-shot cursor-agent prompt (legacy archive path only).
@@ -764,6 +768,7 @@ run_specialty_report_stage() {
   local verify_file="$RUN_DIR/${change_id}.verify.json"
   local report_file="$RUN_DIR/${change_id}.specialty-report.json"
   local report_log="$RUN_DIR/${change_id}.specialty-report.log"
+  local root_state root_invocation_id workflow_entrypoint collect_exit finalize_out registered
 
   [ "$DO_SPECIALTY_REPORT" = "true" ] || return 0
   trace_exit=""
@@ -783,16 +788,31 @@ run_specialty_report_stage() {
     log "[$change_id] ERROR: trace/verify command status missing before specialty collection"
     return 1
   fi
-  if ! collect_benchmark_specialty_report \
+  root_invocation_id=""
+  workflow_entrypoint="$DRIVER_ENTRYPOINT"
+  if root_state="$(read_workflow_root_state "$RUN_DIR" "$change_id" 2>/dev/null)"; then
+    IFS='|' read -r root_invocation_id workflow_entrypoint <<<"$root_state"
+  fi
+  collect_exit=0
+  collect_benchmark_specialty_report \
     "$AA_PYTHON_BIN" "$SPECIALTY_REPORT_PY" "$PROJECT_ROOT" "$AA_REPO_ROOT" \
     "$change_id" "$trace_file" "$verify_file" "$report_file" "$report_log" \
-    "$trace_exit" "$verify_exit"; then
+    "$trace_exit" "$verify_exit" "$root_invocation_id" "$workflow_entrypoint" \
+    || collect_exit=$?
+  finalize_out="$(finalize_benchmark_specialty_report \
+    "$AA_PYTHON_BIN" "$SPECIALTY_REPORT_PY" "$change_id" "$report_file" "$collect_exit")"
+  registered="${finalize_out##*$'\n'}"
+  registered="${registered#registered=}"
+  if [ "$registered" = "true" ]; then
+    report_path="${finalize_out%%$'\n'*}"
+    SPECIALTY_REPORT_FILES+=("$report_path")
+    log "[$change_id] specialty report: $(basename "$report_path")"
+  fi
+  if [ "$collect_exit" -ne 0 ]; then
     SPECIALTY_REPORT_FAILED="true"
     log "[$change_id] ERROR: specialty report/policy replay failed (see $(basename "$report_log"))"
     return 1
   fi
-  SPECIALTY_REPORT_FILES+=("$report_file")
-  log "[$change_id] specialty report: $(basename "$report_file")"
 }
 
 reuse_specialty_report_stage() {

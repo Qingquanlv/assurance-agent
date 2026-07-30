@@ -538,3 +538,120 @@ def test_retro_artifact_contract_accepts_typed_final_status(tmp_path: Path) -> N
     result = _run_helper(tmp_path, 'retro_artifacts_complete "$PWD/qa/retro/retro-current" false')
 
     assert result.returncode == 0, result.stderr
+
+
+def _write_workflow_result(
+    path: Path,
+    *,
+    change_id: str = "CH-1",
+    entrypoint: str = "full",
+    root_invocation_id: str = "inv-root-1",
+    started_new_root: bool = True,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "change_id": change_id,
+                "entrypoint": entrypoint,
+                "root_invocation_id": root_invocation_id,
+                "started_new_root": started_new_root,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_pin_workflow_root_writes_stable_json_for_new_root(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    result_file = tmp_path / "workflow-result.json"
+    _write_workflow_result(result_file)
+    command = (
+        f"pin_workflow_root_from_result {shlex.quote(str(run_dir))} CH-1 "
+        f"{shlex.quote(str(result_file))} full"
+    )
+
+    first = _run_helper(tmp_path, command)
+    second = _run_helper(tmp_path, command)
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    state = json.loads((run_dir / "CH-1.workflow-root.json").read_text(encoding="utf-8"))
+    assert state == {
+        "schema_version": "1",
+        "change_id": "CH-1",
+        "entrypoint": "full",
+        "root_invocation_id": "inv-root-1",
+    }
+
+
+def test_pin_workflow_root_rejects_identity_drift(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    result_file = tmp_path / "workflow-result.json"
+    _write_workflow_result(result_file)
+    assert _run_helper(
+        tmp_path,
+        f"pin_workflow_root_from_result {shlex.quote(str(run_dir))} CH-1 "
+        f"{shlex.quote(str(result_file))} full",
+    ).returncode == 0
+    _write_workflow_result(result_file, root_invocation_id="inv-root-2")
+    drift = _run_helper(
+        tmp_path,
+        f"pin_workflow_root_from_result {shlex.quote(str(run_dir))} CH-1 "
+        f"{shlex.quote(str(result_file))} full",
+    )
+    assert drift.returncode != 0
+    assert "workflow_root_invocation_mismatch" in drift.stderr
+
+
+def test_validate_workflow_command_result_rejects_missing_invocation(tmp_path: Path) -> None:
+    result_file = tmp_path / "workflow-result.json"
+    result_file.write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "change_id": "CH-1",
+                "entrypoint": "full",
+                "root_invocation_id": "",
+                "started_new_root": True,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    result = _run_helper(
+        tmp_path,
+        f"validate_workflow_command_result {shlex.quote(str(result_file))} CH-1 full",
+    )
+    assert result.returncode != 0
+    assert "workflow_result_invocation_missing" in result.stderr
+
+
+def test_read_workflow_root_state_never_calls_aa_status(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "CH-1.workflow-root.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "change_id": "CH-1",
+                "entrypoint": "full",
+                "root_invocation_id": "inv-root-1",
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    fake = _install_fake_aa(tmp_path)
+    command = (
+        f"AA_FAKE_CALL_LOG={shlex.quote(str(tmp_path / 'aa-calls.log'))} "
+        f"read_workflow_root_state {shlex.quote(str(run_dir))} CH-1"
+    )
+    result = _run_helper(tmp_path, command)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "inv-root-1|full"
+    assert not (tmp_path / "aa-calls.log").exists()

@@ -331,6 +331,130 @@ collect_benchmark_specialty_report() {
     2>>"$log_file"
 }
 
+validate_workflow_command_result() {
+  local result_file="$1" change_id="$2" entrypoint="$3"
+  python3 - "$result_file" "$change_id" "$entrypoint" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+expected_change = sys.argv[2]
+expected_entrypoint = sys.argv[3]
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except (OSError, TypeError, ValueError) as exc:
+    raise SystemExit(f"workflow_result_invalid:{exc}") from exc
+if payload.get("schema_version") != "1":
+    raise SystemExit("workflow_result_schema_invalid")
+if payload.get("change_id") != expected_change:
+    raise SystemExit("workflow_result_change_mismatch")
+if payload.get("entrypoint") != expected_entrypoint:
+    raise SystemExit("workflow_result_entrypoint_mismatch")
+root_id = payload.get("root_invocation_id")
+if not isinstance(root_id, str) or not root_id.strip():
+    raise SystemExit("workflow_result_invocation_missing")
+started = payload.get("started_new_root")
+if not isinstance(started, bool):
+    raise SystemExit("workflow_result_started_new_root_invalid")
+print(f"{root_id}|{str(started).lower()}")
+PY
+}
+
+pin_workflow_root_from_result() {
+  local run_dir="$1" change_id="$2" result_file="$3" entrypoint="$4"
+  local state_file="$run_dir/${change_id}.workflow-root.json"
+  local validated root_id started_new_root payload temp
+  validated="$(validate_workflow_command_result "$result_file" "$change_id" "$entrypoint")" || return 1
+  IFS='|' read -r root_id started_new_root <<<"$validated"
+  [ "$started_new_root" = "true" ] || return 0
+  if [ -f "$state_file" ]; then
+    python3 - "$state_file" "$change_id" "$entrypoint" "$root_id" <<'PY' || return 1
+import json
+import sys
+from pathlib import Path
+
+current = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+change_id, entrypoint, root_id = sys.argv[2:5]
+if current.get("schema_version") != "1":
+    raise SystemExit("workflow_root_schema_invalid")
+if current.get("change_id") != change_id:
+    raise SystemExit("workflow_root_change_mismatch")
+if current.get("entrypoint") != entrypoint:
+    raise SystemExit("workflow_root_entrypoint_mismatch")
+if current.get("root_invocation_id") != root_id:
+    raise SystemExit("workflow_root_invocation_mismatch")
+PY
+    return 0
+  fi
+  payload="$(python3 - "$change_id" "$entrypoint" "$root_id" <<'PY'
+import json
+import sys
+
+print(
+    json.dumps(
+        {
+            "schema_version": "1",
+            "change_id": sys.argv[1],
+            "entrypoint": sys.argv[2],
+            "root_invocation_id": sys.argv[3],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    + "\n"
+)
+PY
+)"
+  mkdir -p "$run_dir"
+  temp="$run_dir/.${change_id}.workflow-root.json.$$"
+  printf '%s' "$payload" >"$temp"
+  mv "$temp" "$state_file"
+}
+
+read_workflow_root_state() {
+  local run_dir="$1" change_id="$2"
+  local state_file="$run_dir/${change_id}.workflow-root.json"
+  [ -f "$state_file" ] || return 1
+  python3 - "$state_file" "$change_id" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+expected_change = sys.argv[2]
+payload = json.loads(path.read_text(encoding="utf-8"))
+if payload.get("schema_version") != "1":
+    raise SystemExit("workflow_root_schema_invalid")
+if payload.get("change_id") != expected_change:
+    raise SystemExit("workflow_root_change_mismatch")
+entrypoint = payload.get("entrypoint")
+root_id = payload.get("root_invocation_id")
+if not isinstance(entrypoint, str) or not entrypoint.strip():
+    raise SystemExit("workflow_root_entrypoint_missing")
+if not isinstance(root_id, str) or not root_id.strip():
+    raise SystemExit("workflow_root_invocation_missing")
+print(f"{root_id}|{entrypoint}")
+PY
+}
+
+finalize_benchmark_specialty_report() {
+  local python_bin="$1" reporter="$2" change_id="$3" report_file="$4" collect_exit="$5"
+  local registered="false"
+  if [ -s "$report_file" ]; then
+    if "$python_bin" "$reporter" evidence-row --change-id "$change_id" "$report_file" >/dev/null 2>&1; then
+      registered="true"
+      printf '%s\n' "$report_file"
+    fi
+  fi
+  if [ "$registered" = "true" ]; then
+    printf 'registered=true\n'
+  else
+    printf 'registered=false\n'
+  fi
+  return "$collect_exit"
+}
+
 render_benchmark_specialty_sections() {
   local python_bin="$1" reporter="$2"
   shift 2

@@ -398,13 +398,14 @@ def test_recovery_event_survives_crash_before_fallback_dispatch(tmp_path: Path) 
     original_execute = scheduler.execute
     crashed = False
 
-    def crash_before_fallback(plan, projection, context):  # type: ignore[no-untyped-def]
+    def crash_before_fallback(plan, projection, context, **kwargs):  # type: ignore[no-untyped-def]
         nonlocal crashed
         if not crashed and any(task.node_id == "fallback" for task in plan.tasks):
             crashed = True
-            assert len(projection.recoveries) == 1
+            fresh = runtime._checkpoints.project(projection.invocation_id)  # noqa: SLF001
+            assert len(fresh.recoveries) == 1
             raise SimulatedCrash("after recovery event, before fallback dispatch")
-        return original_execute(plan, projection, context)
+        return original_execute(plan, projection, context, **kwargs)
 
     scheduler.execute = crash_before_fallback  # type: ignore[method-assign]
     from assurance_agent.workflow.graph.models import RuntimeContext
@@ -483,3 +484,59 @@ def test_forbidden_write_failure_does_not_enter_recovery(tmp_path: Path) -> None
     projection = project_invocation(change, result.invocation_id)
     assert projection.recoveries == {}
     assert not (project / "tests" / "api" / "analyzer.py").exists()
+
+
+def test_start_invocation_commits_root_before_drive(tmp_path: Path) -> None:
+    from assurance_agent.workflow.graph.checkpoint import project_invocation
+    from assurance_agent.workflow.graph.models import RuntimeContext
+    from assurance_agent.workflow.graph.runtime import GraphRuntimeError
+    from tests.integration._graph_fault_worker import _build
+
+    project = _project(tmp_path)
+    runtime, compiled, change = _build(project, "linear")
+    context = RuntimeContext(
+        project_root=project,
+        repo_root=project,
+        change_dir=change,
+        change_id="CH-1",
+        params={"run_mode": "full"},
+    )
+    invocation_id = runtime.start_invocation(compiled, "full", context)
+    projection = project_invocation(change, invocation_id)
+    assert projection.invocation_id == invocation_id
+    assert projection.entrypoint == "full"
+    assert projection.parent_invocation_id is None
+    assert projection.terminal is None
+
+    def drive_fault(inv_id: str, ctx: RuntimeContext):  # noqa: ANN001
+        raise GraphRuntimeError("drive fault after start commit")
+
+    runtime._drive = drive_fault  # type: ignore[method-assign]  # noqa: SLF001
+    with pytest.raises(GraphRuntimeError, match="drive fault"):
+        runtime.drive_started(invocation_id)
+    assert project_invocation(change, invocation_id).invocation_id == invocation_id
+
+    fresh_project = _project(tmp_path / "fresh")
+    fresh_runtime, fresh_compiled, fresh_change = _build(fresh_project, "linear")
+    fresh_context = RuntimeContext(
+        project_root=fresh_project,
+        repo_root=fresh_project,
+        change_dir=fresh_change,
+        change_id="CH-1",
+        params={"run_mode": "full"},
+    )
+    composed = fresh_runtime.run(fresh_compiled, "full", fresh_context)
+
+    split_project = _project(tmp_path / "split")
+    split_runtime, split_compiled, split_change = _build(split_project, "linear")
+    split_context = RuntimeContext(
+        project_root=split_project,
+        repo_root=split_project,
+        change_dir=split_change,
+        change_id="CH-1",
+        params={"run_mode": "full"},
+    )
+    split_start = split_runtime.start_invocation(split_compiled, "full", split_context)
+    split_drive = split_runtime.drive_started(split_start)
+    assert split_drive.status.status == composed.status.status
+    assert split_drive.exit_code == composed.exit_code

@@ -37,6 +37,68 @@ from assurance_agent.workflow.graph.runtime import GraphRuntimeError
 from assurance_agent.workflow.graph.runtime import ensure_retro_params
 
 
+def _atomic_write_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temp.write_bytes(raw)
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def _write_workflow_run_result(
+    path: Path,
+    *,
+    change_id: str,
+    entrypoint: str,
+    invocation_id: str | None,
+    started_new_root: bool,
+) -> None:
+    _atomic_write_json(
+        path,
+        {
+            "schema_version": "1",
+            "change_id": change_id,
+            "entrypoint": entrypoint,
+            "root_invocation_id": invocation_id,
+            "started_new_root": started_new_root,
+        },
+    )
+
+
+def _validate_root_invocation(
+    runtime,
+    *,
+    change_dir: Path,
+    change_id: str,
+    invocation_id: str,
+    expected_entrypoint: str,
+) -> None:
+    try:
+        projection = runtime._checkpoints.project(invocation_id)  # noqa: SLF001
+    except Exception as exc:
+        raise GraphRuntimeError(f"unknown invocation {invocation_id}: {exc}") from exc
+    if projection.parent_invocation_id is not None:
+        raise GraphRuntimeError(f"invocation {invocation_id} is not a root")
+    if projection.entrypoint != expected_entrypoint:
+        raise GraphRuntimeError(
+            f"invocation {invocation_id} entrypoint {projection.entrypoint!r} "
+            f"!= expected {expected_entrypoint!r}"
+        )
+    meta_path = change_dir / ".graph-runtime" / "invocations" / f"{invocation_id}.json"
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        bound_change = str(meta.get("change_id", change_id))
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise GraphRuntimeError(f"invocation {invocation_id} lacks change metadata: {exc}") from exc
+    if bound_change != change_id:
+        raise GraphRuntimeError(
+            f"invocation {invocation_id} belongs to change {bound_change!r}, not {change_id!r}"
+        )
+
+
 @click.group("workflow")
 def workflow_group() -> None:
     """Graph workflow driver (run / status / resume / import-checkpoint)."""
@@ -149,6 +211,7 @@ def _run_or_detach(
     agent_cmd: str,
     detach: bool,
     adopt_lock: str | None,
+    result_json: Path | None = None,
 ) -> None:
     project_root = Path.cwd()
     parsed_params = _parse_params(params)
@@ -205,6 +268,18 @@ def _run_or_detach(
             raise SystemExit(EXIT_ERROR)
         click.secho(supervised.status.result, fg="green")
         raise SystemExit(EXIT_COMPLETED)
+
+    def bind_root(invocation_id: str, bound_entrypoint: str, started_new_root: bool) -> None:
+        if result_json is None:
+            return
+        _write_workflow_run_result(
+            result_json,
+            change_id=change_id,
+            entrypoint=bound_entrypoint,
+            invocation_id=invocation_id,
+            started_new_root=started_new_root,
+        )
+
     result = run_workflow_loop(
         project_root=project_root,
         change_id=change_id,
@@ -213,7 +288,16 @@ def _run_or_detach(
         params=parsed_params,
         parent_session_id=parent_session,
         adopt_lock_token=adopt_lock,
+        on_root_bound=bind_root if result_json is not None else None,
     )
+    if result_json is not None:
+        _write_workflow_run_result(
+            result_json,
+            change_id=change_id,
+            entrypoint=entrypoint,
+            invocation_id=result.invocation_id,
+            started_new_root=result.started_new_root,
+        )
     color = {
         EXIT_COMPLETED: "green",
         EXIT_HUMAN_REVIEW: "yellow",
@@ -245,6 +329,13 @@ def _run_or_detach(
     help="Launch in a detached background process and return immediately.",
 )
 @click.option("--adopt-lock", "adopt_lock", default=None, help="Adopt lock from detached start (internal).")
+@click.option(
+    "--result-json",
+    "result_json",
+    default=None,
+    type=click.Path(path_type=Path),
+    help="Atomically write workflow root identity before drive completes.",
+)
 def workflow_run(
     change_id: str,
     entrypoint: str,
@@ -257,6 +348,7 @@ def workflow_run(
     agent_cmd: str,
     detach: bool,
     adopt_lock: str | None,
+    result_json: Path | None,
 ) -> None:
     """Run a new graph invocation, or plain-resume the latest root if one exists."""
     _run_or_detach(
@@ -271,6 +363,7 @@ def workflow_run(
         agent_cmd=agent_cmd,
         detach=detach,
         adopt_lock=adopt_lock,
+        result_json=result_json,
     )
 
 
@@ -332,6 +425,19 @@ def workflow_start(
 )
 @click.option("--parent-session", "parent_session", default=None, help="Parent session id.")
 @click.option("--agent-cmd", "agent_cmd", default="cursor-agent --print", show_default=True)
+@click.option(
+    "--invocation",
+    "invocation_id",
+    default=None,
+    help="Exact root invocation id to resume (requires --entrypoint).",
+)
+@click.option(
+    "--entrypoint",
+    "expected_entrypoint",
+    default=None,
+    type=_ENTRYPOINT_CHOICE,
+    help="Expected entrypoint for --invocation validation.",
+)
 def workflow_resume(
     change_id: str,
     interrupt_id: str | None,
@@ -345,8 +451,13 @@ def workflow_resume(
     model: str | None,
     parent_session: str | None,
     agent_cmd: str,
+    invocation_id: str | None,
+    expected_entrypoint: str | None,
 ) -> None:
     """Plain-resume retry/abandoned work, or resolve one pending interrupt."""
+    if (invocation_id is None) ^ (expected_entrypoint is None):
+        click.secho("--invocation and --entrypoint must be provided together", fg="red")
+        raise SystemExit(EXIT_ERROR)
     if action is not None and interrupt_id is None:
         click.secho("--action requires --interrupt", fg="red")
         raise SystemExit(EXIT_ERROR)
@@ -390,11 +501,22 @@ def workflow_resume(
             change_id=change_id,
             adapter=adapter,
         )
-        latest = bundle.runtime.latest_root_invocation()
-        if latest is None:
-            click.secho("no root invocation to resume", fg="red")
-            raise SystemExit(EXIT_ERROR)
-        result = bundle.runtime.resume(latest, command)
+        if invocation_id is not None:
+            assert expected_entrypoint is not None
+            _validate_root_invocation(
+                bundle.runtime,
+                change_dir=change_dir,
+                change_id=change_id,
+                invocation_id=invocation_id,
+                expected_entrypoint=expected_entrypoint,
+            )
+            target = invocation_id
+        else:
+            target = bundle.runtime.latest_root_invocation()
+            if target is None:
+                click.secho("no root invocation to resume", fg="red")
+                raise SystemExit(EXIT_ERROR)
+        result = bundle.runtime.resume(target, command)
     except GraphRuntimeError as err:
         click.secho(str(err), fg="red")
         raise SystemExit(EXIT_ERROR) from err

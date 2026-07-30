@@ -1111,6 +1111,47 @@ def test_resume_reuses_frozen_report_and_rejects_post_archive_collection(tmp_pat
     assert (archived_with_report.returncode, archived_with_report.stdout) == (0, "reuse")
 
 
+def test_finalize_registers_valid_incomplete_report_before_failure(tmp_path: Path) -> None:
+    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
+    output = tmp_path / "specialty-incomplete.json"
+    collect = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=output,
+        root_invocation_id="missing-root",
+    )
+    assert collect.returncode != 0
+
+    command = (
+        f"source {shlex.quote(str(_HELPERS))}; "
+        f"finalize_benchmark_specialty_report {shlex.quote(sys.executable)} "
+        f"{shlex.quote(str(_REPORTER))} {_CHANGE_ID} {shlex.quote(str(output))} 1"
+    )
+    result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
+
+    assert result.returncode == 1
+    assert "registered=true" in result.stdout
+    assert str(output) in result.stdout.splitlines()[0]
+    report = load_specialty_report(json.loads(output.read_text(encoding="utf-8")))
+    assert isinstance(report, SpecialtyReportV2)
+    assert report.capability_contract_policy.integrity == "incomplete"
+
+
+def test_finalize_skips_invalid_report_on_collector_failure(tmp_path: Path) -> None:
+    output = tmp_path / "specialty-invalid.json"
+    output.write_text("{not-json}\n", encoding="utf-8")
+    command = (
+        f"source {shlex.quote(str(_HELPERS))}; "
+        f"finalize_benchmark_specialty_report {shlex.quote(sys.executable)} "
+        f"{shlex.quote(str(_REPORTER))} {_CHANGE_ID} {shlex.quote(str(output))} 1"
+    )
+    result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
+
+    assert result.returncode == 1
+    assert result.stdout.strip() == "registered=false"
+
+
 def test_cursor_helper_collects_and_renders_real_specialty_report(tmp_path: Path) -> None:
     project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
     output = tmp_path / "specialty.json"
