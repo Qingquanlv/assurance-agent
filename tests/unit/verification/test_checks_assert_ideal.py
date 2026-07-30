@@ -206,8 +206,25 @@ def test_registry_runs_every_check_and_folds_status() -> None:
         "check_capability_keys",
     ]
     ctx = CheckContext(
-        plan_texts={"plans/api-plan.md": "read `qa/.knowledge/data-knowledge.yaml`\n"},
-        cases=(),
+        plan_texts={
+            "plans/api-plan.md": "read `qa/.knowledge/data-knowledge.yaml`\n",
+            "plans/api-test-data-plan.md": "# Plan\n",
+            "plans/api-codegen-plan.md": "# Plan\n",
+        },
+        cases=(
+            {
+                "added": [
+                    {
+                        "case_id": "TC_DEPT_API_001",
+                        "title": "smoke",
+                        "type": "API",
+                        "automation": {"required": True},
+                        "assertions": ["HTTP 200"],
+                    }
+                ],
+                "modified": [],
+            },
+        ),
         data_knowledge={},
     )
     doc = run_plan_checks(ctx)

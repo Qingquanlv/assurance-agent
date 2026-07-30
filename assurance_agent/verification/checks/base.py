@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
+from assurance_agent.artifacts.models.assurance import LayerName
 from assurance_agent.artifacts.models.plan_checks import CheckEvidence, Finding
 
 
@@ -18,7 +19,7 @@ class CheckContext:
     plan_texts: Mapping[str, str]
     cases: Sequence[Mapping[str, object]]
     data_knowledge: Mapping[str, object]
-    layer: str = "api"
+    layer: LayerName = "api"
     # From review/{layer}-plan-review.json when present (mechanical runs before
     # first review: empty → capability_keys is inert until a review exists).
     required_capabilities: Sequence[str] = ()
