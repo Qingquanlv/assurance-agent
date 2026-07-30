@@ -16,6 +16,7 @@ from assurance_agent.workflow.core.events import read_events, read_events_strict
 from assurance_agent.workflow.core.graph_events import SuperstepCommittedEvent
 from assurance_agent.workflow.core.progression import (
     ProgressionCommitError,
+    ProgressionError,
     ProgressionLockTimeout,
     ProgressionRollbackError,
     commit_tree_pointer,
@@ -395,6 +396,86 @@ def test_commit_tree_pointer_commits_checkpoint_and_event(tmp_path: Path) -> Non
     assert len(strict) == 1
     assert strict[0]["type"] == "superstep_committed"
     assert strict[0]["target_tree_id"] == "tree-1"
+
+
+def test_write_runtime_file_once_creates_policy_file_atomically(tmp_path: Path) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    rel = ".graph-runtime/policies/abc123.json"
+    payload = b'{"version":1}\n'
+    with transaction(change) as txn:
+        txn.write_runtime_file_once(rel, payload)
+        txn.append_strict(_event())
+    assert (change / rel).read_bytes() == payload
+
+
+def test_write_runtime_file_once_same_bytes_is_idempotent(tmp_path: Path) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    rel = ".graph-runtime/policies/abc123.json"
+    payload = b'{"version":1}\n'
+    with transaction(change) as txn:
+        txn.write_runtime_file_once(rel, payload)
+    with transaction(change) as txn:
+        txn.write_runtime_file_once(rel, payload)
+    assert (change / rel).read_bytes() == payload
+
+
+def test_write_runtime_file_once_rejects_different_bytes_before_commit(tmp_path: Path) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    rel = ".graph-runtime/policies/abc123.json"
+    (change / ".graph-runtime" / "policies").mkdir(parents=True)
+    (change / rel).write_bytes(b'{"version":1}\n')
+    with pytest.raises(ProgressionError, match="runtime file content mismatch"):
+        with transaction(change) as txn:
+            txn.write_runtime_file_once(rel, b'{"version":2}\n')
+            txn.append_strict(_event())
+    assert read_events(change) == []
+    assert (change / rel).read_bytes() == b'{"version":1}\n'
+
+
+def test_write_runtime_file_once_rejects_different_bytes_on_race_at_apply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    rel = ".graph-runtime/policies/abc123.json"
+    real_capture = progression_mod.capture_files
+
+    def capture_then_race(targets: list[Path]) -> object:
+        snapshots = real_capture(targets)
+        path = change / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'{"version":99}\n')
+        return snapshots
+
+    monkeypatch.setattr(progression_mod, "capture_files", capture_then_race)
+    with pytest.raises(ProgressionError, match="runtime file content mismatch"):
+        with transaction(change) as txn:
+            txn.write_runtime_file_once(rel, b'{"version":1}\n')
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "events.jsonl",
+        "workflow-state.yaml",
+        ".progression.lock",
+        "../outside.txt",
+        "/abs.txt",
+        "healing/note.txt",
+        ".graph-runtime",
+        ".graph-runtime/../events.jsonl",
+        ".graph-runtime/sub/../../workflow-state.yaml",
+    ],
+)
+def test_write_runtime_file_once_rejects_unsafe_paths(tmp_path: Path, rel: str) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    with pytest.raises(ValueError):
+        with transaction(change) as txn:
+            txn.write_runtime_file_once(rel, b"x")
 
 
 def test_commit_tree_pointer_rolls_back_checkpoint_on_event_failure(tmp_path: Path, monkeypatch) -> None:

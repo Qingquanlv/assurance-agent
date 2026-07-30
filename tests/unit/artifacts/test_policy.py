@@ -7,13 +7,21 @@ import pytest
 import assurance_agent.artifacts.models.assurance as assurance_model
 import assurance_agent.artifacts.models.policy as policy_model
 from assurance_agent.artifacts.models.assurance import KNOWN_PLAN_CHECK_IDS
-from assurance_agent.artifacts.policy import POLICY_REL_PATH, PolicyError, load_policy, policy_digest
+from assurance_agent.artifacts.policy import (
+    POLICY_REL_PATH,
+    PolicyError,
+    PolicySnapshot,
+    load_policy,
+    load_policy_snapshot,
+    load_policy_snapshot_bytes,
+    normalized_policy_bytes,
+    policy_digest,
+)
 
 
 def _write(root: Path, body: str) -> None:
     (root / ".aa").mkdir(parents=True, exist_ok=True)
     (root / POLICY_REL_PATH).write_text(body, encoding="utf-8")
-
 
 VALID = """\
 version: 1
@@ -238,6 +246,90 @@ def test_policy_requires_exact_shared_check_catalog(tmp_path: Path) -> None:
 
 def test_policy_reexports_the_shared_catalog_object() -> None:
     assert policy_model.KNOWN_PLAN_CHECK_IDS is assurance_model.KNOWN_PLAN_CHECK_IDS
+
+
+def test_differently_formatted_yaml_yields_identical_normalized_bytes_and_digest(
+    tmp_path: Path,
+) -> None:
+    block_style = VALID
+    flow_style = (
+        "version: 1\n"
+        "human_review_risk_levels: [high]\n"
+        "force_continue_allowed: true\n"
+        "plan_checks: {l1_path: warn, shared_factory: warn, assert_ideal: warn, "
+        "capability_keys: warn}\n"
+        "coverage_floor: {risk_high: 0.9, risk_medium: 0.7}\n"
+        "fuzz: {required_when_endpoint_has_auth: true}\n"
+        "healing: {auth_module: require_human}\n"
+    )
+    root_a = tmp_path / "a"
+    root_b = tmp_path / "b"
+    _write(root_a, block_style)
+    _write(root_b, flow_style)
+    snap_a = load_policy_snapshot(root_a)
+    snap_b = load_policy_snapshot(root_b)
+    assert snap_a.canonical_bytes == snap_b.canonical_bytes
+    assert snap_a.digest == snap_b.digest
+    assert snap_a.digest == policy_digest(snap_a.policy)
+    assert snap_a.canonical_bytes == normalized_policy_bytes(snap_a.policy)
+    assert snap_a.canonical_bytes.endswith(b"\n")
+
+
+def test_equal_project_and_default_content_share_bytes_but_distinct_origins(
+    tmp_path: Path,
+) -> None:
+    from assurance_agent import resources
+
+    default_snap = load_policy_snapshot(tmp_path)
+    assert default_snap.origin == "packaged_default"
+    _write(tmp_path, resources.read_text("schemas", "policy-default.yaml"))
+    project_snap = load_policy_snapshot(tmp_path)
+    assert project_snap.origin == "project"
+    assert project_snap.canonical_bytes == default_snap.canonical_bytes
+    assert project_snap.digest == default_snap.digest
+
+
+def test_snapshot_is_immutable_against_future_packaged_default_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snap = load_policy_snapshot(tmp_path)
+    before_bytes = snap.canonical_bytes
+    before_digest = snap.digest
+    before_policy = snap.policy
+
+    def mutated_default(*_a: object, **_k: object) -> str:
+        return (
+            "version: 1\n"
+            "human_review_risk_levels: [critical]\n"
+            "force_continue_allowed: true\n"
+            "plan_checks:\n"
+            "  l1_path: warn\n"
+            "  shared_factory: warn\n"
+            "  assert_ideal: warn\n"
+            "  capability_keys: warn\n"
+            "coverage_floor:\n"
+            "  risk_high: 0.9\n"
+            "  risk_medium: 0.7\n"
+            "fuzz:\n"
+            "  required_when_endpoint_has_auth: true\n"
+            "healing:\n"
+            "  auth_module: require_human\n"
+        )
+
+    monkeypatch.setattr(
+        "assurance_agent.artifacts.policy.resources.read_text",
+        mutated_default,
+    )
+    assert load_policy_snapshot(tmp_path).digest != before_digest
+    assert snap.canonical_bytes == before_bytes
+    assert snap.digest == before_digest
+    assert snap.policy == before_policy
+
+
+def test_load_policy_snapshot_bytes_accepts_explicit_origin() -> None:
+    snap = load_policy_snapshot_bytes(None, origin="packaged_default")
+    assert snap.origin == "packaged_default"
+    assert isinstance(snap, PolicySnapshot)
 
 
 def test_missing_required_kinds_key_is_rejected(tmp_path: Path) -> None:

@@ -100,6 +100,7 @@ class ProgressionTxn:
     def __init__(self, change_dir: Path) -> None:
         self._change_dir = change_dir
         self._files: list[tuple[str, bytes]] = []
+        self._runtime_once_rels: set[str] = set()
         self._events: list[Mapping[str, object]] = []
         self._next_state: WorkflowState | None = None
         self._state_set = False
@@ -138,6 +139,27 @@ class ProgressionTxn:
         if not normalized.startswith(_RUNTIME_REL_PREFIX):
             raise ValueError(f"write_runtime_file path must stay under .graph-runtime/: {rel!r}")
         data = content.encode("utf-8") if isinstance(content, str) else content
+        self._files = [(r, c) for r, c in self._files if r != rel]
+        self._files.append((rel, data))
+        _ = resolved  # validated
+
+    def write_runtime_file_once(self, rel: str, content: bytes | str) -> None:
+        """Stage a content-addressed ``.graph-runtime/`` file with write-once semantics."""
+        resolved = self._resolve_rel(rel)
+        normalized = Path(rel).as_posix()
+        if not normalized.startswith(_RUNTIME_REL_PREFIX):
+            raise ValueError(f"write_runtime_file_once path must stay under .graph-runtime/: {rel!r}")
+        data = content.encode("utf-8") if isinstance(content, str) else content
+        target = self._change_dir / rel
+        if target.exists():
+            existing = target.read_bytes()
+            if existing == data:
+                return
+            raise ProgressionError(f"runtime file content mismatch for {rel}")
+        for staged_rel, staged_data in self._files:
+            if staged_rel == rel and staged_data != data:
+                raise ProgressionError(f"runtime file content mismatch for {rel}")
+        self._runtime_once_rels.add(rel)
         self._files = [(r, c) for r, c in self._files if r != rel]
         self._files.append((rel, data))
         _ = resolved  # validated
@@ -211,7 +233,14 @@ class ProgressionTxn:
         snapshots = capture_files(targets)
         try:
             for rel, data in self._files:
-                _atomic_write_bytes(self._change_dir / rel, data)
+                target = self._change_dir / rel
+                if rel in self._runtime_once_rels:
+                    if target.exists():
+                        existing = target.read_bytes()
+                        if existing == data:
+                            continue
+                        raise ProgressionError(f"runtime file content mismatch for {rel}")
+                _atomic_write_bytes(target, data)
             if self._state_projection is not None:
                 _atomic_write_bytes(state_file(self._change_dir), self._state_projection)
             for event in self._events:
