@@ -2,8 +2,8 @@
 
 ## Scope
 
-| Case ID | Data need |
-|---------|-----------|
+| Case ID | Title |
+|---------|-------|
 | TC_E2E_AUTH_REJECT | Limited-role user with no API permissions |
 
 ## Required Data

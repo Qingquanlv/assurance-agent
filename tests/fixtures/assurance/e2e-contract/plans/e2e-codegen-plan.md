@@ -62,9 +62,9 @@ Prefer role and text locators for denial messaging and hidden CRUD controls.
 
 ## Cleanup Mapping
 
-| Case ID | Cleanup |
-|---------|---------|
-| TC_E2E_AUTH_REJECT | `capabilities.adapters.e2e.auth.cleanup_limited_user` |
+| Case ID | Cleanup | Capability |
+|---------|---------|------------|
+| TC_E2E_AUTH_REJECT | limited-user cleanup via adapter | `capabilities.adapters.e2e.auth.cleanup_limited_user` |
 
 ## Run Guidance
 

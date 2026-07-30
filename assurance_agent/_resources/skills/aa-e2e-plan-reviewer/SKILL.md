@@ -12,7 +12,7 @@ Before producing output, check whether `.aa/memory/aa-e2e-plan-reviewer.md` exis
 - Shared domain builders belong only in `tests/testdata/domain/`; E2E transport belongs only in `tests/e2e/adapters/`.
 - Require `capabilities.domain_factories` plus `capabilities.adapters.e2e`; reject API fixtures/adapters reused as E2E execution glue.
 - Reject direct async-domain imports from sync Playwright, any in-thread event-loop bridge, or subprocess setup without timeout, JSON/plain-data I/O, exit-code checking, and symmetric cleanup.
-- Conflicting shared-factory creators are `severity: high` and make codegen `not_ready`.
+- When `review/e2e-plan-checks.json` is present, treat `shared_factory` and other mechanical check outcomes as immutable `PlanCheckDocument` facts. Do not re-adjudicate severity, codegen readiness, or gate routing from those findings — policy belongs to the downstream gate only.
 
 ## Context Contract
 
