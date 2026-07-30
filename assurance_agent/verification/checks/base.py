@@ -20,9 +20,12 @@ class CheckContext:
     cases: Sequence[Mapping[str, object]]
     data_knowledge: Mapping[str, object]
     layer: LayerName = "api"
-    # From review/{layer}-plan-review.json when present (mechanical runs before
-    # first review: empty → capability_keys is inert until a review exists).
+    # From the layer's canonical review_artifact when present (mechanical runs
+    # before first review: empty → capability_keys is inert until a review exists).
     required_capabilities: Sequence[str] = ()
+    # Set by run_plan_checks from profile.review_artifact; the check-only ref
+    # capability_keys cites when required_capabilities is non-empty.
+    review_artifact: str | None = None
 
 
 CheckFn = Callable[[CheckContext], CheckEvidence]

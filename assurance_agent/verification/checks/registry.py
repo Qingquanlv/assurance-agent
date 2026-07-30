@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from types import MappingProxyType
 
 from assurance_agent.artifacts.models.assurance import PLAN_CHECK_IDS, PlanCheckId
@@ -36,6 +37,7 @@ def run_plan_checks(
     ctx: CheckContext, *, applicability: LayerApplicability | None = None
 ) -> PlanCheckDocument:
     profile = get_layer_assurance_profile(ctx.layer)
+    ctx = replace(ctx, review_artifact=profile.review_artifact)
     if applicability is None:
         applicability = derive_layer_applicability(ctx.cases, profile)
     elif applicability.layer != profile.layer:

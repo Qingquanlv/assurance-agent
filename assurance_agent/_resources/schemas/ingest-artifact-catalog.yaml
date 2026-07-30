@@ -14,7 +14,7 @@ artifacts:
     kind: file_ingest
     model: review@1
     model_schema_digest: "687468f6991c1d09bd75f2471d0dcd94dcb8215f3c5649da1f061dc458d14996"
-    path: change:review/e2e-plan-review.json
+    path: change:review/plan-review.json
     codec: json
     cardinality: one
     compat: must_compat

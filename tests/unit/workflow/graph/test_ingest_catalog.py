@@ -20,6 +20,11 @@ def test_packaged_catalog_pins_real_model_schema_digest() -> None:
         assert spec.model_schema_digest == expected, symbol
 
 
+def test_e2e_plan_review_uses_the_canonical_shared_review_path() -> None:
+    catalog = load_ingest_catalog()
+    assert catalog.artifacts["e2e_plan_review"].path == "change:review/plan-review.json"
+
+
 def test_validate_catalog_runtime_fills_and_verifies_digests() -> None:
     catalog = validate_catalog_runtime()
     expected = model_schema_digest("review@1")
