@@ -681,6 +681,143 @@ def test_apply_tree_converges_after_partial_failure(tmp_path: Path, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
+# single-capture multi-tree synchronized overlay
+
+
+def test_overlay_synchronized_paths_many_captures_live_bytes_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _make_project(tmp_path)
+    aa_dir = project / ".aa"
+    aa_dir.mkdir()
+    knowledge = aa_dir / "data-knowledge.yaml"
+    knowledge.write_text("snapshot v1\n", encoding="utf-8")
+    store = _store(project)
+    base_tree = store.capture(project)
+
+    (project / "app" / "source.py").write_text("base-specific\n", encoding="utf-8")
+    target_tree = store.capture(project)
+
+    promoted_bytes = b"live promoted\n"
+    knowledge.write_bytes(promoted_bytes)
+
+    synchronized = (ResourcePath.parse("project:.aa/data-knowledge.yaml"),)
+    synchronized_file_read_count = 0
+    real_read_bytes = Path.read_bytes
+
+    def counting_read_bytes(self: Path) -> bytes:
+        nonlocal synchronized_file_read_count
+        if self.resolve() == knowledge.resolve():
+            synchronized_file_read_count += 1
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", counting_read_bytes)
+
+    base_overlay, target_overlay = store.overlay_synchronized_paths_many(
+        (base_tree, target_tree),
+        project,
+        synchronized,
+    )
+
+    assert store.read_bytes(base_overlay, "project:.aa/data-knowledge.yaml") == promoted_bytes
+    assert store.read_bytes(target_overlay, "project:.aa/data-knowledge.yaml") == promoted_bytes
+    assert synchronized_file_read_count == 1
+    assert store.read_bytes(base_overlay, "project:app/source.py") == b"app base\n"
+    assert store.read_bytes(target_overlay, "project:app/source.py") == b"base-specific\n"
+
+
+def test_overlay_synchronized_paths_many_removes_missing_synchronized_path(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    aa_dir = project / ".aa"
+    aa_dir.mkdir()
+    knowledge = aa_dir / "data-knowledge.yaml"
+    knowledge.write_text("was here\n", encoding="utf-8")
+    store = _store(project)
+    base_tree = store.capture(project)
+    target_tree = store.capture(project)
+    knowledge.unlink()
+
+    synchronized = (ResourcePath.parse("project:.aa/data-knowledge.yaml"),)
+    base_overlay, target_overlay = store.overlay_synchronized_paths_many(
+        (base_tree, target_tree),
+        project,
+        synchronized,
+    )
+
+    with pytest.raises(FileNotFoundError):
+        store.read_bytes(base_overlay, "project:.aa/data-knowledge.yaml")
+    with pytest.raises(FileNotFoundError):
+        store.read_bytes(target_overlay, "project:.aa/data-knowledge.yaml")
+
+
+def test_overlay_synchronized_paths_many_empty_paths_returns_original_ids(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    store = _store(project)
+    base_tree = store.capture(project)
+    target_tree = store.capture(project)
+
+    result = store.overlay_synchronized_paths_many((base_tree, target_tree), project, ())
+
+    assert result == (base_tree, target_tree)
+
+
+def test_overlay_synchronized_paths_many_rejects_symlink_escape(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    store = _store(project)
+    tree = store.capture(project)
+    aa_dir = project / ".aa"
+    aa_dir.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret\n", encoding="utf-8")
+    os.symlink(outside, aa_dir / "data-knowledge.yaml")
+    synchronized = (ResourcePath.parse("project:.aa/data-knowledge.yaml"),)
+
+    with pytest.raises(WorkspaceError, match="escapes project root"):
+        store.overlay_synchronized_paths_many((tree, tree), project, synchronized)
+
+
+def test_overlay_synchronized_paths_many_directory_prefix_is_deterministic(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    issues = project / "qa" / "issues"
+    issues.mkdir(parents=True)
+    (issues / "A.json").write_text('{"a":1}\n', encoding="utf-8")
+    (issues / "B.json").write_text('{"b":2}\n', encoding="utf-8")
+    store = _store(project)
+    base_tree = store.capture(project)
+    (issues / "A.json").write_text('{"a":99}\n', encoding="utf-8")
+    target_tree = store.capture(project)
+    (issues / "A.json").write_text('{"a":live}\n', encoding="utf-8")
+    (issues / "B.json").write_text('{"b":live}\n', encoding="utf-8")
+
+    synchronized = (ResourcePath.parse("project:qa/issues/**"),)
+    base_overlay, target_overlay = store.overlay_synchronized_paths_many(
+        (base_tree, target_tree),
+        project,
+        synchronized,
+    )
+
+    assert store.read_bytes(base_overlay, "project:qa/issues/A.json") == b'{"a":live}\n'
+    assert store.read_bytes(base_overlay, "project:qa/issues/B.json") == b'{"b":live}\n'
+    assert store.read_bytes(target_overlay, "project:qa/issues/A.json") == b'{"a":live}\n'
+    assert store.read_bytes(target_overlay, "project:qa/issues/B.json") == b'{"b":live}\n'
+    assert store.read_bytes(base_overlay, "project:app/source.py") == b"app base\n"
+    assert store.read_bytes(target_overlay, "project:app/source.py") == b"app base\n"
+
+
+def test_overlay_synchronized_paths_many_requires_matching_roots(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    repo_root = project / "repo-alias"
+    repo_root.mkdir()
+    store = _store(project)
+    base_tree = store.capture(project)
+    aliased_tree = store.capture(project, repo_root=repo_root)
+    synchronized = (ResourcePath.parse("project:.aa/data-knowledge.yaml"),)
+
+    with pytest.raises(WorkspaceError, match="same logical-root mapping"):
+        store.overlay_synchronized_paths_many((base_tree, aliased_tree), project, synchronized)
+
+
+# ---------------------------------------------------------------------------
 # synchronized live overlays / targeted apply
 
 

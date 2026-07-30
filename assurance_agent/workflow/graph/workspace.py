@@ -398,8 +398,8 @@ def _capture_synchronized_entries(
     synchronized: Sequence[ResourcePath],
     *,
     active_change_dir: Path | None = None,
-) -> dict[str, _Entry]:
-    captured: dict[str, _Entry] = {}
+) -> dict[str, tuple[_Entry, bytes]]:
+    captured: dict[str, tuple[_Entry, bytes]] = {}
     for path in synchronized:
         rel_pattern = _physical_for(roots, path)
         if path.segments[-1] == "**":
@@ -414,12 +414,20 @@ def _capture_synchronized_entries(
             if not directory.is_dir():
                 raise WorkspaceError(f"synchronized prefix is not a directory: {path.pattern}")
             for child_rel, entry in _walk(directory).items():
-                captured[f"{directory_rel}/{child_rel}"] = entry
+                full_rel = f"{directory_rel}/{child_rel}"
+                source = project_root / full_rel
+                if entry.kind == "file":
+                    data = source.read_bytes()
+                else:
+                    data = os.readlink(source).encode("utf-8")
+                if hashlib.sha256(data).hexdigest() != entry.sha256:
+                    raise WorkspaceError(f"synchronized path changed during capture: {full_rel}")
+                captured[full_rel] = (entry, data)
             # Ledger JSONL is basename-excluded from _walk; include it for live overlay.
             events_rel = f"{directory_rel}/events.jsonl" if directory_rel else "events.jsonl"
-            events_entry = _entry_at(project_root, events_rel)
-            if events_entry is not None:
-                captured[events_rel] = events_entry
+            events_captured = _entry_and_bytes_at(project_root, events_rel)
+            if events_captured is not None:
+                captured[events_rel] = events_captured
             # The normal tree walk excludes every events.jsonl basename because
             # the active Change coordinator mutates its ledger during execution.
             # A synchronized Retro snapshot still needs immutable sibling Change
@@ -433,13 +441,13 @@ def _capture_synchronized_entries(
                         if active is not None and ledger.resolve() == (active / suffix).resolve():
                             continue
                         ledger_rel = ledger.relative_to(project_root).as_posix()
-                        ledger_entry = _entry_at(project_root, ledger_rel)
-                        if ledger_entry is not None:
-                            captured[ledger_rel] = ledger_entry
+                        ledger_captured = _entry_and_bytes_at(project_root, ledger_rel)
+                        if ledger_captured is not None:
+                            captured[ledger_rel] = ledger_captured
             continue
-        entry = _entry_at(project_root, rel_pattern)
-        if entry is not None:
-            captured[rel_pattern] = entry
+        file_captured = _entry_and_bytes_at(project_root, rel_pattern)
+        if file_captured is not None:
+            captured[rel_pattern] = file_captured
     return captured
 
 
@@ -476,7 +484,7 @@ def _synchronized_ledger_entries(
     return found
 
 
-def _entry_at(project_root: Path, rel: str) -> _Entry | None:
+def _entry_and_bytes_at(project_root: Path, rel: str) -> tuple[_Entry, bytes] | None:
     target = project_root / rel
     if not _is_within(target.parent.resolve(), project_root):
         raise WorkspaceError(f"targeted path escapes project root: {rel}")
@@ -484,14 +492,23 @@ def _entry_at(project_root: Path, rel: str) -> _Entry | None:
         link_target = os.readlink(target)
         if not _is_within((target.parent / link_target).resolve(), project_root):
             raise WorkspaceError(f"targeted symlink escapes project root: {rel}")
-        return _Entry(kind="symlink", sha256=hashlib.sha256(link_target.encode()).hexdigest())
+        data = link_target.encode("utf-8")
+        return _Entry(kind="symlink", sha256=hashlib.sha256(data).hexdigest()), data
     if not target.exists():
         return None
     if not target.is_file():
         raise WorkspaceError(f"targeted write-set path is not a file: {rel}")
     data = target.read_bytes()
     executable = bool(target.stat(follow_symlinks=False).st_mode & 0o100)
-    return _Entry(kind="file", sha256=hashlib.sha256(data).hexdigest(), executable=executable)
+    return (
+        _Entry(kind="file", sha256=hashlib.sha256(data).hexdigest(), executable=executable),
+        data,
+    )
+
+
+def _entry_at(project_root: Path, rel: str) -> _Entry | None:
+    captured = _entry_and_bytes_at(project_root, rel)
+    return captured[0] if captured is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -955,6 +972,52 @@ class TreeStore:
         self._write_object(target_tree_id, raw)
         return target_tree_id
 
+    def overlay_synchronized_paths_many(
+        self,
+        tree_ids: Sequence[str],
+        project_root: Path,
+        paths: Sequence[ResourcePath],
+    ) -> tuple[str, ...]:
+        """Replace declared synchronized paths in every tree from one live capture."""
+        synchronized = _validated_synchronized_paths(paths)
+        if not synchronized:
+            return tuple(tree_ids)
+        project_root = project_root.resolve()
+        if not project_root.is_dir():
+            raise WorkspaceError(f"project root is not a directory: {project_root}")
+        if not tree_ids:
+            return tuple(tree_ids)
+        trees = [self._load_tree(tree_id) for tree_id in tree_ids]
+        roots = trees[0].roots
+        for tree in trees[1:]:
+            if tree.roots != roots:
+                raise WorkspaceError("supplied trees must share the same logical-root mapping")
+        live = _capture_synchronized_entries(
+            project_root,
+            roots,
+            synchronized,
+            active_change_dir=self._change_dir,
+        )
+        live_entries = {rel: entry for rel, (entry, _data) in live.items()}
+        for _rel, (entry, data) in live.items():
+            self._write_object(entry.sha256, data)
+        overlay_ids: list[str] = []
+        for base in trees:
+            entries = dict(base.entries)
+            for rel in sorted(set(base.entries) | set(live_entries)):
+                if not _matches_synchronized_path(base.roots, rel, synchronized):
+                    continue
+                current = live_entries.get(rel)
+                if current is None:
+                    entries.pop(rel, None)
+                    continue
+                entries[rel] = current
+            raw = _canonical_json(_tree_payload(base.roots, entries))
+            overlay_tree_id = hashlib.sha256(raw).hexdigest()
+            self._write_object(overlay_tree_id, raw)
+            overlay_ids.append(overlay_tree_id)
+        return tuple(overlay_ids)
+
     def overlay_synchronized_paths(
         self,
         base_tree_id: str,
@@ -962,36 +1025,11 @@ class TreeStore:
         paths: Sequence[ResourcePath],
     ) -> str:
         """Replace only declared synchronized paths in ``base_tree_id`` from the live root."""
-        synchronized = _validated_synchronized_paths(paths)
-        if not synchronized:
-            return base_tree_id
-        project_root = project_root.resolve()
-        if not project_root.is_dir():
-            raise WorkspaceError(f"project root is not a directory: {project_root}")
-        base = self._load_tree(base_tree_id)
-        live = _capture_synchronized_entries(
+        (overlay_tree_id,) = self.overlay_synchronized_paths_many(
+            (base_tree_id,),
             project_root,
-            base.roots,
-            synchronized,
-            active_change_dir=self._change_dir,
+            paths,
         )
-        entries = dict(base.entries)
-        for rel in sorted(set(base.entries) | set(live)):
-            if not _matches_synchronized_path(base.roots, rel, synchronized):
-                continue
-            current = live.get(rel)
-            if current is None:
-                entries.pop(rel, None)
-                continue
-            source = project_root / rel
-            data = source.read_bytes() if current.kind == "file" else os.readlink(source).encode("utf-8")
-            if hashlib.sha256(data).hexdigest() != current.sha256:
-                raise WorkspaceError(f"synchronized path changed during overlay: {rel}")
-            self._write_object(current.sha256, data)
-            entries[rel] = current
-        raw = _canonical_json(_tree_payload(base.roots, entries))
-        overlay_tree_id = hashlib.sha256(raw).hexdigest()
-        self._write_object(overlay_tree_id, raw)
         return overlay_tree_id
 
     def apply_write_sets_to_synchronized_paths(
