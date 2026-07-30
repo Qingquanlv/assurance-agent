@@ -10,11 +10,14 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from assurance_agent.artifacts.models.assurance import LAYER_NAMES
 from assurance_agent.eval.specialty_models import (
     LegacySpecialtyReportV1,
     SpecialtyReportV2,
+    build_capability_replay_v2,
     load_specialty_report,
 )
+from assurance_agent.eval.specialty_render import render_specialty_sections
 from assurance_agent.verification.profiles import get_layer_assurance_profile
 from assurance_agent.workflow.graph.definition_pinning import policy_snapshot_relpath
 from assurance_agent.workflow.graph.replay_binding import normalize_logical_path
@@ -583,6 +586,286 @@ def test_v1_report_loads_for_evidence_row_but_rejects_v2_validation(tmp_path: Pa
     assert row.stdout == f"{_CHANGE_ID}|9|degraded|1|40|fail|0|0\n"
 
 
+def _minimal_traceability(*, change_id: str) -> dict[str, object]:
+    return {
+        "command_status": {"trace_exit": 9, "verify_exit": 40},
+        "execution_projection": {
+            "phase": "execution",
+            "batch_id": "batch-1",
+            "integrity": "degraded",
+            "row_count": 2,
+            "source_count": 2,
+            "gap_count": 1,
+            "unmapped_test_count": 1,
+        },
+        "reconciled_projection": {
+            "phase": "reconciled",
+            "batch_id": "batch-1",
+            "integrity": "complete",
+            "row_count": 2,
+            "source_count": 3,
+            "gap_count": 0,
+            "unmapped_test_count": 1,
+            "failure_row_count": 1,
+            "failure_link_count": 2,
+            "open_problem_row_count": 1,
+            "open_problem_link_count": 2,
+            "unique_open_problem_count": 2,
+        },
+        "sufficiency": {
+            "sufficient_count": 1,
+            "insufficient_count": 1,
+            "reason_counts": {"missing_fuzz_run": 1, "never_run": 1},
+        },
+        "coverage": {
+            "status": "PASS",
+            "line": 48.35,
+            "branch": 2.58,
+            "final_status": "FAIL",
+        },
+        "verify": {
+            "verdict": "fail",
+            "blocking_gap_count": 0,
+            "open_problem_count": 2,
+            "reported_insufficient_count": 0,
+            "observed_insufficient_count": 1,
+        },
+    }
+
+
+def _legacy_v1_report(*, change_id: str = "CH-LEGACY") -> LegacySpecialtyReportV1:
+    return LegacySpecialtyReportV1.model_validate(
+        {
+            "schema_version": "1",
+            "change_id": change_id,
+            "capability_contract_policy": {
+                "capabilities": {"required": ["cap.a"], "missing": ["cap.b"]},
+                "contracts": {
+                    "agent_execution_contract_digests": ["exec-1"],
+                    "rendered_output_contract_count": 2,
+                    "prompt_observability": "derived_not_recorded",
+                },
+                "mechanical_checks": {
+                    "status": "fail",
+                    "finding_count": 1,
+                    "by_check": {
+                        "l1_path": {"status": "pass", "finding_count": 0},
+                        "shared_factory": {"status": "fail", "finding_count": 1},
+                        "assert_ideal": {"status": "pass", "finding_count": 0},
+                        "capability_keys": {"status": "pass", "finding_count": 0},
+                    },
+                },
+                "policy": {
+                    "source": "project",
+                    "plan_checks": {
+                        "assert_ideal": "warn",
+                        "capability_keys": "block",
+                        "l1_path": "require_human",
+                        "shared_factory": "warn",
+                    },
+                    "digest": "policy-current",
+                    "recorded_digest": "policy-current",
+                },
+                "policy_replay": [
+                    {"action": "warn", "verdict": "pass"},
+                    {"action": "block", "verdict": "reject"},
+                    {"action": "require_human", "verdict": "needs_human_review"},
+                ],
+            },
+            "traceability_evidence": _minimal_traceability(change_id=change_id),
+        }
+    )
+
+
+def _synthetic_v2_report(*, change_id: str) -> SpecialtyReportV2:
+    rows: list[dict[str, object]] = [
+        {
+            "layer": "api",
+            "case_type": "API",
+            "status": "complete",
+            "reason_code": None,
+            "applicability": "applicable",
+            "gate_id": "api-plan-review-gate",
+            "review_artifact": "review/api-plan-review.json",
+            "checks_artifact": "review/api-plan-checks.json",
+            "capabilities": {"required": ["cap.a", "cap.b"], "missing": ["cap.c"]},
+            "mechanical_checks": {
+                "status": "fail",
+                "finding_count": 2,
+                "checks": [
+                    {"check_id": "l1_path", "status": "pass", "finding_count": 0},
+                    {"check_id": "shared_factory", "status": "fail", "finding_count": 2},
+                    {"check_id": "assert_ideal", "status": "pass", "finding_count": 0},
+                    {"check_id": "capability_keys", "status": "pass", "finding_count": 0},
+                ],
+            },
+            "mechanical_execution_contract_digest": "mech-api",
+            "evidence_digests": {
+                "review": "review-api",
+                "checks": "checks-api",
+                "data_knowledge": "l1-api",
+            },
+            "scenarios": [
+                {
+                    "action": "warn",
+                    "policy_digest": "d-warn",
+                    "verdict": "pass",
+                    "route": "pass",
+                    "matched_rule": "pass_when",
+                    "reason": "ok",
+                    "missing_capabilities": [],
+                    "policy_effect": "no_failed_checks",
+                },
+                {
+                    "action": "block",
+                    "policy_digest": "d-block",
+                    "verdict": "reject",
+                    "route": "reject",
+                    "matched_rule": "reject_when",
+                    "reason": "failed",
+                    "missing_capabilities": [],
+                    "policy_effect": "applied",
+                },
+                {
+                    "action": "require_human",
+                    "policy_digest": "d-human",
+                    "verdict": "needs_human_review",
+                    "route": "needs_human_review",
+                    "matched_rule": "human_when",
+                    "reason": "review",
+                    "missing_capabilities": [],
+                    "policy_effect": "applied",
+                },
+            ],
+        },
+        {
+            "layer": "e2e",
+            "case_type": "E2E",
+            "status": "complete",
+            "reason_code": None,
+            "applicability": "not_applicable",
+            "gate_id": "e2e-plan-review-gate",
+            "review_artifact": "review/plan-review.json",
+            "checks_artifact": "review/e2e-plan-checks.json",
+            "capabilities": None,
+            "mechanical_checks": {
+                "status": "pass",
+                "finding_count": 0,
+                "checks": [
+                    {"check_id": check_id, "status": "not_applicable", "finding_count": 0}
+                    for check_id in ("l1_path", "shared_factory", "assert_ideal", "capability_keys")
+                ],
+            },
+            "mechanical_execution_contract_digest": "mech-e2e",
+            "evidence_digests": {"review": None, "checks": "checks-e2e", "data_knowledge": None},
+            "scenarios": [
+                {
+                    "action": action,
+                    "policy_digest": f"d-{action}",
+                    "verdict": "skip",
+                    "route": "skip",
+                    "matched_rule": None,
+                    "reason": "layer_not_applicable",
+                    "missing_capabilities": [],
+                    "policy_effect": "no_failed_checks",
+                }
+                for action in ("warn", "block", "require_human")
+            ],
+        },
+        {"layer": "fuzz", "case_type": "Fuzz", "status": "not_selected", "reason_code": None},
+        {
+            "layer": "performance",
+            "case_type": "Performance",
+            "status": "incomplete",
+            "reason_code": "mechanical_producer_unbound",
+        },
+    ]
+    return SpecialtyReportV2(
+        change_id=change_id,
+        capability_contract_policy=build_capability_replay_v2(
+            definition_binding={
+                "root_invocation_id": f"root-{change_id}",
+                "assurance_invocation_id": f"assurance-{change_id}",
+                "graph_digest": f"graph-{change_id}",
+                "gate_definition_source": "pinned_schema",
+                "baseline_policy_digest": "policy-digest",
+                "policy_source": "pinned_runtime_snapshot",
+                "policy_origin": "project",
+                "gate_semantics_digest": "semantics-digest",
+                "assurance_profile_digest": "profile-digest",
+            },
+            rows=rows,
+        ),
+        traceability_evidence=_minimal_traceability(change_id=change_id),
+    )
+
+
+def test_render_layer_assurance_matrix_shows_four_layer_fields() -> None:
+    report = _synthetic_v2_report(change_id="CH-MATRIX")
+    rendered = render_specialty_sections([report])
+
+    assert "### Layer Assurance Matrix" in rendered
+    assert "| change_id | layer | status | applicability | mechanical | findings | capabilities req/miss | contract digest |" in rendered
+    assert "| `CH-MATRIX` | api | complete | applicable | fail | 2 | 2/1 | yes |" in rendered
+    assert "| `CH-MATRIX` | e2e | complete | not_applicable | pass | 0 | - | yes |" in rendered
+    assert "| `CH-MATRIX` | fuzz | not_selected | - | - | - | - | - |" in rendered
+    assert "| `CH-MATRIX` | performance | incomplete | - | - | - | - | - |" in rendered
+
+
+def test_render_policy_replay_matrix_shows_verdicts_statuses_and_reasons() -> None:
+    report = _synthetic_v2_report(change_id="CH-MATRIX")
+    rendered = render_specialty_sections([report])
+
+    assert "### Policy Replay Matrix" in rendered
+    assert "| `CH-MATRIX` | api | pass | reject | needs_human_review |" in rendered
+    assert "| `CH-MATRIX` | e2e | skip | skip | skip |" in rendered
+    assert "| `CH-MATRIX` | fuzz | not_selected | not_selected | not_selected |" in rendered
+    assert "| `CH-MATRIX` | performance | mechanical_producer_unbound | mechanical_producer_unbound | mechanical_producer_unbound |" in rendered
+
+
+def test_render_sorts_v2_reports_by_change_id_and_profile_order() -> None:
+    first = _synthetic_v2_report(change_id="CH-A")
+    second = _synthetic_v2_report(change_id="CH-B")
+    rendered = render_specialty_sections([second, first])
+
+    matrix_section = rendered.split("### Layer Assurance Matrix", maxsplit=1)[1].split(
+        "### Policy Replay Matrix", maxsplit=1
+    )[0]
+    api_rows = [line for line in matrix_section.splitlines() if " | api | " in line and line.startswith("| `CH-")]
+    assert api_rows == [
+        "| `CH-A` | api | complete | applicable | fail | 2 | 2/1 | yes |",
+        "| `CH-B` | api | complete | applicable | fail | 2 | 2/1 | yes |",
+    ]
+    ch_a_rows = [line for line in matrix_section.splitlines() if line.startswith("| `CH-A` |")]
+    assert [row.split("|")[2].strip() for row in ch_a_rows] == list(LAYER_NAMES)
+
+
+def test_render_v1_alone_labels_legacy_and_skips_layer_matrix_rows() -> None:
+    report = _legacy_v1_report()
+    rendered = render_specialty_sections([report])
+
+    assert "### legacy_api_only" in rendered
+    assert "### Layer Assurance Matrix" not in rendered
+    assert "| `CH-LEGACY` | fail |" in rendered
+    assert "| `CH-LEGACY` | legacy_api_only | pass | reject | needs_human_review |" in rendered
+    assert "| `CH-LEGACY` | api |" not in rendered
+    assert "| `CH-LEGACY` | e2e |" not in rendered
+    assert "| `CH-LEGACY` | fuzz |" not in rendered
+    assert "| `CH-LEGACY` | performance |" not in rendered
+
+
+def test_render_mixed_v1_v2_preserves_legacy_label_and_four_layer_rows() -> None:
+    v1 = _legacy_v1_report(change_id="CH-LEGACY")
+    v2 = _synthetic_v2_report(change_id="CH-V2")
+    rendered = render_specialty_sections([v2, v1])
+
+    assert "### Layer Assurance Matrix" in rendered
+    assert "### legacy_api_only" in rendered
+    assert "| `CH-V2` | api | complete | applicable |" in rendered
+    assert "| `CH-LEGACY` | legacy_api_only | pass | reject | needs_human_review |" in rendered
+    assert "| `CH-LEGACY` | api |" not in rendered
+
+
 def test_render_emits_both_specialty_sections_and_policy_matrix(tmp_path: Path) -> None:
     project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
     output = tmp_path / "specialty.json"
@@ -605,9 +888,14 @@ def test_render_emits_both_specialty_sections_and_policy_matrix(tmp_path: Path) 
 
     assert rendered.returncode == 0, rendered.stderr
     assert "## Capability + Contract + Policy" in rendered.stdout
-    assert f"| `{_CHANGE_ID}` | complete | {_ROOT_INV} |" in rendered.stdout
+    assert "### Layer Assurance Matrix" in rendered.stdout
+    assert f"| `{_CHANGE_ID}` | api | complete | applicable | fail | 1 |" in rendered.stdout
+    assert f"| `{_CHANGE_ID}` | fuzz | not_selected | - | - | - | - | - |" in rendered.stdout
+    assert f"| `{_CHANGE_ID}` | performance | not_selected | - | - | - | - | - |" in rendered.stdout
     assert "### Policy Replay Matrix" in rendered.stdout
     assert f"| `{_CHANGE_ID}` | api | pass | reject | needs_human_review |" in rendered.stdout
+    assert f"| `{_CHANGE_ID}` | fuzz | not_selected | not_selected | not_selected |" in rendered.stdout
+    assert f"| `{_CHANGE_ID}` | performance | not_selected | not_selected | not_selected |" in rendered.stdout
     assert "## Traceability / Evidence Projection" in rendered.stdout
     assert f"| `{_CHANGE_ID}` | execution | batch-1 | degraded | 2 | 2 | 1 | 1 |" in rendered.stdout
     assert (
@@ -838,5 +1126,6 @@ def test_cursor_helper_collects_and_renders_real_specialty_report(tmp_path: Path
         "verify_exit": 40,
     }
     assert "## Capability + Contract + Policy" in result.stdout
+    assert "### Layer Assurance Matrix" in result.stdout
     assert "### Policy Replay Matrix" in result.stdout
     assert "## Traceability / Evidence Projection" in result.stdout

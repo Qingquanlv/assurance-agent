@@ -13,6 +13,7 @@ from typing import Any
 from assurance_agent.artifacts.models import QualityGateResult
 from assurance_agent.artifacts.models.trace import TraceProjection
 from assurance_agent.eval.specialty_models import LegacySpecialtyReportV1, SpecialtyReportV2, load_specialty_report
+from assurance_agent.eval.specialty_render import render_specialty_sections
 from assurance_agent.eval.specialty_replay import collect_capability_policy_replay
 from assurance_agent.evidence.sufficiency import SufficiencyReport
 from assurance_agent.evidence.verify import VerifyResult, projection_digest
@@ -257,14 +258,6 @@ def collect_report(
     )
 
 
-def _cell(value: object) -> str:
-    return str(value).replace("|", "\\|").replace("\n", " ")
-
-
-def _reason_counts(reasons: dict[str, Any]) -> str:
-    return ", ".join(f"{key}:{value}" for key, value in sorted(reasons.items())) or "none"
-
-
 def evidence_row(report: dict[str, Any], *, expected_change_id: str) -> str:
     change_id = report.get("change_id")
     traceability = report.get("traceability_evidence")
@@ -302,219 +295,6 @@ def evidence_row(report: dict[str, Any], *, expected_change_id: str) -> str:
     if verdict not in {"pass", "needs_human", "fail"}:
         raise ValueError("specialty report has invalid verify verdict")
     return f"{change_id}|{trace_exit}|{integrity}|{gaps}|{verify_exit}|{verdict}|{blocking}|{insufficient}"
-
-
-def _render_v1_capability_sections(reports: list[dict[str, Any]]) -> list[str]:
-    lines = [
-        "## Capability + Contract + Policy",
-        "",
-        "| change_id | mechanical | checks | findings | capabilities required/missing | execution contracts | output contracts | prompt audit | policy source/actions | digest match |",
-        "|---|---|---|---:|---|---:|---:|---|---|---|",
-    ]
-    for report in reports:
-        cap = report["capability_contract_policy"]
-        checks = (
-            ", ".join(
-                f"{check_id}={item['status']}({item['finding_count']})"
-                for check_id, item in cap["mechanical_checks"]["by_check"].items()
-            )
-            or "none"
-        )
-        current_digest = cap["policy"]["digest"]
-        recorded_digest = cap["policy"]["recorded_digest"]
-        policy_actions = ", ".join(
-            f"{check_id}={action}" for check_id, action in sorted(cap["policy"]["plan_checks"].items())
-        )
-        lines.append(
-            "| `{}` | {} | {} | {} | {}/{} | {} | {} | {} | {}/{} | {} |".format(
-                _cell(report["change_id"]),
-                _cell(cap["mechanical_checks"]["status"]),
-                _cell(checks),
-                cap["mechanical_checks"]["finding_count"],
-                len(cap["capabilities"]["required"]),
-                len(cap["capabilities"]["missing"]),
-                len(cap["contracts"]["agent_execution_contract_digests"]),
-                cap["contracts"]["rendered_output_contract_count"],
-                _cell(cap["contracts"]["prompt_observability"]),
-                _cell(cap["policy"]["source"]),
-                _cell(policy_actions),
-                "yes" if current_digest == recorded_digest else "no",
-            )
-        )
-    lines.extend(
-        [
-            "",
-            "### Policy Replay Matrix",
-            "",
-            "| change_id | warn | block | require_human |",
-            "|---|---|---|---|",
-        ]
-    )
-    for report in reports:
-        replay = {
-            row["action"]: row["verdict"] for row in report["capability_contract_policy"]["policy_replay"]
-        }
-        lines.append(
-            "| `{}` | {} | {} | {} |".format(
-                _cell(report["change_id"]),
-                _cell(replay.get("warn", "missing")),
-                _cell(replay.get("block", "missing")),
-                _cell(replay.get("require_human", "missing")),
-            )
-        )
-    return lines
-
-
-def _render_v2_capability_sections(reports: list[dict[str, Any]]) -> list[str]:
-    lines = [
-        "## Capability + Contract + Policy",
-        "",
-        "| change_id | integrity | root | graph_digest | api | e2e | fuzz | performance |",
-        "|---|---|---|---|---|---|---|---|",
-    ]
-    for report in reports:
-        cap = report["capability_contract_policy"]
-        binding = cap.get("definition_binding") or {}
-        by_layer = {row["layer"]: row for row in cap["rows"]}
-        lines.append(
-            "| `{}` | {} | {} | {} | {} | {} | {} | {} |".format(
-                _cell(report["change_id"]),
-                _cell(cap["integrity"]),
-                _cell(binding.get("root_invocation_id", "missing")),
-                _cell(binding.get("graph_digest", "missing")),
-                _cell(by_layer["api"]["status"]),
-                _cell(by_layer["e2e"]["status"]),
-                _cell(by_layer["fuzz"]["status"]),
-                _cell(by_layer["performance"]["status"]),
-            )
-        )
-    lines.extend(
-        [
-            "",
-            "### Policy Replay Matrix",
-            "",
-            "| change_id | layer | warn | block | require_human |",
-            "|---|---|---|---|---|",
-        ]
-    )
-    for report in reports:
-        for row in report["capability_contract_policy"]["rows"]:
-            if row.get("status") != "complete":
-                continue
-            scenarios = {item["action"]: item["verdict"] for item in row.get("scenarios", [])}
-            lines.append(
-                "| `{}` | {} | {} | {} | {} |".format(
-                    _cell(report["change_id"]),
-                    _cell(row["layer"]),
-                    _cell(scenarios.get("warn", "missing")),
-                    _cell(scenarios.get("block", "missing")),
-                    _cell(scenarios.get("require_human", "missing")),
-                )
-            )
-    return lines
-
-
-def _render_traceability_sections(reports: list[dict[str, Any]]) -> list[str]:
-    lines = [
-        "",
-        "## Traceability / Evidence Projection",
-        "",
-        "### Execution Projection",
-        "",
-        "| change_id | phase | batch | integrity | rows | sources | gaps | unmapped tests |",
-        "|---|---|---|---|---:|---:|---:|---:|",
-    ]
-    for report in reports:
-        item = report["traceability_evidence"]["execution_projection"]
-        lines.append(
-            "| `{}` | {} | {} | {} | {} | {} | {} | {} |".format(
-                _cell(report["change_id"]),
-                _cell(item["phase"]),
-                _cell(item["batch_id"]),
-                _cell(item["integrity"]),
-                item["row_count"],
-                item["source_count"],
-                item["gap_count"],
-                item["unmapped_test_count"],
-            )
-        )
-    lines.extend(
-        [
-            "",
-            "### Reconciled Projection",
-            "",
-            "| change_id | phase | batch | integrity | rows | sources | gaps | unmapped tests | failure rows/links | problem rows/links/unique |",
-            "|---|---|---|---|---:|---:|---:|---:|---|---|",
-        ]
-    )
-    for report in reports:
-        item = report["traceability_evidence"]["reconciled_projection"]
-        lines.append(
-            "| `{}` | {} | {} | {} | {} | {} | {} | {} | {}/{} | {}/{}/{} |".format(
-                _cell(report["change_id"]),
-                _cell(item["phase"]),
-                _cell(item["batch_id"]),
-                _cell(item["integrity"]),
-                item["row_count"],
-                item["source_count"],
-                item["gap_count"],
-                item["unmapped_test_count"],
-                item["failure_row_count"],
-                item["failure_link_count"],
-                item["open_problem_row_count"],
-                item["open_problem_link_count"],
-                item["unique_open_problem_count"],
-            )
-        )
-    lines.extend(
-        [
-            "",
-            "### Evidence Sufficiency and Coverage",
-            "",
-            "| change_id | sufficient | insufficient | reason counts | evidence coverage | line % | branch % | final status |",
-            "|---|---:|---:|---|---|---:|---:|---|",
-        ]
-    )
-    for report in reports:
-        evidence = report["traceability_evidence"]
-        sufficiency = evidence["sufficiency"]
-        coverage = evidence["coverage"]
-        lines.append(
-            "| `{}` | {} | {} | {} | {} | {} | {} | {} |".format(
-                _cell(report["change_id"]),
-                sufficiency["sufficient_count"],
-                sufficiency["insufficient_count"],
-                _cell(_reason_counts(sufficiency["reason_counts"])),
-                _cell(coverage["status"]),
-                _cell(coverage["line"]),
-                _cell(coverage["branch"]),
-                _cell(coverage["final_status"]),
-            )
-        )
-    lines.extend(["", "### Verify Diagnostics", ""])
-    for report in reports:
-        verify = report["traceability_evidence"]["verify"]
-        lines.append(
-            "- `{}`: verdict={}; blocking gaps={}; open problems={}; reported insufficient={}; observed insufficient={}.".format(
-                _cell(report["change_id"]),
-                _cell(verify["verdict"]),
-                verify["blocking_gap_count"],
-                verify["open_problem_count"],
-                verify["reported_insufficient_count"],
-                verify["observed_insufficient_count"],
-            )
-        )
-    return lines
-
-
-def render_sections(reports: list[dict[str, Any]]) -> str:
-    reports = sorted(reports, key=lambda item: str(item.get("change_id", "")))
-    if reports and reports[0].get("schema_version") == "2":
-        lines = _render_v2_capability_sections(reports)
-    else:
-        lines = _render_v1_capability_sections(reports)
-    lines.extend(_render_traceability_sections(reports))
-    return "\n".join(lines) + "\n"
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -563,8 +343,8 @@ def main() -> int:
             payload = loaded.model_dump(mode="json")
         print(evidence_row(payload, expected_change_id=args.change_id))
         return 0
-    reports = [_load_json(path) for path in args.reports]
-    print(render_sections(reports), end="")
+    reports = [load_specialty_report(_load_json(path)) for path in args.reports]
+    print(render_specialty_sections(reports), end="")
     return 0
 
 
