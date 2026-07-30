@@ -88,40 +88,39 @@ def _render_layer_assurance_matrix(reports: Sequence[SpecialtyReportV2]) -> list
     return lines
 
 
-def _render_policy_replay_matrix(
-    *,
-    v2_reports: Sequence[SpecialtyReportV2],
-    v1_reports: Sequence[LegacySpecialtyReportV1],
-) -> list[str]:
+def _render_policy_replay_matrix(reports: Sequence[SpecialtyReport]) -> list[str]:
     lines = [
         "### Policy Replay Matrix",
         "",
         "| change_id | layer | warn | block | require_human |",
         "|---|---|---|---|---|",
     ]
-    for report in v2_reports:
-        for row in report.capability_contract_policy.rows:
-            warn, block, require_human = _replay_verdict_cells(row)
+    for report in reports:
+        if isinstance(report, SpecialtyReportV2):
+            for row in report.capability_contract_policy.rows:
+                warn, block, require_human = _replay_verdict_cells(row)
+                lines.append(
+                    "| `{}` | {} | {} | {} | {} |".format(
+                        _cell(report.change_id),
+                        _cell(row.layer),
+                        warn,
+                        block,
+                        require_human,
+                    )
+                )
+        elif isinstance(report, LegacySpecialtyReportV1):
+            cap = report.capability_contract_policy
+            replay = {row["action"]: row["verdict"] for row in cap["policy_replay"]}
             lines.append(
-                "| `{}` | {} | {} | {} | {} |".format(
+                "| `{}` | legacy_api_only | {} | {} | {} |".format(
                     _cell(report.change_id),
-                    _cell(row.layer),
-                    warn,
-                    block,
-                    require_human,
+                    _cell(replay.get("warn", "missing")),
+                    _cell(replay.get("block", "missing")),
+                    _cell(replay.get("require_human", "missing")),
                 )
             )
-    for report in v1_reports:
-        cap = report.capability_contract_policy
-        replay = {row["action"]: row["verdict"] for row in cap["policy_replay"]}
-        lines.append(
-            "| `{}` | legacy_api_only | {} | {} | {} |".format(
-                _cell(report.change_id),
-                _cell(replay.get("warn", "missing")),
-                _cell(replay.get("block", "missing")),
-                _cell(replay.get("require_human", "missing")),
-            )
-        )
+        else:
+            raise TypeError(f"unsupported specialty report type: {type(report)!r}")
     return lines
 
 
@@ -175,7 +174,7 @@ def _render_capability_sections(reports: Sequence[SpecialtyReport]) -> list[str]
         lines.extend(_render_layer_assurance_matrix(v2_reports))
         lines.append("")
     if v2_reports or v1_reports:
-        lines.extend(_render_policy_replay_matrix(v2_reports=v2_reports, v1_reports=v1_reports))
+        lines.extend(_render_policy_replay_matrix(sorted_reports))
     if v1_reports:
         lines.extend(["", *_render_legacy_api_only(v1_reports)])
     return lines

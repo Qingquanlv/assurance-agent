@@ -822,6 +822,26 @@ def test_render_policy_replay_matrix_shows_verdicts_statuses_and_reasons() -> No
     assert "| `CH-MATRIX` | fuzz | not_selected | not_selected | not_selected |" in rendered
     assert "| `CH-MATRIX` | performance | mechanical_producer_unbound | mechanical_producer_unbound | mechanical_producer_unbound |" in rendered
 
+    not_wired = _synthetic_v2_report(change_id="CH-NW")
+    not_wired_rows: list[dict[str, object]] = [
+        not_wired.capability_contract_policy.rows[0].model_dump(mode="json"),
+        not_wired.capability_contract_policy.rows[1].model_dump(mode="json"),
+        {"layer": "fuzz", "case_type": "Fuzz", "status": "not_wired", "reason_code": None},
+        not_wired.capability_contract_policy.rows[3].model_dump(mode="json"),
+    ]
+    binding = not_wired.capability_contract_policy.definition_binding
+    assert binding is not None
+    not_wired_report = SpecialtyReportV2(
+        change_id="CH-NW",
+        capability_contract_policy=build_capability_replay_v2(
+            definition_binding=binding.model_dump(mode="json"),
+            rows=not_wired_rows,
+        ),
+        traceability_evidence=not_wired.traceability_evidence,
+    )
+    not_wired_rendered = render_specialty_sections([not_wired_report])
+    assert "| `CH-NW` | fuzz | not_wired | not_wired | not_wired |" in not_wired_rendered
+
 
 def test_render_sorts_v2_reports_by_change_id_and_profile_order() -> None:
     first = _synthetic_v2_report(change_id="CH-A")
@@ -864,6 +884,17 @@ def test_render_mixed_v1_v2_preserves_legacy_label_and_four_layer_rows() -> None
     assert "| `CH-V2` | api | complete | applicable |" in rendered
     assert "| `CH-LEGACY` | legacy_api_only | pass | reject | needs_human_review |" in rendered
     assert "| `CH-LEGACY` | api |" not in rendered
+
+
+def test_render_mixed_v1_v2_policy_replay_sorts_by_change_id() -> None:
+    v1 = _legacy_v1_report(change_id="CH-A")
+    v2 = _synthetic_v2_report(change_id="CH-B")
+    rendered = render_specialty_sections([v2, v1])
+
+    replay_section = rendered.split("### Policy Replay Matrix", maxsplit=1)[1].split("##", maxsplit=1)[0]
+    data_rows = [line for line in replay_section.splitlines() if line.startswith("| `CH-")]
+    assert data_rows[0] == "| `CH-A` | legacy_api_only | pass | reject | needs_human_review |"
+    assert data_rows[1].startswith("| `CH-B` | api |")
 
 
 def test_render_emits_both_specialty_sections_and_policy_matrix(tmp_path: Path) -> None:
