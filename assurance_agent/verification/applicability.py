@@ -2,8 +2,11 @@
 
 from collections.abc import Mapping, Sequence
 
+from assurance_agent.artifacts.models.assurance import CASE_TYPES
 from assurance_agent.artifacts.models.plan_checks import LayerApplicability
 from assurance_agent.verification.profiles import LayerAssuranceProfile
+
+_CASE_TYPES = frozenset(CASE_TYPES)
 
 
 def derive_layer_applicability(
@@ -21,7 +24,7 @@ def derive_layer_applicability(
                 if not isinstance(entry, Mapping):
                     raise ValueError(f"{locator} must be a mapping")
                 case_type = entry.get("type")
-                if case_type not in {"API", "E2E", "Fuzz", "Performance"}:
+                if case_type not in _CASE_TYPES:
                     raise ValueError(f"{locator}.type is invalid")
                 if "automation" not in entry:
                     required = False

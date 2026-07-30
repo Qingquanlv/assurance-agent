@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from assurance_agent.artifacts.models.assurance import PLAN_CHECK_IDS
 from assurance_agent.artifacts.models.plan_checks import (
     CheckEvidence,
+    CheckStatus,
     Finding,
     LayerApplicability,
     PlanCheckDocument,
@@ -26,7 +27,7 @@ def _finding() -> Finding:
     return Finding(locator="plans/api-plan.md:12", actual="x", expected="y")
 
 
-def _checks(status: str = "pass") -> list[CheckEvidence]:
+def _checks(status: CheckStatus = "pass") -> list[CheckEvidence]:
     return [CheckEvidence(check_id=check_id, status=status) for check_id in PLAN_CHECK_IDS]
 
 

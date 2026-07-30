@@ -212,6 +212,25 @@ def test_review_at_canonical_path_supplies_required_capabilities_on_reviewed_pas
     assert capability_check["findings"][0]["actual"] == "domain_factories.dept.missing_thing"
 
 
+def test_a_failing_check_is_not_a_task_failure(workspace: TaskWorkspace) -> None:
+    """capability_keys 未命中是机械 check 的 fail，不是 task 的 failed（spec C2）。"""
+    _write_profile_plans(workspace, "api", "Data knowledge: `.aa/data-knowledge.yaml`\n")
+    review_path = workspace.change_dir / "review" / "api-plan-review.json"
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    review_path.write_text(
+        json.dumps({"required_capabilities": ["domain_factories.dept.missing_thing"]}),
+        encoding="utf-8",
+    )
+
+    result = verify_plan_mechanical(_task("api"), workspace, _context())
+
+    assert result.status == "succeeded"
+    assert result.value == {"status": "fail"}
+    assert result.error_kind is None
+    doc = json.loads((workspace.change_dir / "review" / "api-plan-checks.json").read_text(encoding="utf-8"))
+    assert doc["status"] == "fail"
+
+
 def test_missing_review_on_first_pass_yields_empty_required_capabilities(workspace: TaskWorkspace) -> None:
     _write_profile_plans(workspace, "api", "Data knowledge: `.aa/data-knowledge.yaml`\n")
     result = verify_plan_mechanical(_task("api"), workspace, _context())

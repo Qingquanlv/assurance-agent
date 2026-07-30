@@ -104,7 +104,7 @@ aa knowledge promote [--project-dir] (--change <id> | --from <proposal-path>) [-
 
 ## Plan check 证据（`review/*-plan-checks.json`，schema v2）
 
-四层机械 check（`l1_path` / `shared_factory` / `assert_ideal` / `capability_keys`，运行顺序由 `assurance_agent/verification/checks/registry.py` 的 `CHECKS_BY_ID` 声明顺序决定）产出的 `PlanCheckDocument`（`assurance_agent/artifacts/models/plan_checks.py`）是版本化产物：
+四层机械 check（`l1_path` / `shared_factory` / `assert_ideal` / `capability_keys`，运行顺序由 `assurance_agent/artifacts/models/assurance.py` 的 `PLAN_CHECK_IDS` 声明顺序决定）产出的 `PlanCheckDocument`（`assurance_agent/artifacts/models/plan_checks.py`）是版本化产物：
 
 - **version 1**——历史只读格式：无 `layer` / `applicability` 字段，文档级与逐 check 的 `status` 只允许 `pass`/`fail`。可被解析，但生产路径不再写出。
 - **version 2**——`api` / `e2e` / `fuzz` / `performance` 四层统一生产格式：新增 `layer`（`LayerName`）与 `applicability`（`LayerApplicability`：`applicable` + `reason_code` + 排序去重的 `case_ids`）。`checks` 必须**恰好**包含 `PLAN_CHECK_IDS` 中每个已知 check 各一次——多、少、重复或未知 `check_id` 均在模型校验期拒绝（fail closed），不会静默丢弃或吞并。

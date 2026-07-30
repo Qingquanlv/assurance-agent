@@ -1,4 +1,4 @@
-"""Plan-check registry; its declaration order defines document check ordering."""
+"""Plan-check registry; document check ordering is defined by ``PLAN_CHECK_IDS``, not this mapping's declaration order."""
 
 from __future__ import annotations
 
