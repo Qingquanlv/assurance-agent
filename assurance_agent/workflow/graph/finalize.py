@@ -34,7 +34,7 @@ from assurance_agent.workflow.graph.models import (
 )
 from assurance_agent.workflow.graph.node_history import build_node_results_for_gate
 from assurance_agent.workflow.graph.schema_v2 import NodeDef
-from assurance_agent.workflow.graph.compiler import canonical_digest
+from assurance_agent.workflow.graph.selected_wave import derive_child_invocation_id
 from assurance_agent.workflow.graph.task_runner import task_failure
 from assurance_agent.workflow.graph.workspace import TaskWorkspace, TreeStore, WorkspaceError
 from assurance_agent.workflow.orchestration.gates import (
@@ -187,7 +187,7 @@ def _apply_subgraph_exports(
     if node is None or not node.exports:
         return result
     child_graph_id = task.target.split(":", 1)[1]
-    child_invocation_id = canonical_digest({"parent_task_id": task.task_id, "graph_id": child_graph_id})
+    child_invocation_id = derive_child_invocation_id(task, child_graph_id)
     try:
         # Nested subgraph events are written to the single per-change ledger
         # (context.change_dir), not the parent task's private workspace — the

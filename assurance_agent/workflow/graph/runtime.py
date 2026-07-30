@@ -42,6 +42,7 @@ from assurance_agent.workflow.graph.status import (
     pending_write_sets as _pending_write_sets_fn,
 )
 from assurance_agent.workflow.graph.compiler import canonical_digest, resolve_params
+from assurance_agent.workflow.graph.selected_wave import derive_child_invocation_id
 from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog
 from assurance_agent.workflow.graph.leases import (
@@ -382,7 +383,7 @@ class GraphRuntime:
                 error_kind="contract",
                 error=f"unknown subgraph '{graph_id}'",
             )
-        child_invocation_id = canonical_digest({"parent_task_id": parent_task.task_id, "graph_id": graph_id})
+        child_invocation_id = derive_child_invocation_id(parent_task, graph_id)
         checkpoint_ns = f"{parent_task.checkpoint_ns}/{parent_task.node_id}/{child_invocation_id}"
         structural_path = f"{parent_task.structural_path}/{parent_task.node_id}/{graph_id}"
         child_params = dict(context.params)
