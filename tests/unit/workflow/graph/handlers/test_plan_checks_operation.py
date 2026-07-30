@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from assurance_agent.verification.profiles import get_layer_assurance_profile
 from assurance_agent.workflow.graph.handlers.plan_checks import verify_plan_mechanical
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
@@ -25,19 +26,49 @@ DK = {
 }
 
 
+def _write_profile_plans(workspace: TaskWorkspace, layer: str, body: str = "# Plan\n") -> None:
+    profile = get_layer_assurance_profile(layer)
+    for rel in profile.plan_artifacts:
+        path = workspace.change_dir / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+
+
+def _write_case(workspace: TaskWorkspace, case_type: str = "API", *, automated: bool = True) -> None:
+    case_dir = workspace.change_dir / "cases" / "system" / "dept"
+    case_dir.mkdir(parents=True, exist_ok=True)
+    (case_dir / "case.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1.0",
+                "added": [
+                    {
+                        "case_id": "TC_DEPT_001",
+                        "title": "case",
+                        "status": "active",
+                        "priority": "P1",
+                        "severity": "major",
+                        "type": case_type,
+                        "module": "dept",
+                        "automation": {"required": automated},
+                    }
+                ],
+                "modified": [],
+                "removed": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 @pytest.fixture()
 def workspace(tmp_path: Path) -> TaskWorkspace:
     project_root = tmp_path / "proj"
     change_dir = project_root / "qa" / "changes" / "CH-1"
-    (change_dir / "plans").mkdir(parents=True)
     (change_dir / "cases" / "system" / "dept").mkdir(parents=True)
     (project_root / ".aa").mkdir()
     (project_root / ".aa" / "data-knowledge.yaml").write_text(yaml.safe_dump(DK), encoding="utf-8")
-    (change_dir / "cases" / "system" / "dept" / "case.yaml").write_text(
-        yaml.safe_dump({"schema_version": "1.0", "added": [], "modified": [], "removed": []}),
-        encoding="utf-8",
-    )
-    return TaskWorkspace(
+    ws = TaskWorkspace(
         task_id="t1",
         root=project_root,
         project_root=project_root,
@@ -45,6 +76,8 @@ def workspace(tmp_path: Path) -> TaskWorkspace:
         change_dir=change_dir,
         base_tree_id="tree",
     )
+    _write_case(ws, "API", automated=True)
+    return ws
 
 
 def _task(layer: str = "api") -> ExecutableTask:
@@ -61,69 +94,81 @@ def _context() -> RuntimeContext:
     return RuntimeContext.model_construct(change_id="CH-1", params={})
 
 
-def test_clean_plan_writes_a_passing_document(workspace: TaskWorkspace) -> None:
-    (workspace.change_dir / "plans" / "api-plan.md").write_text(
-        "Data knowledge: `.aa/data-knowledge.yaml`\n", encoding="utf-8"
-    )
-    result = verify_plan_mechanical(_task(), workspace, _context())
+def test_write_profile_plans_helper_creates_exact_paths(workspace: TaskWorkspace) -> None:
+    _write_profile_plans(workspace, "api")
+    assert (workspace.change_dir / "plans" / "api-plan.md").is_file()
+
+
+def test_api_writes_version_two_evidence_at_the_profile_path(workspace: TaskWorkspace) -> None:
+    _write_profile_plans(workspace, "api", "Data knowledge: `.aa/data-knowledge.yaml`\n")
+    result = verify_plan_mechanical(_task("api"), workspace, _context())
     assert isinstance(result, TaskResult) and result.status == "succeeded"
-    assert result.value == {"status": "pass"}
     doc = json.loads((workspace.change_dir / "review" / "api-plan-checks.json").read_text(encoding="utf-8"))
-    assert doc["schema_version"] == "1"
-    assert doc["status"] == "pass"
-    assert {check["check_id"] for check in doc["checks"]} == {
-        "l1_path",
-        "shared_factory",
-        "assert_ideal",
-        "capability_keys",
-    }
+    assert doc["schema_version"] == "2"
+    assert doc["layer"] == "api"
+    assert doc["applicability"]["applicable"] is True
 
 
-def test_violating_plan_writes_findings_and_reports_fail(workspace: TaskWorkspace) -> None:
-    (workspace.change_dir / "plans" / "api-plan.md").write_text(
-        "read `qa/.knowledge/data-knowledge.yaml`\n", encoding="utf-8"
-    )
-    result = verify_plan_mechanical(_task(), workspace, _context())
+@pytest.mark.parametrize(
+    ("layer", "case_type", "checks_path"),
+    [
+        ("e2e", "E2E", "e2e-plan-checks.json"),
+        ("fuzz", "Fuzz", "fuzz-plan-checks.json"),
+        ("performance", "Performance", "performance-plan-checks.json"),
+    ],
+)
+def test_other_layers_write_their_own_profile_declared_paths(
+    workspace: TaskWorkspace, layer: str, case_type: str, checks_path: str
+) -> None:
+    _write_case(workspace, case_type, automated=True)
+    _write_profile_plans(workspace, layer, "Data knowledge: `.aa/data-knowledge.yaml`\n")
+    result = verify_plan_mechanical(_task(layer), workspace, _context())
     assert result.status == "succeeded"
-    assert result.value == {"status": "fail"}
-    doc = json.loads((workspace.change_dir / "review" / "api-plan-checks.json").read_text(encoding="utf-8"))
-    l1 = next(check for check in doc["checks"] if check["check_id"] == "l1_path")
-    assert l1["status"] == "fail"
-    assert l1["findings"][0]["locator"] == "plans/api-plan.md:1"
+    assert (workspace.change_dir / "review" / checks_path).is_file()
 
 
-def test_a_failing_check_is_not_a_task_failure(workspace: TaskWorkspace) -> None:
-    """check 只报事实；block/warn 由 policy 在 gate 决定，operation 不得自行 fail。"""
-    (workspace.change_dir / "plans" / "api-plan.md").write_text(
-        "read `qa/.knowledge/data-knowledge.yaml`\n", encoding="utf-8"
-    )
-    assert verify_plan_mechanical(_task(), workspace, _context()).error_kind is None
+def test_empty_scope_layer_succeeds_without_plan_or_l1_and_is_not_applicable(
+    workspace: TaskWorkspace,
+) -> None:
+    _write_case(workspace, "E2E", automated=False)
+    result = verify_plan_mechanical(_task("e2e"), workspace, _context())
+    assert result.status == "succeeded"
+    assert result.value == {"status": "not_applicable"}
+    doc = json.loads((workspace.change_dir / "review" / "e2e-plan-checks.json").read_text(encoding="utf-8"))
+    assert doc["applicability"]["applicable"] is False
+    assert all(check["status"] == "not_applicable" for check in doc["checks"])
 
 
-def test_unknown_layer_is_invalid_input(workspace: TaskWorkspace) -> None:
-    result = verify_plan_mechanical(_task(layer="mobile"), workspace, _context())
+def test_applicable_layer_missing_one_exact_plan_is_invalid_output(workspace: TaskWorkspace) -> None:
+    profile = get_layer_assurance_profile("api")
+    for rel in profile.plan_artifacts[1:]:
+        path = workspace.change_dir / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# Plan\n", encoding="utf-8")
+    result = verify_plan_mechanical(_task("api"), workspace, _context())
     assert result.status == "failed"
-    assert result.error_kind == "invalid_input"
+    assert result.error_kind == "invalid_output"
+    assert profile.plan_artifacts[0] in (result.error or "")
 
 
-def test_missing_data_knowledge_is_invalid_output(workspace: TaskWorkspace) -> None:
+def test_applicable_layer_missing_data_knowledge_is_invalid_output(workspace: TaskWorkspace) -> None:
+    _write_profile_plans(workspace, "api")
     (workspace.project_root / ".aa" / "data-knowledge.yaml").unlink()
-    (workspace.change_dir / "plans" / "api-plan.md").write_text("x\n", encoding="utf-8")
-    result = verify_plan_mechanical(_task(), workspace, _context())
+    result = verify_plan_mechanical(_task("api"), workspace, _context())
     assert result.status == "failed"
     assert result.error_kind == "invalid_output"
 
 
-def test_case_loading_does_not_tighten_the_registered_case_schema(workspace: TaskWorkspace) -> None:
-    case_path = workspace.change_dir / "cases" / "system" / "dept" / "case.yaml"
-    case_path.write_text(
+def test_string_automation_required_is_invalid_output_not_empty_scope(workspace: TaskWorkspace) -> None:
+    case_dir = workspace.change_dir / "cases" / "system" / "dept"
+    (case_dir / "case.yaml").write_text(
         yaml.safe_dump(
             {
                 "schema_version": "1.0",
                 "added": [
                     {
-                        "case_id": "TC_DEPT_API_001",
-                        "title": "invalid automation flag",
+                        "case_id": "TC_DEPT_001",
+                        "title": "case",
                         "status": "active",
                         "priority": "P1",
                         "severity": "major",
@@ -138,7 +183,80 @@ def test_case_loading_does_not_tighten_the_registered_case_schema(workspace: Tas
         ),
         encoding="utf-8",
     )
-    (workspace.change_dir / "plans" / "api-plan.md").write_text("# API Plan\n", encoding="utf-8")
+    result = verify_plan_mechanical(_task("api"), workspace, _context())
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_output"
+
+
+def test_unknown_layer_is_invalid_input(workspace: TaskWorkspace) -> None:
+    result = verify_plan_mechanical(_task(layer="mobile"), workspace, _context())
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_input"
+
+
+def test_review_at_canonical_path_supplies_required_capabilities_on_reviewed_pass(
+    workspace: TaskWorkspace,
+) -> None:
+    _write_profile_plans(workspace, "api", "Data knowledge: `.aa/data-knowledge.yaml`\n")
+    review_path = workspace.change_dir / "review" / "api-plan-review.json"
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    review_path.write_text(
+        json.dumps({"required_capabilities": ["domain_factories.dept.missing_thing"]}),
+        encoding="utf-8",
+    )
+    result = verify_plan_mechanical(_task("api"), workspace, _context())
+    assert result.status == "succeeded"
+    doc = json.loads((workspace.change_dir / "review" / "api-plan-checks.json").read_text(encoding="utf-8"))
+    capability_check = next(check for check in doc["checks"] if check["check_id"] == "capability_keys")
+    assert capability_check["status"] == "fail"
+    assert capability_check["findings"][0]["actual"] == "domain_factories.dept.missing_thing"
+
+
+def test_missing_review_on_first_pass_yields_empty_required_capabilities(workspace: TaskWorkspace) -> None:
+    _write_profile_plans(workspace, "api", "Data knowledge: `.aa/data-knowledge.yaml`\n")
+    result = verify_plan_mechanical(_task("api"), workspace, _context())
+    assert result.status == "succeeded"
+    doc = json.loads((workspace.change_dir / "review" / "api-plan-checks.json").read_text(encoding="utf-8"))
+    capability_check = next(check for check in doc["checks"] if check["check_id"] == "capability_keys")
+    assert capability_check["status"] == "pass"
+
+
+def test_malformed_present_review_raises_invalid_output_instead_of_ignoring(workspace: TaskWorkspace) -> None:
+    _write_profile_plans(workspace, "api", "Data knowledge: `.aa/data-knowledge.yaml`\n")
+    review_path = workspace.change_dir / "review" / "api-plan-review.json"
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    review_path.write_text("not: [valid, yaml", encoding="utf-8")
+    result = verify_plan_mechanical(_task("api"), workspace, _context())
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_output"
+
+
+def test_case_loading_does_not_tighten_the_registered_case_schema(workspace: TaskWorkspace) -> None:
+    _write_profile_plans(workspace, "api")
+    case_path = workspace.change_dir / "cases" / "system" / "dept" / "case.yaml"
+    case_path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1.0",
+                "added": [
+                    {
+                        "case_id": "TC_DEPT_API_001",
+                        "title": "extra fields tolerated",
+                        "status": "active",
+                        "priority": "P1",
+                        "severity": "major",
+                        "type": "API",
+                        "module": "dept",
+                        "automation": {"required": True},
+                        "owner": "someone",
+                    }
+                ],
+                "modified": [],
+                "removed": [],
+            }
+        ),
+        encoding="utf-8",
+    )
 
     result = verify_plan_mechanical(_task(), workspace, _context())
 
