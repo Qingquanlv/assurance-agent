@@ -173,9 +173,12 @@ def test_verify_plan_mechanical_contract_reads_traceability_inputs() -> None:
         "change:plans/**",
         "change:review/**",
         "repo:.aa/data-knowledge.yaml",
+        "project:.aa/data-knowledge.yaml",
     }
     assert contract.writes == ("change:review/*-plan-checks.json",)
     assert contract.authorization_writes == ("change:review/*-plan-checks.json",)
+    assert contract.synchronized == ("project:.aa/data-knowledge.yaml",)
+    assert contract.exclusive == ("project:data-knowledge",)
 
 
 def test_materialize_trace_projection_contract_reads_full_surface() -> None:
@@ -789,3 +792,56 @@ def test_retro_closed_loop_contracts_are_least_privilege() -> None:
     assert "project:improvement-registry" in reconcile.exclusive
     assert "project:qa/issues/**" not in reconcile.writes
     assert "project:qa/issues/**" not in reconcile.authorization_writes
+
+
+def _make_project(tmp_path: Path) -> Path:
+    project = tmp_path / "project"
+    change = project / "qa" / "changes" / "CH-1"
+    change.mkdir(parents=True)
+    (change / "driver.json").write_text("{}\n", encoding="utf-8")
+    (change / "driver.lock").write_text("1\ntoken\n", encoding="utf-8")
+    return project
+
+
+def test_api_fixer_authorization_forbids_checks_write(tmp_path: Path) -> None:
+    from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend, WorkspaceError
+
+    project = _make_project(tmp_path)
+    change = project / "qa" / "changes" / "CH-1"
+    store = TreeStore(change)
+    backend = WorkspaceBackend(change)
+    base_tree = store.capture(project)
+    claims = load_execution_contracts(project).claims_for(
+        NodeDef(uses="skill:aa-api-plan-fixer", outputs=["change:review/api-plan-review-apply-summary.md"])
+    )
+    workspace = backend.create(task_id="fixer", base_tree_id=base_tree, store=store)
+    checks = workspace.change_dir / "review" / "api-plan-checks.json"
+    checks.parent.mkdir(parents=True, exist_ok=True)
+    checks.write_text('{"status":"pass"}\n', encoding="utf-8")
+    with pytest.raises(WorkspaceError, match=r"forbidden write outside authorization_writes: change:review/api-plan-checks\.json"):
+        store.freeze_write_set(workspace, claims=claims)
+
+
+@pytest.mark.parametrize(
+    ("uses", "checks_path"),
+    [
+        ("skill:aa-e2e-plan-reviewer", "review/e2e-plan-checks.json"),
+        ("skill:aa-e2e-plan-fixer", "review/e2e-plan-checks.json"),
+    ],
+)
+def test_e2e_reviewer_and_fixer_forbid_checks_write(tmp_path: Path, uses: str, checks_path: str) -> None:
+    from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend, WorkspaceError
+
+    project = _make_project(tmp_path)
+    change = project / "qa" / "changes" / "CH-1"
+    store = TreeStore(change)
+    backend = WorkspaceBackend(change)
+    base_tree = store.capture(project)
+    outputs = ["change:review/plan-review.json"] if "reviewer" in uses else ["change:review/plan-review-apply-summary.md"]
+    claims = load_execution_contracts(project).claims_for(NodeDef(uses=uses, outputs=outputs))
+    workspace = backend.create(task_id="agent", base_tree_id=base_tree, store=store)
+    checks = workspace.change_dir / checks_path
+    checks.parent.mkdir(parents=True, exist_ok=True)
+    checks.write_text('{"status":"pass"}\n', encoding="utf-8")
+    with pytest.raises(WorkspaceError, match=r"forbidden write outside authorization_writes"):
+        store.freeze_write_set(workspace, claims=claims)

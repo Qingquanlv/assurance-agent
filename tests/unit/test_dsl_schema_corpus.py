@@ -49,6 +49,75 @@ _DEFAULT_POLICY = {
     "healing": {"auth_module": "require_human"},
 }
 
+_PLAN_ASSURANCE_RESOLVER = {
+    "plan_assurance_state": lambda checks, review, dk, layer: (
+        "applicable"
+        if isinstance(checks, dict)
+        and checks.get("schema_version") == "2"
+        and checks.get("layer") == layer
+        and isinstance(checks.get("applicability"), dict)
+        and checks["applicability"].get("applicable") is True
+        else (
+            "not_applicable"
+            if isinstance(checks, dict)
+            and checks.get("schema_version") == "2"
+            and isinstance(checks.get("applicability"), dict)
+            and checks["applicability"].get("applicable") is False
+            else "invalid"
+        )
+    )
+}
+
+_APPLICABLE_REVIEW = {
+    "decision": "pass",
+    "review_type": "api-plan",
+    "change_id": "CH-1",
+    "codegen_readiness": "ready",
+    "required_capabilities": ["auth.api_admin_token"],
+}
+_APPLICABLE_E2E_REVIEW = {
+    "decision": "pass",
+    "review_type": "e2e-plan",
+    "change_id": "CH-1",
+    "codegen_readiness": "ready",
+    "required_capabilities": ["auth.api_admin_token"],
+}
+_APPLICABLE_CHECKS = {
+    "schema_version": "2",
+    "layer": "api",
+    "status": "pass",
+    "applicability": {"layer": "api", "applicable": True, "reason_code": "automated_cases_present", "case_ids": ["TC"]},
+    "checks": [],
+}
+_APPLICABLE_E2E_CHECKS = {
+    "schema_version": "2",
+    "layer": "e2e",
+    "status": "pass",
+    "applicability": {"layer": "e2e", "applicable": True, "reason_code": "automated_cases_present", "case_ids": ["TC"]},
+    "checks": [],
+}
+_INAPPLICABLE_CHECKS = {
+    "schema_version": "2",
+    "layer": "api",
+    "status": "pass",
+    "applicability": {
+        "layer": "api",
+        "applicable": False,
+        "reason_code": "no_automated_cases",
+        "case_ids": [],
+    },
+    "checks": [
+        {
+            "check_id": check_id,
+            "status": "not_applicable",
+            "findings": [],
+            "refs": [],
+            "applicability_reason": "layer_not_applicable",
+        }
+        for check_id in ("l1_path", "shared_factory", "assert_ideal", "capability_keys")
+    ],
+}
+
 
 def _scope(values, resolvers: dict[str, Any]):
     return Scope(
@@ -96,10 +165,20 @@ def test_force_continue_policy_branch_is_exercised(
         "data_knowledge": {"auth": {"api_admin_token": {"method": "token"}}},
         "params": {"force_continue": True},
     }
-    resolvers = {"capabilities_present": lambda _r, _d: True}
+    if gate_id == "api-plan-review-gate":
+        values["api_plan_checks"] = _APPLICABLE_CHECKS
+    elif gate_id == "e2e-plan-review-gate":
+        values["e2e_plan_checks"] = _APPLICABLE_E2E_CHECKS
+    resolvers = {
+        "capabilities_present": lambda _r, _d: True,
+        **_PLAN_ASSURANCE_RESOLVER,
+    }
 
     allowed = _scope(values, resolvers)
-    denied = _scope({**values, "policy": {**_DEFAULT_POLICY, "force_continue_allowed": False}}, resolvers)
+    denied = _scope(
+        {**values, "policy": {**_DEFAULT_POLICY, "force_continue_allowed": False}},
+        resolvers,
+    )
 
     assert evaluate(parse_expression(rule.expr), allowed) is False
     assert evaluate(parse_expression(rule.expr), denied) is True
@@ -142,13 +221,43 @@ CORPUS["gate:case-review-gate:pass_when"] = (
     ({}, {}, MISS),
 )
 
-for _alias, _gid in [
-    ("api_plan_review", "api-plan-review-gate"),
-    ("plan_review", "e2e-plan-review-gate"),
+for _alias, _gid, _layer, _checks_key in [
+    ("api_plan_review", "api-plan-review-gate", "api", "api_plan_checks"),
+    ("plan_review", "e2e-plan-review-gate", "e2e", "e2e_plan_checks"),
 ]:
     CORPUS[f"gate:{_gid}:stop_when"] = (
-        ({_alias: {"required_capabilities": None}}, {}),
-        ({_alias: {"required_capabilities": ["auth.api_admin_token"]}}, {}, False),
+        (
+            {_checks_key: {"schema_version": "1"}, _alias: _APPLICABLE_REVIEW},
+            _PLAN_ASSURANCE_RESOLVER,
+        ),
+        (
+            {_checks_key: _APPLICABLE_CHECKS if _layer == "api" else _APPLICABLE_E2E_CHECKS, _alias: _APPLICABLE_REVIEW},
+            _PLAN_ASSURANCE_RESOLVER,
+            False,
+        ),
+    )
+    CORPUS[f"gate:{_gid}:skip_when"] = (
+        (
+            {
+                _checks_key: _INAPPLICABLE_CHECKS
+                if _layer == "api"
+                else {
+                    **_INAPPLICABLE_CHECKS,
+                    "layer": "e2e",
+                    "applicability": {**_INAPPLICABLE_CHECKS["applicability"], "layer": "e2e"},
+                },
+                _alias: None,
+            },
+            _PLAN_ASSURANCE_RESOLVER,
+        ),
+        (
+            {
+                _checks_key: _APPLICABLE_CHECKS if _layer == "api" else _APPLICABLE_E2E_CHECKS,
+                _alias: _APPLICABLE_REVIEW,
+            },
+            _PLAN_ASSURANCE_RESOLVER,
+            False,
+        ),
     )
     CORPUS[f"gate:{_gid}:needs_fix_when"] = (
         ({_alias: {"decision": "needs_fix", "auto_fix_allowed": True}}, {}),
@@ -162,48 +271,38 @@ for _alias, _gid in [
                     "required_capabilities": ["auth.api_admin_token"],
                     "codegen_readiness": "ready",
                 },
+                _checks_key: _APPLICABLE_CHECKS if _layer == "api" else _APPLICABLE_E2E_CHECKS,
                 "data_knowledge": {},
             },
-            {"capabilities_present": lambda _r, _d: False},
+            {
+                **_PLAN_ASSURANCE_RESOLVER,
+                "capabilities_present": lambda _r, _d: False,
+            },
         ),
-        ({}, {}, MISS),
+        ({}, _PLAN_ASSURANCE_RESOLVER, False),
     )
     CORPUS[f"gate:{_gid}:reject_when"] = (
-        ({_alias: {"decision": "reject"}}, {}),
-        ({}, {}, MISS),
+        ({_alias: {"decision": "reject"}}, _PLAN_ASSURANCE_RESOLVER),
+        ({}, _PLAN_ASSURANCE_RESOLVER, MISS),
     )
     CORPUS[f"gate:{_gid}:pass_when"] = (
         (
             {
-                _alias: {
-                    "decision": "pass",
-                    "codegen_readiness": "ready",
-                    "required_capabilities": ["auth.api_admin_token"],
-                },
+                _alias: _APPLICABLE_REVIEW if _layer == "api" else _APPLICABLE_E2E_REVIEW,
+                _checks_key: _APPLICABLE_CHECKS if _layer == "api" else _APPLICABLE_E2E_CHECKS,
                 "data_knowledge": {"auth": {"api_admin_token": {"method": "token"}}},
             },
-            {"capabilities_present": lambda _r, _d: True},
+            {
+                **_PLAN_ASSURANCE_RESOLVER,
+                "capabilities_present": lambda _r, _d: True,
+            },
         ),
-        ({}, {"capabilities_present": lambda _r, _d: False}, False),
+        (
+            {_checks_key: _APPLICABLE_CHECKS if _layer == "api" else _APPLICABLE_E2E_CHECKS, _alias: _APPLICABLE_REVIEW},
+            {**_PLAN_ASSURANCE_RESOLVER, "capabilities_present": lambda _r, _d: False},
+            False,
+        ),
     )
-
-CORPUS["gate:api-plan-review-gate:stop_when"] = (
-    (
-        {
-            "api_plan_review": {"required_capabilities": ["auth.api_admin_token"]},
-            "api_plan_checks": None,
-        },
-        node_result_resolver({"mechanical-plan-checks": {"status": "succeeded"}}),
-    ),
-    (
-        {
-            "api_plan_review": {"required_capabilities": ["auth.api_admin_token"]},
-            "api_plan_checks": None,
-        },
-        {},
-        MISS,
-    ),
-)
 
 for _alias, _gid in [
     ("fuzz_plan_review", "fuzz-plan-review-gate"),
@@ -235,19 +334,68 @@ CORPUS["gate:case-design-gate:pass_when"] = (
     ({}, {}, MISS),
 )
 
+CORPUS["gate:api-codegen-precondition-gate:skip_when"] = (
+    ({"api_plan_checks": _INAPPLICABLE_CHECKS, "api_plan_review": None}, _PLAN_ASSURANCE_RESOLVER),
+    ({"api_plan_checks": _APPLICABLE_CHECKS, "api_plan_review": _APPLICABLE_REVIEW}, _PLAN_ASSURANCE_RESOLVER, False),
+)
 CORPUS["gate:api-codegen-precondition-gate:pass_when"] = (
-    ({"api_plan_checks": {"status": "pass"}}, gvfx("pass", True)),
-    ({}, gvfx("pass", True), False),
+    (
+        {"api_plan_checks": _APPLICABLE_CHECKS, "api_plan_review": _APPLICABLE_REVIEW},
+        {
+            **_PLAN_ASSURANCE_RESOLVER,
+            **node_result_resolver({"review-cycle": {"status": "succeeded"}}),
+            **gvfx("pass", True),
+        },
+    ),
+    ({}, {**_PLAN_ASSURANCE_RESOLVER, **gvfx("pass", True)}, False),
 )
 CORPUS["gate:api-codegen-precondition-gate:stop_when"] = (
-    ({}, fx(True)),
-    ({"api_plan_checks": {"status": "pass"}}, fx(True), False),
+    (
+        {"api_plan_checks": {"schema_version": "1"}, "api_plan_review": _APPLICABLE_REVIEW},
+        {**_PLAN_ASSURANCE_RESOLVER, **node_result_resolver({"review-cycle": {"status": "succeeded"}}), **fx(True)},
+    ),
+    (
+        {"api_plan_checks": _APPLICABLE_CHECKS, "api_plan_review": _APPLICABLE_REVIEW},
+        {**_PLAN_ASSURANCE_RESOLVER, **node_result_resolver({"review-cycle": {"status": "succeeded"}}), **fx(True)},
+        False,
+    ),
+)
+CORPUS["gate:e2e-codegen-precondition-gate:skip_when"] = (
+    (
+        {
+            "e2e_plan_checks": {**_INAPPLICABLE_CHECKS, "layer": "e2e", "applicability": {**_INAPPLICABLE_CHECKS["applicability"], "layer": "e2e"}},
+            "plan_review": None,
+        },
+        _PLAN_ASSURANCE_RESOLVER,
+    ),
+    (
+        {"e2e_plan_checks": _APPLICABLE_E2E_CHECKS, "plan_review": _APPLICABLE_E2E_REVIEW},
+        _PLAN_ASSURANCE_RESOLVER,
+        False,
+    ),
 )
 CORPUS["gate:e2e-codegen-precondition-gate:pass_when"] = (
-    ({}, gvfx("pass", True)),
-    ({}, gvfx(MISS, True), MISS),
+    (
+        {"e2e_plan_checks": _APPLICABLE_E2E_CHECKS, "plan_review": _APPLICABLE_E2E_REVIEW},
+        {
+            **_PLAN_ASSURANCE_RESOLVER,
+            **node_result_resolver({"review-cycle": {"status": "succeeded"}}),
+            **gvfx("pass", True),
+        },
+    ),
+    ({}, {**_PLAN_ASSURANCE_RESOLVER, **gvfx("pass", True)}, False),
 )
-CORPUS["gate:e2e-codegen-precondition-gate:stop_when"] = (({}, fx(False)), ({}, fx(True), False))
+CORPUS["gate:e2e-codegen-precondition-gate:stop_when"] = (
+    (
+        {"e2e_plan_checks": {"schema_version": "1"}, "plan_review": _APPLICABLE_E2E_REVIEW},
+        {**_PLAN_ASSURANCE_RESOLVER, **node_result_resolver({"review-cycle": {"status": "failed"}}), **fx(True)},
+    ),
+    (
+        {"e2e_plan_checks": _APPLICABLE_E2E_CHECKS, "plan_review": _APPLICABLE_E2E_REVIEW},
+        {**_PLAN_ASSURANCE_RESOLVER, **node_result_resolver({"review-cycle": {"status": "succeeded"}}), **fx(True)},
+        False,
+    ),
+)
 
 for _gid in ["fuzz-codegen-precondition-gate", "performance-codegen-precondition-gate"]:
     CORPUS[f"gate:{_gid}:pass_when"] = (({}, gv("pass")), ({}, gv(MISS), MISS))
@@ -365,26 +513,20 @@ CORPUS["gate:archive-gate:stop_when"] = (
     ({}, {}, MISS),
 )
 
-_PLAN_ASSURANCE_RESOLVER = {
-    "plan_assurance_state": lambda checks, review, dk, layer: (
-        "applicable" if isinstance(checks, dict) and checks.get("status") == "pass" else "invalid"
-    )
-}
-
 BUILTIN_CORPUS: dict[str, tuple[tuple[dict, dict], tuple[dict, dict, object]]] = {
     "builtin:plan_assurance_state:valid": (
         (
             {
-                "api_plan_checks": {"status": "pass"},
-                "api_plan_review": {"decision": "pass"},
-                "data_knowledge": {"version": 1},
+                "api_plan_checks": _APPLICABLE_CHECKS,
+                "api_plan_review": _APPLICABLE_REVIEW,
+                "data_knowledge": {"version": 1, "capabilities": {"domain_factories": {}}},
             },
             _PLAN_ASSURANCE_RESOLVER,
         ),
         (
             {
-                "api_plan_checks": {"status": "fail"},
-                "api_plan_review": {"decision": "pass"},
+                "api_plan_checks": {"schema_version": "1"},
+                "api_plan_review": _APPLICABLE_REVIEW,
                 "data_knowledge": {"version": 1},
             },
             _PLAN_ASSURANCE_RESOLVER,
@@ -402,7 +544,7 @@ BUILTIN_CORPUS: dict[str, tuple[tuple[dict, dict], tuple[dict, dict, object]]] =
         ),
         (
             {
-                "api_plan_checks": {"status": "pass"},
+                "api_plan_checks": _APPLICABLE_CHECKS,
                 "api_plan_review": None,
                 "data_knowledge": None,
             },

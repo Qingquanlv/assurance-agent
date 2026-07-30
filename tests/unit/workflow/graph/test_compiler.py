@@ -600,3 +600,23 @@ def test_subgraph_recovery_has_stable_digest() -> None:
     )
 
     assert compile_text(text).digest == compile_text(text).digest
+
+
+def test_packaged_schema_compile_invokes_replay_assurance_guard() -> None:
+    from assurance_agent.workflow.graph.contracts import load_execution_contracts
+    from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
+
+    schema = load_workflow_v2(Path.cwd())
+    compiled = compile_workflow(schema, load_execution_contracts(Path.cwd()))
+    assert compiled.digest
+    assert "api-plan-cycle" in compiled.graphs
+
+
+def test_packaged_schema_compile_invokes_replay_assurance_guard() -> None:
+    from assurance_agent.workflow.graph.contracts import load_execution_contracts
+    from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
+
+    schema = load_workflow_v2(Path.cwd())
+    compiled = compile_workflow(schema, load_execution_contracts(Path.cwd()))
+    assert compiled.digest
+    assert "api-plan-cycle" in compiled.graphs

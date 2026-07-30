@@ -582,6 +582,10 @@ def test_validate_replayable_assurance_schema_composes_branch_and_topology_guard
     assert validate_replayable_assurance_schema(schema) == ()
 
 
+def test_packaged_schema_passes_replay_topology_guard(packaged_schema: WorkflowSchemaV2) -> None:
+    assert validate_replayable_assurance_schema(packaged_schema) == ()
+
+
 def test_validate_replayable_assurance_schema_rejects_noncompliant_branch_predicate() -> None:
     schema = _minimal_replay_schema(layer="api")
     nodes = dict(schema.graphs["assurance"].nodes)

@@ -869,7 +869,7 @@ graphs:
     routes:
       - from: codegen-precheck
         select: "node('codegen-precheck').gate.verdict"
-        cases: {pass: codegen, stop: STOP}
+        cases: {pass: codegen, skip: END, stop: STOP}
         default: STOP
 
   api-plan-cycle:
@@ -878,18 +878,37 @@ graphs:
       fix_attempts:
         limit: "params.max_plan_fix_attempts"
     nodes:
-      mechanical-plan-checks:
-        uses: operation:verify-plan-mechanical
+      applicability:
+        uses: operation:derive-plan-layer-applicability
         with: {layer: api}
-        outputs: [change:review/api-plan-checks.json]
 
       review:
         uses: skill:aa-api-plan-reviewer
         agent: aa-reviewer
         outputs: [change:review/api-plan-review.json, change:review/api-plan-review-summary.md]
-        gate: api-plan-review-gate
         retry: agent-transient
         timeout: agent
+
+      mechanical-plan-checks:
+        uses: operation:verify-plan-mechanical
+        with: {layer: api, require_review: true}
+        outputs: [change:review/api-plan-checks.json]
+        resources:
+          reads:
+            - change:plans/api-plan.md
+            - change:plans/api-test-data-plan.md
+            - change:plans/api-codegen-plan.md
+            - change:review/api-plan-review.json
+            - change:cases/**
+            - repo:.aa/data-knowledge.yaml
+          synchronized:
+            - project:.aa/data-knowledge.yaml
+          exclusive:
+            - project:data-knowledge
+
+      review-gate:
+        uses: builtin:gate
+        with: {gate: api-plan-review-gate}
 
       fix:
         uses: skill:aa-api-plan-fixer
@@ -923,16 +942,22 @@ graphs:
         with: {reason: "api plan fix attempts exhausted"}
 
     edges:
-      - {from: START, to: mechanical-plan-checks}
-      - {from: mechanical-plan-checks, to: review}
-      - {from: fix, to: mechanical-plan-checks}
+      - {from: START, to: applicability}
+      - {from: review, to: mechanical-plan-checks}
+      - {from: mechanical-plan-checks, to: review-gate}
+      - {from: fix, to: review}
       - {from: exhausted, to: STOP}
 
     routes:
-      - from: review
-        select: "plan_review_route('review')"
+      - from: applicability
+        select: "node('applicability').value.applicable"
+        cases: {"true": review, "false": mechanical-plan-checks}
+        default: STOP
+      - from: review-gate
+        select: "plan_review_route('review-gate')"
         cases:
           pass: END
+          skip: END
           needs_fix: fix
           knowledge_remediation: knowledge-remediation
           needs_human_review: human-review
@@ -995,7 +1020,7 @@ graphs:
     routes:
       - from: codegen-precheck
         select: "node('codegen-precheck').gate.verdict"
-        cases: {pass: codegen, stop: STOP}
+        cases: {pass: codegen, skip: END, stop: STOP}
         default: STOP
 
   e2e-plan-cycle:
@@ -1004,13 +1029,37 @@ graphs:
       fix_attempts:
         limit: "params.max_plan_fix_attempts"
     nodes:
+      applicability:
+        uses: operation:derive-plan-layer-applicability
+        with: {layer: e2e}
+
       review:
         uses: skill:aa-e2e-plan-reviewer
         agent: aa-reviewer
         outputs: [change:review/plan-review.json, change:review/plan-review-summary.md]
-        gate: e2e-plan-review-gate
         retry: agent-transient
         timeout: agent
+
+      mechanical-plan-checks:
+        uses: operation:verify-plan-mechanical
+        with: {layer: e2e, require_review: true}
+        outputs: [change:review/e2e-plan-checks.json]
+        resources:
+          reads:
+            - change:plans/e2e-plan.md
+            - change:plans/e2e-test-data-plan.md
+            - change:plans/e2e-codegen-plan.md
+            - change:review/plan-review.json
+            - change:cases/**
+            - repo:.aa/data-knowledge.yaml
+          synchronized:
+            - project:.aa/data-knowledge.yaml
+          exclusive:
+            - project:data-knowledge
+
+      review-gate:
+        uses: builtin:gate
+        with: {gate: e2e-plan-review-gate}
 
       fix:
         uses: skill:aa-e2e-plan-fixer
@@ -1044,15 +1093,22 @@ graphs:
         with: {reason: "e2e plan fix attempts exhausted"}
 
     edges:
-      - {from: START, to: review}
+      - {from: START, to: applicability}
+      - {from: review, to: mechanical-plan-checks}
+      - {from: mechanical-plan-checks, to: review-gate}
       - {from: fix, to: review}
       - {from: exhausted, to: STOP}
 
     routes:
-      - from: review
-        select: "plan_review_route('review')"
+      - from: applicability
+        select: "node('applicability').value.applicable"
+        cases: {"true": review, "false": mechanical-plan-checks}
+        default: STOP
+      - from: review-gate
+        select: "plan_review_route('review-gate')"
         cases:
           pass: END
+          skip: END
           needs_fix: fix
           knowledge_remediation: knowledge-remediation
           needs_human_review: human-review
@@ -1069,7 +1125,7 @@ graphs:
       - from: knowledge-remediation
         select: "resume.action"
         cases:
-          fix_and_proceed: review
+          fix_and_proceed: mechanical-plan-checks
           accept_risk: END
           stop: STOP
         default: STOP
@@ -1828,28 +1884,21 @@ gates:
 
   api-plan-review-gate: &plan-review-gate
     reads:
-      - review/api-plan-review.json
+      - { path: review/api-plan-review.json, as: api_plan_review }
       - { path: review/api-plan-checks.json, as: api_plan_checks }
       - { path: repo:.aa/data-knowledge.yaml, as: data_knowledge }
     invalid_json: stop
     missing_field_is: stop
     stop_when: >
-      not defined(api_plan_review.required_capabilities)
-      or api_plan_review.required_capabilities == null
-      or len(api_plan_review.required_capabilities) == 0
-      or (
-        node('mechanical-plan-checks').status == 'succeeded'
-        and not defined(api_plan_checks.status)
-      )
+      plan_assurance_state(api_plan_checks, api_plan_review, data_knowledge, 'api') == 'invalid'
+    skip_when: >
+      plan_assurance_state(api_plan_checks, api_plan_review, data_knowledge, 'api') == 'not_applicable'
     needs_fix_when: "api_plan_review.decision == 'needs_fix' and api_plan_review.auto_fix_allowed == true"
     needs_human_review_when: >
       api_plan_review.decision != 'reject'
+      and plan_assurance_state(api_plan_checks, api_plan_review, data_knowledge, 'api') == 'applicable'
       and (
-        (
-          defined(api_plan_review.required_capabilities)
-          and len(api_plan_review.required_capabilities) > 0
-          and not capabilities_present(api_plan_review, data_knowledge)
-        )
+        not capabilities_present(api_plan_review, data_knowledge)
         or api_plan_review.decision == 'needs_human_review'
         or (
           (api_plan_review.human_review_required == true or api_plan_review.risk_level in policy.human_review_risk_levels)
@@ -1877,19 +1926,17 @@ gates:
       api_plan_review.decision == 'reject'
       or api_plan_review.codegen_readiness == 'not_ready'
       or (
-        check_failed(api_plan_checks, 'l1_path') and policy.plan_checks.l1_path == 'block'
-      )
-      or (
-        check_failed(api_plan_checks, 'shared_factory') and policy.plan_checks.shared_factory == 'block'
-      )
-      or (
-        check_failed(api_plan_checks, 'assert_ideal') and policy.plan_checks.assert_ideal == 'block'
-      )
-      or (
-        check_failed(api_plan_checks, 'capability_keys') and policy.plan_checks.capability_keys == 'block'
+        plan_assurance_state(api_plan_checks, api_plan_review, data_knowledge, 'api') == 'applicable'
+        and (
+          (check_failed(api_plan_checks, 'l1_path') and policy.plan_checks.l1_path == 'block')
+          or (check_failed(api_plan_checks, 'shared_factory') and policy.plan_checks.shared_factory == 'block')
+          or (check_failed(api_plan_checks, 'assert_ideal') and policy.plan_checks.assert_ideal == 'block')
+          or (check_failed(api_plan_checks, 'capability_keys') and policy.plan_checks.capability_keys == 'block')
+        )
       )
     pass_when: >
-      api_plan_review.decision == 'pass'
+      plan_assurance_state(api_plan_checks, api_plan_review, data_knowledge, 'api') == 'applicable'
+      and api_plan_review.decision == 'pass'
       and api_plan_review.codegen_readiness in ['ready','ready_with_warnings']
       and capabilities_present(api_plan_review, data_knowledge)
       and policy.coverage_floor.risk_high > 0
@@ -1897,34 +1944,59 @@ gates:
 
   e2e-plan-review-gate:
     reads:
-      - review/plan-review.json
+      - { path: review/plan-review.json, as: plan_review }
+      - { path: review/e2e-plan-checks.json, as: e2e_plan_checks }
       - { path: repo:.aa/data-knowledge.yaml, as: data_knowledge }
     invalid_json: stop
     missing_field_is: stop
     stop_when: >
-      not defined(plan_review.required_capabilities)
-      or plan_review.required_capabilities == null
-      or len(plan_review.required_capabilities) == 0
+      plan_assurance_state(e2e_plan_checks, plan_review, data_knowledge, 'e2e') == 'invalid'
+    skip_when: >
+      plan_assurance_state(e2e_plan_checks, plan_review, data_knowledge, 'e2e') == 'not_applicable'
     needs_fix_when: "plan_review.decision == 'needs_fix' and plan_review.auto_fix_allowed == true"
     needs_human_review_when: >
-      (
-        defined(plan_review.required_capabilities)
-        and len(plan_review.required_capabilities) > 0
-        and not capabilities_present(plan_review, data_knowledge)
-      )
-      or plan_review.decision == 'needs_human_review'
-      or (
-        (plan_review.human_review_required == true or plan_review.risk_level in policy.human_review_risk_levels)
-        and not (
-          params.force_continue == true
-          and policy.force_continue_allowed == true
-          and plan_review.decision == 'pass'
-          and plan_review.codegen_readiness in ['ready','ready_with_warnings']
+      plan_review.decision != 'reject'
+      and plan_assurance_state(e2e_plan_checks, plan_review, data_knowledge, 'e2e') == 'applicable'
+      and (
+        not capabilities_present(plan_review, data_knowledge)
+        or plan_review.decision == 'needs_human_review'
+        or (
+          (plan_review.human_review_required == true or plan_review.risk_level in policy.human_review_risk_levels)
+          and not (
+            params.force_continue == true
+            and policy.force_continue_allowed == true
+            and plan_review.decision == 'pass'
+            and plan_review.codegen_readiness in ['ready','ready_with_warnings']
+          )
+        )
+        or (
+          check_failed(e2e_plan_checks, 'l1_path') and policy.plan_checks.l1_path == 'require_human'
+        )
+        or (
+          check_failed(e2e_plan_checks, 'shared_factory') and policy.plan_checks.shared_factory == 'require_human'
+        )
+        or (
+          check_failed(e2e_plan_checks, 'assert_ideal') and policy.plan_checks.assert_ideal == 'require_human'
+        )
+        or (
+          check_failed(e2e_plan_checks, 'capability_keys') and policy.plan_checks.capability_keys == 'require_human'
         )
       )
-    reject_when: "plan_review.decision == 'reject' or plan_review.codegen_readiness == 'not_ready'"
+    reject_when: >
+      plan_review.decision == 'reject'
+      or plan_review.codegen_readiness == 'not_ready'
+      or (
+        plan_assurance_state(e2e_plan_checks, plan_review, data_knowledge, 'e2e') == 'applicable'
+        and (
+          (check_failed(e2e_plan_checks, 'l1_path') and policy.plan_checks.l1_path == 'block')
+          or (check_failed(e2e_plan_checks, 'shared_factory') and policy.plan_checks.shared_factory == 'block')
+          or (check_failed(e2e_plan_checks, 'assert_ideal') and policy.plan_checks.assert_ideal == 'block')
+          or (check_failed(e2e_plan_checks, 'capability_keys') and policy.plan_checks.capability_keys == 'block')
+        )
+      )
     pass_when: >
-      plan_review.decision == 'pass'
+      plan_assurance_state(e2e_plan_checks, plan_review, data_knowledge, 'e2e') == 'applicable'
+      and plan_review.decision == 'pass'
       and plan_review.codegen_readiness in ['ready','ready_with_warnings']
       and capabilities_present(plan_review, data_knowledge)
 
@@ -1976,19 +2048,37 @@ gates:
 
   api-codegen-precondition-gate:
     reads:
+      - { path: review/api-plan-review.json, as: api_plan_review }
       - { path: review/api-plan-checks.json, as: api_plan_checks }
+      - { path: repo:.aa/data-knowledge.yaml, as: data_knowledge }
+    skip_when: >
+      plan_assurance_state(api_plan_checks, api_plan_review, data_knowledge, 'api') == 'not_applicable'
+    stop_when: >
+      node('review-cycle').status != 'succeeded'
+      or plan_assurance_state(api_plan_checks, api_plan_review, data_knowledge, 'api') == 'invalid'
+      or not file_exists('repo:.aa/data-knowledge.yaml')
     pass_when: >
-      defined(api_plan_checks.status)
+      node('review-cycle').status == 'succeeded'
+      and plan_assurance_state(api_plan_checks, api_plan_review, data_knowledge, 'api') == 'applicable'
       and gate('api-plan-review-gate').verdict == 'pass'
       and file_exists('repo:.aa/data-knowledge.yaml')
-    stop_when: >
-      not defined(api_plan_checks.status)
-      or not file_exists('repo:.aa/data-knowledge.yaml')
 
   e2e-codegen-precondition-gate:
-    reads: []
-    pass_when: "gate('e2e-plan-review-gate').verdict == 'pass' and file_exists('repo:.aa/data-knowledge.yaml')"
-    stop_when: "not file_exists('repo:.aa/data-knowledge.yaml')"
+    reads:
+      - { path: review/plan-review.json, as: plan_review }
+      - { path: review/e2e-plan-checks.json, as: e2e_plan_checks }
+      - { path: repo:.aa/data-knowledge.yaml, as: data_knowledge }
+    skip_when: >
+      plan_assurance_state(e2e_plan_checks, plan_review, data_knowledge, 'e2e') == 'not_applicable'
+    stop_when: >
+      node('review-cycle').status != 'succeeded'
+      or plan_assurance_state(e2e_plan_checks, plan_review, data_knowledge, 'e2e') == 'invalid'
+      or not file_exists('repo:.aa/data-knowledge.yaml')
+    pass_when: >
+      node('review-cycle').status == 'succeeded'
+      and plan_assurance_state(e2e_plan_checks, plan_review, data_knowledge, 'e2e') == 'applicable'
+      and gate('e2e-plan-review-gate').verdict == 'pass'
+      and file_exists('repo:.aa/data-knowledge.yaml')
 
   fuzz-codegen-precondition-gate:
     reads: []

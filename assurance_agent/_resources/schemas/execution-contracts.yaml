@@ -59,10 +59,15 @@ contracts:
       - change:plans/**
       - change:review/**
       - repo:.aa/data-knowledge.yaml
+      - project:.aa/data-knowledge.yaml
     writes:
       - change:review/*-plan-checks.json
     authorization_writes:
       - change:review/*-plan-checks.json
+    synchronized:
+      - project:.aa/data-knowledge.yaml
+    exclusive:
+      - project:data-knowledge
     retryable_errors: []
 
   operation:derive-plan-layer-applicability:
@@ -250,8 +255,9 @@ contracts:
       - change:plans/api-*.md
       - change:plans/m3-review-summary.md
     authorization_writes:
-      - change:review/**
-      - change:plans/**
+      - change:review/api-plan-review-apply-summary.md
+      - change:plans/api-*.md
+      - change:plans/m3-review-summary.md
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
@@ -300,7 +306,8 @@ contracts:
       - change:review/plan-review.json
       - change:review/plan-review-summary.md
     authorization_writes:
-      - change:review/**
+      - change:review/plan-review.json
+      - change:review/plan-review-summary.md
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
@@ -314,8 +321,9 @@ contracts:
       - change:plans/e2e-*.md
       - change:plans/m4-review-summary.md
     authorization_writes:
-      - change:review/**
-      - change:plans/**
+      - change:review/plan-review-apply-summary.md
+      - change:plans/e2e-*.md
+      - change:plans/m4-review-summary.md
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 

@@ -52,6 +52,7 @@ from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
 )
 from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
+from assurance_agent.workflow.graph.replay_schema import validate_replayable_assurance_schema
 from assurance_agent.workflow.graph.schema_v2 import (
     GraphDef,
     NodeDef,
@@ -102,6 +103,10 @@ def compile_workflow(
     errors.extend(_validate_exports(schema))
     if contracts is not None:
         errors.extend(_validate_contract_usage(schema, contracts))
+    if _has_packaged_assurance_surface(schema):
+        replay_errors = validate_replayable_assurance_schema(schema)
+        if replay_errors:
+            errors.extend(replay_errors)
     if errors:
         raise CompileError("workflow v2 compile failed:\n  - " + "\n  - ".join(errors))
     footprints, node_claims = _graph_footprints(schema, contracts)
@@ -127,6 +132,11 @@ def canonical_digest(value: BaseModel | Mapping[str, object]) -> str:
         value = value.model_dump(mode="json", by_alias=True, exclude_none=True)
     text = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _has_packaged_assurance_surface(schema: WorkflowSchemaV2) -> bool:
+    """True when the schema exposes the packaged four-layer assurance branch surface."""
+    return "assurance" in schema.graphs and "api-plan-cycle" in schema.graphs
 
 
 def resolve_params(schema: WorkflowSchemaV2, overrides: Mapping[str, object]) -> dict[str, object]:
