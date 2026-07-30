@@ -28,6 +28,7 @@ BUILTIN_ARITY: dict[str, int] = {
     "capabilities_present": 2,
     "check_failed": 2,
     "plan_review_route": 1,
+    "plan_assurance_state": 4,
     "any": 2,
     "all": 2,
     "count": 2,
@@ -238,6 +239,7 @@ FileExistsResolver = Callable[[str], bool]
 GateResolver = Callable[[str], str]
 NodeResolver = Callable[[str], object]
 CapabilitiesPresentResolver = Callable[[object, object], bool]
+PlanAssuranceResolver = Callable[[object, object, object, object], str]
 
 
 class Scope:
@@ -249,12 +251,14 @@ class Scope:
         gate_verdict: GateResolver | None = None,
         node_result: NodeResolver | None = None,
         capabilities_present: CapabilitiesPresentResolver | None = None,
+        plan_assurance_state: PlanAssuranceResolver | None = None,
     ) -> None:
         self._vars = vars
         self.file_exists = file_exists
         self.gate_verdict = gate_verdict
         self.node_result = node_result
         self.capabilities_present = capabilities_present
+        self.plan_assurance_state = plan_assurance_state
 
     def lookup(self, name: str) -> object:
         return self._vars[name] if name in self._vars else MISSING
@@ -269,6 +273,7 @@ class Scope:
             gate_verdict=self.gate_verdict,
             node_result=self.node_result,
             capabilities_present=self.capabilities_present,
+            plan_assurance_state=self.plan_assurance_state,
         )
 
 
@@ -424,6 +429,14 @@ def _eval_call(expr: Call, scope: Scope) -> object:
         if scope.node_result is None:
             raise DslError("plan_review_route() called but no node_result resolver was provided")
         return resolve_plan_review_route(scope.node_result(node_id))
+    if callee == "plan_assurance_state":
+        checks = evaluate(expr.args[0], scope)
+        review = evaluate(expr.args[1], scope)
+        data_knowledge = evaluate(expr.args[2], scope)
+        layer = evaluate(expr.args[3], scope)
+        if scope.plan_assurance_state is None:
+            raise DslError("plan_assurance_state() called but no resolver was provided")
+        return scope.plan_assurance_state(checks, review, data_knowledge, layer)
     if callee == "gate":
         gid = evaluate(expr.args[0], scope)
         if not isinstance(gid, str):

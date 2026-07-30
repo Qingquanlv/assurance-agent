@@ -17,6 +17,7 @@ from assurance_agent.change_location import ChangeLocation
 from assurance_agent.exceptions import AaError
 from assurance_agent.knowledge.capabilities import capabilities_present as check_capabilities_present
 from assurance_agent.knowledge.capabilities import compute_missing_capabilities
+from assurance_agent.verification.gate_state import plan_assurance_state
 from assurance_agent.workflow.core.audit_scope import is_audited_gate_read
 from assurance_agent.workflow.core.events import read_events_strict
 from assurance_agent.workflow.execution.tree_hash import sha256_file
@@ -137,11 +138,23 @@ def build_evidence_scope(
         except GateCycleError:
             return Verdict.STOP.value
 
+    def resolve_plan_assurance_state(
+        checks: object, review: object, data_knowledge: object, layer: object
+    ) -> str:
+        return plan_assurance_state(
+            checks,
+            review,
+            data_knowledge,
+            layer,
+            change_id=loc.change_id,
+        )
+
     return Scope(
         scope_vars,
         file_exists=file_exists,
         gate_verdict=gate_verdict,
         capabilities_present=check_capabilities_present,
+        plan_assurance_state=resolve_plan_assurance_state,
     )
 
 
@@ -599,12 +612,24 @@ def _view_scope(
         result = context.node_results.get(node_id)
         return result if isinstance(result, dict) else {}
 
+    def resolve_plan_assurance_state(
+        checks: object, review: object, data_knowledge: object, layer: object
+    ) -> str:
+        return plan_assurance_state(
+            checks,
+            review,
+            data_knowledge,
+            layer,
+            change_id=context.change_id,
+        )
+
     return Scope(
         scope_vars,
         file_exists=file_exists,
         gate_verdict=gate_verdict,
         node_result=node_result,
         capabilities_present=check_capabilities_present,
+        plan_assurance_state=resolve_plan_assurance_state,
     )
 
 

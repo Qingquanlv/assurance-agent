@@ -57,6 +57,7 @@ def _scope(values, resolvers: dict[str, Any]):
         gate_verdict=resolvers.get("gate_verdict"),
         node_result=resolvers.get("node_result", lambda _node_id: {}),
         capabilities_present=resolvers.get("capabilities_present"),
+        plan_assurance_state=resolvers.get("plan_assurance_state"),
     )
 
 
@@ -364,6 +365,53 @@ CORPUS["gate:archive-gate:stop_when"] = (
     ({}, {}, MISS),
 )
 
+_PLAN_ASSURANCE_RESOLVER = {
+    "plan_assurance_state": lambda checks, review, dk, layer: (
+        "applicable" if isinstance(checks, dict) and checks.get("status") == "pass" else "invalid"
+    )
+}
+
+BUILTIN_CORPUS: dict[str, tuple[tuple[dict, dict], tuple[dict, dict, object]]] = {
+    "builtin:plan_assurance_state:valid": (
+        (
+            {
+                "api_plan_checks": {"status": "pass"},
+                "api_plan_review": {"decision": "pass"},
+                "data_knowledge": {"version": 1},
+            },
+            _PLAN_ASSURANCE_RESOLVER,
+        ),
+        (
+            {
+                "api_plan_checks": {"status": "fail"},
+                "api_plan_review": {"decision": "pass"},
+                "data_knowledge": {"version": 1},
+            },
+            _PLAN_ASSURANCE_RESOLVER,
+            False,
+        ),
+    ),
+    "builtin:plan_assurance_state:missing": (
+        (
+            {
+                "api_plan_checks": None,
+                "api_plan_review": None,
+                "data_knowledge": None,
+            },
+            _PLAN_ASSURANCE_RESOLVER,
+        ),
+        (
+            {
+                "api_plan_checks": {"status": "pass"},
+                "api_plan_review": None,
+                "data_knowledge": None,
+            },
+            _PLAN_ASSURANCE_RESOLVER,
+            False,
+        ),
+    ),
+}
+
 
 def test_corpus_covers_every_packaged_gate_expression(tmp_path: Path) -> None:
     locs = _collect(load_workflow_v2(tmp_path).gates)
@@ -378,5 +426,17 @@ def test_truth_and_missing_pair(tmp_path: Path, loc: str) -> None:
     expr = _collect(load_workflow_v2(tmp_path).gates)[loc]
     node = parse_expression(expr)
     (tv, tkw), (mv, mkw, mexp) = CORPUS[loc]
+    assert evaluate(node, _scope(tv, tkw)) is True, f"{loc} 真值路径应为 True：{expr}"
+    assert evaluate(node, _scope(mv, mkw)) is mexp, f"{loc} missing/否定路径不符：{expr}"
+
+
+@pytest.mark.parametrize("loc", sorted(BUILTIN_CORPUS))
+def test_builtin_truth_and_missing_pair(loc: str) -> None:
+    if loc.endswith(":valid"):
+        expr = "plan_assurance_state(api_plan_checks, api_plan_review, data_knowledge, 'api') == 'applicable'"
+    else:
+        expr = "plan_assurance_state(api_plan_checks, api_plan_review, data_knowledge, 'api') == 'invalid'"
+    node = parse_expression(expr)
+    (tv, tkw), (mv, mkw, mexp) = BUILTIN_CORPUS[loc]
     assert evaluate(node, _scope(tv, tkw)) is True, f"{loc} 真值路径应为 True：{expr}"
     assert evaluate(node, _scope(mv, mkw)) is mexp, f"{loc} missing/否定路径不符：{expr}"
