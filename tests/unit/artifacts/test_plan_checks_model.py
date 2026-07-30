@@ -58,9 +58,7 @@ def test_v2_rejects_duplicate_check_ids() -> None:
 
 def test_v2_rejects_omitted_check_ids() -> None:
     with pytest.raises(ValidationError):
-        PlanCheckDocument.from_checks(
-            layer="api", applicability=_api_scope(), checks=_checks()[:-1]
-        )
+        PlanCheckDocument.from_checks(layer="api", applicability=_api_scope(), checks=_checks()[:-1])
 
 
 def test_v2_rejects_unknown_check_ids() -> None:
@@ -73,9 +71,7 @@ def test_v2_rejects_unknown_check_ids() -> None:
 
 def test_v2_rejects_layer_mismatched_with_applicability() -> None:
     with pytest.raises(ValidationError):
-        PlanCheckDocument.from_checks(
-            layer="e2e", applicability=_api_scope(), checks=_checks()
-        )
+        PlanCheckDocument.from_checks(layer="e2e", applicability=_api_scope(), checks=_checks())
 
 
 def test_v2_inapplicable_layer_rejects_fail_check_via_model_validate() -> None:
@@ -87,9 +83,7 @@ def test_v2_inapplicable_layer_rejects_fail_check_via_model_validate() -> None:
         )
         for check_id in PLAN_CHECK_IDS
     ]
-    checks[0] = CheckEvidence(
-        check_id=PLAN_CHECK_IDS[0], status="fail", findings=(_finding(),)
-    )
+    checks[0] = CheckEvidence(check_id=PLAN_CHECK_IDS[0], status="fail", findings=(_finding(),))
 
     with pytest.raises(ValidationError):
         PlanCheckDocument.model_validate(
@@ -162,14 +156,10 @@ def test_v2_from_checks_rejects_fail_check_on_inapplicable_layer() -> None:
         )
         for check_id in PLAN_CHECK_IDS
     ]
-    checks[0] = CheckEvidence(
-        check_id=PLAN_CHECK_IDS[0], status="fail", findings=(_finding(),)
-    )
+    checks[0] = CheckEvidence(check_id=PLAN_CHECK_IDS[0], status="fail", findings=(_finding(),))
 
     with pytest.raises(ValidationError):
-        PlanCheckDocument.from_checks(
-            layer="api", applicability=_api_scope(applicable=False), checks=checks
-        )
+        PlanCheckDocument.from_checks(layer="api", applicability=_api_scope(applicable=False), checks=checks)
 
 
 def test_v2_from_checks_rejects_pass_check_on_inapplicable_layer() -> None:
@@ -184,9 +174,7 @@ def test_v2_from_checks_rejects_pass_check_on_inapplicable_layer() -> None:
     checks[0] = CheckEvidence(check_id=PLAN_CHECK_IDS[0], status="pass")
 
     with pytest.raises(ValidationError):
-        PlanCheckDocument.from_checks(
-            layer="api", applicability=_api_scope(applicable=False), checks=checks
-        )
+        PlanCheckDocument.from_checks(layer="api", applicability=_api_scope(applicable=False), checks=checks)
 
 
 def test_v2_rejects_aggregate_status_mismatched_with_checks() -> None:

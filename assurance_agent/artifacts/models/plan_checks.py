@@ -109,8 +109,7 @@ class PlanCheckDocument(BaseModel):
         expected_status: CheckStatus
         if not self.applicability.applicable:
             if any(
-                check.status != "not_applicable"
-                or check.applicability_reason != "layer_not_applicable"
+                check.status != "not_applicable" or check.applicability_reason != "layer_not_applicable"
                 for check in self.checks
             ):
                 raise ValueError(
