@@ -16,6 +16,7 @@ from assurance_agent.eval.specialty_models import (
     load_specialty_report,
 )
 from assurance_agent.verification.profiles import get_layer_assurance_profile
+from assurance_agent.workflow.graph.definition_pinning import policy_snapshot_relpath
 from assurance_agent.workflow.graph.replay_binding import normalize_logical_path
 from assurance_agent.workflow.graph.workspace import TreeStore
 from tests.unit.workflow.graph.test_replay_binding import (
@@ -192,6 +193,113 @@ def _install_strict_frozen_item(tmp_path: Path) -> tuple[Path, Path, Path]:
     return fixture.project, trace_path, verify_path
 
 
+def _change_dir(project: Path) -> Path:
+    return project / "qa" / "changes" / _CHANGE_ID
+
+
+def _read_events(change_dir: Path) -> list[dict[str, object]]:
+    path = change_dir / "events.jsonl"
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _write_events(change_dir: Path, events: list[dict[str, object]]) -> None:
+    (change_dir / "events.jsonl").write_text(
+        "\n".join(json.dumps(event, sort_keys=True) for event in events) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _root_event_field(change_dir: Path, field: str) -> str:
+    for event in _read_events(change_dir):
+        if event.get("type") == "graph_invocation_started" and event.get("invocation_id") == _ROOT_INV:
+            return str(event[field])
+    raise AssertionError(f"missing root event field {field!r}")
+
+
+def _mutate_root_started_field(change_dir: Path, field: str, value: str) -> None:
+    events = _read_events(change_dir)
+    for event in events:
+        if event.get("type") == "graph_invocation_started" and event.get("invocation_id") == _ROOT_INV:
+            event[field] = value
+    _write_events(change_dir, events)
+
+
+def _drop_policy_snapshot(change_dir: Path) -> None:
+    digest = _root_event_field(change_dir, "policy_digest")
+    (change_dir / policy_snapshot_relpath(digest)).unlink()
+
+
+def _drop_pinned_schema(change_dir: Path) -> None:
+    digest = _root_event_field(change_dir, "graph_digest")
+    (change_dir / ".graph-runtime" / "schemas" / f"{digest}.json").unlink()
+
+
+def _corrupt_pinned_schema_digest(change_dir: Path) -> None:
+    digest = _root_event_field(change_dir, "graph_digest")
+    schema_path = change_dir / ".graph-runtime" / "schemas" / f"{digest}.json"
+    schema_path.write_text('{"schema_version":"2","name":"bad"}\n', encoding="utf-8")
+
+
+def _corrupt_policy_snapshot_bytes(change_dir: Path) -> None:
+    digest = _root_event_field(change_dir, "policy_digest")
+    policy_path = change_dir / policy_snapshot_relpath(digest)
+    policy_path.write_bytes(b"policy: corrupted\n")
+
+
+def _corrupt_api_mechanical_outputs(change_dir: Path) -> None:
+    events = _read_events(change_dir)
+    profile = get_layer_assurance_profile("api")
+    checks_path = normalize_logical_path(f"change:{profile.checks_artifact}")
+    for event in events:
+        task_id = str(event.get("task_id", ""))
+        if event.get("type") == "task_attempt_succeeded" and task_id.endswith(":mechanical-plan-checks"):
+            if "api-plan-cycle" not in task_id:
+                continue
+            event["outputs_sha256"] = {checks_path: "0" * 64}
+    _write_events(change_dir, events)
+
+
+def _strip_api_gate_reads_sha256(change_dir: Path) -> None:
+    events = _read_events(change_dir)
+    for event in events:
+        task_id = str(event.get("task_id", ""))
+        if event.get("type") == "task_attempt_succeeded" and task_id.endswith(":review-gate"):
+            if "api-plan-cycle" not in task_id:
+                continue
+            gate_report = dict(event.get("gate_report") or {})
+            gate_report.pop("reads_sha256", None)
+            event["gate_report"] = gate_report
+    _write_events(change_dir, events)
+
+
+def _assert_incomplete_v2_collect(
+    result: subprocess.CompletedProcess[str],
+    output: Path,
+    *,
+    definition_failure: str | None = None,
+    layer_reason: tuple[str, str] | None = None,
+) -> SpecialtyReportV2:
+    assert result.returncode != 0
+    report = load_specialty_report(json.loads(output.read_text(encoding="utf-8")))
+    assert isinstance(report, SpecialtyReportV2)
+    assert report.schema_version == "2"
+    capability = report.capability_contract_policy
+    assert capability.integrity == "incomplete"
+    if definition_failure is not None:
+        assert capability.definition_failure == definition_failure
+        assert capability.definition_binding is None
+        assert all(row.status == "incomplete" for row in capability.rows)
+    if layer_reason is not None:
+        layer, reason_code = layer_reason
+        assert capability.definition_binding is not None
+        assert capability.definition_failure is None
+        by_layer = {row.layer: row for row in capability.rows}
+        assert by_layer[layer].status == "incomplete"
+        assert by_layer[layer].reason_code == reason_code
+    assert list(output.parent.glob(f".{output.name}.*.tmp")) == []
+    return report
+
+
 def _collect_command(
     *,
     project: Path,
@@ -339,27 +447,69 @@ def test_collect_freezes_capability_policy_replay_and_trace_evidence(tmp_path: P
     assert evidence["verify"]["observed_insufficient_count"] == 1
 
 
-def test_collect_writes_incomplete_v2_report_for_definition_failure(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("failure_code", "mutator", "collect_overrides"),
+    [
+        ("root_invocation_unbound", lambda _change_dir: None, {"root_invocation_id": "missing-root"}),
+        ("policy_snapshot_missing", _drop_policy_snapshot, {}),
+        ("pinned_schema_missing", _drop_pinned_schema, {}),
+        ("pinned_schema_digest_mismatch", _corrupt_pinned_schema_digest, {}),
+        ("gate_semantics_mismatch", lambda cd: _mutate_root_started_field(cd, "gate_semantics_digest", "0" * 64), {}),
+        (
+            "assurance_profile_mismatch",
+            lambda cd: _mutate_root_started_field(cd, "assurance_profile_digest", "0" * 64),
+            {},
+        ),
+        ("policy_digest_mismatch", _corrupt_policy_snapshot_bytes, {}),
+    ],
+)
+def test_collect_writes_incomplete_v2_for_definition_integrity_failures(
+    tmp_path: Path,
+    failure_code: str,
+    mutator: object,
+    collect_overrides: dict[str, str],
+) -> None:
     project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
-    output = tmp_path / "specialty.json"
+    change_dir = _change_dir(project)
+    mutator(change_dir)  # type: ignore[operator]
+    output = tmp_path / f"specialty-def-{failure_code}.json"
 
     result = _collect_command(
         project=project,
         trace_path=trace_path,
         verify_path=verify_path,
         output=output,
-        root_invocation_id="missing-root",
+        **collect_overrides,
     )
 
-    assert result.returncode != 0
-    report = load_specialty_report(json.loads(output.read_text(encoding="utf-8")))
-    assert isinstance(report, SpecialtyReportV2)
-    assert report.schema_version == "2"
-    assert report.capability_contract_policy.integrity == "incomplete"
-    assert report.capability_contract_policy.definition_failure == "root_invocation_unbound"
-    assert report.capability_contract_policy.definition_binding is None
-    assert all(row.status == "incomplete" for row in report.capability_contract_policy.rows)
-    assert list(output.parent.glob(f".{output.name}.*.tmp")) == []
+    _assert_incomplete_v2_collect(result, output, definition_failure=failure_code)
+
+
+@pytest.mark.parametrize(
+    ("layer", "failure_code", "mutator"),
+    [
+        ("api", "mechanical_producer_unbound", _corrupt_api_mechanical_outputs),
+        ("api", "gate_evidence_unbound", _strip_api_gate_reads_sha256),
+    ],
+)
+def test_collect_writes_incomplete_v2_for_evidence_integrity_failures(
+    tmp_path: Path,
+    layer: str,
+    failure_code: str,
+    mutator: object,
+) -> None:
+    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
+    mutator(_change_dir(project))  # type: ignore[operator]
+    output = tmp_path / f"specialty-evidence-{failure_code}.json"
+
+    result = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=output,
+    )
+
+    _assert_incomplete_v2_collect(result, output, layer_reason=(layer, failure_code))
 
 
 def test_collect_incomplete_report_is_byte_stable_and_leaves_no_temp_files(tmp_path: Path) -> None:
