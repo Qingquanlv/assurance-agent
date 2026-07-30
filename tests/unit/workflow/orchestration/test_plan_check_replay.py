@@ -363,27 +363,55 @@ def test_historical_accept_risk_outside_temp_audit_cannot_mask_replay(tmp_path: 
     assert scenario.verdict != Verdict.PASS.value
 
 
-def test_replay_leaves_real_project_tree_unchanged(tmp_path: Path) -> None:
-    policy_path = tmp_path / ".aa" / "policy.yaml"
-    policy_path.parent.mkdir(parents=True)
-    policy_path.write_text("version: 1\n", encoding="utf-8")
-    original_policy = policy_path.read_bytes()
+def _project_tree_hashes(root: Path) -> dict[str, str]:
+    return {
+        path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
 
-    review_path = tmp_path / "qa" / "changes" / _CHANGE_ID / "review" / "api-plan-review.json"
-    review_path.parent.mkdir(parents=True)
-    review_path.write_text('{"marker": true}\n', encoding="utf-8")
-    original_review = review_path.read_bytes()
 
+def test_replay_leaves_real_project_tree_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = get_layer_assurance_profile("api")
+    change_dir = tmp_path / "qa" / "changes" / _CHANGE_ID
+    decoy_marker = b"# DECOY - replay must not mutate caller cwd artifacts\n"
+
+    decoy_files = {
+        tmp_path / ".aa" / "policy.yaml": decoy_marker + b"version: 1\n",
+        tmp_path / ".aa" / "data-knowledge.yaml": decoy_marker,
+        change_dir / profile.review_artifact: decoy_marker + b'{"decoy": true}\n',
+        change_dir / profile.checks_artifact: decoy_marker + b'{"decoy": true}\n',
+    }
+    for path, content in decoy_files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    base_policy = _base_policy()
+    before = _project_tree_hashes(tmp_path)
+
+    monkeypatch.chdir(tmp_path)
     _replay(
         "api",
         checks=_applicable_checks("api"),
         review=_review("api"),
         data_knowledge=_data_knowledge(),
-        base_policy=_base_policy(),
+        base_policy=base_policy,
     )
 
-    assert policy_path.read_bytes() == original_policy
-    assert review_path.read_bytes() == original_review
+    assert _project_tree_hashes(tmp_path) == before
+
+
+def test_bind_json_artifact_rejects_model_raw_bytes_mismatch() -> None:
+    profile = get_layer_assurance_profile("api")
+    review = _review("api")
+    mismatched = _review("api", decision="reject")
+    raw = (
+        json.dumps(mismatched.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    with pytest.raises(ValueError, match="model does not match raw_bytes"):
+        bind_json_artifact(logical_path=profile.review_artifact, model=review, raw_bytes=raw)
 
 
 def test_replay_scenario_order_and_digests() -> None:

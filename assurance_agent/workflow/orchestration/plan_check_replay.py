@@ -84,6 +84,10 @@ def bind_json_artifact(
         payload = (json.dumps(model.model_dump(mode="json"), indent=2, sort_keys=True) + "\n").encode(
             "utf-8"
         )
+    else:
+        reparsed = type(model).model_validate(json.loads(payload))
+        if reparsed != model:
+            raise ValueError(f"model does not match raw_bytes for {logical_path}")
     digest = hashlib.sha256(payload).hexdigest()
     return BoundArtifact(logical_path=logical_path, raw_bytes=payload, sha256=digest, model=model)
 
@@ -101,6 +105,10 @@ def bind_yaml_artifact(
                 "utf-8"
             )
         )
+    else:
+        reparsed = type(model).model_validate(yaml.safe_load(payload))
+        if reparsed != model:
+            raise ValueError(f"model does not match raw_bytes for {logical_path}")
     digest = hashlib.sha256(payload).hexdigest()
     return BoundArtifact(logical_path=logical_path, raw_bytes=payload, sha256=digest, model=model)
 
