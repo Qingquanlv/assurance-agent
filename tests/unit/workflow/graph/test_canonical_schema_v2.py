@@ -90,6 +90,7 @@ EXPECTED_CONTRACTS = {
     "operation:no-op",
     "operation:skill-registry-check",
     "operation:verify-plan-mechanical",
+    "operation:derive-plan-layer-applicability",
     "operation:run-tests",
     "operation:inspect",
     "operation:generate-report",

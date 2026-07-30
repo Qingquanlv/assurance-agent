@@ -28,6 +28,15 @@ def _load_yaml_mapping(path: Path) -> dict[str, object]:
     return raw
 
 
+def load_sorted_cases(change_dir: Path) -> list[dict[str, object]]:
+    """Deterministically load ``change:cases/**/case.yaml`` documents.
+
+    Sorted path order keeps ``derive_layer_applicability`` outcomes stable
+    across callers (the preflight and mechanical execution must never disagree).
+    """
+    return [_load_yaml_mapping(path) for path in sorted(change_dir.glob("cases/**/case.yaml"))]
+
+
 def _required_capabilities(review_path: Path) -> tuple[str, ...]:
     """Missing review is valid on the first mechanical pass; a present but
     malformed review must raise instead of being silently ignored."""
@@ -51,7 +60,7 @@ def verify_plan_mechanical(
         return task_failure("invalid_input", str(err))
 
     try:
-        cases = [_load_yaml_mapping(path) for path in sorted(workspace.change_dir.glob("cases/**/case.yaml"))]
+        cases = load_sorted_cases(workspace.change_dir)
         applicability = derive_layer_applicability(cases, profile)
 
         if applicability.applicable:
@@ -83,3 +92,28 @@ def verify_plan_mechanical(
     except (OSError, ValueError, ValidationError, yaml.YAMLError) as err:
         return task_failure("invalid_output", str(err))
     return TaskResult(status="succeeded", value={"status": document.status})
+
+
+def derive_plan_layer_applicability(
+    task: ExecutableTask, workspace: TaskWorkspace, context: RuntimeContext
+) -> TaskResult:
+    """operation:derive-plan-layer-applicability —— cases-only preflight.
+
+    Reads only ``change:cases/**/case.yaml`` and returns the pure
+    ``LayerApplicability`` derivation; no plans/review/L1 access, no writes
+    (spec: cheap gating before the mechanical plan-check pipeline runs).
+    """
+    del context
+    layer = str(task_with(task).get("layer", ""))
+    try:
+        profile = get_layer_assurance_profile(layer)
+    except ValueError as err:
+        return task_failure("invalid_input", str(err))
+
+    try:
+        cases = load_sorted_cases(workspace.change_dir)
+        applicability = derive_layer_applicability(cases, profile)
+    except (OSError, ValueError, ValidationError, yaml.YAMLError) as err:
+        return task_failure("invalid_output", str(err))
+
+    return TaskResult(status="succeeded", value=applicability.model_dump(mode="json"))

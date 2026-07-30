@@ -7,7 +7,11 @@ import pytest
 import yaml
 
 from assurance_agent.verification.profiles import get_layer_assurance_profile
-from assurance_agent.workflow.graph.handlers.plan_checks import verify_plan_mechanical
+from assurance_agent.workflow.graph.handlers.operation import default_operations
+from assurance_agent.workflow.graph.handlers.plan_checks import (
+    derive_plan_layer_applicability,
+    verify_plan_mechanical,
+)
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 
@@ -281,3 +285,132 @@ def test_case_loading_does_not_tighten_the_registered_case_schema(workspace: Tas
 
     assert result.status == "succeeded"
     assert result.error_kind is None
+
+
+# ---------------------------------------------------------------------------
+# operation:derive-plan-layer-applicability — cases-only preflight (no plans/review/L1)
+
+
+def _applicability_task(layer: str = "e2e") -> ExecutableTask:
+    return ExecutableTask.model_construct(
+        task_id="t1",
+        node_id="derive-plan-layer-applicability",
+        graph_id="e2e-branch",
+        target="operation:derive-plan-layer-applicability",
+        input={"with": {"layer": layer}},
+    )
+
+
+def test_derive_plan_layer_applicability_is_registered() -> None:
+    assert "operation:derive-plan-layer-applicability" in default_operations()
+    assert (
+        default_operations()["operation:derive-plan-layer-applicability"] is derive_plan_layer_applicability
+    )
+
+
+def test_automated_matching_cases_are_applicable(workspace: TaskWorkspace) -> None:
+    _write_case(workspace, "E2E", automated=True)
+    result = derive_plan_layer_applicability(_applicability_task("e2e"), workspace, _context())
+    assert result.status == "succeeded"
+    assert result.value == {
+        "layer": "e2e",
+        "applicable": True,
+        "reason_code": "automated_cases_present",
+        "case_ids": ["TC_DEPT_001"],
+    }
+
+
+def test_empty_cases_directory_is_not_applicable(tmp_path: Path) -> None:
+    project_root = tmp_path / "proj"
+    change_dir = project_root / "qa" / "changes" / "CH-1"
+    change_dir.mkdir(parents=True)
+    ws = TaskWorkspace(
+        task_id="t1",
+        root=project_root,
+        project_root=project_root,
+        repo_root=project_root,
+        change_dir=change_dir,
+        base_tree_id="tree",
+    )
+    result = derive_plan_layer_applicability(_applicability_task("e2e"), ws, _context())
+    assert result.status == "succeeded"
+    assert result.value == {
+        "layer": "e2e",
+        "applicable": False,
+        "reason_code": "no_automated_cases",
+        "case_ids": [],
+    }
+
+
+def test_manual_only_cases_are_not_applicable(workspace: TaskWorkspace) -> None:
+    _write_case(workspace, "E2E", automated=False)
+    result = derive_plan_layer_applicability(_applicability_task("e2e"), workspace, _context())
+    assert result.status == "succeeded"
+    assert result.value == {
+        "layer": "e2e",
+        "applicable": False,
+        "reason_code": "no_automated_cases",
+        "case_ids": [],
+    }
+
+
+def test_other_layer_cases_do_not_make_target_layer_applicable(workspace: TaskWorkspace) -> None:
+    # workspace fixture already wrote an automated API case; asking for e2e must be inapplicable.
+    result = derive_plan_layer_applicability(_applicability_task("e2e"), workspace, _context())
+    assert result.status == "succeeded"
+    assert result.value["applicable"] is False
+    assert result.value["reason_code"] == "no_automated_cases"
+
+
+def test_malformed_case_yaml_is_invalid_output(workspace: TaskWorkspace) -> None:
+    case_path = workspace.change_dir / "cases" / "system" / "dept" / "case.yaml"
+    case_path.write_text("not: [valid, yaml", encoding="utf-8")
+    result = derive_plan_layer_applicability(_applicability_task("e2e"), workspace, _context())
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_output"
+
+
+def test_non_list_bucket_is_invalid_output(workspace: TaskWorkspace) -> None:
+    case_path = workspace.change_dir / "cases" / "system" / "dept" / "case.yaml"
+    case_path.write_text(
+        yaml.safe_dump({"schema_version": "1.0", "added": "not-a-list", "modified": [], "removed": []}),
+        encoding="utf-8",
+    )
+    result = derive_plan_layer_applicability(_applicability_task("e2e"), workspace, _context())
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_output"
+
+
+def test_strict_rejection_of_string_automation_required(workspace: TaskWorkspace) -> None:
+    case_path = workspace.change_dir / "cases" / "system" / "dept" / "case.yaml"
+    case_path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1.0",
+                "added": [
+                    {
+                        "case_id": "TC_DEPT_002",
+                        "title": "case",
+                        "status": "active",
+                        "priority": "P1",
+                        "severity": "major",
+                        "type": "E2E",
+                        "module": "dept",
+                        "automation": {"required": "true"},
+                    }
+                ],
+                "modified": [],
+                "removed": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = derive_plan_layer_applicability(_applicability_task("e2e"), workspace, _context())
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_output"
+
+
+def test_unknown_layer_is_invalid_input_for_applicability(workspace: TaskWorkspace) -> None:
+    result = derive_plan_layer_applicability(_applicability_task("mobile"), workspace, _context())
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_input"

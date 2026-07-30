@@ -152,6 +152,19 @@ def test_run_tests_contract_reads_traceability_inputs() -> None:
     assert "project:.aa/policy.yaml" in contract.reads
 
 
+def test_derive_plan_layer_applicability_contract_reads_only_cases() -> None:
+    catalog = load_execution_contracts(Path.cwd())
+    contract = catalog.contracts["operation:derive-plan-layer-applicability"]
+    assert contract.reads == ("change:cases/**",)
+    assert contract.writes == ()
+    assert contract.authorization_writes == ()
+    assert contract.synchronized == ()
+    assert contract.side_effect_free is True
+    reads_prefixes = {read.split("/", 1)[0].split(":", 1)[-1] for read in contract.reads}
+    assert "plans" not in reads_prefixes
+    assert "review" not in reads_prefixes
+
+
 def test_materialize_trace_projection_contract_reads_full_surface() -> None:
     catalog = load_execution_contracts(Path.cwd())
     contract = catalog.contracts["operation:materialize-trace-projection"]

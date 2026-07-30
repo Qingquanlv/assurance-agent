@@ -688,6 +688,7 @@ def test_default_operations_registry_has_exact_keys() -> None:
         "operation:no-op",
         "operation:skill-registry-check",
         "operation:verify-plan-mechanical",
+        "operation:derive-plan-layer-applicability",
         "operation:run-tests",
         "operation:allocate-healing-attempt",
         "operation:record-healing-status",

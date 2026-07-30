@@ -64,6 +64,13 @@ contracts:
       - change:review/*-plan-checks.json
     retryable_errors: []
 
+  operation:derive-plan-layer-applicability:
+    handler: operation
+    reads:
+      - change:cases/**
+    side_effect_free: true
+    retryable_errors: []
+
   operation:run-tests:
     handler: operation
     reads:
