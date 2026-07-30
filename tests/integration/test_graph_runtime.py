@@ -19,7 +19,7 @@ from assurance_agent.workflow.graph.handlers.operation import (
     OperationHandler,
     default_operations,
 )
-from assurance_agent.workflow.graph.leases import SystemClock
+from assurance_agent.workflow.graph.leases import LeaseRegistry, SystemClock, new_lease
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
@@ -926,59 +926,59 @@ def test_pending_commit_recovery_failure_raises_graph_runtime_error(tmp_path: Pa
         fresh.resume(invocation_id)
 
 
-def test_recovery_barrier_orders_reconcile_before_pending_commit_before_plan(
+def test_recovery_barrier_blocks_plan_while_task_still_running(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project = _make_project(tmp_path)
     compiled, contracts = _write_compiled()
-    runtime = _build_runtime(project, compiled, contracts, node_runner=_op_runner(_write_ops()))
-    order: list[str] = []
-    original_reconcile = runtime._reconcile_running
-    original_commit_pending = runtime._commit_pending_write_sets
-    original_replay = runtime._replay_committed_publications
-    original_repair_ordinary = runtime._repair_ordinary_materialization
+    clock = FakeClock()
+    runtime = _build_runtime(
+        project, compiled, contracts, clock=clock, node_runner=_op_runner(_write_ops())
+    )
 
-    def track_reconcile(projection, context):  # type: ignore[no-untyped-def]
-        order.append("reconcile")
-        return original_reconcile(projection, context)
+    def crash_run(prepared, plan, projection, context, leases):  # type: ignore[no-untyped-def]
+        raise _InjectedCrash("after task_attempt_started")
 
-    def track_commit_pending(projection, context):  # type: ignore[no-untyped-def]
-        order.append("pending_commit")
-        return original_commit_pending(projection, context)
-
-    def track_replay(projection, context):  # type: ignore[no-untyped-def]
-        order.append("replay_publications")
-        return original_replay(projection, context)
-
-    def track_repair_ordinary(projection, context):  # type: ignore[no-untyped-def]
-        order.append("repair_ordinary")
-        return original_repair_ordinary(projection, context)
-
-    def track_plan(*args, **kwargs):  # type: ignore[no-untyped-def]
-        order.append("plan")
-        raise GraphRuntimeError("stop after first plan")
-
-    monkeypatch.setattr(runtime, "_reconcile_running", track_reconcile)
-    monkeypatch.setattr(runtime, "_commit_pending_write_sets", track_commit_pending)
-    monkeypatch.setattr(runtime, "_replay_committed_publications", track_replay)
-    monkeypatch.setattr(runtime, "_repair_ordinary_materialization", track_repair_ordinary)
-    monkeypatch.setattr(runtime_mod, "plan_superstep", track_plan)
-
-    with pytest.raises(GraphRuntimeError, match="stop after first plan"):
+    runtime._scheduler._run_attempt = crash_run  # type: ignore[method-assign]  # noqa: SLF001
+    with pytest.raises(_InjectedCrash):
         runtime.run(compiled, "full", _context(project))
 
-    assert "reconcile" in order
-    assert order.index("reconcile") < order.index("plan")
-    assert "pending_commit" in order
-    assert order.index("pending_commit") < order.index("plan")
-    assert "replay_publications" in order
-    assert order.index("replay_publications") < order.index("plan")
-    assert "repair_ordinary" in order
-    assert order.index("repair_ordinary") < order.index("plan")
+    change = _context(project).change_dir
+    events = read_events_strict(change)
+    started = next(e for e in events if e.get("type") == "task_attempt_started")
+    invocation_id = next(
+        str(e["invocation_id"]) for e in events if e.get("type") == "graph_invocation_started"
+    )
+    LeaseRegistry(change).upsert(
+        new_lease(
+            task_id=str(started["task_id"]),
+            attempt_id=str(started["attempt_id"]),
+            session_id=None,
+            started_at=str(started["started_at"]),
+            lease_expires_at=(clock.now() + timedelta(hours=1)).isoformat(),
+        )
+    )
+
+    plan_calls: list[str] = []
+
+    def reject_plan(*args, **kwargs):  # type: ignore[no-untyped-def]
+        plan_calls.append("plan")
+        raise AssertionError("plan_superstep must not run while a task is still running")
+
+    monkeypatch.setattr(runtime_mod, "plan_superstep", reject_plan)
+    fresh = _build_runtime(
+        project, compiled, contracts, clock=clock, node_runner=_op_runner(_write_ops())
+    )
+    with pytest.raises(GraphRuntimeError, match="recovery barrier stalled"):
+        fresh.resume(invocation_id)
+    assert plan_calls == []
 
 
-def test_pending_commit_recovery_failure_raises_graph_runtime_error(tmp_path: Path) -> None:
+def test_recovery_barrier_skips_plan_while_pending_write_sets_remain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     project = _make_project(tmp_path)
     compiled, contracts = _write_compiled()
     ops = _write_ops()
@@ -997,11 +997,19 @@ def test_pending_commit_recovery_failure_raises_graph_runtime_error(tmp_path: Pa
         str(e["invocation_id"]) for e in events if e.get("type") == "graph_invocation_started"
     )
 
+    plan_calls: list[str] = []
+
+    def reject_plan(*args, **kwargs):  # type: ignore[no-untyped-def]
+        plan_calls.append("plan")
+        raise AssertionError("plan_superstep must not run while pending write sets remain")
+
+    monkeypatch.setattr(runtime_mod, "plan_superstep", reject_plan)
     fresh = _build_runtime(project, compiled, contracts, node_runner=_op_runner(ops))
 
     def refuse_pending(**_kwargs):  # type: ignore[no-untyped-def]
-        raise ValueError("pending commit refused")
+        return False
 
     fresh._scheduler.commit_pending_write_sets = refuse_pending  # type: ignore[method-assign]
-    with pytest.raises(GraphRuntimeError, match="pending commit refused"):
+    with pytest.raises(GraphRuntimeError, match="recovery barrier stalled"):
         fresh.resume(invocation_id)
+    assert plan_calls == []

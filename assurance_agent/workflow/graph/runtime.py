@@ -995,6 +995,8 @@ class GraphRuntime:
         invocation_id: str,
         context: RuntimeContext,
     ) -> bool:
+        if any(task.status == "running" for task in projection.tasks.values()):
+            return True
         if self._pending_write_sets(invocation_id):
             return True
         planned = self._last_uncommitted_plan(invocation_id)
