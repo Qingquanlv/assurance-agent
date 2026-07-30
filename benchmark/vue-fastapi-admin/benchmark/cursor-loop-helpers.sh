@@ -3,6 +3,14 @@
 # Helpers kept side-effect free until explicitly called so unit tests can source
 # this file without launching the benchmark loop.
 
+resolve_cursor_project_root() {
+  local script_dir="$1" override="$2" candidate resolved
+  candidate="${override:-$script_dir/..}"
+  [ -d "$candidate" ] || return 1
+  resolved="$(cd "$candidate" && pwd)" || return 1
+  printf '%s' "$resolved"
+}
+
 benchmark_eval_setting() {
   local new_value="$1" legacy_value="$2" default_value="$3"
   if [ -n "$new_value" ]; then
@@ -301,6 +309,43 @@ benchmark_evidence_exit_code() {
     fi
   done
   return "$failed"
+}
+
+collect_benchmark_specialty_report() {
+  local python_bin="$1" reporter="$2" project_root="$3" schema_root="$4"
+  local change_id="$5" trace_file="$6" verify_file="$7" output_file="$8" log_file="$9"
+  local trace_exit="${10}" verify_exit="${11}"
+  mkdir -p "$(dirname "$output_file")" "$(dirname "$log_file")"
+  "$python_bin" "$reporter" collect \
+    --project-root "$project_root" \
+    --schema-root "$schema_root" \
+    --change-id "$change_id" \
+    --trace "$trace_file" \
+    --verify "$verify_file" \
+    --trace-exit "$trace_exit" \
+    --verify-exit "$verify_exit" \
+    --output "$output_file" \
+    2>>"$log_file"
+}
+
+render_benchmark_specialty_sections() {
+  local python_bin="$1" reporter="$2"
+  shift 2
+  [ "$#" -gt 0 ] || return 1
+  "$python_bin" "$reporter" render "$@"
+}
+
+benchmark_specialty_resume_action() {
+  local report_file="$1" archive_dir="$2"
+  if [ -s "$report_file" ]; then
+    printf 'reuse'
+    return 0
+  fi
+  if [ -d "$archive_dir" ]; then
+    printf 'missing_after_archive'
+    return 1
+  fi
+  printf 'collect'
 }
 
 remove_generated_artifact_tree() {

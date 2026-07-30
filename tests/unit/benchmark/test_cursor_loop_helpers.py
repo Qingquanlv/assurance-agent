@@ -413,6 +413,21 @@ def test_resolve_aa_python_uses_console_script_interpreter(tmp_path: Path) -> No
     assert result.stdout == sys.executable
 
 
+def test_resolve_cursor_project_root_honors_external_sut_override(tmp_path: Path) -> None:
+    script_dir = tmp_path / "tool" / "benchmark"
+    sut_root = tmp_path / "sut"
+    script_dir.mkdir(parents=True)
+    sut_root.mkdir()
+
+    result = _run_helper(
+        tmp_path,
+        f"resolve_cursor_project_root {shlex.quote(str(script_dir))} {shlex.quote(str(sut_root))}",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == str(sut_root.resolve())
+
+
 def test_benchmark_env_preserves_caller_trace_verify_override(tmp_path: Path) -> None:
     result = subprocess.run(
         [
