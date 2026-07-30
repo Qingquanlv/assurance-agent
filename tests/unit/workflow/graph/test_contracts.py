@@ -165,6 +165,19 @@ def test_derive_plan_layer_applicability_contract_reads_only_cases() -> None:
     assert "review" not in reads_prefixes
 
 
+def test_verify_plan_mechanical_contract_reads_traceability_inputs() -> None:
+    catalog = load_execution_contracts(Path.cwd())
+    contract = catalog.contracts["operation:verify-plan-mechanical"]
+    assert set(contract.reads) == {
+        "change:cases/**",
+        "change:plans/**",
+        "change:review/**",
+        "repo:.aa/data-knowledge.yaml",
+    }
+    assert contract.writes == ("change:review/*-plan-checks.json",)
+    assert contract.authorization_writes == ("change:review/*-plan-checks.json",)
+
+
 def test_materialize_trace_projection_contract_reads_full_surface() -> None:
     catalog = load_execution_contracts(Path.cwd())
     contract = catalog.contracts["operation:materialize-trace-projection"]

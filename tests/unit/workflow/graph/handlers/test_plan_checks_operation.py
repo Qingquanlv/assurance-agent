@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from assurance_agent.artifacts.models.assurance import PLAN_CHECK_IDS
 from assurance_agent.verification.profiles import get_layer_assurance_profile
 from assurance_agent.workflow.graph.handlers.operation import default_operations
 from assurance_agent.workflow.graph.handlers.plan_checks import (
@@ -84,13 +85,40 @@ def workspace(tmp_path: Path) -> TaskWorkspace:
     return ws
 
 
-def _task(layer: str = "api") -> ExecutableTask:
+_BASE_PLAN_REVIEW = {
+    "schema_version": "1.0",
+    "decision": "pass",
+    "codegen_readiness": "ready",
+    "auto_fix_allowed": False,
+    "human_review_required": False,
+    "risk_level": "low",
+    "findings": [],
+    "auto_fix_plan": [],
+    "next_action": "continue",
+    "required_capabilities": ["domain_factories.dept.make_dept"],
+}
+
+
+def _write_plan_review(workspace: TaskWorkspace, layer: str, **overrides: object) -> None:
+    profile = get_layer_assurance_profile(layer)
+    payload = {
+        **_BASE_PLAN_REVIEW,
+        "review_type": f"{layer}-plan",
+        "change_id": "CH-1",
+        **overrides,
+    }
+    path = workspace.change_dir / profile.review_artifact
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _task(layer: str = "api", *, require_review: bool = False) -> ExecutableTask:
     return ExecutableTask.model_construct(
         task_id="t1",
         node_id="mechanical-plan-checks",
         graph_id="api-branch",
         target="operation:verify-plan-mechanical",
-        input={"with": {"layer": layer}},
+        input={"with": {"layer": layer, "require_review": require_review}},
     )
 
 
@@ -105,7 +133,8 @@ def test_write_profile_plans_helper_creates_exact_paths(workspace: TaskWorkspace
 
 def test_api_writes_version_two_evidence_at_the_profile_path(workspace: TaskWorkspace) -> None:
     _write_profile_plans(workspace, "api", "Data knowledge: `.aa/data-knowledge.yaml`\n")
-    result = verify_plan_mechanical(_task("api"), workspace, _context())
+    _write_plan_review(workspace, "api")
+    result = verify_plan_mechanical(_task("api", require_review=True), workspace, _context())
     assert isinstance(result, TaskResult) and result.status == "succeeded"
     doc = json.loads((workspace.change_dir / "review" / "api-plan-checks.json").read_text(encoding="utf-8"))
     assert doc["schema_version"] == "2"
@@ -126,7 +155,11 @@ def test_other_layers_write_their_own_profile_declared_paths(
 ) -> None:
     _write_case(workspace, case_type, automated=True)
     _write_profile_plans(workspace, layer, "Data knowledge: `.aa/data-knowledge.yaml`\n")
-    result = verify_plan_mechanical(_task(layer), workspace, _context())
+    if layer in {"api", "e2e"}:
+        _write_plan_review(workspace, layer)
+        result = verify_plan_mechanical(_task(layer, require_review=True), workspace, _context())
+    else:
+        result = verify_plan_mechanical(_task(layer, require_review=False), workspace, _context())
     assert result.status == "succeeded"
     assert (workspace.change_dir / "review" / checks_path).is_file()
 
@@ -202,13 +235,12 @@ def test_review_at_canonical_path_supplies_required_capabilities_on_reviewed_pas
     workspace: TaskWorkspace,
 ) -> None:
     _write_profile_plans(workspace, "api", "Data knowledge: `.aa/data-knowledge.yaml`\n")
-    review_path = workspace.change_dir / "review" / "api-plan-review.json"
-    review_path.parent.mkdir(parents=True, exist_ok=True)
-    review_path.write_text(
-        json.dumps({"required_capabilities": ["domain_factories.dept.missing_thing"]}),
-        encoding="utf-8",
+    _write_plan_review(
+        workspace,
+        "api",
+        required_capabilities=["domain_factories.dept.missing_thing"],
     )
-    result = verify_plan_mechanical(_task("api"), workspace, _context())
+    result = verify_plan_mechanical(_task("api", require_review=True), workspace, _context())
     assert result.status == "succeeded"
     doc = json.loads((workspace.change_dir / "review" / "api-plan-checks.json").read_text(encoding="utf-8"))
     capability_check = next(check for check in doc["checks"] if check["check_id"] == "capability_keys")
@@ -219,14 +251,13 @@ def test_review_at_canonical_path_supplies_required_capabilities_on_reviewed_pas
 def test_a_failing_check_is_not_a_task_failure(workspace: TaskWorkspace) -> None:
     """capability_keys 未命中是机械 check 的 fail，不是 task 的 failed（spec C2）。"""
     _write_profile_plans(workspace, "api", "Data knowledge: `.aa/data-knowledge.yaml`\n")
-    review_path = workspace.change_dir / "review" / "api-plan-review.json"
-    review_path.parent.mkdir(parents=True, exist_ok=True)
-    review_path.write_text(
-        json.dumps({"required_capabilities": ["domain_factories.dept.missing_thing"]}),
-        encoding="utf-8",
+    _write_plan_review(
+        workspace,
+        "api",
+        required_capabilities=["domain_factories.dept.missing_thing"],
     )
 
-    result = verify_plan_mechanical(_task("api"), workspace, _context())
+    result = verify_plan_mechanical(_task("api", require_review=True), workspace, _context())
 
     assert result.status == "succeeded"
     assert result.value == {"status": "fail"}
@@ -237,7 +268,7 @@ def test_a_failing_check_is_not_a_task_failure(workspace: TaskWorkspace) -> None
 
 def test_missing_review_on_first_pass_yields_empty_required_capabilities(workspace: TaskWorkspace) -> None:
     _write_profile_plans(workspace, "api", "Data knowledge: `.aa/data-knowledge.yaml`\n")
-    result = verify_plan_mechanical(_task("api"), workspace, _context())
+    result = verify_plan_mechanical(_task("api", require_review=False), workspace, _context())
     assert result.status == "succeeded"
     doc = json.loads((workspace.change_dir / "review" / "api-plan-checks.json").read_text(encoding="utf-8"))
     capability_check = next(check for check in doc["checks"] if check["check_id"] == "capability_keys")
@@ -249,7 +280,157 @@ def test_malformed_present_review_raises_invalid_output_instead_of_ignoring(work
     review_path = workspace.change_dir / "review" / "api-plan-review.json"
     review_path.parent.mkdir(parents=True, exist_ok=True)
     review_path.write_text("not: [valid, yaml", encoding="utf-8")
-    result = verify_plan_mechanical(_task("api"), workspace, _context())
+    result = verify_plan_mechanical(_task("api", require_review=False), workspace, _context())
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_output"
+
+
+def test_string_require_review_is_invalid_input(workspace: TaskWorkspace) -> None:
+    _write_profile_plans(workspace, "api")
+    task = ExecutableTask.model_construct(
+        task_id="t1",
+        node_id="mechanical-plan-checks",
+        graph_id="api-branch",
+        target="operation:verify-plan-mechanical",
+        input={"with": {"layer": "api", "require_review": "true"}},
+    )
+    result = verify_plan_mechanical(task, workspace, _context())
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_input"
+    assert "require_review" in (result.error or "")
+
+
+@pytest.mark.parametrize("layer", ["api", "e2e"])
+def test_reviewed_mode_missing_review_is_invalid_output(
+    workspace: TaskWorkspace, layer: str
+) -> None:
+    _write_case(workspace, "E2E" if layer == "e2e" else "API", automated=True)
+    _write_profile_plans(workspace, layer, "Data knowledge: `.aa/data-knowledge.yaml`\n")
+    result = verify_plan_mechanical(_task(layer, require_review=True), workspace, _context())
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_output"
+
+
+@pytest.mark.parametrize("layer", ["api", "e2e"])
+def test_reviewed_mode_malformed_review_is_invalid_output(
+    workspace: TaskWorkspace, layer: str
+) -> None:
+    _write_case(workspace, "E2E" if layer == "e2e" else "API", automated=True)
+    _write_profile_plans(workspace, layer, "Data knowledge: `.aa/data-knowledge.yaml`\n")
+    profile = get_layer_assurance_profile(layer)
+    review_path = workspace.change_dir / profile.review_artifact
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    review_path.write_text("not: [valid, yaml", encoding="utf-8")
+    result = verify_plan_mechanical(_task(layer, require_review=True), workspace, _context())
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_output"
+
+
+@pytest.mark.parametrize(
+    ("layer", "wrong_review_type"),
+    [("api", "e2e-plan"), ("e2e", "api-plan")],
+)
+def test_reviewed_mode_wrong_review_type_is_invalid_output(
+    workspace: TaskWorkspace, layer: str, wrong_review_type: str
+) -> None:
+    _write_case(workspace, "E2E" if layer == "e2e" else "API", automated=True)
+    _write_profile_plans(workspace, layer, "Data knowledge: `.aa/data-knowledge.yaml`\n")
+    _write_plan_review(workspace, layer, review_type=wrong_review_type)
+    result = verify_plan_mechanical(_task(layer, require_review=True), workspace, _context())
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_output"
+    assert "review_type" in (result.error or "")
+
+
+@pytest.mark.parametrize("layer", ["api", "e2e"])
+def test_reviewed_mode_wrong_change_id_is_invalid_output(
+    workspace: TaskWorkspace, layer: str
+) -> None:
+    _write_case(workspace, "E2E" if layer == "e2e" else "API", automated=True)
+    _write_profile_plans(workspace, layer, "Data knowledge: `.aa/data-knowledge.yaml`\n")
+    _write_plan_review(workspace, layer, change_id="CH-OTHER")
+    result = verify_plan_mechanical(_task(layer, require_review=True), workspace, _context())
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_output"
+    assert "change_id" in (result.error or "")
+
+
+@pytest.mark.parametrize("layer", ["api", "e2e"])
+def test_reviewed_mode_missing_l1_is_invalid_output(workspace: TaskWorkspace, layer: str) -> None:
+    _write_case(workspace, "E2E" if layer == "e2e" else "API", automated=True)
+    _write_profile_plans(workspace, layer, "Data knowledge: `.aa/data-knowledge.yaml`\n")
+    _write_plan_review(workspace, layer)
+    (workspace.project_root / ".aa" / "data-knowledge.yaml").unlink()
+    result = verify_plan_mechanical(_task(layer, require_review=True), workspace, _context())
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_output"
+
+
+@pytest.mark.parametrize("layer", ["api", "e2e"])
+def test_reviewed_mode_malformed_l1_yaml_is_invalid_output(
+    workspace: TaskWorkspace, layer: str
+) -> None:
+    _write_case(workspace, "E2E" if layer == "e2e" else "API", automated=True)
+    _write_profile_plans(workspace, layer, "Data knowledge: `.aa/data-knowledge.yaml`\n")
+    _write_plan_review(workspace, layer)
+    (workspace.project_root / ".aa" / "data-knowledge.yaml").write_text(
+        "not: [valid, yaml", encoding="utf-8"
+    )
+    result = verify_plan_mechanical(_task(layer, require_review=True), workspace, _context())
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_output"
+
+
+@pytest.mark.parametrize("layer", ["api", "e2e"])
+def test_reviewed_mode_l1_rejected_by_data_knowledge_is_invalid_output(
+    workspace: TaskWorkspace, layer: str
+) -> None:
+    _write_case(workspace, "E2E" if layer == "e2e" else "API", automated=True)
+    _write_profile_plans(workspace, layer, "Data knowledge: `.aa/data-knowledge.yaml`\n")
+    _write_plan_review(workspace, layer)
+    (workspace.project_root / ".aa" / "data-knowledge.yaml").write_text(
+        yaml.safe_dump({"version": "not-an-int"}), encoding="utf-8"
+    )
+    result = verify_plan_mechanical(_task(layer, require_review=True), workspace, _context())
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_output"
+
+
+def test_inapplicable_scope_ignores_malformed_plans_review_and_l1(workspace: TaskWorkspace) -> None:
+    _write_case(workspace, "E2E", automated=False)
+    (workspace.project_root / ".aa" / "data-knowledge.yaml").write_text(
+        "not: [valid, yaml", encoding="utf-8"
+    )
+    review_path = workspace.change_dir / "review" / "e2e-plan-review.json"
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    review_path.write_text("{not json", encoding="utf-8")
+    (workspace.change_dir / "plans" / "e2e-plan.md").parent.mkdir(parents=True)
+    (workspace.change_dir / "plans" / "e2e-plan.md").write_text("not a plan bundle", encoding="utf-8")
+
+    result = verify_plan_mechanical(_task("e2e", require_review=True), workspace, _context())
+
+    assert result.status == "succeeded"
+    assert result.value == {"status": "not_applicable"}
+    doc = json.loads((workspace.change_dir / "review" / "e2e-plan-checks.json").read_text(encoding="utf-8"))
+    assert doc["schema_version"] == "2"
+    assert doc["applicability"]["applicable"] is False
+    assert [check["check_id"] for check in doc["checks"]] == list(PLAN_CHECK_IDS)
+    assert all(
+        check["status"] == "not_applicable" and check["applicability_reason"] == "layer_not_applicable"
+        for check in doc["checks"]
+    )
+
+
+def test_fuzz_unreviewed_mode_with_optional_malformed_review_is_invalid_output(
+    workspace: TaskWorkspace,
+) -> None:
+    _write_case(workspace, "Fuzz", automated=True)
+    _write_profile_plans(workspace, "fuzz")
+    profile = get_layer_assurance_profile("fuzz")
+    review_path = workspace.change_dir / profile.review_artifact
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    review_path.write_text(json.dumps({"decision": "pass"}), encoding="utf-8")
+    result = verify_plan_mechanical(_task("fuzz", require_review=False), workspace, _context())
     assert result.status == "failed"
     assert result.error_kind == "invalid_output"
 

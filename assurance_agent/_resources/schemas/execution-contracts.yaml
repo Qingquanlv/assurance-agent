@@ -55,8 +55,9 @@ contracts:
   operation:verify-plan-mechanical:
     handler: operation
     reads:
-      - change:plans/**
       - change:cases/**
+      - change:plans/**
+      - change:review/**
       - repo:.aa/data-knowledge.yaml
     writes:
       - change:review/*-plan-checks.json
