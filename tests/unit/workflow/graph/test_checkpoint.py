@@ -20,17 +20,19 @@ from assurance_agent.workflow.graph.checkpoint import (
     project_workflow_state,
     render_workflow_state_yaml,
 )
+from assurance_agent.workflow.graph.definition_pinning import is_definition_binding_replayable
 from assurance_agent.workflow.graph.models import GraphProjection
 
 
-def _started(inv: str = "inv-1") -> dict:
-    return {
+def _started(inv: str = "inv-1", *, schema_version: int = 1) -> dict:
+    payload = {
         "source": "graph",
         "type": "graph_invocation_started",
         "invocation_id": inv,
         "entrypoint": "full",
         "graph_id": "main",
         "graph_digest": "gd-1",
+        "event_schema_version": schema_version,
         "contract_digests": {"skill:noop": "cd-1"},
         "params": {"run_mode": "full"},
         "params_sha256": "ps-1",
@@ -39,6 +41,18 @@ def _started(inv: str = "inv-1") -> dict:
         "checkpoint_ns": inv,
         "structural_path": "main",
     }
+    if schema_version >= 4:
+        payload.update(
+            {
+                "ir_digest": "gd-1",
+                "ingest_catalog_digest": "cat-1",
+                "policy_digest": "a" * 64,
+                "policy_origin": "project",
+                "gate_semantics_digest": "b" * 64,
+                "assurance_profile_digest": "c" * 64,
+            }
+        )
+    return payload
 
 
 def _planned(task_ids: list[str], inv: str = "inv-1") -> dict:
@@ -585,6 +599,31 @@ def test_workflow_state_yaml_rebuilds_semantically_identical(tmp_path: Path) -> 
     with transaction(change) as txn:
         txn.set_workflow_state_projection(rebuilt)
     assert yaml.safe_load(state_file.read_text(encoding="utf-8")) == yaml.safe_load(original.decode("utf-8"))
+
+
+def test_projection_folds_v4_definition_binding_fields(tmp_path: Path) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    _append_all(change, [_started(schema_version=4)])
+
+    projection = project_invocation(change, "inv-1")
+    assert projection.event_schema_version == 4
+    assert projection.policy_digest == "a" * 64
+    assert projection.policy_origin == "project"
+    assert projection.gate_semantics_digest == "b" * 64
+    assert projection.assurance_profile_digest == "c" * 64
+    assert is_definition_binding_replayable(projection)
+
+
+def test_legacy_projection_is_not_replayable(tmp_path: Path) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    _append_all(change, [_started(schema_version=2)])
+
+    projection = project_invocation(change, "inv-1")
+    assert projection.event_schema_version == 2
+    assert projection.policy_origin == ""
+    assert not is_definition_binding_replayable(projection)
 
 
 def test_corrupt_workflow_state_yaml_does_not_affect_projection(tmp_path: Path) -> None:

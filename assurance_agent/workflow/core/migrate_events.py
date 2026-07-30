@@ -146,8 +146,11 @@ def _migrate_invocation_started(event: dict[str, object]) -> None:
     version = event.get("event_schema_version")
     if not isinstance(version, int) or isinstance(version, bool):
         event["event_schema_version"] = 1
-    elif version > 3:
+    elif version > 4:
         raise ValueError(f"unsupported graph event_schema_version {version}")
+    event.setdefault("policy_origin", "")
+    event.setdefault("gate_semantics_digest", "")
+    event.setdefault("assurance_profile_digest", "")
     if "ir_digest" not in event:
         graph_digest = event.get("graph_digest")
         if isinstance(graph_digest, str):

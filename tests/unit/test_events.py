@@ -13,6 +13,7 @@ from assurance_agent.workflow.core.events import (
     read_events,
     read_events_strict,
 )
+from assurance_agent.workflow.core.migrate_events import migrate_graph_event_stream
 
 
 def _allocation(operation_id: str = "op-1") -> HealingAttemptAllocatedEvent:
@@ -247,3 +248,56 @@ def test_graph_event_requires_declared_fields(tmp_path: Path) -> None:
             change,
             {"source": "graph", "type": "task_attempt_started", "task_id": "missing-fields"},
         )
+
+
+def test_migration_accepts_v4_and_rejects_future_versions() -> None:
+    v4 = {
+        "type": "graph_invocation_started",
+        "invocation_id": "inv",
+        "entrypoint": "full",
+        "graph_id": "main",
+        "graph_digest": "d",
+        "event_schema_version": 4,
+        "ir_digest": "d",
+        "ingest_catalog_digest": "cat",
+        "contract_digests": {},
+        "policy_digest": "a" * 64,
+        "policy_origin": "project",
+        "gate_semantics_digest": "b" * 64,
+        "assurance_profile_digest": "c" * 64,
+        "params": {},
+        "params_sha256": "p",
+        "root_tree_id": "t",
+        "max_parallel_tasks": 1,
+        "checkpoint_ns": "inv",
+        "structural_path": "main",
+    }
+    migrated = migrate_graph_event_stream([v4])
+    assert migrated[0]["event_schema_version"] == 4
+    assert migrated[0]["policy_origin"] == "project"
+
+    future = dict(v4, event_schema_version=5)
+    with pytest.raises(ValueError, match="unsupported graph event_schema_version 5"):
+        migrate_graph_event_stream([future])
+
+
+def test_migration_backfills_empty_binding_fields_for_legacy_versions() -> None:
+    legacy = {
+        "type": "graph_invocation_started",
+        "invocation_id": "inv",
+        "entrypoint": "full",
+        "graph_id": "main",
+        "graph_digest": "d",
+        "event_schema_version": 2,
+        "contract_digests": {},
+        "params": {},
+        "params_sha256": "p",
+        "root_tree_id": "t",
+        "max_parallel_tasks": 1,
+        "checkpoint_ns": "inv",
+        "structural_path": "main",
+    }
+    migrated = migrate_graph_event_stream([legacy])[0]
+    assert migrated["policy_origin"] == ""
+    assert migrated["gate_semantics_digest"] == ""
+    assert migrated["assurance_profile_digest"] == ""

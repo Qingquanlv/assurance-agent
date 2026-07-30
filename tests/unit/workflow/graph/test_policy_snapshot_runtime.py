@@ -8,7 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from assurance_agent.artifacts.policy import PolicyError, load_policy, policy_digest
+from assurance_agent import resources
+from assurance_agent.artifacts.policy import PolicyError, load_policy, load_policy_snapshot, policy_digest
+from assurance_agent.verification.profile_manifest import assurance_profile_digest
+from assurance_agent.workflow.graph.definition_pinning import inherit_child_definitions, policy_snapshot_relpath
+from assurance_agent.workflow.orchestration.gate_semantics import gate_semantics_digest
 from assurance_agent.eval.fixtures import write_fixture_lock
 from assurance_agent.workflow.core.events import read_events_strict
 from assurance_agent.workflow.graph.checkpoint import CheckpointStore
@@ -660,3 +664,333 @@ def test_child_digest_inherits_the_parent_workspace_snapshot(tmp_path: Path) -> 
     assert child["root_tree_id"] == root["root_tree_id"]
     assert observed == [frozen_digest]
     assert child["policy_digest"] == frozen_digest
+
+
+def _binding_fields(event: dict[str, object]) -> dict[str, str]:
+    return {
+        "policy_digest": str(event["policy_digest"]),
+        "policy_origin": str(event["policy_origin"]),
+        "gate_semantics_digest": str(event["gate_semantics_digest"]),
+        "assurance_profile_digest": str(event["assurance_profile_digest"]),
+    }
+
+
+def _pinned_policy_bytes(change_dir: Path, digest: str) -> bytes:
+    return (change_dir / policy_snapshot_relpath(digest)).read_bytes()
+
+
+def test_root_start_pins_project_policy_snapshot_and_records_origin(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    _write_policy(project, _POLICY_A)
+    compiled, contracts = _compile(
+        """\
+  main:
+    max_supersteps: 4
+    nodes:
+      observe:
+        uses: operation:observe-policy
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: observe}
+      - {from: observe, to: END}
+"""
+    )
+
+    def observe(
+        task: ExecutableTask,
+        workspace: TaskWorkspace,
+        context: RuntimeContext,
+    ) -> TaskResult:
+        del task, workspace, context
+        return TaskResult(status="succeeded")
+
+    store = TreeStore(_context(project).change_dir)
+    runtime = _runtime(project, compiled, contracts, store, observe)
+    runtime.run(compiled, "full", _context(project))
+
+    started = _started_events(project)[0]
+    change_dir = _context(project).change_dir
+    snapshot = tmp_path / "root-snapshot"
+    store.materialize(started["root_tree_id"], snapshot)  # type: ignore[arg-type]
+    tree_digest = policy_digest(load_policy(snapshot))
+    assert started["event_schema_version"] == 4
+    assert started["policy_origin"] == "project"
+    assert started["policy_digest"] == tree_digest
+    assert started["gate_semantics_digest"] == gate_semantics_digest()
+    assert started["assurance_profile_digest"] == assurance_profile_digest()
+    pinned = _pinned_policy_bytes(change_dir, str(started["policy_digest"]))
+    assert policy_digest(load_policy_snapshot(snapshot).policy) == started["policy_digest"]
+    assert pinned == load_policy_snapshot(project).canonical_bytes
+
+
+def test_root_start_without_project_policy_uses_packaged_default_origin(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    compiled, contracts = _compile(
+        """\
+  main:
+    max_supersteps: 4
+    nodes:
+      observe:
+        uses: operation:observe-policy
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: observe}
+      - {from: observe, to: END}
+"""
+    )
+
+    def observe(
+        task: ExecutableTask,
+        workspace: TaskWorkspace,
+        context: RuntimeContext,
+    ) -> TaskResult:
+        del task, workspace, context
+        return TaskResult(status="succeeded")
+
+    store = TreeStore(_context(project).change_dir)
+    runtime = _runtime(project, compiled, contracts, store, observe)
+    runtime.run(compiled, "full", _context(project))
+
+    started = _started_events(project)[0]
+    change_dir = _context(project).change_dir
+    snapshot = tmp_path / "default-snapshot"
+    store.materialize(started["root_tree_id"], snapshot)  # type: ignore[arg-type]
+    assert not (snapshot / ".aa" / "policy.yaml").exists()
+    assert started["policy_origin"] == "packaged_default"
+    assert started["policy_digest"] == policy_digest(load_policy_snapshot(project).policy)
+    assert _pinned_policy_bytes(change_dir, str(started["policy_digest"])) == load_policy_snapshot(
+        project
+    ).canonical_bytes
+
+
+def test_equal_project_and_default_snapshots_share_policy_path_but_record_distinct_origins(
+    tmp_path: Path,
+) -> None:
+    project = _make_project(tmp_path)
+    _write_policy(project, resources.read_text("schemas", "policy-default.yaml"))
+    compiled, contracts = _compile(
+        """\
+  main:
+    max_supersteps: 4
+    nodes:
+      observe:
+        uses: operation:observe-policy
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: observe}
+      - {from: observe, to: END}
+"""
+    )
+
+    def observe(
+        task: ExecutableTask,
+        workspace: TaskWorkspace,
+        context: RuntimeContext,
+    ) -> TaskResult:
+        del task, workspace, context
+        return TaskResult(status="succeeded")
+
+    store = TreeStore(_context(project).change_dir)
+    runtime = _runtime(project, compiled, contracts, store, observe)
+    runtime.run(compiled, "full", _context(project))
+
+    started = _started_events(project)[0]
+    assert started["policy_origin"] == "project"
+    digest = str(started["policy_digest"])
+    assert ( _context(project).change_dir / policy_snapshot_relpath(digest)).exists()
+
+
+def test_import_start_uses_the_same_root_binding_path(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    fixture_digest = _seed_fixture(project)
+    _write_policy(project, _POLICY_A)
+    compiled, contracts = _compile(
+        """\
+  main:
+    max_supersteps: 4
+    nodes:
+      observe:
+        uses: operation:observe-policy
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: observe}
+      - {from: observe, to: END}
+"""
+    )
+
+    def observe(
+        task: ExecutableTask,
+        workspace: TaskWorkspace,
+        context: RuntimeContext,
+    ) -> TaskResult:
+        del task, workspace, context
+        return TaskResult(status="succeeded")
+
+    store = TreeStore(_context(project).change_dir)
+    runtime = _runtime(project, compiled, contracts, store, observe)
+    runtime.import_checkpoint(compiled, _manifest(fixture_digest), _context(project))
+
+    started = _started_events(project)[0]
+    change_dir = _context(project).change_dir
+    assert started["event_schema_version"] == 4
+    assert started["policy_origin"] == "project"
+    assert _pinned_policy_bytes(change_dir, str(started["policy_digest"])) == load_policy_snapshot(
+        project
+    ).canonical_bytes
+
+
+def test_child_inherits_parent_binding_and_pinned_bytes(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    _write_policy(project, _POLICY_A)
+    compiled, contracts = _compile(
+        """\
+  main:
+    max_supersteps: 4
+    nodes:
+      child:
+        uses: graph:child
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: child}
+      - {from: child, to: END}
+  child:
+    max_supersteps: 4
+    nodes:
+      observe:
+        uses: operation:observe-policy
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: observe}
+      - {from: observe, to: END}
+"""
+    )
+
+    def observe(
+        task: ExecutableTask,
+        workspace: TaskWorkspace,
+        context: RuntimeContext,
+    ) -> TaskResult:
+        del task, workspace, context
+        return TaskResult(status="succeeded")
+
+    store = TreeStore(_context(project).change_dir)
+    runtime = _runtime(project, compiled, contracts, store, observe)
+    runtime.run(compiled, "full", _context(project))
+
+    started = _started_events(project)
+    root = next(event for event in started if event.get("parent_invocation_id") is None)
+    child = next(event for event in started if event.get("parent_invocation_id") is not None)
+    assert _binding_fields(child) == _binding_fields(root)
+    change_dir = _context(project).change_dir
+    digest = str(root["policy_digest"])
+    assert _pinned_policy_bytes(change_dir, digest) == _pinned_policy_bytes(change_dir, str(child["policy_digest"]))
+
+
+def test_missing_pinned_policy_snapshot_fails_child_inheritance(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    _write_policy(project, _POLICY_A)
+    compiled, contracts = _compile(
+        """\
+  main:
+    max_supersteps: 4
+    nodes:
+      child:
+        uses: graph:child
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: child}
+      - {from: child, to: END}
+  child:
+    max_supersteps: 4
+    nodes:
+      observe:
+        uses: operation:observe-policy
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: observe}
+      - {from: observe, to: END}
+"""
+    )
+
+    def observe(
+        task: ExecutableTask,
+        workspace: TaskWorkspace,
+        context: RuntimeContext,
+    ) -> TaskResult:
+        del task, workspace, context
+        return TaskResult(status="succeeded")
+
+    store = TreeStore(_context(project).change_dir)
+    runtime = _runtime(project, compiled, contracts, store, observe)
+    runtime.run(compiled, "full", _context(project))
+    change_dir = _context(project).change_dir
+    from assurance_agent.workflow.graph.checkpoint import project_invocation
+
+    root_event = next(event for event in _started_events(project) if event.get("parent_invocation_id") is None)
+    parent_projection = project_invocation(change_dir, str(root_event["invocation_id"]))
+    pinned = change_dir / policy_snapshot_relpath(parent_projection.policy_digest)
+    pinned.unlink()
+
+    with pytest.raises(PolicyError, match="policy snapshot"):
+        inherit_child_definitions(parent=parent_projection, change_dir=change_dir)
+
+
+def test_tampered_pinned_policy_snapshot_fails_child_inheritance(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    _write_policy(project, _POLICY_A)
+    compiled, contracts = _compile(
+        """\
+  main:
+    max_supersteps: 4
+    nodes:
+      child:
+        uses: graph:child
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: child}
+      - {from: child, to: END}
+  child:
+    max_supersteps: 4
+    nodes:
+      observe:
+        uses: operation:observe-policy
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: observe}
+      - {from: observe, to: END}
+"""
+    )
+
+    def observe(
+        task: ExecutableTask,
+        workspace: TaskWorkspace,
+        context: RuntimeContext,
+    ) -> TaskResult:
+        del task, workspace, context
+        return TaskResult(status="succeeded")
+
+    store = TreeStore(_context(project).change_dir)
+    runtime = _runtime(project, compiled, contracts, store, observe)
+    runtime.run(compiled, "full", _context(project))
+    change_dir = _context(project).change_dir
+    from assurance_agent.workflow.graph.checkpoint import project_invocation
+
+    root_event = next(event for event in _started_events(project) if event.get("parent_invocation_id") is None)
+    parent_projection = project_invocation(change_dir, str(root_event["invocation_id"]))
+    pinned = change_dir / policy_snapshot_relpath(parent_projection.policy_digest)
+    pinned.write_bytes(b"tampered\n")
+
+    with pytest.raises(PolicyError, match="policy snapshot"):
+        inherit_child_definitions(parent=parent_projection, change_dir=change_dir)
+
+

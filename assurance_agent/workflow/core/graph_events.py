@@ -11,9 +11,9 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from assurance_agent.workflow.core.graph_types import ErrorKind
 
@@ -34,6 +34,9 @@ class GraphInvocationStartedEvent(_GraphEvent):
     ingest_catalog_digest: str = ""
     contract_digests: dict[str, str]
     policy_digest: str = ""
+    policy_origin: str = ""
+    gate_semantics_digest: str = ""
+    assurance_profile_digest: str = ""
     params: dict[str, object]
     params_sha256: str
     root_tree_id: str
@@ -42,6 +45,19 @@ class GraphInvocationStartedEvent(_GraphEvent):
     parent_invocation_id: str | None = None
     parent_task_id: str | None = None
     structural_path: str
+
+    @model_validator(mode="after")
+    def _require_v4_definition_binding(self) -> Self:
+        if self.event_schema_version >= 4:
+            if not self.policy_digest:
+                raise ValueError("policy_digest is required for event_schema_version >= 4")
+            if not self.policy_origin:
+                raise ValueError("policy_origin is required for event_schema_version >= 4")
+            if not self.gate_semantics_digest:
+                raise ValueError("gate_semantics_digest is required for event_schema_version >= 4")
+            if not self.assurance_profile_digest:
+                raise ValueError("assurance_profile_digest is required for event_schema_version >= 4")
+        return self
 
 
 class NodeActivatedEvent(_GraphEvent):
