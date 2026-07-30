@@ -30,6 +30,7 @@ class Review(BaseModel):
     decision: ReviewDecision
     findings: list[Any]
     review_type: str | None = None
+    change_id: str | None = None
     auto_fix_allowed: bool | None = None
     human_review_required: bool | None = None
     codegen_readiness: Literal["ready", "ready_with_warnings", "not_ready"] | None = None
@@ -40,6 +41,8 @@ class Review(BaseModel):
     # The fuzz/performance plan-review gates read this to route a graceful
     # `skip` (branch ends, codegen skipped) instead of a dead-end `reject`.
     layer_applicable: bool | None = None
+    auto_fix_plan: list[Any] | None = None
+    next_action: str | None = None
 
     @model_validator(mode="after")
     def _require_capabilities_for_plan_reviews(self) -> "Review":
@@ -58,7 +61,7 @@ class Review(BaseModel):
 
 
 class PlanReview(Review):
-    """api/e2e plan review：字段与校验完全继承 Review，只额外声明撰写期提示。"""
+    """api/e2e plan review：继承 Review 的兼容字段，并强制校验跨技能消费契约。"""
 
     model_config = ConfigDict(
         extra="allow",
@@ -70,3 +73,58 @@ class PlanReview(Review):
             ]
         },
     )
+
+    @model_validator(mode="after")
+    def _require_cross_skill_fields(self) -> "PlanReview":
+        required = (
+            "review_type",
+            "change_id",
+            "auto_fix_allowed",
+            "human_review_required",
+            "codegen_readiness",
+            "risk_level",
+            "required_capabilities",
+            "auto_fix_plan",
+            "next_action",
+        )
+        missing = [name for name in required if getattr(self, name) is None]
+        if missing:
+            raise ValueError("plan review missing cross-skill fields: " + ", ".join(missing))
+        if self.review_type not in _CAPABILITY_GATED_REVIEW_TYPES:
+            raise ValueError("plan review review_type must be api-plan or e2e-plan")
+        for index, finding in enumerate(self.findings):
+            if not isinstance(finding, dict) or not isinstance(finding.get("id"), str):
+                raise ValueError(f"findings[{index}].id must be a non-empty string")
+            if not finding["id"].strip():
+                raise ValueError(f"findings[{index}].id must be a non-empty string")
+        return self
+
+
+class PlanReviewAuthoring(BaseModel):
+    """Agent-authored fields required by plan gates, codegen, and fixer."""
+
+    model_config = ConfigDict(
+        extra="allow",
+        json_schema_extra={
+            "prompt_notes": [
+                "each findings item requires id",
+                "auto_fix_plan items must reference an existing findings id",
+                "required_capabilities must be a non-empty list of fully qualified C4 leaf keys",
+                "use auth.*, accounts.*, entities.*, capabilities.domain_factories.*, "
+                "capabilities.adapters.*, or capabilities.cleanup.* exactly as rooted in L1",
+            ]
+        },
+    )
+
+    schema_version: NonEmptyStr
+    review_type: Literal["api-plan", "e2e-plan"]
+    change_id: NonEmptyStr
+    decision: ReviewDecision
+    findings: list[Any]
+    auto_fix_plan: list[Any]
+    next_action: NonEmptyStr
+    auto_fix_allowed: bool
+    human_review_required: bool
+    codegen_readiness: Literal["ready", "ready_with_warnings", "not_ready"]
+    risk_level: Literal["low", "medium", "high", "critical"]
+    required_capabilities: list[NonEmptyStr]

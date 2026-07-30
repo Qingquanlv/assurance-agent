@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 
 from assurance_agent.artifacts.models.plan_checks import CheckEvidence, Finding
 from assurance_agent.verification.checks.base import CheckContext, case_id_rows, evidence
@@ -12,9 +12,25 @@ CHECK_ID = "assert_ideal"
 _MARKER = "assert_ideal"
 _REJECTION = re.compile(r"\b(4xx|400|401|403|404|409|422)\b")
 _SERVER_ERROR = re.compile(r"\b(5xx|500|502|503)\b")
-_PREFIX_NEGATION = ("not ", "no ", "never ", "非", "不", "avoid ", "without ")
-_SUFFIX_NEGATION = re.compile(r"^\s*(?:(?:is|are|be)\s+)?(?:not|no|never)\b|^\s*(?:非|不)")
+_PREFIX_NEGATION = (
+    "not ",
+    "no ",
+    "never ",
+    "avoid ",
+    "without ",
+    "非",
+    "不",
+    "禁止",
+    "避免",
+    "不得",
+    "不能",
+    "不可",
+)
+_SUFFIX_NEGATION = re.compile(
+    r"^\s*(?:(?:is|are|be)\s+)?(?:not|no|never)\b|^\s*(?:非|不|禁止|避免|不得|不能|不可|并非)"
+)
 _CASE_TEXT_KEYS = ("title", "objective", "summary")
+_METRIC_CUE = re.compile(r"p\d+|latency|duration|elapsed|\bms\b|毫秒|耗时|延迟|[<>]=?", re.IGNORECASE)
 
 
 def _is_negated(text: str, start: int, end: int) -> bool:
@@ -24,7 +40,20 @@ def _is_negated(text: str, start: int, end: int) -> bool:
 
 
 def _has_positive_rejection(text: str) -> bool:
-    return any(not _is_negated(text, match.start(), match.end()) for match in _REJECTION.finditer(text))
+    return any(
+        _is_http_status(text, match) and not _is_negated(text, match.start(), match.end())
+        for match in _REJECTION.finditer(text)
+    )
+
+
+def _is_http_status(text: str, match: re.Match[str]) -> bool:
+    token = match.group(0).lower()
+    if token.endswith("xx"):
+        return True
+    context = text[max(0, match.start() - 24) : match.end() + 24]
+    if _METRIC_CUE.search(context):
+        return False
+    return True
 
 
 def _case_text(entry: Mapping[str, object]) -> str:
@@ -59,6 +88,35 @@ def _scoped_cases(ctx: CheckContext) -> list[Mapping[str, object]]:
     return entries
 
 
+def _interrupted_case_rows(text: str, scoped_ids: set[str]) -> Iterator[tuple[int, str]]:
+    active_case_table = False
+    interrupted_case_table = False
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            active_case_table = False
+            interrupted_case_table = False
+            continue
+        if not stripped.startswith("|"):
+            if active_case_table and stripped:
+                active_case_table = False
+                interrupted_case_table = True
+            continue
+        cells = [cell.strip().strip("`") for cell in stripped.strip("|").split("|")]
+        if "case id" in {cell.casefold() for cell in cells}:
+            active_case_table = True
+            interrupted_case_table = False
+            continue
+        if active_case_table or not interrupted_case_table:
+            continue
+        matched = scoped_ids.intersection(cells)
+        if matched:
+            for case_id in sorted(matched):
+                yield lineno, case_id
+        else:
+            interrupted_case_table = False
+
+
 def check_assert_ideal(ctx: CheckContext) -> CheckEvidence:
     findings: list[Finding] = []
     rows_by_case: dict[str, list[tuple[str, int, int, str]]] = {}
@@ -66,12 +124,23 @@ def check_assert_ideal(ctx: CheckContext) -> CheckEvidence:
         for table_index, lineno, case_id, row in case_id_rows(ctx.plan_texts[rel]):
             rows_by_case.setdefault(case_id, []).append((rel, table_index, lineno, row))
 
+    scoped_ids = {str(entry["case_id"]) for entry in _scoped_cases(ctx)}
+    for rel in sorted(ctx.plan_texts):
+        for lineno, case_id in _interrupted_case_rows(ctx.plan_texts[rel], scoped_ids):
+            findings.append(
+                Finding(
+                    locator=f"{rel}:{lineno}",
+                    actual="Case ID row outside a parseable Case ID table",
+                    expected="keep Case ID rows contiguous under a Case ID table header",
+                )
+            )
+
     for rel in sorted(ctx.plan_texts):
         for _, lineno, _, row in case_id_rows(ctx.plan_texts[rel]):
             if _MARKER not in row:
                 continue
             for match in _SERVER_ERROR.finditer(row):
-                if not _is_negated(row, match.start(), match.end()):
+                if _is_http_status(row, match) and not _is_negated(row, match.start(), match.end()):
                     findings.append(
                         Finding(
                             locator=f"{rel}:{lineno}",

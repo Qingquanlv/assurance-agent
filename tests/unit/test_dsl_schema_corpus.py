@@ -35,14 +35,73 @@ def node_result_resolver(results):
     return {"node_result": lambda node_id, _results=results: _results.get(node_id, {})}
 
 
+_DEFAULT_POLICY = {
+    "human_review_risk_levels": ["high", "critical"],
+    "force_continue_allowed": True,
+    "plan_checks": {
+        "l1_path": "warn",
+        "shared_factory": "warn",
+        "assert_ideal": "warn",
+        "capability_keys": "warn",
+    },
+    "coverage_floor": {"risk_high": 0.9, "risk_medium": 0.7},
+    "fuzz": {"required_when_endpoint_has_auth": True},
+    "healing": {"auth_module": "require_human"},
+}
+
+
 def _scope(values, resolvers: dict[str, Any]):
     return Scope(
-        values,
+        {"policy": _DEFAULT_POLICY, **values},
         file_exists=resolvers.get("file_exists"),
         gate_verdict=resolvers.get("gate_verdict"),
         node_result=resolvers.get("node_result", lambda _node_id: {}),
         capabilities_present=resolvers.get("capabilities_present"),
     )
+
+
+def test_corpus_scope_binds_every_policy_field() -> None:
+    scope = _scope({}, {})
+
+    assert evaluate(parse_expression("policy.force_continue_allowed == true"), scope) is True
+    assert evaluate(parse_expression("'high' in policy.human_review_risk_levels"), scope) is True
+    assert evaluate(parse_expression("policy.plan_checks.assert_ideal == 'warn'"), scope) is True
+    assert evaluate(parse_expression("policy.coverage_floor.risk_high > 0"), scope) is True
+
+
+@pytest.mark.parametrize(
+    ("gate_id", "alias", "passing_decision"),
+    [
+        ("case-review-gate", "case_review", "pass"),
+        ("api-plan-review-gate", "api_plan_review", "pass"),
+        ("e2e-plan-review-gate", "plan_review", "pass"),
+        ("fuzz-plan-review-gate", "fuzz_plan_review", "approved"),
+        ("performance-plan-review-gate", "performance_plan_review", "approved"),
+    ],
+)
+def test_force_continue_policy_branch_is_exercised(
+    tmp_path: Path, gate_id: str, alias: str, passing_decision: str
+) -> None:
+    gate = load_workflow_v2(tmp_path).gates[gate_id]
+    rule = next(rule for rule in gate.rules if rule.field == "needs_human_review_when")
+    values = {
+        alias: {
+            "decision": passing_decision,
+            "human_review_required": True,
+            "risk_level": "low",
+            "codegen_readiness": "ready",
+            "required_capabilities": ["auth.api_admin_token"],
+        },
+        "data_knowledge": {"auth": {"api_admin_token": {"method": "token"}}},
+        "params": {"force_continue": True},
+    }
+    resolvers = {"capabilities_present": lambda _r, _d: True}
+
+    allowed = _scope(values, resolvers)
+    denied = _scope({**values, "policy": {**_DEFAULT_POLICY, "force_continue_allowed": False}}, resolvers)
+
+    assert evaluate(parse_expression(rule.expr), allowed) is False
+    assert evaluate(parse_expression(rule.expr), denied) is True
 
 
 P_FULL = {
@@ -175,9 +234,19 @@ CORPUS["gate:case-design-gate:pass_when"] = (
     ({}, {}, MISS),
 )
 
-for _gid in ["api-codegen-precondition-gate", "e2e-codegen-precondition-gate"]:
-    CORPUS[f"gate:{_gid}:pass_when"] = (({}, gvfx("pass", True)), ({}, gvfx(MISS, True), MISS))
-    CORPUS[f"gate:{_gid}:stop_when"] = (({}, fx(False)), ({}, fx(True), False))
+CORPUS["gate:api-codegen-precondition-gate:pass_when"] = (
+    ({"api_plan_checks": {"status": "pass"}}, gvfx("pass", True)),
+    ({}, gvfx("pass", True), False),
+)
+CORPUS["gate:api-codegen-precondition-gate:stop_when"] = (
+    ({}, fx(True)),
+    ({"api_plan_checks": {"status": "pass"}}, fx(True), False),
+)
+CORPUS["gate:e2e-codegen-precondition-gate:pass_when"] = (
+    ({}, gvfx("pass", True)),
+    ({}, gvfx(MISS, True), MISS),
+)
+CORPUS["gate:e2e-codegen-precondition-gate:stop_when"] = (({}, fx(False)), ({}, fx(True), False))
 
 for _gid in ["fuzz-codegen-precondition-gate", "performance-codegen-precondition-gate"]:
     CORPUS[f"gate:{_gid}:pass_when"] = (({}, gv("pass")), ({}, gv(MISS), MISS))

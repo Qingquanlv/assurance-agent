@@ -43,6 +43,7 @@ from assurance_agent.artifacts.models import (
     QualityGateResult,
     QualityReport,
     PlanReview,
+    PlanReviewAuthoring,
     RetroContextV3,
     RetroPipelineFailureDocument,
     RetroRunStatus,
@@ -50,6 +51,7 @@ from assurance_agent.artifacts.models import (
     Review,
     SafetyCheck,
     SignalDocumentV3,
+    SignalDraftDocument,
     WorkflowEvidenceSlice,
     WorkflowState,
 )
@@ -160,18 +162,21 @@ REGISTRY: list[ArtifactSpec] = [
         pattern="qa/retro/*/signals/issue.json",
         model=SignalDocumentV3,
         compat="must_compat",
+        authoring_model=SignalDraftDocument,
     ),
     ArtifactSpec(
         artifact_type="retro_workflow_signal_v3",
         pattern="qa/retro/*/signals/workflow.json",
         model=SignalDocumentV3,
         compat="must_compat",
+        authoring_model=SignalDraftDocument,
     ),
     ArtifactSpec(
         artifact_type="retro_eval_signal_v3",
         pattern="qa/retro/*/signals/eval.json",
         model=SignalDocumentV3,
         compat="must_compat",
+        authoring_model=SignalDraftDocument,
     ),
     ArtifactSpec(
         artifact_type="case_yaml", pattern="cases/**/case.yaml", model=CaseYaml, compat="must_compat"
@@ -266,12 +271,14 @@ REGISTRY: list[ArtifactSpec] = [
         pattern="review/api-plan-review.json",
         model=PlanReview,
         compat="must_compat",
+        authoring_model=PlanReviewAuthoring,
     ),
     ArtifactSpec(
         artifact_type="review",
         pattern="review/plan-review.json",
         model=PlanReview,
         compat="must_compat",
+        authoring_model=PlanReviewAuthoring,
     ),
     ArtifactSpec(artifact_type="review", pattern="review/*.json", model=Review, compat="must_compat"),
     ArtifactSpec(

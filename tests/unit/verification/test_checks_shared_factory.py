@@ -1,4 +1,6 @@
-"""Declared L1 shared factories must be reused in a codegen plan."""
+"""Declared L1 shared factories must be reused in every layer's codegen plan."""
+
+import pytest
 
 from assurance_agent.verification.checks.base import CheckContext
 from assurance_agent.verification.checks.shared_factory import check_shared_factory
@@ -61,7 +63,7 @@ def test_plan_without_factory_mapping_table_passes() -> None:
     assert check_shared_factory(ctx).status == "pass"
 
 
-def test_matching_columns_outside_factory_mapping_section_are_ignored() -> None:
+def test_matching_columns_outside_factory_mapping_section_do_not_count_as_the_contract_table() -> None:
     plan = (
         "## Migration Notes\n\n"
         "| Shared Module | Function | Ownership |\n"
@@ -73,4 +75,40 @@ def test_matching_columns_outside_factory_mapping_section_are_ignored() -> None:
         cases=(),
         data_knowledge=DK,
     )
-    assert check_shared_factory(ctx).status == "pass"
+    result = check_shared_factory(ctx)
+    assert result.status == "fail"
+    assert result.findings[0].actual == "Factory Mapping table not parsed"
+
+
+def test_factory_mapping_heading_variant_is_still_checked() -> None:
+    plan = (HEADER + "| Dept | `tests/testdata/domain/dept.py` | `make_dept` | rewrite | 003 |\n").replace(
+        "## Factory Mapping", "## Domain Factory Mappings"
+    )
+    result = check_shared_factory(
+        CheckContext(plan_texts={"plans/api-codegen-plan.md": plan}, cases=(), data_knowledge=DK)
+    )
+    assert result.status == "fail"
+    assert result.findings[0].actual == "rewrite"
+
+
+def test_codegen_plan_without_factory_mapping_fails_closed() -> None:
+    result = check_shared_factory(
+        CheckContext(
+            plan_texts={"plans/api-codegen-plan.md": "# API Codegen Plan\n\nNo factory table.\n"},
+            cases=(),
+            data_knowledge=DK,
+        )
+    )
+    assert result.status == "fail"
+    assert result.findings[0].actual == "Factory Mapping table not parsed"
+
+
+@pytest.mark.parametrize("layer", ["api", "e2e", "fuzz", "performance"])
+def test_every_codegen_layer_fails_closed_without_factory_mapping(layer: str) -> None:
+    rel = f"plans/{layer}-codegen-plan.md"
+    result = check_shared_factory(
+        CheckContext(plan_texts={rel: f"# {layer} Codegen Plan\n"}, cases=(), data_knowledge=DK)
+    )
+
+    assert result.status == "fail"
+    assert result.findings[0].locator == rel

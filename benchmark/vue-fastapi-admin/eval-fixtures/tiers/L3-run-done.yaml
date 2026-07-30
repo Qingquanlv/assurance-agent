@@ -35,6 +35,11 @@ imports:
       - change:plans/m3-review-summary.md
     - path: execute-workflow/assurance/assurance/api/api-branch/review-cycle/api-plan-cycle
       graph: api-plan-cycle
+      node: mechanical-plan-checks
+      outputs:
+      - change:review/api-plan-checks.json
+    - path: execute-workflow/assurance/assurance/api/api-branch/review-cycle/api-plan-cycle
+      graph: api-plan-cycle
       node: review
       outputs:
       - change:review/api-plan-review.json
@@ -44,10 +49,13 @@ imports:
       node: review-cycle
     - path: execute-workflow/assurance/assurance/api/api-branch
       graph: api-branch
+      node: codegen-precheck
+      gate: api-codegen-precondition-gate
+    - path: execute-workflow/assurance/assurance/api/api-branch
+      graph: api-branch
       node: codegen
       outputs:
       - change:codegen/api-codegen-summary.md
-      gate: api-codegen-precondition-gate
     - path: execute-workflow/assurance/assurance
       graph: assurance
       node: api
@@ -70,10 +78,13 @@ imports:
       node: review-cycle
     - path: execute-workflow/assurance/assurance/e2e/e2e-branch
       graph: e2e-branch
+      node: codegen-precheck
+      gate: e2e-codegen-precondition-gate
+    - path: execute-workflow/assurance/assurance/e2e/e2e-branch
+      graph: e2e-branch
       node: codegen
       outputs:
       - change:codegen/e2e-codegen-summary.md
-      gate: e2e-codegen-precondition-gate
     - path: execute-workflow/assurance/assurance
       graph: assurance
       node: e2e
@@ -85,9 +96,3 @@ imports:
       node: execution
       outputs:
       - change:execution/execution-manifest.yaml
-    - path: execute-workflow/assurance/assurance
-      graph: assurance
-      node: inspect
-      outputs:
-      - change:inspect/failure-analysis.json
-      - change:inspect/quality-gate-result.json

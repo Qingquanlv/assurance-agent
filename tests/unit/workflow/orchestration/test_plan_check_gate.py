@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from assurance_agent.artifacts.models.policy import Policy
+from assurance_agent.artifacts.models.policy import KNOWN_PLAN_CHECK_IDS, Policy
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import load_execution_contracts
 from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
@@ -53,28 +53,68 @@ def _data_knowledge() -> dict[str, object]:
     }
 
 
+def _policy_text(*, check_actions: dict[str, str] | None = None) -> str:
+    actions = {check_id: "warn" for check_id in sorted(KNOWN_PLAN_CHECK_IDS)}
+    if check_actions:
+        actions.update(check_actions)
+    lines = [
+        "version: 1",
+        "human_review_risk_levels: [high, critical]",
+        "force_continue_allowed: true",
+        "plan_checks:",
+    ]
+    for check_id, action in actions.items():
+        lines.append(f"  {check_id}: {action}")
+    lines.extend(
+        [
+            "coverage_floor:",
+            "  risk_high: 0.9",
+            "  risk_medium: 0.7",
+            "fuzz:",
+            "  required_when_endpoint_has_auth: true",
+            "healing:",
+            "  auth_module: require_human",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _failed_checks(*check_ids: str) -> dict[str, object]:
+    checks = [
+        {
+            "check_id": check_id,
+            "status": "fail",
+            "findings": [{"locator": check_id, "actual": "bad", "expected": "good"}],
+            "refs": [],
+        }
+        for check_id in check_ids
+    ]
+    return {"schema_version": "1", "status": "fail", "checks": checks}
+
+
+def _passing_checks() -> dict[str, object]:
+    return {
+        "schema_version": "1",
+        "status": "pass",
+        "checks": [
+            {"check_id": check_id, "status": "pass", "findings": [], "refs": []}
+            for check_id in sorted(KNOWN_PLAN_CHECK_IDS)
+        ],
+    }
+
+
 def _context(
     tmp_path: Path,
     *,
-    action: str,
+    check_actions: dict[str, str] | None = None,
     checks: object | None = None,
     review: dict[str, object] | None = None,
     node_results: dict[str, object] | None = None,
 ) -> GateEvaluationContext:
     policy_path = tmp_path / ".aa" / "policy.yaml"
-    policy_path.parent.mkdir(parents=True)
-    policy_path.write_text(
-        "\n".join(
-            [
-                "version: 1",
-                "human_review_risk_levels: [high, critical]",
-                "force_continue_allowed: true",
-                f"plan_check_action: {action}",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
+    policy_path.parent.mkdir(parents=True, exist_ok=True)
+    policy_path.write_text(_policy_text(check_actions=check_actions), encoding="utf-8")
     overrides: dict[str, object] = {
         "review/api-plan-review.json": review or _review(),
         "repo:.aa/data-knowledge.yaml": _data_knowledge(),
@@ -96,7 +136,7 @@ def _context(
 def _adjudicate(
     tmp_path: Path,
     *,
-    action: str,
+    check_actions: dict[str, str] | None = None,
     checks: object | None = None,
     review: dict[str, object] | None = None,
     node_results: dict[str, object] | None = None,
@@ -106,7 +146,7 @@ def _adjudicate(
         "api-plan-review-gate",
         _context(
             tmp_path,
-            action=action,
+            check_actions=check_actions,
             checks=checks,
             review=review,
             node_results=node_results,
@@ -119,7 +159,11 @@ def _adjudicate(
     [("warn", Verdict.PASS), ("block", Verdict.REJECT), ("require_human", Verdict.NEEDS_HUMAN_REVIEW)],
 )
 def test_packaged_gate_routes_failing_check_by_policy(tmp_path: Path, action: str, expected: Verdict) -> None:
-    report = _adjudicate(tmp_path, action=action, checks={"status": "fail"})
+    report = _adjudicate(
+        tmp_path,
+        check_actions={"assert_ideal": action},
+        checks=_failed_checks("assert_ideal"),
+    )
 
     assert report.gate_id == "api-plan-review-gate"
     assert report.verdict == expected
@@ -127,7 +171,14 @@ def test_packaged_gate_routes_failing_check_by_policy(tmp_path: Path, action: st
 
 @pytest.mark.parametrize("action", ["warn", "block", "require_human"])
 def test_packaged_gate_keeps_passing_checks_inert(tmp_path: Path, action: str) -> None:
-    assert _adjudicate(tmp_path, action=action, checks={"status": "pass"}).verdict == Verdict.PASS
+    assert (
+        _adjudicate(
+            tmp_path,
+            check_actions={"assert_ideal": action},
+            checks=_passing_checks(),
+        ).verdict
+        == Verdict.PASS
+    )
 
 
 @pytest.mark.parametrize(
@@ -186,7 +237,7 @@ def test_packaged_gate_routes_every_documented_reviewer_decision(
     expected_verdict: Verdict,
     expected_target: str,
 ) -> None:
-    report = _adjudicate(tmp_path, action="warn", checks={"status": "pass"}, review=review)
+    report = _adjudicate(tmp_path, checks=_passing_checks(), review=review)
     route = next(
         route
         for route in load_workflow_v2(Path.cwd()).graphs["api-plan-cycle"].routes
@@ -200,8 +251,8 @@ def test_packaged_gate_routes_every_documented_reviewer_decision(
 def test_explicit_reject_precedes_otherwise_matching_human_review_policy(tmp_path: Path) -> None:
     report = _adjudicate(
         tmp_path,
-        action="require_human",
-        checks={"status": "fail"},
+        check_actions={"assert_ideal": "require_human"},
+        checks=_failed_checks("assert_ideal"),
         review=_review(
             decision="reject",
             codegen_readiness="not_ready",
@@ -216,10 +267,21 @@ def test_explicit_reject_precedes_otherwise_matching_human_review_policy(tmp_pat
     assert report.matched_rule is not None and report.matched_rule.startswith("reject_when:")
 
 
+def test_codegen_precondition_stops_when_plan_check_evidence_is_missing(tmp_path: Path) -> None:
+    (tmp_path / ".aa").mkdir(parents=True)
+    (tmp_path / ".aa" / "data-knowledge.yaml").write_text("version: 1\n", encoding="utf-8")
+    context = _context(tmp_path, check_actions={"assert_ideal": "block"})
+    gates = load_workflow_v2(Path.cwd()).gates
+
+    report = check_gate_in_view(gates, "api-codegen-precondition-gate", context)
+
+    assert report.verdict == Verdict.STOP
+
+
 @pytest.mark.parametrize("action", ["block", "require_human"])
 def test_missing_checks_remain_compatible_without_a_current_producer(tmp_path: Path, action: str) -> None:
     """Historical/imported views have no frozen mechanical producer result."""
-    assert _adjudicate(tmp_path, action=action).verdict == Verdict.PASS
+    assert _adjudicate(tmp_path, check_actions={"assert_ideal": action}).verdict == Verdict.PASS
 
 
 @pytest.mark.parametrize(
@@ -230,6 +292,8 @@ def test_packaged_policy_branch_guard_returns_false_for_compatibility_absence(
     field: str, action: str
 ) -> None:
     rule = next(rule for rule in _gate().rules if rule.field == field)
+    plan_checks = {check_id: "warn" for check_id in sorted(KNOWN_PLAN_CHECK_IDS)}
+    plan_checks["assert_ideal"] = action
     scope = Scope(
         {
             "api_plan_review": _review(),
@@ -239,7 +303,10 @@ def test_packaged_policy_branch_guard_returns_false_for_compatibility_absence(
             "policy": {
                 "human_review_risk_levels": ["high", "critical"],
                 "force_continue_allowed": True,
-                "plan_check_action": action,
+                "plan_checks": plan_checks,
+                "coverage_floor": {"risk_high": 0.9, "risk_medium": 0.7},
+                "fuzz": {"required_when_endpoint_has_auth": True},
+                "healing": {"auth_module": "require_human"},
             },
         },
         capabilities_present=lambda _review_doc, _knowledge_doc: True,
@@ -252,7 +319,6 @@ def test_packaged_policy_branch_guard_returns_false_for_compatibility_absence(
 def test_current_producer_requires_a_check_status(tmp_path: Path, checks: object | None) -> None:
     report = _adjudicate(
         tmp_path,
-        action="warn",
         checks=checks,
         node_results={"mechanical-plan-checks": {"status": "succeeded"}},
     )
@@ -264,13 +330,25 @@ def test_current_producer_requires_a_check_status(tmp_path: Path, checks: object
 def test_existing_needs_fix_precedes_a_blocking_check(tmp_path: Path) -> None:
     report = _adjudicate(
         tmp_path,
-        action="block",
-        checks={"status": "fail"},
+        check_actions={"assert_ideal": "block"},
+        checks=_failed_checks("assert_ideal"),
         review=_review(decision="needs_fix", auto_fix_allowed=True),
     )
 
     assert report.verdict == Verdict.NEEDS_FIX
     assert report.matched_rule is not None and report.matched_rule.startswith("needs_fix_when:")
+
+
+def test_check_failed_builtin_is_false_for_missing_document() -> None:
+    expr = parse_expression("check_failed(api_plan_checks, 'assert_ideal')")
+    scope = Scope({"api_plan_checks": None})
+    assert evaluate(expr, scope) is False
+
+
+def test_check_failed_builtin_detects_named_failure() -> None:
+    expr = parse_expression("check_failed(api_plan_checks, 'assert_ideal')")
+    scope = Scope({"api_plan_checks": _failed_checks("assert_ideal")})
+    assert evaluate(expr, scope) is True
 
 
 def _policy_fields(expression: object) -> set[str]:

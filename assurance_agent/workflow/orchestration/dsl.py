@@ -26,6 +26,7 @@ BUILTIN_ARITY: dict[str, int] = {
     "file_exists": 1,
     "defined": 1,
     "capabilities_present": 2,
+    "check_failed": 2,
     "plan_review_route": 1,
     "any": 2,
     "all": 2,
@@ -399,6 +400,21 @@ def _eval_call(expr: Call, scope: Scope) -> object:
         if scope.capabilities_present is None:
             raise DslError("capabilities_present() called but no resolver was provided")
         return scope.capabilities_present(review_doc, dk_doc)
+    if callee == "check_failed":
+        doc = evaluate(expr.args[0], scope)
+        check_id = evaluate(expr.args[1], scope)
+        if not isinstance(check_id, str):
+            return MISSING
+        if not isinstance(doc, dict):
+            return False
+        checks = doc.get("checks")
+        if not isinstance(checks, list):
+            return False
+        for item in checks:
+            if not isinstance(item, dict) or item.get("check_id") != check_id:
+                continue
+            return item.get("status") == "fail"
+        return False
     if callee == "plan_review_route":
         from assurance_agent.knowledge.capabilities import plan_review_route as resolve_plan_review_route
 

@@ -1,5 +1,7 @@
 """OUTPUT CONTRACT 子句从 artifact registry 的 pydantic 模型渲染（spec C1）。"""
 
+import pytest
+
 from assurance_agent.verification.contract_render import render_output_contract
 
 
@@ -41,6 +43,33 @@ def test_authoring_model_wins_over_validation_model() -> None:
     assert "omit context_sha256" in clause
     assert "include signal_ids" in clause
     assert "never emit legacy intent_key" in clause
+
+
+@pytest.mark.parametrize("domain", ["issue", "workflow", "eval"])
+def test_retro_signal_prompt_uses_the_agent_authored_draft_contract(domain: str) -> None:
+    clause = render_output_contract([f"project:qa/retro/retro-1/signals/{domain}.json"])
+
+    assert "SignalDraftDocument" in clause
+    assert "slice_sha256" not in clause
+
+
+def test_api_plan_review_prompt_declares_every_cross_skill_stop_field() -> None:
+    clause = render_output_contract(["change:review/api-plan-review.json"])
+
+    for field in (
+        "review_type",
+        "change_id",
+        "codegen_readiness",
+        "auto_fix_allowed",
+        "human_review_required",
+        "risk_level",
+        "required_capabilities",
+        "findings",
+        "auto_fix_plan",
+        "next_action",
+    ):
+        assert field in clause, field
+    assert "each findings item requires id" in clause
 
 
 def test_templated_output_segment_still_matches_registry_glob() -> None:

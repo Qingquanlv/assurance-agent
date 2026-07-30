@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 import yaml
 
 from assurance_agent.workflow.graph.finalize import _validate_registry_outputs
@@ -71,8 +72,15 @@ def test_project_candidate_document_is_validated_at_agent_boundary(tmp_path: Pat
 _BASE_API_REVIEW = {
     "schema_version": "1.0",
     "review_type": "api-plan",
+    "change_id": "CH-1",
     "decision": "pass",
+    "codegen_readiness": "ready",
+    "auto_fix_allowed": False,
+    "human_review_required": False,
+    "risk_level": "low",
     "findings": [],
+    "auto_fix_plan": [],
+    "next_action": "continue",
 }
 
 
@@ -102,6 +110,51 @@ def test_api_plan_review_with_capabilities_passes(tmp_path: Path) -> None:
         {**_BASE_API_REVIEW, "required_capabilities": ["auth.api_admin_token"]},
     )
     assert _validate_registry_outputs(workspace=ws, outputs=("change:review/api-plan-review.json",)) is None
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "review_type",
+        "change_id",
+        "codegen_readiness",
+        "auto_fix_allowed",
+        "human_review_required",
+        "risk_level",
+        "auto_fix_plan",
+        "next_action",
+    ),
+)
+def test_api_plan_review_missing_cross_skill_field_is_invalid_output(tmp_path: Path, field: str) -> None:
+    ws = _workspace(tmp_path)
+    payload = {**_BASE_API_REVIEW, "required_capabilities": ["auth.api_admin_token"]}
+    del payload[field]
+    _write(ws, "review/api-plan-review.json", payload)
+
+    result = _validate_registry_outputs(workspace=ws, outputs=("change:review/api-plan-review.json",))
+
+    assert result is not None
+    assert result.error_kind == "invalid_output"
+    assert field in (result.error or "")
+
+
+def test_api_plan_review_finding_without_id_is_invalid_output(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    _write(
+        ws,
+        "review/api-plan-review.json",
+        {
+            **_BASE_API_REVIEW,
+            "required_capabilities": ["auth.api_admin_token"],
+            "findings": [{"severity": "high"}],
+        },
+    )
+
+    result = _validate_registry_outputs(workspace=ws, outputs=("change:review/api-plan-review.json",))
+
+    assert result is not None
+    assert result.error_kind == "invalid_output"
+    assert "findings[0].id" in (result.error or "")
 
 
 def test_non_plan_review_without_capabilities_passes(tmp_path: Path) -> None:

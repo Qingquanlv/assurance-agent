@@ -37,14 +37,36 @@ _POLICY_A = """\
 version: 1
 human_review_risk_levels: [high, critical]
 force_continue_allowed: true
-plan_check_action: warn
+plan_checks:
+  l1_path: warn
+  shared_factory: warn
+  assert_ideal: warn
+  capability_keys: warn
+coverage_floor:
+  risk_high: 0.9
+  risk_medium: 0.7
+fuzz:
+  required_when_endpoint_has_auth: true
+healing:
+  auth_module: require_human
 """
 
 _POLICY_B = """\
 version: 1
 human_review_risk_levels: [critical]
 force_continue_allowed: false
-plan_check_action: block
+plan_checks:
+  l1_path: warn
+  shared_factory: warn
+  assert_ideal: block
+  capability_keys: require_human
+coverage_floor:
+  risk_high: 0.95
+  risk_medium: 0.8
+fuzz:
+  required_when_endpoint_has_auth: false
+healing:
+  auth_module: block
 """
 
 _CONTRACTS = """\

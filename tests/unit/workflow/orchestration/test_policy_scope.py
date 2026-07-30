@@ -24,8 +24,17 @@ def test_in_operator_accepts_a_policy_list(tmp_path: Path) -> None:
 def test_policy_change_flips_the_verdict_without_touching_the_schema(tmp_path: Path) -> None:
     (tmp_path / ".aa").mkdir()
     (tmp_path / ".aa" / "policy.yaml").write_text(
-        "version: 1\nhuman_review_risk_levels: [critical]\n"
-        "force_continue_allowed: true\nplan_check_action: warn\n",
+        "version: 1\n"
+        "human_review_risk_levels: [critical]\n"
+        "force_continue_allowed: true\n"
+        "plan_checks:\n"
+        "  l1_path: warn\n"
+        "  shared_factory: warn\n"
+        "  assert_ideal: warn\n"
+        "  capability_keys: warn\n"
+        "coverage_floor: {risk_high: 0.9, risk_medium: 0.7}\n"
+        "fuzz: {required_when_endpoint_has_auth: true}\n"
+        "healing: {auth_module: require_human}\n",
         encoding="utf-8",
     )
     expr = parse_expression("api_plan_review.risk_level in policy.human_review_risk_levels")
@@ -33,7 +42,7 @@ def test_policy_change_flips_the_verdict_without_touching_the_schema(tmp_path: P
 
 
 def test_scalar_policy_constant_is_comparable(tmp_path: Path) -> None:
-    expr = parse_expression("policy.plan_check_action == 'warn'")
+    expr = parse_expression("policy.plan_checks.assert_ideal == 'warn'")
     assert evaluate(expr, _scope(tmp_path)) is True
 
 

@@ -3,8 +3,19 @@
 #
 # 每个字段都必须有 gate 表达式消费（tests/unit/workflow/orchestration/
 # test_plan_check_gate.py::test_every_policy_field_has_a_runtime_consumer 守着）。
-# 默认值与迁移前的硬编码字面量逐条等价，因此默认行为不变。
+# plan_checks 默认全 warn，与 C3b 迁移前全局 plan_check_action: warn 等价。
 version: 1
 human_review_risk_levels: [high, critical]
 force_continue_allowed: true
-plan_check_action: warn
+plan_checks:
+  l1_path: warn
+  shared_factory: warn
+  assert_ideal: warn
+  capability_keys: warn
+coverage_floor:
+  risk_high: 0.9
+  risk_medium: 0.7
+fuzz:
+  required_when_endpoint_has_auth: true
+healing:
+  auth_module: require_human

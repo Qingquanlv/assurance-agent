@@ -19,6 +19,9 @@ class CheckContext:
     cases: Sequence[Mapping[str, object]]
     data_knowledge: Mapping[str, object]
     layer: str = "api"
+    # From review/{layer}-plan-review.json when present (mechanical runs before
+    # first review: empty → capability_keys is inert until a review exists).
+    required_capabilities: Sequence[str] = ()
 
 
 CheckFn = Callable[[CheckContext], CheckEvidence]

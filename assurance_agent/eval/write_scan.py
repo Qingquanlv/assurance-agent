@@ -27,12 +27,22 @@ GIT_STATUS_AFTER = "git-status-after.bin"
 WRITE_DIFF_JSON = "write-diff.json"
 WRITE_POLICY_JSON = "write-policy.json"
 
-# E0 / E2a–E2d allowlists — 逐条对齐 TS DEFAULT_ALLOWLISTS。
+# Runtime-owned cross-change coordination metadata. These are not agent output
+# paths; the graph engine writes them while publishing an otherwise authorized
+# change-scoped task.
+_RUNTIME_METADATA_ALLOWLIST = [
+    "qa/.graph-runtime/locks/**",
+    "qa/.graph-runtime/publications/**",
+]
+
+# E0 / E2a–E2d allowlists — 逐条对齐 TS DEFAULT_ALLOWLISTS，再加入 Python
+# GraphRuntime 的跨 change 协调元数据。
 DEFAULT_ALLOWLISTS: dict[str, list[str]] = {
     "workflow_case": [
         "qa/changes/eval-sample-*/**",
         "qa/changes/**",
         "eval/out/runs/**",
+        *_RUNTIME_METADATA_ALLOWLIST,
     ],
     "workflow_api_codegen": [
         "qa/changes/eval-sample-*/**",
@@ -40,6 +50,7 @@ DEFAULT_ALLOWLISTS: dict[str, list[str]] = {
         "tests/api",
         "tests/api/**",
         "eval/out/runs/**",
+        *_RUNTIME_METADATA_ALLOWLIST,
     ],
     "workflow_e2e_codegen": [
         "qa/changes/eval-sample-*/**",
@@ -47,6 +58,7 @@ DEFAULT_ALLOWLISTS: dict[str, list[str]] = {
         "tests/e2e",
         "tests/e2e/**",
         "eval/out/runs/**",
+        *_RUNTIME_METADATA_ALLOWLIST,
     ],
     "workflow_fuzz_codegen": [
         "qa/changes/eval-sample-*/**",
@@ -54,6 +66,7 @@ DEFAULT_ALLOWLISTS: dict[str, list[str]] = {
         "tests/fuzz",
         "tests/fuzz/**",
         "eval/out/runs/**",
+        *_RUNTIME_METADATA_ALLOWLIST,
     ],
     "workflow_performance_codegen": [
         "qa/changes/eval-sample-*/**",
@@ -61,8 +74,14 @@ DEFAULT_ALLOWLISTS: dict[str, list[str]] = {
         "tests/perf",
         "tests/perf/**",
         "eval/out/runs/**",
+        *_RUNTIME_METADATA_ALLOWLIST,
     ],
-    "safety_lite": ["qa/changes/**", "tests/**", "eval/out/runs/**"],
+    "safety_lite": [
+        "qa/changes/**",
+        "tests/**",
+        "eval/out/runs/**",
+        *_RUNTIME_METADATA_ALLOWLIST,
+    ],
 }
 
 # E3 workflow-run — product paths must not change.

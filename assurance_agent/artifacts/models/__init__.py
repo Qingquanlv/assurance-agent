@@ -167,7 +167,7 @@ from assurance_agent.artifacts.models.report import (
     ReportDefects,
     ReportScope,
 )
-from assurance_agent.artifacts.models.review import PlanReview, Review, ReviewDecision
+from assurance_agent.artifacts.models.review import PlanReview, PlanReviewAuthoring, Review, ReviewDecision
 from assurance_agent.artifacts.models.state import (
     HealingPhaseState,
     PhaseState,
@@ -320,6 +320,7 @@ __all__ = [
     "Review",
     "ReviewDecision",
     "PlanReview",
+    "PlanReviewAuthoring",
     "RunContext",
     "SafetyCheck",
     "SelectedTargets",

@@ -60,7 +60,7 @@ The Markdown tables below are authoring interfaces; the runtime checks parse a s
 - No Data Required Cases uses `Case ID | Rationale`.
 - Target Files uses `File | Purpose`; include each domain factory as `create-if-missing` or `reuse` in its purpose and the corresponding API adapter whenever setup or cleanup needs domain data.
 - Test Function Mapping uses `Case ID | Test Function | Target File`. Every function is named `test_<case_id_lowercase>__<desc>`; the full lowercase case ID and double underscore are mandatory.
-- Factory Mapping uses `Entity | Shared Module | Function | Ownership | Required By`. `Shared Module` names `tests/testdata/domain/<entity>.py`, `Function` names a `make_*` capability, and `Ownership` is `create-if-missing` or `reuse`.
+- Factory Mapping uses `Entity | Shared Module | Function | Ownership | Required By`. `Shared Module` names `tests/testdata/domain/<entity>.py`, `Function` names a `make_*` capability, and `Ownership` is `reuse` for every symbol already declared by L1 knowledge. Use `create-if-missing` only when L1 does not declare that shared symbol.
 - Adapter Mapping uses `Entity | API Adapter | Transport | Cleanup`; API Adapter names `tests/api/adapters/<module>.py`, and Transport is `in_process_async`, `http`, or `isolated_worker`.
 - Fixture Mapping uses `Fixture | Source Factory | Wrapper Only (yes/no) | Required By`; fixtures only wrap lifecycle or transport.
 - Helper Mapping uses `Helper | Purpose | Required By`.
@@ -96,7 +96,7 @@ Do not continue past planning into codegen.
 
 Shared business-valid factories belong in `tests/testdata/domain/`. They own domain defaults and invariant-preserving create/cleanup behavior, return plain snapshots, and contain no pytest, HTTP client, Playwright, Hypothesis, Locust, subprocess, or event-loop bridge code.
 
-API lifecycle and transport glue belongs in `tests/api/adapters/`. A plan maps each data need to a shared domain factory and an API adapter. The first active codegen layer may own a missing shared module as `create-if-missing`; later layers mark it `reuse`.
+API lifecycle and transport glue belongs in `tests/api/adapters/`. A plan maps each data need to a shared domain factory and an API adapter. The first active codegen layer may own a shared module that is absent from L1 as `create-if-missing`; every L1-declared symbol and every later-layer reference is `reuse`.
 
 Choose setup by aggregate boundary:
 

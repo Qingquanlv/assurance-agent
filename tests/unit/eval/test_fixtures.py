@@ -5,9 +5,13 @@ from pathlib import Path
 import yaml
 import pytest
 
+from assurance_agent.artifacts.models.plan_checks import PlanCheckDocument
 from assurance_agent.eval.fixtures import load_tier, seed_change, write_fixture_lock
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.state import verify_state_integrity, write_state
+from assurance_agent.workflow.graph.compiler import compile_workflow
+from assurance_agent.workflow.graph.contracts import load_execution_contracts
+from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
 from assurance_agent.artifacts.models import WorkflowState
 
 
@@ -164,3 +168,69 @@ def test_load_tier_merges_imports_by_entrypoint(tmp_path: Path) -> None:
     assert "change:.qa.yaml" in imp.inputs
     nodes = {t.node for t in imp.completed}
     assert nodes == {"registry", "fact-baseline"}
+
+
+def test_benchmark_api_review_imports_include_mechanical_predecessor() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    fixtures = repo_root / "benchmark" / "vue-fastapi-admin" / "eval-fixtures"
+    expected_path = "execute-workflow/assurance/assurance/api/api-branch/review-cycle/api-plan-cycle"
+
+    for tier_name in ("L1-plan-seed", "L2-api-codegen-seed", "L3-run-seed", "L3-run-done"):
+        completed = load_tier(fixtures, tier_name).imports["execute"].completed
+        review_index = next(
+            index
+            for index, task in enumerate(completed)
+            if task.path == expected_path and task.node == "review"
+        )
+        checks = completed[review_index - 1]
+        assert checks.path == expected_path, tier_name
+        assert checks.node == "mechanical-plan-checks", tier_name
+        assert checks.outputs == ["change:review/api-plan-checks.json"], tier_name
+
+    evidence_path = fixtures / "samples" / "eval-sample-001" / "review" / "api-plan-checks.json"
+    evidence = PlanCheckDocument.model_validate_json(evidence_path.read_text(encoding="utf-8"))
+    assert evidence.status == "pass"
+
+
+def test_benchmark_codegen_imports_attach_gate_to_precheck_not_codegen() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    fixtures = repo_root / "benchmark" / "vue-fastapi-admin" / "eval-fixtures"
+    tier_names = (
+        "L2-api-codegen-seed",
+        "L2-e2e-codegen-seed",
+        "L2-fuzz-codegen-seed",
+        "L2-performance-codegen-seed",
+        "L3-run-seed",
+        "L3-run-done",
+    )
+
+    for tier_name in tier_names:
+        completed = load_tier(fixtures, tier_name).imports["execute"].completed
+        for index, task in enumerate(completed):
+            if task.node != "codegen":
+                continue
+            precheck = completed[index - 1]
+            layer = task.graph.removesuffix("-branch")
+            precheck_node = "codegen-precheck" if layer in {"api", "e2e"} else "codegen-gate"
+            gate_suffix = "codegen-precondition-gate" if layer in {"api", "e2e"} else "plan-review-gate"
+            assert precheck.path == task.path, tier_name
+            assert precheck.node == precheck_node, tier_name
+            assert precheck.gate == f"{layer}-{gate_suffix}", tier_name
+            assert task.gate is None, tier_name
+
+
+def test_benchmark_fixture_import_nodes_exist_in_packaged_schema() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    fixtures = repo_root / "benchmark" / "vue-fastapi-admin" / "eval-fixtures"
+    compiled = compile_workflow(load_workflow_v2(repo_root), load_execution_contracts(repo_root))
+
+    for tier_path in sorted((fixtures / "tiers").glob("*.yaml")):
+        tier = load_tier(fixtures, tier_path.stem)
+        for import_def in tier.imports.values():
+            for task in import_def.completed:
+                assert task.graph in compiled.schema.graphs, tier.name
+                assert task.node in compiled.schema.graphs[task.graph].nodes, (
+                    tier.name,
+                    task.graph,
+                    task.node,
+                )

@@ -40,10 +40,13 @@ imports:
       node: review-cycle
     - path: execute-workflow/assurance/assurance/e2e/e2e-branch
       graph: e2e-branch
+      node: codegen-precheck
+      gate: e2e-codegen-precondition-gate
+    - path: execute-workflow/assurance/assurance/e2e/e2e-branch
+      graph: e2e-branch
       node: codegen
       outputs:
       - change:codegen/e2e-codegen-summary.md
-      gate: e2e-codegen-precondition-gate
     - path: execute-workflow/assurance/assurance
       graph: assurance
       node: e2e

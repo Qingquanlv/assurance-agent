@@ -1,5 +1,7 @@
 """assert_ideal must not be narrowed or dropped (spec C2)."""
 
+import pytest
+
 from assurance_agent.verification.checks.assert_ideal import check_assert_ideal
 from assurance_agent.verification.checks.base import CheckContext
 
@@ -58,6 +60,24 @@ def test_assert_ideal_row_expecting_500_fails() -> None:
     assert finding.locator == "plans/api-plan.md:4"
 
 
+def test_latency_500_on_an_assert_ideal_row_is_not_an_http_500() -> None:
+    rows = BOTH_PRESENT.replace("on dup create", "; p95 < 500 ms")
+    assert check_assert_ideal(_ctx(rows)).status == "pass"
+
+
+@pytest.mark.parametrize(
+    "wording",
+    [
+        "assert_ideal HTTP 4xx; 500 禁止出现",
+        "assert_ideal HTTP 4xx; 禁止返回 500",
+        "assert_ideal HTTP 4xx; 避免 HTTP 500",
+    ],
+)
+def test_chinese_server_error_negation_is_not_treated_as_an_expectation(wording: str) -> None:
+    rows = BOTH_PRESENT.replace("**assert_ideal HTTP 4xx** on dup create", wording)
+    assert check_assert_ideal(_ctx(rows)).status == "pass"
+
+
 def test_prose_line_mentioning_500_is_not_scanned() -> None:
     rows = BOTH_PRESENT + "\nDo not narrow assert_ideal 4xx expectations to bypass/500 morphologies.\n"
     assert check_assert_ideal(_ctx(rows)).status == "pass"
@@ -112,13 +132,7 @@ def test_similar_case_ids_do_not_satisfy_each_other() -> None:
     assert [f.locator for f in result.findings] == ["TC_DEPT_API_1"]
 
 
-def test_same_case_twice_in_one_table_fails_but_across_tables_passes() -> None:
-    result = check_assert_ideal(
-        _ctx(BOTH_PRESENT + "| TC_DEPT_API_010 | Duplicate | **assert_ideal HTTP 4xx** |\n")
-    )
-    assert result.status == "fail"
-    assert any("duplicate" in f.actual for f in result.findings)
-
+def test_same_case_across_tables_passes() -> None:
     across = CheckContext(
         plan_texts={
             "plans/api-plan.md": HEADER + BOTH_PRESENT,
@@ -131,6 +145,57 @@ def test_same_case_twice_in_one_table_fails_but_across_tables_passes() -> None:
     assert check_assert_ideal(across).status == "pass"
 
 
+def test_same_case_twice_in_one_table_fails() -> None:
+    rows = (
+        "| TC_DEPT_API_002 | List tree | HTTP 200; data array |\n"
+        "| TC_DEPT_API_010 | Duplicate name | assert_ideal HTTP 4xx |\n"
+        "| TC_DEPT_API_010 | Duplicate name | response is not HTTP 500 |\n"
+    )
+    result = check_assert_ideal(_ctx(rows))
+    assert result.status == "fail"
+    assert any("duplicate" in finding.actual for finding in result.findings)
+
+
+def test_interrupted_case_table_reports_a_structural_parse_failure() -> None:
+    text = (
+        HEADER
+        + "| TC_DEPT_API_002 | List tree | HTTP 200; data array |\n"
+        + "wrapped prose interrupts the table\n"
+        + "| TC_DEPT_API_010 | Duplicate name | assert_ideal HTTP 4xx |\n"
+    )
+    result = check_assert_ideal(
+        CheckContext(
+            plan_texts={"plans/api-plan.md": text},
+            cases=CASES,
+            data_knowledge={},
+            layer="api",
+        )
+    )
+    assert result.status == "fail"
+    finding = next(f for f in result.findings if f.locator == "plans/api-plan.md:5")
+    assert finding.actual == "Case ID row outside a parseable Case ID table"
+    missing = next(f for f in result.findings if f.locator == "TC_DEPT_API_010")
+    assert missing.actual == "no plan row"
+
+
+def test_success_alternative_does_not_exempt_a_rejection_case() -> None:
+    cases = (
+        {
+            "added": [
+                _case(
+                    "TC_DEPT_API_012",
+                    "create or reject",
+                    "expect HTTP 201 or HTTP 409 when the name already exists",
+                )
+            ]
+        },
+    )
+    result = check_assert_ideal(_ctx("| TC_DEPT_API_012 | Create | HTTP 201 |\n", cases=cases))
+
+    assert result.status == "fail"
+    assert any(f.locator == "TC_DEPT_API_012" for f in result.findings)
+
+
 def test_registry_runs_every_check_and_folds_status() -> None:
     from assurance_agent.verification.checks.registry import PLAN_CHECKS, run_plan_checks
 
@@ -138,6 +203,7 @@ def test_registry_runs_every_check_and_folds_status() -> None:
         "check_l1_path",
         "check_shared_factory",
         "check_assert_ideal",
+        "check_capability_keys",
     ]
     ctx = CheckContext(
         plan_texts={"plans/api-plan.md": "read `qa/.knowledge/data-knowledge.yaml`\n"},
@@ -146,4 +212,9 @@ def test_registry_runs_every_check_and_folds_status() -> None:
     )
     doc = run_plan_checks(ctx)
     assert doc.status == "fail"
-    assert {check.check_id for check in doc.checks} == {"l1_path", "shared_factory", "assert_ideal"}
+    assert {check.check_id for check in doc.checks} == {
+        "l1_path",
+        "shared_factory",
+        "assert_ideal",
+        "capability_keys",
+    }

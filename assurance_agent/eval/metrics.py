@@ -22,6 +22,7 @@ def aggregate_scores(run_id: str, suite: str, scores: list[SampleScore]) -> Suit
         run_id=run_id,
         suite=suite,
         sample_count=len(scores),
+        error_count=sum(score.status == "error" for score in scores),
         metrics=metrics,
         per_sample=per_sample,
     )

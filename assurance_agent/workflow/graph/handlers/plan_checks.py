@@ -18,6 +18,12 @@ from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.improvements.ledger import atomic_write_json
 
 _LAYERS = ("api", "e2e", "fuzz", "performance")
+_REVIEW_NAMES = {
+    "api": ("api-plan-review.json",),
+    "e2e": ("plan-review.json", "e2e-plan-review.json"),
+    "fuzz": ("fuzz-plan-review.json",),
+    "performance": ("performance-plan-review.json",),
+}
 
 
 def _load_yaml_mapping(path: Path) -> dict[str, object]:
@@ -25,6 +31,24 @@ def _load_yaml_mapping(path: Path) -> dict[str, object]:
     if not isinstance(raw, dict):
         raise ValueError(f"{path} is not a YAML mapping")
     return raw
+
+
+def _required_capabilities(change_dir: Path, layer: str) -> tuple[str, ...]:
+    review_dir = change_dir / "review"
+    for name in _REVIEW_NAMES.get(layer, ()):
+        path = review_dir / name
+        if not path.is_file():
+            continue
+        try:
+            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue
+        if not isinstance(raw, dict):
+            continue
+        required = raw.get("required_capabilities")
+        if isinstance(required, list):
+            return tuple(item for item in required if isinstance(item, str) and item.strip())
+    return ()
 
 
 def verify_plan_mechanical(
@@ -51,6 +75,7 @@ def verify_plan_mechanical(
                 cases=cases,
                 data_knowledge=data_knowledge,
                 layer=layer,
+                required_capabilities=_required_capabilities(workspace.change_dir, layer),
             )
         )
         atomic_write_json(

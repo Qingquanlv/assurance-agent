@@ -75,6 +75,7 @@ def test_clean_plan_writes_a_passing_document(workspace: TaskWorkspace) -> None:
         "l1_path",
         "shared_factory",
         "assert_ideal",
+        "capability_keys",
     }
 
 
@@ -111,3 +112,35 @@ def test_missing_data_knowledge_is_invalid_output(workspace: TaskWorkspace) -> N
     result = verify_plan_mechanical(_task(), workspace, _context())
     assert result.status == "failed"
     assert result.error_kind == "invalid_output"
+
+
+def test_case_loading_does_not_tighten_the_registered_case_schema(workspace: TaskWorkspace) -> None:
+    case_path = workspace.change_dir / "cases" / "system" / "dept" / "case.yaml"
+    case_path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1.0",
+                "added": [
+                    {
+                        "case_id": "TC_DEPT_API_001",
+                        "title": "invalid automation flag",
+                        "status": "active",
+                        "priority": "P1",
+                        "severity": "major",
+                        "type": "API",
+                        "module": "dept",
+                        "automation": {"required": "true"},
+                    }
+                ],
+                "modified": [],
+                "removed": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (workspace.change_dir / "plans" / "api-plan.md").write_text("# API Plan\n", encoding="utf-8")
+
+    result = verify_plan_mechanical(_task(), workspace, _context())
+
+    assert result.status == "succeeded"
+    assert result.error_kind is None
