@@ -4,6 +4,14 @@ Every module that consumes structured artifacts imports from here.
 """
 
 from assurance_agent.artifacts.models.cases import CaseEntry, CaseRemoval, CaseYaml, QaYaml
+from assurance_agent.artifacts.models.assurance import (
+    CASE_TYPES,
+    KNOWN_PLAN_CHECK_IDS,
+    PLAN_CHECK_IDS,
+    CaseType,
+    LayerName,
+    PlanCheckId,
+)
 from assurance_agent.artifacts.models.data_knowledge import (
     AccountLeaf,
     AuthLeaf,
@@ -192,12 +200,14 @@ __all__ = [
     "AffectedSurface",
     "ApplySummary",
     "AssessmentAuthority",
+    "CASE_TYPES",
     "BatchMemberEvidenceGapSignal",
     "EvalProjectionVerdict",
     "EvalRunProjection",
     "RetroPipelineFailureSignal",
     "CaseEntry",
     "CaseRemoval",
+    "CaseType",
     "CaseYaml",
     "AccountLeaf",
     "AuthLeaf",
@@ -265,6 +275,8 @@ __all__ = [
     "IssueReconcileStatus",
     "IssueReconcileStatusValue",
     "IssueSeverity",
+    "KNOWN_PLAN_CHECK_IDS",
+    "LayerName",
     "NonFunctionalDimension",
     "Observation",
     "ObservationDocument",
@@ -339,6 +351,8 @@ __all__ = [
     "ReviewDecision",
     "PlanReview",
     "PlanReviewAuthoring",
+    "PLAN_CHECK_IDS",
+    "PlanCheckId",
     "RunContext",
     "SafetyCheck",
     "SelectedTargets",
