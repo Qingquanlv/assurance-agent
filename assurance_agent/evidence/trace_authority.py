@@ -2,8 +2,8 @@
 
 TraceProjection remains fact-only. This module classifies current-batch authority
 and emits at most one failure gap and at most one issue-authority gap. Completed
-current-batch occurrence membership and project replay live here; historical
-cross-ledger joins and ``fold_trace`` wiring remain deferred to later tasks.
+current-batch occurrence membership, historical cross-ledger joins, and merge
+ownership live here; ``fold_trace`` wiring remains deferred to Task 12.
 """
 
 from __future__ import annotations
@@ -21,7 +21,10 @@ from assurance_agent.artifacts.models.inspect import FailureAnalysis
 from assurance_agent.artifacts.models.issue_events import (
     ChangeIssueEvent,
     IssueAnalysisFailedEvent,
+    ProblemDetectedEvent,
     ProblemEvent,
+    ProblemOccurrenceLinkedEvent,
+    ProblemRegressedEvent,
     ProjectSyncPendingEvent,
 )
 from assurance_agent.artifacts.models.issues import (
@@ -32,6 +35,7 @@ from assurance_agent.artifacts.models.issues import (
     IssueOccurrence,
     IssueReconcileStatusV1,
     IssueReconcileStatusV2,
+    Observation,
     ObservationDocument,
     Problem,
     ProblemProjection,
@@ -40,6 +44,7 @@ from assurance_agent.artifacts.models.issues import (
 from assurance_agent.artifacts.models.trace import TraceFailure, TraceGapV2, TraceSource
 from assurance_agent.evidence.digests import (
     EvidenceEntryPathError,
+    TraceSourceConflictError,
     TraceSourceRecorder,
     evidence_bundle_digest_v1,
     normalize_evidence_entry_path,
@@ -1096,4 +1101,268 @@ def validate_completed_authority(
         problem_events=problem_events,
         replayed_problems=replayed_problems,
         expected_occurrence_ids=frozenset(expected),
+    )
+
+
+_CLOSED_PROBLEM_STATUSES = frozenset({"resolved", "not_an_issue", "accepted_risk"})
+
+
+@dataclass(frozen=True, slots=True)
+class ReconciledAuthorityDecision:
+    sources: tuple[TraceSource, ...]
+    failure_gaps: tuple[TraceGapV2, ...]
+    issue_gaps: tuple[TraceGapV2, ...]
+    project_gaps: tuple[TraceGapV2, ...]
+    failures_by_case: Mapping[str, tuple[TraceFailure, ...]]
+    open_problem_ids_by_case: Mapping[str, tuple[str, ...]]
+
+
+def _merge_sources(*groups: tuple[TraceSource, ...]) -> tuple[TraceSource, ...]:
+    recorder = TraceSourceRecorder()
+    for group in groups:
+        for source in group:
+            try:
+                recorder.add(source)
+            except TraceSourceConflictError:
+                # Prefer the first recorded existence/digest fact for a path.
+                continue
+    return recorder.freeze()
+
+
+def _history_occurrence_count(change_dir: Path) -> int | None:
+    path = change_dir / SNAPSHOT_SOURCE
+    if path.is_file():
+        try:
+            snapshot = ChangeIssueSnapshot.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValidationError, ValueError):
+            pass
+        else:
+            return len(snapshot.occurrences)
+    ledger = change_dir / LEDGER_SOURCE
+    if not ledger.is_file():
+        return None
+    try:
+        events = read_change_issue_events_from_bytes(ledger.read_bytes())
+    except (IssueLedgerMissingError, IssueLedgerIntegrityError, OSError, ValidationError, ValueError):
+        return None
+    try:
+        return len(project_change_issues(events).occurrences)
+    except ProjectionError:
+        return None
+
+
+def _independent_project_gaps(
+    project_root: Path,
+    change_dir: Path,
+    batch_id: str,
+) -> tuple[TraceGapV2, ...]:
+    """Preserve the existing problems_snapshot_missing channel independently."""
+    events_path = project_root / PROJECT_LEDGER_SOURCE
+    problems_path = project_root / PROJECT_PROBLEMS_SOURCE
+    events_missing = not events_path.is_file()
+    if not problems_path.is_file():
+        history_count = _history_occurrence_count(change_dir)
+        if events_missing and (history_count is None or history_count == 0):
+            return ()
+        return (
+            authority_gap(
+                "problems_snapshot_missing",
+                PROJECT_PROBLEMS_SOURCE,
+                batch_id,
+                "missing",
+            ),
+        )
+    try:
+        ProblemProjection.model_validate_json(problems_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValidationError, ValueError):
+        return (
+            authority_gap(
+                "problems_snapshot_missing",
+                PROJECT_PROBLEMS_SOURCE,
+                batch_id,
+                "malformed",
+            ),
+        )
+    return ()
+
+
+def _map_completed_authority_error(
+    err: AuthorityValidationError,
+    batch_id: str,
+) -> tuple[tuple[TraceGapV2, ...], tuple[TraceGapV2, ...]]:
+    """Map completed/historical faults to issue_gaps and/or project_gaps."""
+    if err.source == PROJECT_PROBLEMS_SOURCE and err.reason in ("missing", "malformed"):
+        return (), (authority_gap("problems_snapshot_missing", err.source, batch_id, err.reason),)
+    if err.source == SNAPSHOT_SOURCE and err.reason in ("missing", "malformed"):
+        return (authority_gap("issues_snapshot_missing", err.source, batch_id, err.reason),), ()
+    if err.source == SNAPSHOT_SOURCE and err.reason in ("change_id_mismatch", "batch_id_mismatch"):
+        return (
+            (authority_gap("issues_snapshot_identity_mismatch", err.source, batch_id, err.reason),),
+            (),
+        )
+    return (
+        (authority_gap("issue_reconciliation_unavailable", err.source, batch_id, err.reason),),
+        (),
+    )
+
+
+def _observation_matches(snapshot: ChangeIssueSnapshot, observation_id: str) -> Observation | None:
+    matches = [obs for obs in snapshot.observations if obs.observation_id == observation_id]
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
+def _assert_historical_cross_ledger(
+    snapshot: ChangeIssueSnapshot,
+    problems: ProblemProjection,
+    problem_events: tuple[ProblemEvent, ...],
+    change_id: str,
+) -> None:
+    """Bidirectional historical joins for every current-change occurrence."""
+    problems_by_id = {problem.problem_id: problem for problem in problems.problems}
+    change_occurrences = [occ for occ in snapshot.occurrences if occ.change_id == change_id]
+    if len({occ.occurrence_id for occ in change_occurrences}) != len(change_occurrences):
+        raise AuthorityValidationError(SNAPSHOT_SOURCE, "occurrence_set_mismatch")
+    occ_by_id = {occ.occurrence_id: occ for occ in change_occurrences}
+
+    for occ in change_occurrences:
+        for obs_id in occ.observation_ids:
+            obs = _observation_matches(snapshot, obs_id)
+            if obs is None:
+                raise AuthorityValidationError(SNAPSHOT_SOURCE, "observation_reference_invalid")
+            if obs.change_id != occ.change_id or obs.batch_id != occ.batch_id:
+                raise AuthorityValidationError(SNAPSHOT_SOURCE, "observation_reference_invalid")
+
+        source = problems_by_id.get(occ.problem_id)
+        if source is None:
+            raise AuthorityValidationError(PROJECT_PROBLEMS_SOURCE, "problem_occurrence_mismatch")
+        membership_hits = sum(1 for item in source.occurrences if item == occ.occurrence_id)
+        if membership_hits != 1:
+            raise AuthorityValidationError(PROJECT_PROBLEMS_SOURCE, "problem_occurrence_mismatch")
+        for other in problems.problems:
+            if other.problem_id == source.problem_id:
+                continue
+            if occ.occurrence_id in other.occurrences:
+                raise AuthorityValidationError(PROJECT_PROBLEMS_SOURCE, "problem_occurrence_mismatch")
+        _resolve_alias_chain(occ.problem_id, problems_by_id)
+
+    # Reverse-check project memberships attributed to this change.
+    for event in problem_events:
+        if not isinstance(
+            event,
+            (ProblemDetectedEvent, ProblemOccurrenceLinkedEvent, ProblemRegressedEvent),
+        ):
+            continue
+        if event.change_id != change_id:
+            continue
+        occ = occ_by_id.get(event.occurrence_id)
+        if occ is None:
+            raise AuthorityValidationError(PROJECT_PROBLEMS_SOURCE, "problem_occurrence_mismatch")
+        if occ.problem_id != event.problem_id:
+            raise AuthorityValidationError(PROJECT_PROBLEMS_SOURCE, "problem_occurrence_mismatch")
+
+
+def _build_open_problem_ids_by_case(
+    snapshot: ChangeIssueSnapshot,
+    problems: ProblemProjection,
+    change_id: str,
+) -> dict[str, tuple[str, ...]]:
+    problems_by_id = {problem.problem_id: problem for problem in problems.problems}
+    observation_case = {
+        obs.observation_id: obs.case_id
+        for obs in snapshot.observations
+        if obs.case_id is not None and obs.change_id == change_id
+    }
+    case_terminals: dict[str, list[str]] = {}
+    for occ in snapshot.occurrences:
+        if occ.change_id != change_id:
+            continue
+        terminal_id = _resolve_alias_chain(occ.problem_id, problems_by_id)
+        terminal = problems_by_id[terminal_id]
+        if terminal.status in _CLOSED_PROBLEM_STATUSES:
+            continue
+        if terminal.assessment.classification != "product_bug":
+            continue
+        for obs_id in occ.observation_ids:
+            case_id = observation_case.get(obs_id)
+            if case_id is None:
+                continue
+            case_terminals.setdefault(case_id, []).append(terminal_id)
+
+    out: dict[str, tuple[str, ...]] = {}
+    for case_id, terminal_ids in sorted(case_terminals.items()):
+        seen_fingerprints: set[str] = set()
+        chosen: list[str] = []
+        for terminal_problem_id in sorted(set(terminal_ids)):
+            fingerprint = problems_by_id[terminal_problem_id].fingerprint.digest
+            if fingerprint in seen_fingerprints:
+                continue
+            seen_fingerprints.add(fingerprint)
+            chosen.append(terminal_problem_id)
+        if chosen:
+            out[case_id] = tuple(sorted(chosen))
+    return out
+
+
+def evaluate_reconciled_authority(
+    project_root: Path,
+    change_dir: Path,
+    change_id: str,
+    batch_id: str,
+) -> ReconciledAuthorityDecision:
+    """Validate failure + issue authority and emit historical open-problem links."""
+    failure = validate_failure_authority(change_dir, change_id, batch_id)
+    prefix = validate_issue_authority_prefix(change_dir, change_id, batch_id)
+    sources = _merge_sources(failure.sources, prefix.sources)
+    project_gaps = _independent_project_gaps(project_root, change_dir, batch_id)
+
+    if prefix.state != "completed" or prefix.validated is None:
+        return ReconciledAuthorityDecision(
+            sources=sources,
+            failure_gaps=failure.gaps,
+            issue_gaps=prefix.gaps,
+            project_gaps=project_gaps,
+            failures_by_case=failure.failures_by_case,
+            open_problem_ids_by_case={},
+        )
+
+    try:
+        completed = validate_completed_authority(
+            prefix.validated,
+            project_root,
+            change_id,
+            batch_id,
+        )
+        _assert_historical_cross_ledger(
+            completed.prefix.replayed_snapshot,
+            completed.replayed_problems,
+            completed.problem_events,
+            change_id,
+        )
+        open_by_case = _build_open_problem_ids_by_case(
+            completed.prefix.replayed_snapshot,
+            completed.replayed_problems,
+            change_id,
+        )
+    except AuthorityValidationError as err:
+        issue_gaps, mapped_project = _map_completed_authority_error(err, batch_id)
+        if mapped_project:
+            project_gaps = mapped_project
+        return ReconciledAuthorityDecision(
+            sources=sources,
+            failure_gaps=failure.gaps,
+            issue_gaps=issue_gaps,
+            project_gaps=project_gaps,
+            failures_by_case=failure.failures_by_case,
+            open_problem_ids_by_case={},
+        )
+
+    return ReconciledAuthorityDecision(
+        sources=sources,
+        failure_gaps=failure.gaps,
+        issue_gaps=(),
+        project_gaps=project_gaps,
+        failures_by_case=failure.failures_by_case,
+        open_problem_ids_by_case=open_by_case,
     )

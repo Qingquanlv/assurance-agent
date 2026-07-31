@@ -540,3 +540,42 @@ def test_fold_trace_still_defers_completed_occurrence_authority(tmp_path: Path) 
     projection = fold_trace(tmp_path, CHANGE_ID, phase="reconciled")
     assert not any(gap.code == "issue_reconciliation_unavailable" for gap in projection.gaps)
     assert projection.rows[0].open_problem_ids == ("PROB-1",)
+
+
+def test_fold_trace_still_defers_historical_cross_ledger_authority(tmp_path: Path) -> None:
+    """Task 11 historical joins are not wired into fold_trace until Task 12.
+
+    A historical-shaped occurrence that references a cross-batch observation still
+    produces open-problem links via the legacy snapshot/problems loaders.
+    """
+    historical_batch = "20260728-120000"
+    _seed_reconciled_inputs(
+        tmp_path,
+        observations=[
+            _observation(case_id=CASE_ID, observation_id="OBS-B0"),
+            {
+                **_observation(case_id=CASE_ID, observation_id="OBS-B1"),
+                "batch_id": BATCH_ID,
+            },
+        ],
+        occurrences=[
+            {
+                **_occurrence(
+                    occurrence_id="OCC-B0",
+                    observation_id="OBS-B1",
+                    problem_id="PROB-1",
+                ),
+                "batch_id": historical_batch,
+            }
+        ],
+        problems=[_problem("PROB-1", status="detected", classification="product_bug")],
+    )
+    # Point the historical observation identity at B0 while the OCC still references OBS-B1.
+    snapshot_path = tmp_path / "qa" / "changes" / CHANGE_ID / "issues" / "snapshot.json"
+    payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    payload["observations"][0]["batch_id"] = historical_batch
+    snapshot_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    projection = fold_trace(tmp_path, CHANGE_ID, phase="reconciled")
+    assert not any(gap.code == "issue_reconciliation_unavailable" for gap in projection.gaps)
+    assert projection.rows[0].open_problem_ids == ("PROB-1",)

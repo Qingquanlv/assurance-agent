@@ -19,10 +19,12 @@ from assurance_agent.artifacts.models.issue_events import (
     IssueAnalysisFailedEvent,
     OccurrenceDetectedEvent,
     ObservationRecordedEvent,
+    ProblemAssessmentConfirmedEvent,
     ProblemDetectedEvent,
     ProblemEvent,
     ProblemMergedEvent,
     ProblemOccurrenceLinkedEvent,
+    ProblemResolvedEvent,
     ProjectSyncPendingEvent,
 )
 from assurance_agent.artifacts.models.issues import (
@@ -66,6 +68,7 @@ from assurance_agent.evidence.issue_replay import (
 from assurance_agent.evidence.trace_authority import (
     AuthorityValidationError,
     ValidatedAuthorityPrefix,
+    evaluate_reconciled_authority,
     validate_completed_authority,
     validate_failure_authority,
     validate_issue_authority_prefix,
@@ -1501,9 +1504,7 @@ def _taint_prefix(prefix: ValidatedAuthorityPrefix, mutation: str) -> ValidatedA
         occ = prefix.replayed_snapshot.occurrences[0]
         tainted_occ = occ.model_copy(
             update={
-                "analysis": occ.analysis.model_copy(
-                    update={"evidence_bundle_digest": "sha256:" + "e" * 64}
-                )
+                "analysis": occ.analysis.model_copy(update={"evidence_bundle_digest": "sha256:" + "e" * 64})
             }
         )
         tainted_snapshot = prefix.replayed_snapshot.model_copy(update={"occurrences": [tainted_occ]})
@@ -1679,10 +1680,7 @@ def _problem_merged_event(
     seq: int = 2,
 ) -> ProblemMergedEvent:
     evidence_digest = _evidence_refs_digest(evidence_refs)
-    merge_key = (
-        f"review:merge:{problem_id}:{expected_problem_version}:"
-        f"{target_problem_id}:{evidence_digest}"
-    )
+    merge_key = f"review:merge:{problem_id}:{expected_problem_version}:{target_problem_id}:{evidence_digest}"
     return ProblemMergedEvent(
         schema_version="1.0",
         seq=seq,
@@ -1746,3 +1744,1067 @@ def test_completed_authority_rejects_duplicate_project_membership(completed_tree
         validate_completed_authority(prefix, completed_tree, CHANGE_ID, BATCH_ID)
     assert raised.value.source == PROJECT_PROBLEMS_SOURCE
     assert raised.value.reason == "problem_occurrence_mismatch"
+
+
+# ---------------------------------------------------------------------------
+# Task 11 — historical cross-ledger links + merge ownership
+# ---------------------------------------------------------------------------
+
+BATCH_B0 = "20260728-120000"
+CASE_API = "TC_API_001"
+
+
+def change_dir(project_root: Path) -> Path:
+    return _change_dir(project_root)
+
+
+def _make_observation_for(
+    *,
+    batch_id: str,
+    case_id: str = CASE_ID,
+    signature: str | None = None,
+) -> Observation:
+    source = ObservationSource(
+        artifact="execution/runs/x/api-result.json",
+        json_pointer="/cases/0",
+    )
+    sig = signature or f"GET /api/v1/dept returned HTTP 500 ({batch_id}:{case_id})"
+    obs_id = observation_id(
+        ObservationIdentityInput(
+            change_id=CHANGE_ID,
+            batch_id=batch_id,
+            kind="test_failure",
+            target="api",
+            case_id=case_id,
+            source_artifact=source.artifact,
+            source_json_pointer=source.json_pointer,
+            signature=sig,
+        )
+    )
+    return Observation(
+        observation_id=obs_id,
+        change_id=CHANGE_ID,
+        batch_id=batch_id,
+        kind="test_failure",
+        target="api",
+        case_id=case_id,
+        source=source,
+        evidence_refs=["execution/runs/x/api-result.json"],
+        signature=sig,
+        observed_at=TS,
+    )
+
+
+def _obs_recorded_for(observation: Observation, *, seq: int) -> ObservationRecordedEvent:
+    key = f"observation_recorded:{observation.change_id}:{observation.batch_id}:{observation.observation_id}"
+    return ObservationRecordedEvent(
+        schema_version="1.0",
+        seq=seq,
+        event_id=event_id(key),
+        idempotency_key=key,
+        ts=TS,
+        evidence_digest="sha256:" + "e" * 64,
+        change_id=observation.change_id,
+        batch_id=observation.batch_id,
+        type="observation_recorded",
+        observation=observation,
+    )
+
+
+def _analysis_completed_for(
+    *,
+    batch_id: str,
+    evidence_digest: str,
+    candidate_digest: str,
+    candidate_count: int,
+    seq: int,
+) -> IssueAnalysisCompletedEvent:
+    status = IssueAnalysisStatus(
+        schema_version="1.0",
+        change_id=CHANGE_ID,
+        batch_id=batch_id,
+        status="completed",
+        evidence_bundle_digest=evidence_digest,
+        candidate_count=candidate_count,
+        candidate_digest=candidate_digest,
+    )
+    key = f"issue_analysis_completed:{CHANGE_ID}:{batch_id}:{candidate_digest}"
+    return IssueAnalysisCompletedEvent(
+        schema_version="1.0",
+        seq=seq,
+        event_id=event_id(key),
+        idempotency_key=key,
+        ts=TS,
+        evidence_digest=evidence_digest,
+        change_id=CHANGE_ID,
+        batch_id=batch_id,
+        type="issue_analysis_completed",
+        analysis_status=status,
+    )
+
+
+def _candidate_for(
+    observation: Observation,
+    *,
+    candidate_id: str = "CAND-001",
+    symptom: str = "returns http 500",
+    surface_value: str = "GET /api/v1/dept",
+) -> IssueCandidate:
+    return IssueCandidate(
+        candidate_id=candidate_id,
+        observation_ids=[observation.observation_id],
+        proposed=IssueCandidateProposed(
+            title="API endpoint returns 500",
+            classification="product_bug",
+            severity="high",
+            root_cause_hypothesis="Unhandled exception in endpoint handler",
+        ),
+        affected_surface=AffectedSurface(kind="endpoint", value=surface_value),
+        fingerprint_inputs=FingerprintInputs(
+            surface="endpoint",
+            symptom=symptom,
+            qualifiers=None,
+        ),
+        possible_problem_ids=[],
+        confidence=0.85,
+        recommended_action="investigate and fix",
+    )
+
+
+def _occurrence_event_for(
+    *,
+    candidate: IssueCandidate,
+    batch_id: str,
+    evidence_digest: str,
+    seq: int,
+) -> tuple[OccurrenceDetectedEvent, str, str, str]:
+    digest = per_candidate_digest(candidate)
+    occ_id = compute_occurrence_id(CHANGE_ID, batch_id, digest)
+    fp = problem_fingerprint(
+        affected_surface=candidate.affected_surface,
+        fingerprint_inputs=candidate.fingerprint_inputs,
+    )
+    pid = compute_problem_id(fp)
+    occurrence = IssueOccurrence(
+        occurrence_id=occ_id,
+        change_id=CHANGE_ID,
+        batch_id=batch_id,
+        observation_ids=list(candidate.observation_ids),
+        problem_id=pid,
+        provisional_assessment=ProvisionalAssessment(
+            classification=candidate.proposed.classification,
+            severity=candidate.proposed.severity,
+            authority="llm_provisional",
+            root_cause_hypothesis=candidate.proposed.root_cause_hypothesis,
+        ),
+        analysis=OccurrenceAnalysis(
+            evidence_bundle_digest=evidence_digest,
+            analyzer="aa-issue-analyzer",
+            prompt_version="1.0",
+            candidate_digest=digest,
+        ),
+    )
+    occ_key = f"occurrence_detected:{CHANGE_ID}:{batch_id}:{digest}"
+    occ_event = OccurrenceDetectedEvent(
+        schema_version="1.0",
+        seq=seq,
+        event_id=event_id(occ_key),
+        idempotency_key=occ_key,
+        ts=TS,
+        evidence_digest=evidence_digest,
+        change_id=CHANGE_ID,
+        batch_id=batch_id,
+        type="occurrence_detected",
+        occurrence=occurrence,
+    )
+    return occ_event, occ_id, pid, digest
+
+
+def _problem_detected_for(
+    *,
+    candidate: IssueCandidate,
+    occ_id: str,
+    pid: str,
+    batch_id: str,
+    evidence_digest: str,
+    seq: int,
+) -> ProblemDetectedEvent:
+    digest = per_candidate_digest(candidate)
+    fp = problem_fingerprint(
+        affected_surface=candidate.affected_surface,
+        fingerprint_inputs=candidate.fingerprint_inputs,
+    )
+    det_key = f"problem_detected:{pid}:{CHANGE_ID}:{batch_id}:{digest}"
+    return ProblemDetectedEvent(
+        schema_version="1.0",
+        seq=seq,
+        event_id=event_id(det_key),
+        idempotency_key=det_key,
+        ts=TS,
+        evidence_digest=evidence_digest,
+        problem_id=pid,
+        expected_problem_version=0,
+        type="problem_detected",
+        occurrence_id=occ_id,
+        change_id=CHANGE_ID,
+        batch_id=batch_id,
+        fingerprint=fp,
+        title=candidate.proposed.title,
+        classification=candidate.proposed.classification,
+        severity=candidate.proposed.severity,
+        root_cause_hypothesis=candidate.proposed.root_cause_hypothesis,
+    )
+
+
+def _read_change_events(change_dir: Path) -> list[ChangeIssueEvent]:
+    from assurance_agent.evidence.issue_replay import read_change_issue_events_from_bytes
+
+    return list(read_change_issue_events_from_bytes((change_dir / LEDGER_SOURCE).read_bytes()))
+
+
+def _read_problem_events(project_root: Path) -> list[ProblemEvent]:
+    from assurance_agent.evidence.issue_replay import read_problem_events_from_bytes
+
+    return list(read_problem_events_from_bytes((project_root / PROJECT_LEDGER_SOURCE).read_bytes()))
+
+
+def make_each_ledger_individually_replayable(project_root: Path) -> dict[str, str]:
+    """B0 historical OCC + B1 empty completed current batch; both ledgers replay cleanly."""
+    change = _change_dir(project_root)
+    change.mkdir(parents=True, exist_ok=True)
+    _write_json(change / FAILURE_SOURCE, _failure_payload())
+    digest_b1, _empty, _ = _seed_manifest_tree(change)
+    # Current B1 observations document is empty (no B1 observations in ledger).
+    empty_obs = ObservationDocument(
+        schema_version="1.0",
+        change_id=CHANGE_ID,
+        batch_id=BATCH_ID,
+        observations=[],
+    )
+    _write_json(change / OBSERVATIONS_SOURCE, empty_obs.model_dump(mode="json"))
+    c_digest_b1 = candidate_document_digest(
+        IssueCandidateDocument(
+            schema_version="1.0",
+            change_id=CHANGE_ID,
+            batch_id=BATCH_ID,
+            evidence_bundle_digest=digest_b1,
+            candidates=[],
+        )
+    )
+
+    obs_b0 = _make_observation_for(batch_id=BATCH_B0, case_id=CASE_API)
+    cand_b0 = _candidate_for(obs_b0, symptom="returns http 500 b0")
+    digest_b0 = "sha256:" + "a" * 64
+    c_digest_b0 = "sha256:" + "b" * 64
+    occ_event, occ_id, pid, _ = _occurrence_event_for(
+        candidate=cand_b0,
+        batch_id=BATCH_B0,
+        evidence_digest=digest_b0,
+        seq=3,
+    )
+    change_events: list[ChangeIssueEvent] = [
+        _obs_recorded_for(obs_b0, seq=1),
+        _analysis_completed_for(
+            batch_id=BATCH_B0,
+            evidence_digest=digest_b0,
+            candidate_digest=c_digest_b0,
+            candidate_count=1,
+            seq=2,
+        ),
+        occ_event,
+        _analysis_completed_for(
+            batch_id=BATCH_ID,
+            evidence_digest=digest_b1,
+            candidate_digest=c_digest_b1,
+            candidate_count=0,
+            seq=4,
+        ),
+    ]
+    _write_ledger(change, change_events)
+    _write_snapshot_from_events(change, change_events)
+    _write_reconcile_status(
+        change,
+        schema_version="2.0",
+        status="completed",
+        evidence_bundle_digest=digest_b1,
+        candidate_digest=c_digest_b1,
+        occurrence_count=0,
+    )
+    problem_event = _problem_detected_for(
+        candidate=cand_b0,
+        occ_id=occ_id,
+        pid=pid,
+        batch_id=BATCH_B0,
+        evidence_digest=digest_b0,
+        seq=1,
+    )
+    _write_project_ledger(project_root, [problem_event])
+    _write_problems_projection(project_root, [problem_event])
+    return {"occ_id": occ_id, "problem_id": pid, "obs_b0": obs_b0.observation_id}
+
+
+def point_historical_occurrence_at_current_observation(project_root: Path) -> None:
+    """Keep both ledgers replayable, but point B0 OCC at a B1 observation."""
+    change = _change_dir(project_root)
+    obs_b1 = _make_observation_for(batch_id=BATCH_ID, case_id=CASE_API, signature="b1-current-obs")
+    events = _read_change_events(change)
+    rewritten: list[ChangeIssueEvent] = []
+    for event in events:
+        if isinstance(event, OccurrenceDetectedEvent) and event.batch_id == BATCH_B0:
+            tainted_occ = event.occurrence.model_copy(update={"observation_ids": [obs_b1.observation_id]})
+            rewritten.append(event.model_copy(update={"occurrence": tainted_occ}))
+        else:
+            rewritten.append(event)
+    # Insert B1 observation so change ledger still replays; OCC→OBS batch mismatch remains.
+    rewritten.insert(
+        -1,
+        _obs_recorded_for(obs_b1, seq=max(e.seq for e in rewritten) + 1),
+    )
+    # Fix seq uniqueness by rewriting seqs in order.
+    seq_fixed: list[ChangeIssueEvent] = []
+    for index, event in enumerate(rewritten, start=1):
+        seq_fixed.append(event.model_copy(update={"seq": index}))
+    _write_ledger(change, seq_fixed)
+    _write_snapshot_from_events(change, seq_fixed)
+    obs_doc = ObservationDocument(
+        schema_version="1.0",
+        change_id=CHANGE_ID,
+        batch_id=BATCH_ID,
+        observations=[obs_b1],
+    )
+    _write_json(change / OBSERVATIONS_SOURCE, obs_doc.model_dump(mode="json"))
+
+
+def test_valid_ledgers_with_cross_batch_historical_observation_are_unavailable(
+    tmp_path: Path,
+) -> None:
+    make_each_ledger_individually_replayable(tmp_path)
+    point_historical_occurrence_at_current_observation(tmp_path)
+    decision = evaluate_reconciled_authority(
+        tmp_path,
+        change_dir(tmp_path),
+        CHANGE_ID,
+        BATCH_ID,
+    )
+    assert decision.open_problem_ids_by_case == {}
+    assert [gap.detail for gap in decision.issue_gaps] == ["reason=observation_reference_invalid"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "historical_dangling_observation",
+        "source_missing_occurrence",
+        "membership_only_on_merge_target",
+        "membership_on_source_and_target",
+        "wrong_source_owner",
+        "project_only_current_change_membership",
+        "snapshot_only_cross_change_occurrence",
+        "forged_historical_occurrence",
+        "snapshot_duplicate_observation",
+    ],
+)
+def test_cross_ledger_mismatch_clears_whole_problem_authority(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    ids = make_each_ledger_individually_replayable(tmp_path)
+    change = _change_dir(tmp_path)
+    if mutation == "historical_dangling_observation":
+        events = _read_change_events(change)
+        rewritten: list[ChangeIssueEvent] = []
+        for event in events:
+            if isinstance(event, OccurrenceDetectedEvent) and event.batch_id == BATCH_B0:
+                tainted = event.occurrence.model_copy(update={"observation_ids": ["OBS-missing-historical"]})
+                rewritten.append(event.model_copy(update={"occurrence": tainted}))
+            else:
+                rewritten.append(event)
+        _write_ledger(change, rewritten)
+        _write_snapshot_from_events(change, rewritten)
+    elif mutation == "source_missing_occurrence":
+        events = _read_problem_events(tmp_path)
+        detected = events[0]
+        assert isinstance(detected, ProblemDetectedEvent)
+        # Keep ledger↔projection equal but point membership away from OCC.
+        rewritten_detected = detected.model_copy(update={"occurrence_id": "OCC-not-owned"})
+        # Recompute identity keys for the rewritten event.
+        det_key = f"problem_detected:{detected.problem_id}:{CHANGE_ID}:{BATCH_B0}:rewritten"
+        rewritten_detected = rewritten_detected.model_copy(
+            update={"event_id": event_id(det_key), "idempotency_key": det_key}
+        )
+        _write_project_ledger(tmp_path, [rewritten_detected])
+        _write_problems_projection(tmp_path, [rewritten_detected])
+    elif mutation == "membership_only_on_merge_target":
+        events = _read_problem_events(tmp_path)
+        detected = events[0]
+        assert isinstance(detected, ProblemDetectedEvent)
+        target_cand = _candidate_for(
+            _make_observation_for(batch_id=BATCH_B0, case_id="TC_TARGET"),
+            candidate_id="CAND-T",
+            symptom="target symptom",
+            surface_value="GET /api/v1/target",
+        )
+        target_fp = problem_fingerprint(
+            affected_surface=target_cand.affected_surface,
+            fingerprint_inputs=target_cand.fingerprint_inputs,
+        )
+        target_pid = compute_problem_id(target_fp)
+        target_detected = ProblemDetectedEvent(
+            schema_version="1.0",
+            seq=2,
+            event_id=event_id(f"problem_detected:{target_pid}:seed"),
+            idempotency_key=f"problem_detected:{target_pid}:seed",
+            ts=TS,
+            evidence_digest=detected.evidence_digest,
+            problem_id=target_pid,
+            expected_problem_version=0,
+            type="problem_detected",
+            occurrence_id="OCC-target-seed",
+            change_id="CH-OTHER",
+            batch_id=BATCH_B0,
+            fingerprint=target_fp,
+            title="target",
+            classification="product_bug",
+            severity="high",
+            root_cause_hypothesis="h",
+        )
+        # Move membership: source detected with placeholder, link OCC onto target only.
+        source_seed = detected.model_copy(update={"occurrence_id": "OCC-source-seed"})
+        source_key = f"problem_detected:{detected.problem_id}:seed"
+        source_seed = source_seed.model_copy(
+            update={"event_id": event_id(source_key), "idempotency_key": source_key}
+        )
+        link_key = f"problem_occurrence_linked:{target_pid}:{ids['occ_id']}"
+        link = ProblemOccurrenceLinkedEvent(
+            schema_version="1.0",
+            seq=3,
+            event_id=event_id(link_key),
+            idempotency_key=link_key,
+            ts=TS,
+            evidence_digest=detected.evidence_digest,
+            problem_id=target_pid,
+            expected_problem_version=1,
+            type="problem_occurrence_linked",
+            occurrence_id=ids["occ_id"],
+            change_id=CHANGE_ID,
+            batch_id=BATCH_B0,
+        )
+        problem_events = [source_seed, target_detected, link]
+        _write_project_ledger(tmp_path, problem_events)
+        _write_problems_projection(tmp_path, problem_events)
+    elif mutation == "membership_on_source_and_target":
+        events = _read_problem_events(tmp_path)
+        detected = events[0]
+        assert isinstance(detected, ProblemDetectedEvent)
+        target_fp = problem_fingerprint(
+            affected_surface=AffectedSurface(kind="endpoint", value="GET /api/v1/other"),
+            fingerprint_inputs=FingerprintInputs(
+                surface="endpoint",
+                symptom="other",
+                qualifiers=None,
+            ),
+        )
+        target_pid = compute_problem_id(target_fp)
+        target_detected = ProblemDetectedEvent(
+            schema_version="1.0",
+            seq=2,
+            event_id=event_id(f"problem_detected:{target_pid}:t"),
+            idempotency_key=f"problem_detected:{target_pid}:t",
+            ts=TS,
+            evidence_digest=detected.evidence_digest,
+            problem_id=target_pid,
+            expected_problem_version=0,
+            type="problem_detected",
+            occurrence_id="OCC-target-only",
+            change_id="CH-OTHER",
+            batch_id=BATCH_B0,
+            fingerprint=target_fp,
+            title="target",
+            classification="product_bug",
+            severity="high",
+            root_cause_hypothesis="h",
+        )
+        link_key = f"problem_occurrence_linked:{target_pid}:{ids['occ_id']}:dup"
+        link = ProblemOccurrenceLinkedEvent(
+            schema_version="1.0",
+            seq=3,
+            event_id=event_id(link_key),
+            idempotency_key=link_key,
+            ts=TS,
+            evidence_digest=detected.evidence_digest,
+            problem_id=target_pid,
+            expected_problem_version=1,
+            type="problem_occurrence_linked",
+            occurrence_id=ids["occ_id"],
+            change_id=CHANGE_ID,
+            batch_id=BATCH_B0,
+        )
+        problem_events = [detected, target_detected, link]
+        _write_project_ledger(tmp_path, problem_events)
+        _write_problems_projection(tmp_path, problem_events)
+    elif mutation == "wrong_source_owner":
+        events = _read_change_events(change)
+        rewritten = []
+        for event in events:
+            if isinstance(event, OccurrenceDetectedEvent) and event.batch_id == BATCH_B0:
+                tainted = event.occurrence.model_copy(update={"problem_id": "PROB-wrong-owner"})
+                rewritten.append(event.model_copy(update={"occurrence": tainted}))
+            else:
+                rewritten.append(event)
+        _write_ledger(change, rewritten)
+        _write_snapshot_from_events(change, rewritten)
+    elif mutation == "project_only_current_change_membership":
+        events = _read_problem_events(tmp_path)
+        detected = events[0]
+        assert isinstance(detected, ProblemDetectedEvent)
+        link_key = f"problem_occurrence_linked:{detected.problem_id}:OCC-project-only"
+        link = ProblemOccurrenceLinkedEvent(
+            schema_version="1.0",
+            seq=2,
+            event_id=event_id(link_key),
+            idempotency_key=link_key,
+            ts=TS,
+            evidence_digest=detected.evidence_digest,
+            problem_id=detected.problem_id,
+            expected_problem_version=1,
+            type="problem_occurrence_linked",
+            occurrence_id="OCC-project-only",
+            change_id=CHANGE_ID,
+            batch_id=BATCH_ID,
+        )
+        problem_events = [detected, link]
+        _write_project_ledger(tmp_path, problem_events)
+        _write_problems_projection(tmp_path, problem_events)
+    elif mutation == "snapshot_only_cross_change_occurrence":
+        snapshot = json.loads((change / SNAPSHOT_SOURCE).read_text(encoding="utf-8"))
+        occ = dict(snapshot["occurrences"][0])
+        occ["occurrence_id"] = "OCC-cross-change-only"
+        occ["change_id"] = "CH-OTHER"
+        snapshot["occurrences"] = [*snapshot["occurrences"], occ]
+        _write_json(change / SNAPSHOT_SOURCE, snapshot)
+    elif mutation == "forged_historical_occurrence":
+        snapshot = json.loads((change / SNAPSHOT_SOURCE).read_text(encoding="utf-8"))
+        occ = dict(snapshot["occurrences"][0])
+        occ["occurrence_id"] = "OCC-forged-historical"
+        occ["batch_id"] = BATCH_B0
+        snapshot["occurrences"] = [*snapshot["occurrences"], occ]
+        _write_json(change / SNAPSHOT_SOURCE, snapshot)
+    elif mutation == "snapshot_duplicate_observation":
+        snapshot = json.loads((change / SNAPSHOT_SOURCE).read_text(encoding="utf-8"))
+        obs = snapshot["observations"][0]
+        snapshot["observations"] = [obs, obs]
+        _write_json(change / SNAPSHOT_SOURCE, snapshot)
+    else:
+        raise AssertionError(mutation)
+
+    decision = evaluate_reconciled_authority(tmp_path, change, CHANGE_ID, BATCH_ID)
+    assert decision.open_problem_ids_by_case == {}
+    assert len(decision.issue_gaps) == 1
+    assert decision.issue_gaps[0].code == "issue_reconciliation_unavailable" or decision.issue_gaps[
+        0
+    ].code in {
+        "issues_snapshot_missing",
+        "issues_snapshot_identity_mismatch",
+    }
+
+
+@pytest.mark.parametrize(
+    ("fault", "code", "source", "detail"),
+    [
+        (
+            "ledger_missing",
+            "issue_reconciliation_unavailable",
+            PROJECT_LEDGER_SOURCE,
+            "reason=ledger_missing",
+        ),
+        (
+            "problems_missing",
+            "problems_snapshot_missing",
+            PROJECT_PROBLEMS_SOURCE,
+            "reason=missing",
+        ),
+        (
+            "membership_mismatch",
+            "issue_reconciliation_unavailable",
+            PROJECT_PROBLEMS_SOURCE,
+            "reason=problem_occurrence_mismatch",
+        ),
+    ],
+)
+def test_evaluate_reconciled_maps_project_source_faults(
+    tmp_path: Path,
+    fault: str,
+    code: str,
+    source: str,
+    detail: str,
+) -> None:
+    """Public gap mapping for the three Task 10 project-fault classes."""
+    _write_completed_with_occurrence(tmp_path)
+    events_path = tmp_path / PROJECT_LEDGER_SOURCE
+    problems_path = tmp_path / PROJECT_PROBLEMS_SOURCE
+    if fault == "ledger_missing":
+        events_path.unlink()
+    elif fault == "problems_missing":
+        problems_path.unlink()
+    elif fault == "membership_mismatch":
+        raw = events_path.read_text(encoding="utf-8").strip().splitlines()[0]
+        payload = json.loads(raw)
+        payload["occurrence_id"] = "OCC-not-current"
+        events_path.write_text(
+            json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        _write_problems_projection(
+            tmp_path,
+            [ProblemDetectedEvent.model_validate(json.loads(events_path.read_text().strip()))],
+        )
+    decision = evaluate_reconciled_authority(tmp_path, _change_dir(tmp_path), CHANGE_ID, BATCH_ID)
+    assert decision.open_problem_ids_by_case == {}
+    if fault == "problems_missing":
+        assert decision.issue_gaps == ()
+        assert len(decision.project_gaps) == 1
+        gap = decision.project_gaps[0]
+    else:
+        assert decision.project_gaps == ()
+        assert len(decision.issue_gaps) == 1
+        gap = decision.issue_gaps[0]
+    assert gap.code == code
+    assert gap.source == source
+    assert gap.batch_id == BATCH_ID
+    assert gap.detail == detail
+
+
+def _write_merge_multi_batch_tree(project_root: Path) -> dict[str, str]:
+    """B0: P owns O and T exists; merge P→T; B1 empty completed current batch."""
+    change = _change_dir(project_root)
+    change.mkdir(parents=True, exist_ok=True)
+    _write_json(change / FAILURE_SOURCE, _failure_payload())
+    digest_b1, _, _ = _seed_manifest_tree(change)
+    empty_obs = ObservationDocument(
+        schema_version="1.0",
+        change_id=CHANGE_ID,
+        batch_id=BATCH_ID,
+        observations=[],
+    )
+    _write_json(change / OBSERVATIONS_SOURCE, empty_obs.model_dump(mode="json"))
+    c_digest_b1 = candidate_document_digest(
+        IssueCandidateDocument(
+            schema_version="1.0",
+            change_id=CHANGE_ID,
+            batch_id=BATCH_ID,
+            evidence_bundle_digest=digest_b1,
+            candidates=[],
+        )
+    )
+
+    obs_p = _make_observation_for(batch_id=BATCH_B0, case_id=CASE_API, signature="obs-p")
+    obs_t = _make_observation_for(batch_id=BATCH_B0, case_id="TC_TARGET", signature="obs-t")
+    cand_p = _candidate_for(obs_p, candidate_id="CAND-P", symptom="source symptom")
+    cand_t = _candidate_for(
+        obs_t,
+        candidate_id="CAND-T",
+        symptom="target symptom",
+        surface_value="GET /api/v1/target",
+    )
+    digest_b0 = "sha256:" + "c" * 64
+    c_digest_b0 = "sha256:" + "d" * 64
+    occ_p_event, occ_p, pid_p, _ = _occurrence_event_for(
+        candidate=cand_p, batch_id=BATCH_B0, evidence_digest=digest_b0, seq=4
+    )
+    occ_t_event, occ_t, pid_t, _ = _occurrence_event_for(
+        candidate=cand_t, batch_id=BATCH_B0, evidence_digest=digest_b0, seq=5
+    )
+    change_events: list[ChangeIssueEvent] = [
+        _obs_recorded_for(obs_p, seq=1),
+        _obs_recorded_for(obs_t, seq=2),
+        _analysis_completed_for(
+            batch_id=BATCH_B0,
+            evidence_digest=digest_b0,
+            candidate_digest=c_digest_b0,
+            candidate_count=2,
+            seq=3,
+        ),
+        occ_p_event,
+        occ_t_event,
+        _analysis_completed_for(
+            batch_id=BATCH_ID,
+            evidence_digest=digest_b1,
+            candidate_digest=c_digest_b1,
+            candidate_count=0,
+            seq=6,
+        ),
+    ]
+    _write_ledger(change, change_events)
+    _write_snapshot_from_events(change, change_events)
+    _write_reconcile_status(
+        change,
+        schema_version="2.0",
+        status="completed",
+        evidence_bundle_digest=digest_b1,
+        candidate_digest=c_digest_b1,
+        occurrence_count=0,
+    )
+    detected_p = _problem_detected_for(
+        candidate=cand_p,
+        occ_id=occ_p,
+        pid=pid_p,
+        batch_id=BATCH_B0,
+        evidence_digest=digest_b0,
+        seq=1,
+    )
+    detected_t = _problem_detected_for(
+        candidate=cand_t,
+        occ_id=occ_t,
+        pid=pid_t,
+        batch_id=BATCH_B0,
+        evidence_digest=digest_b0,
+        seq=2,
+    )
+    merge = _problem_merged_event(
+        problem_id=pid_p,
+        target_problem_id=pid_t,
+        evidence_refs=[occ_p],
+        expected_problem_version=1,
+        seq=3,
+    )
+    problem_events: list[ProblemEvent] = [detected_p, detected_t, merge]
+    _write_project_ledger(project_root, problem_events)
+    _write_problems_projection(project_root, problem_events)
+    return {"occ_p": occ_p, "pid_p": pid_p, "pid_t": pid_t, "occ_t": occ_t}
+
+
+def test_merge_source_ownership_links_terminal_canonical_id(tmp_path: Path) -> None:
+    ids = _write_merge_multi_batch_tree(tmp_path)
+    decision = evaluate_reconciled_authority(
+        tmp_path,
+        change_dir(tmp_path),
+        CHANGE_ID,
+        BATCH_ID,
+    )
+    assert decision.issue_gaps == ()
+    assert decision.open_problem_ids_by_case[CASE_API] == (ids["pid_t"],)
+    # Source retains occurrence ownership after merge.
+    problems = project_problems(tuple(_read_problem_events(tmp_path)))
+    source = next(p for p in problems.problems if p.problem_id == ids["pid_p"])
+    assert ids["occ_p"] in source.occurrences
+    target = next(p for p in problems.problems if p.problem_id == ids["pid_t"])
+    assert ids["occ_p"] not in target.occurrences
+
+
+def test_historical_open_problem_survives_later_empty_batch(tmp_path: Path) -> None:
+    ids = make_each_ledger_individually_replayable(tmp_path)
+    decision = evaluate_reconciled_authority(tmp_path, change_dir(tmp_path), CHANGE_ID, BATCH_ID)
+    assert decision.issue_gaps == ()
+    assert decision.open_problem_ids_by_case[CASE_API] == (ids["problem_id"],)
+
+
+def test_closed_or_non_product_terminal_produces_no_historical_link(tmp_path: Path) -> None:
+    ids = make_each_ledger_individually_replayable(tmp_path)
+    detected = _read_problem_events(tmp_path)[0]
+    assert isinstance(detected, ProblemDetectedEvent)
+    resolve_key = f"problem_resolved:{ids['problem_id']}:{BATCH_ID}:{detected.evidence_digest}"
+    resolved = ProblemResolvedEvent(
+        schema_version="1.0",
+        seq=2,
+        event_id=event_id(resolve_key),
+        idempotency_key=resolve_key,
+        ts=TS,
+        evidence_digest=detected.evidence_digest,
+        problem_id=ids["problem_id"],
+        expected_problem_version=1,
+        type="problem_resolved",
+        resolved_at=TS,
+        change_id=CHANGE_ID,
+        batch_id=BATCH_ID,
+        disposition="fixed",
+        verification_scope=["API"],
+    )
+    problem_events: list[ProblemEvent] = [detected, resolved]
+    _write_project_ledger(tmp_path, problem_events)
+    _write_problems_projection(tmp_path, problem_events)
+    decision = evaluate_reconciled_authority(tmp_path, change_dir(tmp_path), CHANGE_ID, BATCH_ID)
+    assert decision.issue_gaps == ()
+    assert decision.open_problem_ids_by_case == {}
+
+
+def test_non_product_classification_produces_no_historical_link(tmp_path: Path) -> None:
+    ids = make_each_ledger_individually_replayable(tmp_path)
+    detected = _read_problem_events(tmp_path)[0]
+    assert isinstance(detected, ProblemDetectedEvent)
+    evidence_refs = [ids["occ_id"]]
+    evidence_digest = _evidence_refs_digest(evidence_refs)
+    confirm_key = f"review:confirm_assessment:{ids['problem_id']}:1:{evidence_digest}"
+    confirmed = ProblemAssessmentConfirmedEvent(
+        schema_version="1.0",
+        seq=2,
+        event_id=event_id(confirm_key),
+        idempotency_key=confirm_key,
+        ts=TS,
+        evidence_digest=evidence_digest,
+        problem_id=ids["problem_id"],
+        expected_problem_version=1,
+        type="problem_assessment_confirmed",
+        classification="test_bug",
+        severity="high",
+        root_cause_hypothesis="test flake",
+        reason="reclassified",
+        evidence_refs=evidence_refs,
+    )
+    problem_events: list[ProblemEvent] = [detected, confirmed]
+    _write_project_ledger(tmp_path, problem_events)
+    _write_problems_projection(tmp_path, problem_events)
+    decision = evaluate_reconciled_authority(tmp_path, change_dir(tmp_path), CHANGE_ID, BATCH_ID)
+    assert decision.issue_gaps == ()
+    assert decision.open_problem_ids_by_case == {}
+
+
+def test_canonical_fingerprint_deduplicates_open_problem_ids(tmp_path: Path) -> None:
+    """Two same-case occurrences of one problem emit a single canonical ID."""
+    change = _change_dir(tmp_path)
+    change.mkdir(parents=True)
+    _write_json(change / FAILURE_SOURCE, _failure_payload())
+    digest_b1, _, _ = _seed_manifest_tree(change)
+    empty_obs = ObservationDocument(
+        schema_version="1.0",
+        change_id=CHANGE_ID,
+        batch_id=BATCH_ID,
+        observations=[],
+    )
+    _write_json(change / OBSERVATIONS_SOURCE, empty_obs.model_dump(mode="json"))
+    c_digest_b1 = candidate_document_digest(
+        IssueCandidateDocument(
+            schema_version="1.0",
+            change_id=CHANGE_ID,
+            batch_id=BATCH_ID,
+            evidence_bundle_digest=digest_b1,
+            candidates=[],
+        )
+    )
+    obs_a = _make_observation_for(batch_id=BATCH_B0, case_id=CASE_API, signature="dedup-a")
+    obs_b = _make_observation_for(batch_id=BATCH_B0, case_id=CASE_API, signature="dedup-b")
+    cand_a = _candidate_for(obs_a, candidate_id="CAND-A", symptom="dedup-shared")
+    # Second occurrence intentionally reuses cand_a's fingerprint surface via same symptom
+    # but a distinct candidate digest from a different observation set — link to same problem.
+    cand_b = _candidate_for(obs_b, candidate_id="CAND-B", symptom="dedup-shared")
+    digest_b0 = "sha256:" + "e" * 64
+    c_digest_b0 = "sha256:" + "f" * 64
+    occ_a_event, occ_a, pid_a, _ = _occurrence_event_for(
+        candidate=cand_a, batch_id=BATCH_B0, evidence_digest=digest_b0, seq=4
+    )
+    # Force second occurrence onto the same problem_id as the first (fingerprint match).
+    occ_b_event, occ_b, pid_b, _ = _occurrence_event_for(
+        candidate=cand_b, batch_id=BATCH_B0, evidence_digest=digest_b0, seq=5
+    )
+    assert pid_b == pid_a  # same fingerprint inputs → same problem
+    occ_b_event = occ_b_event.model_copy(
+        update={
+            "occurrence": occ_b_event.occurrence.model_copy(update={"problem_id": pid_a}),
+            "seq": 5,
+        }
+    )
+    change_events: list[ChangeIssueEvent] = [
+        _obs_recorded_for(obs_a, seq=1),
+        _obs_recorded_for(obs_b, seq=2),
+        _analysis_completed_for(
+            batch_id=BATCH_B0,
+            evidence_digest=digest_b0,
+            candidate_digest=c_digest_b0,
+            candidate_count=2,
+            seq=3,
+        ),
+        occ_a_event.model_copy(update={"seq": 4}),
+        occ_b_event,
+        _analysis_completed_for(
+            batch_id=BATCH_ID,
+            evidence_digest=digest_b1,
+            candidate_digest=c_digest_b1,
+            candidate_count=0,
+            seq=6,
+        ),
+    ]
+    _write_ledger(change, change_events)
+    _write_snapshot_from_events(change, change_events)
+    _write_reconcile_status(
+        change,
+        schema_version="2.0",
+        status="completed",
+        evidence_bundle_digest=digest_b1,
+        candidate_digest=c_digest_b1,
+        occurrence_count=0,
+    )
+    detected = _problem_detected_for(
+        candidate=cand_a,
+        occ_id=occ_a,
+        pid=pid_a,
+        batch_id=BATCH_B0,
+        evidence_digest=digest_b0,
+        seq=1,
+    )
+    link_key = f"problem_occurrence_linked:{pid_a}:{occ_b}"
+    linked = ProblemOccurrenceLinkedEvent(
+        schema_version="1.0",
+        seq=2,
+        event_id=event_id(link_key),
+        idempotency_key=link_key,
+        ts=TS,
+        evidence_digest=digest_b0,
+        problem_id=pid_a,
+        expected_problem_version=1,
+        type="problem_occurrence_linked",
+        occurrence_id=occ_b,
+        change_id=CHANGE_ID,
+        batch_id=BATCH_B0,
+    )
+    _write_project_ledger(tmp_path, [detected, linked])
+    _write_problems_projection(tmp_path, [detected, linked])
+    decision = evaluate_reconciled_authority(tmp_path, change, CHANGE_ID, BATCH_ID)
+    assert decision.issue_gaps == ()
+    assert decision.open_problem_ids_by_case[CASE_API] == (pid_a,)
+
+
+def test_open_problem_ids_emitted_in_lexical_order(tmp_path: Path) -> None:
+    change = _change_dir(tmp_path)
+    change.mkdir(parents=True)
+    _write_json(change / FAILURE_SOURCE, _failure_payload())
+    digest_b1, _, _ = _seed_manifest_tree(change)
+    empty_obs = ObservationDocument(
+        schema_version="1.0",
+        change_id=CHANGE_ID,
+        batch_id=BATCH_ID,
+        observations=[],
+    )
+    _write_json(change / OBSERVATIONS_SOURCE, empty_obs.model_dump(mode="json"))
+    c_digest_b1 = candidate_document_digest(
+        IssueCandidateDocument(
+            schema_version="1.0",
+            change_id=CHANGE_ID,
+            batch_id=BATCH_ID,
+            evidence_bundle_digest=digest_b1,
+            candidates=[],
+        )
+    )
+    obs_a = _make_observation_for(batch_id=BATCH_B0, case_id=CASE_API, signature="order-a")
+    obs_b = _make_observation_for(batch_id=BATCH_B0, case_id=CASE_API, signature="order-b")
+    cand_a = _candidate_for(obs_a, candidate_id="CAND-A", symptom="order-a")
+    cand_b = _candidate_for(
+        obs_b,
+        candidate_id="CAND-B",
+        symptom="order-b",
+        surface_value="GET /api/v1/other",
+    )
+    digest_b0 = "sha256:" + "e" * 64
+    c_digest_b0 = "sha256:" + "f" * 64
+    occ_a_event, occ_a, pid_a, _ = _occurrence_event_for(
+        candidate=cand_a, batch_id=BATCH_B0, evidence_digest=digest_b0, seq=4
+    )
+    occ_b_event, occ_b, pid_b, _ = _occurrence_event_for(
+        candidate=cand_b, batch_id=BATCH_B0, evidence_digest=digest_b0, seq=5
+    )
+    change_events: list[ChangeIssueEvent] = [
+        _obs_recorded_for(obs_a, seq=1),
+        _obs_recorded_for(obs_b, seq=2),
+        _analysis_completed_for(
+            batch_id=BATCH_B0,
+            evidence_digest=digest_b0,
+            candidate_digest=c_digest_b0,
+            candidate_count=2,
+            seq=3,
+        ),
+        occ_a_event.model_copy(update={"seq": 4}),
+        occ_b_event.model_copy(update={"seq": 5}),
+        _analysis_completed_for(
+            batch_id=BATCH_ID,
+            evidence_digest=digest_b1,
+            candidate_digest=c_digest_b1,
+            candidate_count=0,
+            seq=6,
+        ),
+    ]
+    _write_ledger(change, change_events)
+    _write_snapshot_from_events(change, change_events)
+    _write_reconcile_status(
+        change,
+        schema_version="2.0",
+        status="completed",
+        evidence_bundle_digest=digest_b1,
+        candidate_digest=c_digest_b1,
+        occurrence_count=0,
+    )
+    detected_a = _problem_detected_for(
+        candidate=cand_a,
+        occ_id=occ_a,
+        pid=pid_a,
+        batch_id=BATCH_B0,
+        evidence_digest=digest_b0,
+        seq=1,
+    )
+    detected_b = _problem_detected_for(
+        candidate=cand_b,
+        occ_id=occ_b,
+        pid=pid_b,
+        batch_id=BATCH_B0,
+        evidence_digest=digest_b0,
+        seq=2,
+    )
+    _write_project_ledger(tmp_path, [detected_a, detected_b])
+    _write_problems_projection(tmp_path, [detected_a, detected_b])
+    decision = evaluate_reconciled_authority(tmp_path, change, CHANGE_ID, BATCH_ID)
+    assert decision.issue_gaps == ()
+    assert decision.open_problem_ids_by_case[CASE_API] == tuple(sorted((pid_a, pid_b)))
+
+
+def test_alias_cycle_and_missing_target_fail_historical_authority(tmp_path: Path) -> None:
+    ids = make_each_ledger_individually_replayable(tmp_path)
+    detected = _read_problem_events(tmp_path)[0]
+    assert isinstance(detected, ProblemDetectedEvent)
+    merge = _problem_merged_event(
+        problem_id=ids["problem_id"],
+        target_problem_id="PROB-missing-target",
+        evidence_refs=[ids["occ_id"]],
+    )
+    problem_events: list[ProblemEvent] = [detected, merge]
+    _write_project_ledger(tmp_path, problem_events)
+    _write_problems_projection(tmp_path, problem_events)
+    decision = evaluate_reconciled_authority(tmp_path, change_dir(tmp_path), CHANGE_ID, BATCH_ID)
+    assert decision.open_problem_ids_by_case == {}
+    assert [gap.detail for gap in decision.issue_gaps] == ["reason=problem_occurrence_mismatch"]
+
+
+def test_recovery_keeps_independent_problems_snapshot_project_gap(authority_tree: Path) -> None:
+    project_root = _project_root(authority_tree)
+    (project_root / "qa" / "issues").mkdir(parents=True, exist_ok=True)
+    (project_root / PROJECT_PROBLEMS_SOURCE).write_text("{not-json", encoding="utf-8")
+    decision = evaluate_reconciled_authority(
+        project_root,
+        authority_tree,
+        CHANGE_ID,
+        BATCH_ID,
+    )
+    assert decision.open_problem_ids_by_case == {}
+    assert len(decision.issue_gaps) == 1
+    assert decision.issue_gaps[0].code == "issue_analysis_failed"
+    assert len(decision.project_gaps) == 1
+    assert decision.project_gaps[0].code == "problems_snapshot_missing"
+    assert decision.project_gaps[0].detail == "reason=malformed"
+    assert decision.project_gaps[0].batch_id == BATCH_ID
+
+
+def test_recovery_missing_problems_projection_is_independent_project_gap(
+    authority_tree: Path,
+) -> None:
+    project_root = _project_root(authority_tree)
+    (project_root / "qa" / "issues").mkdir(parents=True, exist_ok=True)
+    # Present empty project ledger so missing problems is non-genesis.
+    _write_project_ledger(project_root, [])
+    decision = evaluate_reconciled_authority(
+        project_root,
+        authority_tree,
+        CHANGE_ID,
+        BATCH_ID,
+    )
+    assert decision.open_problem_ids_by_case == {}
+    assert len(decision.issue_gaps) == 1
+    assert decision.issue_gaps[0].code == "issue_analysis_failed"
+    assert len(decision.project_gaps) == 1
+    assert decision.project_gaps[0].code == "problems_snapshot_missing"
+    assert decision.project_gaps[0].detail == "reason=missing"
