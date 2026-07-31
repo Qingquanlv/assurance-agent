@@ -40,7 +40,7 @@ from assurance_agent.artifacts.models import (
     ImprovementOutboxEntry,
     ObservationDocument,
     QaYaml,
-    QualityGateResult,
+    QualityGateResultDocument,
     QualityReport,
     PlanReview,
     PlanReviewAuthoring,
@@ -198,7 +198,7 @@ REGISTRY: list[ArtifactSpec] = [
     ArtifactSpec(
         artifact_type="quality_gate_result",
         pattern="inspect/quality-gate-result.json",
-        model=QualityGateResult,
+        model=QualityGateResultDocument,
         compat="versioned",
     ),
     ArtifactSpec(

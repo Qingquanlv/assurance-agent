@@ -257,3 +257,100 @@ def test_validate_rejects_v2_semantic_violation(change_dir: Path) -> None:
 
     assert report.ok is False
     assert report.results[0].artifact_type == "trace_projection"
+
+
+VALID_QUALITY_V1 = {
+    "schema_version": "1.0",
+    "change_id": "CH-V1",
+    "batch_id": "b1",
+    "dimensions": {
+        "functional": {
+            "status": "PASS",
+            "api": {"total": 1, "passed": 1, "failed": 0},
+            "e2e": {"total": 0, "passed": 0, "failed": 0},
+        },
+        "coverage": {
+            "status": "PASS",
+            "available": True,
+            "line_coverage": 85.0,
+            "branch_coverage": 70.0,
+            "threshold": {"line": 70, "branch": 60},
+        },
+    },
+    "final_status": "PASS",
+}
+
+VALID_QUALITY_V2 = {
+    "schema_version": "2.0",
+    "change_id": "CH-V2",
+    "batch_id": "b1",
+    "dimensions": {
+        "functional": {
+            "status": "PASS",
+            "api": {"total": 1, "passed": 1, "failed": 0},
+            "e2e": {"total": 0, "passed": 0, "failed": 0},
+        },
+        "coverage": {
+            "status": "PASS",
+            "available": True,
+            "line_coverage": 85.0,
+            "branch_coverage": 70.0,
+            "threshold": {"line": 70, "branch": 60},
+            "evidence": {
+                "kind": "sufficiency",
+                "report": {
+                    "schema_version": "2.0",
+                    "source_projection_digest": "a" * 64,
+                    "source_policy_digest": "b" * 64,
+                    "semantics": "evidence_sufficiency/v2",
+                    "require_current_batch": True,
+                    "as_of": "2026-07-30T12:00:00Z",
+                    "recency_hours": 72,
+                    "verdicts": [
+                        {
+                            "case_id": "TC_API_001",
+                            "sufficient": True,
+                            "missing_kinds": [],
+                            "reason_codes": [],
+                            "execution_state": "fresh",
+                        }
+                    ],
+                },
+            },
+        },
+    },
+    "final_status": "PASS",
+}
+
+
+def test_validate_accepts_quality_gate_v1_change_tree(tmp_path: Path) -> None:
+    change_dir = tmp_path / "qa" / "changes" / "CH-V1"
+    change_dir.mkdir(parents=True)
+    write(change_dir, "inspect/quality-gate-result.json", json.dumps(VALID_QUALITY_V1))
+
+    report = validate_change(change_dir, artifact="inspect/quality-gate-result.json")
+
+    assert report.ok is True
+    assert report.results[0].artifact_type == "quality_gate_result"
+
+
+def test_validate_accepts_quality_gate_v2_change_tree(tmp_path: Path) -> None:
+    change_dir = tmp_path / "qa" / "changes" / "CH-V2"
+    change_dir.mkdir(parents=True)
+    write(change_dir, "inspect/quality-gate-result.json", json.dumps(VALID_QUALITY_V2))
+
+    report = validate_change(change_dir, artifact="inspect/quality-gate-result.json")
+
+    assert report.ok is True
+    assert report.results[0].artifact_type == "quality_gate_result"
+
+
+def test_validate_rejects_unknown_quality_schema_version(change_dir: Path) -> None:
+    payload = {**VALID_QUALITY_V1, "schema_version": "99", "change_id": "CH-1"}
+    write(change_dir, "inspect/quality-gate-result.json", json.dumps(payload))
+
+    report = validate_change(change_dir, artifact="inspect/quality-gate-result.json")
+
+    assert report.ok is False
+    assert report.results[0].artifact_type == "quality_gate_result"
+    assert report.results[0].errors

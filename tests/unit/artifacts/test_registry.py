@@ -106,6 +106,7 @@ def test_compat_grades_match_spec_4a() -> None:
     assert grades["workflow_state"] == "versioned"
     assert grades["execution_manifest"] == "versioned"
     assert grades["quality_report"] == "versioned"
+    assert grades["quality_gate_result"] == "versioned"
     assert grades["observation_document"] == "versioned"
     assert grades["issue_evidence_manifest"] == "versioned"
     assert grades["issue_candidate_document"] == "must_compat"
@@ -121,6 +122,15 @@ def test_trace_projection_registry_uses_document_wrapper() -> None:
     spec = match_artifact("inspect/trace-projection.json")
     assert spec is not None
     assert spec.model is TraceProjectionDocument
+    assert spec.compat == "versioned"
+
+
+def test_quality_gate_result_registry_uses_document_wrapper() -> None:
+    from assurance_agent.artifacts.models.inspect import QualityGateResultDocument
+
+    spec = match_artifact("inspect/quality-gate-result.json")
+    assert spec is not None
+    assert spec.model is QualityGateResultDocument
     assert spec.compat == "versioned"
 
 
