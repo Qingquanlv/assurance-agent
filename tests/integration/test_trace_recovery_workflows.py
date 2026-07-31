@@ -75,6 +75,7 @@ class _InjectedCrash(BaseException):
     down the child workspace before resume.
     """
 
+
 T0 = datetime(2026, 7, 31, 12, 0, 0, tzinfo=timezone.utc)
 CHANGE_ID = auth.CHANGE_ID
 B0_BATCH = auth.BATCH_ID
@@ -943,9 +944,7 @@ def test_materializer_fold_failure_publishes_nothing(
         ("issue-reconcile-workflow", "sync_recovery"),
     ],
 )
-def test_healing_rerun_at_b1_after_prior_terminal(
-    tmp_path: Path, parent: str, prior_outcome: str
-) -> None:
+def test_healing_rerun_at_b1_after_prior_terminal(tmp_path: Path, parent: str, prior_outcome: str) -> None:
     project, change, _owner, first = _run_terminal_path(
         tmp_path,
         parent=parent,  # type: ignore[arg-type]
@@ -1088,11 +1087,8 @@ def _pre_task13_independent_issue_schema(schema: Any) -> Any:
         graph = graphs[graph_id]
         nodes = {
             nid: (
-                node.model_copy(
-                    update={"recover": node.recover.model_copy(update={"continue_to": "END"})}
-                )
-                if node.recover is not None
-                and node.recover.continue_to == "materialize-trace-projection"
+                node.model_copy(update={"recover": node.recover.model_copy(update={"continue_to": "END"})})
+                if node.recover is not None and node.recover.continue_to == "materialize-trace-projection"
                 else node
             )
             for nid, node in graph.nodes.items()
@@ -1129,9 +1125,7 @@ def _mutated_live_contracts(contracts: ExecutionContractCatalog) -> ExecutionCon
 
 
 def _mutated_live_catalog(catalog: IngestArtifactCatalog) -> IngestArtifactCatalog:
-    symbol, spec = next(
-        (name, art) for name, art in catalog.artifacts.items() if art.kind == "path_only"
-    )
+    symbol, spec = next((name, art) for name, art in catalog.artifacts.items() if art.kind == "path_only")
     drifted = spec.model_copy(update={"path": spec.path + ".clarification10-drift"})
     return catalog.model_copy(update={"artifacts": {**catalog.artifacts, symbol: drifted}})
 
@@ -1445,16 +1439,17 @@ def test_identity_drift_triad_resumes_via_load_pinned(
     assert final.terminal == "completed"
     if drift_kind == "graph":
         # Pre-Task13 pinned topology: resume must not inject a materializer node.
-        assert "materialize-trace-projection" not in resolved.compiled.schema.graphs[
-            "issue-analyze-workflow"
-        ].nodes
+        assert (
+            "materialize-trace-projection"
+            not in resolved.compiled.schema.graphs["issue-analyze-workflow"].nodes
+        )
         assert _materializer_success_count(change, invocation_id) == 0
     else:
         # Contract/catalog-only drift may retain the post-Task13 materializer node; do not
         # claim identity drift suppresses its later legitimate execution under current handlers.
-        assert "materialize-trace-projection" in resolved.compiled.schema.graphs[
-            "issue-analyze-workflow"
-        ].nodes
+        assert (
+            "materialize-trace-projection" in resolved.compiled.schema.graphs["issue-analyze-workflow"].nodes
+        )
 
 
 def test_pre_task13_resume_does_not_upgrade_v1_or_inject_materializer(
@@ -1630,9 +1625,7 @@ def test_nested_incompatible_parent_epoch_leaves_child_unchanged(
     pending_before = {
         tid
         for tid, t in before.tasks.items()
-        if t.node_id == "materialize-trace-projection"
-        and t.status == "succeeded"
-        and not t.outputs_committed
+        if t.node_id == "materialize-trace-projection" and t.status == "succeeded" and not t.outputs_committed
     }
     assert pending_before
     compiled, contracts = _compile_packaged(assurance_entrypoint=True, inspect_retry="cli-transient")
@@ -1652,9 +1645,7 @@ def test_nested_incompatible_parent_epoch_leaves_child_unchanged(
     pending_after = {
         tid
         for tid, t in after.tasks.items()
-        if t.node_id == "materialize-trace-projection"
-        and t.status == "succeeded"
-        and not t.outputs_committed
+        if t.node_id == "materialize-trace-projection" and t.status == "succeeded" and not t.outputs_committed
     }
     assert pending_after == pending_before
 
@@ -1662,37 +1653,73 @@ def test_nested_incompatible_parent_epoch_leaves_child_unchanged(
 def test_nested_compatible_parent_run_child_keeps_child_owned_recovery(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Compatible parent resume drives ``run_child``, which performs child-owned recovery."""
+    from assurance_agent.workflow.graph.workspace import TaskWorkspace, WorkspaceBackend
+
     project, change, parent_id, child_id = _assurance_child_pending_commit_seam(tmp_path, monkeypatch)
+    child_before = project_invocation(change, child_id)
+    assert child_before.terminal is None
+    pending_before = {
+        tid
+        for tid, t in child_before.tasks.items()
+        if t.node_id == "materialize-trace-projection" and t.status == "succeeded" and not t.outputs_committed
+    }
+    assert pending_before
     events_before = read_events_strict(change)
     child_commits_before = sum(
         1
         for e in events_before
         if e.get("type") == "superstep_committed" and e.get("invocation_id") == child_id
     )
-    compiled, contracts = _compile_packaged(assurance_entrypoint=True, inspect_retry="cli-transient")
-    # Repair the child-owned seam first so parent ``run_child`` inherits a completed child.
-    child_runtime = _build_runtime(
-        project,
-        compiled,
-        contracts,
-        analyzer=ScriptedAnalyzer(succeed_on_attempt=1),
-        ops=_assurance_stub_ops(),
-        stub_assurance_subgraphs=True,
-    )
-    child_result = child_runtime.resume(child_id)
-    assert child_result.exit_code == 0, child_result.reason
-    assert project_invocation(change, child_id).terminal == "completed"
-    events_after_child = read_events_strict(change)
-    assert (
-        sum(
-            1
-            for e in events_after_child
-            if e.get("type") == "superstep_committed" and e.get("invocation_id") == child_id
-        )
-        > child_commits_before
+    assert not any(
+        t.node_id == "materialize-trace-projection" and t.outputs_committed
+        for t in child_before.tasks.values()
     )
 
+    # Process-kill seam: task workspace survives (cleanup already disabled in the
+    # seam helper). Parent retry would otherwise ``rmtree`` that root in
+    # ``WorkspaceBackend.create`` and make the child's frozen write-set
+    # inapplicable. Reuse the surviving root so production ``run_child`` can
+    # drive child recovery against the same sandbox.
+    orig_create = WorkspaceBackend.create
+
+    def create_reusing_surviving_root(
+        self: WorkspaceBackend,
+        *,
+        task_id: str,
+        base_tree_id: str,
+        store: Any,
+        side_effect_free: bool = False,
+        claims: Any = None,
+        declared_reads_only: bool = False,
+        skill_name: str | None = None,
+        initialize_git: bool = True,
+    ) -> TaskWorkspace:
+        root = self._tasks_root / task_id  # noqa: SLF001
+        if root.exists():
+            return TaskWorkspace.from_materialized_root(
+                task_id,
+                root,
+                base_tree_id,
+                materialized_tree_id=base_tree_id,
+            )
+        return orig_create(
+            self,
+            task_id=task_id,
+            base_tree_id=base_tree_id,
+            store=store,
+            side_effect_free=side_effect_free,
+            claims=claims,
+            declared_reads_only=declared_reads_only,
+            skill_name=skill_name,
+            initialize_git=initialize_git,
+        )
+
+    monkeypatch.setattr(WorkspaceBackend, "create", create_reusing_surviving_root)
+
+    # Do NOT resume the child directly: parent must drive recovery via run_child.
     _abandon_running_parent_tasks(change, parent_id)
+    compiled, contracts = _compile_packaged(assurance_entrypoint=True, inspect_retry="cli-transient")
     parent_runtime = _build_runtime(
         project,
         compiled,
@@ -1703,21 +1730,30 @@ def test_nested_compatible_parent_run_child_keeps_child_owned_recovery(
     )
     result = parent_runtime.resume(parent_id)
     assert result.exit_code == 0, result.reason
+
     parent = project_invocation(change, parent_id)
     child = project_invocation(change, child_id)
     assert parent.terminal == "completed"
     assert child.terminal == "completed"
     assert _materializer_success_count(change, child_id) == 1
+    assert any(
+        t.node_id == "materialize-trace-projection" and t.outputs_committed for t in child.tasks.values()
+    )
     assert all(t.node_id != "materialize-trace-projection" for t in parent.tasks.values())
+
     events = read_events_strict(change)
-    # Child-owned recovery/commit events stay on the child invocation id.
+    child_commits_after = sum(
+        1 for e in events if e.get("type") == "superstep_committed" and e.get("invocation_id") == child_id
+    )
+    assert child_commits_after > child_commits_before
+    # Child-owned recovery/commit events stay on the child invocation id; parent
+    # never hosts a materializer task (so it cannot claim those commits).
     assert all(
-        e.get("invocation_id") != parent_id
-        or "materialize-trace-projection" not in json.dumps(e)
+        e.get("invocation_id") != parent_id or "materialize-trace-projection" not in json.dumps(e)
         for e in events
         if e.get("type") == "superstep_committed"
     )
-    # Parent retry's run_child must target the same child invocation (inherited pin).
+    # Parent retry's run_child targets the same child invocation (same task_id → same child id).
     assert any(
         e.get("type") == "graph_invocation_started"
         and e.get("invocation_id") == child_id

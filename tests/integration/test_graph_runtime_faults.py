@@ -1167,46 +1167,86 @@ def test_pinned_request_served_exactly_on_resume(tmp_path: Path) -> None:
 def test_pinned_model_schema_mismatch_refuses_before_recovery(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Real ``validate_ingest_model_map`` fail-closed on stale model_schema_digest."""
+    """Pinned stale ``model_schema_digest`` fails closed on production pinned-load resume."""
     from assurance_agent.workflow.driver import runtime_factory as factory_mod
+    from assurance_agent.workflow.driver.runtime_factory import build_graph_runtime
+    from assurance_agent.workflow.graph.agent_api import AgentInvoker
+    from assurance_agent.workflow.graph.compiler import _compile_with_catalog
     from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
     from assurance_agent.workflow.graph.runtime import GraphDefinitionChanged
-    from tests.integration._graph_fault_worker import _build
+    from tests.integration._graph_fault_worker import FakeClock
+    from tests.integration import test_trace_recovery_workflows as trace_wf
 
-    project = _project(tmp_path)
-    sync = tmp_path / "sync" / "model-epoch"
-    invocation_id = _spawn_and_kill(project, sync, point="sibling_success_before_commit", schema="siblings")
-    change = project / "qa" / "changes" / "CH-1"
-    marker_before = sorted(p.relative_to(project) for p in (project / "tests").rglob("*.py"))
+    class _Never(AgentInvoker):
+        def invoke(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            raise AssertionError("adapter must not be called")
 
-    runtime, _compiled, _change, _scheduler = _build(project, "siblings")
     catalog = validate_catalog_runtime()
-    stale_name = next(
-        name for name, art in catalog.artifacts.items() if art.kind == "file_ingest" and art.model
-    )
-    stale_catalog = catalog.model_copy(
-        update={
-            "artifacts": {
-                **catalog.artifacts,
-                stale_name: catalog.artifacts[stale_name].model_copy(
-                    update={"model_schema_digest": "0" * 64}
-                ),
-            }
-        }
-    )
+    stale_digest = "0" * 64
+    stale_artifacts = {
+        name: (
+            art.model_copy(update={"model_schema_digest": stale_digest})
+            if art.kind == "file_ingest" and art.model
+            else art
+        )
+        for name, art in catalog.artifacts.items()
+    }
+    stale_catalog = catalog.model_copy(update={"artifacts": stale_artifacts})
+    assert stale_catalog.digest != catalog.digest
+    # Direct proof: real validate_ingest_model_map refuses the stale catalog.
     with pytest.raises(GraphDefinitionChanged, match="ingest model schema digest mismatch"):
         factory_mod.validate_ingest_model_map(stale_catalog)
 
-    # Live class digest diverges from every pinned model_schema_digest in the catalog.
-    monkeypatch.setattr(factory_mod, "model_schema_digest", lambda _model_id: "0" * 64)
-    original = runtime._definition_resolver  # noqa: SLF001
+    # Packaged pin (not synthetic siblings): load_pinned → compile_historical requires
+    # the assurance replay surface. Stale model digests change only the catalog identity.
+    project = tmp_path / "proj"
+    change = trace_wf._seed_b0_completed(project)
+    trace_wf._advance_inputs_to_b1(change, seed_completed_analysis=False)
+    live_compiled, live_contracts, _live_catalog = trace_wf._compile_live_packaged()
+    pinned_compiled = _compile_with_catalog(
+        live_compiled.schema,
+        contracts=live_contracts,
+        ingest_catalog=stale_catalog,
+        activation_errors=(),
+    )
+    assert pinned_compiled.digest == live_compiled.digest
+    assert pinned_compiled.ingest_catalog_digest == stale_catalog.digest
+    assert pinned_compiled.ingest_catalog_digest != live_compiled.ingest_catalog_digest
 
-    def spy(request):  # noqa: ANN001
-        factory_mod.validate_ingest_model_map(catalog)
-        return original(request)
+    # Start-only: allow validate_ingest_model_map to accept the stale pin.
+    monkeypatch.setattr(factory_mod, "model_schema_digest", lambda _model_id: stale_digest)
+    invocation_id = trace_wf._start_issue_analyze_pending_commit(
+        project,
+        pinned_compiled,
+        live_contracts,
+        stale_catalog,
+        analyzer=trace_wf.ScriptedAnalyzer(succeed_on_attempt=None),
+        ops={},
+        monkeypatch=monkeypatch,
+    )
+    projection = project_invocation(change, invocation_id)
+    assert projection.terminal is None
+    assert projection.ingest_catalog_digest == stale_catalog.digest
+    assert not any(e.get("type") == "superstep_committed" for e in read_events_strict(change))
+    inspect_before = sorted(
+        (p.relative_to(change), p.read_bytes()) for p in (change / "inspect").rglob("*") if p.is_file()
+    )
 
-    runtime._definition_resolver = spy  # noqa: SLF001
+    # Resume through production build_graph_runtime: catalog identity differs →
+    # load_pinned_execution_definition → validate_ingest_model_map(pinned.ingest_catalog).
+    monkeypatch.undo()
+    bundle = build_graph_runtime(
+        project_root=project,
+        change_id=trace_wf.CHANGE_ID,
+        adapter=_Never(),
+        clock=FakeClock(),
+    )
+    assert bundle.compiled.ingest_catalog_digest != projection.ingest_catalog_digest
     with pytest.raises(GraphDefinitionChanged, match="ingest model schema digest mismatch"):
-        runtime.resume(invocation_id)
-    assert sorted(p.relative_to(project) for p in (project / "tests").rglob("*.py")) == marker_before
+        bundle.runtime.resume(invocation_id)
     assert project_invocation(change, invocation_id).terminal is None
+    assert not any(e.get("type") == "superstep_committed" for e in read_events_strict(change))
+    inspect_after = sorted(
+        (p.relative_to(change), p.read_bytes()) for p in (change / "inspect").rglob("*") if p.is_file()
+    )
+    assert inspect_after == inspect_before
