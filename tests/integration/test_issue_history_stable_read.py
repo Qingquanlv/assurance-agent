@@ -26,6 +26,7 @@ from assurance_agent.evidence.issue_identity import (
 from assurance_agent.workflow.issues.events import (
     CHANGE_ISSUE_EVENT_ADAPTER,
     PROBLEM_EVENT_ADAPTER,
+    ChangeIssueEvent,
 )
 from assurance_agent.workflow.issues.history import (
     IssueHistoryConflict,
@@ -107,7 +108,7 @@ def _ce(
     ts: str,
     idempotency_key: str,
     **extra: object,
-) -> object:
+) -> ChangeIssueEvent:
     return CHANGE_ISSUE_EVENT_ADAPTER.validate_python(
         {
             "schema_version": "1.0",
