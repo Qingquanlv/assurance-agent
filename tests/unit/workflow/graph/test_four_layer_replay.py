@@ -229,3 +229,34 @@ def test_assert_layer_selection_evidence_allows_missing_events() -> None:
         LayerSelectionFact(layer="e2e", selected=False),
     )
     assert_layer_selection_evidence((), assurance_invocation_id=assurance_inv, selections=selections)
+
+
+def test_bind_replay_definitions_exposes_selected_layers_and_topologies(tmp_path: Path) -> None:
+    from assurance_agent.workflow.graph.replay_binding import bind_replay_definitions
+    from assurance_agent.workflow.graph.workspace import TreeStore
+
+    fixture = _build_fixture(tmp_path, include_e2e=False)
+    params = {**_PARAMS, "run_mode": "full", "test_types": ["api", "fuzz"]}
+    lines = fixture.events_path.read_text(encoding="utf-8").splitlines()
+    rewritten: list[str] = []
+    for line in lines:
+        payload = json.loads(line)
+        if payload.get("type") == "graph_invocation_started" and payload.get("invocation_id") in {
+            _ROOT_INV,
+            fixture.assurance_inv,
+        }:
+            payload["params"] = params
+        rewritten.append(json.dumps(payload, sort_keys=True))
+    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+
+    binding = bind_replay_definitions(
+        change_dir=fixture.change_dir,
+        change_id=_CHANGE_ID,
+        root_invocation_id=_ROOT_INV,
+        expected_entrypoint=_ENTRYPOINT,
+        store=TreeStore(fixture.change_dir),
+    )
+    assert binding.selected_layers == frozenset({"api", "fuzz"})
+    assert binding.layer_topologies["api"].status == "wired"
+    assert binding.layer_topologies["fuzz"].status == "legacy_unwired"
+    assert binding.layer_topologies["e2e"].status == "wired"

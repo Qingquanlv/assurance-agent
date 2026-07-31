@@ -369,6 +369,8 @@ class ReplayBindingFixture:
         mech_task = f"{structural_path}:mechanical-plan-checks"
         mech_attempt = f"{mech_task}-a1"
         mech_digest = hashlib.sha256(checks_bytes).hexdigest()
+        mech_contract = self.compiled.contract_digests["operation:verify-plan-mechanical"]  # type: ignore[attr-defined]
+        gate_contract = self.compiled.contract_digests["builtin:gate"]  # type: ignore[attr-defined]
         self.append(
             SuperstepPlannedEvent(
                 type="superstep_planned",
@@ -390,7 +392,7 @@ class ReplayBindingFixture:
                 node_id="mechanical-plan-checks",
                 input_sha256="in-mech",
                 graph_digest=self.compiled.digest,  # type: ignore[attr-defined]
-                contract_digest="mechanical-contract-v1",
+                contract_digest=mech_contract,
                 attempt_number=1,
                 lease_expires_at="2026-07-31T00:00:00Z",
                 started_at="2026-07-31T00:00:00Z",
@@ -454,7 +456,7 @@ class ReplayBindingFixture:
                 node_id="review-gate",
                 input_sha256="in-gate",
                 graph_digest=self.compiled.digest,  # type: ignore[attr-defined]
-                contract_digest="gate-contract-v1",
+                contract_digest=gate_contract,
                 attempt_number=1,
                 lease_expires_at="2026-07-31T00:00:00Z",
                 started_at="2026-07-31T00:00:00Z",
@@ -787,8 +789,15 @@ def test_bind_replay_definitions_happy_path(tmp_path: Path) -> None:
     )
     assert binding.root_invocation_id == _ROOT_INV
     assert binding.assurance_invocation_id == fixture.assurance_inv
-    assert "api" in binding.layer_bindings
-    assert "e2e" in binding.layer_bindings
+    assert binding.event_schema_version == 4
+    assert binding.layer_topologies["api"].status == "wired"
+    assert binding.layer_topologies["e2e"].status == "wired"
+    assert binding.layer_topologies["fuzz"].status == "legacy_unwired"
+    assert binding.layer_topologies["performance"].status == "legacy_unwired"
+    assert binding.gate_semantics_compatible is True
+    assert binding.profile_compatibility["api"] is True
+    assert "api" in binding.selected_layers
+    assert "e2e" in binding.selected_layers
 
 
 def test_bind_replay_definitions_missing_root(tmp_path: Path) -> None:
@@ -886,17 +895,20 @@ def test_bind_replay_definitions_gate_semantics_mismatch(tmp_path: Path) -> None
     mutated = []
     for line in lines:
         payload = json.loads(line)
-        if payload.get("type") == "graph_invocation_started" and payload.get("invocation_id") == _ROOT_INV:
+        if payload.get("type") == "graph_invocation_started":
             payload["gate_semantics_digest"] = "0" * 64
         mutated.append(json.dumps(payload, sort_keys=True))
     fixture.events_path.write_text("\n".join(mutated) + "\n", encoding="utf-8")
+    binding = bind_replay_definitions(
+        change_dir=fixture.change_dir,
+        change_id=_CHANGE_ID,
+        root_invocation_id=_ROOT_INV,
+        expected_entrypoint=_ENTRYPOINT,
+    )
+    assert binding.gate_semantics_compatible is False
+    assert binding.layer_topologies["fuzz"].status == "legacy_unwired"
     with pytest.raises(ReplayBindingError, match="gate_semantics_mismatch"):
-        bind_replay_definitions(
-            change_dir=fixture.change_dir,
-            change_id=_CHANGE_ID,
-            root_invocation_id=_ROOT_INV,
-            expected_entrypoint=_ENTRYPOINT,
-        )
+        recover_layer_inputs(binding, layer="api", change_dir=fixture.change_dir)
 
 
 def test_bind_replay_definitions_assurance_profile_mismatch(tmp_path: Path) -> None:
@@ -905,17 +917,20 @@ def test_bind_replay_definitions_assurance_profile_mismatch(tmp_path: Path) -> N
     mutated = []
     for line in lines:
         payload = json.loads(line)
-        if payload.get("type") == "graph_invocation_started" and payload.get("invocation_id") == _ROOT_INV:
+        if payload.get("type") == "graph_invocation_started":
             payload["assurance_profile_digest"] = "0" * 64
         mutated.append(json.dumps(payload, sort_keys=True))
     fixture.events_path.write_text("\n".join(mutated) + "\n", encoding="utf-8")
-    with pytest.raises(ReplayBindingError, match="assurance_profile_mismatch"):
-        bind_replay_definitions(
-            change_dir=fixture.change_dir,
-            change_id=_CHANGE_ID,
-            root_invocation_id=_ROOT_INV,
-            expected_entrypoint=_ENTRYPOINT,
-        )
+    binding = bind_replay_definitions(
+        change_dir=fixture.change_dir,
+        change_id=_CHANGE_ID,
+        root_invocation_id=_ROOT_INV,
+        expected_entrypoint=_ENTRYPOINT,
+    )
+    assert binding.profile_compatibility["api"] is False
+    assert binding.layer_topologies["fuzz"].status == "legacy_unwired"
+    with pytest.raises(ReplayBindingError, match="profile_definition_incompatible"):
+        recover_layer_inputs(binding, layer="api", change_dir=fixture.change_dir)
 
 
 def test_bind_replay_definitions_ambiguous_assurance_invocation(tmp_path: Path) -> None:
@@ -978,7 +993,10 @@ def test_recover_layer_inputs_api_applicable(tmp_path: Path) -> None:
     assert recovered.review is not None
     assert recovered.checks.model.layer == "api"
     assert recovered.data_knowledge is not None
-    assert recovered.mechanical_execution_contract_digest == "mechanical-contract-v1"
+    assert (
+        recovered.mechanical_execution_contract_digest
+        == fixture.compiled.contract_digests["operation:verify-plan-mechanical"]  # type: ignore[attr-defined]
+    )
     assert isinstance(recovered.baseline, FrozenGateReport)
 
 
@@ -1048,7 +1066,9 @@ def test_recover_layer_inputs_ignores_uncommitted_gate(tmp_path: Path) -> None:
         expected_entrypoint=_ENTRYPOINT,
     )
     recovered = recover_layer_inputs(binding, layer="api", change_dir=fixture.change_dir)
-    assert recovered.gate_attempt.contract_digest == "gate-contract-v1"
+    assert (
+        recovered.gate_attempt.contract_digest == fixture.compiled.contract_digests["builtin:gate"]  # type: ignore[attr-defined]
+    )
 
 
 def test_recover_layer_inputs_last_committed_gate_wins(tmp_path: Path) -> None:
@@ -1072,7 +1092,7 @@ def test_recover_layer_inputs_last_committed_gate_wins(tmp_path: Path) -> None:
     assert recovered.gate_report["verdict"] == "pass"
 
 
-def test_recover_layer_inputs_tree_missing_falls_back_to_active_disk(tmp_path: Path) -> None:
+def test_recover_layer_inputs_tree_missing_never_uses_active_disk(tmp_path: Path) -> None:
     fixture = _build_fixture(tmp_path, include_e2e=False)
     binding = bind_replay_definitions(
         change_dir=fixture.change_dir,
@@ -1109,8 +1129,8 @@ def test_recover_layer_inputs_tree_missing_falls_back_to_active_disk(tmp_path: P
         return TreeStore.read_bytes(store, tree_id, logical_path)
 
     store.read_bytes = _missing_tree_only  # type: ignore[method-assign]
-    recovered = recover_layer_inputs(binding, layer="api", change_dir=fixture.change_dir, store=store)
-    assert recovered.checks.raw_bytes == checks_bytes
+    with pytest.raises(ReplayBindingError, match="missing_evidence"):
+        recover_layer_inputs(binding, layer="api", change_dir=fixture.change_dir, store=store)
 
 
 def test_recover_layer_inputs_digest_drift_rejected(tmp_path: Path) -> None:
@@ -1184,7 +1204,7 @@ def test_bind_replay_definitions_non_terminal_root_rejected(tmp_path: Path) -> N
         )
 
 
-def test_bind_replay_definitions_missing_branch_wiring(tmp_path: Path) -> None:
+def test_bind_replay_definitions_missing_branch_wiring_defers_to_recovery(tmp_path: Path) -> None:
     fixture = _build_fixture(tmp_path)
     lines = [json.loads(line) for line in fixture.events_path.read_text(encoding="utf-8").splitlines()]
     filtered = [
@@ -1198,16 +1218,18 @@ def test_bind_replay_definitions_missing_branch_wiring(tmp_path: Path) -> None:
         payload["seq"] = seq
         rewritten.append(json.dumps(payload, sort_keys=True))
     fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+    binding = bind_replay_definitions(
+        change_dir=fixture.change_dir,
+        change_id=_CHANGE_ID,
+        root_invocation_id=_ROOT_INV,
+        expected_entrypoint=_ENTRYPOINT,
+    )
+    assert binding.layer_topologies["api"].status == "wired"
     with pytest.raises(ReplayBindingError, match="ambiguous_graph_wiring"):
-        bind_replay_definitions(
-            change_dir=fixture.change_dir,
-            change_id=_CHANGE_ID,
-            root_invocation_id=_ROOT_INV,
-            expected_entrypoint=_ENTRYPOINT,
-        )
+        recover_layer_inputs(binding, layer="api", change_dir=fixture.change_dir)
 
 
-def test_bind_replay_definitions_ambiguous_branch_wiring(tmp_path: Path) -> None:
+def test_bind_replay_definitions_ambiguous_branch_wiring_defers_to_recovery(tmp_path: Path) -> None:
     fixture = _build_fixture(tmp_path)
     assurance_path = "main/assurance/assurance"
     api_branch_path = f"{assurance_path}/api/api-branch"
@@ -1222,13 +1244,14 @@ def test_bind_replay_definitions_ambiguous_branch_wiring(tmp_path: Path) -> None
         parent_task_id=f"{assurance_path}:api",
     )
     fixture.append(duplicate.model_dump(mode="json"))
+    binding = bind_replay_definitions(
+        change_dir=fixture.change_dir,
+        change_id=_CHANGE_ID,
+        root_invocation_id=_ROOT_INV,
+        expected_entrypoint=_ENTRYPOINT,
+    )
     with pytest.raises(ReplayBindingError, match="ambiguous_graph_wiring"):
-        bind_replay_definitions(
-            change_dir=fixture.change_dir,
-            change_id=_CHANGE_ID,
-            root_invocation_id=_ROOT_INV,
-            expected_entrypoint=_ENTRYPOINT,
-        )
+        recover_layer_inputs(binding, layer="api", change_dir=fixture.change_dir)
 
 
 def test_recover_layer_inputs_baseline_route_mismatch(
@@ -1387,7 +1410,9 @@ def test_recover_layer_inputs_ignores_failed_abandoned_gate_attempts(tmp_path: P
     )
     recovered = recover_layer_inputs(binding, layer="api", change_dir=fixture.change_dir)
     assert recovered.gate_report["verdict"] == "pass"
-    assert recovered.gate_attempt.contract_digest == "gate-contract-v1"
+    assert (
+        recovered.gate_attempt.contract_digest == fixture.compiled.contract_digests["builtin:gate"]  # type: ignore[attr-defined]
+    )
 
 
 def test_frozen_definition_digests_match_runtime() -> None:
@@ -1768,3 +1793,268 @@ def test_bind_replay_definitions_maps_structural_compile_failure(
             expected_entrypoint=_ENTRYPOINT,
         )
     assert exc_info.value.reason_code == "pinned_schema_compile_failed"
+
+
+def _stage_profile_snapshot(change_dir: Path, digest: str, data: bytes) -> None:
+    path = change_dir / ".graph-runtime" / "assurance-profiles" / f"{digest}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+
+_V5_PROFILE_SPY_CALLS: list[str] = []
+
+
+def _v5_profile_spy(layer: str) -> object:
+    _V5_PROFILE_SPY_CALLS.append(layer)
+    raise AssertionError("v5 topology binding must not call get_layer_assurance_profile")
+
+
+def test_bind_replay_definitions_v5_missing_profile_snapshot(tmp_path: Path) -> None:
+    from assurance_agent.verification.profile_manifest import assurance_profile_bytes
+
+    fixture = _build_fixture(tmp_path)
+    profile_bytes = assurance_profile_bytes()
+    digest = hashlib.sha256(profile_bytes).hexdigest()
+    lines = fixture.events_path.read_text(encoding="utf-8").splitlines()
+    rewritten = []
+    for line in lines:
+        payload = json.loads(line)
+        if payload.get("type") == "graph_invocation_started":
+            payload["event_schema_version"] = 5
+            payload["assurance_profile_digest"] = digest
+        rewritten.append(json.dumps(payload, sort_keys=True))
+    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+    with pytest.raises(ReplayBindingError, match="profile_snapshot_missing"):
+        bind_replay_definitions(
+            change_dir=fixture.change_dir,
+            change_id=_CHANGE_ID,
+            root_invocation_id=_ROOT_INV,
+            expected_entrypoint=_ENTRYPOINT,
+        )
+
+
+def test_bind_replay_definitions_v5_tampered_profile_snapshot(tmp_path: Path) -> None:
+    from assurance_agent.verification.profile_manifest import assurance_profile_bytes
+
+    fixture = _build_fixture(tmp_path)
+    profile_bytes = assurance_profile_bytes()
+    digest = hashlib.sha256(profile_bytes).hexdigest()
+    _stage_profile_snapshot(fixture.change_dir, digest, profile_bytes[:-2] + b"x\n")
+    lines = fixture.events_path.read_text(encoding="utf-8").splitlines()
+    rewritten = []
+    for line in lines:
+        payload = json.loads(line)
+        if payload.get("type") == "graph_invocation_started":
+            payload["event_schema_version"] = 5
+            payload["assurance_profile_digest"] = digest
+        rewritten.append(json.dumps(payload, sort_keys=True))
+    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+    with pytest.raises(ReplayBindingError, match="profile_snapshot_digest_mismatch"):
+        bind_replay_definitions(
+            change_dir=fixture.change_dir,
+            change_id=_CHANGE_ID,
+            root_invocation_id=_ROOT_INV,
+            expected_entrypoint=_ENTRYPOINT,
+        )
+
+
+def test_v5_topology_specs_ignore_current_profile_mutations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from assurance_agent.verification.profile_manifest import (
+        assurance_profile_bytes,
+        parse_assurance_profile_snapshot,
+    )
+    from assurance_agent.workflow.graph.replay_schema import LayerTopologySpec
+
+    fixture = _build_fixture(tmp_path)
+    profile_bytes = assurance_profile_bytes()
+    digest = hashlib.sha256(profile_bytes).hexdigest()
+    _stage_profile_snapshot(fixture.change_dir, digest, profile_bytes)
+    lines = fixture.events_path.read_text(encoding="utf-8").splitlines()
+    rewritten = []
+    for line in lines:
+        payload = json.loads(line)
+        if payload.get("type") == "graph_invocation_started":
+            payload["event_schema_version"] = 5
+            payload["assurance_profile_digest"] = digest
+        rewritten.append(json.dumps(payload, sort_keys=True))
+    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+
+    first = bind_replay_definitions(
+        change_dir=fixture.change_dir,
+        change_id=_CHANGE_ID,
+        root_invocation_id=_ROOT_INV,
+        expected_entrypoint=_ENTRYPOINT,
+    )
+    first_specs = first.layer_topology_specs
+    first_statuses = {layer: topo.status for layer, topo in first.layer_topologies.items()}
+
+    _V5_PROFILE_SPY_CALLS.clear()
+    monkeypatch.setattr(
+        "assurance_agent.workflow.graph.replay_schema.get_layer_assurance_profile",
+        _v5_profile_spy,
+    )
+    second = bind_replay_definitions(
+        change_dir=fixture.change_dir,
+        change_id=_CHANGE_ID,
+        root_invocation_id=_ROOT_INV,
+        expected_entrypoint=_ENTRYPOINT,
+    )
+    assert second.layer_topology_specs == first_specs
+    assert {layer: topo.status for layer, topo in second.layer_topologies.items()} == first_statuses
+    assert all(isinstance(spec, LayerTopologySpec) for spec in second.layer_topology_specs)
+    assert _V5_PROFILE_SPY_CALLS == []
+
+    manifest = parse_assurance_profile_snapshot(profile_bytes)
+    mutated_profiles = []
+    for entry in manifest.profiles:
+        if entry.layer in {"fuzz", "performance"}:
+            mutated_profiles.append(
+                entry.model_copy(
+                    update={
+                        "plan_artifacts": ("plans/mutated.md",),
+                        "review_artifact": "review/mutated-review.json",
+                        "review_alias": "mutated_review",
+                        "checks_artifact": "review/mutated-checks.json",
+                        "gate_id": f"{entry.layer}-mutated-gate",
+                    }
+                )
+            )
+        else:
+            mutated_profiles.append(entry)
+    mutated_manifest = manifest.model_copy(update={"profiles": tuple(mutated_profiles)})
+    mutated_bytes = (
+        json.dumps(
+            mutated_manifest.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+    monkeypatch.setattr(
+        "assurance_agent.workflow.graph.replay_binding.assurance_profile_bytes",
+        lambda: mutated_bytes,
+    )
+    third = bind_replay_definitions(
+        change_dir=fixture.change_dir,
+        change_id=_CHANGE_ID,
+        root_invocation_id=_ROOT_INV,
+        expected_entrypoint=_ENTRYPOINT,
+    )
+    assert third.layer_topology_specs == first_specs
+    assert third.profile_compatibility["fuzz"] is False
+    assert third.profile_compatibility["performance"] is False
+    assert third.profile_compatibility["api"] is True
+
+
+def test_recover_rejects_foreign_definition_epoch_child(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path, include_e2e=False)
+    lines = [json.loads(line) for line in fixture.events_path.read_text(encoding="utf-8").splitlines()]
+    rewritten = []
+    for payload in lines:
+        if payload.get("type") == "graph_invocation_started" and payload.get("graph_id") == "api-branch":
+            payload = dict(payload)
+            payload["assurance_profile_digest"] = "f" * 64
+        rewritten.append(json.dumps(payload, sort_keys=True))
+    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+    binding = bind_replay_definitions(
+        change_dir=fixture.change_dir,
+        change_id=_CHANGE_ID,
+        root_invocation_id=_ROOT_INV,
+        expected_entrypoint=_ENTRYPOINT,
+    )
+    with pytest.raises(ReplayBindingError, match="ambiguous_graph_wiring"):
+        recover_layer_inputs(binding, layer="api", change_dir=fixture.change_dir)
+
+
+def test_recover_ignores_active_file_mutations(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path, include_e2e=False)
+    binding = bind_replay_definitions(
+        change_dir=fixture.change_dir,
+        change_id=_CHANGE_ID,
+        root_invocation_id=_ROOT_INV,
+        expected_entrypoint=_ENTRYPOINT,
+    )
+    before = recover_layer_inputs(binding, layer="api", change_dir=fixture.change_dir)
+    profile = get_layer_assurance_profile("api")
+    (fixture.change_dir / profile.checks_artifact).parent.mkdir(parents=True, exist_ok=True)
+    (fixture.change_dir / profile.checks_artifact).write_text('{"mutated":true}\n', encoding="utf-8")
+    (fixture.change_dir / profile.review_artifact).write_text('{"mutated":true}\n', encoding="utf-8")
+    (fixture.project / ".aa" / "data-knowledge.yaml").write_text("mutated: true\n", encoding="utf-8")
+    (fixture.project / ".aa" / "policy.yaml").write_text("schema_version: '1'\n", encoding="utf-8")
+    after = recover_layer_inputs(binding, layer="api", change_dir=fixture.change_dir)
+    assert after.checks.raw_bytes == before.checks.raw_bytes
+    assert after.review is not None and before.review is not None
+    assert after.review.raw_bytes == before.review.raw_bytes
+    assert after.data_knowledge is not None and before.data_knowledge is not None
+    assert after.data_knowledge.raw_bytes == before.data_knowledge.raw_bytes
+    assert after.gate_report == before.gate_report
+
+
+def test_recover_requires_pinned_contract_digest(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path, include_e2e=False)
+    lines = [json.loads(line) for line in fixture.events_path.read_text(encoding="utf-8").splitlines()]
+    rewritten = []
+    for payload in lines:
+        if payload.get("type") == "task_attempt_started" and str(payload.get("node_id")) == "review-gate":
+            payload = dict(payload)
+            payload["contract_digest"] = "0" * 64
+        rewritten.append(json.dumps(payload, sort_keys=True))
+    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+    binding = bind_replay_definitions(
+        change_dir=fixture.change_dir,
+        change_id=_CHANGE_ID,
+        root_invocation_id=_ROOT_INV,
+        expected_entrypoint=_ENTRYPOINT,
+    )
+    with pytest.raises(ReplayBindingError, match="no_successful_gate_evidence"):
+        recover_layer_inputs(binding, layer="api", change_dir=fixture.change_dir)
+
+
+def test_v4_activated_specialty_without_snapshot_is_partial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from assurance_agent.workflow.graph import replay_binding as replay_mod
+    from assurance_agent.workflow.graph.replay_schema import (
+        PinnedLayerTopology,
+        classify_pinned_layer_topology,
+    )
+
+    fixture = _build_fixture(tmp_path, include_e2e=False)
+    original = classify_pinned_layer_topology
+
+    def classify_force_wired(schema, topology_spec):  # type: ignore[no-untyped-def]
+        topology = original(schema, topology_spec)
+        if topology_spec.layer == "fuzz":
+            return PinnedLayerTopology(
+                layer="fuzz",
+                status="wired",
+                assurance_node_id="fuzz",
+                branch_graph_id="fuzz-branch",
+                cycle_call_node_id="review-cycle",
+                cycle_graph_id="fuzz-plan-review-cycle",
+                applicability_node_id="applicability",
+                reviewer_node_id="review",
+                mechanical_node_id="mechanical-plan-checks",
+                gate_node_id="review-gate",
+                human_review_node_id="human-review",
+                knowledge_remediation_node_id="knowledge-remediation",
+                codegen_precondition_node_id="codegen-precheck",
+                codegen_node_id="codegen",
+                diagnostics=(),
+            )
+        return topology
+
+    monkeypatch.setattr(replay_mod, "classify_pinned_layer_topology", classify_force_wired)
+    binding = bind_replay_definitions(
+        change_dir=fixture.change_dir,
+        change_id=_CHANGE_ID,
+        root_invocation_id=_ROOT_INV,
+        expected_entrypoint=_ENTRYPOINT,
+    )
+    assert binding.layer_topologies["fuzz"].status == "partial"
+    assert any("without profile snapshot" in item for item in binding.layer_topologies["fuzz"].diagnostics)
+    with pytest.raises(ReplayBindingError, match="partial_assurance_wiring"):
+        recover_layer_inputs(binding, layer="fuzz", change_dir=fixture.change_dir)

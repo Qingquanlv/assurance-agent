@@ -1,4 +1,4 @@
-"""Strict historical binding for assurance replay: root, definitions, and evidence."""
+"""Strict historical binding for assurance replay: definitions first, then wired evidence."""
 
 from __future__ import annotations
 
@@ -12,16 +12,21 @@ from typing import Literal, cast
 import yaml
 from pydantic import ValidationError
 
+from assurance_agent.artifacts.models.assurance import LAYER_NAMES
 from assurance_agent.artifacts.models.data_knowledge import DataKnowledge
 from assurance_agent.artifacts.models.plan_checks import PlanCheckDocument
 from assurance_agent.artifacts.models.policy import Policy
 from assurance_agent.artifacts.models.review import PlanReview
 from assurance_agent.artifacts.policy import PolicyError, load_policy_snapshot_bytes
-from assurance_agent.change_location import archive_root
 from assurance_agent.knowledge.capabilities import plan_review_route
 from assurance_agent.verification.gate_state import plan_assurance_state
-from assurance_agent.verification.profile_manifest import assurance_profile_digest
-from assurance_agent.verification.profiles import LayerAssuranceProfile, get_layer_assurance_profile
+from assurance_agent.verification.profile_manifest import (
+    AssuranceProfileManifest,
+    AssuranceProfileManifestEntry,
+    assurance_profile_bytes,
+    assurance_profile_snapshot_relpath,
+    parse_assurance_profile_snapshot,
+)
 from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
 from assurance_agent.workflow.core.graph_events import (
     GRAPH_EVENT_ADAPTER,
@@ -40,18 +45,22 @@ from assurance_agent.workflow.graph.definition_pinning import (
 )
 from assurance_agent.workflow.graph.models import CompiledWorkflow
 from assurance_agent.workflow.graph.replay_schema import (
+    LayerTopologySpec,
+    PinnedLayerTopology,
+    classify_pinned_layer_topology,
     validate_params_only_expression,
-    validate_replayable_assurance_schema,
 )
 from assurance_agent.workflow.graph.schema_v2 import WorkflowSchemaV2
-from assurance_agent.workflow.orchestration.dsl import Scope, evaluate, parse_expression
 from assurance_agent.workflow.graph.workspace import TreeStore
+from assurance_agent.workflow.orchestration.dsl import Scope, evaluate, parse_expression
 from assurance_agent.workflow.orchestration.gate_semantics import gate_semantics_digest
 from assurance_agent.workflow.orchestration.plan_check_replay import (
     BoundArtifact,
+    ProfileExecutableCompatibilityError,
     bind_json_artifact,
     bind_yaml_artifact,
     evaluate_bound_plan_gate,
+    resolve_executable_layer_profile,
 )
 
 ReplayReasonCode = Literal[
@@ -70,6 +79,10 @@ ReplayReasonCode = Literal[
     "policy_origin_mismatch",
     "gate_semantics_mismatch",
     "assurance_profile_mismatch",
+    "profile_snapshot_missing",
+    "profile_snapshot_digest_mismatch",
+    "profile_definition_incompatible",
+    "partial_assurance_wiring",
     "ambiguous_assurance_invocation",
     "ambiguous_graph_wiring",
     "selection_evidence_mismatch",
@@ -84,11 +97,8 @@ ReplayReasonCode = Literal[
     "baseline_route_mismatch",
 ]
 
-_LAYER_CYCLE_GRAPH = {"api": "api-plan-cycle", "e2e": "e2e-plan-cycle"}
-_WIRED_LAYERS = frozenset(_LAYER_CYCLE_GRAPH)
 _ASSURANCE_BRANCH_NODES = ("api", "e2e", "fuzz", "performance")
-_MECHANICAL_NODE = "mechanical-plan-checks"
-_GATE_NODE = "review-gate"
+_SPECIALTY_LAYERS = frozenset({"fuzz", "performance"})
 
 
 class ReplayBindingError(Exception):
@@ -134,6 +144,7 @@ class FrozenDefinitionBinding:
     change_id: str
     root_invocation_id: str
     assurance_invocation_id: str
+    event_schema_version: int
     graph_digest: str
     gate_definition_source: Literal["pinned_schema"]
     baseline_policy_digest: str
@@ -144,7 +155,12 @@ class FrozenDefinitionBinding:
     compiled: CompiledWorkflow
     policy: Policy
     assurance_params: dict[str, object]
-    layer_bindings: dict[str, LayerInvocationBinding]
+    selected_layers: frozenset[str]
+    profile_manifest: AssuranceProfileManifest | None
+    layer_topology_specs: tuple[LayerTopologySpec, ...]
+    profile_compatibility: dict[str, bool]
+    gate_semantics_compatible: bool
+    layer_topologies: dict[str, PinnedLayerTopology]
     sequenced_events: tuple[SequencedEvent, ...]
 
 
@@ -265,7 +281,7 @@ def bind_replay_definitions(
     schema_root: Path | None = None,
 ) -> FrozenDefinitionBinding:
     """Bind replay to the caller-pinned root invocation and pinned definitions."""
-    del store
+    del store, schema_root
     try:
         raw_events = read_events_strict(change_dir)
     except LedgerIntegrityError as exc:
@@ -283,29 +299,34 @@ def bind_replay_definitions(
             f"root invocation {root_invocation_id} has no terminal event",
         )
 
-    del schema_root
     compiled, policy = _load_pinned_definitions(change_dir, root_started)
-    schema_errors = validate_replayable_assurance_schema(compiled.schema)
-    if schema_errors:
-        raise ReplayBindingError(
-            "ambiguous_graph_wiring",
-            "; ".join(schema_errors),
-        )
-
     assurance = _bind_assurance_invocation(
         sequenced,
         root_started=root_started,
         compiled=compiled,
     )
-    layer_bindings = _bind_layer_invocations(
+    selections = evaluate_layer_selection(compiled.schema, assurance.params)
+    assert_layer_selection_evidence(
         sequenced,
-        assurance=assurance,
-        compiled=compiled,
+        assurance_invocation_id=assurance.invocation_id,
+        selections=selections,
     )
+    selected_layers = frozenset(fact.layer for fact in selections if fact.selected)
+
+    gate_semantics_compatible = root_started.gate_semantics_digest == gate_semantics_digest()
+    profile_manifest, layer_topology_specs, profile_compatibility, layer_topologies = (
+        _bind_profile_and_topologies(
+            change_dir=change_dir,
+            root_started=root_started,
+            schema=compiled.schema,
+        )
+    )
+
     return FrozenDefinitionBinding(
         change_id=change_id,
         root_invocation_id=root_invocation_id,
         assurance_invocation_id=assurance.invocation_id,
+        event_schema_version=root_started.event_schema_version,
         graph_digest=root_started.graph_digest,
         gate_definition_source="pinned_schema",
         baseline_policy_digest=root_started.policy_digest,
@@ -316,7 +337,12 @@ def bind_replay_definitions(
         compiled=compiled,
         policy=policy,
         assurance_params=dict(assurance.params),
-        layer_bindings=layer_bindings,
+        selected_layers=selected_layers,
+        profile_manifest=profile_manifest,
+        layer_topology_specs=layer_topology_specs,
+        profile_compatibility=profile_compatibility,
+        gate_semantics_compatible=gate_semantics_compatible,
+        layer_topologies=layer_topologies,
         sequenced_events=tuple(sequenced),
     )
 
@@ -329,19 +355,60 @@ def recover_layer_inputs(
     store: TreeStore | None = None,
 ) -> BoundLayerReplayInputs:
     """Recover committed gate/mechanical evidence and calibrate the frozen baseline."""
-    if layer not in _WIRED_LAYERS:
-        raise ReplayBindingError("invalid_evidence", f"layer {layer!r} is not wired for replay binding")
-    layer_binding = binding.layer_bindings.get(layer)
-    if layer_binding is None:
-        raise ReplayBindingError("ambiguous_graph_wiring", f"no bound invocation for layer {layer!r}")
+    topology = binding.layer_topologies.get(layer)
+    if topology is None:
+        raise ReplayBindingError("ambiguous_graph_wiring", f"no pinned topology for layer {layer!r}")
+    if topology.status == "partial":
+        raise ReplayBindingError("partial_assurance_wiring", "selected layer has partial pinned topology")
+    if topology.status != "wired":
+        raise ReplayBindingError("ambiguous_graph_wiring", "evidence recovery requires wired topology")
+    if not binding.profile_compatibility.get(layer, False):
+        raise ReplayBindingError("profile_definition_incompatible", "pinned profile cannot be executed")
+    if not binding.gate_semantics_compatible:
+        raise ReplayBindingError("gate_semantics_mismatch", "pinned gate evaluator is incompatible")
+    return _recover_wired_layer(binding, topology, change_dir=change_dir, store=store)
 
-    profile = get_layer_assurance_profile(layer)
-    object_store = store or TreeStore(change_dir)
-    gate_attempt = _select_gate_attempt(binding.sequenced_events, layer_binding.invocation_id, profile)
-    mechanical_attempt = _select_mechanical_attempt(
+
+def _recover_wired_layer(
+    binding: FrozenDefinitionBinding,
+    topology: PinnedLayerTopology,
+    *,
+    change_dir: Path,
+    store: TreeStore | None,
+) -> BoundLayerReplayInputs:
+    layer = topology.layer
+    spec = _spec_for_layer(binding, layer)
+    root_started = _root_started_event(binding)
+    assurance = _assurance_started_event(binding)
+    layer_binding = _bind_layer_cycle_invocation(
         binding.sequenced_events,
+        root_started=root_started,
+        assurance=assurance,
+        topology=topology,
+        layer=layer,
+    )
+
+    object_store = store or TreeStore(change_dir)
+    gate_node_id = topology.gate_node_id
+    mechanical_node_id = topology.mechanical_node_id
+    if gate_node_id is None or mechanical_node_id is None:
+        raise ReplayBindingError(
+            "ambiguous_graph_wiring", f"wired topology missing node ids for layer {layer}"
+        )
+
+    gate_attempt = _select_gate_attempt(
+        binding,
         layer_binding.invocation_id,
-        profile,
+        gate_node_id=gate_node_id,
+        gate_id=spec.gate_id,
+        cycle_graph_id=topology.cycle_graph_id or layer_binding.graph_id,
+    )
+    mechanical_attempt = _select_mechanical_attempt(
+        binding,
+        layer_binding.invocation_id,
+        mechanical_node_id=mechanical_node_id,
+        checks_artifact=spec.checks_artifact,
+        cycle_graph_id=topology.cycle_graph_id or layer_binding.graph_id,
         gate_attempt=gate_attempt,
     )
     gate_report = gate_attempt.gate_report
@@ -349,22 +416,22 @@ def recover_layer_inputs(
         raise ReplayBindingError("gate_evidence_unbound", f"missing gate report for layer {layer}")
 
     checks = _recover_checks_artifact(
-        profile=profile,
+        checks_artifact=spec.checks_artifact,
         gate_report=gate_report,
         gate_tree_id=gate_attempt.target_tree_id,
         change_dir=change_dir,
         store=object_store,
-        binding=binding,
+        layer=layer,
     )
     applicable = _is_applicable(checks_doc=checks.model)
     review, data_knowledge = _recover_optional_artifacts(
-        profile=profile,
+        review_artifact=spec.review_artifact,
         gate_report=gate_report,
         gate_tree_id=gate_attempt.target_tree_id,
         applicable=applicable,
         change_dir=change_dir,
         store=object_store,
-        binding=binding,
+        layer=layer,
     )
     if applicable:
         if review is None:
@@ -376,6 +443,15 @@ def recover_layer_inputs(
     else:
         review = None
         data_knowledge = None
+
+    pinned_entry = _pinned_manifest_entry(binding, layer)
+    try:
+        profile = resolve_executable_layer_profile(
+            pinned_entry=pinned_entry,
+            recorded_gate_semantics_digest=binding.gate_semantics_digest,
+        )
+    except ProfileExecutableCompatibilityError as exc:
+        raise ReplayBindingError(cast(ReplayReasonCode, exc.reason_code), exc.message) from exc
 
     state = plan_assurance_state(
         checks.model.model_dump(mode="json"),
@@ -401,7 +477,7 @@ def recover_layer_inputs(
         change_id=binding.change_id,
         params=layer_binding.params,
     )
-    _assert_baseline_gate(gate_report, baseline, profile)
+    _assert_baseline_gate(gate_report, baseline, gate_id=spec.gate_id)
     baseline_route = _route_from_baseline(baseline)
     recorded_route = plan_review_route({"gate": gate_report})
     if baseline_route != recorded_route:
@@ -535,19 +611,153 @@ def _load_pinned_definitions(
         _projection_from_started(started),
     ):
         raise ReplayBindingError("policy_origin_mismatch", "definition binding is not replayable")
-    current_semantics = gate_semantics_digest()
-    if started.gate_semantics_digest != current_semantics:
-        raise ReplayBindingError(
-            "gate_semantics_mismatch",
-            f"gate semantics digest mismatch: recorded {started.gate_semantics_digest}, current {current_semantics}",
-        )
-    current_profile = assurance_profile_digest()
-    if started.assurance_profile_digest != current_profile:
-        raise ReplayBindingError(
-            "assurance_profile_mismatch",
-            f"assurance profile digest mismatch: recorded {started.assurance_profile_digest}, current {current_profile}",
-        )
     return compiled, snap.policy
+
+
+def _bind_profile_and_topologies(
+    *,
+    change_dir: Path,
+    root_started: GraphInvocationStartedEvent,
+    schema: WorkflowSchemaV2,
+) -> tuple[
+    AssuranceProfileManifest | None,
+    tuple[LayerTopologySpec, ...],
+    dict[str, bool],
+    dict[str, PinnedLayerTopology],
+]:
+    version = root_started.event_schema_version
+    if version >= 5:
+        manifest = _load_v5_profile_snapshot(change_dir, root_started.assurance_profile_digest)
+        specs = _specs_from_manifest(manifest)
+        topologies = {spec.layer: classify_pinned_layer_topology(schema, spec) for spec in specs}
+        compatibility = _profile_compatibility_from_manifest(manifest)
+        return manifest, specs, compatibility, topologies
+
+    current_bytes = assurance_profile_bytes()
+    current_digest = hashlib.sha256(current_bytes).hexdigest()
+    digest_compatible = root_started.assurance_profile_digest == current_digest
+    if digest_compatible:
+        manifest = parse_assurance_profile_snapshot(current_bytes)
+        specs = _specs_from_manifest(manifest)
+        topologies = {spec.layer: classify_pinned_layer_topology(schema, spec) for spec in specs}
+        topologies = _force_specialty_incomplete_without_snapshot(topologies)
+        compatibility = {layer: True for layer in LAYER_NAMES}
+        return manifest, specs, compatibility, topologies
+
+    specs = _construct_provisional_specs()
+    topologies = {spec.layer: classify_pinned_layer_topology(schema, spec) for spec in specs}
+    topologies = _force_specialty_incomplete_without_snapshot(topologies)
+    compatibility = {layer: False for layer in LAYER_NAMES}
+    return None, specs, compatibility, topologies
+
+
+def _force_specialty_incomplete_without_snapshot(
+    topologies: dict[str, PinnedLayerTopology],
+) -> dict[str, PinnedLayerTopology]:
+    updated = dict(topologies)
+    for layer in _SPECIALTY_LAYERS:
+        topology = updated.get(layer)
+        if topology is None:
+            continue
+        if topology.status == "wired":
+            updated[layer] = PinnedLayerTopology(
+                layer=topology.layer,
+                status="partial",
+                assurance_node_id=topology.assurance_node_id,
+                branch_graph_id=topology.branch_graph_id,
+                cycle_call_node_id=topology.cycle_call_node_id,
+                cycle_graph_id=topology.cycle_graph_id,
+                applicability_node_id=topology.applicability_node_id,
+                reviewer_node_id=topology.reviewer_node_id,
+                mechanical_node_id=topology.mechanical_node_id,
+                gate_node_id=topology.gate_node_id,
+                human_review_node_id=topology.human_review_node_id,
+                knowledge_remediation_node_id=topology.knowledge_remediation_node_id,
+                codegen_precondition_node_id=topology.codegen_precondition_node_id,
+                codegen_node_id=topology.codegen_node_id,
+                diagnostics=(
+                    *topology.diagnostics,
+                    f"layer:{layer}: complete activation without profile snapshot is incomplete",
+                ),
+            )
+    return updated
+
+
+def _load_v5_profile_snapshot(change_dir: Path, digest: str) -> AssuranceProfileManifest:
+    path = change_dir / assurance_profile_snapshot_relpath(digest)
+    if not path.exists():
+        raise ReplayBindingError(
+            "profile_snapshot_missing",
+            f"assurance profile snapshot missing at {path}",
+        )
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise ReplayBindingError(
+            "profile_snapshot_missing",
+            f"cannot read assurance profile snapshot at {path}: {exc}",
+        ) from exc
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != digest:
+        raise ReplayBindingError(
+            "profile_snapshot_digest_mismatch",
+            f"assurance profile snapshot digest mismatch for {path}",
+        )
+    try:
+        return parse_assurance_profile_snapshot(data)
+    except ValueError as exc:
+        raise ReplayBindingError("profile_snapshot_digest_mismatch", str(exc)) from exc
+
+
+def _specs_from_manifest(manifest: AssuranceProfileManifest) -> tuple[LayerTopologySpec, ...]:
+    return tuple(
+        LayerTopologySpec(
+            layer=entry.layer,
+            plan_artifacts=entry.plan_artifacts,
+            review_artifact=entry.review_artifact,
+            review_alias=entry.review_alias,
+            checks_artifact=entry.checks_artifact,
+            gate_id=entry.gate_id,
+        )
+        for entry in manifest.profiles
+    )
+
+
+def _construct_provisional_specs() -> tuple[LayerTopologySpec, ...]:
+    return tuple(
+        LayerTopologySpec(
+            layer=layer,
+            plan_artifacts=(),
+            review_artifact=(
+                "review/plan-review.json" if layer == "e2e" else f"review/{layer}-plan-review.json"
+            ),
+            review_alias="plan_review" if layer == "e2e" else f"{layer}_plan_review",
+            checks_artifact=f"review/{layer}-plan-checks.json",
+            gate_id=f"{layer}-plan-review-gate",
+        )
+        for layer in LAYER_NAMES
+    )
+
+
+def _profile_compatibility_from_manifest(manifest: AssuranceProfileManifest) -> dict[str, bool]:
+    current = parse_assurance_profile_snapshot(assurance_profile_bytes())
+    current_by_layer = {entry.layer: entry for entry in current.profiles}
+    result: dict[str, bool] = {}
+    for entry in manifest.profiles:
+        current_entry = current_by_layer.get(entry.layer)
+        result[entry.layer] = current_entry is not None and _entry_canonical_bytes(
+            entry
+        ) == _entry_canonical_bytes(current_entry)
+    for layer in LAYER_NAMES:
+        result.setdefault(layer, False)
+    return result
+
+
+def _entry_canonical_bytes(entry: AssuranceProfileManifestEntry) -> bytes:
+    return (
+        json.dumps(entry.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        + "\n"
+    ).encode("utf-8")
 
 
 def _coerce_policy_origin(origin: str) -> Literal["project", "packaged_default"]:
@@ -589,10 +799,12 @@ def _bind_assurance_invocation(
     root_started: GraphInvocationStartedEvent,
     compiled: CompiledWorkflow,
 ) -> GraphInvocationStartedEvent:
+    del compiled
     root_task_id = f"{root_started.structural_path}:assurance"
     expected_path = f"{root_started.structural_path}/assurance/assurance"
     matches = _matching_started_events(
         events,
+        root_started=root_started,
         parent_invocation_id=root_started.invocation_id,
         parent_task_id=root_task_id,
         graph_id="assurance",
@@ -606,66 +818,79 @@ def _bind_assurance_invocation(
     return matches[0]
 
 
-def _bind_layer_invocations(
+def _bind_layer_cycle_invocation(
     events: Sequence[SequencedEvent],
     *,
+    root_started: GraphInvocationStartedEvent,
     assurance: GraphInvocationStartedEvent,
-    compiled: CompiledWorkflow,
-) -> dict[str, LayerInvocationBinding]:
-    bindings: dict[str, LayerInvocationBinding] = {}
-    for layer, branch_graph in (("api", "api-branch"), ("e2e", "e2e-branch")):
-        branch_task_id = f"{assurance.structural_path}:{layer}"
-        branch_path = f"{assurance.structural_path}/{layer}/{branch_graph}"
-        branch_matches = _matching_started_events(
-            events,
-            parent_invocation_id=assurance.invocation_id,
-            parent_task_id=branch_task_id,
-            graph_id=branch_graph,
-            structural_path=branch_path,
+    topology: PinnedLayerTopology,
+    layer: str,
+) -> LayerInvocationBinding:
+    if topology.assurance_node_id is None or topology.branch_graph_id is None:
+        raise ReplayBindingError(
+            "ambiguous_graph_wiring", f"wired topology missing branch identity for layer {layer}"
         )
-        if len(branch_matches) != 1:
-            raise ReplayBindingError(
-                "ambiguous_graph_wiring",
-                f"expected exactly one {branch_graph} invocation for layer {layer}, found {len(branch_matches)}",
-            )
-        branch = branch_matches[0]
-        cycle_graph = _LAYER_CYCLE_GRAPH[layer]
-        cycle_task_id = f"{branch.structural_path}:review-cycle"
-        cycle_path = f"{branch.structural_path}/review-cycle/{cycle_graph}"
-        cycle_matches = _matching_started_events(
-            events,
-            parent_invocation_id=branch.invocation_id,
-            parent_task_id=cycle_task_id,
-            graph_id=cycle_graph,
-            structural_path=cycle_path,
+    if topology.cycle_call_node_id is None or topology.cycle_graph_id is None:
+        raise ReplayBindingError(
+            "ambiguous_graph_wiring", f"wired topology missing cycle identity for layer {layer}"
         )
-        if len(cycle_matches) != 1:
-            raise ReplayBindingError(
-                "ambiguous_graph_wiring",
-                f"expected exactly one {cycle_graph} invocation for layer {layer}, found {len(cycle_matches)}",
-            )
-        cycle = cycle_matches[0]
-        bindings[layer] = LayerInvocationBinding(
-            layer=layer,
-            invocation_id=cycle.invocation_id,
-            parent_invocation_id=branch.invocation_id,
-            parent_task_id=cycle_task_id,
-            graph_id=cycle_graph,
-            structural_path=cycle.structural_path,
-            params=dict(cycle.params),
+
+    branch_task_id = f"{assurance.structural_path}:{topology.assurance_node_id}"
+    branch_path = f"{assurance.structural_path}/{topology.assurance_node_id}/{topology.branch_graph_id}"
+    branch_matches = _matching_started_events(
+        events,
+        root_started=root_started,
+        parent_invocation_id=assurance.invocation_id,
+        parent_task_id=branch_task_id,
+        graph_id=topology.branch_graph_id,
+        structural_path=branch_path,
+    )
+    if len(branch_matches) != 1:
+        raise ReplayBindingError(
+            "ambiguous_graph_wiring",
+            f"expected exactly one {topology.branch_graph_id} invocation for layer {layer}, "
+            f"found {len(branch_matches)}",
         )
-    return bindings
+    branch = branch_matches[0]
+    cycle_task_id = f"{branch.structural_path}:{topology.cycle_call_node_id}"
+    cycle_path = f"{branch.structural_path}/{topology.cycle_call_node_id}/{topology.cycle_graph_id}"
+    cycle_matches = _matching_started_events(
+        events,
+        root_started=root_started,
+        parent_invocation_id=branch.invocation_id,
+        parent_task_id=cycle_task_id,
+        graph_id=topology.cycle_graph_id,
+        structural_path=cycle_path,
+    )
+    if len(cycle_matches) != 1:
+        raise ReplayBindingError(
+            "ambiguous_graph_wiring",
+            f"expected exactly one {topology.cycle_graph_id} invocation for layer {layer}, "
+            f"found {len(cycle_matches)}",
+        )
+    cycle = cycle_matches[0]
+    return LayerInvocationBinding(
+        layer=layer,
+        invocation_id=cycle.invocation_id,
+        parent_invocation_id=branch.invocation_id,
+        parent_task_id=cycle_task_id,
+        graph_id=topology.cycle_graph_id,
+        structural_path=cycle.structural_path,
+        params=dict(cycle.params),
+    )
 
 
 def _matching_started_events(
     events: Sequence[SequencedEvent],
     *,
+    root_started: GraphInvocationStartedEvent,
     parent_invocation_id: str,
     parent_task_id: str,
     graph_id: str,
     structural_path: str,
 ) -> list[GraphInvocationStartedEvent]:
     matches: list[GraphInvocationStartedEvent] = []
+    structural_hits = 0
     for item in events:
         payload = {k: v for k, v in item.payload.items() if k not in {"seq", "ts"}}
         if payload.get("type") != "graph_invocation_started":
@@ -682,66 +907,101 @@ def _matching_started_events(
             and event.graph_id == graph_id
             and event.structural_path == structural_path
         ):
+            structural_hits += 1
+            if not _same_definition_epoch(event, root_started):
+                raise ReplayBindingError(
+                    "ambiguous_graph_wiring",
+                    f"child invocation {event.invocation_id} has a different definition epoch",
+                )
             matches.append(event)
+    if structural_hits > len(matches):
+        raise ReplayBindingError(
+            "ambiguous_graph_wiring",
+            f"structurally matching child for {graph_id} belongs to another definition epoch",
+        )
     return matches
 
 
+def _same_definition_epoch(
+    child: GraphInvocationStartedEvent,
+    root: GraphInvocationStartedEvent,
+) -> bool:
+    return (
+        child.event_schema_version == root.event_schema_version
+        and child.graph_digest == root.graph_digest
+        and child.ingest_catalog_digest == root.ingest_catalog_digest
+        and dict(child.contract_digests) == dict(root.contract_digests)
+        and child.policy_digest == root.policy_digest
+        and child.policy_origin == root.policy_origin
+        and child.gate_semantics_digest == root.gate_semantics_digest
+        and child.assurance_profile_digest == root.assurance_profile_digest
+    )
+
+
 def _select_gate_attempt(
-    events: Sequence[SequencedEvent],
+    binding: FrozenDefinitionBinding,
     invocation_id: str,
-    profile: LayerAssuranceProfile,
+    *,
+    gate_node_id: str,
+    gate_id: str,
+    cycle_graph_id: str,
 ) -> CommittedAttempt:
-    attempts = _committed_attempts(events, invocation_id)
+    attempts = _committed_attempts(binding.sequenced_events, invocation_id)
+    expected_contract = _pinned_contract_digest(binding, cycle_graph_id, gate_node_id)
     gate_attempts = [
         item
         for item in attempts
-        if item.node_id == _GATE_NODE
+        if item.node_id == gate_node_id
         and isinstance(item.gate_report, dict)
-        and item.gate_report.get("gate_id") == profile.gate_id
+        and item.gate_report.get("gate_id") == gate_id
+        and item.contract_digest == expected_contract
     ]
     if not gate_attempts:
-        raise ReplayBindingError("no_successful_gate_evidence", f"no committed gate for {profile.layer}")
-    terminal_seq = _terminal_seq(events, invocation_id)
+        raise ReplayBindingError("no_successful_gate_evidence", f"no committed gate for {gate_id}")
+    terminal_seq = _terminal_seq(binding.sequenced_events, invocation_id)
     eligible = [item for item in gate_attempts if item.commit_seq <= terminal_seq]
     if not eligible:
-        raise ReplayBindingError(
-            "gate_evidence_unbound", f"no gate attempt before terminal for {profile.layer}"
-        )
+        raise ReplayBindingError("gate_evidence_unbound", f"no gate attempt before terminal for {gate_id}")
     return eligible[-1]
 
 
 def _select_mechanical_attempt(
-    events: Sequence[SequencedEvent],
+    binding: FrozenDefinitionBinding,
     invocation_id: str,
-    profile: LayerAssuranceProfile,
     *,
+    mechanical_node_id: str,
+    checks_artifact: str,
+    cycle_graph_id: str,
     gate_attempt: CommittedAttempt,
 ) -> CommittedAttempt:
-    attempts = _committed_attempts(events, invocation_id)
+    attempts = _committed_attempts(binding.sequenced_events, invocation_id)
     gate_reads = gate_attempt.gate_report.get("reads_sha256") if gate_attempt.gate_report else None
     if not isinstance(gate_reads, dict):
         raise ReplayBindingError("gate_evidence_unbound", "gate report missing reads_sha256")
     expected_checks_digest = (
-        gate_reads.get(profile.checks_artifact)
-        or gate_reads.get(normalize_logical_path(f"change:{profile.checks_artifact}"))
-        or gate_reads.get(f"change:{profile.checks_artifact}")
+        gate_reads.get(checks_artifact)
+        or gate_reads.get(normalize_logical_path(f"change:{checks_artifact}"))
+        or gate_reads.get(f"change:{checks_artifact}")
     )
     if expected_checks_digest is None:
         raise ReplayBindingError(
-            "gate_evidence_unbound", f"gate report missing checks digest for {profile.layer}"
+            "gate_evidence_unbound", f"gate report missing checks digest for {checks_artifact}"
         )
+    expected_contract = _pinned_contract_digest(binding, cycle_graph_id, mechanical_node_id)
 
     candidates: list[CommittedAttempt] = []
     for item in attempts:
-        if item.node_id != _MECHANICAL_NODE:
+        if item.node_id != mechanical_node_id:
+            continue
+        if item.contract_digest != expected_contract:
             continue
         if item.commit_seq > gate_attempt.commit_seq:
             continue
         outputs = item.outputs_sha256 or {}
         digest = (
-            outputs.get(normalize_logical_path(f"change:{profile.checks_artifact}"))
-            or outputs.get(f"change:{profile.checks_artifact}")
-            or outputs.get(profile.checks_artifact)
+            outputs.get(normalize_logical_path(f"change:{checks_artifact}"))
+            or outputs.get(f"change:{checks_artifact}")
+            or outputs.get(checks_artifact)
         )
         if digest != expected_checks_digest:
             continue
@@ -749,9 +1009,33 @@ def _select_mechanical_attempt(
     if not candidates:
         raise ReplayBindingError(
             "mechanical_producer_unbound",
-            f"no committed mechanical producer matching gate reads for {profile.layer}",
+            f"no committed mechanical producer matching gate reads for {checks_artifact}",
         )
     return candidates[-1]
+
+
+def _pinned_contract_digest(
+    binding: FrozenDefinitionBinding,
+    cycle_graph_id: str,
+    node_id: str,
+) -> str:
+    graph = binding.compiled.schema.graphs.get(cycle_graph_id)
+    if graph is None:
+        raise ReplayBindingError(
+            "ambiguous_graph_wiring", f"missing cycle graph {cycle_graph_id!r} in pinned schema"
+        )
+    node = graph.nodes.get(node_id)
+    if node is None:
+        raise ReplayBindingError(
+            "ambiguous_graph_wiring", f"missing node {node_id!r} in pinned cycle {cycle_graph_id!r}"
+        )
+    digest = binding.compiled.contract_digests.get(node.uses)
+    if digest is None:
+        raise ReplayBindingError(
+            "ambiguous_graph_wiring",
+            f"missing pinned contract digest for {node.uses!r}",
+        )
+    return digest
 
 
 def _committed_attempts(events: Sequence[SequencedEvent], invocation_id: str) -> list[CommittedAttempt]:
@@ -831,37 +1115,34 @@ def _terminal_seq(events: Sequence[SequencedEvent], invocation_id: str) -> int:
 
 def _recover_checks_artifact(
     *,
-    profile: LayerAssuranceProfile,
+    checks_artifact: str,
     gate_report: dict[str, object],
     gate_tree_id: str,
     change_dir: Path,
     store: TreeStore,
-    binding: FrozenDefinitionBinding,
+    layer: str,
 ) -> BoundArtifact[PlanCheckDocument]:
+    del change_dir
     reads = gate_report.get("reads_sha256")
     if not isinstance(reads, dict):
         raise ReplayBindingError("gate_evidence_unbound", "gate report missing reads_sha256")
-    checks_path = normalize_logical_path(f"change:{profile.checks_artifact}")
+    checks_path = normalize_logical_path(f"change:{checks_artifact}")
     checks_digest = (
-        reads.get(profile.checks_artifact)
-        or reads.get(checks_path)
-        or reads.get(f"change:{profile.checks_artifact}")
+        reads.get(checks_artifact) or reads.get(checks_path) or reads.get(f"change:{checks_artifact}")
     )
     if not isinstance(checks_digest, str):
-        raise ReplayBindingError("missing_evidence", f"missing checks digest for {profile.layer}")
+        raise ReplayBindingError("missing_evidence", f"missing checks digest for {layer}")
     checks_bytes = _read_bound_bytes(
         store,
         gate_tree_id,
         checks_path,
         expected_digest=checks_digest,
-        change_dir=change_dir,
-        binding=binding,
     )
     checks_model = PlanCheckDocument.model_validate(json.loads(checks_bytes))
     return cast(
         BoundArtifact[PlanCheckDocument],
         bind_json_artifact(
-            logical_path=profile.checks_artifact,
+            logical_path=checks_artifact,
             model=checks_model,
             raw_bytes=checks_bytes,
         ),
@@ -870,41 +1151,38 @@ def _recover_checks_artifact(
 
 def _recover_optional_artifacts(
     *,
-    profile: LayerAssuranceProfile,
+    review_artifact: str,
     gate_report: dict[str, object],
     gate_tree_id: str,
     applicable: bool,
     change_dir: Path,
     store: TreeStore,
-    binding: FrozenDefinitionBinding,
+    layer: str,
 ) -> tuple[BoundArtifact[PlanReview] | None, BoundArtifact[DataKnowledge] | None]:
+    del change_dir
     if not applicable:
         return None, None
     reads = gate_report.get("reads_sha256")
     if not isinstance(reads, dict):
         raise ReplayBindingError("gate_evidence_unbound", "gate report missing reads_sha256")
 
-    review_path = normalize_logical_path(f"change:{profile.review_artifact}")
+    review_path = normalize_logical_path(f"change:{review_artifact}")
     review_digest = (
-        reads.get(profile.review_artifact)
-        or reads.get(review_path)
-        or reads.get(f"change:{profile.review_artifact}")
+        reads.get(review_artifact) or reads.get(review_path) or reads.get(f"change:{review_artifact}")
     )
     if not isinstance(review_digest, str):
-        raise ReplayBindingError("missing_evidence", f"missing review digest for {profile.layer}")
+        raise ReplayBindingError("missing_evidence", f"missing review digest for {layer}")
     review_bytes = _read_bound_bytes(
         store,
         gate_tree_id,
         review_path,
         expected_digest=review_digest,
-        change_dir=change_dir,
-        binding=binding,
     )
     review_model = PlanReview.model_validate(json.loads(review_bytes))
     review = cast(
         BoundArtifact[PlanReview],
         bind_json_artifact(
-            logical_path=profile.review_artifact,
+            logical_path=review_artifact,
             model=review_model,
             raw_bytes=review_bytes,
         ),
@@ -913,14 +1191,12 @@ def _recover_optional_artifacts(
     l1_path = normalize_logical_path("repo:.aa/data-knowledge.yaml")
     l1_digest = reads.get(l1_path) or reads.get("repo:.aa/data-knowledge.yaml")
     if not isinstance(l1_digest, str):
-        raise ReplayBindingError("missing_evidence", f"missing L1 digest for {profile.layer}")
+        raise ReplayBindingError("missing_evidence", f"missing L1 digest for {layer}")
     l1_bytes = _read_bound_bytes(
         store,
         gate_tree_id,
         l1_path,
         expected_digest=l1_digest,
-        change_dir=change_dir,
-        binding=binding,
     )
     l1_model = DataKnowledge.model_validate(yaml.safe_load(l1_bytes))
     data_knowledge = cast(
@@ -940,16 +1216,12 @@ def _read_bound_bytes(
     logical_path: str,
     *,
     expected_digest: str,
-    change_dir: Path,
-    binding: FrozenDefinitionBinding,
 ) -> bytes:
     normalized = normalize_logical_path(logical_path)
     try:
         payload = store.read_bytes(tree_id, normalized)
-    except FileNotFoundError:
-        payload = _read_fallback_bytes(
-            change_dir, binding.change_id, normalized, expected_digest=expected_digest
-        )
+    except FileNotFoundError as exc:
+        raise ReplayBindingError("missing_evidence", f"artifact missing for {normalized}") from exc
     except OSError as exc:
         raise ReplayBindingError("missing_evidence", f"cannot read {normalized}: {exc}") from exc
     actual = hashlib.sha256(payload).hexdigest()
@@ -961,33 +1233,6 @@ def _read_bound_bytes(
     return payload
 
 
-def _read_fallback_bytes(
-    change_dir: Path,
-    change_id: str,
-    logical_path: str,
-    *,
-    expected_digest: str,
-) -> bytes:
-    parsed = ResourcePath.parse(logical_path)
-    candidates: list[Path] = []
-    if parsed.root == "change":
-        candidates.append(change_dir / parsed.pattern)
-        candidates.append(archive_root(change_dir.parents[2]) / change_id / parsed.pattern)
-    elif parsed.root == "repo":
-        project_root = change_dir.parents[2]
-        candidates.append(project_root / parsed.pattern)
-    elif parsed.root == "project":
-        project_root = change_dir.parents[2]
-        candidates.append(project_root / parsed.pattern)
-    for path in candidates:
-        if not path.exists():
-            continue
-        payload = path.read_bytes()
-        if hashlib.sha256(payload).hexdigest() == expected_digest:
-            return payload
-    raise ReplayBindingError("missing_evidence", f"artifact missing for {logical_path}")
-
-
 def _is_applicable(*, checks_doc: PlanCheckDocument) -> bool:
     if checks_doc.applicability is None:
         return False
@@ -997,30 +1242,19 @@ def _is_applicable(*, checks_doc: PlanCheckDocument) -> bool:
 def _assert_baseline_gate(
     recorded: dict[str, object],
     baseline: object,
-    profile: LayerAssuranceProfile,
+    *,
+    gate_id: str,
 ) -> None:
     from assurance_agent.workflow.orchestration.gates import FrozenGateReport
 
     if not isinstance(baseline, FrozenGateReport):
         raise ReplayBindingError("baseline_gate_mismatch", "baseline evaluation failed")
-    if recorded.get("gate_id") != profile.gate_id:
+    if recorded.get("gate_id") != gate_id:
         raise ReplayBindingError("baseline_gate_mismatch", "gate id mismatch")
     if recorded.get("verdict") != baseline.verdict.value:
         raise ReplayBindingError(
             "baseline_gate_mismatch",
             f"verdict {recorded.get('verdict')!r} != {baseline.verdict.value!r}",
-        )
-    recorded_value = recorded.get("value")
-    recorded_verdict = recorded.get("verdict")
-    if (
-        recorded_value is not None
-        and recorded_verdict is not None
-        and recorded_value != recorded_verdict
-        and recorded_value != baseline.verdict.value
-    ):
-        raise ReplayBindingError(
-            "baseline_gate_mismatch",
-            f"value {recorded_value!r} != baseline {baseline.verdict.value!r}",
         )
     if recorded.get("matched_rule") != baseline.matched_rule:
         raise ReplayBindingError("baseline_gate_mismatch", "matched_rule mismatch")
@@ -1093,10 +1327,62 @@ def _assert_route_events(
     # Event absence is allowed when earlier termination prevented branch activation.
 
 
+def _spec_for_layer(binding: FrozenDefinitionBinding, layer: str) -> LayerTopologySpec:
+    for spec in binding.layer_topology_specs:
+        if spec.layer == layer:
+            return spec
+    raise ReplayBindingError("ambiguous_graph_wiring", f"missing topology spec for layer {layer}")
+
+
+def _pinned_manifest_entry(
+    binding: FrozenDefinitionBinding,
+    layer: str,
+) -> AssuranceProfileManifestEntry:
+    if binding.profile_manifest is None:
+        raise ReplayBindingError(
+            "profile_definition_incompatible",
+            f"no pinned profile manifest entry for layer {layer}",
+        )
+    for entry in binding.profile_manifest.profiles:
+        if entry.layer == layer:
+            return entry
+    raise ReplayBindingError(
+        "profile_definition_incompatible",
+        f"pinned profile manifest missing layer {layer}",
+    )
+
+
+def _root_started_event(binding: FrozenDefinitionBinding) -> GraphInvocationStartedEvent:
+    for item in binding.sequenced_events:
+        payload = {k: v for k, v in item.payload.items() if k not in {"seq", "ts"}}
+        if payload.get("type") != "graph_invocation_started":
+            continue
+        if payload.get("invocation_id") != binding.root_invocation_id:
+            continue
+        event = GRAPH_EVENT_ADAPTER.validate_python(payload)
+        if isinstance(event, GraphInvocationStartedEvent):
+            return event
+    raise ReplayBindingError("root_invocation_unbound", "root started event missing from binding")
+
+
+def _assurance_started_event(binding: FrozenDefinitionBinding) -> GraphInvocationStartedEvent:
+    for item in binding.sequenced_events:
+        payload = {k: v for k, v in item.payload.items() if k not in {"seq", "ts"}}
+        if payload.get("type") != "graph_invocation_started":
+            continue
+        if payload.get("invocation_id") != binding.assurance_invocation_id:
+            continue
+        event = GRAPH_EVENT_ADAPTER.validate_python(payload)
+        if isinstance(event, GraphInvocationStartedEvent):
+            return event
+    raise ReplayBindingError("ambiguous_assurance_invocation", "assurance started event missing from binding")
+
+
 __all__ = [
     "BoundLayerReplayInputs",
     "CommittedAttempt",
     "FrozenDefinitionBinding",
+    "LayerInvocationBinding",
     "LayerSelectionFact",
     "ReplayBindingError",
     "ReplayReasonCode",

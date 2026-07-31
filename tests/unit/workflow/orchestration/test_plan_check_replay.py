@@ -210,14 +210,14 @@ def test_missing_capability_shadows_policy(layer: str) -> None:
     replay = _replay(
         layer,
         checks=_applicable_checks(layer),
-        review=_review(layer, required_capabilities=["capabilities.missing.leaf"]),
+        review=_review(layer, required_capabilities=["auth.missing_token"]),
         data_knowledge=_data_knowledge(),
     )
     scenario = _scenario(replay, "warn")
     assert scenario.verdict == Verdict.NEEDS_HUMAN_REVIEW.value
     assert scenario.route == "knowledge_remediation"
     assert scenario.policy_effect == "shadowed_by_capability_precondition"
-    assert scenario.missing_capabilities == ["capabilities.missing.leaf"]
+    assert scenario.missing_capabilities == ["auth.missing_token"]
 
 
 @pytest.mark.parametrize("layer", ["api", "e2e"])
@@ -461,3 +461,49 @@ def test_baseline_gate_matches_route_derivation() -> None:
     assert replay.baseline.verdict == report.verdict
     assert replay.baseline.matched_rule == report.matched_rule
     assert _scenario(replay, "warn").route == route
+
+
+def test_resolve_executable_layer_profile_requires_matching_entry() -> None:
+    from assurance_agent.verification.profile_manifest import (
+        assurance_profile_bytes,
+        parse_assurance_profile_snapshot,
+    )
+    from assurance_agent.workflow.orchestration.gate_semantics import gate_semantics_digest
+    from assurance_agent.workflow.orchestration.plan_check_replay import (
+        ProfileExecutableCompatibilityError,
+        resolve_executable_layer_profile,
+    )
+
+    manifest = parse_assurance_profile_snapshot(assurance_profile_bytes())
+    api_entry = next(entry for entry in manifest.profiles if entry.layer == "api")
+    profile = resolve_executable_layer_profile(
+        pinned_entry=api_entry,
+        recorded_gate_semantics_digest=gate_semantics_digest(),
+    )
+    assert profile.layer == "api"
+
+    mutated = api_entry.model_copy(update={"gate_id": "api-mutated-gate"})
+    with pytest.raises(ProfileExecutableCompatibilityError, match="profile_definition_incompatible"):
+        resolve_executable_layer_profile(
+            pinned_entry=mutated,
+            recorded_gate_semantics_digest=gate_semantics_digest(),
+        )
+
+
+def test_resolve_executable_layer_profile_requires_gate_semantics() -> None:
+    from assurance_agent.verification.profile_manifest import (
+        assurance_profile_bytes,
+        parse_assurance_profile_snapshot,
+    )
+    from assurance_agent.workflow.orchestration.plan_check_replay import (
+        ProfileExecutableCompatibilityError,
+        resolve_executable_layer_profile,
+    )
+
+    manifest = parse_assurance_profile_snapshot(assurance_profile_bytes())
+    api_entry = next(entry for entry in manifest.profiles if entry.layer == "api")
+    with pytest.raises(ProfileExecutableCompatibilityError, match="gate_semantics_mismatch"):
+        resolve_executable_layer_profile(
+            pinned_entry=api_entry,
+            recorded_gate_semantics_digest="0" * 64,
+        )

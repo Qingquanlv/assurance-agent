@@ -19,7 +19,13 @@ from assurance_agent.artifacts.models.policy import PlanCheckAction, Policy
 from assurance_agent.artifacts.models.review import PlanReview
 from assurance_agent.artifacts.policy import normalized_policy_bytes, policy_digest
 from assurance_agent.knowledge.capabilities import plan_review_route
-from assurance_agent.verification.profiles import LayerAssuranceProfile
+from assurance_agent.verification.profile_manifest import (
+    AssuranceProfileManifestEntry,
+    assurance_profile_bytes,
+    parse_assurance_profile_snapshot,
+)
+from assurance_agent.verification.profiles import LayerAssuranceProfile, get_layer_assurance_profile
+from assurance_agent.workflow.orchestration.gate_semantics import gate_semantics_digest
 from assurance_agent.workflow.orchestration.gates import (
     FrozenGateReport,
     GateEvaluationContext,
@@ -38,6 +44,13 @@ PolicyEffect = Literal[
 ]
 
 _SCENARIO_ACTIONS: tuple[PlanCheckAction, ...] = ("warn", "block", "require_human")
+
+
+class ProfileExecutableCompatibilityError(Exception):
+    def __init__(self, reason_code: str, message: str) -> None:
+        self.reason_code = reason_code
+        self.message = message
+        super().__init__(f"{reason_code}: {message}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +119,30 @@ def bind_yaml_artifact(
             raise ValueError(f"model does not match raw_bytes for {logical_path}")
     digest = hashlib.sha256(payload).hexdigest()
     return BoundArtifact(logical_path=logical_path, raw_bytes=payload, sha256=digest, model=model)
+
+
+def resolve_executable_layer_profile(
+    *,
+    pinned_entry: AssuranceProfileManifestEntry,
+    recorded_gate_semantics_digest: str,
+) -> LayerAssuranceProfile:
+    """Resolve the current profile only after pinned entry and gate semantics match."""
+    if recorded_gate_semantics_digest != gate_semantics_digest():
+        raise ProfileExecutableCompatibilityError(
+            "gate_semantics_mismatch",
+            "pinned gate evaluator is incompatible",
+        )
+    current_manifest = parse_assurance_profile_snapshot(assurance_profile_bytes())
+    current_entry = next(
+        (entry for entry in current_manifest.profiles if entry.layer == pinned_entry.layer),
+        None,
+    )
+    if current_entry is None or pinned_entry.model_dump(mode="json") != current_entry.model_dump(mode="json"):
+        raise ProfileExecutableCompatibilityError(
+            "profile_definition_incompatible",
+            f"pinned profile entry for {pinned_entry.layer} is not executable",
+        )
+    return get_layer_assurance_profile(pinned_entry.layer)
 
 
 def evaluate_bound_plan_gate(
