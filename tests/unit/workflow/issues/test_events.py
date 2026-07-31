@@ -11,6 +11,7 @@ Covers:
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -25,6 +26,20 @@ from assurance_agent.artifacts.models.issues import (
     ObservationSource,
     ProblemFingerprint,
     ProvisionalAssessment,
+)
+from assurance_agent.evidence.issue_identity import (
+    ObservationIdentityInput,
+    event_id,
+    observation_id,
+    occurrence_id,
+    problem_id,
+    recomputable_issue_event_idempotency_key,
+)
+from assurance_agent.evidence.issue_replay import (
+    IssueLedgerIntegrityError,
+    IssueLedgerMissingError,
+    load_change_issue_ledger,
+    load_problem_ledger,
 )
 from assurance_agent.workflow.issues.events import (
     CHANGE_ISSUE_EVENT_ADAPTER,
@@ -57,8 +72,28 @@ from assurance_agent.workflow.issues.events import (
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
 
+def _obs_id(*, json_pointer: str = "/cases/0") -> str:
+    return observation_id(
+        ObservationIdentityInput(
+            change_id="CH-001",
+            batch_id="B-001",
+            kind="test_failure",
+            target="api",
+            case_id=None,
+            source_artifact="execution/runs/B-001/api-result.json",
+            source_json_pointer=json_pointer,
+            signature="http_500_on_empty_name",
+        )
+    )
+
+
+CANDIDATE_DIGEST = "sha256:11223344"
+OCCURRENCE_ID = occurrence_id("CH-001", "B-001", CANDIDATE_DIGEST)
+FINGERPRINT = ProblemFingerprint(version="1", digest="sha256:" + "a" * 64)
+PROBLEM_ID = problem_id(FINGERPRINT)
+
 OBSERVATION = Observation(
-    observation_id="OBS-1a2b3c4d5e6f7890",
+    observation_id=_obs_id(),
     change_id="CH-001",
     batch_id="B-001",
     kind="test_failure",
@@ -73,6 +108,22 @@ OBSERVATION = Observation(
     observed_at="2026-07-25T10:00:00Z",
 )
 
+OBSERVATION_2 = Observation(
+    observation_id=_obs_id(json_pointer="/cases/1"),
+    change_id="CH-001",
+    batch_id="B-001",
+    kind="test_failure",
+    target="api",
+    case_id=None,
+    source=ObservationSource(
+        artifact="execution/runs/B-001/api-result.json",
+        json_pointer="/cases/1",
+    ),
+    evidence_refs=["execution/runs/B-001/api-result.json"],
+    signature="http_500_on_empty_name",
+    observed_at="2026-07-25T10:00:00Z",
+)
+
 ANALYSIS_STATUS = IssueAnalysisStatus(
     schema_version="1.0",
     change_id="CH-001",
@@ -80,6 +131,7 @@ ANALYSIS_STATUS = IssueAnalysisStatus(
     status="completed",
     evidence_bundle_digest="sha256:aabbccdd",
     candidate_count=2,
+    candidate_digest="sha256:batch",
 )
 
 ANALYSIS_STATUS_FAILED = IssueAnalysisStatus(
@@ -94,11 +146,11 @@ ANALYSIS_STATUS_FAILED = IssueAnalysisStatus(
 )
 
 OCCURRENCE = IssueOccurrence(
-    occurrence_id="OCC-aabbccddeeff0011",
+    occurrence_id=OCCURRENCE_ID,
     change_id="CH-001",
     batch_id="B-001",
-    observation_ids=["OBS-1a2b3c4d5e6f7890"],
-    problem_id="PROB-deadbeef12345678",
+    observation_ids=[OBSERVATION.observation_id],
+    problem_id=PROBLEM_ID,
     provisional_assessment=ProvisionalAssessment(
         classification="product_bug",
         severity="high",
@@ -109,11 +161,9 @@ OCCURRENCE = IssueOccurrence(
         evidence_bundle_digest="sha256:aabbccdd",
         analyzer="aa-issue-analyzer",
         prompt_version="v1",
-        candidate_digest="sha256:11223344",
+        candidate_digest=CANDIDATE_DIGEST,
     ),
 )
-
-FINGERPRINT = ProblemFingerprint(version="1", digest="sha256:" + "a" * 64)
 
 _BASE_CHANGE_ENVELOPE = {
     "schema_version": "1.0",
@@ -133,7 +183,7 @@ _BASE_PROBLEM_ENVELOPE = {
     "idempotency_key": "IDEM-0001",
     "ts": "2026-07-25T10:00:00Z",
     "evidence_digest": "sha256:aabbccdd",
-    "problem_id": "PROB-deadbeef12345678",
+    "problem_id": PROBLEM_ID,
     "expected_problem_version": 0,
 }
 
@@ -485,25 +535,34 @@ def _write_jsonl(path: Path, lines: list[dict]) -> None:
             fh.write(json.dumps(line) + "\n")
 
 
-def _obs_event_dict(seq: int, event_id: str, idem: str) -> dict:
-    return {
+def _obs_event_dict(
+    seq: int,
+    *,
+    observation: Observation = OBSERVATION,
+    mutate: dict | None = None,
+) -> dict:
+    idem = f"observation_recorded:CH-001:B-001:{observation.observation_id}"
+    payload = {
         "schema_version": "1.0",
         "seq": seq,
-        "event_id": event_id,
+        "event_id": event_id(idem),
         "idempotency_key": idem,
         "ts": "2026-07-25T10:00:00Z",
         "evidence_digest": "sha256:aabbccdd",
         "type": "observation_recorded",
         "change_id": "CH-001",
         "batch_id": "B-001",
-        "observation": OBSERVATION.model_dump(mode="json"),
+        "observation": observation.model_dump(mode="json"),
     }
+    if mutate:
+        payload.update(mutate)
+    return payload
 
 
 class TestReadChangeIssueEvents:
     def test_reads_valid_single_event(self, tmp_path: Path) -> None:
         p = tmp_path / "events.jsonl"
-        _write_jsonl(p, [_obs_event_dict(1, "EVT-1", "IDEM-1")])
+        _write_jsonl(p, [_obs_event_dict(1)])
         events = read_change_issue_events(p)
         assert len(events) == 1
         assert isinstance(events[0], ObservationRecordedEvent)
@@ -513,8 +572,8 @@ class TestReadChangeIssueEvents:
         _write_jsonl(
             p,
             [
-                _obs_event_dict(1, "EVT-1", "IDEM-1"),
-                _obs_event_dict(2, "EVT-2", "IDEM-2"),
+                _obs_event_dict(1, observation=OBSERVATION),
+                _obs_event_dict(2, observation=OBSERVATION_2),
             ],
         )
         events = read_change_issue_events(p)
@@ -523,9 +582,9 @@ class TestReadChangeIssueEvents:
     def test_rejects_blank_hole(self, tmp_path: Path) -> None:
         p = tmp_path / "events.jsonl"
         content = (
-            json.dumps(_obs_event_dict(1, "EVT-1", "IDEM-1"))
+            json.dumps(_obs_event_dict(1, observation=OBSERVATION))
             + "\n\n"
-            + json.dumps(_obs_event_dict(2, "EVT-2", "IDEM-2"))
+            + json.dumps(_obs_event_dict(2, observation=OBSERVATION_2))
             + "\n"
         )
         p.write_text(content, encoding="utf-8")
@@ -549,8 +608,8 @@ class TestReadChangeIssueEvents:
         _write_jsonl(
             p,
             [
-                _obs_event_dict(1, "EVT-1", "IDEM-1"),
-                _obs_event_dict(3, "EVT-3", "IDEM-3"),  # gap: seq 2 missing
+                _obs_event_dict(1, observation=OBSERVATION),
+                _obs_event_dict(3, observation=OBSERVATION_2),  # gap: seq 2 missing
             ],
         )
         with pytest.raises(LedgerIntegrityError, match="expected seq 2"):
@@ -558,44 +617,150 @@ class TestReadChangeIssueEvents:
 
     def test_rejects_seq_starting_wrong(self, tmp_path: Path) -> None:
         p = tmp_path / "events.jsonl"
-        _write_jsonl(p, [_obs_event_dict(0, "EVT-1", "IDEM-1")])
+        _write_jsonl(p, [_obs_event_dict(0)])
         with pytest.raises(LedgerIntegrityError, match="expected seq 1"):
             read_change_issue_events(p)
 
     def test_rejects_duplicate_event_id(self, tmp_path: Path) -> None:
         p = tmp_path / "events.jsonl"
-        _write_jsonl(
-            p,
-            [
-                _obs_event_dict(1, "EVT-SAME", "IDEM-1"),
-                _obs_event_dict(2, "EVT-SAME", "IDEM-2"),
-            ],
-        )
+        first = _obs_event_dict(1, observation=OBSERVATION)
+        second = _obs_event_dict(2, observation=OBSERVATION_2)
+        second["event_id"] = first["event_id"]
+        _write_jsonl(p, [first, second])
         with pytest.raises(LedgerIntegrityError, match="duplicate event_id"):
             read_change_issue_events(p)
 
     def test_rejects_duplicate_idempotency_key(self, tmp_path: Path) -> None:
         p = tmp_path / "events.jsonl"
-        _write_jsonl(
-            p,
-            [
-                _obs_event_dict(1, "EVT-1", "IDEM-SAME"),
-                _obs_event_dict(2, "EVT-2", "IDEM-SAME"),
-            ],
-        )
+        first = _obs_event_dict(1, observation=OBSERVATION)
+        second = _obs_event_dict(2, observation=OBSERVATION_2)
+        # Keep a distinct event_id so the duplicate-key check runs before identity.
+        second["idempotency_key"] = first["idempotency_key"]
+        _write_jsonl(p, [first, second])
         with pytest.raises(LedgerIntegrityError, match="duplicate idempotency_key"):
             read_change_issue_events(p)
 
     def test_rejects_unknown_event_type(self, tmp_path: Path) -> None:
         p = tmp_path / "events.jsonl"
-        bad_event = {**_obs_event_dict(1, "EVT-1", "IDEM-1"), "type": "unknown_type"}
+        bad_event = {**_obs_event_dict(1), "type": "unknown_type"}
         _write_jsonl(p, [bad_event])
         with pytest.raises(LedgerIntegrityError, match="invalid event"):
             read_change_issue_events(p)
 
     def test_rejects_unknown_field_in_event(self, tmp_path: Path) -> None:
         p = tmp_path / "events.jsonl"
-        bad_event = {**_obs_event_dict(1, "EVT-1", "IDEM-1"), "surprise_field": True}
+        bad_event = {**_obs_event_dict(1), "surprise_field": True}
         _write_jsonl(p, [bad_event])
         with pytest.raises(LedgerIntegrityError, match="invalid event"):
             read_change_issue_events(p)
+
+    def test_missing_path_returns_empty_for_mutation_compatibility(self, tmp_path: Path) -> None:
+        assert read_problem_events(tmp_path / "missing.jsonl") == []
+
+    def test_authority_loader_distinguishes_missing_from_empty(self, tmp_path: Path) -> None:
+        with pytest.raises(IssueLedgerMissingError):
+            load_problem_ledger(tmp_path / "missing.jsonl")
+
+    def test_strict_change_replay_rejects_forged_event_id(self, tmp_path: Path) -> None:
+        path = tmp_path / "events.jsonl"
+        _write_jsonl(path, [_obs_event_dict(1, mutate={"event_id": "EVT-forged"})])
+        with pytest.raises(IssueLedgerIntegrityError, match="event_id"):
+            load_change_issue_ledger(path)
+
+    def test_strict_change_replay_rejects_duplicate_defining_occurrence(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "events.jsonl"
+        detected_key = f"occurrence_detected:CH-001:B-001:{CANDIDATE_DIGEST}"
+        linked_key = f"occurrence_linked:CH-001:B-001:{CANDIDATE_DIGEST}"
+        occ_payload = OCCURRENCE.model_dump(mode="json")
+        first = {
+            "schema_version": "1.0",
+            "seq": 1,
+            "event_id": event_id(detected_key),
+            "idempotency_key": detected_key,
+            "ts": "2026-07-25T10:00:00Z",
+            "evidence_digest": "sha256:aabbccdd",
+            "type": "occurrence_detected",
+            "change_id": "CH-001",
+            "batch_id": "B-001",
+            "occurrence": occ_payload,
+        }
+        second = {
+            **first,
+            "seq": 2,
+            "event_id": event_id(linked_key),
+            "idempotency_key": linked_key,
+            "type": "occurrence_linked",
+        }
+        _write_jsonl(path, [first, second])
+        with pytest.raises(IssueLedgerIntegrityError, match="occurrence_id"):
+            load_change_issue_ledger(path)
+
+    def test_problem_reference_to_defined_occurrence_remains_legal(self, tmp_path: Path) -> None:
+        """Problem events may reference an occurrence_id; they do not redefine it."""
+        change_path = tmp_path / "change.jsonl"
+        problem_path = tmp_path / "problem.jsonl"
+        detected_key = f"occurrence_detected:CH-001:B-001:{CANDIDATE_DIGEST}"
+        _write_jsonl(
+            change_path,
+            [
+                {
+                    "schema_version": "1.0",
+                    "seq": 1,
+                    "event_id": event_id(detected_key),
+                    "idempotency_key": detected_key,
+                    "ts": "2026-07-25T10:00:00Z",
+                    "evidence_digest": "sha256:aabbccdd",
+                    "type": "occurrence_detected",
+                    "change_id": "CH-001",
+                    "batch_id": "B-001",
+                    "occurrence": OCCURRENCE.model_dump(mode="json"),
+                }
+            ],
+        )
+        # problem_detected omits per-candidate digest → recomputable key is None.
+        problem_key = f"problem_detected:{PROBLEM_ID}:CH-001:B-001:{CANDIDATE_DIGEST}"
+        _write_jsonl(
+            problem_path,
+            [
+                {
+                    "schema_version": "1.0",
+                    "seq": 1,
+                    "event_id": event_id(problem_key),
+                    "idempotency_key": problem_key,
+                    "ts": "2026-07-25T10:00:00Z",
+                    "evidence_digest": "sha256:aabbccdd",
+                    "type": "problem_detected",
+                    "problem_id": PROBLEM_ID,
+                    "expected_problem_version": 0,
+                    "occurrence_id": OCCURRENCE_ID,
+                    "change_id": "CH-001",
+                    "batch_id": "B-001",
+                    "fingerprint": FINGERPRINT.model_dump(mode="json"),
+                    "title": "Endpoint fails",
+                    "classification": "product_bug",
+                    "severity": "high",
+                }
+            ],
+        )
+        assert len(load_change_issue_ledger(change_path)) == 1
+        assert len(load_problem_ledger(problem_path)) == 1
+
+    def test_legacy_merge_suggested_is_not_recomputable(self) -> None:
+        event = PROBLEM_EVENT_ADAPTER.validate_python(
+            _problem_event_data(
+                type="problem_merge_suggested",
+                source_occurrence_id=OCCURRENCE_ID,
+                source_change_id="CH-001",
+                target_problem_id="PROB-other",
+                reason="possible match",
+                problem_id=PROBLEM_ID,
+                expected_problem_version=1,
+            )
+        )
+        assert recomputable_issue_event_idempotency_key(event) is None
+
+    def test_event_id_matches_existing_sha256_prefix(self) -> None:
+        key = "project_sync_pending:CH-1:B1:sha256:candidate"
+        assert event_id(key) == "EVT-" + hashlib.sha256(key.encode()).hexdigest()[:16]

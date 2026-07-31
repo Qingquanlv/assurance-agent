@@ -47,14 +47,14 @@ from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext
 from assurance_agent.workflow.graph.task_runner import task_failure
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.issues.collector import collect_observations
-from assurance_agent.workflow.issues.events import (
+from assurance_agent.artifacts.models.issue_events import (
     IssueAnalysisFailedEvent,
     ObservationRecordedEvent,
     ProjectSyncPendingEvent,
 )
-from assurance_agent.workflow.issues.identity import candidate_document_digest
+from assurance_agent.evidence.issue_identity import candidate_document_digest, event_id
+from assurance_agent.evidence.issue_replay import dump_projection
 from assurance_agent.workflow.issues.ledger import ChangeIssueStore, ProjectProblemStore
-from assurance_agent.workflow.issues.projection import dump_projection
 from assurance_agent.workflow.issues.reconciler import (
     ReconciliationValidationError,
     VerificationEvidence,
@@ -75,11 +75,6 @@ from assurance_agent.workflow.issues.review import (
 
 def _utc_now() -> str:
     return datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _event_id(idempotency_key: str) -> str:
-    """Deterministic event ID derived from the idempotency key."""
-    return "EVT-" + hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:16]
 
 
 def _write_json(path: Path, data: bytes) -> None:
@@ -240,7 +235,7 @@ def collect_observations_operation(
                 schema_version="1.0",
                 # seq is overwritten by ChangeIssueStore._serialize_event; any ≥1 is valid.
                 seq=1,
-                event_id=_event_id(idem_key),
+                event_id=event_id(idem_key),
                 idempotency_key=idem_key,
                 ts=ts,
                 evidence_digest=result.evidence_bundle_digest,
@@ -481,7 +476,7 @@ def record_issue_analysis_failure_operation(
     failed_event = IssueAnalysisFailedEvent(
         schema_version="1.0",
         seq=1,
-        event_id=_event_id(idem_key),
+        event_id=event_id(idem_key),
         idempotency_key=idem_key,
         ts=ts,
         evidence_digest=evidence_bundle_digest,
@@ -544,7 +539,7 @@ def record_project_sync_pending_operation(
     sync_event = ProjectSyncPendingEvent(
         schema_version="1.0",
         seq=1,
-        event_id=_event_id(idem_key),
+        event_id=event_id(idem_key),
         idempotency_key=idem_key,
         ts=ts,
         evidence_digest=evidence_bundle_digest,

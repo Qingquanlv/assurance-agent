@@ -299,3 +299,168 @@ def test_candidate_document_digest_hashes_authored_json_without_inserting_defaul
     )
 
     assert candidate_document_digest(authored) == expected
+
+
+def test_event_id_matches_existing_sha256_prefix() -> None:
+    from assurance_agent.evidence.issue_identity import event_id
+
+    key = "project_sync_pending:CH-1:B1:sha256:candidate"
+    assert event_id(key) == "EVT-" + hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+def test_per_candidate_digest_ignores_key_order_and_whitespace_formatting() -> None:
+    from assurance_agent.evidence.issue_identity import per_candidate_digest
+
+    candidate = {
+        "candidate_id": "CAND-1",
+        "observation_ids": ["OBS-1"],
+        "proposed": {
+            "title": "Endpoint fails",
+            "classification": "product_bug",
+            "severity": "high",
+            "root_cause_hypothesis": "Unhandled input",
+        },
+        "affected_surface": {"kind": "endpoint", "value": "POST /api/items"},
+        "fingerprint_inputs": {"surface": "POST /api/items", "symptom": "http_500"},
+        "possible_problem_ids": [],
+        "confidence": 1,
+        "recommended_action": "investigate",
+    }
+    reordered = {k: candidate[k] for k in reversed(list(candidate))}
+    spaced = json.dumps(candidate, indent=2, sort_keys=False)
+    assert per_candidate_digest(candidate) == per_candidate_digest(reordered)
+    assert per_candidate_digest(candidate) == per_candidate_digest(json.loads(spaced))
+    changed = {**candidate, "candidate_id": "CAND-2"}
+    assert per_candidate_digest(candidate) != per_candidate_digest(changed)
+
+
+def test_recomputable_issue_event_idempotency_key_formats() -> None:
+    from assurance_agent.artifacts.models.issue_events import (
+        ObservationRecordedEvent,
+        ProblemMergeSuggestedEvent,
+        ProjectSyncPendingEvent,
+    )
+    from assurance_agent.artifacts.models.issues import Observation, ObservationSource
+    from assurance_agent.evidence.issue_identity import (
+        ObservationIdentityInput,
+        event_id,
+        observation_id,
+        recomputable_issue_event_idempotency_key,
+    )
+
+    obs_id = observation_id(
+        ObservationIdentityInput(
+            change_id="CH-1",
+            batch_id="B1",
+            kind="test_failure",
+            target="api",
+            case_id=None,
+            source_artifact="execution/runs/B1/api-result.json",
+            source_json_pointer="/cases/0",
+            signature="http_500",
+        )
+    )
+    observation = Observation(
+        observation_id=obs_id,
+        change_id="CH-1",
+        batch_id="B1",
+        kind="test_failure",
+        target="api",
+        case_id=None,
+        source=ObservationSource(
+            artifact="execution/runs/B1/api-result.json",
+            json_pointer="/cases/0",
+        ),
+        evidence_refs=["execution/runs/B1/api-result.json"],
+        signature="http_500",
+        observed_at="2026-07-25T10:00:00Z",
+    )
+    obs_key = f"observation_recorded:CH-1:B1:{obs_id}"
+    obs_event = ObservationRecordedEvent(
+        schema_version="1.0",
+        seq=1,
+        event_id=event_id(obs_key),
+        idempotency_key=obs_key,
+        ts="2026-07-25T10:00:00Z",
+        evidence_digest="sha256:e",
+        change_id="CH-1",
+        batch_id="B1",
+        type="observation_recorded",
+        observation=observation,
+    )
+    assert recomputable_issue_event_idempotency_key(obs_event) == obs_key
+
+    sync_key = "project_sync_pending:CH-1:B1:sha256:candidate"
+    sync_event = ProjectSyncPendingEvent(
+        schema_version="1.0",
+        seq=1,
+        event_id=event_id(sync_key),
+        idempotency_key=sync_key,
+        ts="2026-07-25T10:00:00Z",
+        evidence_digest="sha256:e",
+        change_id="CH-1",
+        batch_id="B1",
+        type="project_sync_pending",
+        candidate_digest="sha256:candidate",
+    )
+    assert recomputable_issue_event_idempotency_key(sync_event) == sync_key
+
+    merge = ProblemMergeSuggestedEvent(
+        schema_version="1.0",
+        seq=1,
+        event_id=event_id("legacy-merge"),
+        idempotency_key="legacy-merge",
+        ts="2026-07-25T10:00:00Z",
+        evidence_digest="sha256:e",
+        problem_id="PROB-aaaaaaaaaaaaaaaa",
+        expected_problem_version=1,
+        type="problem_merge_suggested",
+        source_occurrence_id="OCC-1",
+        source_change_id="CH-1",
+        target_problem_id="PROB-bbbbbbbbbbbbbbbb",
+        reason="possible match",
+    )
+    assert recomputable_issue_event_idempotency_key(merge) is None
+
+
+def test_no_workflow_imports_under_evidence() -> None:
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[4] / "assurance_agent" / "evidence"
+    offenders: list[str] = []
+    for path in root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith(
+                "assurance_agent.workflow"
+            ):
+                offenders.append(f"{path}:{node.lineno}")
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith("assurance_agent.workflow"):
+                        offenders.append(f"{path}:{node.lineno}")
+    assert offenders == []
+
+
+def test_no_local_event_id_helpers_remain_under_workflow_issues() -> None:
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[4] / "assurance_agent" / "workflow" / "issues"
+    writers = ("reconciler.py", "review.py", "operations.py")
+    for path in root.glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_event_id":
+                raise AssertionError(f"local _event_id remains in {path}")
+        if path.name in writers:
+            imported_event_id = False
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module:
+                    if node.module.endswith("issue_identity") or node.module.endswith(
+                        "identity"
+                    ):
+                        if any(alias.name == "event_id" for alias in node.names):
+                            imported_event_id = True
+            assert imported_event_id, f"{path.name} must import foundational event_id"

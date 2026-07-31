@@ -27,6 +27,13 @@ from assurance_agent.artifacts.models.issues import (
     ProblemFingerprint,
     ProvisionalAssessment,
 )
+from assurance_agent.evidence.issue_identity import (
+    ObservationIdentityInput,
+    event_id,
+    observation_id,
+    occurrence_id,
+    problem_id,
+)
 from assurance_agent.workflow.issues.events import (
     CHANGE_ISSUE_EVENT_ADAPTER,
     LedgerIntegrityError,
@@ -45,37 +52,60 @@ from assurance_agent.workflow.issues.ledger import (
 # ---------------------------------------------------------------------------
 
 FINGERPRINT = ProblemFingerprint(version="1", digest="sha256:" + "a" * 64)
+PROB_ID = problem_id(FINGERPRINT)
+CANDIDATE_DIGEST = "sha256:11223344"
 
-OBS_1 = Observation(
-    observation_id="OBS-1111111111111111",
-    change_id="CH-001",
+
+def _make_obs(
+    *,
+    batch_id: str,
+    json_pointer: str,
+    signature: str,
+    observed_at: str,
+    kind: str = "test_failure",
+    case_id: str | None = None,
+) -> Observation:
+    artifact = f"execution/runs/{batch_id}/api-result.json"
+    obs_id = observation_id(
+        ObservationIdentityInput(
+            change_id="CH-001",
+            batch_id=batch_id,
+            kind=kind,
+            target="api",
+            case_id=case_id,
+            source_artifact=artifact,
+            source_json_pointer=json_pointer,
+            signature=signature,
+        )
+    )
+    return Observation(
+        observation_id=obs_id,
+        change_id="CH-001",
+        batch_id=batch_id,
+        kind=kind,  # type: ignore[arg-type]
+        target="api",
+        case_id=case_id,
+        source=ObservationSource(artifact=artifact, json_pointer=json_pointer),
+        evidence_refs=[artifact],
+        signature=signature,
+        observed_at=observed_at,
+    )
+
+
+OBS_1 = _make_obs(
     batch_id="B-001",
-    kind="test_failure",
-    target="api",
-    case_id=None,
-    source=ObservationSource(
-        artifact="execution/runs/B-001/api-result.json",
-        json_pointer="/cases/0",
-    ),
-    evidence_refs=["execution/runs/B-001/api-result.json"],
+    json_pointer="/cases/0",
     signature="http_500_empty_name",
     observed_at="2026-07-25T10:00:00Z",
 )
 
-OBS_2 = Observation(
-    observation_id="OBS-2222222222222222",
-    change_id="CH-001",
+OBS_2 = _make_obs(
     batch_id="B-002",
-    kind="warning",
-    target="api",
-    case_id="API-001",
-    source=ObservationSource(
-        artifact="execution/runs/B-002/api-result.json",
-        json_pointer="/cases/1",
-    ),
-    evidence_refs=["execution/runs/B-002/api-result.json"],
+    json_pointer="/cases/1",
     signature="http_warning_slow",
     observed_at="2026-07-25T11:00:00Z",
+    kind="warning",
+    case_id="API-001",
 )
 
 ANALYSIS_OK = IssueAnalysisStatus(
@@ -85,15 +115,15 @@ ANALYSIS_OK = IssueAnalysisStatus(
     status="completed",
     evidence_bundle_digest="sha256:aabbccdd",
     candidate_count=1,
-    candidate_digest="sha256:11223344",
+    candidate_digest=CANDIDATE_DIGEST,
 )
 
 OCC_1 = IssueOccurrence(
-    occurrence_id="OCC-1111111111111111",
+    occurrence_id=occurrence_id("CH-001", "B-001", CANDIDATE_DIGEST),
     change_id="CH-001",
     batch_id="B-001",
-    observation_ids=["OBS-1111111111111111"],
-    problem_id="PROB-deadbeef12345678",
+    observation_ids=[OBS_1.observation_id],
+    problem_id=PROB_ID,
     provisional_assessment=ProvisionalAssessment(
         classification="product_bug",
         severity="high",
@@ -104,33 +134,34 @@ OCC_1 = IssueOccurrence(
         evidence_bundle_digest="sha256:aabbccdd",
         analyzer="aa-issue-analyzer",
         prompt_version="v1",
-        candidate_digest="sha256:11223344",
+        candidate_digest=CANDIDATE_DIGEST,
     ),
 )
 
-PROB_ID = "PROB-deadbeef12345678"
 
-
-def _obs_event(seq: int, event_id: str, idem: str, obs=OBS_1, batch_id="B-001") -> dict:
+def _obs_event(seq: int, obs=OBS_1, batch_id: str | None = None) -> dict:
+    batch = batch_id or obs.batch_id
+    idem = f"observation_recorded:CH-001:{batch}:{obs.observation_id}"
     return {
         "schema_version": "1.0",
         "seq": seq,
-        "event_id": event_id,
+        "event_id": event_id(idem),
         "idempotency_key": idem,
         "ts": "2026-07-25T10:00:00Z",
         "evidence_digest": "sha256:aabbccdd",
         "type": "observation_recorded",
         "change_id": "CH-001",
-        "batch_id": batch_id,
+        "batch_id": batch,
         "observation": obs.model_dump(mode="json"),
     }
 
 
-def _analysis_event(seq: int, event_id: str, idem: str) -> dict:
+def _analysis_event(seq: int) -> dict:
+    idem = f"issue_analysis_completed:CH-001:B-001:{CANDIDATE_DIGEST}"
     return {
         "schema_version": "1.0",
         "seq": seq,
-        "event_id": event_id,
+        "event_id": event_id(idem),
         "idempotency_key": idem,
         "ts": "2026-07-25T10:00:00Z",
         "evidence_digest": "sha256:aabbccdd",
@@ -141,11 +172,12 @@ def _analysis_event(seq: int, event_id: str, idem: str) -> dict:
     }
 
 
-def _occurrence_event(seq: int, event_id: str, idem: str) -> dict:
+def _occurrence_event(seq: int) -> dict:
+    idem = f"occurrence_detected:CH-001:B-001:{CANDIDATE_DIGEST}"
     return {
         "schema_version": "1.0",
         "seq": seq,
-        "event_id": event_id,
+        "event_id": event_id(idem),
         "idempotency_key": idem,
         "ts": "2026-07-25T10:00:00Z",
         "evidence_digest": "sha256:aabbccdd",
@@ -156,18 +188,19 @@ def _occurrence_event(seq: int, event_id: str, idem: str) -> dict:
     }
 
 
-def _detected_problem_event(seq: int, event_id: str, idem: str) -> dict:
+def _detected_problem_event(seq: int) -> dict:
+    idem = f"test:problem_detected:{PROB_ID}:{seq}"
     return {
         "schema_version": "1.0",
         "seq": seq,
-        "event_id": event_id,
+        "event_id": event_id(idem),
         "idempotency_key": idem,
         "ts": "2026-07-25T10:00:00Z",
         "evidence_digest": "sha256:aabbccdd",
         "type": "problem_detected",
         "problem_id": PROB_ID,
         "expected_problem_version": 0,
-        "occurrence_id": "OCC-1111111111111111",
+        "occurrence_id": OCC_1.occurrence_id,
         "change_id": "CH-001",
         "batch_id": "B-001",
         "fingerprint": FINGERPRINT.model_dump(mode="json"),
@@ -185,11 +218,6 @@ def _mk_problem_events(*dicts: dict):
     return [PROBLEM_EVENT_ADAPTER.validate_python(d) for d in dicts]
 
 
-# ---------------------------------------------------------------------------
-# ChangeIssueStore tests
-# ---------------------------------------------------------------------------
-
-
 class TestChangeIssueStore:
     def test_empty_events_raises(self, tmp_path: Path) -> None:
         store = ChangeIssueStore(tmp_path)
@@ -199,8 +227,8 @@ class TestChangeIssueStore:
     def test_creates_events_and_snapshot(self, tmp_path: Path) -> None:
         store = ChangeIssueStore(tmp_path)
         events = _mk_change_events(
-            _obs_event(1, "E1", "IDEM-1"),
-            _analysis_event(2, "E2", "IDEM-2"),
+            _obs_event(1),
+            _analysis_event(2),
         )
         snap = store.append_and_rebuild(events)
 
@@ -215,7 +243,7 @@ class TestChangeIssueStore:
 
     def test_seq_assigned_to_events(self, tmp_path: Path) -> None:
         store = ChangeIssueStore(tmp_path)
-        events = _mk_change_events(_obs_event(1, "E1", "IDEM-1"))
+        events = _mk_change_events(_obs_event(1))
         store.append_and_rebuild(events)
 
         events_path = tmp_path / "issues" / "events.jsonl"
@@ -223,11 +251,11 @@ class TestChangeIssueStore:
         assert len(lines) == 1
         data = json.loads(lines[0])
         assert data["seq"] == 1
-        assert data["event_id"] == "E1"
+        assert data["event_id"] == _obs_event(1)["event_id"]
 
     def test_idempotent_no_op_on_committed_keys(self, tmp_path: Path) -> None:
         store = ChangeIssueStore(tmp_path)
-        events = _mk_change_events(_obs_event(1, "E1", "IDEM-1"))
+        events = _mk_change_events(_obs_event(1))
 
         snap1 = store.append_and_rebuild(events)
         snap2 = store.append_and_rebuild(events)  # same idempotency_key
@@ -239,8 +267,8 @@ class TestChangeIssueStore:
 
     def test_idempotent_retry_ignores_new_envelope_timestamp(self, tmp_path: Path) -> None:
         store = ChangeIssueStore(tmp_path)
-        first = _obs_event(1, "E1", "IDEM-1")
-        retry = _obs_event(1, "E1", "IDEM-1")
+        first = _obs_event(1)
+        retry = _obs_event(1)
         retry["ts"] = "2026-07-25T10:00:01Z"
 
         store.append_and_rebuild(_mk_change_events(first))
@@ -255,15 +283,16 @@ class TestChangeIssueStore:
     ) -> None:
         store = ChangeIssueStore(tmp_path)
         events_path = tmp_path / "issues/events.jsonl"
-        store.append_and_rebuild(_mk_change_events(_obs_event(1, "E1", "IDEM-1")))
+        first = _obs_event(1)
+        store.append_and_rebuild(_mk_change_events(first))
         before = events_path.read_bytes()
+        conflicting = _obs_event(1, OBS_2, "B-002")
+        conflicting["idempotency_key"] = first["idempotency_key"]
+        # Distinct event_id so the key conflict is reported (not duplicate event_id).
+        conflicting["event_id"] = event_id(conflicting["idempotency_key"] + ":other")
 
         with pytest.raises(LedgerIntegrityError, match="idempotency conflict"):
-            store.append_and_rebuild(
-                _mk_change_events(
-                    _obs_event(1, "E2", "IDEM-1", OBS_2, "B-002"),
-                )
-            )
+            store.append_and_rebuild(_mk_change_events(conflicting))
 
         assert events_path.read_bytes() == before
 
@@ -273,15 +302,14 @@ class TestChangeIssueStore:
     ) -> None:
         store = ChangeIssueStore(tmp_path)
         events_path = tmp_path / "issues/events.jsonl"
-        store.append_and_rebuild(_mk_change_events(_obs_event(1, "E1", "IDEM-1")))
+        first = _obs_event(1)
+        store.append_and_rebuild(_mk_change_events(first))
         before = events_path.read_bytes()
+        conflicting = _obs_event(1, OBS_2, "B-002")
+        conflicting["event_id"] = first["event_id"]
 
         with pytest.raises(LedgerIntegrityError, match="duplicate event_id"):
-            store.append_and_rebuild(
-                _mk_change_events(
-                    _obs_event(1, "E1", "IDEM-2", OBS_2, "B-002"),
-                )
-            )
+            store.append_and_rebuild(_mk_change_events(conflicting))
 
         assert events_path.read_bytes() == before
 
@@ -291,25 +319,24 @@ class TestChangeIssueStore:
     ) -> None:
         store = ChangeIssueStore(tmp_path)
         events_path = tmp_path / "issues/events.jsonl"
+        first = _obs_event(1)
+        conflicting = _obs_event(1, OBS_2, "B-002")
+        conflicting["idempotency_key"] = first["idempotency_key"]
+        conflicting["event_id"] = event_id(conflicting["idempotency_key"] + ":other")
 
         with pytest.raises(LedgerIntegrityError, match="idempotency conflict"):
-            store.append_and_rebuild(
-                _mk_change_events(
-                    _obs_event(1, "E1", "IDEM-1"),
-                    _obs_event(1, "E2", "IDEM-1", OBS_2, "B-002"),
-                )
-            )
+            store.append_and_rebuild(_mk_change_events(first, conflicting))
 
         assert not events_path.exists()
 
     def test_partial_idempotency_only_new_events_appended(self, tmp_path: Path) -> None:
         store = ChangeIssueStore(tmp_path)
-        first_batch = _mk_change_events(_obs_event(1, "E1", "IDEM-1"))
+        first_batch = _mk_change_events(_obs_event(1))
         store.append_and_rebuild(first_batch)
 
         second_batch = _mk_change_events(
-            _obs_event(1, "E1", "IDEM-1"),  # already committed
-            _obs_event(1, "E2", "IDEM-2", OBS_2, "B-002"),  # new
+            _obs_event(1),  # already committed
+            _obs_event(1, OBS_2, "B-002"),  # new
         )
         snap = store.append_and_rebuild(second_batch)
 
@@ -319,17 +346,17 @@ class TestChangeIssueStore:
         # seq of the second committed event should be 2
         data2 = json.loads(lines[1])
         assert data2["seq"] == 2
-        assert data2["event_id"] == "E2"
+        assert data2["event_id"] == _obs_event(1, OBS_2, "B-002")["event_id"]
         assert len(snap.observations) == 2
 
     def test_snapshot_rebuilt_from_events_when_deleted(self, tmp_path: Path) -> None:
         store = ChangeIssueStore(tmp_path)
-        events = _mk_change_events(_obs_event(1, "E1", "IDEM-1"))
+        events = _mk_change_events(_obs_event(1))
         store.append_and_rebuild(events)
 
         # Delete snapshot; add another event to trigger rebuild
         (tmp_path / "issues" / "snapshot.json").unlink()
-        events2 = _mk_change_events(_analysis_event(1, "E2", "IDEM-2"))
+        events2 = _mk_change_events(_analysis_event(1))
         snap = store.append_and_rebuild(events2)
 
         assert len(snap.observations) == 1  # from first batch, still in events.jsonl
@@ -338,13 +365,13 @@ class TestChangeIssueStore:
     def test_occurrence_detected_retained_across_batches(self, tmp_path: Path) -> None:
         store = ChangeIssueStore(tmp_path)
         batch1 = _mk_change_events(
-            _obs_event(1, "E1", "IDEM-1"),
-            _occurrence_event(2, "E2", "IDEM-2"),
+            _obs_event(1),
+            _occurrence_event(2),
         )
         store.append_and_rebuild(batch1)
 
         batch2 = _mk_change_events(
-            _obs_event(1, "E3", "IDEM-3", OBS_2, "B-002"),
+            _obs_event(1, OBS_2, "B-002"),
         )
         snap = store.append_and_rebuild(batch2)
 
@@ -355,7 +382,7 @@ class TestChangeIssueStore:
 
     def test_snapshot_json_is_canonical(self, tmp_path: Path) -> None:
         store = ChangeIssueStore(tmp_path)
-        events = _mk_change_events(_obs_event(1, "E1", "IDEM-1"))
+        events = _mk_change_events(_obs_event(1))
         store.append_and_rebuild(events)
 
         raw = (tmp_path / "issues" / "snapshot.json").read_bytes()
@@ -367,7 +394,7 @@ class TestChangeIssueStore:
 
     def test_read_events_validates_committed_ledger(self, tmp_path: Path) -> None:
         store = ChangeIssueStore(tmp_path)
-        events = _mk_change_events(_obs_event(1, "E1", "IDEM-1"))
+        events = _mk_change_events(_obs_event(1))
         store.append_and_rebuild(events)
 
         committed = read_change_issue_events(tmp_path / "issues" / "events.jsonl")
@@ -387,7 +414,7 @@ class TestProjectProblemStore:
 
     def test_creates_events_problems_and_queue(self, tmp_path: Path) -> None:
         store = ProjectProblemStore(tmp_path)
-        events = _mk_problem_events(_detected_problem_event(1, "E1", "IDEM-1"))
+        events = _mk_problem_events(_detected_problem_event(1))
         proj, queue = store.append_and_rebuild(events)
 
         assert len(proj.problems) == 1
@@ -403,7 +430,7 @@ class TestProjectProblemStore:
 
     def test_idempotent_no_op(self, tmp_path: Path) -> None:
         store = ProjectProblemStore(tmp_path)
-        events = _mk_problem_events(_detected_problem_event(1, "E1", "IDEM-1"))
+        events = _mk_problem_events(_detected_problem_event(1))
 
         proj1, _ = store.append_and_rebuild(events)
         proj2, _ = store.append_and_rebuild(events)  # same key
@@ -415,8 +442,8 @@ class TestProjectProblemStore:
 
     def test_idempotent_retry_ignores_new_envelope_timestamp(self, tmp_path: Path) -> None:
         store = ProjectProblemStore(tmp_path)
-        first = _detected_problem_event(1, "E1", "IDEM-1")
-        retry = _detected_problem_event(1, "E1", "IDEM-1")
+        first = _detected_problem_event(1)
+        retry = _detected_problem_event(1)
         retry["ts"] = "2026-07-25T10:00:01Z"
 
         store.append_and_rebuild(_mk_problem_events(first))
@@ -431,10 +458,12 @@ class TestProjectProblemStore:
     ) -> None:
         store = ProjectProblemStore(tmp_path)
         events_path = tmp_path / "qa/issues/events.jsonl"
-        store.append_and_rebuild(_mk_problem_events(_detected_problem_event(1, "E1", "IDEM-1")))
+        store.append_and_rebuild(_mk_problem_events(_detected_problem_event(1)))
         before = events_path.read_bytes()
-        conflicting = _detected_problem_event(1, "E2", "IDEM-1")
+        first = _detected_problem_event(1)
+        conflicting = _detected_problem_event(1)
         conflicting["title"] = "Different title"
+        conflicting["event_id"] = event_id(first["idempotency_key"] + ":other")
 
         with pytest.raises(LedgerIntegrityError, match="idempotency conflict"):
             store.append_and_rebuild(_mk_problem_events(conflicting))
@@ -447,10 +476,13 @@ class TestProjectProblemStore:
     ) -> None:
         store = ProjectProblemStore(tmp_path)
         events_path = tmp_path / "qa/issues/events.jsonl"
-        store.append_and_rebuild(_mk_problem_events(_detected_problem_event(1, "E1", "IDEM-1")))
+        first = _detected_problem_event(1)
+        store.append_and_rebuild(_mk_problem_events(first))
         before = events_path.read_bytes()
-        conflicting = _detected_problem_event(1, "E1", "IDEM-2")
+        conflicting = _detected_problem_event(1)
         conflicting["title"] = "Different title"
+        conflicting["idempotency_key"] = first["idempotency_key"] + ":other"
+        conflicting["event_id"] = first["event_id"]
 
         with pytest.raises(LedgerIntegrityError, match="duplicate event_id"):
             store.append_and_rebuild(_mk_problem_events(conflicting))
@@ -463,30 +495,27 @@ class TestProjectProblemStore:
     ) -> None:
         store = ProjectProblemStore(tmp_path)
         events_path = tmp_path / "qa/issues/events.jsonl"
-        conflicting = _detected_problem_event(1, "E2", "IDEM-1")
+        first = _detected_problem_event(1)
+        conflicting = _detected_problem_event(1)
         conflicting["title"] = "Different title"
+        conflicting["event_id"] = event_id(first["idempotency_key"] + ":other")
 
         with pytest.raises(LedgerIntegrityError, match="idempotency conflict"):
-            store.append_and_rebuild(
-                _mk_problem_events(
-                    _detected_problem_event(1, "E1", "IDEM-1"),
-                    conflicting,
-                )
-            )
+            store.append_and_rebuild(_mk_problem_events(first, conflicting))
 
         assert not events_path.exists()
 
     def test_multiple_events_incrementing_version(self, tmp_path: Path) -> None:
         store = ProjectProblemStore(tmp_path)
-        batch1 = _mk_problem_events(_detected_problem_event(1, "E1", "IDEM-1"))
+        batch1 = _mk_problem_events(_detected_problem_event(1))
         store.append_and_rebuild(batch1)
 
         batch2 = _mk_problem_events(
             {
                 "schema_version": "1.0",
                 "seq": 1,
-                "event_id": "E2",
-                "idempotency_key": "IDEM-2",
+                "event_id": event_id("test:problem_occurrence_linked:PROB-aaaaaaaaaaaaaaaa:2"),
+                "idempotency_key": "test:problem_occurrence_linked:PROB-aaaaaaaaaaaaaaaa:2",
                 "ts": "2026-07-25T10:01:00Z",
                 "evidence_digest": "sha256:aabbccdd",
                 "type": "problem_occurrence_linked",
@@ -504,24 +533,24 @@ class TestProjectProblemStore:
 
     def test_seq_continues_from_last(self, tmp_path: Path) -> None:
         store = ProjectProblemStore(tmp_path)
-        batch1 = _mk_problem_events(_detected_problem_event(1, "E1", "IDEM-1"))
+        batch1 = _mk_problem_events(_detected_problem_event(1))
         store.append_and_rebuild(batch1)
 
         batch2 = _mk_problem_events(
             {
                 "schema_version": "1.0",
                 "seq": 1,
-                "event_id": "E2",
-                "idempotency_key": "IDEM-2",
+                "event_id": event_id("review:confirm_assessment:PROB-aaaaaaaaaaaaaaaa:1:sha256:eb78e5f858b88c7967c3c4ea7fcccbf8032ec656707d27c8097a45c5d40de34a"),
+                "idempotency_key": "review:confirm_assessment:PROB-aaaaaaaaaaaaaaaa:1:sha256:eb78e5f858b88c7967c3c4ea7fcccbf8032ec656707d27c8097a45c5d40de34a",
                 "ts": "2026-07-25T10:01:00Z",
-                "evidence_digest": "sha256:aabbccdd",
+                "evidence_digest": "sha256:eb78e5f858b88c7967c3c4ea7fcccbf8032ec656707d27c8097a45c5d40de34a",
                 "type": "problem_assessment_confirmed",
                 "problem_id": PROB_ID,
                 "expected_problem_version": 1,
                 "classification": "product_bug",
                 "severity": "critical",
                 "reason": "confirmed",
-                "evidence_refs": ["OCC-1111111111111111"],
+                "evidence_refs": ['OCC-1111111111111111'],
             }
         )
         store.append_and_rebuild(batch2)
@@ -533,7 +562,7 @@ class TestProjectProblemStore:
 
     def test_problems_json_is_canonical(self, tmp_path: Path) -> None:
         store = ProjectProblemStore(tmp_path)
-        events = _mk_problem_events(_detected_problem_event(1, "E1", "IDEM-1"))
+        events = _mk_problem_events(_detected_problem_event(1))
         store.append_and_rebuild(events)
 
         raw = (tmp_path / "qa" / "issues" / "problems.json").read_bytes()
@@ -544,7 +573,7 @@ class TestProjectProblemStore:
 
     def test_rebuild_after_projection_deletion(self, tmp_path: Path) -> None:
         store = ProjectProblemStore(tmp_path)
-        events = _mk_problem_events(_detected_problem_event(1, "E1", "IDEM-1"))
+        events = _mk_problem_events(_detected_problem_event(1))
         store.append_and_rebuild(events)
 
         (tmp_path / "qa" / "issues" / "problems.json").unlink()
@@ -554,8 +583,8 @@ class TestProjectProblemStore:
             {
                 "schema_version": "1.0",
                 "seq": 1,
-                "event_id": "E2",
-                "idempotency_key": "IDEM-2",
+                "event_id": event_id("test:problem_occurrence_linked:PROB-aaaaaaaaaaaaaaaa:2"),
+                "idempotency_key": "test:problem_occurrence_linked:PROB-aaaaaaaaaaaaaaaa:2",
                 "ts": "2026-07-25T10:01:00Z",
                 "evidence_digest": "sha256:aabbccdd",
                 "type": "problem_occurrence_linked",
@@ -574,7 +603,7 @@ class TestProjectProblemStore:
 
     def test_read_events_validates_committed_ledger(self, tmp_path: Path) -> None:
         store = ProjectProblemStore(tmp_path)
-        events = _mk_problem_events(_detected_problem_event(1, "E1", "IDEM-1"))
+        events = _mk_problem_events(_detected_problem_event(1))
         store.append_and_rebuild(events)
 
         committed = read_problem_events(tmp_path / "qa" / "issues" / "events.jsonl")
@@ -585,7 +614,7 @@ class TestProjectProblemStore:
         """Double rebuild from same events must yield byte-identical files."""
         store1 = ProjectProblemStore(tmp_path / "ws1")
         store2 = ProjectProblemStore(tmp_path / "ws2")
-        events = _mk_problem_events(_detected_problem_event(1, "E1", "IDEM-1"))
+        events = _mk_problem_events(_detected_problem_event(1))
 
         store1.append_and_rebuild(events)
         store2.append_and_rebuild(events)

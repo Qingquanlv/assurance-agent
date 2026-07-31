@@ -1153,7 +1153,7 @@ def test_reconcile_uses_authoritative_execution_to_resolve_pending_problem(tmp_p
         ProblemDetectedEvent,
         ProblemVerificationRequestedEvent,
     )
-    from assurance_agent.workflow.issues.identity import problem_fingerprint, problem_id
+    from assurance_agent.evidence.issue_identity import event_id, problem_fingerprint, problem_id
     from assurance_agent.workflow.issues.ledger import ProjectProblemStore
     from assurance_agent.workflow.issues.operations import reconcile_issues_operation
     from assurance_agent.workflow.issues.projection import dump_projection
@@ -1187,12 +1187,17 @@ def test_reconcile_uses_authoritative_execution_to_resolve_pending_problem(tmp_p
         fingerprint_inputs=FingerprintInputs(surface="endpoint", symptom="returns http 500"),
     )
     pid = problem_id(fingerprint)
+    detected_key = "detected"
+    verify_key = (
+        f"review:submit_resolution:{pid}:1:{change_id}:20260725-140000:"
+        f"{'sha256:' + 'b' * 64}"
+    )
     project_events = [
         ProblemDetectedEvent(
             schema_version="1.0",
             seq=1,
-            event_id="EVT-detected",
-            idempotency_key="detected",
+            event_id=event_id(detected_key),
+            idempotency_key=detected_key,
             ts="2026-07-25T13:00:00Z",
             evidence_digest="sha256:" + "a" * 64,
             problem_id=pid,
@@ -1210,8 +1215,8 @@ def test_reconcile_uses_authoritative_execution_to_resolve_pending_problem(tmp_p
         ProblemVerificationRequestedEvent(
             schema_version="1.0",
             seq=1,
-            event_id="EVT-verify",
-            idempotency_key="verify",
+            event_id=event_id(verify_key),
+            idempotency_key=verify_key,
             ts="2026-07-25T14:00:00Z",
             evidence_digest="sha256:" + "b" * 64,
             problem_id=pid,

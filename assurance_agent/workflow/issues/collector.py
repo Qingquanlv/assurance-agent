@@ -50,7 +50,7 @@ from assurance_agent.evidence.digests import (
 )
 from assurance_agent.workflow.execution.evidence import EvidenceError
 from assurance_agent.workflow.execution.results import CoverageResult, PerformanceResult, TargetResult
-from assurance_agent.workflow.issues.identity import (
+from assurance_agent.evidence.issue_identity import (
     ObservationIdentityInput,
     observation_id,
 )
