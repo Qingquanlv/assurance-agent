@@ -21,15 +21,28 @@ from assurance_agent.workflow.core.exit_codes import (
 from assurance_agent.workflow.core.graph_events import (
     BudgetConsumedEvent,
     CheckpointImportedEvent,
+    GraphInterruptedEvent,
     GraphInvocationStartedEvent,
     GraphResumedEvent,
     GraphTerminalEvent,
+    ManualPlanRevisionEvent,
     ResumeAnchor,
     SuperstepCommittedEvent,
     SuperstepPlannedEvent,
     TaskImportedEvent,
 )
 from assurance_agent.workflow.core.progression import ProgressionError, transaction
+from assurance_agent.workflow.graph.manual_revision import (
+    ManualRevisionError,
+    RevisionPathBaseline,
+    RevisionViewBinding,
+    build_manual_revision_transition,
+    capture_revision_candidate,
+    derive_revision_recovery_state,
+    find_open_revision_transition,
+    stage_missing_resume_suffix,
+    transition_from_committed_revision,
+)
 from assurance_agent.workflow.execution.tree_hash import sha256_file
 from assurance_agent.workflow.graph.checkpoint import (
     CheckpointImportError,
@@ -211,9 +224,11 @@ class GraphRuntime:
 
     def status(self, invocation_id: str) -> GraphStatus:
         projection = self._checkpoints.project(invocation_id)
+        events = read_events_strict(self._checkpoints._change_dir)  # noqa: SLF001
         return graph_status_from_projection(
             projection,
             pending_write_sets=self._pending_write_sets(invocation_id),
+            recovery_state=derive_revision_recovery_state(events),
         )
 
     def import_checkpoint(
@@ -650,11 +665,13 @@ class GraphRuntime:
         except LedgerIntegrityError as exc:
             raise GraphIntegrityError(str(exc)) from exc
         context = self._context_for(projection)
+        self._recover_open_revision_transitions(context)
+        try:
+            projection = self._checkpoints.project(invocation_id)
+        except LedgerIntegrityError as exc:
+            raise GraphIntegrityError(str(exc)) from exc
         if projection.terminal is not None:
-            status = graph_status_from_projection(
-                projection,
-                pending_write_sets=self._pending_write_sets(invocation_id),
-            )
+            status = self.status(invocation_id)
             return RunResult(
                 invocation_id=invocation_id,
                 status=status,
@@ -673,6 +690,18 @@ class GraphRuntime:
                 )
         return self._drive(invocation_id, context)
 
+    def _recover_open_revision_transitions(self, context: RuntimeContext) -> None:
+        """Repair any open manual-revision resume prefix before ordinary recovery."""
+        try:
+            with transaction(context.change_dir) as txn:
+                events = txn.read_events_strict()
+                open_transition = find_open_revision_transition(events)
+                if open_transition is None:
+                    return
+                stage_missing_resume_suffix(txn=txn, transition=open_transition)
+        except ManualRevisionError as exc:
+            raise GraphIntegrityError(str(exc)) from exc
+
     def _commit_resume_command(
         self,
         projection: GraphProjection,
@@ -688,6 +717,15 @@ class GraphRuntime:
             raise GraphRuntimeError(
                 f"action {command.action!r} not allowed for interrupt {command.interrupt_id}"
             )
+        uses_manual_revision = (
+            command.action == "fix_and_proceed"
+            and projection.event_schema_version >= 5
+            and pending.revision_view is not None
+        )
+        if uses_manual_revision:
+            self._commit_manual_revision_resume(projection, context, command, pending)
+            return
+
         audited = self._rehash_artifact_view(context.change_dir, pending)
         # Emit graph_resumed for every invocation along the interrupt ns
         # (root → mid → leaf). Writing only root+leaf leaves intermediate
@@ -696,6 +734,8 @@ class GraphRuntime:
         resume_invocation_ids = _invocation_ids_along_ns(pending.checkpoint_ns)
         if projection.invocation_id not in resume_invocation_ids:
             resume_invocation_ids.insert(0, projection.invocation_id)
+        source_attempt = pending.source_gate_attempt_id if projection.event_schema_version >= 5 else None
+        source_tree = pending.source_gate_tree_id if projection.event_schema_version >= 5 else None
         with transaction(context.change_dir) as txn:
             if projection.event_schema_version >= 3:
                 parent_anchor_ref: str | None = None
@@ -723,6 +763,8 @@ class GraphRuntime:
                             anchor=anchor,
                             parent_anchor_ref=parent_anchor_ref,
                             payload=command.payload if index == 0 else {},
+                            source_gate_attempt_id=source_attempt,
+                            source_gate_tree_id=source_tree,
                         )
                     )
                     parent_anchor_ref = canonical_digest(anchor.model_dump(mode="json"))
@@ -762,6 +804,103 @@ class GraphRuntime:
                     projection,
                 )
                 txn.set_workflow_state_projection(render_workflow_state_yaml(live))
+
+    def _commit_manual_revision_resume(
+        self,
+        projection: GraphProjection,
+        context: RuntimeContext,
+        command: ResumeCommand,
+        pending: InterruptProjection,
+    ) -> None:
+        """Ingest the revision view, then append revision + ordered resume prefix."""
+        if (
+            pending.revision_owner_invocation_id is None
+            or pending.revision_base_tree_id is None
+            or pending.revision_view is None
+            or pending.revision_paths is None
+            or pending.revision_before_sha256 is None
+        ):
+            raise GraphRuntimeError(f"interrupt {pending.interrupt_id} lacks committed revision metadata")
+        binding = RevisionViewBinding(
+            interrupt_id=pending.interrupt_id,
+            owner_invocation_id=pending.revision_owner_invocation_id,
+            base_tree_id=pending.revision_base_tree_id,
+            view_relpath=pending.revision_view,
+            logical_paths=tuple(pending.revision_paths),
+            baseline=tuple(
+                RevisionPathBaseline(logical_path=path, sha256=pending.revision_before_sha256[path])
+                for path in pending.revision_paths
+            ),
+        )
+        try:
+            tree_revision = capture_revision_candidate(
+                change_dir=context.change_dir,
+                store=self._objects,
+                binding=binding,
+            )
+        except WorkspaceError as exc:
+            message = str(exc)
+            if "manual_plan_revision_noop" in message:
+                raise GraphRuntimeError("manual_plan_revision_noop") from exc
+            raise GraphRuntimeError(message) from exc
+
+        events = read_events_strict(context.change_dir)
+        interrupted = _committed_leaf_interrupt(
+            events,
+            interrupt_id=pending.interrupt_id,
+            owner_invocation_id=pending.revision_owner_invocation_id,
+        )
+        owner = self._checkpoints.project(pending.revision_owner_invocation_id)
+        pinned = {
+            "policy_digest": owner.policy_digest,
+            "gate_semantics_digest": owner.gate_semantics_digest,
+            "assurance_profile_digest": owner.assurance_profile_digest,
+            "graph_digest": owner.graph_digest,
+            "ir_digest": owner.ir_digest,
+        }
+        anchors = _resume_anchors_for(pending)
+        try:
+            transition = build_manual_revision_transition(
+                interrupted=interrupted,
+                command=command,
+                revision=tree_revision,
+                pinned_definition_digests=pinned,
+                resume_anchors=anchors,
+            )
+        except ManualRevisionError as exc:
+            raise GraphRuntimeError(str(exc)) from exc
+
+        try:
+            with transaction(context.change_dir) as txn:
+                live_events = txn.read_events_strict()
+                existing = next(
+                    (
+                        event
+                        for event in live_events
+                        if event.get("type") == "manual_plan_revision"
+                        and event.get("interrupt_id") == pending.interrupt_id
+                    ),
+                    None,
+                )
+                if existing is not None:
+                    committed = transition_from_committed_revision(
+                        ManualPlanRevisionEvent.model_validate(
+                            {k: v for k, v in existing.items() if k not in {"seq", "ts"}}
+                        )
+                    )
+                    if (
+                        committed.revision.revision_transition_id
+                        != transition.revision.revision_transition_id
+                    ):
+                        raise GraphIntegrityError(
+                            "manual revision integrity conflict: non-identical retry after commit"
+                        )
+                    stage_missing_resume_suffix(txn=txn, transition=committed)
+                    return
+                txn.append_strict(transition.revision)
+                stage_missing_resume_suffix(txn=txn, transition=transition)
+        except ManualRevisionError as exc:
+            raise GraphIntegrityError(str(exc)) from exc
 
     def _rehash_artifact_view(
         self,
@@ -1041,6 +1180,7 @@ class GraphRuntime:
 
     def _reach_recovery_barrier(self, invocation_id: str, context: RuntimeContext) -> GraphProjection:
         """Reconcile and replay durable updates until no recovery seam reports progress."""
+        self._recover_open_revision_transitions(context)
         while True:
             projection = self._checkpoints.project(invocation_id)
             self._reconcile_running(projection, context)
@@ -1306,6 +1446,41 @@ def _invocation_ids_along_ns(checkpoint_ns: str) -> list[str]:
     """
     parts = [part for part in checkpoint_ns.split("/") if part]
     return [parts[index] for index in range(0, len(parts), 2)]
+
+
+def _resume_anchors_for(pending: InterruptProjection) -> tuple[ResumeAnchor, ...]:
+    invocation_ids = _invocation_ids_along_ns(pending.checkpoint_ns)
+    anchors: list[ResumeAnchor] = []
+    for invocation_id in invocation_ids:
+        anchors.append(
+            ResumeAnchor(
+                invocation_id=invocation_id,
+                checkpoint_ns=_checkpoint_ns_for_invocation(pending.checkpoint_ns, invocation_id),
+                node_id=_node_id_for_invocation(pending.checkpoint_ns, invocation_id, pending.node_id),
+                interrupt_id=pending.interrupt_id,
+            )
+        )
+    return tuple(anchors)
+
+
+def _committed_leaf_interrupt(
+    events: list[dict[str, object]],
+    *,
+    interrupt_id: str,
+    owner_invocation_id: str,
+) -> GraphInterruptedEvent:
+    for event in reversed(events):
+        if event.get("type") != "graph_interrupted":
+            continue
+        if event.get("interrupt_id") != interrupt_id:
+            continue
+        if event.get("invocation_id") != owner_invocation_id:
+            continue
+        payload = {key: value for key, value in event.items() if key not in {"seq", "ts"}}
+        return GraphInterruptedEvent.model_validate(payload)
+    raise GraphRuntimeError(
+        f"committed leaf interrupt {interrupt_id} missing for owner {owner_invocation_id}"
+    )
 
 
 def _checkpoint_ns_for_invocation(full_ns: str, invocation_id: str) -> str:

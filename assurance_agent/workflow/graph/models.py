@@ -489,6 +489,7 @@ class GraphStatus(BaseModel):
     next_retry_at: str | None
     budgets: dict[str, int]
     terminal_reason: str | None
+    recovery_state: Literal["revision_resume_recovery_pending"] | None = None
 
 
 class RunResult(BaseModel):

@@ -1249,7 +1249,7 @@ def test_interrupt_handler_builds_structural_projection_without_ledger(tmp_path:
     project = _make_project(tmp_path)
     _write_review(project / "qa" / "changes" / "CH-1", {"decision": "needs_human_review"})
     workspace = _workspace(project)
-    handler = InterruptHandler(_compiled(_INTERRUPT_GRAPH, footer=_GATE_FOOTER))
+    handler = InterruptHandler(_compiled(_INTERRUPT_GRAPH, footer=_GATE_FOOTER), _store(project))
     task = _task("builtin:interrupt", node_id="human-review", task_id="task-int")
     result = handler.execute(task, workspace, _context(project))
 

@@ -11,18 +11,29 @@ import hashlib
 import os
 import shutil
 import stat
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import assert_path_segment_safe
+from assurance_agent.workflow.core.graph_events import (
+    GraphInterruptedEvent,
+    GraphResumedEvent,
+    ManualPlanRevisionEvent,
+    ResumeAnchor,
+)
+from assurance_agent.workflow.core.progression import ProgressionTxn
+from assurance_agent.workflow.graph.compiler import canonical_digest
 from assurance_agent.workflow.graph.contracts import ResourcePath
+from assurance_agent.workflow.graph.models import ResumeCommand
 from assurance_agent.workflow.graph.workspace import TreeFileRevision, TreeStore
 
 _REVISION_VIEWS_RELPATH = PurePosixPath(".graph-runtime") / "revision-views"
 _OPEN_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 _OPEN_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW
+_PREFIX_CONFLICT = "manual_plan_revision_prefix_conflict"
 
 
 class ManualRevisionError(AaError):
@@ -43,6 +54,18 @@ class RevisionViewBinding:
     view_relpath: str
     logical_paths: tuple[str, ...]
     baseline: tuple[RevisionPathBaseline, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class GateEvidenceEpoch:
+    source_gate_attempt_id: str
+    source_gate_tree_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ManualRevisionTransition:
+    revision: ManualPlanRevisionEvent
+    resumes: tuple[GraphResumedEvent, ...]
 
 
 def _after_revision_inventory_hook(view_root: Path) -> None:
@@ -355,10 +378,314 @@ def capture_revision_candidate(
     return store.replace_tree_files(binding.base_tree_id, replacements)
 
 
+def _anchor_ref(anchor: ResumeAnchor) -> str:
+    return canonical_digest(anchor.model_dump(mode="json"))
+
+
+def _resume_events_for(
+    *,
+    revision_transition_id: str,
+    command_action: str,
+    who: str,
+    reason: str,
+    audited_reads_sha256: Mapping[str, str],
+    resume_anchors: tuple[ResumeAnchor, ...],
+    source_gate_attempt_id: str | None,
+    source_gate_tree_id: str | None,
+) -> tuple[GraphResumedEvent, ...]:
+    chain_length = len(resume_anchors)
+    if chain_length < 1:
+        raise ManualRevisionError("manual revision resume chain must be non-empty")
+    resumes: list[GraphResumedEvent] = []
+    parent_anchor_ref: str | None = None
+    for ordinal, anchor in enumerate(resume_anchors):
+        resumes.append(
+            GraphResumedEvent(
+                type="graph_resumed",
+                invocation_id=anchor.invocation_id,
+                checkpoint_ns=anchor.checkpoint_ns,
+                interrupt_id=anchor.interrupt_id,
+                action=command_action,
+                reason=reason,
+                who=who,
+                audited_reads_sha256=dict(audited_reads_sha256) if ordinal == 0 else {},
+                anchor=anchor,
+                parent_anchor_ref=parent_anchor_ref,
+                payload={},
+                revision_transition_id=revision_transition_id,
+                revision_ordinal=ordinal,
+                revision_chain_length=chain_length,
+                source_gate_attempt_id=source_gate_attempt_id,
+                source_gate_tree_id=source_gate_tree_id,
+            )
+        )
+        parent_anchor_ref = _anchor_ref(anchor)
+    return tuple(resumes)
+
+
+def build_manual_revision_transition(
+    *,
+    interrupted: GraphInterruptedEvent,
+    command: ResumeCommand,
+    revision: TreeFileRevision,
+    pinned_definition_digests: Mapping[str, str],
+    resume_anchors: tuple[ResumeAnchor, ...],
+) -> ManualRevisionTransition:
+    """Build a deterministic transition from committed inputs only (no FS paths)."""
+    if command.action != "fix_and_proceed":
+        raise ManualRevisionError("manual revision transition requires fix_and_proceed")
+    if command.interrupt_id != interrupted.interrupt_id:
+        raise ManualRevisionError("resume interrupt_id does not match interrupted event")
+    if interrupted.revision_base_tree_id is None:
+        raise ManualRevisionError("interrupted event lacks revision_base_tree_id")
+    if interrupted.source_gate_attempt_id is None or interrupted.source_gate_tree_id is None:
+        raise ManualRevisionError("manual revision requires a source gate evidence pair")
+    if not resume_anchors:
+        raise ManualRevisionError("manual revision resume anchors must be non-empty")
+    if resume_anchors[-1].interrupt_id != interrupted.interrupt_id:
+        raise ManualRevisionError("leaf resume anchor interrupt_id mismatch")
+
+    logical_paths = [path.logical_path for path in revision.paths]
+    before_sha256 = {path.logical_path: path.before_sha256 for path in revision.paths}
+    after_sha256 = {path.logical_path: path.after_sha256 for path in revision.paths}
+    identity = {
+        "pinned_definition_digests": dict(sorted(pinned_definition_digests.items())),
+        "interrupt_id": interrupted.interrupt_id,
+        "action": command.action,
+        "who": command.who,
+        "reason": command.reason,
+        "audited_reads_sha256": dict(sorted(interrupted.audited_reads_sha256.items())),
+        "source_gate_attempt_id": interrupted.source_gate_attempt_id,
+        "source_gate_tree_id": interrupted.source_gate_tree_id,
+        "base_tree_id": interrupted.revision_base_tree_id,
+        "target_tree_id": revision.target_tree_id,
+        "logical_paths": logical_paths,
+        "before_sha256": dict(sorted(before_sha256.items())),
+        "after_sha256": dict(sorted(after_sha256.items())),
+        "resume_anchors": [anchor.model_dump(mode="json") for anchor in resume_anchors],
+    }
+    revision_transition_id = canonical_digest(identity)
+    owner_invocation_id = interrupted.revision_owner_invocation_id or interrupted.invocation_id
+    owner_ns = next(
+        (anchor.checkpoint_ns for anchor in resume_anchors if anchor.invocation_id == owner_invocation_id),
+        interrupted.checkpoint_ns,
+    )
+    revision_event = ManualPlanRevisionEvent(
+        type="manual_plan_revision",
+        invocation_id=owner_invocation_id,
+        checkpoint_ns=owner_ns,
+        revision_transition_id=revision_transition_id,
+        interrupt_id=interrupted.interrupt_id,
+        action="fix_and_proceed",
+        who=command.who,
+        reason=command.reason,
+        audited_reads_sha256=dict(interrupted.audited_reads_sha256),
+        source_gate_attempt_id=interrupted.source_gate_attempt_id,
+        source_gate_tree_id=interrupted.source_gate_tree_id,
+        base_tree_id=interrupted.revision_base_tree_id,
+        target_tree_id=revision.target_tree_id,
+        logical_paths=logical_paths,
+        before_sha256=before_sha256,
+        after_sha256=after_sha256,
+        resume_anchors=list(resume_anchors),
+    )
+    resumes = _resume_events_for(
+        revision_transition_id=revision_transition_id,
+        command_action=command.action,
+        who=command.who,
+        reason=command.reason,
+        audited_reads_sha256=interrupted.audited_reads_sha256,
+        resume_anchors=resume_anchors,
+        source_gate_attempt_id=interrupted.source_gate_attempt_id,
+        source_gate_tree_id=interrupted.source_gate_tree_id,
+    )
+    return ManualRevisionTransition(revision=revision_event, resumes=resumes)
+
+
+def transition_from_committed_revision(revision: ManualPlanRevisionEvent) -> ManualRevisionTransition:
+    """Reconstruct a transition solely from a committed manual_plan_revision event."""
+    anchors = tuple(revision.resume_anchors)
+    resumes = _resume_events_for(
+        revision_transition_id=revision.revision_transition_id,
+        command_action=revision.action,
+        who=revision.who,
+        reason=revision.reason,
+        audited_reads_sha256=revision.audited_reads_sha256,
+        resume_anchors=anchors,
+        source_gate_attempt_id=revision.source_gate_attempt_id,
+        source_gate_tree_id=revision.source_gate_tree_id,
+    )
+    return ManualRevisionTransition(revision=revision, resumes=resumes)
+
+
+def _resume_payload(event: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "revision_transition_id": event.get("revision_transition_id"),
+        "revision_ordinal": event.get("revision_ordinal"),
+        "revision_chain_length": event.get("revision_chain_length"),
+        "invocation_id": event.get("invocation_id"),
+        "checkpoint_ns": event.get("checkpoint_ns"),
+        "interrupt_id": event.get("interrupt_id"),
+        "action": event.get("action"),
+        "reason": event.get("reason"),
+        "who": event.get("who"),
+        "audited_reads_sha256": event.get("audited_reads_sha256") or {},
+        "anchor": event.get("anchor"),
+        "parent_anchor_ref": event.get("parent_anchor_ref"),
+        "source_gate_attempt_id": event.get("source_gate_attempt_id"),
+        "source_gate_tree_id": event.get("source_gate_tree_id"),
+    }
+
+
+def validate_resume_prefix(
+    events: Sequence[Mapping[str, object]],
+    transition: ManualRevisionTransition,
+) -> int:
+    """Return the first missing resume ordinal or raise a prefix conflict."""
+    expected = transition.resumes
+    chain_length = len(expected)
+    transition_id = transition.revision.revision_transition_id
+    interrupt_id = transition.revision.interrupt_id
+    observed: list[Mapping[str, object]] = []
+    for event in events:
+        if event.get("type") != "graph_resumed":
+            continue
+        event_transition = event.get("revision_transition_id")
+        if event_transition is None:
+            continue
+        if event_transition != transition_id:
+            if event.get("interrupt_id") == interrupt_id:
+                raise ManualRevisionError(_PREFIX_CONFLICT)
+            continue
+        observed.append(event)
+
+    if not observed:
+        return 0
+
+    seen_ordinals: set[int] = set()
+    for index, event in enumerate(observed):
+        ordinal = event.get("revision_ordinal")
+        length = event.get("revision_chain_length")
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise ManualRevisionError(_PREFIX_CONFLICT)
+        if length != chain_length:
+            raise ManualRevisionError(_PREFIX_CONFLICT)
+        if ordinal in seen_ordinals or ordinal != index or ordinal >= chain_length:
+            raise ManualRevisionError(_PREFIX_CONFLICT)
+        seen_ordinals.add(ordinal)
+        expected_dump = expected[ordinal].model_dump(mode="json", exclude_none=True)
+        if _resume_payload(event) != _resume_payload(expected_dump):
+            raise ManualRevisionError(_PREFIX_CONFLICT)
+    return len(observed)
+
+
+def stage_missing_resume_suffix(
+    *,
+    txn: ProgressionTxn,
+    transition: ManualRevisionTransition,
+) -> int:
+    """Validate the committed prefix and append only its missing suffix."""
+    events = txn.read_events_strict()
+    first_missing = validate_resume_prefix(events, transition)
+    for resume in transition.resumes[first_missing:]:
+        txn.append_strict(resume)
+    return first_missing
+
+
+def _graph_payload(event: Mapping[str, object]) -> dict[str, object]:
+    return {key: value for key, value in event.items() if key not in {"seq", "ts"}}
+
+
+def find_open_revision_transition(
+    events: Sequence[Mapping[str, object]],
+) -> ManualRevisionTransition | None:
+    """Return the open committed revision whose resume chain is still incomplete."""
+    open_transition: ManualRevisionTransition | None = None
+    for event in events:
+        if event.get("type") != "manual_plan_revision":
+            continue
+        revision = ManualPlanRevisionEvent.model_validate(_graph_payload(event))
+        transition = transition_from_committed_revision(revision)
+        missing = validate_resume_prefix(events, transition)
+        if missing < len(transition.resumes):
+            if open_transition is not None:
+                raise ManualRevisionError(_PREFIX_CONFLICT)
+            open_transition = transition
+    return open_transition
+
+
+def derive_revision_recovery_state(
+    events: Sequence[Mapping[str, object]],
+) -> Literal["revision_resume_recovery_pending"] | None:
+    """Derive recovery_state from the strict global event stream."""
+    try:
+        open_transition = find_open_revision_transition(events)
+    except ManualRevisionError:
+        return "revision_resume_recovery_pending"
+    if open_transition is None:
+        return None
+    return "revision_resume_recovery_pending"
+
+
+def resolve_gate_evidence_epoch(
+    *,
+    events: Sequence[Mapping[str, object]],
+    invocation_id: str,
+    checkpoint: str,
+    gate_ids: frozenset[str],
+    checkpoint_gate_aliases: Mapping[str, str],
+) -> GateEvidenceEpoch | None:
+    """Resolve the successful gate attempt/tree pair for a checkpoint, if any."""
+    gate_id = checkpoint if checkpoint in gate_ids else checkpoint_gate_aliases.get(checkpoint)
+    if gate_id is None or gate_id not in gate_ids:
+        return None
+
+    current_tree_id: str | None = None
+    latest_attempt_id: str | None = None
+    for event in events:
+        if event.get("invocation_id") != invocation_id:
+            continue
+        event_type = event.get("type")
+        if event_type == "graph_invocation_started":
+            tree = event.get("root_tree_id")
+            current_tree_id = tree if isinstance(tree, str) else current_tree_id
+        elif event_type == "superstep_committed":
+            tree = event.get("target_tree_id")
+            current_tree_id = tree if isinstance(tree, str) else current_tree_id
+        elif event_type == "manual_plan_revision":
+            tree = event.get("target_tree_id")
+            current_tree_id = tree if isinstance(tree, str) else current_tree_id
+        elif event_type == "task_attempt_succeeded":
+            report = event.get("gate_report")
+            attempt_id = event.get("attempt_id")
+            if (
+                isinstance(report, Mapping)
+                and report.get("gate_id") == gate_id
+                and isinstance(attempt_id, str)
+                and current_tree_id is not None
+            ):
+                latest_attempt_id = attempt_id
+    if latest_attempt_id is None or current_tree_id is None:
+        return None
+    return GateEvidenceEpoch(
+        source_gate_attempt_id=latest_attempt_id,
+        source_gate_tree_id=current_tree_id,
+    )
+
+
 __all__ = [
+    "GateEvidenceEpoch",
     "ManualRevisionError",
+    "ManualRevisionTransition",
     "RevisionPathBaseline",
     "RevisionViewBinding",
+    "build_manual_revision_transition",
     "capture_revision_candidate",
+    "derive_revision_recovery_state",
+    "find_open_revision_transition",
     "materialize_revision_view",
+    "resolve_gate_evidence_epoch",
+    "stage_missing_resume_suffix",
+    "transition_from_committed_revision",
+    "validate_resume_prefix",
 ]

@@ -10,7 +10,6 @@ import pytest
 
 from assurance_agent.artifacts.models.plan_checks import CheckEvidence
 from assurance_agent.artifacts.models.review import Review
-from assurance_agent.workflow.orchestration import dsl
 from assurance_agent.workflow.orchestration.gate_semantics import (
     build_gate_semantics_manifest,
     discover_replay_semantic_dependencies,
@@ -44,6 +43,10 @@ def test_runtime_versions_are_present() -> None:
             "assurance_agent.workflow.orchestration.dsl._eval_call",
             "assurance_agent.verification.gate_state.plan_assurance_state",
             "assurance_agent.knowledge.capabilities.plan_review_route",
+            "assurance_agent.workflow.orchestration.gates._latest_graph_gate_decision",
+            "assurance_agent.workflow.orchestration.gates._apply_gate_decision",
+            "assurance_agent.workflow.orchestration.gates._decision_matches_source_epoch",
+            "assurance_agent.workflow.orchestration.gates.resolve_checkpoint_gate_id",
         }
     ),
 )
@@ -63,12 +66,34 @@ def test_ast_branch_mutation_changes_symbol_and_aggregate_digest(qualified_name:
     assert gate_semantics_digest() == baseline_manifest.digest
 
 
-def test_constant_mutation_changes_symbol_and_aggregate_digest() -> None:
-    qualified_name = "assurance_agent.workflow.orchestration.dsl.BUILTIN_ARITY"
+@pytest.mark.parametrize(
+    ("qualified_name", "mutator"),
+    [
+        (
+            "assurance_agent.workflow.orchestration.dsl.BUILTIN_ARITY",
+            lambda value: {**dict(value), "mutated_probe": 0},
+        ),
+        (
+            "assurance_agent.workflow.orchestration.gates.CHECKPOINT_GATE_ALIASES",
+            lambda value: {**dict(value), "mutated.checkpoint": "mutated-gate"},
+        ),
+        (
+            "assurance_agent.artifacts.models.review._PLAN_REVIEW_TYPES",
+            lambda value: frozenset({*value, "mutated-plan"}),
+        ),
+        (
+            "assurance_agent.artifacts.models.review._HUMAN_ONLY_PLAN_REVIEW_TYPES",
+            lambda value: frozenset({*value, "mutated-human-only"}),
+        ),
+    ],
+)
+def test_constant_mutation_changes_symbol_and_aggregate_digest(
+    qualified_name: str,
+    mutator: Callable[[Any], Any],
+) -> None:
     baseline_manifest = build_gate_semantics_manifest()
     baseline_symbol = next(s for s in baseline_manifest.symbols if s.qualified_name == qualified_name)
-    mutated = dict(dsl.BUILTIN_ARITY)
-    mutated["mutated_probe"] = 0
+    mutated = mutator(_resolve(qualified_name))
 
     mutated_manifest = build_gate_semantics_manifest(constant_overrides={qualified_name: mutated})
     mutated_symbol = next(s for s in mutated_manifest.symbols if s.qualified_name == qualified_name)

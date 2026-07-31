@@ -141,7 +141,7 @@ def build_default_node_runner(
     handlers: dict[str, TaskHandler] = {
         "builtin:join": JoinHandler(),
         "builtin:gate": GateHandler(compiled),
-        "builtin:interrupt": InterruptHandler(compiled),
+        "builtin:interrupt": InterruptHandler(compiled, object_store),
         **{target: operation for target in default_operations()},
     }
     namespace_handlers: dict[str, TaskHandler] = {"skill": agent}

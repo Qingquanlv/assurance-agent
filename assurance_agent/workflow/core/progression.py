@@ -23,7 +23,7 @@ from pydantic import BaseModel
 
 from assurance_agent.artifacts.models import WorkflowState
 from assurance_agent.exceptions import AaError
-from assurance_agent.workflow.core.events import Ledger, append_event_strict, read_events
+from assurance_agent.workflow.core.events import Ledger, append_event_strict, read_events, read_events_strict
 from assurance_agent.workflow.core.graph_events import SuperstepCommittedEvent
 from assurance_agent.workflow.core.snapshot import capture_files, restore_files
 from assurance_agent.workflow.core.state import read_state, state_file, state_guard, write_state
@@ -111,6 +111,10 @@ class ProgressionTxn:
 
     def read_events(self) -> list[dict[str, object]]:
         return read_events(self._change_dir)
+
+    def read_events_strict(self) -> list[dict[str, object]]:
+        """Strict ledger read under the already-held progression lock."""
+        return read_events_strict(self._change_dir)
 
     @property
     def ledger(self) -> Ledger:

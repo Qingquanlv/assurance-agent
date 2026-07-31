@@ -40,6 +40,7 @@ def graph_status_from_projection(
     projection: GraphProjection,
     *,
     pending_write_sets: tuple[str, ...] = (),
+    recovery_state: Literal["revision_resume_recovery_pending"] | None = None,
 ) -> GraphStatus:
     """从 ledger 投影派生公开 GraphStatus（不读 workflow-state.yaml）。"""
     pending_interrupts = tuple(
@@ -78,16 +79,21 @@ def graph_status_from_projection(
         next_retry_at=min(retry_ats) if retry_ats else None,
         budgets=dict(sorted(projection.budgets.items())),
         terminal_reason=projection.terminal_reason,
+        recovery_state=recovery_state,
     )
 
 
 def read_latest_graph_status(change_dir: Path, entrypoint: str | None = None) -> GraphStatus | None:
     """单一 ledger 快照：读一次 events，latest/projection/pending_write_sets 共用。"""
+    from assurance_agent.workflow.graph.manual_revision import derive_revision_recovery_state
+
     events = read_events_strict(change_dir)
     invocation_id = latest_root_invocation_id(events, entrypoint)
     if invocation_id is None:
         return None
     projection = fold_invocation_events(invocation_id, events)
     return graph_status_from_projection(
-        projection, pending_write_sets=pending_write_sets(events, invocation_id)
+        projection,
+        pending_write_sets=pending_write_sets(events, invocation_id),
+        recovery_state=derive_revision_recovery_state(events),
     )
