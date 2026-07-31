@@ -120,7 +120,7 @@ def _build_invocation_started(
         entrypoint=entrypoint,
         graph_id=graph_id,
         graph_digest=compiled.digest,
-        event_schema_version=4,
+        event_schema_version=binding.event_schema_version,
         ir_digest=compiled.digest,
         ingest_catalog_digest=catalog_digest,
         contract_digests=dict(compiled.contract_digests),

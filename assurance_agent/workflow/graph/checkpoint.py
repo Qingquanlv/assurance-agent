@@ -33,6 +33,7 @@ from assurance_agent.workflow.core.graph_events import (
     GraphInvocationStartedEvent,
     GraphResumedEvent,
     GraphTerminalEvent,
+    ManualPlanRevisionEvent,
     NodeActivatedEvent,
     NodeSkippedEvent,
     SuperstepCommittedEvent,
@@ -608,6 +609,111 @@ def _imported_task_id(event: TaskImportedEvent, fan_outs: dict[str, FanOutExpans
     return f"{event.structural_path}:{event.node_id}"
 
 
+def _require_v5_epoch(started: GraphInvocationStartedEvent | None, *, what: str) -> None:
+    if started is None or started.event_schema_version < 5:
+        raise LedgerIntegrityError(f"{what} requires event_schema_version >= 5")
+
+
+def _fold_manual_plan_revision(
+    *,
+    event: ManualPlanRevisionEvent,
+    started: GraphInvocationStartedEvent | None,
+    invocation_id: str,
+    current_tree_id: str,
+    interrupts: dict[str, InterruptProjection],
+    unconsumed_revision_transitions: dict[str, ManualPlanRevisionEvent],
+    consumed_revision_transitions: set[str],
+) -> None:
+    _require_v5_epoch(started, what="manual_plan_revision")
+    pending = interrupts.get(event.interrupt_id)
+    if pending is None or pending.resolved_action is not None:
+        raise LedgerIntegrityError(
+            f"manual_plan_revision requires unresolved interrupt {event.interrupt_id} "
+            f"in invocation {invocation_id}"
+        )
+    if pending.revision_owner_invocation_id != event.invocation_id:
+        raise LedgerIntegrityError(
+            f"manual_plan_revision owner mismatch for interrupt {event.interrupt_id}: "
+            f"expected {pending.revision_owner_invocation_id!r}, got {event.invocation_id!r}"
+        )
+    if event.base_tree_id != current_tree_id:
+        raise LedgerIntegrityError(
+            f"manual_plan_revision base_tree mismatch for invocation {invocation_id}: "
+            f"expected {current_tree_id}, got {event.base_tree_id}"
+        )
+    if event.target_tree_id == event.base_tree_id:
+        raise LedgerIntegrityError(
+            f"manual_plan_revision target_tree must differ from base_tree in invocation {invocation_id}"
+        )
+    logical = list(event.logical_paths)
+    before = dict(event.before_sha256)
+    after = dict(event.after_sha256)
+    if set(logical) != set(before) or set(logical) != set(after):
+        raise LedgerIntegrityError(
+            f"manual_plan_revision path/digest mismatch for invocation {invocation_id}"
+        )
+    if pending.revision_paths is not None and list(pending.revision_paths) != logical:
+        raise LedgerIntegrityError(
+            f"manual_plan_revision path/digest mismatch for invocation {invocation_id}"
+        )
+    if pending.revision_before_sha256 is not None and dict(pending.revision_before_sha256) != before:
+        raise LedgerIntegrityError(
+            f"manual_plan_revision path/digest mismatch for invocation {invocation_id}"
+        )
+    transition_id = event.revision_transition_id
+    if transition_id in unconsumed_revision_transitions or transition_id in consumed_revision_transitions:
+        raise LedgerIntegrityError(
+            f"manual_plan_revision reuses revision transition {transition_id} in invocation {invocation_id}"
+        )
+    unconsumed_revision_transitions[transition_id] = event
+
+
+def _fold_graph_resumed_revision_and_source(
+    *,
+    event: GraphResumedEvent,
+    pending: InterruptProjection,
+    started: GraphInvocationStartedEvent | None,
+    invocation_id: str,
+    unconsumed_revision_transitions: dict[str, ManualPlanRevisionEvent],
+    consumed_revision_transitions: set[str],
+) -> None:
+    has_revision_triple = event.revision_transition_id is not None
+    if has_revision_triple:
+        _require_v5_epoch(started, what="revision-tagged graph_resumed")
+    if started is not None and started.event_schema_version >= 5:
+        pending_pair = (pending.source_gate_attempt_id, pending.source_gate_tree_id)
+        resume_pair = (event.source_gate_attempt_id, event.source_gate_tree_id)
+        if pending_pair != resume_pair:
+            raise LedgerIntegrityError(
+                f"graph_resumed source_gate pair mismatch for interrupt {event.interrupt_id} "
+                f"in invocation {invocation_id}"
+            )
+    if not has_revision_triple:
+        return
+    transition_id = event.revision_transition_id
+    assert transition_id is not None
+    is_revision_owner = pending.revision_owner_invocation_id == event.invocation_id
+    if not is_revision_owner:
+        # Ancestor resume: validate the ordered triple only; tree stays unchanged.
+        return
+    if transition_id in consumed_revision_transitions:
+        raise LedgerIntegrityError(
+            f"graph_resumed reuses revision transition {transition_id} in invocation {invocation_id}"
+        )
+    prior = unconsumed_revision_transitions.pop(transition_id, None)
+    if prior is None:
+        raise LedgerIntegrityError(
+            f"graph_resumed missing prior unconsumed revision transition {transition_id} "
+            f"in invocation {invocation_id}"
+        )
+    if prior.interrupt_id != event.interrupt_id:
+        raise LedgerIntegrityError(
+            f"graph_resumed revision transition {transition_id} interrupt mismatch "
+            f"in invocation {invocation_id}"
+        )
+    consumed_revision_transitions.add(transition_id)
+
+
 def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) -> GraphProjection:
     """纯函数：把 strict ledger 事件折叠成 ``GraphProjection``（不触碰磁盘）。
 
@@ -633,6 +739,8 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
     terminal: Literal["completed", "stopped", "failed"] | None = None
     terminal_reason: str | None = None
     generation = GenerationFoldState()
+    unconsumed_revision_transitions: dict[str, ManualPlanRevisionEvent] = {}
+    consumed_revision_transitions: set[str] = set()
 
     for raw in events:
         if raw.get("source") != "graph":
@@ -811,6 +919,15 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                 actions=tuple(event.actions),
                 audited_reads_sha256=dict(event.audited_reads_sha256),
                 artifact_view=event.artifact_view,
+                revision_owner_invocation_id=event.revision_owner_invocation_id,
+                revision_base_tree_id=event.revision_base_tree_id,
+                revision_view=event.revision_view,
+                revision_paths=(tuple(event.revision_paths) if event.revision_paths is not None else None),
+                revision_before_sha256=(
+                    dict(event.revision_before_sha256) if event.revision_before_sha256 is not None else None
+                ),
+                source_gate_attempt_id=event.source_gate_attempt_id,
+                source_gate_tree_id=event.source_gate_tree_id,
             )
             # 嵌套 child 上抛的 interrupt：父 task 不能算成功完成，否则 resume
             # 不会重进 SubgraphHandler。同 namespace 的 builtin:interrupt 节点保持
@@ -822,6 +939,17 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
             # §5.5：interrupt 落在本图某代时，驱动 NodeGeneration.status=interrupted。
             if started is not None and event.checkpoint_ns == started.checkpoint_ns:
                 generation.apply_graph_interrupted(event.node_id)
+        elif isinstance(event, ManualPlanRevisionEvent):
+            _fold_manual_plan_revision(
+                event=event,
+                started=started,
+                invocation_id=invocation_id,
+                current_tree_id=current_tree_id,
+                interrupts=interrupts,
+                unconsumed_revision_transitions=unconsumed_revision_transitions,
+                consumed_revision_transitions=consumed_revision_transitions,
+            )
+            current_tree_id = event.target_tree_id
         elif isinstance(event, GraphResumedEvent):
             pending = interrupts.get(event.interrupt_id)
             if pending is None:
@@ -829,6 +957,14 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                     f"graph_resumed references unknown interrupt {event.interrupt_id} "
                     f"in invocation {invocation_id}"
                 )
+            _fold_graph_resumed_revision_and_source(
+                event=event,
+                pending=pending,
+                started=started,
+                invocation_id=invocation_id,
+                unconsumed_revision_transitions=unconsumed_revision_transitions,
+                consumed_revision_transitions=consumed_revision_transitions,
+            )
             interrupts[event.interrupt_id] = pending.model_copy(update={"resolved_action": event.action})
         elif isinstance(event, SuperstepCommittedEvent):
             # sibling state 直到 Update（commit）才可见：state_values 只在这里推进。

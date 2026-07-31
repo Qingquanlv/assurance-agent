@@ -10,17 +10,24 @@ import pytest
 
 from assurance_agent import resources
 from assurance_agent.artifacts.policy import PolicyError, load_policy, load_policy_snapshot, policy_digest
-from assurance_agent.verification.profile_manifest import assurance_profile_digest
+from assurance_agent.verification.profile_manifest import (
+    assurance_profile_bytes,
+    assurance_profile_digest,
+    assurance_profile_snapshot_relpath,
+)
 from assurance_agent.workflow.graph.definition_pinning import (
+    bind_root_definitions,
     inherit_child_definitions,
     policy_snapshot_relpath,
+    stage_pinned_definitions,
 )
 from assurance_agent.workflow.orchestration.gate_semantics import gate_semantics_digest
 from assurance_agent.eval.fixtures import write_fixture_lock
 from assurance_agent.workflow.core.events import read_events_strict
 from assurance_agent.workflow.graph.checkpoint import CheckpointStore
 from assurance_agent.workflow.graph.compiler import compile_workflow
-from assurance_agent.workflow.graph.contracts import parse_execution_contracts
+from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog, parse_execution_contracts
+
 from assurance_agent.workflow.graph.handlers.interrupt import InterruptHandler
 from assurance_agent.workflow.graph.handlers.operation import OperationFn, OperationHandler
 from assurance_agent.workflow.graph.handlers.subgraph import SubgraphHandler
@@ -128,7 +135,7 @@ def _make_project(tmp_path: Path) -> Path:
     return project
 
 
-def _compile(graphs: str) -> tuple[CompiledWorkflow, object]:
+def _compile(graphs: str) -> tuple[CompiledWorkflow, ExecutionContractCatalog]:
     text = f"""\
 schema_version: "2"
 name: policy-snapshot
@@ -1003,3 +1010,128 @@ def test_tampered_pinned_policy_snapshot_fails_child_inheritance(tmp_path: Path)
 
     with pytest.raises(PolicyError, match="policy snapshot"):
         inherit_child_definitions(parent=parent_projection, change_dir=change_dir)
+
+
+def test_bind_root_definitions_defaults_to_v4_without_profile_bytes(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    _write_policy(project, _POLICY_A)
+    change_dir = _context(project).change_dir
+    store = TreeStore(change_dir)
+    root_tree = store.capture(project)
+    binding = bind_root_definitions(store=store, root_tree_id=root_tree)
+    assert binding.event_schema_version == 4
+    assert binding.assurance_profile_bytes is None
+    assert binding.assurance_profile_digest == assurance_profile_digest()
+
+
+def test_v5_root_binding_stages_profile_snapshot(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    _write_policy(project, _POLICY_A)
+    compiled, contracts = _compile(
+        """\
+  main:
+    max_supersteps: 4
+    nodes:
+      observe:
+        uses: operation:observe-policy
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: observe}
+      - {from: observe, to: END}
+"""
+    )
+    change_dir = _context(project).change_dir
+    store = TreeStore(change_dir)
+    root_tree = store.capture(project)
+    binding = bind_root_definitions(store=store, root_tree_id=root_tree, event_schema_version=5)
+    assert binding.event_schema_version == 5
+    assert binding.assurance_profile_bytes == assurance_profile_bytes()
+    from assurance_agent.workflow.core.progression import transaction
+
+    with transaction(change_dir) as txn:
+        stage_pinned_definitions(txn, compiled, binding, contracts=contracts)
+    rel = assurance_profile_snapshot_relpath(binding.assurance_profile_digest)
+    assert (change_dir / rel).read_bytes() == binding.assurance_profile_bytes
+
+
+def test_v5_child_requires_verified_profile_snapshot(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    _write_policy(project, _POLICY_A)
+    change_dir = _context(project).change_dir
+    store = TreeStore(change_dir)
+    root_tree = store.capture(project)
+    binding = bind_root_definitions(store=store, root_tree_id=root_tree, event_schema_version=5)
+    from assurance_agent.workflow.core.progression import transaction
+    from assurance_agent.workflow.graph.models import GraphProjection
+
+    with transaction(change_dir) as txn:
+        txn.write_runtime_file_once(policy_snapshot_relpath(binding.policy_digest), binding.policy_bytes)
+        assert binding.assurance_profile_bytes is not None
+        txn.write_runtime_file_once(
+            assurance_profile_snapshot_relpath(binding.assurance_profile_digest),
+            binding.assurance_profile_bytes,
+        )
+    parent = GraphProjection(
+        invocation_id="root",
+        entrypoint="full",
+        checkpoint_ns="root",
+        parent_invocation_id=None,
+        parent_task_id=None,
+        structural_path="main",
+        graph_digest="gd",
+        event_schema_version=5,
+        contract_digests={},
+        policy_digest=binding.policy_digest,
+        policy_origin=binding.policy_origin,
+        gate_semantics_digest=binding.gate_semantics_digest,
+        assurance_profile_digest=binding.assurance_profile_digest,
+        params={},
+        root_tree_id=root_tree,
+        current_tree_id=root_tree,
+    )
+    child = inherit_child_definitions(parent=parent, change_dir=change_dir)
+    assert child.event_schema_version == 5
+    assert child.assurance_profile_bytes == binding.assurance_profile_bytes
+
+    (change_dir / assurance_profile_snapshot_relpath(binding.assurance_profile_digest)).unlink()
+    with pytest.raises(PolicyError, match="assurance profile snapshot"):
+        inherit_child_definitions(parent=parent, change_dir=change_dir)
+
+
+def test_v4_parent_child_inheritance_does_not_fabricate_profile_snapshot(
+    tmp_path: Path,
+) -> None:
+    project = _make_project(tmp_path)
+    _write_policy(project, _POLICY_A)
+    change_dir = _context(project).change_dir
+    store = TreeStore(change_dir)
+    root_tree = store.capture(project)
+    binding = bind_root_definitions(store=store, root_tree_id=root_tree)
+    from assurance_agent.workflow.core.progression import transaction
+    from assurance_agent.workflow.graph.models import GraphProjection
+
+    with transaction(change_dir) as txn:
+        txn.write_runtime_file_once(policy_snapshot_relpath(binding.policy_digest), binding.policy_bytes)
+    parent = GraphProjection(
+        invocation_id="root",
+        entrypoint="full",
+        checkpoint_ns="root",
+        parent_invocation_id=None,
+        parent_task_id=None,
+        structural_path="main",
+        graph_digest="gd",
+        event_schema_version=4,
+        contract_digests={},
+        policy_digest=binding.policy_digest,
+        policy_origin=binding.policy_origin,
+        gate_semantics_digest=binding.gate_semantics_digest,
+        assurance_profile_digest=binding.assurance_profile_digest,
+        params={},
+        root_tree_id=root_tree,
+        current_tree_id=root_tree,
+    )
+    child = inherit_child_definitions(parent=parent, change_dir=change_dir)
+    assert child.event_schema_version == 4
+    assert child.assurance_profile_bytes is None
+    assert not (change_dir / assurance_profile_snapshot_relpath(child.assurance_profile_digest)).exists()

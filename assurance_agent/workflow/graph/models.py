@@ -349,6 +349,13 @@ class InterruptProjection(BaseModel):
     audited_reads_sha256: dict[str, str]
     artifact_view: str | None = None
     resolved_action: str | None = None
+    revision_owner_invocation_id: str | None = None
+    revision_base_tree_id: str | None = None
+    revision_view: str | None = None
+    revision_paths: tuple[str, ...] | None = None
+    revision_before_sha256: dict[str, str] | None = None
+    source_gate_attempt_id: str | None = None
+    source_gate_tree_id: str | None = None
 
 
 class RecoveryProjection(BaseModel):

@@ -993,6 +993,57 @@ def test_accept_risk_through_three_level_nest_completes(tmp_path: Path) -> None:
     expected_invs = {ns_parts[i] for i in range(0, len(ns_parts), 2)}
     assert expected_invs <= resumed_invs
 
-    from tests.helpers_graph_v3 import assert_v3_resume_anchor_chain
+    from tests.helpers_graph_v3 import assert_no_revision_resume_fields, assert_v3_resume_anchor_chain
 
     assert_v3_resume_anchor_chain(events, interrupt.checkpoint_ns)
+    assert_no_revision_resume_fields(events)
+
+
+def test_build_graph_interrupted_event_carries_revision_lineage_fields() -> None:
+    from assurance_agent.workflow.graph.contracts import ResourceClaims
+    from assurance_agent.workflow.graph.models import ExecutableTask, InterruptProjection
+    from assurance_agent.workflow.graph.resume_wire import build_graph_interrupted_event
+    from assurance_agent.workflow.graph.schema_v2 import RetryPolicyDef, TimeoutPolicyDef
+
+    interrupt = InterruptProjection(
+        interrupt_id="ir-1",
+        checkpoint_ns="root/node/leaf",
+        node_id="gate",
+        checkpoint="fuzz-plan-gate",
+        actions=("fix_and_proceed", "stop"),
+        audited_reads_sha256={"change:plans/fuzz.yaml": "a" * 64},
+        revision_owner_invocation_id="leaf",
+        revision_base_tree_id="tree-base",
+        revision_view=".graph-runtime/revision-views/ir-1",
+        revision_paths=("change:plans/fuzz.yaml",),
+        revision_before_sha256={"change:plans/fuzz.yaml": "b" * 64},
+        source_gate_attempt_id="ga-1",
+        source_gate_tree_id="tree-src",
+    )
+    task = ExecutableTask(
+        task_id="t1",
+        invocation_id="leaf",
+        checkpoint_ns="root/node/leaf",
+        graph_id="cycle",
+        node_id="gate",
+        structural_path="main/node",
+        input=None,
+        input_sha256="in",
+        contract_digest="cd",
+        retryable_errors=(),
+        retry_policy=RetryPolicyDef(max_attempts=1),
+        timeout_policy=TimeoutPolicyDef(run_seconds=1.0, heartbeat_seconds=1.0),
+        target="builtin:interrupt",
+        resources=ResourceClaims(),
+    )
+    event = build_graph_interrupted_event(
+        task=task,
+        interrupt=interrupt,
+        event_schema_version=5,
+    )
+    assert event.revision_owner_invocation_id == "leaf"
+    assert event.revision_base_tree_id == "tree-base"
+    assert event.revision_paths == ["change:plans/fuzz.yaml"]
+    assert event.source_gate_attempt_id == "ga-1"
+    assert event.source_gate_tree_id == "tree-src"
+    assert event.anchor is not None

@@ -28,6 +28,7 @@ _GRAPH_TYPES = frozenset(
         "task_attempt_abandoned",
         "budget_consumed",
         "graph_interrupted",
+        "manual_plan_revision",
         "graph_resumed",
         "superstep_committed",
         "graph_completed",
@@ -146,7 +147,7 @@ def _migrate_invocation_started(event: dict[str, object]) -> None:
     version = event.get("event_schema_version")
     if not isinstance(version, int) or isinstance(version, bool):
         event["event_schema_version"] = 1
-    elif version > 4:
+    elif version > 5:
         raise ValueError(f"unsupported graph event_schema_version {version}")
     event.setdefault("policy_origin", "")
     event.setdefault("gate_semantics_digest", "")

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -12,10 +14,15 @@ from assurance_agent.artifacts.models.review import PlanReview, Review
 from assurance_agent.verification.checks.registry import CHECKS_BY_ID
 from assurance_agent.verification.profiles import iter_layer_assurance_profiles
 from assurance_agent.verification.profile_manifest import (
+    PROFILE_SNAPSHOT_DIRECTORY,
+    AssuranceProfileManifest,
     assurance_profile_bytes,
     assurance_profile_digest,
+    assurance_profile_snapshot_relpath,
     normalized_assurance_profile_manifest,
+    parse_assurance_profile_snapshot,
 )
+from assurance_agent.workflow.core.progression import ProgressionError, transaction
 
 
 def _manifest() -> dict[str, Any]:
@@ -104,3 +111,56 @@ def test_profile_manifest_mutation_changes_digest(path: str, mutator: Any) -> No
     mutated = copy.deepcopy(_manifest())
     mutator(mutated)
     assert assurance_profile_digest(mutated) != baseline, path
+
+
+def test_parse_assurance_profile_snapshot_accepts_canonical_bytes() -> None:
+    data = assurance_profile_bytes()
+    parsed = parse_assurance_profile_snapshot(data)
+    assert isinstance(parsed, AssuranceProfileManifest)
+    assert parsed.schema_version == "1"
+    assert parsed.layer_names == LAYER_NAMES
+    assert parsed.plan_check_ids == PLAN_CHECK_IDS
+    assert assurance_profile_bytes(parsed.model_dump(mode="json")) == data
+
+
+def test_parse_assurance_profile_snapshot_rejects_malformed() -> None:
+    with pytest.raises(ValueError, match="assurance profile snapshot"):
+        parse_assurance_profile_snapshot(b"{not json\n")
+
+
+def test_parse_assurance_profile_snapshot_rejects_non_canonical() -> None:
+    parsed = parse_assurance_profile_snapshot(assurance_profile_bytes())
+    pretty = (json.dumps(parsed.model_dump(mode="json"), indent=2) + "\n").encode("utf-8")
+    with pytest.raises(ValueError, match="canonical"):
+        parse_assurance_profile_snapshot(pretty)
+
+
+def test_parse_assurance_profile_snapshot_rejects_reordered_layers() -> None:
+    mutated = copy.deepcopy(_manifest())
+    mutated["layer_names"] = list(reversed(mutated["layer_names"]))
+    mutated["profiles"] = list(reversed(mutated["profiles"]))
+    with pytest.raises(ValueError, match="layer"):
+        parse_assurance_profile_snapshot(assurance_profile_bytes(mutated))
+
+
+def test_assurance_profile_snapshot_relpath_requires_sha256() -> None:
+    digest = assurance_profile_digest()
+    assert assurance_profile_snapshot_relpath(digest) == f"{PROFILE_SNAPSHOT_DIRECTORY}/{digest}.json"
+    with pytest.raises(ValueError, match="digest"):
+        assurance_profile_snapshot_relpath("ABC")
+
+
+def test_profile_snapshot_create_once_is_idempotent_and_rejects_mismatch(tmp_path: Path) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    data = assurance_profile_bytes()
+    digest = assurance_profile_digest()
+    rel = assurance_profile_snapshot_relpath(digest)
+    with transaction(change) as txn:
+        txn.write_runtime_file_once(rel, data)
+    assert (change / rel).read_bytes() == data
+    with transaction(change) as txn:
+        txn.write_runtime_file_once(rel, data)
+    with pytest.raises(ProgressionError, match="runtime file content mismatch"):
+        with transaction(change) as txn:
+            txn.write_runtime_file_once(rel, data + b" ")

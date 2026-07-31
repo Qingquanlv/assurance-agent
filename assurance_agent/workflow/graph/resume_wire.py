@@ -46,6 +46,15 @@ def build_graph_interrupted_event(
         artifact_view=interrupt.artifact_view,
         anchor=anchor,
         parent_anchor_ref=parent_anchor_ref,
+        revision_owner_invocation_id=interrupt.revision_owner_invocation_id,
+        revision_base_tree_id=interrupt.revision_base_tree_id,
+        revision_view=interrupt.revision_view,
+        revision_paths=list(interrupt.revision_paths) if interrupt.revision_paths is not None else None,
+        revision_before_sha256=(
+            dict(interrupt.revision_before_sha256) if interrupt.revision_before_sha256 is not None else None
+        ),
+        source_gate_attempt_id=interrupt.source_gate_attempt_id,
+        source_gate_tree_id=interrupt.source_gate_tree_id,
     )
 
 

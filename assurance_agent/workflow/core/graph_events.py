@@ -208,6 +208,21 @@ class GraphInterruptedEvent(_GraphEvent):
     artifact_view: str | None = None
     anchor: "ResumeAnchor | None" = None
     parent_anchor_ref: str | None = None
+    revision_owner_invocation_id: str | None = None
+    revision_base_tree_id: str | None = None
+    revision_view: str | None = None
+    revision_paths: list[str] | None = None
+    revision_before_sha256: dict[str, str] | None = None
+    source_gate_attempt_id: str | None = None
+    source_gate_tree_id: str | None = None
+
+    @model_validator(mode="after")
+    def _source_pair_all_or_none(self) -> Self:
+        has_attempt = self.source_gate_attempt_id is not None
+        has_tree = self.source_gate_tree_id is not None
+        if has_attempt != has_tree:
+            raise ValueError("source gate pair fields must be all-or-none")
+        return self
 
 
 class ResumeAnchor(BaseModel):
@@ -216,6 +231,26 @@ class ResumeAnchor(BaseModel):
     checkpoint_ns: str
     node_id: str
     interrupt_id: str
+
+
+class ManualPlanRevisionEvent(_GraphEvent):
+    type: Literal["manual_plan_revision"] = "manual_plan_revision"
+    invocation_id: str
+    checkpoint_ns: str
+    revision_transition_id: str
+    interrupt_id: str
+    action: Literal["fix_and_proceed"]
+    who: str
+    reason: str
+    audited_reads_sha256: dict[str, str]
+    source_gate_attempt_id: str
+    source_gate_tree_id: str
+    base_tree_id: str
+    target_tree_id: str
+    logical_paths: list[str]
+    before_sha256: dict[str, str]
+    after_sha256: dict[str, str]
+    resume_anchors: list[ResumeAnchor]
 
 
 class GraphResumedEvent(_GraphEvent):
@@ -230,6 +265,35 @@ class GraphResumedEvent(_GraphEvent):
     anchor: ResumeAnchor | None = None
     parent_anchor_ref: str | None = None
     payload: dict[str, object] = Field(default_factory=dict)
+    revision_transition_id: str | None = None
+    revision_ordinal: int | None = None
+    revision_chain_length: int | None = None
+    source_gate_attempt_id: str | None = None
+    source_gate_tree_id: str | None = None
+
+    @model_validator(mode="after")
+    def _revision_and_source_invariants(self) -> Self:
+        rev_fields = (
+            self.revision_transition_id,
+            self.revision_ordinal,
+            self.revision_chain_length,
+        )
+        present = [field is not None for field in rev_fields]
+        if any(present) and not all(present):
+            raise ValueError("revision triple fields must be all-or-none")
+        if all(present):
+            ordinal = self.revision_ordinal
+            length = self.revision_chain_length
+            assert ordinal is not None and length is not None
+            if length < 1:
+                raise ValueError("revision_chain_length must be >= 1")
+            if not (0 <= ordinal < length):
+                raise ValueError("revision_ordinal out of bounds")
+        has_attempt = self.source_gate_attempt_id is not None
+        has_tree = self.source_gate_tree_id is not None
+        if has_attempt != has_tree:
+            raise ValueError("source gate pair fields must be all-or-none")
+        return self
 
 
 class SuperstepCommittedEvent(_GraphEvent):
@@ -288,6 +352,7 @@ GraphEvent = Annotated[
     | TaskAttemptAbandonedEvent
     | BudgetConsumedEvent
     | GraphInterruptedEvent
+    | ManualPlanRevisionEvent
     | GraphResumedEvent
     | SuperstepCommittedEvent
     | GraphTerminalEvent
@@ -314,6 +379,7 @@ __all__ = [
     "TaskAttemptAbandonedEvent",
     "BudgetConsumedEvent",
     "GraphInterruptedEvent",
+    "ManualPlanRevisionEvent",
     "GraphResumedEvent",
     "ResumeAnchor",
     "SuperstepCommittedEvent",

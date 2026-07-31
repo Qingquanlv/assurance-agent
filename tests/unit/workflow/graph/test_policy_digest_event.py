@@ -92,3 +92,11 @@ def test_v4_started_accepts_complete_binding() -> None:
     assert event.policy_origin == "project"
     assert len(event.gate_semantics_digest) == 64
     assert len(event.assurance_profile_digest) == 64
+
+
+def test_v5_started_requires_same_binding_fields() -> None:
+    event = _v4_started(event_schema_version=5)
+    assert event.event_schema_version == 5
+    assert len(event.assurance_profile_digest) == 64
+    with pytest.raises(ValidationError, match="assurance_profile_digest"):
+        _v4_started(event_schema_version=5, assurance_profile_digest="")

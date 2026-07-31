@@ -13,7 +13,12 @@ from assurance_agent.artifacts.policy import (
     PolicySnapshot,
     load_policy_snapshot_bytes,
 )
-from assurance_agent.verification.profile_manifest import assurance_profile_digest
+from assurance_agent.verification.profile_manifest import (
+    assurance_profile_bytes,
+    assurance_profile_digest,
+    assurance_profile_snapshot_relpath,
+    parse_assurance_profile_snapshot,
+)
 from assurance_agent.workflow.core.progression import ProgressionTxn
 from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog
 from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
@@ -30,11 +35,13 @@ _POLICY_DIR = ".graph-runtime/policies"
 
 @dataclass(frozen=True, slots=True)
 class InvocationDefinitionBinding:
+    event_schema_version: int
     policy_digest: str
     policy_origin: PolicyOrigin
     policy_bytes: bytes
     gate_semantics_digest: str
     assurance_profile_digest: str
+    assurance_profile_bytes: bytes | None
 
 
 def policy_snapshot_relpath(policy_digest: str) -> str:
@@ -52,7 +59,12 @@ def is_definition_binding_replayable(projection: GraphProjection) -> bool:
     )
 
 
-def bind_root_definitions(*, store: TreeStore, root_tree_id: str) -> InvocationDefinitionBinding:
+def bind_root_definitions(
+    *,
+    store: TreeStore,
+    root_tree_id: str,
+    event_schema_version: int = 4,
+) -> InvocationDefinitionBinding:
     origin = f"tree {root_tree_id}:{_POLICY_LOGICAL_PATH}"
     try:
         data = store.read_bytes(root_tree_id, _POLICY_LOGICAL_PATH)
@@ -62,7 +74,7 @@ def bind_root_definitions(*, store: TreeStore, root_tree_id: str) -> InvocationD
         raise PolicyError(f"cannot read {origin}: {exc}") from exc
     else:
         snap = load_policy_snapshot_bytes(data, origin="project")
-    return _binding_from_snapshot(snap)
+    return _binding_from_snapshot(snap, event_schema_version=event_schema_version)
 
 
 def inherit_child_definitions(
@@ -72,12 +84,17 @@ def inherit_child_definitions(
 ) -> InvocationDefinitionBinding:
     if not parent.policy_digest:
         raise PolicyError("parent invocation has no pinned policy digest")
+    profile_bytes: bytes | None = None
+    if parent.event_schema_version >= 5:
+        profile_bytes = _read_pinned_profile_bytes(change_dir, parent.assurance_profile_digest)
     binding = InvocationDefinitionBinding(
+        event_schema_version=parent.event_schema_version,
         policy_digest=parent.policy_digest,
         policy_origin=_coerce_policy_origin(parent.policy_origin),
         policy_bytes=_read_pinned_policy_bytes(change_dir, parent.policy_digest),
         gate_semantics_digest=parent.gate_semantics_digest,
         assurance_profile_digest=parent.assurance_profile_digest,
+        assurance_profile_bytes=profile_bytes,
     )
     verify_pinned_definitions(binding, change_dir)
     return binding
@@ -129,6 +146,11 @@ def stage_pinned_definitions(
         txn.write_runtime_file_once(f"{_CONTRACT_DIR}/{digest}.json", payload)
 
     txn.write_runtime_file_once(policy_snapshot_relpath(binding.policy_digest), binding.policy_bytes)
+    if binding.assurance_profile_bytes is not None:
+        txn.write_runtime_file_once(
+            assurance_profile_snapshot_relpath(binding.assurance_profile_digest),
+            binding.assurance_profile_bytes,
+        )
 
 
 def verify_pinned_definitions(binding: InvocationDefinitionBinding, change_dir: Path) -> None:
@@ -140,15 +162,24 @@ def verify_pinned_definitions(binding: InvocationDefinitionBinding, change_dir: 
     ):
         raise PolicyError("definition binding is incomplete for replay")
     _read_pinned_policy_bytes(change_dir, binding.policy_digest)
+    if binding.event_schema_version >= 5:
+        if binding.assurance_profile_bytes is None:
+            raise PolicyError("v5 definition binding requires assurance profile snapshot bytes")
+        pinned = _read_pinned_profile_bytes(change_dir, binding.assurance_profile_digest)
+        if pinned != binding.assurance_profile_bytes:
+            raise PolicyError("assurance profile snapshot bytes do not match binding")
 
 
-def _binding_from_snapshot(snap: PolicySnapshot) -> InvocationDefinitionBinding:
+def _binding_from_snapshot(snap: PolicySnapshot, *, event_schema_version: int) -> InvocationDefinitionBinding:
+    profile_data = assurance_profile_bytes() if event_schema_version >= 5 else None
     return InvocationDefinitionBinding(
+        event_schema_version=event_schema_version,
         policy_digest=snap.digest,
         policy_origin=snap.origin,
         policy_bytes=snap.canonical_bytes,
         gate_semantics_digest=gate_semantics_digest(),
         assurance_profile_digest=assurance_profile_digest(),
+        assurance_profile_bytes=profile_data,
     )
 
 
@@ -173,4 +204,21 @@ def _read_pinned_policy_bytes(change_dir: Path, policy_digest: str) -> bytes:
         raise PolicyError(
             f"policy snapshot digest mismatch for {path}: expected {policy_digest}, got {actual}"
         )
+    return data
+
+
+def _read_pinned_profile_bytes(change_dir: Path, profile_digest: str) -> bytes:
+    path = change_dir / assurance_profile_snapshot_relpath(profile_digest)
+    if not path.exists():
+        raise PolicyError(f"assurance profile snapshot missing at {path}")
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise PolicyError(f"cannot read assurance profile snapshot at {path}: {exc}") from exc
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != profile_digest:
+        raise PolicyError(
+            f"assurance profile snapshot digest mismatch for {path}: expected {profile_digest}, got {actual}"
+        )
+    parse_assurance_profile_snapshot(data)
     return data
