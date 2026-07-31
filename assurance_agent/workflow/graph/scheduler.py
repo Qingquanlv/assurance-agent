@@ -18,6 +18,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from assurance_agent.exceptions import AaError
@@ -153,6 +154,25 @@ def _project_lock_tokens_for_wave(wave: Sequence[ExecutableTask]) -> tuple[str, 
             }
         )
     )
+
+
+def _sync_capture_project_root(context: RuntimeContext) -> Path:
+    """Return the live project root used for synchronized overlay capture.
+
+    Nested ``run_child`` drives rewrite ``RuntimeContext.project_root`` to the
+    parent task sandbox so writes stay isolated. Synchronized overlays must
+    still read sibling Change/archive trees from the canonical SUT root —
+    otherwise deferred child capture after an empty outer preview materializes
+    a sandbox that never saw those immutable siblings.
+    """
+    project = context.project_root.resolve()
+    change = context.change_dir.resolve()
+    tasks_root = change / ".graph-runtime" / "tasks"
+    try:
+        project.relative_to(tasks_root)
+    except ValueError:
+        return context.project_root
+    return change.parent.parent.parent
 
 
 @dataclass
@@ -984,9 +1004,26 @@ class Scheduler:
                 )
             )
 
+        effective_base = base_tree_id or projection.current_tree_id
+        # Deferred nested capture leaves outer SelectedInvocationWave.synchronized_paths
+        # empty when the child invocation does not exist yet. Graph tasks still carry
+        # the descendant footprint on ``task.resources.synchronized``; overlay those
+        # immutable siblings into the freeze/materialize base so nested apply/repair
+        # into this sandbox does not look like an unauthorized write at parent freeze.
+        if task.target.startswith("graph:") and task.resources.synchronized:
+            effective_base = self._objects.overlay_synchronized_paths(
+                effective_base,
+                _sync_capture_project_root(context),
+                tuple(
+                    sorted(
+                        task.resources.synchronized,
+                        key=lambda path: (path.root, path.pattern),
+                    )
+                ),
+            )
         workspace = self._workspaces.create(
             task_id=task.task_id,
-            base_tree_id=base_tree_id or projection.current_tree_id,
+            base_tree_id=effective_base,
             store=self._objects,
             side_effect_free=self._is_side_effect_free(task),
             claims=task.resources,
@@ -1294,17 +1331,20 @@ class Scheduler:
         # A recovery node can run in a later planner wave while successful
         # siblings from the failed wave still own uncommitted write-sets.  The
         # successful recovery closes that atomic boundary, so commit every
-        # successful, uncommitted task together.  Restricting this to the
-        # current ``succeeded_ids`` strands sibling write-sets and lets the
-        # graph observe task success without observing its artifacts.
+        # successful, uncommitted task together.  Already-committed write-sets
+        # must stay out of this boundary: their older base_tree_id would
+        # false-trigger "synchronized live resource changed" during pending
+        # recovery even when live sync bytes are unchanged.
+        # ``succeeded_ids`` remains part of the call signature for wave commit
+        # sites; membership is always the live uncommitted success set.
+        _ = succeeded_ids
         ordered_ids = sorted(
-            set(succeeded_ids)
-            | {
-                task_id
-                for task_id, task in live.tasks.items()
-                if task.status == "succeeded" and not task.outputs_committed
-            }
+            task_id
+            for task_id, task in live.tasks.items()
+            if task.status == "succeeded" and not task.outputs_committed
         )
+        if not ordered_ids:
+            return []
         write_sets = []
         state_pairs: list[tuple[str, Mapping[str, object]]] = []
         commit_eligible: list[str] = []
@@ -1342,7 +1382,17 @@ class Scheduler:
                         locked_context.project_root,
                         recovered_paths,
                     )
-                    if {write_set.base_tree_id for write_set in write_sets} != {refreshed_base}:
+                    bases = {write_set.base_tree_id for write_set in write_sets}
+                    if bases == {refreshed_base}:
+                        commit_base = refreshed_base
+                    elif len(bases) == 1:
+                        # Pending sync tasks often leave their own outputs on
+                        # disk before Update commit. Re-overlay then differs
+                        # from the attempt-time base even with no external
+                        # writer. Trust the shared write-set base; merge/apply
+                        # before_sha256 checks still fail closed on conflicts.
+                        commit_base = next(iter(bases))
+                    else:
                         raise WorkspaceError(
                             "synchronized live resource changed before pending Update replay"
                         )
@@ -1351,7 +1401,7 @@ class Scheduler:
                         projection=projection,
                         context=locked_context,
                         succeeded_ids=succeeded_ids,
-                        base_tree_id=refreshed_base,
+                        base_tree_id=commit_base,
                         synchronized_paths=recovered_paths,
                     )
             except ProjectResourceConflict as exc:

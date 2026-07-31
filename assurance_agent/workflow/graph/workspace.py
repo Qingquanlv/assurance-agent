@@ -492,8 +492,9 @@ def _synchronized_ledger_entries(
 
 
 def _entry_and_bytes_at(project_root: Path, rel: str) -> tuple[_Entry, bytes] | None:
-    target = project_root / rel
-    if not _is_within(target.parent.resolve(), project_root):
+    root = project_root.resolve()
+    target = root / rel
+    if not _is_within(target.parent.resolve(), root):
         raise WorkspaceError(f"targeted path escapes project root: {rel}")
     if target.is_symlink():
         link_target = os.readlink(target)

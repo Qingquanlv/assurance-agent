@@ -1053,14 +1053,15 @@ class GraphRuntime:
             if self._replay_committed_publications(projection, context):
                 progress = True
                 projection = self._checkpoints.project(invocation_id)
-            if self._repair_ordinary_materialization(projection, context):
-                progress = True
-                projection = self._checkpoints.project(invocation_id)
 
             if not progress and not self._recovery_work_remains(projection, invocation_id, context):
-                return projection
+                break
             if not progress:
                 raise GraphRuntimeError("recovery barrier stalled with durable work remaining")
+
+        projection = self._checkpoints.project(invocation_id)
+        self._repair_ordinary_materialization(projection, context)
+        return self._checkpoints.project(invocation_id)
 
     def _recovery_work_remains(
         self,
@@ -1073,21 +1074,25 @@ class GraphRuntime:
         if self._pending_write_sets(invocation_id):
             return True
         planned = self._last_uncommitted_plan(invocation_id)
-        if planned is not None:
-            succeeded = [task_id for task_id, task in projection.tasks.items() if task.status == "succeeded"]
-            if succeeded:
-                return True
+        if planned is not None and any(
+            task.status == "succeeded" and not task.outputs_committed for task in projection.tasks.values()
+        ):
+            return True
         publication_store = ProjectPublicationStore(context.project_root)
         for publication, status in publication_store.list_publications(invocation_id=invocation_id):
             if status != "applied":
                 return True
-        return self._ordinary_materialization_drift(projection, context)
+        return False
 
     def _commit_pending_write_sets(self, projection: GraphProjection, context: RuntimeContext) -> bool:
         planned = self._last_uncommitted_plan(projection.invocation_id)
         if planned is None:
             return False
-        succeeded = [task_id for task_id, task in projection.tasks.items() if task.status == "succeeded"]
+        succeeded = [
+            task_id
+            for task_id, task in projection.tasks.items()
+            if task.status == "succeeded" and not task.outputs_committed
+        ]
         if not succeeded:
             return False
         plan = PlanResult(
@@ -1140,17 +1145,16 @@ class GraphRuntime:
         self,
         projection: GraphProjection,
         context: RuntimeContext,
-    ) -> bool:
+    ) -> None:
         if not self._ordinary_materialization_drift(projection, context):
-            return False
-        prev, target, _, write_set_ids = self._last_committed_tree_edge(projection)
+            return
+        prev, target, _, _write_set_ids = self._last_committed_tree_edge(projection)
         assert target is not None
         base = prev if prev is not None else projection.root_tree_id
         try:
             self._objects.apply_tree(context.project_root, target, base_tree_id=base)
         except WorkspaceError as exc:
             raise GraphRuntimeError(f"failed to repair materialization: {exc}") from exc
-        return True
 
     def _ordinary_materialization_drift(
         self,
