@@ -974,6 +974,13 @@ def test_codegen_hard_predicate_mutations_are_partial(layer: str) -> None:
                 return original.replace(profile.gate_id, f"other-{profile.gate_id}", 1)
             if profile.review_alias in predicate:
                 return original.replace(profile.review_alias, "wrong_review", 1)
+            if "file_exists(" in predicate:
+                mutated_predicate = predicate.replace(
+                    "repo:.aa/data-knowledge.yaml",
+                    "repo:.aa/wrong-data-knowledge.yaml",
+                    1,
+                )
+                return original.replace(predicate, mutated_predicate, 1)
             return original.replace(layer, f"x{layer}", 1)
         if mode == "under_or":
             if field == "pass_when":
