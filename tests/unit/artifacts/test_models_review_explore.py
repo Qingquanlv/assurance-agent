@@ -223,9 +223,15 @@ def test_human_only_authoring_requires_empty_auto_fix_plan(review_type: str) -> 
         ([], "api-plan"),
         ([""], "api-plan"),
         (["capability"], "api-plan"),
+        (["auth."], "api-plan"),
+        (["accounts."], "api-plan"),
+        (["  auth.api_admin_token  "], "api-plan"),
+        (["auth.api_admin_token."], "api-plan"),
         ([], "fuzz-plan"),
         ([""], "fuzz-plan"),
         (["capability"], "fuzz-plan"),
+        (["auth."], "fuzz-plan"),
+        (["  auth.api_admin_token  "], "fuzz-plan"),
     ],
 )
 def test_plan_review_rejects_invalid_required_capabilities(caps: list[str], review_type: str) -> None:
@@ -240,9 +246,15 @@ def test_plan_review_rejects_invalid_required_capabilities(caps: list[str], revi
         ([], "api-plan"),
         ([""], "api-plan"),
         (["capability"], "api-plan"),
+        (["auth."], "api-plan"),
+        (["accounts."], "api-plan"),
+        (["  auth.api_admin_token  "], "api-plan"),
+        (["auth.api_admin_token."], "api-plan"),
         ([], "performance-plan"),
         ([""], "performance-plan"),
         (["capability"], "performance-plan"),
+        (["auth."], "performance-plan"),
+        (["  auth.api_admin_token  "], "performance-plan"),
     ],
 )
 def test_plan_review_authoring_rejects_invalid_required_capabilities(

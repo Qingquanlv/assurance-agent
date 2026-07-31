@@ -35,10 +35,17 @@ _L1_CAPABILITY_ROOTS = (
 
 
 def _is_fully_qualified_capability_key(key: str) -> bool:
-    stripped = key.strip()
-    if not stripped or "." not in stripped:
+    # Exact key only: whitespace padding is a contract error, not normalized away.
+    if not key or key != key.strip() or "." not in key:
         return False
-    return any(stripped.startswith(root) for root in _L1_CAPABILITY_ROOTS)
+    for root in _L1_CAPABILITY_ROOTS:
+        if not key.startswith(root):
+            continue
+        remainder = key[len(root) :]
+        # Require a non-empty leaf path; bare roots ("auth.") and trailing-dot
+        # prefixes ("auth.foo.") are non-leaves.
+        return bool(remainder) and not remainder.endswith(".")
+    return False
 
 
 def _validate_nonblank_finding_ids(findings: list[Any]) -> None:
@@ -72,10 +79,9 @@ class Review(BaseModel):
     codegen_readiness: Literal["ready", "ready_with_warnings", "not_ready"] | None = None
     risk_level: Literal["low", "medium", "high", "critical"] | None = None
     required_capabilities: list[str] | None = None
-    # Set false by the fuzz-/performance-plan reviewers when the layer was
-    # selected in the proposal but has zero applicable cases (empty scope).
-    # The fuzz/performance plan-review gates read this to route a graceful
-    # `skip` (branch ends, codegen skipped) instead of a dead-end `reject`.
+    # Optional legacy field retained for artifact compatibility. Current
+    # plan-review gates do not read it; layer applicability comes from case
+    # delta / mechanical checks.
     layer_applicable: bool | None = None
     auto_fix_plan: list[Any] | None = None
     next_action: str | None = None
@@ -146,7 +152,7 @@ class PlanReview(Review):
 
 
 class PlanReviewAuthoring(BaseModel):
-    """Agent-authored fields required by plan gates, codegen, and fixer."""
+    """Agent-authored fields required by plan gates and codegen."""
 
     model_config = ConfigDict(
         extra="allow",
