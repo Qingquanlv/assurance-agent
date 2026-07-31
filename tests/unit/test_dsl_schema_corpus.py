@@ -86,14 +86,24 @@ _APPLICABLE_CHECKS = {
     "schema_version": "2",
     "layer": "api",
     "status": "pass",
-    "applicability": {"layer": "api", "applicable": True, "reason_code": "automated_cases_present", "case_ids": ["TC"]},
+    "applicability": {
+        "layer": "api",
+        "applicable": True,
+        "reason_code": "automated_cases_present",
+        "case_ids": ["TC"],
+    },
     "checks": [],
 }
 _APPLICABLE_E2E_CHECKS = {
     "schema_version": "2",
     "layer": "e2e",
     "status": "pass",
-    "applicability": {"layer": "e2e", "applicable": True, "reason_code": "automated_cases_present", "case_ids": ["TC"]},
+    "applicability": {
+        "layer": "e2e",
+        "applicable": True,
+        "reason_code": "automated_cases_present",
+        "case_ids": ["TC"],
+    },
     "checks": [],
 }
 _INAPPLICABLE_CHECKS = {
@@ -231,7 +241,10 @@ for _alias, _gid, _layer, _checks_key in [
             _PLAN_ASSURANCE_RESOLVER,
         ),
         (
-            {_checks_key: _APPLICABLE_CHECKS if _layer == "api" else _APPLICABLE_E2E_CHECKS, _alias: _APPLICABLE_REVIEW},
+            {
+                _checks_key: _APPLICABLE_CHECKS if _layer == "api" else _APPLICABLE_E2E_CHECKS,
+                _alias: _APPLICABLE_REVIEW,
+            },
             _PLAN_ASSURANCE_RESOLVER,
             False,
         ),
@@ -298,7 +311,10 @@ for _alias, _gid, _layer, _checks_key in [
             },
         ),
         (
-            {_checks_key: _APPLICABLE_CHECKS if _layer == "api" else _APPLICABLE_E2E_CHECKS, _alias: _APPLICABLE_REVIEW},
+            {
+                _checks_key: _APPLICABLE_CHECKS if _layer == "api" else _APPLICABLE_E2E_CHECKS,
+                _alias: _APPLICABLE_REVIEW,
+            },
             {**_PLAN_ASSURANCE_RESOLVER, "capabilities_present": lambda _r, _d: False},
             False,
         ),
@@ -336,7 +352,11 @@ CORPUS["gate:case-design-gate:pass_when"] = (
 
 CORPUS["gate:api-codegen-precondition-gate:skip_when"] = (
     ({"api_plan_checks": _INAPPLICABLE_CHECKS, "api_plan_review": None}, _PLAN_ASSURANCE_RESOLVER),
-    ({"api_plan_checks": _APPLICABLE_CHECKS, "api_plan_review": _APPLICABLE_REVIEW}, _PLAN_ASSURANCE_RESOLVER, False),
+    (
+        {"api_plan_checks": _APPLICABLE_CHECKS, "api_plan_review": _APPLICABLE_REVIEW},
+        _PLAN_ASSURANCE_RESOLVER,
+        False,
+    ),
 )
 CORPUS["gate:api-codegen-precondition-gate:pass_when"] = (
     (
@@ -352,18 +372,30 @@ CORPUS["gate:api-codegen-precondition-gate:pass_when"] = (
 CORPUS["gate:api-codegen-precondition-gate:stop_when"] = (
     (
         {"api_plan_checks": {"schema_version": "1"}, "api_plan_review": _APPLICABLE_REVIEW},
-        {**_PLAN_ASSURANCE_RESOLVER, **node_result_resolver({"review-cycle": {"status": "succeeded"}}), **fx(True)},
+        {
+            **_PLAN_ASSURANCE_RESOLVER,
+            **node_result_resolver({"review-cycle": {"status": "succeeded"}}),
+            **fx(True),
+        },
     ),
     (
         {"api_plan_checks": _APPLICABLE_CHECKS, "api_plan_review": _APPLICABLE_REVIEW},
-        {**_PLAN_ASSURANCE_RESOLVER, **node_result_resolver({"review-cycle": {"status": "succeeded"}}), **fx(True)},
+        {
+            **_PLAN_ASSURANCE_RESOLVER,
+            **node_result_resolver({"review-cycle": {"status": "succeeded"}}),
+            **fx(True),
+        },
         False,
     ),
 )
 CORPUS["gate:e2e-codegen-precondition-gate:skip_when"] = (
     (
         {
-            "e2e_plan_checks": {**_INAPPLICABLE_CHECKS, "layer": "e2e", "applicability": {**_INAPPLICABLE_CHECKS["applicability"], "layer": "e2e"}},
+            "e2e_plan_checks": {
+                **_INAPPLICABLE_CHECKS,
+                "layer": "e2e",
+                "applicability": {**_INAPPLICABLE_CHECKS["applicability"], "layer": "e2e"},
+            },
             "plan_review": None,
         },
         _PLAN_ASSURANCE_RESOLVER,
@@ -388,11 +420,19 @@ CORPUS["gate:e2e-codegen-precondition-gate:pass_when"] = (
 CORPUS["gate:e2e-codegen-precondition-gate:stop_when"] = (
     (
         {"e2e_plan_checks": {"schema_version": "1"}, "plan_review": _APPLICABLE_E2E_REVIEW},
-        {**_PLAN_ASSURANCE_RESOLVER, **node_result_resolver({"review-cycle": {"status": "failed"}}), **fx(True)},
+        {
+            **_PLAN_ASSURANCE_RESOLVER,
+            **node_result_resolver({"review-cycle": {"status": "failed"}}),
+            **fx(True),
+        },
     ),
     (
         {"e2e_plan_checks": _APPLICABLE_E2E_CHECKS, "plan_review": _APPLICABLE_E2E_REVIEW},
-        {**_PLAN_ASSURANCE_RESOLVER, **node_result_resolver({"review-cycle": {"status": "succeeded"}}), **fx(True)},
+        {
+            **_PLAN_ASSURANCE_RESOLVER,
+            **node_result_resolver({"review-cycle": {"status": "succeeded"}}),
+            **fx(True),
+        },
         False,
     ),
 )

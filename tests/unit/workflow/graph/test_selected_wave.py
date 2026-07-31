@@ -165,7 +165,9 @@ def _task_projection(task: ExecutableTask, status: str, **overrides: object) -> 
     return TaskProjection(**payload)  # type: ignore[arg-type]
 
 
-def _initial_tasks(compiled: CompiledWorkflow, tmp_path: Path, projection: GraphProjection) -> dict[str, ExecutableTask]:
+def _initial_tasks(
+    compiled: CompiledWorkflow, tmp_path: Path, projection: GraphProjection
+) -> dict[str, ExecutableTask]:
     plan = plan_superstep(compiled, projection, _context(tmp_path), _FakeArtifacts())
     return {task.node_id: task for task in plan.tasks}
 
@@ -377,4 +379,3 @@ def test_assert_same_selected_wave_rejects_identity_drift(tmp_path: Path) -> Non
     )
     with pytest.raises(SelectedWaveDriftError, match="identity drifted"):
         assert_same_selected_wave(wave, mutated)
-

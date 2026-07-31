@@ -22,9 +22,7 @@ from assurance_agent.workflow.orchestration.gate_semantics import (
 
 def test_discover_replay_dependencies_match_manifest_symbols() -> None:
     manifest = build_gate_semantics_manifest()
-    assert discover_replay_semantic_dependencies() == {
-        symbol.qualified_name for symbol in manifest.symbols
-    }
+    assert discover_replay_semantic_dependencies() == {symbol.qualified_name for symbol in manifest.symbols}
 
 
 def test_repeated_gate_semantics_construction_is_identical() -> None:

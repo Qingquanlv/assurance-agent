@@ -12,7 +12,7 @@ from assurance_agent.workflow.orchestration.gate_semantics import gate_semantics
 
 
 def _v4_started(**overrides: object) -> GraphInvocationStartedEvent:
-    base = dict(
+    base: dict[str, object] = dict(
         type="graph_invocation_started",
         invocation_id="inv-1",
         entrypoint="full",

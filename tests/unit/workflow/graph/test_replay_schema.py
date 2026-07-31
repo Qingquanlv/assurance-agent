@@ -17,6 +17,7 @@ from assurance_agent.workflow.graph.replay_schema import (
 )
 from assurance_agent.workflow.graph.schema_v2 import (
     EdgeDef,
+    EntrypointDef,
     GraphDef,
     InterruptDef,
     NodeDef,
@@ -43,6 +44,13 @@ PARAM_NAMES = frozenset(
 
 APPLICABILITY_OP = "operation:derive-plan-layer-applicability"
 MECHANICAL_OP = "operation:verify-plan-mechanical"
+
+
+def _node_def(uses: str, *, with_params: dict[str, object] | None = None, **fields: object) -> NodeDef:
+    payload: dict[str, object] = {"uses": uses, **fields}
+    if with_params is not None:
+        payload["with"] = with_params
+    return NodeDef.model_validate(payload)
 
 
 def _branch_when(schema, node_id: str) -> str:
@@ -146,9 +154,9 @@ def _plan_cycle_graph(*, layer: str, mutate: dict | None = None) -> GraphDef:
     graph = GraphDef(
         max_supersteps=20,
         nodes={
-            "applicability": NodeDef(
-                uses=APPLICABILITY_OP,
-                **{"with": {"layer": layer}},
+            "applicability": _node_def(
+                APPLICABILITY_OP,
+                with_params={"layer": layer},
             ),
             "review": NodeDef(
                 uses=reviewer_skill,
@@ -158,14 +166,14 @@ def _plan_cycle_graph(*, layer: str, mutate: dict | None = None) -> GraphDef:
                     f"change:{profile.review_artifact.replace('.json', '-summary.md')}",
                 ],
             ),
-            "mechanical-plan-checks": NodeDef(
-                uses=MECHANICAL_OP,
-                **{"with": {"layer": layer, "require_review": True}},
+            "mechanical-plan-checks": _node_def(
+                MECHANICAL_OP,
+                with_params={"layer": layer, "require_review": True},
                 outputs=[f"change:{profile.checks_artifact}"],
             ),
-            "review-gate": NodeDef(
-                uses="builtin:gate",
-                **{"with": {"gate": profile.gate_id}},
+            "review-gate": _node_def(
+                "builtin:gate",
+                with_params={"gate": profile.gate_id},
             ),
             "fix": NodeDef(
                 uses=fixer_skill,
@@ -190,9 +198,9 @@ def _plan_cycle_graph(*, layer: str, mutate: dict | None = None) -> GraphDef:
                     actions=["fix_and_proceed", "accept_risk", "stop"],
                 ),
             ),
-            "exhausted": NodeDef(
-                uses="operation:stop",
-                **{"with": {"reason": f"{layer} plan fix attempts exhausted"}},
+            "exhausted": _node_def(
+                "operation:stop",
+                with_params={"reason": f"{layer} plan fix attempts exhausted"},
             ),
         },
         edges=[
@@ -271,9 +279,9 @@ def _branch_graph(*, layer: str) -> GraphDef:
             "review-cycle": NodeDef(
                 uses=f"graph:{layer}-plan-cycle",
             ),
-            "codegen-precheck": NodeDef(
-                uses="builtin:gate",
-                **{"with": {"gate": f"{layer}-codegen-precondition-gate"}},
+            "codegen-precheck": _node_def(
+                "builtin:gate",
+                with_params={"gate": f"{layer}-codegen-precondition-gate"},
             ),
             "codegen": NodeDef(
                 uses=f"skill:aa-{layer}-codegen",
@@ -330,7 +338,7 @@ def _minimal_replay_schema(*, layer: str = "api") -> WorkflowSchemaV2:
         schema_version="2",
         name="replay-test",
         params={name: ParamDef(type="str") for name in PARAM_NAMES},
-        entrypoints={"execute": {"graph": "assurance"}},
+        entrypoints={"execute": EntrypointDef(graph="assurance")},
         graphs=graphs,
         gates=gates,
     )
@@ -431,7 +439,9 @@ def _with_plan_cycle(schema: WorkflowSchemaV2, *, layer: str, graph: GraphDef) -
     ("mutator", "expected_fragment"),
     [
         (
-            lambda graph: graph.model_copy(update={"nodes": {k: v for k, v in graph.nodes.items() if k != "applicability"}}),
+            lambda graph: graph.model_copy(
+                update={"nodes": {k: v for k, v in graph.nodes.items() if k != "applicability"}}
+            ),
             "missing applicability operation",
         ),
         (
@@ -448,9 +458,7 @@ def _with_plan_cycle(schema: WorkflowSchemaV2, *, layer: str, graph: GraphDef) -
         ),
     ],
 )
-def test_wired_profile_topology_rejects_missing_required_nodes(
-    mutator, expected_fragment: str
-) -> None:
+def test_wired_profile_topology_rejects_missing_required_nodes(mutator, expected_fragment: str) -> None:
     schema = _minimal_replay_schema(layer="api")
     profile = get_layer_assurance_profile("api")
     mutated = mutator(schema.graphs["api-plan-cycle"])
@@ -494,9 +502,7 @@ def test_wired_profile_topology_rejects_review_after_mechanical_on_applicable_pa
     profile = get_layer_assurance_profile("api")
     cycle = schema.graphs["api-plan-cycle"]
     edges = [
-        edge
-        for edge in cycle.edges
-        if not (edge.from_ == "review" and edge.to == "mechanical-plan-checks")
+        edge for edge in cycle.edges if not (edge.from_ == "review" and edge.to == "mechanical-plan-checks")
     ]
     schema = _with_plan_cycle(schema, layer="api", graph=cycle.model_copy(update={"edges": edges}))
     errors = validate_wired_profile_topology(schema, profile)
@@ -525,14 +531,15 @@ def test_wired_profile_topology_rejects_wrong_knowledge_remediation_freshness() 
     routes = [
         route
         if route.from_ != "knowledge-remediation"
-        else route.model_copy(update={"cases": {"fix_and_proceed": "review", "accept_risk": "END", "stop": "STOP"}})
+        else route.model_copy(
+            update={"cases": {"fix_and_proceed": "review", "accept_risk": "END", "stop": "STOP"}}
+        )
         for route in cycle.routes
     ]
     schema = _with_plan_cycle(schema, layer="api", graph=cycle.model_copy(update={"routes": routes}))
     errors = validate_wired_profile_topology(schema, profile)
     assert any(
-        "knowledge remediation fix_and_proceed must re-enter at mechanical producer" in err
-        for err in errors
+        "knowledge remediation fix_and_proceed must re-enter at mechanical producer" in err for err in errors
     )
 
 
@@ -541,7 +548,9 @@ def test_wired_profile_topology_rejects_fix_skipping_review() -> None:
     profile = get_layer_assurance_profile("api")
     cycle = schema.graphs["api-plan-cycle"]
     edges = [
-        edge if not (edge.from_ == "fix" and edge.to == "review") else EdgeDef(**{"from": "fix", "to": "mechanical-plan-checks"})
+        edge
+        if not (edge.from_ == "fix" and edge.to == "review")
+        else EdgeDef(**{"from": "fix", "to": "mechanical-plan-checks"})
         for edge in cycle.edges
     ]
     schema = _with_plan_cycle(schema, layer="api", graph=cycle.model_copy(update={"edges": edges}))
@@ -552,9 +561,7 @@ def test_wired_profile_topology_rejects_fix_skipping_review() -> None:
 def test_wired_profile_topology_rejects_attached_reviewer_gate() -> None:
     schema = _minimal_replay_schema(layer="api")
     profile = get_layer_assurance_profile("api")
-    review = schema.graphs["api-plan-cycle"].nodes["review"].model_copy(
-        update={"gate": profile.gate_id}
-    )
+    review = schema.graphs["api-plan-cycle"].nodes["review"].model_copy(update={"gate": profile.gate_id})
     nodes = dict(schema.graphs["api-plan-cycle"].nodes)
     nodes["review"] = review
     cycle = schema.graphs["api-plan-cycle"].model_copy(update={"nodes": nodes})

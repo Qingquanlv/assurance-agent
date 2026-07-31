@@ -13,7 +13,11 @@ from assurance_agent.workflow.core.events import read_events_strict
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
 from assurance_agent.workflow.graph.checkpoint import CheckpointStore
 from assurance_agent.workflow.graph.compiler import compile_workflow
-from assurance_agent.workflow.graph.contracts import load_execution_contracts, parse_execution_contracts
+from assurance_agent.workflow.graph.contracts import (
+    ExecutionContractCatalog,
+    load_execution_contracts,
+    parse_execution_contracts,
+)
 from assurance_agent.workflow.graph.handlers.operation import (
     OperationFn,
     OperationHandler,
@@ -306,7 +310,7 @@ def test_minimal_graph_run_and_fresh_status(tmp_path: Path) -> None:
     assert [event["type"] for event in events].count("task_attempt_succeeded") == 1
     assert events[-1]["type"] == "graph_completed"
     started = next(e for e in events if e.get("type") == "graph_invocation_started")
-    assert started.get("event_schema_version") == 3
+    assert started.get("event_schema_version") == 4
 
     fresh_runtime = _build_runtime(project, compiled, contracts)
     assert fresh_runtime.status(result.invocation_id).model_dump() == result.status.model_dump()
@@ -933,9 +937,7 @@ def test_recovery_barrier_blocks_plan_while_task_still_running(
     project = _make_project(tmp_path)
     compiled, contracts = _write_compiled()
     clock = FakeClock()
-    runtime = _build_runtime(
-        project, compiled, contracts, clock=clock, node_runner=_op_runner(_write_ops())
-    )
+    runtime = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(_write_ops()))
 
     def crash_run(prepared, plan, projection, context, leases):  # type: ignore[no-untyped-def]
         raise _InjectedCrash("after task_attempt_started")
@@ -967,9 +969,7 @@ def test_recovery_barrier_blocks_plan_while_task_still_running(
         raise AssertionError("plan_superstep must not run while a task is still running")
 
     monkeypatch.setattr(runtime_mod, "plan_superstep", reject_plan)
-    fresh = _build_runtime(
-        project, compiled, contracts, clock=clock, node_runner=_op_runner(_write_ops())
-    )
+    fresh = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(_write_ops()))
     with pytest.raises(GraphRuntimeError, match="recovery barrier stalled"):
         fresh.resume(invocation_id)
     assert plan_calls == []
@@ -1071,7 +1071,7 @@ gates: {}
 """
 
 
-def _nested_sync_compiled() -> tuple[CompiledWorkflow, object]:
+def _nested_sync_compiled() -> tuple[CompiledWorkflow, ExecutionContractCatalog]:
     contracts = parse_execution_contracts(_NESTED_SYNC_CONTRACTS)
     compiled = compile_workflow(parse_workflow_v2(_NESTED_SYNC_WORKFLOW), contracts)
     return compiled, contracts

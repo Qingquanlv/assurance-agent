@@ -301,9 +301,7 @@ def test_string_require_review_is_invalid_input(workspace: TaskWorkspace) -> Non
 
 
 @pytest.mark.parametrize("layer", ["api", "e2e"])
-def test_reviewed_mode_missing_review_is_invalid_output(
-    workspace: TaskWorkspace, layer: str
-) -> None:
+def test_reviewed_mode_missing_review_is_invalid_output(workspace: TaskWorkspace, layer: str) -> None:
     _write_case(workspace, "E2E" if layer == "e2e" else "API", automated=True)
     _write_profile_plans(workspace, layer, "Data knowledge: `.aa/data-knowledge.yaml`\n")
     result = verify_plan_mechanical(_task(layer, require_review=True), workspace, _context())
@@ -312,9 +310,7 @@ def test_reviewed_mode_missing_review_is_invalid_output(
 
 
 @pytest.mark.parametrize("layer", ["api", "e2e"])
-def test_reviewed_mode_malformed_review_is_invalid_output(
-    workspace: TaskWorkspace, layer: str
-) -> None:
+def test_reviewed_mode_malformed_review_is_invalid_output(workspace: TaskWorkspace, layer: str) -> None:
     _write_case(workspace, "E2E" if layer == "e2e" else "API", automated=True)
     _write_profile_plans(workspace, layer, "Data knowledge: `.aa/data-knowledge.yaml`\n")
     profile = get_layer_assurance_profile(layer)
@@ -343,9 +339,7 @@ def test_reviewed_mode_wrong_review_type_is_invalid_output(
 
 
 @pytest.mark.parametrize("layer", ["api", "e2e"])
-def test_reviewed_mode_wrong_change_id_is_invalid_output(
-    workspace: TaskWorkspace, layer: str
-) -> None:
+def test_reviewed_mode_wrong_change_id_is_invalid_output(workspace: TaskWorkspace, layer: str) -> None:
     _write_case(workspace, "E2E" if layer == "e2e" else "API", automated=True)
     _write_profile_plans(workspace, layer, "Data knowledge: `.aa/data-knowledge.yaml`\n")
     _write_plan_review(workspace, layer, change_id="CH-OTHER")
@@ -367,15 +361,11 @@ def test_reviewed_mode_missing_l1_is_invalid_output(workspace: TaskWorkspace, la
 
 
 @pytest.mark.parametrize("layer", ["api", "e2e"])
-def test_reviewed_mode_malformed_l1_yaml_is_invalid_output(
-    workspace: TaskWorkspace, layer: str
-) -> None:
+def test_reviewed_mode_malformed_l1_yaml_is_invalid_output(workspace: TaskWorkspace, layer: str) -> None:
     _write_case(workspace, "E2E" if layer == "e2e" else "API", automated=True)
     _write_profile_plans(workspace, layer, "Data knowledge: `.aa/data-knowledge.yaml`\n")
     _write_plan_review(workspace, layer)
-    (workspace.project_root / ".aa" / "data-knowledge.yaml").write_text(
-        "not: [valid, yaml", encoding="utf-8"
-    )
+    (workspace.project_root / ".aa" / "data-knowledge.yaml").write_text("not: [valid, yaml", encoding="utf-8")
     result = verify_plan_mechanical(_task(layer, require_review=True), workspace, _context())
     assert result.status == "failed"
     assert result.error_kind == "invalid_output"
@@ -398,9 +388,7 @@ def test_reviewed_mode_l1_rejected_by_data_knowledge_is_invalid_output(
 
 def test_inapplicable_scope_ignores_malformed_plans_review_and_l1(workspace: TaskWorkspace) -> None:
     _write_case(workspace, "E2E", automated=False)
-    (workspace.project_root / ".aa" / "data-knowledge.yaml").write_text(
-        "not: [valid, yaml", encoding="utf-8"
-    )
+    (workspace.project_root / ".aa" / "data-knowledge.yaml").write_text("not: [valid, yaml", encoding="utf-8")
     review_path = workspace.change_dir / "review" / "e2e-plan-review.json"
     review_path.parent.mkdir(parents=True, exist_ok=True)
     review_path.write_text("{not json", encoding="utf-8")
@@ -539,8 +527,10 @@ def test_other_layer_cases_do_not_make_target_layer_applicable(workspace: TaskWo
     # workspace fixture already wrote an automated API case; asking for e2e must be inapplicable.
     result = derive_plan_layer_applicability(_applicability_task("e2e"), workspace, _context())
     assert result.status == "succeeded"
-    assert result.value["applicable"] is False
-    assert result.value["reason_code"] == "no_automated_cases"
+    value = result.value
+    assert isinstance(value, dict)
+    assert value["applicable"] is False
+    assert value["reason_code"] == "no_automated_cases"
 
 
 def test_malformed_case_yaml_is_invalid_output(workspace: TaskWorkspace) -> None:

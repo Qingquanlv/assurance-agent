@@ -11,7 +11,10 @@ import pytest
 from assurance_agent import resources
 from assurance_agent.artifacts.policy import PolicyError, load_policy, load_policy_snapshot, policy_digest
 from assurance_agent.verification.profile_manifest import assurance_profile_digest
-from assurance_agent.workflow.graph.definition_pinning import inherit_child_definitions, policy_snapshot_relpath
+from assurance_agent.workflow.graph.definition_pinning import (
+    inherit_child_definitions,
+    policy_snapshot_relpath,
+)
 from assurance_agent.workflow.orchestration.gate_semantics import gate_semantics_digest
 from assurance_agent.eval.fixtures import write_fixture_lock
 from assurance_agent.workflow.core.events import read_events_strict
@@ -760,9 +763,10 @@ def test_root_start_without_project_policy_uses_packaged_default_origin(tmp_path
     assert not (snapshot / ".aa" / "policy.yaml").exists()
     assert started["policy_origin"] == "packaged_default"
     assert started["policy_digest"] == policy_digest(load_policy_snapshot(project).policy)
-    assert _pinned_policy_bytes(change_dir, str(started["policy_digest"])) == load_policy_snapshot(
-        project
-    ).canonical_bytes
+    assert (
+        _pinned_policy_bytes(change_dir, str(started["policy_digest"]))
+        == load_policy_snapshot(project).canonical_bytes
+    )
 
 
 def test_equal_project_and_default_snapshots_share_policy_path_but_record_distinct_origins(
@@ -800,7 +804,7 @@ def test_equal_project_and_default_snapshots_share_policy_path_but_record_distin
     started = _started_events(project)[0]
     assert started["policy_origin"] == "project"
     digest = str(started["policy_digest"])
-    assert ( _context(project).change_dir / policy_snapshot_relpath(digest)).exists()
+    assert (_context(project).change_dir / policy_snapshot_relpath(digest)).exists()
 
 
 def test_import_start_uses_the_same_root_binding_path(tmp_path: Path) -> None:
@@ -838,9 +842,10 @@ def test_import_start_uses_the_same_root_binding_path(tmp_path: Path) -> None:
     change_dir = _context(project).change_dir
     assert started["event_schema_version"] == 4
     assert started["policy_origin"] == "project"
-    assert _pinned_policy_bytes(change_dir, str(started["policy_digest"])) == load_policy_snapshot(
-        project
-    ).canonical_bytes
+    assert (
+        _pinned_policy_bytes(change_dir, str(started["policy_digest"]))
+        == load_policy_snapshot(project).canonical_bytes
+    )
 
 
 def test_child_inherits_parent_binding_and_pinned_bytes(tmp_path: Path) -> None:
@@ -889,7 +894,9 @@ def test_child_inherits_parent_binding_and_pinned_bytes(tmp_path: Path) -> None:
     assert _binding_fields(child) == _binding_fields(root)
     change_dir = _context(project).change_dir
     digest = str(root["policy_digest"])
-    assert _pinned_policy_bytes(change_dir, digest) == _pinned_policy_bytes(change_dir, str(child["policy_digest"]))
+    assert _pinned_policy_bytes(change_dir, digest) == _pinned_policy_bytes(
+        change_dir, str(child["policy_digest"])
+    )
 
 
 def test_missing_pinned_policy_snapshot_fails_child_inheritance(tmp_path: Path) -> None:
@@ -934,7 +941,9 @@ def test_missing_pinned_policy_snapshot_fails_child_inheritance(tmp_path: Path) 
     change_dir = _context(project).change_dir
     from assurance_agent.workflow.graph.checkpoint import project_invocation
 
-    root_event = next(event for event in _started_events(project) if event.get("parent_invocation_id") is None)
+    root_event = next(
+        event for event in _started_events(project) if event.get("parent_invocation_id") is None
+    )
     parent_projection = project_invocation(change_dir, str(root_event["invocation_id"]))
     pinned = change_dir / policy_snapshot_relpath(parent_projection.policy_digest)
     pinned.unlink()
@@ -985,12 +994,12 @@ def test_tampered_pinned_policy_snapshot_fails_child_inheritance(tmp_path: Path)
     change_dir = _context(project).change_dir
     from assurance_agent.workflow.graph.checkpoint import project_invocation
 
-    root_event = next(event for event in _started_events(project) if event.get("parent_invocation_id") is None)
+    root_event = next(
+        event for event in _started_events(project) if event.get("parent_invocation_id") is None
+    )
     parent_projection = project_invocation(change_dir, str(root_event["invocation_id"]))
     pinned = change_dir / policy_snapshot_relpath(parent_projection.policy_digest)
     pinned.write_bytes(b"tampered\n")
 
     with pytest.raises(PolicyError, match="policy snapshot"):
         inherit_child_definitions(parent=parent_projection, change_dir=change_dir)
-
-

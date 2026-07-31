@@ -122,6 +122,79 @@ aa knowledge promote [--project-dir] (--change <id> | --from <proposal-path>) [-
 
 **与 `Review.layer_applicable` 的关系**：Fuzz/Performance 的层级适用性目前仍经由 `review/*-plan-review.json` 的 `layer_applicable` 字段供 plan-review gate 读取（见上文）。本次改动只落地机械 check 证据自身的版本化与 profile 化执行，尚未把 gate/graph 的跨层消费迁移到 `PlanCheckDocument.applicability`；因此 `Review.layer_applicable` 字段**本次不删除**，其消费迁移与运行期只读该字段的移除属于后续依赖计划。
 
+**v2 `LayerApplicability` 字段**（`PlanCheckDocument.applicability`）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `layer` | `api` \| `e2e` \| `fuzz` \| `performance` | 必须与文档级 `layer` 一致 |
+| `applicable` | bool | 该 change 在该层是否存在自动化 case |
+| `reason_code` | `automated_cases_present` \| `no_automated_cases` | 适用时为前者且 `case_ids` 非空；不适用时为后者且 `case_ids` 为空 |
+| `case_ids` | string[] | 排序去重后的自动化 case ID 列表 |
+
+## Graph invocation 事件（`graph_invocation_started` v4）
+
+新 root invocation 写入 `event_schema_version: 4`，在 v3 的 schema/contract 绑定之上追加 replay 所需的定义冻结字段。v1–v3 事件仍可由 `migrate_graph_event_stream` 解析，缺失的绑定字段回填为空字符串，**不会**被静默升级为可 replay 的 v2 specialty 证据。
+
+| 字段 | v4 要求 | 说明 |
+|---|---|---|
+| `policy_digest` | 必填 | 归一化 policy 快照的 SHA-256；快照位于 `.graph-runtime/policies/<digest>.json` |
+| `policy_origin` | 必填，闭枚举 | `project`（来自 root tree 的项目 `.aa/policy.yaml`）或 `packaged_default`（无项目 policy 时使用打包默认）；相同归一化内容共享同一快照文件，origin 单独记录 |
+| `gate_semantics_digest` | 必填 | 代码拥有的 gate/DSL/校验语义 manifest 聚合 digest；实现变更但未 bump 语义版本也会改变 digest |
+| `assurance_profile_digest` | 必填 | 四层 assurance profile 与 check catalog 的归一化 digest |
+
+Replay/collector 要求上述 digest 与当前兼容实现一致；不匹配时 specialty report 为 `incomplete`（如 `gate_semantics_mismatch` / `assurance_profile_mismatch`），不回退到当前磁盘定义。
+
+## Counterfactual plan-check policy replay（`counterfactual_plan_check_actions/v1`）
+
+Specialty report v2 的 `capability_contract_policy.semantics` 固定为该字符串。每个 **complete** 层行携带恰好三个 scenario，action 顺序固定为 `warn` → `block` → `require_human`：
+
+| scenario 字段 | 说明 |
+|---|---|
+| `action` | `warn` \| `block` \| `require_human` |
+| `policy_digest` | 该 counterfactual 分支所用 policy 快照 digest |
+| `verdict` / `route` / `matched_rule` / `reason` | 冻结 gate 求值结果 |
+| `missing_capabilities` | reviewer 能力缺口（可为空） |
+| `policy_effect` | 闭枚举，见下表 |
+
+**`policy_effect` 闭枚举**：
+
+| 值 | 含义 |
+|---|---|
+| `applied` | 该 action 的 check 失败规则（或同等 reviewer 裁决）决定了 gate 结果 |
+| `no_failed_checks` | 无失败 check；层不适用时三个 scenario 均为 `skip` 且通常为此值 |
+| `shadowed_by_gate_precondition` | 存在失败 check，但更早的 reviewer needs-fix / human / explicit-reject 规则已决定结果 |
+| `shadowed_by_capability_precondition` | 能力前置条件本身是最先决定结果的规则 |
+
+Counterfactual replay 仅在 baseline gate/route 校准通过后运行：冻结 baseline policy 对绑定 raw bytes 的 gate 报告字段（verdict、matched rule、reason、value、normalized details）必须一致；route 由 `plan_review_route` 推导并与 ledger 激活/跳过事件交叉校验。
+
+## 四层 replay 矩阵（SpecialtyReport v2）
+
+`SpecialtyReportV2.capability_contract_policy` 始终输出 **恰好四行**，layer 顺序固定为 `api` → `e2e` → `fuzz` → `performance`（与 `LAYER_NAMES` / `CASE_TYPES` 一致）。顶层 `integrity` 闭枚举：
+
+| `integrity` | 条件 |
+|---|---|
+| `complete` | `definition_binding` 存在且无任何 `incomplete` 行 |
+| `incomplete` | 缺失/模糊定义绑定，或任一行 `status == incomplete` |
+
+**行级 `status` 闭枚举**：
+
+| status | 适用层 | 含义 |
+|---|---|---|
+| `complete` | 已接线且被选中的 API/E2E | 含 applicability、mechanical checks、evidence digests、三 scenario |
+| `not_selected` | 任意 |  pinned params 下 assurance 分支未选中；不 fabricated scenario |
+| `not_wired` | Fuzz/Performance（本增量） | 选中但 graph 未接线；不 fabricated scenario |
+| `incomplete` | 任意 | 带 `reason_code`（如 `root_invocation_unbound`、`gate_evidence_drift`），无借用 artifact |
+
+层选择来自 pinned graph 的 params-only `when` 谓词（可含 `run_mode` 与 `test_types` 合取），**不是** `test_types` 单独推断。本增量已接线集合为 `{api, e2e}`。
+
+## Specialty report v1（仅展示）
+
+`schema_version: "1"` 的 legacy report 可被 `load_specialty_report` 读取并参与 benchmark evidence-row 导出，但：
+
+- **不能**通过 `SpecialtyReportV2` 校验（无四层矩阵、无 definition binding）；
+- Markdown 渲染标记为 `legacy_api_only`，出现在 Policy Replay Matrix，**不出现在** Layer Assurance Matrix 的四层行中；
+- 不得被静默升级为 v2 replay 证据；需要 v4 invocation 绑定字段与完整 replay 链才能产出 v2。
+
 ## Retro v3 signal analysis 与 Improvement lifecycle
 
 Retro 是**独立入口**（`aa workflow run --entrypoint retro` / `aa retro`），不挂在 full workflow 上。当前 run 只读写 `qa/retro/<retro-id>/`；生产路径不扫描、不迁移、不消费历史 Retro 目录。

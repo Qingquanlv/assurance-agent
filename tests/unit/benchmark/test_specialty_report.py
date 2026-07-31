@@ -6,6 +6,7 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 from pydantic import ValidationError
@@ -342,7 +343,7 @@ def _strip_api_gate_reads_sha256(change_dir: Path) -> None:
         if event.get("type") == "task_attempt_succeeded" and task_id.endswith(":review-gate"):
             if "api-plan-cycle" not in task_id:
                 continue
-            gate_report = dict(event.get("gate_report") or {})
+            gate_report = dict(cast(dict[str, object], event.get("gate_report") or {}))
             gate_report.pop("reads_sha256", None)
             event["gate_report"] = gate_report
     _write_events(change_dir, events)

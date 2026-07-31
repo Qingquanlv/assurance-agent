@@ -139,7 +139,10 @@ def _policy_text(*, check_actions: dict[str, str] | None = None) -> str:
 
 def _failed_checks(layer: str, *check_ids: str) -> dict[str, object]:
     payload = _applicable_checks(layer)
-    for check in payload["checks"]:
+    checks = payload["checks"]
+    assert isinstance(checks, list)
+    for check in checks:
+        assert isinstance(check, dict)
         if check["check_id"] in check_ids:
             check["status"] = "fail"
             check["findings"] = [{"locator": check["check_id"], "actual": "bad", "expected": "good"}]
@@ -343,7 +346,6 @@ def test_missing_checks_are_invalid_not_policy_compatible(tmp_path: Path) -> Non
 
 
 def test_codegen_precondition_skips_inapplicable_layer(tmp_path: Path) -> None:
-    profile = get_layer_assurance_profile("api")
     context = _context(
         tmp_path,
         checks=_inapplicable_checks("api"),
@@ -360,7 +362,9 @@ def test_codegen_precondition_skips_inapplicable_layer(tmp_path: Path) -> None:
 
 def test_codegen_precondition_stops_without_current_child_success(tmp_path: Path) -> None:
     (tmp_path / ".aa").mkdir(parents=True)
-    (tmp_path / ".aa" / "data-knowledge.yaml").write_text("version: 1\ncapabilities:\n  domain_factories: {}\n", encoding="utf-8")
+    (tmp_path / ".aa" / "data-knowledge.yaml").write_text(
+        "version: 1\ncapabilities:\n  domain_factories: {}\n", encoding="utf-8"
+    )
     context = _context(
         tmp_path,
         checks=_applicable_checks("api"),

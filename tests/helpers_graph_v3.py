@@ -13,7 +13,7 @@ def invocation_ids_along_ns(checkpoint_ns: str) -> list[str]:
 def assert_event_schema_version_3(events: Sequence[dict[str, object]]) -> None:
     started = [event for event in events if event.get("type") == "graph_invocation_started"]
     assert started, "expected graph_invocation_started"
-    assert started[0].get("event_schema_version") == 3
+    assert started[0].get("event_schema_version") == 4
 
 
 def assert_v3_interrupt_anchors(events: Sequence[dict[str, object]]) -> None:

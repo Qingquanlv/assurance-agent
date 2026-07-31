@@ -170,9 +170,7 @@ def _scenario(replay, action: str):
         ("require_human", Verdict.NEEDS_HUMAN_REVIEW),
     ],
 )
-def test_failing_check_routes_by_policy_action(
-    layer: str, action: str, expected_verdict: Verdict
-) -> None:
+def test_failing_check_routes_by_policy_action(layer: str, action: str, expected_verdict: Verdict) -> None:
     replay = _replay(
         layer,
         checks=_failed_checks(layer, "assert_ideal"),
@@ -296,9 +294,9 @@ def test_noncanonical_bytes_preserve_bound_digests() -> None:
     profile = get_layer_assurance_profile("api")
     review = _review("api")
     payload = review.model_dump(mode="json")
-    noncanonical = (
-        json.dumps(payload, indent=4, sort_keys=False, ensure_ascii=False) + "  \n"
-    ).encode("utf-8")
+    noncanonical = (json.dumps(payload, indent=4, sort_keys=False, ensure_ascii=False) + "  \n").encode(
+        "utf-8"
+    )
     assert noncanonical != json.dumps(payload, sort_keys=True).encode("utf-8")
 
     bound_review = bind_json_artifact(
@@ -371,9 +369,7 @@ def _project_tree_hashes(root: Path) -> dict[str, str]:
     }
 
 
-def test_replay_leaves_real_project_tree_unchanged(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_replay_leaves_real_project_tree_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     profile = get_layer_assurance_profile("api")
     change_dir = tmp_path / "qa" / "changes" / _CHANGE_ID
     decoy_marker = b"# DECOY - replay must not mutate caller cwd artifacts\n"
@@ -407,9 +403,7 @@ def test_bind_json_artifact_rejects_model_raw_bytes_mismatch() -> None:
     profile = get_layer_assurance_profile("api")
     review = _review("api")
     mismatched = _review("api", decision="reject")
-    raw = (
-        json.dumps(mismatched.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
-    ).encode("utf-8")
+    raw = (json.dumps(mismatched.model_dump(mode="json"), indent=2, sort_keys=True) + "\n").encode("utf-8")
     with pytest.raises(ValueError, match="model does not match raw_bytes"):
         bind_json_artifact(logical_path=profile.review_artifact, model=review, raw_bytes=raw)
 

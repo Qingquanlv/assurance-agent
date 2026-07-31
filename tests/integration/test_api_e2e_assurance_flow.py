@@ -6,11 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from assurance_agent.workflow.core.graph_events import NodeSkippedEvent
 from assurance_agent.workflow.graph.compiler import compile_workflow, resolve_params
 from assurance_agent.workflow.graph.contracts import load_execution_contracts
 from assurance_agent.workflow.graph.models import (
-    ExecutableTask,
     GraphProjection,
     RuntimeContext,
     TaskProjection,
@@ -88,7 +86,9 @@ def _task(
     return TaskProjection(**payload)  # type: ignore[arg-type]
 
 
-def _plan_cycle(compiled, tmp_path: Path, *, graph_id: str, tasks: list[TaskProjection] | None = None, supersteps: int = 0):
+def _plan_cycle(
+    compiled, tmp_path: Path, *, graph_id: str, tasks: list[TaskProjection] | None = None, supersteps: int = 0
+):
     return plan_superstep(
         compiled,
         _cycle_projection(compiled, graph_id=graph_id, tasks=tasks, supersteps=supersteps),
@@ -108,16 +108,29 @@ def test_plan_cycle_starts_at_applicability(tmp_path: Path, layer: str, graph_id
 @pytest.mark.parametrize(("layer", "graph_id"), [("api", "api-plan-cycle"), ("e2e", "e2e-plan-cycle")])
 def test_inapplicable_branch_skips_reviewer(tmp_path: Path, layer: str, graph_id: str) -> None:
     compiled, _ = _load_compiled()
-    applicability = _task("applicability", value={"layer": layer, "applicable": False, "reason_code": "no_automated_cases", "case_ids": []})
+    applicability = _task(
+        "applicability",
+        value={"layer": layer, "applicable": False, "reason_code": "no_automated_cases", "case_ids": []},
+    )
     plan = _plan_cycle(compiled, tmp_path, graph_id=graph_id, tasks=[applicability], supersteps=1)
     assert [task.node_id for task in plan.tasks] == ["mechanical-plan-checks"]
     assert "review" not in {task.node_id for task in plan.tasks}
 
 
 @pytest.mark.parametrize(("layer", "graph_id"), [("api", "api-plan-cycle"), ("e2e", "e2e-plan-cycle")])
-def test_applicable_branch_reaches_review_before_mechanical(tmp_path: Path, layer: str, graph_id: str) -> None:
+def test_applicable_branch_reaches_review_before_mechanical(
+    tmp_path: Path, layer: str, graph_id: str
+) -> None:
     compiled, _ = _load_compiled()
-    applicability = _task("applicability", value={"layer": layer, "applicable": True, "reason_code": "automated_cases_present", "case_ids": ["TC-1"]})
+    applicability = _task(
+        "applicability",
+        value={
+            "layer": layer,
+            "applicable": True,
+            "reason_code": "automated_cases_present",
+            "case_ids": ["TC-1"],
+        },
+    )
     plan = _plan_cycle(compiled, tmp_path, graph_id=graph_id, tasks=[applicability], supersteps=1)
     assert [task.node_id for task in plan.tasks] == ["review"]
 
@@ -125,7 +138,10 @@ def test_applicable_branch_reaches_review_before_mechanical(tmp_path: Path, laye
 def test_fix_loop_reenters_review_not_mechanical(tmp_path: Path) -> None:
     compiled, _ = _load_compiled()
     tasks = [
-        _task("applicability", value={"layer": "api", "applicable": True, "reason_code": "x", "case_ids": ["TC-1"]}),
+        _task(
+            "applicability",
+            value={"layer": "api", "applicable": True, "reason_code": "x", "case_ids": ["TC-1"]},
+        ),
         _task("review"),
         _task("mechanical-plan-checks"),
         _task(
@@ -166,7 +182,9 @@ def test_codegen_precheck_skips_inapplicable_branch_without_codegen(tmp_path: Pa
     )
     report = check_gate_in_view(schema.gates, "api-codegen-precondition-gate", context)
     assert report.verdict == Verdict.SKIP
-    branch_route = next(route for route in schema.graphs["api-branch"].routes if route.from_ == "codegen-precheck")
+    branch_route = next(
+        route for route in schema.graphs["api-branch"].routes if route.from_ == "codegen-precheck"
+    )
     assert branch_route.cases["skip"] == "END"
     assert "codegen" not in branch_route.cases.values() or branch_route.cases.get("skip") == "END"
 
@@ -178,7 +196,12 @@ def test_codegen_precheck_stops_on_stale_child_without_success(tmp_path: Path) -
         "schema_version": "2",
         "layer": "api",
         "status": "pass",
-        "applicability": {"layer": "api", "applicable": True, "reason_code": "automated_cases_present", "case_ids": ["TC-1"]},
+        "applicability": {
+            "layer": "api",
+            "applicable": True,
+            "reason_code": "automated_cases_present",
+            "case_ids": ["TC-1"],
+        },
         "checks": [],
     }
     context = GateEvaluationContext(

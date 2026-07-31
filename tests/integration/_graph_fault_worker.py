@@ -215,7 +215,6 @@ def _install_hooks(runtime, point: str) -> None:  # noqa: ANN001
     from assurance_agent.workflow.graph import leases as leases_mod
 
     sched = runtime._scheduler  # noqa: SLF001
-    store = sched._objects  # noqa: SLF001
     checkpoints = runtime._checkpoints  # noqa: SLF001
 
     if point in {"before_attempt_started", "after_attempt_started"}:

@@ -67,19 +67,32 @@ def test_repeated_construction_is_byte_identical() -> None:
     [
         ("profiles[0].case_type", lambda m: m["profiles"][0].update({"case_type": "MUTATED"})),
         ("profiles[0].plan_artifacts", lambda m: m["profiles"][0].update({"plan_artifacts": ["mutated"]})),
-        ("profiles[0].review_artifact", lambda m: m["profiles"][0].update({"review_artifact": "review/mutated.json"})),
+        (
+            "profiles[0].review_artifact",
+            lambda m: m["profiles"][0].update({"review_artifact": "review/mutated.json"}),
+        ),
         ("profiles[0].review_alias", lambda m: m["profiles"][0].update({"review_alias": "mutated_review"})),
-        ("profiles[0].checks_artifact", lambda m: m["profiles"][0].update({"checks_artifact": "review/mutated-checks.json"})),
+        (
+            "profiles[0].checks_artifact",
+            lambda m: m["profiles"][0].update({"checks_artifact": "review/mutated-checks.json"}),
+        ),
         ("profiles[0].gate_id", lambda m: m["profiles"][0].update({"gate_id": "mutated-gate"})),
         (
             "profiles[0].capability_contract_enabled",
-            lambda m: m["profiles"][0].update({"capability_contract_enabled": not m["profiles"][0]["capability_contract_enabled"]}),
+            lambda m: m["profiles"][0].update(
+                {"capability_contract_enabled": not m["profiles"][0]["capability_contract_enabled"]}
+            ),
         ),
         (
             "profiles[0].applicable_check_ids",
-            lambda m: m["profiles"][0].update({"applicable_check_ids": list(reversed(m["profiles"][0]["applicable_check_ids"]))}),
+            lambda m: m["profiles"][0].update(
+                {"applicable_check_ids": list(reversed(m["profiles"][0]["applicable_check_ids"]))}
+            ),
         ),
-        ("profiles[0].review_model", lambda m: m["profiles"][0].update({"review_model": "mutated.ReviewModel"})),
+        (
+            "profiles[0].review_model",
+            lambda m: m["profiles"][0].update({"review_model": "mutated.ReviewModel"}),
+        ),
         (
             "check_catalog order",
             lambda m: m["check_catalog"].sort(key=lambda entry: entry["check_id"], reverse=True),

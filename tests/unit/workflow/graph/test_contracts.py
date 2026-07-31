@@ -818,7 +818,10 @@ def test_api_fixer_authorization_forbids_checks_write(tmp_path: Path) -> None:
     checks = workspace.change_dir / "review" / "api-plan-checks.json"
     checks.parent.mkdir(parents=True, exist_ok=True)
     checks.write_text('{"status":"pass"}\n', encoding="utf-8")
-    with pytest.raises(WorkspaceError, match=r"forbidden write outside authorization_writes: change:review/api-plan-checks\.json"):
+    with pytest.raises(
+        WorkspaceError,
+        match=r"forbidden write outside authorization_writes: change:review/api-plan-checks\.json",
+    ):
         store.freeze_write_set(workspace, claims=claims)
 
 
@@ -837,7 +840,11 @@ def test_e2e_reviewer_and_fixer_forbid_checks_write(tmp_path: Path, uses: str, c
     store = TreeStore(change)
     backend = WorkspaceBackend(change)
     base_tree = store.capture(project)
-    outputs = ["change:review/plan-review.json"] if "reviewer" in uses else ["change:review/plan-review-apply-summary.md"]
+    outputs = (
+        ["change:review/plan-review.json"]
+        if "reviewer" in uses
+        else ["change:review/plan-review-apply-summary.md"]
+    )
     claims = load_execution_contracts(project).claims_for(NodeDef(uses=uses, outputs=outputs))
     workspace = backend.create(task_id="agent", base_tree_id=base_tree, store=store)
     checks = workspace.change_dir / checks_path

@@ -23,6 +23,7 @@ def _write(root: Path, body: str) -> None:
     (root / ".aa").mkdir(parents=True, exist_ok=True)
     (root / POLICY_REL_PATH).write_text(body, encoding="utf-8")
 
+
 VALID = """\
 version: 1
 human_review_risk_levels: [high]

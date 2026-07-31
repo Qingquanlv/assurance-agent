@@ -7,7 +7,6 @@ from pydantic import ValidationError
 
 from assurance_agent.artifacts.models.assurance import LAYER_NAMES, PLAN_CHECK_IDS
 from assurance_agent.eval.specialty_models import (
-    CapabilityPolicyReplayV2,
     CompleteLayerRow,
     IncompleteLayerRow,
     LegacySpecialtyReportV1,
@@ -24,7 +23,9 @@ def _check_summary(*, check_id: str, status: str = "pass", finding_count: int = 
 
 
 def _mechanical(*, status: str = "pass", finding_count: int = 0) -> dict[str, object]:
-    checks = [_check_summary(check_id=check_id, status=status, finding_count=0) for check_id in PLAN_CHECK_IDS]
+    checks = [
+        _check_summary(check_id=check_id, status=status, finding_count=0) for check_id in PLAN_CHECK_IDS
+    ]
     if status == "fail" and finding_count:
         checks[1] = _check_summary(check_id="shared_factory", status="fail", finding_count=finding_count)
     return {"status": status, "finding_count": finding_count, "checks": checks}
@@ -98,7 +99,11 @@ def _complete_row(
             "checks": f"checks-{layer}",
             "data_knowledge": f"l1-{layer}",
         },
-        "scenarios": [_scenario("warn"), _scenario("block", verdict="reject"), _scenario("require_human", verdict="needs_human_review")],
+        "scenarios": [
+            _scenario("warn"),
+            _scenario("block", verdict="reject"),
+            _scenario("require_human", verdict="needs_human_review"),
+        ],
     }
 
 
@@ -145,8 +150,10 @@ def test_inapplicable_complete_row_requires_null_capabilities_and_skip_scenarios
 
 
 def test_mechanical_aggregate_reconciles_finding_count() -> None:
-    payload = _complete_row("api", case_type="API")
-    payload["mechanical_checks"]["finding_count"] = 99
+    payload: dict[str, object] = _complete_row("api", case_type="API")
+    mechanical = payload["mechanical_checks"]
+    assert isinstance(mechanical, dict)
+    mechanical["finding_count"] = 99
     with pytest.raises(ValidationError, match="finding_count"):
         CompleteLayerRow.model_validate(payload)
 
@@ -162,14 +169,24 @@ def test_build_capability_replay_v2_derives_complete_integrity() -> None:
 
 def test_build_capability_replay_v2_rejects_false_complete_claim() -> None:
     rows = _four_complete_rows()
-    rows[0] = {"layer": "api", "case_type": "API", "status": "incomplete", "reason_code": "gate_evidence_unbound"}
+    rows[0] = {
+        "layer": "api",
+        "case_type": "API",
+        "status": "incomplete",
+        "reason_code": "gate_evidence_unbound",
+    }
     with pytest.raises(ValidationError, match="integrity"):
         build_capability_replay_v2(definition_binding=_definition_binding(), rows=rows, integrity="complete")
 
 
 def test_build_capability_replay_v2_forces_incomplete_when_selected_wired_row_incomplete() -> None:
     rows = _four_complete_rows()
-    rows[0] = {"layer": "api", "case_type": "API", "status": "incomplete", "reason_code": "gate_evidence_unbound"}
+    rows[0] = {
+        "layer": "api",
+        "case_type": "API",
+        "status": "incomplete",
+        "reason_code": "gate_evidence_unbound",
+    }
     replay = build_capability_replay_v2(definition_binding=_definition_binding(), rows=rows)
     assert replay.integrity == "incomplete"
 
@@ -196,13 +213,19 @@ def test_build_capability_replay_v2_rejects_duplicate_actions() -> None:
 
 
 def test_not_selected_and_not_wired_rows_are_minimal() -> None:
-    NotSelectedLayerRow.model_validate({"layer": "performance", "case_type": "Performance", "status": "not_selected", "reason_code": None})
-    NotWiredLayerRow.model_validate({"layer": "fuzz", "case_type": "Fuzz", "status": "not_wired", "reason_code": None})
+    NotSelectedLayerRow.model_validate(
+        {"layer": "performance", "case_type": "Performance", "status": "not_selected", "reason_code": None}
+    )
+    NotWiredLayerRow.model_validate(
+        {"layer": "fuzz", "case_type": "Fuzz", "status": "not_wired", "reason_code": None}
+    )
 
 
 def test_incomplete_row_requires_reason_code() -> None:
     with pytest.raises(ValidationError):
-        IncompleteLayerRow.model_validate({"layer": "api", "case_type": "API", "status": "incomplete", "reason_code": None})
+        IncompleteLayerRow.model_validate(
+            {"layer": "api", "case_type": "API", "status": "incomplete", "reason_code": None}
+        )
 
 
 def test_load_specialty_report_discriminates_v2_and_v1() -> None:

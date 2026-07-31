@@ -8,7 +8,10 @@ import pytest
 from assurance_agent.verification.profiles import get_layer_assurance_profile, iter_layer_assurance_profiles
 from assurance_agent.workflow.graph.compiler import CompileError, compile_workflow
 from assurance_agent.workflow.graph.contracts import load_execution_contracts
-from assurance_agent.workflow.graph.replay_schema import validate_replayable_assurance_schema, validate_wired_profile_topology
+from assurance_agent.workflow.graph.replay_schema import (
+    validate_replayable_assurance_schema,
+    validate_wired_profile_topology,
+)
 from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
 from assurance_agent.workflow.orchestration.schema import derive_alias
 

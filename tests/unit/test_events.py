@@ -276,7 +276,7 @@ def test_migration_accepts_v4_and_rejects_future_versions() -> None:
     assert migrated[0]["event_schema_version"] == 4
     assert migrated[0]["policy_origin"] == "project"
 
-    future = dict(v4, event_schema_version=5)
+    future: dict[str, object] = dict(v4, event_schema_version=5)
     with pytest.raises(ValueError, match="unsupported graph event_schema_version 5"):
         migrate_graph_event_stream([future])
 

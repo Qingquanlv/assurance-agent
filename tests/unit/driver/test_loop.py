@@ -313,9 +313,7 @@ def test_on_root_bound_fires_after_start_before_drive(
     assert order == ["bind:inv-1:full:True", "drive"]
 
 
-def test_drive_fault_preserves_invocation_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_drive_fault_preserves_invocation_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from assurance_agent.workflow.graph.runtime import GraphRuntimeError
 
     _prepare(tmp_path)

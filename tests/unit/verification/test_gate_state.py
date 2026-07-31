@@ -42,7 +42,6 @@ def _empty_scope_checks(layer: str) -> dict[str, object]:
 
 
 def _applicable_checks(layer: str) -> dict[str, object]:
-    from assurance_agent.verification.profiles import get_layer_assurance_profile
 
     profile = get_layer_assurance_profile(layer)
     case_id = f"TC_GATE_{profile.case_type.upper()}_001"
@@ -114,7 +113,9 @@ def test_v1_checks_are_invalid() -> None:
         "status": "pass",
         "checks": [{"check_id": "l1_path", "status": "pass"}],
     }
-    assert plan_assurance_state(payload, _review_for("api"), _EMPTY_DK, "api", change_id=_CHANGE_ID) == "invalid"
+    assert (
+        plan_assurance_state(payload, _review_for("api"), _EMPTY_DK, "api", change_id=_CHANGE_ID) == "invalid"
+    )
 
 
 def test_malformed_checks_are_invalid(valid_inapplicable_checks: dict[str, object]) -> None:
@@ -159,22 +160,31 @@ def test_unknown_checks_are_invalid() -> None:
 
 
 def test_wrong_layer_param_is_invalid(valid_inapplicable_checks: dict[str, object]) -> None:
-    assert plan_assurance_state(valid_inapplicable_checks, None, None, "api", change_id=_CHANGE_ID) == "invalid"
+    assert (
+        plan_assurance_state(valid_inapplicable_checks, None, None, "api", change_id=_CHANGE_ID) == "invalid"
+    )
 
 
 def test_unknown_layer_is_invalid(valid_inapplicable_checks: dict[str, object]) -> None:
-    assert plan_assurance_state(valid_inapplicable_checks, None, None, "bogus", change_id=_CHANGE_ID) == "invalid"
+    assert (
+        plan_assurance_state(valid_inapplicable_checks, None, None, "bogus", change_id=_CHANGE_ID)
+        == "invalid"
+    )
 
 
 def test_applicable_missing_review_is_invalid() -> None:
-    assert plan_assurance_state(_applicable_checks("api"), None, _EMPTY_DK, "api", change_id=_CHANGE_ID) == "invalid"
+    assert (
+        plan_assurance_state(_applicable_checks("api"), None, _EMPTY_DK, "api", change_id=_CHANGE_ID)
+        == "invalid"
+    )
 
 
 def test_applicable_malformed_review_is_invalid() -> None:
     review = _review_for("api")
     review["decision"] = "not-a-decision"
     assert (
-        plan_assurance_state(_applicable_checks("api"), review, _EMPTY_DK, "api", change_id=_CHANGE_ID) == "invalid"
+        plan_assurance_state(_applicable_checks("api"), review, _EMPTY_DK, "api", change_id=_CHANGE_ID)
+        == "invalid"
     )
 
 
@@ -182,7 +192,8 @@ def test_applicable_wrong_review_type_is_invalid() -> None:
     review = _review_for("api")
     review["review_type"] = "e2e-plan"
     assert (
-        plan_assurance_state(_applicable_checks("api"), review, _EMPTY_DK, "api", change_id=_CHANGE_ID) == "invalid"
+        plan_assurance_state(_applicable_checks("api"), review, _EMPTY_DK, "api", change_id=_CHANGE_ID)
+        == "invalid"
     )
 
 
@@ -190,7 +201,8 @@ def test_applicable_wrong_change_id_is_invalid() -> None:
     review = _review_for("api")
     review["change_id"] = "CH-OTHER"
     assert (
-        plan_assurance_state(_applicable_checks("api"), review, _EMPTY_DK, "api", change_id=_CHANGE_ID) == "invalid"
+        plan_assurance_state(_applicable_checks("api"), review, _EMPTY_DK, "api", change_id=_CHANGE_ID)
+        == "invalid"
     )
 
 
@@ -215,7 +227,6 @@ def test_applicable_malformed_l1_is_invalid() -> None:
 
 
 def test_profile_validation_rejects_contradictory_applicable_checks() -> None:
-    profile = get_layer_assurance_profile("fuzz")
     applicability = LayerApplicability(
         layer="fuzz", applicable=True, reason_code="automated_cases_present", case_ids=("TC_X",)
     )

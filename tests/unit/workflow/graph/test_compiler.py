@@ -610,5 +610,3 @@ def test_packaged_schema_compile_invokes_replay_assurance_guard() -> None:
     compiled = compile_workflow(schema, load_execution_contracts(Path.cwd()))
     assert compiled.digest
     assert "api-plan-cycle" in compiled.graphs
-
-

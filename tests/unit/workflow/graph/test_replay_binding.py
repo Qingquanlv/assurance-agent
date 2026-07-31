@@ -6,6 +6,7 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 import pytest
 import yaml
@@ -14,6 +15,7 @@ from assurance_agent.artifacts.models.data_knowledge import DataKnowledge
 from assurance_agent.artifacts.models.plan_checks import PlanCheckDocument
 from assurance_agent.artifacts.models.review import PlanReview
 from assurance_agent.artifacts.policy import load_policy, normalized_policy_bytes
+from assurance_agent.artifacts.models.assurance import LayerName
 from assurance_agent.verification.checks.base import CheckContext
 from assurance_agent.verification.checks.registry import run_plan_checks
 from assurance_agent.verification.profile_manifest import assurance_profile_digest
@@ -40,7 +42,11 @@ from assurance_agent.workflow.graph.replay_binding import (
 from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
 from assurance_agent.workflow.graph.workspace import TreeStore
 from assurance_agent.workflow.orchestration.gate_semantics import gate_semantics_digest
-from assurance_agent.workflow.orchestration.gates import FrozenGateReport, GateEvaluationContext, check_gate_in_view
+from assurance_agent.workflow.orchestration.gates import (
+    FrozenGateReport,
+    GateEvaluationContext,
+    check_gate_in_view,
+)
 from tests.helpers_aa import write_aa_config
 
 _CHANGE_ID = "CH-REPLAY-BIND-001"
@@ -109,16 +115,34 @@ def _applicable_checks(layer: str) -> PlanCheckDocument:
     return run_plan_checks(
         CheckContext(
             plan_texts={path: "# plan\n" for path in get_layer_assurance_profile(layer).plan_artifacts},
-            cases=({"added": [{"case_id": case_id, "title": "x", "type": profile_layer.upper(), "automation": {"required": True}, "assertions": ["ok"]}], "modified": []},),
+            cases=(
+                {
+                    "added": [
+                        {
+                            "case_id": case_id,
+                            "title": "x",
+                            "type": profile_layer.upper(),
+                            "automation": {"required": True},
+                            "assertions": ["ok"],
+                        }
+                    ],
+                    "modified": [],
+                },
+            ),
             data_knowledge={"version": 1, "capabilities": {"domain_factories": {}}},
             layer=layer,  # type: ignore[arg-type]
         )
     )
 
 
-def _inapplicable_checks(layer: str) -> PlanCheckDocument:
+def _inapplicable_checks(layer: LayerName) -> PlanCheckDocument:
     return run_plan_checks(
-        CheckContext(plan_texts={}, cases=(), data_knowledge={"version": 1, "capabilities": {"domain_factories": {}}}, layer=layer)  # type: ignore[arg-type]
+        CheckContext(
+            plan_texts={},
+            cases=(),
+            data_knowledge={"version": 1, "capabilities": {"domain_factories": {}}},
+            layer=layer,
+        )  # type: ignore[arg-type]
     )
 
 
@@ -175,7 +199,9 @@ def _gate_report(
     checks_payload = checks.model_dump(mode="json")
     dk_payload = data_knowledge.model_dump(mode="json") if data_knowledge is not None else {}
     review_bytes = (
-        (json.dumps(review_payload, indent=2, sort_keys=True) + "\n").encode("utf-8") if review is not None else b""
+        (json.dumps(review_payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        if review is not None
+        else b""
     )
     checks_bytes = (json.dumps(checks_payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
     dk_bytes = (
@@ -291,7 +317,7 @@ class ReplayBindingFixture:
         profile = get_layer_assurance_profile(layer)
         params = dict(_PARAMS)
         review = _review(layer) if applicable else None
-        checks = _applicable_checks(layer) if applicable else _inapplicable_checks(layer)
+        checks = _applicable_checks(layer) if applicable else _inapplicable_checks(cast(LayerName, layer))
         dk = _data_knowledge() if applicable else None
 
         review_bytes = (
@@ -299,7 +325,9 @@ class ReplayBindingFixture:
             if review is not None
             else b""
         )
-        checks_bytes = (json.dumps(checks.model_dump(mode="json"), indent=2, sort_keys=True) + "\n").encode("utf-8")
+        checks_bytes = (json.dumps(checks.model_dump(mode="json"), indent=2, sort_keys=True) + "\n").encode(
+            "utf-8"
+        )
         dk_bytes = (
             yaml.safe_dump(dk.model_dump(mode="json"), sort_keys=False, allow_unicode=True).encode("utf-8")
             if dk is not None
@@ -320,7 +348,13 @@ class ReplayBindingFixture:
                 node_id=_GATE_NODE,
                 tree_id=gate_tree,
                 contract_digest="decoy-contract",
-                gate_report={"gate_id": profile.gate_id, "verdict": "reject", "matched_rule": "reject_when", "reason": "decoy", "reads_sha256": {}},
+                gate_report={
+                    "gate_id": profile.gate_id,
+                    "verdict": "reject",
+                    "matched_rule": "reject_when",
+                    "reason": "decoy",
+                    "reads_sha256": {},
+                },
             )
 
         mech_task = f"{structural_path}:mechanical-plan-checks"
@@ -489,7 +523,7 @@ class ReplayBindingFixture:
                 started_at="2026-07-31T00:00:00Z",
             ).model_dump(mode="json")
         )
-        success_payload = {
+        success_payload: dict[str, object] = {
             "type": "task_attempt_succeeded",
             "invocation_id": invocation_id,
             "checkpoint_ns": checkpoint_ns,
@@ -518,7 +552,9 @@ class ReplayBindingFixture:
 _GATE_NODE = "review-gate"
 
 
-def _build_fixture(tmp_path: Path, *, include_e2e: bool = True, api_applicable: bool = True) -> ReplayBindingFixture:
+def _build_fixture(
+    tmp_path: Path, *, include_e2e: bool = True, api_applicable: bool = True
+) -> ReplayBindingFixture:
     project = tmp_path / "project"
     change_dir = project / "qa" / "changes" / _CHANGE_ID
     change_dir.mkdir(parents=True)
@@ -541,7 +577,9 @@ def _build_fixture(tmp_path: Path, *, include_e2e: bool = True, api_applicable: 
         )
         + "\n"
     ).encode("utf-8")
-    (change_dir / ".graph-runtime" / "schemas" / f"{compiled.digest}.json").parent.mkdir(parents=True, exist_ok=True)
+    (change_dir / ".graph-runtime" / "schemas" / f"{compiled.digest}.json").parent.mkdir(
+        parents=True, exist_ok=True
+    )
     (change_dir / ".graph-runtime" / "schemas" / f"{compiled.digest}.json").write_bytes(schema_bytes)
 
     store = TreeStore(change_dir)
@@ -558,8 +596,12 @@ def _build_fixture(tmp_path: Path, *, include_e2e: bool = True, api_applicable: 
         binding=binding,
         root_tree=root_tree,
         assurance_inv=derive_child_invocation_id_from("main:assurance", "assurance"),
-        api_cycle_inv=derive_child_invocation_id_from("main/assurance/assurance/api/api-branch/review-cycle", "api-plan-cycle"),
-        e2e_cycle_inv=derive_child_invocation_id_from("main/assurance/assurance/e2e/e2e-branch/review-cycle", "e2e-plan-cycle"),
+        api_cycle_inv=derive_child_invocation_id_from(
+            "main/assurance/assurance/api/api-branch/review-cycle", "api-plan-cycle"
+        ),
+        e2e_cycle_inv=derive_child_invocation_id_from(
+            "main/assurance/assurance/e2e/e2e-branch/review-cycle", "e2e-plan-cycle"
+        ),
     )
 
     root_started = fixture._started(
@@ -938,7 +980,13 @@ def test_recover_layer_inputs_ignores_uncommitted_gate(tmp_path: Path) -> None:
             superstep_id="ss-uncommitted",
             task_id=gate_task,
             attempt_id=f"{gate_task}-a-uncommitted",
-            gate_report={"gate_id": "api-plan-review-gate", "verdict": "reject", "matched_rule": "reject_when", "reason": "uncommitted", "reads_sha256": {}},
+            gate_report={
+                "gate_id": "api-plan-review-gate",
+                "verdict": "reject",
+                "matched_rule": "reject_when",
+                "reason": "uncommitted",
+                "reads_sha256": {},
+            },
         ).model_dump(mode="json")
     )
     binding = bind_replay_definitions(
@@ -982,17 +1030,21 @@ def test_recover_layer_inputs_tree_missing_falls_back_to_active_disk(tmp_path: P
     )
     profile = get_layer_assurance_profile("api")
     checks = _applicable_checks("api")
-    checks_bytes = (json.dumps(checks.model_dump(mode="json"), indent=2, sort_keys=True) + "\n").encode("utf-8")
+    checks_bytes = (json.dumps(checks.model_dump(mode="json"), indent=2, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
     checks_path = fixture.change_dir / profile.checks_artifact
     checks_path.parent.mkdir(parents=True, exist_ok=True)
     checks_path.write_bytes(checks_bytes)
     review = _review("api")
-    review_bytes = (json.dumps(review.model_dump(mode="json"), indent=2, sort_keys=True) + "\n").encode("utf-8")
-    review_path = fixture.change_dir / profile.review_artifact
-    review_path.write_bytes(review_bytes)
-    dk_bytes = yaml.safe_dump(_data_knowledge().model_dump(mode="json"), sort_keys=False, allow_unicode=True).encode(
+    review_bytes = (json.dumps(review.model_dump(mode="json"), indent=2, sort_keys=True) + "\n").encode(
         "utf-8"
     )
+    review_path = fixture.change_dir / profile.review_artifact
+    review_path.write_bytes(review_bytes)
+    dk_bytes = yaml.safe_dump(
+        _data_knowledge().model_dump(mode="json"), sort_keys=False, allow_unicode=True
+    ).encode("utf-8")
     (fixture.project / ".aa" / "data-knowledge.yaml").parent.mkdir(parents=True, exist_ok=True)
     (fixture.project / ".aa" / "data-knowledge.yaml").write_bytes(dk_bytes)
 
@@ -1065,7 +1117,10 @@ def test_bind_replay_definitions_non_terminal_root_rejected(tmp_path: Path) -> N
     rewritten = [
         json.dumps(payload, sort_keys=True)
         for payload in lines
-        if not (payload.get("type") in {"graph_completed", "graph_stopped", "graph_failed"} and payload.get("invocation_id") == _ROOT_INV)
+        if not (
+            payload.get("type") in {"graph_completed", "graph_stopped", "graph_failed"}
+            and payload.get("invocation_id") == _ROOT_INV
+        )
     ]
     fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
     with pytest.raises(ReplayBindingError, match="root_invocation_unbound"):
@@ -1124,12 +1179,16 @@ def test_bind_replay_definitions_ambiguous_branch_wiring(tmp_path: Path) -> None
         )
 
 
-def test_recover_layer_inputs_baseline_route_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_recover_layer_inputs_baseline_route_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     fixture = _build_fixture(tmp_path, include_e2e=False)
     lines = [json.loads(line) for line in fixture.events_path.read_text(encoding="utf-8").splitlines()]
     rewritten = []
     for payload in lines:
-        if payload.get("type") == "task_attempt_succeeded" and payload.get("task_id", "").endswith(":review-gate"):
+        if payload.get("type") == "task_attempt_succeeded" and payload.get("task_id", "").endswith(
+            ":review-gate"
+        ):
             payload = dict(payload)
             gate_report = dict(payload.get("gate_report") or {})
             gate_report["verdict"] = "needs_human_review"
@@ -1156,7 +1215,9 @@ def test_recover_layer_inputs_baseline_gate_details_mismatch(tmp_path: Path) -> 
     lines = [json.loads(line) for line in fixture.events_path.read_text(encoding="utf-8").splitlines()]
     rewritten = []
     for payload in lines:
-        if payload.get("type") == "task_attempt_succeeded" and payload.get("task_id", "").endswith(":review-gate"):
+        if payload.get("type") == "task_attempt_succeeded" and payload.get("task_id", "").endswith(
+            ":review-gate"
+        ):
             payload = dict(payload)
             gate_report = dict(payload.get("gate_report") or {})
             gate_report["details"] = {"missing_capabilities": ["auth.api_admin_token"]}

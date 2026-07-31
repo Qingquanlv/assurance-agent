@@ -148,14 +148,10 @@ def _child_invocation_id(change_dir: Path) -> str:
     from assurance_agent.workflow.core.events import read_events_strict
 
     started = [
-        event
-        for event in read_events_strict(change_dir)
-        if event.get("type") == "graph_invocation_started"
+        event for event in read_events_strict(change_dir) if event.get("type") == "graph_invocation_started"
     ]
     root = next(event for event in started if event.get("parent_invocation_id") is None)
-    child = next(
-        event for event in started if event.get("parent_invocation_id") == root["invocation_id"]
-    )
+    child = next(event for event in started if event.get("parent_invocation_id") == root["invocation_id"])
     return str(child["invocation_id"])
 
 
@@ -263,6 +259,7 @@ def test_workflow_run_writes_result_json_on_all_outcomes(monkeypatch: pytest.Mon
         (EXIT_ERROR, "drive failed", True),
     ]
     for code, reason, started_new_root in mapping:
+
         def _loop(
             *,
             _code: int = code,

@@ -36,6 +36,7 @@ from assurance_agent.workflow.graph.models import (
 from assurance_agent.workflow.graph.handlers.operation import OperationHandler
 from assurance_agent.workflow.graph.project_locks import ProjectResourceConflict
 from assurance_agent.workflow.graph.scheduler import Scheduler, select_wave
+from assurance_agent.workflow.graph.selected_wave import PreparedWaveLease
 from assurance_agent.workflow.graph.schema_v2 import (
     BackoffDef,
     RetryPolicyDef,
@@ -1338,7 +1339,10 @@ def _reserve_and_execute_nested(
                 structural_path="main/mid/mid",
             )
             child_projections[mid_id] = _child_projection(mid_id)
-            mid_tasks = {t.node_id: t for t in plan_superstep(compiled, child_projections[mid_id], context, artifacts).tasks}
+            mid_tasks = {
+                t.node_id: t
+                for t in plan_superstep(compiled, child_projections[mid_id], context, artifacts).tasks
+            }
             if "leaf-run" in mid_tasks:
                 leaf_id = derive_child_invocation_id(mid_tasks["leaf-run"], "leaf")
                 _seed_child_invocation(
@@ -1363,7 +1367,10 @@ def _reserve_and_execute_nested(
                 structural_path="main/l1/l2",
             )
             child_projections[l2_id] = _child_projection(l2_id)
-            l2_tasks = {t.node_id: t for t in plan_superstep(compiled, child_projections[l2_id], context, artifacts).tasks}
+            l2_tasks = {
+                t.node_id: t
+                for t in plan_superstep(compiled, child_projections[l2_id], context, artifacts).tasks
+            }
             l3_id = derive_child_invocation_id(l2_tasks["l2-run"], "l3")
             _seed_child_invocation(
                 change,
@@ -1375,7 +1382,10 @@ def _reserve_and_execute_nested(
                 structural_path="main/l1/l2/l2-run/l3",
             )
             child_projections[l3_id] = _child_projection(l3_id)
-            l3_tasks = {t.node_id: t for t in plan_superstep(compiled, child_projections[l3_id], context, artifacts).tasks}
+            l3_tasks = {
+                t.node_id: t
+                for t in plan_superstep(compiled, child_projections[l3_id], context, artifacts).tasks
+            }
             leaf_id = derive_child_invocation_id(l3_tasks["l3-run"], "leaf")
             _seed_child_invocation(
                 change,
@@ -1708,7 +1718,9 @@ def test_execute_selected_wave_fails_on_task_mutation_after_reserve(tmp_path: Pa
         checkpoints=CheckpointStore(change),
         object_store=store,
         workspace_backend=WorkspaceBackend(change),
-        node_runner=_ScriptedRunner({selected.selected_tasks[0].task_id: lambda *_: TaskResult(status="succeeded")}),
+        node_runner=_ScriptedRunner(
+            {selected.selected_tasks[0].task_id: lambda *_: TaskResult(status="succeeded")}
+        ),
         project_lock_manager=_TrackingProjectLocks(),
         contracts=contracts,
     )
@@ -2046,13 +2058,11 @@ def test_deferred_child_outer_wave_reserves_footprint_locks_before_run_child(
     )
 
     def failing_select(*args, **kwargs):
-        raise AssertionError(
-            "legacy execute must not run when selected_wave carries footprint lock_tokens"
-        )
+        raise AssertionError("legacy execute must not run when selected_wave carries footprint lock_tokens")
 
     scheduler.select = failing_select  # type: ignore[method-assign]
 
-    captured_leases: list[object] = []
+    captured_leases: list[PreparedWaveLease] = []
     original_finalize = scheduler._finalize_selected_wave_reservation  # noqa: SLF001
 
     def spy_finalize(*args, **kwargs):
@@ -2074,7 +2084,7 @@ def test_deferred_child_outer_wave_reserves_footprint_locks_before_run_child(
     )
     assert result.succeeded == (bootstrap.task_id,)
     assert len(captured_leases) == 1
-    assert captured_leases[0].capture_sealed is False  # type: ignore[attr-defined]
+    assert captured_leases[0].capture_sealed is False
     lease = captured_leases[0]
 
     parent_tasks = {t.node_id: t for t in plan.tasks}
@@ -2137,4 +2147,3 @@ def test_deferred_child_outer_wave_reserves_footprint_locks_before_run_child(
         child_projections={},
     )
     assert child_result.succeeded == (child_task_id,)
-

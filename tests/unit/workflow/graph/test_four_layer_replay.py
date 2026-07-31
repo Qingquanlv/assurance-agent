@@ -34,13 +34,27 @@ _SCHEMA = load_workflow_v2(Path.cwd())
 @pytest.mark.parametrize(
     ("params", "expected"),
     [
-        ({"run_mode": "api-only", "test_types": ["api", "e2e"]}, {"api": True, "e2e": False, "fuzz": False, "performance": False}),
-        ({"run_mode": "full", "test_types": ["api", "e2e", "fuzz", "performance"]}, {"api": True, "e2e": True, "fuzz": True, "performance": True}),
-        ({"run_mode": "full", "test_types": ["api"]}, {"api": True, "e2e": False, "fuzz": False, "performance": False}),
-        ({"run_mode": "codegen-only", "test_types": ["api", "e2e"]}, {"api": True, "e2e": True, "fuzz": False, "performance": False}),
+        (
+            {"run_mode": "api-only", "test_types": ["api", "e2e"]},
+            {"api": True, "e2e": False, "fuzz": False, "performance": False},
+        ),
+        (
+            {"run_mode": "full", "test_types": ["api", "e2e", "fuzz", "performance"]},
+            {"api": True, "e2e": True, "fuzz": True, "performance": True},
+        ),
+        (
+            {"run_mode": "full", "test_types": ["api"]},
+            {"api": True, "e2e": False, "fuzz": False, "performance": False},
+        ),
+        (
+            {"run_mode": "codegen-only", "test_types": ["api", "e2e"]},
+            {"api": True, "e2e": True, "fuzz": False, "performance": False},
+        ),
     ],
 )
-def test_evaluate_layer_selection_from_pinned_predicates(params: dict[str, object], expected: dict[str, bool]) -> None:
+def test_evaluate_layer_selection_from_pinned_predicates(
+    params: dict[str, object], expected: dict[str, bool]
+) -> None:
     merged = {**_PARAMS, **params}
     facts = evaluate_layer_selection(_SCHEMA, merged)
     assert {fact.layer: fact.selected for fact in facts} == expected
@@ -108,7 +122,10 @@ def test_collect_capability_policy_replay_selected_fuzz_is_not_wired(tmp_path: P
     rewritten: list[str] = []
     for line in lines:
         payload = json.loads(line)
-        if payload.get("type") == "graph_invocation_started" and payload.get("invocation_id") == fixture.assurance_inv:
+        if (
+            payload.get("type") == "graph_invocation_started"
+            and payload.get("invocation_id") == fixture.assurance_inv
+        ):
             payload["params"] = params
         rewritten.append(json.dumps(payload, sort_keys=True))
     fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
@@ -124,7 +141,9 @@ def test_collect_capability_policy_replay_selected_fuzz_is_not_wired(tmp_path: P
     assert replay.integrity == "complete"
 
 
-def test_collect_capability_policy_replay_definition_failure_returns_incomplete_matrix(tmp_path: Path) -> None:
+def test_collect_capability_policy_replay_definition_failure_returns_incomplete_matrix(
+    tmp_path: Path,
+) -> None:
     fixture = _build_fixture(tmp_path)
     replay = collect_capability_policy_replay(
         change_dir=fixture.change_dir,

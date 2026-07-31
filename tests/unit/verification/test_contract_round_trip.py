@@ -16,7 +16,9 @@ E2E_CONTRACT_ROOT = REPO_ROOT / "tests" / "fixtures" / "assurance" / "e2e-contra
 E2E_CHANGE_ID = "CH-E2E-CONTRACT-001"
 
 
-def _load_e2e_contract_bundle() -> tuple[dict[str, str], list[dict[str, object]], dict[str, object], tuple[str, ...]]:
+def _load_e2e_contract_bundle() -> tuple[
+    dict[str, str], list[dict[str, object]], dict[str, object], tuple[str, ...]
+]:
     plan_texts = {
         f"plans/{path.name}": path.read_text(encoding="utf-8")
         for path in sorted((E2E_CONTRACT_ROOT / "plans").glob("e2e*.md"))
