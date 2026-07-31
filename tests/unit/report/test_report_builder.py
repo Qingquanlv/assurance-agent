@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from assurance_agent.artifacts.models import CoverageThreshold, SelectedTargets
+from assurance_agent.evidence.issue_identity import event_id
 from assurance_agent.workflow.execution.evidence import publish_execution_evidence
 from assurance_agent.workflow.execution.results import CaseResult, CoverageResult, ResultSource, TargetResult
 from assurance_agent.workflow.report.inspector import inspect_change
@@ -358,13 +359,16 @@ def test_generate_report_counts_regression_separately_from_recurrence(tmp_path: 
         ),
         encoding="utf-8",
     )
+    # Ledger V2 derives event_id from idempotency_key; forged ids fail closed
+    # and report_builder then cannot attribute the occurrence as regressed.
+    regressed_idem = "problem_regressed:PROB-regressed:OCC-regressed"
     (problems_dir / "events.jsonl").write_text(
         json.dumps(
             {
                 "schema_version": "1.0",
                 "seq": 1,
-                "event_id": "EVT-regressed",
-                "idempotency_key": "problem_regressed:PROB-regressed:OCC-regressed",
+                "event_id": event_id(regressed_idem),
+                "idempotency_key": regressed_idem,
                 "ts": "2026-07-25T10:00:00Z",
                 "evidence_digest": "sha256:evidence",
                 "problem_id": "PROB-regressed",
