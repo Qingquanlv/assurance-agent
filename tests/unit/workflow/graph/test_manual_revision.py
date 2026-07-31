@@ -189,27 +189,46 @@ def test_capture_fails_closed_on_symlink_race_without_following_target(
     outside = tmp_path / "outside-secret"
     outside.write_text("SECRET\n", encoding="utf-8")
     target = view / "plans" / "fuzz-plan.md"
+    outside_stat = outside.stat()
+    opened_outside = False
     read_outside = False
+    real_open = os.open
+    real_read = os.read
+
+    def _fd_is_outside(fd: int) -> bool:
+        try:
+            st = os.fstat(fd)
+        except OSError:
+            return False
+        return st.st_dev == outside_stat.st_dev and st.st_ino == outside_stat.st_ino
+
+    def guarded_open(path: str | bytes, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+        nonlocal opened_outside
+        if dir_fd is None:
+            fd = real_open(path, flags, mode)
+        else:
+            fd = real_open(path, flags, mode, dir_fd=dir_fd)
+        if _fd_is_outside(fd):
+            opened_outside = True
+        return fd
+
+    def guarded_read(fd: int, n: int, /) -> bytes:
+        nonlocal read_outside
+        if _fd_is_outside(fd):
+            read_outside = True
+        return real_read(fd, n)
 
     def _race(_view_root: Path) -> None:
-        nonlocal read_outside
         target.unlink()
         os.symlink(outside, target)
-        # Prove capture must not open/follow the symlink target.
-        original_read = Path.read_bytes
 
-        def guarded(self: Path) -> bytes:
-            nonlocal read_outside
-            if self.resolve() == outside.resolve():
-                read_outside = True
-            return original_read(self)
-
-        monkeypatch.setattr(Path, "read_bytes", guarded)
-
+    monkeypatch.setattr(os, "open", guarded_open)
+    monkeypatch.setattr(os, "read", guarded_read)
     monkeypatch.setattr(manual_revision_mod, "_after_revision_inventory_hook", _race)
 
     with pytest.raises((ManualRevisionError, WorkspaceError, OSError)):
         capture_revision_candidate(change_dir=change, store=store, binding=binding)
+    assert opened_outside is False
     assert read_outside is False
     assert outside.read_text(encoding="utf-8") == "SECRET\n"
 
