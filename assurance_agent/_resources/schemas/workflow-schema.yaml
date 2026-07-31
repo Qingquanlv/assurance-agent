@@ -1480,7 +1480,7 @@ graphs:
         recover:
           errors: [timeout, transport, rate_limit, invalid_output]
           via: record-analysis-failure
-          continue_to: inspect-complete
+          continue_to: materialize-trace-projection
 
       record-empty-analysis:
         uses: operation:record-empty-issue-analysis
@@ -1494,7 +1494,7 @@ graphs:
         recover:
           errors: [conflict, transport]
           via: record-project-sync-pending
-          continue_to: inspect-complete
+          continue_to: materialize-trace-projection
 
       record-analysis-failure:
         uses: operation:record-issue-analysis-failure
@@ -1910,7 +1910,7 @@ graphs:
     # Reruns the LLM analyzer against the latest existing Observation/evidence
     # digest and then reconciles on success.  Never re-collects evidence.
     # Repeatable: can be retried as many times as needed after analysis failure.
-    max_supersteps: 8
+    max_supersteps: 9
     nodes:
       analyze-issues:
         uses: skill:aa-issue-analyzer
@@ -1923,7 +1923,7 @@ graphs:
         recover:
           errors: [timeout, transport, rate_limit, invalid_output]
           via: record-analysis-failure
-          continue_to: END
+          continue_to: materialize-trace-projection
 
       record-analysis-failure:
         uses: operation:record-issue-analysis-failure
@@ -1937,24 +1937,30 @@ graphs:
         recover:
           errors: [conflict, transport]
           via: record-project-sync-pending
-          continue_to: END
+          continue_to: materialize-trace-projection
 
       record-project-sync-pending:
         uses: operation:record-project-sync-pending
         retry: never
         timeout: local-operation
 
+      materialize-trace-projection:
+        uses: operation:materialize-trace-projection
+        outputs:
+          - change:inspect/trace-projection.json
+
     edges:
       - {from: START, to: analyze-issues}
       - {from: analyze-issues, to: reconcile-issues}
-      - {from: reconcile-issues, to: END}
+      - {from: reconcile-issues, to: materialize-trace-projection}
+      - {from: materialize-trace-projection, to: END}
 
   # ---- issue-reconcile-workflow: idempotent reconcile retry --------------
   issue-reconcile-workflow:
     # Reruns only operation:reconcile-issues for the latest pinned
     # candidate/evidence digest.  Idempotent retry path for project_sync_pending.
     # Never calls the LLM.
-    max_supersteps: 4
+    max_supersteps: 6
     nodes:
       reconcile-issues:
         uses: operation:reconcile-issues
@@ -1963,16 +1969,22 @@ graphs:
         recover:
           errors: [conflict, transport]
           via: record-project-sync-pending
-          continue_to: END
+          continue_to: materialize-trace-projection
 
       record-project-sync-pending:
         uses: operation:record-project-sync-pending
         retry: never
         timeout: local-operation
 
+      materialize-trace-projection:
+        uses: operation:materialize-trace-projection
+        outputs:
+          - change:inspect/trace-projection.json
+
     edges:
       - {from: START, to: reconcile-issues}
-      - {from: reconcile-issues, to: END}
+      - {from: reconcile-issues, to: materialize-trace-projection}
+      - {from: materialize-trace-projection, to: END}
 
 gates:
   registry-gate:

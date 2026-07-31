@@ -1,9 +1,11 @@
+import inspect
 import textwrap
 from pathlib import Path
 
 import pytest
 import yaml
 
+from assurance_agent.workflow.graph import compiler as compiler_module
 from assurance_agent.workflow.graph.compiler import (
     CompileError,
     HistoricalCompileContext,
@@ -727,3 +729,16 @@ def test_pinned_definition_request_differs_when_one_contract_digest_changes() ->
     cache: dict[PinnedDefinitionRequest, str] = {base: "base"}
     assert mutated not in cache
     assert hash(base) != hash(mutated)
+
+
+def test_compiler_has_no_target_specific_trace_materializer_branch() -> None:
+    """Schema edges + recovery continuations are the control plane — no compiler forks."""
+    source = inspect.getsource(compiler_module)
+    for target in (
+        "inspect-with-issues",
+        "issue-analyze-workflow",
+        "issue-reconcile-workflow",
+        "materialize-trace-projection",
+        "operation:materialize-trace-projection",
+    ):
+        assert target not in source, f"compiler must not special-case {target!r}"
