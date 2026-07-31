@@ -34,7 +34,7 @@ _ROOT = Path(__file__).parents[3]
 _REPORTER = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "benchmark_specialty_report.py"
 _HELPERS = _REPORTER.with_name("cursor-loop-helpers.sh")
 _CURSOR_LOOP = _REPORTER.with_name("run-workflow-loop-cursor.sh")
-_GOLDEN_SHA256 = "78d6d13361ab7210cb1fa57b252e51df3fc3b11c57a438b0a6fe1a64944ce640"
+_GOLDEN_SHA256 = "c7c32e59f07a1d72b13058fa6f8a2be92a0b82769900048b28b2684905b87830"
 
 
 def _specialty_stage_function_source() -> str:
@@ -293,14 +293,6 @@ def _root_event_field(change_dir: Path, field: str) -> str:
     raise AssertionError(f"missing root event field {field!r}")
 
 
-def _mutate_root_started_field(change_dir: Path, field: str, value: str) -> None:
-    events = _read_events(change_dir)
-    for event in events:
-        if event.get("type") == "graph_invocation_started" and event.get("invocation_id") == _ROOT_INV:
-            event[field] = value
-    _write_events(change_dir, events)
-
-
 def _drop_policy_snapshot(change_dir: Path) -> None:
     digest = _root_event_field(change_dir, "policy_digest")
     (change_dir / policy_snapshot_relpath(digest)).unlink()
@@ -396,8 +388,6 @@ def _collect_command(
             "collect",
             "--project-root",
             str(project),
-            "--schema-root",
-            str(_ROOT),
             "--change-id",
             change_id,
             "--root-invocation-id",
@@ -453,7 +443,7 @@ def test_collect_freezes_capability_policy_replay_and_trace_evidence(tmp_path: P
     assert isinstance(report, SpecialtyReportV2)
     assert report.schema_version == "2"
     capability = report.capability_contract_policy
-    assert capability.semantics == "counterfactual_plan_check_actions/v1"
+    assert capability.semantics == "counterfactual_plan_check_actions/v2"
     assert capability.integrity == "complete"
     assert capability.definition_binding is not None
     assert capability.definition_binding.root_invocation_id == _ROOT_INV
@@ -524,6 +514,14 @@ def test_collect_freezes_capability_policy_replay_and_trace_evidence(tmp_path: P
     assert evidence["verify"]["observed_insufficient_count"] == 1
 
 
+def _mutate_all_started_field(change_dir: Path, field: str, value: str) -> None:
+    events = _read_events(change_dir)
+    for event in events:
+        if event.get("type") == "graph_invocation_started":
+            event[field] = value
+    _write_events(change_dir, events)
+
+
 @pytest.mark.parametrize(
     ("failure_code", "mutator", "collect_overrides"),
     [
@@ -531,12 +529,6 @@ def test_collect_freezes_capability_policy_replay_and_trace_evidence(tmp_path: P
         ("policy_snapshot_missing", _drop_policy_snapshot, {}),
         ("pinned_schema_missing", _drop_pinned_schema, {}),
         ("pinned_schema_digest_mismatch", _corrupt_pinned_schema_digest, {}),
-        ("gate_semantics_mismatch", lambda cd: _mutate_root_started_field(cd, "gate_semantics_digest", "0" * 64), {}),
-        (
-            "assurance_profile_mismatch",
-            lambda cd: _mutate_root_started_field(cd, "assurance_profile_digest", "0" * 64),
-            {},
-        ),
         ("policy_digest_mismatch", _corrupt_policy_snapshot_bytes, {}),
     ],
 )
@@ -567,6 +559,16 @@ def test_collect_writes_incomplete_v2_for_definition_integrity_failures(
     [
         ("api", "mechanical_producer_unbound", _corrupt_api_mechanical_outputs),
         ("api", "gate_evidence_unbound", _strip_api_gate_reads_sha256),
+        (
+            "api",
+            "gate_semantics_mismatch",
+            lambda cd: _mutate_all_started_field(cd, "gate_semantics_digest", "0" * 64),
+        ),
+        (
+            "api",
+            "profile_definition_incompatible",
+            lambda cd: _mutate_all_started_field(cd, "assurance_profile_digest", "0" * 64),
+        ),
     ],
 )
 def test_collect_writes_incomplete_v2_for_evidence_integrity_failures(
@@ -879,7 +881,10 @@ def test_render_layer_assurance_matrix_shows_four_layer_fields() -> None:
     rendered = render_specialty_sections([report])
 
     assert "### Layer Assurance Matrix" in rendered
-    assert "| change_id | layer | status | applicability | mechanical | findings | capabilities req/miss | contract digest |" in rendered
+    assert (
+        "| change_id | layer | status | applicability | mechanical | findings | capabilities req/miss | contract digest |"
+        in rendered
+    )
     assert "| `CH-MATRIX` | api | complete | applicable | fail | 2 | 2/1 | yes |" in rendered
     assert "| `CH-MATRIX` | e2e | complete | not_applicable | pass | 0 | - | yes |" in rendered
     assert "| `CH-MATRIX` | fuzz | not_selected | - | - | - | - | - |" in rendered
@@ -894,7 +899,10 @@ def test_render_policy_replay_matrix_shows_verdicts_statuses_and_reasons() -> No
     assert "| `CH-MATRIX` | api | pass | reject | needs_human_review |" in rendered
     assert "| `CH-MATRIX` | e2e | skip | skip | skip |" in rendered
     assert "| `CH-MATRIX` | fuzz | not_selected | not_selected | not_selected |" in rendered
-    assert "| `CH-MATRIX` | performance | mechanical_producer_unbound | mechanical_producer_unbound | mechanical_producer_unbound |" in rendered
+    assert (
+        "| `CH-MATRIX` | performance | mechanical_producer_unbound | mechanical_producer_unbound | mechanical_producer_unbound |"
+        in rendered
+    )
 
     not_wired = _synthetic_v2_report(change_id="CH-NW")
     not_wired_rows: list[dict[str, object]] = [
@@ -925,7 +933,9 @@ def test_render_sorts_v2_reports_by_change_id_and_profile_order() -> None:
     matrix_section = rendered.split("### Layer Assurance Matrix", maxsplit=1)[1].split(
         "### Policy Replay Matrix", maxsplit=1
     )[0]
-    api_rows = [line for line in matrix_section.splitlines() if " | api | " in line and line.startswith("| `CH-")]
+    api_rows = [
+        line for line in matrix_section.splitlines() if " | api | " in line and line.startswith("| `CH-")
+    ]
     assert api_rows == [
         "| `CH-A` | api | complete | applicable | fail | 2 | 2/1 | yes |",
         "| `CH-B` | api | complete | applicable | fail | 2 | 2/1 | yes |",
@@ -1242,7 +1252,9 @@ def test_run_specialty_report_stage_registers_incomplete_v2_and_fails(tmp_path: 
     assert result.returncode == 1, result.stderr
     assert "SPECIALTY_REPORT_FAILED=true" in result.stdout
     assert "stage_exit=1" in result.stdout
-    files_line = next(line for line in result.stdout.splitlines() if line.startswith("SPECIALTY_REPORT_FILES="))
+    files_line = next(
+        line for line in result.stdout.splitlines() if line.startswith("SPECIALTY_REPORT_FILES=")
+    )
     report_path = Path(files_line.removeprefix("SPECIALTY_REPORT_FILES=").strip())
     assert report_path.is_file()
     report = load_specialty_report(json.loads(report_path.read_text(encoding="utf-8")))
@@ -1283,7 +1295,9 @@ def test_run_specialty_report_stage_skips_invalid_report_on_collector_failure(
     assert result.returncode == 1, result.stderr
     assert "SPECIALTY_REPORT_FAILED=true" in result.stdout
     assert "stage_exit=1" in result.stdout
-    files_line = next(line for line in result.stdout.splitlines() if line.startswith("SPECIALTY_REPORT_FILES="))
+    files_line = next(
+        line for line in result.stdout.splitlines() if line.startswith("SPECIALTY_REPORT_FILES=")
+    )
     assert files_line.removeprefix("SPECIALTY_REPORT_FILES=").strip() == ""
     report_file = tmp_path / "run" / f"{_CHANGE_ID}.specialty-report.json"
     assert not report_file.exists()
@@ -1300,7 +1314,6 @@ def test_cursor_helper_collects_and_renders_real_specialty_report(tmp_path: Path
             shlex.quote(sys.executable),
             shlex.quote(str(_REPORTER)),
             shlex.quote(str(project)),
-            shlex.quote(str(_ROOT)),
             _CHANGE_ID,
             shlex.quote(str(trace_path)),
             shlex.quote(str(verify_path)),

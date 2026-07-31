@@ -12,7 +12,11 @@ from typing import Any
 
 from assurance_agent.artifacts.models import QualityGateResult
 from assurance_agent.artifacts.models.trace import TraceProjection
-from assurance_agent.eval.specialty_models import LegacySpecialtyReportV1, SpecialtyReportV2, load_specialty_report
+from assurance_agent.eval.specialty_models import (
+    LegacySpecialtyReportV1,
+    SpecialtyReportV2,
+    load_specialty_report,
+)
 from assurance_agent.eval.specialty_render import render_specialty_sections
 from assurance_agent.eval.specialty_replay import collect_capability_policy_replay
 from assurance_agent.evidence.sufficiency import SufficiencyReport
@@ -224,7 +228,6 @@ def _collect_traceability_evidence(
 def collect_report(
     *,
     project_root: Path,
-    schema_root: Path,
     change_id: str,
     root_invocation_id: str,
     workflow_entrypoint: str,
@@ -249,7 +252,6 @@ def collect_report(
         change_id=change_id,
         root_invocation_id=root_invocation_id,
         expected_entrypoint=workflow_entrypoint,
-        schema_root=schema_root,
     )
     return SpecialtyReportV2(
         change_id=change_id,
@@ -302,7 +304,6 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     collect = commands.add_parser("collect")
     collect.add_argument("--project-root", type=Path, required=True)
-    collect.add_argument("--schema-root", type=Path, required=True)
     collect.add_argument("--change-id", required=True)
     collect.add_argument("--root-invocation-id", required=True)
     collect.add_argument("--workflow-entrypoint", required=True)
@@ -324,7 +325,6 @@ def main() -> int:
     if args.command == "collect":
         report = collect_report(
             project_root=args.project_root.resolve(),
-            schema_root=args.schema_root.resolve(),
             change_id=args.change_id,
             root_invocation_id=args.root_invocation_id,
             workflow_entrypoint=args.workflow_entrypoint,

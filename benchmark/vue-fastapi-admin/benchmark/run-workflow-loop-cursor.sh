@@ -795,7 +795,7 @@ run_specialty_report_stage() {
   fi
   collect_exit=0
   collect_benchmark_specialty_report \
-    "$AA_PYTHON_BIN" "$SPECIALTY_REPORT_PY" "$PROJECT_ROOT" "$AA_REPO_ROOT" \
+    "$AA_PYTHON_BIN" "$SPECIALTY_REPORT_PY" "$PROJECT_ROOT" \
     "$change_id" "$trace_file" "$verify_file" "$report_file" "$report_log" \
     "$trace_exit" "$verify_exit" "$root_invocation_id" "$workflow_entrypoint" \
     || collect_exit=$?

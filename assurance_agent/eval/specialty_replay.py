@@ -7,6 +7,7 @@ from pathlib import Path
 from assurance_agent.artifacts.models.assurance import CASE_TYPES, LAYER_NAMES, PLAN_CHECK_IDS
 from assurance_agent.eval.specialty_models import (
     CapabilitiesSummary,
+    CapabilityPolicyReplayV2,
     CheckSummary,
     CompleteLayerRow,
     DefinitionBinding,
@@ -19,10 +20,10 @@ from assurance_agent.eval.specialty_models import (
     ReplayScenario,
     build_capability_replay_v2,
 )
-from assurance_agent.eval.specialty_models import CapabilityPolicyReplayV2
 from assurance_agent.knowledge.capabilities import compute_missing_capabilities
 from assurance_agent.verification.profiles import get_layer_assurance_profile
 from assurance_agent.workflow.graph.replay_binding import (
+    FrozenDefinitionBinding,
     ReplayBindingError,
     assert_layer_selection_evidence,
     bind_replay_definitions,
@@ -32,8 +33,6 @@ from assurance_agent.workflow.graph.replay_binding import (
 from assurance_agent.workflow.graph.workspace import TreeStore
 from assurance_agent.workflow.orchestration.plan_check_replay import replay_plan_check_policy
 
-_WIRED_LAYERS = frozenset({"api", "e2e"})
-
 
 def collect_capability_policy_replay(
     *,
@@ -42,9 +41,8 @@ def collect_capability_policy_replay(
     root_invocation_id: str,
     expected_entrypoint: str,
     store: TreeStore | None = None,
-    schema_root: Path | None = None,
 ) -> CapabilityPolicyReplayV2:
-    """Combine graph binding, layer selection, and counterfactual policy replay."""
+    """Combine graph binding, pinned topology classification, and counterfactual policy replay."""
     try:
         binding = bind_replay_definitions(
             change_dir=change_dir,
@@ -52,7 +50,6 @@ def collect_capability_policy_replay(
             root_invocation_id=root_invocation_id,
             expected_entrypoint=expected_entrypoint,
             store=store,
-            schema_root=schema_root,
         )
     except ReplayBindingError as exc:
         return _incomplete_definition_failure(str(exc.reason_code))
@@ -63,30 +60,10 @@ def collect_capability_policy_replay(
         assurance_invocation_id=binding.assurance_invocation_id,
         selections=selections,
     )
-    selected = {fact.layer: fact.selected for fact in selections}
-    rows: list[LayerRow] = []
-    for layer, case_type in zip(LAYER_NAMES, CASE_TYPES, strict=True):
-        if not selected[layer]:
-            rows.append(NotSelectedLayerRow(layer=layer, case_type=case_type, status="not_selected"))
-            continue
-        if layer not in _WIRED_LAYERS:
-            rows.append(NotWiredLayerRow(layer=layer, case_type=case_type, status="not_wired"))
-            continue
-        try:
-            rows.append(
-                _complete_wired_row(
-                    binding, layer=layer, case_type=case_type, change_dir=change_dir, store=store
-                )
-            )
-        except ReplayBindingError as exc:
-            rows.append(
-                IncompleteLayerRow(
-                    layer=layer,
-                    case_type=case_type,
-                    status="incomplete",
-                    reason_code=str(exc.reason_code),
-                )
-            )
+    rows = [
+        _row_for_layer(binding, layer=layer, case_type=case_type, change_dir=change_dir, store=store)
+        for layer, case_type in zip(LAYER_NAMES, CASE_TYPES, strict=True)
+    ]
 
     return build_capability_replay_v2(
         definition_binding=DefinitionBinding(
@@ -102,6 +79,39 @@ def collect_capability_policy_replay(
         ),
         rows=rows,
     )
+
+
+def _row_for_layer(
+    binding: FrozenDefinitionBinding,
+    *,
+    layer: str,
+    case_type: str,
+    change_dir: Path,
+    store: TreeStore | None,
+) -> LayerRow:
+    if layer not in binding.selected_layers:
+        return NotSelectedLayerRow(layer=layer, case_type=case_type, status="not_selected")
+    topology = binding.layer_topologies[layer]
+    if topology.status == "legacy_unwired":
+        return NotWiredLayerRow(layer=layer, case_type=case_type, status="not_wired")
+    if topology.status == "partial":
+        return IncompleteLayerRow(
+            layer=layer,
+            case_type=case_type,
+            status="incomplete",
+            reason_code="partial_assurance_wiring",
+        )
+    try:
+        return replay_wired_layer(
+            binding, layer=layer, case_type=case_type, change_dir=change_dir, store=store
+        )
+    except ReplayBindingError as exc:
+        return IncompleteLayerRow(
+            layer=layer,
+            case_type=case_type,
+            status="incomplete",
+            reason_code=str(exc.reason_code),
+        )
 
 
 def _incomplete_definition_failure(reason_code: str) -> CapabilityPolicyReplayV2:
@@ -121,14 +131,15 @@ def _incomplete_definition_failure(reason_code: str) -> CapabilityPolicyReplayV2
     )
 
 
-def _complete_wired_row(
-    binding,
+def replay_wired_layer(
+    binding: FrozenDefinitionBinding,
     *,
     layer: str,
     case_type: str,
     change_dir: Path,
     store: TreeStore | None,
 ) -> CompleteLayerRow:
+    """Recover wired-layer evidence and emit a complete counterfactual row."""
     profile = get_layer_assurance_profile(layer)  # type: ignore[arg-type]
     recovered = recover_layer_inputs(binding, layer=layer, change_dir=change_dir, store=store)
     checks_doc = recovered.checks.model
@@ -219,4 +230,4 @@ def _scenario_row(scenario) -> ReplayScenario:
     )
 
 
-__all__ = ["collect_capability_policy_replay"]
+__all__ = ["collect_capability_policy_replay", "replay_wired_layer"]

@@ -14,9 +14,11 @@ ReplayIntegrity = Literal["complete", "incomplete"]
 LayerReplayStatus = Literal["complete", "not_selected", "not_wired", "incomplete"]
 LayerApplicability = Literal["applicable", "not_applicable"]
 ScenarioAction = Literal["warn", "block", "require_human"]
+ReplaySemantics = Literal[
+    "counterfactual_plan_check_actions/v1",
+    "counterfactual_plan_check_actions/v2",
+]
 _SCENARIO_ACTIONS: tuple[ScenarioAction, ...] = ("warn", "block", "require_human")
-_WIRED_LAYERS = frozenset({"api", "e2e"})
-_UNWIRED_LAYERS = frozenset({"fuzz", "performance"})
 
 
 class DefinitionBinding(BaseModel):
@@ -164,7 +166,7 @@ LayerRow = Annotated[
 class CapabilityPolicyReplayV2(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    semantics: Literal["counterfactual_plan_check_actions/v1"] = "counterfactual_plan_check_actions/v1"
+    semantics: ReplaySemantics = "counterfactual_plan_check_actions/v2"
     integrity: ReplayIntegrity
     definition_binding: DefinitionBinding | None = None
     definition_failure: str | None = None
@@ -185,7 +187,7 @@ class CapabilityPolicyReplayV2(BaseModel):
 
     @model_validator(mode="after")
     def _integrity_matches_matrix(self) -> Self:
-        _validate_row_topology(self.rows)
+        _validate_row_topology(self.rows, semantics=self.semantics)
         derived = _derive_integrity(self.definition_binding, self.rows)
         if self.integrity != derived:
             raise ValueError("integrity must match definition binding and row statuses")
@@ -213,12 +215,16 @@ class LegacySpecialtyReportV1(BaseModel):
 SpecialtyReport = SpecialtyReportV2 | LegacySpecialtyReportV1
 
 
-def _validate_row_topology(rows: tuple[LayerRow, ...]) -> None:
-    """Reject structurally impossible layer/status combinations."""
+def _validate_row_topology(rows: tuple[LayerRow, ...], *, semantics: ReplaySemantics) -> None:
+    """Apply historical v1 static wiring rules; v2 defers authority to pinned topology."""
+    if semantics != "counterfactual_plan_check_actions/v1":
+        return
+    v1_wired = frozenset({"api", "e2e"})
+    v1_unwired = frozenset({"fuzz", "performance"})
     for row in rows:
-        if row.layer in _WIRED_LAYERS and row.status == "not_wired":
+        if row.layer in v1_wired and row.status == "not_wired":
             raise ValueError(f"wired layer {row.layer!r} cannot have status not_wired")
-        if row.layer in _UNWIRED_LAYERS and row.status == "complete":
+        if row.layer in v1_unwired and row.status == "complete":
             raise ValueError(f"unwired layer {row.layer!r} cannot have status complete")
 
 
@@ -239,6 +245,7 @@ def build_capability_replay_v2(
     rows: Sequence[dict[str, object] | LayerRow],
     integrity: ReplayIntegrity | None = None,
     definition_failure: str | None = None,
+    semantics: ReplaySemantics = "counterfactual_plan_check_actions/v2",
 ) -> CapabilityPolicyReplayV2:
     binding = (
         None
@@ -265,6 +272,7 @@ def build_capability_replay_v2(
             parsed_rows.append(IncompleteLayerRow.model_validate(row))
     derived = integrity if integrity is not None else _derive_integrity(binding, tuple(parsed_rows))
     return CapabilityPolicyReplayV2(
+        semantics=semantics,
         integrity=derived,
         definition_binding=binding,
         definition_failure=definition_failure,
@@ -295,6 +303,7 @@ __all__ = [
     "NotSelectedLayerRow",
     "NotWiredLayerRow",
     "ReplayScenario",
+    "ReplaySemantics",
     "SpecialtyReport",
     "SpecialtyReportV2",
     "build_capability_replay_v2",

@@ -312,14 +312,13 @@ benchmark_evidence_exit_code() {
 }
 
 collect_benchmark_specialty_report() {
-  local python_bin="$1" reporter="$2" project_root="$3" schema_root="$4"
-  local change_id="$5" trace_file="$6" verify_file="$7" output_file="$8" log_file="$9"
-  local trace_exit="${10}" verify_exit="${11}"
-  local root_invocation_id="${12}" workflow_entrypoint="${13}"
+  local python_bin="$1" reporter="$2" project_root="$3"
+  local change_id="$4" trace_file="$5" verify_file="$6" output_file="$7" log_file="$8"
+  local trace_exit="$9" verify_exit="${10}"
+  local root_invocation_id="${11}" workflow_entrypoint="${12}"
   mkdir -p "$(dirname "$output_file")" "$(dirname "$log_file")"
   "$python_bin" "$reporter" collect \
     --project-root "$project_root" \
-    --schema-root "$schema_root" \
     --change-id "$change_id" \
     --root-invocation-id "$root_invocation_id" \
     --workflow-entrypoint "$workflow_entrypoint" \

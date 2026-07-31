@@ -16,6 +16,7 @@ from assurance_agent.eval.specialty_models import (
     build_capability_replay_v2,
     load_specialty_report,
 )
+from assurance_agent.eval.specialty_render import render_specialty_sections
 
 
 def _check_summary(*, check_id: str, status: str = "pass", finding_count: int = 0) -> dict[str, object]:
@@ -163,8 +164,67 @@ def test_build_capability_replay_v2_derives_complete_integrity() -> None:
         definition_binding=_definition_binding(),
         rows=_four_complete_rows(),
     )
+    assert replay.semantics == "counterfactual_plan_check_actions/v2"
     assert replay.integrity == "complete"
     assert [row.layer for row in replay.rows] == list(LAYER_NAMES)
+
+
+def test_loader_and_renderer_accept_frozen_semantics_v1_unchanged() -> None:
+    capability = build_capability_replay_v2(
+        definition_binding=_definition_binding(),
+        rows=_four_complete_rows(),
+        semantics="counterfactual_plan_check_actions/v1",
+    )
+    assert capability.semantics == "counterfactual_plan_check_actions/v1"
+    payload = {
+        "schema_version": "2",
+        "change_id": "CH-FROZEN-V1",
+        "capability_contract_policy": capability.model_dump(mode="json"),
+        "traceability_evidence": {
+            "command_status": {"trace_exit": 0, "verify_exit": 0},
+            "execution_projection": {
+                "phase": "execution",
+                "batch_id": "b",
+                "integrity": "complete",
+                "row_count": 0,
+                "source_count": 0,
+                "gap_count": 0,
+                "unmapped_test_count": 0,
+            },
+            "reconciled_projection": {
+                "phase": "reconciled",
+                "batch_id": "b",
+                "integrity": "complete",
+                "row_count": 0,
+                "source_count": 0,
+                "gap_count": 0,
+                "unmapped_test_count": 0,
+                "failure_row_count": 0,
+                "failure_link_count": 0,
+                "open_problem_row_count": 0,
+                "open_problem_link_count": 0,
+                "unique_open_problem_count": 0,
+            },
+            "sufficiency": {"sufficient_count": 0, "insufficient_count": 0, "reason_counts": {}},
+            "coverage": {"status": "PASS", "line": 0.0, "branch": 0.0, "final_status": "PASS"},
+            "verify": {
+                "phase": "verify",
+                "verdict": "pass",
+                "policy_digest": "p",
+                "projection_digest": "d",
+                "blocking_gap_count": 0,
+                "open_problem_count": 0,
+                "reported_insufficient_count": 0,
+                "observed_insufficient_count": 0,
+            },
+        },
+    }
+    report = load_specialty_report(payload)
+    assert isinstance(report, SpecialtyReportV2)
+    assert report.capability_contract_policy.semantics == "counterfactual_plan_check_actions/v1"
+    rendered = render_specialty_sections([report])
+    assert "| `CH-FROZEN-V1` | fuzz | not_wired | not_wired | not_wired |" in rendered
+    assert "counterfactual_plan_check_actions/v1" in rendered
 
 
 def test_build_capability_replay_v2_rejects_false_complete_claim() -> None:
@@ -253,18 +313,43 @@ def test_load_specialty_report_discriminates_v2_and_v1() -> None:
     assert isinstance(v1, LegacySpecialtyReportV1)
 
 
-def test_build_capability_replay_v2_rejects_wired_layer_not_wired() -> None:
+def test_semantics_v1_rejects_wired_layer_not_wired() -> None:
     rows = _four_complete_rows()
     rows[0] = {"layer": "api", "case_type": "API", "status": "not_wired", "reason_code": None}
     with pytest.raises(ValidationError, match="not_wired"):
-        build_capability_replay_v2(definition_binding=_definition_binding(), rows=rows)
+        build_capability_replay_v2(
+            definition_binding=_definition_binding(),
+            rows=rows,
+            semantics="counterfactual_plan_check_actions/v1",
+        )
 
 
-def test_build_capability_replay_v2_rejects_unwired_layer_complete() -> None:
+def test_semantics_v1_rejects_forged_fuzz_performance_complete() -> None:
     rows = _four_complete_rows()
     rows[2] = _complete_row("fuzz", case_type="Fuzz")
     with pytest.raises(ValidationError, match="cannot have status complete"):
-        build_capability_replay_v2(definition_binding=_definition_binding(), rows=rows)
+        build_capability_replay_v2(
+            definition_binding=_definition_binding(),
+            rows=rows,
+            semantics="counterfactual_plan_check_actions/v1",
+        )
+
+
+def test_semantics_v2_allows_topology_driven_fuzz_complete_row() -> None:
+    rows = _four_complete_rows()
+    rows[2] = _complete_row("fuzz", case_type="Fuzz")
+    replay = build_capability_replay_v2(definition_binding=_definition_binding(), rows=rows)
+    assert replay.semantics == "counterfactual_plan_check_actions/v2"
+    assert replay.rows[2].status == "complete"
+    assert replay.rows[2].layer == "fuzz"
+
+
+def test_semantics_v2_allows_api_not_wired_without_static_sets() -> None:
+    rows = _four_complete_rows()
+    rows[0] = {"layer": "api", "case_type": "API", "status": "not_wired", "reason_code": None}
+    replay = build_capability_replay_v2(definition_binding=_definition_binding(), rows=rows)
+    assert replay.semantics == "counterfactual_plan_check_actions/v2"
+    assert replay.rows[0].status == "not_wired"
 
 
 def test_build_capability_replay_v2_rejects_false_incomplete_claim() -> None:

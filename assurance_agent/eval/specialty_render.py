@@ -171,6 +171,9 @@ def _render_capability_sections(reports: Sequence[SpecialtyReport]) -> list[str]
 
     lines = ["## Capability + Contract + Policy", ""]
     if v2_reports:
+        semantics = sorted({report.capability_contract_policy.semantics for report in v2_reports})
+        lines.append("Replay semantics: " + ", ".join(f"`{item}`" for item in semantics))
+        lines.append("")
         lines.extend(_render_layer_assurance_matrix(v2_reports))
         lines.append("")
     if v2_reports or v1_reports:

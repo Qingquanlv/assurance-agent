@@ -570,8 +570,7 @@ def test_pin_workflow_root_writes_stable_json_for_new_root(tmp_path: Path) -> No
     result_file = tmp_path / "workflow-result.json"
     _write_workflow_result(result_file)
     command = (
-        f"pin_workflow_root_from_result {shlex.quote(str(run_dir))} CH-1 "
-        f"{shlex.quote(str(result_file))} full"
+        f"pin_workflow_root_from_result {shlex.quote(str(run_dir))} CH-1 {shlex.quote(str(result_file))} full"
     )
 
     first = _run_helper(tmp_path, command)
@@ -593,8 +592,7 @@ def test_pin_workflow_root_skips_creation_when_started_new_root_false(tmp_path: 
     result_file = tmp_path / "workflow-result.json"
     _write_workflow_result(result_file, started_new_root=False)
     command = (
-        f"pin_workflow_root_from_result {shlex.quote(str(run_dir))} CH-1 "
-        f"{shlex.quote(str(result_file))} full"
+        f"pin_workflow_root_from_result {shlex.quote(str(run_dir))} CH-1 {shlex.quote(str(result_file))} full"
     )
 
     result = _run_helper(tmp_path, command)
@@ -607,11 +605,14 @@ def test_pin_workflow_root_rejects_identity_drift(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     result_file = tmp_path / "workflow-result.json"
     _write_workflow_result(result_file)
-    assert _run_helper(
-        tmp_path,
-        f"pin_workflow_root_from_result {shlex.quote(str(run_dir))} CH-1 "
-        f"{shlex.quote(str(result_file))} full",
-    ).returncode == 0
+    assert (
+        _run_helper(
+            tmp_path,
+            f"pin_workflow_root_from_result {shlex.quote(str(run_dir))} CH-1 "
+            f"{shlex.quote(str(result_file))} full",
+        ).returncode
+        == 0
+    )
     _write_workflow_result(result_file, root_invocation_id="inv-root-2")
     drift = _run_helper(
         tmp_path,
@@ -669,3 +670,28 @@ def test_read_workflow_root_state_never_calls_aa_status(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "inv-root-1|full"
     assert not (tmp_path / "aa-calls.log").exists()
+
+
+def test_specialty_collect_helper_omits_schema_root_escape_hatch() -> None:
+    helpers = _HELPERS.read_text(encoding="utf-8")
+    reporter = (
+        _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "benchmark_specialty_report.py"
+    ).read_text(encoding="utf-8")
+    loop = _CURSOR_LOOP.read_text(encoding="utf-8")
+    start = helpers.index("collect_benchmark_specialty_report() {")
+    end = helpers.index("\nvalidate_workflow_command_result() {", start)
+    collect_fn = helpers[start:end]
+    assert "--schema-root" not in collect_fn
+    assert "schema_root" not in collect_fn
+    assert "--schema-root" not in reporter
+    assert "schema_root" not in reporter
+    assert "collect_benchmark_specialty_report" in loop
+    # Caller no longer forwards AA_REPO_ROOT as a schema-root argument.
+    stage_start = loop.index("run_specialty_report_stage() {")
+    stage_end = loop.index("\nreuse_specialty_report_stage() {", stage_start)
+    stage = loop[stage_start:stage_end]
+    assert "collect_benchmark_specialty_report \\" in stage
+    assert (
+        '"$AA_REPO_ROOT"'
+        not in stage.split("collect_benchmark_specialty_report", maxsplit=1)[1].split("||", maxsplit=1)[0]
+    )

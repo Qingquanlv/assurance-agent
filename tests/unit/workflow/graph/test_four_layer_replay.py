@@ -3,23 +3,34 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-from assurance_agent.artifacts.models.assurance import LAYER_NAMES
-from assurance_agent.eval.specialty_models import CapabilityPolicyReplayV2
-from assurance_agent.eval.specialty_replay import collect_capability_policy_replay
+from assurance_agent.artifacts.models.assurance import LAYER_NAMES, PLAN_CHECK_IDS
+from assurance_agent.eval.specialty_models import (
+    CapabilityPolicyReplayV2,
+    CompleteLayerRow,
+    build_capability_replay_v2,
+)
+from assurance_agent.eval.specialty_replay import collect_capability_policy_replay, replay_wired_layer
+from assurance_agent.verification.profiles import get_layer_assurance_profile
 from assurance_agent.workflow.graph.replay_binding import (
+    FrozenDefinitionBinding,
     LayerSelectionFact,
     ReplayBindingError,
     SequencedEvent,
     assert_layer_selection_evidence,
+    bind_replay_definitions,
     evaluate_layer_selection,
+    recover_layer_inputs,
     validate_pinned_layer_selection,
 )
-from assurance_agent.workflow.graph.replay_schema import validate_params_only_expression
+from assurance_agent.workflow.graph.replay_schema import PinnedLayerTopology, validate_params_only_expression
 from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
+from assurance_agent.workflow.orchestration.plan_check_replay import replay_plan_check_policy
 from tests.unit.workflow.graph.test_replay_binding import (
     _CHANGE_ID,
     _ENTRYPOINT,
@@ -260,3 +271,340 @@ def test_bind_replay_definitions_exposes_selected_layers_and_topologies(tmp_path
     assert binding.layer_topologies["api"].status == "wired"
     assert binding.layer_topologies["fuzz"].status == "legacy_unwired"
     assert binding.layer_topologies["e2e"].status == "wired"
+
+
+def _rewrite_assurance_params(fixture, params: dict[str, object]) -> None:
+    lines = fixture.events_path.read_text(encoding="utf-8").splitlines()
+    rewritten: list[str] = []
+    for line in lines:
+        payload = json.loads(line)
+        if payload.get("type") == "graph_invocation_started" and payload.get("invocation_id") in {
+            _ROOT_INV,
+            fixture.assurance_inv,
+        }:
+            payload["params"] = params
+        rewritten.append(json.dumps(payload, sort_keys=True))
+    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+
+
+def _collect(fixture) -> CapabilityPolicyReplayV2:
+    return collect_capability_policy_replay(
+        change_dir=fixture.change_dir,
+        change_id=_CHANGE_ID,
+        root_invocation_id=_ROOT_INV,
+        expected_entrypoint=_ENTRYPOINT,
+    )
+
+
+def test_collect_emits_replay_semantics_v2(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path, include_e2e=False)
+    replay = _collect(fixture)
+    assert replay.semantics == "counterfactual_plan_check_actions/v2"
+
+
+def test_v4_legacy_selected_fuzz_is_not_wired_even_with_stray_active_files(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path)
+    _rewrite_assurance_params(fixture, {**_PARAMS, "test_types": ["api", "e2e", "fuzz"]})
+    fuzz_profile = get_layer_assurance_profile("fuzz")
+    for relative in (fuzz_profile.review_artifact, fuzz_profile.checks_artifact):
+        path = fixture.change_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"status":"pass","checks":[]}\n', encoding="utf-8")
+
+    replay = _collect(fixture)
+    by_layer = {row.layer: row for row in replay.rows}
+    assert by_layer["fuzz"].status == "not_wired"
+    assert replay.integrity == "complete"
+    assert replay.semantics == "counterfactual_plan_check_actions/v2"
+
+
+def test_v4_legacy_unselected_performance_is_not_selected(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path)
+    replay = _collect(fixture)
+    assert {row.layer: row.status for row in replay.rows}["performance"] == "not_selected"
+
+
+def test_v4_forged_wired_fuzz_without_profile_snapshot_is_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from assurance_agent.workflow.graph import replay_binding as replay_mod
+    from assurance_agent.workflow.graph.replay_schema import classify_pinned_layer_topology
+
+    fixture = _build_fixture(tmp_path, include_e2e=False)
+    _rewrite_assurance_params(fixture, {**_PARAMS, "run_mode": "full", "test_types": ["api", "fuzz"]})
+    original = classify_pinned_layer_topology
+
+    def classify_force_wired(schema, topology_spec):  # type: ignore[no-untyped-def]
+        topology = original(schema, topology_spec)
+        if topology_spec.layer == "fuzz":
+            return PinnedLayerTopology(
+                layer="fuzz",
+                status="wired",
+                assurance_node_id="fuzz",
+                branch_graph_id="fuzz-branch",
+                cycle_call_node_id="review-cycle",
+                cycle_graph_id="fuzz-plan-review-cycle",
+                applicability_node_id="applicability",
+                reviewer_node_id="review",
+                mechanical_node_id="mechanical-plan-checks",
+                gate_node_id="review-gate",
+                human_review_node_id="human-review",
+                knowledge_remediation_node_id="knowledge-remediation",
+                codegen_precondition_node_id="codegen-precheck",
+                codegen_node_id="codegen",
+                diagnostics=(),
+            )
+        return topology
+
+    monkeypatch.setattr(replay_mod, "classify_pinned_layer_topology", classify_force_wired)
+    replay = _collect(fixture)
+    by_layer = {row.layer: row for row in replay.rows}
+    assert by_layer["fuzz"].status == "incomplete"
+    assert by_layer["fuzz"].reason_code == "partial_assurance_wiring"
+
+
+def test_v5_missing_profile_snapshot_is_definition_incomplete(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path, include_e2e=False)
+    lines = fixture.events_path.read_text(encoding="utf-8").splitlines()
+    rewritten: list[str] = []
+    for line in lines:
+        payload = json.loads(line)
+        if payload.get("type") == "graph_invocation_started":
+            payload["event_schema_version"] = 5
+        rewritten.append(json.dumps(payload, sort_keys=True))
+    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+
+    replay = _collect(fixture)
+    assert replay.integrity == "incomplete"
+    assert replay.definition_binding is None
+    assert replay.definition_failure == "profile_snapshot_missing"
+    assert all(row.status == "incomplete" for row in replay.rows)
+
+
+def test_broken_pinned_binding_never_upgrades_to_not_wired(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path)
+    digest = json.loads(fixture.events_path.read_text(encoding="utf-8").splitlines()[0])["graph_digest"]
+    (fixture.change_dir / ".graph-runtime" / "schemas" / f"{digest}.json").unlink()
+    replay = _collect(fixture)
+    assert replay.integrity == "incomplete"
+    assert replay.definition_failure == "pinned_schema_missing"
+    assert all(row.status == "incomplete" for row in replay.rows)
+    assert not any(row.status == "not_wired" for row in replay.rows)
+
+
+def test_wired_layer_ambiguous_child_invocation_is_incomplete(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path, include_e2e=False)
+    assurance_path = "main/assurance/assurance"
+    api_branch_path = f"{assurance_path}/api/api-branch"
+    duplicate = fixture._started(
+        invocation_id="inv-api-branch-dup",
+        entrypoint="api-branch",
+        graph_id="api-branch",
+        structural_path=api_branch_path,
+        checkpoint_ns="dup-api-branch",
+        params=dict(_PARAMS),
+        parent_invocation_id=fixture.assurance_inv,
+        parent_task_id=f"{assurance_path}:api",
+    )
+    fixture.append(duplicate.model_dump(mode="json"))
+    replay = _collect(fixture)
+    by_layer = {row.layer: row for row in replay.rows}
+    assert by_layer["api"].status == "incomplete"
+    assert by_layer["api"].reason_code == "ambiguous_graph_wiring"
+
+
+def test_wired_layer_missing_evidence_is_incomplete(tmp_path: Path) -> None:
+    from assurance_agent.workflow.graph.replay_binding import normalize_logical_path
+
+    fixture = _build_fixture(tmp_path, include_e2e=False)
+    profile = get_layer_assurance_profile("api")
+    checks_path = normalize_logical_path(f"change:{profile.checks_artifact}")
+    lines = [json.loads(line) for line in fixture.events_path.read_text(encoding="utf-8").splitlines()]
+    rewritten = []
+    for payload in lines:
+        task_id = str(payload.get("task_id", ""))
+        if payload.get("type") == "task_attempt_succeeded" and task_id.endswith(":mechanical-plan-checks"):
+            if "api-plan-cycle" in task_id:
+                payload = dict(payload)
+                payload["outputs_sha256"] = {checks_path: "0" * 64}
+        rewritten.append(json.dumps(payload, sort_keys=True))
+    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+    replay = _collect(fixture)
+    by_layer = {row.layer: row for row in replay.rows}
+    assert by_layer["api"].status == "incomplete"
+    assert by_layer["api"].reason_code == "mechanical_producer_unbound"
+
+
+def test_frozen_semantics_v1_rejects_forged_fuzz_complete_row() -> None:
+    rows = [
+        {
+            "layer": "api",
+            "case_type": "API",
+            "status": "not_selected",
+            "reason_code": None,
+        },
+        {
+            "layer": "e2e",
+            "case_type": "E2E",
+            "status": "not_selected",
+            "reason_code": None,
+        },
+        {
+            "layer": "fuzz",
+            "case_type": "Fuzz",
+            "status": "complete",
+            "reason_code": None,
+            "applicability": "applicable",
+            "gate_id": "fuzz-plan-review-gate",
+            "review_artifact": "review/fuzz-plan-review.json",
+            "checks_artifact": "review/fuzz-plan-checks.json",
+            "capabilities": {"required": ["auth.api_admin_token"], "missing": []},
+            "mechanical_checks": {
+                "status": "pass",
+                "finding_count": 0,
+                "checks": [
+                    {
+                        "check_id": check_id,
+                        "status": "not_applicable" if check_id == "assert_ideal" else "pass",
+                        "finding_count": 0,
+                    }
+                    for check_id in PLAN_CHECK_IDS
+                ],
+            },
+            "mechanical_execution_contract_digest": "mech-fuzz",
+            "evidence_digests": {
+                "review": "review-fuzz",
+                "checks": "checks-fuzz",
+                "data_knowledge": "l1-fuzz",
+            },
+            "scenarios": [
+                {
+                    "action": action,
+                    "policy_digest": f"d-{action}",
+                    "verdict": "pass",
+                    "route": "pass",
+                    "matched_rule": "pass_when",
+                    "reason": "ok",
+                    "missing_capabilities": [],
+                    "policy_effect": "no_failed_checks",
+                }
+                for action in ("warn", "block", "require_human")
+            ],
+        },
+        {
+            "layer": "performance",
+            "case_type": "Performance",
+            "status": "not_selected",
+            "reason_code": None,
+        },
+    ]
+    with pytest.raises(ValidationError, match="cannot have status complete"):
+        build_capability_replay_v2(
+            definition_binding={
+                "root_invocation_id": "inv-root",
+                "assurance_invocation_id": "inv-assurance",
+                "graph_digest": "graph",
+                "gate_definition_source": "pinned_schema",
+                "baseline_policy_digest": "policy",
+                "policy_source": "pinned_runtime_snapshot",
+                "policy_origin": "project",
+                "gate_semantics_digest": "semantics",
+                "assurance_profile_digest": "profile",
+            },
+            rows=rows,
+            semantics="counterfactual_plan_check_actions/v1",
+        )
+
+
+def _synthetic_wired_fuzz_binding(binding: FrozenDefinitionBinding) -> FrozenDefinitionBinding:
+    api_topo = binding.layer_topologies["api"]
+    fuzz_topo = PinnedLayerTopology(
+        layer="fuzz",
+        status="wired",
+        assurance_node_id="fuzz",
+        branch_graph_id=api_topo.branch_graph_id,
+        cycle_call_node_id=api_topo.cycle_call_node_id,
+        cycle_graph_id=api_topo.cycle_graph_id,
+        applicability_node_id=api_topo.applicability_node_id,
+        reviewer_node_id=api_topo.reviewer_node_id,
+        mechanical_node_id=api_topo.mechanical_node_id,
+        gate_node_id=api_topo.gate_node_id,
+        human_review_node_id=api_topo.human_review_node_id,
+        knowledge_remediation_node_id=api_topo.knowledge_remediation_node_id,
+        codegen_precondition_node_id=api_topo.codegen_precondition_node_id,
+        codegen_node_id=api_topo.codegen_node_id,
+        diagnostics=(),
+    )
+    return replace(
+        binding,
+        selected_layers=frozenset({*binding.selected_layers, "fuzz"}),
+        layer_topologies={**binding.layer_topologies, "fuzz": fuzz_topo},
+        profile_compatibility={**binding.profile_compatibility, "fuzz": True},
+    )
+
+
+@pytest.mark.parametrize("applicable", [True, False])
+def test_synthetic_frozen_binding_builds_complete_fuzz_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, applicable: bool
+) -> None:
+    fixture = _build_fixture(tmp_path, include_e2e=False, api_applicable=applicable)
+    binding = bind_replay_definitions(
+        change_dir=fixture.change_dir,
+        change_id=_CHANGE_ID,
+        root_invocation_id=_ROOT_INV,
+        expected_entrypoint=_ENTRYPOINT,
+    )
+    api_inputs = recover_layer_inputs(binding, layer="api", change_dir=fixture.change_dir)
+    api_profile = get_layer_assurance_profile("api")
+    api_replay = replay_plan_check_policy(
+        gates=binding.compiled.schema.gates,
+        profile=api_profile,
+        review=api_inputs.review,
+        checks=api_inputs.checks,
+        data_knowledge=api_inputs.data_knowledge,
+        base_policy=binding.policy,
+        change_id=binding.change_id,
+        params=api_inputs.params,
+    )
+    synthetic = _synthetic_wired_fuzz_binding(binding)
+
+    monkeypatch.setattr(
+        "assurance_agent.eval.specialty_replay.recover_layer_inputs",
+        lambda _binding, *, layer, change_dir, store=None: api_inputs,
+    )
+    monkeypatch.setattr(
+        "assurance_agent.eval.specialty_replay.get_layer_assurance_profile",
+        lambda layer: api_profile,
+    )
+    monkeypatch.setattr(
+        "assurance_agent.eval.specialty_replay.replay_plan_check_policy",
+        lambda **_kwargs: api_replay,
+    )
+
+    row = replay_wired_layer(
+        synthetic,
+        layer="fuzz",
+        case_type="Fuzz",
+        change_dir=fixture.change_dir,
+        store=None,
+    )
+    assert isinstance(row, CompleteLayerRow)
+    assert row.status == "complete"
+    assert row.layer == "fuzz"
+    assert [item.check_id for item in row.mechanical_checks.checks] == list(PLAN_CHECK_IDS)
+    assert [item.action for item in row.scenarios] == ["warn", "block", "require_human"]
+    if applicable:
+        assert row.applicability == "applicable"
+        assert row.capabilities is not None
+        assert row.evidence_digests.review is not None
+        assert row.evidence_digests.data_knowledge is not None
+        assert row.evidence_digests.checks
+        assert row.mechanical_execution_contract_digest
+    else:
+        assert row.applicability == "not_applicable"
+        assert row.capabilities is None
+        assert row.evidence_digests.review is None
+        assert row.evidence_digests.data_knowledge is None
+        assert row.evidence_digests.checks
+        assert all(item.status == "not_applicable" for item in row.mechanical_checks.checks)
+        assert all(item.verdict == "skip" for item in row.scenarios)
