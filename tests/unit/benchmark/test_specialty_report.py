@@ -1,28 +1,49 @@
 from __future__ import annotations
 
+import ast
 import hashlib
+import importlib.util
+import inspect
 import json
 import shlex
 import subprocess
 import sys
+from datetime import timedelta
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
+from assurance_agent.artifacts.models import CoverageThreshold, SelectedTargets
 from assurance_agent.artifacts.models.assurance import LAYER_NAMES
+from assurance_agent.artifacts.models.trace import TraceProjectionV2, load_trace_projection_document
+from assurance_agent.artifacts.policy import load_policy_bytes, policy_digest
 from assurance_agent.eval.specialty_models import (
+    CompleteTraceabilityEvidenceV3,
     LegacySpecialtyReportV1,
     SpecialtyReportV2,
+    SpecialtyReportV3,
     build_capability_replay_v2,
     load_specialty_report,
+    load_specialty_report_document,
 )
 from assurance_agent.eval.specialty_render import render_specialty_sections
+from assurance_agent.eval.specialty_replay import collect_capability_policy_replay
+from assurance_agent.evidence.current_projection import load_current_reconciled_projection
+from assurance_agent.evidence.layer_summary import join_layer_sufficiency, summarize_projection_by_layer
+from assurance_agent.evidence.sufficiency import build_evidence_coverage_evaluation, evaluate_sufficiency
+from assurance_agent.evidence.trace import fold_trace
+from assurance_agent.evidence.verify import evaluate_verify_verdict
 from assurance_agent.verification.profiles import get_layer_assurance_profile
+from assurance_agent.workflow.execution.results import CoverageResult, ResultSource, TargetResult
 from assurance_agent.workflow.graph.definition_pinning import policy_snapshot_relpath
 from assurance_agent.workflow.graph.replay_binding import normalize_logical_path
 from assurance_agent.workflow.graph.workspace import TreeStore
+from assurance_agent.workflow.improvements.ledger import atomic_write_json
+from assurance_agent.workflow.report.quality_gate import build_quality_gate
+from tests.helpers_aa import AWARE_NOW
 from tests.unit.workflow.graph.test_replay_binding import (
     _CHANGE_ID,
     _ENTRYPOINT,
@@ -30,11 +51,15 @@ from tests.unit.workflow.graph.test_replay_binding import (
     _build_fixture,
 )
 
+CHANGE_ID = _CHANGE_ID
+ROOT_INVOCATION_ID = _ROOT_INV
+_BATCH_ID = "20260730-120000"
+
 _ROOT = Path(__file__).parents[3]
 _REPORTER = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "benchmark_specialty_report.py"
 _HELPERS = _REPORTER.with_name("cursor-loop-helpers.sh")
 _CURSOR_LOOP = _REPORTER.with_name("run-workflow-loop-cursor.sh")
-_GOLDEN_SHA256 = "412a7688d33bd7752bc55d7ed5fb3938da7906a1b51e8d78a222693a3b1ec999"
+_GOLDEN_SHA256 = "ffecb094efafac8a4d1115ae472d94c3d9418e933407ad28021333cee8f1f72a"
 
 
 def _specialty_stage_function_source() -> str:
@@ -268,6 +293,280 @@ def _install_strict_frozen_item(tmp_path: Path) -> tuple[Path, Path, Path]:
         },
     )
     return fixture.project, trace_path, verify_path
+
+
+def _load_reporter_module() -> Any:
+    name = "benchmark_specialty_report_under_test"
+    existing = sys.modules.get(name)
+    if existing is not None:
+        return existing
+    spec = importlib.util.spec_from_file_location(name, _REPORTER)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _write_case_yaml(
+    change_dir: Path,
+    *,
+    rel: str,
+    case_id: str,
+    case_type: str,
+) -> None:
+    performance_block = ""
+    if case_type == "Performance":
+        performance_block = """      performance:
+        scenario:
+          capability: dept_list
+"""
+    path = change_dir / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"""schema_version: "1.0"
+added:
+  - case_id: {case_id}
+    module: system.dept
+    type: {case_type}
+    title: t
+    status: active
+    priority: P0
+    severity: blocker
+    automation:
+      required: true
+{performance_block}modified: []
+removed: []
+""",
+        encoding="utf-8",
+    )
+
+
+def _write_target_result(
+    change_dir: Path,
+    *,
+    target: str,
+    case_id: str,
+    batch_id: str = _BATCH_ID,
+) -> None:
+    payload = {
+        "schema_version": "1.0",
+        "change_id": CHANGE_ID,
+        "batch_id": batch_id,
+        "target": target,
+        "status": "passed",
+        "command": "cmd",
+        "source": {"framework": "pytest", "raw_log": "raw.log"},
+        "total": 1,
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "cases": [
+            {
+                "case_id": case_id,
+                "status": "passed",
+                "file": f"tests/{target}/test_x.py",
+                "test_name": f"test_{case_id.lower()}__ok",
+                "duration_ms": 1,
+                "message": "",
+            }
+        ],
+        "unmapped_tests": [],
+    }
+    path = change_dir / "execution" / "runs" / batch_id / f"{target}-result.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _write_performance_result(change_dir: Path, *, batch_id: str = _BATCH_ID) -> None:
+    payload = {
+        "schema_version": "1.0",
+        "change_id": CHANGE_ID,
+        "batch_id": batch_id,
+        "kind": "performance",
+        "available": True,
+        "status": "PASS",
+        "scenarios": [
+            {
+                "capability": "dept_list",
+                "endpoint": "/dept",
+                "measured_p95_ms": 100.0,
+                "threshold_p95_ms": 200.0,
+                "measured_error_rate": 0.0,
+                "threshold_error_rate_max": 0.01,
+                "verdict": "PASS",
+            }
+        ],
+        "command": "",
+        "source": {},
+    }
+    path = change_dir / "execution" / "runs" / batch_id / "performance-result.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _install_authority_valid_complete_item(
+    tmp_path: Path,
+    *,
+    include_layers: frozenset[str] | None = None,
+) -> tuple[Path, Path, Path]:
+    """Build a fully authority-valid item via production constructors (no digest patches)."""
+    layers = include_layers or frozenset({"api", "e2e", "fuzz", "performance"})
+    fixture = _build_fixture(tmp_path)
+    change_dir = fixture.change_dir
+    project = fixture.project
+
+    if "api" in layers:
+        _write_case_yaml(change_dir, rel="cases/api/case.yaml", case_id="TC_API_001", case_type="API")
+        _write_target_result(change_dir, target="api", case_id="TC_API_001")
+    if "e2e" in layers:
+        _write_case_yaml(change_dir, rel="cases/e2e/case.yaml", case_id="TC_E2E_001", case_type="E2E")
+        _write_target_result(change_dir, target="e2e", case_id="TC_E2E_001")
+    if "fuzz" in layers:
+        _write_case_yaml(change_dir, rel="cases/fuzz/case.yaml", case_id="TC_FUZZ_001", case_type="Fuzz")
+        _write_target_result(change_dir, target="fuzz", case_id="TC_FUZZ_001")
+    if "performance" in layers:
+        _write_case_yaml(
+            change_dir, rel="cases/perf/case.yaml", case_id="TC_PERF_001", case_type="Performance"
+        )
+        _write_performance_result(change_dir)
+
+    selected = SelectedTargets(
+        api="api" in layers,
+        e2e="e2e" in layers,
+        fuzz="fuzz" in layers,
+        performance="performance" in layers,
+    )
+    manifest = {
+        "schema_version": "1.0",
+        "change_id": CHANGE_ID,
+        "batch_id": _BATCH_ID,
+        "executed_at": AWARE_NOW.isoformat(),
+        "selected_targets": selected.model_dump(),
+        "result_files": {},
+    }
+    manifest_path = change_dir / "execution" / "execution-manifest.yaml"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+
+    execution = fold_trace(project, CHANGE_ID, phase="execution")
+    reconciled = fold_trace(project, CHANGE_ID, phase="reconciled")
+    assert isinstance(execution, TraceProjectionV2)
+    assert isinstance(reconciled, TraceProjectionV2)
+
+    execution_trace_path = tmp_path / "trace.json"
+    verify_path = tmp_path / "verify.json"
+    atomic_write_json(execution_trace_path, execution.model_dump(mode="json"))
+    atomic_write_json(
+        change_dir / "inspect" / "trace-projection.json",
+        reconciled.model_dump(mode="json"),
+    )
+    # Prove the persisted reconciled artifact is byte-current before collection.
+    assert load_current_reconciled_projection(project, CHANGE_ID).model_dump(
+        mode="json"
+    ) == reconciled.model_dump(mode="json")
+
+    capability = collect_capability_policy_replay(
+        change_dir=change_dir,
+        change_id=CHANGE_ID,
+        root_invocation_id=ROOT_INVOCATION_ID,
+        expected_entrypoint=_ENTRYPOINT,
+    )
+    binding = capability.definition_binding
+    assert binding is not None
+    policy = load_policy_bytes(
+        (change_dir / policy_snapshot_relpath(binding.baseline_policy_digest)).read_bytes(),
+        origin="pinned",
+    )
+    assert policy_digest(policy) == binding.baseline_policy_digest
+
+    sufficiency = evaluate_sufficiency(
+        execution,
+        policy,
+        as_of=AWARE_NOW,
+        require_current_batch=True,
+    )
+    evidence_coverage = build_evidence_coverage_evaluation(execution, policy, as_of=AWARE_NOW)
+    source = ResultSource(framework="pytest", raw_log="")
+    api = (
+        TargetResult(
+            change_id=CHANGE_ID,
+            batch_id=_BATCH_ID,
+            target="api",
+            status="passed",
+            command="cmd",
+            source=source,
+            total=1,
+            passed=1,
+            failed=0,
+            skipped=0,
+            cases=[],
+            unmapped_tests=[],
+        )
+        if "api" in layers
+        else None
+    )
+    e2e = (
+        TargetResult(
+            change_id=CHANGE_ID,
+            batch_id=_BATCH_ID,
+            target="e2e",
+            status="passed",
+            command="cmd",
+            source=source,
+            total=1,
+            passed=1,
+            failed=0,
+            skipped=0,
+            cases=[],
+            unmapped_tests=[],
+        )
+        if "e2e" in layers
+        else None
+    )
+    fuzz = (
+        TargetResult(
+            change_id=CHANGE_ID,
+            batch_id=_BATCH_ID,
+            target="fuzz",
+            status="passed",
+            command="cmd",
+            source=source,
+            total=1,
+            passed=1,
+            failed=0,
+            skipped=0,
+            cases=[],
+            unmapped_tests=[],
+        )
+        if "fuzz" in layers
+        else None
+    )
+    coverage = CoverageResult(
+        change_id=CHANGE_ID,
+        batch_id=_BATCH_ID,
+        available=True,
+        line_coverage=80.0,
+        branch_coverage=70.0,
+        threshold=CoverageThreshold(line=70.0, branch=60.0),
+        status="PASS",
+    )
+    quality = build_quality_gate(
+        change_id=CHANGE_ID,
+        batch_id=_BATCH_ID,
+        api=api,
+        e2e=e2e,
+        coverage=coverage,
+        evidence_coverage=evidence_coverage,
+        fuzz=fuzz,
+    )
+    atomic_write_json(
+        change_dir / "execution" / "quality-gate-result.json",
+        quality.model_dump(mode="json"),
+    )
+    verify = evaluate_verify_verdict(reconciled, policy, sufficiency)
+    atomic_write_json(verify_path, verify.model_dump(mode="json"))
+    return project, execution_trace_path, verify_path
 
 
 def _change_dir(project: Path) -> Path:
@@ -1351,3 +1650,371 @@ def test_cursor_helper_collects_and_renders_real_specialty_report(tmp_path: Path
     assert "### Layer Assurance Matrix" in result.stdout
     assert "### Policy Replay Matrix" in result.stdout
     assert "## Traceability / Evidence Projection" in result.stdout
+
+
+def test_collect_complete_traceability_happy_path_and_v3_round_trip(tmp_path: Path) -> None:
+    reporter = _load_reporter_module()
+    project, execution_trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    inputs = reporter.TraceCollectionInputs(
+        project_root=project,
+        change_id=CHANGE_ID,
+        root_invocation_id=ROOT_INVOCATION_ID,
+        workflow_entrypoint=_ENTRYPOINT,
+        trace_path=execution_trace_path,
+        verify_path=verify_path,
+        trace_exit=0,
+        verify_exit=0,
+    )
+    capability = collect_capability_policy_replay(
+        change_dir=inputs.change_dir,
+        change_id=inputs.change_id,
+        root_invocation_id=inputs.root_invocation_id,
+        expected_entrypoint=inputs.workflow_entrypoint,
+    )
+    trace = reporter._collect_complete_traceability(inputs, capability)
+    assert trace.status == "complete"
+    assert [row.layer for row in trace.execution.facts.layers] == [
+        "api",
+        "e2e",
+        "fuzz",
+        "performance",
+    ]
+    assert trace.execution.overview.projection_digest == trace.sufficiency.source_projection_digest
+    assert trace.reconciled.overview.projection_digest == trace.verify.projection_digest
+    binding = capability.definition_binding
+    assert binding is not None
+    assert (
+        trace.sufficiency.source_policy_digest == binding.baseline_policy_digest == trace.verify.policy_digest
+    )
+    # Business recovery gaps keep reconciled integrity incomplete while collection is complete.
+    assert trace.reconciled.overview.integrity == "incomplete"
+    assert trace.status == "complete"
+
+    report = SpecialtyReportV3(
+        change_id=CHANGE_ID,
+        capability_contract_policy=capability,
+        traceability_evidence=trace,
+    )
+    reloaded = load_specialty_report_document(report.model_dump(mode="json"))
+    assert isinstance(reloaded, SpecialtyReportV3)
+    assert isinstance(reloaded.traceability_evidence, CompleteTraceabilityEvidenceV3)
+    assert reloaded.model_dump(mode="json") == report.model_dump(mode="json")
+
+
+def test_complete_collection_keeps_zero_row_layers_present(tmp_path: Path) -> None:
+    reporter = _load_reporter_module()
+    project, execution_trace_path, verify_path = _install_authority_valid_complete_item(
+        tmp_path,
+        include_layers=frozenset({"api"}),
+    )
+    inputs = reporter.TraceCollectionInputs(
+        project_root=project,
+        change_id=CHANGE_ID,
+        root_invocation_id=ROOT_INVOCATION_ID,
+        workflow_entrypoint=_ENTRYPOINT,
+        trace_path=execution_trace_path,
+        verify_path=verify_path,
+        trace_exit=0,
+        verify_exit=0,
+    )
+    capability = collect_capability_policy_replay(
+        change_dir=inputs.change_dir,
+        change_id=inputs.change_id,
+        root_invocation_id=inputs.root_invocation_id,
+        expected_entrypoint=inputs.workflow_entrypoint,
+    )
+    trace = reporter._collect_complete_traceability(inputs, capability)
+    assert [row.layer for row in trace.execution.facts.layers] == list(LAYER_NAMES)
+    by_layer = {row.layer: row for row in trace.execution.facts.layers}
+    assert by_layer["api"].total == 1
+    assert by_layer["e2e"].total == 0
+    assert by_layer["fuzz"].total == 0
+    assert by_layer["performance"].total == 0
+
+
+def test_complete_collection_global_gaps_stay_out_of_layer_rows(tmp_path: Path) -> None:
+    reporter = _load_reporter_module()
+    project, execution_trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    inputs = reporter.TraceCollectionInputs(
+        project_root=project,
+        change_id=CHANGE_ID,
+        root_invocation_id=ROOT_INVOCATION_ID,
+        workflow_entrypoint=_ENTRYPOINT,
+        trace_path=execution_trace_path,
+        verify_path=verify_path,
+        trace_exit=0,
+        verify_exit=0,
+    )
+    capability = collect_capability_policy_replay(
+        change_dir=inputs.change_dir,
+        change_id=inputs.change_id,
+        root_invocation_id=inputs.root_invocation_id,
+        expected_entrypoint=inputs.workflow_entrypoint,
+    )
+    trace = reporter._collect_complete_traceability(inputs, capability)
+    assert trace.reconciled.facts.global_gaps.total > 0
+    global_codes = set(trace.reconciled.facts.global_gaps.by_code)
+    for layer in trace.reconciled.facts.layers:
+        assert global_codes.isdisjoint(layer.gaps.by_code)
+
+
+def test_complete_collection_sufficiency_view_can_change_without_mutating_facts(
+    tmp_path: Path,
+) -> None:
+    reporter = _load_reporter_module()
+    project, execution_trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    inputs = reporter.TraceCollectionInputs(
+        project_root=project,
+        change_id=CHANGE_ID,
+        root_invocation_id=ROOT_INVOCATION_ID,
+        workflow_entrypoint=_ENTRYPOINT,
+        trace_path=execution_trace_path,
+        verify_path=verify_path,
+        trace_exit=0,
+        verify_exit=0,
+    )
+    capability = collect_capability_policy_replay(
+        change_dir=inputs.change_dir,
+        change_id=inputs.change_id,
+        root_invocation_id=inputs.root_invocation_id,
+        expected_entrypoint=inputs.workflow_entrypoint,
+    )
+    trace = reporter._collect_complete_traceability(inputs, capability)
+    exec_facts = trace.execution.facts.model_dump(mode="json")
+    rec_facts = trace.reconciled.facts.model_dump(mode="json")
+
+    execution = load_trace_projection_document(json.loads(execution_trace_path.read_text(encoding="utf-8")))
+    assert isinstance(execution, TraceProjectionV2)
+    binding = capability.definition_binding
+    assert binding is not None
+    policy = load_policy_bytes(
+        (inputs.change_dir / policy_snapshot_relpath(binding.baseline_policy_digest)).read_bytes(),
+        origin="pinned",
+    )
+    alt_report = evaluate_sufficiency(
+        execution,
+        policy,
+        as_of=AWARE_NOW + timedelta(hours=100),
+        require_current_batch=True,
+    )
+    alt_joined = join_layer_sufficiency(
+        execution,
+        summarize_projection_by_layer(execution),
+        alt_report,
+        expected_policy_digest=binding.baseline_policy_digest,
+    )
+    assert alt_joined.as_of != trace.sufficiency.as_of
+    assert alt_joined.model_dump(mode="json") != trace.sufficiency.model_dump(mode="json")
+    assert summarize_projection_by_layer(execution).model_dump(mode="json") == exec_facts
+    reconciled = load_current_reconciled_projection(project, CHANGE_ID)
+    assert summarize_projection_by_layer(reconciled).model_dump(mode="json") == rec_facts
+
+
+def test_public_collect_report_and_cli_still_emit_specialty_report_v2(tmp_path: Path) -> None:
+    reporter = _load_reporter_module()
+    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
+    report = reporter.collect_report(
+        project_root=project,
+        change_id=CHANGE_ID,
+        root_invocation_id=ROOT_INVOCATION_ID,
+        workflow_entrypoint=_ENTRYPOINT,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        trace_exit=0,
+        verify_exit=0,
+    )
+    assert isinstance(report, SpecialtyReportV2)
+    assert report.schema_version == "2"
+    assert "layers" not in report.traceability_evidence
+    assert "sufficient_count" in report.traceability_evidence["sufficiency"]
+
+    output = tmp_path / "specialty-public-v2.json"
+    result = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=output,
+    )
+    assert result.returncode == 0, result.stderr
+    loaded = load_specialty_report(json.loads(output.read_text(encoding="utf-8")))
+    assert isinstance(loaded, SpecialtyReportV2)
+
+
+def test_complete_collection_path_not_reachable_from_main() -> None:
+    reporter = _load_reporter_module()
+    main_source = inspect.getsource(reporter.main)
+    assert "_collect_complete_traceability" not in main_source
+    assert "collect_v3_report" not in main_source
+    assert "SpecialtyReportV3" not in main_source
+    source = _REPORTER.read_text(encoding="utf-8")
+    assert "schema_root" not in source
+    assert "TraceCollectionInputs" in source
+
+
+@pytest.mark.parametrize(
+    ("attr", "module_path"),
+    [
+        ("load_current_reconciled_projection", "assurance_agent.evidence.current_projection"),
+        ("validate_trace_phase_pair", "assurance_agent.evidence.layer_summary"),
+        ("summarize_projection_by_layer", "assurance_agent.eval.specialty_models"),
+        ("join_layer_sufficiency", "assurance_agent.evidence.layer_summary"),
+        ("load_quality_gate_result_document", "assurance_agent.artifacts.models.inspect"),
+    ],
+)
+def test_complete_collection_uses_shared_seams(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    attr: str,
+    module_path: str,
+) -> None:
+    reporter = _load_reporter_module()
+    project, execution_trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    inputs = reporter.TraceCollectionInputs(
+        project_root=project,
+        change_id=CHANGE_ID,
+        root_invocation_id=ROOT_INVOCATION_ID,
+        workflow_entrypoint=_ENTRYPOINT,
+        trace_path=execution_trace_path,
+        verify_path=verify_path,
+        trace_exit=0,
+        verify_exit=0,
+    )
+    capability = collect_capability_policy_replay(
+        change_dir=inputs.change_dir,
+        change_id=inputs.change_id,
+        root_invocation_id=inputs.root_invocation_id,
+        expected_entrypoint=inputs.workflow_entrypoint,
+    )
+
+    import importlib
+
+    module = importlib.import_module(module_path)
+    original = getattr(module, attr)
+    calls: list[object] = []
+
+    if attr == "validate_trace_phase_pair":
+
+        def wrapper(*args: object, **kwargs: object) -> object:
+            calls.append((args, kwargs))
+            return original(*args, **kwargs)
+
+    elif attr == "summarize_projection_by_layer":
+
+        def wrapper(*args: object, **kwargs: object) -> object:
+            result = original(*args, **kwargs)
+            calls.append(result)
+            return result
+
+    elif attr == "join_layer_sufficiency":
+
+        def wrapper(*args: object, **kwargs: object) -> object:
+            result = original(*args, **kwargs)
+            calls.append(result)
+            return result
+
+    elif attr == "load_current_reconciled_projection":
+
+        def wrapper(*args: object, **kwargs: object) -> object:
+            result = original(*args, **kwargs)
+            calls.append(result)
+            return result
+
+    else:
+
+        def wrapper(*args: object, **kwargs: object) -> object:
+            result = original(*args, **kwargs)
+            calls.append(result)
+            return result
+
+    monkeypatch.setattr(module, attr, wrapper)
+    # Also patch the reporter's bound name when it imported the symbol directly.
+    if hasattr(reporter, attr):
+        monkeypatch.setattr(reporter, attr, wrapper)
+    if attr == "summarize_projection_by_layer":
+        monkeypatch.setattr(
+            "assurance_agent.eval.specialty_models.summarize_projection_by_layer",
+            wrapper,
+        )
+    if attr == "join_layer_sufficiency" and hasattr(reporter, "join_layer_sufficiency"):
+        monkeypatch.setattr(reporter, "join_layer_sufficiency", wrapper)
+    if attr == "load_current_reconciled_projection" and hasattr(
+        reporter, "load_current_reconciled_projection"
+    ):
+        monkeypatch.setattr(reporter, "load_current_reconciled_projection", wrapper)
+    if attr == "validate_trace_phase_pair" and hasattr(reporter, "validate_trace_phase_pair"):
+        monkeypatch.setattr(reporter, "validate_trace_phase_pair", wrapper)
+    if attr == "load_quality_gate_result_document" and hasattr(reporter, "load_quality_gate_result_document"):
+        monkeypatch.setattr(reporter, "load_quality_gate_result_document", wrapper)
+
+    trace = reporter._collect_complete_traceability(inputs, capability)
+    assert calls, f"expected shared seam {attr} to be called"
+    if attr == "load_current_reconciled_projection":
+        assert calls[0] is not None
+        assert trace.reconciled.overview.projection_digest
+    elif attr == "join_layer_sufficiency":
+        assert trace.sufficiency == calls[0]
+    elif attr == "summarize_projection_by_layer":
+        assert any(
+            cast(Any, call).source_projection_digest
+            in {
+                trace.execution.overview.projection_digest,
+                trace.reconciled.overview.projection_digest,
+            }
+            for call in calls
+        )
+    elif attr == "load_quality_gate_result_document":
+        quality = cast(Any, calls[0])
+        assert quality.schema_version == "2.0"
+        assert trace.coverage.final_status == quality.final_status
+    else:
+        assert calls
+
+
+def test_complete_collector_ast_forbids_local_aggregation_and_legacy_parses() -> None:
+    reporter = _load_reporter_module()
+    source = inspect.getsource(reporter._collect_complete_traceability)
+    tree = ast.parse(source)
+    assert isinstance(tree.body[0], ast.FunctionDef)
+    forbidden_substrings = (
+        "_projection_summary",
+        "_quality_summary",
+        "Counter(",
+        "TraceProjection.model_validate",
+        "QualityGateResult.model_validate",
+        "SufficiencyReport.model_validate",
+        "json.loads",
+    )
+    for token in forbidden_substrings:
+        assert token not in source, token
+
+
+def test_trace_collection_inputs_rejects_negative_exits_and_resolves_change(
+    tmp_path: Path,
+) -> None:
+    reporter = _load_reporter_module()
+    project, execution_trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    with pytest.raises(ValueError, match="nonnegative"):
+        reporter.TraceCollectionInputs(
+            project_root=project,
+            change_id=CHANGE_ID,
+            root_invocation_id=ROOT_INVOCATION_ID,
+            workflow_entrypoint=_ENTRYPOINT,
+            trace_path=execution_trace_path,
+            verify_path=verify_path,
+            trace_exit=-1,
+            verify_exit=0,
+        )
+    inputs = reporter.TraceCollectionInputs(
+        project_root=project,
+        change_id=CHANGE_ID,
+        root_invocation_id="",
+        workflow_entrypoint=_ENTRYPOINT,
+        trace_path=execution_trace_path,
+        verify_path=verify_path,
+        trace_exit=0,
+        verify_exit=0,
+    )
+    assert inputs.change_dir == _change_dir(project)
+    assert inputs.command_status.trace_exit == 0
+    assert inputs.root_invocation_id == ""
+    assert not hasattr(inputs, "schema_root")

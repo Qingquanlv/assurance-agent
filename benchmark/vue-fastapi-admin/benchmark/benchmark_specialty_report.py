@@ -7,18 +7,41 @@ import argparse
 import json
 import os
 from collections import Counter
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from assurance_agent.artifacts.models import QualityGateResult
-from assurance_agent.artifacts.models.trace import TraceProjection
+from assurance_agent.artifacts.models.inspect import (
+    EvidenceCoverageSuccessV2,
+    QualityGateResultV2,
+    load_quality_gate_result_document,
+)
+from assurance_agent.artifacts.models.trace import (
+    TraceProjection,
+    TraceProjectionV2,
+    load_trace_projection_document,
+)
+from assurance_agent.change_location import resolve_change
 from assurance_agent.eval.specialty_models import (
+    CapabilityPolicyReplayV2,
+    CompleteTraceabilityEvidenceV3,
+    CoverageSummary,
     LegacySpecialtyReportV1,
     SpecialtyReportV2,
+    TraceCollectionFailureReason,
+    TraceCommandStatus,
+    TracePhaseEvidence,
+    VerifyDiagnostics,
     load_specialty_report,
 )
 from assurance_agent.eval.specialty_render import render_specialty_sections
 from assurance_agent.eval.specialty_replay import collect_capability_policy_replay
+from assurance_agent.evidence.current_projection import load_current_reconciled_projection
+from assurance_agent.evidence.digests import projection_digest as shared_projection_digest
+from assurance_agent.evidence.layer_summary import join_layer_sufficiency, validate_trace_phase_pair
 from assurance_agent.evidence.sufficiency import SufficiencyReport
 from assurance_agent.evidence.verify import VerifyResult, projection_digest
 
@@ -174,6 +197,283 @@ def _validate_verify_binding(reconciled: TraceProjection, verify: VerifyResult) 
             "verify scope batch mismatch: "
             f"expected {reconciled.authoritative_batch_id!r}, got {verify.scope.batch!r}"
         )
+
+
+class TraceCollectionFailure(Exception):
+    def __init__(
+        self,
+        reason_code: TraceCollectionFailureReason,
+        detail: str,
+    ) -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+        self.detail = detail
+
+
+@dataclass(frozen=True, slots=True)
+class TraceCollectionInputs:
+    project_root: Path
+    change_id: str
+    root_invocation_id: str
+    workflow_entrypoint: str
+    trace_path: Path
+    verify_path: Path
+    trace_exit: int
+    verify_exit: int
+    change_dir: Path = field(init=False)
+    command_status: TraceCommandStatus = field(init=False)
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("trace_exit", self.trace_exit),
+            ("verify_exit", self.verify_exit),
+        ):
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"{name} must be a nonnegative integer")
+        if not self.workflow_entrypoint:
+            raise ValueError("workflow entrypoint is required")
+        change_dir = resolve_change(self.project_root, self.change_id).path
+        object.__setattr__(self, "change_dir", change_dir)
+        object.__setattr__(
+            self,
+            "command_status",
+            TraceCommandStatus(trace_exit=self.trace_exit, verify_exit=self.verify_exit),
+        )
+
+
+def _load_execution_projection_v2(inputs: TraceCollectionInputs) -> TraceProjectionV2:
+    path = inputs.trace_path
+    if not path.is_file():
+        raise TraceCollectionFailure(
+            "execution_projection_missing",
+            "execution_trace_absent",
+        )
+    try:
+        raw_text = path.read_text(encoding="utf-8")
+        raw = json.loads(raw_text)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise TraceCollectionFailure(
+            "execution_projection_invalid",
+            "execution_trace_unreadable",
+        ) from exc
+    if not isinstance(raw, dict):
+        raise TraceCollectionFailure(
+            "execution_projection_invalid",
+            "execution_trace_not_object",
+        )
+    batch = raw.get("authoritative_batch_id")
+    if (
+        raw.get("change_id") != inputs.change_id
+        or raw.get("phase") != "execution"
+        or not isinstance(batch, str)
+        or not batch
+    ):
+        raise TraceCollectionFailure(
+            "projection_identity_mismatch",
+            "execution_identity_mismatch",
+        )
+    try:
+        document = load_trace_projection_document(raw)
+    except ValidationError as exc:
+        raise TraceCollectionFailure(
+            "execution_projection_invalid",
+            "execution_trace_model_invalid",
+        ) from exc
+    if not isinstance(document, TraceProjectionV2):
+        raise TraceCollectionFailure(
+            "execution_projection_invalid",
+            "execution_trace_not_v2",
+        )
+    return document
+
+
+def _validate_projection_identity(
+    change_id: str,
+    execution: TraceProjectionV2,
+    reconciled: TraceProjectionV2,
+) -> None:
+    if execution.change_id != change_id or reconciled.change_id != change_id:
+        raise TraceCollectionFailure(
+            "projection_identity_mismatch",
+            "change_id_mismatch",
+        )
+    if execution.phase != "execution" or reconciled.phase != "reconciled":
+        raise TraceCollectionFailure(
+            "projection_identity_mismatch",
+            "phase_mismatch",
+        )
+    if execution.authoritative_batch_id != reconciled.authoritative_batch_id:
+        raise TraceCollectionFailure(
+            "projection_identity_mismatch",
+            "batch_mismatch",
+        )
+
+
+def _load_bound_quality_v2(
+    inputs: TraceCollectionInputs,
+    execution: TraceProjectionV2,
+    expected_policy_digest: str,
+) -> QualityGateResultV2:
+    path = inputs.change_dir / "execution" / "quality-gate-result.json"
+    if not path.is_file():
+        raise TraceCollectionFailure("quality_gate_missing", "quality_gate_absent")
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise TraceCollectionFailure(
+            "quality_gate_invalid",
+            "quality_gate_unreadable",
+        ) from exc
+    if not isinstance(raw, dict):
+        raise TraceCollectionFailure("quality_gate_invalid", "quality_gate_not_object")
+    if raw.get("change_id") != inputs.change_id or raw.get("batch_id") != execution.authoritative_batch_id:
+        raise TraceCollectionFailure(
+            "quality_gate_binding_mismatch",
+            "quality_identity_mismatch",
+        )
+    try:
+        quality = load_quality_gate_result_document(raw)
+    except ValidationError as exc:
+        raise TraceCollectionFailure(
+            "quality_gate_invalid",
+            "quality_gate_model_invalid",
+        ) from exc
+    if not isinstance(quality, QualityGateResultV2):
+        raise TraceCollectionFailure(
+            "quality_gate_binding_mismatch",
+            "quality_gate_not_v2_success",
+        )
+    coverage_evidence = quality.dimensions.coverage.evidence
+    if isinstance(coverage_evidence, EvidenceCoverageSuccessV2):
+        report = coverage_evidence.report
+        if report.source_policy_digest != expected_policy_digest:
+            raise TraceCollectionFailure(
+                "sufficiency_binding_mismatch",
+                "quality_policy_digest_mismatch",
+            )
+        if report.source_projection_digest != shared_projection_digest(execution):
+            raise TraceCollectionFailure(
+                "sufficiency_binding_mismatch",
+                "quality_projection_digest_mismatch",
+            )
+    return quality
+
+
+def _load_bound_verify(
+    inputs: TraceCollectionInputs,
+    reconciled: TraceProjectionV2,
+    expected_policy_digest: str,
+) -> VerifyResult:
+    path = inputs.verify_path
+    if not path.is_file():
+        raise TraceCollectionFailure("verify_result_missing", "verify_result_absent")
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise TraceCollectionFailure(
+            "verify_result_invalid",
+            "verify_result_unreadable",
+        ) from exc
+    if not isinstance(raw, dict):
+        raise TraceCollectionFailure("verify_result_invalid", "verify_result_not_object")
+    if raw.get("change_id") != inputs.change_id or raw.get("phase") != "reconciled":
+        raise TraceCollectionFailure(
+            "verify_binding_mismatch",
+            "verify_identity_mismatch",
+        )
+    try:
+        verify = VerifyResult.model_validate(raw)
+    except ValidationError as exc:
+        raise TraceCollectionFailure(
+            "verify_result_invalid",
+            "verify_result_model_invalid",
+        ) from exc
+    expected_projection_digest = shared_projection_digest(reconciled)
+    if (
+        verify.projection_digest != expected_projection_digest
+        or verify.policy_digest != expected_policy_digest
+    ):
+        raise TraceCollectionFailure(
+            "verify_binding_mismatch",
+            "verify_digest_mismatch",
+        )
+    if verify.verdict == "pass" and verify.scope is None:
+        raise TraceCollectionFailure(
+            "verify_binding_mismatch",
+            "verify_pass_requires_scope",
+        )
+    if verify.scope is not None:
+        expected_cases = tuple(row.case_id for row in reconciled.rows)
+        if (
+            verify.scope.cases != expected_cases
+            or verify.scope.batch != reconciled.authoritative_batch_id
+            or verify.scope.policy_digest != expected_policy_digest
+            or verify.scope.projection_digest != expected_projection_digest
+        ):
+            raise TraceCollectionFailure(
+                "verify_binding_mismatch",
+                "verify_scope_mismatch",
+            )
+    return verify
+
+
+def _collect_complete_traceability(
+    inputs: TraceCollectionInputs,
+    capability: CapabilityPolicyReplayV2,
+) -> CompleteTraceabilityEvidenceV3:
+    binding = capability.definition_binding
+    if binding is None:
+        raise TraceCollectionFailure(
+            "sufficiency_binding_mismatch",
+            "capability_definition_binding_missing",
+        )
+    execution = _load_execution_projection_v2(inputs)
+    reconciled = load_current_reconciled_projection(
+        inputs.project_root,
+        inputs.change_id,
+    )
+    _validate_projection_identity(inputs.change_id, execution, reconciled)
+    validate_trace_phase_pair(execution, reconciled)
+    execution_evidence = TracePhaseEvidence.from_projection(execution)
+    reconciled_evidence = TracePhaseEvidence.from_projection(reconciled)
+    quality = _load_bound_quality_v2(inputs, execution, binding.baseline_policy_digest)
+    coverage_evidence = quality.dimensions.coverage.evidence
+    if not isinstance(coverage_evidence, EvidenceCoverageSuccessV2):
+        raise TraceCollectionFailure(
+            "quality_gate_binding_mismatch",
+            "typed_sufficiency_unavailable",
+        )
+    sufficiency = join_layer_sufficiency(
+        execution,
+        execution_evidence.facts,
+        coverage_evidence.report,
+        expected_policy_digest=binding.baseline_policy_digest,
+    )
+    verify = _load_bound_verify(inputs, reconciled, binding.baseline_policy_digest)
+    coverage_summary = CoverageSummary(
+        status=quality.dimensions.coverage.status,
+        line=quality.dimensions.coverage.line_coverage,
+        branch=quality.dimensions.coverage.branch_coverage,
+        final_status=quality.final_status,
+    )
+    verify_diagnostics = VerifyDiagnostics(
+        phase=verify.phase,
+        verdict=verify.verdict,
+        policy_digest=verify.policy_digest,
+        projection_digest=verify.projection_digest,
+        blocking_gap_count=len(verify.blocking_gaps),
+        open_problem_count=len(verify.open_problem_ids),
+        reported_insufficient_count=len(verify.insufficient),
+    )
+    return CompleteTraceabilityEvidenceV3(
+        status="complete",
+        command_status=inputs.command_status,
+        execution=execution_evidence,
+        reconciled=reconciled_evidence,
+        sufficiency=sufficiency,
+        coverage=coverage_summary,
+        verify=verify_diagnostics,
+    )
 
 
 def _collect_traceability_evidence(
