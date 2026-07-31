@@ -220,6 +220,73 @@ def test_join_rejects_extra_case() -> None:
         )
 
 
+def test_join_rejects_duplicate_verdict_case_ids() -> None:
+    projection = _four_layer_projection()
+    policy = _policy()
+    report = evaluate_sufficiency(
+        projection, policy, as_of=AWARE_NOW, require_current_batch=True
+    )
+    duplicate_verdict = report.verdicts[0]
+    bloated = SufficiencyReportV2.model_construct(
+        schema_version=report.schema_version,
+        source_projection_digest=report.source_projection_digest,
+        source_policy_digest=report.source_policy_digest,
+        semantics=report.semantics,
+        require_current_batch=report.require_current_batch,
+        as_of=report.as_of,
+        recency_hours=report.recency_hours,
+        verdicts=(*report.verdicts, duplicate_verdict),
+    )
+    with pytest.raises(SufficiencyBindingError, match="duplicate sufficiency verdict"):
+        join_layer_sufficiency(
+            projection,
+            summarize_projection_by_layer(projection),
+            bloated,
+            expected_policy_digest=policy_digest(policy),
+        )
+
+
+def test_join_rejects_facts_layer_case_type_mismatch() -> None:
+    projection = _four_layer_projection()
+    policy = _policy()
+    report = evaluate_sufficiency(
+        projection, policy, as_of=AWARE_NOW, require_current_batch=True
+    )
+    facts = summarize_projection_by_layer(projection)
+    swapped = facts.layers[0].model_copy(update={"layer": "e2e", "case_type": "E2E"})
+    bad_facts = facts.model_copy(update={"layers": (swapped, *facts.layers[1:])})
+    with pytest.raises(SufficiencyBindingError, match="layer/case_type assignment mismatch"):
+        join_layer_sufficiency(
+            projection,
+            bad_facts,
+            report,
+            expected_policy_digest=policy_digest(policy),
+        )
+
+
+def test_join_includes_zero_row_layers() -> None:
+    projection = _projection(_row(case_id="TC_API_001", case_type="API"))
+    policy = _policy()
+    report = evaluate_sufficiency(
+        projection, policy, as_of=AWARE_NOW, require_current_batch=True
+    )
+    joined = join_layer_sufficiency(
+        projection,
+        summarize_projection_by_layer(projection),
+        report,
+        expected_policy_digest=policy_digest(policy),
+    )
+    assert [row.layer for row in joined.layers] == ["api", "e2e", "fuzz", "performance"]
+    api, e2e, fuzz, perf = joined.layers
+    assert api.sufficient == 1
+    assert api.insufficient == 0
+    for empty in (e2e, fuzz, perf):
+        assert empty.sufficient == 0
+        assert empty.insufficient == 0
+        assert empty.reason_counts == {}
+        assert empty.execution_state_counts == {"never_run": 0, "stale": 0, "fresh": 0}
+
+
 def test_join_rejects_duplicate_projection_case_ids() -> None:
     policy = _policy()
     row = _row(case_id="TC_API_001", case_type="API")

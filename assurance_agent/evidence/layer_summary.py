@@ -178,13 +178,11 @@ def join_layer_sufficiency(
 
     proj_case_ids: list[str] = []
     seen_proj: set[str] = set()
-    rows_by_id: dict[str, TraceRow] = {}
     for row in projection.rows:
         if row.case_id in seen_proj:
             raise SufficiencyBindingError(f"duplicate projection case_id: {row.case_id}")
         seen_proj.add(row.case_id)
         proj_case_ids.append(row.case_id)
-        rows_by_id[row.case_id] = row
 
     verdict_ids = [verdict.case_id for verdict in report.verdicts]
     if len(set(verdict_ids)) != len(verdict_ids):
