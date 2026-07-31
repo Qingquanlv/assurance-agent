@@ -189,3 +189,71 @@ def test_change_id_rejects_path_segments(value: str) -> None:
 
 def test_change_id_accepts_canonical_values() -> None:
     assert_change_id_safe("REQ-001.login_v2")
+
+
+VALID_TRACE_V1 = {
+    "change_id": "CH-1",
+    "phase": "execution",
+    "authoritative_batch_id": "20260729-120000",
+    "sources": [],
+    "rows": [],
+    "unmapped_tests": [],
+    "gaps": [],
+    "integrity": "complete",
+}
+
+VALID_TRACE_V2 = {
+    **VALID_TRACE_V1,
+    "schema_version": "2",
+}
+
+
+def test_validate_accepts_legacy_trace_v1_without_schema_version(change_dir: Path) -> None:
+    write(change_dir, "inspect/trace-projection.json", json.dumps(VALID_TRACE_V1))
+
+    report = validate_change(change_dir, artifact="inspect/trace-projection.json")
+
+    assert report.ok is True
+    assert report.results[0].artifact_type == "trace_projection"
+
+
+def test_validate_accepts_trace_v2(change_dir: Path) -> None:
+    write(change_dir, "inspect/trace-projection.json", json.dumps(VALID_TRACE_V2))
+
+    report = validate_change(change_dir, artifact="inspect/trace-projection.json")
+
+    assert report.ok is True
+    assert report.results[0].artifact_type == "trace_projection"
+
+
+def test_validate_rejects_unknown_trace_schema_version(change_dir: Path) -> None:
+    payload = {**VALID_TRACE_V1, "schema_version": "99"}
+    write(change_dir, "inspect/trace-projection.json", json.dumps(payload))
+
+    report = validate_change(change_dir, artifact="inspect/trace-projection.json")
+
+    assert report.ok is False
+    assert report.results[0].artifact_type == "trace_projection"
+    assert report.results[0].errors
+
+
+def test_validate_rejects_v2_semantic_violation(change_dir: Path) -> None:
+    payload = {
+        **VALID_TRACE_V2,
+        "rows": [
+            {
+                "case_id": "TC_1",
+                "module": "m",
+                "case_type": "API",
+                "automation_required": True,
+                "coverage_state": "not_required",
+                "presence_in_current_batch": "executed",
+            }
+        ],
+    }
+    write(change_dir, "inspect/trace-projection.json", json.dumps(payload))
+
+    report = validate_change(change_dir, artifact="inspect/trace-projection.json")
+
+    assert report.ok is False
+    assert report.results[0].artifact_type == "trace_projection"

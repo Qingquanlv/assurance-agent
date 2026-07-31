@@ -44,7 +44,7 @@ from assurance_agent.artifacts.models import (
     QualityReport,
     PlanReview,
     PlanReviewAuthoring,
-    TraceProjection,
+    TraceProjectionDocument,
     RetroContextV3,
     RetroPipelineFailureDocument,
     RetroRunStatus,
@@ -204,8 +204,8 @@ REGISTRY: list[ArtifactSpec] = [
     ArtifactSpec(
         artifact_type="trace_projection",
         pattern="inspect/trace-projection.json",
-        model=TraceProjection,
-        compat="must_compat",
+        model=TraceProjectionDocument,
+        compat="versioned",
     ),
     ArtifactSpec(
         artifact_type="observation_document",

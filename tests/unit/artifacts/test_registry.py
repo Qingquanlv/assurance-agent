@@ -112,6 +112,16 @@ def test_compat_grades_match_spec_4a() -> None:
     assert grades["issue_analysis_status"] == "must_compat"
     assert grades["issue_reconcile_status"] == "versioned"
     assert grades["change_issue_snapshot"] == "versioned"
+    assert grades["trace_projection"] == "versioned"
+
+
+def test_trace_projection_registry_uses_document_wrapper() -> None:
+    from assurance_agent.artifacts.models.trace import TraceProjectionDocument
+
+    spec = match_artifact("inspect/trace-projection.json")
+    assert spec is not None
+    assert spec.model is TraceProjectionDocument
+    assert spec.compat == "versioned"
 
 
 def test_issue_artifact_patterns_match_exact_paths() -> None:

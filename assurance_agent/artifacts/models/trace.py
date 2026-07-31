@@ -2,18 +2,23 @@
 
 Projection carries no policy judgment and no wall-clock freshness; consumers
 apply ``evaluate_sufficiency(projection, policy, *, as_of)`` at the use site.
+
+Wire boundary: V1 remains the legacy reader; V2 adds recovery gap codes and
+semantic validators. Registry-facing dispatch is ``TraceProjectionDocument``.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
+
+from assurance_agent.artifacts.models.assurance import LAYER_NAMES
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
 
-TraceGapCode = Literal[
+TraceGapCodeV1 = Literal[
     "result_missing",
     "result_corrupt",
     "batch_id_unparseable",
@@ -28,7 +33,31 @@ TraceGapCode = Literal[
     "problem_alias_invalid",
 ]
 
+TraceGapCodeV2 = (
+    TraceGapCodeV1
+    | Literal[
+        "failure_analysis_identity_mismatch",
+        "issues_snapshot_identity_mismatch",
+        "issue_analysis_failed",
+        "project_sync_pending",
+        "issue_reconcile_failed",
+        "issue_reconciliation_unavailable",
+    ]
+)
+TraceSummaryGapCode = TraceGapCodeV1 | TraceGapCodeV2
+
+# Legacy aliases — V1 only; never repoint to V2.
+TraceGapCode = TraceGapCodeV1
+
 TraceIntegrity = Literal["complete", "degraded", "incomplete"]
+
+_CASE_TYPE_TO_TARGET: dict[str, str] = {
+    "API": "api",
+    "E2E": "e2e",
+    "Fuzz": "fuzz",
+    "Performance": "performance",
+}
+_ALLOWED_GAP_TARGETS = frozenset(LAYER_NAMES)
 
 
 class TraceExecution(BaseModel):
@@ -48,14 +77,27 @@ class TraceFailure(BaseModel):
     severity: str
 
 
-class TraceGap(BaseModel):
+class TraceGapV1(BaseModel):
     model_config = _FROZEN
 
-    code: TraceGapCode
+    code: TraceGapCodeV1
     source: str
     batch_id: str | None = None
     target: str | None = None
     detail: str = ""
+
+
+class TraceGapV2(BaseModel):
+    model_config = _FROZEN
+
+    code: TraceGapCodeV2
+    source: str
+    batch_id: str | None = None
+    target: str | None = None
+    detail: str = ""
+
+
+TraceGap = TraceGapV1
 
 
 class TraceTestRef(BaseModel):
@@ -98,7 +140,68 @@ class TraceSource(BaseModel):
     sha256: str | None = None
 
 
-class TraceProjection(BaseModel):
+def _gap_identity(gap: TraceGapV1 | TraceGapV2) -> tuple[str, str, str, str, str]:
+    return (
+        gap.code,
+        gap.source,
+        gap.batch_id or "",
+        gap.target or "",
+        gap.detail,
+    )
+
+
+def validate_unique_case_ids(rows: tuple[TraceRow, ...]) -> None:
+    seen: set[str] = set()
+    for row in rows:
+        if row.case_id in seen:
+            raise ValueError(f"duplicate case_id: {row.case_id}")
+        seen.add(row.case_id)
+
+
+def validate_unique_source_paths(sources: tuple[TraceSource, ...]) -> None:
+    seen: set[str] = set()
+    for source in sources:
+        if source.path in seen:
+            raise ValueError(f"duplicate TraceSource path: {source.path}")
+        seen.add(source.path)
+
+
+def validate_unique_gaps(gaps: tuple[TraceGapV1, ...] | tuple[TraceGapV2, ...]) -> None:
+    seen: set[tuple[str, str, str, str, str]] = set()
+    for gap in gaps:
+        key = _gap_identity(gap)
+        if key in seen:
+            raise ValueError(f"duplicate gap: {key}")
+        seen.add(key)
+
+
+def validate_row_semantics(phase: Literal["execution", "reconciled"], rows: tuple[TraceRow, ...]) -> None:
+    for row in rows:
+        if row.automation_required:
+            if row.coverage_state == "not_required":
+                raise ValueError(f"row {row.case_id}: automation_required requires covered/uncovered")
+        elif row.coverage_state != "not_required":
+            raise ValueError(f"row {row.case_id}: non-automated row must use coverage_state=not_required")
+
+        if phase == "execution" and (row.failures or row.open_problem_ids):
+            raise ValueError(f"row {row.case_id}: execution phase must not carry failure/problem enrichment")
+
+        expected_target = _CASE_TYPE_TO_TARGET[row.case_type]
+        for execution in (row.latest_execution, row.freshest_pass):
+            if execution is not None and execution.target != expected_target:
+                raise ValueError(
+                    f"row {row.case_id}: execution target {execution.target!r} "
+                    f"does not match case_type {row.case_type!r}"
+                )
+
+
+def validate_gap_targets(gaps: tuple[TraceGapV1, ...] | tuple[TraceGapV2, ...]) -> None:
+    for gap in gaps:
+        if gap.target is not None and gap.target not in _ALLOWED_GAP_TARGETS:
+            raise ValueError(f"gap target must be empty or one of {LAYER_NAMES}: {gap.target!r}")
+
+
+class TraceProjectionV1(BaseModel):
     model_config = _FROZEN
 
     schema_version: Literal["1"] = "1"
@@ -108,5 +211,51 @@ class TraceProjection(BaseModel):
     sources: tuple[TraceSource, ...] = ()
     rows: tuple[TraceRow, ...] = ()
     unmapped_tests: tuple[UnmappedTest, ...] = ()
-    gaps: tuple[TraceGap, ...] = ()
+    gaps: tuple[TraceGapV1, ...] = ()
     integrity: TraceIntegrity
+
+
+class TraceProjectionV2(BaseModel):
+    model_config = _FROZEN
+
+    schema_version: Literal["2"] = "2"
+    change_id: str
+    phase: Literal["execution", "reconciled"]
+    authoritative_batch_id: str
+    sources: tuple[TraceSource, ...] = ()
+    rows: tuple[TraceRow, ...] = ()
+    unmapped_tests: tuple[UnmappedTest, ...] = ()
+    gaps: tuple[TraceGapV2, ...] = ()
+    integrity: TraceIntegrity
+
+    @model_validator(mode="after")
+    def _validate_semantics(self) -> Self:
+        validate_unique_case_ids(self.rows)
+        validate_unique_source_paths(self.sources)
+        validate_unique_gaps(self.gaps)
+        validate_row_semantics(self.phase, self.rows)
+        validate_gap_targets(self.gaps)
+        return self
+
+
+TraceProjection = TraceProjectionV1
+
+TraceProjectionLike = TraceProjectionV1 | TraceProjectionV2
+
+TraceProjectionVariant = Annotated[
+    TraceProjectionV1 | TraceProjectionV2,
+    Field(discriminator="schema_version"),
+]
+
+
+class TraceProjectionDocument(RootModel[TraceProjectionVariant]):
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_missing_version(cls, raw: object) -> object:
+        if isinstance(raw, dict) and "schema_version" not in raw:
+            return {**raw, "schema_version": "1"}
+        return raw
+
+
+def load_trace_projection_document(raw: object) -> TraceProjectionLike:
+    return TraceProjectionDocument.model_validate(raw).root
