@@ -24,10 +24,16 @@ VERIFY_BLOCKING_GAP_CODES = frozenset(
         "result_identity_mismatch",
         "batch_id_unparseable",
         "failure_analysis_missing",
+        "failure_analysis_identity_mismatch",
         "issues_snapshot_missing",
+        "issues_snapshot_identity_mismatch",
         "problems_snapshot_missing",
         "tests_tree_digest_mismatch",
         "problem_alias_invalid",
+        "issue_analysis_failed",
+        "project_sync_pending",
+        "issue_reconcile_failed",
+        "issue_reconciliation_unavailable",
     }
 )
 

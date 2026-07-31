@@ -498,3 +498,24 @@ def test_reconciled_sources_include_three_inputs(tmp_path: Path) -> None:
     assert "inspect/failure-analysis.json" in paths
     assert "issues/snapshot.json" in paths
     assert "qa/issues/problems.json" in paths
+
+
+def test_fold_trace_still_defers_failure_identity_authority(tmp_path: Path) -> None:
+    """Task 9 authority is not wired into fold_trace until Task 12.
+
+    Wrong change_id currently still enriches failure links via legacy loaders.
+    """
+    change_dir = _seed_reconciled_inputs(
+        tmp_path,
+        failures=[_failure_entry(category="assertion_failure", severity="high")],
+    )
+    path = change_dir / "inspect" / "failure-analysis.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["change_id"] = "CH-OTHER"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    projection = fold_trace(tmp_path, CHANGE_ID, phase="reconciled")
+    assert not any(gap.code == "failure_analysis_identity_mismatch" for gap in projection.gaps)
+    assert projection.rows[0].failures == (
+        TraceFailure(category="assertion_failure", severity="high"),
+    )

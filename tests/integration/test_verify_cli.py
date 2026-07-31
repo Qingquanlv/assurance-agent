@@ -18,7 +18,14 @@ from assurance_agent.artifacts.models.policy import (
     HealingPolicy,
     Policy,
 )
-from assurance_agent.artifacts.models.trace import TraceExecution, TraceGap, TraceProjection, TraceRow
+from assurance_agent.artifacts.models.trace import (
+    TraceExecution,
+    TraceGap,
+    TraceGapV2,
+    TraceProjection,
+    TraceProjectionV2,
+    TraceRow,
+)
 from assurance_agent.artifacts.policy import load_policy, policy_digest
 from assurance_agent.cli import main
 from assurance_agent.artifacts.models.sufficiency import SufficiencyReportV2
@@ -455,19 +462,41 @@ def test_open_problem_ids_fail(project) -> None:
     assert doc["open_problem_ids"] == ["PROB-1"]
 
 
+_V2_ONLY_BLOCKING_GAP_CODES = frozenset(
+    {
+        "failure_analysis_identity_mismatch",
+        "issues_snapshot_identity_mismatch",
+        "issue_analysis_failed",
+        "project_sync_pending",
+        "issue_reconcile_failed",
+        "issue_reconciliation_unavailable",
+    }
+)
+
+
 @pytest.mark.parametrize("gap_code", RECONCILED_BLOCKING_GAP_CODES)
 def test_blocking_gap_codes_fail(gap_code: str) -> None:
-    gap = TraceGap(code=gap_code, source=f"src/{gap_code}")  # type: ignore[arg-type]
-    projection = TraceProjection(
-        change_id=CHANGE_ID,
-        phase="reconciled",
-        authoritative_batch_id=BATCH_ID,
-        rows=(_row(latest_execution=_execution()),),
-        gaps=(gap,),
-        integrity="incomplete",
-    )
+    row = _row(latest_execution=_execution())
+    if gap_code in _V2_ONLY_BLOCKING_GAP_CODES:
+        projection: TraceProjection | TraceProjectionV2 = TraceProjectionV2(
+            change_id=CHANGE_ID,
+            phase="reconciled",
+            authoritative_batch_id=BATCH_ID,
+            rows=(row,),
+            gaps=(TraceGapV2(code=gap_code, source=f"src/{gap_code}"),),  # type: ignore[arg-type]
+            integrity="incomplete",
+        )
+    else:
+        projection = TraceProjection(
+            change_id=CHANGE_ID,
+            phase="reconciled",
+            authoritative_batch_id=BATCH_ID,
+            rows=(row,),
+            gaps=(TraceGap(code=gap_code, source=f"src/{gap_code}"),),  # type: ignore[arg-type]
+            integrity="incomplete",
+        )
     result = verify_cmd.evaluate_verify_verdict(
-        projection,
+        projection,  # type: ignore[arg-type]
         _policy(on_insufficient="warn"),
         _report(),
     )
