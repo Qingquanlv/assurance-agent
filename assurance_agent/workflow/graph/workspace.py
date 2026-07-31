@@ -104,6 +104,23 @@ class WorkspaceError(AaError):
 
 
 # ---------------------------------------------------------------------------
+# 公开 tree 替换结果
+
+
+@dataclass(frozen=True, slots=True)
+class TreePathRevision:
+    logical_path: str
+    before_sha256: str
+    after_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class TreeFileRevision:
+    target_tree_id: str
+    paths: tuple[TreePathRevision, ...]
+
+
+# ---------------------------------------------------------------------------
 # 内部模型与规范 JSON
 
 
@@ -679,6 +696,61 @@ class TreeStore:
             return self._read_tree_bytes(manifest, rel)
         except FileNotFoundError as exc:
             raise FileNotFoundError(logical_path) from exc
+
+    def replace_tree_files(
+        self,
+        base_tree_id: str,
+        replacements: Mapping[str, bytes],
+    ) -> TreeFileRevision:
+        """Return a new tree by replacing existing regular files only."""
+        if not replacements:
+            raise WorkspaceError("manual_plan_revision_noop: empty replacements")
+
+        manifest = self._load_tree(base_tree_id)
+        resolved: dict[str, tuple[str, bytes, _Entry]] = {}
+        for raw_path, data in replacements.items():
+            logical = ResourcePath.parse(raw_path)
+            canonical = f"{logical.root}:{logical.pattern}"
+            if canonical in resolved:
+                raise WorkspaceError(f"duplicate canonical path: {canonical}")
+            physical = _physical_for(manifest.roots, logical)
+            entry = manifest.entries.get(physical)
+            if entry is None:
+                raise WorkspaceError(f"replacement path missing from tree: {canonical}")
+            if entry.kind != "file":
+                raise WorkspaceError(f"replacement path is a symlink, not a regular file: {canonical}")
+            resolved[canonical] = (physical, data, entry)
+
+        path_revisions: list[TreePathRevision] = []
+        new_entries = dict(manifest.entries)
+        any_changed = False
+        for canonical in sorted(resolved):
+            physical, data, entry = resolved[canonical]
+            after = hashlib.sha256(data).hexdigest()
+            path_revisions.append(
+                TreePathRevision(
+                    logical_path=canonical,
+                    before_sha256=entry.sha256,
+                    after_sha256=after,
+                )
+            )
+            if after == entry.sha256:
+                continue
+            any_changed = True
+            self._write_object(after, data)
+            new_entries[physical] = _Entry(
+                kind="file",
+                sha256=after,
+                executable=entry.executable,
+            )
+
+        if not any_changed:
+            raise WorkspaceError("manual_plan_revision_noop")
+
+        raw = _canonical_json(_tree_payload(manifest.roots, new_entries))
+        target_tree_id = hashlib.sha256(raw).hexdigest()
+        self._write_object(target_tree_id, raw)
+        return TreeFileRevision(target_tree_id=target_tree_id, paths=tuple(path_revisions))
 
     def read_json(self, tree_id: str, logical_path: str) -> ResolvedArtifact:
         """Read a JSON artifact from a committed tree by logical path (change:/project:/repo:)."""
@@ -1497,6 +1569,8 @@ class WorkspaceBackend:
 
 __all__ = [
     "TaskWorkspace",
+    "TreeFileRevision",
+    "TreePathRevision",
     "TreeStore",
     "WorkspaceBackend",
     "WorkspaceError",

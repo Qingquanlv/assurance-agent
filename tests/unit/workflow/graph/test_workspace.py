@@ -1232,3 +1232,91 @@ def test_missing_git_binary_skips_convenience_index(tmp_path: Path, monkeypatch)
     workspace = _backend(project).create(task_id="task-a", base_tree_id=store.capture(project), store=store)
     assert workspace.project_root.is_dir()
     assert not (workspace.root / ".git").exists()
+
+
+# ---------------------------------------------------------------------------
+# exact immutable tree file replacement
+
+
+def _tree_with_plans(tmp_path: Path) -> tuple[Path, TreeStore, str]:
+    project = _make_project(tmp_path)
+    change = project / "qa" / "changes" / "CH-1"
+    plans = change / "plans"
+    plans.mkdir()
+    (plans / "fuzz-plan.md").write_text("# original\n", encoding="utf-8")
+    (plans / "fuzz-codegen-plan.md").write_text("# codegen\n", encoding="utf-8")
+    review = change / "review"
+    review.mkdir()
+    (review / "fuzz-plan-review.json").write_text('{"status":"needs_fix"}\n', encoding="utf-8")
+    store = _store(project)
+    return project, store, store.capture(project)
+
+
+def test_replace_tree_files_publishes_exact_replacement_without_live_drift(tmp_path: Path) -> None:
+    project, store, base_tree_id = _tree_with_plans(tmp_path)
+    # Live drift under the project must not enter the replacement tree.
+    (project / "app" / "source.py").write_text("drifted\n", encoding="utf-8")
+
+    revision = store.replace_tree_files(
+        base_tree_id,
+        {"change:plans/fuzz-plan.md": b"# revised\n"},
+    )
+    assert revision.target_tree_id != base_tree_id
+    assert store.read_bytes(revision.target_tree_id, "change:plans/fuzz-plan.md") == b"# revised\n"
+    assert store.read_bytes(
+        revision.target_tree_id, "change:review/fuzz-plan-review.json"
+    ) == store.read_bytes(base_tree_id, "change:review/fuzz-plan-review.json")
+    assert store.read_bytes(revision.target_tree_id, "project:app/source.py") == b"app base\n"
+    assert len(revision.paths) == 1
+    assert revision.paths[0].logical_path == "change:plans/fuzz-plan.md"
+    assert revision.paths[0].before_sha256 != revision.paths[0].after_sha256
+    assert revision.paths[0].after_sha256 == hashlib.sha256(b"# revised\n").hexdigest()
+
+
+def test_replace_tree_files_keeps_unchanged_allowlisted_path_in_lineage(tmp_path: Path) -> None:
+    _project, store, base_tree_id = _tree_with_plans(tmp_path)
+    original_codegen = store.read_bytes(base_tree_id, "change:plans/fuzz-codegen-plan.md")
+
+    revision = store.replace_tree_files(
+        base_tree_id,
+        {
+            "change:plans/fuzz-codegen-plan.md": original_codegen,
+            "change:plans/fuzz-plan.md": b"# revised\n",
+        },
+    )
+    assert revision.target_tree_id != base_tree_id
+    assert [path.logical_path for path in revision.paths] == [
+        "change:plans/fuzz-codegen-plan.md",
+        "change:plans/fuzz-plan.md",
+    ]
+    unchanged, changed = revision.paths
+    assert unchanged.before_sha256 == unchanged.after_sha256
+    assert changed.before_sha256 != changed.after_sha256
+    assert store.read_bytes(revision.target_tree_id, "change:plans/fuzz-codegen-plan.md") == original_codegen
+    assert store.read_bytes(revision.target_tree_id, "change:plans/fuzz-plan.md") == b"# revised\n"
+
+
+def test_replace_tree_files_rejects_missing_symlink_noop_and_duplicate(tmp_path: Path) -> None:
+    project, store, base_tree_id = _tree_with_plans(tmp_path)
+    change = project / "qa" / "changes" / "CH-1"
+    os.symlink("fuzz-plan.md", change / "plans" / "alias.md")
+    linked_tree = store.capture(project)
+
+    with pytest.raises(WorkspaceError, match="missing"):
+        store.replace_tree_files(base_tree_id, {"change:plans/absent.md": b"x\n"})
+
+    with pytest.raises(WorkspaceError, match="symlink|not a regular file"):
+        store.replace_tree_files(linked_tree, {"change:plans/alias.md": b"x\n"})
+
+    original = store.read_bytes(base_tree_id, "change:plans/fuzz-plan.md")
+    with pytest.raises(WorkspaceError, match="manual_plan_revision_noop"):
+        store.replace_tree_files(base_tree_id, {"change:plans/fuzz-plan.md": original})
+
+    with pytest.raises(WorkspaceError, match="duplicate"):
+        store.replace_tree_files(
+            base_tree_id,
+            {
+                "change:plans/fuzz-plan.md": b"# revised\n",
+                "change:plans/fuzz-plan.md/": b"# other\n",
+            },
+        )
