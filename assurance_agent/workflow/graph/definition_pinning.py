@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
+
+from pydantic import ValidationError
 
 from assurance_agent.artifacts.policy import (
     PolicyError,
@@ -20,9 +24,27 @@ from assurance_agent.verification.profile_manifest import (
     parse_assurance_profile_snapshot,
 )
 from assurance_agent.workflow.core.progression import ProgressionTxn
-from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog
-from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
+from assurance_agent.workflow.graph.compiler import (
+    CompileError,
+    HistoricalCompileContext,
+    PinnedDefinitionRequest,
+    ResolvedPinnedDefinition,
+    canonical_digest,
+    compile_historical_workflow,
+)
+from assurance_agent.workflow.graph.contracts import (
+    ContractError,
+    ExecutionContract,
+    ExecutionContractCatalog,
+    catalog_from_pinned_contracts,
+)
+from assurance_agent.workflow.graph.ingest_catalog import (
+    IngestArtifactCatalog,
+    parse_ingest_catalog_snapshot,
+    validate_catalog_runtime,
+)
 from assurance_agent.workflow.graph.models import CompiledWorkflow, GraphProjection
+from assurance_agent.workflow.graph.schema_v2 import WorkflowSchemaV2
 from assurance_agent.workflow.graph.workspace import TreeStore
 from assurance_agent.workflow.orchestration.gate_semantics import gate_semantics_digest
 
@@ -31,6 +53,24 @@ _SCHEMA_DIR = ".graph-runtime/schemas"
 _CONTRACT_DIR = ".graph-runtime/contracts"
 _CATALOG_DIR = ".graph-runtime/ingest-catalogs"
 _POLICY_DIR = ".graph-runtime/policies"
+
+PinnedDefinitionReason = Literal[
+    "pinned_schema_missing",
+    "pinned_schema_digest_mismatch",
+    "pinned_ingest_catalog_missing",
+    "pinned_ingest_catalog_invalid",
+    "pinned_ingest_catalog_digest_mismatch",
+    "pinned_contract_snapshot_missing",
+    "pinned_contract_digest_mismatch",
+    "pinned_contract_target_mismatch",
+]
+
+
+class PinnedDefinitionError(Exception):
+    def __init__(self, reason_code: PinnedDefinitionReason, message: str) -> None:
+        self.reason_code = reason_code
+        self.message = message
+        super().__init__(f"{reason_code}: {message}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,3 +262,209 @@ def _read_pinned_profile_bytes(change_dir: Path, profile_digest: str) -> bytes:
         )
     parse_assurance_profile_snapshot(data)
     return data
+
+
+def _canonical_contract_snapshot_bytes(contract: ExecutionContract) -> bytes:
+    return (
+        json.dumps(
+            contract.model_dump(mode="json", by_alias=True, exclude_none=True),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _load_pinned_schema(change_dir: Path, digest: str) -> WorkflowSchemaV2:
+    path = change_dir / _SCHEMA_DIR / f"{digest}.json"
+    if not path.exists():
+        raise PinnedDefinitionError(
+            "pinned_schema_missing",
+            f"pinned schema missing at {path}",
+        )
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise PinnedDefinitionError(
+            "pinned_schema_digest_mismatch",
+            f"cannot read pinned schema at {path}: {exc}",
+        ) from exc
+    try:
+        schema = WorkflowSchemaV2.model_validate(json.loads(data))
+    except (json.JSONDecodeError, ValidationError) as exc:
+        raise PinnedDefinitionError(
+            "pinned_schema_digest_mismatch",
+            f"pinned schema at {path} is invalid: {exc}",
+        ) from exc
+    return schema
+
+
+def _load_pinned_ingest_catalog(change_dir: Path, digest: str) -> IngestArtifactCatalog:
+    path = change_dir / _CATALOG_DIR / f"{digest}.json"
+    if not path.exists():
+        raise PinnedDefinitionError(
+            "pinned_ingest_catalog_missing",
+            f"pinned ingest catalog missing at {path}",
+        )
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise PinnedDefinitionError(
+            "pinned_ingest_catalog_invalid",
+            f"cannot read pinned ingest catalog at {path}: {exc}",
+        ) from exc
+    try:
+        catalog = parse_ingest_catalog_snapshot(data)
+    except ValueError as exc:
+        message = str(exc)
+        if (
+            "canonical" in message
+            or "malformed" in message
+            or "invalid" in message
+            or "schema_version" in message
+        ):
+            raise PinnedDefinitionError("pinned_ingest_catalog_invalid", message) from exc
+        raise PinnedDefinitionError("pinned_ingest_catalog_invalid", message) from exc
+    if catalog.digest != digest:
+        raise PinnedDefinitionError(
+            "pinned_ingest_catalog_digest_mismatch",
+            f"pinned ingest catalog digest mismatch for {path}: expected {digest}, got {catalog.digest}",
+        )
+    return catalog
+
+
+def _load_pinned_execution_contracts(
+    change_dir: Path,
+    recorded: Mapping[str, str],
+) -> ExecutionContractCatalog:
+    loaded: list[ExecutionContract] = []
+    for target, digest in sorted(recorded.items()):
+        path = change_dir / _CONTRACT_DIR / f"{digest}.json"
+        if not path.exists():
+            raise PinnedDefinitionError(
+                "pinned_contract_snapshot_missing",
+                f"pinned contract snapshot missing for {target!r} at {path}",
+            )
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise PinnedDefinitionError(
+                "pinned_contract_digest_mismatch",
+                f"cannot read pinned contract snapshot at {path}: {exc}",
+            ) from exc
+        try:
+            payload = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise PinnedDefinitionError(
+                "pinned_contract_digest_mismatch",
+                f"pinned contract snapshot at {path} is malformed: {exc}",
+            ) from exc
+        if not isinstance(payload, dict):
+            raise PinnedDefinitionError(
+                "pinned_contract_digest_mismatch",
+                f"pinned contract snapshot at {path} must be a JSON object",
+            )
+        try:
+            contract = ExecutionContract.model_validate(payload)
+        except ValidationError as exc:
+            raise PinnedDefinitionError(
+                "pinned_contract_digest_mismatch",
+                f"pinned contract snapshot at {path} is invalid: {exc}",
+            ) from exc
+        if _canonical_contract_snapshot_bytes(contract) != data:
+            raise PinnedDefinitionError(
+                "pinned_contract_digest_mismatch",
+                f"pinned contract snapshot bytes are not canonical for {path}",
+            )
+        if contract.target != target:
+            raise PinnedDefinitionError(
+                "pinned_contract_target_mismatch",
+                f"pinned contract target mismatch for {path}: recorded {target!r}, snapshot {contract.target!r}",
+            )
+        actual_digest = canonical_digest(contract)
+        if actual_digest != digest:
+            raise PinnedDefinitionError(
+                "pinned_contract_digest_mismatch",
+                f"pinned contract digest mismatch for {path}: expected {digest}, got {actual_digest}",
+            )
+        loaded.append(contract)
+    try:
+        return catalog_from_pinned_contracts(loaded)
+    except ContractError as exc:
+        raise PinnedDefinitionError(
+            "pinned_contract_digest_mismatch",
+            str(exc),
+        ) from exc
+
+
+def load_pinned_execution_definition(
+    change_dir: Path,
+    request: PinnedDefinitionRequest,
+) -> ResolvedPinnedDefinition:
+    recorded_contracts = dict(request.contract_digests)
+    schema = _load_pinned_schema(change_dir, request.graph_digest)
+    ingest = _load_pinned_ingest_catalog(change_dir, request.ingest_catalog_digest)
+    contracts = _load_pinned_execution_contracts(change_dir, recorded_contracts)
+    unrecorded = sorted(
+        {
+            node.uses
+            for graph in schema.graphs.values()
+            for node in graph.nodes.values()
+            if not node.uses.startswith("graph:") and node.uses not in recorded_contracts
+        }
+    )
+    if unrecorded:
+        raise PinnedDefinitionError(
+            "pinned_contract_digest_mismatch",
+            f"unrecorded referenced contract targets: {unrecorded}",
+        )
+    try:
+        compiled = compile_historical_workflow(
+            schema,
+            context=HistoricalCompileContext(
+                ingest_catalog=ingest,
+                ingest_catalog_digest=request.ingest_catalog_digest,
+                contracts=contracts,
+                contract_digests=recorded_contracts,
+            ),
+        )
+    except CompileError as exc:
+        raise PinnedDefinitionError(
+            "pinned_contract_digest_mismatch",
+            str(exc),
+        ) from exc
+    if compiled.digest != request.graph_digest:
+        raise PinnedDefinitionError(
+            "pinned_schema_digest_mismatch",
+            f"pinned schema digest mismatch: expected {request.graph_digest}, compiled {compiled.digest}",
+        )
+    if compiled.ingest_catalog_digest != request.ingest_catalog_digest:
+        raise PinnedDefinitionError(
+            "pinned_ingest_catalog_digest_mismatch",
+            "compiled ingest catalog digest does not match recorded root digest",
+        )
+    if compiled.contract_digests != recorded_contracts:
+        recorded_targets = set(recorded_contracts)
+        compiled_targets = set(compiled.contract_digests)
+        missing = sorted(compiled_targets - recorded_targets)
+        extra = sorted(recorded_targets - compiled_targets)
+        if missing:
+            raise PinnedDefinitionError(
+                "pinned_contract_digest_mismatch",
+                f"unrecorded referenced contract targets: {missing}",
+            )
+        if extra:
+            raise PinnedDefinitionError(
+                "pinned_contract_digest_mismatch",
+                f"extra conflicting contract bindings: {extra}",
+            )
+        raise PinnedDefinitionError(
+            "pinned_contract_digest_mismatch",
+            "compiled contract digests do not match recorded root contract_digests",
+        )
+    return ResolvedPinnedDefinition(
+        compiled=compiled,
+        contracts=contracts,
+        ingest_catalog=ingest,
+    )

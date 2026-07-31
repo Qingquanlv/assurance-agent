@@ -10,9 +10,11 @@ from assurance_agent.workflow.graph.compiler import (
 )
 from assurance_agent.workflow.graph.contracts import (
     ContractError,
+    ExecutionContract,
     ExecutionContractCatalog,
     ResourceClaims,
     ResourcePath,
+    catalog_from_pinned_contracts,
     claims_conflict,
     load_execution_contracts,
     parse_execution_contracts,
@@ -1203,3 +1205,30 @@ def test_packaged_api_e2e_mechanical_nodes_narrow_away_sync_only_read(tmp_path: 
         assert any(path.startswith("change:plans/") for path in materialized)
         assert any(path.startswith("change:review/") for path in materialized)
         assert tuple(_path_text(path) for path in task.resources.authorization_writes) == (checks,)
+
+
+def test_catalog_from_pinned_contracts_rebuilds_packaged_targets() -> None:
+    packaged = load_execution_contracts(Path.cwd())
+    rebuilt = catalog_from_pinned_contracts(tuple(packaged.contracts.values()))
+    assert set(rebuilt.contracts) == set(packaged.contracts)
+    for target, contract in packaged.contracts.items():
+        assert canonical_digest(rebuilt.contracts[target]) == canonical_digest(contract)
+
+
+def test_catalog_from_pinned_contracts_rejects_duplicate_targets() -> None:
+    packaged = load_execution_contracts(Path.cwd())
+    first = next(iter(packaged.contracts.values()))
+    with pytest.raises(ContractError, match="duplicate"):
+        catalog_from_pinned_contracts((first, first))
+
+
+def test_catalog_from_pinned_contracts_rejects_unsafe_resource_paths() -> None:
+    bad = ExecutionContract(
+        target="operation:bad",
+        handler="operation",
+        reads=("change:../escape",),
+        writes=(),
+        authorization_writes=(),
+    )
+    with pytest.raises(ContractError, match="unsafe|invalid"):
+        catalog_from_pinned_contracts((bad,))

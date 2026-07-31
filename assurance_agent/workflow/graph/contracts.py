@@ -14,6 +14,7 @@ glob 相交测试）：read/read 可并行；write/read、write/write 与相同 
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
@@ -364,3 +365,17 @@ def load_execution_contracts(project_root: Path, explicit: Path | None = None) -
     if candidate.exists():
         return parse_execution_contracts(candidate.read_text(encoding="utf-8"))
     return parse_execution_contracts(resources.read_text("schemas", "execution-contracts.yaml"))
+
+
+def catalog_from_pinned_contracts(
+    contracts: Sequence[ExecutionContract],
+) -> ExecutionContractCatalog:
+    """Validate target uniqueness and resource path safety."""
+    mapping: dict[str, ExecutionContract] = {}
+    for contract in contracts:
+        if contract.target in mapping:
+            raise ContractError(f"duplicate pinned contract target: {contract.target}")
+        mapping[contract.target] = contract
+    catalog = ExecutionContractCatalog(contracts=mapping)
+    _validate_catalog_paths(catalog)
+    return catalog

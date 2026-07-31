@@ -30,10 +30,12 @@ from assurance_agent.workflow.core.graph_events import (
     TaskAttemptStartedEvent,
     TaskAttemptSucceededEvent,
 )
-from assurance_agent.workflow.graph.compiler import compile_workflow
+from assurance_agent.workflow.graph.compiler import CompileError, PinnedDefinitionRequest
 from assurance_agent.workflow.graph.contracts import ResourcePath
 from assurance_agent.workflow.graph.definition_pinning import (
+    PinnedDefinitionError,
     is_definition_binding_replayable,
+    load_pinned_execution_definition,
     policy_snapshot_relpath,
 )
 from assurance_agent.workflow.graph.models import CompiledWorkflow
@@ -56,6 +58,12 @@ ReplayReasonCode = Literal[
     "root_invocation_unbound",
     "pinned_schema_missing",
     "pinned_schema_digest_mismatch",
+    "pinned_ingest_catalog_missing",
+    "pinned_ingest_catalog_invalid",
+    "pinned_ingest_catalog_digest_mismatch",
+    "pinned_contract_snapshot_missing",
+    "pinned_contract_digest_mismatch",
+    "pinned_contract_target_mismatch",
     "policy_snapshot_missing",
     "policy_digest_mismatch",
     "policy_origin_mismatch",
@@ -80,7 +88,6 @@ _WIRED_LAYERS = frozenset(_LAYER_CYCLE_GRAPH)
 _ASSURANCE_BRANCH_NODES = ("api", "e2e", "fuzz", "performance")
 _MECHANICAL_NODE = "mechanical-plan-checks"
 _GATE_NODE = "review-gate"
-_SCHEMA_DIR = ".graph-runtime/schemas"
 
 
 class ReplayBindingError(Exception):
@@ -275,7 +282,8 @@ def bind_replay_definitions(
             f"root invocation {root_invocation_id} has no terminal event",
         )
 
-    compiled, policy = _load_pinned_definitions(change_dir, root_started, schema_root=schema_root)
+    del schema_root
+    compiled, policy = _load_pinned_definitions(change_dir, root_started)
     schema_errors = validate_replayable_assurance_schema(compiled.schema)
     if schema_errors:
         raise ReplayBindingError(
@@ -484,33 +492,25 @@ def _has_terminal(events: Sequence[SequencedEvent], invocation_id: str) -> bool:
 def _load_pinned_definitions(
     change_dir: Path,
     started: GraphInvocationStartedEvent,
-    *,
-    schema_root: Path | None,
 ) -> tuple[CompiledWorkflow, Policy]:
-    schema_path = change_dir / _SCHEMA_DIR / f"{started.graph_digest}.json"
-    if not schema_path.exists():
-        raise ReplayBindingError(
-            "pinned_schema_missing",
-            f"pinned schema missing at {schema_path}",
-        )
-    schema_bytes = schema_path.read_bytes()
+    request = PinnedDefinitionRequest(
+        graph_digest=started.graph_digest,
+        ingest_catalog_digest=started.ingest_catalog_digest,
+        contract_digests=tuple(sorted(started.contract_digests.items())),
+        event_schema_version=started.event_schema_version,
+        gate_semantics_digest=started.gate_semantics_digest,
+        assurance_profile_digest=started.assurance_profile_digest,
+    )
     try:
-        schema = WorkflowSchemaV2.model_validate(json.loads(schema_bytes))
-    except (json.JSONDecodeError, ValidationError) as exc:
+        resolved = load_pinned_execution_definition(change_dir, request)
+    except PinnedDefinitionError as exc:
+        raise ReplayBindingError(cast(ReplayReasonCode, exc.reason_code), exc.message) from exc
+    except CompileError as exc:
         raise ReplayBindingError(
-            "pinned_schema_digest_mismatch",
-            f"pinned schema at {schema_path} is invalid: {exc}",
+            "pinned_contract_digest_mismatch",
+            str(exc),
         ) from exc
-    root = schema_root or Path.cwd()
-    from assurance_agent.workflow.graph.contracts import load_execution_contracts
-
-    compiled = compile_workflow(schema, load_execution_contracts(root))
-    if compiled.digest != started.graph_digest:
-        raise ReplayBindingError(
-            "pinned_schema_digest_mismatch",
-            f"pinned schema digest mismatch for {schema_path}: "
-            f"expected {started.graph_digest}, compiled {compiled.digest}",
-        )
+    compiled = resolved.compiled
 
     policy_path = change_dir / policy_snapshot_relpath(started.policy_digest)
     if not policy_path.exists():

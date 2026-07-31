@@ -27,12 +27,19 @@ from assurance_agent.workflow.core.graph_events import (
     TaskAttemptStartedEvent,
     TaskAttemptSucceededEvent,
 )
-from assurance_agent.workflow.graph.compiler import canonical_digest, compile_workflow
+from assurance_agent.workflow.graph.compiler import (
+    PinnedDefinitionRequest,
+    canonical_digest,
+    compile_workflow,
+)
 from assurance_agent.workflow.graph.contracts import load_execution_contracts
 from assurance_agent.workflow.graph.definition_pinning import (
+    PinnedDefinitionError,
     bind_root_definitions,
+    load_pinned_execution_definition,
     policy_snapshot_relpath,
 )
+from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 from assurance_agent.workflow.graph.replay_binding import (
     ReplayBindingError,
     bind_replay_definitions,
@@ -552,6 +559,56 @@ class ReplayBindingFixture:
 _GATE_NODE = "review-gate"
 
 
+def _stage_pinned_definition_snapshots(
+    change_dir: Path,
+    *,
+    compiled: object,
+    schema: object,
+    contracts: object,
+) -> None:
+    schema_bytes = (
+        json.dumps(
+            schema.model_dump(mode="json", by_alias=True, exclude_none=True),  # type: ignore[attr-defined]
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+    schema_dir = change_dir / ".graph-runtime" / "schemas"
+    schema_dir.mkdir(parents=True, exist_ok=True)
+    (schema_dir / f"{compiled.digest}.json").write_bytes(schema_bytes)  # type: ignore[attr-defined]
+
+    catalog = validate_catalog_runtime()
+    catalog_bytes = (
+        json.dumps(
+            catalog.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+    catalog_dir = change_dir / ".graph-runtime" / "ingest-catalogs"
+    catalog_dir.mkdir(parents=True, exist_ok=True)
+    (catalog_dir / f"{catalog.digest}.json").write_bytes(catalog_bytes)
+
+    contract_dir = change_dir / ".graph-runtime" / "contracts"
+    contract_dir.mkdir(parents=True, exist_ok=True)
+    for target, digest in sorted(compiled.contract_digests.items()):  # type: ignore[attr-defined]
+        contract = contracts.contracts[target]  # type: ignore[attr-defined]
+        payload = (
+            json.dumps(
+                contract.model_dump(mode="json", by_alias=True, exclude_none=True),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+        (contract_dir / f"{digest}.json").write_bytes(payload)
+
+
 def _build_fixture(
     tmp_path: Path, *, include_e2e: bool = True, api_applicable: bool = True
 ) -> ReplayBindingFixture:
@@ -568,19 +625,12 @@ def _build_fixture(
     schema = load_workflow_v2(Path.cwd())
     contracts = load_execution_contracts(Path.cwd())
     compiled = compile_workflow(schema, contracts)
-    schema_bytes = (
-        json.dumps(
-            schema.model_dump(mode="json", by_alias=True, exclude_none=True),
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        )
-        + "\n"
-    ).encode("utf-8")
-    (change_dir / ".graph-runtime" / "schemas" / f"{compiled.digest}.json").parent.mkdir(
-        parents=True, exist_ok=True
+    _stage_pinned_definition_snapshots(
+        change_dir,
+        compiled=compiled,
+        schema=schema,
+        contracts=contracts,
     )
-    (change_dir / ".graph-runtime" / "schemas" / f"{compiled.digest}.json").write_bytes(schema_bytes)
 
     store = TreeStore(change_dir)
     root_tree = store.capture(project)
@@ -1341,3 +1391,313 @@ def test_recover_layer_inputs_ignores_failed_abandoned_gate_attempts(tmp_path: P
 def test_frozen_definition_digests_match_runtime() -> None:
     assert gate_semantics_digest()
     assert assurance_profile_digest()
+
+
+def _root_started_from_fixture(fixture: ReplayBindingFixture) -> GraphInvocationStartedEvent:
+    return fixture._started(
+        invocation_id=_ROOT_INV,
+        entrypoint=_ENTRYPOINT,
+        graph_id="main",
+        structural_path="main",
+        checkpoint_ns=_ROOT_INV,
+        params=dict(_PARAMS),
+        root_tree_id=fixture.root_tree,
+    )
+
+
+def test_bind_replay_definitions_pinned_ingest_catalog_missing(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path)
+    catalog_path = (
+        fixture.change_dir
+        / ".graph-runtime"
+        / "ingest-catalogs"
+        / f"{fixture.compiled.ingest_catalog_digest}.json"  # type: ignore[attr-defined]
+    )
+    catalog_path.unlink()
+    with pytest.raises(ReplayBindingError, match="pinned_ingest_catalog_missing"):
+        bind_replay_definitions(
+            change_dir=fixture.change_dir,
+            change_id=_CHANGE_ID,
+            root_invocation_id=_ROOT_INV,
+            expected_entrypoint=_ENTRYPOINT,
+        )
+
+
+def test_bind_replay_definitions_pinned_ingest_catalog_invalid(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path)
+    catalog_path = (
+        fixture.change_dir
+        / ".graph-runtime"
+        / "ingest-catalogs"
+        / f"{fixture.compiled.ingest_catalog_digest}.json"  # type: ignore[attr-defined]
+    )
+    catalog_path.write_bytes(b"{not-json")
+    with pytest.raises(ReplayBindingError, match="pinned_ingest_catalog_invalid"):
+        bind_replay_definitions(
+            change_dir=fixture.change_dir,
+            change_id=_CHANGE_ID,
+            root_invocation_id=_ROOT_INV,
+            expected_entrypoint=_ENTRYPOINT,
+        )
+
+
+def test_bind_replay_definitions_pinned_ingest_catalog_digest_mismatch(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path)
+    catalog_path = (
+        fixture.change_dir
+        / ".graph-runtime"
+        / "ingest-catalogs"
+        / f"{fixture.compiled.ingest_catalog_digest}.json"  # type: ignore[attr-defined]
+    )
+    other = validate_catalog_runtime().model_copy(
+        update={
+            "artifacts": {
+                "only": validate_catalog_runtime()
+                .artifacts["api_plan"]
+                .model_copy(update={"path": "change:plans/other.md"})
+            }
+        }
+    )
+    catalog_path.write_bytes(
+        (
+            json.dumps(
+                other.model_dump(mode="json"),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+    )
+    with pytest.raises(ReplayBindingError, match="pinned_ingest_catalog_digest_mismatch"):
+        bind_replay_definitions(
+            change_dir=fixture.change_dir,
+            change_id=_CHANGE_ID,
+            root_invocation_id=_ROOT_INV,
+            expected_entrypoint=_ENTRYPOINT,
+        )
+
+
+def test_bind_replay_definitions_pinned_contract_snapshot_missing(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path)
+    target, digest = next(iter(fixture.compiled.contract_digests.items()))  # type: ignore[attr-defined]
+    del target
+    (fixture.change_dir / ".graph-runtime" / "contracts" / f"{digest}.json").unlink()
+    with pytest.raises(ReplayBindingError, match="pinned_contract_snapshot_missing"):
+        bind_replay_definitions(
+            change_dir=fixture.change_dir,
+            change_id=_CHANGE_ID,
+            root_invocation_id=_ROOT_INV,
+            expected_entrypoint=_ENTRYPOINT,
+        )
+
+
+def test_bind_replay_definitions_pinned_contract_digest_mismatch(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path)
+    target, digest = next(iter(fixture.compiled.contract_digests.items()))  # type: ignore[attr-defined]
+    contract = fixture.contracts.contracts[target]  # type: ignore[attr-defined]
+    mutated = contract.model_copy(update={"reads": (*contract.reads, "change:plans/extra.md")})
+    path = fixture.change_dir / ".graph-runtime" / "contracts" / f"{digest}.json"
+    path.write_bytes(
+        (
+            json.dumps(
+                mutated.model_dump(mode="json", by_alias=True, exclude_none=True),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+    )
+    with pytest.raises(ReplayBindingError, match="pinned_contract_digest_mismatch"):
+        bind_replay_definitions(
+            change_dir=fixture.change_dir,
+            change_id=_CHANGE_ID,
+            root_invocation_id=_ROOT_INV,
+            expected_entrypoint=_ENTRYPOINT,
+        )
+
+
+def test_bind_replay_definitions_pinned_contract_target_mismatch(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path)
+    target, digest = next(iter(fixture.compiled.contract_digests.items()))  # type: ignore[attr-defined]
+    contract = fixture.contracts.contracts[target]  # type: ignore[attr-defined]
+    wrong_target = "operation:not-the-recorded-target"
+    mutated = contract.model_copy(update={"target": wrong_target})
+    path = fixture.change_dir / ".graph-runtime" / "contracts" / f"{digest}.json"
+    path.write_bytes(
+        (
+            json.dumps(
+                mutated.model_dump(mode="json", by_alias=True, exclude_none=True),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+    )
+    with pytest.raises(ReplayBindingError, match="pinned_contract_target_mismatch"):
+        bind_replay_definitions(
+            change_dir=fixture.change_dir,
+            change_id=_CHANGE_ID,
+            root_invocation_id=_ROOT_INV,
+            expected_entrypoint=_ENTRYPOINT,
+        )
+
+
+def test_bind_replay_definitions_rejects_unrecorded_referenced_target(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path)
+    target, digest = next(iter(sorted(fixture.compiled.contract_digests.items())))  # type: ignore[attr-defined]
+    (fixture.change_dir / ".graph-runtime" / "contracts" / f"{digest}.json").unlink()
+    # Drop the recorded digest from the root event so the referenced target is unrecorded.
+    events = fixture.events_path.read_text(encoding="utf-8").splitlines()
+    rewritten: list[str] = []
+    for line in events:
+        payload = json.loads(line)
+        if payload.get("invocation_id") == _ROOT_INV and payload.get("type") == "graph_invocation_started":
+            digests = dict(payload["contract_digests"])
+            digests.pop(target)
+            payload["contract_digests"] = digests
+        rewritten.append(json.dumps(payload, sort_keys=True))
+    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+    with pytest.raises(ReplayBindingError, match="pinned_contract|unrecorded|no execution contract"):
+        bind_replay_definitions(
+            change_dir=fixture.change_dir,
+            change_id=_CHANGE_ID,
+            root_invocation_id=_ROOT_INV,
+            expected_entrypoint=_ENTRYPOINT,
+        )
+
+
+def test_bind_replay_definitions_rejects_extra_conflicting_binding(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path)
+    extra_target = "operation:extra-conflicting-binding"
+    extra_contract = next(iter(fixture.contracts.contracts.values())).model_copy(  # type: ignore[attr-defined]
+        update={"target": extra_target}
+    )
+    extra_digest = canonical_digest(extra_contract)
+    payload = (
+        json.dumps(
+            extra_contract.model_dump(mode="json", by_alias=True, exclude_none=True),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+    (fixture.change_dir / ".graph-runtime" / "contracts" / f"{extra_digest}.json").write_bytes(payload)
+    events = fixture.events_path.read_text(encoding="utf-8").splitlines()
+    rewritten: list[str] = []
+    for line in events:
+        payload_obj = json.loads(line)
+        if (
+            payload_obj.get("invocation_id") == _ROOT_INV
+            and payload_obj.get("type") == "graph_invocation_started"
+        ):
+            digests = dict(payload_obj["contract_digests"])
+            digests[extra_target] = extra_digest
+            payload_obj["contract_digests"] = digests
+        rewritten.append(json.dumps(payload_obj, sort_keys=True))
+    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+    with pytest.raises(ReplayBindingError, match="pinned_contract|conflicting|digest"):
+        bind_replay_definitions(
+            change_dir=fixture.change_dir,
+            change_id=_CHANGE_ID,
+            root_invocation_id=_ROOT_INV,
+            expected_entrypoint=_ENTRYPOINT,
+        )
+
+
+def test_bind_replay_definitions_ignores_current_ingest_model_registry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _build_fixture(tmp_path)
+    started = _root_started_from_fixture(fixture)
+
+    def explode(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("replay must not consult current ingest model registry")
+
+    monkeypatch.setattr("assurance_agent.workflow.graph.ingest_catalog.resolve_model", explode)
+    monkeypatch.setattr("assurance_agent.workflow.graph.ingest_catalog.validate_catalog_runtime", explode)
+    binding = bind_replay_definitions(
+        change_dir=fixture.change_dir,
+        change_id="CH-PINNED-001",
+        root_invocation_id=_ROOT_INV,
+        expected_entrypoint=_ENTRYPOINT,
+        store=TreeStore(fixture.change_dir),
+    )
+    assert binding.compiled.ingest_catalog_digest == started.ingest_catalog_digest
+
+
+def test_bind_replay_definitions_ignores_current_execution_contracts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _build_fixture(tmp_path)
+    expected = dict(fixture.compiled.contract_digests)  # type: ignore[attr-defined]
+
+    def explode(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("replay must not load current execution contracts")
+
+    monkeypatch.setattr(
+        "assurance_agent.workflow.graph.contracts.load_execution_contracts",
+        explode,
+    )
+    # Mutate project-local contracts after pinning.
+    local = fixture.project / ".aa" / "execution-contracts.yaml"
+    local.write_text(
+        "schema_version: '1'\ncontracts:\n  operation:mutated:\n    handler: operation\n",
+        encoding="utf-8",
+    )
+    binding = bind_replay_definitions(
+        change_dir=fixture.change_dir,
+        change_id=_CHANGE_ID,
+        root_invocation_id=_ROOT_INV,
+        expected_entrypoint=_ENTRYPOINT,
+    )
+    assert binding.compiled.contract_digests == expected
+
+
+def test_load_pinned_execution_definition_succeeds_when_current_loaders_explode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _build_fixture(tmp_path)
+    request = PinnedDefinitionRequest(
+        graph_digest=fixture.compiled.digest,  # type: ignore[attr-defined]
+        ingest_catalog_digest=fixture.compiled.ingest_catalog_digest,  # type: ignore[attr-defined]
+        contract_digests=tuple(sorted(fixture.compiled.contract_digests.items())),  # type: ignore[attr-defined]
+        event_schema_version=4,
+        gate_semantics_digest=fixture.binding.gate_semantics_digest,  # type: ignore[attr-defined]
+        assurance_profile_digest=fixture.binding.assurance_profile_digest,  # type: ignore[attr-defined]
+    )
+
+    def explode(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("pinned loader must not consult current catalogs")
+
+    monkeypatch.setattr("assurance_agent.workflow.graph.ingest_catalog.validate_catalog_runtime", explode)
+    monkeypatch.setattr("assurance_agent.workflow.graph.ingest_catalog.resolve_model", explode)
+    monkeypatch.setattr("assurance_agent.workflow.graph.contracts.load_execution_contracts", explode)
+    resolved = load_pinned_execution_definition(fixture.change_dir, request)
+    assert resolved.compiled.digest == request.graph_digest
+    assert resolved.compiled.ingest_catalog_digest == request.ingest_catalog_digest
+    assert resolved.compiled.contract_digests == dict(request.contract_digests)
+
+
+def test_load_pinned_execution_definition_missing_snapshot_fails_closed(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path)
+    request = PinnedDefinitionRequest(
+        graph_digest=fixture.compiled.digest,  # type: ignore[attr-defined]
+        ingest_catalog_digest=fixture.compiled.ingest_catalog_digest,  # type: ignore[attr-defined]
+        contract_digests=tuple(sorted(fixture.compiled.contract_digests.items())),  # type: ignore[attr-defined]
+        event_schema_version=4,
+        gate_semantics_digest=fixture.binding.gate_semantics_digest,  # type: ignore[attr-defined]
+        assurance_profile_digest=fixture.binding.assurance_profile_digest,  # type: ignore[attr-defined]
+    )
+    catalog_path = (
+        fixture.change_dir / ".graph-runtime" / "ingest-catalogs" / f"{request.ingest_catalog_digest}.json"
+    )
+    catalog_path.unlink()
+    with pytest.raises(PinnedDefinitionError, match="pinned_ingest_catalog_missing"):
+        load_pinned_execution_definition(fixture.change_dir, request)

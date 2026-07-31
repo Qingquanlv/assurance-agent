@@ -30,6 +30,7 @@ import json
 import math
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 from pydantic import BaseModel
 
@@ -51,8 +52,14 @@ from assurance_agent.workflow.graph.models import (
     CompiledNode,
     CompiledWorkflow,
 )
-from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
-from assurance_agent.workflow.graph.replay_schema import validate_replayable_assurance_schema
+from assurance_agent.workflow.graph.ingest_catalog import (
+    IngestArtifactCatalog,
+    validate_catalog_runtime,
+)
+from assurance_agent.workflow.graph.replay_schema import (
+    validate_historical_replay_surface,
+    validate_replayable_assurance_schema,
+)
 from assurance_agent.workflow.graph.schema_v2 import (
     GraphDef,
     NodeDef,
@@ -88,10 +95,96 @@ _TEMPLATE = re.compile(r"\$\{([^}]+)\}")
 _PREDICATE_BUILTINS = ("any", "all", "count")
 
 
+@dataclass(frozen=True, slots=True)
+class HistoricalCompileContext:
+    ingest_catalog: IngestArtifactCatalog
+    ingest_catalog_digest: str
+    contracts: ExecutionContractCatalog
+    contract_digests: Mapping[str, str]
+
+    def validate_identities(self) -> None:
+        if self.ingest_catalog.digest != self.ingest_catalog_digest:
+            raise CompileError(
+                "historical compile identity mismatch: "
+                f"ingest_catalog_digest expected {self.ingest_catalog_digest}, "
+                f"got {self.ingest_catalog.digest}"
+            )
+        recorded = dict(self.contract_digests)
+        actual_targets = set(self.contracts.contracts)
+        if actual_targets != set(recorded):
+            raise CompileError(
+                "historical compile identity mismatch: contract target set "
+                f"recorded={sorted(recorded)} actual={sorted(actual_targets)}"
+            )
+        for target, expected in recorded.items():
+            actual = canonical_digest(self.contracts.contracts[target])
+            if actual != expected:
+                raise CompileError(
+                    "historical compile identity mismatch: "
+                    f"contract {target!r} digest expected {expected}, got {actual}"
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class PinnedDefinitionRequest:
+    graph_digest: str
+    ingest_catalog_digest: str
+    contract_digests: tuple[tuple[str, str], ...]
+    event_schema_version: int
+    gate_semantics_digest: str
+    assurance_profile_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedPinnedDefinition:
+    compiled: CompiledWorkflow
+    contracts: ExecutionContractCatalog
+    ingest_catalog: IngestArtifactCatalog
+
+
 def compile_workflow(
     schema: WorkflowSchemaV2,
     contracts: ExecutionContractCatalog | None = None,
 ) -> CompiledWorkflow:
+    activation_errors: tuple[str, ...] = ()
+    if _has_packaged_assurance_surface(schema):
+        activation_errors = validate_replayable_assurance_schema(schema)
+    return _compile_with_catalog(
+        schema,
+        contracts=contracts,
+        ingest_catalog=None,
+        activation_errors=activation_errors,
+    )
+
+
+def compile_historical_workflow(
+    schema: WorkflowSchemaV2,
+    *,
+    context: HistoricalCompileContext,
+) -> CompiledWorkflow:
+    context.validate_identities()
+    return _compile_with_catalog(
+        schema,
+        contracts=context.contracts,
+        ingest_catalog=context.ingest_catalog,
+        activation_errors=validate_historical_replay_surface(schema),
+    )
+
+
+def _compile_with_catalog(
+    schema: WorkflowSchemaV2,
+    *,
+    contracts: ExecutionContractCatalog | None,
+    ingest_catalog: IngestArtifactCatalog | None,
+    activation_errors: tuple[str, ...],
+) -> CompiledWorkflow:
+    """Compile with an explicit ingest catalog, or the live catalog on the current path.
+
+    When ``ingest_catalog`` is None this is the live/current path and loads
+    ``validate_catalog_runtime()`` only after structural validation succeeds.
+    Historical compilation always passes a verified pinned catalog and never
+    calls ``validate_catalog_runtime()``.
+    """
     errors: list[str] = []
     errors.extend(_validate_params_and_entrypoints(schema))
     errors.extend(_validate_graph_refs(schema))
@@ -103,26 +196,23 @@ def compile_workflow(
     errors.extend(_validate_exports(schema))
     if contracts is not None:
         errors.extend(_validate_contract_usage(schema, contracts))
-    if _has_packaged_assurance_surface(schema):
-        replay_errors = validate_replayable_assurance_schema(schema)
-        if replay_errors:
-            errors.extend(replay_errors)
+    errors.extend(activation_errors)
     if errors:
         raise CompileError("workflow v2 compile failed:\n  - " + "\n  - ".join(errors))
+    resolved_catalog = ingest_catalog if ingest_catalog is not None else validate_catalog_runtime()
     footprints, node_claims = _graph_footprints(schema, contracts)
     graphs = {
         graph_id: _compile_graph(schema, graph_id, graph, footprints[graph_id], node_claims[graph_id])
         for graph_id, graph in schema.graphs.items()
     }
     canonical = schema.model_dump(mode="json", by_alias=True, exclude_none=True)
-    catalog_digest = validate_catalog_runtime().digest
     return CompiledWorkflow(
         schema=schema,
         digest=canonical_digest(canonical),
         entrypoints=_compile_entrypoints(schema),
         graphs=graphs,
         contract_digests=_referenced_contract_digests(schema, contracts) if contracts is not None else {},
-        ingest_catalog_digest=catalog_digest,
+        ingest_catalog_digest=resolved_catalog.digest,
     )
 
 

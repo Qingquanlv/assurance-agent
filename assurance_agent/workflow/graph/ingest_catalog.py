@@ -100,3 +100,35 @@ def validate_catalog_runtime() -> IngestArtifactCatalog:
         else:
             patched[symbol] = spec
     return catalog.model_copy(update={"artifacts": patched})
+
+
+def _canonical_ingest_catalog_bytes(catalog: IngestArtifactCatalog) -> bytes:
+    text = json.dumps(
+        catalog.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return (text + "\n").encode("utf-8")
+
+
+def parse_ingest_catalog_snapshot(data: bytes) -> IngestArtifactCatalog:
+    """Parse schema version 1 and canonical JSON bytes without resolving models."""
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"ingest catalog snapshot is malformed: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("ingest catalog snapshot must be a JSON object")
+    version = payload.get("schema_version")
+    if version != 1:
+        raise ValueError(f"ingest catalog snapshot schema_version must be 1, got {version!r}")
+    try:
+        catalog = IngestArtifactCatalog.model_validate(payload)
+    except ValidationError as exc:
+        raise ValueError(f"ingest catalog snapshot is invalid: {exc}") from exc
+    if catalog.schema_version != 1:
+        raise ValueError(f"ingest catalog snapshot schema_version must be 1, got {catalog.schema_version!r}")
+    if _canonical_ingest_catalog_bytes(catalog) != data:
+        raise ValueError("ingest catalog snapshot bytes are not canonical")
+    return catalog

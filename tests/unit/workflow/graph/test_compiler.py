@@ -6,10 +6,14 @@ import yaml
 
 from assurance_agent.workflow.graph.compiler import (
     CompileError,
+    HistoricalCompileContext,
+    PinnedDefinitionRequest,
+    compile_historical_workflow,
     compile_workflow,
     resolve_params,
 )
 from assurance_agent.workflow.graph.contracts import ExecutionContract, ExecutionContractCatalog
+from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
 
 _DEFAULT_HEADER = """\
@@ -610,3 +614,116 @@ def test_packaged_schema_compile_invokes_replay_assurance_guard() -> None:
     compiled = compile_workflow(schema, load_execution_contracts(Path.cwd()))
     assert compiled.digest
     assert "api-plan-cycle" in compiled.graphs
+
+
+def test_compile_workflow_uses_live_ingest_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from assurance_agent.workflow.graph.contracts import load_execution_contracts
+    from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
+
+    calls: list[str] = []
+    real = validate_catalog_runtime
+
+    def tracked() -> object:
+        calls.append("live")
+        return real()
+
+    monkeypatch.setattr(
+        "assurance_agent.workflow.graph.compiler.validate_catalog_runtime",
+        tracked,
+    )
+    schema = load_workflow_v2(Path.cwd())
+    compiled = compile_workflow(schema, load_execution_contracts(Path.cwd()))
+    assert calls == ["live"]
+    assert compiled.ingest_catalog_digest == real().digest
+
+
+def test_compile_historical_workflow_uses_pinned_context_not_live_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from assurance_agent.workflow.graph.compiler import canonical_digest
+    from assurance_agent.workflow.graph.contracts import (
+        catalog_from_pinned_contracts,
+        load_execution_contracts,
+    )
+    from assurance_agent.workflow.graph.replay_schema import validate_historical_replay_surface
+    from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
+
+    schema = load_workflow_v2(Path.cwd())
+    contracts = load_execution_contracts(Path.cwd())
+    ingest = validate_catalog_runtime()
+    referenced_targets = sorted(
+        {
+            node.uses
+            for graph in schema.graphs.values()
+            for node in graph.nodes.values()
+            if node.uses in contracts.contracts
+        }
+    )
+    pinned_contracts = catalog_from_pinned_contracts(
+        tuple(contracts.contracts[target] for target in referenced_targets)
+    )
+    contract_digests = {
+        target: canonical_digest(pinned_contracts.contracts[target]) for target in pinned_contracts.contracts
+    }
+
+    def explode(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("historical compile must not load the live ingest catalog")
+
+    monkeypatch.setattr("assurance_agent.workflow.graph.compiler.validate_catalog_runtime", explode)
+    monkeypatch.setattr(
+        "assurance_agent.workflow.graph.ingest_catalog.validate_catalog_runtime",
+        explode,
+    )
+    assert validate_historical_replay_surface(schema) == ()
+    compiled = compile_historical_workflow(
+        schema,
+        context=HistoricalCompileContext(
+            ingest_catalog=ingest,
+            ingest_catalog_digest=ingest.digest,
+            contracts=pinned_contracts,
+            contract_digests=contract_digests,
+        ),
+    )
+    assert compiled.ingest_catalog_digest == ingest.digest
+    assert compiled.contract_digests == contract_digests
+
+
+def test_historical_compile_context_rejects_identity_mismatch() -> None:
+    from assurance_agent.workflow.graph.contracts import load_execution_contracts
+    from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
+
+    schema = load_workflow_v2(Path.cwd())
+    contracts = load_execution_contracts(Path.cwd())
+    ingest = validate_catalog_runtime()
+    context = HistoricalCompileContext(
+        ingest_catalog=ingest,
+        ingest_catalog_digest="0" * 64,
+        contracts=contracts,
+        contract_digests={},
+    )
+    with pytest.raises(CompileError, match="ingest_catalog_digest|identity"):
+        compile_historical_workflow(schema, context=context)
+
+
+def test_pinned_definition_request_differs_when_one_contract_digest_changes() -> None:
+    base = PinnedDefinitionRequest(
+        graph_digest="g" * 64,
+        ingest_catalog_digest="i" * 64,
+        contract_digests=(("operation:a", "a" * 64), ("operation:b", "b" * 64)),
+        event_schema_version=4,
+        gate_semantics_digest="s" * 64,
+        assurance_profile_digest="p" * 64,
+    )
+    mutated = PinnedDefinitionRequest(
+        graph_digest=base.graph_digest,
+        ingest_catalog_digest=base.ingest_catalog_digest,
+        contract_digests=(("operation:a", "a" * 64), ("operation:b", "c" * 64)),
+        event_schema_version=base.event_schema_version,
+        gate_semantics_digest=base.gate_semantics_digest,
+        assurance_profile_digest=base.assurance_profile_digest,
+    )
+    cache: dict[PinnedDefinitionRequest, str] = {base: "base"}
+    assert mutated not in cache
+    assert hash(base) != hash(mutated)
