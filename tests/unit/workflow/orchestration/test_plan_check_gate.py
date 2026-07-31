@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import fields, is_dataclass
+from dataclasses import fields, is_dataclass, replace
 from pathlib import Path
 
 import pytest
+import yaml
 
 from assurance_agent.artifacts.models.policy import KNOWN_PLAN_CHECK_IDS, Policy
 from assurance_agent.verification.checks.base import CheckContext
@@ -16,9 +17,20 @@ from assurance_agent.workflow.graph.contracts import load_execution_contracts
 from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
 from assurance_agent.workflow.orchestration.dsl import Ident, Member, Scope, evaluate, parse_expression
 from assurance_agent.workflow.orchestration.gates import GateEvaluationContext, check_gate_in_view
-from assurance_agent.workflow.orchestration.schema import GateDef, Verdict
+from assurance_agent.workflow.orchestration.schema import GateDef, Verdict, derive_alias, normalize_gates
 
 _CHANGE_ID = "CH-1"
+_FUZZ_PERF_FIXTURE = (
+    Path(__file__).resolve().parents[3] / "fixtures" / "assurance" / "fuzz-performance-gates.yaml"
+)
+_CANONICAL_FUZZ_PERF_GATE_IDS = frozenset(
+    {
+        "fuzz-plan-review-gate",
+        "performance-plan-review-gate",
+        "fuzz-codegen-precondition-gate",
+        "performance-codegen-precondition-gate",
+    }
+)
 _EMPTY_DK: dict[str, object] = {
     "version": 1,
     "capabilities": {"domain_factories": {}},
@@ -324,7 +336,7 @@ def test_capability_absence_routes_to_knowledge_remediation_even_under_warn(tmp_
         tmp_path,
         check_actions={"capability_keys": "warn"},
         checks=_applicable_checks("api"),
-        review=_review(required_capabilities=["capabilities.missing.leaf"]),
+        review=_review(required_capabilities=["auth.missing_token"]),
     )
     assert report.verdict == Verdict.NEEDS_HUMAN_REVIEW
     assert report.details is not None
@@ -439,3 +451,389 @@ def test_guard_fails_when_a_policy_field_lacks_any_consumer() -> None:
     expected = set(Policy.model_fields) - {"version"}
     uncovered = expected - consumed - REGISTERED_PYTHON_POLICY_CONSUMERS
     assert not uncovered, f"policy fields without runtime consumers: {sorted(uncovered)}"
+
+
+def _load_fixture_gates() -> dict[str, GateDef]:
+    raw = yaml.safe_load(_FUZZ_PERF_FIXTURE.read_text(encoding="utf-8"))
+    return normalize_gates(raw)
+
+
+def _fixture_gate(layer: str) -> GateDef:
+    profile = get_layer_assurance_profile(layer)
+    return _load_fixture_gates()[profile.gate_id]
+
+
+def _fixture_codegen_gate(layer: str) -> GateDef:
+    return _load_fixture_gates()[f"{layer}-codegen-precondition-gate"]
+
+
+def _fixture_adjudicate(
+    tmp_path: Path,
+    *,
+    layer: str,
+    check_actions: dict[str, str] | None = None,
+    checks: object | None = None,
+    review: dict[str, object] | None = None,
+    node_results: dict[str, object] | None = None,
+):
+    profile = get_layer_assurance_profile(layer)
+    fixture_gates = _load_fixture_gates()
+    return check_gate_in_view(
+        fixture_gates,
+        profile.gate_id,
+        _context(
+            tmp_path,
+            layer=layer,
+            check_actions=check_actions,
+            checks=checks,
+            review=review,
+            node_results=node_results,
+        ),
+    )
+
+
+def test_fixture_defines_exactly_four_canonical_fuzz_performance_gates() -> None:
+    gates = _load_fixture_gates()
+    assert set(gates) == _CANONICAL_FUZZ_PERF_GATE_IDS
+
+
+@pytest.mark.parametrize("layer", ["fuzz", "performance"])
+def test_fixture_plan_gate_reads_profile_canonical_artifacts(layer: str) -> None:
+    profile = get_layer_assurance_profile(layer)
+    gate = _fixture_gate(layer)
+    reads_by_path = {entry.path: entry.alias for entry in gate.reads}
+    assert reads_by_path == {
+        profile.review_artifact: profile.review_alias,
+        profile.checks_artifact: derive_alias(profile.checks_artifact),
+        "repo:.aa/data-knowledge.yaml": "data_knowledge",
+    }
+    assert gate.invalid_json == Verdict.STOP
+    assert gate.missing_field_is == Verdict.STOP
+
+
+@pytest.mark.parametrize("layer", ["fuzz", "performance"])
+def test_fixture_codegen_gate_reads_all_three_artifacts(layer: str) -> None:
+    profile = get_layer_assurance_profile(layer)
+    gate = _fixture_codegen_gate(layer)
+    reads_by_path = {entry.path: entry.alias for entry in gate.reads}
+    assert reads_by_path == {
+        profile.review_artifact: profile.review_alias,
+        profile.checks_artifact: derive_alias(profile.checks_artifact),
+        "repo:.aa/data-knowledge.yaml": "data_knowledge",
+    }
+
+
+@pytest.mark.parametrize("layer", ["fuzz", "performance"])
+def test_fixture_invalid_assurance_state_stops(tmp_path: Path, layer: str) -> None:
+    broken = dict(_applicable_checks(layer))
+    broken["schema_version"] = "1"
+    report = _fixture_adjudicate(tmp_path, layer=layer, checks=broken)
+    assert report.verdict == Verdict.STOP
+    assert report.matched_rule is not None and report.matched_rule.startswith("stop_when:")
+
+
+@pytest.mark.parametrize("layer", ["fuzz", "performance"])
+def test_fixture_inapplicable_scope_skips(tmp_path: Path, layer: str) -> None:
+    report = _fixture_adjudicate(
+        tmp_path,
+        layer=layer,
+        checks=_inapplicable_checks(layer),
+        review=None,
+    )
+    assert report.verdict == Verdict.SKIP
+
+
+@pytest.mark.parametrize("layer", ["fuzz", "performance"])
+def test_fixture_needs_fix_without_auto_fix_allowed(tmp_path: Path, layer: str) -> None:
+    report = _fixture_adjudicate(
+        tmp_path,
+        layer=layer,
+        checks=_applicable_checks(layer),
+        review=_review(layer, decision="needs_fix", auto_fix_allowed=False),
+    )
+    assert report.verdict == Verdict.NEEDS_FIX
+
+
+@pytest.mark.parametrize("layer", ["fuzz", "performance"])
+@pytest.mark.parametrize("action", ["warn", "block", "require_human"])
+def test_fixture_missing_capability_routes_to_knowledge_remediation(
+    tmp_path: Path, layer: str, action: str
+) -> None:
+    report = _fixture_adjudicate(
+        tmp_path,
+        layer=layer,
+        check_actions={"capability_keys": action},
+        checks=_applicable_checks(layer),
+        review=_review(layer, required_capabilities=["auth.missing_token"]),
+    )
+    assert report.verdict == Verdict.NEEDS_HUMAN_REVIEW
+    assert report.details is not None
+    assert report.details.get("missing_capabilities")
+
+
+@pytest.mark.parametrize("layer", ["fuzz", "performance"])
+def test_fixture_explicit_reject_precedes_high_risk_human_review(tmp_path: Path, layer: str) -> None:
+    report = _fixture_adjudicate(
+        tmp_path,
+        layer=layer,
+        check_actions={"l1_path": "require_human"},
+        checks=_failed_checks(layer, "l1_path"),
+        review=_review(
+            layer,
+            decision="reject",
+            codegen_readiness="not_ready",
+            human_review_required=True,
+            risk_level="critical",
+        ),
+    )
+    assert report.verdict == Verdict.REJECT
+    assert report.matched_rule is not None and report.matched_rule.startswith("reject_when:")
+
+
+@pytest.mark.parametrize("layer", ["fuzz", "performance"])
+@pytest.mark.parametrize(
+    ("review_overrides", "check_actions", "failed_checks"),
+    [
+        ({"decision": "changes_requested"}, None, ()),
+        ({"decision": "needs_human_review"}, None, ()),
+        ({"decision": "pass", "human_review_required": True, "risk_level": "high"}, None, ()),
+        ({"decision": "pass"}, {"l1_path": "require_human"}, ("l1_path",)),
+    ],
+    ids=("changes-requested", "needs-human-review", "configured-risk", "require-human-check"),
+)
+def test_fixture_routes_to_human_review(
+    tmp_path: Path,
+    layer: str,
+    review_overrides: dict[str, object],
+    check_actions: dict[str, str] | None,
+    failed_checks: tuple[str, ...],
+) -> None:
+    checks = _applicable_checks(layer)
+    if failed_checks:
+        checks = _failed_checks(layer, *failed_checks)
+    report = _fixture_adjudicate(
+        tmp_path,
+        layer=layer,
+        check_actions=check_actions,
+        checks=checks,
+        review=_review(layer, **review_overrides),
+    )
+    assert report.verdict == Verdict.NEEDS_HUMAN_REVIEW
+
+
+@pytest.mark.parametrize("layer", ["fuzz", "performance"])
+@pytest.mark.parametrize(
+    ("review_overrides", "check_actions", "failed_checks"),
+    [
+        ({"decision": "reject"}, None, ()),
+        ({"decision": "pass", "codegen_readiness": "not_ready"}, None, ()),
+        ({"decision": "pass"}, {"l1_path": "block"}, ("l1_path",)),
+    ],
+    ids=("explicit-reject", "not-ready", "block-check"),
+)
+def test_fixture_routes_to_reject(
+    tmp_path: Path,
+    layer: str,
+    review_overrides: dict[str, object],
+    check_actions: dict[str, str] | None,
+    failed_checks: tuple[str, ...],
+) -> None:
+    checks = _applicable_checks(layer)
+    if failed_checks:
+        checks = _failed_checks(layer, *failed_checks)
+    report = _fixture_adjudicate(
+        tmp_path,
+        layer=layer,
+        check_actions=check_actions,
+        checks=checks,
+        review=_review(layer, **review_overrides),
+    )
+    assert report.verdict == Verdict.REJECT
+
+
+@pytest.mark.parametrize("layer", ["fuzz", "performance"])
+def test_fixture_passes_ready_review_with_present_capabilities(tmp_path: Path, layer: str) -> None:
+    report = _fixture_adjudicate(
+        tmp_path,
+        layer=layer,
+        checks=_applicable_checks(layer),
+        review=_review(layer, decision="pass", codegen_readiness="ready"),
+    )
+    assert report.verdict == Verdict.PASS
+
+
+@pytest.mark.parametrize("layer", ["fuzz", "performance"])
+def test_fixture_force_continue_never_overrides_reject_or_missing_capability(
+    tmp_path: Path, layer: str
+) -> None:
+    reject_report = _fixture_adjudicate(
+        tmp_path,
+        layer=layer,
+        checks=_applicable_checks(layer),
+        review=_review(
+            layer,
+            decision="reject",
+            human_review_required=True,
+            risk_level="low",
+            codegen_readiness="ready",
+        ),
+    )
+    assert reject_report.verdict == Verdict.REJECT
+
+    missing_cap_report = _fixture_adjudicate(
+        tmp_path,
+        layer=layer,
+        checks=_applicable_checks(layer),
+        review=_review(
+            layer,
+            decision="pass",
+            human_review_required=True,
+            risk_level="low",
+            codegen_readiness="ready",
+            required_capabilities=["capabilities.missing.leaf"],
+        ),
+    )
+    assert missing_cap_report.verdict == Verdict.NEEDS_HUMAN_REVIEW
+
+
+@pytest.mark.parametrize("layer", ["fuzz", "performance"])
+def test_fixture_force_continue_suppresses_configured_risk_when_allowed(
+    tmp_path: Path, layer: str
+) -> None:
+    context = _context(
+        tmp_path,
+        layer=layer,
+        checks=_applicable_checks(layer),
+        review=_review(
+            layer,
+            decision="pass",
+            human_review_required=True,
+            risk_level="low",
+            codegen_readiness="ready",
+        ),
+    )
+    context = replace(context, params={**context.params, "force_continue": True})
+    profile = get_layer_assurance_profile(layer)
+    report = check_gate_in_view(_load_fixture_gates(), profile.gate_id, context)
+    assert report.verdict == Verdict.PASS
+
+
+@pytest.mark.parametrize("layer", ["fuzz", "performance"])
+def test_fixture_approved_is_not_pass(tmp_path: Path, layer: str) -> None:
+    report = _fixture_adjudicate(
+        tmp_path,
+        layer=layer,
+        checks=_applicable_checks(layer),
+        review=_review(layer, decision="approved", codegen_readiness="ready"),
+    )
+    assert report.verdict != Verdict.PASS
+
+
+@pytest.mark.parametrize("layer", ["fuzz", "performance"])
+def test_fixture_malformed_review_stops(tmp_path: Path, layer: str) -> None:
+    report = _fixture_adjudicate(
+        tmp_path,
+        layer=layer,
+        checks=_applicable_checks(layer),
+        review={"decision": "pass"},
+    )
+    assert report.verdict == Verdict.STOP
+
+
+@pytest.mark.parametrize("layer", ["fuzz", "performance"])
+def test_fixture_malformed_l1_stops(tmp_path: Path, layer: str) -> None:
+    context = _context(tmp_path, layer=layer, checks=_applicable_checks(layer))
+    profile = get_layer_assurance_profile(layer)
+    context = replace(
+        context,
+        artifact_overrides={
+            **context.artifact_overrides,
+            "repo:.aa/data-knowledge.yaml": {"version": "bad"},
+        },
+    )
+    report = check_gate_in_view(_load_fixture_gates(), profile.gate_id, context)
+    assert report.verdict == Verdict.STOP
+
+
+@pytest.mark.parametrize("layer", ["fuzz", "performance"])
+def test_fixture_unmatched_combination_defaults_to_stop(tmp_path: Path, layer: str) -> None:
+    report = _fixture_adjudicate(
+        tmp_path,
+        layer=layer,
+        checks=_applicable_checks(layer),
+        review=_review(layer, decision="pass", codegen_readiness="pending"),
+    )
+    assert report.verdict == Verdict.STOP
+
+
+@pytest.mark.parametrize("layer", ["fuzz", "performance"])
+@pytest.mark.parametrize(
+    ("check_id", "action", "expected"),
+    [
+        ("assert_ideal", "block", Verdict.PASS),
+        ("assert_ideal", "require_human", Verdict.PASS),
+        ("l1_path", "warn", Verdict.PASS),
+        ("l1_path", "block", Verdict.REJECT),
+        ("l1_path", "require_human", Verdict.NEEDS_HUMAN_REVIEW),
+        ("shared_factory", "block", Verdict.REJECT),
+        ("capability_keys", "require_human", Verdict.NEEDS_HUMAN_REVIEW),
+    ],
+)
+def test_fixture_check_actions_respect_profile_applicability(
+    tmp_path: Path,
+    layer: str,
+    check_id: str,
+    action: str,
+    expected: Verdict,
+) -> None:
+    if check_id == "assert_ideal":
+        checks = _applicable_checks(layer)
+    else:
+        checks = _failed_checks(layer, check_id)
+    report = _fixture_adjudicate(
+        tmp_path,
+        layer=layer,
+        check_actions={check_id: action},
+        checks=checks,
+        review=_review(layer),
+    )
+    assert report.verdict == expected
+
+
+@pytest.mark.parametrize("layer", ["fuzz", "performance"])
+def test_fixture_codegen_precondition_skips_inapplicable_layer(tmp_path: Path, layer: str) -> None:
+    context = _context(
+        tmp_path,
+        layer=layer,
+        checks=_inapplicable_checks(layer),
+        review=None,
+        node_results={"review-cycle": {"status": "succeeded"}},
+    )
+    report = check_gate_in_view(
+        _load_fixture_gates(),
+        f"{layer}-codegen-precondition-gate",
+        context,
+    )
+    assert report.verdict == Verdict.SKIP
+
+
+@pytest.mark.parametrize("layer", ["fuzz", "performance"])
+def test_fixture_codegen_precondition_stops_without_current_child_success(
+    tmp_path: Path, layer: str
+) -> None:
+    (tmp_path / ".aa").mkdir(parents=True)
+    (tmp_path / ".aa" / "data-knowledge.yaml").write_text(
+        "version: 1\ncapabilities:\n  domain_factories: {}\n", encoding="utf-8"
+    )
+    context = _context(
+        tmp_path,
+        layer=layer,
+        checks=_applicable_checks(layer),
+        node_results={"review-cycle": {"status": "failed"}},
+    )
+    report = check_gate_in_view(
+        _load_fixture_gates(),
+        f"{layer}-codegen-precondition-gate",
+        context,
+    )
+    assert report.verdict == Verdict.STOP

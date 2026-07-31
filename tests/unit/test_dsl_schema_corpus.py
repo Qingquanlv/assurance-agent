@@ -4,7 +4,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
+from assurance_agent.verification.profiles import get_layer_assurance_profile
+from assurance_agent.workflow.graph.replay_schema import LayerTopologySpec, _codegen_ast_errors
+from assurance_agent.workflow.graph.schema_v2 import EntrypointDef, GraphDef, ParamDef, WorkflowSchemaV2
+from assurance_agent.workflow.orchestration.schema import normalize_gates
 from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
 from assurance_agent.workflow.orchestration.dsl import MISSING as MISS
 from assurance_agent.workflow.orchestration.dsl import Scope, evaluate, parse_expression
@@ -642,3 +647,57 @@ def test_builtin_truth_and_missing_pair(loc: str) -> None:
     (tv, tkw), (mv, mkw, mexp) = BUILTIN_CORPUS[loc]
     assert evaluate(node, _scope(tv, tkw)) is True, f"{loc} 真值路径应为 True：{expr}"
     assert evaluate(node, _scope(mv, mkw)) is mexp, f"{loc} missing/否定路径不符：{expr}"
+
+
+_FUZZ_PERF_FIXTURE = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "assurance" / "fuzz-performance-gates.yaml"
+)
+
+
+def _load_fuzz_perf_fixture_gates():
+    raw = yaml.safe_load(_FUZZ_PERF_FIXTURE.read_text(encoding="utf-8"))
+    return normalize_gates(raw)
+
+
+def _fixture_schema_for_layer(layer: str) -> WorkflowSchemaV2:
+    gates = _load_fuzz_perf_fixture_gates()
+    return WorkflowSchemaV2(
+        schema_version="2",
+        name="fuzz-performance-fixture",
+        params={name: ParamDef(type="str") for name in ("run_mode", "test_types")},
+        entrypoints={"execute": EntrypointDef(graph="assurance")},
+        graphs={"assurance": GraphDef(max_supersteps=10, nodes={}, edges=[], routes=[])},
+        gates=gates,
+    )
+
+
+def _topology_spec(layer: str) -> LayerTopologySpec:
+    profile = get_layer_assurance_profile(layer)
+    return LayerTopologySpec(
+        layer=profile.layer,
+        plan_artifacts=profile.plan_artifacts,
+        review_artifact=profile.review_artifact,
+        review_alias=profile.review_alias,
+        checks_artifact=profile.checks_artifact,
+        gate_id=profile.gate_id,
+    )
+
+
+def test_fixture_excludes_legacy_policy_and_applicability_references() -> None:
+    text = _FUZZ_PERF_FIXTURE.read_text(encoding="utf-8")
+    assert "policy.fuzz.required_when_endpoint_has_auth" not in text
+    assert "layer_applicable" not in text
+
+
+@pytest.mark.parametrize("layer", ["fuzz", "performance"])
+def test_fixture_codegen_expressions_contain_hard_predicates(layer: str) -> None:
+    schema = _fixture_schema_for_layer(layer)
+    spec = _topology_spec(layer)
+    gate_id = f"{layer}-codegen-precondition-gate"
+    errors = _codegen_ast_errors(
+        schema,
+        spec,
+        codegen_gate_id=gate_id,
+        cycle_call_node_id="review-cycle",
+    )
+    assert not errors, errors
