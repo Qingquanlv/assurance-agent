@@ -1272,6 +1272,57 @@ def test_interrupt_handler_builds_structural_projection_without_ledger(tmp_path:
     assert replay.interrupt.interrupt_id == projection.interrupt_id
 
 
+_MANUAL_REVISION_INTERRUPT_GRAPH = """
+main:
+  max_supersteps: 5
+  nodes:
+    human-review:
+      uses: builtin:interrupt
+      interrupt:
+        reason: needs a human
+        checkpoint: case-review-gate
+        bind: audited_gate_read
+        actions: [fix_and_proceed, accept_risk, stop]
+        manual_revision:
+          action: fix_and_proceed
+          paths: [change:plans/fuzz-plan.md]
+  edges:
+    - {from: START, to: human-review}
+  routes:
+    - from: human-review
+      select: "resume.action"
+      cases:
+        fix_and_proceed: END
+        accept_risk: END
+        stop: STOP
+      default: STOP
+"""
+
+
+def test_interrupt_handler_fails_closed_when_manual_revision_lacks_gate_epoch(
+    tmp_path: Path,
+) -> None:
+    project = _make_project(tmp_path)
+    change = project / "qa" / "changes" / "CH-1"
+    _write_review(change, {"decision": "needs_human_review"})
+    plans = change / "plans"
+    plans.mkdir(parents=True, exist_ok=True)
+    (plans / "fuzz-plan.md").write_text("# plan\n", encoding="utf-8")
+    workspace = _workspace(project)
+    handler = InterruptHandler(
+        _compiled(_MANUAL_REVISION_INTERRUPT_GRAPH, footer=_GATE_FOOTER),
+        _store(project),
+    )
+    task = _task("builtin:interrupt", node_id="human-review", task_id="task-int")
+    result = handler.execute(task, workspace, _context(project))
+
+    assert result.status == "failed"
+    assert result.error_kind == "contract"
+    assert result.error is not None
+    assert "cannot bind a gate evidence epoch" in result.error
+    assert not (change / ".graph-runtime" / "revision-views").exists()
+
+
 # ---------------------------------------------------------------------------
 # Step 2：driver adapter 的 graph AgentInvoker 路径与翻译 shim
 # ---------------------------------------------------------------------------

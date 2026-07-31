@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -16,6 +18,8 @@ from assurance_agent.workflow.core.progression import transaction
 from assurance_agent.workflow.graph import manual_revision as manual_revision_mod
 from assurance_agent.workflow.graph.manual_revision import (
     ManualRevisionError,
+    RevisionPathBaseline,
+    RevisionViewBinding,
     build_manual_revision_transition,
     capture_revision_candidate,
     derive_revision_recovery_state,
@@ -540,6 +544,76 @@ def test_resolve_gate_evidence_epoch_direct_and_aliased_checkpoints() -> None:
     assert pairless is None
 
 
+def test_resolve_gate_evidence_epoch_binds_attempt_time_tree_not_later_tree() -> None:
+    events: list[dict[str, object]] = [
+        {
+            "source": "graph",
+            "type": "graph_invocation_started",
+            "invocation_id": "leaf",
+            "entrypoint": "full",
+            "graph_id": "cycle",
+            "graph_digest": "g",
+            "contract_digests": {},
+            "params": {},
+            "params_sha256": "",
+            "root_tree_id": "tree-at-attempt",
+            "max_parallel_tasks": 1,
+            "checkpoint_ns": "leaf",
+            "structural_path": "cycle",
+        },
+        {
+            "source": "graph",
+            "type": "task_attempt_succeeded",
+            "invocation_id": "leaf",
+            "checkpoint_ns": "leaf",
+            "superstep_id": "ss-1",
+            "task_id": "gate-task",
+            "attempt_id": "ga-1",
+            "gate_report": {"gate_id": "fuzz-plan-review-gate", "verdict": "needs_human_review"},
+        },
+        {
+            "source": "graph",
+            "type": "superstep_committed",
+            "invocation_id": "leaf",
+            "checkpoint_ns": "leaf",
+            "superstep_id": "ss-2",
+            "base_tree_id": "tree-at-attempt",
+            "target_tree_id": "tree-after-superstep",
+            "task_ids": [],
+        },
+        {
+            "source": "graph",
+            "type": "manual_plan_revision",
+            "invocation_id": "leaf",
+            "checkpoint_ns": "leaf",
+            "revision_transition_id": "rt-later",
+            "interrupt_id": "ir-other",
+            "action": "fix_and_proceed",
+            "who": "reviewer",
+            "reason": "later revision",
+            "audited_reads_sha256": {},
+            "source_gate_attempt_id": "ga-other",
+            "source_gate_tree_id": "tree-at-attempt",
+            "base_tree_id": "tree-after-superstep",
+            "target_tree_id": "tree-after-revision",
+            "logical_paths": ["change:plans/fuzz-plan.md"],
+            "before_sha256": {"change:plans/fuzz-plan.md": "a" * 64},
+            "after_sha256": {"change:plans/fuzz-plan.md": "b" * 64},
+            "resume_anchors": [],
+        },
+    ]
+    epoch = resolve_gate_evidence_epoch(
+        events=events,
+        invocation_id="leaf",
+        checkpoint="fuzz-plan-review-gate",
+        gate_ids=frozenset({"fuzz-plan-review-gate"}),
+        checkpoint_gate_aliases=CHECKPOINT_GATE_ALIASES,
+    )
+    assert epoch is not None
+    assert epoch.source_gate_attempt_id == "ga-1"
+    assert epoch.source_gate_tree_id == "tree-at-attempt"
+
+
 def test_open_revision_prefix_derives_recovery_state() -> None:
     transition = build_manual_revision_transition(
         interrupted=_interrupted_event(),
@@ -558,3 +632,499 @@ def test_open_revision_prefix_derives_recovery_state() -> None:
         *[resume.model_dump(mode="json", exclude_none=True) for resume in transition.resumes],
     ]
     assert derive_revision_recovery_state(complete) is None
+
+
+# ---------------------------------------------------------------------------
+# Step 2: runtime fix_and_proceed / accept_risk / stop ingestion
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _ManualRevisionRuntimeFixture:
+    runtime: object
+    result: object
+    interrupt: object
+    change: Path
+    revision_view: str
+
+
+def _force_v5_binding(monkeypatch: pytest.MonkeyPatch) -> None:
+    from assurance_agent.workflow.graph import definition_pinning, runtime as runtime_mod
+
+    original = definition_pinning.bind_root_definitions
+
+    def _bind_v5(*, store, root_tree_id, event_schema_version=4):  # type: ignore[no-untyped-def]
+        return original(store=store, root_tree_id=root_tree_id, event_schema_version=5)
+
+    monkeypatch.setattr(definition_pinning, "bind_root_definitions", _bind_v5)
+    monkeypatch.setattr(runtime_mod, "bind_root_definitions", _bind_v5)
+
+
+def _manual_revision_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> _ManualRevisionRuntimeFixture:
+    """Build a v5 runtime interrupted on a manual_revision human-review node."""
+    import json
+    import textwrap
+
+    from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
+    from assurance_agent.workflow.graph.checkpoint import CheckpointStore
+    from assurance_agent.workflow.graph.compiler import compile_workflow
+    from assurance_agent.workflow.graph.contracts import parse_execution_contracts
+    from assurance_agent.workflow.graph.handlers.operation import OperationHandler, default_operations
+    from assurance_agent.workflow.graph.leases import SystemClock
+    from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
+    from assurance_agent.workflow.graph.runtime import GraphRuntime
+    from assurance_agent.workflow.graph.scheduler import Scheduler
+    from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
+    from assurance_agent.workflow.graph.task_runner import build_default_node_runner
+    from assurance_agent.workflow.graph.workspace import WorkspaceBackend
+    from tests.helpers_aa import write_aa_config
+
+    _force_v5_binding(monkeypatch)
+
+    project = tmp_path / "proj"
+    change = project / "qa" / "changes" / "CH-1"
+    change.mkdir(parents=True)
+    write_aa_config(project)
+
+    contracts_text = """\
+schema_version: "1"
+contracts:
+  operation:seed-plan:
+    handler: operation
+    side_effect_free: false
+    writes: ["change:plans/**", "change:review/**"]
+    authorization_writes: ["change:plans/**", "change:review/**"]
+    retryable_errors: []
+  builtin:gate:
+    handler: builtin
+    side_effect_free: true
+  builtin:interrupt:
+    handler: builtin
+    side_effect_free: true
+"""
+    body = """
+main:
+  max_supersteps: 8
+  nodes:
+    seed:
+      uses: operation:seed-plan
+    review:
+      uses: builtin:gate
+      with: {gate: plan-gate}
+    human-review:
+      uses: builtin:interrupt
+      interrupt:
+        reason: plan needs human revision
+        checkpoint: plan-gate
+        bind: audited_gate_read
+        actions: [fix_and_proceed, accept_risk, stop]
+        manual_revision:
+          action: fix_and_proceed
+          paths: [change:plans/fuzz-plan.md]
+  edges:
+    - {from: START, to: seed}
+    - {from: seed, to: review}
+  routes:
+    - from: review
+      select: "node('review').gate.verdict"
+      cases:
+        needs_human_review: human-review
+        pass: END
+      default: STOP
+    - from: human-review
+      select: "resume.action"
+      cases:
+        fix_and_proceed: END
+        accept_risk: END
+        stop: STOP
+      default: STOP
+"""
+    footer = """
+gates:
+  plan-gate:
+    reads: [review/plan-review.json]
+    invalid_json: stop
+    missing_field_is: stop
+    needs_human_review_when: "plan_review.decision == 'needs_human_review'"
+    pass_when: "plan_review.decision == 'pass'"
+"""
+    text = (
+        'schema_version: "2"\nname: t\n'
+        "params:\n  run_mode: {type: enum, values: [full], default: full}\n"
+        "entrypoints:\n  full: {graph: main, allow: \"params.run_mode == 'full'\"}\n"
+        "policies:\n"
+        "  retry:\n    never: {max_attempts: 1, retry_on: []}\n"
+        "  timeout:\n    local: {run_seconds: 60, heartbeat_seconds: 0.05}\n"
+        "  scheduler: {max_parallel_tasks: 2}\n"
+        "graphs:\n" + textwrap.indent(textwrap.dedent(body), "  ") + footer
+    )
+    contracts = parse_execution_contracts(contracts_text)
+    compiled = compile_workflow(parse_workflow_v2(text), contracts)
+
+    def seed_plan(task: ExecutableTask, workspace, context: RuntimeContext) -> TaskResult:
+        plans = workspace.change_dir / "plans"
+        plans.mkdir(parents=True, exist_ok=True)
+        (plans / "fuzz-plan.md").write_text("# original plan\n", encoding="utf-8")
+        review = workspace.change_dir / "review"
+        review.mkdir(parents=True, exist_ok=True)
+        (review / "plan-review.json").write_text(
+            json.dumps({"decision": "needs_human_review"}),
+            encoding="utf-8",
+        )
+        return TaskResult(status="succeeded")
+
+    ops = default_operations()
+    ops["operation:seed-plan"] = seed_plan
+
+    class NeverInvoker:
+        def invoke(self, request: AgentRequest) -> AgentResult:
+            raise AssertionError(f"unexpected agent invoke: {request}")
+
+    store = TreeStore(change)
+    checkpoints = CheckpointStore(change)
+    workspaces = WorkspaceBackend(change)
+    holder: dict[str, GraphRuntime] = {}
+
+    def run_child(task, graph_id, workspace, context):  # type: ignore[no-untyped-def]
+        return holder["rt"].run_child(task, graph_id, workspace, context)
+
+    base = build_default_node_runner(NeverInvoker(), store, contracts, compiled=compiled, run_child=run_child)
+    op_handler = OperationHandler(ops)
+
+    class Combined:
+        def execute(self, task, workspace, context):  # type: ignore[no-untyped-def]
+            if task.target.startswith("operation:"):
+                return op_handler.execute(task, workspace, context)
+            return base.execute(task, workspace, context)
+
+    scheduler = Scheduler(
+        checkpoints=checkpoints,
+        object_store=store,
+        clock=SystemClock(),
+        workspace_backend=workspaces,
+        node_runner=Combined(),
+        max_parallel_tasks=2,
+        contracts=contracts,
+        state_defs={},
+    )
+    schemas = {compiled.digest: compiled}
+    runtime = GraphRuntime(
+        checkpoint_store=checkpoints,
+        object_store=store,
+        workspace_backend=workspaces,
+        contracts=contracts,
+        node_runner=Combined(),
+        scheduler=scheduler,
+        schema_resolver=lambda digest: schemas[digest],
+        clock=SystemClock(),
+    )
+    holder["rt"] = runtime
+    context = RuntimeContext(
+        project_root=project,
+        repo_root=project,
+        change_dir=change,
+        change_id="CH-1",
+        params={"run_mode": "full"},
+    )
+    result = runtime.run(compiled, "full", context)
+    assert result.exit_code == 30, result.reason
+    assert result.status.status == "interrupted"
+    interrupt = result.status.pending_interrupts[0]
+    assert interrupt.revision_view is not None
+    assert interrupt.source_gate_attempt_id is not None
+    return _ManualRevisionRuntimeFixture(
+        runtime=runtime,
+        result=result,
+        interrupt=interrupt,
+        change=change,
+        revision_view=interrupt.revision_view,
+    )
+
+
+def test_runtime_fix_and_proceed_noop_leaves_interrupt_unresolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from assurance_agent.workflow.graph.models import InterruptProjection, RunResult
+    from assurance_agent.workflow.graph.runtime import GraphRuntime, GraphRuntimeError
+
+    fx = _manual_revision_runtime(tmp_path, monkeypatch)
+    runtime = cast(GraphRuntime, fx.runtime)
+    result = cast(RunResult, fx.result)
+    interrupt = cast(InterruptProjection, fx.interrupt)
+    with pytest.raises(GraphRuntimeError, match="manual_plan_revision_noop"):
+        runtime.resume(
+            result.invocation_id,
+            ResumeCommand(
+                interrupt_id=interrupt.interrupt_id,
+                action="fix_and_proceed",
+                reason="no edits",
+                who="reviewer",
+            ),
+        )
+    status = runtime.status(result.invocation_id)
+    assert status.status == "interrupted"
+    assert status.pending_interrupts
+    events = (fx.change / "events.jsonl").read_text(encoding="utf-8")
+    assert "manual_plan_revision" not in events
+
+
+def test_runtime_fix_and_proceed_captures_edited_view(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from assurance_agent.workflow.core.events import read_events_strict
+    from assurance_agent.workflow.graph.models import InterruptProjection, RunResult
+    from assurance_agent.workflow.graph.runtime import GraphRuntime
+
+    fx = _manual_revision_runtime(tmp_path, monkeypatch)
+    runtime = cast(GraphRuntime, fx.runtime)
+    result = cast(RunResult, fx.result)
+    interrupt = cast(InterruptProjection, fx.interrupt)
+    view = fx.change / fx.revision_view
+    (view / "plans" / "fuzz-plan.md").write_text("# revised plan\n", encoding="utf-8")
+
+    done = runtime.resume(
+        result.invocation_id,
+        ResumeCommand(
+            interrupt_id=interrupt.interrupt_id,
+            action="fix_and_proceed",
+            reason="revise plan",
+            who="reviewer",
+        ),
+    )
+    assert done.exit_code == 0, done.reason
+    assert done.status.status == "completed"
+    events = read_events_strict(fx.change)
+    revisions = [e for e in events if e.get("type") == "manual_plan_revision"]
+    assert len(revisions) == 1
+    after = revisions[0].get("after_sha256")
+    assert isinstance(after, dict)
+    assert after["change:plans/fuzz-plan.md"] == hashlib.sha256(b"# revised plan\n").hexdigest()
+    resumes = [e for e in events if e.get("type") == "graph_resumed"]
+    assert resumes
+    assert all(e.get("revision_transition_id") == revisions[0].get("revision_transition_id") for e in resumes)
+
+
+def test_runtime_accept_risk_and_stop_ignore_revision_view_edits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from assurance_agent.workflow.core.events import read_events_strict
+    from assurance_agent.workflow.graph.models import InterruptProjection, RunResult
+    from assurance_agent.workflow.graph.runtime import GraphRuntime
+
+    fx = _manual_revision_runtime(tmp_path, monkeypatch)
+    runtime = cast(GraphRuntime, fx.runtime)
+    result = cast(RunResult, fx.result)
+    interrupt = cast(InterruptProjection, fx.interrupt)
+    view = fx.change / fx.revision_view
+    (view / "plans" / "fuzz-plan.md").write_text("# should be ignored\n", encoding="utf-8")
+
+    done = runtime.resume(
+        result.invocation_id,
+        ResumeCommand(
+            interrupt_id=interrupt.interrupt_id,
+            action="accept_risk",
+            reason="accept as-is",
+            who="reviewer",
+        ),
+    )
+    assert done.exit_code == 0, done.reason
+    events = read_events_strict(fx.change)
+    assert not any(e.get("type") == "manual_plan_revision" for e in events)
+    resumed = [e for e in events if e.get("type") == "graph_resumed"]
+    assert resumed and resumed[0]["action"] == "accept_risk"
+
+    # Fresh interrupted run for stop
+    fx2 = _manual_revision_runtime(tmp_path / "stop", monkeypatch)
+    runtime2 = cast(GraphRuntime, fx2.runtime)
+    result2 = cast(RunResult, fx2.result)
+    interrupt2 = cast(InterruptProjection, fx2.interrupt)
+    view2 = fx2.change / fx2.revision_view
+    (view2 / "plans" / "fuzz-plan.md").write_text("# ignored on stop\n", encoding="utf-8")
+    stopped = runtime2.resume(
+        result2.invocation_id,
+        ResumeCommand(
+            interrupt_id=interrupt2.interrupt_id,
+            action="stop",
+            reason="abort",
+            who="reviewer",
+        ),
+    )
+    assert stopped.exit_code == 20
+    events2 = read_events_strict(fx2.change)
+    assert not any(e.get("type") == "manual_plan_revision" for e in events2)
+
+
+def test_runtime_identical_suffix_repair_after_open_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from assurance_agent.workflow.core.events import read_events_strict
+    from assurance_agent.workflow.core.graph_events import GraphInterruptedEvent, ManualPlanRevisionEvent
+    from assurance_agent.workflow.core.progression import transaction
+    from assurance_agent.workflow.graph.models import InterruptProjection, RunResult
+    from assurance_agent.workflow.graph.runtime import GraphRuntime, _resume_anchors_for
+
+    fx = _manual_revision_runtime(tmp_path, monkeypatch)
+    runtime = cast(GraphRuntime, fx.runtime)
+    result = cast(RunResult, fx.result)
+    interrupt = cast(InterruptProjection, fx.interrupt)
+    change = fx.change
+    view = change / fx.revision_view
+    (view / "plans" / "fuzz-plan.md").write_text("# revised once\n", encoding="utf-8")
+
+    projection = runtime._checkpoints.project(result.invocation_id)  # noqa: SLF001
+    pending = projection.interrupts[interrupt.interrupt_id]
+    binding = RevisionViewBinding(
+        interrupt_id=pending.interrupt_id,
+        owner_invocation_id=pending.revision_owner_invocation_id or "",
+        base_tree_id=pending.revision_base_tree_id or "",
+        view_relpath=pending.revision_view or "",
+        logical_paths=tuple(pending.revision_paths or ()),
+        baseline=tuple(
+            RevisionPathBaseline(logical_path=path, sha256=(pending.revision_before_sha256 or {})[path])
+            for path in (pending.revision_paths or ())
+        ),
+    )
+    tree_revision = capture_revision_candidate(
+        change_dir=change,
+        store=runtime._objects,  # noqa: SLF001
+        binding=binding,
+    )
+    events = read_events_strict(change)
+    interrupted = next(
+        e
+        for e in events
+        if e.get("type") == "graph_interrupted" and e.get("interrupt_id") == interrupt.interrupt_id
+    )
+    owner = runtime._checkpoints.project(pending.revision_owner_invocation_id or "")  # noqa: SLF001
+    transition = build_manual_revision_transition(
+        interrupted=GraphInterruptedEvent.model_validate(
+            {k: v for k, v in interrupted.items() if k not in {"seq", "ts", "source"}}
+        ),
+        command=ResumeCommand(
+            interrupt_id=interrupt.interrupt_id,
+            action="fix_and_proceed",
+            reason="revise plan",
+            who="reviewer",
+        ),
+        revision=tree_revision,
+        pinned_definition_digests={
+            "policy_digest": owner.policy_digest,
+            "gate_semantics_digest": owner.gate_semantics_digest,
+            "assurance_profile_digest": owner.assurance_profile_digest,
+            "graph_digest": owner.graph_digest,
+            "ir_digest": owner.ir_digest,
+        },
+        resume_anchors=_resume_anchors_for(pending),
+    )
+    # Crash after revision commit: only the revision event is durable.
+    with transaction(change) as txn:
+        txn.append_strict(transition.revision)
+
+    assert derive_revision_recovery_state(read_events_strict(change)) == ("revision_resume_recovery_pending")
+    # Identical CLI retry must repair the missing resume suffix (or no-op after recovery).
+    done = runtime.resume(
+        result.invocation_id,
+        ResumeCommand(
+            interrupt_id=interrupt.interrupt_id,
+            action="fix_and_proceed",
+            reason="revise plan",
+            who="reviewer",
+        ),
+    )
+    assert done.exit_code == 0, done.reason
+    events_after = read_events_strict(change)
+    revisions = [e for e in events_after if e.get("type") == "manual_plan_revision"]
+    assert len(revisions) == 1
+    rebuilt = transition_from_committed_revision(
+        ManualPlanRevisionEvent.model_validate(
+            {k: v for k, v in revisions[0].items() if k not in {"seq", "ts", "source"}}
+        )
+    )
+    resumes = [
+        e
+        for e in events_after
+        if e.get("type") == "graph_resumed"
+        and e.get("revision_transition_id") == rebuilt.revision.revision_transition_id
+    ]
+    assert len(resumes) == len(rebuilt.resumes)
+
+
+def test_runtime_non_identical_retry_after_commit_conflicts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from assurance_agent.workflow.core.events import read_events_strict
+    from assurance_agent.workflow.core.graph_events import GraphInterruptedEvent
+    from assurance_agent.workflow.core.progression import transaction
+    from assurance_agent.workflow.graph.models import InterruptProjection, RunResult
+    from assurance_agent.workflow.graph.runtime import GraphIntegrityError, GraphRuntime, _resume_anchors_for
+
+    fx = _manual_revision_runtime(tmp_path, monkeypatch)
+    runtime = cast(GraphRuntime, fx.runtime)
+    result = cast(RunResult, fx.result)
+    interrupt = cast(InterruptProjection, fx.interrupt)
+    change = fx.change
+    view = change / fx.revision_view
+    (view / "plans" / "fuzz-plan.md").write_text("# first revision\n", encoding="utf-8")
+
+    projection = runtime._checkpoints.project(result.invocation_id)  # noqa: SLF001
+    pending = projection.interrupts[interrupt.interrupt_id]
+    binding = RevisionViewBinding(
+        interrupt_id=pending.interrupt_id,
+        owner_invocation_id=pending.revision_owner_invocation_id or "",
+        base_tree_id=pending.revision_base_tree_id or "",
+        view_relpath=pending.revision_view or "",
+        logical_paths=tuple(pending.revision_paths or ()),
+        baseline=tuple(
+            RevisionPathBaseline(logical_path=path, sha256=(pending.revision_before_sha256 or {})[path])
+            for path in (pending.revision_paths or ())
+        ),
+    )
+    tree_revision = capture_revision_candidate(
+        change_dir=change,
+        store=runtime._objects,  # noqa: SLF001
+        binding=binding,
+    )
+    events = read_events_strict(change)
+    interrupted = next(
+        e
+        for e in events
+        if e.get("type") == "graph_interrupted" and e.get("interrupt_id") == interrupt.interrupt_id
+    )
+    owner = runtime._checkpoints.project(pending.revision_owner_invocation_id or "")  # noqa: SLF001
+    transition = build_manual_revision_transition(
+        interrupted=GraphInterruptedEvent.model_validate(
+            {k: v for k, v in interrupted.items() if k not in {"seq", "ts", "source"}}
+        ),
+        command=ResumeCommand(
+            interrupt_id=interrupt.interrupt_id,
+            action="fix_and_proceed",
+            reason="revise plan",
+            who="reviewer",
+        ),
+        revision=tree_revision,
+        pinned_definition_digests={
+            "policy_digest": owner.policy_digest,
+            "gate_semantics_digest": owner.gate_semantics_digest,
+            "assurance_profile_digest": owner.assurance_profile_digest,
+            "graph_digest": owner.graph_digest,
+            "ir_digest": owner.ir_digest,
+        },
+        resume_anchors=_resume_anchors_for(pending),
+    )
+    with transaction(change) as txn:
+        txn.append_strict(transition.revision)
+
+    # Non-identical view content on retry must conflict while interrupt is still pending.
+    (view / "plans" / "fuzz-plan.md").write_text("# different second try\n", encoding="utf-8")
+    with pytest.raises(GraphIntegrityError, match="non-identical retry after commit"):
+        runtime.resume(
+            result.invocation_id,
+            ResumeCommand(
+                interrupt_id=interrupt.interrupt_id,
+                action="fix_and_proceed",
+                reason="revise plan",
+                who="reviewer",
+            ),
+        )

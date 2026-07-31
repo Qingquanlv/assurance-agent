@@ -133,9 +133,11 @@ class InterruptHandler:
                     f"interrupt {interrupt_id} declares manual_revision but object store is unavailable",
                 )
             if epoch is None:
-                # Manual revision requires a resolvable gate evidence epoch.
-                source_gate_attempt_id = None
-                source_gate_tree_id = None
+                return task_failure(
+                    "contract",
+                    f"interrupt {interrupt_id} declares manual_revision but cannot bind "
+                    f"a gate evidence epoch for checkpoint {interrupt.checkpoint!r}",
+                )
             committed_binding = self._committed_revision_binding(events, interrupt_id)
             binding = materialize_revision_view(
                 change_dir=context.change_dir,

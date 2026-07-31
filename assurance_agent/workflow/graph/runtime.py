@@ -665,11 +665,18 @@ class GraphRuntime:
         except LedgerIntegrityError as exc:
             raise GraphIntegrityError(str(exc)) from exc
         context = self._context_for(projection)
-        self._recover_open_revision_transitions(context)
-        try:
-            projection = self._checkpoints.project(invocation_id)
-        except LedgerIntegrityError as exc:
-            raise GraphIntegrityError(str(exc)) from exc
+        # Manual-revision fix_and_proceed must reach _commit_manual_revision_resume
+        # before open-prefix recovery can resolve the interrupt. Otherwise an
+        # identical CLI retry after a repaired open prefix hits "not pending",
+        # and a non-identical retry never reaches the integrity-conflict path.
+        # resume(None) / ordinary actions still recover first.
+        uses_manual_revision_command = self._is_manual_revision_resume_command(projection, command)
+        if not uses_manual_revision_command:
+            self._recover_open_revision_transitions(context)
+            try:
+                projection = self._checkpoints.project(invocation_id)
+            except LedgerIntegrityError as exc:
+                raise GraphIntegrityError(str(exc)) from exc
         if projection.terminal is not None:
             status = self.status(invocation_id)
             return RunResult(
@@ -688,7 +695,23 @@ class GraphRuntime:
                     exit_code=EXIT_STOPPED,
                     reason=command.reason,
                 )
+            if uses_manual_revision_command:
+                # Commit stages the missing suffix; recover is a no-op afterward
+                # unless a concurrent open prefix remains.
+                self._recover_open_revision_transitions(context)
         return self._drive(invocation_id, context)
+
+    @staticmethod
+    def _is_manual_revision_resume_command(
+        projection: GraphProjection,
+        command: ResumeCommand | None,
+    ) -> bool:
+        if command is None or command.action != "fix_and_proceed":
+            return False
+        if projection.event_schema_version < 5:
+            return False
+        pending = projection.interrupts.get(command.interrupt_id)
+        return pending is not None and pending.revision_view is not None
 
     def _recover_open_revision_transitions(self, context: RuntimeContext) -> None:
         """Repair any open manual-revision resume prefix before ordinary recovery."""
@@ -711,17 +734,26 @@ class GraphRuntime:
         if not command.reason.strip() or not command.who.strip():
             raise GraphRuntimeError("resume requires nonblank reason and who")
         pending = projection.interrupts.get(command.interrupt_id)
-        if pending is None or pending.resolved_action is not None:
+        if pending is None:
             raise GraphRuntimeError(f"interrupt {command.interrupt_id} is not pending")
-        if command.action not in pending.actions:
-            raise GraphRuntimeError(
-                f"action {command.action!r} not allowed for interrupt {command.interrupt_id}"
-            )
         uses_manual_revision = (
             command.action == "fix_and_proceed"
             and projection.event_schema_version >= 5
             and pending.revision_view is not None
         )
+        # After a crash that wrote root resume ordinal(s), the root interrupt is
+        # already resolved while the revision resume suffix may still be open.
+        # Identical fix_and_proceed retries must still reach the revision commit
+        # path for suffix repair / no-op ack (and non-identical conflict).
+        if pending.resolved_action is not None:
+            if uses_manual_revision:
+                self._commit_manual_revision_resume(projection, context, command, pending)
+                return
+            raise GraphRuntimeError(f"interrupt {command.interrupt_id} is not pending")
+        if command.action not in pending.actions:
+            raise GraphRuntimeError(
+                f"action {command.action!r} not allowed for interrupt {command.interrupt_id}"
+            )
         if uses_manual_revision:
             self._commit_manual_revision_resume(projection, context, command, pending)
             return

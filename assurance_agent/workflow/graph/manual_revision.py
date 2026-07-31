@@ -642,6 +642,7 @@ def resolve_gate_evidence_epoch(
 
     current_tree_id: str | None = None
     latest_attempt_id: str | None = None
+    latest_attempt_tree_id: str | None = None
     for event in events:
         if event.get("invocation_id") != invocation_id:
             continue
@@ -664,12 +665,15 @@ def resolve_gate_evidence_epoch(
                 and isinstance(attempt_id, str)
                 and current_tree_id is not None
             ):
+                # Bind the tree that was current when this gate attempt succeeded,
+                # not a later superstep/manual-revision tree.
                 latest_attempt_id = attempt_id
-    if latest_attempt_id is None or current_tree_id is None:
+                latest_attempt_tree_id = current_tree_id
+    if latest_attempt_id is None or latest_attempt_tree_id is None:
         return None
     return GateEvidenceEpoch(
         source_gate_attempt_id=latest_attempt_id,
-        source_gate_tree_id=current_tree_id,
+        source_gate_tree_id=latest_attempt_tree_id,
     )
 
 
