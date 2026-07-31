@@ -1,0 +1,14 @@
+version: 1
+auth:
+  api_admin_token:
+    method: token
+    symbol: tests.conftest.api_admin_token
+    notes: reused by fuzz adapter for authenticated endpoint calls
+capabilities:
+  domain_factories:
+    account:
+      make_account:
+        kind: async_factory
+        symbol: tests.factories.account.make_account
+        entity: account
+        cleanup_ref: cleanup.account_delete
