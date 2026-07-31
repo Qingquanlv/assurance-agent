@@ -547,9 +547,10 @@ def test_fold_is_deterministic(tmp_path: Path) -> None:
     batch_id = "20260729-120000"
     _write_api_result(change_dir, batch_id)
     _write_manifest(change_dir, batch_id=batch_id, executed_at=EXECUTED_AT)
-    first = fold_trace(tmp_path, CHANGE_ID).model_dump_json()
-    second = fold_trace(tmp_path, CHANGE_ID).model_dump_json()
-    assert first == second
+    first = fold_trace(tmp_path, CHANGE_ID)
+    second = fold_trace(tmp_path, CHANGE_ID)
+    assert first.schema_version == "2"
+    assert first.model_dump_json() == second.model_dump_json()
 
 
 def test_sources_include_case_results_and_fold_view(tmp_path: Path) -> None:

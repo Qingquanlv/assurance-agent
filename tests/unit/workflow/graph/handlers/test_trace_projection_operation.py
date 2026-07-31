@@ -100,6 +100,7 @@ def test_materialize_writes_reconciled_projection(workspace: TaskWorkspace) -> N
     assert out.is_file()
     doc = json.loads(out.read_text(encoding="utf-8"))
     assert doc["phase"] == "reconciled"
+    assert doc["schema_version"] == "2"
     expected = fold_trace(workspace.project_root, CHANGE_ID, phase="reconciled")
     assert doc == json.loads(expected.model_dump_json())
 
@@ -110,9 +111,77 @@ def test_missing_sources_still_writes_projection_with_gaps(workspace: TaskWorksp
     out = workspace.change_dir / "inspect" / "trace-projection.json"
     doc = json.loads(out.read_text(encoding="utf-8"))
     assert doc["phase"] == "reconciled"
+    assert doc["schema_version"] == "2"
     assert doc["gaps"]
     gap_codes = {gap["code"] for gap in doc["gaps"]}
     assert "manifest_missing" in gap_codes
+
+
+@pytest.mark.parametrize(
+    "state",
+    ["analysis_failed", "reconcile_failed", "project_sync_pending"],
+)
+def test_materialize_writes_v2_for_recovery_states(workspace: TaskWorkspace, state: str) -> None:
+    from tests.unit.evidence import test_issue_replay_authority as auth
+    from tests.unit.evidence.test_fold_trace_reconciled import _write_selected_api_result
+
+    _write_minimal_case(workspace.change_dir)
+    auth._write_json(workspace.change_dir / auth.FAILURE_SOURCE, auth._failure_payload())
+    auth.write_recovery_state(workspace.change_dir, state)
+    _write_selected_api_result(workspace.change_dir, auth.BATCH_ID)
+    # Preseed a B0 projection that must be replaced.
+    preseed = workspace.change_dir / "inspect" / "trace-projection.json"
+    preseed.parent.mkdir(parents=True, exist_ok=True)
+    preseed.write_text(
+        json.dumps(
+            {
+                "schema_version": "2",
+                "change_id": CHANGE_ID,
+                "phase": "reconciled",
+                "authoritative_batch_id": "B0",
+                "sources": [],
+                "rows": [],
+                "unmapped_tests": [],
+                "gaps": [],
+                "integrity": "complete",
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = materialize_trace_projection(_task(), workspace, _context())
+    assert result.status == "succeeded"
+    doc = json.loads(preseed.read_text(encoding="utf-8"))
+    assert doc["schema_version"] == "2"
+    assert doc["authoritative_batch_id"] == auth.BATCH_ID
+    assert doc["integrity"] == "incomplete"
+    assert any(
+        gap["code"]
+        == {
+            "analysis_failed": "issue_analysis_failed",
+            "reconcile_failed": "issue_reconcile_failed",
+            "project_sync_pending": "project_sync_pending",
+        }[state]
+        for gap in doc["gaps"]
+    )
+
+
+def test_materialize_lets_summary_errors_escape(
+    workspace: TaskWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from assurance_agent.evidence import trace as trace_mod
+    from assurance_agent.evidence.layer_summary import TraceLayerSummaryError
+
+    _write_minimal_case(workspace.change_dir)
+    _write_manifest(workspace.change_dir)
+
+    def boom(*_args, **_kwargs):
+        raise TraceLayerSummaryError("materializer must not catch")
+
+    monkeypatch.setattr(trace_mod, "summarize_projection_by_layer", boom)
+    with pytest.raises(TraceLayerSummaryError):
+        materialize_trace_projection(_task(), workspace, _context())
+    out = workspace.change_dir / "inspect" / "trace-projection.json"
+    assert not out.exists()
 
 
 def test_operation_registered_in_default_operations() -> None:

@@ -210,9 +210,12 @@ def test_json_output_matches_fold_trace(project) -> None:
     runner, root = project
     _seed_happy_path(root)
     expected = fold_trace(root, CHANGE_ID, phase="execution", current=None)
+    assert expected.schema_version == "2"
     result = runner.invoke(main, ["trace", "--change", CHANGE_ID, "--json"])
     assert result.exit_code == 0, result.output
-    assert json.loads(result.stdout) == json.loads(expected.model_dump_json())
+    doc = json.loads(result.stdout)
+    assert doc["schema_version"] == "2"
+    assert doc == json.loads(expected.model_dump_json())
 
 
 def test_json_output_is_deterministic(project) -> None:

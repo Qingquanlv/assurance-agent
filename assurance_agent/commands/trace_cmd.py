@@ -11,12 +11,23 @@ from pathlib import Path
 
 import click
 
-from assurance_agent.artifacts.models.trace import TraceProjection, TraceRow
+from pydantic import ValidationError
+
+from assurance_agent.artifacts.models.trace import TraceProjectionLike, TraceRow
 from assurance_agent.change_location import ChangeNotFoundError, resolve_change
 from assurance_agent.config import ConfigInvalidError, ConfigNotFoundError
+from assurance_agent.evidence.digests import TraceSourceConflictError
+from assurance_agent.evidence.layer_summary import TraceLayerSummaryError, TracePhasePairError
 from assurance_agent.evidence.trace import fold_trace
 from assurance_agent.identifiers import UnsafeIdentifierError
 from assurance_agent.workflow.core.exit_codes import EXIT_ERROR
+
+_FOLD_MODEL_ERRORS = (
+    TraceLayerSummaryError,
+    TracePhasePairError,
+    TraceSourceConflictError,
+    ValidationError,
+)
 
 
 def trace_error_no_cases(change_id: str) -> str:
@@ -27,7 +38,7 @@ def trace_error_all_unmapped(change_id: str) -> str:
     return f"trace failed: all tests unmapped for change '{change_id}'"
 
 
-def validate_trace_projection(projection: TraceProjection) -> str | None:
+def validate_trace_projection(projection: TraceProjectionLike) -> str | None:
     if projection.rows:
         if projection.unmapped_tests and not any(
             row.presence_in_current_batch == "executed" for row in projection.rows
@@ -49,7 +60,7 @@ def filter_trace_rows(
     return tuple(row for row in rows if row.case_type in allowed)
 
 
-def gaps_payload(projection: TraceProjection) -> dict[str, object]:
+def gaps_payload(projection: TraceProjectionLike) -> dict[str, object]:
     return {
         "change_id": projection.change_id,
         "gaps": [gap.model_dump(mode="json") for gap in projection.gaps],
@@ -58,7 +69,7 @@ def gaps_payload(projection: TraceProjection) -> dict[str, object]:
 
 def _print_human(
     change_id: str,
-    projection: TraceProjection,
+    projection: TraceProjectionLike,
     *,
     only_gaps: bool,
     case_types: tuple[str, ...],
@@ -107,14 +118,19 @@ def run_trace(
         click.secho(str(err), fg="red", err=True)
         return EXIT_ERROR
 
-    projection = fold_trace(project_root, change_id, phase="execution", current=None)
+    try:
+        projection = fold_trace(project_root, change_id, phase="execution", current=None)
+    except _FOLD_MODEL_ERRORS as err:
+        click.secho(f"trace failed: fold/model error ({type(err).__name__})", fg="red", err=True)
+        return EXIT_ERROR
+
     error = validate_trace_projection(projection)
     if error:
         click.secho(error, fg="red", err=True)
         return EXIT_ERROR
 
     if only_gaps:
-        payload: TraceProjection | dict[str, object] = gaps_payload(projection)
+        payload: TraceProjectionLike | dict[str, object] = gaps_payload(projection)
     elif case_types:
         payload = projection.model_copy(update={"rows": filter_trace_rows(projection.rows, case_types)})
     else:

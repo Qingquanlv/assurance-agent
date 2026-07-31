@@ -707,8 +707,18 @@ contracts:
     reads:
       - change:cases/**
       - change:execution/**
+      - change:facts/**
+      - change:review/**
+      - change:healing/**
+      - change:codegen/**
       - change:inspect/failure-analysis.json
-      - change:issues/**
+      - change:inspect/issue-evidence-manifest.json
+      - change:inspect/observations.json
+      - change:inspect/issue-candidates.json
+      - change:inspect/issue-reconcile-status.json
+      - change:issues/events.jsonl
+      - change:issues/snapshot.json
+      - project:qa/issues/events.jsonl
       - project:qa/issues/problems.json
       - repo:tests/**
     writes:

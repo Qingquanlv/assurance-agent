@@ -8,7 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from assurance_agent.artifacts.models.policy import Policy
-from assurance_agent.artifacts.models.trace import TraceGap, TraceProjection
+from assurance_agent.artifacts.models.trace import TraceGap, TraceGapV2, TraceProjectionLike
 from assurance_agent.artifacts.policy import policy_digest
 from assurance_agent.evidence.digests import projection_digest
 from assurance_agent.evidence.sufficiency import SufficiencyReportLike
@@ -84,7 +84,7 @@ class VerifyResult(BaseModel):
     warnings: tuple[str, ...] = ()
 
 
-def _gap_item(gap: TraceGap) -> VerifyGapItem:
+def _gap_item(gap: TraceGap | TraceGapV2) -> VerifyGapItem:
     return VerifyGapItem(
         code=gap.code,
         source=gap.source,
@@ -107,7 +107,7 @@ def _insufficient_cases(report: SufficiencyReportLike) -> tuple[VerifyInsufficie
     )
 
 
-def _collect_open_problem_ids(projection: TraceProjection) -> tuple[str, ...]:
+def _collect_open_problem_ids(projection: TraceProjectionLike) -> tuple[str, ...]:
     seen: set[str] = set()
     ordered: list[str] = []
     for row in projection.rows:
@@ -118,12 +118,12 @@ def _collect_open_problem_ids(projection: TraceProjection) -> tuple[str, ...]:
     return tuple(ordered)
 
 
-def _blocking_gaps(projection: TraceProjection) -> tuple[VerifyGapItem, ...]:
+def _blocking_gaps(projection: TraceProjectionLike) -> tuple[VerifyGapItem, ...]:
     return tuple(_gap_item(gap) for gap in projection.gaps if gap.code in VERIFY_BLOCKING_GAP_CODES)
 
 
 def evaluate_verify_verdict(
-    projection: TraceProjection,
+    projection: TraceProjectionLike,
     policy: Policy,
     report: SufficiencyReportLike,
     *,

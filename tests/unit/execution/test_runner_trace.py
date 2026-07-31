@@ -14,9 +14,10 @@ from assurance_agent.artifacts.models import (
     QualityGateResultV2,
     load_quality_gate_result_document,
 )
-from assurance_agent.artifacts.models.trace import TraceProjection
+from assurance_agent.artifacts.models.trace import TraceProjectionV2, load_trace_projection_document
 from assurance_agent.artifacts.policy import load_policy, policy_digest
 from assurance_agent.evidence.digests import projection_digest
+from assurance_agent.evidence.layer_summary import TraceLayerSummaryError
 from assurance_agent.evidence.trace import canonical_json_bytes, fold_trace
 from assurance_agent.workflow.execution import runner as runner_mod
 from assurance_agent.workflow.execution import runners as runners_mod
@@ -109,7 +110,7 @@ def test_gate_projection_equals_saved_and_disk_fold(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project_root, change_dir = trace_project
-    gate_projections: list[TraceProjection] = []
+    gate_projections: list[TraceProjectionV2] = []
     real_fold = fold_trace
 
     def track_fold(*args, **kwargs):
@@ -123,9 +124,11 @@ def test_gate_projection_equals_saved_and_disk_fold(
 
     assert len(gate_projections) == 1
     gate_projection = gate_projections[0]
+    assert gate_projection.schema_version == "2"
 
     projection_path = change_dir / "execution" / "runs" / BATCH_ID / "trace-projection.json"
-    saved = TraceProjection.model_validate_json(projection_path.read_text(encoding="utf-8"))
+    saved = load_trace_projection_document(json.loads(projection_path.read_text(encoding="utf-8")))
+    assert isinstance(saved, TraceProjectionV2)
     from_disk = fold_trace(project_root, CHANGE_ID, current=None)
 
     gate_bytes = canonical_json_bytes(gate_projection.model_dump(mode="json"))
@@ -144,7 +147,8 @@ def test_saved_projection_matches_disk_fold_after_publish(
     projection_path = change_dir / "execution" / "runs" / BATCH_ID / "trace-projection.json"
     assert projection_path.is_file()
 
-    saved = TraceProjection.model_validate_json(projection_path.read_text(encoding="utf-8"))
+    saved = load_trace_projection_document(json.loads(projection_path.read_text(encoding="utf-8")))
+    assert isinstance(saved, TraceProjectionV2)
     from_disk = fold_trace(project_root, CHANGE_ID, current=None)
 
     assert canonical_json_bytes(saved.model_dump(mode="json")) == canonical_json_bytes(
@@ -168,7 +172,8 @@ def test_trace_projection_written_under_batch_dir(
     _run_with_stubs(monkeypatch, project_root, change_dir)
     path = change_dir / "execution" / "runs" / BATCH_ID / "trace-projection.json"
     assert path.is_file()
-    TraceProjection.model_validate_json(path.read_text(encoding="utf-8"))
+    saved = load_trace_projection_document(json.loads(path.read_text(encoding="utf-8")))
+    assert isinstance(saved, TraceProjectionV2)
 
 
 def test_quality_gate_diagnostics_contain_evidence_sufficiency(
@@ -194,9 +199,14 @@ def test_runner_persists_quality_v2_with_bound_digests(
     _run_with_stubs(monkeypatch, project_root, change_dir)
     batch_path = change_dir / "execution" / "runs" / BATCH_ID / "quality-gate-result.json"
     latest_path = change_dir / "execution" / "quality-gate-result.json"
-    projection = TraceProjection.model_validate_json(
-        (change_dir / "execution" / "runs" / BATCH_ID / "trace-projection.json").read_text(encoding="utf-8")
+    projection = load_trace_projection_document(
+        json.loads(
+            (change_dir / "execution" / "runs" / BATCH_ID / "trace-projection.json").read_text(
+                encoding="utf-8"
+            )
+        )
     )
+    assert isinstance(projection, TraceProjectionV2)
     expected_projection = projection_digest(projection)
     expected_policy = policy_digest(load_policy(project_root))
     for path in (batch_path, latest_path):
@@ -268,3 +278,44 @@ def test_policy_error_fails_closed_on_coverage(
         "error_code": "policy_error",
     }
     assert "policy_error" in gate["diagnostics"]["evidence_sufficiency"]
+
+
+def test_first_fold_summary_failure_publishes_neither_quality_nor_trace(
+    trace_project: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root, change_dir = trace_project
+    real_fold = fold_trace
+
+    def fail_first(*args, **kwargs):
+        if kwargs.get("current") is not None:
+            raise TraceLayerSummaryError("gate fold summary failure")
+        return real_fold(*args, **kwargs)
+
+    monkeypatch.setattr(runner_mod, "fold_trace", fail_first)
+    with pytest.raises(TraceLayerSummaryError):
+        _run_with_stubs(monkeypatch, project_root, change_dir)
+    assert not (change_dir / "execution" / "runs" / BATCH_ID / "quality-gate-result.json").exists()
+    assert not (change_dir / "execution" / "runs" / BATCH_ID / "trace-projection.json").exists()
+
+
+def test_second_fold_summary_failure_publishes_no_trace(
+    trace_project: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root, change_dir = trace_project
+    real_fold = fold_trace
+    calls = {"n": 0}
+
+    def fail_second(*args, **kwargs):
+        calls["n"] += 1
+        if kwargs.get("current") is None and calls["n"] >= 2:
+            raise TraceLayerSummaryError("disk fold summary failure")
+        return real_fold(*args, **kwargs)
+
+    monkeypatch.setattr(runner_mod, "fold_trace", fail_second)
+    with pytest.raises(TraceLayerSummaryError):
+        _run_with_stubs(monkeypatch, project_root, change_dir)
+    # Quality may already be published; Trace must not be.
+    assert (change_dir / "execution" / "runs" / BATCH_ID / "quality-gate-result.json").is_file()
+    assert not (change_dir / "execution" / "runs" / BATCH_ID / "trace-projection.json").exists()

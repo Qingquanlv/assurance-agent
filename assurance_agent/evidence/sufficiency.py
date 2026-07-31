@@ -15,7 +15,7 @@ from assurance_agent.artifacts.models.sufficiency import (
     SufficiencyReportV2,
     SufficiencyRowVerdictV2,
 )
-from assurance_agent.artifacts.models.trace import TraceProjection, TraceRow
+from assurance_agent.artifacts.models.trace import TraceProjectionLike, TraceRow
 from assurance_agent.artifacts.policy import policy_digest
 from assurance_agent.evidence.digests import projection_digest
 
@@ -70,7 +70,7 @@ class EvidenceCoverageEvaluation:
 
 
 def build_evidence_coverage_evaluation(
-    projection: TraceProjection | None,
+    projection: TraceProjectionLike | None,
     policy: Policy | None,
     *,
     as_of: datetime,
@@ -101,7 +101,7 @@ def build_evidence_coverage_evaluation(
 
 
 def evaluate_sufficiency(
-    projection: TraceProjection,
+    projection: TraceProjectionLike,
     policy: Policy,
     *,
     as_of: datetime,

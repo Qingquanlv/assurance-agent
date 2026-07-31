@@ -12,13 +12,10 @@ import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from assurance_agent.artifacts.models import SelectedTargets
-from assurance_agent.artifacts.models.inspect import FailureAnalysis
-from assurance_agent.artifacts.models.issues import ChangeIssueSnapshot, Problem, ProblemProjection
 from assurance_agent.artifacts.models.trace import (
     TraceExecution,
-    TraceFailure,
-    TraceGap,
-    TraceProjection,
+    TraceGapV2,
+    TraceProjectionV2,
     TraceRow,
     TraceSource,
     TraceTestRef,
@@ -27,18 +24,18 @@ from assurance_agent.artifacts.models.trace import (
 from assurance_agent.change_location import resolve_change
 from assurance_agent.evidence.case_doc import EvidenceCaseEntry, load_case_entries
 from assurance_agent.evidence.digests import TraceSourceRecorder, canonical_json_bytes
-from assurance_agent.evidence.layer_summary import derive_trace_integrity, summarize_projection_by_layer
+from assurance_agent.evidence.layer_summary import (
+    derive_trace_integrity,
+    summarize_projection_by_layer,
+    validate_trace_phase_pair,
+)
+from assurance_agent.evidence.trace_authority import evaluate_reconciled_authority
 from assurance_agent.evidence.tree_scan import TreeScanResult, scan_test_tree
 
 _TREE_DIGEST_SOURCE = "tests/#tree-digest"
 
 _FOLD_VIEW_SOURCE = "execution/execution-manifest.yaml#fold-view"
 _MANIFEST_PATH = "execution/execution-manifest.yaml"
-_FAILURE_ANALYSIS_PATH = "inspect/failure-analysis.json"
-_ISSUES_SNAPSHOT_PATH = "issues/snapshot.json"
-_PROBLEMS_PATH = "qa/issues/problems.json"
-_MERGE_INTO_PREFIX = "merged_into:"
-_CLOSED_PROBLEM_STATUSES = frozenset({"resolved", "not_an_issue", "accepted_risk"})
 _PYTEST_TARGETS = ("api", "e2e", "fuzz")
 _CASE_TYPE_TO_TARGET: dict[str, Literal["api", "e2e", "fuzz", "performance"]] = {
     "API": "api",
@@ -142,10 +139,10 @@ def fold_trace(
     *,
     phase: Literal["execution", "reconciled"] = "execution",
     current: ExecutionFoldInput | None = None,
-) -> TraceProjection:
+) -> TraceProjectionV2:
     change_dir = resolve_change(project_root, change_id).path
     entries, case_gaps = load_case_entries(change_dir)
-    gaps: list[TraceGap] = list(case_gaps)
+    gaps: list[TraceGapV2] = [TraceGapV2.model_validate(gap.model_dump()) for gap in case_gaps]
     sources = TraceSourceRecorder()
     _record_case_sources(change_dir, sources)
 
@@ -163,7 +160,7 @@ def fold_trace(
     fold_digest = _record_fold_view_source(current_view, change_id, sources)
     if fold_digest is None and current_view.manifest_exists:
         gaps.append(
-            TraceGap(
+            TraceGapV2(
                 code="batch_id_unparseable",
                 source=_FOLD_VIEW_SOURCE,
                 batch_id=current_view.batch_id,
@@ -188,14 +185,14 @@ def fold_trace(
     )
     unmapped = _collect_unmapped_tests(batches, current_view.batch_id)
     integrity = derive_trace_integrity(rows, gaps)
-    execution = TraceProjection(
+    execution = TraceProjectionV2(
         change_id=change_id,
         phase="execution",
         authoritative_batch_id=current_view.batch_id,
         sources=sources.freeze(),
         rows=rows,
         unmapped_tests=unmapped,
-        gaps=tuple(sorted(gaps, key=_gap_sort_key)),
+        gaps=canonical_gaps(gaps),
         integrity=integrity,
     )
     summarize_projection_by_layer(execution)
@@ -207,14 +204,14 @@ def fold_trace(
 def _compare_test_files_sha256(
     current: _CurrentBatchView,
     tree: TreeScanResult,
-    gaps: list[TraceGap],
+    gaps: list[TraceGapV2],
 ) -> None:
     if not current.manifest_exists:
         # Disk/injection view absent → Task 3 already emitted manifest_missing.
         return
     if dict(tree.file_sha256) != dict(current.test_files_sha256):
         gaps.append(
-            TraceGap(
+            TraceGapV2(
                 code="tests_tree_digest_mismatch",
                 source=_TREE_DIGEST_SOURCE,
                 batch_id=current.batch_id or None,
@@ -223,7 +220,7 @@ def _compare_test_files_sha256(
         )
 
 
-def _gap_sort_key(gap: TraceGap) -> tuple[str, str, str, str, str]:
+def _gap_sort_key(gap: TraceGapV2) -> tuple[str, str, str, str, str]:
     return (
         gap.code,
         gap.source,
@@ -233,11 +230,32 @@ def _gap_sort_key(gap: TraceGap) -> tuple[str, str, str, str, str]:
     )
 
 
+def canonical_gaps(gaps: tuple[TraceGapV2, ...] | list[TraceGapV2]) -> tuple[TraceGapV2, ...]:
+    ordered = sorted(gaps, key=_gap_sort_key)
+    seen: set[tuple[str, str, str, str, str]] = set()
+    out: list[TraceGapV2] = []
+    for gap in ordered:
+        key = _gap_sort_key(gap)
+        if key in seen:
+            raise ValueError(f"duplicate gap identity: {key}")
+        seen.add(key)
+        out.append(gap)
+    return tuple(out)
+
+
+def merge_sources(*groups: tuple[TraceSource, ...]) -> tuple[TraceSource, ...]:
+    recorder = TraceSourceRecorder()
+    for group in groups:
+        for source in group:
+            recorder.add(source)
+    return recorder.freeze()
+
+
 def _resolve_current_batch(
     change_dir: Path,
     change_id: str,
     current: ExecutionFoldInput | None,
-    gaps: list[TraceGap],
+    gaps: list[TraceGapV2],
     sources: TraceSourceRecorder,
 ) -> _CurrentBatchView:
     manifest_path = change_dir / _MANIFEST_PATH
@@ -253,7 +271,7 @@ def _resolve_current_batch(
         )
 
     if not manifest_path.is_file():
-        gaps.append(TraceGap(code="manifest_missing", source=_MANIFEST_PATH))
+        gaps.append(TraceGapV2(code="manifest_missing", source=_MANIFEST_PATH))
         return _CurrentBatchView(
             batch_id="",
             executed_at=None,
@@ -269,7 +287,7 @@ def _resolve_current_batch(
 
     raw = _read_yaml_mapping(manifest_path)
     if raw is None:
-        gaps.append(TraceGap(code="manifest_missing", source=_MANIFEST_PATH, detail="invalid YAML mapping"))
+        gaps.append(TraceGapV2(code="manifest_missing", source=_MANIFEST_PATH, detail="invalid YAML mapping"))
         return _CurrentBatchView(
             batch_id="",
             executed_at=None,
@@ -285,7 +303,7 @@ def _resolve_current_batch(
 
     batch_id = raw.get("batch_id")
     if not isinstance(batch_id, str) or not batch_id:
-        gaps.append(TraceGap(code="manifest_missing", source=_MANIFEST_PATH, detail="missing batch_id"))
+        gaps.append(TraceGapV2(code="manifest_missing", source=_MANIFEST_PATH, detail="missing batch_id"))
         return _CurrentBatchView(
             batch_id="",
             executed_at=None,
@@ -304,7 +322,7 @@ def _resolve_current_batch(
     executed_at = _parse_executed_at(raw.get("executed_at"))
     if raw.get("change_id") != change_id:
         gaps.append(
-            TraceGap(
+            TraceGapV2(
                 code="result_identity_mismatch",
                 source=_MANIFEST_PATH,
                 batch_id=batch_id,
@@ -351,12 +369,12 @@ def _load_batch_executions(
     change_id: str,
     current: _CurrentBatchView,
     current_input: ExecutionFoldInput | None,
-    gaps: list[TraceGap],
+    gaps: list[TraceGapV2],
     sources: TraceSourceRecorder,
-) -> tuple[list[_BatchExecution], list[TraceGap]]:
+) -> tuple[list[_BatchExecution], list[TraceGapV2]]:
     runs_root = change_dir / "execution" / "runs"
     out: list[_BatchExecution] = []
-    extra_gaps: list[TraceGap] = []
+    extra_gaps: list[TraceGapV2] = []
     by_batch_id: dict[str, _BatchExecution] = {}
 
     if runs_root.is_dir():
@@ -404,7 +422,7 @@ def _load_batch_from_disk(
     batch_dir: Path,
     change_id: str,
     current: _CurrentBatchView,
-    gaps: list[TraceGap],
+    gaps: list[TraceGapV2],
     sources: TraceSourceRecorder,
 ) -> _BatchExecution | None:
     batch_id = batch_dir.name
@@ -457,7 +475,7 @@ def _build_current_batch(
     change_id: str,
     current: ExecutionFoldInput,
     disk_batch: _BatchExecution | None,
-    gaps: list[TraceGap],
+    gaps: list[TraceGapV2],
     sources: TraceSourceRecorder,
 ) -> _BatchExecution:
     batch_id = current.batch_id
@@ -541,14 +559,14 @@ def _build_current_batch(
 
 
 def _append_result_missing(
-    gaps: list[TraceGap],
+    gaps: list[TraceGapV2],
     sources: TraceSourceRecorder,
     rel: str,
     batch_id: str,
     target: str,
 ) -> None:
     gaps.append(
-        TraceGap(
+        TraceGapV2(
             code="result_missing",
             source=rel,
             batch_id=batch_id,
@@ -563,7 +581,7 @@ def _emit_missing_results_for_selected_targets(
     batch_id: str,
     selected_targets: SelectedTargets,
     batch: _BatchExecution | None,
-    gaps: list[TraceGap],
+    gaps: list[TraceGapV2],
     sources: TraceSourceRecorder,
 ) -> None:
     if not batch_id:
@@ -597,11 +615,11 @@ def _accept_injected_pytest_result(
     batch_id: str,
     target: str,
     source: str,
-    gaps: list[TraceGap],
+    gaps: list[TraceGapV2],
 ) -> ResultDocument | None:
     if doc.change_id != change_id:
         gaps.append(
-            TraceGap(
+            TraceGapV2(
                 code="result_identity_mismatch",
                 source=source,
                 batch_id=batch_id,
@@ -612,7 +630,7 @@ def _accept_injected_pytest_result(
         return None
     if doc.batch_id != batch_id:
         gaps.append(
-            TraceGap(
+            TraceGapV2(
                 code="result_identity_mismatch",
                 source=source,
                 batch_id=batch_id,
@@ -623,7 +641,7 @@ def _accept_injected_pytest_result(
         return None
     if doc.target != target:
         gaps.append(
-            TraceGap(
+            TraceGapV2(
                 code="result_identity_mismatch",
                 source=source,
                 batch_id=batch_id,
@@ -640,11 +658,11 @@ def _accept_injected_performance_result(
     change_id: str,
     batch_id: str,
     source: str,
-    gaps: list[TraceGap],
+    gaps: list[TraceGapV2],
 ) -> PerformanceResultDocument | None:
     if doc.change_id != change_id:
         gaps.append(
-            TraceGap(
+            TraceGapV2(
                 code="result_identity_mismatch",
                 source=source,
                 batch_id=batch_id,
@@ -655,7 +673,7 @@ def _accept_injected_performance_result(
         return None
     if doc.batch_id != batch_id:
         gaps.append(
-            TraceGap(
+            TraceGapV2(
                 code="result_identity_mismatch",
                 source=source,
                 batch_id=batch_id,
@@ -666,7 +684,7 @@ def _accept_injected_performance_result(
         return None
     if doc.kind != "performance":
         gaps.append(
-            TraceGap(
+            TraceGapV2(
                 code="result_identity_mismatch",
                 source=source,
                 batch_id=batch_id,
@@ -684,13 +702,13 @@ def _load_pytest_result(
     batch_id: str,
     target: str,
     source: str,
-    gaps: list[TraceGap],
+    gaps: list[TraceGapV2],
 ) -> ResultDocument | None:
     try:
         doc = ResultDocument.model_validate_json(path.read_text(encoding="utf-8"))
     except (OSError, ValidationError, ValueError) as err:
         gaps.append(
-            TraceGap(
+            TraceGapV2(
                 code="result_corrupt",
                 source=source,
                 batch_id=batch_id,
@@ -702,7 +720,7 @@ def _load_pytest_result(
 
     if doc.change_id != change_id:
         gaps.append(
-            TraceGap(
+            TraceGapV2(
                 code="result_identity_mismatch",
                 source=source,
                 batch_id=batch_id,
@@ -713,7 +731,7 @@ def _load_pytest_result(
         return None
     if doc.batch_id != batch_id:
         gaps.append(
-            TraceGap(
+            TraceGapV2(
                 code="result_identity_mismatch",
                 source=source,
                 batch_id=batch_id,
@@ -724,7 +742,7 @@ def _load_pytest_result(
         return None
     if doc.target != target:
         gaps.append(
-            TraceGap(
+            TraceGapV2(
                 code="result_identity_mismatch",
                 source=source,
                 batch_id=batch_id,
@@ -741,13 +759,13 @@ def _load_performance_result(
     change_id: str,
     batch_id: str,
     source: str,
-    gaps: list[TraceGap],
+    gaps: list[TraceGapV2],
 ) -> PerformanceResultDocument | None:
     try:
         doc = PerformanceResultDocument.model_validate_json(path.read_text(encoding="utf-8"))
     except (OSError, ValidationError, ValueError) as err:
         gaps.append(
-            TraceGap(
+            TraceGapV2(
                 code="result_corrupt",
                 source=source,
                 batch_id=batch_id,
@@ -759,7 +777,7 @@ def _load_performance_result(
 
     if doc.change_id != change_id:
         gaps.append(
-            TraceGap(
+            TraceGapV2(
                 code="result_identity_mismatch",
                 source=source,
                 batch_id=batch_id,
@@ -770,7 +788,7 @@ def _load_performance_result(
         return None
     if doc.batch_id != batch_id:
         gaps.append(
-            TraceGap(
+            TraceGapV2(
                 code="result_identity_mismatch",
                 source=source,
                 batch_id=batch_id,
@@ -781,7 +799,7 @@ def _load_performance_result(
         return None
     if doc.kind != "performance":
         gaps.append(
-            TraceGap(
+            TraceGapV2(
                 code="result_identity_mismatch",
                 source=source,
                 batch_id=batch_id,
@@ -845,7 +863,7 @@ def _build_row(
     executions: tuple[_CaseExecution, ...],
     current: _CurrentBatchView,
     tree: TreeScanResult,
-    gaps: list[TraceGap],
+    gaps: list[TraceGapV2],
 ) -> TraceRow:
     target = _CASE_TYPE_TO_TARGET[entry.type]
     latest = _pick_latest(executions)
@@ -890,7 +908,7 @@ def _maybe_mapped_test_missing(
     entry: EvidenceCaseEntry,
     latest: _CaseExecution,
     tree: TreeScanResult,
-    gaps: list[TraceGap],
+    gaps: list[TraceGapV2],
 ) -> None:
     """Emit gap when latest mapped pytest test disappeared from the current tree."""
     if entry.type == "Performance":
@@ -898,7 +916,7 @@ def _maybe_mapped_test_missing(
     if entry.case_id in tree.case_ids:
         return
     gaps.append(
-        TraceGap(
+        TraceGapV2(
             code="mapped_test_missing_from_tree",
             source=_TREE_DIGEST_SOURCE,
             batch_id=latest.batch_id,
@@ -997,7 +1015,7 @@ def _resolve_batch_ts(
     batch_id: str,
     executed_at: datetime | None,
     source: str,
-    gaps: list[TraceGap],
+    gaps: list[TraceGapV2],
 ) -> tuple[datetime | None, Literal["executed_at", "batch_id_legacy_utc"]]:
     if executed_at is not None:
         if executed_at.tzinfo is None:
@@ -1006,7 +1024,7 @@ def _resolve_batch_ts(
     legacy = _parse_legacy_batch_ts(batch_id)
     if legacy is None:
         gaps.append(
-            TraceGap(
+            TraceGapV2(
                 code="batch_id_unparseable",
                 source=source,
                 batch_id=batch_id,
@@ -1042,15 +1060,15 @@ def _parse_executed_at(value: object) -> datetime | None:
 def _parse_selected_targets(
     value: object,
     source: str,
-    gaps: list[TraceGap],
+    gaps: list[TraceGapV2],
 ) -> SelectedTargets:
     if not isinstance(value, dict):
-        gaps.append(TraceGap(code="manifest_missing", source=source, detail="selected_targets invalid"))
+        gaps.append(TraceGapV2(code="manifest_missing", source=source, detail="selected_targets invalid"))
         return SelectedTargets(api=False, e2e=False, fuzz=False, performance=False)
     try:
         return SelectedTargets.model_validate(value)
     except ValidationError:
-        gaps.append(TraceGap(code="manifest_missing", source=source, detail="selected_targets invalid"))
+        gaps.append(TraceGapV2(code="manifest_missing", source=source, detail="selected_targets invalid"))
         return SelectedTargets(api=False, e2e=False, fuzz=False, performance=False)
 
 
@@ -1093,221 +1111,41 @@ def _file_source(rel: str, path: Path) -> TraceSource:
 def _enrich_reconciled(
     project_root: Path,
     change_dir: Path,
-    execution: TraceProjection,
-) -> TraceProjection:
-    gaps = list(execution.gaps)
-    sources = TraceSourceRecorder()
-    for source in execution.sources:
-        sources.add(source)
-    failure_analysis = _load_failure_analysis(change_dir, gaps, sources)
-    issues_snapshot = _load_issues_snapshot(change_dir, gaps, sources)
-    problems_projection = _load_problems_projection(project_root, gaps, sources)
-    failures_by_case = _index_failures_by_case(failure_analysis)
-    problems_by_id = (
-        {problem.problem_id: problem for problem in problems_projection.problems}
-        if problems_projection is not None
-        else {}
+    execution: TraceProjectionV2,
+) -> TraceProjectionV2:
+    decision = evaluate_reconciled_authority(
+        project_root,
+        change_dir,
+        execution.change_id,
+        execution.authoritative_batch_id,
     )
-    open_by_case = _index_open_problems_by_case(issues_snapshot, problems_by_id, gaps)
     rows = tuple(
         row.model_copy(
             update={
-                "failures": failures_by_case.get(row.case_id, ()),
-                "open_problem_ids": open_by_case.get(row.case_id, ()),
+                "failures": decision.failures_by_case.get(row.case_id, ()),
+                "open_problem_ids": decision.open_problem_ids_by_case.get(row.case_id, ()),
             }
         )
         for row in execution.rows
     )
-    integrity = derive_trace_integrity(rows, gaps)
-    projection = TraceProjection(
+    gaps = canonical_gaps(
+        (
+            *execution.gaps,
+            *decision.failure_gaps,
+            *decision.issue_gaps,
+            *decision.project_gaps,
+        )
+    )
+    projection = TraceProjectionV2(
         change_id=execution.change_id,
         phase="reconciled",
         authoritative_batch_id=execution.authoritative_batch_id,
-        sources=sources.freeze(),
+        sources=merge_sources(execution.sources, decision.sources),
         rows=rows,
         unmapped_tests=execution.unmapped_tests,
-        gaps=tuple(sorted(gaps, key=_gap_sort_key)),
-        integrity=integrity,
+        gaps=gaps,
+        integrity=derive_trace_integrity(rows, gaps),
     )
     summarize_projection_by_layer(projection)
+    validate_trace_phase_pair(execution, projection)
     return projection
-
-
-def _load_failure_analysis(
-    change_dir: Path,
-    gaps: list[TraceGap],
-    sources: TraceSourceRecorder,
-) -> FailureAnalysis | None:
-    path = change_dir / _FAILURE_ANALYSIS_PATH
-    sources.add(_file_source(_FAILURE_ANALYSIS_PATH, path))
-    if not path.is_file():
-        gaps.append(TraceGap(code="failure_analysis_missing", source=_FAILURE_ANALYSIS_PATH))
-        return None
-    try:
-        return FailureAnalysis.model_validate_json(path.read_text(encoding="utf-8"))
-    except (OSError, ValidationError, ValueError) as err:
-        gaps.append(
-            TraceGap(
-                code="failure_analysis_missing",
-                source=_FAILURE_ANALYSIS_PATH,
-                detail=str(err),
-            )
-        )
-        return None
-
-
-def _load_issues_snapshot(
-    change_dir: Path,
-    gaps: list[TraceGap],
-    sources: TraceSourceRecorder,
-) -> ChangeIssueSnapshot | None:
-    path = change_dir / _ISSUES_SNAPSHOT_PATH
-    sources.add(_file_source(_ISSUES_SNAPSHOT_PATH, path))
-    if not path.is_file():
-        gaps.append(TraceGap(code="issues_snapshot_missing", source=_ISSUES_SNAPSHOT_PATH))
-        return None
-    try:
-        return ChangeIssueSnapshot.model_validate_json(path.read_text(encoding="utf-8"))
-    except (OSError, ValidationError, ValueError) as err:
-        gaps.append(
-            TraceGap(
-                code="issues_snapshot_missing",
-                source=_ISSUES_SNAPSHOT_PATH,
-                detail=str(err),
-            )
-        )
-        return None
-
-
-def _load_problems_projection(
-    project_root: Path,
-    gaps: list[TraceGap],
-    sources: TraceSourceRecorder,
-) -> ProblemProjection | None:
-    path = project_root / _PROBLEMS_PATH
-    sources.add(_file_source(_PROBLEMS_PATH, path))
-    if not path.is_file():
-        gaps.append(TraceGap(code="problems_snapshot_missing", source=_PROBLEMS_PATH))
-        return None
-    try:
-        return ProblemProjection.model_validate_json(path.read_text(encoding="utf-8"))
-    except (OSError, ValidationError, ValueError) as err:
-        gaps.append(
-            TraceGap(
-                code="problems_snapshot_missing",
-                source=_PROBLEMS_PATH,
-                detail=str(err),
-            )
-        )
-        return None
-
-
-def _index_failures_by_case(
-    failure_analysis: FailureAnalysis | None,
-) -> dict[str, tuple[TraceFailure, ...]]:
-    if failure_analysis is None:
-        return {}
-    grouped: dict[str, list[TraceFailure]] = {}
-    for entry in failure_analysis.failures:
-        grouped.setdefault(entry.case_id, []).append(
-            TraceFailure(category=entry.category, severity=entry.severity)
-        )
-    return {case_id: tuple(items) for case_id, items in grouped.items()}
-
-
-def _index_open_problems_by_case(
-    issues_snapshot: ChangeIssueSnapshot | None,
-    problems_by_id: dict[str, Problem],
-    gaps: list[TraceGap],
-) -> dict[str, tuple[str, ...]]:
-    if issues_snapshot is None:
-        return {}
-
-    observation_case: dict[str, str] = {}
-    for observation in issues_snapshot.observations:
-        if observation.case_id is not None:
-            observation_case[observation.observation_id] = observation.case_id
-
-    case_problem_ids: dict[str, list[str]] = {}
-    for occurrence in issues_snapshot.occurrences:
-        for observation_id in occurrence.observation_ids:
-            case_id = observation_case.get(observation_id)
-            if case_id is None:
-                continue
-            case_problem_ids.setdefault(case_id, []).append(occurrence.problem_id)
-
-    out: dict[str, tuple[str, ...]] = {}
-    for case_id, problem_ids in case_problem_ids.items():
-        open_ids = _collect_open_problem_ids(problem_ids, problems_by_id, gaps)
-        if open_ids:
-            out[case_id] = open_ids
-    return out
-
-
-def _collect_open_problem_ids(
-    problem_ids: list[str],
-    problems_by_id: dict[str, Problem],
-    gaps: list[TraceGap],
-) -> tuple[str, ...]:
-    seen_fingerprints: set[str] = set()
-    open_ids: list[str] = []
-    for problem_id in sorted(problem_ids):
-        canonical_id = _resolve_canonical_problem_id(problem_id, problems_by_id, gaps)
-        if canonical_id is None:
-            continue
-        problem = problems_by_id[canonical_id]
-        if problem.status in _CLOSED_PROBLEM_STATUSES:
-            continue
-        if problem.assessment.classification != "product_bug":
-            continue
-        fingerprint = problem.fingerprint.digest
-        if fingerprint in seen_fingerprints:
-            continue
-        seen_fingerprints.add(fingerprint)
-        open_ids.append(canonical_id)
-    return tuple(sorted(open_ids))
-
-
-def _resolve_canonical_problem_id(
-    problem_id: str,
-    problems_by_id: dict[str, Problem],
-    gaps: list[TraceGap],
-) -> str | None:
-    visited: set[str] = set()
-    current = problem_id
-    while True:
-        if current in visited:
-            gaps.append(
-                TraceGap(
-                    code="problem_alias_invalid",
-                    source=_PROBLEMS_PATH,
-                    detail=f"merge alias cycle at {current}",
-                )
-            )
-            return None
-        visited.add(current)
-        problem = problems_by_id.get(current)
-        if problem is None:
-            gaps.append(
-                TraceGap(
-                    code="problem_alias_invalid",
-                    source=_PROBLEMS_PATH,
-                    detail=f"merge alias target missing: {current}",
-                )
-            )
-            return None
-        resolution = problem.resolution
-        if resolution is not None and resolution.disposition.startswith(_MERGE_INTO_PREFIX):
-            target_id = resolution.disposition[len(_MERGE_INTO_PREFIX) :]
-            if not target_id:
-                gaps.append(
-                    TraceGap(
-                        code="problem_alias_invalid",
-                        source=_PROBLEMS_PATH,
-                        detail=f"empty merge alias target from {current}",
-                    )
-                )
-                return None
-            current = target_id
-            continue
-        return current

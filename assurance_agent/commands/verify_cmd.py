@@ -7,10 +7,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import click
+from pydantic import ValidationError
 
 from assurance_agent.artifacts.policy import PolicyError, load_policy
 from assurance_agent.change_location import ChangeNotFoundError, resolve_change
 from assurance_agent.config import ConfigInvalidError, ConfigNotFoundError
+from assurance_agent.evidence.digests import TraceSourceConflictError
+from assurance_agent.evidence.layer_summary import TraceLayerSummaryError, TracePhasePairError
 from assurance_agent.evidence.sufficiency import evaluate_sufficiency
 from assurance_agent.evidence.trace import fold_trace
 from assurance_agent.evidence.verify import (
@@ -21,6 +24,13 @@ from assurance_agent.evidence.verify import (
 )
 from assurance_agent.identifiers import UnsafeIdentifierError
 from assurance_agent.workflow.core.exit_codes import EXIT_ERROR, EXIT_HUMAN_REVIEW
+
+_FOLD_MODEL_ERRORS = (
+    TraceLayerSummaryError,
+    TracePhasePairError,
+    TraceSourceConflictError,
+    ValidationError,
+)
 
 __all__ = [
     "VERIFY_BLOCKING_GAP_CODES",
@@ -97,7 +107,11 @@ def run_verify(
         return EXIT_ERROR
 
     aware_as_of = as_of if as_of is not None else datetime.now(UTC)
-    projection = fold_trace(project_root, change_id, phase="reconciled")
+    try:
+        projection = fold_trace(project_root, change_id, phase="reconciled")
+    except _FOLD_MODEL_ERRORS as err:
+        click.secho(f"verify failed: fold/model error ({type(err).__name__})", fg="red", err=True)
+        return EXIT_ERROR
     try:
         report = evaluate_sufficiency(projection, policy, as_of=aware_as_of)
     except TypeError as err:

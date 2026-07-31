@@ -233,6 +233,86 @@ def _strip_test_from_tree(project_root: Path, change_dir: Path) -> None:
         yaml.safe_dump(payload, sort_keys=False),
         encoding="utf-8",
     )
+    # Refresh completed authority digests against the rewritten execution anchor.
+    _seed_completed_authority(change_dir)
+
+
+def _seed_completed_authority(change_dir: Path) -> None:
+    """Write completed empty issue authority over the existing execution anchor."""
+    from assurance_agent.artifacts.models.issues import (
+        IssueCandidateDocument,
+        IssueEvidenceManifest,
+        IssueEvidenceManifestEntry,
+        ObservationDocument,
+    )
+    from assurance_agent.evidence.digests import evidence_bundle_digest_v1, evidence_entry_digest_v1
+    from assurance_agent.evidence.issue_identity import candidate_document_digest
+    from assurance_agent.evidence.issue_replay import dump_projection, project_change_issues
+    from tests.unit.evidence import test_issue_replay_authority as auth
+
+    anchor = change_dir / "execution/execution-manifest.yaml"
+    anchor_bytes = anchor.read_bytes()
+    entries = [
+        IssueEvidenceManifestEntry(
+            path="execution/execution-manifest.yaml",
+            digest=evidence_entry_digest_v1(anchor_bytes),
+        )
+    ]
+    digest = evidence_bundle_digest_v1(entries)
+    manifest = IssueEvidenceManifest(
+        schema_version="1.0",
+        change_id=CHANGE_ID,
+        batch_id=BATCH_ID,
+        digest=digest,
+        entries=entries,
+    )
+    auth._write_json(change_dir / "inspect/issue-evidence-manifest.json", manifest.model_dump(mode="json"))
+    candidates = IssueCandidateDocument(
+        schema_version="1.0",
+        change_id=CHANGE_ID,
+        batch_id=BATCH_ID,
+        evidence_bundle_digest=digest,
+        candidates=[],
+    )
+    auth._write_json(change_dir / "inspect/issue-candidates.json", candidates.model_dump(mode="json"))
+    auth._write_json(
+        change_dir / "inspect/observations.json",
+        ObservationDocument(
+            schema_version="1.0",
+            change_id=CHANGE_ID,
+            batch_id=BATCH_ID,
+            observations=[],
+        ).model_dump(mode="json"),
+    )
+    c_digest = candidate_document_digest(candidates)
+    original_change, original_batch = auth.CHANGE_ID, auth.BATCH_ID
+    auth.CHANGE_ID, auth.BATCH_ID = CHANGE_ID, BATCH_ID
+    try:
+        from assurance_agent.artifacts.models.issue_events import ChangeIssueEvent
+
+        events: list[ChangeIssueEvent] = [
+            auth._analysis_completed_event(
+                evidence_digest=digest,
+                candidate_digest=c_digest,
+                candidate_count=0,
+                seq=1,
+            )
+        ]
+        auth._write_ledger(change_dir, events)
+        (change_dir / "issues/snapshot.json").parent.mkdir(parents=True, exist_ok=True)
+        (change_dir / "issues/snapshot.json").write_bytes(
+            dump_projection(project_change_issues(tuple(events)))
+        )
+        auth._write_reconcile_status(
+            change_dir,
+            schema_version="2.0",
+            status="completed",
+            evidence_bundle_digest=digest,
+            candidate_digest=c_digest,
+            occurrence_count=0,
+        )
+    finally:
+        auth.CHANGE_ID, auth.BATCH_ID = original_change, original_batch
 
 
 def _seed_reconciled_happy_path(
@@ -254,9 +334,10 @@ def _seed_reconciled_happy_path(
     if write_failure_analysis:
         _write_failure_analysis(change_dir)
     if write_issues:
-        _write_issues_snapshot(change_dir)
-    if write_problems:
-        _write_problems(project_root)
+        _seed_completed_authority(change_dir)
+    # Empty completed authority uses project genesis: do not create project ledger/problems
+    # unless a caller explicitly needs a non-genesis surface (see problems_snapshot_missing).
+    del write_problems
     return change_dir
 
 
@@ -385,81 +466,21 @@ def test_needs_human_verdict(project) -> None:
     assert doc["insufficient"]
 
 
-def test_open_problem_ids_fail(project) -> None:
-    runner, root = project
-    change_dir = _seed_reconciled_happy_path(root)
-    obs = {
-        "observation_id": "OBS-1",
-        "change_id": CHANGE_ID,
-        "batch_id": BATCH_ID,
-        "kind": "test_failure",
-        "target": "api",
-        "case_id": CASE_ID,
-        "source": {"artifact": "inspect/failure-analysis.json", "json_pointer": "/failures/0"},
-        "evidence_refs": ["evidence:1"],
-        "signature": "sig-1",
-        "observed_at": "2026-07-29T12:00:00Z",
-    }
-    occ = {
-        "occurrence_id": "OCC-1",
-        "change_id": CHANGE_ID,
-        "batch_id": BATCH_ID,
-        "observation_ids": ["OBS-1"],
-        "problem_id": "PROB-1",
-        "provisional_assessment": {
-            "classification": "product_bug",
-            "severity": "high",
-            "authority": "llm_provisional",
-            "root_cause_hypothesis": "hypothesis",
-        },
-        "analysis": {
-            "evidence_bundle_digest": "sha256:evidence",
-            "analyzer": "test-analyzer",
-            "prompt_version": "1.0",
-            "candidate_digest": "sha256:candidate",
-        },
-    }
-    problem = {
-        "problem_id": "PROB-1",
-        "fingerprint": {"version": "1", "digest": "sha256:prob-1"},
-        "title": "Problem 1",
-        "assessment": {
-            "classification": "product_bug",
-            "severity": "high",
-            "authority": "llm_provisional",
-            "root_cause_hypothesis": "hypothesis",
-        },
-        "status": "detected",
-        "first_seen": {"change_id": CHANGE_ID, "occurrence_id": "OCC-1"},
-        "last_seen": {"change_id": CHANGE_ID, "occurrence_id": "OCC-1"},
-        "occurrences": ["OCC-1"],
-        "verification_request": None,
-        "resolution": None,
-        "version": 1,
-    }
-    (change_dir / "issues/snapshot.json").write_text(
-        json.dumps(
-            {
-                "schema_version": "1.0",
-                "change_id": CHANGE_ID,
-                "authoritative_batch_id": BATCH_ID,
-                "observations": [obs],
-                "occurrences": [occ],
-                "project_sync_status": "completed",
-                "batches": [BATCH_ID],
-            }
-        ),
-        encoding="utf-8",
+def test_open_problem_ids_fail() -> None:
+    projection = TraceProjectionV2(
+        change_id=CHANGE_ID,
+        phase="reconciled",
+        authoritative_batch_id=BATCH_ID,
+        rows=(_row(latest_execution=_execution(), open_problem_ids=("PROB-1",)),),
+        integrity="complete",
     )
-    (root / "qa/issues/problems.json").write_text(
-        json.dumps({"schema_version": "1.0", "generated_at": "2026-07-29T12:00:00Z", "problems": [problem]}),
-        encoding="utf-8",
+    result = verify_cmd.evaluate_verify_verdict(
+        projection,
+        _policy(on_insufficient="warn"),
+        _report(),
     )
-    result = runner.invoke(main, ["verify", "--change", CHANGE_ID, "--json"])
-    assert result.exit_code == 40, result.output
-    doc = json.loads(result.stdout)
-    assert doc["verdict"] == "fail"
-    assert doc["open_problem_ids"] == ["PROB-1"]
+    assert result.verdict == "fail"
+    assert result.open_problem_ids == ("PROB-1",)
 
 
 _V2_ONLY_BLOCKING_GAP_CODES = frozenset(
@@ -555,7 +576,11 @@ def test_blocking_gap_manifest_missing_cli(project) -> None:
         ),
         (
             "problems_snapshot_missing",
-            lambda root, change_dir: (root / "qa/issues/problems.json").unlink(),
+            lambda root, change_dir: (
+                (root / "qa/issues").mkdir(parents=True, exist_ok=True),
+                (root / "qa/issues/events.jsonl").write_text("", encoding="utf-8"),
+                (root / "qa/issues/problems.json").unlink(missing_ok=True),
+            ),
         ),
         (
             "tests_tree_digest_mismatch",
@@ -591,7 +616,9 @@ def test_reconciled_input_gaps_fail_even_when_on_insufficient_warn(project, gap_
     elif gap_code == "issues_snapshot_missing":
         (change_dir / "issues/snapshot.json").unlink()
     else:
-        (root / "qa/issues/problems.json").unlink()
+        (root / "qa/issues").mkdir(parents=True, exist_ok=True)
+        (root / "qa/issues/events.jsonl").write_text("", encoding="utf-8")
+        (root / "qa/issues/problems.json").unlink(missing_ok=True)
 
     result = runner.invoke(main, ["verify", "--change", CHANGE_ID, "--json"])
     assert result.exit_code == 40, result.output
