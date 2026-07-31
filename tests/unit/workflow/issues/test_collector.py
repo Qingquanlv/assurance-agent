@@ -1142,3 +1142,58 @@ def test_collector_manifest_paths_are_unique_and_non_aliasing(tmp_path: Path) ->
     paths = [e.path for e in result.manifest.entries]
     assert len(paths) == len(set(paths))
     assert all(normalize_evidence_entry_path(p) == p for p in paths)
+
+
+def test_build_evidence_manifest_rejects_duplicate_normalized_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Distinct manifest refs that normalize to the same path must fail closed."""
+    from assurance_agent.artifacts.models.issues import Observation, ObservationSource
+    from assurance_agent.evidence.digests import ValidatedEvidenceEntry
+    from assurance_agent.workflow.issues.collector import _build_evidence_manifest
+
+    change_id = "CH-dup-normalized"
+    batch_id = "20260725-100021"
+    change_dir = tmp_path / change_id
+    change_dir.mkdir()
+    normalized_path = "execution/runs/b/result.json"
+
+    def fake_read(_change_dir: Path, _path: str) -> ValidatedEvidenceEntry:
+        return ValidatedEvidenceEntry(
+            path=normalized_path,
+            data=b"payload",
+            entry_digest="sha256:abc",
+            raw_sha256="abc",
+        )
+
+    monkeypatch.setattr(
+        "assurance_agent.workflow.issues.collector.read_evidence_entry_v1",
+        fake_read,
+    )
+
+    observation = Observation(
+        observation_id="OBS-dup-path",
+        change_id=change_id,
+        batch_id=batch_id,
+        kind="test_failure",
+        target="api",
+        source=ObservationSource(
+            artifact="execution/runs/b/api-result.json",
+            json_pointer="/cases/0",
+        ),
+        evidence_refs=[
+            "execution/runs/b/alias-result.json",
+            normalized_path,
+        ],
+        signature="sig-dup-path",
+        observed_at="2026-07-25T10:00:00Z",
+    )
+
+    with pytest.raises(EvidenceError, match=f"duplicate evidence path: {normalized_path}"):
+        _build_evidence_manifest(
+            change_id=change_id,
+            batch_id=batch_id,
+            anchor_path="execution/execution-manifest.yaml",
+            observations=[observation],
+            change_dir=change_dir,
+        )
