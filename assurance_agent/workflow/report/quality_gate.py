@@ -4,15 +4,29 @@ Functional folds api + e2e + fuzz; coverage and performance are separate
 dimensions. final_status is the worst status across active dimensions.
 """
 
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from pydantic import ValidationError
+
 from assurance_agent.artifacts.models import (
     CoverageDimension,
+    CoverageDimensionV2,
     CoverageThreshold,
+    EvidenceCoverageErrorV2,
+    EvidenceCoveragePayloadV2,
+    EvidenceCoverageSuccessV2,
     FunctionalCounts,
     FunctionalDimension,
     GateStatus,
     NonFunctionalDimension,
-    QualityGateDimensions,
-    QualityGateResult,
+    QualityGateDimensionsV2,
+    QualityGateResultLike,
+    QualityGateResultV2,
+    SufficiencyReportV2,
+    load_quality_gate_result_document,
 )
 from assurance_agent.evidence.sufficiency import EvidenceCoverageEvaluation
 from assurance_agent.workflow.execution.results import (
@@ -57,27 +71,32 @@ def _unmapped_count(*results: TargetResult | None) -> int:
 def _coverage_from_evidence(
     coverage: CoverageResult | None,
     evidence_coverage: EvidenceCoverageEvaluation,
-) -> CoverageDimension:
+) -> CoverageDimensionV2:
     if evidence_coverage.error_code is not None:
         status: GateStatus = "FAIL"
-        evidence = {"error_code": evidence_coverage.error_code}
-    elif evidence_coverage.report is not None and evidence_coverage.report.all_sufficient:
-        status = "PASS"
-        evidence = evidence_coverage.report.model_dump(mode="json")
-    elif evidence_coverage.action == "warn":
-        status = "PASS_WITH_WARNINGS"
-        evidence = evidence_coverage.report.model_dump(mode="json") if evidence_coverage.report else None
+        payload: EvidenceCoveragePayloadV2 = EvidenceCoverageErrorV2(
+            kind="error",
+            error_code=evidence_coverage.error_code,
+        )
     else:
-        status = "FAIL"
-        evidence = evidence_coverage.report.model_dump(mode="json") if evidence_coverage.report else None
+        report = evidence_coverage.report
+        if not isinstance(report, SufficiencyReportV2):
+            raise TypeError("new quality writer requires SufficiencyReportV2")
+        if report.all_sufficient:
+            status = "PASS"
+        elif evidence_coverage.action == "warn":
+            status = "PASS_WITH_WARNINGS"
+        else:
+            status = "FAIL"
+        payload = EvidenceCoverageSuccessV2(kind="sufficiency", report=report)
 
-    return CoverageDimension(
+    return CoverageDimensionV2(
         status=status,
         available=bool(coverage and coverage.available),
         line_coverage=coverage.line_coverage if coverage else 0.0,
         branch_coverage=coverage.branch_coverage if coverage else 0.0,
         threshold=coverage.threshold if coverage else CoverageThreshold(line=0, branch=0),
-        evidence=evidence,
+        evidence=payload,
     )
 
 
@@ -105,7 +124,7 @@ def build_quality_gate(
     evidence_coverage: EvidenceCoverageEvaluation,
     fuzz: TargetResult | None = None,
     performance: PerformanceResult | None = None,
-) -> QualityGateResult:
+) -> QualityGateResultV2:
     func_status = _functional_status(api, e2e, fuzz)
     coverage_dim = _coverage_from_evidence(coverage, evidence_coverage)
     cov_status = coverage_dim.status
@@ -131,17 +150,44 @@ def build_quality_gate(
     if fuzz and fuzz.status != "skipped":
         functional.fuzz = _counts(fuzz)
 
-    dimensions = QualityGateDimensions(functional=functional, coverage=coverage_dim)
+    dimensions = QualityGateDimensionsV2(
+        functional=functional,
+        coverage=coverage_dim,
+        non_functional=non_functional,
+    )
     gate_statuses: list[GateStatus] = [func_status, cov_status]
     if non_functional is not None:
-        dimensions.non_functional = non_functional
         gate_statuses.append(non_functional.status)
 
-    return QualityGateResult(
-        schema_version="1.0",
+    return QualityGateResultV2(
+        schema_version="2.0",
         change_id=change_id,
         batch_id=batch_id,
         dimensions=dimensions,
         final_status=worst_status(gate_statuses),
         warnings=warnings or None,
     )
+
+
+def quality_gate_legacy_view(
+    gate: QualityGateResultLike,
+) -> tuple[FunctionalDimension, CoverageDimension, NonFunctionalDimension | None]:
+    return (
+        FunctionalDimension.model_validate(gate.dimensions.functional.model_dump(mode="json")),
+        CoverageDimension.model_validate(gate.dimensions.coverage.model_dump(mode="json")),
+        (
+            None
+            if gate.dimensions.non_functional is None
+            else NonFunctionalDimension.model_validate(gate.dimensions.non_functional.model_dump(mode="json"))
+        ),
+    )
+
+
+def load_quality_gate_result_file(path: Path) -> QualityGateResultLike | None:
+    if not path.is_file():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return load_quality_gate_result_document(raw)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValidationError):
+        return None

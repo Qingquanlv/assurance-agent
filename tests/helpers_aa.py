@@ -6,8 +6,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from assurance_agent.artifacts.models.sufficiency import SufficiencyReportV2
 from assurance_agent.change_location import ChangeLocation, ChangeSource
-from assurance_agent.evidence.sufficiency import EvidenceCoverageEvaluation, SufficiencyReport
+from assurance_agent.evidence.sufficiency import EvidenceCoverageEvaluation
 from assurance_agent.workflow.core.templates import InitAnswers, build_config_yaml
 
 AWARE_NOW = datetime(2026, 7, 30, 12, 0, 0, tzinfo=UTC)
@@ -62,7 +63,7 @@ def make_report_v2(
         "source_policy_digest": source_policy_digest,
         "semantics": semantics,
         "require_current_batch": require_current_batch,
-        "as_of": as_of,
+        "as_of": as_of.isoformat(),
         "recency_hours": recency_hours,
         "verdicts": verdicts if verdicts is not None else [make_verdict()],
     }
@@ -97,11 +98,7 @@ def sufficient_evidence_coverage(
 ) -> EvidenceCoverageEvaluation:
     """Stub evidence evaluation for tests that seed execution artifacts only."""
     return EvidenceCoverageEvaluation(
-        report=SufficiencyReport(
-            as_of=datetime(2026, 7, 30, 12, 0, 0, tzinfo=UTC),
-            recency_hours=72,
-            verdicts=(),
-        ),
+        report=SufficiencyReportV2.model_validate(make_report_v2(verdicts=[])),
         action=action,  # type: ignore[arg-type]
         error_code=None,
     )

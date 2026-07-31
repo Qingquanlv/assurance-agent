@@ -14,13 +14,18 @@ import yaml
 from pydantic import BaseModel
 from pydantic.types import AwareDatetime
 
-from assurance_agent.artifacts.models import ExecutionManifest, QualityGateResult, SelectedTargets
+from assurance_agent.artifacts.models import (
+    ExecutionManifest,
+    QualityGateResultLike,
+    SelectedTargets,
+)
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.execution.results import (
     CoverageResult,
     PerformanceResult,
     TargetResult,
 )
+from assurance_agent.workflow.report.quality_gate import load_quality_gate_result_file
 
 
 class EvidenceError(AaError):
@@ -45,7 +50,7 @@ class ExecutionEvidence(BaseModel):
     fuzz: TargetResult | None
     coverage: CoverageResult | None
     performance: PerformanceResult | None
-    quality_gate: QualityGateResult | None
+    quality_gate: QualityGateResultLike | None
     result_paths: dict[str, str]
     integrity_issues: list[IntegrityIssue]
 
@@ -86,7 +91,7 @@ def publish_execution_evidence(
     fuzz: TargetResult | None,
     coverage: CoverageResult | None,
     performance: PerformanceResult | None,
-    quality_gate: QualityGateResult,
+    quality_gate: QualityGateResultLike,
     summary: str,
     tests_tree_sha256: str | None = None,
     test_files_sha256: dict[str, str] | None = None,
@@ -245,12 +250,7 @@ def load_execution_evidence(
             )
 
     gate_path = execution_dir / "runs" / manifest.batch_id / "quality-gate-result.json"
-    quality_gate: QualityGateResult | None = None
-    if gate_path.is_file():
-        try:
-            quality_gate = QualityGateResult.model_validate_json(gate_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            quality_gate = None
+    quality_gate = load_quality_gate_result_file(gate_path)
     if quality_gate is not None and (
         quality_gate.batch_id != manifest.batch_id or quality_gate.change_id != manifest.change_id
     ):

@@ -9,7 +9,14 @@ from pathlib import Path
 import pytest
 import yaml
 
+from assurance_agent.artifacts.models import (
+    EvidenceCoverageSuccessV2,
+    QualityGateResultV2,
+    load_quality_gate_result_document,
+)
 from assurance_agent.artifacts.models.trace import TraceProjection
+from assurance_agent.artifacts.policy import load_policy, policy_digest
+from assurance_agent.evidence.digests import projection_digest
 from assurance_agent.evidence.trace import canonical_json_bytes, fold_trace
 from assurance_agent.workflow.execution import runner as runner_mod
 from assurance_agent.workflow.execution import runners as runners_mod
@@ -179,6 +186,29 @@ def test_quality_gate_diagnostics_contain_evidence_sufficiency(
     assert "verdicts" in shadow
 
 
+def test_runner_persists_quality_v2_with_bound_digests(
+    trace_project: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root, change_dir = trace_project
+    _run_with_stubs(monkeypatch, project_root, change_dir)
+    batch_path = change_dir / "execution" / "runs" / BATCH_ID / "quality-gate-result.json"
+    latest_path = change_dir / "execution" / "quality-gate-result.json"
+    projection = TraceProjection.model_validate_json(
+        (change_dir / "execution" / "runs" / BATCH_ID / "trace-projection.json").read_text(encoding="utf-8")
+    )
+    expected_projection = projection_digest(projection)
+    expected_policy = policy_digest(load_policy(project_root))
+    for path in (batch_path, latest_path):
+        gate = load_quality_gate_result_document(json.loads(path.read_text(encoding="utf-8")))
+        assert isinstance(gate, QualityGateResultV2)
+        evidence = gate.dimensions.coverage.evidence
+        assert isinstance(evidence, EvidenceCoverageSuccessV2)
+        assert evidence.report.require_current_batch is True
+        assert evidence.report.source_projection_digest == expected_projection
+        assert evidence.report.source_policy_digest == expected_policy
+
+
 def test_coverage_dimension_uses_evidence_sufficiency(
     trace_project: tuple[Path, Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -187,9 +217,11 @@ def test_coverage_dimension_uses_evidence_sufficiency(
     _run_with_stubs(monkeypatch, project_root, change_dir)
     gate_path = change_dir / "execution" / "runs" / BATCH_ID / "quality-gate-result.json"
     gate = json.loads(gate_path.read_text(encoding="utf-8"))
+    assert gate["schema_version"] == "2.0"
     coverage = gate["dimensions"]["coverage"]
     assert coverage["evidence"] is not None
-    assert "verdicts" in coverage["evidence"]
+    assert coverage["evidence"]["kind"] == "sufficiency"
+    assert "verdicts" in coverage["evidence"]["report"]
     assert coverage["status"] in {"PASS", "PASS_WITH_WARNINGS", "FAIL"}
 
 
@@ -231,5 +263,8 @@ def test_policy_error_fails_closed_on_coverage(
     gate_path = change_dir / "execution" / "runs" / BATCH_ID / "quality-gate-result.json"
     gate = json.loads(gate_path.read_text(encoding="utf-8"))
     assert gate["final_status"] == "FAIL"
-    assert gate["dimensions"]["coverage"]["evidence"] == {"error_code": "policy_error"}
+    assert gate["dimensions"]["coverage"]["evidence"] == {
+        "kind": "error",
+        "error_code": "policy_error",
+    }
     assert "policy_error" in gate["diagnostics"]["evidence_sufficiency"]

@@ -2,10 +2,16 @@ from datetime import UTC, datetime
 
 import pytest
 
-from assurance_agent.artifacts.models import CoverageThreshold, PerformanceScenarioVerdict
+from assurance_agent.artifacts.models import (
+    CoverageThreshold,
+    EvidenceCoverageErrorV2,
+    EvidenceCoverageSuccessV2,
+    PerformanceScenarioVerdict,
+    QualityGateResultV2,
+)
+from assurance_agent.artifacts.models.sufficiency import SufficiencyReportV2
 from assurance_agent.evidence.sufficiency import (
     EvidenceCoverageEvaluation,
-    RowVerdict,
     SufficiencyReport,
 )
 from assurance_agent.workflow.execution.results import (
@@ -16,32 +22,55 @@ from assurance_agent.workflow.execution.results import (
     TargetResult,
 )
 from assurance_agent.workflow.report.quality_gate import build_quality_gate, worst_status
+from tests.helpers_aa import make_report_v2, make_verdict
 
 AS_OF = datetime(2026, 7, 30, 12, 0, 0, tzinfo=UTC)
 
 
-def _sufficient_eval(*, action: str = "require_human") -> EvidenceCoverageEvaluation:
+def gate_inputs() -> dict:
+    return {
+        "change_id": "CH-1",
+        "batch_id": "b1",
+        "api": make_target("api", 3, 3, 0),
+        "e2e": None,
+        "coverage": make_coverage("PASS"),
+    }
+
+
+def successful_v2_evidence(*, action: str = "require_human") -> EvidenceCoverageEvaluation:
     return EvidenceCoverageEvaluation(
-        report=SufficiencyReport(as_of=AS_OF, recency_hours=72, verdicts=()),
+        report=SufficiencyReportV2.model_validate(make_report_v2(verdicts=[])),
         action=action,  # type: ignore[arg-type]
         error_code=None,
     )
 
 
+def missing_projection_evidence() -> EvidenceCoverageEvaluation:
+    return EvidenceCoverageEvaluation(
+        report=None,
+        action=None,
+        error_code="evidence_projection_missing",
+    )
+
+
+def _sufficient_eval(*, action: str = "require_human") -> EvidenceCoverageEvaluation:
+    return successful_v2_evidence(action=action)
+
+
 def _insufficient_eval(*, action: str) -> EvidenceCoverageEvaluation:
     return EvidenceCoverageEvaluation(
-        report=SufficiencyReport(
-            as_of=AS_OF,
-            recency_hours=72,
-            verdicts=(
-                RowVerdict(
-                    case_id="TC_API_001",
-                    sufficient=False,
-                    missing_kinds=("execution_recent",),
-                    reason_codes=("never_run",),
-                    execution_state="never_run",
-                ),
-            ),
+        report=SufficiencyReportV2.model_validate(
+            make_report_v2(
+                verdicts=[
+                    make_verdict(
+                        case_id="TC_API_001",
+                        sufficient=False,
+                        missing_kinds=["execution_recent"],
+                        reason_codes=["never_run"],
+                        execution_state="never_run",
+                    )
+                ]
+            )
         ),
         action=action,  # type: ignore[arg-type]
         error_code=None,
@@ -107,6 +136,31 @@ def make_coverage(status: str, available: bool = True, line: float = 85.0) -> Co
     )
 
 
+def test_quality_gate_v2_embeds_typed_current_sufficiency() -> None:
+    gate = build_quality_gate(evidence_coverage=successful_v2_evidence(), **gate_inputs())
+    assert gate.schema_version == "2.0"
+    evidence = gate.dimensions.coverage.evidence
+    assert isinstance(evidence, EvidenceCoverageSuccessV2)
+    assert evidence.report.require_current_batch is True
+
+
+def test_quality_gate_v2_embeds_closed_error() -> None:
+    gate = build_quality_gate(evidence_coverage=missing_projection_evidence(), **gate_inputs())
+    assert isinstance(gate.dimensions.coverage.evidence, EvidenceCoverageErrorV2)
+
+
+def test_quality_gate_writer_rejects_legacy_sufficiency_report() -> None:
+    with pytest.raises(TypeError, match="SufficiencyReportV2"):
+        build_quality_gate(
+            evidence_coverage=EvidenceCoverageEvaluation(
+                report=SufficiencyReport(as_of=AS_OF, recency_hours=72, verdicts=()),
+                action="warn",
+                error_code=None,
+            ),
+            **gate_inputs(),
+        )
+
+
 def test_all_pass_gate_is_pass() -> None:
     gate = build_quality_gate(
         change_id="CH-1",
@@ -116,6 +170,7 @@ def test_all_pass_gate_is_pass() -> None:
         coverage=make_coverage("PASS"),
         evidence_coverage=_sufficient_eval(),
     )
+    assert isinstance(gate, QualityGateResultV2)
     assert gate.dimensions.functional.status == "PASS"
     assert gate.dimensions.coverage.status == "PASS"
     assert gate.final_status == "PASS"
@@ -171,8 +226,9 @@ def test_insufficient_evidence_maps_action_to_coverage_status(
     )
     assert gate.dimensions.coverage.status == expected_status
     assert gate.final_status == expected_final
-    assert gate.dimensions.coverage.evidence is not None
-    assert "verdicts" in gate.dimensions.coverage.evidence
+    evidence = gate.dimensions.coverage.evidence
+    assert isinstance(evidence, EvidenceCoverageSuccessV2)
+    assert evidence.report.verdicts
 
 
 @pytest.mark.parametrize(
@@ -193,7 +249,9 @@ def test_fail_closed_coverage_errors(error_code: str) -> None:
         ),
     )
     assert gate.dimensions.coverage.status == "FAIL"
-    assert gate.dimensions.coverage.evidence == {"error_code": error_code}
+    evidence = gate.dimensions.coverage.evidence
+    assert isinstance(evidence, EvidenceCoverageErrorV2)
+    assert evidence.error_code == error_code
     assert gate.final_status == "FAIL"
 
 

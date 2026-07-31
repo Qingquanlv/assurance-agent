@@ -17,7 +17,7 @@ from assurance_agent.artifacts.models import (
     IssueReconcileStatus,
     IssueReport,
     ProblemProjection,
-    QualityGateResult,
+    QualityGateResultLike,
     QualityReport,
     ReportDefect,
     ReportDefects,
@@ -31,6 +31,10 @@ from assurance_agent.workflow.issues.events import (
     LedgerIntegrityError,
     ProblemRegressedEvent,
     read_problem_events,
+)
+from assurance_agent.workflow.report.quality_gate import (
+    load_quality_gate_result_file,
+    quality_gate_legacy_view,
 )
 from assurance_agent.workflow.report.quality_score import ScoreDimension, compute_quality_score
 
@@ -82,7 +86,7 @@ def generate_report(project_root: Path, change_id: str) -> GenerateReportResult:
     report_dir = change_base / "report"
 
     evidence = load_execution_evidence(change_base / "execution")
-    gate = _load(inspect_dir / "quality-gate-result.json", QualityGateResult)
+    gate = load_quality_gate_result_file(inspect_dir / "quality-gate-result.json")
     if gate is None:
         raise FileNotFoundError(
             f"quality-gate-result.json not found for '{change_id}'. Run `aa report inspect` first."
@@ -95,6 +99,7 @@ def generate_report(project_root: Path, change_id: str) -> GenerateReportResult:
     recommendation = _recommendation(gate.final_status, defects)
     started_at, duration = _execution_timing(change_base)
     issue_report = _derive_issue_report(change_base, project_root)
+    functional, coverage, non_functional = quality_gate_legacy_view(gate)
 
     report = QualityReport(
         schema_version="1.1",
@@ -104,15 +109,15 @@ def generate_report(project_root: Path, change_id: str) -> GenerateReportResult:
         quality_score=score,
         score_breakdown=breakdown,
         scope=_scope(change_base),
-        functional=gate.dimensions.functional,
-        coverage=gate.dimensions.coverage,
+        functional=functional,
+        coverage=coverage,
         defects=defects,
         risk_level=risk_level,
         risk_rationale=risk_rationale,
         recommendation=recommendation,
         started_at=started_at,
         duration=duration,
-        non_functional=gate.dimensions.non_functional,
+        non_functional=non_functional,
         issues=issue_report,
     )
 
@@ -330,7 +335,7 @@ def _build_issue_report(
     )
 
 
-def _dimensions(gate: QualityGateResult) -> dict[str, ScoreDimension]:
+def _dimensions(gate: QualityGateResultLike) -> dict[str, ScoreDimension]:
     func = gate.dimensions.functional
     func_total = func.api.total + func.e2e.total
     func_passed = func.api.passed + func.e2e.passed
@@ -378,7 +383,7 @@ def _bucket_defects(analysis: FailureAnalysis | None) -> ReportDefects:
     return ReportDefects(product=product, test=test, environment=environment)
 
 
-def _risk(gate: QualityGateResult, defects: ReportDefects) -> tuple[ReportRiskLevel, str]:
+def _risk(gate: QualityGateResultLike, defects: ReportDefects) -> tuple[ReportRiskLevel, str]:
     if defects.product:
         return (
             "HIGH",
