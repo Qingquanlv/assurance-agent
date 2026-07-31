@@ -57,6 +57,7 @@ _POLICY_DIR = ".graph-runtime/policies"
 PinnedDefinitionReason = Literal[
     "pinned_schema_missing",
     "pinned_schema_digest_mismatch",
+    "pinned_schema_compile_failed",
     "pinned_ingest_catalog_missing",
     "pinned_ingest_catalog_invalid",
     "pinned_ingest_catalog_digest_mismatch",
@@ -317,15 +318,7 @@ def _load_pinned_ingest_catalog(change_dir: Path, digest: str) -> IngestArtifact
     try:
         catalog = parse_ingest_catalog_snapshot(data)
     except ValueError as exc:
-        message = str(exc)
-        if (
-            "canonical" in message
-            or "malformed" in message
-            or "invalid" in message
-            or "schema_version" in message
-        ):
-            raise PinnedDefinitionError("pinned_ingest_catalog_invalid", message) from exc
-        raise PinnedDefinitionError("pinned_ingest_catalog_invalid", message) from exc
+        raise PinnedDefinitionError("pinned_ingest_catalog_invalid", str(exc)) from exc
     if catalog.digest != digest:
         raise PinnedDefinitionError(
             "pinned_ingest_catalog_digest_mismatch",
@@ -398,6 +391,15 @@ def _load_pinned_execution_contracts(
         ) from exc
 
 
+def _pinned_reason_for_compile_error(exc: CompileError) -> PinnedDefinitionReason:
+    message = str(exc)
+    if "ingest_catalog_digest" in message:
+        return "pinned_ingest_catalog_digest_mismatch"
+    if "contract target set" in message or ("contract" in message and "digest expected" in message):
+        return "pinned_contract_digest_mismatch"
+    return "pinned_schema_compile_failed"
+
+
 def load_pinned_execution_definition(
     change_dir: Path,
     request: PinnedDefinitionRequest,
@@ -431,7 +433,7 @@ def load_pinned_execution_definition(
         )
     except CompileError as exc:
         raise PinnedDefinitionError(
-            "pinned_contract_digest_mismatch",
+            _pinned_reason_for_compile_error(exc),
             str(exc),
         ) from exc
     if compiled.digest != request.graph_digest:

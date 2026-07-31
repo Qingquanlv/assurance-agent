@@ -30,7 +30,7 @@ from assurance_agent.workflow.core.graph_events import (
     TaskAttemptStartedEvent,
     TaskAttemptSucceededEvent,
 )
-from assurance_agent.workflow.graph.compiler import CompileError, PinnedDefinitionRequest
+from assurance_agent.workflow.graph.compiler import PinnedDefinitionRequest
 from assurance_agent.workflow.graph.contracts import ResourcePath
 from assurance_agent.workflow.graph.definition_pinning import (
     PinnedDefinitionError,
@@ -58,6 +58,7 @@ ReplayReasonCode = Literal[
     "root_invocation_unbound",
     "pinned_schema_missing",
     "pinned_schema_digest_mismatch",
+    "pinned_schema_compile_failed",
     "pinned_ingest_catalog_missing",
     "pinned_ingest_catalog_invalid",
     "pinned_ingest_catalog_digest_mismatch",
@@ -505,11 +506,6 @@ def _load_pinned_definitions(
         resolved = load_pinned_execution_definition(change_dir, request)
     except PinnedDefinitionError as exc:
         raise ReplayBindingError(cast(ReplayReasonCode, exc.reason_code), exc.message) from exc
-    except CompileError as exc:
-        raise ReplayBindingError(
-            "pinned_contract_digest_mismatch",
-            str(exc),
-        ) from exc
     compiled = resolved.compiled
 
     policy_path = change_dir / policy_snapshot_relpath(started.policy_digest)

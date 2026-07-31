@@ -28,6 +28,7 @@ from assurance_agent.workflow.core.graph_events import (
     TaskAttemptSucceededEvent,
 )
 from assurance_agent.workflow.graph.compiler import (
+    CompileError,
     PinnedDefinitionRequest,
     canonical_digest,
     compile_workflow,
@@ -35,6 +36,7 @@ from assurance_agent.workflow.graph.compiler import (
 from assurance_agent.workflow.graph.contracts import load_execution_contracts
 from assurance_agent.workflow.graph.definition_pinning import (
     PinnedDefinitionError,
+    _pinned_reason_for_compile_error,
     bind_root_definitions,
     load_pinned_execution_definition,
     policy_snapshot_relpath,
@@ -1701,3 +1703,68 @@ def test_load_pinned_execution_definition_missing_snapshot_fails_closed(tmp_path
     catalog_path.unlink()
     with pytest.raises(PinnedDefinitionError, match="pinned_ingest_catalog_missing"):
         load_pinned_execution_definition(fixture.change_dir, request)
+
+
+def test_pinned_reason_for_compile_error_maps_digest_and_structural_failures() -> None:
+    assert (
+        _pinned_reason_for_compile_error(
+            CompileError("historical compile identity mismatch: ingest_catalog_digest expected abc, got def")
+        )
+        == "pinned_ingest_catalog_digest_mismatch"
+    )
+    assert (
+        _pinned_reason_for_compile_error(
+            CompileError(
+                "historical compile identity mismatch: contract 'operation:x' digest expected a, got b"
+            )
+        )
+        == "pinned_contract_digest_mismatch"
+    )
+    assert (
+        _pinned_reason_for_compile_error(
+            CompileError("workflow v2 compile failed:\n  - unknown node 'missing'")
+        )
+        == "pinned_schema_compile_failed"
+    )
+
+
+def test_load_pinned_execution_definition_maps_structural_compile_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _build_fixture(tmp_path)
+    request = PinnedDefinitionRequest(
+        graph_digest=fixture.compiled.digest,  # type: ignore[attr-defined]
+        ingest_catalog_digest=fixture.compiled.ingest_catalog_digest,  # type: ignore[attr-defined]
+        contract_digests=tuple(sorted(fixture.compiled.contract_digests.items())),  # type: ignore[attr-defined]
+        event_schema_version=4,
+        gate_semantics_digest=fixture.binding.gate_semantics_digest,  # type: ignore[attr-defined]
+        assurance_profile_digest=fixture.binding.assurance_profile_digest,  # type: ignore[attr-defined]
+    )
+
+    monkeypatch.setattr(
+        "assurance_agent.workflow.graph.compiler.validate_historical_replay_surface",
+        lambda _schema: ("historical replay surface is not valid",),
+    )
+    with pytest.raises(PinnedDefinitionError) as exc_info:
+        load_pinned_execution_definition(fixture.change_dir, request)
+    assert exc_info.value.reason_code == "pinned_schema_compile_failed"
+
+
+def test_bind_replay_definitions_maps_structural_compile_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _build_fixture(tmp_path)
+    monkeypatch.setattr(
+        "assurance_agent.workflow.graph.compiler.validate_historical_replay_surface",
+        lambda _schema: ("historical replay surface is not valid",),
+    )
+    with pytest.raises(ReplayBindingError) as exc_info:
+        bind_replay_definitions(
+            change_dir=fixture.change_dir,
+            change_id=_CHANGE_ID,
+            root_invocation_id=_ROOT_INV,
+            expected_entrypoint=_ENTRYPOINT,
+        )
+    assert exc_info.value.reason_code == "pinned_schema_compile_failed"
