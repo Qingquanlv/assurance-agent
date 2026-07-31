@@ -1,13 +1,31 @@
-"""Specialty report v2 models, four-layer matrix invariants, and discriminated loader."""
+"""Specialty report v2/v3 models, four-layer matrix invariants, and loaders."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    RootModel,
+    field_validator,
+    model_validator,
+)
 
 from assurance_agent.artifacts.models.assurance import CASE_TYPES, LAYER_NAMES, PLAN_CHECK_IDS
+from assurance_agent.artifacts.models.common import GateStatus
+from assurance_agent.artifacts.models.sufficiency import TraceLayerSufficiencySummary
+from assurance_agent.artifacts.models.trace import (
+    StrictNonNegativeInt,
+    TraceIntegrity,
+    TraceLayerFactSummary,
+    TraceProjectionLike,
+)
+from assurance_agent.evidence.digests import projection_digest
+from assurance_agent.evidence.layer_summary import summarize_projection_by_layer
+from assurance_agent.evidence.verify import VerifyVerdict
 from assurance_agent.workflow.orchestration.plan_check_replay import PolicyEffect
 
 ReplayIntegrity = Literal["complete", "incomplete"]
@@ -212,7 +230,216 @@ class LegacySpecialtyReportV1(BaseModel):
     traceability_evidence: dict[str, Any] = Field(default_factory=dict)
 
 
+TraceCollectionFailureReason = Literal[
+    "execution_projection_missing",
+    "execution_projection_invalid",
+    "reconciled_projection_missing",
+    "reconciled_projection_invalid",
+    "reconciled_projection_stale",
+    "projection_identity_mismatch",
+    "projection_phase_pair_mismatch",
+    "quality_gate_missing",
+    "quality_gate_invalid",
+    "quality_gate_binding_mismatch",
+    "sufficiency_binding_mismatch",
+    "verify_result_missing",
+    "verify_result_invalid",
+    "verify_binding_mismatch",
+    "layer_summary_invalid",
+]
+
+
+class TraceCommandStatus(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    trace_exit: StrictNonNegativeInt
+    verify_exit: StrictNonNegativeInt
+
+
+class ProjectionOverview(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    phase: Literal["execution", "reconciled"]
+    batch_id: str
+    projection_digest: str
+    integrity: TraceIntegrity
+    row_count: StrictNonNegativeInt
+    source_count: StrictNonNegativeInt
+    gap_count: StrictNonNegativeInt
+    unmapped_test_count: StrictNonNegativeInt
+
+    @classmethod
+    def from_projection(cls, projection: TraceProjectionLike) -> Self:
+        return cls(
+            phase=projection.phase,
+            batch_id=projection.authoritative_batch_id,
+            projection_digest=projection_digest(projection),
+            integrity=projection.integrity,
+            row_count=len(projection.rows),
+            source_count=len(projection.sources),
+            gap_count=len(projection.gaps),
+            unmapped_test_count=len(projection.unmapped_tests),
+        )
+
+
+class TracePhaseEvidence(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    overview: ProjectionOverview
+    facts: TraceLayerFactSummary
+
+    @classmethod
+    def from_projection(cls, projection: TraceProjectionLike) -> Self:
+        return cls(
+            overview=ProjectionOverview.from_projection(projection),
+            facts=summarize_projection_by_layer(projection),
+        )
+
+    @model_validator(mode="after")
+    def _overview_matches_facts(self) -> Self:
+        if self.overview.phase != self.facts.phase:
+            raise ValueError("overview.phase must match facts.phase")
+        if self.overview.batch_id != self.facts.authoritative_batch_id:
+            raise ValueError("overview.batch_id must match facts.authoritative_batch_id")
+        if self.overview.projection_digest != self.facts.source_projection_digest:
+            raise ValueError("overview.projection_digest must match facts.source_projection_digest")
+        if self.overview.integrity != self.facts.projection_integrity:
+            raise ValueError("overview.integrity must match facts.projection_integrity")
+        row_total = sum(layer.total for layer in self.facts.layers)
+        if self.overview.row_count != row_total:
+            raise ValueError("overview.row_count must equal sum of facts.layers totals")
+        gap_total = sum(layer.gaps.total for layer in self.facts.layers) + self.facts.global_gaps.total
+        if self.overview.gap_count != gap_total:
+            raise ValueError("overview.gap_count must equal layer plus global gap totals")
+        return self
+
+
+class CoverageSummary(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    status: GateStatus
+    line: float
+    branch: float
+    final_status: GateStatus
+
+
+class VerifyDiagnostics(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    phase: Literal["reconciled"]
+    verdict: VerifyVerdict
+    policy_digest: str
+    projection_digest: str
+    blocking_gap_count: StrictNonNegativeInt
+    open_problem_count: StrictNonNegativeInt
+    reported_insufficient_count: StrictNonNegativeInt
+
+
+class CompleteTraceabilityEvidenceV3(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    status: Literal["complete"]
+    command_status: TraceCommandStatus
+    execution: TracePhaseEvidence
+    reconciled: TracePhaseEvidence
+    sufficiency: TraceLayerSufficiencySummary
+    coverage: CoverageSummary
+    verify: VerifyDiagnostics
+
+    @model_validator(mode="after")
+    def _validate_complete_bindings(self) -> Self:
+        if self.execution.overview.phase != "execution" or self.execution.facts.phase != "execution":
+            raise ValueError("execution phase evidence must be phase=execution")
+        if self.reconciled.overview.phase != "reconciled" or self.reconciled.facts.phase != "reconciled":
+            raise ValueError("reconciled phase evidence must be phase=reconciled")
+        if self.execution.facts.change_id != self.reconciled.facts.change_id:
+            raise ValueError("execution and reconciled change_id must match")
+        if self.execution.overview.batch_id != self.reconciled.overview.batch_id:
+            raise ValueError("execution and reconciled authoritative batch must match")
+        if self.execution.facts.authoritative_batch_id != self.reconciled.facts.authoritative_batch_id:
+            raise ValueError("execution and reconciled authoritative batch must match")
+        if self.sufficiency.source_projection_digest != self.execution.overview.projection_digest:
+            raise ValueError("sufficiency.source_projection_digest must bind to execution")
+        if self.sufficiency.semantics != "evidence_sufficiency/v2":
+            raise ValueError("sufficiency.semantics must be evidence_sufficiency/v2")
+        if self.sufficiency.require_current_batch is not True:
+            raise ValueError("sufficiency.require_current_batch must be true")
+        if self.verify.phase != "reconciled":
+            raise ValueError("verify.phase must be reconciled")
+        if self.verify.projection_digest != self.reconciled.overview.projection_digest:
+            raise ValueError("verify.projection_digest must bind to reconciled")
+        for fact_layer, sufficiency_layer in zip(
+            self.execution.facts.layers,
+            self.sufficiency.layers,
+            strict=True,
+        ):
+            if (
+                fact_layer.layer != sufficiency_layer.layer
+                or fact_layer.case_type != sufficiency_layer.case_type
+            ):
+                raise ValueError("sufficiency layers must match execution fact layer identity")
+            if sufficiency_layer.sufficient + sufficiency_layer.insufficient != fact_layer.total:
+                raise ValueError("sufficiency sufficient+insufficient must equal execution facts.total")
+        return self
+
+
+class IncompleteTraceabilityEvidenceV3(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    status: Literal["incomplete"]
+    reason_code: TraceCollectionFailureReason
+    detail: str = ""
+    command_status: TraceCommandStatus | None = None
+
+
+TraceabilityEvidenceV3 = Annotated[
+    CompleteTraceabilityEvidenceV3 | IncompleteTraceabilityEvidenceV3,
+    Field(discriminator="status"),
+]
+
+
+class SpecialtyReportV3(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: Literal["3"] = "3"
+    change_id: str
+    capability_contract_policy: CapabilityPolicyReplayV2
+    traceability_evidence: TraceabilityEvidenceV3
+
+    @model_validator(mode="after")
+    def _validate_complete_report(self) -> Self:
+        evidence = self.traceability_evidence
+        if not isinstance(evidence, CompleteTraceabilityEvidenceV3):
+            return self
+        binding = self.capability_contract_policy.definition_binding
+        if binding is None:
+            raise ValueError("complete traceability requires capability definition_binding")
+        if evidence.execution.facts.change_id != self.change_id:
+            raise ValueError("change_id must match execution facts.change_id")
+        if evidence.reconciled.facts.change_id != self.change_id:
+            raise ValueError("change_id must match reconciled facts.change_id")
+        baseline = binding.baseline_policy_digest
+        if evidence.sufficiency.source_policy_digest != baseline:
+            raise ValueError("sufficiency.source_policy_digest must bind to replay baseline")
+        if evidence.verify.policy_digest != baseline:
+            raise ValueError("verify.policy_digest must bind to replay baseline")
+        return self
+
+
 SpecialtyReport = SpecialtyReportV2 | LegacySpecialtyReportV1
+
+SpecialtyReportVariant = Annotated[
+    LegacySpecialtyReportV1 | SpecialtyReportV2 | SpecialtyReportV3,
+    Field(discriminator="schema_version"),
+]
+
+
+class SpecialtyReportDocument(RootModel[SpecialtyReportVariant]):
+    """Discriminated specialty-report wire document."""
+
+
+def load_specialty_report_document(raw: object) -> SpecialtyReportVariant:
+    return SpecialtyReportDocument.model_validate(raw).root
 
 
 def _validate_row_topology(rows: tuple[LayerRow, ...], *, semantics: ReplaySemantics) -> None:
@@ -294,18 +521,31 @@ __all__ = [
     "CapabilitiesSummary",
     "CheckSummary",
     "CompleteLayerRow",
+    "CompleteTraceabilityEvidenceV3",
+    "CoverageSummary",
     "DefinitionBinding",
     "EvidenceDigests",
     "IncompleteLayerRow",
+    "IncompleteTraceabilityEvidenceV3",
     "LayerRow",
     "LegacySpecialtyReportV1",
     "MechanicalAggregate",
     "NotSelectedLayerRow",
     "NotWiredLayerRow",
+    "ProjectionOverview",
     "ReplayScenario",
     "ReplaySemantics",
     "SpecialtyReport",
+    "SpecialtyReportDocument",
     "SpecialtyReportV2",
+    "SpecialtyReportV3",
+    "SpecialtyReportVariant",
+    "TraceCollectionFailureReason",
+    "TraceCommandStatus",
+    "TracePhaseEvidence",
+    "TraceabilityEvidenceV3",
+    "VerifyDiagnostics",
     "build_capability_replay_v2",
     "load_specialty_report",
+    "load_specialty_report_document",
 ]

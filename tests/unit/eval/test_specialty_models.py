@@ -1,22 +1,49 @@
-"""Specialty report v2 model invariants and integrity derivation."""
+"""Specialty report v2/v3 model invariants and integrity derivation."""
 
 from __future__ import annotations
+
+import copy
+from datetime import datetime
+from typing import Literal, cast, get_args
 
 import pytest
 from pydantic import ValidationError
 
 from assurance_agent.artifacts.models.assurance import LAYER_NAMES, PLAN_CHECK_IDS
+from assurance_agent.artifacts.models.policy import (
+    CoverageFloor,
+    EvidenceSufficiency,
+    FuzzPolicy,
+    HealingPolicy,
+    Policy,
+)
+from assurance_agent.artifacts.models.trace import TraceExecution, TraceProjection, TraceRow
+from assurance_agent.artifacts.policy import policy_digest
 from assurance_agent.eval.specialty_models import (
     CompleteLayerRow,
+    CompleteTraceabilityEvidenceV3,
+    CoverageSummary,
     IncompleteLayerRow,
+    IncompleteTraceabilityEvidenceV3,
     LegacySpecialtyReportV1,
     NotSelectedLayerRow,
     NotWiredLayerRow,
+    ProjectionOverview,
     SpecialtyReportV2,
+    SpecialtyReportV3,
+    TraceCollectionFailureReason,
+    TraceCommandStatus,
+    TracePhaseEvidence,
+    TraceabilityEvidenceV3,
+    VerifyDiagnostics,
     build_capability_replay_v2,
     load_specialty_report,
+    load_specialty_report_document,
 )
 from assurance_agent.eval.specialty_render import render_specialty_sections
+from assurance_agent.evidence.layer_summary import join_layer_sufficiency
+from assurance_agent.evidence.sufficiency import evaluate_sufficiency
+from tests.helpers_aa import AWARE_NOW
 
 
 def _check_summary(*, check_id: str, status: str = "pass", finding_count: int = 0) -> dict[str, object]:
@@ -359,3 +386,573 @@ def test_build_capability_replay_v2_rejects_false_incomplete_claim() -> None:
             rows=_four_complete_rows(),
             integrity="incomplete",
         )
+
+
+# ---------------------------------------------------------------------------
+# Specialty report v3 closed wire contract
+# ---------------------------------------------------------------------------
+
+_RECENCY_HOURS = 72
+_CHANGE_ID = "CH-V3-1"
+_BATCH_ID = "20260729120000"
+
+
+def _trace_execution(
+    *,
+    target: Literal["api", "e2e", "fuzz", "performance"] = "api",
+) -> TraceExecution:
+    return TraceExecution(
+        batch_id=_BATCH_ID,
+        target=target,
+        status="passed",
+        ts=AWARE_NOW.replace(hour=11),
+        ts_source="executed_at",
+    )
+
+
+def _trace_row(
+    *,
+    case_id: str,
+    case_type: Literal["API", "E2E", "Fuzz", "Performance"],
+) -> TraceRow:
+    target = cast(
+        Literal["api", "e2e", "fuzz", "performance"],
+        {"API": "api", "E2E": "e2e", "Fuzz": "fuzz", "Performance": "performance"}[case_type],
+    )
+    kinds: tuple[str, ...]
+    if case_type == "Fuzz":
+        kinds = ("covered", "fuzz_run")
+    elif case_type == "Performance":
+        kinds = ("covered", "perf_run")
+    else:
+        kinds = ("covered",)
+    latest = _trace_execution(target=target)
+    return TraceRow(
+        case_id=case_id,
+        module="system.dept",
+        case_type=case_type,
+        automation_required=True,
+        coverage_state="covered",
+        latest_execution=latest,
+        freshest_pass=latest,
+        presence_in_current_batch="executed",
+        atemporal_kinds_present=kinds,
+    )
+
+
+def _four_layer_projection(*, phase: Literal["execution", "reconciled"]) -> TraceProjection:
+    return TraceProjection(
+        change_id=_CHANGE_ID,
+        phase=phase,
+        authoritative_batch_id=_BATCH_ID,
+        rows=(
+            _trace_row(case_id="TC_API_001", case_type="API"),
+            _trace_row(case_id="TC_E2E_001", case_type="E2E"),
+            _trace_row(case_id="TC_FUZZ_001", case_type="Fuzz"),
+            _trace_row(case_id="TC_PERF_001", case_type="Performance"),
+        ),
+        integrity="complete",
+    )
+
+
+def _policy() -> Policy:
+    return Policy(
+        version=1,
+        human_review_risk_levels=["high"],
+        force_continue_allowed=True,
+        plan_checks={
+            "l1_path": "warn",
+            "shared_factory": "warn",
+            "assert_ideal": "warn",
+            "capability_keys": "warn",
+        },
+        coverage_floor=CoverageFloor(risk_high=0.9, risk_medium=0.7),
+        fuzz=FuzzPolicy(required_when_endpoint_has_auth=True),
+        healing=HealingPolicy(auth_module="require_human"),
+        evidence_sufficiency=EvidenceSufficiency(
+            recency_hours=_RECENCY_HOURS,
+            required_kinds={
+                "API": ["covered", "execution_recent"],
+                "E2E": ["covered", "execution_recent"],
+                "Fuzz": ["covered", "fuzz_run"],
+                "Performance": ["covered", "perf_run"],
+            },
+            on_insufficient="require_human",
+        ),
+    )
+
+
+def _canonical_capability(*, baseline_policy_digest: str):
+    binding = _definition_binding()
+    binding["baseline_policy_digest"] = baseline_policy_digest
+    return build_capability_replay_v2(definition_binding=binding, rows=_four_complete_rows())
+
+
+def canonical_execution_phase() -> dict[str, object]:
+    return TracePhaseEvidence.from_projection(_four_layer_projection(phase="execution")).model_dump(
+        mode="json"
+    )
+
+
+def _canonical_complete_v3() -> SpecialtyReportV3:
+    execution = _four_layer_projection(phase="execution")
+    reconciled = _four_layer_projection(phase="reconciled")
+    policy = _policy()
+    baseline = policy_digest(policy)
+    report = evaluate_sufficiency(
+        execution,
+        policy,
+        as_of=AWARE_NOW,
+        require_current_batch=True,
+    )
+    execution_evidence = TracePhaseEvidence.from_projection(execution)
+    reconciled_evidence = TracePhaseEvidence.from_projection(reconciled)
+    sufficiency = join_layer_sufficiency(
+        execution,
+        execution_evidence.facts,
+        report,
+        expected_policy_digest=baseline,
+    )
+    return SpecialtyReportV3(
+        schema_version="3",
+        change_id=_CHANGE_ID,
+        capability_contract_policy=_canonical_capability(baseline_policy_digest=baseline),
+        traceability_evidence=CompleteTraceabilityEvidenceV3(
+            status="complete",
+            command_status=TraceCommandStatus(trace_exit=0, verify_exit=0),
+            execution=execution_evidence,
+            reconciled=reconciled_evidence,
+            sufficiency=sufficiency,
+            coverage=CoverageSummary(status="PASS", line=0.9, branch=0.8, final_status="PASS"),
+            verify=VerifyDiagnostics(
+                phase="reconciled",
+                verdict="pass",
+                policy_digest=baseline,
+                projection_digest=reconciled_evidence.overview.projection_digest,
+                blocking_gap_count=0,
+                open_problem_count=0,
+                reported_insufficient_count=0,
+            ),
+        ),
+    )
+
+
+def incomplete_v3(reason: TraceCollectionFailureReason) -> dict[str, object]:
+    capability = _canonical_capability(baseline_policy_digest="policy-digest")
+    return {
+        "schema_version": "3",
+        "change_id": _CHANGE_ID,
+        "capability_contract_policy": capability.model_dump(mode="json"),
+        "traceability_evidence": {
+            "status": "incomplete",
+            "reason_code": reason,
+            "detail": "",
+            "command_status": {"trace_exit": 1, "verify_exit": 0},
+        },
+    }
+
+
+def test_canonical_complete_v3_round_trip_is_frozen_and_extra_forbid() -> None:
+    report = _canonical_complete_v3()
+    assert report.schema_version == "3"
+    assert report.model_config.get("frozen") is True
+    nested_models = (
+        SpecialtyReportV3,
+        CompleteTraceabilityEvidenceV3,
+        IncompleteTraceabilityEvidenceV3,
+        TraceCommandStatus,
+        ProjectionOverview,
+        TracePhaseEvidence,
+        CoverageSummary,
+        VerifyDiagnostics,
+    )
+    for model in nested_models:
+        assert model.model_config.get("frozen") is True
+        assert model.model_config.get("extra") == "forbid"
+
+    evidence = report.traceability_evidence
+    assert isinstance(evidence, CompleteTraceabilityEvidenceV3)
+    assert [layer.layer for layer in evidence.execution.facts.layers] == list(LAYER_NAMES)
+    assert [layer.layer for layer in evidence.sufficiency.layers] == list(LAYER_NAMES)
+
+    payload = report.model_dump(mode="json")
+    reloaded = load_specialty_report_document(payload)
+    assert isinstance(reloaded, SpecialtyReportV3)
+    assert reloaded.schema_version == "3"
+    assert reloaded.model_dump(mode="json") == payload
+
+
+@pytest.mark.parametrize(
+    "mutator",
+    [
+        pytest.param(
+            lambda p: _set_path(
+                p,
+                ("traceability_evidence", "sufficiency", "layers", 0, "reason_counts"),
+                {"not_a_reason": 1},
+            ),
+            id="unknown_sufficiency_reason",
+        ),
+        pytest.param(
+            lambda p: _set_path(
+                p,
+                ("traceability_evidence", "sufficiency", "layers", 0, "execution_state_counts"),
+                {"never_run": 0, "stale": 0, "fresh": 0, "hot": 1},
+            ),
+            id="unknown_execution_state",
+        ),
+        pytest.param(
+            lambda p: _set_path(
+                p,
+                ("traceability_evidence", "sufficiency", "as_of"),
+                datetime(2026, 7, 30, 12, 0, 0).isoformat(),
+            ),
+            id="naive_as_of",
+        ),
+        pytest.param(
+            lambda p: _set_path(p, ("traceability_evidence", "sufficiency", "recency_hours"), 0),
+            id="zero_recency_hours",
+        ),
+        pytest.param(
+            lambda p: _set_path(p, ("traceability_evidence", "execution", "overview", "row_count"), True),
+            id="boolean_count",
+        ),
+        pytest.param(
+            lambda p: _set_path(p, ("traceability_evidence", "execution", "overview", "gap_count"), 1.5),
+            id="float_count",
+        ),
+        pytest.param(
+            lambda p: _mutate_fact_layer_order(p),
+            id="wrong_layer_order",
+        ),
+        pytest.param(
+            lambda p: _set_path(p, ("change_id",), "CH-OTHER"),
+            id="outer_change_id_mismatch",
+        ),
+        pytest.param(
+            lambda p: _set_path(
+                p, ("traceability_evidence", "reconciled", "overview", "batch_id"), "other-batch"
+            ),
+            id="phase_batch_mismatch",
+        ),
+        pytest.param(
+            lambda p: _set_path(p, ("traceability_evidence", "execution", "overview", "phase"), "reconciled"),
+            id="overview_phase_mismatch",
+        ),
+        pytest.param(
+            lambda p: _set_path(
+                p,
+                ("traceability_evidence", "execution", "overview", "projection_digest"),
+                "deadbeef",
+            ),
+            id="overview_digest_mismatch",
+        ),
+        pytest.param(
+            lambda p: _set_path(
+                p, ("traceability_evidence", "execution", "overview", "integrity"), "incomplete"
+            ),
+            id="overview_integrity_mismatch",
+        ),
+        pytest.param(
+            lambda p: _set_path(p, ("traceability_evidence", "execution", "overview", "row_count"), 99),
+            id="overview_row_count_mismatch",
+        ),
+        pytest.param(
+            lambda p: _set_path(p, ("traceability_evidence", "execution", "overview", "gap_count"), 99),
+            id="overview_gap_count_mismatch",
+        ),
+        pytest.param(
+            lambda p: _break_fact_layer_total(p),
+            id="fact_layer_total_mismatch",
+        ),
+        pytest.param(
+            lambda p: _set_path(
+                p,
+                ("traceability_evidence", "execution", "facts", "global_gaps"),
+                {"total": 1, "by_code": {}},
+            ),
+            id="gap_total_breakdown_mismatch",
+        ),
+        pytest.param(
+            lambda p: _break_sufficiency_arithmetic(p),
+            id="sufficiency_arithmetic_mismatch",
+        ),
+        pytest.param(
+            lambda p: _break_sufficiency_vs_facts_total(p),
+            id="sufficiency_total_vs_facts",
+        ),
+        pytest.param(
+            lambda p: _set_path(
+                p,
+                ("traceability_evidence", "sufficiency", "source_projection_digest"),
+                "not-execution",
+            ),
+            id="sufficiency_digest_unbound",
+        ),
+        pytest.param(
+            lambda p: _set_path(
+                p, ("traceability_evidence", "verify", "projection_digest"), "not-reconciled"
+            ),
+            id="verify_digest_unbound",
+        ),
+        pytest.param(
+            lambda p: _set_path(
+                p, ("traceability_evidence", "sufficiency", "source_policy_digest"), "other-policy"
+            ),
+            id="sufficiency_policy_unbound",
+        ),
+        pytest.param(
+            lambda p: _set_path(p, ("traceability_evidence", "verify", "policy_digest"), "other-policy"),
+            id="verify_policy_unbound",
+        ),
+        pytest.param(
+            lambda p: _drop_definition_binding(p),
+            id="missing_definition_binding",
+        ),
+        pytest.param(
+            lambda p: _set_path(
+                p,
+                ("traceability_evidence", "sufficiency", "semantics"),
+                "evidence_sufficiency/v1",
+            ),
+            id="wrong_semantics",
+        ),
+        pytest.param(
+            lambda p: _set_path(p, ("traceability_evidence", "sufficiency", "require_current_batch"), False),
+            id="wrong_require_current_batch",
+        ),
+        pytest.param(
+            lambda p: _set_path(p, ("traceability_evidence", "verify", "phase"), "verify"),
+            id="wrong_verify_phase",
+        ),
+        pytest.param(
+            lambda p: _set_path(p, ("traceability_evidence", "extra_complete_field"), "x"),
+            id="extra_complete_field",
+        ),
+    ],
+)
+def test_complete_v3_rejects_invariant_mutations(mutator) -> None:
+    payload = mutator(_canonical_complete_v3().model_dump(mode="json"))
+    with pytest.raises(ValidationError):
+        load_specialty_report_document(payload)
+
+
+def _set_path(payload: dict[str, object], path: tuple[object, ...], value: object) -> dict[str, object]:
+    data = copy.deepcopy(payload)
+    cursor: object = data
+    for key in path[:-1]:
+        assert isinstance(cursor, (dict, list))
+        cursor = cursor[key]  # type: ignore[index]
+    assert isinstance(cursor, (dict, list))
+    cursor[path[-1]] = value  # type: ignore[index]
+    return data
+
+
+def _mutate_fact_layer_order(payload: dict[str, object]) -> dict[str, object]:
+    data = copy.deepcopy(payload)
+    evidence = data["traceability_evidence"]
+    assert isinstance(evidence, dict)
+    execution = evidence["execution"]
+    assert isinstance(execution, dict)
+    facts = execution["facts"]
+    assert isinstance(facts, dict)
+    layers = facts["layers"]
+    assert isinstance(layers, list)
+    layers[0], layers[1] = layers[1], layers[0]
+    return data
+
+
+def _break_fact_layer_total(payload: dict[str, object]) -> dict[str, object]:
+    data = copy.deepcopy(payload)
+    evidence = data["traceability_evidence"]
+    assert isinstance(evidence, dict)
+    execution = evidence["execution"]
+    assert isinstance(execution, dict)
+    facts = execution["facts"]
+    assert isinstance(facts, dict)
+    layers = facts["layers"]
+    assert isinstance(layers, list)
+    layer0 = layers[0]
+    assert isinstance(layer0, dict)
+    layer0["total"] = int(layer0["total"]) + 1
+    return data
+
+
+def _break_sufficiency_arithmetic(payload: dict[str, object]) -> dict[str, object]:
+    data = copy.deepcopy(payload)
+    evidence = data["traceability_evidence"]
+    assert isinstance(evidence, dict)
+    sufficiency = evidence["sufficiency"]
+    assert isinstance(sufficiency, dict)
+    layers = sufficiency["layers"]
+    assert isinstance(layers, list)
+    layer0 = layers[0]
+    assert isinstance(layer0, dict)
+    layer0["sufficient"] = int(layer0["sufficient"]) + 1
+    return data
+
+
+def _break_sufficiency_vs_facts_total(payload: dict[str, object]) -> dict[str, object]:
+    """Keep layer self-consistent while breaking sufficient+insufficient vs facts.total."""
+    data = copy.deepcopy(payload)
+    evidence = data["traceability_evidence"]
+    assert isinstance(evidence, dict)
+    sufficiency = evidence["sufficiency"]
+    assert isinstance(sufficiency, dict)
+    layers = sufficiency["layers"]
+    assert isinstance(layers, list)
+    layer0 = layers[0]
+    assert isinstance(layer0, dict)
+    layer0["sufficient"] = 0
+    layer0["insufficient"] = 0
+    layer0["reason_counts"] = {}
+    layer0["execution_state_counts"] = {"never_run": 0, "stale": 0, "fresh": 0}
+    return data
+
+
+def _drop_definition_binding(payload: dict[str, object]) -> dict[str, object]:
+    data = copy.deepcopy(payload)
+    capability = data["capability_contract_policy"]
+    assert isinstance(capability, dict)
+    capability["definition_binding"] = None
+    capability["integrity"] = "incomplete"
+    return data
+
+
+@pytest.mark.parametrize("reason", get_args(TraceCollectionFailureReason))
+def test_incomplete_v3_reason_round_trips(reason: TraceCollectionFailureReason) -> None:
+    payload = incomplete_v3(reason)
+    loaded = load_specialty_report_document(payload)
+    assert isinstance(loaded, SpecialtyReportV3)
+    evidence = loaded.traceability_evidence
+    assert isinstance(evidence, IncompleteTraceabilityEvidenceV3)
+    assert evidence.status == "incomplete"
+    assert evidence.reason_code == reason
+    assert evidence.detail == ""
+    assert evidence.command_status is not None
+    assert evidence.command_status.trace_exit == 1
+
+
+def test_incomplete_v3_rejects_unknown_reason() -> None:
+    payload = incomplete_v3("execution_projection_missing")
+    evidence = payload["traceability_evidence"]
+    assert isinstance(evidence, dict)
+    evidence["reason_code"] = "not_a_closed_reason"
+    with pytest.raises(ValidationError):
+        load_specialty_report_document(payload)
+
+
+def test_incomplete_v3_rejects_non_string_detail() -> None:
+    payload = incomplete_v3("quality_gate_missing")
+    evidence = payload["traceability_evidence"]
+    assert isinstance(evidence, dict)
+    evidence["detail"] = 123
+    with pytest.raises(ValidationError):
+        load_specialty_report_document(payload)
+
+
+def test_incomplete_v3_rejects_partial_complete_matrix() -> None:
+    payload = incomplete_v3("reconciled_projection_stale")
+    evidence = payload["traceability_evidence"]
+    assert isinstance(evidence, dict)
+    evidence["execution"] = canonical_execution_phase()
+    with pytest.raises(ValidationError, match="extra"):
+        load_specialty_report_document(payload)
+
+
+def test_incomplete_v3_empty_detail_default_is_valid() -> None:
+    capability = _canonical_capability(baseline_policy_digest="policy-digest")
+    loaded = load_specialty_report_document(
+        {
+            "schema_version": "3",
+            "change_id": _CHANGE_ID,
+            "capability_contract_policy": capability.model_dump(mode="json"),
+            "traceability_evidence": {
+                "status": "incomplete",
+                "reason_code": "layer_summary_invalid",
+            },
+        }
+    )
+    assert isinstance(loaded, SpecialtyReportV3)
+    evidence = loaded.traceability_evidence
+    assert isinstance(evidence, IncompleteTraceabilityEvidenceV3)
+    assert evidence.detail == ""
+    assert evidence.command_status is None
+
+
+def test_document_loader_preserves_v1_and_v2_concrete_types() -> None:
+    v2_payload = {
+        "schema_version": "2",
+        "change_id": "CH-1",
+        "capability_contract_policy": build_capability_replay_v2(
+            definition_binding=_definition_binding(),
+            rows=_four_complete_rows(),
+        ).model_dump(mode="json"),
+        "traceability_evidence": {"command_status": {"trace_exit": 0, "verify_exit": 0}},
+    }
+    v2 = load_specialty_report_document(v2_payload)
+    assert isinstance(v2, SpecialtyReportV2)
+    assert v2.traceability_evidence == {"command_status": {"trace_exit": 0, "verify_exit": 0}}
+
+    v1_payload = {
+        "schema_version": "1",
+        "change_id": "CH-1",
+        "capability_contract_policy": {"capabilities": {"required": [], "missing": []}},
+        "traceability_evidence": {"legacy": True},
+    }
+    v1 = load_specialty_report_document(v1_payload)
+    assert isinstance(v1, LegacySpecialtyReportV1)
+    assert v1.traceability_evidence == {"legacy": True}
+
+
+@pytest.mark.parametrize("version", [None, "4", ""])
+def test_document_loader_rejects_missing_null_and_unknown_versions(version: object) -> None:
+    payload: dict[str, object] = {
+        "change_id": "CH-1",
+        "capability_contract_policy": {"capabilities": {"required": [], "missing": []}},
+        "traceability_evidence": {},
+    }
+    if version is not None:
+        payload["schema_version"] = version
+    with pytest.raises(ValidationError):
+        load_specialty_report_document(payload)
+
+
+def test_public_load_specialty_report_remains_v1_v2_only() -> None:
+    v3_payload = _canonical_complete_v3().model_dump(mode="json")
+    with pytest.raises(ValueError, match="unsupported specialty report schema_version"):
+        load_specialty_report(v3_payload)
+
+    v2 = load_specialty_report(
+        {
+            "schema_version": "2",
+            "change_id": "CH-1",
+            "capability_contract_policy": build_capability_replay_v2(
+                definition_binding=_definition_binding(),
+                rows=_four_complete_rows(),
+            ).model_dump(mode="json"),
+            "traceability_evidence": {"command_status": {"trace_exit": 0, "verify_exit": 0}},
+        }
+    )
+    assert isinstance(v2, SpecialtyReportV2)
+
+    v1 = load_specialty_report(
+        {
+            "schema_version": "1",
+            "change_id": "CH-1",
+            "capability_contract_policy": {"capabilities": {"required": [], "missing": []}},
+            "traceability_evidence": {},
+        }
+    )
+    assert isinstance(v1, LegacySpecialtyReportV1)
+
+
+def test_traceability_evidence_v3_is_status_discriminated_union() -> None:
+    assert TraceabilityEvidenceV3 is not None
+    complete = _canonical_complete_v3().traceability_evidence
+    assert complete.status == "complete"
+    incomplete = IncompleteTraceabilityEvidenceV3(
+        status="incomplete",
+        reason_code="verify_result_missing",
+    )
+    assert incomplete.status == "incomplete"
