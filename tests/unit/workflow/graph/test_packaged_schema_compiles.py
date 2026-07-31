@@ -9,6 +9,7 @@ from assurance_agent.verification.profiles import get_layer_assurance_profile, i
 from assurance_agent.workflow.graph.compiler import CompileError, compile_workflow
 from assurance_agent.workflow.graph.contracts import load_execution_contracts
 from assurance_agent.workflow.graph.replay_schema import (
+    validate_current_assurance_activation,
     validate_replayable_assurance_schema,
     validate_wired_profile_topology,
 )
@@ -116,6 +117,17 @@ def test_layer_assurance_profiles_match_the_packaged_schema() -> None:
 def test_packaged_assurance_surface_passes_replay_schema_guard() -> None:
     schema = load_workflow_v2(Path.cwd())
     assert validate_replayable_assurance_schema(schema) == ()
+
+
+def test_current_activation_validator_reports_unwired_fuzz_and_performance() -> None:
+    schema = load_workflow_v2(Path.cwd())
+    errors = validate_current_assurance_activation(schema)
+    joined = "\n".join(errors)
+    assert "fuzz" in joined
+    assert "performance" in joined
+    # Compatibility release gate remains green until Task 13 switches the compiler.
+    assert validate_replayable_assurance_schema(schema) == ()
+    compile_workflow(schema, contracts=load_execution_contracts(Path.cwd()))
 
 
 def test_wired_plan_gates_read_canonical_aliases() -> None:

@@ -122,11 +122,38 @@ class BudgetUseDef(_FrozenModel):
     exhausted_to: str
 
 
+class ManualRevisionDef(_FrozenModel):
+    action: Literal["fix_and_proceed"]
+    paths: list[str] = Field(min_length=1)
+
+    @field_validator("paths")
+    @classmethod
+    def paths_are_exact_change_plan_files(cls, paths: list[str]) -> list[str]:
+        if len(set(paths)) != len(paths):
+            raise ValueError("manual_revision.paths must not contain duplicate paths")
+        for path in paths:
+            if any(marker in path for marker in ("*", "?", "[", "]")):
+                raise ValueError(f"manual_revision path must not contain globs: {path}")
+            if "${" in path or "{" in path or "}" in path:
+                raise ValueError(f"manual_revision path must not contain templates: {path}")
+            if not path.startswith("change:"):
+                raise ValueError(f"manual_revision path must start with 'change:': {path}")
+            if ".." in path:
+                raise ValueError(f"manual_revision path must not contain '..': {path}")
+            if not path.startswith("change:plans/"):
+                raise ValueError(f"manual_revision path must stay under change:plans/: {path}")
+            relative = path.removeprefix("change:plans/")
+            if not relative or relative.endswith("/"):
+                raise ValueError(f"manual_revision path must be a file, not a directory: {path}")
+        return paths
+
+
 class InterruptDef(_FrozenModel):
     reason: str
     checkpoint: str
     bind: Literal["audited_gate_read"]
     actions: list[str] = Field(min_length=1)
+    manual_revision: ManualRevisionDef | None = None
 
     @field_validator("actions")
     @classmethod
@@ -136,6 +163,17 @@ class InterruptDef(_FrozenModel):
         if len(set(actions)) != len(actions):
             raise ValueError("interrupt.actions must be unique")
         return actions
+
+    @model_validator(mode="after")
+    def manual_revision_action_must_be_declared(self) -> InterruptDef:
+        if self.manual_revision is None:
+            return self
+        if self.manual_revision.action not in self.actions:
+            raise ValueError(
+                "manual_revision.action must be present in interrupt.actions: "
+                f"{self.manual_revision.action!r}"
+            )
+        return self
 
 
 class EvidenceRef(_FrozenModel):

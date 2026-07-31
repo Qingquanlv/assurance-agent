@@ -2,12 +2,33 @@
 
 from __future__ import annotations
 
-from assurance_agent.verification.profiles import LayerAssuranceProfile, get_layer_assurance_profile
+from dataclasses import dataclass
+from typing import Literal
+
+from assurance_agent.verification.profiles import (
+    LayerAssuranceProfile,
+    get_layer_assurance_profile,
+    iter_layer_assurance_profiles,
+)
 from assurance_agent.workflow.graph.schema_v2 import GraphDef, WorkflowSchemaV2
-from assurance_agent.workflow.orchestration.dsl import Call, Expr, Ident, _walk, parse_expression
+from assurance_agent.workflow.orchestration.dsl import (
+    BoolOp,
+    Call,
+    Compare,
+    Expr,
+    Ident,
+    Literal as DslLiteral,
+    Member,
+    Not,
+    _walk,
+    parse_expression,
+)
 from assurance_agent.workflow.orchestration.schema import GateDef, derive_alias
 
 WIRED_REPLAY_LAYERS = frozenset({"api", "e2e"})
+_SPECIALTY_PARENT_PREFLIGHT_LAYERS = frozenset({"fuzz", "performance"})
+
+WiringStatus = Literal["wired", "legacy_unwired", "partial"]
 
 _APPLICABILITY_OPERATION = "operation:derive-plan-layer-applicability"
 _MECHANICAL_OPERATION = "operation:verify-plan-mechanical"
@@ -25,6 +46,35 @@ _REPLAYABLE_PLAN_BUILTINS = frozenset(
 )
 
 _FORBIDDEN_REPLAY_BUILTINS = frozenset({"node", "gate", "file_exists"})
+
+
+@dataclass(frozen=True, slots=True)
+class LayerTopologySpec:
+    layer: str
+    plan_artifacts: tuple[str, ...]
+    review_artifact: str
+    review_alias: str
+    checks_artifact: str
+    gate_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class PinnedLayerTopology:
+    layer: str
+    status: WiringStatus
+    assurance_node_id: str | None
+    branch_graph_id: str | None
+    cycle_call_node_id: str | None
+    cycle_graph_id: str | None
+    applicability_node_id: str | None
+    reviewer_node_id: str | None
+    mechanical_node_id: str | None
+    gate_node_id: str | None
+    human_review_node_id: str | None
+    knowledge_remediation_node_id: str | None
+    codegen_precondition_node_id: str | None
+    codegen_node_id: str | None
+    diagnostics: tuple[str, ...]
 
 
 def validate_params_only_expression(
@@ -227,6 +277,170 @@ def validate_replayable_assurance_schema(schema: WorkflowSchemaV2) -> tuple[str,
     return tuple(errors)
 
 
+def validate_current_assurance_activation(
+    schema: WorkflowSchemaV2,
+) -> tuple[str, ...]:
+    """Require every current registry profile to classify as fully wired."""
+    errors: list[str] = []
+    for profile in iter_layer_assurance_profiles():
+        spec = LayerTopologySpec(
+            layer=profile.layer,
+            plan_artifacts=profile.plan_artifacts,
+            review_artifact=profile.review_artifact,
+            review_alias=profile.review_alias,
+            checks_artifact=profile.checks_artifact,
+            gate_id=profile.gate_id,
+        )
+        topology = classify_pinned_layer_topology(schema, spec)
+        if topology.status == "wired":
+            continue
+        errors.append(f"layer:{profile.layer}: assurance activation is {topology.status}")
+        errors.extend(topology.diagnostics)
+    return tuple(errors)
+
+
+def validate_historical_replay_surface(
+    schema: WorkflowSchemaV2,
+) -> tuple[str, ...]:
+    """Validate syntax, graph integrity, and replay-safe dependencies only."""
+    param_names = frozenset(schema.params)
+    errors: list[str] = []
+
+    assurance = schema.graphs.get("assurance")
+    if assurance is None:
+        return ("graph:assurance: missing assurance graph",)
+
+    for node_id in _ASSURANCE_BRANCH_NODES:
+        node = assurance.nodes.get(node_id)
+        if node is None:
+            errors.append(f"graph:assurance.nodes.{node_id}: missing branch node")
+            continue
+        if not node.uses.startswith("graph:"):
+            errors.append(f"graph:assurance.nodes.{node_id}: branch must use graph:<id>")
+            continue
+        branch_id = node.uses.removeprefix("graph:")
+        if branch_id not in schema.graphs:
+            errors.append(f"graph:assurance.nodes.{node_id}: missing branch graph {branch_id!r}")
+        when = node.when
+        if not when:
+            errors.append(f"graph:assurance.nodes.{node_id}.when: missing selection predicate")
+            continue
+        errors.extend(
+            validate_params_only_expression(
+                when,
+                param_names,
+                locator=f"graph:assurance.nodes.{node_id}.when",
+            )
+        )
+
+    for profile in iter_layer_assurance_profiles():
+        gate = schema.gates.get(profile.gate_id)
+        if gate is not None:
+            errors.extend(validate_replayable_plan_gate(gate))
+
+    return tuple(errors)
+
+
+def classify_pinned_layer_topology(
+    schema: WorkflowSchemaV2,
+    topology_spec: LayerTopologySpec,
+) -> PinnedLayerTopology:
+    """Classify one pinned layer as wired, legacy_unwired, or partial."""
+    layer = topology_spec.layer
+    empty = _empty_topology(layer)
+    diagnostics: list[str] = []
+
+    assurance = schema.graphs.get("assurance")
+    if assurance is None:
+        return _finalize_topology(
+            empty,
+            status="partial",
+            diagnostics=("graph:assurance: missing assurance graph",),
+        )
+
+    assurance_nodes = [
+        node_id
+        for node_id, node in assurance.nodes.items()
+        if node_id == layer and node.uses.startswith("graph:")
+    ]
+    if len(assurance_nodes) != 1:
+        if not assurance_nodes:
+            # Probe construct-named graphs for legacy marker absence when present.
+            return _classify_without_assurance_binding(schema, topology_spec, empty)
+        return _finalize_topology(
+            empty,
+            status="partial",
+            diagnostics=(f"layer:{layer}: expected exactly one assurance branch node",),
+            assurance_node_id=assurance_nodes[0],
+        )
+
+    assurance_node_id = assurance_nodes[0]
+    branch_graph_id = assurance.nodes[assurance_node_id].uses.removeprefix("graph:")
+    branch = schema.graphs.get(branch_graph_id)
+    if branch is None:
+        return _finalize_topology(
+            empty,
+            status="partial",
+            diagnostics=(f"layer:{layer}: missing branch graph {branch_graph_id!r}",),
+            assurance_node_id=assurance_node_id,
+            branch_graph_id=branch_graph_id,
+        )
+
+    cycle_calls = [
+        (node_id, node.uses.removeprefix("graph:"))
+        for node_id, node in branch.nodes.items()
+        if node.uses.startswith("graph:")
+    ]
+    if len(cycle_calls) != 1:
+        # Still probe cycle markers if a unique construct-named cycle exists.
+        if len(cycle_calls) == 0:
+            return _classify_discovered(
+                schema,
+                topology_spec,
+                empty,
+                assurance_node_id=assurance_node_id,
+                branch_graph_id=branch_graph_id,
+                branch=branch,
+                cycle_call_node_id=None,
+                cycle_graph_id=None,
+                cycle=None,
+                extra_diagnostics=(f"layer:{layer}: expected exactly one cycle-call graph binding",),
+            )
+        return _finalize_topology(
+            empty,
+            status="partial",
+            diagnostics=(f"layer:{layer}: expected exactly one cycle-call graph binding",),
+            assurance_node_id=assurance_node_id,
+            branch_graph_id=branch_graph_id,
+        )
+
+    cycle_call_node_id, cycle_graph_id = cycle_calls[0]
+    cycle = schema.graphs.get(cycle_graph_id)
+    if cycle is None:
+        return _finalize_topology(
+            empty,
+            status="partial",
+            diagnostics=(f"layer:{layer}: missing cycle graph {cycle_graph_id!r}",),
+            assurance_node_id=assurance_node_id,
+            branch_graph_id=branch_graph_id,
+            cycle_call_node_id=cycle_call_node_id,
+            cycle_graph_id=cycle_graph_id,
+        )
+
+    return _classify_discovered(
+        schema,
+        topology_spec,
+        empty,
+        assurance_node_id=assurance_node_id,
+        branch_graph_id=branch_graph_id,
+        branch=branch,
+        cycle_call_node_id=cycle_call_node_id,
+        cycle_graph_id=cycle_graph_id,
+        cycle=cycle,
+        extra_diagnostics=tuple(diagnostics),
+    )
+
+
 def _dependency_errors(
     expr: Expr,
     *,
@@ -392,3 +606,663 @@ def _codegen_topology_errors(
             f"got {reads_by_path[profile.checks_artifact]!r}"
         )
     return errors
+
+
+def _empty_topology(layer: str) -> PinnedLayerTopology:
+    return PinnedLayerTopology(
+        layer=layer,
+        status="partial",
+        assurance_node_id=None,
+        branch_graph_id=None,
+        cycle_call_node_id=None,
+        cycle_graph_id=None,
+        applicability_node_id=None,
+        reviewer_node_id=None,
+        mechanical_node_id=None,
+        gate_node_id=None,
+        human_review_node_id=None,
+        knowledge_remediation_node_id=None,
+        codegen_precondition_node_id=None,
+        codegen_node_id=None,
+        diagnostics=(),
+    )
+
+
+def _finalize_topology(
+    base: PinnedLayerTopology,
+    *,
+    status: WiringStatus,
+    diagnostics: tuple[str, ...],
+    assurance_node_id: str | None = None,
+    branch_graph_id: str | None = None,
+    cycle_call_node_id: str | None = None,
+    cycle_graph_id: str | None = None,
+    applicability_node_id: str | None = None,
+    reviewer_node_id: str | None = None,
+    mechanical_node_id: str | None = None,
+    gate_node_id: str | None = None,
+    human_review_node_id: str | None = None,
+    knowledge_remediation_node_id: str | None = None,
+    codegen_precondition_node_id: str | None = None,
+    codegen_node_id: str | None = None,
+) -> PinnedLayerTopology:
+    return PinnedLayerTopology(
+        layer=base.layer,
+        status=status,
+        assurance_node_id=assurance_node_id,
+        branch_graph_id=branch_graph_id,
+        cycle_call_node_id=cycle_call_node_id,
+        cycle_graph_id=cycle_graph_id,
+        applicability_node_id=applicability_node_id,
+        reviewer_node_id=reviewer_node_id,
+        mechanical_node_id=mechanical_node_id,
+        gate_node_id=gate_node_id,
+        human_review_node_id=human_review_node_id,
+        knowledge_remediation_node_id=knowledge_remediation_node_id,
+        codegen_precondition_node_id=codegen_precondition_node_id,
+        codegen_node_id=codegen_node_id,
+        diagnostics=diagnostics,
+    )
+
+
+def _classify_without_assurance_binding(
+    schema: WorkflowSchemaV2,
+    topology_spec: LayerTopologySpec,
+    empty: PinnedLayerTopology,
+) -> PinnedLayerTopology:
+    layer = topology_spec.layer
+    # Best-effort legacy probe for construct-named graphs when assurance binding is absent.
+    for branch_id in (f"{layer}-branch", f"{layer}-pinned-branch"):
+        branch = schema.graphs.get(branch_id)
+        if branch is None:
+            continue
+        cycle_calls = [
+            (node_id, node.uses.removeprefix("graph:"))
+            for node_id, node in branch.nodes.items()
+            if node.uses.startswith("graph:")
+        ]
+        if len(cycle_calls) != 1:
+            continue
+        cycle_call_node_id, cycle_graph_id = cycle_calls[0]
+        cycle = schema.graphs.get(cycle_graph_id)
+        return _classify_discovered(
+            schema,
+            topology_spec,
+            empty,
+            assurance_node_id=None,
+            branch_graph_id=branch_id,
+            branch=branch,
+            cycle_call_node_id=cycle_call_node_id,
+            cycle_graph_id=cycle_graph_id,
+            cycle=cycle,
+            extra_diagnostics=(f"layer:{layer}: missing assurance branch node",),
+        )
+    return _finalize_topology(
+        empty,
+        status="legacy_unwired",
+        diagnostics=(f"layer:{layer}: no assurance branch binding",),
+    )
+
+
+def _classify_discovered(
+    schema: WorkflowSchemaV2,
+    topology_spec: LayerTopologySpec,
+    empty: PinnedLayerTopology,
+    *,
+    assurance_node_id: str | None,
+    branch_graph_id: str | None,
+    branch: GraphDef | None,
+    cycle_call_node_id: str | None,
+    cycle_graph_id: str | None,
+    cycle: GraphDef | None,
+    extra_diagnostics: tuple[str, ...] = (),
+) -> PinnedLayerTopology:
+    layer = topology_spec.layer
+    diagnostics = list(extra_diagnostics)
+
+    applicability_ids = _applicability_nodes(cycle, layer) if cycle is not None else []
+    mechanical_ids = _mechanical_nodes_for_spec(cycle, topology_spec) if cycle is not None else []
+    gate_ids = _gate_owner_nodes(cycle, topology_spec.gate_id) if cycle is not None else []
+    marker_count = sum(1 for group in (applicability_ids, mechanical_ids, gate_ids) if group)
+
+    discovered = {
+        "assurance_node_id": assurance_node_id,
+        "branch_graph_id": branch_graph_id,
+        "cycle_call_node_id": cycle_call_node_id,
+        "cycle_graph_id": cycle_graph_id,
+        "applicability_node_id": applicability_ids[0] if len(applicability_ids) == 1 else None,
+        "mechanical_node_id": mechanical_ids[0] if len(mechanical_ids) == 1 else None,
+        "gate_node_id": gate_ids[0] if len(gate_ids) == 1 else None,
+    }
+
+    if marker_count == 0:
+        # Shallow attached reviewer / branch codegen gates do not count as activation.
+        return _finalize_topology(
+            empty,
+            status="legacy_unwired",
+            diagnostics=tuple(diagnostics)
+            if diagnostics
+            else (f"layer:{layer}: no assurance activation markers",),
+            **discovered,
+        )
+
+    if cycle is None or branch is None or cycle_call_node_id is None:
+        diagnostics.append(f"layer:{layer}: incomplete branch/cycle discovery")
+        return _finalize_topology(empty, status="partial", diagnostics=tuple(diagnostics), **discovered)
+
+    review_ids = _review_nodes(cycle, layer)
+    human_ids = _interrupt_nodes(cycle)
+    knowledge_ids = [
+        node_id
+        for node_id in human_ids
+        if "knowledge" in node_id or _route_targets_mechanical(cycle, node_id, mechanical_ids)
+    ]
+    # Prefer explicit knowledge-remediation node id when present.
+    knowledge_node_id = (
+        "knowledge-remediation"
+        if "knowledge-remediation" in cycle.nodes
+        else (knowledge_ids[0] if len(knowledge_ids) == 1 else None)
+    )
+    human_review_node_id = (
+        "human-review"
+        if "human-review" in cycle.nodes
+        else next((node_id for node_id in human_ids if node_id != knowledge_node_id), None)
+    )
+
+    codegen_gate_id = f"{layer}-codegen-precondition-gate"
+    codegen_precondition_ids = _gate_owner_nodes(branch, codegen_gate_id)
+    codegen_ids = [
+        node_id
+        for node_id, node in branch.nodes.items()
+        if "codegen" in node_id and node.uses.startswith("skill:")
+    ]
+
+    discovered.update(
+        {
+            "reviewer_node_id": review_ids[0] if len(review_ids) == 1 else None,
+            "human_review_node_id": human_review_node_id,
+            "knowledge_remediation_node_id": knowledge_node_id,
+            "codegen_precondition_node_id": (
+                codegen_precondition_ids[0] if len(codegen_precondition_ids) == 1 else None
+            ),
+            "codegen_node_id": codegen_ids[0] if len(codegen_ids) == 1 else None,
+        }
+    )
+
+    diagnostics.extend(
+        _complete_wiring_diagnostics(
+            schema,
+            topology_spec,
+            branch=branch,
+            cycle=cycle,
+            cycle_call_node_id=cycle_call_node_id,
+            applicability_ids=applicability_ids,
+            review_ids=review_ids,
+            mechanical_ids=mechanical_ids,
+            gate_ids=gate_ids,
+            human_review_node_id=human_review_node_id,
+            knowledge_node_id=knowledge_node_id,
+            codegen_precondition_ids=codegen_precondition_ids,
+            codegen_ids=codegen_ids,
+        )
+    )
+
+    status: WiringStatus = "wired" if not diagnostics else "partial"
+    return _finalize_topology(empty, status=status, diagnostics=tuple(diagnostics), **discovered)
+
+
+def _mechanical_nodes_for_spec(graph: GraphDef, spec: LayerTopologySpec) -> list[str]:
+    expected_output = f"change:{spec.checks_artifact}"
+    nodes: list[str] = []
+    for node_id, node in graph.nodes.items():
+        if node.uses != _MECHANICAL_OPERATION:
+            continue
+        if node.with_.get("layer") != spec.layer:
+            continue
+        if node.with_.get("require_review") is not True:
+            continue
+        if expected_output not in node.outputs:
+            continue
+        nodes.append(node_id)
+    return nodes
+
+
+def _interrupt_nodes(graph: GraphDef) -> list[str]:
+    return [node_id for node_id, node in graph.nodes.items() if node.uses == "builtin:interrupt"]
+
+
+def _route_targets_mechanical(graph: GraphDef, node_id: str, mechanical_ids: list[str]) -> bool:
+    route = _route_from(graph, node_id)
+    if route is None:
+        return False
+    return route.cases.get("fix_and_proceed") in mechanical_ids
+
+
+def _complete_wiring_diagnostics(
+    schema: WorkflowSchemaV2,
+    topology_spec: LayerTopologySpec,
+    *,
+    branch: GraphDef,
+    cycle: GraphDef,
+    cycle_call_node_id: str,
+    applicability_ids: list[str],
+    review_ids: list[str],
+    mechanical_ids: list[str],
+    gate_ids: list[str],
+    human_review_node_id: str | None,
+    knowledge_node_id: str | None,
+    codegen_precondition_ids: list[str],
+    codegen_ids: list[str],
+) -> list[str]:
+    layer = topology_spec.layer
+    locator = f"layer:{layer}"
+    errors: list[str] = []
+
+    if len(applicability_ids) != 1:
+        errors.append(f"{locator}: expected exactly one applicability operation")
+    if len(review_ids) != 1:
+        errors.append(f"{locator}: expected exactly one reviewer")
+    if len(mechanical_ids) != 1:
+        errors.append(f"{locator}: expected exactly one reviewed mechanical producer")
+    if len(gate_ids) != 1:
+        errors.append(f"{locator}: expected exactly one explicit gate owner")
+    elif review_ids:
+        attached = _attached_reviewer_gate_nodes(cycle, topology_spec.gate_id)
+        if attached:
+            errors.append(f"{locator}: reviewer must not attach the plan gate")
+
+    if len(applicability_ids) == 1 and len(mechanical_ids) == 1 and len(review_ids) == 1:
+        applicability = applicability_ids[0]
+        mechanical = mechanical_ids[0]
+        review = review_ids[0]
+        route = _route_from(cycle, applicability)
+        if route is None:
+            errors.append(f"{locator}: applicability node must declare a route")
+        else:
+            if route.cases.get("true") != review:
+                errors.append(f"{locator}: applicable path must reach review before mechanical")
+            if route.cases.get("false") != mechanical:
+                errors.append(f"{locator}: inapplicable path must reach mechanical producer")
+            if route.cases.get("true") == review and not _has_edge(cycle, review, mechanical):
+                errors.append(f"{locator}: review must precede mechanical on applicable path")
+
+    if len(mechanical_ids) == 1 and len(gate_ids) == 1:
+        if not _has_edge(cycle, mechanical_ids[0], gate_ids[0]):
+            errors.append(f"{locator}: explicit gate must follow mechanical producer")
+
+    errors.extend(
+        _recovery_shape_errors(
+            cycle,
+            topology_spec,
+            gate_ids=gate_ids,
+            review_ids=review_ids,
+            mechanical_ids=mechanical_ids,
+            human_review_node_id=human_review_node_id,
+        )
+    )
+    errors.extend(
+        _knowledge_remediation_errors(
+            cycle,
+            locator=locator,
+            gate_ids=gate_ids,
+            mechanical_ids=mechanical_ids,
+            knowledge_node_id=knowledge_node_id,
+        )
+    )
+
+    if len(codegen_precondition_ids) != 1:
+        errors.append(f"{locator}: expected exactly one codegen precondition owner")
+    if len(codegen_ids) != 1:
+        errors.append(f"{locator}: expected exactly one codegen skill node")
+
+    if len(codegen_precondition_ids) == 1 and cycle_call_node_id is not None:
+        errors.extend(
+            _codegen_ast_errors(
+                schema,
+                topology_spec,
+                codegen_gate_id=f"{layer}-codegen-precondition-gate",
+                cycle_call_node_id=cycle_call_node_id,
+            )
+        )
+
+    plan_gate = schema.gates.get(topology_spec.gate_id)
+    if plan_gate is None:
+        errors.append(f"gate:{topology_spec.gate_id}: missing plan gate")
+    else:
+        # Reuse profile-shaped gate read checks via a temporary profile-like adapter.
+        errors.extend(_topology_gate_read_errors(plan_gate, topology_spec))
+        errors.extend(validate_replayable_plan_gate(plan_gate))
+
+    if layer in _SPECIALTY_PARENT_PREFLIGHT_LAYERS:
+        errors.extend(
+            _parent_preflight_errors(
+                branch,
+                layer=layer,
+                cycle_call_node_id=cycle_call_node_id,
+            )
+        )
+
+    return errors
+
+
+def _recovery_shape_errors(
+    cycle: GraphDef,
+    topology_spec: LayerTopologySpec,
+    *,
+    gate_ids: list[str],
+    review_ids: list[str],
+    mechanical_ids: list[str],
+    human_review_node_id: str | None,
+) -> list[str]:
+    locator = f"layer:{topology_spec.layer}"
+    if len(gate_ids) != 1 or len(review_ids) != 1:
+        return [f"{locator}: cannot validate recovery shape without gate and reviewer"]
+
+    gate_route = _route_from(cycle, gate_ids[0])
+    if gate_route is None:
+        return [f"{locator}: missing review-gate route"]
+
+    needs_fix_target = gate_route.cases.get("needs_fix")
+    review = review_ids[0]
+
+    # Automatic-fixer shape: needs_fix -> fix node, fix -> review.
+    if needs_fix_target is not None and needs_fix_target in cycle.nodes:
+        fix_node = cycle.nodes[needs_fix_target]
+        if fix_node.uses.startswith("skill:") and "fixer" in fix_node.uses:
+            if _has_edge(cycle, needs_fix_target, review):
+                return []
+            return [f"{locator}: automatic fixer must re-enter at review"]
+
+    # Human-only shape: needs_fix -> human-review, fix_and_proceed -> review + allowlist.
+    if human_review_node_id is None or needs_fix_target != human_review_node_id:
+        return [f"{locator}: needs_fix must reach human-review for human-only recovery"]
+
+    human = cycle.nodes[human_review_node_id]
+    interrupt = human.interrupt
+    if interrupt is None or interrupt.manual_revision is None:
+        return [f"{locator}: human-only interrupt must declare manual_revision"]
+    if interrupt.manual_revision.action != "fix_and_proceed":
+        return [f"{locator}: manual_revision.action must be fix_and_proceed"]
+    expected_paths = tuple(f"change:{path}" for path in topology_spec.plan_artifacts)
+    if tuple(interrupt.manual_revision.paths) != expected_paths:
+        return [f"{locator}: manual_revision.paths must exactly match plan artifacts"]
+
+    human_route = _route_from(cycle, human_review_node_id)
+    if human_route is None or human_route.cases.get("fix_and_proceed") != review:
+        return [f"{locator}: human-only fix_and_proceed must return to review"]
+    _ = mechanical_ids
+    return []
+
+
+def _knowledge_remediation_errors(
+    cycle: GraphDef,
+    *,
+    locator: str,
+    gate_ids: list[str],
+    mechanical_ids: list[str],
+    knowledge_node_id: str | None,
+) -> list[str]:
+    errors: list[str] = []
+    if len(gate_ids) != 1:
+        return [f"{locator}: cannot validate knowledge remediation without gate"]
+    if knowledge_node_id is None:
+        return [f"{locator}: missing knowledge-remediation interrupt"]
+    if len(mechanical_ids) != 1:
+        return [f"{locator}: cannot validate knowledge remediation without mechanical producer"]
+
+    gate_route = _route_from(cycle, gate_ids[0])
+    if gate_route is None or gate_route.cases.get("knowledge_remediation") != knowledge_node_id:
+        errors.append(f"{locator}: review-gate.knowledge_remediation must reach knowledge interrupt")
+
+    knowledge_route = _route_from(cycle, knowledge_node_id)
+    if knowledge_route is None:
+        errors.append(f"{locator}: missing knowledge-remediation route")
+    elif knowledge_route.cases.get("fix_and_proceed") != mechanical_ids[0]:
+        errors.append(
+            f"{locator}: knowledge remediation fix_and_proceed must re-enter at mechanical producer"
+        )
+    return errors
+
+
+def _parent_preflight_errors(
+    branch: GraphDef,
+    *,
+    layer: str,
+    cycle_call_node_id: str,
+) -> list[str]:
+    locator = f"layer:{layer}"
+    preflight_ids = _applicability_nodes(branch, layer)
+    if len(preflight_ids) != 1:
+        return [f"{locator}: missing cases-only parent preflight"]
+    preflight = preflight_ids[0]
+    if not _has_edge(branch, "START", preflight):
+        return [f"{locator}: parent preflight must be reached from START"]
+
+    route = _route_from(branch, preflight)
+    if route is None:
+        return [f"{locator}: parent preflight must declare a route"]
+
+    plan_ids = [node_id for node_id, node in branch.nodes.items() if node.uses == f"skill:aa-{layer}-plan"]
+    if not plan_ids:
+        return [f"{locator}: parent branch must declare a plan node"]
+
+    if route.cases.get("false") != cycle_call_node_id:
+        return [f"{locator}: parent preflight false path must reach cycle"]
+    if route.cases.get("true") not in plan_ids:
+        return [f"{locator}: parent preflight true path must reach plan"]
+    plan_id = route.cases["true"]
+    if not _has_edge(branch, plan_id, cycle_call_node_id):
+        return [f"{locator}: plan must reach cycle after parent preflight"]
+    if not any(edge.from_ == preflight and edge.to == cycle_call_node_id for edge in branch.edges):
+        return [f"{locator}: parent preflight must provide a direct cycle path for codegen-only"]
+    return []
+
+
+def _topology_gate_read_errors(gate: GateDef, spec: LayerTopologySpec) -> list[str]:
+    locator = f"gate:{gate.id}:reads"
+    errors: list[str] = []
+    reads_by_path = {entry.path: entry.alias for entry in gate.reads}
+    if spec.review_artifact not in reads_by_path:
+        errors.append(f"{locator}: gate reads must include review artifact {spec.review_artifact!r}")
+    elif reads_by_path[spec.review_artifact] != spec.review_alias:
+        errors.append(
+            f"{locator}: review alias must be {spec.review_alias!r}, "
+            f"got {reads_by_path[spec.review_artifact]!r}"
+        )
+    if spec.checks_artifact not in reads_by_path:
+        errors.append(f"{locator}: gate reads must include checks artifact {spec.checks_artifact!r}")
+    else:
+        expected_checks_alias = derive_alias(spec.checks_artifact)
+        if reads_by_path[spec.checks_artifact] != expected_checks_alias:
+            errors.append(
+                f"{locator}: checks alias must be {expected_checks_alias!r}, "
+                f"got {reads_by_path[spec.checks_artifact]!r}"
+            )
+    if _DATA_KNOWLEDGE_PATH not in reads_by_path:
+        errors.append(f"{locator}: gate reads must include L1 path {_DATA_KNOWLEDGE_PATH!r}")
+    elif reads_by_path[_DATA_KNOWLEDGE_PATH] != _DATA_KNOWLEDGE_ALIAS:
+        errors.append(
+            f"{locator}: L1 alias must be {_DATA_KNOWLEDGE_ALIAS!r}, "
+            f"got {reads_by_path[_DATA_KNOWLEDGE_PATH]!r}"
+        )
+    return errors
+
+
+def _codegen_ast_errors(
+    schema: WorkflowSchemaV2,
+    topology_spec: LayerTopologySpec,
+    *,
+    codegen_gate_id: str,
+    cycle_call_node_id: str,
+) -> list[str]:
+    locator = f"gate:{codegen_gate_id}"
+    gate = schema.gates.get(codegen_gate_id)
+    if gate is None:
+        return [f"{locator}: missing codegen precondition gate"]
+
+    errors: list[str] = []
+    reads_by_path = {entry.path: entry.alias for entry in gate.reads}
+    checks_alias = derive_alias(topology_spec.checks_artifact)
+    for path, alias in (
+        (topology_spec.review_artifact, topology_spec.review_alias),
+        (topology_spec.checks_artifact, checks_alias),
+        (_DATA_KNOWLEDGE_PATH, _DATA_KNOWLEDGE_ALIAS),
+    ):
+        if path not in reads_by_path:
+            errors.append(f"{locator}:reads: must include {path!r}")
+        elif reads_by_path[path] != alias:
+            errors.append(f"{locator}:reads: alias for {path!r} must be {alias!r}")
+
+    rules = {rule.field: rule.expr for rule in gate.rules}
+    for field in ("skip_when", "stop_when", "pass_when"):
+        if field not in rules:
+            errors.append(f"{locator}: missing {field}")
+
+    if "skip_when" in rules:
+        errors.extend(
+            _require_top_level_predicates(
+                rules["skip_when"],
+                locator=f"{locator}:skip_when",
+                op="and",
+                required=_skip_predicates(topology_spec),
+                allow_extra=True,
+            )
+        )
+    if "stop_when" in rules:
+        errors.extend(
+            _require_top_level_predicates(
+                rules["stop_when"],
+                locator=f"{locator}:stop_when",
+                op="or",
+                required=_stop_predicates(topology_spec, cycle_call_node_id),
+                allow_extra=True,
+            )
+        )
+    if "pass_when" in rules:
+        errors.extend(
+            _require_top_level_predicates(
+                rules["pass_when"],
+                locator=f"{locator}:pass_when",
+                op="and",
+                required=_pass_predicates(topology_spec, cycle_call_node_id),
+                allow_extra=True,
+            )
+        )
+    return errors
+
+
+def _skip_predicates(spec: LayerTopologySpec) -> tuple[Expr, ...]:
+    checks_alias = derive_alias(spec.checks_artifact)
+    return (
+        Compare(
+            "==",
+            Call(
+                "plan_assurance_state",
+                (
+                    Ident(checks_alias),
+                    Ident(spec.review_alias),
+                    Ident(_DATA_KNOWLEDGE_ALIAS),
+                    DslLiteral(spec.layer),
+                ),
+            ),
+            DslLiteral("not_applicable"),
+        ),
+    )
+
+
+def _stop_predicates(spec: LayerTopologySpec, cycle_call_node_id: str) -> tuple[Expr, ...]:
+    checks_alias = derive_alias(spec.checks_artifact)
+    return (
+        Compare(
+            "!=",
+            Member(Call("node", (DslLiteral(cycle_call_node_id),)), "status"),
+            DslLiteral("succeeded"),
+        ),
+        Compare(
+            "==",
+            Call(
+                "plan_assurance_state",
+                (
+                    Ident(checks_alias),
+                    Ident(spec.review_alias),
+                    Ident(_DATA_KNOWLEDGE_ALIAS),
+                    DslLiteral(spec.layer),
+                ),
+            ),
+            DslLiteral("invalid"),
+        ),
+        Not(Call("file_exists", (DslLiteral(_DATA_KNOWLEDGE_PATH),))),
+    )
+
+
+def _pass_predicates(spec: LayerTopologySpec, cycle_call_node_id: str) -> tuple[Expr, ...]:
+    checks_alias = derive_alias(spec.checks_artifact)
+    predicates: list[Expr] = [
+        Compare(
+            "==",
+            Member(Call("node", (DslLiteral(cycle_call_node_id),)), "status"),
+            DslLiteral("succeeded"),
+        ),
+        Compare(
+            "==",
+            Call(
+                "plan_assurance_state",
+                (
+                    Ident(checks_alias),
+                    Ident(spec.review_alias),
+                    Ident(_DATA_KNOWLEDGE_ALIAS),
+                    DslLiteral(spec.layer),
+                ),
+            ),
+            DslLiteral("applicable"),
+        ),
+        Compare(
+            "==",
+            Member(Call("gate", (DslLiteral(spec.gate_id),)), "verdict"),
+            DslLiteral("pass"),
+        ),
+    ]
+    if spec.layer in _SPECIALTY_PARENT_PREFLIGHT_LAYERS:
+        predicates.append(
+            Call(
+                "capabilities_present",
+                (Ident(spec.review_alias), Ident(_DATA_KNOWLEDGE_ALIAS)),
+            )
+        )
+    predicates.append(Call("file_exists", (DslLiteral(_DATA_KNOWLEDGE_PATH),)))
+    return tuple(predicates)
+
+
+def _require_top_level_predicates(
+    text: str,
+    *,
+    locator: str,
+    op: str,
+    required: tuple[Expr, ...],
+    allow_extra: bool,
+) -> list[str]:
+    _ = allow_extra
+    try:
+        expr = parse_expression(text)
+    except Exception as exc:  # noqa: BLE001
+        return [f"{locator}: invalid expression: {exc}"]
+
+    # Reject permissive top-level OR around a pass/skip conjunction.
+    if op == "and" and isinstance(expr, BoolOp) and expr.op == "or":
+        return [f"{locator}: required predicates must not sit under a permissive or"]
+
+    parts = _flatten_boolop(expr, op)
+    missing = [predicate for predicate in required if not any(_expr_equal(part, predicate) for part in parts)]
+    if missing:
+        return [f"{locator}: missing required hard predicate ({len(missing)} absent)"]
+    return []
+
+
+def _flatten_boolop(expr: Expr, op: str) -> list[Expr]:
+    if isinstance(expr, BoolOp) and expr.op == op:
+        return _flatten_boolop(expr.left, op) + _flatten_boolop(expr.right, op)
+    return [expr]
+
+
+def _expr_equal(left: Expr, right: Expr) -> bool:
+    return left == right
