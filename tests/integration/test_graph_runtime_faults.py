@@ -785,10 +785,11 @@ def test_v5_accept_risk_and_stop_do_not_ingest_revision_view(tmp_path: Path) -> 
 
 def test_v5_source_decision_cannot_cross_revised_tree_epoch(tmp_path: Path) -> None:
     """A pre-revision source decision must not authorize the post-revision gate epoch."""
+    import hashlib
     import json
     from dataclasses import replace
 
-    from assurance_agent.workflow.core.events import read_events_strict
+    from assurance_agent.workflow.core.events import append_event_strict, read_events_strict
     from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
     from assurance_agent.workflow.orchestration.gates import GateEvaluationContext, check_gate_in_view
     from tests.integration._graph_fault_worker import (
@@ -799,7 +800,7 @@ def test_v5_source_decision_cannot_cross_revised_tree_epoch(tmp_path: Path) -> N
         prepare_interrupted_v5_graph,
     )
 
-    runtime, _compiled, context, root_id = prepare_interrupted_v5_graph(tmp_path)
+    runtime, _compiled, _context, root_id = prepare_interrupted_v5_graph(tmp_path)
     fx = _REVISION_FIXTURES[root_id]
     change = fx["change"]
     assert isinstance(change, Path)
@@ -813,45 +814,173 @@ def test_v5_source_decision_cannot_cross_revised_tree_epoch(tmp_path: Path) -> N
     assert done.status.status == "completed"
     events = read_events_strict(change)
     revision = next(e for e in events if e.get("type") == "manual_plan_revision")
-    post_gate = next(
-        e
-        for e in events
-        if e.get("type") == "task_attempt_succeeded"
-        and isinstance(e.get("gate_report"), dict)
-        and int(e["seq"]) > int(revision["seq"])  # type: ignore[arg-type]
-    )
+    target_tree = str(revision["target_tree_id"])
     leaf_id = str(revision["invocation_id"])
-    leaf = runtime._checkpoints.project(leaf_id)  # noqa: SLF001
-    assert leaf.current_tree_id != source_tree
-    assert post_gate.get("attempt_id") != source_attempt
+    assert target_tree != source_tree
 
-    # Durable fix_and_proceed resumes still carry the OLD source tree pair; they
-    # must not authorize gate re-evaluation against the revised tree epoch.
+    # Dedicated audit log so post-revision gate attempts cannot shadow the
+    # pre-revision accept_risk override (mirrors unit epoch-binding proof).
+    epoch_root = tmp_path / "epoch-proof"
+    epoch_change = epoch_root / "qa" / "changes" / "CH-1"
+    review_dir = epoch_change / "review"
+    review_dir.mkdir(parents=True)
+    review_path = review_dir / "synth-plan-review.json"
+    checks_path = review_dir / "synth-plan-checks.json"
+    review_path.write_text(json.dumps({"decision": "needs_human_review"}), encoding="utf-8")
+    checks_path.write_text(json.dumps({"status": "ready", "layer": "synth"}), encoding="utf-8")
+    audited = {
+        "review/synth-plan-review.json": hashlib.sha256(review_path.read_bytes()).hexdigest(),
+        "review/synth-plan-checks.json": hashlib.sha256(checks_path.read_bytes()).hexdigest(),
+    }
+    append_event_strict(
+        epoch_change,
+        {
+            "source": "graph",
+            "type": "graph_invocation_started",
+            "invocation_id": leaf_id,
+            "entrypoint": "leaf",
+            "graph_id": "g-leaf",
+            "graph_digest": "dg",
+            "event_schema_version": 5,
+            "contract_digests": {},
+            "policy_digest": "p",
+            "policy_origin": "packaged_default",
+            "gate_semantics_digest": "s",
+            "assurance_profile_digest": "a",
+            "params": {},
+            "params_sha256": "",
+            "root_tree_id": source_tree,
+            "max_parallel_tasks": 1,
+            "checkpoint_ns": leaf_id,
+            "structural_path": "g-leaf",
+        },
+    )
+    append_event_strict(
+        epoch_change,
+        {
+            "source": "graph",
+            "type": "task_attempt_succeeded",
+            "invocation_id": leaf_id,
+            "checkpoint_ns": leaf_id,
+            "superstep_id": "ss-1",
+            "task_id": "gate-task",
+            "attempt_id": source_attempt,
+            "gate_report": {"gate_id": "synth-plan-gate", "verdict": "needs_human_review"},
+        },
+    )
+    append_event_strict(
+        epoch_change,
+        {
+            "source": "graph",
+            "type": "graph_interrupted",
+            "invocation_id": leaf_id,
+            "checkpoint_ns": leaf_id,
+            "interrupt_id": "epoch-interrupt",
+            "node_id": "human-review",
+            "checkpoint": "synth-plan-gate",
+            "actions": ["accept_risk", "stop", "fix_and_proceed"],
+            "audited_reads_sha256": audited,
+            "source_gate_attempt_id": source_attempt,
+            "source_gate_tree_id": source_tree,
+        },
+    )
+    append_event_strict(
+        epoch_change,
+        {
+            "source": "graph",
+            "type": "graph_resumed",
+            "invocation_id": leaf_id,
+            "checkpoint_ns": leaf_id,
+            "interrupt_id": "epoch-interrupt",
+            "action": "accept_risk",
+            "reason": "accepted pre-revision",
+            "who": "reviewer",
+            "audited_reads_sha256": audited,
+            "payload": {},
+            "source_gate_attempt_id": source_attempt,
+            "source_gate_tree_id": source_tree,
+        },
+    )
+
     schema = parse_workflow_v2(_V5_REVISION)
-    (change / "review" / "synth-plan-review.json").write_text(
-        json.dumps({"decision": "needs_human_review"}),
-        encoding="utf-8",
-    )
-    (change / "review" / "synth-plan-checks.json").write_text(
-        json.dumps({"status": "ready", "layer": "synth"}),
-        encoding="utf-8",
-    )
     base_ctx = GateEvaluationContext(
-        project_root=context.project_root,
-        repo_root=context.repo_root,
-        change_dir=change,
+        project_root=epoch_root,
+        repo_root=epoch_root,
+        change_dir=epoch_change,
         change_id="CH-1",
         params={},
         state_values={},
         node_results={},
-        audit_events_dir=change,
+        audit_events_dir=epoch_change,
         event_schema_version=5,
         invocation_id=leaf_id,
     )
-    mismatched = replace(base_ctx, committed_tree_id=str(revision["target_tree_id"]))
+    matched = replace(base_ctx, committed_tree_id=source_tree)
+    assert check_gate_in_view(schema.gates, "synth-plan-gate", matched).verdict.value == "pass"
+
+    mismatched = replace(base_ctx, committed_tree_id=target_tree)
     assert check_gate_in_view(schema.gates, "synth-plan-gate", mismatched).verdict.value == (
         "needs_human_review"
     )
+
+
+def test_v5_resume_none_after_revision_commit_ignores_mutated_view(tmp_path: Path) -> None:
+    """After manual_plan_revision commits, resume(None) repairs from durable trees only."""
+    from assurance_agent.workflow.core.events import read_events_strict
+    from assurance_agent.workflow.graph.workspace import TreeStore
+    from tests.integration._graph_fault_worker import (
+        _REVISION_FIXTURES,
+        _build_v5_revision,
+        edit_recorded_revision_view,
+        prepare_interrupted_v5_graph,
+    )
+
+    _runtime, _compiled, context, root_id = prepare_interrupted_v5_graph(tmp_path)
+    committed_plan = b"# revised plan\n"
+    edit_recorded_revision_view(root_id, committed_plan)
+    fx = _REVISION_FIXTURES[root_id]
+    change = fx["change"]
+    assert isinstance(change, Path)
+    project = context.project_root
+    view = change / str(fx["revision_view"])
+
+    kill_sync = tmp_path / "sync" / "post-commit-mutate"
+    _spawn_resume_and_kill(
+        project,
+        kill_sync,
+        point="manual_plan_revision_append",
+        invocation_id=root_id,
+    )
+    events_after_kill = read_events_strict(change)
+    revisions_after_kill = [e for e in events_after_kill if e.get("type") == "manual_plan_revision"]
+    assert len(revisions_after_kill) == 1
+    assert not any(
+        e.get("type") == "graph_resumed" and e.get("revision_transition_id") is not None
+        for e in events_after_kill
+    )
+    target_tree = str(revisions_after_kill[0]["target_tree_id"])
+    store = TreeStore(change)
+    assert store.read_bytes(target_tree, "change:plans/synth-plan.md") == committed_plan
+
+    # Mutate the mutable revision view after the durable commit.
+    (view / "plans" / "synth-plan.md").write_bytes(b"# mutated after commit\n")
+
+    runtime2, _compiled2, _change2 = _build_v5_revision(project)
+    done = runtime2.resume(root_id, None)
+    assert done.status.status == "completed", done.reason
+
+    events = read_events_strict(change)
+    revisions = [e for e in events if e.get("type") == "manual_plan_revision"]
+    assert len(revisions) == 1
+    assert revisions[0]["target_tree_id"] == target_tree
+    assert store.read_bytes(target_tree, "change:plans/synth-plan.md") == committed_plan
+    resumes = [
+        e
+        for e in events
+        if e.get("type") == "graph_resumed"
+        and e.get("revision_transition_id") == revisions[0]["revision_transition_id"]
+    ]
+    assert [e.get("revision_ordinal") for e in resumes] == [0, 1, 2]
 
 
 @pytest.mark.parametrize("point", REVISION_FAULT_POINTS)

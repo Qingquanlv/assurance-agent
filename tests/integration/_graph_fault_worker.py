@@ -6,6 +6,7 @@ import os
 import signal
 import sys
 import time
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -343,17 +344,29 @@ def _fault_hit(point: str) -> None:
     os.kill(os.getpid(), signal.SIGKILL)
 
 
-def force_v5_binding() -> None:
-    """Force fresh root bindings onto event schema version 5 with profile snapshot."""
+@contextmanager
+def force_v5_binding():
+    """Force fresh root bindings onto event schema version 5 with profile snapshot.
+
+    Restores the original ``bind_root_definitions`` on exit so in-process suites
+    do not leak the monkeypatch across tests. Worker subprocesses may keep the
+    patch for the process lifetime; the context manager still restores cleanly.
+    """
     from assurance_agent.workflow.graph import definition_pinning, runtime as runtime_mod
 
-    original = definition_pinning.bind_root_definitions
+    original_pinning = definition_pinning.bind_root_definitions
+    original_runtime = runtime_mod.bind_root_definitions
 
     def _bind_v5(*, store, root_tree_id, event_schema_version=4):  # type: ignore[no-untyped-def]
-        return original(store=store, root_tree_id=root_tree_id, event_schema_version=5)
+        return original_pinning(store=store, root_tree_id=root_tree_id, event_schema_version=5)
 
     definition_pinning.bind_root_definitions = _bind_v5  # type: ignore[assignment]
     runtime_mod.bind_root_definitions = _bind_v5  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        definition_pinning.bind_root_definitions = original_pinning
+        runtime_mod.bind_root_definitions = original_runtime
 
 
 def _install_hooks(runtime, point: str) -> None:  # noqa: ANN001
@@ -519,7 +532,6 @@ def _build_v5_revision(project: Path):
     from assurance_agent.workflow.graph.task_runner import build_default_node_runner
     from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
 
-    force_v5_binding()
     change = project / "qa" / "changes" / "CH-1"
     contracts = parse_execution_contracts(_V5_REVISION_CONTRACTS)
     compiled = compile_workflow(parse_workflow_v2(_V5_REVISION), contracts)
@@ -709,15 +721,18 @@ def prepare_interrupted_v5_graph(tmp_path: Path):
     change = project / "qa" / "changes" / "CH-1"
     change.mkdir(parents=True, exist_ok=True)
     write_aa_config(project)
-    runtime, compiled, change = _build_v5_revision(project)
-    context = RuntimeContext(
-        project_root=project,
-        repo_root=project,
-        change_dir=change,
-        change_id="CH-1",
-        params={"run_mode": "full"},
-    )
-    result = runtime.run(compiled, "root", context)
+    # bind_root_definitions runs during root start; restore immediately after so
+    # later in-process tests do not inherit the v5 force-patch.
+    with force_v5_binding():
+        runtime, compiled, change = _build_v5_revision(project)
+        context = RuntimeContext(
+            project_root=project,
+            repo_root=project,
+            change_dir=change,
+            change_id="CH-1",
+            params={"run_mode": "full"},
+        )
+        result = runtime.run(compiled, "root", context)
     assert result.exit_code == 30, result.reason
     assert result.status.status == "interrupted"
     interrupt = result.status.pending_interrupts[0]
@@ -800,48 +815,50 @@ def main() -> int:
     sync.mkdir(parents=True, exist_ok=True)
     (sync / "READY").write_text(str(os.getpid()), encoding="utf-8")
 
-    runtime, compiled, change = _build(project, schema_key)
-    if point:
-        _install_hooks(runtime, point)
+    binding_cm = force_v5_binding() if schema_key == "v5_revision" else nullcontext()
+    with binding_cm:
+        runtime, compiled, change = _build(project, schema_key)
+        if point:
+            _install_hooks(runtime, point)
 
-    from assurance_agent.workflow.graph.checkpoint import project_invocation
-    from assurance_agent.workflow.graph.models import RuntimeContext
+        from assurance_agent.workflow.graph.checkpoint import project_invocation
+        from assurance_agent.workflow.graph.models import RuntimeContext
 
-    entrypoint = "root" if schema_key == "v5_revision" else "full"
-    context = RuntimeContext(
-        project_root=project,
-        repo_root=project,
-        change_dir=change,
-        change_id="CH-1",
-        params={"run_mode": "full"},
-    )
-
-    if mode == "resume":
-        invocation_id = os.environ["AA_FAULT_INVOCATION"]
-        from assurance_agent.workflow.graph.models import ResumeCommand
-
-        projection = project_invocation(change, invocation_id)
-        pending = next(
-            (i for i in projection.interrupts.values() if i.resolved_action is None),
-            None,
+        entrypoint = "root" if schema_key == "v5_revision" else "full"
+        context = RuntimeContext(
+            project_root=project,
+            repo_root=project,
+            change_dir=change,
+            change_id="CH-1",
+            params={"run_mode": "full"},
         )
-        command = None
-        if pending is not None:
-            from typing import Literal, cast
 
-            raw_action = "fix_and_proceed" if "fix_and_proceed" in pending.actions else pending.actions[0]
-            action = cast(Literal["fix_and_proceed", "accept_risk", "stop"], raw_action)
-            reason = os.environ.get("AA_FAULT_RESUME_REASON", "fault-test resume")
-            who = os.environ.get("AA_FAULT_RESUME_WHO", "fault-worker")
-            command = ResumeCommand(
-                interrupt_id=pending.interrupt_id,
-                action=action,
-                reason=reason,
-                who=who,
+        if mode == "resume":
+            invocation_id = os.environ["AA_FAULT_INVOCATION"]
+            from assurance_agent.workflow.graph.models import ResumeCommand
+
+            projection = project_invocation(change, invocation_id)
+            pending = next(
+                (i for i in projection.interrupts.values() if i.resolved_action is None),
+                None,
             )
-        result = runtime.resume(invocation_id, command)
-    else:
-        result = runtime.run(compiled, entrypoint, context)
+            command = None
+            if pending is not None:
+                from typing import Literal, cast
+
+                raw_action = "fix_and_proceed" if "fix_and_proceed" in pending.actions else pending.actions[0]
+                action = cast(Literal["fix_and_proceed", "accept_risk", "stop"], raw_action)
+                reason = os.environ.get("AA_FAULT_RESUME_REASON", "fault-test resume")
+                who = os.environ.get("AA_FAULT_RESUME_WHO", "fault-worker")
+                command = ResumeCommand(
+                    interrupt_id=pending.interrupt_id,
+                    action=action,
+                    reason=reason,
+                    who=who,
+                )
+            result = runtime.resume(invocation_id, command)
+        else:
+            result = runtime.run(compiled, entrypoint, context)
 
     (sync / "DONE").write_text(
         f"{result.exit_code}:{result.status.status}:{result.invocation_id}",
