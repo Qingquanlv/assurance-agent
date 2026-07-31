@@ -424,6 +424,32 @@ def _source_map(result: Any) -> dict[str, TraceSource]:
     return {source.path: source for source in result.sources}
 
 
+def _write_completed_authority_tree(change_dir: Path) -> tuple[str, str]:
+    """Manifest→ledger prefix + completed snapshot + V2 completed reconcile."""
+    digest, candidates, observation = _seed_manifest_tree(change_dir)
+    c_digest = candidate_document_digest(candidates)
+    events = [
+        _obs_recorded(observation, seq=1),
+        _analysis_completed_event(
+            evidence_digest=digest,
+            candidate_digest=c_digest,
+            candidate_count=0,
+            seq=2,
+        ),
+    ]
+    _write_ledger(change_dir, events)
+    _write_snapshot_from_events(change_dir, events)
+    _write_reconcile_status(
+        change_dir,
+        schema_version="2.0",
+        status="completed",
+        evidence_bundle_digest=digest,
+        candidate_digest=c_digest,
+        occurrence_count=0,
+    )
+    return digest, c_digest
+
+
 @pytest.fixture
 def authority_tree(tmp_path: Path) -> Path:
     """Valid analysis-failed recovery tree (manifest→ledger prefix + failed snapshot)."""
@@ -780,6 +806,105 @@ def test_source_local_precedence(
     assert result.gaps[0].detail == f"reason={expected_reason}"
 
 
+def test_snapshot_document_source_local_precedence(authority_tree: Path) -> None:
+    """Snapshot document: change_id > authoritative_batch_id (> projection)."""
+    snapshot = json.loads((authority_tree / SNAPSHOT_SOURCE).read_text(encoding="utf-8"))
+    snapshot["change_id"] = "OTHER-CHANGE"
+    snapshot["authoritative_batch_id"] = "OTHER-BATCH"
+    # Also drift projection payload; change_id must still win.
+    snapshot["observations"] = []
+    _write_json(authority_tree / SNAPSHOT_SOURCE, snapshot)
+    result = validate_issue_authority_prefix(authority_tree, CHANGE_ID, BATCH_ID)
+    assert result.state == "unavailable"
+    assert [(gap.code, gap.source, gap.detail) for gap in result.gaps] == [
+        (
+            "issues_snapshot_identity_mismatch",
+            SNAPSHOT_SOURCE,
+            "reason=change_id_mismatch",
+        )
+    ]
+
+
+def test_snapshot_batch_precedes_projection_replay_mismatch(authority_tree: Path) -> None:
+    snapshot = json.loads((authority_tree / SNAPSHOT_SOURCE).read_text(encoding="utf-8"))
+    snapshot["authoritative_batch_id"] = "OTHER-BATCH"
+    snapshot["observations"] = []
+    _write_json(authority_tree / SNAPSHOT_SOURCE, snapshot)
+    result = validate_issue_authority_prefix(authority_tree, CHANGE_ID, BATCH_ID)
+    assert result.state == "unavailable"
+    assert result.gaps[0].code == "issues_snapshot_identity_mismatch"
+    assert result.gaps[0].detail == "reason=batch_id_mismatch"
+
+
+def test_reconcile_status_source_local_precedence(tmp_path: Path) -> None:
+    """Reconcile: change_id > evidence_digest_mismatch."""
+    change_dir = tmp_path / "qa" / "changes" / CHANGE_ID
+    change_dir.mkdir(parents=True)
+    _write_json(change_dir / FAILURE_SOURCE, _failure_payload())
+    _write_completed_authority_tree(change_dir)
+    status = json.loads((change_dir / RECONCILE_SOURCE).read_text(encoding="utf-8"))
+    status["change_id"] = "OTHER-CHANGE"
+    status["evidence_bundle_digest"] = "sha256:" + "f" * 64
+    _write_json(change_dir / RECONCILE_SOURCE, status)
+    result = validate_issue_authority_prefix(change_dir, CHANGE_ID, BATCH_ID)
+    assert result.state == "unavailable"
+    assert [(gap.code, gap.source, gap.detail) for gap in result.gaps] == [
+        (
+            "issue_reconciliation_unavailable",
+            RECONCILE_SOURCE,
+            "reason=change_id_mismatch",
+        )
+    ]
+
+
+def test_v1_reconcile_change_id_precedes_status_inconsistent(tmp_path: Path) -> None:
+    """V1 must not short-circuit to status_inconsistent before identity checks."""
+    change_dir = tmp_path / "qa" / "changes" / CHANGE_ID
+    change_dir.mkdir(parents=True)
+    _write_json(change_dir / FAILURE_SOURCE, _failure_payload())
+    digest, c_digest = _write_completed_authority_tree(change_dir)
+    _write_reconcile_status(
+        change_dir,
+        schema_version="1.0",
+        status="failed",
+        evidence_bundle_digest=digest,
+        candidate_digest=c_digest,
+        error="conflict",
+    )
+    status = json.loads((change_dir / RECONCILE_SOURCE).read_text(encoding="utf-8"))
+    status["change_id"] = "OTHER-CHANGE"
+    _write_json(change_dir / RECONCILE_SOURCE, status)
+    result = validate_issue_authority_prefix(change_dir, CHANGE_ID, BATCH_ID)
+    assert result.state == "unavailable"
+    assert result.gaps[0].source == RECONCILE_SOURCE
+    assert result.gaps[0].code == "issue_reconciliation_unavailable"
+    assert result.gaps[0].detail == "reason=change_id_mismatch"
+
+
+def test_analysis_failed_missing_snapshot_uses_dedicated_code(authority_tree: Path) -> None:
+    (authority_tree / SNAPSHOT_SOURCE).unlink()
+    result = validate_issue_authority_prefix(authority_tree, CHANGE_ID, BATCH_ID)
+    assert result.state == "unavailable"
+    assert [(gap.code, gap.source, gap.detail) for gap in result.gaps] == [
+        ("issues_snapshot_missing", SNAPSHOT_SOURCE, "reason=missing")
+    ]
+
+
+def test_analysis_failed_snapshot_identity_uses_dedicated_code(authority_tree: Path) -> None:
+    snapshot = json.loads((authority_tree / SNAPSHOT_SOURCE).read_text(encoding="utf-8"))
+    snapshot["change_id"] = "OTHER-CHANGE"
+    _write_json(authority_tree / SNAPSHOT_SOURCE, snapshot)
+    result = validate_issue_authority_prefix(authority_tree, CHANGE_ID, BATCH_ID)
+    assert result.state == "unavailable"
+    assert [(gap.code, gap.source, gap.detail) for gap in result.gaps] == [
+        (
+            "issues_snapshot_identity_mismatch",
+            SNAPSHOT_SOURCE,
+            "reason=change_id_mismatch",
+        )
+    ]
+
+
 def test_cross_source_prefix_order_manifest_before_candidates(authority_tree: Path) -> None:
     mutate_prefix(authority_tree, "manifest_wrong_batch")
     mutate_prefix(authority_tree, "candidates_missing")
@@ -1030,27 +1155,7 @@ def test_completed_prefix_returns_validated(tmp_path: Path) -> None:
     change_dir = tmp_path / "qa" / "changes" / CHANGE_ID
     change_dir.mkdir(parents=True)
     _write_json(change_dir / FAILURE_SOURCE, _failure_payload())
-    digest, candidates, observation = _seed_manifest_tree(change_dir)
-    c_digest = candidate_document_digest(candidates)
-    events = [
-        _obs_recorded(observation, seq=1),
-        _analysis_completed_event(
-            evidence_digest=digest,
-            candidate_digest=c_digest,
-            candidate_count=0,
-            seq=2,
-        ),
-    ]
-    _write_ledger(change_dir, events)
-    _write_snapshot_from_events(change_dir, events)
-    _write_reconcile_status(
-        change_dir,
-        schema_version="2.0",
-        status="completed",
-        evidence_bundle_digest=digest,
-        candidate_digest=c_digest,
-        occurrence_count=0,
-    )
+    digest, c_digest = _write_completed_authority_tree(change_dir)
     result = validate_issue_authority_prefix(change_dir, CHANGE_ID, BATCH_ID)
     assert result.state == "completed"
     assert result.gaps == ()

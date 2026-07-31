@@ -575,15 +575,19 @@ def _validate_reconcile_identity(
     manifest_digest: str,
     candidate_digest: str,
 ) -> None:
-    if isinstance(status, IssueReconcileStatusV1):
-        # V1 is readable history but never current recovery/completed authority.
-        raise AuthorityValidationError(RECONCILE_SOURCE, "status_inconsistent")
+    # Identity/digest faults outrank schema-version rejection so V1 with a wrong
+    # change_id reports change_id_mismatch, not a premature status_inconsistent.
     if status.change_id != change_id:
         raise AuthorityValidationError(RECONCILE_SOURCE, "change_id_mismatch")
     if status.batch_id != batch_id:
         raise AuthorityValidationError(RECONCILE_SOURCE, "batch_id_mismatch")
     if status.evidence_bundle_digest != manifest_digest:
         raise AuthorityValidationError(RECONCILE_SOURCE, "evidence_digest_mismatch")
+    if isinstance(status, IssueReconcileStatusV1):
+        if status.candidate_digest is not None and status.candidate_digest != candidate_digest:
+            raise AuthorityValidationError(RECONCILE_SOURCE, "candidate_digest_mismatch")
+        # V1 is readable history but never current recovery/completed authority.
+        raise AuthorityValidationError(RECONCILE_SOURCE, "status_inconsistent")
     if status.candidate_digest != candidate_digest:
         raise AuthorityValidationError(RECONCILE_SOURCE, "candidate_digest_mismatch")
 
@@ -639,6 +643,28 @@ def _unavailable(
     )
 
 
+def _unavailable_snapshot_document(
+    recorder: TraceSourceRecorder,
+    batch_id: str,
+    err: AuthorityValidationError,
+) -> AuthorityPrefixResult:
+    """Map persisted snapshot document faults to §7.2 dedicated gap codes."""
+    if err.source != SNAPSHOT_SOURCE:
+        return _unavailable(recorder, batch_id, err)
+    if err.reason in ("missing", "malformed"):
+        code = "issues_snapshot_missing"
+    elif err.reason in ("change_id_mismatch", "batch_id_mismatch"):
+        code = "issues_snapshot_identity_mismatch"
+    else:
+        code = "issue_reconciliation_unavailable"
+    return AuthorityPrefixResult(
+        state="unavailable",
+        sources=recorder.freeze(),
+        gaps=(authority_gap(code, SNAPSHOT_SOURCE, batch_id, err.reason),),
+        validated=None,
+    )
+
+
 def validate_issue_authority_prefix(
     change_dir: Path,
     change_id: str,
@@ -677,6 +703,12 @@ def validate_issue_authority_prefix(
                 recorder,
                 require_authoritative_batch=True,
             )
+        except AuthorityValidationError as err:
+            # Document missing/identity use dedicated §7.2 codes; chain faults stay unavailable.
+            _load_reconcile_status(change_dir, recorder)
+            _record_project_sources(change_dir, recorder)
+            return _unavailable_snapshot_document(recorder, batch_id, err)
+        try:
             _validate_failed_analysis_chain(
                 replayed,
                 change_id,
@@ -770,6 +802,10 @@ def validate_issue_authority_prefix(
             recorder,
             require_authoritative_batch=True,
         )
+    except AuthorityValidationError as err:
+        _record_project_sources(change_dir, recorder)
+        return _unavailable_snapshot_document(recorder, batch_id, err)
+    try:
         _validate_completed_analysis_chain(
             replayed,
             change_id,
@@ -784,63 +820,6 @@ def validate_issue_authority_prefix(
             raise AuthorityValidationError(SNAPSHOT_SOURCE, "status_inconsistent")
     except AuthorityValidationError as err:
         _record_project_sources(change_dir, recorder)
-        # Dedicated snapshot missing/identity codes per §7.2.
-        if err.source == SNAPSHOT_SOURCE and err.reason == "missing":
-            return AuthorityPrefixResult(
-                state="unavailable",
-                sources=recorder.freeze(),
-                gaps=(
-                    authority_gap(
-                        "issues_snapshot_missing",
-                        SNAPSHOT_SOURCE,
-                        batch_id,
-                        "missing",
-                    ),
-                ),
-                validated=None,
-            )
-        if err.source == SNAPSHOT_SOURCE and err.reason == "malformed":
-            return AuthorityPrefixResult(
-                state="unavailable",
-                sources=recorder.freeze(),
-                gaps=(
-                    authority_gap(
-                        "issues_snapshot_missing",
-                        SNAPSHOT_SOURCE,
-                        batch_id,
-                        "malformed",
-                    ),
-                ),
-                validated=None,
-            )
-        if err.source == SNAPSHOT_SOURCE and err.reason == "change_id_mismatch":
-            return AuthorityPrefixResult(
-                state="unavailable",
-                sources=recorder.freeze(),
-                gaps=(
-                    authority_gap(
-                        "issues_snapshot_identity_mismatch",
-                        SNAPSHOT_SOURCE,
-                        batch_id,
-                        "change_id_mismatch",
-                    ),
-                ),
-                validated=None,
-            )
-        if err.source == SNAPSHOT_SOURCE and err.reason == "batch_id_mismatch":
-            return AuthorityPrefixResult(
-                state="unavailable",
-                sources=recorder.freeze(),
-                gaps=(
-                    authority_gap(
-                        "issues_snapshot_identity_mismatch",
-                        SNAPSHOT_SOURCE,
-                        batch_id,
-                        "batch_id_mismatch",
-                    ),
-                ),
-                validated=None,
-            )
         return _unavailable(recorder, batch_id, err)
 
     _record_project_sources(change_dir, recorder)
