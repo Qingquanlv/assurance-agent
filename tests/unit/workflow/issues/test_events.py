@@ -72,6 +72,7 @@ from assurance_agent.workflow.issues.events import (
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
 
+
 def _obs_id(*, json_pointer: str = "/cases/0") -> str:
     return observation_id(
         ObservationIdentityInput(
@@ -535,6 +536,19 @@ def _write_jsonl(path: Path, lines: list[dict]) -> None:
             fh.write(json.dumps(line) + "\n")
 
 
+def _evidence_refs_digest(evidence_refs: list[str]) -> str:
+    canonical = json.dumps(sorted(evidence_refs), sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _with_identity(payload: dict, *, mutate: dict | None = None) -> dict:
+    """Apply mutate, then ensure event_id matches the (possibly mutated) key."""
+    if mutate:
+        payload = {**payload, **mutate}
+    payload["event_id"] = event_id(payload["idempotency_key"])
+    return payload
+
+
 def _obs_event_dict(
     seq: int,
     *,
@@ -557,6 +571,200 @@ def _obs_event_dict(
     if mutate:
         payload.update(mutate)
     return payload
+
+
+def _analysis_completed_event_dict(seq: int = 1, *, mutate: dict | None = None) -> dict:
+    digest = ANALYSIS_STATUS.candidate_digest
+    idem = f"issue_analysis_completed:CH-001:B-001:{digest}"
+    return _with_identity(
+        {
+            "schema_version": "1.0",
+            "seq": seq,
+            "event_id": event_id(idem),
+            "idempotency_key": idem,
+            "ts": "2026-07-25T10:00:00Z",
+            "evidence_digest": ANALYSIS_STATUS.evidence_bundle_digest,
+            "type": "issue_analysis_completed",
+            "change_id": "CH-001",
+            "batch_id": "B-001",
+            "analysis_status": ANALYSIS_STATUS.model_dump(mode="json"),
+        },
+        mutate=mutate,
+    )
+
+
+def _analysis_failed_event_dict(seq: int = 1, *, mutate: dict | None = None) -> dict:
+    digest = ANALYSIS_STATUS_FAILED.evidence_bundle_digest
+    idem = f"issue_analysis_failed:CH-001:B-001:{digest}"
+    return _with_identity(
+        {
+            "schema_version": "1.0",
+            "seq": seq,
+            "event_id": event_id(idem),
+            "idempotency_key": idem,
+            "ts": "2026-07-25T10:00:00Z",
+            "evidence_digest": digest,
+            "type": "issue_analysis_failed",
+            "change_id": "CH-001",
+            "batch_id": "B-001",
+            "analysis_status": ANALYSIS_STATUS_FAILED.model_dump(mode="json"),
+        },
+        mutate=mutate,
+    )
+
+
+def _occurrence_event_dict(
+    event_type: str,
+    seq: int = 1,
+    *,
+    mutate: dict | None = None,
+) -> dict:
+    idem = f"{event_type}:CH-001:B-001:{CANDIDATE_DIGEST}"
+    return _with_identity(
+        {
+            "schema_version": "1.0",
+            "seq": seq,
+            "event_id": event_id(idem),
+            "idempotency_key": idem,
+            "ts": "2026-07-25T10:00:00Z",
+            "evidence_digest": OCCURRENCE.analysis.evidence_bundle_digest,
+            "type": event_type,
+            "change_id": "CH-001",
+            "batch_id": "B-001",
+            "occurrence": OCCURRENCE.model_dump(mode="json"),
+        },
+        mutate=mutate,
+    )
+
+
+def _sync_event_dict(seq: int = 1, *, mutate: dict | None = None) -> dict:
+    idem = f"project_sync_pending:CH-001:B-001:{CANDIDATE_DIGEST}"
+    return _with_identity(
+        {
+            "schema_version": "1.0",
+            "seq": seq,
+            "event_id": event_id(idem),
+            "idempotency_key": idem,
+            "ts": "2026-07-25T10:00:00Z",
+            "evidence_digest": "sha256:aabbccdd",
+            "type": "project_sync_pending",
+            "change_id": "CH-001",
+            "batch_id": "B-001",
+            "candidate_digest": CANDIDATE_DIGEST,
+        },
+        mutate=mutate,
+    )
+
+
+def _problem_detected_event_dict(seq: int = 1, *, mutate: dict | None = None) -> dict:
+    # Not recomputable; use a stable writer-shaped key.
+    idem = f"problem_detected:{PROBLEM_ID}:CH-001:B-001:{CANDIDATE_DIGEST}"
+    return _with_identity(
+        {
+            "schema_version": "1.0",
+            "seq": seq,
+            "event_id": event_id(idem),
+            "idempotency_key": idem,
+            "ts": "2026-07-25T10:00:00Z",
+            "evidence_digest": "sha256:aabbccdd",
+            "type": "problem_detected",
+            "problem_id": PROBLEM_ID,
+            "expected_problem_version": 0,
+            "occurrence_id": OCCURRENCE_ID,
+            "change_id": "CH-001",
+            "batch_id": "B-001",
+            "fingerprint": FINGERPRINT.model_dump(mode="json"),
+            "title": "Endpoint fails",
+            "classification": "product_bug",
+            "severity": "high",
+        },
+        mutate=mutate,
+    )
+
+
+def _problem_resolved_event_dict(seq: int = 1, *, mutate: dict | None = None) -> dict:
+    digest = "sha256:aabbccdd"
+    idem = f"problem_resolved:{PROBLEM_ID}:B-004:{digest}"
+    return _with_identity(
+        {
+            "schema_version": "1.0",
+            "seq": seq,
+            "event_id": event_id(idem),
+            "idempotency_key": idem,
+            "ts": "2026-07-25T10:00:00Z",
+            "evidence_digest": digest,
+            "type": "problem_resolved",
+            "problem_id": PROBLEM_ID,
+            "expected_problem_version": 4,
+            "resolved_at": "2026-07-25T12:00:00Z",
+            "change_id": "CH-002",
+            "batch_id": "B-004",
+            "disposition": "PR-42 merged",
+            "verification_scope": ["API-TEST-001"],
+        },
+        mutate=mutate,
+    )
+
+
+def _review_event_dict(
+    event_type: str,
+    *,
+    seq: int = 1,
+    expected_problem_version: int = 1,
+    mutate: dict | None = None,
+) -> dict:
+    evidence_refs = ["ref-a"]
+    digest = _evidence_refs_digest(evidence_refs)
+    key_prefix = {
+        "problem_assessment_confirmed": "review:confirm_assessment",
+        "problem_marked_not_an_issue": "review:mark_not_an_issue",
+        "problem_risk_accepted": "review:accept_risk",
+        "problem_work_started": "review:start_work",
+        "problem_reopened": "review:reopen",
+        "problem_merged": "review:merge",
+        "problem_verification_requested": "review:submit_resolution",
+    }[event_type]
+    if event_type == "problem_merged":
+        target = "PROB-" + "b" * 16
+        idem = f"{key_prefix}:{PROBLEM_ID}:{expected_problem_version}:{target}:{digest}"
+        body: dict = {
+            "target_problem_id": target,
+            "reason": "duplicate",
+            "evidence_refs": evidence_refs,
+            "resolved_at": "2026-07-25T12:00:00Z",
+        }
+    elif event_type == "problem_verification_requested":
+        idem = f"{key_prefix}:{PROBLEM_ID}:{expected_problem_version}:CH-002:B-003:{digest}"
+        body = {
+            "verification_scope": ["API-TEST-001"],
+            "linked_fix_disposition": "PR-42",
+            "change_id": "CH-002",
+            "batch_id": "B-003",
+        }
+    elif event_type == "problem_assessment_confirmed":
+        idem = f"{key_prefix}:{PROBLEM_ID}:{expected_problem_version}:{digest}"
+        body = {
+            "classification": "product_bug",
+            "severity": "critical",
+            "reason": "confirmed",
+            "evidence_refs": evidence_refs,
+        }
+    else:
+        idem = f"{key_prefix}:{PROBLEM_ID}:{expected_problem_version}:{digest}"
+        body = {"reason": "review action", "evidence_refs": evidence_refs}
+    payload = {
+        "schema_version": "1.0",
+        "seq": seq,
+        "event_id": event_id(idem),
+        "idempotency_key": idem,
+        "ts": "2026-07-25T10:00:00Z",
+        "evidence_digest": digest,
+        "type": event_type,
+        "problem_id": PROBLEM_ID,
+        "expected_problem_version": expected_problem_version,
+        **body,
+    }
+    return _with_identity(payload, mutate=mutate)
 
 
 class TestReadChangeIssueEvents:
@@ -660,6 +868,10 @@ class TestReadChangeIssueEvents:
     def test_authority_loader_distinguishes_missing_from_empty(self, tmp_path: Path) -> None:
         with pytest.raises(IssueLedgerMissingError):
             load_problem_ledger(tmp_path / "missing.jsonl")
+        empty = tmp_path / "empty.jsonl"
+        empty.write_bytes(b"")
+        assert load_problem_ledger(empty) == ()
+        assert load_change_issue_ledger(empty) == ()
 
     def test_strict_change_replay_rejects_forged_event_id(self, tmp_path: Path) -> None:
         path = tmp_path / "events.jsonl"
@@ -667,33 +879,170 @@ class TestReadChangeIssueEvents:
         with pytest.raises(IssueLedgerIntegrityError, match="event_id"):
             load_change_issue_ledger(path)
 
-    def test_strict_change_replay_rejects_duplicate_defining_occurrence(
-        self, tmp_path: Path
+    def test_strict_change_replay_rejects_envelope_nested_change_id_mismatch(self, tmp_path: Path) -> None:
+        path = tmp_path / "events.jsonl"
+        nested = OBSERVATION.model_dump(mode="json")
+        nested["change_id"] = "CH-OTHER"
+        _write_jsonl(path, [_obs_event_dict(1, mutate={"observation": nested})])
+        with pytest.raises(IssueLedgerIntegrityError, match="change_id"):
+            load_change_issue_ledger(path)
+
+    def test_strict_change_replay_rejects_envelope_nested_batch_id_mismatch(self, tmp_path: Path) -> None:
+        path = tmp_path / "events.jsonl"
+        nested = ANALYSIS_STATUS.model_dump(mode="json")
+        nested["batch_id"] = "B-OTHER"
+        _write_jsonl(path, [_analysis_completed_event_dict(mutate={"analysis_status": nested})])
+        with pytest.raises(IssueLedgerIntegrityError, match="batch_id"):
+            load_change_issue_ledger(path)
+
+    def test_strict_change_replay_rejects_nested_evidence_digest_mismatch(self, tmp_path: Path) -> None:
+        path = tmp_path / "events.jsonl"
+        nested = OCCURRENCE.model_dump(mode="json")
+        nested["analysis"]["evidence_bundle_digest"] = "sha256:forged-digest"
+        _write_jsonl(
+            path,
+            [_occurrence_event_dict("occurrence_detected", mutate={"occurrence": nested})],
+        )
+        with pytest.raises(IssueLedgerIntegrityError, match="evidence_digest"):
+            load_change_issue_ledger(path)
+
+    def test_strict_change_replay_rejects_forged_observation_id(self, tmp_path: Path) -> None:
+        path = tmp_path / "events.jsonl"
+        nested = OBSERVATION.model_dump(mode="json")
+        nested["observation_id"] = "OBS-forged00000001"
+        # Keep the recomputable key consistent with the forged nested id so the
+        # nested observation_id check is the rejection path.
+        forged_key = "observation_recorded:CH-001:B-001:OBS-forged00000001"
+        _write_jsonl(
+            path,
+            [
+                _obs_event_dict(
+                    1,
+                    mutate={
+                        "observation": nested,
+                        "idempotency_key": forged_key,
+                        "event_id": event_id(forged_key),
+                    },
+                )
+            ],
+        )
+        with pytest.raises(IssueLedgerIntegrityError, match="observation_id"):
+            load_change_issue_ledger(path)
+
+    def test_strict_change_replay_rejects_forged_occurrence_id(self, tmp_path: Path) -> None:
+        path = tmp_path / "events.jsonl"
+        nested = OCCURRENCE.model_dump(mode="json")
+        nested["occurrence_id"] = "OCC-forged00000001"
+        _write_jsonl(
+            path,
+            [_occurrence_event_dict("occurrence_detected", mutate={"occurrence": nested})],
+        )
+        with pytest.raises(IssueLedgerIntegrityError, match="occurrence_id"):
+            load_change_issue_ledger(path)
+
+    def test_strict_problem_replay_rejects_expected_problem_version(self, tmp_path: Path) -> None:
+        path = tmp_path / "events.jsonl"
+        _write_jsonl(
+            path,
+            [_problem_detected_event_dict(mutate={"expected_problem_version": 1})],
+        )
+        with pytest.raises(IssueLedgerIntegrityError, match="expected_problem_version"):
+            load_problem_ledger(path)
+
+    def test_strict_problem_replay_rejects_problem_id_mismatch(self, tmp_path: Path) -> None:
+        path = tmp_path / "events.jsonl"
+        _write_jsonl(
+            path,
+            [_problem_detected_event_dict(mutate={"problem_id": "PROB-" + "f" * 16})],
+        )
+        with pytest.raises(IssueLedgerIntegrityError, match="problem_id"):
+            load_problem_ledger(path)
+
+    @pytest.mark.parametrize(
+        ("builder", "loader"),
+        [
+            (lambda: _obs_event_dict(1), load_change_issue_ledger),
+            (lambda: _analysis_completed_event_dict(), load_change_issue_ledger),
+            (lambda: _analysis_failed_event_dict(), load_change_issue_ledger),
+            (lambda: _occurrence_event_dict("occurrence_detected"), load_change_issue_ledger),
+            (lambda: _occurrence_event_dict("occurrence_linked"), load_change_issue_ledger),
+            (lambda: _sync_event_dict(), load_change_issue_ledger),
+            (lambda: _problem_resolved_event_dict(), load_problem_ledger),
+            (
+                lambda: _review_event_dict("problem_assessment_confirmed"),
+                load_problem_ledger,
+            ),
+            (
+                lambda: _review_event_dict("problem_marked_not_an_issue"),
+                load_problem_ledger,
+            ),
+            (lambda: _review_event_dict("problem_risk_accepted"), load_problem_ledger),
+            (lambda: _review_event_dict("problem_work_started"), load_problem_ledger),
+            (lambda: _review_event_dict("problem_reopened"), load_problem_ledger),
+            (lambda: _review_event_dict("problem_merged"), load_problem_ledger),
+            (
+                lambda: _review_event_dict("problem_verification_requested"),
+                load_problem_ledger,
+            ),
+        ],
+        ids=[
+            "observation_recorded",
+            "issue_analysis_completed",
+            "issue_analysis_failed",
+            "occurrence_detected",
+            "occurrence_linked",
+            "project_sync_pending",
+            "problem_resolved",
+            "problem_assessment_confirmed",
+            "problem_marked_not_an_issue",
+            "problem_risk_accepted",
+            "problem_work_started",
+            "problem_reopened",
+            "problem_merged",
+            "problem_verification_requested",
+        ],
+    )
+    def test_strict_replay_rejects_forged_recomputable_idempotency_key(
+        self,
+        tmp_path: Path,
+        builder,
+        loader,
     ) -> None:
         path = tmp_path / "events.jsonl"
-        detected_key = f"occurrence_detected:CH-001:B-001:{CANDIDATE_DIGEST}"
-        linked_key = f"occurrence_linked:CH-001:B-001:{CANDIDATE_DIGEST}"
-        occ_payload = OCCURRENCE.model_dump(mode="json")
-        first = {
-            "schema_version": "1.0",
-            "seq": 1,
-            "event_id": event_id(detected_key),
-            "idempotency_key": detected_key,
-            "ts": "2026-07-25T10:00:00Z",
-            "evidence_digest": "sha256:aabbccdd",
-            "type": "occurrence_detected",
-            "change_id": "CH-001",
-            "batch_id": "B-001",
-            "occurrence": occ_payload,
-        }
-        second = {
-            **first,
-            "seq": 2,
-            "event_id": event_id(linked_key),
-            "idempotency_key": linked_key,
-            "type": "occurrence_linked",
-        }
+        payload = builder()
+        forged = {**payload, "idempotency_key": "forged-recomputable-key"}
+        forged["event_id"] = event_id(forged["idempotency_key"])
+        _write_jsonl(path, [forged])
+        with pytest.raises(IssueLedgerIntegrityError, match="idempotency_key"):
+            loader(path)
+
+    def test_strict_change_replay_rejects_duplicate_defining_observation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Same observation_id implies the same recomputable key; disable that check so
+        # the dedicated defining-observation uniqueness path is exercised.
+        monkeypatch.setattr(
+            "assurance_agent.evidence.issue_replay.recomputable_issue_event_idempotency_key",
+            lambda _event: None,
+        )
+        path = tmp_path / "events.jsonl"
+        first = _obs_event_dict(1, observation=OBSERVATION)
+        second = _obs_event_dict(2, observation=OBSERVATION)
+        second["idempotency_key"] = "distinct-key-same-defining-observation"
+        second["event_id"] = event_id(second["idempotency_key"])
         _write_jsonl(path, [first, second])
+        with pytest.raises(IssueLedgerIntegrityError, match="duplicate defining observation_id"):
+            load_change_issue_ledger(path)
+
+    def test_strict_change_replay_rejects_duplicate_defining_occurrence(self, tmp_path: Path) -> None:
+        path = tmp_path / "events.jsonl"
+        _write_jsonl(
+            path,
+            [
+                _occurrence_event_dict("occurrence_detected", seq=1),
+                _occurrence_event_dict("occurrence_linked", seq=2),
+            ],
+        )
         with pytest.raises(IssueLedgerIntegrityError, match="occurrence_id"):
             load_change_issue_ledger(path)
 
