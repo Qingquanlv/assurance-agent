@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -28,8 +29,11 @@ from assurance_agent.workflow.graph.replay_binding import (
     recover_layer_inputs,
     validate_pinned_layer_selection,
 )
+from assurance_agent.verification.profile_manifest import assurance_profile_bytes
+from assurance_agent.workflow.graph.compiler import compile_workflow
+from assurance_agent.workflow.graph.contracts import load_execution_contracts
 from assurance_agent.workflow.graph.replay_schema import PinnedLayerTopology, validate_params_only_expression
-from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
+from assurance_agent.workflow.graph.schema_v2 import EdgeDef, load_workflow_v2
 from assurance_agent.workflow.orchestration.plan_check_replay import replay_plan_check_policy
 from tests.unit.workflow.graph.test_replay_binding import (
     _CHANGE_ID,
@@ -37,6 +41,8 @@ from tests.unit.workflow.graph.test_replay_binding import (
     _PARAMS,
     _ROOT_INV,
     _build_fixture,
+    _stage_pinned_definition_snapshots,
+    _stage_profile_snapshot,
 )
 
 _SCHEMA = load_workflow_v2(Path.cwd())
@@ -273,6 +279,75 @@ def test_bind_replay_definitions_exposes_selected_layers_and_topologies(tmp_path
     assert binding.layer_topologies["e2e"].status == "wired"
 
 
+def _partial_fuzz_plan_review_cycle(schema):
+    """Activation markers without complete specialty wiring → topology partial."""
+    cycle = schema.graphs["fuzz-plan-review-cycle"]
+    api_mechanical = schema.graphs["api-plan-cycle"].nodes["mechanical-plan-checks"]
+    fuzz_profile = get_layer_assurance_profile("fuzz")
+    mechanical = api_mechanical.model_copy(
+        update={
+            "with_": {"layer": "fuzz", "require_review": True},
+            "outputs": [f"change:{fuzz_profile.checks_artifact}"],
+        }
+    )
+    nodes = {**cycle.nodes, "mechanical-plan-checks": mechanical}
+    edges = [
+        *cycle.edges,
+        EdgeDef(**{"from": "review", "to": "mechanical-plan-checks"}),
+        EdgeDef(**{"from": "mechanical-plan-checks", "to": "END"}),
+    ]
+    graphs = {
+        **schema.graphs,
+        "fuzz-plan-review-cycle": cycle.model_copy(update={"nodes": nodes, "edges": edges}),
+    }
+    return schema.model_copy(update={"graphs": graphs})
+
+
+def _repin_partial_fuzz_topology(fixture) -> None:
+    schema = _partial_fuzz_plan_review_cycle(load_workflow_v2(Path.cwd()))
+    contracts = load_execution_contracts(Path.cwd())
+    compiled = compile_workflow(schema, contracts)
+    old_digest = fixture.compiled.digest  # type: ignore[attr-defined]
+    _stage_pinned_definition_snapshots(
+        fixture.change_dir,
+        compiled=compiled,
+        schema=schema,
+        contracts=contracts,
+    )
+    rewritten: list[str] = []
+    for line in fixture.events_path.read_text(encoding="utf-8").splitlines():
+        payload = json.loads(line)
+        if payload.get("graph_digest") == old_digest:
+            payload["graph_digest"] = compiled.digest
+        if payload.get("ir_digest") == old_digest:
+            payload["ir_digest"] = compiled.digest
+        rewritten.append(json.dumps(payload, sort_keys=True))
+    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+    fixture.compiled = compiled  # type: ignore[attr-defined]
+
+
+def _upgrade_fixture_to_v5(fixture) -> None:
+    profile_bytes = assurance_profile_bytes()
+    profile_digest = hashlib.sha256(profile_bytes).hexdigest()
+    _stage_profile_snapshot(fixture.change_dir, profile_digest, profile_bytes)
+    rewritten: list[str] = []
+    for line in fixture.events_path.read_text(encoding="utf-8").splitlines():
+        payload = json.loads(line)
+        if payload.get("type") == "graph_invocation_started":
+            payload["event_schema_version"] = 5
+            payload["assurance_profile_digest"] = profile_digest
+        rewritten.append(json.dumps(payload, sort_keys=True))
+    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+
+
+def _write_pass_shaped_active_files(change_dir: Path, layer: str) -> None:
+    profile = get_layer_assurance_profile(layer)  # type: ignore[arg-type]
+    for relative in (profile.review_artifact, profile.checks_artifact):
+        path = change_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"status":"pass","checks":[]}\n', encoding="utf-8")
+
+
 def _rewrite_assurance_params(fixture, params: dict[str, object]) -> None:
     lines = fixture.events_path.read_text(encoding="utf-8").splitlines()
     rewritten: list[str] = []
@@ -361,6 +436,31 @@ def test_v4_forged_wired_fuzz_without_profile_snapshot_is_incomplete(
     by_layer = {row.layer: row for row in replay.rows}
     assert by_layer["fuzz"].status == "incomplete"
     assert by_layer["fuzz"].reason_code == "partial_assurance_wiring"
+
+
+def test_v5_partial_fuzz_with_pass_shaped_active_files_is_incomplete(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path, include_e2e=False)
+    _repin_partial_fuzz_topology(fixture)
+    _upgrade_fixture_to_v5(fixture)
+    _rewrite_assurance_params(fixture, {**_PARAMS, "run_mode": "full", "test_types": ["api", "fuzz"]})
+    _write_pass_shaped_active_files(fixture.change_dir, "fuzz")
+
+    binding = bind_replay_definitions(
+        change_dir=fixture.change_dir,
+        change_id=_CHANGE_ID,
+        root_invocation_id=_ROOT_INV,
+        expected_entrypoint=_ENTRYPOINT,
+    )
+    assert binding.event_schema_version >= 5
+    assert binding.layer_topologies["fuzz"].status == "partial"
+    assert binding.layer_topologies["fuzz"].diagnostics
+
+    replay = _collect(fixture)
+    by_layer = {row.layer: row for row in replay.rows}
+    assert by_layer["fuzz"].status == "incomplete"
+    assert by_layer["fuzz"].reason_code == "partial_assurance_wiring"
+    assert replay.integrity == "incomplete"
+    assert replay.semantics == "counterfactual_plan_check_actions/v2"
 
 
 def test_v5_missing_profile_snapshot_is_definition_incomplete(tmp_path: Path) -> None:
