@@ -200,6 +200,21 @@ def test_materialize_trace_projection_contract_reads_full_surface() -> None:
     assert contract.authorization_writes == ("change:inspect/trace-projection.json",)
 
 
+def test_record_project_sync_pending_contract_writes_reconcile_status() -> None:
+    catalog = load_execution_contracts(Path.cwd())
+    contract = catalog.contracts["operation:record-project-sync-pending"]
+    assert set(contract.reads) == {
+        "change:inspect/issue-evidence-manifest.json",
+        "change:inspect/issue-candidates.json",
+    }
+    assert set(contract.writes) == {
+        "change:issues/events.jsonl",
+        "change:issues/snapshot.json",
+        "change:inspect/issue-reconcile-status.json",
+    }
+    assert set(contract.authorization_writes) == set(contract.writes)
+
+
 def test_project_local_registry_overrides_packaged(tmp_path: Path) -> None:
     local = tmp_path / ".aa" / "execution-contracts.yaml"
     local.parent.mkdir(parents=True)

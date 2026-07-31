@@ -354,3 +354,61 @@ def test_validate_rejects_unknown_quality_schema_version(change_dir: Path) -> No
     assert report.ok is False
     assert report.results[0].artifact_type == "quality_gate_result"
     assert report.results[0].errors
+
+
+VALID_RECONCILE_V1 = {
+    "schema_version": "1.0",
+    "change_id": "CH-1",
+    "batch_id": "20260725-124844",
+    "status": "failed",
+    "evidence_bundle_digest": "sha256:bundle",
+    "error": "legacy failure",
+}
+
+VALID_RECONCILE_V2 = {
+    "schema_version": "2.0",
+    "change_id": "CH-1",
+    "batch_id": "20260725-124844",
+    "status": "pending",
+    "evidence_bundle_digest": "sha256:bundle",
+    "candidate_digest": "sha256:candidate",
+}
+
+
+def test_validate_accepts_reconcile_status_v1(change_dir: Path) -> None:
+    write(change_dir, "inspect/issue-reconcile-status.json", json.dumps(VALID_RECONCILE_V1))
+
+    report = validate_change(change_dir, artifact="inspect/issue-reconcile-status.json")
+
+    assert report.ok is True
+    assert report.results[0].artifact_type == "issue_reconcile_status"
+
+
+def test_validate_accepts_reconcile_status_v2(change_dir: Path) -> None:
+    write(change_dir, "inspect/issue-reconcile-status.json", json.dumps(VALID_RECONCILE_V2))
+
+    report = validate_change(change_dir, artifact="inspect/issue-reconcile-status.json")
+
+    assert report.ok is True
+    assert report.results[0].artifact_type == "issue_reconcile_status"
+
+
+def test_validate_rejects_unknown_reconcile_schema_version(change_dir: Path) -> None:
+    payload = {**VALID_RECONCILE_V2, "schema_version": "99"}
+    write(change_dir, "inspect/issue-reconcile-status.json", json.dumps(payload))
+
+    report = validate_change(change_dir, artifact="inspect/issue-reconcile-status.json")
+
+    assert report.ok is False
+    assert report.results[0].artifact_type == "issue_reconcile_status"
+    assert report.results[0].errors
+
+
+def test_validate_rejects_reconcile_v2_missing_candidate_digest(change_dir: Path) -> None:
+    payload = {**VALID_RECONCILE_V2, "candidate_digest": ""}
+    write(change_dir, "inspect/issue-reconcile-status.json", json.dumps(payload))
+
+    report = validate_change(change_dir, artifact="inspect/issue-reconcile-status.json")
+
+    assert report.ok is False
+    assert report.results[0].artifact_type == "issue_reconcile_status"

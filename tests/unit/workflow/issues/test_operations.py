@@ -521,13 +521,19 @@ def _write_evidence_manifest(change_dir: Path, batch_id: str, evidence_digest: s
     )
 
 
-def _write_candidate_doc(change_dir: Path, batch_id: str, evidence_digest: str) -> None:
+def _write_candidate_doc(
+    change_dir: Path,
+    batch_id: str,
+    evidence_digest: str,
+    *,
+    change_id: str | None = None,
+) -> None:
     """Write a minimal inspect/issue-candidates.json for project-sync-pending tests."""
     inspect_dir = change_dir / "inspect"
     inspect_dir.mkdir(parents=True, exist_ok=True)
     doc = {
         "schema_version": "1.0",
-        "change_id": change_dir.name,
+        "change_id": change_id or change_dir.name,
         "batch_id": batch_id,
         "evidence_bundle_digest": evidence_digest,
         "candidates": [],
@@ -852,17 +858,38 @@ def test_record_failure_is_registered(tmp_path: Path) -> None:
 # ===========================================================================
 
 
+def pending_workspace(
+    tmp_path: Path,
+    *,
+    include_candidates: bool = True,
+    change_id: str = "CH-sync-001",
+    batch_id: str = "20260725-140000",
+    evidence_digest: str | None = None,
+    candidate_change_id: str | None = None,
+    candidate_batch_id: str | None = None,
+    candidate_evidence_digest: str | None = None,
+) -> _FakeTaskWorkspace:
+    """Build a workspace for project-sync-pending tests with optional binding mismatches."""
+    digest = evidence_digest or ("sha256:" + "2" * 64)
+    change_dir = tmp_path / change_id
+    _write_evidence_manifest(change_dir, batch_id, digest)
+    if include_candidates:
+        _write_candidate_doc(
+            change_dir,
+            candidate_batch_id or batch_id,
+            candidate_evidence_digest or digest,
+            change_id=candidate_change_id or change_id,
+        )
+    return _FakeTaskWorkspace(change_dir)
+
+
 def test_record_sync_pending_appends_event(tmp_path: Path) -> None:
     change_id = "CH-sync-001"
-    change_dir = tmp_path / change_id
     batch_id = "20260725-140000"
-    evidence_digest = "sha256:" + "2" * 64
-
-    _write_evidence_manifest(change_dir, batch_id, evidence_digest)
-    _write_candidate_doc(change_dir, batch_id, evidence_digest)
+    workspace = pending_workspace(tmp_path, change_id=change_id, batch_id=batch_id)
+    change_dir = workspace.change_dir
 
     task = _make_recovery_task("operation:record-project-sync-pending")
-    workspace = _FakeTaskWorkspace(change_dir)
     context = _make_context(change_dir)
 
     result = record_project_sync_pending_operation(task, workspace, context)  # type: ignore[arg-type]
@@ -872,6 +899,10 @@ def test_record_sync_pending_appends_event(tmp_path: Path) -> None:
     assert isinstance(value, dict)
     assert value["batch_id"] == batch_id
 
+    authored = json.loads((change_dir / "inspect" / "issue-candidates.json").read_text(encoding="utf-8"))
+    expected_digest = candidate_document_digest(authored)
+    assert value["candidate_digest"] == expected_digest
+
     events_file = change_dir / "issues" / "events.jsonl"
     assert events_file.is_file()
     lines = [line for line in events_file.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -879,13 +910,14 @@ def test_record_sync_pending_appends_event(tmp_path: Path) -> None:
     event = json.loads(lines[0])
     assert event["type"] == "project_sync_pending"
     assert event["change_id"] == change_id
-    assert "candidate_digest" in event
-    from assurance_agent.artifacts.models.issues import IssueCandidateDocument
+    assert event["candidate_digest"] == expected_digest
 
-    candidate_doc = IssueCandidateDocument.model_validate_json(
-        (change_dir / "inspect" / "issue-candidates.json").read_bytes()
-    )
-    assert event["candidate_digest"] == candidate_document_digest(candidate_doc)
+    status = json.loads((change_dir / "inspect" / "issue-reconcile-status.json").read_text(encoding="utf-8"))
+    assert status["schema_version"] == "2.0"
+    assert status["status"] == "pending"
+    assert status["candidate_digest"] == expected_digest
+    assert status["occurrence_count"] is None
+    assert status["error"] is None
 
 
 def test_record_sync_pending_fails_without_manifest(tmp_path: Path) -> None:
@@ -904,16 +936,15 @@ def test_record_sync_pending_fails_without_manifest(tmp_path: Path) -> None:
 
 
 def test_record_sync_pending_is_idempotent(tmp_path: Path) -> None:
-    change_id = "CH-sync-idm"
-    change_dir = tmp_path / change_id
-    batch_id = "20260725-140001"
-    evidence_digest = "sha256:" + "3" * 64
-
-    _write_evidence_manifest(change_dir, batch_id, evidence_digest)
-    _write_candidate_doc(change_dir, batch_id, evidence_digest)
+    workspace = pending_workspace(
+        tmp_path,
+        change_id="CH-sync-idm",
+        batch_id="20260725-140001",
+        evidence_digest="sha256:" + "3" * 64,
+    )
+    change_dir = workspace.change_dir
 
     task = _make_recovery_task("operation:record-project-sync-pending")
-    workspace = _FakeTaskWorkspace(change_dir)
     context = _make_context(change_dir)
 
     record_project_sync_pending_operation(task, workspace, context)  # type: ignore[arg-type]
@@ -923,28 +954,54 @@ def test_record_sync_pending_is_idempotent(tmp_path: Path) -> None:
     lines = [line for line in events_file.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert len(lines) == 1, "Idempotent replay must not duplicate ledger events"
 
+    authored = json.loads((change_dir / "inspect" / "issue-candidates.json").read_text(encoding="utf-8"))
+    status = json.loads((change_dir / "inspect" / "issue-reconcile-status.json").read_text(encoding="utf-8"))
+    assert status["schema_version"] == "2.0"
+    assert status["status"] == "pending"
+    assert status["candidate_digest"] == candidate_document_digest(authored)
 
-def test_record_sync_pending_fallback_to_evidence_digest_when_no_candidates(tmp_path: Path) -> None:
-    """When no candidates file exists, candidate_digest falls back to evidence_bundle_digest."""
-    change_id = "CH-sync-nocand"
-    change_dir = tmp_path / change_id
-    batch_id = "20260725-140002"
-    evidence_digest = "sha256:" + "4" * 64
 
-    _write_evidence_manifest(change_dir, batch_id, evidence_digest)
-    # No candidates file written.
+def test_record_sync_pending_fails_without_candidates_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    workspace = pending_workspace(tmp_path, include_candidates=False)
+    result = record_project_sync_pending_operation(
+        _make_recovery_task("operation:record-project-sync-pending"),
+        workspace,  # type: ignore[arg-type]
+        _make_context(workspace.change_dir),
+    )
+    assert result.status == "failed"
+    assert not (workspace.change_dir / "issues" / "events.jsonl").exists()
+    assert not (workspace.change_dir / "inspect" / "issue-reconcile-status.json").exists()
 
-    task = _make_recovery_task("operation:record-project-sync-pending")
-    workspace = _FakeTaskWorkspace(change_dir)
-    context = _make_context(change_dir)
 
-    result = record_project_sync_pending_operation(task, workspace, context)  # type: ignore[arg-type]
+@pytest.mark.parametrize(
+    "mismatch",
+    ["change_id", "batch_id", "evidence_digest"],
+)
+def test_record_sync_pending_fails_on_candidate_binding_mismatch(
+    tmp_path: Path,
+    mismatch: str,
+) -> None:
+    kwargs: dict[str, object] = {"change_id": "CH-sync-bind", "batch_id": "BATCH-BIND"}
+    if mismatch == "change_id":
+        kwargs["candidate_change_id"] = "CH-OTHER"
+    elif mismatch == "batch_id":
+        kwargs["candidate_batch_id"] = "BATCH-OTHER"
+    else:
+        kwargs["candidate_evidence_digest"] = "sha256:" + "9" * 64
 
-    assert result.status == "succeeded"
-    value = result.value
-    assert isinstance(value, dict)
-    # Candidate digest should fall back to evidence digest.
-    assert value["candidate_digest"] == evidence_digest
+    workspace = pending_workspace(tmp_path, **kwargs)  # type: ignore[arg-type]
+    result = record_project_sync_pending_operation(
+        _make_recovery_task("operation:record-project-sync-pending"),
+        workspace,  # type: ignore[arg-type]
+        _make_context(workspace.change_dir),
+    )
+
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_input"
+    assert not (workspace.change_dir / "issues" / "events.jsonl").exists()
+    assert not (workspace.change_dir / "inspect" / "issue-reconcile-status.json").exists()
 
 
 def test_record_sync_pending_is_registered(tmp_path: Path) -> None:
@@ -1188,10 +1245,7 @@ def test_reconcile_uses_authoritative_execution_to_resolve_pending_problem(tmp_p
     )
     pid = problem_id(fingerprint)
     detected_key = "detected"
-    verify_key = (
-        f"review:submit_resolution:{pid}:1:{change_id}:20260725-140000:"
-        f"{'sha256:' + 'b' * 64}"
-    )
+    verify_key = f"review:submit_resolution:{pid}:1:{change_id}:20260725-140000:{'sha256:' + 'b' * 64}"
     project_events = [
         ProblemDetectedEvent(
             schema_version="1.0",
@@ -1266,8 +1320,14 @@ def test_reconcile_status_completed_on_success(tmp_path: Path) -> None:
     assert result.status == "succeeded"
 
     status = json.loads((change_dir / "inspect" / "issue-reconcile-status.json").read_text(encoding="utf-8"))
+    assert status["schema_version"] == "2.0"
     assert status["status"] == "completed"
     assert status["change_id"] == change_id
+    authored = json.loads((change_dir / "inspect" / "issue-candidates.json").read_text(encoding="utf-8"))
+    assert status["candidate_digest"] == candidate_document_digest(authored)
+    assert status["occurrence_count"] is not None
+    assert status["occurrence_count"] >= 0
+    assert status["error"] is None
 
 
 def test_reconcile_semantic_failure_writes_failed_status_returns_success(tmp_path: Path) -> None:
@@ -1301,8 +1361,13 @@ def test_reconcile_semantic_failure_writes_failed_status_returns_success(tmp_pat
     assert not (change_dir / "issues" / "events.jsonl").is_file()
     assert not (project_root / "qa" / "issues" / "events.jsonl").is_file()
 
+    authored = json.loads((change_dir / "inspect" / "issue-candidates.json").read_text(encoding="utf-8"))
     status = json.loads((change_dir / "inspect" / "issue-reconcile-status.json").read_text(encoding="utf-8"))
+    assert status["schema_version"] == "2.0"
     assert status["status"] == "failed"
+    assert status["candidate_digest"] == candidate_document_digest(authored)
+    assert status["occurrence_count"] is None
+    assert isinstance(status["error"], str) and status["error"]
 
 
 def test_reconcile_missing_candidates_returns_invalid_input(tmp_path: Path) -> None:

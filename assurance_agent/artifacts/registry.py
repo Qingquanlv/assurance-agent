@@ -30,7 +30,7 @@ from assurance_agent.artifacts.models import (
     IssueCandidateDocument,
     IssueEvidenceManifest,
     IssueEvidenceSlice,
-    IssueReconcileStatus,
+    IssueReconcileStatusDocument,
     ImprovementCandidateDocumentDraftV3,
     ImprovementCandidateDocumentV3,
     ImprovementAutoReviewAssessment,
@@ -234,7 +234,7 @@ REGISTRY: list[ArtifactSpec] = [
     ArtifactSpec(
         artifact_type="issue_reconcile_status",
         pattern="inspect/issue-reconcile-status.json",
-        model=IssueReconcileStatus,
+        model=IssueReconcileStatusDocument,
         compat="versioned",
     ),
     ArtifactSpec(

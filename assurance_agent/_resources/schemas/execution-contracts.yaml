@@ -673,9 +673,11 @@ contracts:
     writes:
       - change:issues/events.jsonl
       - change:issues/snapshot.json
+      - change:inspect/issue-reconcile-status.json
     authorization_writes:
       - change:issues/events.jsonl
       - change:issues/snapshot.json
+      - change:inspect/issue-reconcile-status.json
     retryable_errors: []
 
   operation:reconcile-issues:

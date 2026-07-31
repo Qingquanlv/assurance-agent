@@ -4,6 +4,7 @@ Consumes the inspect artifacts + execution evidence, scores the run, buckets
 defects, and derives risk/recommendation. CLI is the only trusted scorer.
 """
 
+import json
 import re
 from datetime import datetime
 from pathlib import Path
@@ -14,7 +15,9 @@ from pydantic import BaseModel
 from assurance_agent.artifacts.models import (
     ChangeIssueSnapshot,
     FailureAnalysis,
-    IssueReconcileStatus,
+    IssueReconcileStatusLike,
+    IssueReconcileStatusV1,
+    IssueReconcileStatusV2,
     IssueReport,
     ProblemProjection,
     QualityGateResultLike,
@@ -23,6 +26,7 @@ from assurance_agent.artifacts.models import (
     ReportDefects,
     ReportRiskLevel,
     ReportScope,
+    load_issue_reconcile_status_document,
 )
 from assurance_agent.change_location import resolve_change
 from assurance_agent.workflow.core.events import Ledger
@@ -146,16 +150,14 @@ def _derive_issue_report(change_base: Path, project_root: Path) -> IssueReport |
     Failed ``issue-reconcile-status.json`` is fail-visible even when the canonical
     snapshot was never written: archive/report must not treat that as clear.
     """
-    reconcile_status = _load(
-        change_base / "inspect" / "issue-reconcile-status.json",
-        IssueReconcileStatus,
-    )
+    reconcile_status = _load_issue_reconcile_status(change_base / "inspect" / "issue-reconcile-status.json")
     snapshot = _load(change_base / "issues" / "snapshot.json", ChangeIssueSnapshot)
     if snapshot is None and reconcile_status is None:
         return None
 
     problems_path = project_root / "qa" / "issues" / "problems.json"
     projection = _load(problems_path, ProblemProjection)
+    reconcile_failed = _reconcile_status_failed(reconcile_status)
 
     if snapshot is None:
         # Semantic rejection / incomplete reconcile with no canonical analysis.
@@ -175,12 +177,12 @@ def _derive_issue_report(change_base: Path, project_root: Path) -> IssueReport |
             issue_risk="unknown",
             issue_risk_rationale=(
                 "Issue reconciliation failed or incomplete"
-                if reconcile_status is not None and reconcile_status.status == "failed"
+                if reconcile_failed
                 else "Issue analysis failed or incomplete"
             ),
         )
 
-    if reconcile_status is not None and reconcile_status.status == "failed":
+    if reconcile_failed:
         analysis_status_val = "failed"
         project_sync_status_val = snapshot.project_sync_status
         return _build_issue_report(
@@ -448,6 +450,23 @@ def _load(path: Path, model: type[_ModelT]) -> _ModelT | None:
         return model.model_validate_json(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+
+
+def _load_issue_reconcile_status(path: Path) -> IssueReconcileStatusLike | None:
+    if not path.is_file():
+        return None
+    try:
+        return load_issue_reconcile_status_document(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return None
+
+
+def _reconcile_status_failed(status: IssueReconcileStatusLike | None) -> bool:
+    if isinstance(status, IssueReconcileStatusV2):
+        return status.status == "failed"
+    if isinstance(status, IssueReconcileStatusV1):
+        return status.status == "failed"
+    return False
 
 
 def _fmt(value: float | str) -> str:

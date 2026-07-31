@@ -38,7 +38,7 @@ from assurance_agent.artifacts.models.issues import (
     IssueCandidateDocument,
     IssueAnalysisStatus,
     IssueEvidenceManifest,
-    IssueReconcileStatus,
+    IssueReconcileStatusV2,
     ObservationDocument,
     ProblemProjection,
 )
@@ -305,19 +305,6 @@ def _read_evidence_manifest_info(change_dir: Path) -> tuple[str, str] | None:
     return None
 
 
-def _read_candidates_digest(change_dir: Path) -> str | None:
-    """Return the canonical candidate document digest if a valid document exists."""
-    candidates_path = change_dir / "inspect" / "issue-candidates.json"
-    if not candidates_path.is_file():
-        return None
-    try:
-        authored = json.loads(candidates_path.read_text(encoding="utf-8"))
-        IssueCandidateDocument.model_validate(authored)
-    except (OSError, ValueError):
-        return None
-    return candidate_document_digest(authored)
-
-
 _ERROR_KIND_TO_ANALYSIS_REASON: dict[str, str] = {
     "transport": "unavailable",
     "timeout": "timeout",
@@ -516,26 +503,60 @@ def record_project_sync_pending_operation(
 ) -> TaskResult:
     """Append a project_sync_pending event indicating reconcile must be retried.
 
-    Reads inspect/issue-candidates.json to pin the candidate digest.
+    Strictly decodes the evidence manifest and authored candidate document,
+    validates change/batch/evidence binding, and writes a digest-bound V2
+    pending reconcile-status in the same task write-set.
     Idempotent: the ChangeIssueStore deduplicates on idempotency_key.
     """
-    manifest_info = _read_evidence_manifest_info(workspace.change_dir)
-    if manifest_info is None:
+    change_dir = workspace.change_dir
+    inspect_dir = change_dir / "inspect"
+    manifest_path = inspect_dir / "issue-evidence-manifest.json"
+    candidates_path = inspect_dir / "issue-candidates.json"
+
+    try:
+        evidence_manifest = _load_json_model(
+            manifest_path, IssueEvidenceManifest, "record-project-sync-pending"
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return task_failure("invalid_input", str(exc))
+
+    try:
+        authored_candidates = json.loads(candidates_path.read_text(encoding="utf-8"))
+        candidates = IssueCandidateDocument.model_validate(authored_candidates)
+    except (OSError, ValueError) as exc:
         return task_failure(
             "invalid_input",
-            "record-project-sync-pending: inspect/issue-evidence-manifest.json not found "
-            "or missing batch_id/digest fields",
+            f"record-project-sync-pending: inspect/issue-candidates.json missing or invalid: {exc}",
         )
-    batch_id, evidence_bundle_digest = manifest_info
 
-    # Pin the candidate digest from whatever the analyzer produced.
-    candidate_digest = _read_candidates_digest(workspace.change_dir)
-    if candidate_digest is None:
-        # Candidates file absent — use evidence digest as fallback pin.
-        candidate_digest = evidence_bundle_digest
+    if evidence_manifest.change_id != context.change_id:
+        return task_failure(
+            "invalid_input",
+            "record-project-sync-pending: evidence manifest change_id does not match runtime",
+        )
+    if candidates.change_id != context.change_id:
+        return task_failure(
+            "invalid_input",
+            "record-project-sync-pending: candidates change_id does not match runtime",
+        )
+    if candidates.batch_id != evidence_manifest.batch_id:
+        return task_failure(
+            "invalid_input",
+            "record-project-sync-pending: candidates batch_id does not match evidence manifest",
+        )
+    if candidates.evidence_bundle_digest != evidence_manifest.digest:
+        return task_failure(
+            "invalid_input",
+            "record-project-sync-pending: candidates evidence_bundle_digest does not match "
+            "evidence manifest digest",
+        )
+
+    authored_candidate_digest = candidate_document_digest(authored_candidates)
+    batch_id = candidates.batch_id
+    evidence_bundle_digest = candidates.evidence_bundle_digest
 
     ts = _utc_now()
-    idem_key = f"project_sync_pending:{context.change_id}:{batch_id}:{candidate_digest}"
+    idem_key = f"project_sync_pending:{context.change_id}:{batch_id}:{authored_candidate_digest}"
     sync_event = ProjectSyncPendingEvent(
         schema_version="1.0",
         seq=1,
@@ -546,20 +567,33 @@ def record_project_sync_pending_operation(
         change_id=context.change_id,
         batch_id=batch_id,
         type="project_sync_pending",
-        candidate_digest=candidate_digest,
+        candidate_digest=authored_candidate_digest,
     )
 
-    issues_dir = workspace.change_dir / "issues"
+    pending_status = IssueReconcileStatusV2(
+        change_id=context.change_id,
+        batch_id=candidates.batch_id,
+        status="pending",
+        evidence_bundle_digest=candidates.evidence_bundle_digest,
+        candidate_digest=authored_candidate_digest,
+    )
+
+    issues_dir = change_dir / "issues"
     issues_dir.mkdir(parents=True, exist_ok=True)
-    store = ChangeIssueStore(workspace.change_dir)
+    inspect_dir.mkdir(parents=True, exist_ok=True)
+    store = ChangeIssueStore(change_dir)
     store.append_and_rebuild([sync_event])
+    _write_json(
+        inspect_dir / "issue-reconcile-status.json",
+        _canonical_json(pending_status.model_dump(mode="json")),
+    )
 
     return TaskResult(
         status="succeeded",
         value={
             "batch_id": batch_id,
             "evidence_bundle_digest": evidence_bundle_digest,
-            "candidate_digest": candidate_digest,
+            "candidate_digest": authored_candidate_digest,
         },
     )
 
@@ -722,12 +756,12 @@ def reconcile_issues_operation(
         )
     except ReconciliationValidationError as exc:
         # Semantic failure: write failed reconcile-status; return success
-        reconcile_status = IssueReconcileStatus(
-            schema_version="1.0",
+        reconcile_status = IssueReconcileStatusV2(
             change_id=change_id,
             batch_id=batch_id,
             status="failed",
             evidence_bundle_digest=evidence_bundle_digest,
+            candidate_digest=authored_candidate_digest,
             error=str(exc),
         )
         _write_json(
@@ -765,8 +799,7 @@ def reconcile_issues_operation(
     # ------------------------------------------------------------------
     # 7. Write completed reconcile status
     # ------------------------------------------------------------------
-    reconcile_status = IssueReconcileStatus(
-        schema_version="1.0",
+    reconcile_status = IssueReconcileStatusV2(
         change_id=change_id,
         batch_id=batch_id,
         status="completed",

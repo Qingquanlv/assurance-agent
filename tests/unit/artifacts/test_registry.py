@@ -134,6 +134,15 @@ def test_quality_gate_result_registry_uses_document_wrapper() -> None:
     assert spec.compat == "versioned"
 
 
+def test_issue_reconcile_status_registry_uses_document_wrapper() -> None:
+    from assurance_agent.artifacts.models.issues import IssueReconcileStatusDocument
+
+    spec = match_artifact("inspect/issue-reconcile-status.json")
+    assert spec is not None
+    assert spec.model is IssueReconcileStatusDocument
+    assert spec.compat == "versioned"
+
+
 def test_issue_artifact_patterns_match_exact_paths() -> None:
     issue_specs = {
         "observation_document": "inspect/observations.json",
