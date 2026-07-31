@@ -1170,7 +1170,8 @@ graphs:
     edges:
       - {from: START, to: applicability-preflight}
       - {from: plan, to: review-cycle}
-      - {from: applicability-preflight, to: review-cycle, when: "params.run_mode == 'codegen-only'"}
+      # Mutually exclusive with the false route: only applicable codegen-only bypasses plan.
+      - {from: applicability-preflight, to: review-cycle, when: "params.run_mode == 'codegen-only' and node('applicability-preflight').value.applicable == true"}
       - {from: review-cycle, to: codegen-precheck, when: "params.run_mode in ['full','codegen-only']"}
       - {from: review-cycle, to: END, when: "params.run_mode in ['plan-only','review-plan']"}
       - {from: codegen, to: END}
@@ -1326,7 +1327,8 @@ graphs:
     edges:
       - {from: START, to: applicability-preflight}
       - {from: plan, to: review-cycle}
-      - {from: applicability-preflight, to: review-cycle, when: "params.run_mode == 'codegen-only'"}
+      # Mutually exclusive with the false route: only applicable codegen-only bypasses plan.
+      - {from: applicability-preflight, to: review-cycle, when: "params.run_mode == 'codegen-only' and node('applicability-preflight').value.applicable == true"}
       - {from: review-cycle, to: codegen-precheck, when: "params.run_mode in ['full','codegen-only']"}
       - {from: review-cycle, to: END, when: "params.run_mode in ['plan-only','review-plan']"}
       - {from: codegen, to: END}

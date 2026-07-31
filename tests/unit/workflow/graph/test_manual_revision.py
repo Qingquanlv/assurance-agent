@@ -680,6 +680,8 @@ def _manual_revision_runtime(
     from assurance_agent.workflow.graph.task_runner import build_default_node_runner
     from assurance_agent.workflow.graph.workspace import WorkspaceBackend
     from tests.helpers_aa import write_aa_config
+    from assurance_agent.workflow.driver.runtime_factory import one_definition_resolver
+    from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 
     _force_v5_binding(monkeypatch)
 
@@ -809,15 +811,17 @@ gates:
         contracts=contracts,
         state_defs={},
     )
-    schemas = {compiled.digest: compiled}
     runtime = GraphRuntime(
         checkpoint_store=checkpoints,
         object_store=store,
         workspace_backend=workspaces,
-        contracts=contracts,
-        node_runner=Combined(),
-        scheduler=scheduler,
-        schema_resolver=lambda digest: schemas[digest],
+        definition_resolver=one_definition_resolver(
+            compiled=compiled,
+            contracts=contracts,
+            ingest_catalog=validate_catalog_runtime(),
+            node_runner=Combined(),
+            scheduler=scheduler,
+        ),
         clock=SystemClock(),
     )
     holder["rt"] = runtime

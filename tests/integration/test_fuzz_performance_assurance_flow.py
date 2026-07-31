@@ -94,9 +94,7 @@ def _plan_cycle(
 ):
     return plan_superstep(
         compiled,
-        _cycle_projection(
-            compiled, graph_id=graph_id, layer=layer, tasks=tasks, supersteps=supersteps
-        ),
+        _cycle_projection(compiled, graph_id=graph_id, layer=layer, tasks=tasks, supersteps=supersteps),
         _context(tmp_path),
         _EmptyArtifacts(),
     )
@@ -174,3 +172,54 @@ def test_parent_branch_starts_at_cases_only_preflight(tmp_path: Path, layer: str
     )
     plan = plan_superstep(compiled, projection, _context(tmp_path), _EmptyArtifacts())
     assert [task.node_id for task in plan.tasks] == ["applicability-preflight"]
+
+
+@pytest.mark.parametrize(
+    ("layer", "branch_id"),
+    [("fuzz", "fuzz-branch"), ("performance", "performance-branch")],
+)
+@pytest.mark.parametrize(
+    ("run_mode", "applicable", "expected_next"),
+    [
+        ("full", True, "plan"),
+        ("full", False, "review-cycle"),
+        ("codegen-only", True, "review-cycle"),
+        ("codegen-only", False, "review-cycle"),
+    ],
+)
+def test_specialty_parent_preflight_routing_matrix(
+    tmp_path: Path,
+    layer: str,
+    branch_id: str,
+    run_mode: str,
+    applicable: bool,
+    expected_next: str,
+) -> None:
+    """All four (run_mode × applicable) cells must activate exactly one successor."""
+    compiled, _ = _load_compiled()
+    preflight = _task(
+        "applicability-preflight",
+        value={
+            "layer": layer,
+            "applicable": applicable,
+            "reason_code": "has_cases" if applicable else "no_automated_cases",
+            "case_ids": ["C1"] if applicable else [],
+        },
+    )
+    projection = GraphProjection(
+        invocation_id=f"inv-{branch_id}",
+        entrypoint=branch_id,
+        checkpoint_ns=f"inv-{branch_id}",
+        parent_invocation_id="inv-assurance",
+        parent_task_id="parent-task",
+        structural_path=f"assurance/{branch_id}",
+        graph_digest=compiled.digest,
+        contract_digests=dict(compiled.contract_digests),
+        params=resolve_params(compiled.schema, {"run_mode": run_mode, "test_types": [layer]}),
+        root_tree_id="tree-0",
+        current_tree_id="tree-0",
+        supersteps=1,
+        tasks={preflight.task_id: preflight},
+    )
+    plan = plan_superstep(compiled, projection, _context(tmp_path), _EmptyArtifacts())
+    assert [task.node_id for task in plan.tasks] == [expected_next]

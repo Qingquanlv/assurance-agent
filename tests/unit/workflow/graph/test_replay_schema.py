@@ -809,7 +809,10 @@ def _specialty_branch_with_preflight(*, layer: str, cycle_graph_id: str) -> Grap
                 **{
                     "from": "applicability-preflight",
                     "to": "review-cycle",
-                    "when": "params.run_mode == 'codegen-only'",
+                    "when": (
+                        "params.run_mode == 'codegen-only' and "
+                        "node('applicability-preflight').value.applicable == true"
+                    ),
                 }
             ),
             EdgeDef(

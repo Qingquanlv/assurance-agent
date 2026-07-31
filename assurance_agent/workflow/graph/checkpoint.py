@@ -65,6 +65,14 @@ from assurance_agent.workflow.graph.models import (
 )
 from assurance_agent.workflow.graph.node_history import GenerationFoldState
 from assurance_agent.workflow.graph.schema_v2 import NodeDef
+from assurance_agent.workflow.orchestration.dsl import (
+    DslError,
+    MISSING,
+    Scope,
+    evaluate,
+    is_satisfied,
+    parse_expression,
+)
 from assurance_agent.workflow.orchestration.gates import (
     GateEvaluationContext,
     check_gate_in_view,
@@ -175,9 +183,11 @@ def validate_import(
     imported_ids: set[str] = set()
     ledger_complete = _ledger_succeeded_nodes(projection) if projection is not None else set()
     resolved: list[ResolvedImportTask] = []
-    # Accumulate prior imported gate reports so later gate() DSL refs resolve
-    # (e.g. codegen precondition → plan-review verdict).
-    node_results: dict[str, object] = {}
+    # Same-named nodes in nested/sibling graphs must not overwrite one another;
+    # gate/edge/route evaluation only sees the current graph instance's locals.
+    node_results_by_structural_path: dict[str, dict[str, dict[str, object]]] = {}
+    if projection is not None:
+        _seed_node_results_from_projection(projection, node_results_by_structural_path)
     state_values = _state_values_from_change(context)
 
     for task in manifest.completed:
@@ -194,6 +204,7 @@ def validate_import(
                 )
 
         task_id = _import_task_id(structural_path, task.node, task.task_key)
+        local_results = node_results_by_structural_path.setdefault(structural_path, {})
         _assert_predecessor_closure(
             compiled,
             entrypoint=manifest.entrypoint,
@@ -202,6 +213,8 @@ def validate_import(
             imported_ids=imported_ids,
             ledger_complete=ledger_complete,
             params=context.params,
+            state_values=state_values,
+            local_results=local_results,
         )
 
         for logical, expected in sorted(task.outputs.items()):
@@ -210,11 +223,17 @@ def validate_import(
             if actual is None or actual != _strip_sha_prefix(expected):
                 raise CheckpointImportError(f"output hash mismatch for {logical}")
 
+        local_payload = local_results.setdefault(task.node, {})
+        local_payload["status"] = "succeeded"
         gate_report = _reevaluate_gate(
-            compiled, context, task, state_values=state_values, node_results=node_results
+            compiled, context, task, state_values=state_values, node_results=local_results
         )
         if gate_report is not None:
-            node_results[task.node] = {"gate": gate_report}
+            gate_payload = local_payload.setdefault("gate", {})
+            if isinstance(gate_payload, dict):
+                gate_payload.update(gate_report)
+            else:
+                local_payload["gate"] = dict(gate_report)
         imported_ids.add(_node_identity(structural_path, task.node, task.task_key))
         resolved.append(
             ResolvedImportTask(
@@ -406,6 +425,118 @@ def _is_mandatory_predecessor(graph: CompiledGraph, *, pred: str, node: str) -> 
     return not _can_reach_without_node(graph, start="START", target=node, avoid=pred)
 
 
+def _seed_node_results_from_projection(
+    projection: GraphProjection,
+    node_results_by_structural_path: dict[str, dict[str, dict[str, object]]],
+) -> None:
+    """Mirror committed succeeded tasks into structural-path local node results."""
+    for task in projection.tasks.values():
+        if task.status != "succeeded":
+            continue
+        suffix = f":{task.node_id}"
+        if task.task_key is not None:
+            suffix = f":{task.node_id}:{task.task_key}"
+        if not task.task_id.endswith(suffix):
+            continue
+        structural_path = task.task_id[: -len(suffix)]
+        local_results = node_results_by_structural_path.setdefault(structural_path, {})
+        payload = local_results.setdefault(task.node_id, {})
+        payload["status"] = "succeeded"
+        if task.value is not None:
+            payload["value"] = task.value
+        if task.gate_report is not None:
+            gate_payload = payload.setdefault("gate", {})
+            if isinstance(gate_payload, dict):
+                gate_payload.update(task.gate_report)
+            else:
+                payload["gate"] = dict(task.gate_report)
+
+
+def _import_eval_scope(
+    *,
+    params: Mapping[str, object],
+    state_values: Mapping[str, object],
+    local_results: Mapping[str, Mapping[str, object]],
+) -> Scope:
+    def node_result(node_id: str) -> object:
+        result = local_results.get(node_id)
+        return dict(result) if isinstance(result, Mapping) else {}
+
+    return Scope(
+        {"params": dict(params), "state": dict(state_values)},
+        node_result=node_result,
+    )
+
+
+def _condition_satisfied(expression: str, scope: Scope, *, nid: str) -> bool:
+    try:
+        return is_satisfied(parse_expression(expression), scope)
+    except DslError as exc:
+        raise CheckpointImportError(
+            f"import predecessor condition on '{nid}' failed to evaluate: {exc}"
+        ) from exc
+
+
+def _resolve_import_route_target(route, scope: Scope, *, src: str) -> str | None:
+    """Resolve a route select to a target label; missing/default-less → None (no delivery)."""
+    try:
+        label = evaluate(parse_expression(route.select), scope)
+    except DslError as exc:
+        raise CheckpointImportError(f"import route from '{src}' select failed to evaluate: {exc}") from exc
+    case_label: str | None = None
+    if isinstance(label, bool):
+        case_label = "true" if label else "false"
+    elif label is not MISSING and isinstance(label, str):
+        case_label = label
+    chosen = route.cases.get(case_label) if case_label is not None else None
+    if chosen is not None:
+        return chosen
+    return route.default
+
+
+def _known_structural_deliverers(
+    graph: CompiledGraph,
+    *,
+    structural_path: str,
+    known: set[str],
+    target: str,
+) -> tuple[str, ...]:
+    """Already-validated predecessors that have an edge/route case targeting ``target``."""
+    deliverers: list[str] = []
+    for pred_id, compiled_node in graph.nodes.items():
+        if _import_task_id(structural_path, pred_id, None) not in known:
+            continue
+        if any(edge.to == target for edge in compiled_node.outgoing):
+            deliverers.append(pred_id)
+            continue
+        if any(target in route.cases.values() or route.default == target for route in compiled_node.routes):
+            deliverers.append(pred_id)
+    return tuple(deliverers)
+
+
+def _selected_by_known_predecessors(
+    graph: CompiledGraph,
+    *,
+    structural_path: str,
+    known: set[str],
+    scope: Scope,
+) -> set[str]:
+    """Targets currently selected by already-validated predecessors under frozen scope."""
+    selected: set[str] = set()
+    for pred_id, compiled_node in graph.nodes.items():
+        if _import_task_id(structural_path, pred_id, None) not in known:
+            continue
+        for edge in compiled_node.outgoing:
+            if edge.when is not None and not _condition_satisfied(edge.when, scope, nid=pred_id):
+                continue
+            selected.add(edge.to)
+        for route in compiled_node.routes:
+            target = _resolve_import_route_target(route, scope, src=pred_id)
+            if target is not None and target not in {"END", "STOP", "FAIL"}:
+                selected.add(target)
+    return selected
+
+
 def _assert_predecessor_closure(
     compiled: CompiledWorkflow,
     *,
@@ -415,9 +546,11 @@ def _assert_predecessor_closure(
     imported_ids: set[str],
     ledger_complete: set[str],
     params: Mapping[str, object],
+    state_values: Mapping[str, object],
+    local_results: Mapping[str, Mapping[str, object]],
 ) -> None:
-    """Each mandatory predecessor must be imported, START-skipped, or ledger-complete."""
-    del entrypoint, params  # when/run_mode 跳过留给后续加深；首版要求同图前驱已导入
+    """Mandatory predecessors present; known deliverers must actually select the successor."""
+    del entrypoint
     graph = compiled.graphs[task.graph]
     node = graph.nodes[task.node]
     known = imported_ids | ledger_complete
@@ -431,6 +564,30 @@ def _assert_predecessor_closure(
             continue
         raise CheckpointImportError(
             f"missing predecessor closure: node '{task.node}' requires predecessor '{edge.from_}'"
+        )
+
+    # Join tokens are declared via join.sources, not ordinary edge/route delivery.
+    if node.definition.join is not None:
+        return
+
+    deliverers = _known_structural_deliverers(
+        graph, structural_path=structural_path, known=known, target=task.node
+    )
+    if not deliverers:
+        # Fixture imports may omit optional alternate-path predecessors; presence
+        # of mandatory preds (above) remains the baseline. Selection is enforced
+        # only when a known deliverer already claims this successor.
+        return
+
+    scope = _import_eval_scope(params=params, state_values=state_values, local_results=local_results)
+    selected = _selected_by_known_predecessors(
+        graph, structural_path=structural_path, known=known, scope=scope
+    )
+    if task.node not in selected:
+        raise CheckpointImportError(
+            f"missing predecessor closure: node '{task.node}' is not selected by any "
+            "validated predecessor edge/route under frozen params/state "
+            "(stop/skip precheck cannot satisfy codegen)"
         )
 
 
