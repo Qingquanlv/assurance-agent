@@ -36,6 +36,14 @@ contracts:
   operation:interrupt-once:
     handler: operation
     side_effect_free: true
+  operation:update-issue:
+    handler: operation
+    side_effect_free: false
+    reads: ["project:qa/issues/**"]
+    writes: ["project:qa/issues/**", "change:results/**"]
+    authorization_writes: ["project:qa/issues/**", "change:results/**"]
+    synchronized: ["project:qa/issues/**"]
+    exclusive: ["project:issue-registry"]
 """
 
 _LINEAR = """\
@@ -298,12 +306,43 @@ gates:
     pass_when: "synth_plan_review.decision == 'pass'"
 """
 
+_SYNC = """\
+schema_version: "2"
+name: fault-sync
+params:
+  run_mode: {type: enum, values: [full], default: full}
+entrypoints:
+  full: {graph: main, allow: "params.run_mode == 'full'"}
+policies:
+  retry:
+    never: {max_attempts: 1, retry_on: []}
+  timeout:
+    local: {run_seconds: 60, heartbeat_seconds: 0.05}
+  scheduler: {max_parallel_tasks: 1}
+graphs:
+  main:
+    max_supersteps: 5
+    nodes:
+      update:
+        uses: operation:update-issue
+        outputs:
+          - project:qa/issues/ISSUE-1.json
+          - change:results/update.json
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: update}
+      - {from: update, to: END}
+gates: {}
+"""
+
 _SCHEMAS = {
     "linear": _LINEAR,
     "siblings": _SIBLINGS,
     "budget": _BUDGET,
     "interrupt": _INTERRUPT,
     "v5_revision": _V5_REVISION,
+    "sync": _SYNC,
 }
 
 _REVISION_FIXTURES: dict[str, dict[str, object]] = {}
@@ -494,6 +533,26 @@ def _install_hooks(runtime, point: str, *, scheduler) -> None:  # noqa: ANN001
             return repair_ordinary_orig(projection, context)
 
         runtime._repair_ordinary_materialization = repair_ordinary  # type: ignore[method-assign]  # noqa: SLF001
+
+    if point == "sync_apply_pending":
+        store = runtime._objects  # noqa: SLF001
+
+        def crash_before_sync_apply(*args, **kwargs):  # type: ignore[no-untyped-def]
+            _fault_hit("sync_apply_pending")
+            raise RuntimeError("fault: sync_apply_pending")
+
+        store.apply_write_sets_to_synchronized_paths = crash_before_sync_apply  # type: ignore[method-assign]
+
+    if point == "sync_ack_pending":
+        store = runtime._objects  # noqa: SLF001
+        original_apply = store.apply_write_sets_to_synchronized_paths
+
+        def apply_then_kill(*args, **kwargs):  # type: ignore[no-untyped-def]
+            original_apply(*args, **kwargs)
+            _fault_hit("sync_ack_pending")
+            raise RuntimeError("fault: sync_ack_pending")
+
+        store.apply_write_sets_to_synchronized_paths = apply_then_kill  # type: ignore[method-assign]
 
     if point == "checkpoint_snapshot_write":
         write_checkpoint_orig = checkpoints.write
@@ -687,10 +746,25 @@ def _build(project: Path, schema_key: str):
             ),
         )
 
+    def update_issue(task: ExecutableTask, workspace, context: RuntimeContext) -> TaskResult:
+        del task
+        issue = workspace.project_root / "qa" / "issues" / "ISSUE-1.json"
+        issue.parent.mkdir(parents=True, exist_ok=True)
+        issue.write_text('{"version":2}\n', encoding="utf-8")
+        result_path = workspace.change_dir / "results" / "update.json"
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        result_path.write_text('{"updated":true}\n', encoding="utf-8")
+        # Unrelated live mutation (outside workspace) must not be rolled into sync apply.
+        app = context.project_root / "app" / "source.py"
+        app.parent.mkdir(parents=True, exist_ok=True)
+        app.write_text("unrelated live version 2\n", encoding="utf-8")
+        return TaskResult(status="succeeded")
+
     ops["operation:write-marker"] = write_marker
     ops["operation:write-e2e"] = write_e2e
     ops["operation:consume-budget"] = consume_budget
     ops["operation:interrupt-once"] = interrupt_once
+    ops["operation:update-issue"] = update_issue
     handler = OperationHandler(ops)
     node_runner = HandlerNodeRunner({target: handler for target in ops})
     graph_id = compiled.entrypoints["full"].graph_id

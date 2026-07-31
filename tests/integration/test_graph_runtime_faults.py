@@ -33,6 +33,8 @@ FAULT_CASES = [
     ("canonical_materialization", "linear"),
     ("checkpoint_snapshot_write", "linear"),
     ("heartbeat_replacement", "linear"),
+    ("sync_apply_pending", "sync"),
+    ("sync_ack_pending", "sync"),
 ]
 
 
@@ -43,6 +45,17 @@ def _project(tmp_path: Path) -> Path:
     (project / "tests" / "api").mkdir(parents=True)
     (project / "tests" / "e2e").mkdir(parents=True)
     write_aa_config(project)
+    return project
+
+
+def _project_with_sync_seed(tmp_path: Path, *, seed: str) -> Path:
+    project = _project(tmp_path)
+    issue = project / "qa" / "issues" / "ISSUE-1.json"
+    issue.parent.mkdir(parents=True, exist_ok=True)
+    issue.write_text(f'{{"version":1,"seed":"{seed}"}}\n', encoding="utf-8")
+    app = project / "app" / "source.py"
+    app.parent.mkdir(parents=True, exist_ok=True)
+    app.write_text("invocation version 1\n", encoding="utf-8")
     return project
 
 
@@ -182,7 +195,7 @@ def _assert_recovery(change: Path, invocation_id: str) -> None:
 
 @pytest.mark.parametrize(("point", "schema"), FAULT_CASES)
 def test_fault_kill_then_fresh_resume(tmp_path: Path, point: str, schema: str) -> None:
-    project = _project(tmp_path)
+    project = _project_with_sync_seed(tmp_path, seed=point) if schema == "sync" else _project(tmp_path)
     sync = tmp_path / "sync" / point
     invocation_id = _spawn_and_kill(project, sync, point=point, schema=schema)
     change = project / "qa" / "changes" / "CH-1"
@@ -1110,3 +1123,79 @@ def test_v5_revision_prefix_conflict_fails_before_planner(tmp_path: Path, corrup
     with pytest.raises(GraphIntegrityError, match="manual_plan_revision_prefix_conflict"):
         runtime.resume(root_id, fix_and_proceed_command(root_id))
     assert planner_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Task 14 Step 5 — pinned identity continues; model epoch fail-closed
+# ---------------------------------------------------------------------------
+
+
+def test_pinned_request_served_exactly_on_resume(tmp_path: Path) -> None:
+    """Resume resolves the invocation's full PinnedDefinitionRequest; digests are not substituted."""
+    from assurance_agent.workflow.graph.compiler import PinnedDefinitionRequest
+    from tests.integration._graph_fault_worker import _build
+
+    project = _project(tmp_path)
+    sync = tmp_path / "sync" / "pinned-exact"
+    invocation_id = _spawn_and_kill(project, sync, point="sibling_success_before_commit", schema="siblings")
+    change = project / "qa" / "changes" / "CH-1"
+    projection = project_invocation(change, invocation_id)
+    assert projection.terminal is None
+
+    runtime, _compiled, _change, _scheduler = _build(project, "siblings")
+    seen: list[PinnedDefinitionRequest] = []
+    original = runtime._definition_resolver  # noqa: SLF001
+
+    def spy(request: PinnedDefinitionRequest):
+        seen.append(request)
+        bundle = original(request)
+        assert bundle.compiled.digest == request.graph_digest
+        assert bundle.compiled.ingest_catalog_digest == request.ingest_catalog_digest
+        assert dict(bundle.compiled.contract_digests) == dict(request.contract_digests)
+        return bundle
+
+    runtime._definition_resolver = spy  # noqa: SLF001
+    result = runtime.resume(invocation_id)
+    assert result.exit_code == 0
+    assert seen
+    req = seen[0]
+    assert req.graph_digest == projection.graph_digest
+    assert req.ingest_catalog_digest == projection.ingest_catalog_digest
+    assert dict(req.contract_digests) == dict(projection.contract_digests)
+
+
+def test_pinned_model_schema_mismatch_refuses_before_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from assurance_agent.workflow.driver import runtime_factory as factory_mod
+    from assurance_agent.workflow.graph.runtime import GraphDefinitionChanged
+    from tests.integration._graph_fault_worker import _build
+
+    project = _project(tmp_path)
+    sync = tmp_path / "sync" / "model-epoch"
+    invocation_id = _spawn_and_kill(project, sync, point="sibling_success_before_commit", schema="siblings")
+    change = project / "qa" / "changes" / "CH-1"
+    marker_before = sorted(p.relative_to(project) for p in (project / "tests").rglob("*.py"))
+
+    runtime, _compiled, _change, _scheduler = _build(project, "siblings")
+
+    def boom_model_map(catalog):  # noqa: ANN001
+        raise GraphDefinitionChanged(
+            "ingest model schema digest mismatch for 'FactBaseline' "
+            "(model 'FactBaseline'): pinned 'sha256:dead' != 'sha256:live'"
+        )
+
+    monkeypatch.setattr(factory_mod, "validate_ingest_model_map", boom_model_map)
+    original = runtime._definition_resolver  # noqa: SLF001
+
+    def spy(request):  # noqa: ANN001
+        from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
+
+        factory_mod.validate_ingest_model_map(validate_catalog_runtime())
+        return original(request)
+
+    runtime._definition_resolver = spy  # noqa: SLF001
+    with pytest.raises(GraphDefinitionChanged, match="ingest model schema digest mismatch"):
+        runtime.resume(invocation_id)
+    assert sorted(p.relative_to(project) for p in (project / "tests").rglob("*.py")) == marker_before
+    assert project_invocation(change, invocation_id).terminal is None

@@ -1183,3 +1183,178 @@ def test_nested_drive_run_child_single_synchronized_capture(tmp_path: Path) -> N
     assert result.exit_code == 0
     assert overlay_calls == [1]
     assert (project / ".aa/data-knowledge.yaml").read_text() == "written from nested leaf\n"
+
+
+# ---------------------------------------------------------------------------
+# Task 14 Step 4/5 — publication seams + incompatible epoch fail-closed
+# ---------------------------------------------------------------------------
+
+
+def test_sync_apply_pending_resume_replays_before_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _make_project(tmp_path)
+    _seed_synchronized_project(project)
+    (project / "qa/issues/ISSUE-1.json").write_text(
+        '{"version":1,"seed":"apply-pending"}\n', encoding="utf-8"
+    )
+    compiled, contracts = _sync_compiled()
+    calls = {"n": 0}
+    runtime, _scheduler = _build_runtime(
+        project, compiled, contracts, node_runner=_op_runner(_sync_ops(calls=calls))
+    )
+    store = runtime._objects  # noqa: SLF001
+
+    def crash_before_apply(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise _InjectedCrash("sync apply pending")
+
+    store.apply_write_sets_to_synchronized_paths = crash_before_apply  # type: ignore[method-assign]
+    with pytest.raises(_InjectedCrash, match="sync apply pending"):
+        runtime.run(compiled, "full", _context(project))
+
+    change = _context(project).change_dir
+    events = read_events_strict(change)
+    assert any(e.get("type") == "superstep_committed" for e in events)
+    invocation_id = next(
+        str(e["invocation_id"]) for e in events if e.get("type") == "graph_invocation_started"
+    )
+    assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version":1,"seed":"apply-pending"}\n'
+
+    order: list[str] = []
+    fresh_calls = {"n": 0}
+    fresh, _ = _build_runtime(
+        project, compiled, contracts, node_runner=_op_runner(_sync_ops(calls=fresh_calls))
+    )
+    original_replay = fresh._replay_committed_publications
+    original_plan = runtime_mod.plan_superstep
+
+    def track_replay(projection, context):  # type: ignore[no-untyped-def]
+        order.append("replay_publications")
+        return original_replay(projection, context)
+
+    def track_plan(*args, **kwargs):  # type: ignore[no-untyped-def]
+        order.append("plan")
+        return original_plan(*args, **kwargs)
+
+    monkeypatch.setattr(fresh, "_replay_committed_publications", track_replay)
+    monkeypatch.setattr(runtime_mod, "plan_superstep", track_plan)
+    result = fresh.resume(invocation_id)
+    assert result.exit_code == 0
+    assert fresh_calls["n"] == 0
+    assert "replay_publications" in order
+    assert order.index("replay_publications") < order.index("plan")
+    assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version":2}\n'
+
+
+def test_ordinary_pending_commit_resume_commits_frozen_write_set_once(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    compiled, contracts = _write_compiled()
+    ops = _write_ops()
+    calls = {"n": 0}
+    base = OperationHandler(ops)
+
+    class CountingHandler(OperationHandler):
+        def execute(self, task, workspace, context):  # type: ignore[no-untyped-def]
+            calls["n"] += 1
+            return base.execute(task, workspace, context)
+
+    runtime, scheduler = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        node_runner=HandlerNodeRunner({target: CountingHandler(ops) for target in ops}),
+    )
+
+    def crash_commit(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise _InjectedCrash("ordinary pending commit seam")
+
+    scheduler._commit_wave = crash_commit  # type: ignore[method-assign]  # noqa: SLF001
+    with pytest.raises(_InjectedCrash):
+        runtime.run(compiled, "full", _context(project))
+    change = _context(project).change_dir
+    events = read_events_strict(change)
+    assert any(e.get("type") == "task_attempt_succeeded" for e in events)
+    assert not any(e.get("type") == "superstep_committed" for e in events)
+    invocation_id = next(
+        str(e["invocation_id"]) for e in events if e.get("type") == "graph_invocation_started"
+    )
+    assert calls["n"] == 1
+
+    fresh_calls = {"n": 0}
+
+    class FreshCounting(OperationHandler):
+        def execute(self, task, workspace, context):  # type: ignore[no-untyped-def]
+            fresh_calls["n"] += 1
+            return base.execute(task, workspace, context)
+
+    fresh, _ = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        node_runner=HandlerNodeRunner({target: FreshCounting(ops) for target in ops}),
+    )
+    result = fresh.resume(invocation_id)
+    assert result.exit_code == 0
+    assert fresh_calls["n"] == 0
+    assert [e.get("type") for e in read_events_strict(change)].count("task_attempt_succeeded") == 1
+    assert (project / "tests" / "api" / "marker.py").read_text(encoding="utf-8") == "marker\n"
+
+
+def test_incompatible_gate_semantics_refuses_before_pending_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import assurance_agent.workflow.orchestration.gate_semantics as gate_sem
+
+    project = _make_project(tmp_path)
+    compiled, contracts = _write_compiled()
+    runtime, scheduler = _build_runtime(project, compiled, contracts, node_runner=_op_runner(_write_ops()))
+
+    def crash_commit(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise _InjectedCrash("after success before commit")
+
+    scheduler._commit_wave = crash_commit  # type: ignore[method-assign]  # noqa: SLF001
+    with pytest.raises(_InjectedCrash):
+        runtime.run(compiled, "full", _context(project))
+    change = _context(project).change_dir
+    invocation_id = next(
+        str(e["invocation_id"])
+        for e in read_events_strict(change)
+        if e.get("type") == "graph_invocation_started"
+    )
+    marker_path = project / "tests" / "api" / "marker.py"
+    marker_before = marker_path.read_text(encoding="utf-8") if marker_path.exists() else None
+
+    fresh, _ = _build_runtime(project, compiled, contracts, node_runner=_op_runner(_write_ops()))
+    monkeypatch.setattr(gate_sem, "gate_semantics_digest", lambda: "sha256:" + "0" * 64)
+    with pytest.raises(GraphDefinitionChanged, match="gate semantics"):
+        fresh.resume(invocation_id)
+    marker_after = marker_path.read_text(encoding="utf-8") if marker_path.exists() else None
+    assert marker_after == marker_before
+    assert not any(e.get("type") == "superstep_committed" for e in read_events_strict(change))
+
+
+def test_incompatible_assurance_profile_refuses_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import assurance_agent.verification.profile_manifest as profile_mod
+
+    project = _make_project(tmp_path)
+    compiled, contracts = _write_compiled()
+    runtime, scheduler = _build_runtime(project, compiled, contracts, node_runner=_op_runner(_write_ops()))
+
+    def crash_commit(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise _InjectedCrash("after success")
+
+    scheduler._commit_wave = crash_commit  # type: ignore[method-assign]  # noqa: SLF001
+    with pytest.raises(_InjectedCrash):
+        runtime.run(compiled, "full", _context(project))
+    change = _context(project).change_dir
+    invocation_id = next(
+        str(e["invocation_id"])
+        for e in read_events_strict(change)
+        if e.get("type") == "graph_invocation_started"
+    )
+    fresh, _ = _build_runtime(project, compiled, contracts, node_runner=_op_runner(_write_ops()))
+    monkeypatch.setattr(profile_mod, "assurance_profile_digest", lambda: "sha256:" + "1" * 64)
+    with pytest.raises(GraphDefinitionChanged, match="assurance profile"):
+        fresh.resume(invocation_id)

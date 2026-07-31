@@ -145,6 +145,13 @@ contracts:
     writes: ["change:issues/events.jsonl", "change:issues/snapshot.json"]
     authorization_writes: ["change:issues/events.jsonl", "change:issues/snapshot.json"]
     retryable_errors: []
+
+  operation:fake-materialize-trace-projection:
+    handler: operation
+    reads: ["change:inspect/**", "change:issues/**", "change:execution/**", "change:cases/**"]
+    writes: ["change:inspect/trace-projection.json"]
+    authorization_writes: ["change:inspect/trace-projection.json"]
+    retryable_errors: []
 """
 
 # ---------------------------------------------------------------------------
@@ -223,7 +230,7 @@ graphs:
         recover:
           errors: [timeout, transport, rate_limit, invalid_output]
           via: record-analysis-failure
-          continue_to: inspect-complete
+          continue_to: materialize-trace-projection
 
       record-empty-analysis:
         uses: operation:fake-record-empty-analysis
@@ -237,7 +244,7 @@ graphs:
         recover:
           errors: [conflict, transport]
           via: record-project-sync-pending
-          continue_to: inspect-complete
+          continue_to: materialize-trace-projection
 
       record-analysis-failure:
         uses: operation:fake-record-issue-analysis-failure
@@ -248,6 +255,11 @@ graphs:
         uses: operation:fake-record-project-sync-pending
         retry: never
         timeout: local
+
+      materialize-trace-projection:
+        uses: operation:fake-materialize-trace-projection
+        outputs:
+          - change:inspect/trace-projection.json
 
       inspect-complete:
         uses: operation:no-op
@@ -261,7 +273,8 @@ graphs:
          when: "node('collect-observations').value.abnormal_count == 0"}
       - {from: record-empty-analysis, to: reconcile-issues}
       - {from: analyze-issues, to: reconcile-issues}
-      - {from: reconcile-issues, to: inspect-complete}
+      - {from: reconcile-issues, to: materialize-trace-projection}
+      - {from: materialize-trace-projection, to: inspect-complete}
       - {from: inspect-complete, to: END}
 gates: {}
 """
@@ -410,6 +423,32 @@ def _fake_record_project_sync_pending(
     return TaskResult(status="succeeded", value={"sync_pending": True})
 
 
+def _fake_materialize_trace_projection(
+    task: ExecutableTask, workspace: Any, context: RuntimeContext
+) -> TaskResult:
+    del task, context
+    inspect_dir = workspace.change_dir / "inspect"
+    inspect_dir.mkdir(parents=True, exist_ok=True)
+    (inspect_dir / "trace-projection.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "2",
+                "phase": "reconciled",
+                "change_id": "CH-1",
+                "authoritative_batch_id": "batch-1",
+                "integrity": "incomplete",
+                "sources": [],
+                "rows": [],
+                "unmapped_tests": [],
+                "gaps": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return TaskResult(status="succeeded", value={"phase": "reconciled", "integrity": "incomplete"})
+
+
 def _fake_analyzer_succeed(task: ExecutableTask, workspace: Any, context: RuntimeContext) -> TaskResult:
     """Analyzer that always succeeds."""
     inspect_dir = workspace.change_dir / "inspect"
@@ -455,6 +494,7 @@ def _default_ops(
         "operation:fake-reconcile-issues": _fake_reconcile_issues,
         "operation:fake-record-issue-analysis-failure": _fake_record_analysis_failure,
         "operation:fake-record-project-sync-pending": _fake_record_project_sync_pending,
+        "operation:fake-materialize-trace-projection": _fake_materialize_trace_projection,
         "operation:no-op": lambda task, ws, ctx: TaskResult(status="succeeded"),
     }
 
@@ -736,3 +776,32 @@ def test_inline_main_graph_orders_inspect_before_end_without_retro() -> None:
     assert "graph:retro-workflow" not in uses
     assert "operation:reconcile-improvements" not in uses
     assert "skill:aa-retro" not in uses
+
+
+def test_inline_inspect_routes_recovery_through_materializer() -> None:
+    schema = parse_workflow_v2(_WORKFLOW)
+    inspect = schema.graphs["inspect-with-issues"]
+    edges = {(edge.from_, edge.to) for edge in inspect.edges}
+    assert ("reconcile-issues", "materialize-trace-projection") in edges
+    assert ("materialize-trace-projection", "inspect-complete") in edges
+    analyze = inspect.nodes["analyze-issues"]
+    assert analyze.recover is not None
+    assert analyze.recover.continue_to == "materialize-trace-projection"
+    reconcile = inspect.nodes["reconcile-issues"]
+    assert reconcile.recover is not None
+    assert reconcile.recover.continue_to == "materialize-trace-projection"
+
+
+def test_analyzer_timeout_materializes_before_complete(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    compiled, contracts = _compile()
+    timeout_analyzer, calls = _make_timeout_analyzer()
+    ops = _default_ops(abnormal_count=1, analyzer=timeout_analyzer)
+    runtime = _build(project, compiled, contracts, ops=ops)
+    result = runtime.run(compiled, "full", _context(project))
+    assert result.exit_code == 0
+    assert calls["n"] == 3
+    change = project / "qa" / "changes" / "CH-1"
+    assert (change / "inspect" / "trace-projection.json").is_file()
+    events = read_events_strict(change)
+    assert any(e.get("type") == "task_recovery_routed" for e in events)
