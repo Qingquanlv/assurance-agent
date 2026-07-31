@@ -76,3 +76,68 @@ def test_workspace_without_declared_read_isolation_keeps_unclaimed_files(tmp_pat
     )
 
     assert (workspace.project_root / "app/source.py").is_file()
+
+
+def test_mechanical_declared_reads_hide_cross_layer_inputs_and_forbid_cross_layer_checks(
+    tmp_path: Path,
+) -> None:
+    from assurance_agent.workflow.graph.workspace import WorkspaceError
+
+    project = tmp_path / "project"
+    change_dir = project / "qa" / "changes" / "CH-FUZZ"
+    change_dir.mkdir(parents=True)
+
+    fuzz_plan = change_dir / "plans" / "fuzz-plan.md"
+    fuzz_plan.parent.mkdir(parents=True)
+    fuzz_plan.write_text("# fuzz plan\n", encoding="utf-8")
+    fuzz_review = change_dir / "review" / "fuzz-plan-review.json"
+    fuzz_review.parent.mkdir(parents=True)
+    fuzz_review.write_text('{"decision":"pass"}\n', encoding="utf-8")
+    cross_plan = change_dir / "plans" / "api-plan.md"
+    cross_plan.write_text("# api plan\n", encoding="utf-8")
+    cross_review = change_dir / "review" / "api-plan-review.json"
+    cross_review.write_text('{"decision":"pass"}\n', encoding="utf-8")
+    cross_checks = change_dir / "review" / "api-plan-checks.json"
+    cross_checks.write_text('{"schema_version":"2"}\n', encoding="utf-8")
+    cases = change_dir / "cases" / "FUZZ-001" / "case.yaml"
+    cases.parent.mkdir(parents=True)
+    cases.write_text("schema_version: '1.0'\n", encoding="utf-8")
+    repo_l1 = project / ".aa" / "data-knowledge.yaml"
+    repo_l1.parent.mkdir(parents=True)
+    repo_l1.write_text("version: 1\ncapabilities: {}\n", encoding="utf-8")
+
+    store = TreeStore(change_dir)
+    tree_id = store.capture(project)
+    checks = "change:review/fuzz-plan-checks.json"
+    claims = ResourceClaims(
+        reads=(
+            ResourcePath.parse("change:plans/fuzz-plan.md"),
+            ResourcePath.parse("change:plans/fuzz-codegen-plan.md"),
+            ResourcePath.parse("change:review/fuzz-plan-review.json"),
+            ResourcePath.parse("change:cases/**"),
+            ResourcePath.parse("repo:.aa/data-knowledge.yaml"),
+        ),
+        writes=(ResourcePath.parse(checks),),
+        authorization_writes=(ResourcePath.parse(checks),),
+        synchronized=(ResourcePath.parse("project:.aa/data-knowledge.yaml"),),
+        exclusive=("project:data-knowledge",),
+    )
+    workspace = WorkspaceBackend(change_dir).create(
+        task_id="mechanical-fuzz",
+        base_tree_id=tree_id,
+        store=store,
+        claims=claims,
+        declared_reads_only=True,
+    )
+
+    assert (workspace.change_dir / "plans" / "fuzz-plan.md").is_file()
+    assert (workspace.change_dir / "review" / "fuzz-plan-review.json").is_file()
+    assert not (workspace.change_dir / "plans" / "api-plan.md").exists()
+    assert not (workspace.change_dir / "review" / "api-plan-review.json").exists()
+    assert not (workspace.change_dir / "review" / "api-plan-checks.json").exists()
+
+    leaked = workspace.change_dir / "review" / "api-plan-checks.json"
+    leaked.parent.mkdir(parents=True, exist_ok=True)
+    leaked.write_text('{"leaked":true}\n', encoding="utf-8")
+    with pytest.raises(WorkspaceError, match=r"forbidden write outside authorization_writes"):
+        store.freeze_write_set(workspace, claims=claims)

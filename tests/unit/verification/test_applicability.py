@@ -1,10 +1,13 @@
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from assurance_agent.verification.applicability import derive_layer_applicability
 from assurance_agent.verification.profiles import get_layer_assurance_profile
+from assurance_agent.workflow.graph.contracts import load_execution_contracts
 
 
 def _case(case_id: str, case_type: str, *, required: bool) -> dict[str, Any]:
@@ -151,3 +154,35 @@ def test_malformed_scope_raises_value_error(
 ) -> None:
     with pytest.raises(ValueError, match=match):
         derive_layer_applicability(cases, get_layer_assurance_profile("api"))
+
+
+@pytest.mark.parametrize(
+    ("layer", "case_rel", "case_id"),
+    [
+        ("fuzz", "tests/fixtures/assurance/fuzz-contract/cases/FUZZ-001/case.yaml", "FUZZ-001"),
+        (
+            "performance",
+            "tests/fixtures/assurance/performance-contract/cases/PERF-001/case.yaml",
+            "PERF-001",
+        ),
+    ],
+)
+def test_contract_fixture_cases_make_fuzz_and_performance_applicable(
+    layer: str,
+    case_rel: str,
+    case_id: str,
+) -> None:
+    mapping = yaml.safe_load(Path(case_rel).read_text(encoding="utf-8"))
+    assert isinstance(mapping, dict)
+    result = derive_layer_applicability([mapping], get_layer_assurance_profile(layer))
+    assert result.applicable is True
+    assert result.case_ids == (case_id,)
+
+
+def test_applicability_operation_contract_stays_cases_only() -> None:
+    """Applicability ownership stays independent of mechanical/skill contract narrowing."""
+    contract = load_execution_contracts(Path.cwd()).contracts["operation:derive-plan-layer-applicability"]
+    assert contract.reads == ("change:cases/**/case.yaml",)
+    assert contract.writes == ()
+    assert contract.authorization_writes == ()
+    assert contract.side_effect_free is True

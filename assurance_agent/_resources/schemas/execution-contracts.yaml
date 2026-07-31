@@ -55,15 +55,18 @@ contracts:
   operation:verify-plan-mechanical:
     handler: operation
     reads:
-      - change:cases/**
-      - change:plans/**
-      - change:review/**
-      - repo:.aa/data-knowledge.yaml
-      - project:.aa/data-knowledge.yaml
+      - project:.aa/data-knowledge.yaml  # static synchronization bound; planner narrows it away
+    read_isolation: declared_only
     writes:
-      - change:review/*-plan-checks.json
+      - change:review/api-plan-checks.json
+      - change:review/e2e-plan-checks.json
+      - change:review/fuzz-plan-checks.json
+      - change:review/performance-plan-checks.json
     authorization_writes:
-      - change:review/*-plan-checks.json
+      - change:review/api-plan-checks.json
+      - change:review/e2e-plan-checks.json
+      - change:review/fuzz-plan-checks.json
+      - change:review/performance-plan-checks.json
     synchronized:
       - project:.aa/data-knowledge.yaml
     exclusive:
@@ -350,33 +353,56 @@ contracts:
     handler: agent
     reads:
       - change:facts/fact-baseline.json
-      - change:cases/**
+      - change:cases/**/case.yaml
+      - change:proposal.md
+      - repo:.aa/config.yaml
+      - repo:.aa/data-knowledge.yaml
+      - project:.aa/memory/aa-fuzz-plan.md
+      - repo:tests/fuzz/**
     writes:
       - change:plans/fuzz-plan.md
       - change:plans/fuzz-codegen-plan.md
       - change:plans/fuzz-review-summary.md
     authorization_writes:
-      - change:plans/**
+      - change:plans/fuzz-plan.md
+      - change:plans/fuzz-codegen-plan.md
+      - change:plans/fuzz-review-summary.md
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   skill:aa-fuzz-plan-reviewer:
     handler: agent
     reads:
-      - change:plans/fuzz-*.md
+      - change:plans/fuzz-plan.md
+      - change:plans/fuzz-codegen-plan.md
+      - change:plans/fuzz-review-summary.md
+      - change:cases/**/case.yaml
+      - repo:.aa/config.yaml
+      - repo:.aa/data-knowledge.yaml
     writes:
       - change:review/fuzz-plan-review.json
       - change:review/fuzz-plan-review-summary.md
     authorization_writes:
-      - change:review/**
+      - change:review/fuzz-plan-review.json
+      - change:review/fuzz-plan-review-summary.md
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   skill:aa-fuzz-codegen:
     handler: agent
     reads:
-      - change:plans/fuzz-*.md
+      - change:plans/fuzz-plan.md
+      - change:plans/fuzz-codegen-plan.md
+      - change:plans/fuzz-review-summary.md
       - change:review/fuzz-plan-review.json
+      - change:review/fuzz-plan-checks.json
+      - change:cases/**/case.yaml
+      - repo:.aa/config.yaml
+      - repo:.aa/data-knowledge.yaml
+      - project:.aa/memory/aa-fuzz-codegen.md
+      - repo:tests/fuzz/**
+      - repo:tests/testdata/**
+      - repo:tests/config.py
     writes:
       - change:codegen/fuzz-codegen-summary.md
       - repo:tests/fuzz/**
@@ -394,33 +420,56 @@ contracts:
     handler: agent
     reads:
       - change:facts/fact-baseline.json
-      - change:cases/**
+      - change:cases/**/case.yaml
+      - change:proposal.md
+      - repo:.aa/config.yaml
+      - repo:.aa/data-knowledge.yaml
+      - project:.aa/memory/aa-performance-plan.md
+      - repo:tests/perf/**
     writes:
       - change:plans/performance-plan.md
       - change:plans/performance-codegen-plan.md
       - change:plans/performance-review-summary.md
     authorization_writes:
-      - change:plans/**
+      - change:plans/performance-plan.md
+      - change:plans/performance-codegen-plan.md
+      - change:plans/performance-review-summary.md
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   skill:aa-performance-plan-reviewer:
     handler: agent
     reads:
-      - change:plans/performance-*.md
+      - change:plans/performance-plan.md
+      - change:plans/performance-codegen-plan.md
+      - change:plans/performance-review-summary.md
+      - change:cases/**/case.yaml
+      - repo:.aa/config.yaml
+      - repo:.aa/data-knowledge.yaml
     writes:
       - change:review/performance-plan-review.json
       - change:review/performance-plan-review-summary.md
     authorization_writes:
-      - change:review/**
+      - change:review/performance-plan-review.json
+      - change:review/performance-plan-review-summary.md
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
   skill:aa-performance-codegen:
     handler: agent
     reads:
-      - change:plans/performance-*.md
+      - change:plans/performance-plan.md
+      - change:plans/performance-codegen-plan.md
+      - change:plans/performance-review-summary.md
       - change:review/performance-plan-review.json
+      - change:review/performance-plan-checks.json
+      - change:cases/**/case.yaml
+      - repo:.aa/config.yaml
+      - repo:.aa/data-knowledge.yaml
+      - project:.aa/memory/aa-performance-codegen.md
+      - repo:tests/perf/**
+      - repo:tests/testdata/**
+      - repo:tests/config.py
     writes:
       - change:codegen/performance-codegen-summary.md
       - repo:tests/perf/**

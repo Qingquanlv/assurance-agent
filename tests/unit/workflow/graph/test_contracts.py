@@ -16,6 +16,7 @@ from assurance_agent.workflow.graph.contracts import (
     claims_conflict,
     load_execution_contracts,
     parse_execution_contracts,
+    path_covers,
 )
 from assurance_agent.workflow.graph.schema_v2 import (
     NodeDef,
@@ -165,18 +166,18 @@ def test_derive_plan_layer_applicability_contract_reads_only_cases() -> None:
     assert "review" not in reads_prefixes
 
 
-def test_verify_plan_mechanical_contract_reads_traceability_inputs() -> None:
+def test_verify_plan_mechanical_contract_is_write_lock_shell() -> None:
     catalog = load_execution_contracts(Path.cwd())
     contract = catalog.contracts["operation:verify-plan-mechanical"]
-    assert set(contract.reads) == {
-        "change:cases/**",
-        "change:plans/**",
-        "change:review/**",
-        "repo:.aa/data-knowledge.yaml",
-        "project:.aa/data-knowledge.yaml",
-    }
-    assert contract.writes == ("change:review/*-plan-checks.json",)
-    assert contract.authorization_writes == ("change:review/*-plan-checks.json",)
+    assert contract.reads == ("project:.aa/data-knowledge.yaml",)
+    assert contract.read_isolation == "declared_only"
+    assert contract.writes == (
+        "change:review/api-plan-checks.json",
+        "change:review/e2e-plan-checks.json",
+        "change:review/fuzz-plan-checks.json",
+        "change:review/performance-plan-checks.json",
+    )
+    assert contract.authorization_writes == contract.writes
     assert contract.synchronized == ("project:.aa/data-knowledge.yaml",)
     assert contract.exclusive == ("project:data-knowledge",)
 
@@ -852,3 +853,353 @@ def test_e2e_reviewer_and_fixer_forbid_checks_write(tmp_path: Path, uses: str, c
     checks.write_text('{"status":"pass"}\n', encoding="utf-8")
     with pytest.raises(WorkspaceError, match=r"forbidden write outside authorization_writes"):
         store.freeze_write_set(workspace, claims=claims)
+
+
+# ---------------------------------------------------------------------------
+# Fuzz / Performance exact ownership + mechanical narrowing (Task 3)
+# ---------------------------------------------------------------------------
+
+
+def _path_text(path: ResourcePath) -> str:
+    return f"{path.root}:{path.pattern}"
+
+
+def _covers(pattern: str, claim: str) -> bool:
+    return path_covers(ResourcePath.parse(pattern), ResourcePath.parse(claim))
+
+
+_FUZZ_PLAN_READS = (
+    "change:facts/fact-baseline.json",
+    "change:cases/**/case.yaml",
+    "change:proposal.md",
+    "repo:.aa/config.yaml",
+    "repo:.aa/data-knowledge.yaml",
+    "project:.aa/memory/aa-fuzz-plan.md",
+    "repo:tests/fuzz/**",
+)
+_FUZZ_PLAN_WRITES = (
+    "change:plans/fuzz-plan.md",
+    "change:plans/fuzz-codegen-plan.md",
+    "change:plans/fuzz-review-summary.md",
+)
+_FUZZ_REVIEWER_READS = (
+    "change:plans/fuzz-plan.md",
+    "change:plans/fuzz-codegen-plan.md",
+    "change:plans/fuzz-review-summary.md",
+    "change:cases/**/case.yaml",
+    "repo:.aa/config.yaml",
+    "repo:.aa/data-knowledge.yaml",
+)
+_FUZZ_REVIEWER_WRITES = (
+    "change:review/fuzz-plan-review.json",
+    "change:review/fuzz-plan-review-summary.md",
+)
+_FUZZ_CODEGEN_READS = (
+    "change:plans/fuzz-plan.md",
+    "change:plans/fuzz-codegen-plan.md",
+    "change:plans/fuzz-review-summary.md",
+    "change:review/fuzz-plan-review.json",
+    "change:review/fuzz-plan-checks.json",
+    "change:cases/**/case.yaml",
+    "repo:.aa/config.yaml",
+    "repo:.aa/data-knowledge.yaml",
+    "project:.aa/memory/aa-fuzz-codegen.md",
+    "repo:tests/fuzz/**",
+    "repo:tests/testdata/**",
+    "repo:tests/config.py",
+)
+_FUZZ_CODEGEN_WRITES = (
+    "change:codegen/fuzz-codegen-summary.md",
+    "repo:tests/fuzz/**",
+    "repo:tests/testdata/**",
+)
+
+_PERF_PLAN_READS = (
+    "change:facts/fact-baseline.json",
+    "change:cases/**/case.yaml",
+    "change:proposal.md",
+    "repo:.aa/config.yaml",
+    "repo:.aa/data-knowledge.yaml",
+    "project:.aa/memory/aa-performance-plan.md",
+    "repo:tests/perf/**",
+)
+_PERF_PLAN_WRITES = (
+    "change:plans/performance-plan.md",
+    "change:plans/performance-codegen-plan.md",
+    "change:plans/performance-review-summary.md",
+)
+_PERF_REVIEWER_READS = (
+    "change:plans/performance-plan.md",
+    "change:plans/performance-codegen-plan.md",
+    "change:plans/performance-review-summary.md",
+    "change:cases/**/case.yaml",
+    "repo:.aa/config.yaml",
+    "repo:.aa/data-knowledge.yaml",
+)
+_PERF_REVIEWER_WRITES = (
+    "change:review/performance-plan-review.json",
+    "change:review/performance-plan-review-summary.md",
+)
+_PERF_CODEGEN_READS = (
+    "change:plans/performance-plan.md",
+    "change:plans/performance-codegen-plan.md",
+    "change:plans/performance-review-summary.md",
+    "change:review/performance-plan-review.json",
+    "change:review/performance-plan-checks.json",
+    "change:cases/**/case.yaml",
+    "repo:.aa/config.yaml",
+    "repo:.aa/data-knowledge.yaml",
+    "project:.aa/memory/aa-performance-codegen.md",
+    "repo:tests/perf/**",
+    "repo:tests/testdata/**",
+    "repo:tests/config.py",
+)
+_PERF_CODEGEN_WRITES = (
+    "change:codegen/performance-codegen-summary.md",
+    "repo:tests/perf/**",
+    "repo:tests/testdata/**",
+)
+
+_SIX_TARGETS = (
+    ("skill:aa-fuzz-plan", _FUZZ_PLAN_READS, _FUZZ_PLAN_WRITES),
+    ("skill:aa-fuzz-plan-reviewer", _FUZZ_REVIEWER_READS, _FUZZ_REVIEWER_WRITES),
+    ("skill:aa-fuzz-codegen", _FUZZ_CODEGEN_READS, _FUZZ_CODEGEN_WRITES),
+    ("skill:aa-performance-plan", _PERF_PLAN_READS, _PERF_PLAN_WRITES),
+    ("skill:aa-performance-plan-reviewer", _PERF_REVIEWER_READS, _PERF_REVIEWER_WRITES),
+    ("skill:aa-performance-codegen", _PERF_CODEGEN_READS, _PERF_CODEGEN_WRITES),
+)
+
+_MECHANICAL_CHECKS = (
+    "change:review/api-plan-checks.json",
+    "change:review/e2e-plan-checks.json",
+    "change:review/fuzz-plan-checks.json",
+    "change:review/performance-plan-checks.json",
+)
+
+_LAYER_MECHANICAL_READS = {
+    "api": (
+        "change:plans/api-plan.md",
+        "change:plans/api-test-data-plan.md",
+        "change:plans/api-codegen-plan.md",
+        "change:review/api-plan-review.json",
+        "change:cases/**",
+        "repo:.aa/data-knowledge.yaml",
+    ),
+    "e2e": (
+        "change:plans/e2e-plan.md",
+        "change:plans/e2e-test-data-plan.md",
+        "change:plans/e2e-codegen-plan.md",
+        "change:review/plan-review.json",
+        "change:cases/**",
+        "repo:.aa/data-knowledge.yaml",
+    ),
+    "fuzz": (
+        "change:plans/fuzz-plan.md",
+        "change:plans/fuzz-codegen-plan.md",
+        "change:review/fuzz-plan-review.json",
+        "change:cases/**",
+        "repo:.aa/data-knowledge.yaml",
+    ),
+    "performance": (
+        "change:plans/performance-plan.md",
+        "change:plans/performance-codegen-plan.md",
+        "change:review/performance-plan-review.json",
+        "change:cases/**",
+        "repo:.aa/data-knowledge.yaml",
+    ),
+}
+
+
+def _assert_covered(patterns: tuple[str, ...], claim: str) -> None:
+    assert any(_covers(pattern, claim) for pattern in patterns), f"{claim} not covered by {patterns}"
+
+
+@pytest.mark.parametrize(("target", "reads", "writes"), _SIX_TARGETS)
+def test_fuzz_performance_skill_contracts_match_exact_matrix(
+    target: str,
+    reads: tuple[str, ...],
+    writes: tuple[str, ...],
+) -> None:
+    catalog = load_execution_contracts(Path.cwd())
+    contract = catalog.contracts[target]
+    assert contract.reads == reads
+    assert contract.writes == writes
+    assert contract.authorization_writes == writes
+    for logical in reads:
+        _assert_covered(contract.reads, logical)
+    for output in writes:
+        _assert_covered(contract.writes, output)
+        _assert_covered(contract.authorization_writes, output)
+    for forbidden in ("repo:**", "change:plans/**", "change:review/**"):
+        assert forbidden not in contract.reads
+        assert forbidden not in contract.writes
+        assert forbidden not in contract.authorization_writes
+    if target.endswith("-codegen"):
+        assert contract.exclusive == ("repo:test-infra",)
+
+
+def test_fuzz_and_performance_reviewers_cannot_authorize_checks() -> None:
+    catalog = load_execution_contracts(Path.cwd())
+    fuzz_reviewer = catalog.contracts["skill:aa-fuzz-plan-reviewer"]
+    assert not any(
+        path_covers(
+            ResourcePath.parse(pattern),
+            ResourcePath.parse("change:review/fuzz-plan-checks.json"),
+        )
+        for pattern in fuzz_reviewer.authorization_writes
+    )
+    assert fuzz_reviewer.authorization_writes == (
+        "change:review/fuzz-plan-review.json",
+        "change:review/fuzz-plan-review-summary.md",
+    )
+    performance_reviewer = catalog.contracts["skill:aa-performance-plan-reviewer"]
+    assert not any(
+        path_covers(
+            ResourcePath.parse(pattern),
+            ResourcePath.parse("change:review/performance-plan-checks.json"),
+        )
+        for pattern in performance_reviewer.authorization_writes
+    )
+    assert performance_reviewer.authorization_writes == (
+        "change:review/performance-plan-review.json",
+        "change:review/performance-plan-review-summary.md",
+    )
+
+
+def test_mechanical_sync_bound_requires_static_project_l1_read() -> None:
+    import copy
+
+    import yaml
+
+    from assurance_agent import resources
+
+    doc = yaml.safe_load(resources.read_text("schemas", "execution-contracts.yaml"))
+    assert isinstance(doc, dict)
+    mutated = copy.deepcopy(doc)
+    mech = mutated["contracts"]["operation:verify-plan-mechanical"]
+    mech["reads"] = [path for path in mech.get("reads", []) if path != "project:.aa/data-knowledge.yaml"]
+    with pytest.raises(ContractError, match="synchronized path must be covered by reads or writes"):
+        parse_execution_contracts(yaml.safe_dump(mutated))
+
+
+def _plan_mechanical_node(
+    *,
+    layer: str,
+    reads: tuple[str, ...],
+    checks: str,
+    tmp_path: Path,
+):
+    import yaml
+
+    from assurance_agent.workflow.graph.models import GraphProjection, RuntimeContext
+    from assurance_agent.workflow.graph.planner import plan_superstep
+
+    schema_doc = {
+        "schema_version": "2",
+        "name": f"mechanical-{layer}",
+        "entrypoints": {"full": {"graph": "main"}},
+        "graphs": {
+            "main": {
+                "max_supersteps": 5,
+                "nodes": {
+                    "mechanical": {
+                        "uses": "operation:verify-plan-mechanical",
+                        "with": {"layer": layer, "require_review": True},
+                        "outputs": [checks],
+                        "resources": {
+                            "reads": list(reads),
+                            "writes": [checks],
+                            "synchronized": ["project:.aa/data-knowledge.yaml"],
+                            "exclusive": ["project:data-knowledge"],
+                        },
+                    }
+                },
+                "edges": [
+                    {"from": "START", "to": "mechanical"},
+                    {"from": "mechanical", "to": "END"},
+                ],
+            }
+        },
+    }
+    text = yaml.safe_dump(schema_doc, sort_keys=False)
+    catalog = load_execution_contracts(Path.cwd())
+    compiled = compile_workflow(parse_workflow_v2(text), catalog)
+    context = RuntimeContext(
+        project_root=tmp_path,
+        repo_root=tmp_path,
+        change_dir=tmp_path / "change",
+        change_id="CH-MECH",
+    )
+    projection = GraphProjection(
+        invocation_id="inv-1",
+        entrypoint="full",
+        checkpoint_ns="inv-1",
+        structural_path="main",
+        graph_digest=compiled.digest,
+        contract_digests=dict(compiled.contract_digests),
+        params={},
+        root_tree_id="tree-0",
+        current_tree_id="tree-0",
+        latest_checkpoint_id=None,
+        supersteps=0,
+        state_values={},
+        tasks={},
+        interrupts={},
+        recoveries={},
+        node_histories={},
+        terminal=None,
+        terminal_reason=None,
+    )
+
+    class _Artifacts:
+        def read_json(self, tree_id: str, logical_path: str):
+            raise AssertionError(f"unexpected artifact read: {tree_id}:{logical_path}")
+
+    plan = plan_superstep(compiled, projection, context, _Artifacts())
+    assert len(plan.tasks) == 1
+    return plan.tasks[0]
+
+
+@pytest.mark.parametrize("layer", ("api", "e2e", "fuzz", "performance"))
+def test_mechanical_narrowing_keeps_only_layer_checks_and_node_reads(
+    layer: str,
+    tmp_path: Path,
+) -> None:
+    checks = f"change:review/{layer}-plan-checks.json"
+    if layer == "e2e":
+        checks = "change:review/e2e-plan-checks.json"
+    task = _plan_mechanical_node(
+        layer=layer,
+        reads=_LAYER_MECHANICAL_READS[layer],
+        checks=checks,
+        tmp_path=tmp_path,
+    )
+    assert tuple(_path_text(path) for path in task.resources.reads) == _LAYER_MECHANICAL_READS[layer]
+    assert "project:.aa/data-knowledge.yaml" not in {_path_text(path) for path in task.resources.reads}
+    assert tuple(_path_text(path) for path in task.resources.authorization_writes) == (checks,)
+    other_checks = [path for path in _MECHANICAL_CHECKS if path != checks]
+    assert not any(_path_text(path) in other_checks for path in task.resources.authorization_writes)
+
+
+def test_packaged_api_e2e_mechanical_nodes_narrow_away_sync_only_read(tmp_path: Path) -> None:
+    from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
+
+    schema = load_workflow_v2(Path.cwd())
+    for layer in ("api", "e2e"):
+        node = schema.graphs[f"{layer}-plan-cycle"].nodes["mechanical-plan-checks"]
+        assert node.resources is not None
+        assert node.resources.reads
+        checks = f"change:review/{layer}-plan-checks.json"
+        task = _plan_mechanical_node(
+            layer=layer,
+            reads=tuple(node.resources.reads),
+            checks=checks,
+            tmp_path=tmp_path / layer,
+        )
+        materialized = {_path_text(path) for path in task.resources.reads}
+        assert "project:.aa/data-knowledge.yaml" not in materialized
+        assert "repo:.aa/data-knowledge.yaml" in materialized
+        assert any(path.startswith("change:cases") for path in materialized)
+        assert any(path.startswith("change:plans/") for path in materialized)
+        assert any(path.startswith("change:review/") for path in materialized)
+        assert tuple(_path_text(path) for path in task.resources.authorization_writes) == (checks,)
