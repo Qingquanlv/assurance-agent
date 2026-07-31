@@ -870,6 +870,32 @@ def test_runtime_fix_and_proceed_noop_leaves_interrupt_unresolved(
     assert "manual_plan_revision" not in events
 
 
+def test_runtime_invalid_revision_inventory_raises_graph_runtime_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from assurance_agent.workflow.graph.models import InterruptProjection, RunResult
+    from assurance_agent.workflow.graph.runtime import GraphRuntime, GraphRuntimeError
+
+    fx = _manual_revision_runtime(tmp_path, monkeypatch)
+    runtime = cast(GraphRuntime, fx.runtime)
+    result = cast(RunResult, fx.result)
+    interrupt = cast(InterruptProjection, fx.interrupt)
+    view = fx.change / fx.revision_view
+    (view / "plans" / "fuzz-plan.md").write_text("# revised plan\n", encoding="utf-8")
+    (view / "plans" / "extra.md").write_text("undeclared\n", encoding="utf-8")
+    with pytest.raises(GraphRuntimeError, match="extra path|inventory"):
+        runtime.resume(
+            result.invocation_id,
+            ResumeCommand(
+                interrupt_id=interrupt.interrupt_id,
+                action="fix_and_proceed",
+                reason="revise plan",
+                who="reviewer",
+            ),
+        )
+    assert runtime.status(result.invocation_id).status == "interrupted"
+
+
 def test_runtime_fix_and_proceed_captures_edited_view(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

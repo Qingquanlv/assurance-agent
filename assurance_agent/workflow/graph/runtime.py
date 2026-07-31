@@ -870,7 +870,7 @@ class GraphRuntime:
                 store=self._objects,
                 binding=binding,
             )
-        except WorkspaceError as exc:
+        except (WorkspaceError, ManualRevisionError) as exc:
             message = str(exc)
             if "manual_plan_revision_noop" in message:
                 raise GraphRuntimeError("manual_plan_revision_noop") from exc
