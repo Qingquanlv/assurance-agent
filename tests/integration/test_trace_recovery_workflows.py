@@ -15,11 +15,19 @@ from assurance_agent.evidence.current_projection import load_current_reconciled_
 from assurance_agent.evidence.layer_summary import TraceLayerSummaryError, summarize_projection_by_layer
 from assurance_agent.evidence.trace import fold_trace
 from assurance_agent.workflow.core.events import read_events_strict
-from assurance_agent.workflow.driver.runtime_factory import one_definition_resolver
+from assurance_agent.workflow.driver.runtime_factory import (
+    ResolvedExecutionBundle,
+    one_definition_resolver,
+    validate_ingest_model_map,
+)
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult, ErrorKind
 from assurance_agent.workflow.graph.checkpoint import CheckpointStore, project_invocation
-from assurance_agent.workflow.graph.compiler import compile_workflow
-from assurance_agent.workflow.graph.contracts import load_execution_contracts
+from assurance_agent.workflow.graph.compiler import compile_packaged_workflow, compile_workflow
+from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog, load_execution_contracts
+from assurance_agent.workflow.graph.definition_pinning import (
+    load_pinned_execution_definition,
+    request_for_compiled,
+)
 from assurance_agent.workflow.graph.handlers.agent import AgentHandler
 from assurance_agent.workflow.graph.handlers.gate import GateHandler
 from assurance_agent.workflow.graph.handlers.interrupt import InterruptHandler
@@ -30,16 +38,23 @@ from assurance_agent.workflow.graph.handlers.operation import (
     default_operations,
 )
 from assurance_agent.workflow.graph.handlers.subgraph import SubgraphHandler
-from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
+from assurance_agent.workflow.graph.ingest_catalog import (
+    IngestArtifactCatalog,
+    validate_catalog_runtime,
+)
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
     RuntimeContext,
     TaskResult,
 )
-from assurance_agent.workflow.graph.runtime import GraphRuntime
+from assurance_agent.workflow.graph.runtime import (
+    GraphDefinitionChanged,
+    GraphRuntime,
+    assert_live_semantic_compatibility,
+)
 from assurance_agent.workflow.graph.scheduler import Scheduler
-from assurance_agent.workflow.graph.schema_v2 import EntrypointDef, load_workflow_v2
+from assurance_agent.workflow.graph.schema_v2 import EdgeDef, EntrypointDef, load_workflow_v2
 from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
 from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
 from assurance_agent.workflow.improvements.ledger import atomic_write_json
@@ -50,6 +65,15 @@ from tests.unit.evidence.test_fold_trace_reconciled import (
     _write_selected_api_result,
     materialize_reconciled_v2,
 )
+
+
+class _InjectedCrash(BaseException):
+    """Test-only seam crash before ordinary write-set commit.
+
+    Subclasses ``BaseException`` so nested ``HandlerNodeRunner`` (which catches
+    ``Exception``) cannot convert the seam into a failed subgraph task and tear
+    down the child workspace before resume.
+    """
 
 T0 = datetime(2026, 7, 31, 12, 0, 0, tzinfo=timezone.utc)
 CHANGE_ID = auth.CHANGE_ID
@@ -158,15 +182,27 @@ class SkillRouter:
         return AgentResult(ok=True)
 
 
-def _compile_packaged(*, assurance_entrypoint: bool = False) -> tuple[CompiledWorkflow, Any]:
+def _compile_packaged(
+    *,
+    assurance_entrypoint: bool = False,
+    inspect_retry: str | None = None,
+) -> tuple[CompiledWorkflow, Any]:
     schema = load_workflow_v2(Path.cwd())
     if assurance_entrypoint:
+        graphs = dict(schema.graphs)
+        if inspect_retry is not None:
+            assurance = graphs["assurance"]
+            nodes = dict(assurance.nodes)
+            inspect_node = nodes["inspect-with-issues"]
+            nodes["inspect-with-issues"] = inspect_node.model_copy(update={"retry": inspect_retry})
+            graphs["assurance"] = assurance.model_copy(update={"nodes": nodes})
         schema = schema.model_copy(
             update={
                 "entrypoints": {
                     **dict(schema.entrypoints),
                     "assurance-direct": EntrypointDef(graph="assurance"),
-                }
+                },
+                "graphs": graphs if inspect_retry is not None else schema.graphs,
             }
         )
     contracts = load_execution_contracts(Path.cwd())
@@ -898,19 +934,27 @@ def test_materializer_fold_failure_publishes_nothing(
 
 
 @pytest.mark.parametrize(
-    "prior_outcome",
-    ["success", "analyzer_recovery", "sync_recovery"],
+    ("parent", "prior_outcome"),
+    [
+        ("issue-analyze-workflow", "success"),
+        ("issue-analyze-workflow", "analyzer_recovery"),
+        ("issue-analyze-workflow", "sync_recovery"),
+        ("issue-reconcile-workflow", "success"),
+        ("issue-reconcile-workflow", "sync_recovery"),
+    ],
 )
-def test_healing_rerun_at_b1_after_prior_terminal(tmp_path: Path, prior_outcome: str) -> None:
+def test_healing_rerun_at_b1_after_prior_terminal(
+    tmp_path: Path, parent: str, prior_outcome: str
+) -> None:
     project, change, _owner, first = _run_terminal_path(
         tmp_path,
-        parent="issue-analyze-workflow",
+        parent=parent,  # type: ignore[arg-type]
         child=None,
         outcome=prior_outcome,  # type: ignore[arg-type]
     )
     first_digest = first.model_dump(mode="json")
 
-    # Second healing rerun with unchanged authoritative source bytes → byte-identical.
+    # Healing rerun with unchanged authoritative source bytes → byte-identical.
     compiled, contracts = _compile_packaged()
     analyzer = ScriptedAnalyzer(
         succeed_on_attempt=None if prior_outcome == "analyzer_recovery" else 1,
@@ -926,7 +970,8 @@ def test_healing_rerun_at_b1_after_prior_terminal(tmp_path: Path, prior_outcome:
         analyzer=analyzer,
         ops=ops,
     )
-    result = runtime.run(compiled, "issue-analyze", _context(project))
+    entry = "issue-analyze" if parent == "issue-analyze-workflow" else "issue-reconcile"
+    result = runtime.run(compiled, entry, _context(project))
     assert result.exit_code == 0, result.reason
     second = load_current_reconciled_projection(project, CHANGE_ID)
     assert second.authoritative_batch_id == B1_BATCH
@@ -1011,3 +1056,671 @@ def test_prior_sync_pending_remains_after_repeated_conflict(tmp_path: Path) -> N
     assert again.integrity == "incomplete"
     assert {g.code for g in again.gaps} == {"project_sync_pending"}
     assert again.authoritative_batch_id == prior.authoritative_batch_id == B1_BATCH
+
+
+# ---------------------------------------------------------------------------
+# Clarification 10 — identity drift triad, pre-Task13 corpus, nested seams
+# ---------------------------------------------------------------------------
+
+
+def _pre_task13_independent_issue_schema(schema: Any) -> Any:
+    """Independent issue graphs as of pre-Task13: no materializer, recover→END."""
+    graphs = dict(schema.graphs)
+    for graph_id, max_supersteps, edges in (
+        (
+            "issue-analyze-workflow",
+            8,
+            [
+                EdgeDef.model_validate({"from": "START", "to": "analyze-issues"}),
+                EdgeDef.model_validate({"from": "analyze-issues", "to": "reconcile-issues"}),
+                EdgeDef.model_validate({"from": "reconcile-issues", "to": "END"}),
+            ],
+        ),
+        (
+            "issue-reconcile-workflow",
+            4,
+            [
+                EdgeDef.model_validate({"from": "START", "to": "reconcile-issues"}),
+                EdgeDef.model_validate({"from": "reconcile-issues", "to": "END"}),
+            ],
+        ),
+    ):
+        graph = graphs[graph_id]
+        nodes = {
+            nid: (
+                node.model_copy(
+                    update={"recover": node.recover.model_copy(update={"continue_to": "END"})}
+                )
+                if node.recover is not None
+                and node.recover.continue_to == "materialize-trace-projection"
+                else node
+            )
+            for nid, node in graph.nodes.items()
+            if nid != "materialize-trace-projection"
+        }
+        graphs[graph_id] = graph.model_copy(
+            update={"nodes": nodes, "edges": edges, "max_supersteps": max_supersteps}
+        )
+    return schema.model_copy(update={"graphs": graphs})
+
+
+def _compile_pre_task13_issue_analyze() -> tuple[CompiledWorkflow, Any, IngestArtifactCatalog]:
+    schema = _pre_task13_independent_issue_schema(load_workflow_v2(Path.cwd()))
+    contracts = load_execution_contracts(Path.cwd())
+    catalog = validate_catalog_runtime()
+    compiled = compile_workflow(schema, contracts)
+    assert "materialize-trace-projection" not in compiled.schema.graphs["issue-analyze-workflow"].nodes
+    return compiled, contracts, catalog
+
+
+def _compile_live_packaged() -> tuple[CompiledWorkflow, Any, IngestArtifactCatalog]:
+    schema = load_workflow_v2(Path.cwd())
+    contracts = load_execution_contracts(Path.cwd())
+    catalog = validate_catalog_runtime()
+    compiled = compile_packaged_workflow(schema, contracts)
+    return compiled, contracts, catalog
+
+
+def _mutated_live_contracts(contracts: ExecutionContractCatalog) -> ExecutionContractCatalog:
+    target = "operation:record-issue-analysis-failure"
+    base = contracts.contracts[target]
+    flipped = base.model_copy(update={"side_effect_free": not base.side_effect_free})
+    return ExecutionContractCatalog(contracts={**contracts.contracts, target: flipped})
+
+
+def _mutated_live_catalog(catalog: IngestArtifactCatalog) -> IngestArtifactCatalog:
+    symbol, spec = next(
+        (name, art) for name, art in catalog.artifacts.items() if art.kind == "path_only"
+    )
+    drifted = spec.model_copy(update={"path": spec.path + ".clarification10-drift"})
+    return catalog.model_copy(update={"artifacts": {**catalog.artifacts, symbol: drifted}})
+
+
+def _runner_and_scheduler(
+    *,
+    compiled: CompiledWorkflow,
+    contracts: Any,
+    store: TreeStore,
+    checkpoints: CheckpointStore,
+    workspaces: WorkspaceBackend,
+    clock: FakeClock,
+    analyzer: ScriptedAnalyzer,
+    ops: dict[str, OperationFn],
+    run_child: Any,
+) -> tuple[HandlerNodeRunner, Scheduler]:
+    merged = default_operations()
+    merged.update(ops)
+    op_handler = OperationHandler(merged)
+    agent = AgentHandler(SkillRouter(analyzer), store, contracts=contracts, compiled=compiled)
+    handlers: dict[str, Any] = {
+        "builtin:join": JoinHandler(),
+        "builtin:gate": GateHandler(compiled),
+        "builtin:interrupt": InterruptHandler(compiled),
+        **{target: op_handler for target in merged},
+    }
+    node_runner = HandlerNodeRunner(
+        handlers,
+        namespace_handlers={"skill": agent, "graph": SubgraphHandler(run_child)},
+        compiled=compiled,
+        object_store=store,
+    )
+    state_defs: dict = {}
+    for graph in compiled.schema.graphs.values():
+        state_defs.update(dict(graph.state))
+    scheduler = Scheduler(
+        checkpoints=checkpoints,
+        object_store=store,
+        clock=clock,
+        workspace_backend=workspaces,
+        node_runner=node_runner,
+        max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
+        contracts=contracts,
+        state_defs=state_defs,
+    )
+    return node_runner, scheduler
+
+
+def _build_pinning_aware_runtime(
+    project: Path,
+    *,
+    live_compiled: CompiledWorkflow,
+    live_contracts: Any,
+    live_catalog: IngestArtifactCatalog,
+    analyzer: ScriptedAnalyzer,
+    ops: dict[str, OperationFn],
+    stub_assurance_subgraphs: bool = False,
+) -> tuple[GraphRuntime, list[Any]]:
+    """Resolver mirrors ``build_graph_runtime``: live hit or ``load_pinned_execution_definition``."""
+    change = project / "qa" / "changes" / CHANGE_ID
+    store = TreeStore(change)
+    checkpoints = CheckpointStore(change)
+    workspaces = WorkspaceBackend(change)
+    clock = FakeClock()
+    holder: dict[str, GraphRuntime] = {}
+    pinned_loads: list[Any] = []
+
+    def run_child(task: Any, graph_id: str, workspace: Any, context: Any) -> TaskResult:
+        if stub_assurance_subgraphs and graph_id in STUB_SUBGRAPHS:
+            return TaskResult(status="succeeded", value={"stubbed": graph_id})
+        return holder["rt"].run_child(task, graph_id, workspace, context)
+
+    def services_for(compiled: CompiledWorkflow, contracts: Any) -> tuple[HandlerNodeRunner, Scheduler]:
+        return _runner_and_scheduler(
+            compiled=compiled,
+            contracts=contracts,
+            store=store,
+            checkpoints=checkpoints,
+            workspaces=workspaces,
+            clock=clock,
+            analyzer=analyzer,
+            ops=ops,
+            run_child=run_child,
+        )
+
+    live_models = validate_ingest_model_map(live_catalog)
+    live_runner, live_scheduler = services_for(live_compiled, live_contracts)
+    live_request = request_for_compiled(live_compiled, event_schema_version=5)
+    cache: dict[Any, ResolvedExecutionBundle] = {
+        live_request: ResolvedExecutionBundle(
+            request=live_request,
+            compiled=live_compiled,
+            contracts=live_contracts,
+            ingest_catalog=live_catalog,
+            model_map=live_models,
+            node_runner=live_runner,
+            scheduler=live_scheduler,
+        )
+    }
+
+    def resolve(request: Any) -> ResolvedExecutionBundle:
+        assert_live_semantic_compatibility(request)
+        hit = cache.get(request)
+        if hit is not None:
+            return hit
+        same = (
+            request.graph_digest == live_compiled.digest
+            and request.ingest_catalog_digest == live_compiled.ingest_catalog_digest
+            and dict(request.contract_digests) == live_compiled.contract_digests
+        )
+        if same:
+            bundle = ResolvedExecutionBundle(
+                request=request,
+                compiled=live_compiled,
+                contracts=live_contracts,
+                ingest_catalog=live_catalog,
+                model_map=live_models,
+                node_runner=live_runner,
+                scheduler=live_scheduler,
+            )
+            cache[request] = bundle
+            return bundle
+        pinned = load_pinned_execution_definition(change, request)
+        pinned_loads.append(request)
+        pinned_models = validate_ingest_model_map(pinned.ingest_catalog)
+        pinned_runner, pinned_scheduler = services_for(pinned.compiled, pinned.contracts)
+        bundle = ResolvedExecutionBundle(
+            request=request,
+            compiled=pinned.compiled,
+            contracts=pinned.contracts,
+            ingest_catalog=pinned.ingest_catalog,
+            model_map=pinned_models,
+            node_runner=pinned_runner,
+            scheduler=pinned_scheduler,
+        )
+        cache[request] = bundle
+        return bundle
+
+    runtime = GraphRuntime(
+        checkpoint_store=checkpoints,
+        object_store=store,
+        workspace_backend=workspaces,
+        definition_resolver=resolve,
+        clock=clock,
+    )
+    holder["rt"] = runtime
+    return runtime, pinned_loads
+
+
+def _start_issue_analyze_pending_commit(
+    project: Path,
+    compiled: CompiledWorkflow,
+    contracts: Any,
+    catalog: IngestArtifactCatalog,
+    *,
+    analyzer: ScriptedAnalyzer,
+    ops: dict[str, OperationFn],
+    monkeypatch: pytest.MonkeyPatch,
+) -> str:
+    """Run until first successful task has a frozen write-set pending ordinary commit."""
+    change = project / "qa" / "changes" / CHANGE_ID
+    store = TreeStore(change)
+    checkpoints = CheckpointStore(change)
+    workspaces = WorkspaceBackend(change)
+    clock = FakeClock()
+    holder: dict[str, GraphRuntime] = {}
+
+    def run_child(task: Any, graph_id: str, workspace: Any, context: Any) -> TaskResult:
+        return holder["rt"].run_child(task, graph_id, workspace, context)
+
+    node_runner, scheduler = _runner_and_scheduler(
+        compiled=compiled,
+        contracts=contracts,
+        store=store,
+        checkpoints=checkpoints,
+        workspaces=workspaces,
+        clock=clock,
+        analyzer=analyzer,
+        ops=ops,
+        run_child=run_child,
+    )
+    runtime = GraphRuntime(
+        checkpoint_store=checkpoints,
+        object_store=store,
+        workspace_backend=workspaces,
+        definition_resolver=one_definition_resolver(
+            compiled=compiled,
+            contracts=contracts,
+            ingest_catalog=catalog,
+            node_runner=node_runner,
+            scheduler=scheduler,
+        ),
+        clock=clock,
+    )
+    holder["rt"] = runtime
+
+    orig = Scheduler._commit_wave
+
+    def crash_first_commit(self: Scheduler, **kwargs: Any) -> list[str]:  # noqa: ANN401
+        projection = kwargs["projection"]
+        live = project_invocation(change, projection.invocation_id)
+        if any(t.status == "succeeded" and not t.outputs_committed for t in live.tasks.values()):
+            raise _InjectedCrash("ordinary pending commit seam")
+        return orig(self, **kwargs)
+
+    monkeypatch.setattr(Scheduler, "_commit_wave", crash_first_commit)
+    with pytest.raises(_InjectedCrash, match="ordinary pending commit seam"):
+        runtime.run(compiled, "issue-analyze", _context(project))
+    monkeypatch.setattr(Scheduler, "_commit_wave", orig)
+    events = read_events_strict(change)
+    assert any(e.get("type") == "task_attempt_succeeded" for e in events)
+    assert not any(e.get("type") == "superstep_committed" for e in events)
+    return next(
+        str(e["invocation_id"])
+        for e in events
+        if e.get("type") == "graph_invocation_started" and e.get("parent_invocation_id") is None
+    )
+
+
+@pytest.mark.parametrize("drift_kind", ["graph", "contract", "catalog"])
+def test_identity_drift_triad_resumes_via_load_pinned(
+    tmp_path: Path, drift_kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live packaged digests ≠ pinned; resume continues via exact pinned snapshots."""
+    project = tmp_path / "proj"
+    change = _seed_b0_completed(project)
+    _advance_inputs_to_b1(change, seed_completed_analysis=False)
+
+    pinned_compiled, pinned_contracts, pinned_catalog = _compile_pre_task13_issue_analyze()
+    live_compiled, live_contracts, live_catalog = _compile_live_packaged()
+    if drift_kind == "graph":
+        assert live_compiled.digest != pinned_compiled.digest
+        resume_live = (live_compiled, live_contracts, live_catalog)
+        start = (pinned_compiled, pinned_contracts, pinned_catalog)
+    elif drift_kind == "contract":
+        # Contract-only: keep post-Task13 graph/catalog; drift one live contract digest.
+        start = (live_compiled, live_contracts, live_catalog)
+        mutated = _mutated_live_contracts(live_contracts)
+        drifted = compile_workflow(live_compiled.schema, mutated)
+        assert drifted.digest == live_compiled.digest
+        assert drifted.ingest_catalog_digest == live_compiled.ingest_catalog_digest
+        assert drifted.contract_digests != live_compiled.contract_digests
+        resume_live = (drifted, mutated, live_catalog)
+    else:
+        start = (live_compiled, live_contracts, live_catalog)
+        mutated_catalog = _mutated_live_catalog(live_catalog)
+        from assurance_agent.workflow.graph.compiler import _compile_with_catalog
+
+        drifted = _compile_with_catalog(
+            live_compiled.schema,
+            contracts=live_contracts,
+            ingest_catalog=mutated_catalog,
+            activation_errors=(),
+        )
+        assert drifted.digest == live_compiled.digest
+        assert drifted.contract_digests == live_compiled.contract_digests
+        assert drifted.ingest_catalog_digest != live_compiled.ingest_catalog_digest
+        resume_live = (drifted, live_contracts, mutated_catalog)
+
+    start_compiled, start_contracts, start_catalog = start
+    analyzer = ScriptedAnalyzer(succeed_on_attempt=None)
+    invocation_id = _start_issue_analyze_pending_commit(
+        project,
+        start_compiled,
+        start_contracts,
+        start_catalog,
+        analyzer=analyzer,
+        ops={},
+        monkeypatch=monkeypatch,
+    )
+    projection = project_invocation(change, invocation_id)
+    assert projection.graph_digest == start_compiled.digest
+    assert projection.terminal is None
+
+    live_c, live_ct, live_cat = resume_live
+    # Prove live packaging digests differ from the invocation pin for the drifted axis.
+    if drift_kind == "graph":
+        assert live_c.digest != projection.graph_digest
+    elif drift_kind == "contract":
+        assert dict(live_c.contract_digests) != dict(projection.contract_digests)
+        assert live_c.digest == projection.graph_digest
+        assert live_c.ingest_catalog_digest == projection.ingest_catalog_digest
+    else:
+        assert live_c.ingest_catalog_digest != projection.ingest_catalog_digest
+        assert live_c.digest == projection.graph_digest
+        assert dict(live_c.contract_digests) == dict(projection.contract_digests)
+
+    resume_analyzer = ScriptedAnalyzer(succeed_on_attempt=None)
+    runtime, pinned_loads = _build_pinning_aware_runtime(
+        project,
+        live_compiled=live_c,
+        live_contracts=live_ct,
+        live_catalog=live_cat,
+        analyzer=resume_analyzer,
+        ops={},
+    )
+    result = runtime.resume(invocation_id)
+    assert result.exit_code == 0, result.reason
+    assert pinned_loads, "resume must load committed snapshots when live identities drifted"
+    req = pinned_loads[0]
+    assert req.graph_digest == projection.graph_digest
+    assert req.ingest_catalog_digest == projection.ingest_catalog_digest
+    assert dict(req.contract_digests) == dict(projection.contract_digests)
+
+    resolved = runtime._definition_resolver(req)  # noqa: SLF001
+    assert resolved.compiled.digest == projection.graph_digest
+    assert resolved.compiled.ingest_catalog_digest == projection.ingest_catalog_digest
+    assert dict(resolved.compiled.contract_digests) == dict(projection.contract_digests)
+
+    final = project_invocation(change, invocation_id)
+    assert final.terminal == "completed"
+    if drift_kind == "graph":
+        # Pre-Task13 pinned topology: resume must not inject a materializer node.
+        assert "materialize-trace-projection" not in resolved.compiled.schema.graphs[
+            "issue-analyze-workflow"
+        ].nodes
+        assert _materializer_success_count(change, invocation_id) == 0
+    else:
+        # Contract/catalog-only drift may retain the post-Task13 materializer node; do not
+        # claim identity drift suppresses its later legitimate execution under current handlers.
+        assert "materialize-trace-projection" in resolved.compiled.schema.graphs[
+            "issue-analyze-workflow"
+        ].nodes
+
+
+def test_pre_task13_resume_does_not_upgrade_v1_or_inject_materializer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "proj"
+    change = _seed_b0_completed(project)
+    _advance_inputs_to_b1(change, seed_completed_analysis=False)
+    # Leave a legacy V1 projection so resume cannot be said to upgrade/backfill V2.
+    (change / "inspect" / "trace-projection.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "change_id": CHANGE_ID,
+                "phase": "reconciled",
+                "authoritative_batch_id": B0_BATCH,
+                "sources": [],
+                "rows": [],
+                "unmapped_tests": [],
+                "gaps": [],
+                "integrity": "incomplete",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    v1_before = (change / "inspect" / "trace-projection.json").read_bytes()
+
+    pinned_compiled, pinned_contracts, pinned_catalog = _compile_pre_task13_issue_analyze()
+    live_compiled, live_contracts, live_catalog = _compile_live_packaged()
+    assert live_compiled.digest != pinned_compiled.digest
+    assert "materialize-trace-projection" in live_compiled.schema.graphs["issue-analyze-workflow"].nodes
+
+    invocation_id = _start_issue_analyze_pending_commit(
+        project,
+        pinned_compiled,
+        pinned_contracts,
+        pinned_catalog,
+        analyzer=ScriptedAnalyzer(succeed_on_attempt=None),
+        ops={},
+        monkeypatch=monkeypatch,
+    )
+    runtime, pinned_loads = _build_pinning_aware_runtime(
+        project,
+        live_compiled=live_compiled,
+        live_contracts=live_contracts,
+        live_catalog=live_catalog,
+        analyzer=ScriptedAnalyzer(succeed_on_attempt=None),
+        ops={},
+    )
+    result = runtime.resume(invocation_id)
+    assert result.exit_code == 0, result.reason
+    assert pinned_loads
+    final = project_invocation(change, invocation_id)
+    assert final.terminal == "completed"
+    assert _materializer_success_count(change, invocation_id) == 0
+    assert not any(t.node_id == "materialize-trace-projection" for t in final.tasks.values())
+    assert (change / "inspect" / "trace-projection.json").read_bytes() == v1_before
+
+
+def _assurance_child_pending_commit_seam(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path, str, str]:
+    """Crash after child materializer success before ordinary commit; return ids."""
+    from assurance_agent.workflow.graph.workspace import TaskWorkspace
+
+    project = tmp_path / "proj"
+    change = _seed_b0_completed(project)
+    _advance_inputs_to_b1(change, seed_completed_analysis=False)
+    # Allow one abandon+retry of the parent inspect subgraph after the seam crash.
+    compiled, contracts = _compile_packaged(assurance_entrypoint=True, inspect_retry="cli-transient")
+    analyzer = ScriptedAnalyzer(succeed_on_attempt=1)
+    ops = _assurance_stub_ops()
+    runtime = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        analyzer=analyzer,
+        ops=ops,
+        stub_assurance_subgraphs=True,
+    )
+    orig = Scheduler._commit_wave
+    hit = {"n": 0}
+
+    def crash_child_materializer(self: Scheduler, **kwargs: Any) -> list[str]:  # noqa: ANN401
+        projection = kwargs["projection"]
+        live = project_invocation(change, projection.invocation_id)
+        if any(
+            t.node_id == "materialize-trace-projection"
+            and t.status == "succeeded"
+            and not t.outputs_committed
+            for t in live.tasks.values()
+        ):
+            hit["n"] += 1
+            raise _InjectedCrash("child materializer pending commit")
+        return orig(self, **kwargs)
+
+    # Child context.project_root is the parent inspect task workspace. Keep it so
+    # direct child resume can apply the frozen write-set (process-kill semantics).
+    monkeypatch.setattr(TaskWorkspace, "cleanup", lambda self: None)
+    monkeypatch.setattr(Scheduler, "_commit_wave", crash_child_materializer)
+    with pytest.raises(_InjectedCrash, match="child materializer pending commit"):
+        runtime.run(compiled, "assurance-direct", _context(project))
+    monkeypatch.setattr(Scheduler, "_commit_wave", orig)
+    assert hit["n"] == 1
+    parent_id = _owner_invocation_id(change, child_graph=None)
+    child_id = _owner_invocation_id(change, child_graph="inspect-with-issues")
+    child = project_invocation(change, child_id)
+    assert child.terminal is None
+    assert any(
+        t.node_id == "materialize-trace-projection" and t.status == "succeeded" and not t.outputs_committed
+        for t in child.tasks.values()
+    )
+    return project, change, parent_id, child_id
+
+
+def _abandon_running_parent_tasks(change: Path, parent_id: str) -> None:
+    """Settle crashed ``running`` parent tasks so resume can re-enter ``run_child``."""
+    from assurance_agent.workflow.graph.leases import LeaseRegistry, abandon_running_attempt
+
+    lease_path = change / ".graph-runtime" / "running-tasks.json"
+    if lease_path.is_file():
+        lease_path.write_text('{"schema_version":1,"leases":[]}\n', encoding="utf-8")
+    parent = project_invocation(change, parent_id)
+    for task_id, task in parent.tasks.items():
+        if task.status != "running" or task.latest_attempt_id is None:
+            continue
+        try:
+            LeaseRegistry(change).remove(task_id, task.latest_attempt_id)
+        except Exception:  # noqa: BLE001
+            pass
+        abandon_running_attempt(
+            change,
+            invocation_id=parent_id,
+            checkpoint_ns=parent.checkpoint_ns,
+            task_id=task_id,
+            attempt_id=task.latest_attempt_id,
+            reason="clarification10 nested seam crash",
+            abandoned_at=(T0 + timedelta(hours=2)).isoformat(),
+        )
+
+
+def test_nested_child_owned_recovery_seam_resume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project, change, _parent_id, child_id = _assurance_child_pending_commit_seam(tmp_path, monkeypatch)
+    compiled, contracts = _compile_packaged(assurance_entrypoint=True, inspect_retry="cli-transient")
+    runtime = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        analyzer=ScriptedAnalyzer(succeed_on_attempt=1),
+        ops=_assurance_stub_ops(),
+        stub_assurance_subgraphs=True,
+    )
+    result = runtime.resume(child_id)
+    assert result.exit_code == 0, result.reason
+    child = project_invocation(change, child_id)
+    assert child.terminal == "completed"
+    assert _materializer_success_count(change, child_id) == 1
+    assert any(
+        t.node_id == "materialize-trace-projection" and t.outputs_committed for t in child.tasks.values()
+    )
+    # Nested child applies into the parent task workspace; live current-authority
+    # publication is owned by the later parent subgraph commit — not asserted here.
+
+
+def test_nested_incompatible_parent_epoch_leaves_child_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import assurance_agent.workflow.orchestration.gate_semantics as gate_sem
+
+    project, change, parent_id, child_id = _assurance_child_pending_commit_seam(tmp_path, monkeypatch)
+    before = project_invocation(change, child_id)
+    pending_before = {
+        tid
+        for tid, t in before.tasks.items()
+        if t.node_id == "materialize-trace-projection"
+        and t.status == "succeeded"
+        and not t.outputs_committed
+    }
+    assert pending_before
+    compiled, contracts = _compile_packaged(assurance_entrypoint=True, inspect_retry="cli-transient")
+    runtime = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        analyzer=ScriptedAnalyzer(succeed_on_attempt=1),
+        ops=_assurance_stub_ops(),
+        stub_assurance_subgraphs=True,
+    )
+    monkeypatch.setattr(gate_sem, "gate_semantics_digest", lambda: "sha256:" + "0" * 64)
+    with pytest.raises(GraphDefinitionChanged, match="gate semantics"):
+        runtime.resume(parent_id)
+    after = project_invocation(change, child_id)
+    assert after.terminal is None
+    pending_after = {
+        tid
+        for tid, t in after.tasks.items()
+        if t.node_id == "materialize-trace-projection"
+        and t.status == "succeeded"
+        and not t.outputs_committed
+    }
+    assert pending_after == pending_before
+
+
+def test_nested_compatible_parent_run_child_keeps_child_owned_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project, change, parent_id, child_id = _assurance_child_pending_commit_seam(tmp_path, monkeypatch)
+    events_before = read_events_strict(change)
+    child_commits_before = sum(
+        1
+        for e in events_before
+        if e.get("type") == "superstep_committed" and e.get("invocation_id") == child_id
+    )
+    compiled, contracts = _compile_packaged(assurance_entrypoint=True, inspect_retry="cli-transient")
+    # Repair the child-owned seam first so parent ``run_child`` inherits a completed child.
+    child_runtime = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        analyzer=ScriptedAnalyzer(succeed_on_attempt=1),
+        ops=_assurance_stub_ops(),
+        stub_assurance_subgraphs=True,
+    )
+    child_result = child_runtime.resume(child_id)
+    assert child_result.exit_code == 0, child_result.reason
+    assert project_invocation(change, child_id).terminal == "completed"
+    events_after_child = read_events_strict(change)
+    assert (
+        sum(
+            1
+            for e in events_after_child
+            if e.get("type") == "superstep_committed" and e.get("invocation_id") == child_id
+        )
+        > child_commits_before
+    )
+
+    _abandon_running_parent_tasks(change, parent_id)
+    parent_runtime = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        analyzer=ScriptedAnalyzer(succeed_on_attempt=1),
+        ops=_assurance_stub_ops(),
+        stub_assurance_subgraphs=True,
+    )
+    result = parent_runtime.resume(parent_id)
+    assert result.exit_code == 0, result.reason
+    parent = project_invocation(change, parent_id)
+    child = project_invocation(change, child_id)
+    assert parent.terminal == "completed"
+    assert child.terminal == "completed"
+    assert _materializer_success_count(change, child_id) == 1
+    assert all(t.node_id != "materialize-trace-projection" for t in parent.tasks.values())
+    events = read_events_strict(change)
+    # Child-owned recovery/commit events stay on the child invocation id.
+    assert all(
+        e.get("invocation_id") != parent_id
+        or "materialize-trace-projection" not in json.dumps(e)
+        for e in events
+        if e.get("type") == "superstep_committed"
+    )
+    # Parent retry's run_child must target the same child invocation (inherited pin).
+    assert any(
+        e.get("type") == "graph_invocation_started"
+        and e.get("invocation_id") == child_id
+        and e.get("parent_invocation_id") == parent_id
+        for e in events
+    )

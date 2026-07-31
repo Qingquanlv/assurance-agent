@@ -1167,7 +1167,9 @@ def test_pinned_request_served_exactly_on_resume(tmp_path: Path) -> None:
 def test_pinned_model_schema_mismatch_refuses_before_recovery(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Real ``validate_ingest_model_map`` fail-closed on stale model_schema_digest."""
     from assurance_agent.workflow.driver import runtime_factory as factory_mod
+    from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
     from assurance_agent.workflow.graph.runtime import GraphDefinitionChanged
     from tests.integration._graph_fault_worker import _build
 
@@ -1178,20 +1180,29 @@ def test_pinned_model_schema_mismatch_refuses_before_recovery(
     marker_before = sorted(p.relative_to(project) for p in (project / "tests").rglob("*.py"))
 
     runtime, _compiled, _change, _scheduler = _build(project, "siblings")
+    catalog = validate_catalog_runtime()
+    stale_name = next(
+        name for name, art in catalog.artifacts.items() if art.kind == "file_ingest" and art.model
+    )
+    stale_catalog = catalog.model_copy(
+        update={
+            "artifacts": {
+                **catalog.artifacts,
+                stale_name: catalog.artifacts[stale_name].model_copy(
+                    update={"model_schema_digest": "0" * 64}
+                ),
+            }
+        }
+    )
+    with pytest.raises(GraphDefinitionChanged, match="ingest model schema digest mismatch"):
+        factory_mod.validate_ingest_model_map(stale_catalog)
 
-    def boom_model_map(catalog):  # noqa: ANN001
-        raise GraphDefinitionChanged(
-            "ingest model schema digest mismatch for 'FactBaseline' "
-            "(model 'FactBaseline'): pinned 'sha256:dead' != 'sha256:live'"
-        )
-
-    monkeypatch.setattr(factory_mod, "validate_ingest_model_map", boom_model_map)
+    # Live class digest diverges from every pinned model_schema_digest in the catalog.
+    monkeypatch.setattr(factory_mod, "model_schema_digest", lambda _model_id: "0" * 64)
     original = runtime._definition_resolver  # noqa: SLF001
 
     def spy(request):  # noqa: ANN001
-        from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
-
-        factory_mod.validate_ingest_model_map(validate_catalog_runtime())
+        factory_mod.validate_ingest_model_map(catalog)
         return original(request)
 
     runtime._definition_resolver = spy  # noqa: SLF001
