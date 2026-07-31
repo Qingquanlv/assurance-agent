@@ -231,9 +231,7 @@ def join_layer_sufficiency(
                 f"layer {layer_name} sufficiency counts do not conserve facts.total"
             )
         reason_counts: dict[SufficiencyReasonCode, int] = {
-            code: reason_counter[code]
-            for code in sorted(reason_counter)
-            if reason_counter[code] > 0
+            code: reason_counter[code] for code in sorted(reason_counter) if reason_counter[code] > 0
         }
         execution_state_counts: dict[ExecutionState, int] = {
             state: state_counter.get(state, 0) for state in EXECUTION_STATES
@@ -251,9 +249,7 @@ def join_layer_sufficiency(
 
     if sum(layer.sufficient for layer in layers) != sum(1 for v in report.verdicts if v.sufficient):
         raise SufficiencyBindingError("sufficient totals do not conserve report verdicts")
-    if sum(layer.insufficient for layer in layers) != sum(
-        1 for v in report.verdicts if not v.sufficient
-    ):
+    if sum(layer.insufficient for layer in layers) != sum(1 for v in report.verdicts if not v.sufficient):
         raise SufficiencyBindingError("insufficient totals do not conserve report verdicts")
 
     return TraceLayerSufficiencySummary(

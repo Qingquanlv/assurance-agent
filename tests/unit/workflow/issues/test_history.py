@@ -192,15 +192,11 @@ def _ce(
         if type_ == "observation_recorded":
             obs = extra["observation"]
             assert isinstance(obs, dict)
-            idempotency_key = (
-                f"observation_recorded:{change_id}:{batch_id}:{obs['observation_id']}"
-            )
+            idempotency_key = f"observation_recorded:{change_id}:{batch_id}:{obs['observation_id']}"
         elif type_ == "issue_analysis_completed":
             status = extra["analysis_status"]
             assert isinstance(status, dict)
-            idempotency_key = (
-                f"issue_analysis_completed:{change_id}:{batch_id}:{status['candidate_digest']}"
-            )
+            idempotency_key = f"issue_analysis_completed:{change_id}:{batch_id}:{status['candidate_digest']}"
         elif type_ == "issue_analysis_failed":
             status = extra["analysis_status"]
             assert isinstance(status, dict)
@@ -213,9 +209,7 @@ def _ce(
             digest = occ["analysis"]["candidate_digest"]
             idempotency_key = f"{type_}:{change_id}:{batch_id}:{digest}"
         elif type_ == "project_sync_pending":
-            idempotency_key = (
-                f"project_sync_pending:{change_id}:{batch_id}:{extra['candidate_digest']}"
-            )
+            idempotency_key = f"project_sync_pending:{change_id}:{batch_id}:{extra['candidate_digest']}"
         else:
             idempotency_key = f"test:{type_}:{change_id}:{seq}"
     data = {
@@ -256,13 +250,9 @@ def _pe(
                 f"review:confirm_assessment:{problem_id}:{expected_problem_version}:{evidence_digest}"
             )
         elif type_ == "problem_work_started":
-            idempotency_key = (
-                f"review:start_work:{problem_id}:{expected_problem_version}:{evidence_digest}"
-            )
+            idempotency_key = f"review:start_work:{problem_id}:{expected_problem_version}:{evidence_digest}"
         elif type_ == "problem_resolved":
-            idempotency_key = (
-                f"problem_resolved:{problem_id}:{extra['batch_id']}:{evidence_digest}"
-            )
+            idempotency_key = f"problem_resolved:{problem_id}:{extra['batch_id']}:{evidence_digest}"
         elif type_ == "problem_merged":
             idempotency_key = (
                 f"review:merge:{problem_id}:{expected_problem_version}:"
@@ -273,13 +263,9 @@ def _pe(
                 f"review:mark_not_an_issue:{problem_id}:{expected_problem_version}:{evidence_digest}"
             )
         elif type_ == "problem_risk_accepted":
-            idempotency_key = (
-                f"review:accept_risk:{problem_id}:{expected_problem_version}:{evidence_digest}"
-            )
+            idempotency_key = f"review:accept_risk:{problem_id}:{expected_problem_version}:{evidence_digest}"
         elif type_ == "problem_reopened":
-            idempotency_key = (
-                f"review:reopen:{problem_id}:{expected_problem_version}:{evidence_digest}"
-            )
+            idempotency_key = f"review:reopen:{problem_id}:{expected_problem_version}:{evidence_digest}"
         elif type_ == "problem_verification_requested":
             idempotency_key = (
                 f"review:submit_resolution:{problem_id}:{expected_problem_version}:"

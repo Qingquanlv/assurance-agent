@@ -2873,12 +2873,12 @@ def test_evidence_row_exit_covers_capability_trace_and_v2_rules(tmp_path: Path) 
     complete_rows.append(
         {"layer": "performance", "case_type": "Performance", "status": "not_selected", "reason_code": None}
     )
+    v2_binding = v2_incomplete.capability_contract_policy.definition_binding
+    assert v2_binding is not None
     v2_complete = SpecialtyReportV2(
         change_id=CHANGE_ID,
         capability_contract_policy=build_capability_replay_v2(
-            definition_binding=v2_incomplete.capability_contract_policy.definition_binding.model_dump(
-                mode="json"
-            ),
+            definition_binding=v2_binding.model_dump(mode="json"),
             rows=complete_rows,
         ),
         traceability_evidence=v2_incomplete.traceability_evidence,

@@ -1226,9 +1226,7 @@ def test_trace_topology_mutation_guards() -> None:
         )
 
     def second_materializer_successor(raw: dict) -> None:
-        raw["graphs"]["inspect-with-issues"]["edges"].append(
-            {"from": _MATERIALIZER, "to": "END"}
-        )
+        raw["graphs"]["inspect-with-issues"]["edges"].append({"from": _MATERIALIZER, "to": "END"})
 
     def lower_iwi_budget(raw: dict) -> None:
         raw["graphs"]["inspect-with-issues"]["max_supersteps"] = 12

@@ -1070,9 +1070,7 @@ def test_workflow_and_foundational_projectors_are_byte_identical() -> None:
             **env_c(2, k2, type="issue_analysis_completed", analysis_status=analysis)
         ),
         OccurrenceDetectedEvent(**env_c(3, k3, type="occurrence_detected", occurrence=occurrence)),
-        ProjectSyncPendingEvent(
-            **env_c(4, k4, type="project_sync_pending", candidate_digest="sha256:batch")
-        ),
+        ProjectSyncPendingEvent(**env_c(4, k4, type="project_sync_pending", candidate_digest="sha256:batch")),
     )
     kd = f"problem_detected:{pid}:CH-001:B-001:{cand}"
     typed_problem_events = (
@@ -1097,18 +1095,16 @@ def test_workflow_and_foundational_projectors_are_byte_identical() -> None:
         ),
     )
 
-    expected_change = foundational.dump_projection(
-        foundational.project_change_issues(typed_change_events)
+    expected_change = foundational.dump_projection(foundational.project_change_issues(typed_change_events))
+    expected_project = foundational.dump_projection(foundational.project_problems(typed_problem_events))
+    assert (
+        workflow_projection.dump_projection(workflow_projection.project_change_issues(typed_change_events))
+        == expected_change
     )
-    expected_project = foundational.dump_projection(
-        foundational.project_problems(typed_problem_events)
+    assert (
+        workflow_projection.dump_projection(workflow_projection.project_problems(typed_problem_events))
+        == expected_project
     )
-    assert workflow_projection.dump_projection(
-        workflow_projection.project_change_issues(typed_change_events)
-    ) == expected_change
-    assert workflow_projection.dump_projection(
-        workflow_projection.project_problems(typed_problem_events)
-    ) == expected_project
     assert expected_change == (
         b'{"analysis_status":{"batch_id":"B-001","candidate_count":1,"candidate_digest":"sha256:batch",'
         b'"change_id":"CH-001","evidence_bundle_digest":"sha256:aabbccdd","reason":null,"retryable":null,'

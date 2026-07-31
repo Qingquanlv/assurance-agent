@@ -182,9 +182,7 @@ def test_join_layer_sufficiency_happy_path_four_layer_order() -> None:
 def test_join_rejects_missing_case() -> None:
     projection = _four_layer_projection()
     policy = _policy()
-    report = evaluate_sufficiency(
-        projection, policy, as_of=AWARE_NOW, require_current_batch=True
-    )
+    report = evaluate_sufficiency(projection, policy, as_of=AWARE_NOW, require_current_batch=True)
     truncated = report.model_copy(update={"verdicts": report.verdicts[:-1]})
     with pytest.raises(SufficiencyBindingError):
         join_layer_sufficiency(
@@ -198,9 +196,7 @@ def test_join_rejects_missing_case() -> None:
 def test_join_rejects_extra_case() -> None:
     projection = _four_layer_projection()
     policy = _policy()
-    report = evaluate_sufficiency(
-        projection, policy, as_of=AWARE_NOW, require_current_batch=True
-    )
+    report = evaluate_sufficiency(projection, policy, as_of=AWARE_NOW, require_current_batch=True)
     extra = SufficiencyRowVerdictV2.model_validate(
         {
             "case_id": "TC_EXTRA",
@@ -223,9 +219,7 @@ def test_join_rejects_extra_case() -> None:
 def test_join_rejects_duplicate_verdict_case_ids() -> None:
     projection = _four_layer_projection()
     policy = _policy()
-    report = evaluate_sufficiency(
-        projection, policy, as_of=AWARE_NOW, require_current_batch=True
-    )
+    report = evaluate_sufficiency(projection, policy, as_of=AWARE_NOW, require_current_batch=True)
     duplicate_verdict = report.verdicts[0]
     bloated = SufficiencyReportV2.model_construct(
         schema_version=report.schema_version,
@@ -249,9 +243,7 @@ def test_join_rejects_duplicate_verdict_case_ids() -> None:
 def test_join_rejects_facts_layer_case_type_mismatch() -> None:
     projection = _four_layer_projection()
     policy = _policy()
-    report = evaluate_sufficiency(
-        projection, policy, as_of=AWARE_NOW, require_current_batch=True
-    )
+    report = evaluate_sufficiency(projection, policy, as_of=AWARE_NOW, require_current_batch=True)
     facts = summarize_projection_by_layer(projection)
     swapped = facts.layers[0].model_copy(update={"layer": "e2e", "case_type": "E2E"})
     bad_facts = facts.model_copy(update={"layers": (swapped, *facts.layers[1:])})
@@ -267,9 +259,7 @@ def test_join_rejects_facts_layer_case_type_mismatch() -> None:
 def test_join_includes_zero_row_layers() -> None:
     projection = _projection(_row(case_id="TC_API_001", case_type="API"))
     policy = _policy()
-    report = evaluate_sufficiency(
-        projection, policy, as_of=AWARE_NOW, require_current_batch=True
-    )
+    report = evaluate_sufficiency(projection, policy, as_of=AWARE_NOW, require_current_batch=True)
     joined = join_layer_sufficiency(
         projection,
         summarize_projection_by_layer(projection),
@@ -340,9 +330,7 @@ def test_join_rejects_duplicate_projection_case_ids() -> None:
 def test_join_rejects_wrong_projection_digest() -> None:
     projection = _four_layer_projection()
     policy = _policy()
-    report = evaluate_sufficiency(
-        projection, policy, as_of=AWARE_NOW, require_current_batch=True
-    )
+    report = evaluate_sufficiency(projection, policy, as_of=AWARE_NOW, require_current_batch=True)
     bad = report.model_copy(update={"source_projection_digest": "0" * 64})
     with pytest.raises(SufficiencyBindingError):
         join_layer_sufficiency(
@@ -356,9 +344,7 @@ def test_join_rejects_wrong_projection_digest() -> None:
 def test_join_rejects_wrong_policy_digest() -> None:
     projection = _four_layer_projection()
     policy = _policy()
-    report = evaluate_sufficiency(
-        projection, policy, as_of=AWARE_NOW, require_current_batch=True
-    )
+    report = evaluate_sufficiency(projection, policy, as_of=AWARE_NOW, require_current_batch=True)
     with pytest.raises(SufficiencyBindingError):
         join_layer_sufficiency(
             projection,
@@ -371,9 +357,7 @@ def test_join_rejects_wrong_policy_digest() -> None:
 def test_join_rejects_wrong_semantics() -> None:
     projection = _four_layer_projection()
     policy = _policy()
-    report = evaluate_sufficiency(
-        projection, policy, as_of=AWARE_NOW, require_current_batch=True
-    )
+    report = evaluate_sufficiency(projection, policy, as_of=AWARE_NOW, require_current_batch=True)
     bad = SufficiencyReportV2.model_construct(
         schema_version=report.schema_version,
         source_projection_digest=report.source_projection_digest,
@@ -396,9 +380,7 @@ def test_join_rejects_wrong_semantics() -> None:
 def test_join_rejects_require_current_batch_false() -> None:
     projection = _four_layer_projection()
     policy = _policy()
-    report = evaluate_sufficiency(
-        projection, policy, as_of=AWARE_NOW, require_current_batch=False
-    )
+    report = evaluate_sufficiency(projection, policy, as_of=AWARE_NOW, require_current_batch=False)
     assert report.require_current_batch is False
     with pytest.raises(SufficiencyBindingError):
         join_layer_sufficiency(
@@ -412,9 +394,7 @@ def test_join_rejects_require_current_batch_false() -> None:
 def test_join_rejects_facts_projection_digest_mismatch() -> None:
     projection = _four_layer_projection()
     policy = _policy()
-    report = evaluate_sufficiency(
-        projection, policy, as_of=AWARE_NOW, require_current_batch=True
-    )
+    report = evaluate_sufficiency(projection, policy, as_of=AWARE_NOW, require_current_batch=True)
     facts = summarize_projection_by_layer(projection).model_copy(
         update={"source_projection_digest": "0" * 64}
     )
@@ -430,9 +410,7 @@ def test_join_rejects_facts_projection_digest_mismatch() -> None:
 def test_join_rejects_facts_identity_mismatch() -> None:
     projection = _four_layer_projection()
     policy = _policy()
-    report = evaluate_sufficiency(
-        projection, policy, as_of=AWARE_NOW, require_current_batch=True
-    )
+    report = evaluate_sufficiency(projection, policy, as_of=AWARE_NOW, require_current_batch=True)
     facts = summarize_projection_by_layer(projection).model_copy(update={"change_id": "CH-OTHER"})
     with pytest.raises(SufficiencyBindingError):
         join_layer_sufficiency(
@@ -446,9 +424,7 @@ def test_join_rejects_facts_identity_mismatch() -> None:
 def test_join_rejects_facts_total_conservation_mismatch() -> None:
     projection = _four_layer_projection()
     policy = _policy()
-    report = evaluate_sufficiency(
-        projection, policy, as_of=AWARE_NOW, require_current_batch=True
-    )
+    report = evaluate_sufficiency(projection, policy, as_of=AWARE_NOW, require_current_batch=True)
     facts = summarize_projection_by_layer(projection)
     api = facts.layers[0]
     mutated_api = api.model_copy(
@@ -572,9 +548,7 @@ def test_join_reason_counts_lexical_and_state_order_with_insufficients() -> None
         _row(case_id="TC_PERF_001", case_type="Performance"),
     )
     policy = _policy()
-    report = evaluate_sufficiency(
-        projection, policy, as_of=AWARE_NOW, require_current_batch=True
-    )
+    report = evaluate_sufficiency(projection, policy, as_of=AWARE_NOW, require_current_batch=True)
     joined = join_layer_sufficiency(
         projection,
         summarize_projection_by_layer(projection),

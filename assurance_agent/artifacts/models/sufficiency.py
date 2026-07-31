@@ -84,11 +84,7 @@ class SufficiencyRowVerdictV2(BaseModel):
                 raise ValueError(f"invalid kind/reason pair: {kind}->{reason}")
             if kind == "execution_recent" and reason == "never_run" and self.execution_state != "never_run":
                 raise ValueError("execution_recent/never_run requires execution_state=never_run")
-            if (
-                kind == "execution_recent"
-                and reason == "execution_stale"
-                and self.execution_state != "stale"
-            ):
+            if kind == "execution_recent" and reason == "execution_stale" and self.execution_state != "stale":
                 raise ValueError("execution_recent/execution_stale requires execution_state=stale")
         return self
 
@@ -138,9 +134,7 @@ class LayerSufficiencyCounts(BaseModel):
 
     @field_validator("execution_state_counts")
     @classmethod
-    def _exact_execution_state_keys(
-        cls, value: dict[ExecutionState, int]
-    ) -> dict[ExecutionState, int]:
+    def _exact_execution_state_keys(cls, value: dict[ExecutionState, int]) -> dict[ExecutionState, int]:
         if tuple(value) != EXECUTION_STATES:
             raise ValueError("execution_state_counts must use never_run, stale, fresh order")
         return value

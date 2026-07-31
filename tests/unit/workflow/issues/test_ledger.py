@@ -540,7 +540,9 @@ class TestProjectProblemStore:
             {
                 "schema_version": "1.0",
                 "seq": 1,
-                "event_id": event_id("review:confirm_assessment:PROB-aaaaaaaaaaaaaaaa:1:sha256:eb78e5f858b88c7967c3c4ea7fcccbf8032ec656707d27c8097a45c5d40de34a"),
+                "event_id": event_id(
+                    "review:confirm_assessment:PROB-aaaaaaaaaaaaaaaa:1:sha256:eb78e5f858b88c7967c3c4ea7fcccbf8032ec656707d27c8097a45c5d40de34a"
+                ),
                 "idempotency_key": "review:confirm_assessment:PROB-aaaaaaaaaaaaaaaa:1:sha256:eb78e5f858b88c7967c3c4ea7fcccbf8032ec656707d27c8097a45c5d40de34a",
                 "ts": "2026-07-25T10:01:00Z",
                 "evidence_digest": "sha256:eb78e5f858b88c7967c3c4ea7fcccbf8032ec656707d27c8097a45c5d40de34a",
@@ -550,7 +552,7 @@ class TestProjectProblemStore:
                 "classification": "product_bug",
                 "severity": "critical",
                 "reason": "confirmed",
-                "evidence_refs": ['OCC-1111111111111111'],
+                "evidence_refs": ["OCC-1111111111111111"],
             }
         )
         store.append_and_rebuild(batch2)

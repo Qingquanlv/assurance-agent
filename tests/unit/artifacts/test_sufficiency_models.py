@@ -94,9 +94,7 @@ def test_unknown_reason_code_is_rejected() -> None:
 )
 def test_undeclared_kind_reason_pairs_are_rejected(kind: str, reason: str) -> None:
     with pytest.raises(ValidationError):
-        SufficiencyRowVerdictV2.model_validate(
-            make_verdict(missing_kinds=[kind], reason_codes=[reason])
-        )
+        SufficiencyRowVerdictV2.model_validate(make_verdict(missing_kinds=[kind], reason_codes=[reason]))
 
 
 def test_duplicate_missing_kinds_are_rejected() -> None:
@@ -137,16 +135,12 @@ def test_execution_recent_stale_requires_stale_state() -> None:
 
 def test_strict_bool_rejects_int_coercion() -> None:
     with pytest.raises(ValidationError):
-        SufficiencyRowVerdictV2.model_validate(
-            {**make_verdict(), "sufficient": 1}
-        )
+        SufficiencyRowVerdictV2.model_validate({**make_verdict(), "sufficient": 1})
 
 
 def test_report_rejects_naive_as_of() -> None:
     with pytest.raises(ValidationError):
-        SufficiencyReportV2.model_validate(
-            make_report_v2(as_of=datetime(2026, 7, 30, 12, 0, 0))
-        )
+        SufficiencyReportV2.model_validate(make_report_v2(as_of=datetime(2026, 7, 30, 12, 0, 0)))
 
 
 def test_report_rejects_nonpositive_recency() -> None:
