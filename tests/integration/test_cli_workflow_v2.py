@@ -793,3 +793,123 @@ def test_vue_fastapi_admin_acceptance_fixture_is_present() -> None:
     assert (root / "scenario.json").is_file()
     assert (root / "initial" / "execution-manifest.yaml").is_file()
     assert (root / "healing" / "execution-manifest.yaml").is_file()
+
+
+def test_cli_resume_repairs_v5_manual_revision_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLI workflow resume recovers an open revision resume prefix via real runtime."""
+    from assurance_agent.workflow.core.events import read_events_strict
+    from assurance_agent.workflow.core.graph_events import GraphInterruptedEvent, ManualPlanRevisionEvent
+    from assurance_agent.workflow.core.progression import transaction
+    from assurance_agent.workflow.driver.runtime_factory import RuntimeBundle
+    from assurance_agent.workflow.graph.manual_revision import (
+        RevisionPathBaseline,
+        RevisionViewBinding,
+        build_manual_revision_transition,
+        capture_revision_candidate,
+        transition_from_committed_revision,
+    )
+    from assurance_agent.workflow.graph.runtime import _resume_anchors_for
+    from tests.integration._graph_fault_worker import (
+        _REVISION_FIXTURES,
+        edit_recorded_revision_view,
+        prepare_interrupted_v5_graph,
+    )
+
+    runtime, compiled, context, root_id = prepare_interrupted_v5_graph(tmp_path)
+    edit_recorded_revision_view(root_id, b"# revised plan\n")
+    fx = _REVISION_FIXTURES[root_id]
+    change = fx["change"]
+    assert isinstance(change, Path)
+    project = context.project_root
+    interrupt_id = str(fx["interrupt_id"])
+
+    projection = runtime._checkpoints.project(root_id)  # noqa: SLF001
+    pending = projection.interrupts[interrupt_id]
+    binding = RevisionViewBinding(
+        interrupt_id=pending.interrupt_id,
+        owner_invocation_id=pending.revision_owner_invocation_id or "",
+        base_tree_id=pending.revision_base_tree_id or "",
+        view_relpath=pending.revision_view or "",
+        logical_paths=tuple(pending.revision_paths or ()),
+        baseline=tuple(
+            RevisionPathBaseline(logical_path=path, sha256=(pending.revision_before_sha256 or {})[path])
+            for path in (pending.revision_paths or ())
+        ),
+    )
+    tree_revision = capture_revision_candidate(
+        change_dir=change,
+        store=runtime._objects,  # noqa: SLF001
+        binding=binding,
+    )
+    events = read_events_strict(change)
+    interrupted = next(
+        e for e in events if e.get("type") == "graph_interrupted" and e.get("interrupt_id") == interrupt_id
+    )
+    owner = runtime._checkpoints.project(pending.revision_owner_invocation_id or "")  # noqa: SLF001
+    transition = build_manual_revision_transition(
+        interrupted=GraphInterruptedEvent.model_validate(
+            {k: v for k, v in interrupted.items() if k not in {"seq", "ts", "source"}}
+        ),
+        command=ResumeCommand(
+            interrupt_id=interrupt_id,
+            action="fix_and_proceed",
+            reason="revise synth plan",
+            who="reviewer",
+        ),
+        revision=tree_revision,
+        pinned_definition_digests={
+            "policy_digest": owner.policy_digest,
+            "gate_semantics_digest": owner.gate_semantics_digest,
+            "assurance_profile_digest": owner.assurance_profile_digest,
+            "graph_digest": owner.graph_digest,
+            "ir_digest": owner.ir_digest,
+        },
+        resume_anchors=_resume_anchors_for(pending),
+    )
+    with transaction(change) as txn:
+        txn.append_strict(transition.revision)
+
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(
+        wf,
+        "build_graph_runtime",
+        lambda **_k: RuntimeBundle(runtime=runtime, compiled=compiled),
+    )
+    monkeypatch.setattr(wf, "evaluate_start_guard", lambda _p: MagicMock(allowed=True))
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "workflow",
+            "resume",
+            "--change",
+            "CH-1",
+            "--interrupt",
+            interrupt_id,
+            "--action",
+            "fix_and_proceed",
+            "--reason",
+            "revise synth plan",
+            "--who",
+            "reviewer",
+        ],
+    )
+    assert result.exit_code == EXIT_COMPLETED, result.output
+    events_after = read_events_strict(change)
+    revisions = [e for e in events_after if e.get("type") == "manual_plan_revision"]
+    assert len(revisions) == 1
+    rebuilt = transition_from_committed_revision(
+        ManualPlanRevisionEvent.model_validate(
+            {k: v for k, v in revisions[0].items() if k not in {"seq", "ts", "source"}}
+        )
+    )
+    resumes = [
+        e
+        for e in events_after
+        if e.get("type") == "graph_resumed"
+        and e.get("revision_transition_id") == rebuilt.revision.revision_transition_id
+    ]
+    assert len(resumes) == len(rebuilt.resumes) == 3
+    assert [e.get("revision_ordinal") for e in resumes] == [0, 1, 2]

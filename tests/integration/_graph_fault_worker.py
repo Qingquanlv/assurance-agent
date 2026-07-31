@@ -168,12 +168,144 @@ graphs:
 gates: {}
 """
 
+_V5_REVISION_CONTRACTS = """\
+schema_version: "1"
+contracts:
+  operation:seed-plan:
+    handler: operation
+    side_effect_free: false
+    writes: ["change:plans/**", "change:review/**"]
+    authorization_writes: ["change:plans/**", "change:review/**"]
+    retryable_errors: []
+  operation:write-review:
+    handler: operation
+    side_effect_free: false
+    writes: ["change:review/**"]
+    authorization_writes: ["change:review/**"]
+    retryable_errors: []
+  operation:write-checks:
+    handler: operation
+    side_effect_free: false
+    writes: ["change:review/**"]
+    authorization_writes: ["change:review/**"]
+    retryable_errors: []
+  builtin:gate:
+    handler: builtin
+    side_effect_free: true
+  builtin:interrupt:
+    handler: builtin
+    side_effect_free: true
+"""
+
+_V5_REVISION = """\
+schema_version: "2"
+name: fault-v5-revision
+params:
+  run_mode: {type: enum, values: [full], default: full}
+entrypoints:
+  root: {graph: main, allow: "params.run_mode == 'full'"}
+policies:
+  retry:
+    never: {max_attempts: 1, retry_on: []}
+  timeout:
+    local: {run_seconds: 60, heartbeat_seconds: 0.05}
+  scheduler: {max_parallel_tasks: 1}
+graphs:
+  main:
+    max_supersteps: 12
+    nodes:
+      branch:
+        uses: graph:branch
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: branch}
+      - {from: branch, to: END}
+  branch:
+    max_supersteps: 12
+    nodes:
+      cycle:
+        uses: graph:review-cycle
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: cycle}
+      - {from: cycle, to: END}
+  review-cycle:
+    max_supersteps: 16
+    budgets:
+      fix_attempts: {limit: 3}
+    nodes:
+      seed:
+        uses: operation:seed-plan
+        outputs: ["change:plans/synth-plan.md"]
+        retry: never
+        timeout: local
+      review:
+        uses: operation:write-review
+        outputs: ["change:review/synth-plan-review.json"]
+        retry: never
+        timeout: local
+        budget: {consume: fix_attempts, "on": committed, exhausted_to: END}
+      mechanical:
+        uses: operation:write-checks
+        outputs: ["change:review/synth-plan-checks.json"]
+        retry: never
+        timeout: local
+      gate:
+        uses: builtin:gate
+        with: {gate: synth-plan-gate}
+        retry: never
+        timeout: local
+      human-review:
+        uses: builtin:interrupt
+        interrupt:
+          reason: synth plan needs human revision
+          checkpoint: synth-plan-gate
+          bind: audited_gate_read
+          actions: [fix_and_proceed, accept_risk, stop]
+          manual_revision:
+            action: fix_and_proceed
+            paths: [change:plans/synth-plan.md]
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: seed}
+      - {from: seed, to: review}
+      - {from: review, to: mechanical}
+      - {from: mechanical, to: gate}
+    routes:
+      - from: gate
+        select: "node('gate').gate.verdict"
+        cases:
+          needs_human_review: human-review
+          pass: END
+        default: STOP
+      - from: human-review
+        select: "resume.action"
+        cases:
+          fix_and_proceed: review
+          accept_risk: END
+          stop: STOP
+        default: STOP
+gates:
+  synth-plan-gate:
+    reads: [review/synth-plan-review.json, review/synth-plan-checks.json]
+    invalid_json: stop
+    missing_field_is: stop
+    needs_human_review_when: "synth_plan_review.decision == 'needs_human_review'"
+    pass_when: "synth_plan_review.decision == 'pass'"
+"""
+
 _SCHEMAS = {
     "linear": _LINEAR,
     "siblings": _SIBLINGS,
     "budget": _BUDGET,
     "interrupt": _INTERRUPT,
+    "v5_revision": _V5_REVISION,
 }
+
+_REVISION_FIXTURES: dict[str, dict[str, object]] = {}
 
 
 class NeverCalledInvoker:
@@ -211,11 +343,64 @@ def _fault_hit(point: str) -> None:
     os.kill(os.getpid(), signal.SIGKILL)
 
 
+def force_v5_binding() -> None:
+    """Force fresh root bindings onto event schema version 5 with profile snapshot."""
+    from assurance_agent.workflow.graph import definition_pinning, runtime as runtime_mod
+
+    original = definition_pinning.bind_root_definitions
+
+    def _bind_v5(*, store, root_tree_id, event_schema_version=4):  # type: ignore[no-untyped-def]
+        return original(store=store, root_tree_id=root_tree_id, event_schema_version=5)
+
+    definition_pinning.bind_root_definitions = _bind_v5  # type: ignore[assignment]
+    runtime_mod.bind_root_definitions = _bind_v5  # type: ignore[assignment]
+
+
 def _install_hooks(runtime, point: str) -> None:  # noqa: ANN001
+    from assurance_agent.workflow.core import events as events_mod
+    from assurance_agent.workflow.core import progression as prog_mod
     from assurance_agent.workflow.graph import leases as leases_mod
+    from assurance_agent.workflow.graph import manual_revision as manual_revision_mod
+    from assurance_agent.workflow.graph import runtime as runtime_mod
 
     sched = runtime._scheduler  # noqa: SLF001
     checkpoints = runtime._checkpoints  # noqa: SLF001
+
+    if point == "revision_target_objects":
+        capture_orig = manual_revision_mod.capture_revision_candidate
+
+        def capture_and_kill(**kwargs):  # type: ignore[no-untyped-def]
+            result = capture_orig(**kwargs)
+            _fault_hit("revision_target_objects")
+            return result
+
+        manual_revision_mod.capture_revision_candidate = capture_and_kill  # type: ignore[assignment]
+        runtime_mod.capture_revision_candidate = capture_and_kill  # type: ignore[assignment]
+
+    if point in {
+        "manual_plan_revision_append",
+        "graph_resumed_ordinal_0",
+        "graph_resumed_ordinal_1",
+        "graph_resumed_ordinal_2",
+    }:
+        append_orig = events_mod.append_event_strict
+
+        def append_and_kill(change_dir, event):  # type: ignore[no-untyped-def]
+            append_orig(change_dir, event)
+            if hasattr(event, "model_dump"):
+                payload = event.model_dump(mode="json", by_alias=True, exclude_none=True)
+            else:
+                payload = dict(event)
+            etype = payload.get("type")
+            if point == "manual_plan_revision_append" and etype == "manual_plan_revision":
+                _fault_hit("manual_plan_revision_append")
+            if etype == "graph_resumed" and payload.get("revision_transition_id") is not None:
+                ordinal = payload.get("revision_ordinal")
+                if point == f"graph_resumed_ordinal_{ordinal}":
+                    _fault_hit(point)
+
+        events_mod.append_event_strict = append_and_kill  # type: ignore[assignment]
+        prog_mod.append_event_strict = append_and_kill  # type: ignore[assignment]
 
     if point in {"before_attempt_started", "after_attempt_started"}:
         begin_attempt = sched._begin_attempt  # noqa: SLF001
@@ -317,7 +502,116 @@ def _install_hooks(runtime, point: str) -> None:  # noqa: ANN001
         leases_mod.LeaseRegistry.upsert = upsert  # type: ignore[method-assign]
 
 
+def _build_v5_revision(project: Path):
+    import json
+
+    from assurance_agent.workflow.graph.checkpoint import CheckpointStore
+    from assurance_agent.workflow.graph.compiler import compile_workflow
+    from assurance_agent.workflow.graph.contracts import parse_execution_contracts
+    from assurance_agent.workflow.graph.handlers.operation import (
+        OperationHandler,
+        default_operations,
+    )
+    from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
+    from assurance_agent.workflow.graph.runtime import GraphRuntime
+    from assurance_agent.workflow.graph.scheduler import Scheduler
+    from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
+    from assurance_agent.workflow.graph.task_runner import build_default_node_runner
+    from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
+
+    force_v5_binding()
+    change = project / "qa" / "changes" / "CH-1"
+    contracts = parse_execution_contracts(_V5_REVISION_CONTRACTS)
+    compiled = compile_workflow(parse_workflow_v2(_V5_REVISION), contracts)
+    store = TreeStore(change)
+    checkpoints = CheckpointStore(change)
+    workspaces = WorkspaceBackend(change)
+    clock = FakeClock()
+    ops = default_operations()
+
+    def seed_plan(task: ExecutableTask, workspace, context: RuntimeContext) -> TaskResult:
+        plans = workspace.change_dir / "plans"
+        plans.mkdir(parents=True, exist_ok=True)
+        plan_path = plans / "synth-plan.md"
+        if not plan_path.exists():
+            plan_path.write_text("# original plan\n", encoding="utf-8")
+        return TaskResult(status="succeeded")
+
+    def write_review(task: ExecutableTask, workspace, context: RuntimeContext) -> TaskResult:
+        plan_path = workspace.change_dir / "plans" / "synth-plan.md"
+        plan_text = plan_path.read_text(encoding="utf-8") if plan_path.exists() else ""
+        decision = "pass" if "revised" in plan_text else "needs_human_review"
+        review = workspace.change_dir / "review"
+        review.mkdir(parents=True, exist_ok=True)
+        (review / "synth-plan-review.json").write_text(
+            json.dumps({"decision": decision}),
+            encoding="utf-8",
+        )
+        return TaskResult(status="succeeded")
+
+    def write_checks(task: ExecutableTask, workspace, context: RuntimeContext) -> TaskResult:
+        review = workspace.change_dir / "review"
+        review.mkdir(parents=True, exist_ok=True)
+        (review / "synth-plan-checks.json").write_text(
+            json.dumps({"status": "ready", "layer": "synth"}),
+            encoding="utf-8",
+        )
+        return TaskResult(status="succeeded")
+
+    ops["operation:seed-plan"] = seed_plan
+    ops["operation:write-review"] = write_review
+    ops["operation:write-checks"] = write_checks
+    holder: dict[str, GraphRuntime] = {}
+
+    def run_child(task, graph_id, workspace, context):  # type: ignore[no-untyped-def]
+        return holder["rt"].run_child(task, graph_id, workspace, context)
+
+    base = build_default_node_runner(
+        NeverCalledInvoker(),
+        store,
+        contracts,
+        compiled=compiled,
+        run_child=run_child,
+    )
+    op_handler = OperationHandler(ops)
+
+    class Combined:
+        def execute(self, task, workspace, context):  # type: ignore[no-untyped-def]
+            if task.target.startswith("operation:"):
+                return op_handler.execute(task, workspace, context)
+            return base.execute(task, workspace, context)
+
+    node_runner = Combined()
+    graph_id = compiled.entrypoints["root"].graph_id
+    scheduler = Scheduler(
+        checkpoints=checkpoints,
+        object_store=store,
+        clock=clock,
+        workspace_backend=workspaces,
+        node_runner=node_runner,
+        max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
+        contracts=contracts,
+        state_defs=dict(compiled.schema.graphs[graph_id].state),
+    )
+    schemas = {compiled.digest: compiled}
+    runtime = GraphRuntime(
+        checkpoint_store=checkpoints,
+        object_store=store,
+        workspace_backend=workspaces,
+        contracts=contracts,
+        node_runner=node_runner,
+        scheduler=scheduler,
+        schema_resolver=lambda digest: schemas[digest],
+        clock=clock,
+    )
+    holder["rt"] = runtime
+    return runtime, compiled, change
+
+
 def _build(project: Path, schema_key: str):
+    if schema_key == "v5_revision":
+        return _build_v5_revision(project)
+
     from assurance_agent.workflow.graph.checkpoint import CheckpointStore
     from assurance_agent.workflow.graph.compiler import compile_workflow
     from assurance_agent.workflow.graph.contracts import parse_execution_contracts
@@ -406,6 +700,97 @@ def _build(project: Path, schema_key: str):
     return runtime, compiled, change
 
 
+def prepare_interrupted_v5_graph(tmp_path: Path):
+    """Build and run the synthetic root→branch→leaf graph until manual revision interrupt."""
+    from assurance_agent.workflow.graph.models import RuntimeContext
+    from tests.helpers_aa import write_aa_config
+
+    project = tmp_path / "proj"
+    change = project / "qa" / "changes" / "CH-1"
+    change.mkdir(parents=True, exist_ok=True)
+    write_aa_config(project)
+    runtime, compiled, change = _build_v5_revision(project)
+    context = RuntimeContext(
+        project_root=project,
+        repo_root=project,
+        change_dir=change,
+        change_id="CH-1",
+        params={"run_mode": "full"},
+    )
+    result = runtime.run(compiled, "root", context)
+    assert result.exit_code == 30, result.reason
+    assert result.status.status == "interrupted"
+    interrupt = result.status.pending_interrupts[0]
+    assert interrupt.revision_view is not None
+    root_id = result.invocation_id
+    _REVISION_FIXTURES[root_id] = {
+        "runtime": runtime,
+        "compiled": compiled,
+        "context": context,
+        "change": change,
+        "project": project,
+        "interrupt_id": interrupt.interrupt_id,
+        "revision_view": interrupt.revision_view,
+    }
+    return runtime, compiled, context, root_id
+
+
+def edit_recorded_revision_view(root_id: str, content: bytes) -> None:
+    fx = _REVISION_FIXTURES[root_id]
+    change = fx["change"]
+    assert isinstance(change, Path)
+    view_rel = fx["revision_view"]
+    assert isinstance(view_rel, str)
+    plan = change / view_rel / "plans" / "synth-plan.md"
+    plan.parent.mkdir(parents=True, exist_ok=True)
+    plan.write_bytes(content)
+
+
+def fix_and_proceed_command(root_id: str):
+    from assurance_agent.workflow.graph.models import ResumeCommand
+
+    fx = _REVISION_FIXTURES[root_id]
+    interrupt_id = fx["interrupt_id"]
+    assert isinstance(interrupt_id, str)
+    return ResumeCommand(
+        interrupt_id=interrupt_id,
+        action="fix_and_proceed",
+        reason="revise synth plan",
+        who="reviewer",
+    )
+
+
+def assert_revision_resume_chain(root_id: str, *, expected_ordinals: tuple[int, ...]) -> None:
+    from assurance_agent.workflow.core.events import read_events_strict
+    from assurance_agent.workflow.graph.checkpoint import project_invocation
+
+    fx = _REVISION_FIXTURES[root_id]
+    change = fx["change"]
+    assert isinstance(change, Path)
+    events = read_events_strict(change)
+    revisions = [e for e in events if e.get("type") == "manual_plan_revision"]
+    assert len(revisions) == 1
+    transition_id = revisions[0]["revision_transition_id"]
+    resumes = [
+        e
+        for e in events
+        if e.get("type") == "graph_resumed" and e.get("revision_transition_id") == transition_id
+    ]
+    ordinals = tuple(int(e["revision_ordinal"]) for e in resumes)  # type: ignore[arg-type]
+    assert ordinals == expected_ordinals
+    assert resumes[0].get("parent_anchor_ref") is None
+    for index in range(1, len(resumes)):
+        assert resumes[index].get("parent_anchor_ref") is not None
+    leaf_id = revisions[0]["invocation_id"]
+    assert resumes[-1]["invocation_id"] == leaf_id
+    assert resumes[0]["invocation_id"] == root_id
+    assert resumes[0].get("revision_chain_length") == len(expected_ordinals)
+    leaf_proj = project_invocation(change, str(leaf_id))
+    assert leaf_proj.current_tree_id != revisions[0]["base_tree_id"]
+    root_proj = project_invocation(change, root_id)
+    assert root_proj.terminal == "completed"
+
+
 def main() -> int:
     project = Path(os.environ["AA_FAULT_PROJECT"])
     point = os.environ.get("AA_FAULT_POINT", "")
@@ -416,12 +801,13 @@ def main() -> int:
     (sync / "READY").write_text(str(os.getpid()), encoding="utf-8")
 
     runtime, compiled, change = _build(project, schema_key)
-    if mode == "run" and point:
+    if point:
         _install_hooks(runtime, point)
 
     from assurance_agent.workflow.graph.checkpoint import project_invocation
     from assurance_agent.workflow.graph.models import RuntimeContext
 
+    entrypoint = "root" if schema_key == "v5_revision" else "full"
     context = RuntimeContext(
         project_root=project,
         repo_root=project,
@@ -445,15 +831,17 @@ def main() -> int:
 
             raw_action = "fix_and_proceed" if "fix_and_proceed" in pending.actions else pending.actions[0]
             action = cast(Literal["fix_and_proceed", "accept_risk", "stop"], raw_action)
+            reason = os.environ.get("AA_FAULT_RESUME_REASON", "fault-test resume")
+            who = os.environ.get("AA_FAULT_RESUME_WHO", "fault-worker")
             command = ResumeCommand(
                 interrupt_id=pending.interrupt_id,
                 action=action,
-                reason="fault-test resume",
-                who="fault-worker",
+                reason=reason,
+                who=who,
             )
         result = runtime.resume(invocation_id, command)
     else:
-        result = runtime.run(compiled, "full", context)
+        result = runtime.run(compiled, entrypoint, context)
 
     (sync / "DONE").write_text(
         f"{result.exit_code}:{result.status.status}:{result.invocation_id}",

@@ -55,6 +55,8 @@ def _run_worker(
     schema: str = "linear",
     invocation_id: str | None = None,
     timeout: float = 30.0,
+    resume_reason: str = "fault-test resume",
+    resume_who: str = "fault-worker",
 ) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
@@ -63,6 +65,8 @@ def _run_worker(
         "AA_FAULT_MODE": mode,
         "AA_FAULT_SCHEMA": schema,
         "AA_FAULT_POINT": point,
+        "AA_FAULT_RESUME_REASON": resume_reason,
+        "AA_FAULT_RESUME_WHO": resume_who,
     }
     if invocation_id is not None:
         env["AA_FAULT_INVOCATION"] = invocation_id
@@ -540,3 +544,433 @@ def test_start_invocation_commits_root_before_drive(tmp_path: Path) -> None:
     split_drive = split_runtime.drive_started(split_start)
     assert split_drive.status.status == composed.status.status
     assert split_drive.exit_code == composed.exit_code
+
+
+# ---------------------------------------------------------------------------
+# Task 9: v5 manual-revision power-loss recovery on a synthetic nested graph
+# ---------------------------------------------------------------------------
+
+REVISION_FAULT_POINTS = [
+    "revision_target_objects",
+    "manual_plan_revision_append",
+    "graph_resumed_ordinal_0",
+    "graph_resumed_ordinal_1",
+    "graph_resumed_ordinal_2",
+]
+
+
+def _spawn_resume_and_kill(
+    project: Path,
+    sync: Path,
+    *,
+    point: str,
+    invocation_id: str,
+    schema: str = "v5_revision",
+) -> None:
+    env = {
+        **os.environ,
+        "AA_FAULT_PROJECT": str(project),
+        "AA_FAULT_SYNC": str(sync),
+        "AA_FAULT_MODE": "resume",
+        "AA_FAULT_SCHEMA": schema,
+        "AA_FAULT_POINT": point,
+        "AA_FAULT_INVOCATION": invocation_id,
+        "AA_FAULT_RESUME_REASON": "revise synth plan",
+        "AA_FAULT_RESUME_WHO": "reviewer",
+    }
+    sync.mkdir(parents=True, exist_ok=True)
+    for name in ("READY", "HIT", "DONE"):
+        path = sync / name
+        if path.exists():
+            path.unlink()
+    proc = subprocess.Popen(
+        [sys.executable, str(WORKER)],
+        env=env,
+        cwd=str(Path.cwd()),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        _wait_for(sync / "READY")
+        _wait_for(sync / "HIT", timeout=30.0)
+        if proc.poll() is None:
+            proc.send_signal(signal.SIGKILL)
+            proc.wait(timeout=5)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+    assert (sync / "HIT").read_text(encoding="utf-8") == point
+
+
+def test_v5_manual_revision_resumes_root_to_leaf(tmp_path: Path) -> None:
+    from tests.integration._graph_fault_worker import (
+        assert_revision_resume_chain,
+        edit_recorded_revision_view,
+        fix_and_proceed_command,
+        prepare_interrupted_v5_graph,
+    )
+
+    runtime, compiled, context, root_id = prepare_interrupted_v5_graph(tmp_path)
+    del compiled, context
+    edit_recorded_revision_view(root_id, b"# revised plan\n")
+    result = runtime.resume(root_id, fix_and_proceed_command(root_id))
+    assert result.status.status == "completed"
+    assert_revision_resume_chain(root_id, expected_ordinals=(0, 1, 2))
+
+
+def test_v5_nested_revision_view_survives_and_propagates(tmp_path: Path) -> None:
+    from assurance_agent.workflow.core.events import read_events_strict
+    from assurance_agent.workflow.graph.checkpoint import project_invocation
+    from tests.integration._graph_fault_worker import (
+        _REVISION_FIXTURES,
+        edit_recorded_revision_view,
+        fix_and_proceed_command,
+        prepare_interrupted_v5_graph,
+    )
+
+    runtime, _compiled, _context, root_id = prepare_interrupted_v5_graph(tmp_path)
+    fx = _REVISION_FIXTURES[root_id]
+    change = fx["change"]
+    assert isinstance(change, Path)
+    view_root = change / str(fx["revision_view"])
+    assert view_root.is_dir()
+    assert (view_root / "plans" / "synth-plan.md").is_file()
+
+    root_before = project_invocation(change, root_id)
+    pending = runtime.status(root_id).pending_interrupts[0]
+    cycle_id = pending.revision_owner_invocation_id
+    assert cycle_id
+    leaf_before = project_invocation(change, cycle_id)
+    started_ids = {
+        e.get("invocation_id")
+        for e in read_events_strict(change)
+        if e.get("type") == "graph_invocation_started"
+    }
+    branch_ids = [
+        cid
+        for cid in started_ids
+        if isinstance(cid, str) and project_invocation(change, cid).parent_invocation_id == root_id
+    ]
+    assert len(branch_ids) == 1
+    branch_before = project_invocation(change, branch_ids[0])
+
+    edit_recorded_revision_view(root_id, b"# revised plan\n")
+    done = runtime.resume(root_id, fix_and_proceed_command(root_id))
+    assert done.status.status == "completed"
+    assert view_root.is_dir(), "revision view must survive leaf TaskWorkspace cleanup"
+
+    events = read_events_strict(change)
+    revisions = [e for e in events if e.get("type") == "manual_plan_revision"]
+    assert len(revisions) == 1
+    revision = revisions[0]
+    assert revision["invocation_id"] == cycle_id
+    assert revision["base_tree_id"] == leaf_before.current_tree_id
+    assert revision["target_tree_id"] != revision["base_tree_id"]
+
+    post_nodes = {
+        e.get("node_id")
+        for e in events
+        if e.get("type") == "task_attempt_started"
+        and e.get("invocation_id") == cycle_id
+        and int(e["seq"]) > int(revision["seq"])  # type: ignore[arg-type]
+    }
+    assert {"review", "mechanical", "gate"} <= post_nodes
+
+    resumes = [
+        e
+        for e in events
+        if e.get("type") == "graph_resumed"
+        and e.get("revision_transition_id") == revision["revision_transition_id"]
+    ]
+    assert [e.get("revision_ordinal") for e in resumes] == [0, 1, 2]
+    assert resumes[0]["invocation_id"] == root_id
+    assert resumes[1]["invocation_id"] == branch_ids[0]
+    assert resumes[2]["invocation_id"] == cycle_id
+    assert resumes[0].get("parent_anchor_ref") is None
+    assert resumes[1].get("parent_anchor_ref") is not None
+    assert resumes[2].get("parent_anchor_ref") is not None
+
+    root_after = project_invocation(change, root_id)
+    branch_after = project_invocation(change, branch_ids[0])
+    leaf_after = project_invocation(change, cycle_id)
+    assert leaf_after.current_tree_id != leaf_before.current_tree_id
+    assert root_after.current_tree_id != root_before.current_tree_id
+    assert branch_after.current_tree_id != branch_before.current_tree_id
+
+
+@pytest.mark.parametrize(
+    "mutator",
+    ["noop", "extra_file", "missing_file", "symlink", "outside_path"],
+)
+def test_v5_revision_invalid_edits_leave_interrupt_unresolved(tmp_path: Path, mutator: str) -> None:
+    from assurance_agent.workflow.graph.runtime import GraphRuntimeError
+    from tests.integration._graph_fault_worker import (
+        _REVISION_FIXTURES,
+        fix_and_proceed_command,
+        prepare_interrupted_v5_graph,
+    )
+
+    runtime, _compiled, _context, root_id = prepare_interrupted_v5_graph(tmp_path)
+    fx = _REVISION_FIXTURES[root_id]
+    change = fx["change"]
+    assert isinstance(change, Path)
+    view = change / str(fx["revision_view"])
+    plan = view / "plans" / "synth-plan.md"
+    if mutator == "noop":
+        pass
+    elif mutator == "extra_file":
+        plan.write_text("# revised plan\n", encoding="utf-8")
+        (view / "plans" / "extra.md").write_text("nope\n", encoding="utf-8")
+    elif mutator == "missing_file":
+        plan.unlink()
+    elif mutator == "symlink":
+        plan.unlink()
+        plan.symlink_to("/tmp/synth-plan-escape")
+    elif mutator == "outside_path":
+        plan.write_text("# revised plan\n", encoding="utf-8")
+        outside = view / "review" / "tamper.json"
+        outside.parent.mkdir(parents=True, exist_ok=True)
+        outside.write_text('{"decision":"pass"}', encoding="utf-8")
+    with pytest.raises(GraphRuntimeError):
+        runtime.resume(root_id, fix_and_proceed_command(root_id))
+    status = runtime.status(root_id)
+    assert status.status == "interrupted"
+    assert status.pending_interrupts
+
+
+def test_v5_accept_risk_and_stop_do_not_ingest_revision_view(tmp_path: Path) -> None:
+    from assurance_agent.workflow.core.events import read_events_strict
+    from assurance_agent.workflow.graph.models import ResumeCommand
+    from tests.integration._graph_fault_worker import (
+        _REVISION_FIXTURES,
+        edit_recorded_revision_view,
+        prepare_interrupted_v5_graph,
+    )
+
+    runtime, _compiled, _context, root_id = prepare_interrupted_v5_graph(tmp_path)
+    fx = _REVISION_FIXTURES[root_id]
+    interrupt_id = str(fx["interrupt_id"])
+    edit_recorded_revision_view(root_id, b"# should be ignored\n")
+    done = runtime.resume(
+        root_id,
+        ResumeCommand(
+            interrupt_id=interrupt_id,
+            action="accept_risk",
+            reason="accept as-is",
+            who="reviewer",
+        ),
+    )
+    assert done.status.status == "completed"
+    events = read_events_strict(fx["change"])  # type: ignore[arg-type]
+    assert not any(e.get("type") == "manual_plan_revision" for e in events)
+
+    runtime2, _c2, _ctx2, root2 = prepare_interrupted_v5_graph(tmp_path / "stop")
+    fx2 = _REVISION_FIXTURES[root2]
+    edit_recorded_revision_view(root2, b"# ignored on stop\n")
+    stopped = runtime2.resume(
+        root2,
+        ResumeCommand(
+            interrupt_id=str(fx2["interrupt_id"]),
+            action="stop",
+            reason="abort",
+            who="reviewer",
+        ),
+    )
+    assert stopped.exit_code == 20
+    events2 = read_events_strict(fx2["change"])  # type: ignore[arg-type]
+    assert not any(e.get("type") == "manual_plan_revision" for e in events2)
+
+
+def test_v5_source_decision_cannot_cross_revised_tree_epoch(tmp_path: Path) -> None:
+    """A pre-revision source decision must not authorize the post-revision gate epoch."""
+    import json
+    from dataclasses import replace
+
+    from assurance_agent.workflow.core.events import read_events_strict
+    from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
+    from assurance_agent.workflow.orchestration.gates import GateEvaluationContext, check_gate_in_view
+    from tests.integration._graph_fault_worker import (
+        _REVISION_FIXTURES,
+        _V5_REVISION,
+        edit_recorded_revision_view,
+        fix_and_proceed_command,
+        prepare_interrupted_v5_graph,
+    )
+
+    runtime, _compiled, context, root_id = prepare_interrupted_v5_graph(tmp_path)
+    fx = _REVISION_FIXTURES[root_id]
+    change = fx["change"]
+    assert isinstance(change, Path)
+    pending = runtime.status(root_id).pending_interrupts[0]
+    source_attempt = pending.source_gate_attempt_id
+    source_tree = pending.source_gate_tree_id
+    assert source_attempt and source_tree
+
+    edit_recorded_revision_view(root_id, b"# revised plan\n")
+    done = runtime.resume(root_id, fix_and_proceed_command(root_id))
+    assert done.status.status == "completed"
+    events = read_events_strict(change)
+    revision = next(e for e in events if e.get("type") == "manual_plan_revision")
+    post_gate = next(
+        e
+        for e in events
+        if e.get("type") == "task_attempt_succeeded"
+        and isinstance(e.get("gate_report"), dict)
+        and int(e["seq"]) > int(revision["seq"])  # type: ignore[arg-type]
+    )
+    leaf_id = str(revision["invocation_id"])
+    leaf = runtime._checkpoints.project(leaf_id)  # noqa: SLF001
+    assert leaf.current_tree_id != source_tree
+    assert post_gate.get("attempt_id") != source_attempt
+
+    # Durable fix_and_proceed resumes still carry the OLD source tree pair; they
+    # must not authorize gate re-evaluation against the revised tree epoch.
+    schema = parse_workflow_v2(_V5_REVISION)
+    (change / "review" / "synth-plan-review.json").write_text(
+        json.dumps({"decision": "needs_human_review"}),
+        encoding="utf-8",
+    )
+    (change / "review" / "synth-plan-checks.json").write_text(
+        json.dumps({"status": "ready", "layer": "synth"}),
+        encoding="utf-8",
+    )
+    base_ctx = GateEvaluationContext(
+        project_root=context.project_root,
+        repo_root=context.repo_root,
+        change_dir=change,
+        change_id="CH-1",
+        params={},
+        state_values={},
+        node_results={},
+        audit_events_dir=change,
+        event_schema_version=5,
+        invocation_id=leaf_id,
+    )
+    mismatched = replace(base_ctx, committed_tree_id=str(revision["target_tree_id"]))
+    assert check_gate_in_view(schema.gates, "synth-plan-gate", mismatched).verdict.value == (
+        "needs_human_review"
+    )
+
+
+@pytest.mark.parametrize("point", REVISION_FAULT_POINTS)
+def test_v5_revision_fault_prefix_recovers_without_duplicates(tmp_path: Path, point: str) -> None:
+    from assurance_agent.workflow.core.events import read_events_strict
+    from tests.integration._graph_fault_worker import (
+        _REVISION_FIXTURES,
+        edit_recorded_revision_view,
+        prepare_interrupted_v5_graph,
+    )
+
+    _runtime, _compiled, context, root_id = prepare_interrupted_v5_graph(tmp_path)
+    edit_recorded_revision_view(root_id, b"# revised plan\n")
+    project = context.project_root
+    change = _REVISION_FIXTURES[root_id]["change"]
+    assert isinstance(change, Path)
+
+    kill_sync = tmp_path / "sync" / point
+    _spawn_resume_and_kill(project, kill_sync, point=point, invocation_id=root_id)
+    events_after_kill = read_events_strict(change)
+    revisions_after_kill = [e for e in events_after_kill if e.get("type") == "manual_plan_revision"]
+    resumes_after_kill = [
+        e
+        for e in events_after_kill
+        if e.get("type") == "graph_resumed" and e.get("revision_transition_id") is not None
+    ]
+    if point == "revision_target_objects":
+        assert revisions_after_kill == []
+    elif point == "manual_plan_revision_append":
+        assert len(revisions_after_kill) == 1
+        assert resumes_after_kill == []
+    else:
+        assert len(revisions_after_kill) == 1
+        expected_prefix = int(point.rsplit("_", 1)[-1]) + 1
+        assert len(resumes_after_kill) == expected_prefix
+
+    resume_sync = tmp_path / "sync" / f"{point}-resume"
+    completed = _run_worker(
+        project,
+        resume_sync,
+        mode="resume",
+        schema="v5_revision",
+        invocation_id=root_id,
+        timeout=60.0,
+        resume_reason="revise synth plan",
+        resume_who="reviewer",
+    )
+    assert completed.returncode == 0, completed.stderr
+    events = read_events_strict(change)
+    revisions = [e for e in events if e.get("type") == "manual_plan_revision"]
+    assert len(revisions) == 1
+    transition_id = revisions[0]["revision_transition_id"]
+    resumes = [
+        e
+        for e in events
+        if e.get("type") == "graph_resumed" and e.get("revision_transition_id") == transition_id
+    ]
+    assert [e.get("revision_ordinal") for e in resumes] == [0, 1, 2]
+    assert (resume_sync / "DONE").read_text(encoding="utf-8").split(":", 2)[1] == "completed"
+
+
+@pytest.mark.parametrize("corruption", ["gap", "reorder", "duplicate", "altered_payload"])
+def test_v5_revision_prefix_conflict_fails_before_planner(tmp_path: Path, corruption: str) -> None:
+    from assurance_agent.workflow.core.events import read_events_strict
+    from assurance_agent.workflow.core.progression import transaction
+    from assurance_agent.workflow.graph.runtime import GraphIntegrityError
+    from tests.integration._graph_fault_worker import (
+        _REVISION_FIXTURES,
+        edit_recorded_revision_view,
+        fix_and_proceed_command,
+        prepare_interrupted_v5_graph,
+    )
+
+    runtime, _compiled, context, root_id = prepare_interrupted_v5_graph(tmp_path)
+    edit_recorded_revision_view(root_id, b"# revised plan\n")
+    change = _REVISION_FIXTURES[root_id]["change"]
+    assert isinstance(change, Path)
+    project = context.project_root
+
+    kill_sync = tmp_path / "sync" / f"conflict-{corruption}"
+    _spawn_resume_and_kill(
+        project,
+        kill_sync,
+        point="graph_resumed_ordinal_0",
+        invocation_id=root_id,
+    )
+
+    events = read_events_strict(change)
+    resumes = [
+        e for e in events if e.get("type") == "graph_resumed" and e.get("revision_transition_id") is not None
+    ]
+    assert len(resumes) == 1
+    revision = next(e for e in events if e.get("type") == "manual_plan_revision")
+
+    planner_calls: list[str] = []
+    original_drive = runtime._drive  # noqa: SLF001
+
+    def drive_guard(invocation_id, ctx):  # type: ignore[no-untyped-def]
+        planner_calls.append("drive")
+        return original_drive(invocation_id, ctx)
+
+    runtime._drive = drive_guard  # type: ignore[method-assign]  # noqa: SLF001
+
+    forged = {k: v for k, v in resumes[0].items() if k not in {"seq", "ts"}}
+    if corruption == "gap":
+        forged["revision_ordinal"] = 2
+        forged["invocation_id"] = revision["invocation_id"]
+    elif corruption == "reorder":
+        forged["revision_ordinal"] = 1
+    elif corruption == "duplicate":
+        pass
+    else:
+        forged["reason"] = "tampered reason"
+    with transaction(change) as txn:
+        txn.append_strict(forged)
+
+    with pytest.raises(GraphIntegrityError, match="manual_plan_revision_prefix_conflict"):
+        runtime.resume(root_id, None)
+    assert planner_calls == []
+    with pytest.raises(GraphIntegrityError, match="manual_plan_revision_prefix_conflict"):
+        runtime.resume(root_id, fix_and_proceed_command(root_id))
+    assert planner_calls == []
