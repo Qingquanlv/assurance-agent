@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Sequence
 from dataclasses import replace
@@ -20,6 +21,8 @@ from assurance_agent.artifacts.models.issue_events import (
     ObservationRecordedEvent,
     ProblemDetectedEvent,
     ProblemEvent,
+    ProblemMergedEvent,
+    ProblemOccurrenceLinkedEvent,
     ProjectSyncPendingEvent,
 )
 from assurance_agent.artifacts.models.issues import (
@@ -1442,6 +1445,9 @@ def mutate_completed_tree(project_root: Path, mutation: str) -> None:
         snapshot["occurrences"][0]["observation_ids"] = ["OBS-missing-dangling"]
         _write_json(change_dir / SNAPSHOT_SOURCE, snapshot)
         return
+    if mutation in {"additional_occurrence", "wrong_problem_id", "wrong_evidence_digest"}:
+        # Change-side checks use tainted prefix; disk left valid for project replay.
+        return
     raise AssertionError(mutation)
 
 
@@ -1476,6 +1482,32 @@ def _taint_prefix(prefix: ValidatedAuthorityPrefix, mutation: str) -> ValidatedA
         # Keep occurrence.observation_ids aligned with the candidate, but drop the observation.
         tainted_snapshot = prefix.replayed_snapshot.model_copy(update={"observations": []})
         return replace(prefix, replayed_snapshot=tainted_snapshot)
+    if mutation == "additional_occurrence":
+        occ = prefix.replayed_snapshot.occurrences[0]
+        extra = occ.model_copy(
+            update={
+                "occurrence_id": compute_occurrence_id(CHANGE_ID, BATCH_ID, "sha256:" + "b" * 64),
+                "analysis": occ.analysis.model_copy(update={"candidate_digest": "sha256:" + "b" * 64}),
+            }
+        )
+        tainted_snapshot = prefix.replayed_snapshot.model_copy(update={"occurrences": [occ, extra]})
+        return replace(prefix, replayed_snapshot=tainted_snapshot)
+    if mutation == "wrong_problem_id":
+        occ = prefix.replayed_snapshot.occurrences[0]
+        tainted_occ = occ.model_copy(update={"problem_id": "PROB-wrong-problem-id"})
+        tainted_snapshot = prefix.replayed_snapshot.model_copy(update={"occurrences": [tainted_occ]})
+        return replace(prefix, replayed_snapshot=tainted_snapshot)
+    if mutation == "wrong_evidence_digest":
+        occ = prefix.replayed_snapshot.occurrences[0]
+        tainted_occ = occ.model_copy(
+            update={
+                "analysis": occ.analysis.model_copy(
+                    update={"evidence_bundle_digest": "sha256:" + "e" * 64}
+                )
+            }
+        )
+        tainted_snapshot = prefix.replayed_snapshot.model_copy(update={"occurrences": [tainted_occ]})
+        return replace(prefix, replayed_snapshot=tainted_snapshot)
     raise AssertionError(mutation)
 
 
@@ -1487,6 +1519,9 @@ def _taint_prefix(prefix: ValidatedAuthorityPrefix, mutation: str) -> ValidatedA
         ("missing_occurrence", "occurrence_set_mismatch"),
         ("duplicate_occurrence", "occurrence_set_mismatch"),
         ("wrong_occurrence_identity", "occurrence_identity_mismatch"),
+        ("additional_occurrence", "occurrence_set_mismatch"),
+        ("wrong_problem_id", "occurrence_identity_mismatch"),
+        ("wrong_evidence_digest", "occurrence_identity_mismatch"),
         ("dangling_observation", "observation_reference_invalid"),
     ],
 )
@@ -1624,25 +1659,90 @@ def test_completed_authority_accepts_valid_occurrence_membership(completed_tree:
     assert completed.prefix is prefix
 
 
+def _load_project_detected_event(project_root: Path) -> ProblemDetectedEvent:
+    events_path = project_root / PROJECT_LEDGER_SOURCE
+    raw_line = events_path.read_text(encoding="utf-8").strip().splitlines()[0]
+    return ProblemDetectedEvent.model_validate(json.loads(raw_line))
+
+
+def _evidence_refs_digest(evidence_refs: Sequence[str]) -> str:
+    canonical = json.dumps(sorted(evidence_refs), sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _problem_merged_event(
+    *,
+    problem_id: str,
+    target_problem_id: str,
+    evidence_refs: Sequence[str],
+    expected_problem_version: int = 1,
+    seq: int = 2,
+) -> ProblemMergedEvent:
+    evidence_digest = _evidence_refs_digest(evidence_refs)
+    merge_key = (
+        f"review:merge:{problem_id}:{expected_problem_version}:"
+        f"{target_problem_id}:{evidence_digest}"
+    )
+    return ProblemMergedEvent(
+        schema_version="1.0",
+        seq=seq,
+        event_id=event_id(merge_key),
+        idempotency_key=merge_key,
+        ts=TS,
+        evidence_digest=evidence_digest,
+        problem_id=problem_id,
+        expected_problem_version=expected_problem_version,
+        type="problem_merged",
+        target_problem_id=target_problem_id,
+        reason="test merge",
+        evidence_refs=list(evidence_refs),
+        resolved_at=TS,
+    )
+
+
 def test_completed_authority_rejects_invalid_alias_chain(completed_tree: Path) -> None:
     prefix = completed_prefix(completed_tree)
-    problems_path = completed_tree / PROJECT_PROBLEMS_SOURCE
-    payload = json.loads(problems_path.read_text(encoding="utf-8"))
-    problem = payload["problems"][0]
-    problem["status"] = "resolved"
-    problem["resolution"] = {
-        "resolved_at": TS,
-        "change_id": CHANGE_ID,
-        "batch_id": BATCH_ID,
-        "disposition": "merged_into:PROB-missing-target",
-        "verification_scope": ["merged"],
-        "evidence_digest": "sha256:" + "d" * 64,
-    }
-    # Keep ledger/projection equality by rewriting both from a merged event stream is heavy;
-    # taint the replayed projection equality path: rewrite problems without matching ledger.
-    _write_json(problems_path, payload)
+    occ_id = prefix.replayed_snapshot.occurrences[0].occurrence_id
+    pid = prefix.replayed_snapshot.occurrences[0].problem_id
+    detected = _load_project_detected_event(completed_tree)
+    merge_event = _problem_merged_event(
+        problem_id=pid,
+        target_problem_id="PROB-missing-target",
+        evidence_refs=[occ_id],
+    )
+    problem_events: list[ProblemEvent] = [detected, merge_event]
+    _write_project_ledger(completed_tree, problem_events)
+    _write_problems_projection(completed_tree, problem_events)
     with pytest.raises(AuthorityValidationError) as raised:
         validate_completed_authority(prefix, completed_tree, CHANGE_ID, BATCH_ID)
-    # Replay mismatch outranks alias when disk projection diverges from ledger.
     assert raised.value.source == PROJECT_PROBLEMS_SOURCE
-    assert raised.value.reason in {"projection_replay_mismatch", "problem_occurrence_mismatch"}
+    assert raised.value.reason == "problem_occurrence_mismatch"
+
+
+def test_completed_authority_rejects_duplicate_project_membership(completed_tree: Path) -> None:
+    prefix = completed_prefix(completed_tree)
+    occ_id = prefix.replayed_snapshot.occurrences[0].occurrence_id
+    pid = prefix.replayed_snapshot.occurrences[0].problem_id
+    detected = _load_project_detected_event(completed_tree)
+    link_key = f"problem_occurrence_linked:{pid}:{occ_id}:dup"
+    link_event = ProblemOccurrenceLinkedEvent(
+        schema_version="1.0",
+        seq=2,
+        event_id=event_id(link_key),
+        idempotency_key=link_key,
+        ts=TS,
+        evidence_digest=prefix.manifest_digest,
+        problem_id=pid,
+        expected_problem_version=1,
+        type="problem_occurrence_linked",
+        occurrence_id=occ_id,
+        change_id=CHANGE_ID,
+        batch_id=BATCH_ID,
+    )
+    problem_events: list[ProblemEvent] = [detected, link_event]
+    _write_project_ledger(completed_tree, problem_events)
+    _write_problems_projection(completed_tree, problem_events)
+    with pytest.raises(AuthorityValidationError) as raised:
+        validate_completed_authority(prefix, completed_tree, CHANGE_ID, BATCH_ID)
+    assert raised.value.source == PROJECT_PROBLEMS_SOURCE
+    assert raised.value.reason == "problem_occurrence_mismatch"
