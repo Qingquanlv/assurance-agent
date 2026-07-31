@@ -11,7 +11,7 @@ from assurance_agent.artifacts.models.policy import Policy
 from assurance_agent.artifacts.models.trace import TraceGap, TraceProjection
 from assurance_agent.artifacts.policy import policy_digest
 from assurance_agent.evidence.digests import projection_digest
-from assurance_agent.evidence.sufficiency import SufficiencyReport
+from assurance_agent.evidence.sufficiency import SufficiencyReportLike
 
 VerifyVerdict = Literal["pass", "fail", "needs_human"]
 
@@ -88,7 +88,7 @@ def _gap_item(gap: TraceGap) -> VerifyGapItem:
     )
 
 
-def _insufficient_cases(report: SufficiencyReport) -> tuple[VerifyInsufficientCase, ...]:
+def _insufficient_cases(report: SufficiencyReportLike) -> tuple[VerifyInsufficientCase, ...]:
     return tuple(
         VerifyInsufficientCase(
             case_id=verdict.case_id,
@@ -119,7 +119,7 @@ def _blocking_gaps(projection: TraceProjection) -> tuple[VerifyGapItem, ...]:
 def evaluate_verify_verdict(
     projection: TraceProjection,
     policy: Policy,
-    report: SufficiencyReport,
+    report: SufficiencyReportLike,
     *,
     digest: str | None = None,
 ) -> VerifyResult:

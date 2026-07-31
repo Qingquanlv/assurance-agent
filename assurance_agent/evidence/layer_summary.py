@@ -7,6 +7,15 @@ from collections import Counter
 from collections.abc import Sequence
 
 from assurance_agent.artifacts.models.assurance import CASE_TYPES, LAYER_NAMES, CaseType, LayerName
+from assurance_agent.artifacts.models.sufficiency import (
+    EXECUTION_STATES,
+    ExecutionState,
+    LayerSufficiencyCounts,
+    SufficiencyBindingError,
+    SufficiencyReasonCode,
+    SufficiencyReportV2,
+    TraceLayerSufficiencySummary,
+)
 from assurance_agent.artifacts.models.trace import (
     TraceGapAggregate,
     TraceGapV1,
@@ -154,6 +163,111 @@ def _validate_fact_arithmetic(
     gap_total = sum(layer.gaps.total for layer in summary.layers) + summary.global_gaps.total
     if gap_total != len(projection.gaps):
         raise TraceLayerSummaryError("layer/global gaps do not conserve projection gaps")
+
+
+def join_layer_sufficiency(
+    projection: TraceProjectionLike,
+    facts: TraceLayerFactSummary,
+    report: SufficiencyReportV2,
+    *,
+    expected_policy_digest: str,
+) -> TraceLayerSufficiencySummary:
+    """Join a bound V2 sufficiency report onto four-layer facts without re-evaluating policy."""
+    if not isinstance(report, SufficiencyReportV2):
+        raise SufficiencyBindingError("join requires SufficiencyReportV2")
+
+    proj_case_ids: list[str] = []
+    seen_proj: set[str] = set()
+    rows_by_id: dict[str, TraceRow] = {}
+    for row in projection.rows:
+        if row.case_id in seen_proj:
+            raise SufficiencyBindingError(f"duplicate projection case_id: {row.case_id}")
+        seen_proj.add(row.case_id)
+        proj_case_ids.append(row.case_id)
+        rows_by_id[row.case_id] = row
+
+    verdict_ids = [verdict.case_id for verdict in report.verdicts]
+    if len(set(verdict_ids)) != len(verdict_ids):
+        raise SufficiencyBindingError("duplicate sufficiency verdict case_id")
+    if set(verdict_ids) != set(proj_case_ids):
+        raise SufficiencyBindingError("projection and sufficiency case sets must be equal")
+
+    digest = projection_digest(projection)
+    if report.source_projection_digest != digest:
+        raise SufficiencyBindingError("report source_projection_digest mismatch")
+    if facts.source_projection_digest != digest:
+        raise SufficiencyBindingError("facts source_projection_digest mismatch")
+    if (
+        facts.change_id != projection.change_id
+        or facts.phase != projection.phase
+        or facts.authoritative_batch_id != projection.authoritative_batch_id
+    ):
+        raise SufficiencyBindingError("facts identity does not match projection")
+    if report.source_policy_digest != expected_policy_digest:
+        raise SufficiencyBindingError("report source_policy_digest mismatch")
+    if report.semantics != "evidence_sufficiency/v2":
+        raise SufficiencyBindingError("report semantics must be evidence_sufficiency/v2")
+    if report.require_current_batch is not True:
+        raise SufficiencyBindingError("join requires require_current_batch=True")
+
+    verdict_by_id = {verdict.case_id: verdict for verdict in report.verdicts}
+    layers: list[LayerSufficiencyCounts] = []
+    for layer_name, case_type, fact_layer in zip(LAYER_NAMES, CASE_TYPES, facts.layers, strict=True):
+        if fact_layer.layer != layer_name or fact_layer.case_type != case_type:
+            raise SufficiencyBindingError("facts layer/case_type assignment mismatch")
+        layer_rows = [row for row in projection.rows if row.case_type == case_type]
+        sufficient = 0
+        insufficient = 0
+        reason_counter: Counter[SufficiencyReasonCode] = Counter()
+        state_counter: Counter[ExecutionState] = Counter()
+        for row in layer_rows:
+            verdict = verdict_by_id[row.case_id]
+            if verdict.sufficient:
+                sufficient += 1
+            else:
+                insufficient += 1
+            reason_counter.update(verdict.reason_codes)
+            state_counter[verdict.execution_state] += 1
+        if sufficient + insufficient != fact_layer.total:
+            raise SufficiencyBindingError(
+                f"layer {layer_name} sufficiency counts do not conserve facts.total"
+            )
+        reason_counts: dict[SufficiencyReasonCode, int] = {
+            code: reason_counter[code]
+            for code in sorted(reason_counter)
+            if reason_counter[code] > 0
+        }
+        execution_state_counts: dict[ExecutionState, int] = {
+            state: state_counter.get(state, 0) for state in EXECUTION_STATES
+        }
+        layers.append(
+            LayerSufficiencyCounts(
+                layer=layer_name,
+                case_type=case_type,
+                sufficient=sufficient,
+                insufficient=insufficient,
+                reason_counts=reason_counts,
+                execution_state_counts=execution_state_counts,
+            )
+        )
+
+    if sum(layer.sufficient for layer in layers) != sum(1 for v in report.verdicts if v.sufficient):
+        raise SufficiencyBindingError("sufficient totals do not conserve report verdicts")
+    if sum(layer.insufficient for layer in layers) != sum(
+        1 for v in report.verdicts if not v.sufficient
+    ):
+        raise SufficiencyBindingError("insufficient totals do not conserve report verdicts")
+
+    return TraceLayerSufficiencySummary(
+        schema_version="1",
+        source_projection_digest=digest,
+        source_policy_digest=report.source_policy_digest,
+        semantics="evidence_sufficiency/v2",
+        require_current_batch=True,
+        as_of=report.as_of,
+        recency_hours=report.recency_hours,
+        layers=tuple(layers),
+    )
 
 
 def summarize_projection_by_layer(

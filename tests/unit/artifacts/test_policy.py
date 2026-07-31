@@ -346,3 +346,19 @@ def test_missing_required_kinds_key_is_rejected(tmp_path: Path) -> None:
     )
     with pytest.raises(PolicyError, match="required_kinds missing keys"):
         load_policy(tmp_path)
+
+
+def test_duplicate_required_kinds_within_case_type_are_rejected(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        VALID + "evidence_sufficiency:\n"
+        "  recency_hours: 72\n"
+        "  required_kinds:\n"
+        "    API: [covered, covered, execution_recent]\n"
+        "    E2E: [covered, execution_recent]\n"
+        "    Fuzz: [covered, fuzz_run]\n"
+        "    Performance: [covered, perf_run]\n"
+        "  on_insufficient: warn\n",
+    )
+    with pytest.raises(PolicyError, match="duplicate"):
+        load_policy(tmp_path)

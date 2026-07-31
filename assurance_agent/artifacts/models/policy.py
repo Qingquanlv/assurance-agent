@@ -41,6 +41,9 @@ class EvidenceSufficiency(BaseModel):
         missing = [key for key in _REQUIRED_CASE_TYPES if key not in self.required_kinds]
         if missing:
             raise ValueError(f"required_kinds missing keys: {', '.join(missing)}")
+        for case_type, kinds in self.required_kinds.items():
+            if len(kinds) != len(set(kinds)):
+                raise ValueError(f"required_kinds[{case_type}] contains duplicate kinds")
         return self
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -13,10 +13,14 @@ from assurance_agent.artifacts.models.policy import (
     HealingPolicy,
     Policy,
 )
+from assurance_agent.artifacts.models.sufficiency import SufficiencyReportV2
 from assurance_agent.artifacts.models.trace import TraceExecution, TraceProjection, TraceRow
+from assurance_agent.artifacts.policy import policy_digest
+from assurance_agent.evidence.digests import projection_digest
 from assurance_agent.evidence.sufficiency import evaluate_sufficiency
+from tests.helpers_aa import AWARE_NOW
 
-AS_OF = datetime(2026, 7, 30, 12, 0, 0, tzinfo=UTC)
+AS_OF = AWARE_NOW
 RECENCY_HOURS = 72
 
 
@@ -286,6 +290,22 @@ def test_report_carries_as_of_and_recency_hours() -> None:
     report = evaluate_sufficiency(_projection(_row()), _policy(), as_of=AS_OF)
     assert report.as_of == AS_OF
     assert report.recency_hours == RECENCY_HOURS
+
+
+def test_evaluate_sufficiency_returns_bound_v2_report() -> None:
+    projection = _projection(_row(latest_execution=_execution(ts=AS_OF - timedelta(hours=1))))
+    policy = _policy()
+    report = evaluate_sufficiency(
+        projection,
+        policy,
+        as_of=AWARE_NOW,
+        require_current_batch=True,
+    )
+    assert isinstance(report, SufficiencyReportV2)
+    assert report.source_projection_digest == projection_digest(projection)
+    assert report.source_policy_digest == policy_digest(policy)
+    assert report.semantics == "evidence_sufficiency/v2"
+    assert report.require_current_batch is True
 
 
 def test_all_sufficient_property() -> None:

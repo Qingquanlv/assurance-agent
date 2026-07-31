@@ -9,14 +9,22 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from assurance_agent.artifacts.models.policy import EvidenceKind, PlanCheckAction, Policy
+from assurance_agent.artifacts.models.sufficiency import (
+    ExecutionState,
+    SufficiencyReasonCode,
+    SufficiencyReportV2,
+    SufficiencyRowVerdictV2,
+)
 from assurance_agent.artifacts.models.trace import TraceProjection, TraceRow
+from assurance_agent.artifacts.policy import policy_digest
+from assurance_agent.evidence.digests import projection_digest
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
 
-ExecutionState = Literal["never_run", "stale", "fresh"]
-
 
 class RowVerdict(BaseModel):
+    """Legacy V1 per-row verdict retained for old fixtures/readers."""
+
     model_config = _FROZEN
 
     case_id: str
@@ -27,6 +35,8 @@ class RowVerdict(BaseModel):
 
 
 class SufficiencyReport(BaseModel):
+    """Legacy V1 unbound report retained for old fixtures/readers."""
+
     model_config = _FROZEN
 
     as_of: datetime
@@ -38,12 +48,14 @@ class SufficiencyReport(BaseModel):
         return all(verdict.sufficient for verdict in self.verdicts)
 
 
+SufficiencyReportLike = SufficiencyReport | SufficiencyReportV2
+
 EvidenceCoverageErrorCode = Literal["evidence_projection_missing", "policy_error"]
 
 
 @dataclass(frozen=True)
 class EvidenceCoverageEvaluation:
-    report: SufficiencyReport | None
+    report: SufficiencyReportLike | None
     action: PlanCheckAction | None
     error_code: EvidenceCoverageErrorCode | None
 
@@ -94,7 +106,7 @@ def evaluate_sufficiency(
     *,
     as_of: datetime,
     require_current_batch: bool = False,
-) -> SufficiencyReport:
+) -> SufficiencyReportV2:
     if as_of.tzinfo is None:
         raise TypeError("as_of must be timezone-aware")
 
@@ -109,7 +121,10 @@ def evaluate_sufficiency(
         )
         for row in projection.rows
     )
-    return SufficiencyReport(
+    return SufficiencyReportV2(
+        source_projection_digest=projection_digest(projection),
+        source_policy_digest=policy_digest(policy),
+        require_current_batch=require_current_batch,
         as_of=as_of,
         recency_hours=recency_hours,
         verdicts=verdicts,
@@ -123,11 +138,11 @@ def _evaluate_row(
     as_of: datetime,
     recency_hours: int,
     require_current_batch: bool,
-) -> RowVerdict:
+) -> SufficiencyRowVerdictV2:
     execution_state = _execution_state(row, as_of=as_of, recency_hours=recency_hours)
     required = policy.evidence_sufficiency.required_kinds[row.case_type]
     missing: list[EvidenceKind] = []
-    reasons: list[str] = []
+    reasons: list[SufficiencyReasonCode] = []
 
     for kind in required:
         if _kind_satisfied(
@@ -148,7 +163,7 @@ def _evaluate_row(
             )
         )
 
-    return RowVerdict(
+    return SufficiencyRowVerdictV2(
         case_id=row.case_id,
         sufficient=not missing,
         missing_kinds=tuple(missing),
@@ -203,7 +218,7 @@ def _reason_for_missing(
     execution_state: ExecutionState,
     *,
     require_current_batch: bool,
-) -> str:
+) -> SufficiencyReasonCode:
     if require_current_batch and kind in ("execution_recent", "pass_status", "fuzz_run", "perf_run"):
         if row.presence_in_current_batch != "executed":
             return "not_in_current_batch"

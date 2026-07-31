@@ -21,8 +21,9 @@ from assurance_agent.artifacts.models.policy import (
 from assurance_agent.artifacts.models.trace import TraceExecution, TraceGap, TraceProjection, TraceRow
 from assurance_agent.artifacts.policy import load_policy, policy_digest
 from assurance_agent.cli import main
+from assurance_agent.artifacts.models.sufficiency import SufficiencyReportV2
 from assurance_agent.evidence.sufficiency import (
-    SufficiencyReport,
+    SufficiencyReportLike,
     build_evidence_coverage_evaluation,
     evaluate_sufficiency,
 )
@@ -313,9 +314,9 @@ def _policy(*, on_insufficient: str = "require_human") -> Policy:
     )
 
 
-def _report(*, sufficient: bool = True) -> SufficiencyReport:
+def _report(*, sufficient: bool = True) -> SufficiencyReportLike:
     latest = _execution()
-    return evaluate_sufficiency(
+    report = evaluate_sufficiency(
         TraceProjection(
             change_id=CHANGE_ID,
             phase="reconciled",
@@ -325,7 +326,10 @@ def _report(*, sufficient: bool = True) -> SufficiencyReport:
         ),
         _policy(),
         as_of=AS_OF,
+        require_current_batch=True,
     )
+    assert isinstance(report, SufficiencyReportV2)
+    return report
 
 
 @pytest.fixture
