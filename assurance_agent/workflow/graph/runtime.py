@@ -860,14 +860,8 @@ class GraphRuntime:
             )
             from assurance_agent.workflow.graph.selected_wave import PreparedWaveLease
 
-            typed_lease = (
-                inherited_lease
-                if isinstance(inherited_lease, PreparedWaveLease)
-                else None
-            )
-            prepared_entry = (
-                typed_lease.for_invocation(invocation_id) if typed_lease is not None else None
-            )
+            typed_lease = inherited_lease if isinstance(inherited_lease, PreparedWaveLease) else None
+            prepared_entry = typed_lease.for_invocation(invocation_id) if typed_lease is not None else None
             selected = preview_selected_wave(
                 compiled,
                 projection,
@@ -876,9 +870,8 @@ class GraphRuntime:
                 max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
                 child_projections=child_projections,
             )
-            uses_prepared = (
-                prepared_entry is not None
-                or (selected is not None and (selected.synchronized_paths or selected.lock_tokens))
+            uses_prepared = prepared_entry is not None or (
+                selected is not None and (selected.synchronized_paths or selected.lock_tokens)
             )
             if plan.strict_events and not uses_prepared:
                 with transaction(context.change_dir) as txn:
@@ -889,10 +882,11 @@ class GraphRuntime:
                 return self._finish_terminal(invocation_id, context, plan)
 
             if not plan.tasks:
-                if plan.strict_events and uses_prepared:
-                    with transaction(context.change_dir) as txn:
-                        for event in plan.strict_events:
-                            txn.append_strict(event)
+                if plan.strict_events:
+                    if uses_prepared:
+                        with transaction(context.change_dir) as txn:
+                            for event in plan.strict_events:
+                                txn.append_strict(event)
                     continue
                 raise GraphRuntimeError("planner returned no tasks and no terminal")
 
@@ -1080,9 +1074,7 @@ class GraphRuntime:
             return True
         planned = self._last_uncommitted_plan(invocation_id)
         if planned is not None:
-            succeeded = [
-                task_id for task_id, task in projection.tasks.items() if task.status == "succeeded"
-            ]
+            succeeded = [task_id for task_id, task in projection.tasks.items() if task.status == "succeeded"]
             if succeeded:
                 return True
         publication_store = ProjectPublicationStore(context.project_root)

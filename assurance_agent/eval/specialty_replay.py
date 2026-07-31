@@ -73,7 +73,11 @@ def collect_capability_policy_replay(
             rows.append(NotWiredLayerRow(layer=layer, case_type=case_type, status="not_wired"))
             continue
         try:
-            rows.append(_complete_wired_row(binding, layer=layer, case_type=case_type, change_dir=change_dir, store=store))
+            rows.append(
+                _complete_wired_row(
+                    binding, layer=layer, case_type=case_type, change_dir=change_dir, store=store
+                )
+            )
         except ReplayBindingError as exc:
             rows.append(
                 IncompleteLayerRow(
@@ -128,9 +132,7 @@ def _complete_wired_row(
     profile = get_layer_assurance_profile(layer)  # type: ignore[arg-type]
     recovered = recover_layer_inputs(binding, layer=layer, change_dir=change_dir, store=store)
     checks_doc = recovered.checks.model
-    applicable = (
-        checks_doc.applicability is not None and bool(checks_doc.applicability.applicable)
-    )
+    applicable = checks_doc.applicability is not None and bool(checks_doc.applicability.applicable)
     replay = replay_plan_check_policy(
         gates=binding.compiled.schema.gates,
         profile=profile,
@@ -145,7 +147,9 @@ def _complete_wired_row(
     review_digest = None
     l1_digest = None
     if applicable:
-        review_payload = recovered.review.model.model_dump(mode="json") if recovered.review is not None else {}
+        review_payload = (
+            recovered.review.model.model_dump(mode="json") if recovered.review is not None else {}
+        )
         l1_payload = (
             recovered.data_knowledge.model.model_dump(mode="json")
             if recovered.data_knowledge is not None

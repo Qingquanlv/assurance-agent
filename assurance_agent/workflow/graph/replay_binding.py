@@ -359,7 +359,9 @@ def recover_layer_inputs(
     )
     if applicable:
         if review is None:
-            raise ReplayBindingError("missing_evidence", f"missing review artifact for applicable layer {layer}")
+            raise ReplayBindingError(
+                "missing_evidence", f"missing review artifact for applicable layer {layer}"
+            )
         if data_knowledge is None:
             raise ReplayBindingError("missing_evidence", f"missing L1 artifact for applicable layer {layer}")
     else:
@@ -706,7 +708,9 @@ def _select_gate_attempt(
     terminal_seq = _terminal_seq(events, invocation_id)
     eligible = [item for item in gate_attempts if item.commit_seq <= terminal_seq]
     if not eligible:
-        raise ReplayBindingError("gate_evidence_unbound", f"no gate attempt before terminal for {profile.layer}")
+        raise ReplayBindingError(
+            "gate_evidence_unbound", f"no gate attempt before terminal for {profile.layer}"
+        )
     return eligible[-1]
 
 
@@ -727,7 +731,9 @@ def _select_mechanical_attempt(
         or gate_reads.get(f"change:{profile.checks_artifact}")
     )
     if expected_checks_digest is None:
-        raise ReplayBindingError("gate_evidence_unbound", f"gate report missing checks digest for {profile.layer}")
+        raise ReplayBindingError(
+            "gate_evidence_unbound", f"gate report missing checks digest for {profile.layer}"
+        )
 
     candidates: list[CommittedAttempt] = []
     for item in attempts:
@@ -945,7 +951,9 @@ def _read_bound_bytes(
     try:
         payload = store.read_bytes(tree_id, normalized)
     except FileNotFoundError:
-        payload = _read_fallback_bytes(change_dir, binding.change_id, normalized, expected_digest=expected_digest)
+        payload = _read_fallback_bytes(
+            change_dir, binding.change_id, normalized, expected_digest=expected_digest
+        )
     except OSError as exc:
         raise ReplayBindingError("missing_evidence", f"cannot read {normalized}: {exc}") from exc
     actual = hashlib.sha256(payload).hexdigest()

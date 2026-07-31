@@ -159,9 +159,7 @@ def build_prepared_wave_tree(
     return PreparedInvocationWave(
         preview=wave,
         prepared_tree_id=prepared_tree_id,
-        child_prepared=tuple(
-            build_prepared_wave_tree(child, tree_overlays) for child in wave.child_waves
-        ),
+        child_prepared=tuple(build_prepared_wave_tree(child, tree_overlays) for child in wave.child_waves),
     )
 
 

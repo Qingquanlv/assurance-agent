@@ -28,6 +28,7 @@ from assurance_agent.workflow.orchestration.gates import (
 from assurance_agent.workflow.orchestration.schema import GateDef
 
 T = TypeVar("T")
+TModel = TypeVar("TModel", bound=BaseModel)
 
 PolicyEffect = Literal[
     "applied",
@@ -49,9 +50,7 @@ class BoundArtifact(Generic[T]):
     def __post_init__(self) -> None:
         digest = hashlib.sha256(self.raw_bytes).hexdigest()
         if digest != self.sha256:
-            raise ValueError(
-                f"sha256 mismatch for {self.logical_path}: expected {self.sha256}, got {digest}"
-            )
+            raise ValueError(f"sha256 mismatch for {self.logical_path}: expected {self.sha256}, got {digest}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,14 +75,12 @@ class LayerPolicyReplay:
 def bind_json_artifact(
     *,
     logical_path: str,
-    model: BaseModel,
+    model: TModel,
     raw_bytes: bytes | None = None,
-) -> BoundArtifact[BaseModel]:
+) -> BoundArtifact[TModel]:
     payload = raw_bytes
     if payload is None:
-        payload = (json.dumps(model.model_dump(mode="json"), indent=2, sort_keys=True) + "\n").encode(
-            "utf-8"
-        )
+        payload = (json.dumps(model.model_dump(mode="json"), indent=2, sort_keys=True) + "\n").encode("utf-8")
     else:
         reparsed = type(model).model_validate(json.loads(payload))
         if reparsed != model:
@@ -95,15 +92,13 @@ def bind_json_artifact(
 def bind_yaml_artifact(
     *,
     logical_path: str,
-    model: BaseModel,
+    model: TModel,
     raw_bytes: bytes | None = None,
-) -> BoundArtifact[BaseModel]:
+) -> BoundArtifact[TModel]:
     payload = raw_bytes
     if payload is None:
-        payload = (
-            yaml.safe_dump(model.model_dump(mode="json"), sort_keys=False, allow_unicode=True).encode(
-                "utf-8"
-            )
+        payload = yaml.safe_dump(model.model_dump(mode="json"), sort_keys=False, allow_unicode=True).encode(
+            "utf-8"
         )
     else:
         reparsed = type(model).model_validate(yaml.safe_load(payload))
@@ -247,9 +242,7 @@ def _classify_policy_effect(
     has_failed = _has_failed_applicable_checks(checks, profile)
     details = report.details if isinstance(report.details, dict) else {}
     missing_raw = details.get("missing_capabilities")
-    missing_capabilities = (
-        [str(item) for item in missing_raw] if isinstance(missing_raw, list) else []
-    )
+    missing_capabilities = [str(item) for item in missing_raw] if isinstance(missing_raw, list) else []
 
     if field == "needs_human_review_when" and missing_capabilities:
         return "shadowed_by_capability_precondition"
@@ -299,8 +292,7 @@ def _has_failed_applicable_checks(
     if checks.applicability is None or not checks.applicability.applicable:
         return False
     return any(
-        check.status == "fail" and check.check_id in profile.applicable_check_ids
-        for check in checks.checks
+        check.status == "fail" and check.check_id in profile.applicable_check_ids for check in checks.checks
     )
 
 

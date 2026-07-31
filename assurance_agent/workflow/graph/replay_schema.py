@@ -129,8 +129,7 @@ def validate_wired_profile_topology(
         errors.append(f"{locator_prefix}: missing applicability operation for layer {layer!r}")
     elif len(applicability_nodes) > 1:
         errors.append(
-            f"{locator_prefix}: multiple applicability operations: "
-            + ", ".join(sorted(applicability_nodes))
+            f"{locator_prefix}: multiple applicability operations: " + ", ".join(sorted(applicability_nodes))
         )
 
     mechanical_nodes = _mechanical_nodes(cycle, profile)

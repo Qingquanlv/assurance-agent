@@ -346,6 +346,13 @@ def _same_file_content(left: _Entry | None, right: _Entry | None) -> bool:
     )
 
 
+def _path_matches_entry(path: Path, entry: _Entry) -> bool:
+    """Whether on-disk bytes match a tree/write-set file entry."""
+    if entry.kind != "file" or not path.is_file():
+        return False
+    return hashlib.sha256(path.read_bytes()).hexdigest() == entry.sha256
+
+
 def _prune_empty_parents(path: Path, stop: Path) -> None:
     parent = path.parent
     while parent != stop and _is_within(parent, stop):
@@ -1169,6 +1176,11 @@ class TreeStore:
                         and not rel.startswith(f"{change_prefix}/")
                     ):
                         continue
+                    if before is not None and actual is None:
+                        writes.append((rel, before))
+                        continue
+                    if before is not None and _path_matches_entry(project_root / rel, before):
+                        continue
                     raise WorkspaceError(f"canonical workspace drift at {rel}")
                 continue
             if actual == wanted:
@@ -1178,6 +1190,8 @@ class TreeStore:
                 writes.append((rel, wanted))
                 continue
             if actual != before:
+                if wanted is not None and _path_matches_entry(project_root / rel, wanted):
+                    continue
                 raise WorkspaceError(f"canonical workspace drift at {rel}")
             if wanted is None:
                 deletes.append(rel)

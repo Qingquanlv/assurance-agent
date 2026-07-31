@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib import metadata
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Literal
 
 MANIFEST_SCHEMA_VERSION = "1"
 
@@ -210,7 +210,10 @@ def _normalize_value(value: object) -> object:
     if isinstance(value, MappingProxyType):
         return _normalize_value(dict(value))
     if isinstance(value, Mapping):
-        return {str(key): _normalize_value(item) for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))}
+        return {
+            str(key): _normalize_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
     if isinstance(value, frozenset):
         return [_normalize_value(item) for item in sorted(value, key=repr)]
     if isinstance(value, (set, tuple, list)):

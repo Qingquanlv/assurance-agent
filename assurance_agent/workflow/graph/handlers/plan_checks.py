@@ -60,9 +60,7 @@ def _optional_required_capabilities(review_path: Path) -> tuple[str, ...]:
 
 
 def _load_applicable_plan_texts(change_dir: Path, plan_artifacts: tuple[str, ...]) -> dict[str, str]:
-    return {
-        rel: (change_dir / rel).read_text(encoding="utf-8") for rel in plan_artifacts
-    }
+    return {rel: (change_dir / rel).read_text(encoding="utf-8") for rel in plan_artifacts}
 
 
 def verify_plan_mechanical(
