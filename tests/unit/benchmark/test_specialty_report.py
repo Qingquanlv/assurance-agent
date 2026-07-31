@@ -2992,3 +2992,136 @@ def test_render_zero_row_layers_and_once_per_phase_global_gaps(tmp_path: Path) -
     assert len(gap_lines) == 2
     assert sum("/execution:" in line for line in gap_lines) == 1
     assert sum("/reconciled:" in line for line in gap_lines) == 1
+
+
+def test_render_mixed_v1_v2_v3_labels_only_legacy_unlayered(tmp_path: Path) -> None:
+    reporter = _load_reporter_module()
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    v3 = reporter.collect_report(
+        reporter.TraceCollectionInputs(
+            project_root=project,
+            change_id=CHANGE_ID,
+            root_invocation_id=ROOT_INVOCATION_ID,
+            workflow_entrypoint=_ENTRYPOINT,
+            trace_path=trace_path,
+            verify_path=verify_path,
+            trace_exit=0,
+            verify_exit=0,
+        )
+    )
+    assert isinstance(v3, SpecialtyReportV3)
+    v2 = _synthetic_v2_report(change_id="CH-LEGACY-V2")
+    v1 = _legacy_v1_report(change_id="CH-LEGACY-V1")
+    reports = [v3, v2, v1]
+
+    first = render_specialty_sections(reports)
+    second = render_specialty_sections(reports)
+    assert first == second
+
+    assert first.count("`legacy_unlayered`") >= 2
+    assert "CH-LEGACY-V1" in first and "CH-LEGACY-V2" in first
+    facts = first.split("### Trace Layer Facts", 1)[1].split("###", 1)[0]
+    fact_rows = [line for line in facts.splitlines() if line.startswith("| `")]
+    legacy_markers = [line for line in facts.splitlines() if "`legacy_unlayered`" in line]
+    assert fact_rows
+    assert all("CH-LEGACY" not in line for line in fact_rows)
+    assert any(CHANGE_ID in line for line in fact_rows)
+    assert {line.split("`")[1] for line in legacy_markers} == {"CH-LEGACY-V1", "CH-LEGACY-V2"}
+
+
+def test_collect_old_pinned_run_missing_reconciled_v2_exits_nonzero(tmp_path: Path) -> None:
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    (_change_dir(project) / "inspect" / "trace-projection.json").unlink()
+    output = tmp_path / "old-pinned-missing.json"
+    result = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=output,
+        verify_exit="0",
+        attempt_id="attempt-old-pinned",
+    )
+    assert result.returncode != 0
+    report = load_specialty_report(json.loads(output.read_text(encoding="utf-8")))
+    assert isinstance(report, SpecialtyReportV3)
+    assert report.traceability_evidence.status == "incomplete"
+    assert report.traceability_evidence.reason_code == "reconciled_projection_missing"
+    assert isinstance(report.traceability_evidence, IncompleteTraceabilityEvidenceV3)
+    receipt = json.loads((tmp_path / "old-pinned-missing.json.receipt.json").read_text(encoding="utf-8"))
+    assert receipt["state"] == "committed"
+    assert receipt["trace_status"] == "incomplete"
+
+
+def test_collect_old_repaired_v1_projection_is_stale_never_complete_v3(tmp_path: Path) -> None:
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    reconciled_path = _change_dir(project) / "inspect" / "trace-projection.json"
+    payload = json.loads(reconciled_path.read_text(encoding="utf-8"))
+    payload["schema_version"] = "1"
+    # Recovery-barrier repair yields a readable V1 wire; strip V2-only gap codes.
+    v2_only_codes = {
+        "failure_analysis_identity_mismatch",
+        "issues_snapshot_identity_mismatch",
+        "issue_analysis_failed",
+        "project_sync_pending",
+        "issue_reconcile_failed",
+        "issue_reconciliation_unavailable",
+    }
+    payload["gaps"] = [
+        gap
+        for gap in payload.get("gaps", [])
+        if isinstance(gap, dict) and gap.get("code") not in v2_only_codes
+    ]
+    reconciled_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    # Disk V1 remains a valid legacy reader payload, not current authority.
+    assert load_trace_projection_document(
+        json.loads(reconciled_path.read_text(encoding="utf-8"))
+    ).schema_version == "1"
+
+    output = tmp_path / "repaired-v1.json"
+    result = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=output,
+        verify_exit="0",
+        attempt_id="attempt-repaired-v1",
+    )
+    assert result.returncode != 0
+    report = load_specialty_report(json.loads(output.read_text(encoding="utf-8")))
+    assert isinstance(report, SpecialtyReportV3)
+    assert report.traceability_evidence.status == "incomplete"
+    assert report.traceability_evidence.reason_code == "reconciled_projection_stale"
+    assert not isinstance(report.traceability_evidence, CompleteTraceabilityEvidenceV3)
+    dumped = report.model_dump(mode="json")
+    assert "execution" not in dumped["traceability_evidence"]
+    assert "reconciled" not in dumped["traceability_evidence"]
+
+
+def test_receipt_committed_v3_resumes_and_report_only_v3_is_rejected(tmp_path: Path) -> None:
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    output = tmp_path / "resume-v3.json"
+    first = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=output,
+        verify_exit="0",
+        attempt_id="attempt-resume",
+    )
+    assert first.returncode == 0, first.stderr
+    receipt = Path(str(output) + ".receipt.json")
+    assert _validate_publication(
+        report=output, receipt=receipt, mode="reuse"
+    ).returncode == 0
+    assert _reuse_helper(report=output, change_id=CHANGE_ID).returncode == 0
+
+    report_only = tmp_path / "report-only-v3.json"
+    report_only.write_bytes(output.read_bytes())
+    missing_receipt = Path(str(report_only) + ".receipt.json")
+    assert not missing_receipt.exists()
+    assert _validate_publication(
+        report=report_only, receipt=missing_receipt, mode="reuse"
+    ).returncode != 0
+    assert _finalize_helper(
+        report=report_only, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-resume"
+    ).stdout.strip().endswith("registered=false")

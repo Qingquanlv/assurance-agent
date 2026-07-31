@@ -120,6 +120,7 @@ def test_report_cli_accepts_persisted_quality_versions(
     monkeypatch,
     version: str,
 ) -> None:
+    """V1-only and V2-only quality artifacts dispatch concretely; QualityReport stays 1.1."""
     _seed(tmp_path, failed=False)
     gate_path = (
         tmp_path
@@ -139,6 +140,7 @@ def test_report_cli_accepts_persisted_quality_versions(
             "dimensions": {"functional": make_functional(), "coverage": make_coverage()},
             "final_status": "PASS",
         }
+        assert "evidence" not in doc["dimensions"]["coverage"]
     else:
         coverage = {
             **make_coverage(),
@@ -151,6 +153,7 @@ def test_report_cli_accepts_persisted_quality_versions(
             "dimensions": {"functional": make_functional(), "coverage": coverage},
             "final_status": "PASS",
         }
+        assert doc["dimensions"]["coverage"]["evidence"]["kind"] == "sufficiency"
     gate_path.write_text(json.dumps(doc), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     runner = CliRunner()
@@ -162,3 +165,6 @@ def test_report_cli_accepts_persisted_quality_versions(
         (tmp_path / "qa" / "changes" / "CH-1" / "report" / "quality-report.json").read_text(encoding="utf-8")
     )
     assert report["schema_version"] == "1.1"
+    # Concrete dispatch must not upgrade the on-disk quality gate artifact.
+    persisted = json.loads(gate_path.read_text(encoding="utf-8"))
+    assert persisted["schema_version"] == version

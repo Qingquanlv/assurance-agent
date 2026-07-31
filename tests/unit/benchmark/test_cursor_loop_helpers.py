@@ -936,3 +936,74 @@ def test_finalize_and_reuse_register_nothing_for_pending_or_mismatched_receipt(
     )
     assert reuse_ok.returncode == 0, reuse_ok.stderr
     assert reuse_ok.stdout.startswith("CH-1|incomplete|execution_projection_missing|")
+
+
+def test_evidence_row_cli_ten_columns_for_v3_and_legacy_without_schema_root(tmp_path: Path) -> None:
+    """evidence-row emits the frozen ten-column contract; reporter has no --schema-root."""
+    from assurance_agent.eval.specialty_models import SpecialtyReportV3, load_specialty_report
+    from tests.unit.benchmark.test_specialty_report import (
+        _legacy_v1_report,
+        _synthetic_v2_report,
+    )
+    from tests.unit.eval.test_specialty_models import _canonical_complete_v3, incomplete_v3
+
+    reporter = (
+        _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "benchmark_specialty_report.py"
+    )
+    assert "--schema-root" not in reporter.read_text(encoding="utf-8")
+
+    complete = _canonical_complete_v3()
+    incomplete = load_specialty_report(incomplete_v3("reconciled_projection_missing"))
+    assert isinstance(incomplete, SpecialtyReportV3)
+    cases = [
+        (complete.change_id, "complete.json", complete, "complete", "none"),
+        (
+            incomplete.change_id,
+            "incomplete.json",
+            incomplete,
+            "incomplete",
+            "reconciled_projection_missing",
+        ),
+        ("CH-LEGACY-V2", "legacy-v2.json", _synthetic_v2_report(change_id="CH-LEGACY-V2"), "legacy_unlayered", "none"),
+        ("CH-LEGACY-V1", "legacy-v1.json", _legacy_v1_report(change_id="CH-LEGACY-V1"), "legacy_unlayered", "none"),
+    ]
+    for change_id, name, model, status, reason in cases:
+        path = tmp_path / name
+        path.write_text(
+            json.dumps(model.model_dump(mode="json"), indent=2) + "\n",
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(reporter),
+                "evidence-row",
+                "--change-id",
+                change_id,
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        # evidence-row always prints the row; exit mirrors collection outcome (0/1).
+        assert result.stdout.strip(), result.stderr
+        parts = result.stdout.strip().split("|")
+        assert len(parts) == 10
+        assert parts[0] == change_id
+        assert parts[1] == status
+        assert parts[2] == reason
+        if status == "complete":
+            assert result.returncode == 0
+        else:
+            assert result.returncode in {0, 1}
+        if status == "incomplete":
+            assert parts[4] == "unknown"
+            assert parts[5] == "unknown"
+            assert parts[7] == "unknown"
+            assert parts[8] == "unknown"
+            assert parts[9] == "unknown"
+        parsed = _run_helper(
+            tmp_path, f"parse_evidence_row_fields {shlex.quote(result.stdout.strip())}"
+        )
+        assert parsed.returncode == 0, parsed.stderr

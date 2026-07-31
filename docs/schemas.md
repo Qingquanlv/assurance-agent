@@ -184,7 +184,7 @@ v5 resume 仅在 interrupt 存在真实已提交的 gate evidence epoch 时绑�
 
 ## Counterfactual plan-check policy replay（v2）
 
-新 specialty report 的 `schema_version` 仍为 `"2"`，但 `capability_contract_policy.semantics` 为 `counterfactual_plan_check_actions/v2`（拓扑驱动分类）。`counterfactual_plan_check_actions/v1` 与 legacy specialty `schema_version: "1"` **保持可读**，旧文件从不被改写。v1 的历史解释不变：API/E2E 视为 wired，Fuzz/Performance 不能为 `complete`。
+Specialty Report **当前 writer** 为 schema `"3"`（见下）。`"2"` 报告仍可读，其 `capability_contract_policy.semantics` 为 `counterfactual_plan_check_actions/v2`（拓扑驱动分类）。`counterfactual_plan_check_actions/v1` 与 legacy specialty `schema_version: "1"` **保持可读**，旧文件从不被改写。v1 的历史解释不变：API/E2E 视为 wired，Fuzz/Performance 不能为 `complete`。
 
 每个 **complete** 层行携带恰好三个 scenario，action 顺序固定为 `warn` → `block` → `require_human`：
 
@@ -231,9 +231,111 @@ Counterfactual replay 仅在 baseline gate/route 校准通过后运行：冻结 
 
 `schema_version: "1"` 的 legacy report 可被 `load_specialty_report` 读取并参与 benchmark evidence-row 导出，但：
 
-- **不能**通过 `SpecialtyReportV2` 校验（无四层矩阵、无 definition binding）；
-- Markdown 渲染标记为 `legacy_api_only`，出现在 Policy Replay Matrix，**不出现在** Layer Assurance Matrix 的四层行中；
-- 不得被静默升级为 v2 replay 证据；需要 v4+ invocation 绑定字段与完整 replay 链才能产出 `schema_version: "2"` 报告。
+- **不能**通过 `SpecialtyReportV2` / `SpecialtyReportV3` 校验（无四层矩阵、无 definition binding、无 typed traceability）；
+- Capability/Policy Markdown 仍用 `legacy_api_only` 行展示历史 policy replay；Traceability 区标记 `legacy_unlayered`，**不**生成四个零值 complete layer row；
+- 不得被静默升级为 v2/v3 证据；当前 writer 只写 Specialty Report `"3"`。
+
+## Trace / reconcile / quality / specialty 线缆兼容
+
+本节记录当前 writer 与兼容 reader 的精确版本边界。Python 名 `TraceProjection` / `IssueReconcileStatus` / `QualityGateResult` 仍是 **V1 别名**（只读历史），不是当前 writer 类型。磁盘上的 `inspect/trace-projection.json` 是 **point-in-time** 产物：通过 registry 形状校验不等于 current authority；声称“当前 reconciled projection”的路径必须经 `load_current_reconciled_projection`，对 legacy V1 / digest 漂移返回 typed stale，不得把陈旧文件当 live authority。
+
+### Trace Projection（`inspect/trace-projection.json`，execution batch 同模型）
+
+| | Reader | Current writer |
+|---|---|---|
+| `"1"` | `TraceProjectionV1`（别名 `TraceProjection`） | 否 |
+| `"2"` | `TraceProjectionV2` | 是（`fold_trace` / materializer） |
+
+- Registry 面：`TraceProjectionDocument`（`schema_version` discriminator）；compat=`versioned`。
+- **Legacy missing-version**：顶层 mapping **完全缺少** `schema_version` key 时，loader 仅注入 `"1"` 再走 discriminator。显式 `null`、空字符串、未知版本一律 fail closed。IssueReconcile / QualityGate **不做**同类缺失注入。
+- **V2-only gap codes**（不得出现在 V1）：`failure_analysis_identity_mismatch`、`issues_snapshot_identity_mismatch`、`issue_analysis_failed`、`project_sync_pending`、`issue_reconcile_failed`、`issue_reconciliation_unavailable`。
+- **Freshness**：authoritative loader 要求 concrete V2 且与当前 live reconciled fold 的 change/batch/canonical digest 完全相等；V1 → `legacy_version` stale；source 变化 → typed stale，不自动重写磁盘。
+
+### Issue Reconcile Status（`inspect/issue-reconcile-status.json`）
+
+| | Reader | Current writer |
+|---|---|---|
+| `"1.0"` | `IssueReconcileStatusV1`（别名 `IssueReconcileStatus`）；仅 `completed` \| `failed` | 否 |
+| `"2.0"` | `IssueReconcileStatusV2` | 是 |
+
+V2 形状（三种状态均要求非空 `candidate_digest`）：
+
+| status | `occurrence_count` | `error` |
+|---|---|---|
+| `completed` | 必填且 `>= 0` | 必须 `null` |
+| `failed` | 必须 `null` | 非空 |
+| `pending` | 必须 `null` | 必须 `null` |
+
+V1 可读但只作 legacy fact，不能建立本设计的 current completed/failed/pending authority。
+
+### Quality Gate Result（execution / inspect quality-gate 路径）
+
+| | Reader | Current writer |
+|---|---|---|
+| `"1.0"` | `QualityGateResultV1`（别名 `QualityGateResult`）；无 typed evidence | 否 |
+| `"2.0"` | `QualityGateResultV2` | 是 |
+
+V2 coverage `evidence` 是 typed 联合：
+
+- `kind: "sufficiency"` → 嵌入 `SufficiencyReportV2`（见下）；
+- `kind: "error"` → `error_code ∈ {evidence_projection_missing, policy_error}`。
+
+`aa report generate` 经 concrete document dispatch 读取 V1-only / V2-only 门禁产物，输出 QualityReport 仍为 `"1.1"`；不把磁盘上的 V1 quality 升级为 V2。
+
+### Sufficiency Report `"2.0"`（reporting-only）
+
+`SufficiencyReportV2`（`artifacts/models/sufficiency.py`）绑定：
+
+- `schema_version: "2.0"`、`semantics: "evidence_sufficiency/v2"`；
+- `source_projection_digest` / `source_policy_digest`；
+- Quality success 路径要求 `require_current_batch: true`；
+- 四层 sufficiency join 是 **reporting-only view**：按 `case_id` 关联 verdict，不回写 `TraceProjection`，不携带 policy/clock 进 projection。
+
+### execution / reconciled phase-pair
+
+仅两相：`execution`（执行期事实）与 `reconciled`（在其上增加当前有效的 failure/problem enrichment）。共享 row 身份字段必须一致；允许差异的只有声明的 enrichment 字段。Phase-pair 违反 → specialty collect `projection_phase_pair_mismatch`（incomplete），integrity 不得因 enrichment 而“变好”。
+
+### 三图 settled-path 与 recovery-as-incomplete
+
+`inspect-with-issues` / `issue-analyze` / `issue-reconcile` 凡将 issue 状态视为 settled 的路径，都必须先经 `operation:materialize-trace-projection` 再完成。Typed recovery（analysis failure、project sync pending 等）发布 **当前 batch** 的合法 incomplete V2 projection（稳定 blocking gap，无陈旧 problem links），不得跳过 materialize，也不得把旧 batch 磁盘文件冒充当前 authority。
+
+### Specialty Report `"1"` / `"2"` / `"3"`
+
+| Version | Role |
+|---|---|
+| `"1"` / `"2"` | Legacy readers；evidence-row / render 标 `legacy_unlayered`；无 typed 四层 complete matrix |
+| `"3"` | Current writer：`status` 判别的 complete / incomplete `TraceabilityEvidenceV3` 联合 |
+
+Incomplete V3 使用闭集 `TraceCollectionFailureReason`（含 `reconciled_projection_missing` / `reconciled_projection_stale` 等）。旧 pinned run 无当前 reconciled V2 → 原子写出 incomplete V3 + `reconciled_projection_missing` 并非零退出。旧 recovery-barrier 修出的 V1 projection 经 current loader 判 `legacy_version` → collect 为 `reconciled_projection_stale` incomplete，**从不**升格为 complete v3 matrix。
+
+### Specialty V3 发布收据（Clarification 11）
+
+独立原子文件，非单事务：
+
+1. fresh attempt：先把 sibling receipt 写成 `state="pending"` + 新 `attempt_id`；
+2. 再原子写出 report 字节；
+3. 再把 receipt 换成 `state="committed"`（绑定 change_id、report_sha256、trace_status、capability_integrity）。
+
+- Fresh validate 还要求调用方 expected attempt ID；reuse 校验已记录的非空 attempt 与全部 binding。
+- 同 digest 的旧 committed receipt 不能在 pending 窗口后 ABA 假提交。
+- V3 **必须**有匹配的 committed receipt 才可 reuse；仅有 report、无 receipt / pending / 错配一律拒绝。
+- V1/V2 仅在 sibling receipt 路径 **不存在** 时允许 receiptless 读取；任何 pending/committed/畸形/错配 receipt 都阻断 legacy bypass。
+
+### Cursor evidence-row 十列（Clarification 9）
+
+```text
+change_id|collection_status|reason_code|trace_exit|integrity|gap_count|verify_exit|verdict|blocking|insufficient
+```
+
+`collection_status` ∈ `{raw, complete, incomplete, legacy_unlayered}`。V3 incomplete 上不可用字段写字面量 `unknown`，**从不**用 `0` / `-1` 顶替。无 `--schema-root` 逃生舱。
+
+### 历史 pinned 续跑边界（Clarification 10，修正设计 D7）
+
+- graph / contract / **ingest-catalog** identity 漂移：解析已校验的 pinned execution bundle，**可继续旧拓扑**；本身不抛 `GraphDefinitionChanged`。
+- gate-semantics / profile 不兼容，或 pinned-model 与 current-class schema 不匹配：在依赖定义的 pending-write recovery / planning **之前** fail closed（`GraphDefinitionChanged`）。
+- Recovery barrier 仍是 invocation-local；已成功 task 只 replay 冻结 write-set，不重调 handler。
+- **不**归档历史 Python handler：后续旧拓扑任务只能经与 pinned catalog 证明兼容的 **当前** 代码执行。修出的 V1 artifact 仍是 legacy/stale，不是 current complete 证据。
+
 ## Retro v3 signal analysis 与 Improvement lifecycle
 
 Retro 是**独立入口**（`aa workflow run --entrypoint retro` / `aa retro`），不挂在 full workflow 上。当前 run 只读写 `qa/retro/<retro-id>/`；生产路径不扫描、不迁移、不消费历史 Retro 目录。

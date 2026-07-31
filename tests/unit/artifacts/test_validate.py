@@ -412,3 +412,59 @@ def test_validate_rejects_reconcile_v2_missing_candidate_digest(change_dir: Path
 
     assert report.ok is False
     assert report.results[0].artifact_type == "issue_reconcile_status"
+
+
+@pytest.mark.parametrize(
+    ("relpath", "payload", "artifact_type"),
+    [
+        ("inspect/trace-projection.json", {**VALID_TRACE_V1, "schema_version": None}, "trace_projection"),
+        (
+            "inspect/quality-gate-result.json",
+            {**VALID_QUALITY_V1, "schema_version": None, "change_id": "CH-1"},
+            "quality_gate_result",
+        ),
+        (
+            "inspect/issue-reconcile-status.json",
+            {**VALID_RECONCILE_V1, "schema_version": None},
+            "issue_reconcile_status",
+        ),
+    ],
+)
+def test_validate_rejects_explicit_null_schema_version(
+    change_dir: Path,
+    relpath: str,
+    payload: dict[str, object],
+    artifact_type: str,
+) -> None:
+    write(change_dir, relpath, json.dumps(payload))
+
+    report = validate_change(change_dir, artifact=relpath)
+
+    assert report.ok is False
+    assert report.results[0].artifact_type == artifact_type
+    assert report.results[0].errors
+
+
+def test_validate_accepts_mixed_wire_compat_change_tree(tmp_path: Path) -> None:
+    """One change tree: legacy missing-version Trace V1 + Quality V2 + Reconcile V1."""
+    change_dir = tmp_path / "qa" / "changes" / "CH-MIX"
+    change_dir.mkdir(parents=True)
+    write(change_dir, "inspect/trace-projection.json", json.dumps(VALID_TRACE_V1))
+    write(
+        change_dir,
+        "inspect/quality-gate-result.json",
+        json.dumps({**VALID_QUALITY_V2, "change_id": "CH-MIX"}),
+    )
+    write(
+        change_dir,
+        "inspect/issue-reconcile-status.json",
+        json.dumps({**VALID_RECONCILE_V1, "change_id": "CH-MIX"}),
+    )
+
+    report = validate_change(change_dir)
+
+    assert report.ok is True
+    by_type = {r.artifact_type: r for r in report.results}
+    assert by_type["trace_projection"].ok is True
+    assert by_type["quality_gate_result"].ok is True
+    assert by_type["issue_reconcile_status"].ok is True
