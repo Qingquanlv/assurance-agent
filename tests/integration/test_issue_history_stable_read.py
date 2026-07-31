@@ -16,6 +16,13 @@ from assurance_agent.artifacts.models.issues import (
     ProblemFingerprint,
     ProvisionalAssessment,
 )
+from assurance_agent.evidence.issue_identity import (
+    ObservationIdentityInput,
+    event_id,
+    observation_id,
+    occurrence_id,
+    problem_id,
+)
 from assurance_agent.workflow.issues.events import (
     CHANGE_ISSUE_EVENT_ADAPTER,
     PROBLEM_EVENT_ADAPTER,
@@ -29,27 +36,41 @@ from assurance_agent.workflow.issues.ledger import ChangeIssueStore, ProjectProb
 from tests.helpers_aa import write_aa_config
 
 CHANGE_ID = "RET-1"
-PROB_ID = "PROB-deadbeef12345678"
 FINGERPRINT = ProblemFingerprint(version="1", digest="sha256:" + "a" * 64)
+PROB_ID = problem_id(FINGERPRINT)
+CANDIDATE_DIGEST = "sha256:11223344"
+EVIDENCE_DIGEST = "sha256:aabbccdd"
+ARTIFACT = "execution/runs/B-001/api-result.json"
 
 OBS = Observation(
-    observation_id="OBS-1111111111111111",
+    observation_id=observation_id(
+        ObservationIdentityInput(
+            change_id=CHANGE_ID,
+            batch_id="B-001",
+            kind="test_failure",
+            target="api",
+            case_id=None,
+            source_artifact=ARTIFACT,
+            source_json_pointer="/cases/0",
+            signature="http_500_empty_name",
+        )
+    ),
     change_id=CHANGE_ID,
     batch_id="B-001",
     kind="test_failure",
     target="api",
     case_id=None,
     source=ObservationSource(
-        artifact="execution/runs/B-001/api-result.json",
+        artifact=ARTIFACT,
         json_pointer="/cases/0",
     ),
-    evidence_refs=["execution/runs/B-001/api-result.json"],
+    evidence_refs=[ARTIFACT],
     signature="http_500_empty_name",
     observed_at="2026-07-25T10:00:00Z",
 )
 
 OCC = IssueOccurrence(
-    occurrence_id="OCC-1111111111111111",
+    occurrence_id=occurrence_id(CHANGE_ID, "B-001", CANDIDATE_DIGEST),
     change_id=CHANGE_ID,
     batch_id="B-001",
     observation_ids=[OBS.observation_id],
@@ -61,10 +82,10 @@ OCC = IssueOccurrence(
         root_cause_hypothesis="null pointer",
     ),
     analysis=OccurrenceAnalysis(
-        evidence_bundle_digest="sha256:aabbccdd",
+        evidence_bundle_digest=EVIDENCE_DIGEST,
         analyzer="aa-issue-analyzer",
         prompt_version="v1",
-        candidate_digest="sha256:11223344",
+        candidate_digest=CANDIDATE_DIGEST,
     ),
 )
 
@@ -73,10 +94,34 @@ ANALYSIS_OK = IssueAnalysisStatus(
     change_id=CHANGE_ID,
     batch_id="B-001",
     status="completed",
-    evidence_bundle_digest="sha256:aabbccdd",
+    evidence_bundle_digest=EVIDENCE_DIGEST,
     candidate_count=1,
-    candidate_digest="sha256:11223344",
+    candidate_digest=CANDIDATE_DIGEST,
 )
+
+
+def _ce(
+    *,
+    seq: int,
+    type_: str,
+    ts: str,
+    idempotency_key: str,
+    **extra: object,
+) -> object:
+    return CHANGE_ISSUE_EVENT_ADAPTER.validate_python(
+        {
+            "schema_version": "1.0",
+            "seq": seq,
+            "event_id": event_id(idempotency_key),
+            "idempotency_key": idempotency_key,
+            "ts": ts,
+            "evidence_digest": EVIDENCE_DIGEST,
+            "type": type_,
+            "change_id": CHANGE_ID,
+            "batch_id": "B-001",
+            **extra,
+        }
+    )
 
 
 def _setup(tmp_path: Path) -> Path:
@@ -84,59 +129,39 @@ def _setup(tmp_path: Path) -> Path:
     change_root = tmp_path / "qa/archive" / CHANGE_ID
     change_root.mkdir(parents=True)
     change_events = [
-        CHANGE_ISSUE_EVENT_ADAPTER.validate_python(
-            {
-                "schema_version": "1.0",
-                "seq": 1,
-                "event_id": "CEVT-1",
-                "idempotency_key": "IDEM-CEVT-1",
-                "ts": "2026-07-25T10:00:00Z",
-                "evidence_digest": "sha256:aabbccdd",
-                "type": "observation_recorded",
-                "change_id": CHANGE_ID,
-                "batch_id": "B-001",
-                "observation": OBS.model_dump(mode="json"),
-            }
+        _ce(
+            seq=1,
+            type_="observation_recorded",
+            ts="2026-07-25T10:00:00Z",
+            idempotency_key=f"observation_recorded:{CHANGE_ID}:B-001:{OBS.observation_id}",
+            observation=OBS.model_dump(mode="json"),
         ),
-        CHANGE_ISSUE_EVENT_ADAPTER.validate_python(
-            {
-                "schema_version": "1.0",
-                "seq": 2,
-                "event_id": "CEVT-2",
-                "idempotency_key": "IDEM-CEVT-2",
-                "ts": "2026-07-25T10:01:00Z",
-                "evidence_digest": "sha256:aabbccdd",
-                "type": "issue_analysis_completed",
-                "change_id": CHANGE_ID,
-                "batch_id": "B-001",
-                "analysis_status": ANALYSIS_OK.model_dump(mode="json"),
-            }
+        _ce(
+            seq=2,
+            type_="issue_analysis_completed",
+            ts="2026-07-25T10:01:00Z",
+            idempotency_key=f"issue_analysis_completed:{CHANGE_ID}:B-001:{CANDIDATE_DIGEST}",
+            analysis_status=ANALYSIS_OK.model_dump(mode="json"),
         ),
-        CHANGE_ISSUE_EVENT_ADAPTER.validate_python(
-            {
-                "schema_version": "1.0",
-                "seq": 3,
-                "event_id": "CEVT-3",
-                "idempotency_key": "IDEM-CEVT-3",
-                "ts": "2026-07-25T10:02:00Z",
-                "evidence_digest": "sha256:aabbccdd",
-                "type": "occurrence_detected",
-                "change_id": CHANGE_ID,
-                "batch_id": "B-001",
-                "occurrence": OCC.model_dump(mode="json"),
-            }
+        _ce(
+            seq=3,
+            type_="occurrence_detected",
+            ts="2026-07-25T10:02:00Z",
+            idempotency_key=f"occurrence_detected:{CHANGE_ID}:B-001:{CANDIDATE_DIGEST}",
+            occurrence=OCC.model_dump(mode="json"),
         ),
     ]
     ChangeIssueStore(change_root).append_and_rebuild(change_events)
+    problem_idem = f"test:problem_detected:{PROB_ID}:1"
     problem_events = [
         PROBLEM_EVENT_ADAPTER.validate_python(
             {
                 "schema_version": "1.0",
                 "seq": 1,
-                "event_id": "PEVT-1",
-                "idempotency_key": "IDEM-PEVT-1",
+                "event_id": event_id(problem_idem),
+                "idempotency_key": problem_idem,
                 "ts": "2026-07-25T10:03:00Z",
-                "evidence_digest": "sha256:aabbccdd",
+                "evidence_digest": EVIDENCE_DIGEST,
                 "type": "problem_detected",
                 "problem_id": PROB_ID,
                 "expected_problem_version": 0,
@@ -156,11 +181,12 @@ def _setup(tmp_path: Path) -> Path:
 
 def test_stable_read_succeeds_when_head_unchanged(tmp_path: Path) -> None:
     root = _setup(tmp_path)
+    pevt_1 = event_id(f"test:problem_detected:{PROB_ID}:1")
     slice_ = LedgerIssueHistoryReader(root).read_window(
-        IssueWindowSelection(change_ids=(CHANGE_ID,), project_event_through="PEVT-1")
+        IssueWindowSelection(change_ids=(CHANGE_ID,), project_event_through=pevt_1)
     )
     assert slice_.integrity.status == "complete"
-    assert slice_.sources[-1].head_event_id == "PEVT-1"
+    assert slice_.sources[-1].head_event_id == pevt_1
 
 
 def test_changed_project_head_during_read_raises_conflict(tmp_path: Path) -> None:
@@ -199,10 +225,11 @@ def test_stable_read_retries_then_succeeds(tmp_path: Path) -> None:
         reads["n"] += 1
         return sequence[idx]
 
+    pevt_1 = event_id(f"test:problem_detected:{PROB_ID}:1")
     reader = LedgerIssueHistoryReader(root)
     with patch.object(Path, "read_bytes", sequenced):
         slice_ = reader.read_window(
-            IssueWindowSelection(change_ids=(CHANGE_ID,), project_event_through="PEVT-1")
+            IssueWindowSelection(change_ids=(CHANGE_ID,), project_event_through=pevt_1)
         )
     assert slice_.integrity.status == "complete"
     assert reads["n"] >= 4
