@@ -267,12 +267,14 @@ def test_plan_review_authoring_rejects_blank_finding_id(review_type: str) -> Non
         PlanReviewAuthoring.model_validate(payload)
 
 
-def test_fuzz_performance_registry_and_profile_still_use_broad_review_model() -> None:
+def test_fuzz_performance_registry_and_profile_use_strong_plan_review_model() -> None:
     fuzz_spec = match_artifact("review/fuzz-plan-review.json")
     performance_spec = match_artifact("review/performance-plan-review.json")
     assert fuzz_spec is not None
     assert performance_spec is not None
-    assert fuzz_spec.model is Review
-    assert performance_spec.model is Review
-    assert get_layer_assurance_profile("fuzz").review_model is Review
-    assert get_layer_assurance_profile("performance").review_model is Review
+    assert fuzz_spec.model is PlanReview
+    assert performance_spec.model is PlanReview
+    assert fuzz_spec.authoring_model is PlanReviewAuthoring
+    assert performance_spec.authoring_model is PlanReviewAuthoring
+    assert get_layer_assurance_profile("fuzz").review_model is PlanReview
+    assert get_layer_assurance_profile("performance").review_model is PlanReview

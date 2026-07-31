@@ -426,19 +426,66 @@ def _policy_fields(expression: object) -> set[str]:
 REGISTERED_PYTHON_POLICY_CONSUMERS = frozenset({"evidence_sufficiency"})
 
 
-def _consumed_policy_fields() -> set[str]:
-    return {
-        name
+def _policy_leaf_paths(expression: object, *, prefix: str = "") -> set[str]:
+    """Collect dotted policy leaf paths such as ``plan_checks.l1_path``."""
+    from assurance_agent.workflow.orchestration.dsl import Ident, Member
+
+    leaves: set[str] = set()
+    if isinstance(expression, Member):
+        parts: list[str] = []
+        cur: object = expression
+        while isinstance(cur, Member):
+            parts.append(cur.prop)
+            cur = cur.obj
+        if isinstance(cur, Ident) and cur.name == "policy":
+            leaves.add(".".join(reversed(parts)))
+    if is_dataclass(expression):
+        for field in fields(expression):
+            value = getattr(expression, field.name)
+            if isinstance(value, tuple):
+                for item in value:
+                    leaves.update(_policy_leaf_paths(item))
+            else:
+                leaves.update(_policy_leaf_paths(value))
+    return leaves
+
+
+def _runtime_policy_consumers() -> set[str]:
+    gate_leaves = {
+        leaf
         for gate in load_workflow_v2(Path.cwd()).gates.values()
         for rule in gate.rules
-        for name in _policy_fields(parse_expression(rule.expr))
+        for leaf in _policy_leaf_paths(parse_expression(rule.expr))
     }
+    # Top-level python-only consumers remain first-segment leaves.
+    return gate_leaves | {name for name in REGISTERED_PYTHON_POLICY_CONSUMERS}
 
 
-def test_every_policy_field_has_a_runtime_consumer() -> None:
-    consumed = _consumed_policy_fields()
-    expected = set(Policy.model_fields) - {"version"}
-    assert consumed | REGISTERED_PYTHON_POLICY_CONSUMERS == expected
+def _all_policy_top_level_fields() -> set[str]:
+    return set(Policy.model_fields) - {"version"}
+
+
+def _deferred_policy_fields() -> set[str]:
+    from assurance_agent.artifacts.policy_obligations import DEFERRED_POLICY_OBLIGATIONS
+
+    return set(DEFERRED_POLICY_OBLIGATIONS)
+
+
+def _runtime_policy_top_level_consumers() -> set[str]:
+    leaves = _runtime_policy_consumers()
+    tops = {leaf.split(".", 1)[0] for leaf in leaves}
+    return tops
+
+
+def test_every_policy_field_has_a_runtime_consumer_or_deferred_obligation() -> None:
+    runtime = _runtime_policy_top_level_consumers()
+    deferred_tops = {field.split(".", 1)[0] for field in _deferred_policy_fields()}
+    all_fields = _all_policy_top_level_fields()
+    assert runtime.isdisjoint(deferred_tops)
+    assert all_fields == runtime | deferred_tops
+    schema_text = Path("assurance_agent/_resources/schemas/workflow-schema.yaml").read_text(encoding="utf-8")
+    for field in _deferred_policy_fields():
+        assert f"policy.{field}" not in schema_text
 
 
 def test_registered_python_consumers_must_name_real_policy_fields() -> None:
@@ -447,9 +494,9 @@ def test_registered_python_consumers_must_name_real_policy_fields() -> None:
 
 
 def test_guard_fails_when_a_policy_field_lacks_any_consumer() -> None:
-    consumed = _consumed_policy_fields()
-    expected = set(Policy.model_fields) - {"version"}
-    uncovered = expected - consumed - REGISTERED_PYTHON_POLICY_CONSUMERS
+    runtime = _runtime_policy_top_level_consumers()
+    deferred_tops = {field.split(".", 1)[0] for field in _deferred_policy_fields()}
+    uncovered = _all_policy_top_level_fields() - runtime - deferred_tops
     assert not uncovered, f"policy fields without runtime consumers: {sorted(uncovered)}"
 
 
@@ -680,7 +727,7 @@ def test_fixture_force_continue_never_overrides_reject_or_missing_capability(
     )
     assert reject_report.verdict == Verdict.REJECT
 
-    missing_cap_report = _fixture_adjudicate(
+    missing_cap_context = _context(
         tmp_path,
         layer=layer,
         checks=_applicable_checks(layer),
@@ -690,8 +737,15 @@ def test_fixture_force_continue_never_overrides_reject_or_missing_capability(
             human_review_required=True,
             risk_level="low",
             codegen_readiness="ready",
-            required_capabilities=["capabilities.missing.leaf"],
+            required_capabilities=["auth.missing_token"],
         ),
+    )
+    missing_cap_context = replace(
+        missing_cap_context, params={**missing_cap_context.params, "force_continue": True}
+    )
+    profile = get_layer_assurance_profile(layer)
+    missing_cap_report = check_gate_in_view(
+        _load_fixture_gates(), profile.gate_id, missing_cap_context
     )
     assert missing_cap_report.verdict == Verdict.NEEDS_HUMAN_REVIEW
 

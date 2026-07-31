@@ -256,10 +256,11 @@ def test_acceptance_schema_digest_drift_refuses_resume(tmp_path: Path) -> None:
     change = project / "qa" / "changes" / "CH-1"
     assert project_invocation(change, invocation_id).terminal is None
 
-    runtime, _compiled, _ = _build(project, "linear")
-    runtime._schema_resolver = lambda digest: (_ for _ in ()).throw(  # noqa: SLF001
-        RuntimeError(f"schema digest drift: {digest}")
-    )
+    runtime, _compiled, _, _scheduler = _build(project, "linear")
+    def _boom(request):  # noqa: ANN001
+        raise RuntimeError(f"schema digest drift: {request.graph_digest}")
+
+    runtime._definition_resolver = _boom  # noqa: SLF001
     with pytest.raises(GraphDefinitionChanged, match="digest"):
         runtime.resume(invocation_id)
 
@@ -270,9 +271,11 @@ def _build_recovery_runtime(
     analyzer_error: str,
     fallback_calls: list[object],
 ):
+    from assurance_agent.workflow.driver.runtime_factory import one_definition_resolver
     from assurance_agent.workflow.graph.compiler import compile_workflow
     from assurance_agent.workflow.graph.contracts import parse_execution_contracts
     from assurance_agent.workflow.graph.handlers.operation import OperationHandler, default_operations
+    from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
     from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
     from assurance_agent.workflow.graph.runtime import GraphRuntime
     from assurance_agent.workflow.graph.scheduler import Scheduler
@@ -379,10 +382,13 @@ graphs:
         checkpoint_store=checkpoints,
         object_store=store,
         workspace_backend=workspaces,
-        contracts=contracts,
-        node_runner=runner,
-        scheduler=scheduler,
-        schema_resolver=lambda _digest: compiled,
+        definition_resolver=one_definition_resolver(
+            compiled=compiled,
+            contracts=contracts,
+            ingest_catalog=validate_catalog_runtime(),
+            node_runner=runner,
+            scheduler=scheduler,
+        ),
         clock=clock,
     )
     return runtime, compiled, scheduler, change
@@ -497,7 +503,7 @@ def test_start_invocation_commits_root_before_drive(tmp_path: Path) -> None:
     from tests.integration._graph_fault_worker import _build
 
     project = _project(tmp_path)
-    runtime, compiled, change = _build(project, "linear")
+    runtime, compiled, change, scheduler = _build(project, "linear")
     context = RuntimeContext(
         project_root=project,
         repo_root=project,
@@ -521,7 +527,7 @@ def test_start_invocation_commits_root_before_drive(tmp_path: Path) -> None:
     assert project_invocation(change, invocation_id).invocation_id == invocation_id
 
     fresh_project = _project(tmp_path / "fresh")
-    fresh_runtime, fresh_compiled, fresh_change = _build(fresh_project, "linear")
+    fresh_runtime, fresh_compiled, fresh_change, _fresh_scheduler = _build(fresh_project, "linear")
     fresh_context = RuntimeContext(
         project_root=fresh_project,
         repo_root=fresh_project,
@@ -532,7 +538,7 @@ def test_start_invocation_commits_root_before_drive(tmp_path: Path) -> None:
     composed = fresh_runtime.run(fresh_compiled, "full", fresh_context)
 
     split_project = _project(tmp_path / "split")
-    split_runtime, split_compiled, split_change = _build(split_project, "linear")
+    split_runtime, split_compiled, split_change, _split_scheduler = _build(split_project, "linear")
     split_context = RuntimeContext(
         project_root=split_project,
         repo_root=split_project,
@@ -965,7 +971,7 @@ def test_v5_resume_none_after_revision_commit_ignores_mutated_view(tmp_path: Pat
     # Mutate the mutable revision view after the durable commit.
     (view / "plans" / "synth-plan.md").write_bytes(b"# mutated after commit\n")
 
-    runtime2, _compiled2, _change2 = _build_v5_revision(project)
+    runtime2, _compiled2, _change2, _scheduler2 = _build_v5_revision(project)
     done = runtime2.resume(root_id, None)
     assert done.status.status == "completed", done.reason
 

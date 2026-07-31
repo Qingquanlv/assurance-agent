@@ -37,6 +37,8 @@ from assurance_agent.workflow.graph.models import (
 )
 from assurance_agent.workflow.graph.project_locks import ProjectResourceLockManager
 from assurance_agent.workflow.graph.runtime import GraphRuntime
+from assurance_agent.workflow.driver.runtime_factory import one_definition_resolver
+from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
 from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
@@ -514,15 +516,17 @@ def _build(
         project_lock_manager=(ProjectResourceLockManager(project) if shared_project_locks else None),
         project_lock_timeout_seconds=0.05,
     )
-    schemas = {compiled.digest: compiled}
     runtime = GraphRuntime(
         checkpoint_store=checkpoints,
         object_store=store,
         workspace_backend=workspaces,
-        contracts=contracts,
-        node_runner=node_runner,
-        scheduler=scheduler,
-        schema_resolver=lambda digest: schemas[digest],
+        definition_resolver=one_definition_resolver(
+            compiled=compiled,
+            contracts=contracts,
+            ingest_catalog=validate_catalog_runtime(),
+            node_runner=node_runner,
+            scheduler=scheduler,
+        ),
         clock=clock,
     )
     holder["rt"] = runtime

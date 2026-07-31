@@ -355,10 +355,7 @@ def test_equivalence_with_runtime_status(tmp_path: Path) -> None:
         checkpoint_store=CheckpointStore(change),
         object_store=cast(Any, None),
         workspace_backend=cast(Any, None),
-        contracts=cast(Any, None),
-        node_runner=cast(Any, None),
-        scheduler=cast(Any, None),
-        schema_resolver=cast(Any, None),
+        definition_resolver=cast(Any, None),
         clock=cast(Any, None),
     )
     expected = runtime.status(INV).model_dump(mode="json")

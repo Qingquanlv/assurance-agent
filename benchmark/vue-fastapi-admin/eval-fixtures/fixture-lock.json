@@ -3,10 +3,12 @@
   "fixtures": {
     "eval-sample-001": {
       "sample_dir": "samples/eval-sample-001",
-      "aggregate_sha256": "17626453c21e2bb67313a1b3336e02785b1c2ea7ced59179087af542ff651f9f",
+      "aggregate_sha256": "cee8cc98b3d848408087c1b6b92d23c8cfea8ab43543d511f0d15da1b0d144fa",
       "files": {
         ".qa.yaml": "dccabbb8c719b86d5980b856a36a10de28f9e31e2af81e4a8b231527129142a4",
         "cases/system/api/case.yaml": "502cb7351ad63cb3363b08edd153ca3db2296086cac42cdd32591c4a4cd0a2bb",
+        "cases/system/fuzz/case.yaml": "d064d2ef060cc08f598ff919a01ff20c705d4d1f7c91c3524b7cf5b776dd0349",
+        "cases/system/performance/case.yaml": "2697bedc145380de946b3821c9c1b1fca2dda35b2f5fc8072663d632aab74158",
         "codegen/api-codegen-summary.md": "b7a11150d8ee2b91694bc821347b3b1e00bb43ec6c55b60cee16ccd5a94ddf6a",
         "codegen/e2e-codegen-summary.md": "ad5d8f5f6bf30926b531298ae83f2232d38d497abf5cc75f00e5cc6851aafe09",
         "codegen/fuzz-codegen-summary.md": "c035c97b5972ece070bfe31cb021d28b9e75045ccd6abeb831906893268f0075",
@@ -40,8 +42,14 @@
         "plans/e2e-codegen-plan.md": "3304bcf714fb5e6111ba71a51c8635d780168f3527d334c00f19fa5cd6b8a196",
         "plans/e2e-plan.md": "f91a07c7e2b70a15f43db7aa8adbba7c7e6921b9d529ea0b3ec605a53b33f1a4",
         "plans/e2e-test-data-plan.md": "a6be3cbb6672dc1329aeb53073541b0cba40085a19aba143ab9be69e581629c5",
+        "plans/fuzz-codegen-plan.md": "f56b71a72f9fe67f9b18c36bae638bfe9723259be522d232d048c49011cfbcbf",
+        "plans/fuzz-plan.md": "c11f3f5945f8fe37e85a680be24605a801db5ae8654221502c62fdf195b0c3b2",
+        "plans/fuzz-review-summary.md": "b21582ba274838fdc31f72bef53e1496627113c0f559ca6d9cab5cde1da5e4b3",
         "plans/m3-review-summary.md": "b1d0c3e790946c0369ffdb8e3bf0d11d974cb75f3166593112f6fbc1aa05a828",
         "plans/m4-review-summary.md": "0b98e667882c63c3030ab15e4440b133f890db695bc11653b5b0b68be0c51fe0",
+        "plans/performance-codegen-plan.md": "34a3ef945af163b1a570a8e36ab3960929549fe9a36c6c86736af41a02e91306",
+        "plans/performance-plan.md": "988308a38d31864bbbff3cf8adb4c9d44a0d47b80f2b6aa35bf084d64e6cfce2",
+        "plans/performance-review-summary.md": "815091599f11dc10724239511987a974937f1049689be97f08cb64a2c4096a79",
         "proposal.md": "80938825ba4c0a48dacdf0e37cdc3d513d8ec13db96deaf3640249397eb95b1a",
         "registry/skill-registry-check.json": "8bc761ad1982df44012c2578801ba048c739e28aeaf8d3bc854081cc72e2c011",
         "review/api-plan-checks.json": "4ad3577744c5bab619e5df20efd9413763f3bcae426b86af8b4aa570ed88affc",

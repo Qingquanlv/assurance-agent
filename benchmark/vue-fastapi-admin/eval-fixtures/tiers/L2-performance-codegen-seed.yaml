@@ -1,12 +1,16 @@
 name: L2-performance-codegen-seed
 extends: L1-plan-seed
-description: Performance codegen stub (golden-sample wiring; real perf artifacts TBD)
+description: Performance codegen seed with full assurance predecessor chain
 paths:
 - codegen
 - tests/config.py
 - tests/conftest.py
 - tests/schema_validation.py
 - tests/perf
+- cases/system/performance
+- plans/performance-plan.md
+- plans/performance-codegen-plan.md
+- plans/performance-review-summary.md
 resets:
   workflow_state:
     phases.execution.status: pending
@@ -26,19 +30,31 @@ imports:
       outputs:
       - change:registry/skill-registry-check.json
       gate: registry-gate
-    - path: execute-workflow/assurance/assurance/performance/performance-branch/review-cycle/performance-plan-review-cycle
-      graph: performance-plan-review-cycle
+    - path: execute-workflow/assurance/assurance/performance/performance-branch/review-cycle/performance-plan-cycle
+      graph: performance-plan-cycle
+      node: applicability
+    - path: execute-workflow/assurance/assurance/performance/performance-branch/review-cycle/performance-plan-cycle
+      graph: performance-plan-cycle
       node: review
       outputs:
       - change:review/performance-plan-review.json
+      - change:review/performance-plan-review-summary.md
+    - path: execute-workflow/assurance/assurance/performance/performance-branch/review-cycle/performance-plan-cycle
+      graph: performance-plan-cycle
+      node: mechanical-plan-checks
+      outputs:
+      - change:review/performance-plan-checks.json
+    - path: execute-workflow/assurance/assurance/performance/performance-branch/review-cycle/performance-plan-cycle
+      graph: performance-plan-cycle
+      node: review-gate
       gate: performance-plan-review-gate
     - path: execute-workflow/assurance/assurance/performance/performance-branch
       graph: performance-branch
       node: review-cycle
     - path: execute-workflow/assurance/assurance/performance/performance-branch
       graph: performance-branch
-      node: codegen-gate
-      gate: performance-plan-review-gate
+      node: codegen-precheck
+      gate: performance-codegen-precondition-gate
     - path: execute-workflow/assurance/assurance/performance/performance-branch
       graph: performance-branch
       node: codegen

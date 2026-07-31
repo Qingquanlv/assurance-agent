@@ -57,8 +57,8 @@ from assurance_agent.workflow.graph.ingest_catalog import (
     validate_catalog_runtime,
 )
 from assurance_agent.workflow.graph.replay_schema import (
+    validate_current_assurance_activation,
     validate_historical_replay_surface,
-    validate_replayable_assurance_schema,
 )
 from assurance_agent.workflow.graph.schema_v2 import (
     GraphDef,
@@ -146,15 +146,25 @@ def compile_workflow(
     schema: WorkflowSchemaV2,
     contracts: ExecutionContractCatalog | None = None,
 ) -> CompiledWorkflow:
-    activation_errors: tuple[str, ...] = ()
-    if _has_packaged_assurance_surface(schema):
-        activation_errors = validate_replayable_assurance_schema(schema)
+    """Compile an explicit synthetic/custom schema without packaged activation gates."""
     return _compile_with_catalog(
         schema,
         contracts=contracts,
         ingest_catalog=None,
-        activation_errors=activation_errors,
+        activation_errors=(),
     )
+
+
+def compile_packaged_workflow(
+    schema: WorkflowSchemaV2,
+    contracts: ExecutionContractCatalog | None = None,
+) -> CompiledWorkflow:
+    """Compile the packaged assurance schema; requires complete four-layer activation."""
+    errors = validate_current_assurance_activation(schema)
+    if errors:
+        details = "\n  - ".join(errors)
+        raise CompileError(f"packaged assurance activation failed:\n  - {details}")
+    return compile_workflow(schema, contracts)
 
 
 def compile_historical_workflow(
@@ -222,11 +232,6 @@ def canonical_digest(value: BaseModel | Mapping[str, object]) -> str:
         value = value.model_dump(mode="json", by_alias=True, exclude_none=True)
     text = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def _has_packaged_assurance_surface(schema: WorkflowSchemaV2) -> bool:
-    """True when the schema exposes the packaged four-layer assurance branch surface."""
-    return "assurance" in schema.graphs and "api-plan-cycle" in schema.graphs
 
 
 def resolve_params(schema: WorkflowSchemaV2, overrides: Mapping[str, object]) -> dict[str, object]:

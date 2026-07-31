@@ -287,6 +287,20 @@ REGISTRY: list[ArtifactSpec] = [
         compat="must_compat",
         authoring_model=PlanReviewAuthoring,
     ),
+    ArtifactSpec(
+        artifact_type="review",
+        pattern="review/fuzz-plan-review.json",
+        model=PlanReview,
+        compat="must_compat",
+        authoring_model=PlanReviewAuthoring,
+    ),
+    ArtifactSpec(
+        artifact_type="review",
+        pattern="review/performance-plan-review.json",
+        model=PlanReview,
+        compat="must_compat",
+        authoring_model=PlanReviewAuthoring,
+    ),
     ArtifactSpec(artifact_type="review", pattern="review/*.json", model=Review, compat="must_compat"),
     ArtifactSpec(
         artifact_type="fact_baseline",

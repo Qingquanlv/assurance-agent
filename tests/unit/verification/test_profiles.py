@@ -84,8 +84,8 @@ def test_profiles_expose_the_approved_artifacts_and_gates() -> None:
 def test_profile_review_models_match_the_capability_gated_contract() -> None:
     assert get_layer_assurance_profile("api").review_model is PlanReview
     assert get_layer_assurance_profile("e2e").review_model is PlanReview
-    assert get_layer_assurance_profile("fuzz").review_model is Review
-    assert get_layer_assurance_profile("performance").review_model is Review
+    assert get_layer_assurance_profile("fuzz").review_model is PlanReview
+    assert get_layer_assurance_profile("performance").review_model is PlanReview
 
 
 def test_profile_applicable_checks_are_subset_of_shared_catalog() -> None:

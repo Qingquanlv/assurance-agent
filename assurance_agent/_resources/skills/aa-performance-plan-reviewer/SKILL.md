@@ -1,144 +1,69 @@
 ---
 name: aa-performance-plan-reviewer
-description: "Review AA performance planning artifacts before performance code generation. Use after aa-performance-plan has generated performance plan files. Read-only: writes performance-plan-review.json and performance-plan-review-summary.md, never modifies plan files."
+description: Review performance planning artifacts semantically before code generation. Writes the registered performance plan review JSON and Markdown summary without modifying plan files.
 ---
-
-## Test Data Architecture Contract
-
-- Require shared builders in `tests/testdata/domain/` and bulk seed/cleanup adapters in `tests/perf/adapters/`.
-- Require mappings to `capabilities.domain_factories` and `capabilities.adapters.performance`.
-- Reject Locust code coupled to pytest fixtures, API/E2E adapters, per-user ORM initialization, or a cleanup plan without a generated-data manifest.
-
-## Context Contract
-
-Do not rely on prior conversation context.
-
-**Before doing any work:**
-
-1. Read `qa/changes/<change-id>/workflow-state.yaml`.
-2. Verify `phases.performance_plan.status == done`.
-3. Read input files from disk: `plans/performance-plan.md`, `plans/performance-codegen-plan.md`, `plans/performance-review-summary.md`, and the selected `cases/**/case.yaml` (type == Performance).
-4. If any required file is missing, stop and report.
-5. Use files as the sole source of truth.
-
-**After completing work:**
-
-1. Write output files:
-   - `qa/changes/<change-id>/review/performance-plan-review.json`
-   - `qa/changes/<change-id>/review/performance-plan-review-summary.md`
-2. Report the `workflow-state.yaml` state delta (inline mode: apply it directly; dispatched subagent: never write `workflow-state.yaml` — report the values in your final message and the orchestrator applies them):
-   - `phases.performance_plan_review.status` = `pass | needs_fix | needs_human_review | reject`
-   - `phases.performance_plan_review.gate_file = review/performance-plan-review.json`
-
----
-
-# AA Performance Plan Reviewer
 
 ## Purpose
 
-Review the performance plan before code generation and produce a machine-readable gate. Read-only; must not modify plan files.
+Act as the semantic gate between `aa-performance-plan` and `aa-performance-codegen`. Decide whether the plan covers approved Performance cases, preserves measurable intent, exposes concrete risks, and can be implemented without guessing product behavior.
 
-## Mandatory Output Contract
+Review absolute thresholds, load shape, scenario coverage, and statistical interpretation. Do not reimplement deterministic plan checks or restate the registered JSON schema.
 
-This skill is a **gate producer**. The workflow cannot advance to `aa-performance-codegen` without a valid `performance-plan-review.json`.
+Apply non-deprecated guidance from `.aa/memory/aa-performance-plan-reviewer.md` when that read-only file exists. Empty scope is handled by the graph applicability operation before this skill runs.
 
-- You **must** write valid JSON with all required fields, including `codegen_readiness`.
-- A natural-language verdict is **not** a substitute for the JSON gate.
-- User approval does not release the gate.
-- If you cannot write the JSON file, treat the review as failed (STOP condition).
+## Inputs
 
-## Review Criteria
+Required; stop if any is missing:
 
-1. **Case-to-plan coverage** — every selected `type: Performance` case maps to a planned scenario.
-2. **Thresholds present and absolute** — each scenario has non-empty `p95_ms` and `error_rate_max`. Missing or placeholder thresholds → **blocker** (Performance must be a pass/fail against confirmed absolute thresholds, not a baseline comparison).
-3. **Load profile concrete** — `users`, `spawn_rate`, `run_time_s` are set.
-4. **Target environment resolvable** — base URL comes from `.aa/config.yaml` (or explicitly provided); not vague.
-5. **Auth strategy** — Locust user auth reuses known fixtures/data-knowledge; no hardcoded real tokens.
-6. **Target file path** — outputs map to `tests/perf/locustfile_<module>.py` (required for runner discovery).
+- `qa/changes/<change-id>/plans/performance-plan.md`
+- `qa/changes/<change-id>/plans/performance-codegen-plan.md`
+- `qa/changes/<change-id>/plans/performance-review-summary.md`
+- `qa/changes/<change-id>/cases/**/case.yaml`
 
-## Decision Rules
+Read when present:
 
-Return one of: `pass` / `needs_fix` / `needs_human_review` / `reject`.
+- `.aa/config.yaml`
+- `.aa/data-knowledge.yaml`
 
-- **pass**: `codegen_readiness in [ready, ready_with_warnings]`, `blockers` empty, no blocking `needs_review`.
-- **needs_fix**: mechanically fixable plan issues only; `auto_fix_plan` non-empty; all referenced findings `severity in [low, medium]`.
-- **needs_human_review**: thresholds missing/unconfirmed, base URL unknown, or auth unknown.
-- **reject**: wrong feature, plan contradicts case files, or Performance used as a baseline/regression comparison instead of absolute thresholds.
+## Outputs
 
-### Empty-scope skip (do NOT reject a layer that has no cases)
+Write both:
 
-If the proposal selected the Performance layer but there are **zero applicable `type: Performance` cases** in scope (empty selection, and the plan honestly documents the empty scope), this is **not** a defect — there is simply nothing to load-test. Do **not** hard-reject and do **not** invent scenarios.
+- `qa/changes/<change-id>/review/performance-plan-review.json`
+- `qa/changes/<change-id>/review/performance-plan-review-summary.md`
 
-- Set **`layer_applicable: false`** in the review JSON. Keep `codegen_readiness: not_ready` and record a `finding` explaining the empty scope.
-- The `performance-plan-review-gate` reads `layer_applicable == false` and routes a graceful **skip**: the performance branch ends and `aa-performance-codegen` is skipped, without halting the parallel API/E2E work.
-- Only omit `layer_applicable` (or set it `true`) when the layer genuinely has applicable cases — in that case the normal `pass`/`needs_fix`/`needs_human_review`/`reject` rules apply. Missing `cases/**` while cases were expected is still a real problem: raise `needs_human_review`, not a silent skip.
+The JSON is the registered `PlanReview` gate artifact; its schema contract is supplied by the runtime (`aa validate`). Populate the semantic verdict, concrete downstream risks, all codegen capability leaves, and an actionable next step.
 
-### Gate Consistency Rules
+Always emit `codegen_readiness`, `auto_fix_allowed`, `human_review_required`, `risk_level`, and non-empty fully qualified `required_capabilities` for an applicable review. Use this consistency map:
 
-- If `blockers` non-empty → `decision != pass`, `codegen_readiness = not_ready`, `next_action != continue`, `auto_fix_allowed = false`.
-- If `codegen_readiness == not_ready` → `decision != pass`, `next_action != continue`.
-- If `decision == pass` → `codegen_readiness in [ready, ready_with_warnings]`, `blockers` empty, `human_review_required = false`, `auto_fix_allowed = false`, `next_action = continue`.
-- If any `needs_review` item `blocking == true` → `decision = needs_human_review`, `human_review_required = true`, `next_action = human_review`.
-- Missing/placeholder thresholds → MUST be a blocker; `decision` MUST NOT be `pass`.
+| `decision` | `codegen_readiness` | `auto_fix_allowed` | `human_review_required` | `next_action` |
+|---|---|---|---|---|
+| `pass` | `ready` or `ready_with_warnings` | `false` | `false` | `continue` |
+| `needs_fix` | `not_ready` | `false` | `false` | `human_review` |
+| `needs_human_review` | `not_ready` | `false` | `true` | `human_review` |
+| `reject` | `not_ready` | `false` | `true` | `stop` |
 
-### next_action Mapping
+Performance has no automatic plan fixer. Always set `auto_fix_allowed: false` and `auto_fix_plan: []`. For `needs_fix`, use a manual/human next action — use a manual human next action only.
 
-| decision | next_action |
-|---|---|
-| `pass` | `continue` |
-| `needs_fix` | `run_performance_plan_fixer` |
-| `needs_human_review` | `human_review` |
-| `reject` | `stop` |
+Always set `risk_level` to exactly `low`, `medium`, `high`, or `critical`. The downstream gate applies `policy.human_review_risk_levels`.
 
-## Required JSON Format
+The graph coordinator records the task and gate outcome; this skill does not own progression.
 
-> **Schema source of truth:** the complete, enforced field contract for review gate JSON
-> lives in `src/schema/review.ts` (validated by `aa validate`). The example below is
-> illustrative only. After writing review files you MUST run:
->
-> ```
-> aa validate --change <change-id> --artifact review/performance-plan-review.json
-> ```
->
-> and resolve every reported error. Do not rely on this document for the full field list.
+## Boundaries
 
-Write valid JSON to:
+Write only the two review outputs listed in Outputs.
 
-```text
-qa/changes/<change-id>/review/performance-plan-review.json
-```
+Do not modify plan files, case files, source code, tests, knowledge files, or memory files.
 
-**Minimal top-level structure (illustrative — see `src/schema/review.ts` for the full contract):**
+Do not write `review/performance-plan-checks.json`; mechanical checks are graph-owned.
 
-```json
-{
-  "schema_version": "1.0",
-  "review_type": "performance-plan",
-  "change_id": "<change-id>",
-  "decision": "pass",
-  "risk_level": "low",
-  "codegen_readiness": "ready",
-  "auto_fix_allowed": false,
-  "human_review_required": false,
-  "summary": "Short review summary.",
-  "reviewed_files": [],
-  "blockers": [],
-  "findings": [],
-  "needs_review": [],
-  "auto_fix_plan": [],
-  "next_action": "continue",
-  "created_at": "YYYY-MM-DDTHH:mm:ssZ"
-}
-```
+Do not invent thresholds, load shapes, factories, or product intent.
 
-`reviewed_files` MUST be non-empty and include `plans/performance-plan.md`, `plans/performance-codegen-plan.md`, `plans/performance-review-summary.md`.
+Do not continue into code generation. The graph gate is the progression authority.
 
-Optional field **`layer_applicable`** (boolean): set `false` only for the empty-scope skip case described in Decision Rules. Omit it otherwise.
+## Domain Notes
 
-## Hard Rules
-
-- Do not modify plan files.
-- Do not write `decision == pass` when any scenario lacks confirmed absolute thresholds.
-- Do not accept plans whose base URL or auth strategy is unresolved.
-- Performance is a pass/fail against absolute thresholds — reject baseline/regression framing.
-- Do not hard-reject a layer solely because it has no applicable cases — use `layer_applicable: false` (empty-scope skip) instead.
+- Absolute thresholds must be numeric and comparable (latency, error rate, throughput).
+- Load shape must specify concurrency/ramp/duration without ambiguity.
+- Scenario coverage must map every in-scope Performance case.
+- Statistical interpretation must state how results are aggregated and judged.

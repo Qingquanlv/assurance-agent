@@ -33,7 +33,7 @@ from assurance_agent.verification.profile_manifest import assurance_profile_byte
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import load_execution_contracts
 from assurance_agent.workflow.graph.replay_schema import PinnedLayerTopology, validate_params_only_expression
-from assurance_agent.workflow.graph.schema_v2 import EdgeDef, load_workflow_v2
+from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
 from assurance_agent.workflow.orchestration.plan_check_replay import replay_plan_check_policy
 from tests.unit.workflow.graph.test_replay_binding import (
     _CHANGE_ID,
@@ -154,8 +154,9 @@ def test_collect_capability_policy_replay_selected_fuzz_is_not_wired(tmp_path: P
         expected_entrypoint=_ENTRYPOINT,
     )
     by_layer = {row.layer: row for row in replay.rows}
-    assert by_layer["fuzz"].status == "not_wired"
-    assert replay.integrity == "complete"
+    assert by_layer["fuzz"].status == "incomplete"
+    assert by_layer["fuzz"].reason_code == "partial_assurance_wiring"
+    assert replay.integrity == "incomplete"
 
 
 def test_collect_capability_policy_replay_definition_failure_returns_incomplete_matrix(
@@ -275,30 +276,22 @@ def test_bind_replay_definitions_exposes_selected_layers_and_topologies(tmp_path
     )
     assert binding.selected_layers == frozenset({"api", "fuzz"})
     assert binding.layer_topologies["api"].status == "wired"
-    assert binding.layer_topologies["fuzz"].status == "legacy_unwired"
+    assert binding.layer_topologies["fuzz"].status == "partial"
     assert binding.layer_topologies["e2e"].status == "wired"
 
 
 def _partial_fuzz_plan_review_cycle(schema):
-    """Activation markers without complete specialty wiring → topology partial."""
-    cycle = schema.graphs["fuzz-plan-review-cycle"]
-    api_mechanical = schema.graphs["api-plan-cycle"].nodes["mechanical-plan-checks"]
-    fuzz_profile = get_layer_assurance_profile("fuzz")
-    mechanical = api_mechanical.model_copy(
-        update={
-            "with_": {"layer": "fuzz", "require_review": True},
-            "outputs": [f"change:{fuzz_profile.checks_artifact}"],
-        }
-    )
-    nodes = {**cycle.nodes, "mechanical-plan-checks": mechanical}
-    edges = [
-        *cycle.edges,
-        EdgeDef(**{"from": "review", "to": "mechanical-plan-checks"}),
-        EdgeDef(**{"from": "mechanical-plan-checks", "to": "END"}),
+    """Keep activation markers but mis-route knowledge resume → topology partial."""
+    cycle = schema.graphs["fuzz-plan-cycle"]
+    routes = [
+        route
+        if route.from_ != "knowledge-remediation"
+        else route.model_copy(update={"cases": {**route.cases, "fix_and_proceed": "review"}})
+        for route in cycle.routes
     ]
     graphs = {
         **schema.graphs,
-        "fuzz-plan-review-cycle": cycle.model_copy(update={"nodes": nodes, "edges": edges}),
+        "fuzz-plan-cycle": cycle.model_copy(update={"routes": routes}),
     }
     return schema.model_copy(update={"graphs": graphs})
 
@@ -388,8 +381,9 @@ def test_v4_legacy_selected_fuzz_is_not_wired_even_with_stray_active_files(tmp_p
 
     replay = _collect(fixture)
     by_layer = {row.layer: row for row in replay.rows}
-    assert by_layer["fuzz"].status == "not_wired"
-    assert replay.integrity == "complete"
+    assert by_layer["fuzz"].status == "incomplete"
+    assert by_layer["fuzz"].reason_code == "partial_assurance_wiring"
+    assert replay.integrity == "incomplete"
     assert replay.semantics == "counterfactual_plan_check_actions/v2"
 
 
@@ -418,7 +412,7 @@ def test_v4_forged_wired_fuzz_without_profile_snapshot_is_incomplete(
                 assurance_node_id="fuzz",
                 branch_graph_id="fuzz-branch",
                 cycle_call_node_id="review-cycle",
-                cycle_graph_id="fuzz-plan-review-cycle",
+                cycle_graph_id="fuzz-plan-cycle",
                 applicability_node_id="applicability",
                 reviewer_node_id="review",
                 mechanical_node_id="mechanical-plan-checks",

@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 from assurance_agent.artifacts.policy import PolicyError
@@ -61,7 +61,11 @@ from assurance_agent.workflow.graph.definition_pinning import (
     stage_pinned_definitions,
     verify_pinned_definitions,
 )
-from assurance_agent.workflow.graph.compiler import canonical_digest, resolve_params
+from assurance_agent.workflow.graph.compiler import (
+    PinnedDefinitionRequest,
+    canonical_digest,
+    resolve_params,
+)
 from assurance_agent.workflow.graph.selected_wave import (
     SelectedWaveDriftError,
     derive_child_invocation_id,
@@ -92,7 +96,6 @@ from assurance_agent.workflow.graph.models import (
 from assurance_agent.workflow.graph.planner import PlanError, plan_superstep
 from assurance_agent.workflow.graph.project_locks import ProjectPublicationStore
 from assurance_agent.workflow.graph.scheduler import Scheduler, SchedulerError
-from assurance_agent.workflow.graph.task_runner import NodeRunner
 from assurance_agent.workflow.graph.workspace import (
     TaskWorkspace,
     TreeStore,
@@ -160,6 +163,20 @@ class GraphDefinitionChanged(GraphRuntimeError):
     """pinned graph/contract digest 与当前定义漂移；拒绝普通 resume。"""
 
 
+def assert_live_semantic_compatibility(request: PinnedDefinitionRequest) -> None:
+    from assurance_agent.verification.profile_manifest import assurance_profile_digest
+    from assurance_agent.workflow.orchestration.gate_semantics import gate_semantics_digest
+
+    if request.gate_semantics_digest != gate_semantics_digest():
+        raise GraphDefinitionChanged(
+            "graph_definition_changed: gate semantics digest does not match current executable"
+        )
+    if request.assurance_profile_digest != assurance_profile_digest():
+        raise GraphDefinitionChanged(
+            "graph_definition_changed: assurance profile digest does not match current executable"
+        )
+
+
 class GraphIntegrityError(GraphRuntimeError):
     """checkpoint/ledger 损坏或因果完整性失败。"""
 
@@ -173,20 +190,15 @@ class GraphRuntime:
         checkpoint_store: CheckpointStore,
         object_store: TreeStore,
         workspace_backend: WorkspaceBackend,
-        contracts: ExecutionContractCatalog,
-        node_runner: NodeRunner,
-        scheduler: Scheduler,
-        schema_resolver: Callable[[str], CompiledWorkflow],
+        definition_resolver: Callable[[PinnedDefinitionRequest], Any],
         clock: Clock,
     ) -> None:
         self._checkpoints = checkpoint_store
         self._objects = object_store
         self._workspaces = workspace_backend
-        self._contracts = contracts
-        self._node_runner = node_runner
-        self._scheduler = scheduler
-        self._schema_resolver = schema_resolver
+        self._definition_resolver = definition_resolver
         self._clock = clock
+        self._bundle_cache: dict[PinnedDefinitionRequest, Any] = {}
 
     def run(
         self,
@@ -270,7 +282,7 @@ class GraphRuntime:
         checkpoint_ns = invocation_id
         bound = context.model_copy(update={"params": params})
         try:
-            binding = bind_root_definitions(store=self._objects, root_tree_id=root_tree_id)
+            binding = bind_root_definitions(store=self._objects, root_tree_id=root_tree_id, event_schema_version=5)
         except PolicyError:
             raise
         started = _build_invocation_started(
@@ -491,7 +503,7 @@ class GraphRuntime:
 
     def _schema_resolver_for_parent(self, parent_task: ExecutableTask) -> CompiledWorkflow:
         parent = self._checkpoints.project(parent_task.invocation_id)
-        return self._resolve_compiled(parent)
+        return self._resolve_bundle(parent).compiled
 
     def _try_project(self, invocation_id: str) -> GraphProjection | None:
         try:
@@ -603,7 +615,7 @@ class GraphRuntime:
         graph_id = entry.graph_id
 
         try:
-            binding = bind_root_definitions(store=self._objects, root_tree_id=root_tree_id)
+            binding = bind_root_definitions(store=self._objects, root_tree_id=root_tree_id, event_schema_version=5)
         except PolicyError:
             raise
         started = _build_invocation_started(
@@ -640,17 +652,35 @@ class GraphRuntime:
             raise
         return invocation_id
 
+    def _bundle_for_compiled(
+        self, compiled: CompiledWorkflow, *, event_schema_version: int
+    ) -> Any:
+        from assurance_agent.workflow.graph.definition_pinning import request_for_compiled
+
+        request = request_for_compiled(compiled, event_schema_version=event_schema_version)
+        assert_live_semantic_compatibility(request)
+        try:
+            return self._definition_resolver(request)
+        except GraphDefinitionChanged:
+            raise
+        except Exception as exc:
+            raise GraphDefinitionChanged(
+                f"definition_resolver failed for digest {compiled.digest}: {exc}"
+            ) from exc
+
     def _stage_pinned_definitions(
         self,
         txn: object,
         compiled: CompiledWorkflow,
         binding: InvocationDefinitionBinding,
     ) -> None:
+        bundle = self._bundle_for_compiled(compiled, event_schema_version=binding.event_schema_version)
         stage_pinned_definitions(
             txn,  # type: ignore[arg-type]
             compiled,
             binding,
-            contracts=self._contracts,
+            contracts=bundle.contracts,
+            ingest_catalog=bundle.ingest_catalog,
         )
 
     # ------------------------------------------------------------------ resume
@@ -1008,7 +1038,9 @@ class GraphRuntime:
             if projection.terminal is not None:
                 return self._result_from_projection(projection)
 
-            compiled = self._resolve_compiled(projection)
+            bundle = self._resolve_bundle(projection)
+            compiled = bundle.compiled
+            scheduler = bundle.scheduler
 
             wait_until = self._earliest_retry_at(projection)
             if wait_until is not None and wait_until > self._clock.now():
@@ -1027,7 +1059,7 @@ class GraphRuntime:
 
             child_projections = self._child_projections(invocation_id)
             inherited_lease = context.inherited_prepared_wave_lease(
-                self._scheduler._prepared_wave_lease_owner  # noqa: SLF001
+                scheduler._prepared_wave_lease_owner  # noqa: SLF001
             )
             from assurance_agent.workflow.graph.selected_wave import PreparedWaveLease
 
@@ -1064,7 +1096,7 @@ class GraphRuntime:
             try:
                 if prepared_entry is not None:
                     assert typed_lease is not None
-                    wave = self._scheduler.execute_selected_wave(
+                    wave = scheduler.execute_selected_wave(
                         typed_lease,
                         context,
                         invocation_id=invocation_id,
@@ -1073,7 +1105,7 @@ class GraphRuntime:
                         child_projections=child_projections,
                     )
                 else:
-                    wave = self._scheduler.execute(
+                    wave = scheduler.execute(
                         plan,
                         projection,
                         context,
@@ -1183,21 +1215,50 @@ class GraphRuntime:
             reason=status.terminal_reason or status.status,
         )
 
-    def _resolve_compiled(self, projection: GraphProjection) -> CompiledWorkflow:
+    def _request_from_projection(self, projection: GraphProjection) -> PinnedDefinitionRequest:
+        return PinnedDefinitionRequest(
+            graph_digest=projection.graph_digest,
+            ingest_catalog_digest=projection.ingest_catalog_digest,
+            contract_digests=tuple(sorted(projection.contract_digests.items())),
+            event_schema_version=projection.event_schema_version,
+            gate_semantics_digest=projection.gate_semantics_digest,
+            assurance_profile_digest=projection.assurance_profile_digest,
+        )
+
+    def _resolve_bundle(self, projection: GraphProjection) -> Any:
+        request = self._request_from_projection(projection)
+        assert_live_semantic_compatibility(request)
         try:
-            compiled = self._schema_resolver(projection.graph_digest)
+            bundle = self._definition_resolver(request)
+        except GraphDefinitionChanged:
+            raise
         except Exception as exc:
             raise GraphDefinitionChanged(
-                f"schema_resolver failed for digest {projection.graph_digest}: {exc}"
+                f"definition_resolver failed for request {request.graph_digest}: {exc}"
             ) from exc
-        if compiled.digest != projection.graph_digest:
+        if bundle.compiled.digest != projection.graph_digest:
             raise GraphDefinitionChanged(
-                f"graph_definition_changed: resolver digest {compiled.digest} != "
+                f"graph_definition_changed: resolver digest {bundle.compiled.digest} != "
                 f"pinned {projection.graph_digest}"
             )
-        if compiled.contract_digests != projection.contract_digests:
+        if bundle.compiled.contract_digests != projection.contract_digests:
             raise GraphDefinitionChanged("graph_definition_changed: contract digests drifted")
-        return compiled
+        if (
+            projection.ingest_catalog_digest
+            and bundle.compiled.ingest_catalog_digest != projection.ingest_catalog_digest
+        ):
+            raise GraphDefinitionChanged("graph_definition_changed: ingest catalog digest drifted")
+        self._bundle_cache[request] = bundle
+        return bundle
+
+    def _resolve_compiled(self, projection: GraphProjection) -> CompiledWorkflow:
+        return self._resolve_bundle(projection).compiled
+
+    def _scheduler_for(self, projection: GraphProjection) -> Scheduler:
+        return self._resolve_bundle(projection).scheduler
+
+    def _contracts_for(self, projection: GraphProjection) -> ExecutionContractCatalog:
+        return self._resolve_bundle(projection).contracts
 
     def _reconcile_running(self, projection: GraphProjection, context: RuntimeContext) -> None:
         leases = LeaseRegistry(context.change_dir)
@@ -1213,6 +1274,9 @@ class GraphRuntime:
     def _reach_recovery_barrier(self, invocation_id: str, context: RuntimeContext) -> GraphProjection:
         """Reconcile and replay durable updates until no recovery seam reports progress."""
         self._recover_open_revision_transitions(context)
+        # Definition-dependent recovery requires a live-compatible resolved bundle.
+        projection = self._checkpoints.project(invocation_id)
+        self._resolve_bundle(projection)
         while True:
             projection = self._checkpoints.project(invocation_id)
             self._reconcile_running(projection, context)
@@ -1273,7 +1337,7 @@ class GraphRuntime:
             tasks=(),
         )
         try:
-            return self._scheduler.commit_pending_write_sets(
+            return self._scheduler_for(projection).commit_pending_write_sets(
                 plan=plan,
                 projection=projection,
                 context=context,
@@ -1302,7 +1366,7 @@ class GraphRuntime:
             if publication_id is None or not write_set_ids:
                 continue
             try:
-                if self._scheduler.repair_committed_write_sets(
+                if self._scheduler_for(projection).repair_committed_write_sets(
                     context=context,
                     invocation_id=projection.invocation_id,
                     publication_id=publication_id,

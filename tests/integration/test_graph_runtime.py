@@ -32,6 +32,8 @@ from assurance_agent.workflow.graph.models import (
 )
 from assurance_agent.workflow.graph.planner import PlanError
 from assurance_agent.workflow.graph import runtime as runtime_mod
+from assurance_agent.workflow.driver.runtime_factory import one_definition_resolver
+from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 from assurance_agent.workflow.graph.runtime import (
     GraphDefinitionChanged,
     GraphRuntime,
@@ -254,7 +256,7 @@ def _build_runtime(
     clock=None,
     node_runner=None,
     change_id: str = "CH-1",
-) -> GraphRuntime:
+) -> tuple[GraphRuntime, Scheduler]:
     change = project / "qa" / "changes" / change_id
     store = TreeStore(change)
     checkpoints = CheckpointStore(change)
@@ -281,25 +283,27 @@ def _build_runtime(
         contracts=contracts,
         state_defs=state_defs,
     )
-    schemas = {compiled.digest: compiled}
     runtime = GraphRuntime(
         checkpoint_store=checkpoints,
         object_store=store,
         workspace_backend=workspaces,
-        contracts=contracts,
-        node_runner=node_runner,
-        scheduler=scheduler,
-        schema_resolver=lambda digest: schemas[digest],
+        definition_resolver=one_definition_resolver(
+            compiled=compiled,
+            contracts=contracts,
+            ingest_catalog=validate_catalog_runtime(),
+            node_runner=node_runner,
+            scheduler=scheduler,
+        ),
         clock=clock,
     )
     holder["rt"] = runtime
-    return runtime
+    return runtime, scheduler
 
 
 def test_minimal_graph_run_and_fresh_status(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     compiled, contracts = _minimal_compiled()
-    runtime = _build_runtime(project, compiled, contracts)
+    runtime, scheduler = _build_runtime(project, compiled, contracts)
     context = _context(project)
 
     result = runtime.run(compiled, "full", context)
@@ -310,9 +314,9 @@ def test_minimal_graph_run_and_fresh_status(tmp_path: Path) -> None:
     assert [event["type"] for event in events].count("task_attempt_succeeded") == 1
     assert events[-1]["type"] == "graph_completed"
     started = next(e for e in events if e.get("type") == "graph_invocation_started")
-    assert started.get("event_schema_version") == 4
+    assert started.get("event_schema_version") == 5
 
-    fresh_runtime = _build_runtime(project, compiled, contracts)
+    fresh_runtime, _scheduler = _build_runtime(project, compiled, contracts)
     assert fresh_runtime.status(result.invocation_id).model_dump() == result.status.model_dump()
 
 
@@ -322,7 +326,7 @@ def test_runtime_maps_structured_plan_error_without_reading_its_message(
 ) -> None:
     project = _make_project(tmp_path)
     compiled, contracts = _minimal_compiled()
-    runtime = _build_runtime(project, compiled, contracts)
+    runtime, scheduler = _build_runtime(project, compiled, contracts)
 
     def reject_plan(*args, **kwargs):  # type: ignore[no-untyped-def]
         raise PlanError("compiled pins drifted", error_kind="graph_definition_changed")
@@ -339,7 +343,7 @@ def test_runtime_does_not_infer_plan_error_kind_from_message(
 ) -> None:
     project = _make_project(tmp_path)
     compiled, contracts = _minimal_compiled()
-    runtime = _build_runtime(project, compiled, contracts)
+    runtime, scheduler = _build_runtime(project, compiled, contracts)
 
     def reject_plan(*args, **kwargs):  # type: ignore[no-untyped-def]
         raise PlanError("graph_definition_changed appeared in ordinary diagnostics")
@@ -356,12 +360,12 @@ def test_crash_after_attempt_started_abandons_and_retries(tmp_path: Path) -> Non
     compiled, contracts = _write_compiled()
     clock = FakeClock()
     ops = _write_ops()
-    runtime = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(ops))
+    runtime, scheduler = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(ops))
 
     def crash_run(prepared, plan, projection, context, leases):  # type: ignore[no-untyped-def]
         raise _InjectedCrash("after task_attempt_started")
 
-    runtime._scheduler._run_attempt = crash_run  # type: ignore[method-assign]  # noqa: SLF001
+    scheduler._run_attempt = crash_run  # type: ignore[method-assign]  # noqa: SLF001
     with pytest.raises(_InjectedCrash):
         runtime.run(compiled, "full", _context(project))
 
@@ -374,7 +378,7 @@ def test_crash_after_attempt_started_abandons_and_retries(tmp_path: Path) -> Non
     )
 
     clock.advance(3600)
-    fresh = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(ops))
+    fresh, fresh_scheduler = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(ops))
     result = fresh.resume(invocation_id)
     assert result.exit_code == 0
     events = read_events_strict(change)
@@ -397,12 +401,12 @@ def test_crash_after_success_retries_update_only(tmp_path: Path) -> None:
 
     counting = CountingHandler(ops)
     runner = HandlerNodeRunner({target: counting for target in ops})
-    runtime = _build_runtime(project, compiled, contracts, node_runner=runner)
+    runtime, scheduler = _build_runtime(project, compiled, contracts, node_runner=runner)
 
     def crash_commit(*args, **kwargs):  # type: ignore[no-untyped-def]
         raise _InjectedCrash("after task_attempt_succeeded")
 
-    runtime._scheduler._commit_wave = crash_commit  # type: ignore[method-assign]  # noqa: SLF001
+    scheduler._commit_wave = crash_commit  # type: ignore[method-assign]  # noqa: SLF001
     with pytest.raises(_InjectedCrash):
         runtime.run(compiled, "full", _context(project))
 
@@ -423,7 +427,7 @@ def test_crash_after_success_retries_update_only(tmp_path: Path) -> None:
             return base.execute(task, workspace, context)
 
     fresh_handler = FreshCounting(ops)
-    fresh = _build_runtime(
+    fresh, fresh_scheduler = _build_runtime(
         project,
         compiled,
         contracts,
@@ -451,7 +455,7 @@ def test_crash_during_materialization_repairs_without_reexec(tmp_path: Path) -> 
             return base.execute(task, workspace, context)
 
     counting = CountingHandler(ops)
-    runtime = _build_runtime(
+    runtime, scheduler = _build_runtime(
         project,
         compiled,
         contracts,
@@ -487,7 +491,7 @@ def test_crash_during_materialization_repairs_without_reexec(tmp_path: Path) -> 
             return base.execute(task, workspace, context)
 
     fresh_handler = FreshCounting(ops)
-    fresh = _build_runtime(
+    fresh, fresh_scheduler = _build_runtime(
         project,
         compiled,
         contracts,
@@ -513,7 +517,7 @@ def test_synchronized_commit_next_loop_replays_targeted_publication_only(tmp_pat
     project = _make_project(tmp_path)
     _seed_synchronized_project(project)
     compiled, contracts = _sync_compiled()
-    runtime = _build_runtime(
+    runtime, scheduler = _build_runtime(
         project,
         compiled,
         contracts,
@@ -533,7 +537,7 @@ def test_synchronized_commit_before_apply_is_repaired_by_fresh_runtime(tmp_path:
     _seed_synchronized_project(project)
     compiled, contracts = _sync_compiled()
     calls = {"n": 0}
-    runtime = _build_runtime(
+    runtime, scheduler = _build_runtime(
         project,
         compiled,
         contracts,
@@ -557,7 +561,7 @@ def test_synchronized_commit_before_apply_is_repaired_by_fresh_runtime(tmp_path:
     assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version":1}\n'
 
     fresh_calls = {"n": 0}
-    fresh = _build_runtime(
+    fresh, fresh_scheduler = _build_runtime(
         project,
         compiled,
         contracts,
@@ -579,7 +583,7 @@ def test_synchronized_partial_apply_is_repaired_by_fresh_runtime(
     _seed_synchronized_project(project)
     compiled, contracts = _sync_compiled()
     calls = {"n": 0}
-    runtime = _build_runtime(
+    runtime, scheduler = _build_runtime(
         project,
         compiled,
         contracts,
@@ -616,7 +620,7 @@ def test_synchronized_partial_apply_is_repaired_by_fresh_runtime(
     assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version":1}\n'
 
     fresh_calls = {"n": 0}
-    fresh = _build_runtime(
+    fresh, fresh_scheduler = _build_runtime(
         project,
         compiled,
         contracts,
@@ -663,14 +667,14 @@ def test_applied_marker_prevents_stale_replay_after_later_change_advances_resour
 ) -> None:
     project = _two_change_project(tmp_path)
     compiled, contracts = _sync_compiled()
-    runtime_a = _build_runtime(
+    runtime_a, scheduler_a = _build_runtime(
         project,
         compiled,
         contracts,
         node_runner=_op_runner(_versioned_sync_ops(2)),
         change_id="CH-A",
     )
-    runtime_b = _build_runtime(
+    runtime_b, scheduler_b = _build_runtime(
         project,
         compiled,
         contracts,
@@ -679,7 +683,7 @@ def test_applied_marker_prevents_stale_replay_after_later_change_advances_resour
     )
     a_applied = threading.Event()
     continue_a = threading.Event()
-    execute_a = runtime_a._scheduler.execute  # noqa: SLF001
+    execute_a = scheduler_a.execute  # noqa: SLF001
 
     def pause_after_a_releases_lock(*args, **kwargs):  # type: ignore[no-untyped-def]
         result = execute_a(*args, **kwargs)
@@ -688,7 +692,7 @@ def test_applied_marker_prevents_stale_replay_after_later_change_advances_resour
             raise RuntimeError("timed out waiting for Change B")
         return result
 
-    runtime_a._scheduler.execute = pause_after_a_releases_lock  # type: ignore[method-assign]  # noqa: SLF001
+    scheduler_a.execute = pause_after_a_releases_lock  # type: ignore[method-assign]  # noqa: SLF001
     a_results: list[object] = []
     a_errors: list[BaseException] = []
 
@@ -724,7 +728,7 @@ def test_prepared_publication_before_commit_does_not_permanently_block_later_cha
 
     project = _two_change_project(tmp_path)
     compiled, contracts = _sync_compiled()
-    runtime_a = _build_runtime(
+    runtime_a, scheduler_a = _build_runtime(
         project,
         compiled,
         contracts,
@@ -744,7 +748,7 @@ def test_prepared_publication_before_commit_does_not_permanently_block_later_cha
     assert not any(event.get("type") == "superstep_committed" for event in events_a)
     assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version": 1}\n'
 
-    runtime_b = _build_runtime(
+    runtime_b, scheduler_b = _build_runtime(
         project,
         compiled,
         contracts,
@@ -761,7 +765,7 @@ def test_prepared_publication_blocks_later_change_after_apply_before_ack_crash(
 ) -> None:
     project = _two_change_project(tmp_path)
     compiled, contracts = _sync_compiled()
-    runtime_a = _build_runtime(
+    runtime_a, scheduler_a = _build_runtime(
         project,
         compiled,
         contracts,
@@ -779,7 +783,7 @@ def test_prepared_publication_blocks_later_change_after_apply_before_ack_crash(
         runtime_a.run(compiled, "full", _context(project, change_id="CH-A"))
     assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version": 2}\n'
 
-    runtime_b = _build_runtime(
+    runtime_b, scheduler_b = _build_runtime(
         project,
         compiled,
         contracts,
@@ -794,7 +798,7 @@ def test_prepared_publication_blocks_later_change_after_apply_before_ack_crash(
     invocation_a = next(
         str(event["invocation_id"]) for event in events_a if event.get("type") == "graph_invocation_started"
     )
-    fresh_a = _build_runtime(
+    fresh_a, _scheduler_a = _build_runtime(
         project,
         compiled,
         contracts,
@@ -803,7 +807,7 @@ def test_prepared_publication_blocks_later_change_after_apply_before_ack_crash(
     )
     assert fresh_a.resume(invocation_a).exit_code == 0
 
-    runtime_c = _build_runtime(
+    runtime_c, _scheduler_c = _build_runtime(
         project,
         compiled,
         contracts,
@@ -819,7 +823,7 @@ def test_crash_after_write_set_freeze_before_success_retries_attempt(tmp_path: P
     compiled, contracts = _write_compiled()
     ops = _write_ops()
     clock = FakeClock()
-    runtime = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(ops))
+    runtime, scheduler = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(ops))
     store = runtime._objects  # noqa: SLF001
     original_freeze = store.freeze_write_set
 
@@ -841,7 +845,7 @@ def test_crash_after_write_set_freeze_before_success_retries_attempt(tmp_path: P
 
     clock.advance(3600)
     store.freeze_write_set = original_freeze  # type: ignore[method-assign]
-    fresh = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(ops))
+    fresh, fresh_scheduler = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(ops))
     result = fresh.resume(invocation_id)
     assert result.exit_code == 0
     events = read_events_strict(change)
@@ -855,7 +859,7 @@ def test_recovery_barrier_orders_reconcile_before_pending_commit_before_plan(
 ) -> None:
     project = _make_project(tmp_path)
     compiled, contracts = _write_compiled()
-    runtime = _build_runtime(project, compiled, contracts, node_runner=_op_runner(_write_ops()))
+    runtime, scheduler = _build_runtime(project, compiled, contracts, node_runner=_op_runner(_write_ops()))
     order: list[str] = []
     original_reconcile = runtime._reconcile_running
     original_commit_pending = runtime._commit_pending_write_sets
@@ -905,12 +909,12 @@ def test_pending_commit_recovery_failure_raises_graph_runtime_error(tmp_path: Pa
     project = _make_project(tmp_path)
     compiled, contracts = _write_compiled()
     ops = _write_ops()
-    runtime = _build_runtime(project, compiled, contracts, node_runner=_op_runner(ops))
+    runtime, scheduler = _build_runtime(project, compiled, contracts, node_runner=_op_runner(ops))
 
     def crash_commit(*args, **kwargs):  # type: ignore[no-untyped-def]
         raise _InjectedCrash("after task_attempt_succeeded")
 
-    runtime._scheduler._commit_wave = crash_commit  # type: ignore[method-assign]  # noqa: SLF001
+    scheduler._commit_wave = crash_commit  # type: ignore[method-assign]  # noqa: SLF001
     with pytest.raises(_InjectedCrash):
         runtime.run(compiled, "full", _context(project))
 
@@ -920,12 +924,12 @@ def test_pending_commit_recovery_failure_raises_graph_runtime_error(tmp_path: Pa
         str(e["invocation_id"]) for e in events if e.get("type") == "graph_invocation_started"
     )
 
-    fresh = _build_runtime(project, compiled, contracts, node_runner=_op_runner(ops))
+    fresh, fresh_scheduler = _build_runtime(project, compiled, contracts, node_runner=_op_runner(ops))
 
     def refuse_pending(**_kwargs):  # type: ignore[no-untyped-def]
         raise ValueError("pending commit refused")
 
-    fresh._scheduler.commit_pending_write_sets = refuse_pending  # type: ignore[method-assign]
+    fresh_scheduler.commit_pending_write_sets = refuse_pending  # type: ignore[method-assign]
     with pytest.raises(GraphRuntimeError, match="pending commit refused"):
         fresh.resume(invocation_id)
 
@@ -937,12 +941,12 @@ def test_recovery_barrier_blocks_plan_while_task_still_running(
     project = _make_project(tmp_path)
     compiled, contracts = _write_compiled()
     clock = FakeClock()
-    runtime = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(_write_ops()))
+    runtime, scheduler = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(_write_ops()))
 
     def crash_run(prepared, plan, projection, context, leases):  # type: ignore[no-untyped-def]
         raise _InjectedCrash("after task_attempt_started")
 
-    runtime._scheduler._run_attempt = crash_run  # type: ignore[method-assign]  # noqa: SLF001
+    scheduler._run_attempt = crash_run  # type: ignore[method-assign]  # noqa: SLF001
     with pytest.raises(_InjectedCrash):
         runtime.run(compiled, "full", _context(project))
 
@@ -969,7 +973,7 @@ def test_recovery_barrier_blocks_plan_while_task_still_running(
         raise AssertionError("plan_superstep must not run while a task is still running")
 
     monkeypatch.setattr(runtime_mod, "plan_superstep", reject_plan)
-    fresh = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(_write_ops()))
+    fresh, fresh_scheduler = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(_write_ops()))
     with pytest.raises(GraphRuntimeError, match="recovery barrier stalled"):
         fresh.resume(invocation_id)
     assert plan_calls == []
@@ -982,12 +986,12 @@ def test_recovery_barrier_skips_plan_while_pending_write_sets_remain(
     project = _make_project(tmp_path)
     compiled, contracts = _write_compiled()
     ops = _write_ops()
-    runtime = _build_runtime(project, compiled, contracts, node_runner=_op_runner(ops))
+    runtime, scheduler = _build_runtime(project, compiled, contracts, node_runner=_op_runner(ops))
 
     def crash_commit(*args, **kwargs):  # type: ignore[no-untyped-def]
         raise _InjectedCrash("after task_attempt_succeeded")
 
-    runtime._scheduler._commit_wave = crash_commit  # type: ignore[method-assign]  # noqa: SLF001
+    scheduler._commit_wave = crash_commit  # type: ignore[method-assign]  # noqa: SLF001
     with pytest.raises(_InjectedCrash):
         runtime.run(compiled, "full", _context(project))
 
@@ -1004,12 +1008,12 @@ def test_recovery_barrier_skips_plan_while_pending_write_sets_remain(
         raise AssertionError("plan_superstep must not run while pending write sets remain")
 
     monkeypatch.setattr(runtime_mod, "plan_superstep", reject_plan)
-    fresh = _build_runtime(project, compiled, contracts, node_runner=_op_runner(ops))
+    fresh, fresh_scheduler = _build_runtime(project, compiled, contracts, node_runner=_op_runner(ops))
 
     def refuse_pending(**_kwargs):  # type: ignore[no-untyped-def]
         return False
 
-    fresh._scheduler.commit_pending_write_sets = refuse_pending  # type: ignore[method-assign]
+    fresh_scheduler.commit_pending_write_sets = refuse_pending  # type: ignore[method-assign]
     with pytest.raises(GraphRuntimeError, match="recovery barrier stalled"):
         fresh.resume(invocation_id)
     assert plan_calls == []
@@ -1148,15 +1152,17 @@ def test_nested_drive_run_child_single_synchronized_capture(tmp_path: Path) -> N
         contracts=contracts,
         state_defs=state_defs,
     )
-    schemas = {compiled.digest: compiled}
     runtime = GraphRuntime(
         checkpoint_store=checkpoints,
         object_store=store,
         workspace_backend=workspaces,
-        contracts=contracts,
-        node_runner=node_runner,
-        scheduler=scheduler,
-        schema_resolver=lambda digest: schemas[digest],
+        definition_resolver=one_definition_resolver(
+            compiled=compiled,
+            contracts=contracts,
+            ingest_catalog=validate_catalog_runtime(),
+            node_runner=node_runner,
+            scheduler=scheduler,
+        ),
         clock=clock,
     )
     holder["rt"] = runtime

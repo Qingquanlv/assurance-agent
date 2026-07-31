@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
@@ -80,23 +81,7 @@ class FixtureLock(BaseModel):
     fixtures: dict[str, FixtureLockEntry]
 
 
-# Stub review files for fuzz/performance golden wiring (artifacts TBD).
-_STUB_REVIEW_DOCS: dict[str, dict[str, object]] = {
-    "review/fuzz-plan-review.json": {
-        "decision": "pass",
-        "codegen_readiness": "ready",
-        "auto_fix_allowed": False,
-        "human_review_required": False,
-        "risk_level": "low",
-    },
-    "review/performance-plan-review.json": {
-        "decision": "pass",
-        "codegen_readiness": "ready",
-        "auto_fix_allowed": False,
-        "human_review_required": False,
-        "risk_level": "low",
-    },
-}
+_ASSURANCE_SEED_LAYERS = ("fuzz", "performance")
 
 
 def _fixture_entry(fixtures_root: Path, sample_dir: str) -> FixtureLockEntry:
@@ -321,27 +306,96 @@ def _hash_logical(change_dir: Path, project_root: Path, logical: str) -> str:
     return digest
 
 
-def _ensure_stub_artifacts(change_dir: Path, project_root: Path, import_def: FixtureImportDef) -> None:
-    """Materialize stub review / knowledge files required by gated imports."""
+def _ensure_assurance_seed_artifacts(
+    change_dir: Path,
+    project_root: Path,
+    change_id: str,
+    import_def: FixtureImportDef,
+) -> None:
+    """Materialize typed PlanReview + mechanical checks for gated Fuzz/Performance imports."""
+    from assurance_agent.artifacts.models.review import PlanReview
+    from assurance_agent.verification.checks.registry import run_plan_checks
+    from assurance_agent.verification.profiles import get_layer_assurance_profile
+
     gate_ids = {t.gate for t in import_def.completed if t.gate}
     logicals = set(import_def.inputs)
     for task in import_def.completed:
         logicals.update(task.outputs)
 
-    for rel, doc in _STUB_REVIEW_DOCS.items():
-        want = f"change:{rel}" in logicals
-        if rel.startswith("review/fuzz"):
-            want = want or bool(gate_ids & {"fuzz-plan-review-gate", "fuzz-codegen-precondition-gate"})
-        if rel.startswith("review/performance"):
-            want = want or bool(
-                gate_ids & {"performance-plan-review-gate", "performance-codegen-precondition-gate"}
-            )
-        if not want:
+    fixture_root = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "assurance"
+    for layer in _ASSURANCE_SEED_LAYERS:
+        profile = get_layer_assurance_profile(layer)
+        needed = bool(
+            gate_ids
+            & {
+                profile.gate_id,
+                f"{layer}-codegen-precondition-gate",
+            }
+        ) or any(f"change:review/{layer}-" in item for item in logicals)
+        if not needed:
             continue
-        dest = change_dir / rel
-        if not dest.is_file():
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+
+        contract_dir = fixture_root / f"{layer}-contract"
+        knowledge_src = contract_dir / ".aa" / "data-knowledge.yaml"
+        knowledge_dst = project_root / ".aa" / "data-knowledge.yaml"
+        if knowledge_src.is_file() and (
+            not knowledge_dst.is_file() or knowledge_dst.read_text(encoding="utf-8").strip() == "capabilities: {}"
+        ):
+            knowledge_dst.parent.mkdir(parents=True, exist_ok=True)
+            knowledge_dst.write_text(knowledge_src.read_text(encoding="utf-8"), encoding="utf-8")
+
+        review_rel = profile.review_artifact
+        review_path = change_dir / review_rel
+        if not review_path.is_file():
+            src = contract_dir / "review" / Path(review_rel).name
+            payload = json.loads(src.read_text(encoding="utf-8"))
+            payload["change_id"] = change_id
+            review = PlanReview.model_validate(payload)
+            review_path.parent.mkdir(parents=True, exist_ok=True)
+            review_path.write_text(
+                json.dumps(review.model_dump(mode="json"), indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+        summary_rel = review_rel.replace(".json", "-summary.md")
+        summary_path = change_dir / summary_rel
+        if not summary_path.is_file():
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            summary_path.write_text(
+                f"# {layer} plan review summary\n\ndecision: pass\n",
+                encoding="utf-8",
+            )
+
+        checks_path = change_dir / profile.checks_artifact
+        if not checks_path.is_file():
+            from assurance_agent.verification.checks.base import CheckContext
+
+            plan_texts = {
+                path: (change_dir / path).read_text(encoding="utf-8")
+                for path in profile.plan_artifacts
+                if (change_dir / path).is_file()
+            }
+            cases = []
+            for case_path in sorted((change_dir / "cases").glob("**/case.yaml")):
+                payload = yaml.safe_load(case_path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    cases.append(payload)
+            knowledge_payload = yaml.safe_load(knowledge_dst.read_text(encoding="utf-8")) or {}
+            review_payload = json.loads(review_path.read_text(encoding="utf-8"))
+            document = run_plan_checks(
+                CheckContext(
+                    plan_texts=plan_texts,
+                    cases=cases,
+                    data_knowledge=knowledge_payload if isinstance(knowledge_payload, dict) else {},
+                    layer=profile.layer,
+                    required_capabilities=tuple(review_payload.get("required_capabilities") or ()),
+                )
+            )
+            checks_path.parent.mkdir(parents=True, exist_ok=True)
+            checks_path.write_text(
+                json.dumps(document.model_dump(mode="json"), indent=2) + "\n",
+                encoding="utf-8",
+            )
 
     knowledge = project_root / ".aa" / "data-knowledge.yaml"
     if not knowledge.is_file():
@@ -376,14 +430,19 @@ def _evaluate_gate_for_seed(
     change_dir: Path,
     change_id: str,
     gate_id: str,
-    node_results: dict[str, object],
+    node_results: Mapping[str, Mapping[str, Any]],
 ) -> tuple[str, dict[str, str]]:
-    from assurance_agent.workflow.graph.compiler import compile_workflow
+    from assurance_agent.workflow.graph.compiler import compile_packaged_workflow, compile_workflow
     from assurance_agent.workflow.graph.contracts import load_execution_contracts
-    from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
+    from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2_with_origin
 
-    schema = load_workflow_v2(project_root)
-    compiled = compile_workflow(schema, load_execution_contracts(project_root))
+    loaded = load_workflow_v2_with_origin(project_root)
+    contracts = load_execution_contracts(project_root)
+    compiled = (
+        compile_packaged_workflow(loaded.schema, contracts)
+        if loaded.origin == "packaged"
+        else compile_workflow(loaded.schema, contracts)
+    )
     if gate_id not in compiled.schema.gates:
         raise AaError(f"unknown gate in fixture import: {gate_id}")
     report = check_gate_in_view(
@@ -411,14 +470,14 @@ def _write_import_manifest(
     fixtures_root: Path,
     import_def: FixtureImportDef,
 ) -> Path:
-    _ensure_stub_artifacts(change_dir, project_root, import_def)
+    _ensure_assurance_seed_artifacts(change_dir, project_root, change_id, import_def)
     digest = fixture_digest(fixtures_root, fixture_id)
     inputs: dict[str, str] = {}
     for logical in import_def.inputs:
         inputs[logical] = _hash_logical(change_dir, project_root, logical)
 
     completed: list[dict[str, Any]] = []
-    node_results: dict[str, object] = {}
+    node_results_by_structural_path: dict[str, dict[str, dict[str, Any]]] = {}
     for task in import_def.completed:
         outputs = {logical: _hash_logical(change_dir, project_root, logical) for logical in task.outputs}
         entry: dict[str, Any] = {
@@ -429,22 +488,33 @@ def _write_import_manifest(
         }
         if task.task_key is not None:
             entry["task_key"] = task.task_key
+        local_results = node_results_by_structural_path.setdefault(task.path, {})
+        local_payload = local_results.setdefault(task.node, {})
+        local_payload["status"] = "succeeded"
         if task.gate is not None:
             verdict, reads = _evaluate_gate_for_seed(
                 project_root=project_root,
                 change_dir=change_dir,
                 change_id=change_id,
                 gate_id=task.gate,
-                node_results=node_results,
+                node_results=local_results,
             )
             entry["gate"] = {
                 "id": task.gate,
                 "verdict": verdict,
                 "reads_sha256": reads,
             }
-            node_results[task.node] = {
-                "gate": {"gate_id": task.gate, "verdict": verdict, "reads_sha256": reads}
-            }
+            gate_payload = local_payload.setdefault("gate", {})
+            if isinstance(gate_payload, dict):
+                gate_payload.update(
+                    {"gate_id": task.gate, "verdict": verdict, "reads_sha256": reads}
+                )
+            else:
+                local_payload["gate"] = {
+                    "gate_id": task.gate,
+                    "verdict": verdict,
+                    "reads_sha256": reads,
+                }
         completed.append(entry)
 
     payload = {

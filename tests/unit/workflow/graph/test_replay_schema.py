@@ -906,8 +906,18 @@ def test_classify_pinned_layer_topology_three_way_for_fuzz(
     packaged_schema: WorkflowSchemaV2,
 ) -> None:
     fuzz_spec = _topology_spec("fuzz")
-    legacy = classify_pinned_layer_topology(packaged_schema, fuzz_spec)
-    wired = classify_pinned_layer_topology(_wired_specialty_schema(layer="fuzz"), fuzz_spec)
+    # True legacy: strip all three activation markers from the packaged surface.
+    graphs = dict(packaged_schema.graphs)
+    cycle = graphs["fuzz-plan-cycle"]
+    nodes = {
+        k: v
+        for k, v in cycle.nodes.items()
+        if k not in {"applicability", "mechanical-plan-checks", "review-gate"}
+    }
+    graphs["fuzz-plan-cycle"] = cycle.model_copy(update={"nodes": nodes})
+    legacy_schema = packaged_schema.model_copy(update={"graphs": graphs})
+    legacy = classify_pinned_layer_topology(legacy_schema, fuzz_spec)
+    wired = classify_pinned_layer_topology(packaged_schema, fuzz_spec)
     partial = classify_pinned_layer_topology(_partial_specialty_schema(layer="fuzz"), fuzz_spec)
 
     assert legacy.status == "legacy_unwired"
@@ -1071,10 +1081,7 @@ def test_knowledge_remediation_half_mutations_are_partial(layer: str, mutator: s
 def test_validate_current_assurance_activation_reports_packaged_fuzz_performance(
     packaged_schema: WorkflowSchemaV2,
 ) -> None:
-    errors = validate_current_assurance_activation(packaged_schema)
-    joined = "\n".join(errors)
-    assert "fuzz" in joined
-    assert "performance" in joined
+    assert validate_current_assurance_activation(packaged_schema) == ()
     assert validate_replayable_assurance_schema(packaged_schema) == ()
 
 

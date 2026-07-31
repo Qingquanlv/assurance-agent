@@ -9,6 +9,8 @@ Validates:
 
 from __future__ import annotations
 
+from typing import cast
+
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -18,11 +20,14 @@ from assurance_agent.artifacts.models.improvements import ImprovementState
 from assurance_agent.artifacts.models.issues import Problem, ProblemProjection
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
 from assurance_agent.workflow.graph.checkpoint import CheckpointStore
+from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import load_execution_contracts, parse_execution_contracts
 from assurance_agent.workflow.graph.handlers.operation import default_operations
 from assurance_agent.workflow.graph.models import CompiledWorkflow, ResumeCommand, RuntimeContext
 from assurance_agent.workflow.graph.runtime import GraphRuntime
+from assurance_agent.workflow.driver.runtime_factory import one_definition_resolver
+from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2, parse_workflow_v2
 from assurance_agent.workflow.graph.task_runner import build_default_node_runner
@@ -188,15 +193,17 @@ def _runtime(
         contracts=contracts,  # type: ignore[arg-type]
         state_defs=state_defs,
     )
-    schemas = {compiled.digest: compiled}
     runtime = GraphRuntime(
         checkpoint_store=checkpoints,
         object_store=store,
         workspace_backend=workspaces,
-        contracts=contracts,  # type: ignore[arg-type]
-        node_runner=node_runner,
-        scheduler=scheduler,
-        schema_resolver=lambda digest: schemas[digest],
+        definition_resolver=one_definition_resolver(
+            compiled=compiled,
+            contracts=cast(ExecutionContractCatalog, contracts),
+            ingest_catalog=validate_catalog_runtime(),
+            node_runner=node_runner,
+            scheduler=scheduler,
+        ),
         clock=clock,
     )
     holder["rt"] = runtime

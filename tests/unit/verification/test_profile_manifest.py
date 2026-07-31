@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from assurance_agent.artifacts.models.assurance import LAYER_NAMES, PLAN_CHECK_IDS
-from assurance_agent.artifacts.models.review import PlanReview, Review
+from assurance_agent.artifacts.models.review import PlanReview
 from assurance_agent.verification.checks.registry import CHECKS_BY_ID
 from assurance_agent.verification.profiles import iter_layer_assurance_profiles
 from assurance_agent.verification.profile_manifest import (
@@ -59,7 +59,8 @@ def test_manifest_records_review_models_by_qualified_name() -> None:
     actual = {profile["layer"]: profile["review_model"] for profile in manifest["profiles"]}
     assert actual == expected
     assert actual["api"] == f"{PlanReview.__module__}.{PlanReview.__name__}"
-    assert actual["fuzz"] == f"{Review.__module__}.{Review.__name__}"
+    assert actual["fuzz"] == f"{PlanReview.__module__}.{PlanReview.__name__}"
+    assert actual["performance"] == f"{PlanReview.__module__}.{PlanReview.__name__}"
 
 
 def test_repeated_construction_is_byte_identical() -> None:

@@ -1,0 +1,34 @@
+schema_version: "1.0"
+added:
+  - case_id: PERF-001
+    title: Account list endpoint load threshold
+    priority: P1
+    severity: high
+    type: Performance
+    objective: Verify GET /accounts sustains declared absolute latency and error thresholds under fixed load.
+    summary: Locust hammers the list endpoint with authenticated users; thresholds are user-confirmed absolutes, not baseline regression.
+    preconditions:
+      - Target environment base URL is configured in `.aa/config.yaml`
+      - Admin auth can be acquired from `.aa/data-knowledge.yaml`
+    steps:
+      - Seed accounts via declared domain factory through performance adapter
+      - Launch Locust with configured users, spawn rate, and run time
+      - Collect p95 latency and error rate against absolute thresholds
+    assertions:
+      - p95 latency must stay at or below confirmed threshold
+      - error rate must stay at or below confirmed maximum
+    automation:
+      required: true
+      framework: locust
+      performance:
+        scenario:
+          capability: GET /accounts
+          thresholds:
+            p95_ms: 500
+            error_rate_max: 0.01
+          load:
+            users: 50
+            spawn_rate: 5
+            run_time_s: 120
+modified: []
+removed: []

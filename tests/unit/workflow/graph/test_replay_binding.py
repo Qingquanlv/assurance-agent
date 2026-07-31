@@ -792,8 +792,8 @@ def test_bind_replay_definitions_happy_path(tmp_path: Path) -> None:
     assert binding.event_schema_version == 4
     assert binding.layer_topologies["api"].status == "wired"
     assert binding.layer_topologies["e2e"].status == "wired"
-    assert binding.layer_topologies["fuzz"].status == "legacy_unwired"
-    assert binding.layer_topologies["performance"].status == "legacy_unwired"
+    assert binding.layer_topologies["fuzz"].status == "partial"
+    assert binding.layer_topologies["performance"].status == "partial"
     assert binding.gate_semantics_compatible is True
     assert binding.profile_compatibility["api"] is True
     assert "api" in binding.selected_layers
@@ -906,7 +906,7 @@ def test_bind_replay_definitions_gate_semantics_mismatch(tmp_path: Path) -> None
         expected_entrypoint=_ENTRYPOINT,
     )
     assert binding.gate_semantics_compatible is False
-    assert binding.layer_topologies["fuzz"].status == "legacy_unwired"
+    assert binding.layer_topologies["fuzz"].status == "partial"
     with pytest.raises(ReplayBindingError, match="gate_semantics_mismatch"):
         recover_layer_inputs(binding, layer="api", change_dir=fixture.change_dir)
 
@@ -928,7 +928,7 @@ def test_bind_replay_definitions_assurance_profile_mismatch(tmp_path: Path) -> N
         expected_entrypoint=_ENTRYPOINT,
     )
     assert binding.profile_compatibility["api"] is False
-    assert binding.layer_topologies["fuzz"].status == "legacy_unwired"
+    assert binding.layer_topologies["fuzz"].status == "partial"
     with pytest.raises(ReplayBindingError, match="profile_definition_incompatible"):
         recover_layer_inputs(binding, layer="api", change_dir=fixture.change_dir)
 

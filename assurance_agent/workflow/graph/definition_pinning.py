@@ -74,6 +74,26 @@ class PinnedDefinitionError(Exception):
         super().__init__(f"{reason_code}: {message}")
 
 
+def request_for_compiled(
+    compiled: CompiledWorkflow,
+    *,
+    event_schema_version: int,
+    gate_digest: str | None = None,
+    profile_digest: str | None = None,
+) -> PinnedDefinitionRequest:
+    """Build a pinned definition request from a compiled workflow identity."""
+    return PinnedDefinitionRequest(
+        graph_digest=compiled.digest,
+        ingest_catalog_digest=compiled.ingest_catalog_digest,
+        contract_digests=tuple(sorted(compiled.contract_digests.items())),
+        event_schema_version=event_schema_version,
+        gate_semantics_digest=gate_digest if gate_digest is not None else gate_semantics_digest(),
+        assurance_profile_digest=(
+            profile_digest if profile_digest is not None else assurance_profile_digest()
+        ),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class InvocationDefinitionBinding:
     event_schema_version: int
@@ -147,6 +167,7 @@ def stage_pinned_definitions(
     binding: InvocationDefinitionBinding,
     *,
     contracts: ExecutionContractCatalog,
+    ingest_catalog: IngestArtifactCatalog | None = None,
 ) -> None:
     schema_bytes = (
         json.dumps(
@@ -159,7 +180,7 @@ def stage_pinned_definitions(
     ).encode("utf-8")
     txn.write_runtime_file_once(f"{_SCHEMA_DIR}/{compiled.digest}.json", schema_bytes)
 
-    catalog = validate_catalog_runtime()
+    catalog = ingest_catalog if ingest_catalog is not None else validate_catalog_runtime()
     catalog_bytes = (
         json.dumps(
             catalog.model_dump(mode="json"),

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from collections.abc import Callable
 import json
 from pathlib import Path
@@ -41,6 +43,8 @@ from assurance_agent.workflow.graph.models import (
     TaskResult,
 )
 from assurance_agent.workflow.graph.runtime import GraphRuntime
+from assurance_agent.workflow.driver.runtime_factory import one_definition_resolver
+from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
 from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
@@ -213,10 +217,13 @@ def _runtime(
         checkpoint_store=checkpoints,
         object_store=store,
         workspace_backend=workspaces,
-        contracts=contracts,  # type: ignore[arg-type]
-        node_runner=runner,
-        scheduler=scheduler,
-        schema_resolver=lambda _digest: compiled,
+        definition_resolver=one_definition_resolver(
+            compiled=compiled,
+            contracts=cast(ExecutionContractCatalog, contracts),
+            ingest_catalog=validate_catalog_runtime(),
+            node_runner=runner,
+            scheduler=scheduler,
+        ),
         clock=SystemClock(),
     )
     holder["runtime"] = runtime
@@ -724,7 +731,7 @@ def test_root_start_pins_project_policy_snapshot_and_records_origin(tmp_path: Pa
     snapshot = tmp_path / "root-snapshot"
     store.materialize(started["root_tree_id"], snapshot)  # type: ignore[arg-type]
     tree_digest = policy_digest(load_policy(snapshot))
-    assert started["event_schema_version"] == 4
+    assert started["event_schema_version"] == 5
     assert started["policy_origin"] == "project"
     assert started["policy_digest"] == tree_digest
     assert started["gate_semantics_digest"] == gate_semantics_digest()
@@ -847,7 +854,7 @@ def test_import_start_uses_the_same_root_binding_path(tmp_path: Path) -> None:
 
     started = _started_events(project)[0]
     change_dir = _context(project).change_dir
-    assert started["event_schema_version"] == 4
+    assert started["event_schema_version"] == 5
     assert started["policy_origin"] == "project"
     assert (
         _pinned_policy_bytes(change_dir, str(started["policy_digest"]))

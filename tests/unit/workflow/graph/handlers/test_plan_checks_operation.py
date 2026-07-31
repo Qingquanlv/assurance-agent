@@ -95,7 +95,7 @@ _BASE_PLAN_REVIEW = {
     "findings": [],
     "auto_fix_plan": [],
     "next_action": "continue",
-    "required_capabilities": ["domain_factories.dept.make_dept"],
+    "required_capabilities": ["capabilities.domain_factories.dept.make_dept"],
 }
 
 
@@ -238,14 +238,14 @@ def test_review_at_canonical_path_supplies_required_capabilities_on_reviewed_pas
     _write_plan_review(
         workspace,
         "api",
-        required_capabilities=["domain_factories.dept.missing_thing"],
+        required_capabilities=["capabilities.domain_factories.dept.missing_thing"],
     )
     result = verify_plan_mechanical(_task("api", require_review=True), workspace, _context())
     assert result.status == "succeeded"
     doc = json.loads((workspace.change_dir / "review" / "api-plan-checks.json").read_text(encoding="utf-8"))
     capability_check = next(check for check in doc["checks"] if check["check_id"] == "capability_keys")
     assert capability_check["status"] == "fail"
-    assert capability_check["findings"][0]["actual"] == "domain_factories.dept.missing_thing"
+    assert capability_check["findings"][0]["actual"] == "capabilities.domain_factories.dept.missing_thing"
 
 
 def test_a_failing_check_is_not_a_task_failure(workspace: TaskWorkspace) -> None:
@@ -254,7 +254,7 @@ def test_a_failing_check_is_not_a_task_failure(workspace: TaskWorkspace) -> None
     _write_plan_review(
         workspace,
         "api",
-        required_capabilities=["domain_factories.dept.missing_thing"],
+        required_capabilities=["capabilities.domain_factories.dept.missing_thing"],
     )
 
     result = verify_plan_mechanical(_task("api", require_review=True), workspace, _context())

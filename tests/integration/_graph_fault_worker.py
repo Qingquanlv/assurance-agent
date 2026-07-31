@@ -369,14 +369,14 @@ def force_v5_binding():
         runtime_mod.bind_root_definitions = original_runtime
 
 
-def _install_hooks(runtime, point: str) -> None:  # noqa: ANN001
+def _install_hooks(runtime, point: str, *, scheduler) -> None:  # noqa: ANN001
     from assurance_agent.workflow.core import events as events_mod
     from assurance_agent.workflow.core import progression as prog_mod
     from assurance_agent.workflow.graph import leases as leases_mod
     from assurance_agent.workflow.graph import manual_revision as manual_revision_mod
     from assurance_agent.workflow.graph import runtime as runtime_mod
 
-    sched = runtime._scheduler  # noqa: SLF001
+    sched = scheduler
     checkpoints = runtime._checkpoints  # noqa: SLF001
 
     if point == "revision_target_objects":
@@ -531,6 +531,8 @@ def _build_v5_revision(project: Path):
     from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
     from assurance_agent.workflow.graph.task_runner import build_default_node_runner
     from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
+    from assurance_agent.workflow.driver.runtime_factory import one_definition_resolver
+    from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 
     change = project / "qa" / "changes" / "CH-1"
     contracts = parse_execution_contracts(_V5_REVISION_CONTRACTS)
@@ -605,19 +607,21 @@ def _build_v5_revision(project: Path):
         contracts=contracts,
         state_defs=dict(compiled.schema.graphs[graph_id].state),
     )
-    schemas = {compiled.digest: compiled}
     runtime = GraphRuntime(
         checkpoint_store=checkpoints,
         object_store=store,
         workspace_backend=workspaces,
-        contracts=contracts,
-        node_runner=node_runner,
-        scheduler=scheduler,
-        schema_resolver=lambda digest: schemas[digest],
+        definition_resolver=one_definition_resolver(
+            compiled=compiled,
+            contracts=contracts,
+            ingest_catalog=validate_catalog_runtime(),
+            node_runner=node_runner,
+            scheduler=scheduler,
+        ),
         clock=clock,
     )
     holder["rt"] = runtime
-    return runtime, compiled, change
+    return runtime, compiled, change, scheduler
 
 
 def _build(project: Path, schema_key: str):
@@ -642,6 +646,8 @@ def _build(project: Path, schema_key: str):
     from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
     from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
     from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
+    from assurance_agent.workflow.driver.runtime_factory import one_definition_resolver
+    from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 
     change = project / "qa" / "changes" / "CH-1"
     contracts = parse_execution_contracts(_CONTRACTS)
@@ -698,18 +704,20 @@ def _build(project: Path, schema_key: str):
         contracts=contracts,
         state_defs=dict(compiled.schema.graphs[graph_id].state),
     )
-    schemas = {compiled.digest: compiled}
     runtime = GraphRuntime(
         checkpoint_store=checkpoints,
         object_store=store,
         workspace_backend=workspaces,
-        contracts=contracts,
-        node_runner=node_runner,
-        scheduler=scheduler,
-        schema_resolver=lambda digest: schemas[digest],
+        definition_resolver=one_definition_resolver(
+            compiled=compiled,
+            contracts=contracts,
+            ingest_catalog=validate_catalog_runtime(),
+            node_runner=node_runner,
+            scheduler=scheduler,
+        ),
         clock=clock,
     )
-    return runtime, compiled, change
+    return runtime, compiled, change, scheduler
 
 
 def prepare_interrupted_v5_graph(tmp_path: Path):
@@ -724,7 +732,7 @@ def prepare_interrupted_v5_graph(tmp_path: Path):
     # bind_root_definitions runs during root start; restore immediately after so
     # later in-process tests do not inherit the v5 force-patch.
     with force_v5_binding():
-        runtime, compiled, change = _build_v5_revision(project)
+        runtime, compiled, change, scheduler = _build_v5_revision(project)
         context = RuntimeContext(
             project_root=project,
             repo_root=project,
@@ -817,9 +825,9 @@ def main() -> int:
 
     binding_cm = force_v5_binding() if schema_key == "v5_revision" else nullcontext()
     with binding_cm:
-        runtime, compiled, change = _build(project, schema_key)
+        runtime, compiled, change, scheduler = _build(project, schema_key)
         if point:
-            _install_hooks(runtime, point)
+            _install_hooks(runtime, point, scheduler=scheduler)
 
         from assurance_agent.workflow.graph.checkpoint import project_invocation
         from assurance_agent.workflow.graph.models import RuntimeContext

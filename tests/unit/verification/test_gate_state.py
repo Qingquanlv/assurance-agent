@@ -30,7 +30,7 @@ _VALID_REVIEW = {
     "findings": [],
     "auto_fix_plan": [],
     "next_action": "continue",
-    "required_capabilities": ["domain_factories.dept.make_dept"],
+    "required_capabilities": ["capabilities.domain_factories.dept.make_dept"],
 }
 
 

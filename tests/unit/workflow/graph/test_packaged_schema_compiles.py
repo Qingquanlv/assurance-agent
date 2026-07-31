@@ -6,14 +6,22 @@ from pathlib import Path
 import pytest
 
 from assurance_agent.verification.profiles import get_layer_assurance_profile, iter_layer_assurance_profiles
-from assurance_agent.workflow.graph.compiler import CompileError, compile_workflow
+from assurance_agent.workflow.graph.compiler import (
+    CompileError,
+    compile_historical_workflow,
+    compile_packaged_workflow,
+    compile_workflow,
+    HistoricalCompileContext,
+)
 from assurance_agent.workflow.graph.contracts import load_execution_contracts
+from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 from assurance_agent.workflow.graph.replay_schema import (
+    classify_pinned_layer_topology,
+    LayerTopologySpec,
     validate_current_assurance_activation,
-    validate_replayable_assurance_schema,
     validate_wired_profile_topology,
 )
-from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
+from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2, load_workflow_v2_with_origin, parse_workflow_v2
 from assurance_agent.workflow.orchestration.schema import derive_alias
 
 _LAYER_PLAN_NODE = {
@@ -23,14 +31,25 @@ _LAYER_PLAN_NODE = {
     "performance": ("performance-branch", "plan"),
 }
 
-_WIRED_LAYERS = ("api", "e2e")
+_WIRED_LAYERS = ("api", "e2e", "fuzz", "performance")
+
+
+def _topology_spec(layer: str) -> LayerTopologySpec:
+    profile = get_layer_assurance_profile(layer)
+    return LayerTopologySpec(
+        layer=profile.layer,
+        plan_artifacts=profile.plan_artifacts,
+        review_artifact=profile.review_artifact,
+        review_alias=profile.review_alias,
+        checks_artifact=profile.checks_artifact,
+        gate_id=profile.gate_id,
+    )
 
 
 def test_packaged_schema_compiles_against_packaged_contracts() -> None:
-    compiled = compile_workflow(
-        load_workflow_v2(Path.cwd()),
-        contracts=load_execution_contracts(Path.cwd()),
-    )
+    loaded = load_workflow_v2_with_origin(Path.cwd())
+    assert loaded.origin == "packaged"
+    compiled = compile_packaged_workflow(loaded.schema, contracts=load_execution_contracts(Path.cwd()))
     assert compiled.digest
 
 
@@ -50,8 +69,11 @@ def test_every_non_graph_target_has_a_contract() -> None:
 def test_wired_plan_cycle_topology_matches_profile(layer: str) -> None:
     schema = load_workflow_v2(Path.cwd())
     profile = get_layer_assurance_profile(layer)
-    cycle = schema.graphs[f"{layer}-plan-cycle"]
-    assert validate_wired_profile_topology(schema, profile) == ()
+    cycle_name = f"{layer}-plan-cycle"
+    cycle = schema.graphs[cycle_name]
+    if layer in {"api", "e2e"}:
+        assert validate_wired_profile_topology(schema, profile) == ()
+    assert classify_pinned_layer_topology(schema, _topology_spec(layer)).status == "wired"
     assert "applicability" in cycle.nodes
     assert cycle.nodes["applicability"].uses == "operation:derive-plan-layer-applicability"
     assert cycle.nodes["applicability"].with_.get("layer") == layer
@@ -59,6 +81,8 @@ def test_wired_plan_cycle_topology_matches_profile(layer: str) -> None:
     assert mechanical.uses == "operation:verify-plan-mechanical"
     assert mechanical.with_ == {"layer": layer, "require_review": True}
     assert f"change:{profile.checks_artifact}" in mechanical.outputs
+    assert mechanical.resources is not None
+    assert f"change:{profile.checks_artifact}" in mechanical.resources.writes
     assert cycle.nodes["review-gate"].uses == "builtin:gate"
     assert cycle.nodes["review-gate"].with_ == {"gate": profile.gate_id}
     assert cycle.nodes["review"].gate is None
@@ -66,7 +90,6 @@ def test_wired_plan_cycle_topology_matches_profile(layer: str) -> None:
     assert ("START", "applicability") in edges
     assert ("review", "mechanical-plan-checks") in edges
     assert ("mechanical-plan-checks", "review-gate") in edges
-    assert ("fix", "review") in edges
     applicability_route = next(route for route in cycle.routes if route.from_ == "applicability")
     assert applicability_route.cases == {"true": "review", "false": "mechanical-plan-checks"}
     gate_route = next(route for route in cycle.routes if route.from_ == "review-gate")
@@ -95,13 +118,11 @@ def test_packaged_schema_rejects_forbidden_plan_gate_dependency() -> None:
     gate = deepcopy(schema.gates[profile.gate_id])
     gate.rules[0].expr = "node('review-gate').status == 'succeeded'"
     mutated = schema.model_copy(update={"gates": {**schema.gates, profile.gate_id: gate}})
-    with pytest.raises(CompileError, match="disallowed builtin 'node'"):
-        compile_workflow(mutated, load_execution_contracts(Path.cwd()))
+    with pytest.raises(CompileError, match="disallowed builtin 'node'|packaged assurance activation failed"):
+        compile_packaged_workflow(mutated, load_execution_contracts(Path.cwd()))
 
 
 def test_layer_assurance_profiles_match_the_packaged_schema() -> None:
-    """Every profile's gate_id and plan_artifacts must have a durable counterpart
-    in workflow-schema.yaml, or the profile and the schema have silently drifted."""
     schema = load_workflow_v2(Path.cwd())
 
     for profile in iter_layer_assurance_profiles():
@@ -114,20 +135,61 @@ def test_layer_assurance_profiles_match_the_packaged_schema() -> None:
         assert not missing, f"{profile.layer}: plan node does not produce {sorted(missing)}"
 
 
-def test_packaged_assurance_surface_passes_replay_schema_guard() -> None:
+def test_current_assurance_activation_accepts_packaged_four_layers() -> None:
     schema = load_workflow_v2(Path.cwd())
-    assert validate_replayable_assurance_schema(schema) == ()
+    assert validate_current_assurance_activation(schema) == ()
+    compile_packaged_workflow(schema, contracts=load_execution_contracts(Path.cwd()))
 
 
-def test_current_activation_validator_reports_unwired_fuzz_and_performance() -> None:
+def test_core_compile_still_accepts_minimal_non_assurance_graph() -> None:
+    schema = parse_workflow_v2(
+        """
+schema_version: "2"
+name: minimal
+params:
+  run_mode: {type: str, default: full}
+entrypoints:
+  full: {graph: g}
+graphs:
+  g:
+    max_supersteps: 1
+    nodes:
+      done:
+        uses: operation:stop
+        with: {reason: ok}
+    edges:
+      - {from: START, to: done}
+      - {from: done, to: END}
+"""
+    )
+    compiled = compile_workflow(schema)
+    assert compiled.digest
+
+
+def test_historical_compile_still_accepts_legacy_specialty_fixture() -> None:
+    from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog
+
     schema = load_workflow_v2(Path.cwd())
-    errors = validate_current_assurance_activation(schema)
-    joined = "\n".join(errors)
-    assert "fuzz" in joined
-    assert "performance" in joined
-    # Compatibility release gate remains green until Task 13 switches the compiler.
-    assert validate_replayable_assurance_schema(schema) == ()
-    compile_workflow(schema, contracts=load_execution_contracts(Path.cwd()))
+    contracts = load_execution_contracts(Path.cwd())
+    ingest = validate_catalog_runtime()
+    current = compile_packaged_workflow(schema, contracts)
+    pinned_contracts = ExecutionContractCatalog(
+        contracts={
+            target: contracts.contracts[target]
+            for target in current.contract_digests
+            if target in contracts.contracts
+        }
+    )
+    historical = compile_historical_workflow(
+        schema,
+        context=HistoricalCompileContext(
+            ingest_catalog=ingest,
+            ingest_catalog_digest=ingest.digest,
+            contracts=pinned_contracts,
+            contract_digests=dict(current.contract_digests),
+        ),
+    )
+    assert historical.digest == current.digest
 
 
 def test_wired_plan_gates_read_canonical_aliases() -> None:

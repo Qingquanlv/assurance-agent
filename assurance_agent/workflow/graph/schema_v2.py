@@ -8,6 +8,7 @@ gate 定义复用 v1 的共享模型与 normalization。
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -287,14 +288,39 @@ def parse_workflow_v2(yaml_text: str) -> WorkflowSchemaV2:
         raise SchemaV2Error(f"invalid workflow schema v2: {exc}") from exc
 
 
-def load_workflow_v2(project_root: Path, explicit: Path | None = None) -> WorkflowSchemaV2:
+WorkflowSchemaOrigin = Literal["packaged", "project", "explicit"]
+
+
+@dataclass(frozen=True, slots=True)
+class LoadedWorkflowV2:
+    schema: WorkflowSchemaV2
+    origin: WorkflowSchemaOrigin
+
+
+def load_workflow_v2_with_origin(
+    project_root: Path, explicit: Path | None = None
+) -> LoadedWorkflowV2:
     if explicit is not None:
         path = explicit if explicit.is_absolute() else project_root / explicit
         if not path.exists():
             raise SchemaV2Error(f"explicit schema not found: {path}")
-        return parse_workflow_v2(path.read_text(encoding="utf-8"))
+        return LoadedWorkflowV2(
+            schema=parse_workflow_v2(path.read_text(encoding="utf-8")),
+            origin="explicit",
+        )
     for rel in (Path(".aa/workflow-schema.yaml"), Path("schemas/workflow-schema.yaml")):
         candidate = project_root / rel
         if candidate.exists():
-            return parse_workflow_v2(candidate.read_text(encoding="utf-8"))
-    return parse_workflow_v2(resources.read_text("schemas", "workflow-schema.yaml"))
+            return LoadedWorkflowV2(
+                schema=parse_workflow_v2(candidate.read_text(encoding="utf-8")),
+                origin="project",
+            )
+    return LoadedWorkflowV2(
+        schema=parse_workflow_v2(resources.read_text("schemas", "workflow-schema.yaml")),
+        origin="packaged",
+    )
+
+
+def load_workflow_v2(project_root: Path, explicit: Path | None = None) -> WorkflowSchemaV2:
+    """Compatibility wrapper; does not select a compilation purpose."""
+    return load_workflow_v2_with_origin(project_root, explicit).schema

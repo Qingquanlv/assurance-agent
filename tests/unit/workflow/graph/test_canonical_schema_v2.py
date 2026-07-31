@@ -43,9 +43,9 @@ EXPECTED_GRAPHS = {
     "e2e-branch",
     "e2e-plan-cycle",
     "fuzz-branch",
-    "fuzz-plan-review-cycle",
+    "fuzz-plan-cycle",
     "performance-branch",
-    "performance-plan-review-cycle",
+    "performance-plan-cycle",
     "inspect-with-issues",
     "healing",
     # Issue review entrypoints (Task 12)

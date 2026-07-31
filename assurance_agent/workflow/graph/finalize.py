@@ -54,6 +54,8 @@ def finalize_task_result(
     result: TaskResult,
     workspace: TaskWorkspace,
     context: RuntimeContext,
+    ingest_catalog: object | None = None,
+    model_map: object | None = None,
 ) -> TaskResult:
     """在 handler 返回 succeeded/stopped 后执行 output + attached-gate 合同。"""
     if result.status not in ("succeeded", "stopped"):
@@ -77,6 +79,8 @@ def finalize_task_result(
             task=task,
             result=result,
             outputs=outputs,
+            ingest_catalog=ingest_catalog,
+            model_map=model_map,
         )
         if result.status != "succeeded":
             return result
@@ -154,6 +158,8 @@ def _ingest_frozen_outputs(
     task: ExecutableTask,
     result: TaskResult,
     outputs: tuple[str, ...],
+    ingest_catalog: object | None = None,
+    model_map: object | None = None,
 ) -> TaskResult:
     """Blob 摄入 → ``frozen_outputs`` wire map + ``candidate_outputs`` value map。"""
     frozen: dict[str, FrozenOutput] = {}
@@ -163,6 +169,8 @@ def _ingest_frozen_outputs(
                 store,
                 write_set_id=result.write_set_id,
                 output_paths=outputs,
+                catalog=ingest_catalog,  # type: ignore[arg-type]
+                model_map=model_map,  # type: ignore[arg-type]
             )
         except (ValueError, WorkspaceError) as exc:
             return task_failure("invalid_output", str(exc))

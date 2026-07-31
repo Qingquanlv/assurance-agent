@@ -11,14 +11,14 @@ def invocation_ids_along_ns(checkpoint_ns: str) -> list[str]:
 
 
 def assert_event_schema_version_3(events: Sequence[dict[str, object]]) -> None:
-    """Packaged emission remains v4 until Task 13 activates the v5 root epoch."""
+    """Fresh packaged roots emit event schema version 5 with profile snapshots."""
     started = [event for event in events if event.get("type") == "graph_invocation_started"]
     assert started, "expected graph_invocation_started"
-    assert started[0].get("event_schema_version") == 4
+    assert started[0].get("event_schema_version") == 5
 
 
 def assert_no_revision_resume_fields(events: Sequence[dict[str, object]]) -> None:
-    """Current packaged resume path must not emit v5 revision lineage fields yet."""
+    """Ordinary non-revision resumes must remain pairless (no revision lineage fields)."""
     for event in events:
         if event.get("type") != "graph_resumed":
             continue

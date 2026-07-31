@@ -125,7 +125,7 @@ _PROFILES = _build_profile_registry(
             gate_id="fuzz-plan-review-gate",
             applicable_check_ids=KNOWN_PLAN_CHECK_IDS - {"assert_ideal"},
             capability_contract_enabled=True,
-            review_model=Review,
+            review_model=PlanReview,
         ),
         LayerAssuranceProfile(
             layer="performance",
@@ -137,7 +137,7 @@ _PROFILES = _build_profile_registry(
             gate_id="performance-plan-review-gate",
             applicable_check_ids=KNOWN_PLAN_CHECK_IDS - {"assert_ideal"},
             capability_contract_enabled=True,
-            review_model=Review,
+            review_model=PlanReview,
         ),
     ),
     known_check_ids=set(KNOWN_PLAN_CHECK_IDS),

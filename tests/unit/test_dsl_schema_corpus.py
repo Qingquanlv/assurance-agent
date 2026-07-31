@@ -111,6 +111,44 @@ _APPLICABLE_E2E_CHECKS = {
     },
     "checks": [],
 }
+_APPLICABLE_FUZZ_REVIEW = {
+    "decision": "pass",
+    "review_type": "fuzz-plan",
+    "change_id": "CH-1",
+    "codegen_readiness": "ready",
+    "required_capabilities": ["auth.api_admin_token"],
+}
+_APPLICABLE_PERF_REVIEW = {
+    "decision": "pass",
+    "review_type": "performance-plan",
+    "change_id": "CH-1",
+    "codegen_readiness": "ready",
+    "required_capabilities": ["auth.api_admin_token"],
+}
+_APPLICABLE_FUZZ_CHECKS = {
+    "schema_version": "2",
+    "layer": "fuzz",
+    "status": "pass",
+    "applicability": {
+        "layer": "fuzz",
+        "applicable": True,
+        "reason_code": "automated_cases_present",
+        "case_ids": ["TC"],
+    },
+    "checks": [],
+}
+_APPLICABLE_PERF_CHECKS = {
+    "schema_version": "2",
+    "layer": "performance",
+    "status": "pass",
+    "applicability": {
+        "layer": "performance",
+        "applicable": True,
+        "reason_code": "automated_cases_present",
+        "case_ids": ["TC"],
+    },
+    "checks": [],
+}
 _INAPPLICABLE_CHECKS = {
     "schema_version": "2",
     "layer": "api",
@@ -160,8 +198,8 @@ def test_corpus_scope_binds_every_policy_field() -> None:
         ("case-review-gate", "case_review", "pass"),
         ("api-plan-review-gate", "api_plan_review", "pass"),
         ("e2e-plan-review-gate", "plan_review", "pass"),
-        ("fuzz-plan-review-gate", "fuzz_plan_review", "approved"),
-        ("performance-plan-review-gate", "performance_plan_review", "approved"),
+        ("fuzz-plan-review-gate", "fuzz_plan_review", "pass"),
+        ("performance-plan-review-gate", "performance_plan_review", "pass"),
     ],
 )
 def test_force_continue_policy_branch_is_exercised(
@@ -184,6 +222,18 @@ def test_force_continue_policy_branch_is_exercised(
         values["api_plan_checks"] = _APPLICABLE_CHECKS
     elif gate_id == "e2e-plan-review-gate":
         values["e2e_plan_checks"] = _APPLICABLE_E2E_CHECKS
+    elif gate_id == "fuzz-plan-review-gate":
+        values["fuzz_plan_checks"] = {
+            **_APPLICABLE_CHECKS,
+            "layer": "fuzz",
+            "applicability": {**_APPLICABLE_CHECKS["applicability"], "layer": "fuzz"},
+        }
+    elif gate_id == "performance-plan-review-gate":
+        values["performance_plan_checks"] = {
+            **_APPLICABLE_CHECKS,
+            "layer": "performance",
+            "applicability": {**_APPLICABLE_CHECKS["applicability"], "layer": "performance"},
+        }
     resolvers = {
         "capabilities_present": lambda _r, _d: True,
         **_PLAN_ASSURANCE_RESOLVER,
@@ -325,29 +375,88 @@ for _alias, _gid, _layer, _checks_key in [
         ),
     )
 
-for _alias, _gid in [
-    ("fuzz_plan_review", "fuzz-plan-review-gate"),
-    ("performance_plan_review", "performance-plan-review-gate"),
+for _alias, _gid, _layer, _checks_key, _review, _checks in [
+    (
+        "fuzz_plan_review",
+        "fuzz-plan-review-gate",
+        "fuzz",
+        "fuzz_plan_checks",
+        _APPLICABLE_FUZZ_REVIEW,
+        _APPLICABLE_FUZZ_CHECKS,
+    ),
+    (
+        "performance_plan_review",
+        "performance-plan-review-gate",
+        "performance",
+        "performance_plan_checks",
+        _APPLICABLE_PERF_REVIEW,
+        _APPLICABLE_PERF_CHECKS,
+    ),
 ]:
+    CORPUS[f"gate:{_gid}:stop_when"] = (
+        (
+            {_checks_key: {"schema_version": "1"}, _alias: _review},
+            _PLAN_ASSURANCE_RESOLVER,
+        ),
+        ({_checks_key: _checks, _alias: _review}, _PLAN_ASSURANCE_RESOLVER, False),
+    )
+    CORPUS[f"gate:{_gid}:skip_when"] = (
+        (
+            {
+                _checks_key: {
+                    **_INAPPLICABLE_CHECKS,
+                    "layer": _layer,
+                    "applicability": {**_INAPPLICABLE_CHECKS["applicability"], "layer": _layer},
+                },
+                _alias: None,
+            },
+            _PLAN_ASSURANCE_RESOLVER,
+        ),
+        ({_checks_key: _checks, _alias: _review}, _PLAN_ASSURANCE_RESOLVER, False),
+    )
     CORPUS[f"gate:{_gid}:needs_fix_when"] = (
-        ({_alias: {"decision": "needs_fix", "auto_fix_allowed": True}}, {}),
+        ({_alias: {"decision": "needs_fix"}}, {}),
         ({}, {}, MISS),
     )
     CORPUS[f"gate:{_gid}:needs_human_review_when"] = (
-        ({_alias: {"decision": "changes_requested"}}, {}),
-        ({}, {}, MISS),
-    )
-    CORPUS[f"gate:{_gid}:skip_when"] = (
-        ({_alias: {"layer_applicable": False}}, {}),
-        ({}, {}, MISS),
+        (
+            {
+                _alias: {
+                    "decision": "pass",
+                    "required_capabilities": ["auth.api_admin_token"],
+                    "codegen_readiness": "ready",
+                },
+                _checks_key: _checks,
+                "data_knowledge": {},
+            },
+            {
+                **_PLAN_ASSURANCE_RESOLVER,
+                "capabilities_present": lambda _r, _d: False,
+            },
+        ),
+        ({}, _PLAN_ASSURANCE_RESOLVER, False),
     )
     CORPUS[f"gate:{_gid}:reject_when"] = (
-        ({_alias: {"decision": "reject"}}, {}),
-        ({}, {}, MISS),
+        ({_alias: {"decision": "reject"}}, _PLAN_ASSURANCE_RESOLVER),
+        ({}, _PLAN_ASSURANCE_RESOLVER, MISS),
     )
     CORPUS[f"gate:{_gid}:pass_when"] = (
-        ({_alias: {"decision": "approved"}}, {}),
-        ({}, {}, MISS),
+        (
+            {
+                _alias: _review,
+                _checks_key: _checks,
+                "data_knowledge": {"auth": {"api_admin_token": {"method": "token"}}},
+            },
+            {
+                **_PLAN_ASSURANCE_RESOLVER,
+                "capabilities_present": lambda _r, _d: True,
+            },
+        ),
+        (
+            {_checks_key: _checks, _alias: _review},
+            {**_PLAN_ASSURANCE_RESOLVER, "capabilities_present": lambda _r, _d: False},
+            False,
+        ),
     )
 
 CORPUS["gate:case-design-gate:pass_when"] = (
@@ -442,9 +551,72 @@ CORPUS["gate:e2e-codegen-precondition-gate:stop_when"] = (
     ),
 )
 
-for _gid in ["fuzz-codegen-precondition-gate", "performance-codegen-precondition-gate"]:
-    CORPUS[f"gate:{_gid}:pass_when"] = (({}, gv("pass")), ({}, gv(MISS), MISS))
-    CORPUS[f"gate:{_gid}:stop_when"] = (({}, gv("stop")), ({}, gv(MISS), MISS))
+for _gid, _alias, _checks_key, _review, _checks, _plan_gate in [
+    (
+        "fuzz-codegen-precondition-gate",
+        "fuzz_plan_review",
+        "fuzz_plan_checks",
+        _APPLICABLE_FUZZ_REVIEW,
+        _APPLICABLE_FUZZ_CHECKS,
+        "fuzz-plan-review-gate",
+    ),
+    (
+        "performance-codegen-precondition-gate",
+        "performance_plan_review",
+        "performance_plan_checks",
+        _APPLICABLE_PERF_REVIEW,
+        _APPLICABLE_PERF_CHECKS,
+        "performance-plan-review-gate",
+    ),
+]:
+    CORPUS[f"gate:{_gid}:skip_when"] = (
+        (
+            {
+                _checks_key: {
+                    **_INAPPLICABLE_CHECKS,
+                    "layer": _checks["layer"],
+                    "applicability": {
+                        **_INAPPLICABLE_CHECKS["applicability"],
+                        "layer": _checks["layer"],
+                    },
+                },
+                _alias: None,
+            },
+            _PLAN_ASSURANCE_RESOLVER,
+        ),
+        ({_checks_key: _checks, _alias: _review}, _PLAN_ASSURANCE_RESOLVER, False),
+    )
+    CORPUS[f"gate:{_gid}:pass_when"] = (
+        (
+            {_checks_key: _checks, _alias: _review},
+            {
+                **_PLAN_ASSURANCE_RESOLVER,
+                **node_result_resolver({"review-cycle": {"status": "succeeded"}}),
+                **gvfx("pass", True),
+                "capabilities_present": lambda _r, _d: True,
+            },
+        ),
+        ({}, {**_PLAN_ASSURANCE_RESOLVER, **gvfx("pass", True)}, False),
+    )
+    CORPUS[f"gate:{_gid}:stop_when"] = (
+        (
+            {_checks_key: {"schema_version": "1"}, _alias: _review},
+            {
+                **_PLAN_ASSURANCE_RESOLVER,
+                **node_result_resolver({"review-cycle": {"status": "succeeded"}}),
+                **fx(True),
+            },
+        ),
+        (
+            {_checks_key: _checks, _alias: _review},
+            {
+                **_PLAN_ASSURANCE_RESOLVER,
+                **node_result_resolver({"review-cycle": {"status": "succeeded"}}),
+                **fx(True),
+            },
+            False,
+        ),
+    )
 
 CORPUS["gate:fixer-safety-gate:pass_when"] = (
     (

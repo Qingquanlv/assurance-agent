@@ -15,9 +15,12 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Protocol
 
+from pydantic import BaseModel
+
 from assurance_agent.workflow.core.graph_types import ErrorKind
 from assurance_agent.workflow.graph.agent_api import AgentInvoker
 from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog
+from assurance_agent.workflow.graph.ingest_catalog import IngestArtifactCatalog
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
@@ -71,11 +74,15 @@ class HandlerNodeRunner:
         namespace_handlers: Mapping[str, TaskHandler] | None = None,
         compiled: CompiledWorkflow | None = None,
         object_store: TreeStore | None = None,
+        ingest_catalog: IngestArtifactCatalog | None = None,
+        model_map: Mapping[str, type[BaseModel]] | None = None,
     ) -> None:
         self._handlers = dict(handlers)
         self._namespace_handlers = dict(namespace_handlers or {})
         self._compiled = compiled
         self._object_store = object_store
+        self._ingest_catalog = ingest_catalog
+        self._model_map = model_map
 
     def execute(
         self,
@@ -107,6 +114,8 @@ class HandlerNodeRunner:
                 result=result,
                 workspace=workspace,
                 context=context,
+                ingest_catalog=self._ingest_catalog,
+                model_map=self._model_map,
             )
         return result
 
@@ -118,6 +127,8 @@ def build_default_node_runner(
     *,
     compiled: CompiledWorkflow,
     run_child: Callable[[ExecutableTask, str, TaskWorkspace, RuntimeContext], TaskResult] | None = None,
+    ingest_catalog: IngestArtifactCatalog | None = None,
+    model_map: Mapping[str, type[BaseModel]] | None = None,
 ) -> NodeRunner:
     """注册 canonical target handler：agent 桥、domain operation、builtin 与 subgraph。
 
@@ -152,6 +163,8 @@ def build_default_node_runner(
         namespace_handlers=namespace_handlers,
         compiled=compiled,
         object_store=object_store,
+        ingest_catalog=ingest_catalog,
+        model_map=model_map,
     )
 
 

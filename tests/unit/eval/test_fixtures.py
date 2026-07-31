@@ -211,8 +211,8 @@ def test_benchmark_codegen_imports_attach_gate_to_precheck_not_codegen() -> None
                 continue
             precheck = completed[index - 1]
             layer = task.graph.removesuffix("-branch")
-            precheck_node = "codegen-precheck" if layer in {"api", "e2e"} else "codegen-gate"
-            gate_suffix = "codegen-precondition-gate" if layer in {"api", "e2e"} else "plan-review-gate"
+            precheck_node = "codegen-precheck"
+            gate_suffix = "codegen-precondition-gate"
             assert precheck.path == task.path, tier_name
             assert precheck.node == precheck_node, tier_name
             assert precheck.gate == f"{layer}-{gate_suffix}", tier_name
