@@ -11,6 +11,11 @@ import pytest
 import yaml
 
 from assurance_agent.artifacts.models import SelectedTargets
+from assurance_agent.evidence.digests import TraceSourceRecorder, projection_digest
+from assurance_agent.evidence.layer_summary import (
+    derive_trace_integrity,
+    summarize_projection_by_layer,
+)
 from assurance_agent.evidence.trace import (
     ExecutionFoldInput,
     canonical_json_bytes,
@@ -261,6 +266,10 @@ def test_manifest_missing_when_current_is_none(tmp_path: Path) -> None:
     projection = fold_trace(tmp_path, CHANGE_ID)
     assert any(gap.code == "manifest_missing" for gap in projection.gaps)
     assert projection.integrity == "incomplete"
+    assert projection.integrity == derive_trace_integrity(projection.rows, projection.gaps)
+    summary = summarize_projection_by_layer(projection)
+    assert summary.source_projection_digest == projection_digest(projection)
+    assert isinstance(TraceSourceRecorder(), TraceSourceRecorder)
     fold_view = next(src for src in projection.sources if src.path.endswith("#fold-view"))
     assert fold_view.exists is False
     assert fold_view.sha256 is None

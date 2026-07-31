@@ -14,9 +14,13 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 
-from assurance_agent.artifacts.models.assurance import LAYER_NAMES
+from assurance_agent.artifacts.models.assurance import CASE_TYPES, LAYER_NAMES, CaseType, LayerName
+from assurance_agent.artifacts.models.common import NonEmptyStr
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
+
+StrictNonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
+StrictPositiveInt = Annotated[int, Field(strict=True, gt=0)]
 
 TraceGapCodeV1 = Literal[
     "result_missing",
@@ -259,3 +263,99 @@ class TraceProjectionDocument(RootModel[TraceProjectionVariant]):
 
 def load_trace_projection_document(raw: object) -> TraceProjectionLike:
     return TraceProjectionDocument.model_validate(raw).root
+
+
+class TraceGapAggregate(BaseModel):
+    model_config = _FROZEN
+
+    total: StrictNonNegativeInt
+    by_code: dict[TraceSummaryGapCode, StrictPositiveInt]
+
+    @model_validator(mode="after")
+    def _total_matches_breakdown(self) -> Self:
+        if self.total != sum(self.by_code.values()):
+            raise ValueError("gap total must equal by_code sum")
+        return self
+
+
+class TraceLayerFacts(BaseModel):
+    model_config = _FROZEN
+
+    layer: LayerName
+    case_type: CaseType
+    total: StrictNonNegativeInt
+    automated: StrictNonNegativeInt
+    covered: StrictNonNegativeInt
+    uncovered: StrictNonNegativeInt
+    not_required: StrictNonNegativeInt
+    current_executed: StrictNonNegativeInt
+    current_not_present: StrictNonNegativeInt
+    target_not_selected: StrictNonNegativeInt
+    latest_passed: StrictNonNegativeInt
+    latest_failed: StrictNonNegativeInt
+    latest_skipped: StrictNonNegativeInt
+    never_run: StrictNonNegativeInt
+    failure_rows: StrictNonNegativeInt
+    failure_links: StrictNonNegativeInt
+    open_problem_rows: StrictNonNegativeInt
+    open_problem_links: StrictNonNegativeInt
+    unique_open_problems: StrictNonNegativeInt
+    gaps: TraceGapAggregate
+
+    @model_validator(mode="after")
+    def _validate_partitions(self) -> Self:
+        if self.automated != self.covered + self.uncovered:
+            raise ValueError("automated must equal covered + uncovered")
+        if self.total != self.covered + self.uncovered + self.not_required:
+            raise ValueError("total must equal covered + uncovered + not_required")
+        if self.total != (self.current_executed + self.current_not_present + self.target_not_selected):
+            raise ValueError("total must equal current presence partition")
+        if self.total != (self.latest_passed + self.latest_failed + self.latest_skipped + self.never_run):
+            raise ValueError("total must equal latest status partition")
+        if self.failure_rows > self.total:
+            raise ValueError("failure_rows cannot exceed total")
+        if self.failure_links < self.failure_rows:
+            raise ValueError("failure_links cannot be less than failure_rows")
+        if self.open_problem_rows > self.total:
+            raise ValueError("open_problem_rows cannot exceed total")
+        if self.open_problem_links < self.open_problem_rows:
+            raise ValueError("open_problem_links cannot be less than open_problem_rows")
+        if self.unique_open_problems > self.open_problem_links:
+            raise ValueError("unique_open_problems cannot exceed open_problem_links")
+        if self.gaps.total != sum(self.gaps.by_code.values()):
+            raise ValueError("gap total must equal by_code sum")
+        return self
+
+
+class TraceLayerFactSummary(BaseModel):
+    model_config = _FROZEN
+
+    schema_version: Literal["1"] = "1"
+    change_id: NonEmptyStr
+    phase: Literal["execution", "reconciled"]
+    # Matches TraceProjection: fold may emit "" when the manifest is absent.
+    authoritative_batch_id: str
+    source_projection_digest: NonEmptyStr
+    projection_integrity: TraceIntegrity
+    layers: tuple[TraceLayerFacts, ...]
+    global_gaps: TraceGapAggregate
+
+    @model_validator(mode="after")
+    def _validate_layers(self) -> Self:
+        if len(self.layers) != len(LAYER_NAMES):
+            raise ValueError("layers must contain exactly four layer rows")
+        if tuple(layer.layer for layer in self.layers) != LAYER_NAMES:
+            raise ValueError("layers must follow LAYER_NAMES order")
+        if tuple(layer.case_type for layer in self.layers) != CASE_TYPES:
+            raise ValueError("layers must follow CASE_TYPES order")
+        if self.phase == "execution":
+            for layer in self.layers:
+                if (
+                    layer.failure_rows
+                    or layer.failure_links
+                    or layer.open_problem_rows
+                    or layer.open_problem_links
+                    or layer.unique_open_problems
+                ):
+                    raise ValueError("execution phase failure/problem counts must be zero")
+        return self

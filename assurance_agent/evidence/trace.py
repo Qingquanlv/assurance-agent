@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,10 +26,11 @@ from assurance_agent.artifacts.models.trace import (
 )
 from assurance_agent.change_location import resolve_change
 from assurance_agent.evidence.case_doc import EvidenceCaseEntry, load_case_entries
+from assurance_agent.evidence.digests import TraceSourceRecorder, canonical_json_bytes
+from assurance_agent.evidence.layer_summary import derive_trace_integrity, summarize_projection_by_layer
 from assurance_agent.evidence.tree_scan import TreeScanResult, scan_test_tree
 
 _TREE_DIGEST_SOURCE = "tests/#tree-digest"
-_DEGRADED_ONLY_GAP = "mapped_test_missing_from_tree"
 
 _FOLD_VIEW_SOURCE = "execution/execution-manifest.yaml#fold-view"
 _MANIFEST_PATH = "execution/execution-manifest.yaml"
@@ -51,24 +51,6 @@ _PERF_VERDICT_TO_STATUS: dict[str, Literal["passed", "failed", "skipped"]] = {
     "FAIL": "failed",
     "SKIPPED": "skipped",
 }
-
-
-def canonical_json_bytes(obj: object) -> bytes:
-    """Deterministic JSON bytes for digests and tests (sorted keys, compact)."""
-    return json.dumps(
-        obj,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=_canonical_json_default,
-    ).encode("utf-8")
-
-
-def _canonical_json_default(value: object) -> object:
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, SelectedTargets):
-        return value.model_dump()
-    raise TypeError(f"unsupported type for canonical JSON: {type(value)!r}")
 
 
 @dataclass(frozen=True)
@@ -164,7 +146,8 @@ def fold_trace(
     change_dir = resolve_change(project_root, change_id).path
     entries, case_gaps = load_case_entries(change_dir)
     gaps: list[TraceGap] = list(case_gaps)
-    sources: list[TraceSource] = _case_sources(change_dir)
+    sources = TraceSourceRecorder()
+    _record_case_sources(change_dir, sources)
 
     current_view = _resolve_current_batch(change_dir, change_id, current, gaps, sources)
     batches, batch_gaps = _load_batch_executions(
@@ -189,7 +172,7 @@ def fold_trace(
         )
 
     tree = scan_test_tree(project_root)
-    sources.append(TraceSource(path=_TREE_DIGEST_SOURCE, exists=True, sha256=tree.tree_digest))
+    sources.add(TraceSource(path=_TREE_DIGEST_SOURCE, exists=True, sha256=tree.tree_digest))
     _compare_test_files_sha256(current_view, tree, gaps)
 
     executions_by_case = _index_executions(entries, batches)
@@ -204,17 +187,18 @@ def fold_trace(
         for entry in sorted(entries, key=lambda item: item.case_id)
     )
     unmapped = _collect_unmapped_tests(batches, current_view.batch_id)
-    integrity = _derive_integrity(gaps, rows)
+    integrity = derive_trace_integrity(rows, gaps)
     execution = TraceProjection(
         change_id=change_id,
         phase="execution",
         authoritative_batch_id=current_view.batch_id,
-        sources=tuple(sorted(sources, key=lambda item: item.path)),
+        sources=sources.freeze(),
         rows=rows,
         unmapped_tests=unmapped,
         gaps=tuple(sorted(gaps, key=_gap_sort_key)),
         integrity=integrity,
     )
+    summarize_projection_by_layer(execution)
     if phase == "execution":
         return execution
     return _enrich_reconciled(project_root, change_dir, execution)
@@ -239,20 +223,6 @@ def _compare_test_files_sha256(
         )
 
 
-def _derive_integrity(
-    gaps: list[TraceGap],
-    rows: tuple[TraceRow, ...],
-) -> Literal["complete", "degraded", "incomplete"]:
-    if not rows:
-        return "incomplete"
-    if not gaps:
-        return "complete"
-    codes = {gap.code for gap in gaps}
-    if codes == {_DEGRADED_ONLY_GAP}:
-        return "degraded"
-    return "incomplete"
-
-
 def _gap_sort_key(gap: TraceGap) -> tuple[str, str, str, str, str]:
     return (
         gap.code,
@@ -268,7 +238,7 @@ def _resolve_current_batch(
     change_id: str,
     current: ExecutionFoldInput | None,
     gaps: list[TraceGap],
-    sources: list[TraceSource],
+    sources: TraceSourceRecorder,
 ) -> _CurrentBatchView:
     manifest_path = change_dir / _MANIFEST_PATH
     if current is not None:
@@ -353,15 +323,15 @@ def _resolve_current_batch(
 def _record_fold_view_source(
     current: _CurrentBatchView,
     change_id: str,
-    sources: list[TraceSource],
+    sources: TraceSourceRecorder,
 ) -> str | None:
     if not current.manifest_exists or not current.batch_id:
-        sources.append(TraceSource(path=_FOLD_VIEW_SOURCE, exists=False, sha256=None))
+        sources.add(TraceSource(path=_FOLD_VIEW_SOURCE, exists=False, sha256=None))
         return None
 
     ts, _ = _resolve_batch_ts(current.batch_id, current.executed_at, _FOLD_VIEW_SOURCE, [])
     if ts is None:
-        sources.append(TraceSource(path=_FOLD_VIEW_SOURCE, exists=False, sha256=None))
+        sources.add(TraceSource(path=_FOLD_VIEW_SOURCE, exists=False, sha256=None))
         return None
 
     payload = {
@@ -372,7 +342,7 @@ def _record_fold_view_source(
         "test_files_sha256": dict(sorted(current.test_files_sha256.items())),
     }
     digest = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
-    sources.append(TraceSource(path=_FOLD_VIEW_SOURCE, exists=True, sha256=digest))
+    sources.add(TraceSource(path=_FOLD_VIEW_SOURCE, exists=True, sha256=digest))
     return digest
 
 
@@ -382,7 +352,7 @@ def _load_batch_executions(
     current: _CurrentBatchView,
     current_input: ExecutionFoldInput | None,
     gaps: list[TraceGap],
-    sources: list[TraceSource],
+    sources: TraceSourceRecorder,
 ) -> tuple[list[_BatchExecution], list[TraceGap]]:
     runs_root = change_dir / "execution" / "runs"
     out: list[_BatchExecution] = []
@@ -435,7 +405,7 @@ def _load_batch_from_disk(
     change_id: str,
     current: _CurrentBatchView,
     gaps: list[TraceGap],
-    sources: list[TraceSource],
+    sources: TraceSourceRecorder,
 ) -> _BatchExecution | None:
     batch_id = batch_dir.name
     manifest_path = batch_dir / "execution-manifest.yaml"
@@ -461,7 +431,7 @@ def _load_batch_from_disk(
         path = batch_dir / f"{target}-result.json"
         if not path.is_file():
             continue
-        sources.append(_file_source(rel, path))
+        sources.add(_file_source(rel, path))
         doc = _load_pytest_result(path, change_id, batch_id, target, rel, gaps)
         if doc is not None:
             pytest_docs[target] = doc
@@ -470,7 +440,7 @@ def _load_batch_from_disk(
     perf_rel = f"execution/runs/{batch_id}/performance-result.json"
     perf_path = batch_dir / "performance-result.json"
     if perf_path.is_file():
-        sources.append(_file_source(perf_rel, perf_path))
+        sources.add(_file_source(perf_rel, perf_path))
         perf_doc = _load_performance_result(perf_path, change_id, batch_id, perf_rel, gaps)
 
     return _BatchExecution(
@@ -488,7 +458,7 @@ def _build_current_batch(
     current: ExecutionFoldInput,
     disk_batch: _BatchExecution | None,
     gaps: list[TraceGap],
-    sources: list[TraceSource],
+    sources: TraceSourceRecorder,
 ) -> _BatchExecution:
     batch_id = current.batch_id
     batch_dir = change_dir / "execution" / "runs" / batch_id
@@ -516,11 +486,11 @@ def _build_current_batch(
             doc = _accept_injected_pytest_result(injected, change_id, batch_id, target, rel, gaps)
             if doc is not None:
                 if path.is_file():
-                    sources.append(_file_source(rel, path))
+                    sources.add(_file_source(rel, path))
                 pytest_docs[target] = doc
                 continue
         elif path.is_file():
-            sources.append(_file_source(rel, path))
+            sources.add(_file_source(rel, path))
             doc = _load_pytest_result(path, change_id, batch_id, target, rel, gaps)
             if doc is not None:
                 pytest_docs[target] = doc
@@ -528,7 +498,7 @@ def _build_current_batch(
         elif target in disk_pytest:
             doc = disk_pytest[target]
             if path.is_file():
-                sources.append(_file_source(rel, path))
+                sources.add(_file_source(rel, path))
 
         if doc is not None:
             pytest_docs[target] = doc
@@ -549,14 +519,14 @@ def _build_current_batch(
             gaps,
         )
         if perf_doc is not None and perf_path.is_file():
-            sources.append(_file_source(perf_rel, perf_path))
+            sources.add(_file_source(perf_rel, perf_path))
     elif perf_path.is_file():
-        sources.append(_file_source(perf_rel, perf_path))
+        sources.add(_file_source(perf_rel, perf_path))
         perf_doc = _load_performance_result(perf_path, change_id, batch_id, perf_rel, gaps)
     elif disk_perf is not None:
         perf_doc = disk_perf
         if perf_path.is_file():
-            sources.append(_file_source(perf_rel, perf_path))
+            sources.add(_file_source(perf_rel, perf_path))
 
     if perf_doc is None and current.selected_targets.performance and not perf_path.is_file():
         _append_result_missing(gaps, sources, perf_rel, batch_id, "performance")
@@ -572,7 +542,7 @@ def _build_current_batch(
 
 def _append_result_missing(
     gaps: list[TraceGap],
-    sources: list[TraceSource],
+    sources: TraceSourceRecorder,
     rel: str,
     batch_id: str,
     target: str,
@@ -585,7 +555,7 @@ def _append_result_missing(
             target=target,
         )
     )
-    sources.append(TraceSource(path=rel, exists=False, sha256=None))
+    sources.add(TraceSource(path=rel, exists=False, sha256=None))
 
 
 def _emit_missing_results_for_selected_targets(
@@ -594,7 +564,7 @@ def _emit_missing_results_for_selected_targets(
     selected_targets: SelectedTargets,
     batch: _BatchExecution | None,
     gaps: list[TraceGap],
-    sources: list[TraceSource],
+    sources: TraceSourceRecorder,
 ) -> None:
     if not batch_id:
         return
@@ -1104,15 +1074,13 @@ def _read_yaml_mapping(path: Path) -> dict[str, object] | None:
     return raw
 
 
-def _case_sources(change_dir: Path) -> list[TraceSource]:
+def _record_case_sources(change_dir: Path, sources: TraceSourceRecorder) -> None:
     cases_root = change_dir / "cases"
     if not cases_root.is_dir():
-        return []
-    out: list[TraceSource] = []
+        return
     for path in sorted(cases_root.glob("**/case.yaml")):
         rel = path.relative_to(change_dir).as_posix()
-        out.append(_file_source(rel, path))
-    return out
+        sources.add(_file_source(rel, path))
 
 
 def _file_source(rel: str, path: Path) -> TraceSource:
@@ -1128,7 +1096,9 @@ def _enrich_reconciled(
     execution: TraceProjection,
 ) -> TraceProjection:
     gaps = list(execution.gaps)
-    sources = list(execution.sources)
+    sources = TraceSourceRecorder()
+    for source in execution.sources:
+        sources.add(source)
     failure_analysis = _load_failure_analysis(change_dir, gaps, sources)
     issues_snapshot = _load_issues_snapshot(change_dir, gaps, sources)
     problems_projection = _load_problems_projection(project_root, gaps, sources)
@@ -1148,26 +1118,28 @@ def _enrich_reconciled(
         )
         for row in execution.rows
     )
-    integrity = _derive_integrity(gaps, rows)
-    return TraceProjection(
+    integrity = derive_trace_integrity(rows, gaps)
+    projection = TraceProjection(
         change_id=execution.change_id,
         phase="reconciled",
         authoritative_batch_id=execution.authoritative_batch_id,
-        sources=tuple(sorted(sources, key=lambda item: item.path)),
+        sources=sources.freeze(),
         rows=rows,
         unmapped_tests=execution.unmapped_tests,
         gaps=tuple(sorted(gaps, key=_gap_sort_key)),
         integrity=integrity,
     )
+    summarize_projection_by_layer(projection)
+    return projection
 
 
 def _load_failure_analysis(
     change_dir: Path,
     gaps: list[TraceGap],
-    sources: list[TraceSource],
+    sources: TraceSourceRecorder,
 ) -> FailureAnalysis | None:
     path = change_dir / _FAILURE_ANALYSIS_PATH
-    sources.append(_file_source(_FAILURE_ANALYSIS_PATH, path))
+    sources.add(_file_source(_FAILURE_ANALYSIS_PATH, path))
     if not path.is_file():
         gaps.append(TraceGap(code="failure_analysis_missing", source=_FAILURE_ANALYSIS_PATH))
         return None
@@ -1187,10 +1159,10 @@ def _load_failure_analysis(
 def _load_issues_snapshot(
     change_dir: Path,
     gaps: list[TraceGap],
-    sources: list[TraceSource],
+    sources: TraceSourceRecorder,
 ) -> ChangeIssueSnapshot | None:
     path = change_dir / _ISSUES_SNAPSHOT_PATH
-    sources.append(_file_source(_ISSUES_SNAPSHOT_PATH, path))
+    sources.add(_file_source(_ISSUES_SNAPSHOT_PATH, path))
     if not path.is_file():
         gaps.append(TraceGap(code="issues_snapshot_missing", source=_ISSUES_SNAPSHOT_PATH))
         return None
@@ -1210,10 +1182,10 @@ def _load_issues_snapshot(
 def _load_problems_projection(
     project_root: Path,
     gaps: list[TraceGap],
-    sources: list[TraceSource],
+    sources: TraceSourceRecorder,
 ) -> ProblemProjection | None:
     path = project_root / _PROBLEMS_PATH
-    sources.append(_file_source(_PROBLEMS_PATH, path))
+    sources.add(_file_source(_PROBLEMS_PATH, path))
     if not path.is_file():
         gaps.append(TraceGap(code="problems_snapshot_missing", source=_PROBLEMS_PATH))
         return None

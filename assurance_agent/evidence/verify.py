@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from datetime import datetime
 from typing import Literal
 
@@ -11,8 +10,8 @@ from pydantic import BaseModel, ConfigDict
 from assurance_agent.artifacts.models.policy import Policy
 from assurance_agent.artifacts.models.trace import TraceGap, TraceProjection
 from assurance_agent.artifacts.policy import policy_digest
+from assurance_agent.evidence.digests import projection_digest
 from assurance_agent.evidence.sufficiency import SufficiencyReport
-from assurance_agent.evidence.trace import canonical_json_bytes
 
 VerifyVerdict = Literal["pass", "fail", "needs_human"]
 
@@ -77,11 +76,6 @@ class VerifyResult(BaseModel):
     open_problem_ids: tuple[str, ...] = ()
     insufficient: tuple[VerifyInsufficientCase, ...] = ()
     warnings: tuple[str, ...] = ()
-
-
-def projection_digest(projection: TraceProjection) -> str:
-    payload = projection.model_dump(mode="json")
-    return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
 def _gap_item(gap: TraceGap) -> VerifyGapItem:

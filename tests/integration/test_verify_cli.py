@@ -26,8 +26,9 @@ from assurance_agent.evidence.sufficiency import (
     build_evidence_coverage_evaluation,
     evaluate_sufficiency,
 )
+from assurance_agent.evidence.digests import projection_digest as shared_projection_digest
 from assurance_agent.evidence.trace import fold_trace
-from assurance_agent.evidence.verify import VERIFY_BLOCKING_GAP_CODES
+from assurance_agent.evidence.verify import VERIFY_BLOCKING_GAP_CODES, projection_digest
 from assurance_agent.commands import verify_cmd
 from assurance_agent.workflow.report.quality_gate import build_quality_gate
 from tests.helpers_aa import write_aa_config
@@ -357,6 +358,9 @@ def test_pass_verdict_json(project) -> None:
     assert doc["scope"]["batch"] == BATCH_ID
     assert doc["scope"]["policy_digest"] == doc["policy_digest"]
     assert doc["scope"]["projection_digest"] == doc["projection_digest"]
+    live = fold_trace(root, CHANGE_ID, phase="reconciled")
+    assert doc["projection_digest"] == projection_digest(live)
+    assert shared_projection_digest(live) == projection_digest(live)
 
 
 def test_needs_human_verdict(project) -> None:

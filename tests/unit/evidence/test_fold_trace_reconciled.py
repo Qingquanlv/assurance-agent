@@ -11,6 +11,10 @@ import yaml
 
 from assurance_agent.artifacts.models import SelectedTargets
 from assurance_agent.artifacts.models.trace import TraceFailure
+from assurance_agent.evidence.layer_summary import (
+    summarize_projection_by_layer,
+    validate_trace_phase_pair,
+)
 from assurance_agent.evidence.trace import fold_trace
 from tests.helpers_aa import write_aa_config
 
@@ -482,6 +486,9 @@ def test_dual_phase_shared_fields_are_equal(tmp_path: Path) -> None:
         assert _shared_row_view(exec_row) == _shared_row_view(rec_row)
         assert exec_row.failures == ()
         assert exec_row.open_problem_ids == ()
+    summarize_projection_by_layer(execution)
+    summarize_projection_by_layer(reconciled)
+    validate_trace_phase_pair(execution, reconciled)
 
 
 def test_reconciled_sources_include_three_inputs(tmp_path: Path) -> None:
