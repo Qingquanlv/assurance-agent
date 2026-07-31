@@ -19,6 +19,7 @@ from assurance_agent.artifacts.models.inspect import (
     QualityGateResultV2,
     load_quality_gate_result_document,
 )
+from assurance_agent.artifacts.models.sufficiency import SufficiencyBindingError
 from assurance_agent.artifacts.models.trace import (
     TraceProjection,
     TraceProjectionV2,
@@ -29,8 +30,10 @@ from assurance_agent.eval.specialty_models import (
     CapabilityPolicyReplayV2,
     CompleteTraceabilityEvidenceV3,
     CoverageSummary,
+    IncompleteTraceabilityEvidenceV3,
     LegacySpecialtyReportV1,
     SpecialtyReportV2,
+    SpecialtyReportV3,
     TraceCollectionFailureReason,
     TraceCommandStatus,
     TracePhaseEvidence,
@@ -39,11 +42,26 @@ from assurance_agent.eval.specialty_models import (
 )
 from assurance_agent.eval.specialty_render import render_specialty_sections
 from assurance_agent.eval.specialty_replay import collect_capability_policy_replay
-from assurance_agent.evidence.current_projection import load_current_reconciled_projection
+from assurance_agent.evidence.current_projection import (
+    CurrentProjectionInvalidError,
+    CurrentProjectionMissingError,
+    CurrentProjectionStaleError,
+    load_current_reconciled_projection,
+)
 from assurance_agent.evidence.digests import projection_digest as shared_projection_digest
-from assurance_agent.evidence.layer_summary import join_layer_sufficiency, validate_trace_phase_pair
+from assurance_agent.evidence.layer_summary import (
+    TraceLayerSummaryError,
+    TracePhasePairError,
+    join_layer_sufficiency,
+    validate_trace_phase_pair,
+)
 from assurance_agent.evidence.sufficiency import SufficiencyReport
 from assurance_agent.evidence.verify import VerifyResult, projection_digest
+
+_CURRENT_IDENTITY_STALE_REASONS = frozenset(
+    {"phase_mismatch", "change_id_mismatch", "batch_id_mismatch"}
+)
+_CURRENT_STALE_REASONS = frozenset({"legacy_version", "digest_mismatch"})
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -200,6 +218,9 @@ def _validate_verify_binding(reconciled: TraceProjection, verify: VerifyResult) 
 
 
 class TraceCollectionFailure(Exception):
+    reason_code: TraceCollectionFailureReason
+    detail: str
+
     def __init__(
         self,
         reason_code: TraceCollectionFailureReason,
@@ -309,6 +330,113 @@ def _validate_projection_identity(
         )
 
 
+def _load_current_reconciled_projection_v2(inputs: TraceCollectionInputs) -> TraceProjectionV2:
+    try:
+        return load_current_reconciled_projection(inputs.project_root, inputs.change_id)
+    except CurrentProjectionMissingError as exc:
+        raise TraceCollectionFailure(
+            "reconciled_projection_missing",
+            "reconciled_trace_absent",
+        ) from exc
+    except CurrentProjectionInvalidError as exc:
+        raise TraceCollectionFailure(
+            "reconciled_projection_invalid",
+            "reconciled_trace_unreadable",
+        ) from exc
+    except CurrentProjectionStaleError as exc:
+        if exc.reason in _CURRENT_IDENTITY_STALE_REASONS:
+            raise TraceCollectionFailure(
+                "projection_identity_mismatch",
+                f"reconciled_{exc.reason}",
+            ) from exc
+        if exc.reason in _CURRENT_STALE_REASONS:
+            raise TraceCollectionFailure(
+                "reconciled_projection_stale",
+                f"reconciled_{exc.reason}",
+            ) from exc
+        raise
+
+
+def _phase_evidence_from_projection(projection: TraceProjectionV2) -> TracePhaseEvidence:
+    try:
+        return TracePhaseEvidence.from_projection(projection)
+    except TraceLayerSummaryError as exc:
+        raise TraceCollectionFailure(
+            "layer_summary_invalid",
+            "layer_summary_rejected",
+        ) from exc
+
+
+def _preflight_quality_sufficiency_binding(
+    raw: dict[str, Any],
+    *,
+    expected_policy_digest: str,
+    expected_projection_digest: str,
+) -> None:
+    dimensions = raw.get("dimensions")
+    if not isinstance(dimensions, dict):
+        return
+    coverage = dimensions.get("coverage")
+    if not isinstance(coverage, dict):
+        return
+    evidence = coverage.get("evidence")
+    if not isinstance(evidence, dict) or evidence.get("kind") != "sufficiency":
+        return
+    report = evidence.get("report")
+    if not isinstance(report, dict):
+        return
+
+    projection_digest_value = report.get("source_projection_digest")
+    if (
+        isinstance(projection_digest_value, str)
+        and projection_digest_value
+        and projection_digest_value != expected_projection_digest
+    ):
+        raise TraceCollectionFailure(
+            "sufficiency_binding_mismatch",
+            "quality_projection_digest_mismatch",
+        )
+    policy_digest_value = report.get("source_policy_digest")
+    if (
+        isinstance(policy_digest_value, str)
+        and policy_digest_value
+        and policy_digest_value != expected_policy_digest
+    ):
+        raise TraceCollectionFailure(
+            "sufficiency_binding_mismatch",
+            "quality_policy_digest_mismatch",
+        )
+    semantics = report.get("semantics")
+    if isinstance(semantics, str) and semantics != "evidence_sufficiency/v2":
+        raise TraceCollectionFailure(
+            "sufficiency_binding_mismatch",
+            "quality_semantics_mismatch",
+        )
+    require_current_batch = report.get("require_current_batch")
+    if isinstance(require_current_batch, bool) and require_current_batch is not True:
+        raise TraceCollectionFailure(
+            "sufficiency_binding_mismatch",
+            "quality_require_current_batch_mismatch",
+        )
+
+    verdicts = report.get("verdicts")
+    if not isinstance(verdicts, list):
+        return
+    case_ids: list[str] = []
+    for item in verdicts:
+        if not isinstance(item, dict):
+            return
+        case_id = item.get("case_id")
+        if not isinstance(case_id, str) or not case_id:
+            return
+        case_ids.append(case_id)
+    if len(case_ids) != len(set(case_ids)):
+        raise TraceCollectionFailure(
+            "sufficiency_binding_mismatch",
+            "duplicate_sufficiency_case_id",
+        )
+
+
 def _load_bound_quality_v2(
     inputs: TraceCollectionInputs,
     execution: TraceProjectionV2,
@@ -331,6 +459,11 @@ def _load_bound_quality_v2(
             "quality_gate_binding_mismatch",
             "quality_identity_mismatch",
         )
+    _preflight_quality_sufficiency_binding(
+        raw,
+        expected_policy_digest=expected_policy_digest,
+        expected_projection_digest=shared_projection_digest(execution),
+    )
     try:
         quality = load_quality_gate_result_document(raw)
     except ValidationError as exc:
@@ -341,21 +474,8 @@ def _load_bound_quality_v2(
     if not isinstance(quality, QualityGateResultV2):
         raise TraceCollectionFailure(
             "quality_gate_binding_mismatch",
-            "quality_gate_not_v2_success",
+            "quality_gate_not_v2",
         )
-    coverage_evidence = quality.dimensions.coverage.evidence
-    if isinstance(coverage_evidence, EvidenceCoverageSuccessV2):
-        report = coverage_evidence.report
-        if report.source_policy_digest != expected_policy_digest:
-            raise TraceCollectionFailure(
-                "sufficiency_binding_mismatch",
-                "quality_policy_digest_mismatch",
-            )
-        if report.source_projection_digest != shared_projection_digest(execution):
-            raise TraceCollectionFailure(
-                "sufficiency_binding_mismatch",
-                "quality_projection_digest_mismatch",
-            )
     return quality
 
 
@@ -428,14 +548,19 @@ def _collect_complete_traceability(
             "capability_definition_binding_missing",
         )
     execution = _load_execution_projection_v2(inputs)
-    reconciled = load_current_reconciled_projection(
-        inputs.project_root,
-        inputs.change_id,
-    )
+    reconciled = _load_current_reconciled_projection_v2(inputs)
     _validate_projection_identity(inputs.change_id, execution, reconciled)
-    validate_trace_phase_pair(execution, reconciled)
-    execution_evidence = TracePhaseEvidence.from_projection(execution)
-    reconciled_evidence = TracePhaseEvidence.from_projection(reconciled)
+    # Per-projection summary rejection is diagnosed before cross-phase pairing so
+    # integrity misstatements map to layer_summary_invalid rather than phase-pair.
+    execution_evidence = _phase_evidence_from_projection(execution)
+    reconciled_evidence = _phase_evidence_from_projection(reconciled)
+    try:
+        validate_trace_phase_pair(execution, reconciled)
+    except TracePhasePairError as exc:
+        raise TraceCollectionFailure(
+            "projection_phase_pair_mismatch",
+            "phase_pair_mismatch",
+        ) from exc
     quality = _load_bound_quality_v2(inputs, execution, binding.baseline_policy_digest)
     coverage_evidence = quality.dimensions.coverage.evidence
     if not isinstance(coverage_evidence, EvidenceCoverageSuccessV2):
@@ -443,12 +568,23 @@ def _collect_complete_traceability(
             "quality_gate_binding_mismatch",
             "typed_sufficiency_unavailable",
         )
-    sufficiency = join_layer_sufficiency(
-        execution,
-        execution_evidence.facts,
-        coverage_evidence.report,
-        expected_policy_digest=binding.baseline_policy_digest,
-    )
+    try:
+        sufficiency = join_layer_sufficiency(
+            execution,
+            execution_evidence.facts,
+            coverage_evidence.report,
+            expected_policy_digest=binding.baseline_policy_digest,
+        )
+    except SufficiencyBindingError as exc:
+        raise TraceCollectionFailure(
+            "sufficiency_binding_mismatch",
+            "sufficiency_join_mismatch",
+        ) from exc
+    except TraceLayerSummaryError as exc:
+        raise TraceCollectionFailure(
+            "layer_summary_invalid",
+            "layer_summary_rejected",
+        ) from exc
     verify = _load_bound_verify(inputs, reconciled, binding.baseline_policy_digest)
     coverage_summary = CoverageSummary(
         status=quality.dimensions.coverage.status,
@@ -473,6 +609,31 @@ def _collect_complete_traceability(
         sufficiency=sufficiency,
         coverage=coverage_summary,
         verify=verify_diagnostics,
+    )
+
+
+def collect_v3_report(inputs: TraceCollectionInputs) -> SpecialtyReportV3:
+    capability = collect_capability_policy_replay(
+        change_dir=inputs.change_dir,
+        change_id=inputs.change_id,
+        root_invocation_id=inputs.root_invocation_id,
+        expected_entrypoint=inputs.workflow_entrypoint,
+    )
+    try:
+        traceability: CompleteTraceabilityEvidenceV3 | IncompleteTraceabilityEvidenceV3 = (
+            _collect_complete_traceability(inputs, capability)
+        )
+    except TraceCollectionFailure as exc:
+        traceability = IncompleteTraceabilityEvidenceV3(
+            status="incomplete",
+            reason_code=exc.reason_code,
+            detail=exc.detail,
+            command_status=inputs.command_status,
+        )
+    return SpecialtyReportV3(
+        change_id=inputs.change_id,
+        capability_contract_policy=capability,
+        traceability_evidence=traceability,
     )
 
 

@@ -8,9 +8,10 @@ import json
 import shlex
 import subprocess
 import sys
+from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, get_args
 
 import pytest
 import yaml
@@ -22,9 +23,11 @@ from assurance_agent.artifacts.models.trace import TraceProjectionV2, load_trace
 from assurance_agent.artifacts.policy import load_policy_bytes, policy_digest
 from assurance_agent.eval.specialty_models import (
     CompleteTraceabilityEvidenceV3,
+    IncompleteTraceabilityEvidenceV3,
     LegacySpecialtyReportV1,
     SpecialtyReportV2,
     SpecialtyReportV3,
+    TraceCollectionFailureReason,
     build_capability_replay_v2,
     load_specialty_report,
     load_specialty_report_document,
@@ -2018,3 +2021,380 @@ def test_trace_collection_inputs_rejects_negative_exits_and_resolves_change(
     assert inputs.command_status.trace_exit == 0
     assert inputs.root_invocation_id == ""
     assert not hasattr(inputs, "schema_root")
+
+
+def _v3_inputs(
+    reporter: Any,
+    project: Path,
+    execution_trace_path: Path,
+    verify_path: Path,
+) -> Any:
+    return reporter.TraceCollectionInputs(
+        project_root=project,
+        change_id=CHANGE_ID,
+        root_invocation_id=ROOT_INVOCATION_ID,
+        workflow_entrypoint=_ENTRYPOINT,
+        trace_path=execution_trace_path,
+        verify_path=verify_path,
+        trace_exit=0,
+        verify_exit=0,
+    )
+
+
+def _assert_incomplete_v3_report(
+    report: SpecialtyReportV3,
+    *,
+    reason_code: TraceCollectionFailureReason,
+) -> IncompleteTraceabilityEvidenceV3:
+    reloaded = load_specialty_report_document(report.model_dump(mode="json"))
+    assert isinstance(reloaded, SpecialtyReportV3)
+    evidence = reloaded.traceability_evidence
+    assert isinstance(evidence, IncompleteTraceabilityEvidenceV3)
+    assert evidence.status == "incomplete"
+    assert evidence.reason_code == reason_code
+    assert isinstance(evidence.detail, str)
+    assert "Traceback" not in evidence.detail
+    assert "Exception" not in evidence.detail
+    assert "Error(" not in evidence.detail
+    dumped = evidence.model_dump(mode="json")
+    for complete_key in (
+        "execution",
+        "reconciled",
+        "sufficiency",
+        "coverage",
+        "verify",
+    ):
+        assert complete_key not in dumped
+    return evidence
+
+
+def _mutate_execution_json(
+    execution_trace_path: Path,
+    mutator: Callable[[dict[str, Any]], None],
+) -> None:
+    payload = json.loads(execution_trace_path.read_text(encoding="utf-8"))
+    assert isinstance(payload, dict)
+    mutator(payload)
+    _write_json(execution_trace_path, payload)
+
+
+def _mutate_reconciled_json(
+    project: Path,
+    mutator: Callable[[dict[str, Any]], None],
+) -> None:
+    path = _change_dir(project) / "inspect" / "trace-projection.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert isinstance(payload, dict)
+    mutator(payload)
+    _write_json(path, payload)
+
+
+def _mutate_quality_json(
+    project: Path,
+    mutator: Callable[[dict[str, Any]], None],
+) -> None:
+    path = _change_dir(project) / "execution" / "quality-gate-result.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert isinstance(payload, dict)
+    mutator(payload)
+    _write_json(path, payload)
+
+
+def _mutate_verify_json(
+    verify_path: Path,
+    mutator: Callable[[dict[str, Any]], None],
+) -> None:
+    payload = json.loads(verify_path.read_text(encoding="utf-8"))
+    assert isinstance(payload, dict)
+    mutator(payload)
+    _write_json(verify_path, payload)
+
+
+def _apply_incomplete_reason_mutation(
+    *,
+    reason: TraceCollectionFailureReason,
+    project: Path,
+    execution_trace_path: Path,
+    verify_path: Path,
+) -> None:
+    change_dir = _change_dir(project)
+    if reason == "execution_projection_missing":
+        execution_trace_path.unlink()
+        return
+    if reason == "execution_projection_invalid":
+        execution_trace_path.write_bytes(b"\xff\xfe not-json")
+        return
+    if reason == "reconciled_projection_missing":
+        (change_dir / "inspect" / "trace-projection.json").unlink()
+        return
+    if reason == "reconciled_projection_invalid":
+        (change_dir / "inspect" / "trace-projection.json").write_text("{", encoding="utf-8")
+        return
+    if reason == "reconciled_projection_stale":
+
+        def drift_persisted_digest(payload: dict[str, Any]) -> None:
+            # Keep raw identity; change bytes so current-loader digest_mismatch → stale.
+            rows = payload["rows"]
+            assert isinstance(rows, list) and rows
+            first = rows[0]
+            assert isinstance(first, dict)
+            first["assertions"] = ["persisted-no-longer-current"]
+
+        _mutate_reconciled_json(project, drift_persisted_digest)
+        return
+    if reason == "projection_identity_mismatch":
+
+        def wrong_execution_change(payload: dict[str, Any]) -> None:
+            payload["change_id"] = "CH-OTHER"
+            payload["rows"] = "not-a-list"  # compound: identity precedes model defects
+
+        _mutate_execution_json(execution_trace_path, wrong_execution_change)
+        return
+    if reason == "projection_phase_pair_mismatch":
+
+        def drift_execution_row(payload: dict[str, Any]) -> None:
+            rows = payload["rows"]
+            assert isinstance(rows, list) and rows
+            first = rows[0]
+            assert isinstance(first, dict)
+            first["assertions"] = ["mutated-for-phase-pair"]
+
+        _mutate_execution_json(execution_trace_path, drift_execution_row)
+        return
+    if reason == "quality_gate_missing":
+        (change_dir / "execution" / "quality-gate-result.json").unlink()
+        return
+    if reason == "quality_gate_invalid":
+        (change_dir / "execution" / "quality-gate-result.json").write_text(
+            '["not-an-object"]\n',
+            encoding="utf-8",
+        )
+        return
+    if reason == "quality_gate_binding_mismatch":
+
+        def to_v2_error_arm(payload: dict[str, Any]) -> None:
+            coverage = payload["dimensions"]["coverage"]
+            assert isinstance(coverage, dict)
+            coverage["evidence"] = {
+                "kind": "error",
+                "error_code": "evidence_projection_missing",
+            }
+
+        _mutate_quality_json(project, to_v2_error_arm)
+        return
+    if reason == "sufficiency_binding_mismatch":
+
+        def duplicate_case_id(payload: dict[str, Any]) -> None:
+            report = payload["dimensions"]["coverage"]["evidence"]["report"]
+            verdicts = report["verdicts"]
+            assert isinstance(verdicts, list) and verdicts
+            first = dict(verdicts[0])
+            verdicts.append(first)
+
+        _mutate_quality_json(project, duplicate_case_id)
+        return
+    if reason == "verify_result_missing":
+        verify_path.unlink()
+        return
+    if reason == "verify_result_invalid":
+        verify_path.write_text("{not-json", encoding="utf-8")
+        return
+    if reason == "verify_binding_mismatch":
+
+        def pass_without_scope(payload: dict[str, Any]) -> None:
+            payload["verdict"] = "pass"
+            payload["scope"] = None
+            payload["phase"] = "execution"  # compound: raw identity precedes model/arm checks
+            payload["blocking_gaps"] = "bad"
+
+        _mutate_verify_json(verify_path, pass_without_scope)
+        return
+    if reason == "layer_summary_invalid":
+
+        def lie_about_integrity(payload: dict[str, Any]) -> None:
+            # Parsed V2 stays model-valid; shared summary rejects integrity misstatement.
+            current = payload.get("integrity")
+            payload["integrity"] = "complete" if current != "complete" else "degraded"
+
+        _mutate_execution_json(execution_trace_path, lie_about_integrity)
+        return
+    raise AssertionError(f"unmapped reason fixture: {reason}")
+
+
+@pytest.mark.parametrize("reason", list(get_args(TraceCollectionFailureReason)))
+def test_collect_v3_report_maps_every_closed_failure_reason(
+    tmp_path: Path,
+    reason: TraceCollectionFailureReason,
+) -> None:
+    reporter = _load_reporter_module()
+    project, execution_trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    _apply_incomplete_reason_mutation(
+        reason=reason,
+        project=project,
+        execution_trace_path=execution_trace_path,
+        verify_path=verify_path,
+    )
+    report = reporter.collect_v3_report(
+        _v3_inputs(reporter, project, execution_trace_path, verify_path)
+    )
+    _assert_incomplete_v3_report(report, reason_code=reason)
+    assert report.capability_contract_policy.integrity in {"complete", "incomplete"}
+
+
+def test_collect_v3_ordered_mapping_prefers_missing_over_invalid(tmp_path: Path) -> None:
+    reporter = _load_reporter_module()
+    project, execution_trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    execution_trace_path.write_bytes(b"\xff\xfe")
+    execution_trace_path.unlink()
+    report = reporter.collect_v3_report(
+        _v3_inputs(reporter, project, execution_trace_path, verify_path)
+    )
+    _assert_incomplete_v3_report(report, reason_code="execution_projection_missing")
+
+
+def test_collect_v3_ordered_mapping_prefers_identity_over_model_defect(tmp_path: Path) -> None:
+    reporter = _load_reporter_module()
+    project, execution_trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+
+    def mutate(payload: dict[str, Any]) -> None:
+        payload["phase"] = "reconciled"
+        payload["schema_version"] = "1"
+        payload["rows"] = None
+
+    _mutate_execution_json(execution_trace_path, mutate)
+    report = reporter.collect_v3_report(
+        _v3_inputs(reporter, project, execution_trace_path, verify_path)
+    )
+    _assert_incomplete_v3_report(report, reason_code="projection_identity_mismatch")
+
+
+def test_collect_v3_quality_duplicate_case_id_is_sufficiency_binding_mismatch(
+    tmp_path: Path,
+) -> None:
+    reporter = _load_reporter_module()
+    project, execution_trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+
+    def mutate(payload: dict[str, Any]) -> None:
+        report = payload["dimensions"]["coverage"]["evidence"]["report"]
+        # Keep digests/semantics correct; only defect is duplicate case_id.
+        report["verdicts"] = [report["verdicts"][0], dict(report["verdicts"][0])]
+
+    _mutate_quality_json(project, mutate)
+    report = reporter.collect_v3_report(
+        _v3_inputs(reporter, project, execution_trace_path, verify_path)
+    )
+    _assert_incomplete_v3_report(report, reason_code="sufficiency_binding_mismatch")
+
+
+def test_collect_v3_quality_binding_scalar_precedes_duplicate_case_id(tmp_path: Path) -> None:
+    reporter = _load_reporter_module()
+    project, execution_trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+
+    def mutate(payload: dict[str, Any]) -> None:
+        report = payload["dimensions"]["coverage"]["evidence"]["report"]
+        report["source_policy_digest"] = "0" * 64
+        report["verdicts"] = [report["verdicts"][0], dict(report["verdicts"][0])]
+
+    _mutate_quality_json(project, mutate)
+    report = reporter.collect_v3_report(
+        _v3_inputs(reporter, project, execution_trace_path, verify_path)
+    )
+    _assert_incomplete_v3_report(report, reason_code="sufficiency_binding_mismatch")
+    assert "policy" in report.traceability_evidence.detail
+
+
+def test_collect_v3_quality_identity_precedes_sufficiency_preflight(tmp_path: Path) -> None:
+    reporter = _load_reporter_module()
+    project, execution_trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+
+    def mutate(payload: dict[str, Any]) -> None:
+        payload["batch_id"] = "wrong-batch"
+        report = payload["dimensions"]["coverage"]["evidence"]["report"]
+        report["source_policy_digest"] = "0" * 64
+        report["verdicts"] = [report["verdicts"][0], dict(report["verdicts"][0])]
+
+    _mutate_quality_json(project, mutate)
+    report = reporter.collect_v3_report(
+        _v3_inputs(reporter, project, execution_trace_path, verify_path)
+    )
+    _assert_incomplete_v3_report(report, reason_code="quality_gate_binding_mismatch")
+
+
+def test_collect_v3_capability_incomplete_with_trace_complete(tmp_path: Path) -> None:
+    reporter = _load_reporter_module()
+    project, execution_trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    _corrupt_api_mechanical_outputs(_change_dir(project))
+    report = reporter.collect_v3_report(
+        _v3_inputs(reporter, project, execution_trace_path, verify_path)
+    )
+    reloaded = load_specialty_report_document(report.model_dump(mode="json"))
+    assert isinstance(reloaded, SpecialtyReportV3)
+    assert reloaded.capability_contract_policy.integrity == "incomplete"
+    assert reloaded.capability_contract_policy.definition_binding is not None
+    assert isinstance(reloaded.traceability_evidence, CompleteTraceabilityEvidenceV3)
+    assert reloaded.traceability_evidence.status == "complete"
+
+
+def test_collect_v3_trace_incomplete_with_capability_complete(tmp_path: Path) -> None:
+    reporter = _load_reporter_module()
+    project, execution_trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    execution_trace_path.unlink()
+    report = reporter.collect_v3_report(
+        _v3_inputs(reporter, project, execution_trace_path, verify_path)
+    )
+    assert report.capability_contract_policy.integrity == "complete"
+    _assert_incomplete_v3_report(report, reason_code="execution_projection_missing")
+
+
+def test_collect_v3_both_capability_and_trace_incomplete(tmp_path: Path) -> None:
+    reporter = _load_reporter_module()
+    project, execution_trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    _corrupt_api_mechanical_outputs(_change_dir(project))
+    execution_trace_path.unlink()
+    report = reporter.collect_v3_report(
+        _v3_inputs(reporter, project, execution_trace_path, verify_path)
+    )
+    reloaded = load_specialty_report_document(report.model_dump(mode="json"))
+    assert isinstance(reloaded, SpecialtyReportV3)
+    assert reloaded.capability_contract_policy.integrity == "incomplete"
+    _assert_incomplete_v3_report(reloaded, reason_code="execution_projection_missing")
+
+
+def test_collect_v3_unexpected_runtime_error_escapes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reporter = _load_reporter_module()
+    project, execution_trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    inputs = _v3_inputs(reporter, project, execution_trace_path, verify_path)
+
+    def boom(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("programmer-bug")
+
+    monkeypatch.setattr(reporter, "_collect_complete_traceability", boom)
+    with pytest.raises(RuntimeError, match="programmer-bug"):
+        reporter.collect_v3_report(inputs)
+
+
+def test_tasks_16_17_keep_public_collect_atomic_activation_guard(tmp_path: Path) -> None:
+    reporter = _load_reporter_module()
+    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
+    public = reporter.collect_report(
+        project_root=project,
+        change_id=CHANGE_ID,
+        root_invocation_id=ROOT_INVOCATION_ID,
+        workflow_entrypoint=_ENTRYPOINT,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        trace_exit=0,
+        verify_exit=0,
+    )
+    assert isinstance(public, SpecialtyReportV2)
+    assert public.schema_version == "2"
+
+    main_source = inspect.getsource(reporter.main)
+    collect_source = inspect.getsource(reporter.collect_report)
+    assert "collect_v3_report" not in main_source
+    assert "collect_v3_report" not in collect_source
+    assert "SpecialtyReportV3" not in main_source
+    assert callable(reporter.collect_v3_report)
