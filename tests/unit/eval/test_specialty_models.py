@@ -918,10 +918,9 @@ def test_document_loader_rejects_missing_null_and_unknown_versions(version: obje
         load_specialty_report_document(payload)
 
 
-def test_public_load_specialty_report_remains_v1_v2_only() -> None:
-    v3_payload = _canonical_complete_v3().model_dump(mode="json")
-    with pytest.raises(ValueError, match="unsupported specialty report schema_version"):
-        load_specialty_report(v3_payload)
+def test_public_load_specialty_report_accepts_v1_v2_v3() -> None:
+    v3 = load_specialty_report(_canonical_complete_v3().model_dump(mode="json"))
+    assert isinstance(v3, SpecialtyReportV3)
 
     v2 = load_specialty_report(
         {
@@ -956,3 +955,102 @@ def test_traceability_evidence_v3_is_status_discriminated_union() -> None:
         reason_code="verify_result_missing",
     )
     assert incomplete.status == "incomplete"
+
+
+def test_render_mixed_report_states_four_layer_matrices() -> None:
+    complete_a = _canonical_complete_v3()
+    payload_b = _canonical_complete_v3().model_dump(mode="json")
+    payload_b["change_id"] = "CH-V3-2"
+    payload_b["traceability_evidence"]["execution"]["facts"]["change_id"] = "CH-V3-2"
+    payload_b["traceability_evidence"]["reconciled"]["facts"]["change_id"] = "CH-V3-2"
+    payload_b["traceability_evidence"]["reconciled"]["overview"]["integrity"] = "incomplete"
+    payload_b["traceability_evidence"]["reconciled"]["facts"]["projection_integrity"] = "incomplete"
+    complete_b = SpecialtyReportV3.model_validate(payload_b)
+    incomplete = SpecialtyReportV3.model_validate(incomplete_v3("quality_gate_missing"))
+
+    v2_payload = {
+        "schema_version": "2",
+        "change_id": "CH-LEGACY-V2",
+        "capability_contract_policy": build_capability_replay_v2(
+            definition_binding=_definition_binding(),
+            rows=_four_complete_rows(),
+        ).model_dump(mode="json"),
+        "traceability_evidence": {
+            "command_status": {"trace_exit": 0, "verify_exit": 0},
+            "execution_projection": {
+                "phase": "execution",
+                "batch_id": "b",
+                "integrity": "complete",
+                "row_count": 0,
+                "source_count": 0,
+                "gap_count": 0,
+                "unmapped_test_count": 0,
+            },
+            "reconciled_projection": {
+                "phase": "reconciled",
+                "batch_id": "b",
+                "integrity": "complete",
+                "row_count": 0,
+                "source_count": 0,
+                "gap_count": 0,
+                "unmapped_test_count": 0,
+                "failure_row_count": 0,
+                "failure_link_count": 0,
+                "open_problem_row_count": 0,
+                "open_problem_link_count": 0,
+                "unique_open_problem_count": 0,
+            },
+            "sufficiency": {"sufficient_count": 0, "insufficient_count": 0, "reason_counts": {}},
+            "coverage": {"status": "PASS", "line": 1.0, "branch": 1.0, "final_status": "PASS"},
+            "verify": {
+                "phase": "reconciled",
+                "verdict": "pass",
+                "policy_digest": "p",
+                "projection_digest": "d",
+                "blocking_gap_count": 0,
+                "open_problem_count": 0,
+                "reported_insufficient_count": 0,
+                "observed_insufficient_count": 0,
+            },
+        },
+    }
+    v2 = SpecialtyReportV2.model_validate(v2_payload)
+    v1 = LegacySpecialtyReportV1(
+        schema_version="1",
+        change_id="CH-LEGACY-V1",
+        capability_contract_policy={
+            "mechanical_checks": {"status": "pass", "finding_count": 0, "by_check": {}},
+            "capabilities": {"required": [], "missing": []},
+            "contracts": {
+                "agent_execution_contract_digests": [],
+                "rendered_output_contract_count": 0,
+                "prompt_observability": "ok",
+            },
+            "policy": {
+                "digest": "d",
+                "recorded_digest": "d",
+                "source": "pinned",
+                "plan_checks": {},
+            },
+            "policy_replay": [
+                {"action": "warn", "verdict": "pass"},
+                {"action": "block", "verdict": "pass"},
+                {"action": "require_human", "verdict": "pass"},
+            ],
+        },
+        traceability_evidence=v2.traceability_evidence,
+    )
+
+    rendered = render_specialty_sections([complete_b, incomplete, complete_a, v2, v1])
+    facts = rendered.split("### Trace Layer Facts", 1)[1].split("###", 1)[0]
+    fact_data = [line for line in facts.splitlines() if line.startswith("| `")]
+    assert len(fact_data) == 16
+    sufficiency = rendered.split("### Trace Layer Sufficiency", 1)[1]
+    sufficiency_data = [line for line in sufficiency.splitlines() if line.startswith("| `CH-V3-")]
+    assert len(sufficiency_data) == 8
+    assert "quality_gate_missing" in rendered
+    assert rendered.count("`legacy_unlayered`") >= 2
+    assert "CH-LEGACY-V1" in rendered and "CH-LEGACY-V2" in rendered
+    assert all("CH-V3-1" in line or "CH-V3-2" in line for line in fact_data)
+    assert "Global Gaps" in rendered
+    assert "Incomplete Collection" in rendered

@@ -15,7 +15,7 @@ from pydantic import (
 )
 
 from assurance_agent.artifacts.models.assurance import CASE_TYPES, LAYER_NAMES, PLAN_CHECK_IDS
-from assurance_agent.artifacts.models.common import GateStatus
+from assurance_agent.artifacts.models.common import GateStatus, NonEmptyStr
 from assurance_agent.artifacts.models.sufficiency import TraceLayerSufficiencySummary
 from assurance_agent.artifacts.models.trace import (
     StrictNonNegativeInt,
@@ -426,12 +426,12 @@ class SpecialtyReportV3(BaseModel):
         return self
 
 
-SpecialtyReport = SpecialtyReportV2 | LegacySpecialtyReportV1
-
 SpecialtyReportVariant = Annotated[
     LegacySpecialtyReportV1 | SpecialtyReportV2 | SpecialtyReportV3,
     Field(discriminator="schema_version"),
 ]
+
+SpecialtyReport = SpecialtyReportVariant
 
 
 class SpecialtyReportDocument(RootModel[SpecialtyReportVariant]):
@@ -440,6 +440,41 @@ class SpecialtyReportDocument(RootModel[SpecialtyReportVariant]):
 
 def load_specialty_report_document(raw: object) -> SpecialtyReportVariant:
     return SpecialtyReportDocument.model_validate(raw).root
+
+
+class PendingSpecialtyPublicationReceipt(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: Literal["1"] = "1"
+    state: Literal["pending"] = "pending"
+    attempt_id: NonEmptyStr
+    change_id: NonEmptyStr
+
+
+class CommittedSpecialtyPublicationReceipt(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: Literal["1"] = "1"
+    state: Literal["committed"] = "committed"
+    attempt_id: NonEmptyStr
+    change_id: NonEmptyStr
+    report_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    trace_status: Literal["complete", "incomplete"]
+    capability_integrity: Literal["complete", "incomplete"]
+
+
+SpecialtyPublicationReceipt = Annotated[
+    PendingSpecialtyPublicationReceipt | CommittedSpecialtyPublicationReceipt,
+    Field(discriminator="state"),
+]
+
+
+class SpecialtyPublicationReceiptDocument(RootModel[SpecialtyPublicationReceipt]):
+    """Discriminated specialty publication receipt wire document."""
+
+
+def load_specialty_publication_receipt(raw: object) -> SpecialtyPublicationReceipt:
+    return SpecialtyPublicationReceiptDocument.model_validate(raw).root
 
 
 def _validate_row_topology(rows: tuple[LayerRow, ...], *, semantics: ReplaySemantics) -> None:
@@ -507,19 +542,15 @@ def build_capability_replay_v2(
     )
 
 
-def load_specialty_report(payload: dict[str, Any]) -> SpecialtyReport:
-    version = payload.get("schema_version")
-    if version == "2":
-        return SpecialtyReportV2.model_validate(payload)
-    if version == "1":
-        return LegacySpecialtyReportV1.model_validate(payload)
-    raise ValueError(f"unsupported specialty report schema_version: {version!r}")
+def load_specialty_report(raw: object) -> SpecialtyReportVariant:
+    return load_specialty_report_document(raw)
 
 
 __all__ = [
     "CapabilityPolicyReplayV2",
     "CapabilitiesSummary",
     "CheckSummary",
+    "CommittedSpecialtyPublicationReceipt",
     "CompleteLayerRow",
     "CompleteTraceabilityEvidenceV3",
     "CoverageSummary",
@@ -532,9 +563,12 @@ __all__ = [
     "MechanicalAggregate",
     "NotSelectedLayerRow",
     "NotWiredLayerRow",
+    "PendingSpecialtyPublicationReceipt",
     "ProjectionOverview",
     "ReplayScenario",
     "ReplaySemantics",
+    "SpecialtyPublicationReceipt",
+    "SpecialtyPublicationReceiptDocument",
     "SpecialtyReport",
     "SpecialtyReportDocument",
     "SpecialtyReportV2",
@@ -546,6 +580,7 @@ __all__ = [
     "TraceabilityEvidenceV3",
     "VerifyDiagnostics",
     "build_capability_replay_v2",
+    "load_specialty_publication_receipt",
     "load_specialty_report",
     "load_specialty_report_document",
 ]

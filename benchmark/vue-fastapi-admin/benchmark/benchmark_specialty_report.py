@@ -4,16 +4,16 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
-from collections import Counter
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import ValidationError
 
-from assurance_agent.artifacts.models import QualityGateResult
 from assurance_agent.artifacts.models.inspect import (
     EvidenceCoverageSuccessV2,
     QualityGateResultV2,
@@ -21,23 +21,26 @@ from assurance_agent.artifacts.models.inspect import (
 )
 from assurance_agent.artifacts.models.sufficiency import SufficiencyBindingError
 from assurance_agent.artifacts.models.trace import (
-    TraceProjection,
     TraceProjectionV2,
     load_trace_projection_document,
 )
 from assurance_agent.change_location import resolve_change
 from assurance_agent.eval.specialty_models import (
     CapabilityPolicyReplayV2,
+    CommittedSpecialtyPublicationReceipt,
     CompleteTraceabilityEvidenceV3,
     CoverageSummary,
     IncompleteTraceabilityEvidenceV3,
     LegacySpecialtyReportV1,
+    PendingSpecialtyPublicationReceipt,
     SpecialtyReportV2,
     SpecialtyReportV3,
+    SpecialtyReportVariant,
     TraceCollectionFailureReason,
     TraceCommandStatus,
     TracePhaseEvidence,
     VerifyDiagnostics,
+    load_specialty_publication_receipt,
     load_specialty_report,
 )
 from assurance_agent.eval.specialty_render import render_specialty_sections
@@ -55,13 +58,11 @@ from assurance_agent.evidence.layer_summary import (
     join_layer_sufficiency,
     validate_trace_phase_pair,
 )
-from assurance_agent.evidence.sufficiency import SufficiencyReport
-from assurance_agent.evidence.verify import VerifyResult, projection_digest
+from assurance_agent.evidence.verify import VerifyResult
 
-_CURRENT_IDENTITY_STALE_REASONS = frozenset(
-    {"phase_mismatch", "change_id_mismatch", "batch_id_mismatch"}
-)
+_CURRENT_IDENTITY_STALE_REASONS = frozenset({"phase_mismatch", "change_id_mismatch", "batch_id_mismatch"})
 _CURRENT_STALE_REASONS = frozenset({"legacy_version", "digest_mismatch"})
+_PUBLICATION_CRASH_ENV = "AA_SPECIALTY_PUBLICATION_CRASH"
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -71,150 +72,24 @@ def _load_json(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _atomic_dump(path: Path, payload: dict[str, Any]) -> None:
+def _atomic_write_bytes(path: Path, raw: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    raw = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
-        temp.write_text(raw, encoding="utf-8")
+        temp.write_bytes(raw)
         os.replace(temp, path)
     finally:
         temp.unlink(missing_ok=True)
 
 
-def _projection_summary(projection: TraceProjection, *, reconciled: bool) -> dict[str, Any]:
-    rows = projection.rows
-    summary: dict[str, Any] = {
-        "phase": projection.phase,
-        "batch_id": projection.authoritative_batch_id,
-        "integrity": projection.integrity,
-        "row_count": len(rows),
-        "source_count": len(projection.sources),
-        "gap_count": len(projection.gaps),
-        "unmapped_test_count": len(projection.unmapped_tests),
-    }
-    if not reconciled:
-        return summary
-
-    failure_rows = 0
-    failure_links = 0
-    problem_rows = 0
-    problem_links = 0
-    unique_problems: set[str] = set()
-    for row in rows:
-        failures = row.failures
-        problems = row.open_problem_ids
-        if failures:
-            failure_rows += 1
-        if problems:
-            problem_rows += 1
-        failure_links += len(failures)
-        problem_links += len(problems)
-        unique_problems.update(problems)
-    summary.update(
-        {
-            "failure_row_count": failure_rows,
-            "failure_link_count": failure_links,
-            "open_problem_row_count": problem_rows,
-            "open_problem_link_count": problem_links,
-            "unique_open_problem_count": len(unique_problems),
-        }
-    )
-    return summary
+def _report_wire_bytes(report: SpecialtyReportV3) -> bytes:
+    # Do not sort object keys: sufficiency execution_state_counts is order-sensitive.
+    return (report.model_dump_json(indent=2) + "\n").encode("utf-8")
 
 
-def _quality_summary(
-    quality: QualityGateResult,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    coverage = quality.dimensions.coverage
-    if coverage.evidence is None:
-        raise ValueError("quality-gate coverage.evidence is required for specialty reporting")
-    evidence = SufficiencyReport.model_validate(coverage.evidence)
-    reasons: Counter[str] = Counter()
-    for verdict in evidence.verdicts:
-        if not verdict.sufficient:
-            reasons.update(verdict.reason_codes)
-    sufficient = sum(verdict.sufficient for verdict in evidence.verdicts)
-    insufficient = len(evidence.verdicts) - sufficient
-    return (
-        {
-            "status": coverage.status,
-            "line": coverage.line_coverage,
-            "branch": coverage.branch_coverage,
-            "final_status": quality.final_status,
-        },
-        {
-            "sufficient_count": sufficient,
-            "insufficient_count": insufficient,
-            "reason_counts": dict(sorted(reasons.items())),
-        },
-    )
-
-
-def _validate_cross_artifact_identity(
-    *,
-    change_id: str,
-    review: dict[str, Any],
-    execution: dict[str, Any],
-    reconciled: dict[str, Any],
-    quality: dict[str, Any],
-    verify: dict[str, Any],
-) -> None:
-    if review.get("change_id") != change_id:
-        raise ValueError(
-            f"review change_id mismatch: expected {change_id!r}, got {review.get('change_id')!r}"
-        )
-    if execution.get("change_id") != change_id:
-        raise ValueError(
-            f"execution trace change_id mismatch: expected {change_id!r}, got {execution.get('change_id')!r}"
-        )
-    if execution.get("phase") != "execution":
-        raise ValueError(
-            f"execution trace phase mismatch: expected 'execution', got {execution.get('phase')!r}"
-        )
-    if reconciled.get("change_id") != change_id:
-        raise ValueError(
-            "reconciled trace change_id mismatch: "
-            f"expected {change_id!r}, got {reconciled.get('change_id')!r}"
-        )
-    if reconciled.get("phase") != "reconciled":
-        raise ValueError(
-            f"reconciled trace phase mismatch: expected 'reconciled', got {reconciled.get('phase')!r}"
-        )
-    execution_batch = execution.get("authoritative_batch_id")
-    reconciled_batch = reconciled.get("authoritative_batch_id")
-    if execution_batch != reconciled_batch:
-        raise ValueError(
-            f"trace batch mismatch: execution={execution_batch!r}, reconciled={reconciled_batch!r}"
-        )
-    if quality.get("change_id") != change_id:
-        raise ValueError(
-            f"quality gate change_id mismatch: expected {change_id!r}, got {quality.get('change_id')!r}"
-        )
-    if quality.get("batch_id") != execution_batch:
-        raise ValueError(
-            f"quality gate batch mismatch: expected {execution_batch!r}, got {quality.get('batch_id')!r}"
-        )
-    if verify.get("change_id") != change_id:
-        raise ValueError(
-            f"verify change_id mismatch: expected {change_id!r}, got {verify.get('change_id')!r}"
-        )
-    if verify.get("phase") != "reconciled":
-        raise ValueError(f"verify phase mismatch: expected 'reconciled', got {verify.get('phase')!r}")
-
-
-def _validate_verify_binding(reconciled: TraceProjection, verify: VerifyResult) -> None:
-    expected_digest = projection_digest(reconciled)
-    if verify.projection_digest != expected_digest:
-        raise ValueError(
-            "verify projection digest mismatch: "
-            f"expected {expected_digest!r}, got {verify.projection_digest!r}"
-        )
-    if verify.scope is not None and verify.scope.batch != reconciled.authoritative_batch_id:
-        raise ValueError(
-            "verify scope batch mismatch: "
-            f"expected {reconciled.authoritative_batch_id!r}, got {verify.scope.batch!r}"
-        )
+def _crash_maybe(window: str) -> None:
+    if os.environ.get(_PUBLICATION_CRASH_ENV) == window:
+        raise RuntimeError(f"injected publication crash:{window}")
 
 
 class TraceCollectionFailure(Exception):
@@ -637,102 +512,84 @@ def collect_v3_report(inputs: TraceCollectionInputs) -> SpecialtyReportV3:
     )
 
 
-def _collect_traceability_evidence(
+def collect_report(inputs: TraceCollectionInputs) -> SpecialtyReportV3:
+    return collect_v3_report(inputs)
+
+
+def report_collection_exit(report: SpecialtyReportVariant) -> Literal[0, 1]:
+    if isinstance(report, SpecialtyReportV3):
+        if report.capability_contract_policy.integrity != "complete":
+            return 1
+        if report.traceability_evidence.status != "complete":
+            return 1
+        return 0
+    if isinstance(report, SpecialtyReportV2):
+        return 0 if report.capability_contract_policy.integrity == "complete" else 1
+    return 0
+
+
+def _resolve_distinct_paths(output: Path, receipt_path: Path) -> tuple[Path, Path]:
+    resolved_output = output.resolve()
+    resolved_receipt = receipt_path.resolve()
+    if resolved_output == resolved_receipt:
+        raise ValueError("report output and publication receipt paths must differ")
+    if resolved_output.exists() and resolved_receipt.exists() and resolved_output.samefile(resolved_receipt):
+        raise ValueError("report output and publication receipt paths must differ")
+    return resolved_output, resolved_receipt
+
+
+def publish_specialty_report(
+    report: SpecialtyReportV3,
     *,
-    change_id: str,
-    trace_path: Path,
-    verify_path: Path,
-    change_dir: Path,
-    trace_exit: int,
-    verify_exit: int,
-) -> dict[str, Any]:
-    raw_review = _load_json(change_dir / "review" / "api-plan-review.json")
-    raw_execution = _load_json(trace_path)
-    raw_reconciled = _load_json(change_dir / "inspect" / "trace-projection.json")
-    raw_quality = _load_json(change_dir / "execution" / "quality-gate-result.json")
-    raw_verify = _load_json(verify_path)
-    _validate_cross_artifact_identity(
-        change_id=change_id,
-        review=raw_review,
-        execution=raw_execution,
-        reconciled=raw_reconciled,
-        quality=raw_quality,
-        verify=raw_verify,
+    output: Path,
+    receipt_path: Path,
+    attempt_id: str,
+) -> Literal[0, 1]:
+    if not attempt_id or not str(attempt_id).strip():
+        raise ValueError("attempt_id must be non-empty")
+    if not report.change_id or not str(report.change_id).strip():
+        raise ValueError("change_id must be non-empty")
+    output, receipt_path = _resolve_distinct_paths(output, receipt_path)
+
+    report_bytes = _report_wire_bytes(report)
+    # Validate wire bytes round-trip before touching disk.
+    load_specialty_report(json.loads(report_bytes.decode("utf-8")))
+    report_sha256 = hashlib.sha256(report_bytes).hexdigest()
+    pending = PendingSpecialtyPublicationReceipt(
+        attempt_id=attempt_id,
+        change_id=report.change_id,
     )
-
-    execution_projection = TraceProjection.model_validate(raw_execution)
-    reconciled_projection = TraceProjection.model_validate(raw_reconciled)
-    quality = QualityGateResult.model_validate(raw_quality)
-    verify = VerifyResult.model_validate(raw_verify)
-    _validate_verify_binding(reconciled_projection, verify)
-    coverage, sufficiency = _quality_summary(quality)
-
-    return {
-        "command_status": {"trace_exit": trace_exit, "verify_exit": verify_exit},
-        "execution_projection": _projection_summary(execution_projection, reconciled=False),
-        "reconciled_projection": _projection_summary(reconciled_projection, reconciled=True),
-        "coverage": coverage,
-        "sufficiency": sufficiency,
-        "verify": {
-            "phase": verify.phase,
-            "verdict": verify.verdict,
-            "policy_digest": verify.policy_digest,
-            "projection_digest": verify.projection_digest,
-            "blocking_gap_count": len(verify.blocking_gaps),
-            "open_problem_count": len(verify.open_problem_ids),
-            "reported_insufficient_count": len(verify.insufficient),
-            "observed_insufficient_count": sufficiency["insufficient_count"],
-        },
-    }
-
-
-def collect_report(
-    *,
-    project_root: Path,
-    change_id: str,
-    root_invocation_id: str,
-    workflow_entrypoint: str,
-    trace_path: Path,
-    verify_path: Path,
-    trace_exit: int,
-    verify_exit: int,
-) -> SpecialtyReportV2:
-    if trace_exit < 0 or verify_exit < 0:
-        raise ValueError("trace and verify exit codes must be non-negative")
-    change_dir = project_root / "qa" / "changes" / change_id
-    traceability_evidence = _collect_traceability_evidence(
-        change_id=change_id,
-        trace_path=trace_path,
-        verify_path=verify_path,
-        change_dir=change_dir,
-        trace_exit=trace_exit,
-        verify_exit=verify_exit,
+    committed = CommittedSpecialtyPublicationReceipt(
+        attempt_id=attempt_id,
+        change_id=report.change_id,
+        report_sha256=report_sha256,
+        trace_status=report.traceability_evidence.status,
+        capability_integrity=report.capability_contract_policy.integrity,
     )
-    capability = collect_capability_policy_replay(
-        change_dir=change_dir,
-        change_id=change_id,
-        root_invocation_id=root_invocation_id,
-        expected_entrypoint=workflow_entrypoint,
-    )
-    return SpecialtyReportV2(
-        change_id=change_id,
-        capability_contract_policy=capability,
-        traceability_evidence=traceability_evidence,
-    )
+    pending_bytes = (
+        json.dumps(pending.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    committed_bytes = (
+        json.dumps(committed.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+
+    _crash_maybe("before_pending")
+    _atomic_write_bytes(receipt_path, pending_bytes)
+    _crash_maybe("after_pending")
+    _atomic_write_bytes(output, report_bytes)
+    _crash_maybe("after_report")
+    _atomic_write_bytes(receipt_path, committed_bytes)
+    _crash_maybe("after_committed")
+    return report_collection_exit(report)
 
 
-def evidence_row(report: dict[str, Any], *, expected_change_id: str) -> str:
-    change_id = report.get("change_id")
-    traceability = report.get("traceability_evidence")
-    if not isinstance(change_id, str) or not isinstance(traceability, dict):
-        raise ValueError("specialty report is missing change_id or traceability_evidence")
-    if change_id != expected_change_id:
-        raise ValueError(
-            f"specialty report change_id mismatch: expected {expected_change_id!r}, got {change_id!r}"
-        )
-    execution = traceability.get("execution_projection")
-    command_status = traceability.get("command_status")
-    verify = traceability.get("verify")
+def _legacy_evidence_fields(
+    report: SpecialtyReportV2 | LegacySpecialtyReportV1,
+) -> tuple[str, str, str, str, str, str, str]:
+    evidence = report.traceability_evidence
+    command_status = evidence.get("command_status")
+    execution = evidence.get("execution_projection")
+    verify = evidence.get("verify")
     if (
         not isinstance(command_status, dict)
         or not isinstance(execution, dict)
@@ -753,11 +610,101 @@ def evidence_row(report: dict[str, Any], *, expected_change_id: str) -> str:
         for value in (trace_exit, verify_exit, gaps, blocking, insufficient)
     ):
         raise ValueError("specialty report has invalid evidence counts")
-    if not isinstance(verdict, str):
-        raise ValueError("specialty report has invalid verify verdict")
     if verdict not in {"pass", "needs_human", "fail"}:
         raise ValueError("specialty report has invalid verify verdict")
-    return f"{change_id}|{trace_exit}|{integrity}|{gaps}|{verify_exit}|{verdict}|{blocking}|{insufficient}"
+    return (
+        str(trace_exit),
+        str(integrity),
+        str(gaps),
+        str(verify_exit),
+        str(verdict),
+        str(blocking),
+        str(insufficient),
+    )
+
+
+def evidence_row(report: SpecialtyReportVariant, *, expected_change_id: str) -> str:
+    if report.change_id != expected_change_id:
+        raise ValueError(
+            f"specialty report change_id mismatch: expected {expected_change_id!r}, got {report.change_id!r}"
+        )
+    if isinstance(report, SpecialtyReportV3):
+        evidence = report.traceability_evidence
+        if isinstance(evidence, IncompleteTraceabilityEvidenceV3):
+            if evidence.command_status is None:
+                trace_exit = "unknown"
+                verify_exit = "unknown"
+            else:
+                trace_exit = str(evidence.command_status.trace_exit)
+                verify_exit = str(evidence.command_status.verify_exit)
+            return (
+                f"{report.change_id}|incomplete|{evidence.reason_code}|{trace_exit}|"
+                f"unknown|unknown|{verify_exit}|unknown|unknown|unknown"
+            )
+        return (
+            f"{report.change_id}|complete|none|{evidence.command_status.trace_exit}|"
+            f"{evidence.execution.overview.integrity}|{evidence.execution.overview.gap_count}|"
+            f"{evidence.command_status.verify_exit}|{evidence.verify.verdict}|"
+            f"{evidence.verify.blocking_gap_count}|{evidence.verify.reported_insufficient_count}"
+        )
+    if isinstance(report, (SpecialtyReportV2, LegacySpecialtyReportV1)):
+        trace_exit, integrity, gaps, verify_exit, verdict, blocking, insufficient = _legacy_evidence_fields(
+            report
+        )
+        return (
+            f"{report.change_id}|legacy_unlayered|none|{trace_exit}|{integrity}|{gaps}|"
+            f"{verify_exit}|{verdict}|{blocking}|{insufficient}"
+        )
+    raise TypeError(f"unsupported specialty report type: {type(report)!r}")
+
+
+def validate_publication(
+    *,
+    report_path: Path,
+    receipt_path: Path,
+    change_id: str,
+    mode: Literal["fresh", "reuse"],
+    attempt_id: str | None = None,
+) -> None:
+    if not change_id or not str(change_id).strip():
+        raise ValueError("change_id must be non-empty")
+    report = load_specialty_report(_load_json(report_path))
+    if report.change_id != change_id:
+        raise ValueError(
+            f"specialty report change_id mismatch: expected {change_id!r}, got {report.change_id!r}"
+        )
+
+    receipt_exists = receipt_path.is_file()
+    if isinstance(report, SpecialtyReportV3):
+        if not receipt_exists:
+            raise ValueError("v3 specialty report requires a durable publication receipt")
+        receipt = load_specialty_publication_receipt(_load_json(receipt_path))
+        if not isinstance(receipt, CommittedSpecialtyPublicationReceipt):
+            raise ValueError("publication receipt must be committed")
+        report_bytes = report_path.read_bytes()
+        digest = hashlib.sha256(report_bytes).hexdigest()
+        if receipt.change_id != change_id:
+            raise ValueError("publication receipt change_id mismatch")
+        if receipt.report_sha256 != digest:
+            raise ValueError("publication receipt report digest mismatch")
+        if receipt.trace_status != report.traceability_evidence.status:
+            raise ValueError("publication receipt trace_status mismatch")
+        if receipt.capability_integrity != report.capability_contract_policy.integrity:
+            raise ValueError("publication receipt capability_integrity mismatch")
+        if mode == "fresh":
+            if not attempt_id or not str(attempt_id).strip():
+                raise ValueError("fresh validation requires non-empty attempt_id")
+            if receipt.attempt_id != attempt_id:
+                raise ValueError("publication receipt attempt_id mismatch")
+        elif not receipt.attempt_id or not str(receipt.attempt_id).strip():
+            raise ValueError("publication receipt attempt_id missing")
+        return
+
+    # Legacy V1/V2: receiptless only.
+    if receipt_exists:
+        raise ValueError("legacy specialty report cannot validate while a receipt is present")
+    if mode == "fresh" and attempt_id is not None and not str(attempt_id).strip():
+        raise ValueError("attempt_id must be non-empty when provided")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -773,18 +720,37 @@ def _parser() -> argparse.ArgumentParser:
     collect.add_argument("--trace-exit", type=int, required=True)
     collect.add_argument("--verify-exit", type=int, required=True)
     collect.add_argument("--output", type=Path, required=True)
+    collect.add_argument("--attempt-id", required=True)
+    collect.add_argument("--publication-receipt", type=Path, required=True)
     render = commands.add_parser("render")
     render.add_argument("reports", nargs="+", type=Path)
     evidence = commands.add_parser("evidence-row")
     evidence.add_argument("--change-id", required=True)
     evidence.add_argument("report", type=Path)
+    validate = commands.add_parser("validate-publication")
+    validate.add_argument("--report", type=Path, required=True)
+    validate.add_argument("--publication-receipt", type=Path, required=True)
+    validate.add_argument("--change-id", required=True)
+    validate.add_argument("--mode", choices=("fresh", "reuse"), required=True)
+    validate.add_argument("--attempt-id", default=None)
     return parser
 
 
 def main() -> int:
     args = _parser().parse_args()
     if args.command == "collect":
-        report = collect_report(
+        if not args.attempt_id or not str(args.attempt_id).strip():
+            print("attempt_id must be non-empty", file=sys.stderr)
+            return 2
+        if not args.change_id or not str(args.change_id).strip():
+            print("change_id must be non-empty", file=sys.stderr)
+            return 2
+        try:
+            output, receipt = _resolve_distinct_paths(args.output, args.publication_receipt)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        inputs = TraceCollectionInputs(
             project_root=args.project_root.resolve(),
             change_id=args.change_id,
             root_invocation_id=args.root_invocation_id,
@@ -794,15 +760,33 @@ def main() -> int:
             trace_exit=args.trace_exit,
             verify_exit=args.verify_exit,
         )
-        _atomic_dump(args.output.resolve(), report.model_dump(mode="json"))
-        return 1 if report.capability_contract_policy.integrity == "incomplete" else 0
+        report = collect_report(inputs)
+        return publish_specialty_report(
+            report,
+            output=output,
+            receipt_path=receipt,
+            attempt_id=args.attempt_id,
+        )
     if args.command == "evidence-row":
-        loaded = load_specialty_report(_load_json(args.report))
-        if isinstance(loaded, LegacySpecialtyReportV1):
-            payload = loaded.model_dump(mode="json")
-        else:
-            payload = loaded.model_dump(mode="json")
-        print(evidence_row(payload, expected_change_id=args.change_id))
+        try:
+            loaded = load_specialty_report(_load_json(args.report))
+            print(evidence_row(loaded, expected_change_id=args.change_id))
+        except (OSError, ValueError, ValidationError, TypeError, json.JSONDecodeError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        return report_collection_exit(loaded)
+    if args.command == "validate-publication":
+        try:
+            validate_publication(
+                report_path=args.report.resolve(),
+                receipt_path=args.publication_receipt.resolve(),
+                change_id=args.change_id,
+                mode=args.mode,
+                attempt_id=args.attempt_id,
+            )
+        except (OSError, ValueError, ValidationError, TypeError, json.JSONDecodeError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
         return 0
     reports = [load_specialty_report(_load_json(path)) for path in args.reports]
     print(render_specialty_sections(reports), end="")

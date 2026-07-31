@@ -750,32 +750,47 @@ run_trace_verify_stage() {
   local trace_file="$RUN_DIR/${change_id}.trace.json"
   local verify_file="$RUN_DIR/${change_id}.verify.json"
   local evidence_log="$RUN_DIR/${change_id}.trace-verify.log"
-  local cid trace_exit integrity gap_count verify_exit verdict blocking insufficient
+  local cid collection_status reason_code trace_exit integrity gap_count
+  local verify_exit verdict blocking insufficient
 
   [ "$DO_TRACE_VERIFY" = "true" ] || return 0
   row="$(collect_trace_verify_evidence \
     "$AA_BIN" "$change_id" "$trace_file" "$verify_file" "$evidence_log" "$AA_PYTHON_BIN")"
   EVIDENCE_ROWS+=("$row")
-  IFS='|' read -r cid trace_exit integrity gap_count verify_exit verdict blocking insufficient \
+  IFS='|' read -r \
+    cid collection_status reason_code trace_exit integrity gap_count \
+    verify_exit verdict blocking insufficient \
     <<<"$row"
-  log "[$change_id] trace/verify: trace_exit=$trace_exit integrity=$integrity gaps=$gap_count verify_exit=$verify_exit verdict=$verdict blocking=$blocking insufficient=$insufficient"
+  log "[$change_id] trace/verify: status=$collection_status trace_exit=$trace_exit integrity=$integrity gaps=$gap_count verify_exit=$verify_exit verdict=$verdict blocking=$blocking insufficient=$insufficient"
+  case "$collection_status" in
+    raw)
+      if [ "$integrity" = "unknown" ] || [ "$gap_count" = "unknown" ] \
+        || [ "$verdict" = "unknown" ] || [ "$blocking" = "unknown" ] \
+        || [ "$insufficient" = "unknown" ]; then
+        SPECIALTY_REPORT_FAILED="true"
+      fi
+      ;;
+  esac
 }
 
 run_specialty_report_stage() {
-  local change_id="$1" evidence_row cid trace_exit integrity gap_count
-  local verify_exit verdict blocking insufficient
+  local change_id="$1" evidence_row cid collection_status reason_code
+  local trace_exit integrity gap_count verify_exit verdict blocking insufficient
   local trace_file="$RUN_DIR/${change_id}.trace.json"
   local verify_file="$RUN_DIR/${change_id}.verify.json"
   local report_file="$RUN_DIR/${change_id}.specialty-report.json"
   local report_log="$RUN_DIR/${change_id}.specialty-report.log"
   local root_state root_invocation_id workflow_entrypoint collect_exit finalize_out registered
+  local attempt_id report_path specialty_row replaced
+  local -a next_rows=()
 
   [ "$DO_SPECIALTY_REPORT" = "true" ] || return 0
   trace_exit=""
   verify_exit=""
   for evidence_row in "${EVIDENCE_ROWS[@]}"; do
     IFS='|' read -r \
-      cid trace_exit integrity gap_count verify_exit verdict blocking insufficient \
+      cid collection_status reason_code trace_exit integrity gap_count \
+      verify_exit verdict blocking insufficient \
       <<<"$evidence_row"
     if [ "$cid" = "$change_id" ]; then
       break
@@ -793,20 +808,37 @@ run_specialty_report_stage() {
   if root_state="$(read_workflow_root_state "$RUN_DIR" "$change_id" 2>/dev/null)"; then
     IFS='|' read -r root_invocation_id workflow_entrypoint <<<"$root_state"
   fi
+  attempt_id="${change_id}-$(date +%s)-$$"
   collect_exit=0
   collect_benchmark_specialty_report \
     "$AA_PYTHON_BIN" "$SPECIALTY_REPORT_PY" "$PROJECT_ROOT" \
     "$change_id" "$trace_file" "$verify_file" "$report_file" "$report_log" \
     "$trace_exit" "$verify_exit" "$root_invocation_id" "$workflow_entrypoint" \
+    "$attempt_id" \
     || collect_exit=$?
   finalize_out="$(finalize_benchmark_specialty_report \
-    "$AA_PYTHON_BIN" "$SPECIALTY_REPORT_PY" "$change_id" "$report_file" "$collect_exit")"
+    "$AA_PYTHON_BIN" "$SPECIALTY_REPORT_PY" "$change_id" "$report_file" "$collect_exit" "$attempt_id")"
   registered="${finalize_out##*$'\n'}"
   registered="${registered#registered=}"
   if [ "$registered" = "true" ]; then
-    report_path="${finalize_out%%$'\n'*}"
+    report_path="$(printf '%s\n' "$finalize_out" | sed -n '1p')"
+    specialty_row="$(printf '%s\n' "$finalize_out" | sed -n '2p')"
     SPECIALTY_REPORT_FILES+=("$report_path")
-    log "[$change_id] specialty report: $(basename "$report_path")"
+    while IFS= read -r replaced; do
+      [ -n "$replaced" ] || continue
+      next_rows+=("$replaced")
+    done < <(replace_evidence_row_for_change "$change_id" "$specialty_row" "${EVIDENCE_ROWS[@]+"${EVIDENCE_ROWS[@]}"}")
+    EVIDENCE_ROWS=("${next_rows[@]}")
+    IFS='|' read -r \
+      cid collection_status reason_code trace_exit integrity gap_count \
+      verify_exit verdict blocking insufficient \
+      <<<"$specialty_row"
+    case "$collection_status" in
+      incomplete)
+        SPECIALTY_REPORT_FAILED="true"
+        ;;
+    esac
+    log "[$change_id] specialty report: $(basename "$report_path") status=$collection_status reason=$reason_code"
   fi
   if [ "$collect_exit" -ne 0 ]; then
     SPECIALTY_REPORT_FAILED="true"
@@ -818,16 +850,43 @@ run_specialty_report_stage() {
 reuse_specialty_report_stage() {
   local change_id="$1" row
   local report_file="$RUN_DIR/${change_id}.specialty-report.json"
+  local cid collection_status reason_code trace_exit integrity gap_count
+  local verify_exit verdict blocking insufficient
+  local -a next_rows=()
+  local replaced
 
-  if ! row="$("$AA_PYTHON_BIN" "$SPECIALTY_REPORT_PY" evidence-row \
-    --change-id "$change_id" "$report_file")"; then
+  if ! row="$(reuse_benchmark_specialty_report \
+    "$AA_PYTHON_BIN" "$SPECIALTY_REPORT_PY" "$change_id" "$report_file")"; then
     SPECIALTY_REPORT_FAILED="true"
     log "[$change_id] ERROR: frozen specialty report is invalid: $(basename "$report_file")"
     return 1
   fi
   SPECIALTY_REPORT_FILES+=("$report_file")
-  EVIDENCE_ROWS+=("$row")
-  log "[$change_id] reused frozen specialty and trace/verify evidence"
+  while IFS= read -r replaced; do
+    [ -n "$replaced" ] || continue
+    next_rows+=("$replaced")
+  done < <(replace_evidence_row_for_change "$change_id" "$row" "${EVIDENCE_ROWS[@]+"${EVIDENCE_ROWS[@]}"}")
+  EVIDENCE_ROWS=("${next_rows[@]}")
+  IFS='|' read -r \
+    cid collection_status reason_code trace_exit integrity gap_count \
+    verify_exit verdict blocking insufficient \
+    <<<"$row"
+  case "$collection_status" in
+    incomplete)
+      SPECIALTY_REPORT_FAILED="true"
+      ;;
+    complete|legacy_unlayered)
+      if [ "$integrity" = "incomplete" ] || [ "$verdict" != "pass" ]; then
+        :
+      fi
+      ;;
+  esac
+  # Capability replay incomplete is already encoded in report_collection_exit / evidence-row exit.
+  if ! "$AA_PYTHON_BIN" "$SPECIALTY_REPORT_PY" evidence-row \
+    --change-id "$change_id" "$report_file" >/dev/null 2>&1; then
+    SPECIALTY_REPORT_FAILED="true"
+  fi
+  log "[$change_id] reused frozen specialty and trace/verify evidence status=$collection_status reason=$reason_code"
 }
 
 # Deterministic benchmark metrics over golden fixtures. This is observational:
@@ -1165,11 +1224,13 @@ PY
     echo
     echo "## Trace / Verify Evidence"
     echo
-    echo "| change_id | trace exit | integrity | gaps | verify exit | verdict | blocking gaps | insufficient |"
-    echo "|---|---:|---|---:|---:|---|---:|---:|"
+    echo "| change_id | collection_status | reason_code | trace exit | integrity | gaps | verify exit | verdict | blocking gaps | insufficient |"
+    echo "|---|---|---|---:|---|---:|---:|---|---:|---:|"
     for row in "${EVIDENCE_ROWS[@]}"; do
-      IFS='|' read -r cid trace_exit integrity gap_count verify_exit verdict blocking insufficient <<<"$row"
-      echo "| \`$cid\` | $trace_exit | $integrity | $gap_count | $verify_exit | $verdict | $blocking | $insufficient |"
+      IFS='|' read -r \
+        cid collection_status reason_code trace_exit integrity gap_count \
+        verify_exit verdict blocking insufficient <<<"$row"
+      echo "| \`$cid\` | $collection_status | $reason_code | $trace_exit | $integrity | $gap_count | $verify_exit | $verdict | $blocking | $insufficient |"
     done
   fi
   if [ "$DO_SPECIALTY_REPORT" = "true" ]; then

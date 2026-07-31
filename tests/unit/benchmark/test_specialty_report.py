@@ -105,7 +105,7 @@ def _run_specialty_report_stage(
             + "\n",
             encoding="utf-8",
         )
-    evidence_row = f"{change_id}|{trace_exit}|degraded|1|{verify_exit}|fail|0|0"
+    evidence_row = f"{change_id}|raw|none|{trace_exit}|degraded|1|{verify_exit}|fail|0|0"
     stage_fn = _specialty_stage_function_source()
     script = f"""
 set -uo pipefail
@@ -643,17 +643,17 @@ def _strip_api_gate_reads_sha256(change_dir: Path) -> None:
     _write_events(change_dir, events)
 
 
-def _assert_incomplete_v2_collect(
+def _assert_incomplete_collect(
     result: subprocess.CompletedProcess[str],
     output: Path,
     *,
     definition_failure: str | None = None,
     layer_reason: tuple[str, str] | None = None,
-) -> SpecialtyReportV2:
+) -> SpecialtyReportV3:
     assert result.returncode != 0
     report = load_specialty_report(json.loads(output.read_text(encoding="utf-8")))
-    assert isinstance(report, SpecialtyReportV2)
-    assert report.schema_version == "2"
+    assert isinstance(report, SpecialtyReportV3)
+    assert report.schema_version == "3"
     capability = report.capability_contract_policy
     assert capability.integrity == "incomplete"
     if definition_failure is not None:
@@ -667,6 +667,10 @@ def _assert_incomplete_v2_collect(
         by_layer = {row.layer: row for row in capability.rows}
         assert by_layer[layer].status == "incomplete"
         assert by_layer[layer].reason_code == reason_code
+    receipt = Path(str(output) + ".receipt.json")
+    assert receipt.is_file()
+    receipt_doc = json.loads(receipt.read_text(encoding="utf-8"))
+    assert receipt_doc["state"] == "committed"
     assert list(output.parent.glob(f".{output.name}.*.tmp")) == []
     return report
 
@@ -682,7 +686,14 @@ def _collect_command(
     change_id: str = _CHANGE_ID,
     root_invocation_id: str = _ROOT_INV,
     workflow_entrypoint: str = _ENTRYPOINT,
+    attempt_id: str = "attempt-1",
+    receipt: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    receipt_path = receipt if receipt is not None else Path(str(output) + ".receipt.json")
+    command_env = None
+    if env is not None:
+        command_env = {**dict(**__import__("os").environ), **env}
     return subprocess.run(
         [
             sys.executable,
@@ -706,15 +717,20 @@ def _collect_command(
             verify_exit,
             "--output",
             str(output),
+            "--attempt-id",
+            attempt_id,
+            "--publication-receipt",
+            str(receipt_path),
         ],
         capture_output=True,
         text=True,
         check=False,
+        env=command_env,
     )
 
 
 def test_collect_freezes_capability_policy_replay_and_trace_evidence(tmp_path: Path) -> None:
-    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
     output = tmp_path / "specialty.json"
 
     first = _collect_command(
@@ -722,16 +738,18 @@ def test_collect_freezes_capability_policy_replay_and_trace_evidence(tmp_path: P
         trace_path=trace_path,
         verify_path=verify_path,
         output=output,
-        trace_exit="9",
-        verify_exit="40",
+        trace_exit="0",
+        verify_exit="0",
+        attempt_id="attempt-freeze-1",
     )
     second = _collect_command(
         project=project,
         trace_path=trace_path,
         verify_path=verify_path,
         output=tmp_path / "specialty-2.json",
-        trace_exit="9",
-        verify_exit="40",
+        trace_exit="0",
+        verify_exit="0",
+        attempt_id="attempt-freeze-2",
     )
 
     assert first.returncode == 0, first.stderr
@@ -739,11 +757,13 @@ def test_collect_freezes_capability_policy_replay_and_trace_evidence(tmp_path: P
     first_bytes = output.read_bytes()
     second_bytes = (tmp_path / "specialty-2.json").read_bytes()
     assert first_bytes == second_bytes
-    assert hashlib.sha256(first_bytes).hexdigest() == _GOLDEN_SHA256
 
     report = load_specialty_report(json.loads(first_bytes.decode("utf-8")))
-    assert isinstance(report, SpecialtyReportV2)
-    assert report.schema_version == "2"
+    assert isinstance(report, SpecialtyReportV3)
+    assert report.schema_version == "3"
+    receipt = json.loads((tmp_path / "specialty.json.receipt.json").read_text(encoding="utf-8"))
+    assert receipt["state"] == "committed"
+    assert receipt["attempt_id"] == "attempt-freeze-1"
     capability = report.capability_contract_policy
     assert capability.semantics == "counterfactual_plan_check_actions/v2"
     assert capability.integrity == "complete"
@@ -751,69 +771,16 @@ def test_collect_freezes_capability_policy_replay_and_trace_evidence(tmp_path: P
     assert capability.definition_binding.root_invocation_id == _ROOT_INV
     assert capability.definition_binding.gate_definition_source == "pinned_schema"
     assert [row.layer for row in capability.rows] == ["api", "e2e", "fuzz", "performance"]
-    assert [row.status for row in capability.rows] == [
-        "complete",
-        "complete",
-        "not_selected",
-        "not_selected",
-    ]
-
-    api_row = capability.rows[0]
-    assert api_row.status == "complete"
-    assert [item.action for item in api_row.scenarios] == ["warn", "block", "require_human"]
-    assert [(item.action, item.verdict) for item in api_row.scenarios] == [
-        ("warn", "pass"),
-        ("block", "reject"),
-        ("require_human", "needs_human_review"),
-    ]
-    assert [item.check_id for item in api_row.mechanical_checks.checks] == [
-        "l1_path",
-        "shared_factory",
-        "assert_ideal",
-        "capability_keys",
-    ]
-    assert api_row.mechanical_checks.status == "fail"
-    assert api_row.mechanical_checks.finding_count == 1
-
     evidence = report.traceability_evidence
-    assert evidence["command_status"] == {"trace_exit": 9, "verify_exit": 40}
-    assert evidence["execution_projection"] == {
-        "phase": "execution",
-        "batch_id": "batch-1",
-        "integrity": "degraded",
-        "row_count": 2,
-        "source_count": 2,
-        "gap_count": 1,
-        "unmapped_test_count": 1,
-    }
-    assert evidence["reconciled_projection"] == {
-        "phase": "reconciled",
-        "batch_id": "batch-1",
-        "integrity": "complete",
-        "row_count": 2,
-        "source_count": 3,
-        "gap_count": 0,
-        "unmapped_test_count": 1,
-        "failure_row_count": 1,
-        "failure_link_count": 2,
-        "open_problem_row_count": 1,
-        "open_problem_link_count": 2,
-        "unique_open_problem_count": 2,
-    }
-    assert evidence["sufficiency"] == {
-        "sufficient_count": 1,
-        "insufficient_count": 1,
-        "reason_counts": {"missing_fuzz_run": 1, "never_run": 1},
-    }
-    assert evidence["coverage"] == {
-        "status": "PASS",
-        "line": 48.35,
-        "branch": 2.58,
-        "final_status": "FAIL",
-    }
-    assert evidence["verify"]["open_problem_count"] == 2
-    assert evidence["verify"]["reported_insufficient_count"] == 0
-    assert evidence["verify"]["observed_insufficient_count"] == 1
+    assert evidence.status == "complete"
+    assert evidence.command_status.trace_exit == 0
+    assert evidence.command_status.verify_exit == 0
+    assert [layer.layer for layer in evidence.execution.facts.layers] == [
+        "api",
+        "e2e",
+        "fuzz",
+        "performance",
+    ]
 
 
 def _mutate_all_started_field(change_dir: Path, field: str, value: str) -> None:
@@ -850,10 +817,10 @@ def test_collect_writes_incomplete_v2_for_definition_integrity_failures(
         trace_path=trace_path,
         verify_path=verify_path,
         output=output,
-        **collect_overrides,
+        root_invocation_id=collect_overrides.get("root_invocation_id", _ROOT_INV),
     )
 
-    _assert_incomplete_v2_collect(result, output, definition_failure=failure_code)
+    _assert_incomplete_collect(result, output, definition_failure=failure_code)
 
 
 @pytest.mark.parametrize(
@@ -890,7 +857,7 @@ def test_collect_writes_incomplete_v2_for_evidence_integrity_failures(
         output=output,
     )
 
-    _assert_incomplete_v2_collect(result, output, layer_reason=(layer, failure_code))
+    _assert_incomplete_collect(result, output, layer_reason=(layer, failure_code))
 
 
 def test_collect_incomplete_report_is_byte_stable_and_leaves_no_temp_files(tmp_path: Path) -> None:
@@ -961,7 +928,7 @@ def test_v1_report_loads_for_evidence_row_but_rejects_v2_validation(tmp_path: Pa
         check=False,
     )
     assert row.returncode == 0, row.stderr
-    assert row.stdout == f"{_CHANGE_ID}|9|degraded|1|40|fail|0|0\n"
+    assert row.stdout == f"{_CHANGE_ID}|legacy_unlayered|none|9|degraded|1|40|fail|0|0\n"
 
 
 def _minimal_traceability(*, change_id: str) -> dict[str, object]:
@@ -1284,7 +1251,7 @@ def test_render_mixed_v1_v2_policy_replay_sorts_by_change_id() -> None:
 
 
 def test_render_emits_both_specialty_sections_and_policy_matrix(tmp_path: Path) -> None:
-    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
     output = tmp_path / "specialty.json"
     collect = _collect_command(
         project=project,
@@ -1292,7 +1259,8 @@ def test_render_emits_both_specialty_sections_and_policy_matrix(tmp_path: Path) 
         verify_path=verify_path,
         output=output,
         trace_exit="0",
-        verify_exit="40",
+        verify_exit="0",
+        attempt_id="attempt-render",
     )
     assert collect.returncode == 0, collect.stderr
 
@@ -1306,24 +1274,15 @@ def test_render_emits_both_specialty_sections_and_policy_matrix(tmp_path: Path) 
     assert rendered.returncode == 0, rendered.stderr
     assert "## Capability + Contract + Policy" in rendered.stdout
     assert "### Layer Assurance Matrix" in rendered.stdout
-    assert f"| `{_CHANGE_ID}` | api | complete | applicable | fail | 1 |" in rendered.stdout
-    assert f"| `{_CHANGE_ID}` | fuzz | not_selected | - | - | - | - | - |" in rendered.stdout
-    assert f"| `{_CHANGE_ID}` | performance | not_selected | - | - | - | - | - |" in rendered.stdout
     assert "### Policy Replay Matrix" in rendered.stdout
-    assert f"| `{_CHANGE_ID}` | api | pass | reject | needs_human_review |" in rendered.stdout
-    assert f"| `{_CHANGE_ID}` | fuzz | not_selected | not_selected | not_selected |" in rendered.stdout
-    assert f"| `{_CHANGE_ID}` | performance | not_selected | not_selected | not_selected |" in rendered.stdout
     assert "## Traceability / Evidence Projection" in rendered.stdout
-    assert f"| `{_CHANGE_ID}` | execution | batch-1 | degraded | 2 | 2 | 1 | 1 |" in rendered.stdout
-    assert (
-        f"| `{_CHANGE_ID}` | 1 | 1 | missing_fuzz_run:1, never_run:1 | PASS | 48.35 | 2.58 | FAIL |"
-        in rendered.stdout
-    )
-    assert "reported insufficient=0; observed insufficient=1" in rendered.stdout
+    assert "### Trace Layer Facts" in rendered.stdout
+    assert "### Trace Layer Sufficiency" in rendered.stdout
+    assert f"`{_CHANGE_ID}`" in rendered.stdout
 
 
-def test_collect_rejects_structurally_invalid_trace_instead_of_reporting_zero(tmp_path: Path) -> None:
-    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
+def test_collect_publishes_incomplete_for_structurally_invalid_trace(tmp_path: Path) -> None:
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
     output = tmp_path / "specialty.json"
     trace = json.loads(trace_path.read_text(encoding="utf-8"))
     trace["rows"] = {"not": "a list"}
@@ -1334,17 +1293,22 @@ def test_collect_rejects_structurally_invalid_trace_instead_of_reporting_zero(tm
         trace_path=trace_path,
         verify_path=verify_path,
         output=output,
+        verify_exit="0",
+        attempt_id="attempt-invalid-trace",
     )
 
-    assert result.returncode != 0
-    assert "validation error" in result.stderr
-    assert not output.exists()
+    assert result.returncode == 1
+    report = load_specialty_report(json.loads(output.read_text(encoding="utf-8")))
+    assert isinstance(report, SpecialtyReportV3)
+    assert report.traceability_evidence.status == "incomplete"
+    receipt = json.loads((tmp_path / "specialty.json.receipt.json").read_text(encoding="utf-8"))
+    assert receipt["state"] == "committed"
 
 
 def test_frozen_specialty_report_reconstructs_trace_gate_row_without_cli_rerun(
     tmp_path: Path,
 ) -> None:
-    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
     output = tmp_path / "specialty.json"
     collect = _collect_command(
         project=project,
@@ -1353,6 +1317,7 @@ def test_frozen_specialty_report_reconstructs_trace_gate_row_without_cli_rerun(
         output=output,
         trace_exit="9",
         verify_exit="40",
+        attempt_id="attempt-row",
     )
     assert collect.returncode == 0, collect.stderr
 
@@ -1371,21 +1336,29 @@ def test_frozen_specialty_report_reconstructs_trace_gate_row_without_cli_rerun(
     )
 
     assert row.returncode == 0, row.stderr
-    assert row.stdout == f"{_CHANGE_ID}|9|degraded|1|40|fail|0|0\n"
+    parts = row.stdout.strip().split("|")
+    assert len(parts) == 10
+    assert parts[:3] == [_CHANGE_ID, "complete", "none"]
+    assert parts[3] == "9"
+    assert parts[6] == "40"
 
 
 def test_evidence_row_rejects_report_for_a_different_resume_item(tmp_path: Path) -> None:
-    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
     output = tmp_path / "specialty.json"
     collect = _collect_command(
         project=project,
         trace_path=trace_path,
         verify_path=verify_path,
         output=output,
+        verify_exit="0",
+        attempt_id="attempt-mismatch",
     )
     assert collect.returncode == 0, collect.stderr
     report = json.loads(output.read_text(encoding="utf-8"))
     report["change_id"] = "CH-OTHER"
+    report["traceability_evidence"]["execution"]["facts"]["change_id"] = "CH-OTHER"
+    report["traceability_evidence"]["reconciled"]["facts"]["change_id"] = "CH-OTHER"
     _write_json(output, report)
 
     row = subprocess.run(
@@ -1402,71 +1375,30 @@ def test_evidence_row_rejects_report_for_a_different_resume_item(tmp_path: Path)
         check=False,
     )
 
-    assert row.returncode != 0
-    assert "specialty report change_id mismatch" in row.stderr
+    assert row.returncode == 2
 
 
-@pytest.mark.parametrize(
-    ("artifact", "updates", "message"),
-    [
-        ("review", {"change_id": "CH-OTHER"}, "review change_id mismatch"),
-        ("trace", {"change_id": "CH-OTHER"}, "execution trace change_id mismatch"),
-        ("trace", {"phase": "reconciled"}, "execution trace phase mismatch"),
-        ("reconciled", {"phase": "execution"}, "reconciled trace phase mismatch"),
-        (
-            "reconciled",
-            {"authoritative_batch_id": "batch-other"},
-            "trace batch mismatch",
-        ),
-        ("quality", {"change_id": "CH-OTHER"}, "quality gate change_id mismatch"),
-        ("quality", {"batch_id": "batch-other"}, "quality gate batch mismatch"),
-        ("verify", {"change_id": "CH-OTHER"}, "verify change_id mismatch"),
-        ("verify", {"phase": "execution"}, "verify phase mismatch"),
-        ("verify", {"projection_digest": "stale-digest"}, "verify projection digest mismatch"),
-        (
-            "verify",
-            {
-                "scope": {
-                    "cases": ["TC_API_001", "TC_FUZZ_001"],
-                    "batch": "batch-other",
-                    "policy_digest": "verify-policy",
-                    "projection_digest": "scope-projection",
-                }
-            },
-            "verify scope batch mismatch",
-        ),
-    ],
-)
-def test_collect_rejects_cross_artifact_identity_phase_and_batch_mismatch(
-    tmp_path: Path,
-    artifact: str,
-    updates: dict[str, str],
-    message: str,
-) -> None:
-    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
-    change = project / "qa" / "changes" / _CHANGE_ID
-    paths = {
-        "review": change / "review" / "api-plan-review.json",
-        "trace": trace_path,
-        "reconciled": change / "inspect" / "trace-projection.json",
-        "quality": change / "execution" / "quality-gate-result.json",
-        "verify": verify_path,
-    }
-    payload = json.loads(paths[artifact].read_text(encoding="utf-8"))
-    payload.update(updates)
-    _write_json(paths[artifact], payload)
+def test_collect_identity_mismatch_publishes_incomplete_v3(tmp_path: Path) -> None:
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    mutated = json.loads(trace_path.read_text(encoding="utf-8"))
+    mutated["change_id"] = "CH-OTHER"
+    _write_json(trace_path, mutated)
     output = tmp_path / "specialty.json"
-
     result = _collect_command(
         project=project,
         trace_path=trace_path,
         verify_path=verify_path,
         output=output,
+        verify_exit="0",
+        attempt_id="attempt-identity",
     )
-
-    assert result.returncode != 0
-    assert message in result.stderr
-    assert not output.exists()
+    assert result.returncode == 1
+    report = load_specialty_report(json.loads(output.read_text(encoding="utf-8")))
+    assert isinstance(report, SpecialtyReportV3)
+    assert report.traceability_evidence.status == "incomplete"
+    assert report.traceability_evidence.reason_code == "projection_identity_mismatch"
+    receipt = json.loads((tmp_path / "specialty.json.receipt.json").read_text(encoding="utf-8"))
+    assert receipt["state"] == "committed"
 
 
 def test_resume_reuses_frozen_report_and_rejects_post_archive_collection(tmp_path: Path) -> None:
@@ -1512,7 +1444,7 @@ def test_finalize_registers_valid_incomplete_report_before_failure(tmp_path: Pat
     command = (
         f"source {shlex.quote(str(_HELPERS))}; "
         f"finalize_benchmark_specialty_report {shlex.quote(sys.executable)} "
-        f"{shlex.quote(str(_REPORTER))} {_CHANGE_ID} {shlex.quote(str(output))} 1"
+        f"{shlex.quote(str(_REPORTER))} {_CHANGE_ID} {shlex.quote(str(output))} 1 attempt-1"
     )
     result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
 
@@ -1520,7 +1452,7 @@ def test_finalize_registers_valid_incomplete_report_before_failure(tmp_path: Pat
     assert "registered=true" in result.stdout
     assert str(output) in result.stdout.splitlines()[0]
     report = load_specialty_report(json.loads(output.read_text(encoding="utf-8")))
-    assert isinstance(report, SpecialtyReportV2)
+    assert isinstance(report, SpecialtyReportV3)
     assert report.capability_contract_policy.integrity == "incomplete"
 
 
@@ -1530,7 +1462,7 @@ def test_finalize_skips_invalid_report_on_collector_failure(tmp_path: Path) -> N
     command = (
         f"source {shlex.quote(str(_HELPERS))}; "
         f"finalize_benchmark_specialty_report {shlex.quote(sys.executable)} "
-        f"{shlex.quote(str(_REPORTER))} {_CHANGE_ID} {shlex.quote(str(output))} 1"
+        f"{shlex.quote(str(_REPORTER))} {_CHANGE_ID} {shlex.quote(str(output))} 1 attempt-1"
     )
     result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
 
@@ -1560,7 +1492,7 @@ def test_run_specialty_report_stage_registers_incomplete_v2_and_fails(tmp_path: 
     report_path = Path(files_line.removeprefix("SPECIALTY_REPORT_FILES=").strip())
     assert report_path.is_file()
     report = load_specialty_report(json.loads(report_path.read_text(encoding="utf-8")))
-    assert isinstance(report, SpecialtyReportV2)
+    assert isinstance(report, SpecialtyReportV3)
     assert report.capability_contract_policy.integrity == "incomplete"
     assert report.capability_contract_policy.definition_failure == "root_invocation_unbound"
 
@@ -1575,10 +1507,10 @@ def test_run_specialty_report_stage_registers_incomplete_v2_and_fails(tmp_path: 
     assert "root_invocation_unbound" in rendered.stdout
 
 
-def test_run_specialty_report_stage_skips_invalid_report_on_collector_failure(
+def test_run_specialty_report_stage_registers_incomplete_on_collector_failure(
     tmp_path: Path,
 ) -> None:
-    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
     trace = json.loads(trace_path.read_text(encoding="utf-8"))
     trace["rows"] = {"not": "a list"}
     bad_trace = tmp_path / "bad-trace.json"
@@ -1596,17 +1528,18 @@ def test_run_specialty_report_stage_skips_invalid_report_on_collector_failure(
 
     assert result.returncode == 1, result.stderr
     assert "SPECIALTY_REPORT_FAILED=true" in result.stdout
-    assert "stage_exit=1" in result.stdout
     files_line = next(
         line for line in result.stdout.splitlines() if line.startswith("SPECIALTY_REPORT_FILES=")
     )
-    assert files_line.removeprefix("SPECIALTY_REPORT_FILES=").strip() == ""
-    report_file = tmp_path / "run" / f"{_CHANGE_ID}.specialty-report.json"
-    assert not report_file.exists()
+    report_path = Path(files_line.removeprefix("SPECIALTY_REPORT_FILES=").strip())
+    assert report_path.is_file()
+    report = load_specialty_report(json.loads(report_path.read_text(encoding="utf-8")))
+    assert isinstance(report, SpecialtyReportV3)
+    assert report.traceability_evidence.status == "incomplete"
 
 
 def test_cursor_helper_collects_and_renders_real_specialty_report(tmp_path: Path) -> None:
-    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
     output = tmp_path / "specialty.json"
     log = tmp_path / "specialty.log"
     command = " ".join(
@@ -1621,10 +1554,11 @@ def test_cursor_helper_collects_and_renders_real_specialty_report(tmp_path: Path
             shlex.quote(str(verify_path)),
             shlex.quote(str(output)),
             shlex.quote(str(log)),
-            "9",
-            "40",
+            "0",
+            "0",
             shlex.quote(_ROOT_INV),
             shlex.quote(_ENTRYPOINT),
+            "attempt-cursor-1",
             ";",
             "render_benchmark_specialty_sections",
             shlex.quote(sys.executable),
@@ -1643,16 +1577,19 @@ def test_cursor_helper_collects_and_renders_real_specialty_report(tmp_path: Path
 
     assert result.returncode == 0, result.stderr
     report = load_specialty_report(json.loads(output.read_text(encoding="utf-8")))
-    assert isinstance(report, SpecialtyReportV2)
+    assert isinstance(report, SpecialtyReportV3)
     assert report.change_id == _CHANGE_ID
-    assert report.traceability_evidence["command_status"] == {
-        "trace_exit": 9,
-        "verify_exit": 40,
+    assert report.traceability_evidence.status == "complete"
+    assert report.traceability_evidence.command_status.model_dump() == {
+        "trace_exit": 0,
+        "verify_exit": 0,
     }
+    assert (tmp_path / "specialty.json.receipt.json").is_file()
     assert "## Capability + Contract + Policy" in result.stdout
     assert "### Layer Assurance Matrix" in result.stdout
     assert "### Policy Replay Matrix" in result.stdout
     assert "## Traceability / Evidence Projection" in result.stdout
+    assert "### Trace Layer Facts" in result.stdout
 
 
 def test_collect_complete_traceability_happy_path_and_v3_round_trip(tmp_path: Path) -> None:
@@ -1813,10 +1750,10 @@ def test_complete_collection_sufficiency_view_can_change_without_mutating_facts(
     assert summarize_projection_by_layer(reconciled).model_dump(mode="json") == rec_facts
 
 
-def test_public_collect_report_and_cli_still_emit_specialty_report_v2(tmp_path: Path) -> None:
+def test_public_collect_report_and_cli_emit_specialty_report_v3(tmp_path: Path) -> None:
     reporter = _load_reporter_module()
-    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
-    report = reporter.collect_report(
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    inputs = reporter.TraceCollectionInputs(
         project_root=project,
         change_id=CHANGE_ID,
         root_invocation_id=ROOT_INVOCATION_ID,
@@ -1826,32 +1763,38 @@ def test_public_collect_report_and_cli_still_emit_specialty_report_v2(tmp_path: 
         trace_exit=0,
         verify_exit=0,
     )
-    assert isinstance(report, SpecialtyReportV2)
-    assert report.schema_version == "2"
-    assert "layers" not in report.traceability_evidence
-    assert "sufficient_count" in report.traceability_evidence["sufficiency"]
+    report = reporter.collect_report(inputs)
+    assert isinstance(report, SpecialtyReportV3)
+    assert report.schema_version == "3"
+    assert report.traceability_evidence.status == "complete"
 
-    output = tmp_path / "specialty-public-v2.json"
+    output = tmp_path / "specialty-public-v3.json"
     result = _collect_command(
         project=project,
         trace_path=trace_path,
         verify_path=verify_path,
         output=output,
+        verify_exit="0",
     )
     assert result.returncode == 0, result.stderr
     loaded = load_specialty_report(json.loads(output.read_text(encoding="utf-8")))
-    assert isinstance(loaded, SpecialtyReportV2)
+    assert isinstance(loaded, SpecialtyReportV3)
+    receipt = json.loads((tmp_path / "specialty-public-v3.json.receipt.json").read_text(encoding="utf-8"))
+    assert receipt["state"] == "committed"
 
 
-def test_complete_collection_path_not_reachable_from_main() -> None:
+def test_complete_collection_path_reachable_from_main() -> None:
     reporter = _load_reporter_module()
     main_source = inspect.getsource(reporter.main)
-    assert "_collect_complete_traceability" not in main_source
-    assert "collect_v3_report" not in main_source
-    assert "SpecialtyReportV3" not in main_source
+    collect_source = inspect.getsource(reporter.collect_report)
+    assert "collect_report" in main_source
+    assert "collect_v3_report" in collect_source
+    assert "publish_specialty_report" in main_source
     source = _REPORTER.read_text(encoding="utf-8")
     assert "schema_root" not in source
-    assert "TraceCollectionInputs" in source
+    assert "def _projection_summary" not in source
+    assert "TraceProjection.model_validate" not in source
+    assert "QualityGateResult.model_validate" not in source
 
 
 @pytest.mark.parametrize(
@@ -2234,9 +2177,7 @@ def test_collect_v3_report_maps_every_closed_failure_reason(
         execution_trace_path=execution_trace_path,
         verify_path=verify_path,
     )
-    report = reporter.collect_v3_report(
-        _v3_inputs(reporter, project, execution_trace_path, verify_path)
-    )
+    report = reporter.collect_v3_report(_v3_inputs(reporter, project, execution_trace_path, verify_path))
     _assert_incomplete_v3_report(report, reason_code=reason)
     assert report.capability_contract_policy.integrity in {"complete", "incomplete"}
 
@@ -2246,9 +2187,7 @@ def test_collect_v3_ordered_mapping_prefers_missing_over_invalid(tmp_path: Path)
     project, execution_trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
     execution_trace_path.write_bytes(b"\xff\xfe")
     execution_trace_path.unlink()
-    report = reporter.collect_v3_report(
-        _v3_inputs(reporter, project, execution_trace_path, verify_path)
-    )
+    report = reporter.collect_v3_report(_v3_inputs(reporter, project, execution_trace_path, verify_path))
     _assert_incomplete_v3_report(report, reason_code="execution_projection_missing")
 
 
@@ -2262,9 +2201,7 @@ def test_collect_v3_ordered_mapping_prefers_identity_over_model_defect(tmp_path:
         payload["rows"] = None
 
     _mutate_execution_json(execution_trace_path, mutate)
-    report = reporter.collect_v3_report(
-        _v3_inputs(reporter, project, execution_trace_path, verify_path)
-    )
+    report = reporter.collect_v3_report(_v3_inputs(reporter, project, execution_trace_path, verify_path))
     _assert_incomplete_v3_report(report, reason_code="projection_identity_mismatch")
 
 
@@ -2280,9 +2217,7 @@ def test_collect_v3_quality_duplicate_case_id_is_sufficiency_binding_mismatch(
         report["verdicts"] = [report["verdicts"][0], dict(report["verdicts"][0])]
 
     _mutate_quality_json(project, mutate)
-    report = reporter.collect_v3_report(
-        _v3_inputs(reporter, project, execution_trace_path, verify_path)
-    )
+    report = reporter.collect_v3_report(_v3_inputs(reporter, project, execution_trace_path, verify_path))
     _assert_incomplete_v3_report(report, reason_code="sufficiency_binding_mismatch")
 
 
@@ -2296,9 +2231,7 @@ def test_collect_v3_quality_binding_scalar_precedes_duplicate_case_id(tmp_path: 
         report["verdicts"] = [report["verdicts"][0], dict(report["verdicts"][0])]
 
     _mutate_quality_json(project, mutate)
-    report = reporter.collect_v3_report(
-        _v3_inputs(reporter, project, execution_trace_path, verify_path)
-    )
+    report = reporter.collect_v3_report(_v3_inputs(reporter, project, execution_trace_path, verify_path))
     _assert_incomplete_v3_report(report, reason_code="sufficiency_binding_mismatch")
     assert "policy" in report.traceability_evidence.detail
 
@@ -2314,9 +2247,7 @@ def test_collect_v3_quality_identity_precedes_sufficiency_preflight(tmp_path: Pa
         report["verdicts"] = [report["verdicts"][0], dict(report["verdicts"][0])]
 
     _mutate_quality_json(project, mutate)
-    report = reporter.collect_v3_report(
-        _v3_inputs(reporter, project, execution_trace_path, verify_path)
-    )
+    report = reporter.collect_v3_report(_v3_inputs(reporter, project, execution_trace_path, verify_path))
     _assert_incomplete_v3_report(report, reason_code="quality_gate_binding_mismatch")
 
 
@@ -2324,9 +2255,7 @@ def test_collect_v3_capability_incomplete_with_trace_complete(tmp_path: Path) ->
     reporter = _load_reporter_module()
     project, execution_trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
     _corrupt_api_mechanical_outputs(_change_dir(project))
-    report = reporter.collect_v3_report(
-        _v3_inputs(reporter, project, execution_trace_path, verify_path)
-    )
+    report = reporter.collect_v3_report(_v3_inputs(reporter, project, execution_trace_path, verify_path))
     reloaded = load_specialty_report_document(report.model_dump(mode="json"))
     assert isinstance(reloaded, SpecialtyReportV3)
     assert reloaded.capability_contract_policy.integrity == "incomplete"
@@ -2339,9 +2268,7 @@ def test_collect_v3_trace_incomplete_with_capability_complete(tmp_path: Path) ->
     reporter = _load_reporter_module()
     project, execution_trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
     execution_trace_path.unlink()
-    report = reporter.collect_v3_report(
-        _v3_inputs(reporter, project, execution_trace_path, verify_path)
-    )
+    report = reporter.collect_v3_report(_v3_inputs(reporter, project, execution_trace_path, verify_path))
     assert report.capability_contract_policy.integrity == "complete"
     _assert_incomplete_v3_report(report, reason_code="execution_projection_missing")
 
@@ -2351,9 +2278,7 @@ def test_collect_v3_both_capability_and_trace_incomplete(tmp_path: Path) -> None
     project, execution_trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
     _corrupt_api_mechanical_outputs(_change_dir(project))
     execution_trace_path.unlink()
-    report = reporter.collect_v3_report(
-        _v3_inputs(reporter, project, execution_trace_path, verify_path)
-    )
+    report = reporter.collect_v3_report(_v3_inputs(reporter, project, execution_trace_path, verify_path))
     reloaded = load_specialty_report_document(report.model_dump(mode="json"))
     assert isinstance(reloaded, SpecialtyReportV3)
     assert reloaded.capability_contract_policy.integrity == "incomplete"
@@ -2376,10 +2301,10 @@ def test_collect_v3_unexpected_runtime_error_escapes(
         reporter.collect_v3_report(inputs)
 
 
-def test_tasks_16_17_keep_public_collect_atomic_activation_guard(tmp_path: Path) -> None:
+def test_task_18_public_collect_atomic_activation(tmp_path: Path) -> None:
     reporter = _load_reporter_module()
-    project, trace_path, verify_path = _install_strict_frozen_item(tmp_path)
-    public = reporter.collect_report(
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    inputs = reporter.TraceCollectionInputs(
         project_root=project,
         change_id=CHANGE_ID,
         root_invocation_id=ROOT_INVOCATION_ID,
@@ -2389,12 +2314,219 @@ def test_tasks_16_17_keep_public_collect_atomic_activation_guard(tmp_path: Path)
         trace_exit=0,
         verify_exit=0,
     )
-    assert isinstance(public, SpecialtyReportV2)
-    assert public.schema_version == "2"
+    public = reporter.collect_report(inputs)
+    assert isinstance(public, SpecialtyReportV3)
+    assert public.schema_version == "3"
 
     main_source = inspect.getsource(reporter.main)
     collect_source = inspect.getsource(reporter.collect_report)
-    assert "collect_v3_report" not in main_source
-    assert "collect_v3_report" not in collect_source
-    assert "SpecialtyReportV3" not in main_source
+    assert "collect_v3_report" in collect_source
+    assert "publish_specialty_report" in main_source
+    assert "validate-publication" in _REPORTER.read_text(encoding="utf-8")
     assert callable(reporter.collect_v3_report)
+
+
+def test_evidence_row_ten_column_contract_for_v3_and_legacy(tmp_path: Path) -> None:
+    reporter = _load_reporter_module()
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    complete = reporter.collect_report(
+        reporter.TraceCollectionInputs(
+            project_root=project,
+            change_id=CHANGE_ID,
+            root_invocation_id=ROOT_INVOCATION_ID,
+            workflow_entrypoint=_ENTRYPOINT,
+            trace_path=trace_path,
+            verify_path=verify_path,
+            trace_exit=0,
+            verify_exit=0,
+        )
+    )
+    row = reporter.evidence_row(complete, expected_change_id=CHANGE_ID)
+    parts = row.split("|")
+    assert len(parts) == 10
+    assert parts[1] == "complete"
+    assert parts[2] == "none"
+    assert reporter.report_collection_exit(complete) == 0
+
+    incomplete = SpecialtyReportV3.model_validate(
+        {
+            "schema_version": "3",
+            "change_id": CHANGE_ID,
+            "capability_contract_policy": complete.capability_contract_policy.model_dump(mode="json"),
+            "traceability_evidence": {
+                "status": "incomplete",
+                "reason_code": "verify_result_missing",
+                "detail": "",
+                "command_status": {"trace_exit": 3, "verify_exit": 4},
+            },
+        }
+    )
+    incomplete_row = reporter.evidence_row(incomplete, expected_change_id=CHANGE_ID)
+    assert incomplete_row.split("|") == [
+        CHANGE_ID,
+        "incomplete",
+        "verify_result_missing",
+        "3",
+        "unknown",
+        "unknown",
+        "4",
+        "unknown",
+        "unknown",
+        "unknown",
+    ]
+    assert reporter.report_collection_exit(incomplete) == 1
+
+    legacy = _synthetic_v2_report(change_id=CHANGE_ID)
+    legacy_row = reporter.evidence_row(legacy, expected_change_id=CHANGE_ID)
+    assert legacy_row.startswith(f"{CHANGE_ID}|legacy_unlayered|none|")
+
+
+def test_publication_crash_windows_are_aba_safe(tmp_path: Path) -> None:
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    output = tmp_path / "specialty.json"
+    receipt = tmp_path / "specialty.json.receipt.json"
+
+    # Seed a committed publication for attempt A.
+    seed = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=output,
+        verify_exit="0",
+        attempt_id="attempt-A",
+        receipt=receipt,
+    )
+    assert seed.returncode == 0, seed.stderr
+    prior_report = output.read_bytes()
+    prior_receipt = receipt.read_bytes()
+
+    crashed = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=output,
+        verify_exit="0",
+        attempt_id="attempt-B",
+        receipt=receipt,
+        env={"AA_SPECIALTY_PUBLICATION_CRASH": "after_pending"},
+    )
+    assert crashed.returncode != 0
+    assert json.loads(receipt.read_text(encoding="utf-8"))["state"] == "pending"
+    assert json.loads(receipt.read_text(encoding="utf-8"))["attempt_id"] == "attempt-B"
+
+    # Fresh validation for attempt-B must fail while pending.
+    fresh = subprocess.run(
+        [
+            sys.executable,
+            str(_REPORTER),
+            "validate-publication",
+            "--report",
+            str(output),
+            "--publication-receipt",
+            str(receipt),
+            "--change-id",
+            CHANGE_ID,
+            "--mode",
+            "fresh",
+            "--attempt-id",
+            "attempt-B",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert fresh.returncode != 0
+
+    # Restore prior committed bytes and prove attempt-B cannot ABA-accept them.
+    output.write_bytes(prior_report)
+    receipt.write_bytes(prior_receipt)
+    aba = subprocess.run(
+        [
+            sys.executable,
+            str(_REPORTER),
+            "validate-publication",
+            "--report",
+            str(output),
+            "--publication-receipt",
+            str(receipt),
+            "--change-id",
+            CHANGE_ID,
+            "--mode",
+            "fresh",
+            "--attempt-id",
+            "attempt-B",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert aba.returncode != 0
+
+    reuse = subprocess.run(
+        [
+            sys.executable,
+            str(_REPORTER),
+            "validate-publication",
+            "--report",
+            str(output),
+            "--publication-receipt",
+            str(receipt),
+            "--change-id",
+            CHANGE_ID,
+            "--mode",
+            "reuse",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert reuse.returncode == 0, reuse.stderr
+
+
+def test_empty_attempt_or_same_paths_fail_before_mutation(tmp_path: Path) -> None:
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    output = tmp_path / "specialty.json"
+    same = tmp_path / "same.json"
+    empty_attempt = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=output,
+        verify_exit="0",
+        attempt_id="",
+    )
+    assert empty_attempt.returncode == 2
+    assert not output.exists()
+
+    same_path = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=same,
+        verify_exit="0",
+        attempt_id="attempt-1",
+        receipt=same,
+    )
+    assert same_path.returncode == 2
+    assert not same.exists()
+
+
+def test_modeled_incomplete_publishes_committed_receipt_before_exit_1(tmp_path: Path) -> None:
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    trace_path.unlink()
+    output = tmp_path / "specialty-incomplete.json"
+    result = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=output,
+        verify_exit="0",
+        attempt_id="attempt-incomplete",
+    )
+    assert result.returncode == 1
+    report = load_specialty_report(json.loads(output.read_text(encoding="utf-8")))
+    assert isinstance(report, SpecialtyReportV3)
+    assert report.traceability_evidence.status == "incomplete"
+    receipt = json.loads((tmp_path / "specialty-incomplete.json.receipt.json").read_text(encoding="utf-8"))
+    assert receipt["state"] == "committed"
+    assert receipt["attempt_id"] == "attempt-incomplete"

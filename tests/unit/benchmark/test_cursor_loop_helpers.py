@@ -338,7 +338,7 @@ def test_trace_verify_collection_persists_json_and_reports_pass(tmp_path: Path) 
     result = _run_helper(tmp_path, command)
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "CH-1|0|complete|0|0|pass|0|0"
+    assert result.stdout == "CH-1|raw|none|0|complete|0|0|pass|0|0"
     assert json.loads(trace_path.read_text(encoding="utf-8"))["integrity"] == "complete"
     assert json.loads(verify_path.read_text(encoding="utf-8"))["verdict"] == "pass"
     assert call_log.read_text(encoding="utf-8").splitlines() == [
@@ -363,7 +363,7 @@ def test_trace_verify_collection_preserves_nonzero_verify_verdict(tmp_path: Path
     result = _run_helper(tmp_path, command)
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "CH-2|0|complete|0|30|needs_human|0|0"
+    assert result.stdout == "CH-2|raw|none|0|complete|0|30|needs_human|0|0"
 
 
 def test_trace_verify_collection_wraps_empty_error_outputs_as_json(tmp_path: Path) -> None:
@@ -448,15 +448,15 @@ def test_benchmark_env_preserves_caller_trace_verify_override(tmp_path: Path) ->
 def test_benchmark_evidence_gate_requires_successful_trace_and_verify(tmp_path: Path) -> None:
     passing = _run_helper(
         tmp_path,
-        "benchmark_evidence_exit_code true 'CH-1|0|complete|0|0|pass|0|0'",
+        "benchmark_evidence_exit_code true 'CH-1|complete|none|0|complete|0|0|pass|0|0'",
     )
     needs_human = _run_helper(
         tmp_path,
-        "benchmark_evidence_exit_code true 'CH-1|0|complete|0|30|needs_human|0|1'",
+        "benchmark_evidence_exit_code true 'CH-1|complete|none|0|complete|0|30|needs_human|0|1'",
     )
     malformed = _run_helper(
         tmp_path,
-        "benchmark_evidence_exit_code true 'CH-1|0|complete|bogus|0|pass|0|0'",
+        "benchmark_evidence_exit_code true 'CH-1|complete|none|0|complete|bogus|0|pass|0|0'",
     )
     disabled = _run_helper(tmp_path, "benchmark_evidence_exit_code false")
 
@@ -695,3 +695,45 @@ def test_specialty_collect_helper_omits_schema_root_escape_hatch() -> None:
         '"$AA_REPO_ROOT"'
         not in stage.split("collect_benchmark_specialty_report", maxsplit=1)[1].split("||", maxsplit=1)[0]
     )
+
+
+def test_raw_evidence_row_uses_ten_columns_and_unknown(tmp_path: Path) -> None:
+    import os
+
+    aa = _install_fake_aa(tmp_path)
+    command = (
+        f"collect_trace_verify_evidence {shlex.quote(str(aa))} CH-1 "
+        f"{shlex.quote(str(tmp_path / 't.json'))} {shlex.quote(str(tmp_path / 'v.json'))} "
+        f"{shlex.quote(str(tmp_path / 'log.txt'))} {shlex.quote(sys.executable)}"
+    )
+    result = subprocess.run(
+        ["bash", "-c", f"source {shlex.quote(str(_HELPERS))}; {command}"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **os.environ,
+            "AA_FAKE_CALL_LOG": str(tmp_path / "calls.log"),
+            "AA_FAKE_TRACE_EMPTY": "true",
+            "AA_FAKE_VERIFY_EMPTY": "true",
+            "AA_FAKE_TRACE_EXIT": "7",
+            "AA_FAKE_VERIFY_VERDICT": "fail",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    parts = result.stdout.strip().split("|")
+    assert len(parts) == 10
+    assert parts[:3] == ["CH-1", "raw", "none"]
+    assert parts[4] == "unknown"
+    assert parts[5] == "unknown"
+
+
+def test_parse_evidence_row_rejects_unknown_collection_status(tmp_path: Path) -> None:
+    bad = _run_helper(tmp_path, "parse_evidence_row_fields 'CH-1|weird|none|0|complete|0|0|pass|0|0'")
+    assert bad.returncode != 0
+    good = _run_helper(
+        tmp_path,
+        "parse_evidence_row_fields 'CH-1|incomplete|execution_projection_missing|0|unknown|unknown|0|unknown|unknown|unknown'",
+    )
+    assert good.returncode == 0, good.stderr

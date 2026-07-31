@@ -258,41 +258,111 @@ verify, verify_valid = load_json_or_write_error(verify_path, "verify", verify_ex
 if trace_valid:
     integrity = trace.get("integrity") or "unknown"
     gaps = trace.get("gaps")
-    print(f"{integrity}|{len(gaps) if isinstance(gaps, list) else -1}")
+    if isinstance(gaps, list):
+        print(f"{integrity}|{len(gaps)}")
+    else:
+        print(f"{integrity}|unknown")
 else:
-    print("invalid|-1")
+    print("unknown|unknown")
 
 if verify_valid:
     verdict = verify.get("verdict") or "unknown"
     blocking = verify.get("blocking_gaps")
     insufficient = verify.get("insufficient")
-    blocking_count = len(blocking) if isinstance(blocking, list) else -1
-    insufficient_count = len(insufficient) if isinstance(insufficient, list) else -1
+    blocking_count = len(blocking) if isinstance(blocking, list) else "unknown"
+    insufficient_count = len(insufficient) if isinstance(insufficient, list) else "unknown"
     print(f"{verdict}|{blocking_count}|{insufficient_count}")
 else:
-    print("invalid|-1|-1")
+    print("unknown|unknown|unknown")
 PY
 )"
   trace_summary="${summaries%%$'\n'*}"
   verify_summary="${summaries#*$'\n'}"
-  printf '%s|%s|%s|%s|%s' \
+  printf '%s|raw|none|%s|%s|%s|%s' \
     "$change_id" "$trace_exit" "$trace_summary" "$verify_exit" "$verify_summary"
   return 0
+}
+
+parse_evidence_row_fields() {
+  local row="$1"
+  local cid collection_status reason_code trace_exit integrity gap_count
+  local verify_exit verdict blocking insufficient extra
+  IFS='|' read -r \
+    cid collection_status reason_code trace_exit integrity gap_count \
+    verify_exit verdict blocking insufficient extra <<<"$row"
+  if [ -z "$cid" ] || [ -n "$extra" ]; then
+    return 1
+  fi
+  case "$collection_status" in
+    incomplete)
+      ;;
+    raw)
+      if [ "$integrity" = "unknown" ] || [ "$gap_count" = "unknown" ] \
+        || [ "$verdict" = "unknown" ] || [ "$blocking" = "unknown" ] \
+        || [ "$insufficient" = "unknown" ]; then
+        return 2
+      fi
+      ;;
+    complete|legacy_unlayered)
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
+    "$cid" "$collection_status" "$reason_code" "$trace_exit" "$integrity" "$gap_count" \
+    "$verify_exit" "$verdict" "$blocking" "$insufficient"
+}
+
+replace_evidence_row_for_change() {
+  local change_id="$1" new_row="$2"
+  shift 2
+  local row cid kept=()
+  for row in "$@"; do
+    IFS='|' read -r cid _ <<<"$row"
+    if [ "$cid" != "$change_id" ]; then
+      kept+=("$row")
+    fi
+  done
+  kept+=("$new_row")
+  printf '%s\n' "${kept[@]}"
 }
 
 benchmark_evidence_exit_code() {
   local enabled="$1"
   shift
-  local row change_id trace_exit integrity gap_count verify_exit verdict blocking insufficient extra
+  local row parsed cid collection_status reason_code trace_exit integrity gap_count
+  local verify_exit verdict blocking insufficient
   local failed=0
 
   [ "$enabled" = "true" ] || return 0
   [ "$#" -gt 0 ] || return 1
   for row in "$@"; do
+    parsed="$(parse_evidence_row_fields "$row")" || { failed=1; continue; }
     IFS='|' read -r \
-      change_id trace_exit integrity gap_count verify_exit verdict blocking insufficient extra <<<"$row"
-    if [ -z "$change_id" ] || [ -n "$extra" ] \
-      || ! [[ "$trace_exit" =~ ^[0-9]+$ ]] \
+      cid collection_status reason_code trace_exit integrity gap_count \
+      verify_exit verdict blocking insufficient <<<"$parsed"
+    case "$collection_status" in
+      incomplete)
+        failed=1
+        continue
+        ;;
+      raw)
+        if [ "$integrity" = "unknown" ] || [ "$gap_count" = "unknown" ] \
+          || [ "$verdict" = "unknown" ] || [ "$blocking" = "unknown" ] \
+          || [ "$insufficient" = "unknown" ]; then
+          failed=1
+          continue
+        fi
+        ;;
+      complete|legacy_unlayered)
+        ;;
+      *)
+        failed=1
+        continue
+        ;;
+    esac
+    if ! [[ "$trace_exit" =~ ^[0-9]+$ ]] \
       || ! [[ "$gap_count" =~ ^[0-9]+$ ]] \
       || ! [[ "$verify_exit" =~ ^[0-9]+$ ]] \
       || ! [[ "$blocking" =~ ^[0-9]+$ ]] \
@@ -316,6 +386,8 @@ collect_benchmark_specialty_report() {
   local change_id="$4" trace_file="$5" verify_file="$6" output_file="$7" log_file="$8"
   local trace_exit="$9" verify_exit="${10}"
   local root_invocation_id="${11}" workflow_entrypoint="${12}"
+  local attempt_id="${13}"
+  local receipt_file="${output_file}.receipt.json"
   mkdir -p "$(dirname "$output_file")" "$(dirname "$log_file")"
   "$python_bin" "$reporter" collect \
     --project-root "$project_root" \
@@ -327,6 +399,8 @@ collect_benchmark_specialty_report() {
     --trace-exit "$trace_exit" \
     --verify-exit "$verify_exit" \
     --output "$output_file" \
+    --attempt-id "$attempt_id" \
+    --publication-receipt "$receipt_file" \
     2>>"$log_file"
 }
 
@@ -439,19 +513,54 @@ PY
 
 finalize_benchmark_specialty_report() {
   local python_bin="$1" reporter="$2" change_id="$3" report_file="$4" collect_exit="$5"
-  local registered="false"
+  local attempt_id="${6:-}"
+  local receipt_file="${report_file}.receipt.json"
+  local registered="false" row="" evidence_exit=0
   if [ -s "$report_file" ]; then
-    if "$python_bin" "$reporter" evidence-row --change-id "$change_id" "$report_file" >/dev/null 2>&1; then
-      registered="true"
-      printf '%s\n' "$report_file"
+    if "$python_bin" "$reporter" validate-publication \
+      --report "$report_file" \
+      --publication-receipt "$receipt_file" \
+      --change-id "$change_id" \
+      --mode fresh \
+      --attempt-id "$attempt_id" >/dev/null 2>&1; then
+      row="$("$python_bin" "$reporter" evidence-row --change-id "$change_id" "$report_file" 2>/dev/null)"
+      evidence_exit=$?
+      if [ -n "$row" ] && { [ "$evidence_exit" -eq 0 ] || [ "$evidence_exit" -eq 1 ]; }; then
+        registered="true"
+      else
+        row=""
+        registered="false"
+      fi
     fi
   fi
   if [ "$registered" = "true" ]; then
+    printf '%s\n' "$report_file"
+    printf '%s\n' "$row"
     printf 'registered=true\n'
   else
     printf 'registered=false\n'
   fi
   return "$collect_exit"
+}
+
+reuse_benchmark_specialty_report() {
+  local python_bin="$1" reporter="$2" change_id="$3" report_file="$4"
+  local receipt_file="${report_file}.receipt.json"
+  local row=""
+  if ! "$python_bin" "$reporter" validate-publication \
+    --report "$report_file" \
+    --publication-receipt "$receipt_file" \
+    --change-id "$change_id" \
+    --mode reuse >/dev/null 2>&1; then
+    return 1
+  fi
+  if ! row="$("$python_bin" "$reporter" evidence-row --change-id "$change_id" "$report_file")"; then
+    # exit 1 still yields a valid printable row for incomplete overall outcomes
+    if [ -z "$row" ]; then
+      return 1
+    fi
+  fi
+  printf '%s\n' "$row"
 }
 
 render_benchmark_specialty_sections() {
@@ -463,6 +572,7 @@ render_benchmark_specialty_sections() {
 
 benchmark_specialty_resume_action() {
   local report_file="$1" archive_dir="$2"
+  local receipt_file="${report_file}.receipt.json"
   if [ -s "$report_file" ]; then
     printf 'reuse'
     return 0
@@ -470,6 +580,11 @@ benchmark_specialty_resume_action() {
   if [ -d "$archive_dir" ]; then
     printf 'missing_after_archive'
     return 1
+  fi
+  # A pending receipt without a durable report is not reusable.
+  if [ -s "$receipt_file" ]; then
+    printf 'collect'
+    return 0
   fi
   printf 'collect'
 }
