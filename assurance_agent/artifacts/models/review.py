@@ -21,6 +21,42 @@ ReviewDecision = Literal["pass", "approved", "needs_fix", "needs_human_review", 
 # only turn into a dead-end `stop`; fail it here so the reviewer's mandatory
 # `aa validate` self-check surfaces it before the gate ever runs.
 _CAPABILITY_GATED_REVIEW_TYPES = frozenset({"api-plan", "e2e-plan"})
+_PLAN_REVIEW_TYPES = frozenset({"api-plan", "e2e-plan", "fuzz-plan", "performance-plan"})
+_HUMAN_ONLY_PLAN_REVIEW_TYPES = frozenset({"fuzz-plan", "performance-plan"})
+
+_L1_CAPABILITY_ROOTS = (
+    "auth.",
+    "accounts.",
+    "entities.",
+    "capabilities.cleanup.",
+    "capabilities.domain_factories.",
+    "capabilities.adapters.",
+)
+
+
+def _is_fully_qualified_capability_key(key: str) -> bool:
+    stripped = key.strip()
+    if not stripped or "." not in stripped:
+        return False
+    return any(stripped.startswith(root) for root in _L1_CAPABILITY_ROOTS)
+
+
+def _validate_nonblank_finding_ids(findings: list[Any]) -> None:
+    for index, finding in enumerate(findings):
+        if not isinstance(finding, dict) or not isinstance(finding.get("id"), str):
+            raise ValueError(f"findings[{index}].id must be a non-empty string")
+        if not finding["id"].strip():
+            raise ValueError(f"findings[{index}].id must be a non-empty string")
+
+
+def _validate_fully_qualified_capabilities(caps: list[str] | None) -> None:
+    if not isinstance(caps, list) or len(caps) == 0:
+        raise ValueError("required_capabilities must be a non-empty list of fully qualified L1 leaf keys")
+    for index, item in enumerate(caps):
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"required_capabilities[{index}] must be a fully qualified L1 leaf key")
+        if not _is_fully_qualified_capability_key(item):
+            raise ValueError(f"required_capabilities[{index}] must be a fully qualified L1 leaf key")
 
 
 class Review(BaseModel):
@@ -61,7 +97,7 @@ class Review(BaseModel):
 
 
 class PlanReview(Review):
-    """api/e2e plan review：继承 Review 的兼容字段，并强制校验跨技能消费契约。"""
+    """Strong cross-skill contract for API, E2E, Fuzz, and Performance plans."""
 
     model_config = ConfigDict(
         extra="allow",
@@ -74,8 +110,7 @@ class PlanReview(Review):
         },
     )
 
-    @model_validator(mode="after")
-    def _require_cross_skill_fields(self) -> "PlanReview":
+    def _validate_required_cross_skill_fields(self) -> None:
         required = (
             "review_type",
             "change_id",
@@ -90,13 +125,23 @@ class PlanReview(Review):
         missing = [name for name in required if getattr(self, name) is None]
         if missing:
             raise ValueError("plan review missing cross-skill fields: " + ", ".join(missing))
-        if self.review_type not in _CAPABILITY_GATED_REVIEW_TYPES:
-            raise ValueError("plan review review_type must be api-plan or e2e-plan")
-        for index, finding in enumerate(self.findings):
-            if not isinstance(finding, dict) or not isinstance(finding.get("id"), str):
-                raise ValueError(f"findings[{index}].id must be a non-empty string")
-            if not finding["id"].strip():
-                raise ValueError(f"findings[{index}].id must be a non-empty string")
+
+    def _validate_nonblank_finding_ids(self) -> None:
+        _validate_nonblank_finding_ids(self.findings)
+
+    def _validate_fully_qualified_capabilities(self) -> None:
+        _validate_fully_qualified_capabilities(self.required_capabilities)
+
+    @model_validator(mode="after")
+    def _require_cross_skill_fields(self) -> "PlanReview":
+        if self.review_type not in _PLAN_REVIEW_TYPES:
+            raise ValueError("unsupported plan review type")
+        self._validate_required_cross_skill_fields()
+        self._validate_nonblank_finding_ids()
+        self._validate_fully_qualified_capabilities()
+        if self.review_type in _HUMAN_ONLY_PLAN_REVIEW_TYPES:
+            if self.auto_fix_allowed or self.auto_fix_plan:
+                raise ValueError("human-only plan review cannot authorize automatic fixes")
         return self
 
 
@@ -117,7 +162,7 @@ class PlanReviewAuthoring(BaseModel):
     )
 
     schema_version: NonEmptyStr
-    review_type: Literal["api-plan", "e2e-plan"]
+    review_type: Literal["api-plan", "e2e-plan", "fuzz-plan", "performance-plan"]
     change_id: NonEmptyStr
     decision: ReviewDecision
     findings: list[Any]
@@ -128,3 +173,14 @@ class PlanReviewAuthoring(BaseModel):
     codegen_readiness: Literal["ready", "ready_with_warnings", "not_ready"]
     risk_level: Literal["low", "medium", "high", "critical"]
     required_capabilities: list[NonEmptyStr]
+
+    @model_validator(mode="after")
+    def _validate_authoring_contract(self) -> "PlanReviewAuthoring":
+        _validate_nonblank_finding_ids(self.findings)
+        _validate_fully_qualified_capabilities(list(self.required_capabilities))
+        if self.review_type in _HUMAN_ONLY_PLAN_REVIEW_TYPES:
+            if self.auto_fix_allowed:
+                raise ValueError("human-only plan review cannot authorize automatic fixes")
+            if self.auto_fix_plan:
+                raise ValueError("auto_fix_plan must be empty for human-only plan review")
+        return self
