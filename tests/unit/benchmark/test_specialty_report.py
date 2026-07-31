@@ -34,7 +34,7 @@ _ROOT = Path(__file__).parents[3]
 _REPORTER = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "benchmark_specialty_report.py"
 _HELPERS = _REPORTER.with_name("cursor-loop-helpers.sh")
 _CURSOR_LOOP = _REPORTER.with_name("run-workflow-loop-cursor.sh")
-_GOLDEN_SHA256 = "c7c32e59f07a1d72b13058fa6f8a2be92a0b82769900048b28b2684905b87830"
+_GOLDEN_SHA256 = "412a7688d33bd7752bc55d7ed5fb3938da7906a1b51e8d78a222693a3b1ec999"
 
 
 def _specialty_stage_function_source() -> str:

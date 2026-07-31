@@ -282,7 +282,9 @@ class GraphRuntime:
         checkpoint_ns = invocation_id
         bound = context.model_copy(update={"params": params})
         try:
-            binding = bind_root_definitions(store=self._objects, root_tree_id=root_tree_id, event_schema_version=5)
+            binding = bind_root_definitions(
+                store=self._objects, root_tree_id=root_tree_id, event_schema_version=5
+            )
         except PolicyError:
             raise
         started = _build_invocation_started(
@@ -615,7 +617,9 @@ class GraphRuntime:
         graph_id = entry.graph_id
 
         try:
-            binding = bind_root_definitions(store=self._objects, root_tree_id=root_tree_id, event_schema_version=5)
+            binding = bind_root_definitions(
+                store=self._objects, root_tree_id=root_tree_id, event_schema_version=5
+            )
         except PolicyError:
             raise
         started = _build_invocation_started(
@@ -652,9 +656,7 @@ class GraphRuntime:
             raise
         return invocation_id
 
-    def _bundle_for_compiled(
-        self, compiled: CompiledWorkflow, *, event_schema_version: int
-    ) -> Any:
+    def _bundle_for_compiled(self, compiled: CompiledWorkflow, *, event_schema_version: int) -> Any:
         from assurance_agent.workflow.graph.definition_pinning import request_for_compiled
 
         request = request_for_compiled(compiled, event_schema_version=event_schema_version)

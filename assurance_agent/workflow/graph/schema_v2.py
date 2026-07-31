@@ -297,9 +297,7 @@ class LoadedWorkflowV2:
     origin: WorkflowSchemaOrigin
 
 
-def load_workflow_v2_with_origin(
-    project_root: Path, explicit: Path | None = None
-) -> LoadedWorkflowV2:
+def load_workflow_v2_with_origin(project_root: Path, explicit: Path | None = None) -> LoadedWorkflowV2:
     if explicit is not None:
         path = explicit if explicit.is_absolute() else project_root / explicit
         if not path.exists():

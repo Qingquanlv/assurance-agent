@@ -360,7 +360,9 @@ def test_crash_after_attempt_started_abandons_and_retries(tmp_path: Path) -> Non
     compiled, contracts = _write_compiled()
     clock = FakeClock()
     ops = _write_ops()
-    runtime, scheduler = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(ops))
+    runtime, scheduler = _build_runtime(
+        project, compiled, contracts, clock=clock, node_runner=_op_runner(ops)
+    )
 
     def crash_run(prepared, plan, projection, context, leases):  # type: ignore[no-untyped-def]
         raise _InjectedCrash("after task_attempt_started")
@@ -378,7 +380,9 @@ def test_crash_after_attempt_started_abandons_and_retries(tmp_path: Path) -> Non
     )
 
     clock.advance(3600)
-    fresh, fresh_scheduler = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(ops))
+    fresh, fresh_scheduler = _build_runtime(
+        project, compiled, contracts, clock=clock, node_runner=_op_runner(ops)
+    )
     result = fresh.resume(invocation_id)
     assert result.exit_code == 0
     events = read_events_strict(change)
@@ -823,7 +827,9 @@ def test_crash_after_write_set_freeze_before_success_retries_attempt(tmp_path: P
     compiled, contracts = _write_compiled()
     ops = _write_ops()
     clock = FakeClock()
-    runtime, scheduler = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(ops))
+    runtime, scheduler = _build_runtime(
+        project, compiled, contracts, clock=clock, node_runner=_op_runner(ops)
+    )
     store = runtime._objects  # noqa: SLF001
     original_freeze = store.freeze_write_set
 
@@ -845,7 +851,9 @@ def test_crash_after_write_set_freeze_before_success_retries_attempt(tmp_path: P
 
     clock.advance(3600)
     store.freeze_write_set = original_freeze  # type: ignore[method-assign]
-    fresh, fresh_scheduler = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(ops))
+    fresh, fresh_scheduler = _build_runtime(
+        project, compiled, contracts, clock=clock, node_runner=_op_runner(ops)
+    )
     result = fresh.resume(invocation_id)
     assert result.exit_code == 0
     events = read_events_strict(change)
@@ -941,7 +949,9 @@ def test_recovery_barrier_blocks_plan_while_task_still_running(
     project = _make_project(tmp_path)
     compiled, contracts = _write_compiled()
     clock = FakeClock()
-    runtime, scheduler = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(_write_ops()))
+    runtime, scheduler = _build_runtime(
+        project, compiled, contracts, clock=clock, node_runner=_op_runner(_write_ops())
+    )
 
     def crash_run(prepared, plan, projection, context, leases):  # type: ignore[no-untyped-def]
         raise _InjectedCrash("after task_attempt_started")
@@ -973,7 +983,9 @@ def test_recovery_barrier_blocks_plan_while_task_still_running(
         raise AssertionError("plan_superstep must not run while a task is still running")
 
     monkeypatch.setattr(runtime_mod, "plan_superstep", reject_plan)
-    fresh, fresh_scheduler = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(_write_ops()))
+    fresh, fresh_scheduler = _build_runtime(
+        project, compiled, contracts, clock=clock, node_runner=_op_runner(_write_ops())
+    )
     with pytest.raises(GraphRuntimeError, match="recovery barrier stalled"):
         fresh.resume(invocation_id)
     assert plan_calls == []

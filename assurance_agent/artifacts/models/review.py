@@ -134,9 +134,9 @@ class PlanReview(Review):
 
     @model_validator(mode="after")
     def _require_cross_skill_fields(self) -> "PlanReview":
-        if self.review_type not in _PLAN_REVIEW_TYPES:
-            raise ValueError("unsupported plan review type")
         self._validate_required_cross_skill_fields()
+        if self.review_type not in _PLAN_REVIEW_TYPES:
+            raise ValueError(f"unsupported plan review_type {self.review_type!r}")
         self._validate_nonblank_finding_ids()
         self._validate_fully_qualified_capabilities()
         if self.review_type in _HUMAN_ONLY_PLAN_REVIEW_TYPES:

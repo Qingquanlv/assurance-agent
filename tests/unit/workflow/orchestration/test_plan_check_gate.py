@@ -744,16 +744,12 @@ def test_fixture_force_continue_never_overrides_reject_or_missing_capability(
         missing_cap_context, params={**missing_cap_context.params, "force_continue": True}
     )
     profile = get_layer_assurance_profile(layer)
-    missing_cap_report = check_gate_in_view(
-        _load_fixture_gates(), profile.gate_id, missing_cap_context
-    )
+    missing_cap_report = check_gate_in_view(_load_fixture_gates(), profile.gate_id, missing_cap_context)
     assert missing_cap_report.verdict == Verdict.NEEDS_HUMAN_REVIEW
 
 
 @pytest.mark.parametrize("layer", ["fuzz", "performance"])
-def test_fixture_force_continue_suppresses_configured_risk_when_allowed(
-    tmp_path: Path, layer: str
-) -> None:
+def test_fixture_force_continue_suppresses_configured_risk_when_allowed(tmp_path: Path, layer: str) -> None:
     context = _context(
         tmp_path,
         layer=layer,
@@ -872,9 +868,7 @@ def test_fixture_codegen_precondition_skips_inapplicable_layer(tmp_path: Path, l
 
 
 @pytest.mark.parametrize("layer", ["fuzz", "performance"])
-def test_fixture_codegen_precondition_stops_without_current_child_success(
-    tmp_path: Path, layer: str
-) -> None:
+def test_fixture_codegen_precondition_stops_without_current_child_success(tmp_path: Path, layer: str) -> None:
     (tmp_path / ".aa").mkdir(parents=True)
     (tmp_path / ".aa" / "data-knowledge.yaml").write_text(
         "version: 1\ncapabilities:\n  domain_factories: {}\n", encoding="utf-8"

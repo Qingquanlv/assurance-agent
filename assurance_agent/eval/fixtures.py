@@ -339,7 +339,8 @@ def _ensure_assurance_seed_artifacts(
         knowledge_src = contract_dir / ".aa" / "data-knowledge.yaml"
         knowledge_dst = project_root / ".aa" / "data-knowledge.yaml"
         if knowledge_src.is_file() and (
-            not knowledge_dst.is_file() or knowledge_dst.read_text(encoding="utf-8").strip() == "capabilities: {}"
+            not knowledge_dst.is_file()
+            or knowledge_dst.read_text(encoding="utf-8").strip() == "capabilities: {}"
         ):
             knowledge_dst.parent.mkdir(parents=True, exist_ok=True)
             knowledge_dst.write_text(knowledge_src.read_text(encoding="utf-8"), encoding="utf-8")
@@ -506,9 +507,7 @@ def _write_import_manifest(
             }
             gate_payload = local_payload.setdefault("gate", {})
             if isinstance(gate_payload, dict):
-                gate_payload.update(
-                    {"gate_id": task.gate, "verdict": verdict, "reads_sha256": reads}
-                )
+                gate_payload.update({"gate_id": task.gate, "verdict": verdict, "reads_sha256": reads})
             else:
                 local_payload["gate"] = {
                     "gate_id": task.gate,

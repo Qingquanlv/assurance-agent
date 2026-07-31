@@ -131,22 +131,62 @@ aa knowledge promote [--project-dir] (--change <id> | --from <proposal-path>) [-
 | `reason_code` | `automated_cases_present` \| `no_automated_cases` | 适用时为前者且 `case_ids` 非空；不适用时为后者且 `case_ids` 为空 |
 | `case_ids` | string[] | 排序去重后的自动化 case ID 列表 |
 
-## Graph invocation 事件（`graph_invocation_started` v4）
+## Graph invocation 事件（`graph_invocation_started` v5）
 
-新 root invocation 写入 `event_schema_version: 4`，在 v3 的 schema/contract 绑定之上追加 replay 所需的定义冻结字段。v1–v3 事件仍可由 `migrate_graph_event_stream` 解析，缺失的绑定字段回填为空字符串，**不会**被静默升级为可 replay 的 v2 specialty 证据。
+新 root invocation 写入 `event_schema_version: 5`，并**要求**已落盘的 assurance-profile 快照（见下）。v4 事件保持可读，**从不**被升级，也**从不**被补造（fabricated）profile 快照。v1–v3 事件仍可由 `migrate_graph_event_stream` 解析，缺失的绑定字段回填为空字符串，不会被静默升级为可 replay 的 specialty 证据。
 
-| 字段 | v4 要求 | 说明 |
+| 字段 | v4+ 要求 | 说明 |
 |---|---|---|
 | `policy_digest` | 必填 | 归一化 policy 快照的 SHA-256；快照位于 `.graph-runtime/policies/<digest>.json` |
 | `policy_origin` | 必填，闭枚举 | `project`（来自 root tree 的项目 `.aa/policy.yaml`）或 `packaged_default`（无项目 policy 时使用打包默认）；相同归一化内容共享同一快照文件，origin 单独记录 |
 | `gate_semantics_digest` | 必填 | 代码拥有的 gate/DSL/校验语义 manifest 聚合 digest；实现变更但未 bump 语义版本也会改变 digest |
 | `assurance_profile_digest` | 必填 | 四层 assurance profile 与 check catalog 的归一化 digest |
 
-Replay/collector 要求上述 digest 与当前兼容实现一致；不匹配时 specialty report 为 `incomplete`（如 `gate_semantics_mismatch` / `assurance_profile_mismatch`），不回退到当前磁盘定义。
+v5 额外要求：digest 对应的不可变字节必须已写入 `.graph-runtime/assurance-profiles/<digest>.json`，且在 `graph_invocation_started` 引用该 digest 之前通过解析校验。重复写入相同字节幂等；同 digest 不同字节为完整性错误。子 invocation 继承 digest 与「需要 snapshot」的 epoch，不重新从当前 registry 取材。
 
-## Counterfactual plan-check policy replay（`counterfactual_plan_check_actions/v1`）
+### Assurance-profile 快照
 
-Specialty report v2 的 `capability_contract_policy.semantics` 固定为该字符串。每个 **complete** 层行携带恰好三个 scenario，action 顺序固定为 `warn` → `block` → `require_human`：
+Profile 快照是元数据与审计证据，不是归档的 Python 实现。Replay 对该文件做 hash/parse，**不会**静默用当前 profile registry 替换它。可执行 gate/check 语义仍须与记录的 `gate_semantics_digest` 兼容，wired 行才能 `complete`。
+
+对无 profile 快照的历史 v4 invocation：
+
+- 在 pinned 定义完整性成立后，legacy-unwired 的 Fuzz/Performance 仍可报告 `not_wired`；
+- API/E2E wired 行仅在记录的 profile digest 与可用 manifest 可证明兼容时才能 `complete`；
+- pre-v4 或定义绑定损坏的 invocation **不能**升格为 `not_wired`，保持 report 级 `incomplete`（或走 legacy renderer）。
+
+### 编译入口三分（无启发式降级）
+
+工作流编译是三条显式入口，**禁止**按 schema 内容启发式选择更弱的校验器：
+
+| 入口 | API | 用途 |
+|---|---|---|
+| core | `compile_workflow` | 合成/自定义 schema；不做 packaged 四层 activation 门禁 |
+| packaged-current | `compile_packaged_workflow` | 打包 assurance schema；要求完整四层 activation，并校验 live ingest catalog |
+| pinned-historical | `compile_historical_workflow` | 仅消费已校验的 pinned schema / ingest-catalog / execution-contract 快照；不调用 `validate_catalog_runtime` |
+
+当前路径继续用 live catalog；历史路径只使用 reconstructed catalog。`WorkflowSchemaOrigin`（`packaged` / `project` / `explicit`）记录加载来源，不替代上述编译入口选择。
+
+### Manual revision、revision view 与 prefix recovery
+
+Fuzz/Performance 的 `fix_and_proceed` interrupt 声明 `manual_revision` allowlist（仅 plan-node 输出）。v5 interrupt 在 ephemeral `TaskWorkspace` 清理前物化可写 revision view：
+
+```text
+.graph-runtime/revision-views/<interrupt-id>/
+```
+
+**Revision view 是可变 transport**，不是证据。证据是 `manual_plan_revision.target_tree_id`（以及事件上的 base/target 树、路径 digest、`revision_transition_id` 与 resume-anchor 链）和 ledger lineage。一旦 `manual_plan_revision` 已提交，恢复只读已提交事件字段与不可变 tree object，**不再**重读可变 view。
+
+该协议是显式的 **crash-recoverable prefix recovery**（目标对象 → `manual_plan_revision` → 有序 `graph_resumed` 后缀），**不得**描述为 power-loss-atomic 的事务回滚。合法前缀可单独落盘；重启后只补缺失后缀。缺口、乱序、重复 ordinal 或 payload 漂移 → `manual_plan_revision_prefix_conflict`。字节相同的 `fix_and_proceed` → `manual_plan_revision_noop`，interrupt 保持未解决。
+
+### v5 resume 的 source-gate 绑定
+
+v5 resume 仅在 interrupt 存在真实已提交的 gate evidence epoch 时绑定 `source_gate_attempt_id` + `source_gate_tree_id` 对；该对必须与当前 gate 求值一致才可作为 gate override。Improvement/issue 等无 gate checkpoint 的 interrupt 保持 **pairless**：仍可正常 resume，但**不能**充当 gate override。v4 保持仅 hash 的兼容路径。
+
+## Counterfactual plan-check policy replay（v2）
+
+新 specialty report 的 `schema_version` 仍为 `"2"`，但 `capability_contract_policy.semantics` 为 `counterfactual_plan_check_actions/v2`（拓扑驱动分类）。`counterfactual_plan_check_actions/v1` 与 legacy specialty `schema_version: "1"` **保持可读**，旧文件从不被改写。v1 的历史解释不变：API/E2E 视为 wired，Fuzz/Performance 不能为 `complete`。
+
+每个 **complete** 层行携带恰好三个 scenario，action 顺序固定为 `warn` → `block` → `require_human`：
 
 | scenario 字段 | 说明 |
 |---|---|
@@ -165,9 +205,9 @@ Specialty report v2 的 `capability_contract_policy.semantics` 固定为该字�
 | `shadowed_by_gate_precondition` | 存在失败 check，但更早的 reviewer needs-fix / human / explicit-reject 规则已决定结果 |
 | `shadowed_by_capability_precondition` | 能力前置条件本身是最先决定结果的规则 |
 
-Counterfactual replay 仅在 baseline gate/route 校准通过后运行：冻结 baseline policy 对绑定 raw bytes 的 gate 报告字段（verdict、matched rule、reason、value、normalized details）必须一致；route 由 `plan_review_route` 推导并与 ledger 激活/跳过事件交叉校验。
+Counterfactual replay 仅在 baseline gate/route 校准通过后运行：冻结 baseline policy 对绑定 raw bytes 的 gate 报告字段必须一致；route 由 `plan_review_route` 推导并与 ledger 激活/跳过事件交叉校验。
 
-## 四层 replay 矩阵（SpecialtyReport v2）
+## 四层 replay 矩阵（SpecialtyReport v2，semantics v2）
 
 `SpecialtyReportV2.capability_contract_policy` 始终输出 **恰好四行**，layer 顺序固定为 `api` → `e2e` → `fuzz` → `performance`（与 `LAYER_NAMES` / `CASE_TYPES` 一致）。顶层 `integrity` 闭枚举：
 
@@ -176,16 +216,16 @@ Counterfactual replay 仅在 baseline gate/route 校准通过后运行：冻结 
 | `complete` | `definition_binding` 存在且无任何 `incomplete` 行 |
 | `incomplete` | 缺失/模糊定义绑定，或任一行 `status == incomplete` |
 
-**行级 `status` 闭枚举**：
+**行级 `status` 闭枚举**（由 pinned 拓扑分类驱动，不是硬编码 wired 集合）：
 
-| status | 适用层 | 含义 |
-|---|---|---|
-| `complete` | 已接线且被选中的 API/E2E | 含 applicability、mechanical checks、evidence digests、三 scenario |
-| `not_selected` | 任意 |  pinned params 下 assurance 分支未选中；不 fabricated scenario |
-| `not_wired` | Fuzz/Performance（本增量） | 选中但 graph 未接线；不 fabricated scenario |
-| `incomplete` | 任意 | 带 `reason_code`（如 `root_invocation_unbound`、`gate_evidence_drift`），无借用 artifact |
+| status | 含义 |
+|---|---|
+| `complete` | 选中且 fully wired；含 applicability、mechanical checks、evidence digests、三 scenario |
+| `not_selected` | pinned params 下 assurance 分支未选中；不 fabricated scenario |
+| `not_wired` | 选中且 pinned 拓扑为 legacy-unwired；仅在 pinned 定义完整性成功后可用于 legacy v4 Fuzz/Performance；不 fabricated scenario |
+| `incomplete` | 带 `reason_code`（如 `partial_assurance_wiring`、`root_invocation_unbound`、`gate_evidence_drift`、`profile_snapshot_missing`）；无借用 artifact |
 
-层选择来自 pinned graph 的 params-only `when` 谓词（可含 `run_mode` 与 `test_types` 合取），**不是** `test_types` 单独推断。本增量已接线集合为 `{api, e2e}`。
+层选择来自 pinned assurance graph 的 params-only `when` 谓词（可含 `run_mode` 与 `test_types` 合取），**不是** `test_types` 单独推断。Fully activated 的 v5 拓扑上，被选中的 Fuzz/Performance 只能是 `complete` 或 `incomplete`，**绝不是** `not_wired`。部分接线（任一 activation marker 出现但不完整）→ `incomplete` / `partial_assurance_wiring`，永不降级为 `not_wired`。当前源文件从不改写历史分类；迁移不补造缺失的 ingest/contract/profile 快照或 gate 证据。
 
 ## Specialty report v1（仅展示）
 
@@ -193,8 +233,7 @@ Counterfactual replay 仅在 baseline gate/route 校准通过后运行：冻结 
 
 - **不能**通过 `SpecialtyReportV2` 校验（无四层矩阵、无 definition binding）；
 - Markdown 渲染标记为 `legacy_api_only`，出现在 Policy Replay Matrix，**不出现在** Layer Assurance Matrix 的四层行中；
-- 不得被静默升级为 v2 replay 证据；需要 v4 invocation 绑定字段与完整 replay 链才能产出 v2。
-
+- 不得被静默升级为 v2 replay 证据；需要 v4+ invocation 绑定字段与完整 replay 链才能产出 `schema_version: "2"` 报告。
 ## Retro v3 signal analysis 与 Improvement lifecycle
 
 Retro 是**独立入口**（`aa workflow run --entrypoint retro` / `aa retro`），不挂在 full workflow 上。当前 run 只读写 `qa/retro/<retro-id>/`；生产路径不扫描、不迁移、不消费历史 Retro 目录。

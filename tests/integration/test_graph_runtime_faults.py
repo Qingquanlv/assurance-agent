@@ -257,6 +257,7 @@ def test_acceptance_schema_digest_drift_refuses_resume(tmp_path: Path) -> None:
     assert project_invocation(change, invocation_id).terminal is None
 
     runtime, _compiled, _, _scheduler = _build(project, "linear")
+
     def _boom(request):  # noqa: ANN001
         raise RuntimeError(f"schema digest drift: {request.graph_digest}")
 

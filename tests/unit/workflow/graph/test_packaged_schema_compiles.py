@@ -21,7 +21,11 @@ from assurance_agent.workflow.graph.replay_schema import (
     validate_current_assurance_activation,
     validate_wired_profile_topology,
 )
-from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2, load_workflow_v2_with_origin, parse_workflow_v2
+from assurance_agent.workflow.graph.schema_v2 import (
+    load_workflow_v2,
+    load_workflow_v2_with_origin,
+    parse_workflow_v2,
+)
 from assurance_agent.workflow.orchestration.schema import derive_alias
 
 _LAYER_PLAN_NODE = {
