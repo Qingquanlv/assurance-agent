@@ -29,6 +29,7 @@ from assurance_agent.eval.specialty_models import (
     SpecialtyReportV3,
     TraceCollectionFailureReason,
     build_capability_replay_v2,
+    load_specialty_publication_receipt,
     load_specialty_report,
     load_specialty_report_document,
 )
@@ -2381,12 +2382,128 @@ def test_evidence_row_ten_column_contract_for_v3_and_legacy(tmp_path: Path) -> N
     assert legacy_row.startswith(f"{CHANGE_ID}|legacy_unlayered|none|")
 
 
+def _validate_publication(
+    *,
+    report: Path,
+    receipt: Path,
+    change_id: str = CHANGE_ID,
+    mode: str,
+    attempt_id: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    command = [
+        sys.executable,
+        str(_REPORTER),
+        "validate-publication",
+        "--report",
+        str(report),
+        "--publication-receipt",
+        str(receipt),
+        "--change-id",
+        change_id,
+        "--mode",
+        mode,
+    ]
+    if attempt_id is not None:
+        command.extend(["--attempt-id", attempt_id])
+    return subprocess.run(command, capture_output=True, text=True, check=False)
+
+
+def _finalize_helper(
+    *,
+    report: Path,
+    change_id: str,
+    collect_exit: int,
+    attempt_id: str,
+) -> subprocess.CompletedProcess[str]:
+    command = (
+        f"source {shlex.quote(str(_HELPERS))}; "
+        f"finalize_benchmark_specialty_report {shlex.quote(sys.executable)} "
+        f"{shlex.quote(str(_REPORTER))} {shlex.quote(change_id)} "
+        f"{shlex.quote(str(report))} {collect_exit} {shlex.quote(attempt_id)}"
+    )
+    return subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
+
+
+def _reuse_helper(*, report: Path, change_id: str) -> subprocess.CompletedProcess[str]:
+    command = (
+        f"source {shlex.quote(str(_HELPERS))}; "
+        f"reuse_benchmark_specialty_report {shlex.quote(sys.executable)} "
+        f"{shlex.quote(str(_REPORTER))} {shlex.quote(change_id)} {shlex.quote(str(report))}"
+    )
+    return subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
+
+
+def _evidence_row_cli(report: Path, *, change_id: str = CHANGE_ID) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(_REPORTER),
+            "evidence-row",
+            "--change-id",
+            change_id,
+            str(report),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _write_pending_receipt(
+    path: Path,
+    *,
+    attempt_id: str,
+    change_id: str = CHANGE_ID,
+) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "state": "pending",
+                "attempt_id": attempt_id,
+                "change_id": change_id,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _write_committed_receipt(
+    path: Path,
+    *,
+    attempt_id: str,
+    report_bytes: bytes,
+    change_id: str = CHANGE_ID,
+    trace_status: str = "complete",
+    capability_integrity: str = "complete",
+) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "state": "committed",
+                "attempt_id": attempt_id,
+                "change_id": change_id,
+                "report_sha256": hashlib.sha256(report_bytes).hexdigest(),
+                "trace_status": trace_status,
+                "capability_integrity": capability_integrity,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_publication_crash_windows_are_aba_safe(tmp_path: Path) -> None:
     project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
     output = tmp_path / "specialty.json"
     receipt = tmp_path / "specialty.json.receipt.json"
 
-    # Seed a committed publication for attempt A.
     seed = _collect_command(
         project=project,
         trace_path=trace_path,
@@ -2413,74 +2530,222 @@ def test_publication_crash_windows_are_aba_safe(tmp_path: Path) -> None:
     assert crashed.returncode != 0
     assert json.loads(receipt.read_text(encoding="utf-8"))["state"] == "pending"
     assert json.loads(receipt.read_text(encoding="utf-8"))["attempt_id"] == "attempt-B"
+    assert _validate_publication(
+        report=output, receipt=receipt, mode="fresh", attempt_id="attempt-B"
+    ).returncode != 0
 
-    # Fresh validation for attempt-B must fail while pending.
-    fresh = subprocess.run(
-        [
-            sys.executable,
-            str(_REPORTER),
-            "validate-publication",
-            "--report",
-            str(output),
-            "--publication-receipt",
-            str(receipt),
-            "--change-id",
-            CHANGE_ID,
-            "--mode",
-            "fresh",
-            "--attempt-id",
-            "attempt-B",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert fresh.returncode != 0
-
-    # Restore prior committed bytes and prove attempt-B cannot ABA-accept them.
     output.write_bytes(prior_report)
     receipt.write_bytes(prior_receipt)
-    aba = subprocess.run(
-        [
-            sys.executable,
-            str(_REPORTER),
-            "validate-publication",
-            "--report",
-            str(output),
-            "--publication-receipt",
-            str(receipt),
-            "--change-id",
-            CHANGE_ID,
-            "--mode",
-            "fresh",
-            "--attempt-id",
-            "attempt-B",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert aba.returncode != 0
+    assert _validate_publication(
+        report=output, receipt=receipt, mode="fresh", attempt_id="attempt-B"
+    ).returncode != 0
+    assert _validate_publication(report=output, receipt=receipt, mode="reuse").returncode == 0
 
-    reuse = subprocess.run(
-        [
-            sys.executable,
-            str(_REPORTER),
-            "validate-publication",
-            "--report",
-            str(output),
-            "--publication-receipt",
-            str(receipt),
-            "--change-id",
-            CHANGE_ID,
-            "--mode",
-            "reuse",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+
+@pytest.mark.parametrize("window", ["before_pending", "after_pending", "after_report", "after_committed"])
+def test_clarification_11_crash_window_acceptance_matrix(tmp_path: Path, window: str) -> None:
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    output = tmp_path / f"specialty-{window}.json"
+    receipt = Path(str(output) + ".receipt.json")
+
+    seed = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=output,
+        verify_exit="0",
+        attempt_id="attempt-A",
+        receipt=receipt,
     )
-    assert reuse.returncode == 0, reuse.stderr
+    assert seed.returncode == 0, seed.stderr
+    prior_report = output.read_bytes()
+    prior_receipt = receipt.read_bytes()
+
+    crashed = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=output,
+        verify_exit="0",
+        attempt_id="attempt-B",
+        receipt=receipt,
+        env={"AA_SPECIALTY_PUBLICATION_CRASH": window},
+    )
+    assert crashed.returncode != 0
+
+    fresh_b = _validate_publication(
+        report=output, receipt=receipt, mode="fresh", attempt_id="attempt-B"
+    )
+    reuse = _validate_publication(report=output, receipt=receipt, mode="reuse")
+
+    if window == "before_pending":
+        assert output.read_bytes() == prior_report
+        assert receipt.read_bytes() == prior_receipt
+        # Prior committed publication remains valid; cannot validate as the new attempt.
+        assert _validate_publication(report=output, receipt=receipt, mode="reuse").returncode == 0
+        assert _validate_publication(
+            report=output, receipt=receipt, mode="fresh", attempt_id="attempt-A"
+        ).returncode == 0
+        assert fresh_b.returncode != 0
+    elif window in {"after_pending", "after_report"}:
+        assert json.loads(receipt.read_text(encoding="utf-8"))["state"] == "pending"
+        assert json.loads(receipt.read_text(encoding="utf-8"))["attempt_id"] == "attempt-B"
+        # Pending blocks fresh and reuse even when report bytes match a prior publication.
+        assert hashlib.sha256(output.read_bytes()).hexdigest() == hashlib.sha256(prior_report).hexdigest()
+        assert fresh_b.returncode != 0
+        assert reuse.returncode != 0
+        assert _finalize_helper(
+            report=output, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-B"
+        ).stdout.strip().endswith("registered=false")
+        assert _reuse_helper(report=output, change_id=CHANGE_ID).returncode != 0
+    else:
+        # after_committed: durable publication is complete; resume validation succeeds.
+        committed = json.loads(receipt.read_text(encoding="utf-8"))
+        assert committed["state"] == "committed"
+        assert committed["attempt_id"] == "attempt-B"
+        assert fresh_b.returncode == 0, fresh_b.stderr
+        assert reuse.returncode == 0, reuse.stderr
+        finalize = _finalize_helper(
+            report=output, change_id=CHANGE_ID, collect_exit=1, attempt_id="attempt-B"
+        )
+        assert "registered=true" in finalize.stdout
+        assert _reuse_helper(report=output, change_id=CHANGE_ID).returncode == 0
+
+
+@pytest.mark.parametrize(
+    ("mutator", "mode_kwargs"),
+    [
+        ("digest", {"mode": "reuse"}),
+        ("state", {"mode": "reuse"}),
+        ("attempt", {"mode": "fresh", "attempt_id": "attempt-A"}),
+        ("change", {"mode": "reuse"}),
+        ("trace_status", {"mode": "reuse"}),
+        ("capability_integrity", {"mode": "reuse"}),
+    ],
+)
+def test_validate_publication_rejects_binding_mismatches(
+    tmp_path: Path,
+    mutator: str,
+    mode_kwargs: dict[str, str],
+) -> None:
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    output = tmp_path / "specialty-bind.json"
+    receipt = Path(str(output) + ".receipt.json")
+    seed = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=output,
+        verify_exit="0",
+        attempt_id="attempt-A",
+        receipt=receipt,
+    )
+    assert seed.returncode == 0, seed.stderr
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    if mutator == "digest":
+        payload["report_sha256"] = "0" * 64
+    elif mutator == "state":
+        payload = {
+            "schema_version": "1",
+            "state": "pending",
+            "attempt_id": "attempt-A",
+            "change_id": CHANGE_ID,
+        }
+    elif mutator == "attempt":
+        payload["attempt_id"] = "attempt-OTHER"
+    elif mutator == "change":
+        payload["change_id"] = "CH-OTHER"
+    elif mutator == "trace_status":
+        payload["trace_status"] = "incomplete"
+    else:
+        payload["capability_integrity"] = "incomplete"
+    receipt.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    result = _validate_publication(report=output, receipt=receipt, **mode_kwargs)
+    assert result.returncode != 0
+    finalize = _finalize_helper(
+        report=output,
+        change_id=CHANGE_ID,
+        collect_exit=0,
+        attempt_id=str(mode_kwargs.get("attempt_id", "attempt-A")),
+    )
+    assert finalize.stdout.strip().endswith("registered=false")
+
+
+def test_pending_or_substituted_legacy_never_registers(tmp_path: Path) -> None:
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    v3_output = tmp_path / "v3.json"
+    seed = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=v3_output,
+        verify_exit="0",
+        attempt_id="attempt-v3",
+    )
+    assert seed.returncode == 0, seed.stderr
+    committed_receipt = Path(str(v3_output) + ".receipt.json").read_bytes()
+
+    for legacy in (_legacy_v1_report(change_id=CHANGE_ID), _synthetic_v2_report(change_id=CHANGE_ID)):
+        legacy_path = tmp_path / f"legacy-{legacy.schema_version}.json"
+        legacy_bytes = (
+            json.dumps(legacy.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        legacy_path.write_bytes(legacy_bytes)
+        receipt = Path(str(legacy_path) + ".receipt.json")
+
+        _write_pending_receipt(receipt, attempt_id="attempt-pending")
+        assert _validate_publication(
+            report=legacy_path, receipt=receipt, mode="fresh", attempt_id="attempt-pending"
+        ).returncode != 0
+        assert _finalize_helper(
+            report=legacy_path, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-pending"
+        ).stdout.strip().endswith("registered=false")
+        assert _reuse_helper(report=legacy_path, change_id=CHANGE_ID).returncode != 0
+
+        # Committed V3 receipt + substituted V1/V2 must not downgrade around digest validation.
+        receipt.write_bytes(committed_receipt)
+        assert _validate_publication(report=legacy_path, receipt=receipt, mode="reuse").returncode != 0
+        assert _finalize_helper(
+            report=legacy_path, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-v3"
+        ).stdout.strip().endswith("registered=false")
+
+
+def test_v3_requires_receipt_legacy_receiptless_only_when_absent(tmp_path: Path) -> None:
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    v3_path = tmp_path / "needs-receipt.json"
+    seed = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=v3_path,
+        verify_exit="0",
+        attempt_id="attempt-receipt",
+    )
+    assert seed.returncode == 0, seed.stderr
+    receipt = Path(str(v3_path) + ".receipt.json")
+    receipt.unlink()
+    assert _validate_publication(
+        report=v3_path, receipt=receipt, mode="reuse"
+    ).returncode != 0
+    assert _finalize_helper(
+        report=v3_path, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-receipt"
+    ).stdout.strip().endswith("registered=false")
+
+    legacy_path = tmp_path / "legacy-receiptless.json"
+    legacy_path.write_text(
+        json.dumps(_synthetic_v2_report(change_id=CHANGE_ID).model_dump(mode="json"), indent=2) + "\n",
+        encoding="utf-8",
+    )
+    missing_sibling = Path(str(legacy_path) + ".receipt.json")
+    assert not missing_sibling.exists()
+    assert _validate_publication(
+        report=legacy_path, receipt=missing_sibling, mode="reuse"
+    ).returncode == 0
+    _write_pending_receipt(missing_sibling, attempt_id="attempt-x")
+    assert _validate_publication(
+        report=legacy_path, receipt=missing_sibling, mode="reuse"
+    ).returncode != 0
 
 
 def test_empty_attempt_or_same_paths_fail_before_mutation(tmp_path: Path) -> None:
@@ -2530,3 +2795,200 @@ def test_modeled_incomplete_publishes_committed_receipt_before_exit_1(tmp_path: 
     receipt = json.loads((tmp_path / "specialty-incomplete.json.receipt.json").read_text(encoding="utf-8"))
     assert receipt["state"] == "committed"
     assert receipt["attempt_id"] == "attempt-incomplete"
+
+
+def test_publication_receipt_loader_fail_closed() -> None:
+    with pytest.raises(ValidationError):
+        load_specialty_publication_receipt(None)
+    with pytest.raises(ValidationError):
+        load_specialty_publication_receipt({"schema_version": "1", "state": "unknown", "attempt_id": "a", "change_id": "c"})
+    with pytest.raises(ValidationError):
+        load_specialty_publication_receipt(
+            {
+                "schema_version": "9",
+                "state": "committed",
+                "attempt_id": "a",
+                "change_id": "c",
+                "report_sha256": "0" * 64,
+                "trace_status": "complete",
+                "capability_integrity": "complete",
+            }
+        )
+    with pytest.raises(ValidationError):
+        load_specialty_publication_receipt(
+            {
+                "schema_version": "1",
+                "state": "pending",
+                "attempt_id": "a",
+                "change_id": "c",
+                "extra": True,
+            }
+        )
+    pending = load_specialty_publication_receipt(
+        {"schema_version": "1", "state": "pending", "attempt_id": "a", "change_id": "c"}
+    )
+    assert pending.state == "pending"
+
+
+def test_evidence_row_exit_covers_capability_trace_and_v2_rules(tmp_path: Path) -> None:
+    reporter = _load_reporter_module()
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    _corrupt_api_mechanical_outputs(_change_dir(project))
+    cap_incomplete = tmp_path / "cap-incomplete.json"
+    collected = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=cap_incomplete,
+        verify_exit="0",
+        attempt_id="attempt-cap",
+    )
+    assert collected.returncode == 1
+    report = load_specialty_report(json.loads(cap_incomplete.read_text(encoding="utf-8")))
+    assert isinstance(report, SpecialtyReportV3)
+    assert isinstance(report.traceability_evidence, CompleteTraceabilityEvidenceV3)
+    assert report.capability_contract_policy.integrity == "incomplete"
+    assert reporter.report_collection_exit(report) == 1
+    row = _evidence_row_cli(cap_incomplete)
+    assert row.returncode == 1
+    parts = row.stdout.strip().split("|")
+    assert parts[:3] == [CHANGE_ID, "complete", "none"]
+
+    v2_incomplete_path = tmp_path / "v2-incomplete.json"
+    v2_incomplete = _synthetic_v2_report(change_id=CHANGE_ID)
+    assert v2_incomplete.capability_contract_policy.integrity == "incomplete"
+    v2_incomplete_path.write_text(
+        json.dumps(v2_incomplete.model_dump(mode="json"), indent=2) + "\n", encoding="utf-8"
+    )
+    assert reporter.report_collection_exit(v2_incomplete) == 1
+    v2_incomplete_row = _evidence_row_cli(v2_incomplete_path)
+    assert v2_incomplete_row.returncode == 1
+    assert v2_incomplete_row.stdout.startswith(f"{CHANGE_ID}|legacy_unlayered|none|")
+
+    complete_rows = [
+        row
+        for row in v2_incomplete.capability_contract_policy.model_dump(mode="json")["rows"]
+        if row["layer"] != "performance"
+    ]
+    complete_rows.append(
+        {"layer": "performance", "case_type": "Performance", "status": "not_selected", "reason_code": None}
+    )
+    v2_complete = SpecialtyReportV2(
+        change_id=CHANGE_ID,
+        capability_contract_policy=build_capability_replay_v2(
+            definition_binding=v2_incomplete.capability_contract_policy.definition_binding.model_dump(
+                mode="json"
+            ),
+            rows=complete_rows,
+        ),
+        traceability_evidence=v2_incomplete.traceability_evidence,
+    )
+    assert v2_complete.capability_contract_policy.integrity == "complete"
+    v2_complete_path = tmp_path / "v2-complete.json"
+    v2_complete_path.write_text(
+        json.dumps(v2_complete.model_dump(mode="json"), indent=2) + "\n", encoding="utf-8"
+    )
+    assert reporter.report_collection_exit(v2_complete) == 0
+    assert _evidence_row_cli(v2_complete_path).returncode == 0
+
+    v1_path = tmp_path / "v1.json"
+    v1_path.write_text(
+        json.dumps(_legacy_v1_report(change_id=CHANGE_ID).model_dump(mode="json"), indent=2) + "\n",
+        encoding="utf-8",
+    )
+    assert _evidence_row_cli(v1_path).returncode == 0
+
+
+def test_finalize_retention_pending_attempt_digest_and_incomplete(tmp_path: Path) -> None:
+    project, trace_path, verify_path = _install_authority_valid_complete_item(tmp_path)
+    output = tmp_path / "retention.json"
+    seed = _collect_command(
+        project=project,
+        trace_path=trace_path,
+        verify_path=verify_path,
+        output=output,
+        verify_exit="0",
+        attempt_id="attempt-A",
+    )
+    assert seed.returncode == 0, seed.stderr
+    receipt = Path(str(output) + ".receipt.json")
+    report_bytes = output.read_bytes()
+
+    _write_pending_receipt(receipt, attempt_id="attempt-B")
+    assert _finalize_helper(
+        report=output, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-B"
+    ).stdout.strip().endswith("registered=false")
+    assert _reuse_helper(report=output, change_id=CHANGE_ID).returncode != 0
+
+    _write_committed_receipt(receipt, attempt_id="attempt-A", report_bytes=report_bytes)
+    assert _finalize_helper(
+        report=output, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-B"
+    ).stdout.strip().endswith("registered=false")
+
+    _write_committed_receipt(
+        receipt,
+        attempt_id="attempt-A",
+        report_bytes=report_bytes,
+    )
+    output.write_bytes(report_bytes + b"\n")
+    assert _finalize_helper(
+        report=output, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-A"
+    ).stdout.strip().endswith("registered=false")
+
+    # Restore matching committed publication, then prove incomplete+matching still registers.
+    output.write_bytes(report_bytes)
+    _write_committed_receipt(receipt, attempt_id="attempt-A", report_bytes=report_bytes)
+    incomplete_project, incomplete_trace, incomplete_verify = _install_strict_frozen_item(
+        tmp_path / "incomplete-item"
+    )
+    incomplete_output = tmp_path / "incomplete-retention.json"
+    incomplete_collect = _collect_command(
+        project=incomplete_project,
+        trace_path=incomplete_trace,
+        verify_path=incomplete_verify,
+        output=incomplete_output,
+        root_invocation_id="missing-root",
+        attempt_id="attempt-incomplete",
+    )
+    assert incomplete_collect.returncode != 0
+    finalize_incomplete = _finalize_helper(
+        report=incomplete_output,
+        change_id=CHANGE_ID,
+        collect_exit=1,
+        attempt_id="attempt-incomplete",
+    )
+    assert "registered=true" in finalize_incomplete.stdout
+    assert _reuse_helper(report=incomplete_output, change_id=CHANGE_ID).returncode == 0
+
+
+def test_render_zero_row_layers_and_once_per_phase_global_gaps(tmp_path: Path) -> None:
+    reporter = _load_reporter_module()
+    project, execution_trace_path, verify_path = _install_authority_valid_complete_item(
+        tmp_path,
+        include_layers=frozenset({"api"}),
+    )
+    report = reporter.collect_report(
+        reporter.TraceCollectionInputs(
+            project_root=project,
+            change_id=CHANGE_ID,
+            root_invocation_id=ROOT_INVOCATION_ID,
+            workflow_entrypoint=_ENTRYPOINT,
+            trace_path=execution_trace_path,
+            verify_path=verify_path,
+            trace_exit=0,
+            verify_exit=0,
+        )
+    )
+    assert isinstance(report.traceability_evidence, CompleteTraceabilityEvidenceV3)
+    rendered = render_specialty_sections([report])
+    facts = rendered.split("### Trace Layer Facts", 1)[1].split("###", 1)[0]
+    fact_rows = [line for line in facts.splitlines() if line.startswith("| `")]
+    assert len(fact_rows) == 8  # two phases × four layers, including zero-row layers
+    assert any("| e2e |" in line and "| 0 |" in line for line in fact_rows)
+    assert any("| fuzz |" in line and "| 0 |" in line for line in fact_rows)
+    assert any("| performance |" in line and "| 0 |" in line for line in fact_rows)
+    gap_section = rendered.split("### Global Gaps", 1)[1].split("###", 1)[0]
+    gap_lines = [line for line in gap_section.splitlines() if line.startswith("- `")]
+    assert len(gap_lines) == 2
+    assert sum("/execution:" in line for line in gap_lines) == 1
+    assert sum("/reconciled:" in line for line in gap_lines) == 1

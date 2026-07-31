@@ -876,12 +876,13 @@ reuse_specialty_report_stage() {
       SPECIALTY_REPORT_FAILED="true"
       ;;
     complete|legacy_unlayered)
+      # Trace integrity incomplete or non-pass verify marks the specialty stage failed.
       if [ "$integrity" = "incomplete" ] || [ "$verdict" != "pass" ]; then
-        :
+        SPECIALTY_REPORT_FAILED="true"
       fi
       ;;
   esac
-  # Capability replay incomplete is already encoded in report_collection_exit / evidence-row exit.
+  # Capability replay incomplete is encoded in report_collection_exit / evidence-row exit.
   if ! "$AA_PYTHON_BIN" "$SPECIALTY_REPORT_PY" evidence-row \
     --change-id "$change_id" "$report_file" >/dev/null 2>&1; then
     SPECIALTY_REPORT_FAILED="true"

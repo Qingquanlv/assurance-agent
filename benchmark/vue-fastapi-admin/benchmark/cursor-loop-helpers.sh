@@ -295,15 +295,37 @@ parse_evidence_row_fields() {
   fi
   case "$collection_status" in
     incomplete)
-      ;;
-    raw)
-      if [ "$integrity" = "unknown" ] || [ "$gap_count" = "unknown" ] \
-        || [ "$verdict" = "unknown" ] || [ "$blocking" = "unknown" ] \
-        || [ "$insufficient" = "unknown" ]; then
-        return 2
+      case "$reason_code" in
+        execution_projection_missing|execution_projection_invalid|\
+        reconciled_projection_missing|reconciled_projection_invalid|\
+        reconciled_projection_stale|projection_identity_mismatch|\
+        projection_phase_pair_mismatch|quality_gate_missing|\
+        quality_gate_invalid|quality_gate_binding_mismatch|\
+        sufficiency_binding_mismatch|verify_result_missing|\
+        verify_result_invalid|verify_binding_mismatch|layer_summary_invalid)
+          ;;
+        *)
+          return 1
+          ;;
+      esac
+      # Incomplete unavailable fields stay literal unknown — never numeric zeros.
+      if [ "$integrity" != "unknown" ] || [ "$gap_count" != "unknown" ] \
+        || [ "$verdict" != "unknown" ] || [ "$blocking" != "unknown" ] \
+        || [ "$insufficient" != "unknown" ]; then
+        return 1
       fi
       ;;
-    complete|legacy_unlayered)
+    raw|complete|legacy_unlayered)
+      if [ "$reason_code" != "none" ]; then
+        return 1
+      fi
+      if [ "$collection_status" = "raw" ]; then
+        if [ "$integrity" = "unknown" ] || [ "$gap_count" = "unknown" ] \
+          || [ "$verdict" = "unknown" ] || [ "$blocking" = "unknown" ] \
+          || [ "$insufficient" = "unknown" ]; then
+          return 2
+        fi
+      fi
       ;;
     *)
       return 1

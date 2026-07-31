@@ -737,3 +737,202 @@ def test_parse_evidence_row_rejects_unknown_collection_status(tmp_path: Path) ->
         "parse_evidence_row_fields 'CH-1|incomplete|execution_projection_missing|0|unknown|unknown|0|unknown|unknown|unknown'",
     )
     assert good.returncode == 0, good.stderr
+
+
+def test_parse_evidence_row_rejects_unknown_reason_and_zero_substituted_incomplete(
+    tmp_path: Path,
+) -> None:
+    from typing import get_args
+
+    from assurance_agent.eval.specialty_models import TraceCollectionFailureReason
+
+    for reason in get_args(TraceCollectionFailureReason):
+        ok = _run_helper(
+            tmp_path,
+            "parse_evidence_row_fields "
+            f"'CH-1|incomplete|{reason}|0|unknown|unknown|0|unknown|unknown|unknown'",
+        )
+        assert ok.returncode == 0, reason
+
+    unknown_reason = _run_helper(
+        tmp_path,
+        "parse_evidence_row_fields "
+        "'CH-1|incomplete|not_a_closed_reason|0|unknown|unknown|0|unknown|unknown|unknown'",
+    )
+    assert unknown_reason.returncode != 0
+
+    zero_substituted = _run_helper(
+        tmp_path,
+        "parse_evidence_row_fields "
+        "'CH-1|incomplete|execution_projection_missing|0|0|0|0|0|0|0'",
+    )
+    assert zero_substituted.returncode != 0
+
+    complete_with_reason = _run_helper(
+        tmp_path,
+        "parse_evidence_row_fields "
+        "'CH-1|complete|verify_result_missing|0|complete|0|0|pass|0|0'",
+    )
+    assert complete_with_reason.returncode != 0
+
+    raw_with_reason = _run_helper(
+        tmp_path,
+        "parse_evidence_row_fields 'CH-1|raw|bogus|0|complete|0|0|pass|0|0'",
+    )
+    assert raw_with_reason.returncode != 0
+
+
+def test_finalize_and_reuse_register_nothing_for_pending_or_mismatched_receipt(
+    tmp_path: Path,
+) -> None:
+    import hashlib
+    import json
+
+    from assurance_agent.eval.specialty_models import SpecialtyReportV3
+
+    reporter = (
+        _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "benchmark_specialty_report.py"
+    )
+    # Minimal committed-shaped V3 incomplete report bytes for retention gates.
+    report_payload = {
+        "schema_version": "3",
+        "change_id": "CH-1",
+        "capability_contract_policy": {
+            "semantics": "counterfactual_plan_check_actions/v2",
+            "integrity": "incomplete",
+            "definition_binding": None,
+            "definition_failure": "root_invocation_unbound",
+            "rows": [
+                {
+                    "layer": layer,
+                    "case_type": case_type,
+                    "status": "incomplete",
+                    "reason_code": "root_invocation_unbound",
+                }
+                for layer, case_type in (
+                    ("api", "API"),
+                    ("e2e", "E2E"),
+                    ("fuzz", "Fuzz"),
+                    ("performance", "Performance"),
+                )
+            ],
+        },
+        "traceability_evidence": {
+            "status": "incomplete",
+            "reason_code": "execution_projection_missing",
+            "detail": "",
+            "command_status": {"trace_exit": 1, "verify_exit": 2},
+        },
+    }
+    SpecialtyReportV3.model_validate(report_payload)
+    report = tmp_path / "CH-1.specialty-report.json"
+    report_bytes = (json.dumps(report_payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    report.write_bytes(report_bytes)
+    receipt = Path(str(report) + ".receipt.json")
+
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "state": "pending",
+                "attempt_id": "attempt-1",
+                "change_id": "CH-1",
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    pending = _run_helper(
+        tmp_path,
+        f"finalize_benchmark_specialty_report {shlex.quote(sys.executable)} "
+        f"{shlex.quote(str(reporter))} CH-1 {shlex.quote(str(report))} 1 attempt-1",
+    )
+    assert pending.stdout.strip().endswith("registered=false")
+    reuse_pending = _run_helper(
+        tmp_path,
+        f"reuse_benchmark_specialty_report {shlex.quote(sys.executable)} "
+        f"{shlex.quote(str(reporter))} CH-1 {shlex.quote(str(report))}",
+    )
+    assert reuse_pending.returncode != 0
+
+    digest = hashlib.sha256(report_bytes).hexdigest()
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "state": "committed",
+                "attempt_id": "attempt-old",
+                "change_id": "CH-1",
+                "report_sha256": digest,
+                "trace_status": "incomplete",
+                "capability_integrity": "incomplete",
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    attempt_mismatch = _run_helper(
+        tmp_path,
+        f"finalize_benchmark_specialty_report {shlex.quote(sys.executable)} "
+        f"{shlex.quote(str(reporter))} CH-1 {shlex.quote(str(report))} 1 attempt-new",
+    )
+    assert attempt_mismatch.stdout.strip().endswith("registered=false")
+
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "state": "committed",
+                "attempt_id": "attempt-1",
+                "change_id": "CH-1",
+                "report_sha256": "0" * 64,
+                "trace_status": "incomplete",
+                "capability_integrity": "incomplete",
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    digest_mismatch = _run_helper(
+        tmp_path,
+        f"finalize_benchmark_specialty_report {shlex.quote(sys.executable)} "
+        f"{shlex.quote(str(reporter))} CH-1 {shlex.quote(str(report))} 1 attempt-1",
+    )
+    assert digest_mismatch.stdout.strip().endswith("registered=false")
+
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "state": "committed",
+                "attempt_id": "attempt-1",
+                "change_id": "CH-1",
+                "report_sha256": digest,
+                "trace_status": "incomplete",
+                "capability_integrity": "incomplete",
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    matching = _run_helper(
+        tmp_path,
+        f"finalize_benchmark_specialty_report {shlex.quote(sys.executable)} "
+        f"{shlex.quote(str(reporter))} CH-1 {shlex.quote(str(report))} 1 attempt-1",
+    )
+    assert "registered=true" in matching.stdout
+    reuse_ok = _run_helper(
+        tmp_path,
+        f"reuse_benchmark_specialty_report {shlex.quote(sys.executable)} "
+        f"{shlex.quote(str(reporter))} CH-1 {shlex.quote(str(report))}",
+    )
+    assert reuse_ok.returncode == 0, reuse_ok.stderr
+    assert reuse_ok.stdout.startswith("CH-1|incomplete|execution_projection_missing|")

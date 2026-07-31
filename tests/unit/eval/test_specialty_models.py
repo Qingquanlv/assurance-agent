@@ -37,6 +37,7 @@ from assurance_agent.eval.specialty_models import (
     TraceabilityEvidenceV3,
     VerifyDiagnostics,
     build_capability_replay_v2,
+    load_specialty_publication_receipt,
     load_specialty_report,
     load_specialty_report_document,
 )
@@ -1054,3 +1055,40 @@ def test_render_mixed_report_states_four_layer_matrices() -> None:
     assert all("CH-V3-1" in line or "CH-V3-2" in line for line in fact_data)
     assert "Global Gaps" in rendered
     assert "Incomplete Collection" in rendered
+    # Two complete V3 reports × one global-gap line per phase (not per layer).
+    gap_lines = [
+        line
+        for line in rendered.splitlines()
+        if line.startswith("- `") and ("/execution:" in line or "/reconciled:" in line)
+    ]
+    assert len(gap_lines) == 4
+    assert sum("/execution:" in line for line in gap_lines) == 2
+    assert sum("/reconciled:" in line for line in gap_lines) == 2
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,
+        {"schema_version": "1", "state": "weird", "attempt_id": "a", "change_id": "c"},
+        {
+            "schema_version": "1",
+            "state": "pending",
+            "attempt_id": "a",
+            "change_id": "c",
+            "extra_field": 1,
+        },
+        {
+            "schema_version": "2",
+            "state": "committed",
+            "attempt_id": "a",
+            "change_id": "c",
+            "report_sha256": "0" * 64,
+            "trace_status": "complete",
+            "capability_integrity": "complete",
+        },
+    ],
+)
+def test_publication_receipt_document_fail_closed(raw: object) -> None:
+    with pytest.raises(ValidationError):
+        load_specialty_publication_receipt(raw)
