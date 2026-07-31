@@ -2,8 +2,8 @@
 
 TraceProjection remains fact-only. This module classifies current-batch authority
 and emits at most one failure gap and at most one issue-authority gap. Completed
-project/history membership is deferred to later tasks; ``fold_trace`` does not
-call this module until Task 12.
+current-batch occurrence membership and project replay live here; historical
+cross-ledger joins and ``fold_trace`` wiring remain deferred to later tasks.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from assurance_agent.artifacts.models.inspect import FailureAnalysis
 from assurance_agent.artifacts.models.issue_events import (
     ChangeIssueEvent,
     IssueAnalysisFailedEvent,
+    ProblemEvent,
     ProjectSyncPendingEvent,
 )
 from assurance_agent.artifacts.models.issues import (
@@ -28,9 +29,12 @@ from assurance_agent.artifacts.models.issues import (
     IssueCandidateDocument,
     IssueEvidenceManifest,
     IssueEvidenceManifestEntry,
+    IssueOccurrence,
     IssueReconcileStatusV1,
     IssueReconcileStatusV2,
     ObservationDocument,
+    Problem,
+    ProblemProjection,
     load_issue_reconcile_status_document,
 )
 from assurance_agent.artifacts.models.trace import TraceFailure, TraceGapV2, TraceSource
@@ -41,13 +45,22 @@ from assurance_agent.evidence.digests import (
     normalize_evidence_entry_path,
     read_evidence_entry_v1,
 )
-from assurance_agent.evidence.issue_identity import candidate_document_digest
+from assurance_agent.evidence.issue_identity import (
+    candidate_document_digest,
+    occurrence_id,
+    per_candidate_digest,
+    problem_fingerprint,
+    problem_id,
+)
 from assurance_agent.evidence.issue_replay import (
     IssueLedgerIntegrityError,
     IssueLedgerMissingError,
+    ProjectionError,
     dump_projection,
     project_change_issues,
+    project_problems,
     read_change_issue_events_from_bytes,
+    read_problem_events_from_bytes,
 )
 
 AuthoritySource = Literal[
@@ -142,6 +155,22 @@ class ValidatedAuthorityPrefix:
     change_events: tuple[ChangeIssueEvent, ...]
     replayed_snapshot: ChangeIssueSnapshot
     reconcile_status: IssueReconcileStatusV2
+
+
+@dataclass(frozen=True, slots=True)
+class ExpectedOccurrence:
+    occurrence_id: str
+    problem_id: str
+    observation_ids: tuple[str, ...]
+    per_candidate_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedCompletedAuthority:
+    prefix: ValidatedAuthorityPrefix
+    problem_events: tuple[ProblemEvent, ...]
+    replayed_problems: ProblemProjection
+    expected_occurrence_ids: frozenset[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -792,7 +821,7 @@ def validate_issue_authority_prefix(
             validated=None,
         )
 
-    # Completed branch (project membership deferred to Task 10).
+    # Completed branch (exact occurrence/project membership via validate_completed_authority).
     try:
         _require_persisted_snapshot(
             change_dir,
@@ -837,4 +866,234 @@ def validate_issue_authority_prefix(
             replayed_snapshot=replayed,
             reconcile_status=status,
         ),
+    )
+
+
+_MERGE_INTO_PREFIX = "merged_into:"
+_EMPTY_PROJECT = ProblemProjection(
+    schema_version="1.0",
+    problems=[],
+    generated_at="1970-01-01T00:00:00Z",
+)
+
+
+def expected_occurrences(
+    candidates: IssueCandidateDocument,
+) -> dict[str, ExpectedOccurrence]:
+    result: dict[str, ExpectedOccurrence] = {}
+    for candidate in candidates.candidates:
+        digest = per_candidate_digest(candidate)
+        expected = ExpectedOccurrence(
+            occurrence_id=occurrence_id(candidates.change_id, candidates.batch_id, digest),
+            problem_id=problem_id(
+                problem_fingerprint(
+                    affected_surface=candidate.affected_surface,
+                    fingerprint_inputs=candidate.fingerprint_inputs,
+                )
+            ),
+            observation_ids=tuple(candidate.observation_ids),
+            per_candidate_digest=digest,
+        )
+        if expected.occurrence_id in result:
+            raise AuthorityValidationError(
+                SNAPSHOT_SOURCE,
+                "occurrence_set_mismatch",
+            )
+        result[expected.occurrence_id] = expected
+    return result
+
+
+def _current_batch_occurrences(
+    snapshot: ChangeIssueSnapshot,
+    change_id: str,
+    batch_id: str,
+) -> list[IssueOccurrence]:
+    current = [occ for occ in snapshot.occurrences if occ.change_id == change_id and occ.batch_id == batch_id]
+    seen: set[str] = set()
+    for occ in current:
+        if occ.occurrence_id in seen:
+            raise AuthorityValidationError(SNAPSHOT_SOURCE, "occurrence_set_mismatch")
+        seen.add(occ.occurrence_id)
+    return current
+
+
+def _assert_current_occurrence_set(
+    prefix: ValidatedAuthorityPrefix,
+    change_id: str,
+    batch_id: str,
+) -> dict[str, ExpectedOccurrence]:
+    candidates = prefix.candidates
+    snapshot = prefix.replayed_snapshot
+    status = prefix.reconcile_status
+    candidate_count = len(candidates.candidates)
+
+    analysis = snapshot.analysis_status
+    if analysis is None:
+        raise AuthorityValidationError(SNAPSHOT_SOURCE, "missing")
+    if analysis.candidate_count != candidate_count:
+        raise AuthorityValidationError(SNAPSHOT_SOURCE, "candidate_count_mismatch")
+    if status.occurrence_count != candidate_count:
+        raise AuthorityValidationError(RECONCILE_SOURCE, "occurrence_count_mismatch")
+
+    expected = expected_occurrences(candidates)
+    current = _current_batch_occurrences(snapshot, change_id, batch_id)
+    actual_ids = {occ.occurrence_id for occ in current}
+    if actual_ids != set(expected):
+        raise AuthorityValidationError(SNAPSHOT_SOURCE, "occurrence_set_mismatch")
+
+    observations_by_id = {
+        obs.observation_id: obs
+        for obs in snapshot.observations
+        if obs.change_id == change_id and obs.batch_id == batch_id
+    }
+    for occ in current:
+        exp = expected[occ.occurrence_id]
+        if (
+            occ.change_id != change_id
+            or occ.batch_id != batch_id
+            or tuple(occ.observation_ids) != exp.observation_ids
+            or occ.problem_id != exp.problem_id
+            or occ.analysis.evidence_bundle_digest != prefix.manifest_digest
+            or occ.analysis.candidate_digest != exp.per_candidate_digest
+        ):
+            raise AuthorityValidationError(SNAPSHOT_SOURCE, "occurrence_identity_mismatch")
+        for obs_id in occ.observation_ids:
+            obs = observations_by_id.get(obs_id)
+            if obs is None:
+                raise AuthorityValidationError(SNAPSHOT_SOURCE, "observation_reference_invalid")
+            if obs.change_id != change_id or obs.batch_id != batch_id:
+                raise AuthorityValidationError(SNAPSHOT_SOURCE, "observation_reference_invalid")
+    return expected
+
+
+def _validate_project_ledger(project_root: Path) -> tuple[ProblemEvent, ...]:
+    path = project_root / PROJECT_LEDGER_SOURCE
+    if not path.is_file():
+        raise AuthorityValidationError(PROJECT_LEDGER_SOURCE, "ledger_missing")
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise AuthorityValidationError(PROJECT_LEDGER_SOURCE, "ledger_malformed") from exc
+    try:
+        return read_problem_events_from_bytes(data)
+    except IssueLedgerMissingError as exc:
+        raise AuthorityValidationError(PROJECT_LEDGER_SOURCE, "ledger_missing") from exc
+    except IssueLedgerIntegrityError as exc:
+        message = str(exc).lower()
+        if "event_id" in message or "idempotency" in message or "mismatch" in message:
+            raise AuthorityValidationError(PROJECT_LEDGER_SOURCE, "event_identity_mismatch") from exc
+        raise AuthorityValidationError(PROJECT_LEDGER_SOURCE, "ledger_malformed") from exc
+    except (ValidationError, ValueError, UnicodeDecodeError) as exc:
+        raise AuthorityValidationError(PROJECT_LEDGER_SOURCE, "ledger_malformed") from exc
+
+
+def _load_persisted_problems(project_root: Path) -> ProblemProjection:
+    path = project_root / PROJECT_PROBLEMS_SOURCE
+    if not path.is_file():
+        raise AuthorityValidationError(PROJECT_PROBLEMS_SOURCE, "missing")
+    try:
+        return ProblemProjection.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValidationError, ValueError) as exc:
+        raise AuthorityValidationError(PROJECT_PROBLEMS_SOURCE, "malformed") from exc
+
+
+def _resolve_alias_chain(
+    source_problem_id: str,
+    problems_by_id: Mapping[str, Problem],
+) -> str:
+    visited: set[str] = set()
+    current = source_problem_id
+    while True:
+        if current in visited:
+            raise AuthorityValidationError(PROJECT_PROBLEMS_SOURCE, "problem_occurrence_mismatch")
+        visited.add(current)
+        problem = problems_by_id.get(current)
+        if problem is None:
+            raise AuthorityValidationError(PROJECT_PROBLEMS_SOURCE, "problem_occurrence_mismatch")
+        resolution = problem.resolution
+        if resolution is not None and resolution.disposition.startswith(_MERGE_INTO_PREFIX):
+            target = resolution.disposition[len(_MERGE_INTO_PREFIX) :]
+            if not target:
+                raise AuthorityValidationError(PROJECT_PROBLEMS_SOURCE, "problem_occurrence_mismatch")
+            current = target
+            continue
+        return current
+
+
+def _assert_current_project_membership(
+    expected: dict[str, ExpectedOccurrence],
+    snapshot: ChangeIssueSnapshot,
+    problems: ProblemProjection,
+) -> None:
+    problems_by_id = {problem.problem_id: problem for problem in problems.problems}
+    occurrences_by_id = {occ.occurrence_id: occ for occ in snapshot.occurrences}
+    for occ_id, exp in expected.items():
+        occ = occurrences_by_id.get(occ_id)
+        if occ is None:
+            raise AuthorityValidationError(SNAPSHOT_SOURCE, "occurrence_set_mismatch")
+        source = problems_by_id.get(occ.problem_id)
+        if source is None:
+            raise AuthorityValidationError(PROJECT_PROBLEMS_SOURCE, "problem_occurrence_mismatch")
+        membership_hits = sum(1 for item in source.occurrences if item == occ_id)
+        if membership_hits != 1:
+            raise AuthorityValidationError(PROJECT_PROBLEMS_SOURCE, "problem_occurrence_mismatch")
+        for other in problems.problems:
+            if other.problem_id == source.problem_id:
+                continue
+            if occ_id in other.occurrences:
+                raise AuthorityValidationError(PROJECT_PROBLEMS_SOURCE, "problem_occurrence_mismatch")
+        if occ.problem_id != exp.problem_id:
+            raise AuthorityValidationError(PROJECT_PROBLEMS_SOURCE, "problem_occurrence_mismatch")
+        _resolve_alias_chain(occ.problem_id, problems_by_id)
+
+
+def validate_completed_authority(
+    prefix: ValidatedAuthorityPrefix,
+    project_root: Path,
+    change_id: str,
+    batch_id: str,
+) -> ValidatedCompletedAuthority:
+    """Prove current candidate→occurrence set and project membership for a completed prefix."""
+    expected = _assert_current_occurrence_set(prefix, change_id, batch_id)
+    history_occurrence_count = len(prefix.replayed_snapshot.occurrences)
+
+    events_path = project_root / PROJECT_LEDGER_SOURCE
+    problems_path = project_root / PROJECT_PROBLEMS_SOURCE
+    events_missing = not events_path.is_file()
+    problems_missing = not problems_path.is_file()
+
+    if events_missing and problems_missing and history_occurrence_count == 0:
+        return ValidatedCompletedAuthority(
+            prefix=prefix,
+            problem_events=(),
+            replayed_problems=_EMPTY_PROJECT,
+            expected_occurrence_ids=frozenset(expected),
+        )
+
+    if events_missing:
+        raise AuthorityValidationError(PROJECT_LEDGER_SOURCE, "ledger_missing")
+    if problems_missing:
+        raise AuthorityValidationError(PROJECT_PROBLEMS_SOURCE, "missing")
+
+    try:
+        problem_events = _validate_project_ledger(project_root)
+        try:
+            replayed_problems = project_problems(problem_events)
+        except ProjectionError as exc:
+            message = str(exc).lower()
+            if "version" in message:
+                raise AuthorityValidationError(PROJECT_LEDGER_SOURCE, "event_identity_mismatch") from exc
+            raise AuthorityValidationError(PROJECT_LEDGER_SOURCE, "ledger_malformed") from exc
+        persisted = _load_persisted_problems(project_root)
+        if dump_projection(persisted) != dump_projection(replayed_problems):
+            raise AuthorityValidationError(PROJECT_PROBLEMS_SOURCE, "projection_replay_mismatch")
+        _assert_current_project_membership(expected, prefix.replayed_snapshot, replayed_problems)
+    except AuthorityValidationError:
+        raise
+
+    return ValidatedCompletedAuthority(
+        prefix=prefix,
+        problem_events=problem_events,
+        replayed_problems=replayed_problems,
+        expected_occurrence_ids=frozenset(expected),
     )

@@ -516,6 +516,27 @@ def test_fold_trace_still_defers_failure_identity_authority(tmp_path: Path) -> N
 
     projection = fold_trace(tmp_path, CHANGE_ID, phase="reconciled")
     assert not any(gap.code == "failure_analysis_identity_mismatch" for gap in projection.gaps)
-    assert projection.rows[0].failures == (
-        TraceFailure(category="assertion_failure", severity="high"),
+    assert projection.rows[0].failures == (TraceFailure(category="assertion_failure", severity="high"),)
+
+
+def test_fold_trace_still_defers_completed_occurrence_authority(tmp_path: Path) -> None:
+    """Task 10 completed membership is not wired into fold_trace until Task 12.
+
+    A snapshot occurrence with no matching project membership still produces links
+    via the legacy snapshot/problems loaders.
+    """
+    _seed_reconciled_inputs(
+        tmp_path,
+        observations=[_observation(case_id=CASE_ID, observation_id="OBS-1")],
+        occurrences=[_occurrence(occurrence_id="OCC-1", observation_id="OBS-1", problem_id="PROB-1")],
+        problems=[_problem("PROB-1", status="detected", classification="product_bug")],
     )
+    # Remove project problems membership for OCC-1 while leaving the problem present.
+    problems_path = tmp_path / "qa" / "issues" / "problems.json"
+    payload = json.loads(problems_path.read_text(encoding="utf-8"))
+    payload["problems"][0]["occurrences"] = ["OCC-other"]
+    problems_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    projection = fold_trace(tmp_path, CHANGE_ID, phase="reconciled")
+    assert not any(gap.code == "issue_reconciliation_unavailable" for gap in projection.gaps)
+    assert projection.rows[0].open_problem_ids == ("PROB-1",)
