@@ -1374,12 +1374,17 @@ class GraphRuntime:
                 continue
             task = projection.tasks.get(success.task_id)
             outputs = dict(sorted((success.outputs_sha256 or {}).items()))
+            target = (
+                task.target
+                if task is not None and task.target is not None and task.target.strip()
+                else (task.node_id if task is not None else success.task_id)
+            )
             effect_context = DurableEffectContext(
                 root_invocation_id=root_id,
                 invocation_id=success.invocation_id,
                 task_id=success.task_id,
                 attempt_id=success.attempt_id,
-                target=task.node_id if task is not None else success.task_id,
+                target=target,
                 output_digests=outputs,
                 write_set_id=success.write_set_id,
             )
@@ -1390,19 +1395,23 @@ class GraphRuntime:
                 # Prepared/committed fence suppresses or permanently rejects retry.
                 continue
             except DurableEffectRetryableError as exc:
-                retry_store.schedule_next(
-                    fence_store=fence_store,
-                    root_invocation_id=root_id,
-                    invocation_id=success.invocation_id,
-                    task_id=success.task_id,
-                    attempt_id=success.attempt_id,
-                    effect_id=intent.effect_id,
-                    kind=intent.kind,
-                    lock_key=f"effect:{intent.effect_id}",
-                    error_code=exc.error_code,
-                    now=now,
-                    expected=sidecar,
-                )
+                try:
+                    retry_store.schedule_next(
+                        fence_store=fence_store,
+                        root_invocation_id=root_id,
+                        invocation_id=success.invocation_id,
+                        task_id=success.task_id,
+                        attempt_id=success.attempt_id,
+                        effect_id=intent.effect_id,
+                        kind=intent.kind,
+                        lock_key=f"effect:{intent.effect_id}",
+                        error_code=exc.error_code,
+                        now=now,
+                        expected=sidecar,
+                    )
+                except RootTerminalFenceError:
+                    # Fence prepared/committed during the retryable window: suppress.
+                    continue
             except DurableEffectIntegrityError as exc:
                 record_integrity_failure(
                     context.change_dir,

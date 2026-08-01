@@ -123,6 +123,8 @@ class TaskAttemptStartedEvent(_GraphEvent):
     input_snapshot_id: str | None = None
     runtime_context_sha256: str | None = None
     precommit_validator: str | None = None
+    # Execution-contract / operation target (e.g. operation:allocate-healing-attempt).
+    target: str | None = None
 
 
 class TaskAttemptSucceededEvent(_GraphEvent):

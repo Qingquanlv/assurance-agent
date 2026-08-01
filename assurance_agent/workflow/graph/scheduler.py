@@ -1126,6 +1126,7 @@ class Scheduler:
                         input_snapshot_id=input_snapshot_id,
                         runtime_context_sha256=runtime_context_sha256,
                         precommit_validator=precommit_validator,
+                        target=task.target,
                     )
                 )
             started_appended = True

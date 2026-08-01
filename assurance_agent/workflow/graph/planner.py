@@ -1114,7 +1114,12 @@ def _seed_fan_out(
             # 冻结后、分发前的崩溃窗口：child 由 _decide_fan_out 按冻结数据重建。
             missing += 1
             continue
+        if child.status == "succeeded" and _task_ready_as_predecessor(child):
+            continue
         if child.status == "succeeded":
+            # Succeeded but uncommitted/unacked: keep fan-out unresolved.
+            if waiting is None:
+                waiting = child
             continue
         if child.status == "pending" and child.next_retry_at is not None:
             # Scheduling deferral: reselect the same fan-out child without budget use.
@@ -1195,7 +1200,7 @@ def _seed_fan_out(
             child_count=len(expansion.task_ids),
         )
         aggregate = by_id.get(aggregate_id) or projection.tasks.get(aggregate_id)
-        if aggregate is None or aggregate.status != "succeeded":
+        if aggregate is None or not _task_ready_as_predecessor(aggregate):
             if aggregate is not None:
                 return _Outcome(status="unresolved", task=aggregate), retry, None
             return _Outcome(status="unresolved"), retry, None
@@ -1245,7 +1250,7 @@ def _decide_fan_out(
             if task_id not in projection.tasks:
                 ready.append(_build_fan_out_task(compiled, graph, projection, context, nid, expansion, index))
         if all(
-            (child := projection.tasks.get(task_id)) is not None and child.status == "succeeded"
+            (child := projection.tasks.get(task_id)) is not None and _task_ready_as_predecessor(child)
             for task_id in expansion.task_ids
         ):
             aggregate_id = fan_out_aggregate_task_id(
@@ -1257,7 +1262,9 @@ def _decide_fan_out(
                 child_count=len(expansion.task_ids),
             )
             aggregate = projection.tasks.get(aggregate_id)
-            if aggregate is None or aggregate.status not in ("succeeded", "running"):
+            if aggregate is None or (
+                aggregate.status != "running" and not _task_ready_as_predecessor(aggregate)
+            ):
                 ready.append(
                     _build_fan_out_aggregate_task(compiled, graph, projection, context, nid, expansion)
                 )
@@ -1599,7 +1606,7 @@ def fan_out_state_updates(
             continue
         _validate_expansion_shape(graph, expansion, nid)
         children = [projection.tasks.get(task_id) for task_id in expansion.task_ids]
-        if any(child is None or child.status != "succeeded" for child in children):
+        if any(child is None or not _task_ready_as_predecessor(child) for child in children):
             continue
         reduced = _reduce_fan_out(compiled, graph, projection, nid, fan_out.reduce, expansion)
         updates.append((f"reduce:{projection.structural_path}:{nid}", {fan_out.reduce.into: reduced}))
@@ -2331,6 +2338,11 @@ def _has_inflight(outcomes: dict[str, _Outcome]) -> bool:
         and (
             outcome.task.status in ("running", "interrupted")
             or (outcome.task.status == "pending" and outcome.task.next_retry_at is None)
+            # D14: succeeded but uncommitted/unacked still owns recovery work.
+            or (
+                outcome.task.status == "succeeded"
+                and not _task_ready_as_predecessor(outcome.task)
+            )
         )
         for outcome in outcomes.values()
     )

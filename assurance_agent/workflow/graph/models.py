@@ -326,6 +326,8 @@ class TaskProjection(BaseModel):
     runtime_context_sha256: str | None = None
     candidate_validation_receipt_id: str | None = None
     precommit_validator: str | None = None
+    # Execution-contract / operation target stamped from task_attempt_started.
+    target: str | None = None
     durable_effects: tuple[dict[str, object], ...] = ()
     acknowledged_effect_ids: tuple[str, ...] = ()
     deferral_ordinal: int = 0

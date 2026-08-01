@@ -970,6 +970,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                 precommit_validator=event.precommit_validator
                 if event.precommit_validator is not None
                 else (prev.precommit_validator if prev else None),
+                target=event.target if event.target is not None else (prev.target if prev else None),
                 deferral_ordinal=prev.deferral_ordinal if prev else 0,
                 latest_deferral_id=prev.latest_deferral_id if prev else None,
             )
@@ -1040,6 +1041,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                     if event.candidate_validation_receipt_id is not None
                     else prev.candidate_validation_receipt_id,
                     "precommit_validator": prev.precommit_validator,
+                    "target": prev.target,
                     "durable_effects": durable_effects,
                     "acknowledged_effect_ids": prev.acknowledged_effect_ids,
                 }
@@ -1256,18 +1258,34 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                 raise LedgerIntegrityError(
                     f"durable_effect_acknowledged before superstep commit for {event.effect_id}"
                 )
-            intent_ids = {
-                item.get("effect_id")
-                for item in task.durable_effects
-                if isinstance(item.get("effect_id"), str)
-            }
-            if event.effect_id not in intent_ids:
+            intent = next(
+                (
+                    item
+                    for item in task.durable_effects
+                    if isinstance(item, dict) and item.get("effect_id") == event.effect_id
+                ),
+                None,
+            )
+            if intent is None:
                 raise LedgerIntegrityError(
                     f"durable_effect_acknowledged without matching inline intent {event.effect_id}"
                 )
             if event.attempt_id != task.latest_attempt_id:
                 raise LedgerIntegrityError(
                     f"durable_effect_acknowledged attempt mismatch for {event.effect_id}"
+                )
+            if event.kind != intent.get("kind"):
+                raise LedgerIntegrityError(
+                    f"durable_effect_acknowledged kind mismatch for {event.effect_id}"
+                )
+            if event.reconciler_semantics_digest != intent.get("reconciler_semantics_digest"):
+                raise LedgerIntegrityError(
+                    f"durable_effect_acknowledged reconciler_semantics_digest mismatch "
+                    f"for {event.effect_id}"
+                )
+            if event.payload_sha256 != intent.get("payload_sha256"):
+                raise LedgerIntegrityError(
+                    f"durable_effect_acknowledged payload_sha256 mismatch for {event.effect_id}"
                 )
             seen_effect_acks[event.effect_id] = event
             tasks[event.task_id] = task.model_copy(

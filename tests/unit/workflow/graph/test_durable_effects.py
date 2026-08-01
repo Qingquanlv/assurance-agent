@@ -396,6 +396,7 @@ def test_crash_cut_after_success_before_ack_reconciles_once(tmp_path: Path) -> N
                 attempt_number=1,
                 lease_expires_at="2099-01-01T00:00:00+00:00",
                 started_at="2099-01-01T00:00:00+00:00",
+                target="operation:test-marker",
             )
         )
         txn.append_strict(
@@ -486,3 +487,126 @@ def test_intent_rejects_payload_digest_drift() -> None:
             payload_sha256="sha256:" + ("b" * 64),
             payload={"schema_version": "1", "marker_key": "k", "value": "v"},
         )
+
+
+def test_crash_cut_before_success_leaves_no_inline_intent(tmp_path: Path) -> None:
+    """Cut before success line: no inline intent, recovery has nothing to reconcile."""
+    change = tmp_path / "change"
+    change.mkdir()
+    (change / "events.jsonl").write_text("", encoding="utf-8")
+    with transaction(change) as txn:
+        txn.append_strict(
+            TaskAttemptStartedEvent(
+                type="task_attempt_started",
+                invocation_id="inv-1",
+                checkpoint_ns="inv-1",
+                superstep_id="ss-1",
+                task_id="task-a",
+                attempt_id="att-1",
+                node_id="n1",
+                input_sha256="in",
+                graph_digest="g" * 64,
+                contract_digest="c" * 64,
+                attempt_number=1,
+                lease_expires_at="2099-01-01T00:00:00+00:00",
+                started_at="2099-01-01T00:00:00+00:00",
+                target="operation:test-marker",
+            )
+        )
+    assert scan_unacknowledged_intents(change, "inv-1") == ()
+
+
+def test_reconcile_uses_operation_target_and_suppresses_fence_on_retry_schedule(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1/P2: context.target is contract target; fence on schedule_next is no-progress."""
+    from datetime import datetime, timezone
+    from typing import Any, cast
+
+    from assurance_agent.workflow.graph import runtime as runtime_mod
+    from assurance_agent.workflow.graph.checkpoint import CheckpointStore
+    from assurance_agent.workflow.graph.durable_effects import DurableEffectRetryableError
+    from assurance_agent.workflow.graph.models import GraphProjection, RuntimeContext
+    from assurance_agent.workflow.graph.runtime import GraphRuntime
+
+    registry = _test_registry()
+    intent = _intent(registry)
+    change = tmp_path / "change"
+    change.mkdir()
+    (change / "events.jsonl").write_text("", encoding="utf-8")
+    success = TaskAttemptSucceededEvent(
+        type="task_attempt_succeeded",
+        invocation_id="inv-1",
+        checkpoint_ns="inv-1",
+        superstep_id="ss-1",
+        task_id="task-a",
+        attempt_id="att-1",
+        durable_effects=[intent.model_dump(mode="json")],
+    )
+    monkeypatch.setattr(
+        runtime_mod,
+        "scan_unacknowledged_intents",
+        lambda *_a, **_k: ((success, intent),),
+    )
+    seen_targets: list[str] = []
+
+    def _retryable(
+        _intent: DurableEffectIntentV1,
+        effect_context: DurableEffectContext,
+        *_a: object,
+        **_k: object,
+    ) -> DurableEffectAcknowledgementV1:
+        seen_targets.append(effect_context.target)
+        raise DurableEffectRetryableError("lock held", error_code="progression_lock_timeout")
+
+    monkeypatch.setattr(runtime_mod, "reconcile_effect", _retryable)
+    fence = RootEffectFenceStore(tmp_path)
+    fence.prepare_terminal("inv-1", now=datetime(2026, 8, 1, tzinfo=timezone.utc))
+
+    class _Clock:
+        def now(self) -> datetime:
+            return datetime(2026, 8, 1, tzinfo=timezone.utc)
+
+    runtime = GraphRuntime(
+        checkpoint_store=CheckpointStore(change),
+        object_store=cast(Any, None),
+        workspace_backend=cast(Any, None),
+        definition_resolver=cast(Any, None),
+        clock=_Clock(),  # type: ignore[arg-type]
+    )
+
+    class _Sched:
+        _effect_registry = registry
+
+    monkeypatch.setattr(runtime, "_scheduler_for", lambda _proj: _Sched())
+    projection = GraphProjection(
+        invocation_id="inv-1",
+        entrypoint="full",
+        checkpoint_ns="inv-1",
+        structural_path="main",
+        graph_digest="g" * 64,
+        contract_digests={},
+        params={},
+        root_tree_id="t" * 64,
+        current_tree_id="t" * 64,
+        tasks={
+            "task-a": TaskProjection(
+                task_id="task-a",
+                node_id="n1",
+                status="succeeded",
+                outputs_committed=True,
+                target="operation:test-marker",
+                durable_effects=(intent.model_dump(mode="json"),),
+                latest_attempt_id="att-1",
+            )
+        },
+    )
+    context = RuntimeContext(
+        project_root=tmp_path,
+        repo_root=tmp_path,
+        change_dir=change,
+        change_id="change-1",
+    )
+    assert runtime._reconcile_durable_effects(projection, context) is False  # noqa: SLF001
+    assert seen_targets == ["operation:test-marker"]

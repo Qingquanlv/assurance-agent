@@ -1061,3 +1061,61 @@ def test_candidate_validation_receipt_required_when_validator_named() -> None:
     )
     assert projection.tasks["t1"].precommit_validator == "generated_files_candidate/v1"
     assert projection.tasks["t1"].candidate_validation_receipt_id == "a" * 64
+
+
+def test_durable_effect_ack_must_bind_inline_intent_digests() -> None:
+    intent = {
+        "schema_version": "1",
+        "effect_id": "eff-1",
+        "kind": "test_marker/v1",
+        "reconciler_semantics_digest": "sha256:" + ("b" * 64),
+        "payload_sha256": "sha256:" + ("c" * 64),
+        "payload": {"schema_version": "1", "marker_key": "k", "value": "v"},
+    }
+    started = dict(_begin("t1", "node-a"))
+    started["target"] = "operation:test-marker"
+    success = dict(_succeeded("t1", "ws-1"))
+    success["durable_effects"] = [intent]
+    committed = dict(_committed())
+    committed["write_set_ids"] = ["ws-1"]
+    committed["committed_task_ids"] = ["t1"]
+
+    def _ack(**overrides: object) -> dict:
+        payload = {
+            "source": "graph",
+            "type": "durable_effect_acknowledged",
+            "root_invocation_id": "inv-1",
+            "invocation_id": "inv-1",
+            "checkpoint_ns": "inv-1",
+            "task_id": "t1",
+            "attempt_id": "t1-a1",
+            "effect_id": "eff-1",
+            "kind": "test_marker/v1",
+            "reconciler_semantics_digest": intent["reconciler_semantics_digest"],
+            "payload_sha256": intent["payload_sha256"],
+            "domain_source_sequence": 1,
+            "domain_event_digest": "sha256:" + ("d" * 64),
+        }
+        payload.update(overrides)
+        return payload
+
+    prefix = [_started(), _activated("node-a"), _planned(["t1"]), started, success, committed]
+    ok = fold_invocation_events("inv-1", [*prefix, _ack()])
+    assert ok.tasks["t1"].target == "operation:test-marker"
+    assert ok.tasks["t1"].acknowledged_effect_ids == ("eff-1",)
+
+    with pytest.raises(LedgerIntegrityError, match="payload_sha256 mismatch"):
+        fold_invocation_events(
+            "inv-1",
+            [*prefix, _ack(payload_sha256="sha256:" + ("e" * 64))],
+        )
+    with pytest.raises(LedgerIntegrityError, match="kind mismatch"):
+        fold_invocation_events(
+            "inv-1",
+            [*prefix, _ack(kind="other_kind/v1")],
+        )
+    with pytest.raises(LedgerIntegrityError, match="reconciler_semantics_digest mismatch"):
+        fold_invocation_events(
+            "inv-1",
+            [*prefix, _ack(reconciler_semantics_digest="sha256:" + ("f" * 64))],
+        )
