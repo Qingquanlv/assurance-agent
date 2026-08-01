@@ -687,10 +687,10 @@ def _authority_paths_from_manifest_and_write_set(
             if not entry.repo_path.startswith(private_root.rstrip("/") + "/") and entry.repo_path != private_root:
                 # Summary-only / shared helpers outside private root do not gain edit authority.
                 continue
+            # Fail closed: reuse authority requires a present, matching input-snapshot digest.
+            # Never fall back to the manifest's self-attested content_sha256.
             digest = _snapshot_digest_for_repo_path(snapshot_entries, entry.repo_path)
-            if digest is None:
-                digest = entry.content_sha256
-            if digest != entry.content_sha256:
+            if digest is None or digest != entry.content_sha256:
                 return None
             paths.append(
                 FixerAuthorityPathV1(

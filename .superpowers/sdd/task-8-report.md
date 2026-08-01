@@ -13,6 +13,7 @@ Edit + test only (no git add/commit). Cursor-loop helpers left alone. Packaged t
 | P1 | High-risk approval digest binding | `_bind_approval_to_snapshot_artifacts` binds proposal/authority/baseline/policy sha256 + targets/paths to snapshot artifacts; forged digests → `CandidateValidationError` |
 | P1 | record verifies candidate receipt | `operation_record_codegen_fix_apply` loads CAS receipt, checks identity/`bind_receipt_to_success_event`, on-disk intent digest, then `verify_candidate_receipt`; fail closed if missing/wrong |
 | P1 | Allocate authority from write-set/snapshot | `allocate_authority_bindings_from_artifacts` binds generated/updated after digests from codegen write set; reused under private root; imported → `unverified`; `with.authority_bindings` remains test seam only when artifacts absent |
+| P2 | Reused allocate authority fail-closed | Reused paths no longer fall back to manifest `content_sha256` when snapshot digest is missing; missing/mismatched snapshot → `unverified`; matching snapshot → ready (`test_reused_authority_fail_closed_without_or_mismatched_snapshot`) |
 | P2 | before-digest on modify | generated/updated authority before-digest enforced on content-`modify` (not only add-with-before) |
 | P2 | Healing conformance mutation table | Emits `missing_approval_interrupt`, `missing_record_join`, `missing_hard_outputs`, `inactive_target_required`, plus prior codes; positive controls for API-only / E2E-only / both |
 | P2 | Registry compatibility | `CodegenFixApplySummaryV1.applied` + aggregate SafetyCheck boolean shims so legacy `ApplySummary` / `SafetyCheck` must_compat readers accept new ops output (no colliding registry flip) |
@@ -23,31 +24,21 @@ Edit + test only (no git add/commit). Cursor-loop helpers left alone. Packaged t
 - Projection / consumers, durable effects + v2 events, dark-ship ops, `codegen_fix_candidate/v1`, `diff_safety.py`, production effect registry registration
 - Packaged YAML / contracts unchanged
 
-## Verify (fix pass)
+## Verify (latest: reused fail-closed)
 
 ```text
 uv run pytest -q \
-  tests/unit/healing/test_episode_projection.py \
-  tests/unit/healing/test_allocation.py \
-  tests/unit/healing/test_record_apply.py \
   tests/unit/healing/test_authority_allocate.py \
-  tests/unit/test_healing_state.py \
-  tests/unit/retro/test_workflow_history.py \
-  tests/unit/workflow/graph/test_healing_topology_mutations.py \
-  tests/unit/workflow/graph/test_durable_effects.py \
-  tests/unit/workflow/graph/test_task_input_snapshot.py \
-  tests/unit/workflow/graph/test_task_runner.py \
-  tests/unit/workflow/graph/test_precommit_validation.py \
+  tests/unit/healing/test_episode_projection.py \
   tests/integration/test_codegen_fixer_record.py \
-  tests/unit/artifacts/test_healing_codegen.py
-→ 161 passed
+  tests/unit/workflow/graph/test_precommit_validation.py \
+  tests/unit/workflow/graph/test_healing_topology_mutations.py
+→ 35 passed
 
-uv run ruff check assurance_agent/workflow/healing \
-  assurance_agent/workflow/graph/healing_conformance.py \
-  assurance_agent/workflow/graph/diff_safety.py \
-  assurance_agent/workflow/graph/precommit.py \
-  assurance_agent/artifacts/models
-→ All checks passed
+uv run ruff check assurance_agent/workflow/healing/operations.py → All checks passed
+uv run pyright → 0 errors
+
+Prior full fix-pass suite: 161 passed; ruff/pyright clean.
 
 uv run pyright → 0 errors
 ```

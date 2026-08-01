@@ -11,7 +11,7 @@ from assurance_agent.artifacts.models.generated_files import ApiGeneratedFilesV1
 from assurance_agent.workflow.graph.contracts import ResourceClaims, ResourcePath
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext
 from assurance_agent.workflow.graph.schema_v2 import RetryPolicyDef, TimeoutPolicyDef
-from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
+from assurance_agent.workflow.graph.workspace import TaskWorkspace, TreeStore, WorkspaceBackend
 from assurance_agent.workflow.healing.operations import (
     allocate_authority_bindings_from_artifacts,
     enhance_allocate_result_with_authority,
@@ -206,3 +206,124 @@ def test_allocate_binds_generated_after_digest_from_write_set(tmp_path: Path) ->
     assert dumped["targets"][0]["status"] == "ready"
     assert dumped["targets"][0]["paths"][0]["content_sha256"] == f"sha256:{after}"
     assert sha256_bytes(canonical_json_bytes(dumped)).startswith("sha256:")
+
+
+def _seed_reused_only_workspace(
+    tmp_path: Path,
+) -> tuple[Path, TaskWorkspace, TreeStore, str, str]:
+    """Return project, workspace, store, write_set_id, content digest for a reused private-root path."""
+    write_aa_config(tmp_path)
+    project = tmp_path
+    change = project / "qa" / "changes" / "CH-1"
+    change.mkdir(parents=True)
+    (project / "tests" / "api").mkdir(parents=True)
+    body = b"def test_existing():\n    assert True\n"
+    digest = hashlib.sha256(body).hexdigest()
+    (project / "tests" / "api" / "existing.py").write_bytes(body)
+    store = TreeStore(change)
+    tree_id = store.capture(project)
+    workspace = WorkspaceBackend(change).create(task_id="t-reuse", base_tree_id=tree_id, store=store)
+
+    manifest = ApiGeneratedFilesV1.model_validate(
+        {
+            "schema_version": "1",
+            "change_id": "CH-1",
+            "layer": "api",
+            "files": [
+                {
+                    "repo_path": "tests/api/existing.py",
+                    "disposition": "reused",
+                    "role": "test_entry",
+                    "case_ids": ["API_REUSE"],
+                    "content_sha256": f"sha256:{digest}",
+                }
+            ],
+        }
+    )
+    (workspace.change_dir / "codegen").mkdir(parents=True, exist_ok=True)
+    (workspace.change_dir / "codegen" / "api-generated-files.json").write_bytes(
+        canonical_json_bytes(manifest)
+    )
+    (workspace.change_dir / "codegen" / "api-codegen-summary.md").write_bytes(b"# summary\n")
+    write_set = store.freeze_write_set(
+        workspace,
+        claims=ResourceClaims(
+            writes=(ResourcePath.parse("change:codegen/**"),),
+            authorization_writes=(ResourcePath.parse("change:codegen/**"),),
+        ),
+        outputs=(
+            "change:codegen/api-codegen-summary.md",
+            "change:codegen/api-generated-files.json",
+        ),
+    )
+    return project, workspace, store, write_set.write_set_id, digest
+
+
+def test_reused_authority_fail_closed_without_or_mismatched_snapshot(tmp_path: Path) -> None:
+    project, workspace, _store, write_set_id, digest = _seed_reused_only_workspace(tmp_path)
+    base_params = {
+        "codegen_write_set_ids": {"api": write_set_id},
+        "codegen_attempt_ids": {"api": "cg-api-1"},
+        "execution_batch_id": "batch-1",
+    }
+
+    # No snapshot entries → cannot prove reuse → unverified.
+    missing = allocate_authority_bindings_from_artifacts(
+        workspace=workspace,
+        context=_context(project),
+        active_targets=["api"],
+        params=base_params,
+    )
+    assert missing["api"]["status"] == "unverified"
+    assert missing["api"]["paths"] == []
+
+    empty = allocate_authority_bindings_from_artifacts(
+        workspace=workspace,
+        context=_context(project),
+        active_targets=["api"],
+        params={**base_params, "input_snapshot_entries": []},
+    )
+    assert empty["api"]["status"] == "unverified"
+
+    # Snapshot present but digest mismatch → unverified.
+    mismatched = allocate_authority_bindings_from_artifacts(
+        workspace=workspace,
+        context=_context(project),
+        active_targets=["api"],
+        params={
+            **base_params,
+            "input_snapshot_entries": [
+                {
+                    "kind": "file",
+                    "repo_relpath": "tests/api/existing.py",
+                    "logical_aliases": ["repo:tests/api/existing.py"],
+                    "sha256": "sha256:" + "0" * 64,
+                }
+            ],
+        },
+    )
+    assert mismatched["api"]["status"] == "unverified"
+    assert mismatched["api"]["paths"] == []
+
+    # Matching snapshot digest → ready with reused path authority.
+    matched = allocate_authority_bindings_from_artifacts(
+        workspace=workspace,
+        context=_context(project),
+        active_targets=["api"],
+        params={
+            **base_params,
+            "input_snapshot_entries": [
+                {
+                    "kind": "file",
+                    "repo_relpath": "tests/api/existing.py",
+                    "logical_aliases": ["repo:tests/api/existing.py", "project:tests/api/existing.py"],
+                    "sha256": f"sha256:{digest}",
+                }
+            ],
+        },
+    )
+    assert matched["api"]["status"] == "ready"
+    paths = matched["api"]["paths"]
+    assert len(paths) == 1
+    assert paths[0].disposition == "reused"
+    assert paths[0].content_sha256 == f"sha256:{digest}"
