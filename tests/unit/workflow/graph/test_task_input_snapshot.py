@@ -124,6 +124,11 @@ def test_snapshot_rejects_wrong_input_digest() -> None:
         TaskInputSnapshotV1.model_validate(payload)
 
 
+def test_snapshot_rejects_empty_matched_claims() -> None:
+    with pytest.raises(ValidationError):
+        TaskInputSnapshotEntryV1.model_validate(_entry(matched_claims=[]))
+
+
 def test_automatic_healing_requires_null_human_fields() -> None:
     PlanFixerRuntimeContextV1.model_validate(_runtime_context())
     with pytest.raises(ValidationError):
@@ -620,3 +625,368 @@ def test_ast_consumer_set_guards_for_snapshot_and_runtime_context_fields() -> No
                             found_symbols.add(node.name)
             missing = symbols - found_symbols
             assert not missing, f"{field} missing AST consumers in {rel}: {sorted(missing)}"
+
+
+def test_plan_fixer_and_declared_only_paths_have_zero_events_jsonl_references() -> None:
+    """Closed inventory: typed Runtime Context must not keep an events.jsonl escape hatch."""
+    repo = Path(__file__).resolve().parents[4]
+    closed_paths = (
+        "assurance_agent/_resources/skills/aa-api-plan-fixer/SKILL.md",
+        "assurance_agent/_resources/skills/aa-e2e-plan-fixer/SKILL.md",
+        "assurance_agent/workflow/graph/task_inputs.py",
+        "assurance_agent/workflow/graph/agent_api.py",
+        "assurance_agent/workflow/graph/handlers/agent.py",
+    )
+    needle = "events.jsonl"
+    for rel in closed_paths:
+        path = repo / rel
+        text = path.read_text(encoding="utf-8")
+        assert needle not in text, f"{rel} must not reference {needle}"
+        if path.suffix == ".py":
+            tree = ast.parse(text, filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    assert needle not in node.value, f"{rel} AST string references {needle}"
+                if isinstance(node, ast.JoinedStr):
+                    for part in node.values:
+                        if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                            assert needle not in part.value, f"{rel} f-string references {needle}"
+
+
+def test_capture_rejects_wrong_tree_or_review_bytes(tmp_path: Path) -> None:
+    project, change, _tree_id, _claims = _seed_declared_project(tmp_path)
+    review = change / "review" / "api-plan-review.json"
+    review.parent.mkdir(parents=True)
+    review.write_text('{"decision":"needs_fix"}\n', encoding="utf-8")
+    review_digest = sha256_bytes(review.read_bytes())
+    store = TreeStore(change)
+    tree_id = store.capture(project, repo_root=project)
+    claims = ResourceClaims(
+        reads=(
+            ResourcePath.parse("change:plans/api-plan.md"),
+            ResourcePath.parse("change:review/api-plan-review.json"),
+        ),
+        writes=(ResourcePath.parse("change:plans/api-plan.md"),),
+        authorization_writes=(ResourcePath.parse("change:plans/api-plan.md"),),
+    )
+    backend = WorkspaceBackend(change)
+    workspace = backend.create(
+        task_id="plan-api",
+        base_tree_id=tree_id,
+        store=store,
+        sidecar_root=backend.sidecar_root_for("plan-api"),
+        claims=claims,
+        declared_reads_only=True,
+        skill_name="aa-api-plan",
+        initialize_git=False,
+    )
+    task = _executable_task(
+        task_id="plan-api",
+        target="skill:aa-api-plan-fixer",
+        claims=claims,
+        contract_digest="c" * 64,
+    )
+    contract = ExecutionContract(
+        target="skill:aa-api-plan-fixer",
+        handler="agent",
+        reads=("change:plans/api-plan.md", "change:review/api-plan-review.json"),
+        writes=("change:plans/api-plan.md",),
+        authorization_writes=("change:plans/api-plan.md",),
+        read_isolation="declared_only",
+    )
+    context = PlanFixerRuntimeContextV1.model_validate(
+        _runtime_context(
+            task_id="plan-api",
+            attempt_id="plan-api-a1",
+            base_tree_id=tree_id,
+            source_review_path="change:review/api-plan-review.json",
+            source_review_sha256=review_digest,
+        )
+    )
+    wrong_tree = PlanFixerRuntimeContextV1.model_validate(
+        {**context.model_dump(mode="json"), "base_tree_id": "tree-other"}
+    )
+    with pytest.raises(TaskInputError, match="base_tree_id mismatch"):
+        capture_task_input_snapshot(
+            invocation_id="inv-1",
+            task=task,
+            attempt_id="plan-api-a1",
+            workspace=workspace,
+            contract=contract,
+            runtime_context=wrong_tree,
+        )
+    wrong_review = PlanFixerRuntimeContextV1.model_validate(
+        {**context.model_dump(mode="json"), "source_review_sha256": DIGEST_B}
+    )
+    with pytest.raises(TaskInputError, match="source_review_sha256 mismatch"):
+        capture_task_input_snapshot(
+            invocation_id="inv-1",
+            task=task,
+            attempt_id="plan-api-a1",
+            workspace=workspace,
+            contract=contract,
+            runtime_context=wrong_review,
+        )
+
+
+def test_scheduler_crash_after_started_keeps_reachable_snapshot(tmp_path: Path) -> None:
+    from datetime import datetime, timezone
+
+    from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog
+    from assurance_agent.workflow.graph.leases import abandon_running_attempt
+
+    project, change, tree_id, claims = _seed_declared_project(tmp_path)
+    (change / "events.jsonl").unlink(missing_ok=True)
+    _seed_invocation(change, tree_id)
+    store = TreeStore(change)
+    contract = ExecutionContract(
+        target="skill:aa-api-plan",
+        handler="agent",
+        reads=("change:plans/api-plan.md",),
+        writes=("change:plans/api-plan.md",),
+        authorization_writes=("change:plans/api-plan.md",),
+        read_isolation="declared_only",
+    )
+    catalog = ExecutionContractCatalog(contracts={contract.target: contract})
+    task = _executable_task(
+        task_id="plan-api",
+        target=contract.target,
+        claims=claims,
+        contract_digest="c" * 64,
+    )
+
+    def crash_after_started(_task: ExecutableTask, attempt_id: str) -> None:
+        raise RuntimeError(f"crash after started:{attempt_id}")
+
+    class Runner:
+        def execute(self, task, workspace, context):  # noqa: ANN001
+            return TaskResult(status="succeeded")
+
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=Runner(),
+        contracts=catalog,
+        crash_after_started=crash_after_started,
+    )
+    projection = fold_invocation_events("inv-1", read_events_strict(change))
+    plan = PlanResult(superstep_id="ss-1", checkpoint_id="cp-1", tasks=(task,))
+    context = RuntimeContext(
+        project_root=project,
+        repo_root=project,
+        change_dir=change,
+        change_id="CH-1",
+    )
+    with pytest.raises(RuntimeError, match="crash after started"):
+        scheduler.execute(plan, projection, context)
+
+    events = read_events_strict(change)
+    started = [event for event in events if event.get("type") == "task_attempt_started"]
+    assert len(started) == 1
+    assert started[0]["attempt_number"] == 1
+    snapshot_id = started[0]["input_snapshot_id"]
+    assert isinstance(snapshot_id, str) and snapshot_id
+    assert load_task_input_snapshot(store, snapshot_id)
+    attempt_id = started[0]["attempt_id"]
+    assert isinstance(attempt_id, str)
+
+    abandoned = abandon_running_attempt(
+        change,
+        invocation_id="inv-1",
+        checkpoint_ns="root",
+        task_id="plan-api",
+        attempt_id=attempt_id,
+        reason="crash after started",
+        abandoned_at=datetime(2026, 8, 1, 0, 0, 1, tzinfo=timezone.utc).isoformat(),
+    )
+    assert abandoned is True
+
+    scheduler2 = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=Runner(),
+        contracts=catalog,
+    )
+    projection2 = fold_invocation_events("inv-1", read_events_strict(change))
+    result = scheduler2.execute(plan, projection2, context)
+    assert result.succeeded == ("plan-api",)
+    started_all = [
+        event for event in read_events_strict(change) if event.get("type") == "task_attempt_started"
+    ]
+    assert len(started_all) == 2
+    assert started_all[1]["attempt_number"] == 2
+    first_snapshot = started_all[0]["input_snapshot_id"]
+    second_snapshot = started_all[1]["input_snapshot_id"]
+    assert isinstance(first_snapshot, str) and first_snapshot
+    assert isinstance(second_snapshot, str) and second_snapshot
+    assert load_task_input_snapshot(store, first_snapshot)
+    assert load_task_input_snapshot(store, second_snapshot)
+
+
+def test_lock_deferral_reselects_via_plan_superstep_drive_after_release(tmp_path: Path) -> None:
+    """P0/D13: after backoff + lock release, real plan/_drive creates attempt_number 1 once."""
+    from datetime import datetime, timedelta, timezone
+
+    from assurance_agent.workflow.driver.runtime_factory import one_definition_resolver
+    from assurance_agent.workflow.graph.compiler import compile_workflow
+    from assurance_agent.workflow.graph.contracts import parse_execution_contracts
+    from assurance_agent.workflow.graph.handlers.operation import OperationHandler, default_operations
+    from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
+    from assurance_agent.workflow.graph.project_locks import ProjectResourceConflict
+    from assurance_agent.workflow.graph.runtime import GraphRuntime
+    from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
+    from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
+    from tests.helpers_aa import write_aa_config
+
+    t0 = datetime(2026, 8, 1, 0, 0, 0, tzinfo=timezone.utc)
+
+    class FakeClock:
+        def __init__(self) -> None:
+            self._now = t0
+            self._mono = 0.0
+
+        def now(self) -> datetime:
+            return self._now
+
+        def monotonic(self) -> float:
+            return self._mono
+
+        def sleep(self, seconds: float) -> None:
+            self._now += timedelta(seconds=seconds)
+            self._mono += seconds
+
+    class ReleaseAfterFirstConflict:
+        def __init__(self) -> None:
+            self.acquires = 0
+
+        def acquire(self, tokens, timeout_seconds=5.0):  # noqa: ANN001
+            from contextlib import nullcontext
+
+            self.acquires += 1
+            if self.acquires == 1:
+                raise ProjectResourceConflict(token=tokens[0], message="held")
+            return nullcontext()
+
+    contracts_text = """\
+schema_version: "1"
+contracts:
+  operation:update-issue:
+    handler: operation
+    side_effect_free: false
+    reads: ["project:qa/issues/**"]
+    writes: ["project:qa/issues/**", "change:results/**"]
+    authorization_writes: ["project:qa/issues/**", "change:results/**"]
+    synchronized: ["project:qa/issues/**"]
+    exclusive: ["project:issue-registry"]
+    retryable_errors: [conflict]
+"""
+    workflow_text = """\
+schema_version: "2"
+name: deferred-reselect
+params:
+  run_mode: {type: enum, values: [full], default: full}
+entrypoints:
+  full: {graph: main, allow: "params.run_mode == 'full'"}
+policies:
+  retry:
+    conflict:
+      max_attempts: 3
+      retry_on: [conflict]
+      backoff: {initial_seconds: 60, multiplier: 2, max_seconds: 300, jitter: false}
+  timeout:
+    local: {run_seconds: 60, heartbeat_seconds: 5}
+  scheduler: {max_parallel_tasks: 1}
+graphs:
+  main:
+    max_supersteps: 8
+    nodes:
+      update:
+        uses: operation:update-issue
+        outputs:
+          - project:qa/issues/ISSUE-1.json
+          - change:results/update.json
+        retry: conflict
+        timeout: local
+    edges:
+      - {from: START, to: update}
+      - {from: update, to: END}
+gates: {}
+"""
+    project = tmp_path / "proj"
+    change = project / "qa" / "changes" / "CH-1"
+    change.mkdir(parents=True)
+    write_aa_config(project)
+    issue = project / "qa" / "issues" / "ISSUE-1.json"
+    issue.parent.mkdir(parents=True)
+    issue.write_text('{"version":1}\n', encoding="utf-8")
+    (project / "app").mkdir()
+    (project / "app" / "source.py").write_text("v1\n", encoding="utf-8")
+
+    contracts = parse_execution_contracts(contracts_text)
+    compiled = compile_workflow(parse_workflow_v2(workflow_text), contracts)
+    store = TreeStore(change)
+    checkpoints = CheckpointStore(change)
+    workspaces = WorkspaceBackend(change)
+    clock = FakeClock()
+    locks = ReleaseAfterFirstConflict()
+
+    def update_issue(task, workspace, context):  # noqa: ANN001
+        (workspace.project_root / "qa/issues/ISSUE-1.json").write_text(
+            '{"version":2}\n', encoding="utf-8"
+        )
+        result = workspace.change_dir / "results" / "update.json"
+        result.parent.mkdir(parents=True)
+        result.write_text('{"updated":true}\n', encoding="utf-8")
+        return TaskResult(status="succeeded")
+
+    ops = default_operations()
+    ops["operation:update-issue"] = update_issue
+    op_handler = OperationHandler(ops)
+    node_runner = HandlerNodeRunner({target: op_handler for target in ops})
+    graph_id = compiled.entrypoints["full"].graph_id
+    scheduler = Scheduler(
+        checkpoints=checkpoints,
+        object_store=store,
+        clock=clock,
+        workspace_backend=workspaces,
+        node_runner=node_runner,
+        max_parallel_tasks=1,
+        contracts=contracts,
+        state_defs=dict(compiled.schema.graphs[graph_id].state),
+        project_lock_manager=locks,  # type: ignore[arg-type]
+        project_lock_timeout_seconds=0.05,
+    )
+    runtime = GraphRuntime(
+        checkpoint_store=checkpoints,
+        object_store=store,
+        workspace_backend=workspaces,
+        definition_resolver=one_definition_resolver(
+            compiled=compiled,
+            contracts=contracts,
+            ingest_catalog=validate_catalog_runtime(),
+            node_runner=node_runner,
+            scheduler=scheduler,
+        ),
+        clock=clock,
+    )
+    context = RuntimeContext(
+        project_root=project,
+        repo_root=project,
+        change_dir=change,
+        change_id="CH-1",
+        params={"run_mode": "full"},
+    )
+    result = runtime.run(compiled, "full", context)
+    assert result.exit_code == 0
+    events = read_events_strict(change)
+    deferred = [event for event in events if event.get("type") == "task_scheduling_deferred"]
+    started = [event for event in events if event.get("type") == "task_attempt_started"]
+    failed = [event for event in events if event.get("type") == "task_attempt_failed"]
+    assert len(deferred) == 1
+    assert len(started) == 1
+    assert started[0]["attempt_number"] == 1
+    assert failed == []
+    assert locks.acquires >= 2
+    assert issue.read_text(encoding="utf-8") == '{"version":2}\n'

@@ -1468,7 +1468,8 @@ class GraphRuntime:
         times = [
             _parse_ts(task.next_retry_at)
             for task in projection.tasks.values()
-            if task.next_retry_at is not None and task.status == "failed"
+            if task.next_retry_at is not None
+            and task.status in ("failed", "pending")
         ]
         return min(times) if times else None
 

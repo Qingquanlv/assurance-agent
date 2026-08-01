@@ -2,39 +2,40 @@
 
 ## Status: DONE
 
-Branch tip remained `775a513` (no commit). Edit + test only.
+Branch tip at start of fix pass: `8541d36`. Edit + test only (no commit).
 
-## What changed
+## What changed (this fix pass)
 
-### New
-- `assurance_agent/workflow/graph/task_inputs.py` — D13 wire models (`TaskInputSnapshotEntryV1`, `TaskInputSnapshotV1`, `PlanFixerRuntimeContextV1`), `capture_task_input_snapshot` / `load_task_input_snapshot`, plan-fixer Runtime Context render/bind/assert helpers, dormant prepare/resume binding helpers.
-- `tests/unit/workflow/graph/test_task_input_snapshot.py` — strict model tests, sidecar visibility + aliased-root snapshot, begin-attempt ordering/crash-retry, lock deferral, prompt binding, closed AST consumer inventory.
+### P0 — Deferred lock conflicts reselectable when due
+- `assurance_agent/workflow/graph/planner.py` — `pending` + `next_retry_at` (scheduling deferral) is added to `retry_tasks` instead of treated as permanently in-flight; plain `pending` without `next_retry_at` stays in-flight. Fan-out children get the same treatment. `_has_inflight` excludes backoff-gated deferrals.
+- `assurance_agent/workflow/graph/runtime.py` — `_earliest_retry_at` includes `pending` with `next_retry_at` so `_drive` sleeps until due before re-planning.
+- `assurance_agent/workflow/graph/scheduler.py` — on lock conflict, durable-ize any not-yet-written `node_activated` from `plan.strict_events` before emitting `task_scheduling_deferred` (prepared/synchronized waves otherwise skip activation when the lock is never held). Still no started+failed lock-conflict shape.
 
-### Modified
-- `assurance_agent/workflow/graph/workspace.py` — `sidecar_root` on `WorkspaceBackend.create`, explicit `tree_manifest_path` / `sidecar_root` on `TaskWorkspace.from_materialized_root`, materialize writes control manifest to sidecar; declared-only skips convenience git.
-- `assurance_agent/workflow/core/graph_events.py` — optional `input_snapshot_id` / `runtime_context_sha256` on start/success; new `TaskSchedulingDeferredEvent`.
-- `assurance_agent/workflow/graph/models.py` — projection fields for snapshot/context/deferral ordinal.
-- `assurance_agent/workflow/graph/checkpoint.py` — fold start/success snapshot identity match; fold deferrals (highest ordinal, idempotent ID, payload conflict = corruption).
-- `assurance_agent/workflow/graph/leases.py` — pending tasks honor `next_retry_at` from scheduling deferral without consuming attempt numbers.
-- `assurance_agent/workflow/graph/scheduler.py` — reorder `_begin_attempt` (reserve → materialize → snapshot CAS → started → dispatch); lock conflict → `task_scheduling_deferred` (no attempt/budget/failed); success repeats snapshot/context IDs; crash-cut cleanup for pre-started unreachable sidecar/CAS.
-- `assurance_agent/workflow/graph/agent_api.py` — `AgentRequest.runtime_context_sha256`; prompt Runtime Context bind/reject mismatch (dormant unless context supplied).
-- `assurance_agent/workflow/graph/handlers/agent.py` — skip host-link policy for `declared_only`.
-- Tests: `test_workspace.py`, `test_scheduler.py` (lock-conflict shape), `test_trace_recovery_workflows.py` (sidecar threading).
+### P2 — Step 3 coverage + AST zero-ref
+- `tests/unit/workflow/graph/test_task_input_snapshot.py`
+  - Real `GraphRuntime` / `plan_superstep` / `_drive` path: clock past `next_retry_at`, lock released, exactly one `task_attempt_started` with `attempt_number == 1`.
+  - `crash_after_started`: started event keeps a loadable snapshot; abandon + retry uses attempt 2.
+  - Capture-time wrong-tree / wrong-review rejection.
+  - Empty `matched_claims` schema reject.
+  - Closed inventory: plan-fixer skills + declared-only agent surface modules must contain zero `events.jsonl` references (text + AST string check).
+- `assurance_agent/_resources/skills/aa-api-plan-fixer/SKILL.md` and `aa-e2e-plan-fixer/SKILL.md` — mode/source-review authority via typed Runtime Context; removed `events.jsonl` reads.
+- `assurance_agent/workflow/graph/task_inputs.py` — require non-empty `matched_claims`; capture-time `source_review_sha256` byte check against workspace review file.
 
 ### Left alone (per instructions)
 - `benchmark/vue-fastapi-admin/benchmark/cursor-loop-helpers.sh`
 - `tests/unit/benchmark/test_cursor_loop_helpers.py`
 
-### Plan file listed but unchanged
-- `assurance_agent/workflow/graph/contracts.py` — `read_isolation: declared_only` already present; no Task 4 API change required.
+## How reselection works (D13)
+
+1. Lock conflict → `task_scheduling_deferred` folds to `TaskProjection(status="pending", next_retry_at=..., attempts_used=0)` (and durable `node_activated` if the prepared-wave path had not written it yet). No attempt / budget / failed event.
+2. `_drive` waits until `_earliest_retry_at` (pending or failed).
+3. `plan_superstep` reselects the same `task_id` into `retry_tasks` when `pending` + `next_retry_at` is set.
+4. `next_attempt_decision` returns `wait` before due, else `start` with `attempt_number = attempts_used + 1` → **1** on first real attempt after release.
+5. Continued conflict after due emits the next deferral ordinal with capped backoff; still no started+failed.
 
 ## Dark-ship status
 
-- No packaged contract flipped to `declared_only`.
-- Non-declared / legacy workspaces still compile and run; host links and convenience git remain for non-declared agents.
-- Historical events without new fields still fold.
-- Plan-fixer Runtime Context injection path exists but is not selected by current contracts (Task 15).
-- Snapshot capture/start binding activates only when a contract uses `read_isolation: declared_only`.
+Unchanged from prior Task 4 landing: no packaged contract flipped to `declared_only`; Runtime Context injection remains dormant until Task 15; snapshot binding activates only for `read_isolation: declared_only`.
 
 ## Verify commands / results
 
@@ -47,17 +48,15 @@ uv run pytest -q \
   tests/unit/workflow/graph/test_checkpoint.py \
   tests/unit/workflow/graph/test_task_runner.py \
   tests/integration/test_trace_recovery_workflows.py
-# → 228 passed
+# → 233 passed
 
 uv run ruff check assurance_agent/workflow/core/graph_events.py assurance_agent/workflow/graph tests/unit/workflow/graph
 # → All checks passed
 
 uv run pyright
-# → 0 errors, 0 warnings, 0 informations
+# → 0 errors (after typing fixes)
 ```
 
 ## Not committed
 
-Integrator owns staging/commit. Suggested message from plan:
-
-`feat(graph): bind declared task input snapshots`
+Integrator owns staging/commit. Do not include cursor-loop-helpers dirty files.

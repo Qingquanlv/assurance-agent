@@ -9,14 +9,13 @@ Do not rely on prior conversation context.
 
 **Before doing any work:**
 
-1. Read `qa/changes/<change-id>/workflow-state.yaml`.
-2. Read `events.jsonl` and determine the execution mode before validating the old review fields:
-   - **automatic mode**: `phases.e2e_plan_review.status == needs_fix`.
-   - **human-approved mode**: the latest `human_decision` for checkpoint `e2e-plan-review-gate` (or legacy checkpoint `e2e-plan-review`) has action `fix_and_proceed`, and its `review_sha256` matches the current `review/plan-review.json`.
+1. Read the bound `## Runtime Context` prompt block (`platform:plan-fixer-runtime-context/v1`). Use its `mode` and `source_review_*` fields as the sole authority for why this fixer was invoked:
+   - **automatic_healing**: proceed with automatic-mode gate validation below.
+   - **human_approved**: require `resume_action == fix_and_proceed`, non-empty `human_reason`, and `source_review_sha256` matching the current review bytes. Do not inspect the host coordinator ledger.
    - Otherwise stop.
-3. Read input files from disk: `review/plan-review.json`, `plans/e2e-plan.md`, `plans/e2e-test-data-plan.md`, `plans/e2e-codegen-plan.md`, `plans/m4-review-summary.md`.
-4. Always verify `review_type == "e2e-plan"` and `change_id == <change-id>`. In human-approved mode, apply only changes explicitly resolved by the decision reason. **human-approved mode bypasses the default auto-fix gate-field requirements** for `decision`, `next_action`, `human_review_required`, `auto_fix_allowed`, and non-empty `auto_fix_plan`.
-5. In automatic mode, verify the remaining gate fields in order — **STOP** on first failure:
+2. Read input files from disk: `review/plan-review.json`, `plans/e2e-plan.md`, `plans/e2e-test-data-plan.md`, `plans/e2e-codegen-plan.md`, `plans/m4-review-summary.md`.
+3. Always verify `review_type == "e2e-plan"` and `change_id == <change-id>`. In human_approved mode, apply only changes explicitly resolved by the decision reason. **human_approved mode bypasses the default auto-fix gate-field requirements** for `decision`, `next_action`, `human_review_required`, `auto_fix_allowed`, and non-empty `auto_fix_plan`.
+4. In automatic_healing mode, verify the remaining gate fields in order — **STOP** on first failure:
    - `decision == "needs_fix"` — if not, stop.
    - `next_action == "run_e2e_plan_fixer"` — if not, stop as reviewer contract error.
    - `human_review_required == false` — if not, stop **unless** human_approved exception applies (see below).
@@ -25,10 +24,10 @@ Do not rely on prior conversation context.
 
 **human_approved exception**:
 
-> In human-approved mode, allow fixing blocker / high severity items explicitly resolved by the decision reason, using `findings[]` and files on disk as evidence. Record each item in `plan-review-apply-summary.md` under `human_approved_fixes[]`. **Still never write review JSON or change gate status** — re-run `aa-e2e-plan-reviewer` after fixes.
+> In human_approved mode, allow fixing blocker / high severity items explicitly resolved by the decision reason, using `findings[]` and files on disk as evidence. Record each item in `plan-review-apply-summary.md` under `human_approved_fixes[]`. **Still never write review JSON or change gate status** — re-run `aa-e2e-plan-reviewer` after fixes.
 
-6. In automatic mode, resolve every `auto_fix_plan` item before applying fixes. In human-approved mode, validate each approved change against the decision reason, matching finding, and target-file allowlist.
-7. Use files as the sole source of truth.
+5. In automatic_healing mode, resolve every `auto_fix_plan` item before applying fixes. In human_approved mode, validate each approved change against the decision reason, matching finding, and target-file allowlist.
+6. Use files as the sole source of truth.
 
 **After completing work:**
 

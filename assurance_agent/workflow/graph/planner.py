@@ -584,9 +584,29 @@ def _seed_outcomes(
                     )
                 )
             continue
-        if latest.status in ("running", "pending"):
+        if latest.status == "running":
             # wave 仍在飞行：交由 lease/scheduler 对账，planner 不重复执行。
             outcomes[nid] = _Outcome(status="unresolved", task=latest)
+            continue
+        if latest.status == "pending" and latest.next_retry_at is None:
+            # Non-deferral pending remains in-flight. Scheduling deferrals always
+            # stamp next_retry_at and are reselected below without attempt credit.
+            outcomes[nid] = _Outcome(status="unresolved", task=latest)
+            continue
+        if latest.status == "pending" and latest.next_retry_at is not None:
+            # D13 lock deferral: durable scheduling state, not a failed attempt.
+            # Reselect the same task_id; scheduler honors next_retry_at / attempt 1.
+            outcomes[nid] = _Outcome(status="unresolved", task=latest)
+            retry.append(
+                _build_task(
+                    compiled,
+                    graph,
+                    projection,
+                    context,
+                    nid,
+                    max(len(node_tasks) - 1, 0),
+                )
+            )
             continue
         policy = _retry_policy(compiled, definition)
         if latest.status == "failed":
@@ -1091,6 +1111,20 @@ def _seed_fan_out(
             missing += 1
             continue
         if child.status == "succeeded":
+            continue
+        if child.status == "pending" and child.next_retry_at is not None:
+            # Scheduling deferral: reselect the same fan-out child without budget use.
+            retry.append(
+                _build_fan_out_task(
+                    compiled,
+                    graph,
+                    projection,
+                    context,
+                    nid,
+                    expansion,
+                    index,
+                )
+            )
             continue
         if child.status in ("running", "pending", "interrupted"):
             if waiting is None:
@@ -2276,7 +2310,10 @@ def _has_inflight(outcomes: dict[str, _Outcome]) -> bool:
     return any(
         outcome.status == "unresolved"
         and outcome.task is not None
-        and outcome.task.status in ("running", "pending", "interrupted")
+        and (
+            outcome.task.status in ("running", "interrupted")
+            or (outcome.task.status == "pending" and outcome.task.next_retry_at is None)
+        )
         for outcome in outcomes.values()
     )
 

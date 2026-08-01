@@ -23,6 +23,8 @@ from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from pydantic import BaseModel
+
 from assurance_agent.artifacts.canonical import canonical_json_bytes, sha256_bytes
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.events import read_events_strict
@@ -910,7 +912,14 @@ class Scheduler:
             token=token,
             ordinal=ordinal,
         )
+        # Prepared/synchronized waves write plan.strict_events only after the
+        # project lock is held. A conflict must still durable-ize node activation
+        # so later due reselection has a generation binding; the superstep itself
+        # remains uncommitted (D13).
+        pending_plan_events = _unwritten_activation_events(context.change_dir, plan.strict_events)
         with transaction(context.change_dir) as txn:
+            for event in pending_plan_events:
+                txn.append_strict(event)
             txn.append_strict(
                 TaskSchedulingDeferredEvent(
                     type="task_scheduling_deferred",
@@ -1780,6 +1789,33 @@ def _deferral_id(
 ) -> str:
     material = "|".join((invocation_id, checkpoint_ns, superstep_id, task_id, token, str(ordinal)))
     return "sha256:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _unwritten_activation_events(
+    change_dir: Path, events: Sequence[BaseModel]
+) -> tuple[BaseModel, ...]:
+    """Return node_activated events from a plan that are not yet durable."""
+    if not events:
+        return ()
+    existing = read_events_strict(change_dir)
+    activated = {
+        (event.get("invocation_id"), event.get("node_id"), event.get("generation_ordinal"))
+        for event in existing
+        if event.get("type") == "node_activated"
+    }
+    pending: list[BaseModel] = []
+    for event in events:
+        if getattr(event, "type", None) != "node_activated":
+            continue
+        key = (
+            getattr(event, "invocation_id", None),
+            getattr(event, "node_id", None),
+            getattr(event, "generation_ordinal", None),
+        )
+        if key in activated:
+            continue
+        pending.append(event)
+    return tuple(pending)
 
 
 __all__ = [

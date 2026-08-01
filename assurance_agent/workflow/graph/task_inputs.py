@@ -83,6 +83,8 @@ class TaskInputSnapshotEntryV1(StrictWireModel):
         _validate_canonical_strings(self.origins, label="origins")
         if not self.logical_aliases:
             raise ValueError("logical_aliases must be non-empty")
+        if not self.matched_claims:
+            raise ValueError("matched_claims must be non-empty")
         if not self.origins:
             raise ValueError("origins must be non-empty")
         if self.kind == "file":
@@ -260,6 +262,7 @@ def capture_task_input_snapshot(
             raise TaskInputError("runtime context base_tree_id mismatch")
         if runtime_context.target not in ("api", "e2e"):
             raise TaskInputError("runtime context target rejected")
+        _assert_source_review_bytes(workspace, runtime_context)
     roots = _load_workspace_roots(workspace)
     skill_name = task.target.partition(":")[2] if task.target.startswith("skill:") else None
     entries = _collect_entries(
@@ -320,6 +323,36 @@ def store_task_input_snapshot(store: TreeStore, snapshot_id: str, raw: bytes) ->
     if digest != snapshot_id:
         raise TaskInputError("snapshot_id does not match canonical bytes")
     store._write_object(snapshot_id, raw)  # noqa: SLF001
+
+
+def _assert_source_review_bytes(
+    workspace: TaskWorkspace,
+    runtime_context: PlanFixerRuntimeContextV1,
+) -> None:
+    """Reject missing/wrong-tree review bytes at capture time (D13)."""
+    try:
+        logical = ResourcePath.parse(runtime_context.source_review_path)
+    except Exception as exc:
+        raise TaskInputError(
+            f"runtime context source_review_path rejected: {runtime_context.source_review_path}"
+        ) from exc
+    if logical.root == "change":
+        physical = workspace.change_dir / logical.pattern
+    elif logical.root == "project":
+        physical = workspace.project_root / logical.pattern
+    else:
+        raise TaskInputError(
+            f"runtime context source_review_path root rejected: {runtime_context.source_review_path}"
+        )
+    try:
+        raw = physical.read_bytes()
+    except OSError as exc:
+        raise TaskInputError(
+            f"runtime context source review missing: {runtime_context.source_review_path}"
+        ) from exc
+    actual = sha256_bytes(raw)
+    if actual != runtime_context.source_review_sha256:
+        raise TaskInputError("runtime context source_review_sha256 mismatch")
 
 
 def _entries_input_sha256(entries: Sequence[TaskInputSnapshotEntryV1]) -> str:
