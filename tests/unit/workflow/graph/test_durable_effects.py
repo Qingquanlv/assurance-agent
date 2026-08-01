@@ -153,9 +153,18 @@ def _intent(
     )
 
 
-def test_production_registry_empty_in_task_7() -> None:
-    assert len(production_effect_registry()) == 0
-    assert production_effect_registry().kinds() == frozenset()
+def test_production_registry_has_exact_healing_kinds() -> None:
+    from assurance_agent.workflow.graph.durable_effects import (
+        FIXER_PROPOSAL_APPROVED_V1,
+        HEAL_RECORD_APPLY_V2,
+        HEALING_ALLOCATION_V2,
+    )
+
+    registry = production_effect_registry()
+    assert registry.kinds() == frozenset(
+        {HEALING_ALLOCATION_V2, FIXER_PROPOSAL_APPROVED_V1, HEAL_RECORD_APPLY_V2}
+    )
+    assert len(registry) == 3
 
 
 def test_packaged_contracts_select_no_durable_effects() -> None:

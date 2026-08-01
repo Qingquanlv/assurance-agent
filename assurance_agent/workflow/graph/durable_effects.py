@@ -1,9 +1,7 @@
 """D14 inline durable-effect protocol: intents, acknowledgements, and reconciliation.
 
-Task 7 ships the generic seam dark: ``ExecutionContract.durable_effects`` defaults
-empty, handlers return no intents, and the production registry has no healing
-entries until Task 8. Tests inject a local registry with one strict
-payload/reconciler.
+Production registry gains the three healing kinds in Task 8. Packaged contracts
+still select none until Task 15. Tests may inject a local registry.
 """
 
 from __future__ import annotations
@@ -205,10 +203,22 @@ class EffectRegistry:
 
 
 _PRODUCTION_REGISTRY = EffectRegistry()
+_HEALING_EFFECTS_REGISTERED = False
+
+
+def _ensure_healing_effects_registered() -> None:
+    global _HEALING_EFFECTS_REGISTERED
+    if _HEALING_EFFECTS_REGISTERED:
+        return
+    from assurance_agent.workflow.healing.effects import register_healing_effects
+
+    register_healing_effects(_PRODUCTION_REGISTRY)
+    _HEALING_EFFECTS_REGISTERED = True
 
 
 def production_effect_registry() -> EffectRegistry:
-    """Return the process-wide production registry (empty until Task 8)."""
+    """Return the process-wide production registry (healing kinds from Task 8)."""
+    _ensure_healing_effects_registered()
     return _PRODUCTION_REGISTRY
 
 

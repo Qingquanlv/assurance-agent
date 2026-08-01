@@ -98,6 +98,55 @@ class HealingEntryBaselinePinnedEvent(_AuditEventBase):
     episode_id: str
 
 
+class HealingAttemptAllocatedV2Event(_AuditEventBase):
+    """Combined baseline+allocation domain event for D14 healing outbox recovery."""
+
+    source: Literal["progression"] = "progression"
+    type: Literal["healing_attempt_allocated_v2"] = "healing_attempt_allocated_v2"
+    episode_id: str
+    attempt_id: str
+    attempt_number: int = Field(ge=1)
+    operation_id: str = Field(min_length=1)
+    source_batch_id: str
+    entry_batch_id: str
+    baseline_sha256: str
+    baseline_embedded: bool
+
+
+class FixerProposalApprovedEvent(_AuditEventBase):
+    source: Literal["heal"] = "heal"
+    type: Literal["fixer_proposal_approved"] = "fixer_proposal_approved"
+    approval_id: str
+    root_invocation_id: str
+    interrupt_task_id: str
+    source_gate_attempt_id: str
+    source_tree_id: str
+    proposal_sha256: str
+    fixer_authority_sha256: str
+    entry_baseline_sha256: str
+    policy_sha256: str
+    targets: list[Literal["api", "e2e"]]
+    paths: list[str]
+    target_tree_id: str
+
+
+class HealRecordApplyV2Event(_AuditEventBase):
+    source: Literal["heal"] = "heal"
+    type: Literal["heal_record_apply_v2"] = "heal_record_apply_v2"
+    record_key: str
+    root_invocation_id: str
+    record_task_id: str
+    fixer_attempt_id: str
+    target: Literal["api", "e2e"]
+    entry_batch_id: str
+    intent_sha256: str
+    write_set_id: str
+    outcome: Literal["applied", "no_op", "skipped"]
+    proposal_ids: list[str]
+    claimed_modified_paths: list[str]
+    safety_payload_sha256: str
+
+
 class GateVerdictEvent(_AuditEventBase):
     """Durable gate adjudication with audited-read hashes for tamper detection."""
 
@@ -129,9 +178,12 @@ AuditEvent = Annotated[
     | DispatchSignedEvent
     | PhaseOutcomeCommittedEvent
     | HealingAttemptAllocatedEvent
+    | HealingAttemptAllocatedV2Event
     | HealRecordApplyEvent
+    | HealRecordApplyV2Event
     | HealTransitionEvent
     | HealingEntryBaselinePinnedEvent
+    | FixerProposalApprovedEvent
     | GateVerdictEvent
     | FailureReclassifiedEvent
     | GraphEvent,

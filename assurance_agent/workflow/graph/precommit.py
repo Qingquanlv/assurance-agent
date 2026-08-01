@@ -1,8 +1,7 @@
 """D14 candidate validation receipts and closed precommit validator registry.
 
-Resolution B (Task 6): ``generated_files_candidate/v1`` is implemented.
-``codegen_fix_candidate/v1`` remains a known closed ID that contract load
-rejects until Task 8 supplies FixerAuthority and the fixer algorithm.
+Both ``generated_files_candidate/v1`` and ``codegen_fix_candidate/v1`` are
+implemented. Packaged contracts still select neither until Task 15.
 """
 
 from __future__ import annotations
@@ -10,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Literal
 
 import yaml
@@ -17,6 +17,12 @@ from pydantic import field_validator, model_validator
 
 from assurance_agent.artifacts.canonical import canonical_json_bytes, sha256_bytes
 from assurance_agent.artifacts.models.common import StrictWireModel
+from assurance_agent.artifacts.models.healing_codegen import (
+    ApiCodegenFixApplyIntentV1,
+    E2eCodegenFixApplyIntentV1,
+    FixerAuthorityV1,
+    FixerProposalApprovalReceiptV1,
+)
 from assurance_agent.exceptions import AaError
 from assurance_agent.verification.generated_entries import (
     MappingExtractionError,
@@ -28,6 +34,7 @@ from assurance_agent.verification.generated_files import (
     get_generated_files_contract,
     get_generated_files_model,
 )
+from assurance_agent.workflow.graph.diff_safety import evaluate_diff_safety
 from assurance_agent.workflow.graph.evidence_paths import (
     EvidencePathError,
     pinned_write_set_roots,
@@ -35,6 +42,7 @@ from assurance_agent.workflow.graph.evidence_paths import (
 )
 from assurance_agent.workflow.graph.task_inputs import TaskInputSnapshotV1
 from assurance_agent.workflow.graph.workspace import TreeStore, WriteSet, WorkspaceError
+from assurance_agent.workflow.healing.safety import load_product_code_roots
 
 GENERATED_FILES_CANDIDATE_V1 = "generated_files_candidate/v1"
 CODEGEN_FIX_CANDIDATE_V1 = "codegen_fix_candidate/v1"
@@ -42,7 +50,9 @@ CODEGEN_FIX_CANDIDATE_V1 = "codegen_fix_candidate/v1"
 KNOWN_PRECOMMIT_VALIDATORS: frozenset[str] = frozenset(
     {GENERATED_FILES_CANDIDATE_V1, CODEGEN_FIX_CANDIDATE_V1}
 )
-IMPLEMENTED_PRECOMMIT_VALIDATORS: frozenset[str] = frozenset({GENERATED_FILES_CANDIDATE_V1})
+IMPLEMENTED_PRECOMMIT_VALIDATORS: frozenset[str] = frozenset(
+    {GENERATED_FILES_CANDIDATE_V1, CODEGEN_FIX_CANDIDATE_V1}
+)
 
 _TESTDATA_ROOT = "tests/testdata"
 
@@ -146,13 +156,13 @@ def validator_semantics_digest(validator_id: str) -> str:
 
 
 def validate_precommit_validator_id(validator_id: str | None) -> None:
-    """Reject unknown or Task-8-deferred validator IDs at contract load."""
+    """Reject unknown validator IDs at contract load."""
     if validator_id is None:
         return
     if validator_id not in KNOWN_PRECOMMIT_VALIDATORS:
         raise CandidateValidationError(f"unknown precommit validator: {validator_id}")
     if validator_id not in IMPLEMENTED_PRECOMMIT_VALIDATORS:
-        raise CandidateValidationError(f"precommit validator not implemented until Task 8: {validator_id}")
+        raise CandidateValidationError(f"precommit validator not implemented: {validator_id}")
 
 
 def validate_candidate(
@@ -167,30 +177,42 @@ def validate_candidate(
     change_id: str,
     layer: str,
     current_change_repo_path: str,
+    project_root: Path | None = None,
 ) -> tuple[str, CandidateValidationReceiptV1]:
     """Dispatch one registered validator; return CAS receipt id and receipt."""
     if validator_id not in KNOWN_PRECOMMIT_VALIDATORS:
         raise CandidateValidationError(f"unknown precommit validator: {validator_id}")
-    if validator_id == CODEGEN_FIX_CANDIDATE_V1:
-        raise CandidateValidationError(f"precommit validator not implemented until Task 8: {validator_id}")
-    if validator_id != GENERATED_FILES_CANDIDATE_V1:
-        raise CandidateValidationError(f"unknown precommit validator: {validator_id}")
+    if validator_id not in IMPLEMENTED_PRECOMMIT_VALIDATORS:
+        raise CandidateValidationError(f"precommit validator not implemented: {validator_id}")
     _assert_context_bindings(
         context,
         write_set=write_set,
         input_snapshot=input_snapshot,
     )
-    decision = _validate_generated_files_candidate(
-        context=context,
-        store=store,
-        write_set=write_set,
-        input_snapshot=input_snapshot,
-        plan_text=plan_text,
-        cases=cases,
-        change_id=change_id,
-        layer=layer,
-        current_change_repo_path=current_change_repo_path,
-    )
+    if validator_id == CODEGEN_FIX_CANDIDATE_V1:
+        decision = _validate_codegen_fix_candidate(
+            context=context,
+            store=store,
+            write_set=write_set,
+            input_snapshot=input_snapshot,
+            layer=layer,
+            current_change_repo_path=current_change_repo_path,
+            project_root=project_root,
+        )
+    elif validator_id == GENERATED_FILES_CANDIDATE_V1:
+        decision = _validate_generated_files_candidate(
+            context=context,
+            store=store,
+            write_set=write_set,
+            input_snapshot=input_snapshot,
+            plan_text=plan_text,
+            cases=cases,
+            change_id=change_id,
+            layer=layer,
+            current_change_repo_path=current_change_repo_path,
+        )
+    else:
+        raise CandidateValidationError(f"unknown precommit validator: {validator_id}")
     decision_bytes = canonical_json_bytes(decision)
     decision_digest = sha256_bytes(decision_bytes)
     decision_id = hashlib.sha256(decision_bytes).hexdigest()
@@ -243,9 +265,10 @@ def verify_candidate_receipt(
     change_id: str,
     layer: str,
     current_change_repo_path: str,
+    project_root: Path | None = None,
 ) -> None:
     """Recompute every binding or raise CandidateValidationError."""
-    if receipt.validator_id != GENERATED_FILES_CANDIDATE_V1:
+    if receipt.validator_id not in IMPLEMENTED_PRECOMMIT_VALIDATORS:
         raise CandidateValidationError(f"unsupported receipt validator: {receipt.validator_id}")
     expected_semantics = validator_semantics_digest(receipt.validator_id)
     if receipt.validator_semantics_digest != expected_semantics:
@@ -265,17 +288,28 @@ def verify_candidate_receipt(
     if dict(sorted(receipt.output_digests.items())) != dict(sorted(context.output_digests.items())):
         raise CandidateValidationError("output_digests mismatch")
     _assert_context_bindings(context, write_set=write_set, input_snapshot=input_snapshot)
-    decision = _validate_generated_files_candidate(
-        context=context,
-        store=store,
-        write_set=write_set,
-        input_snapshot=input_snapshot,
-        plan_text=plan_text,
-        cases=cases,
-        change_id=change_id,
-        layer=layer,
-        current_change_repo_path=current_change_repo_path,
-    )
+    if receipt.validator_id == CODEGEN_FIX_CANDIDATE_V1:
+        decision = _validate_codegen_fix_candidate(
+            context=context,
+            store=store,
+            write_set=write_set,
+            input_snapshot=input_snapshot,
+            layer=layer,
+            current_change_repo_path=current_change_repo_path,
+            project_root=project_root,
+        )
+    else:
+        decision = _validate_generated_files_candidate(
+            context=context,
+            store=store,
+            write_set=write_set,
+            input_snapshot=input_snapshot,
+            plan_text=plan_text,
+            cases=cases,
+            change_id=change_id,
+            layer=layer,
+            current_change_repo_path=current_change_repo_path,
+        )
     decision_bytes = canonical_json_bytes(decision)
     if sha256_bytes(decision_bytes) != receipt.decision_payload_sha256:
         raise CandidateValidationError("decision_payload_sha256 mismatch")
@@ -453,7 +487,13 @@ _SEMANTICS_RULES: dict[str, list[str]] = {
         "resolve_evidence_path_for_every_write",
     ],
     CODEGEN_FIX_CANDIDATE_V1: [
-        "deferred_to_task_8",
+        "require_target_specific_intent",
+        "proposal_and_authority_path_subsets",
+        "exact_claimed_test_write_equality",
+        "regular_file_add_or_content_modify_only",
+        "baseline_before_digest_for_reused_authority",
+        "high_risk_requires_approval_receipt",
+        "code_owned_diff_safety_predicates",
     ],
 }
 
@@ -499,6 +539,217 @@ def _assert_context_bindings(
     outputs = dict(sorted(write_set.outputs_sha256.items()))
     if outputs != dict(sorted(context.output_digests.items())):
         raise CandidateValidationError("output_digests do not match write set outputs")
+
+
+def _validate_codegen_fix_candidate(
+    *,
+    context: PrecommitValidationContext,
+    store: TreeStore,
+    write_set: WriteSet,
+    input_snapshot: TaskInputSnapshotV1,
+    layer: str,
+    current_change_repo_path: str,
+    project_root: Path | None,
+) -> dict[str, object]:
+    if layer not in {"api", "e2e"}:
+        raise CandidateValidationError(f"codegen_fix_candidate only supports api/e2e, got {layer}")
+    intent_logical = f"change:healing/{layer}-apply-intent.json"
+    intent_digest = context.output_digests.get(intent_logical)
+    if intent_digest is None:
+        raise CandidateValidationError(f"missing required intent output: {intent_logical}")
+    try:
+        intent_bytes = store.read_object(intent_digest)
+        intent_payload = json.loads(intent_bytes.decode("utf-8"))
+        intent_model = (
+            ApiCodegenFixApplyIntentV1 if layer == "api" else E2eCodegenFixApplyIntentV1
+        ).model_validate(intent_payload)
+    except Exception as exc:
+        raise CandidateValidationError(f"invalid codegen fix intent: {exc}") from exc
+    if intent_model.target != layer:
+        raise CandidateValidationError("intent target mismatch")
+
+    proposal = _load_snapshot_json(store, input_snapshot, logical="change:healing/fix-proposal.json")
+    authority_raw = _load_snapshot_json(store, input_snapshot, logical="change:healing/fixer-authority.json")
+    try:
+        authority = FixerAuthorityV1.model_validate(authority_raw)
+    except Exception as exc:
+        raise CandidateValidationError(f"invalid fixer authority: {exc}") from exc
+    target_authority = next((item for item in authority.targets if item.target == layer), None)
+    if target_authority is None or target_authority.status != "ready":
+        raise CandidateValidationError("fixer authority target missing or not ready")
+    authority_paths = {path.repo_path: path for path in target_authority.paths}
+    proposal_paths = _proposal_paths_for_target(proposal, layer)
+    if not set(proposal_paths).issubset(set(authority_paths)):
+        raise CandidateValidationError("proposal paths are not a subset of fixer-authority paths")
+
+    try:
+        tree_roots = pinned_write_set_roots(write_set)
+    except EvidencePathError as exc:
+        raise CandidateValidationError(str(exc)) from exc
+    write_by_repo = _repository_test_writes(
+        write_set,
+        store=store,
+        tree_roots=tree_roots,
+        current_change_repo_path=current_change_repo_path,
+    )
+    # Exclude the intent artifact itself from claimed/write equality.
+    claimed = list(intent_model.claimed_modified_paths)
+    write_paths = sorted(write_by_repo)
+    if intent_model.outcome == "applied":
+        if not intent_model.proposal_ids or not claimed:
+            raise CandidateValidationError("applied intent requires proposals and claimed paths")
+        if write_paths != sorted(claimed):
+            raise CandidateValidationError("claimed_modified_paths must equal test/testdata writes")
+        if not set(claimed).issubset(set(proposal_paths)):
+            raise CandidateValidationError("claimed paths exceed proposal authorization")
+        if not set(claimed).issubset(set(authority_paths)):
+            raise CandidateValidationError("claimed paths exceed fixer-authority authorization")
+        for path in claimed:
+            binding = write_by_repo[path]
+            if binding["operation"] not in {"add", "modify"}:
+                raise CandidateValidationError(f"invalid write operation for {path}")
+            auth_path = authority_paths[path]
+            if auth_path.disposition == "reused":
+                before = binding.get("before_sha256")
+                expected_before = auth_path.content_sha256.removeprefix("sha256:")
+                if before != expected_before:
+                    raise CandidateValidationError(
+                        f"reused authority before-digest mismatch for {path}"
+                    )
+            elif auth_path.disposition in {"generated", "updated"}:
+                after = binding.get("after_sha256")
+                if f"sha256:{after}" != auth_path.content_sha256 and binding["operation"] == "add":
+                    # generated/updated authority binds after digest of codegen write set;
+                    # fixer may further modify, so before must match authority digest.
+                    before = binding.get("before_sha256")
+                    if before is not None and f"sha256:{before}" != auth_path.content_sha256:
+                        raise CandidateValidationError(
+                            f"authority before-digest mismatch for {path}"
+                        )
+    else:
+        if write_paths:
+            raise CandidateValidationError(f"{intent_model.outcome} intent must have zero test writes")
+        if claimed:
+            raise CandidateValidationError(f"{intent_model.outcome} intent must not claim paths")
+
+    high_risk = _proposal_is_high_risk(proposal, intent_model.proposal_ids, layer)
+    approval_digest = None
+    if high_risk:
+        approval_raw = _load_snapshot_json(
+            store,
+            input_snapshot,
+            logical="change:healing/fixer-proposal-approval.json",
+            required=True,
+        )
+        try:
+            approval = FixerProposalApprovalReceiptV1.model_validate(approval_raw)
+        except Exception as exc:
+            raise CandidateValidationError(f"invalid approval receipt: {exc}") from exc
+        approval_digest = sha256_bytes(canonical_json_bytes(approval))
+        if context.current_tree_id != approval.source_tree_id and context.base_tree_id != approval.source_tree_id:
+            # Allow either bound tree identity; reject when neither matches.
+            if approval.source_tree_id not in {context.current_tree_id, context.base_tree_id}:
+                raise CandidateValidationError("approval receipt tree drift")
+
+    blobs: dict[str, bytes] = {}
+    for binding in write_by_repo.values():
+        for key in ("before_sha256", "after_sha256"):
+            digest = binding.get(key)
+            if isinstance(digest, str) and digest and digest not in blobs:
+                try:
+                    blobs[digest] = store.read_object(digest)
+                except WorkspaceError:
+                    continue
+    roots = load_product_code_roots(project_root) if project_root is not None else ["app", "web/src", "src"]
+    private_root = get_generated_files_contract(layer).private_test_root
+    safety = evaluate_diff_safety(
+        write_bindings=list(write_by_repo.values()),
+        blobs=blobs,
+        authorized_paths=proposal_paths,
+        private_root=private_root,
+        product_roots=roots,
+    )
+    if any(safety.values()):
+        raise CandidateValidationError(f"diff-safety rejected candidate: {safety}")
+
+    return {
+        "approval_sha256": approval_digest,
+        "authority_paths": sorted(authority_paths),
+        "claimed_modified_paths": claimed,
+        "high_risk": high_risk,
+        "intent": intent_model.model_dump(mode="json"),
+        "layer": layer,
+        "proposal_paths": sorted(proposal_paths),
+        "safety": safety,
+        "validator_id": CODEGEN_FIX_CANDIDATE_V1,
+        "write_paths": write_paths,
+        "write_set_id": write_set.write_set_id,
+    }
+
+
+def _load_snapshot_json(
+    store: TreeStore,
+    snapshot: TaskInputSnapshotV1,
+    *,
+    logical: str,
+    required: bool = True,
+) -> dict[str, object]:
+    for entry in snapshot.entries:
+        if entry.kind != "file" or entry.sha256 is None:
+            continue
+        if logical not in set(entry.logical_aliases):
+            continue
+        digest = entry.sha256.removeprefix("sha256:")
+        try:
+            raw = store.read_object(digest)
+            data = json.loads(raw.decode("utf-8"))
+        except Exception as exc:
+            raise CandidateValidationError(f"unreadable snapshot artifact {logical}: {exc}") from exc
+        if not isinstance(data, dict):
+            raise CandidateValidationError(f"snapshot artifact must be object: {logical}")
+        return data
+    if required:
+        raise CandidateValidationError(f"missing snapshot artifact: {logical}")
+    return {}
+
+
+def _proposal_paths_for_target(proposal: Mapping[str, object], layer: str) -> list[str]:
+    paths: list[str] = []
+    items = proposal.get("proposals")
+    if not isinstance(items, list):
+        return paths
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("target") != layer or not item.get("eligible", True):
+            continue
+        files = item.get("files_to_modify") or item.get("paths") or []
+        if isinstance(files, list):
+            paths.extend(str(path) for path in files)
+    return sorted(set(paths))
+
+
+def _proposal_is_high_risk(
+    proposal: Mapping[str, object],
+    proposal_ids: Sequence[str],
+    layer: str,
+) -> bool:
+    items = proposal.get("proposals")
+    if not isinstance(items, list):
+        return False
+    wanted = set(proposal_ids)
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("target") != layer:
+            continue
+        pid = str(item.get("proposal_id") or "")
+        if wanted and pid not in wanted:
+            continue
+        risk = str(item.get("risk_level") or "").lower()
+        if risk in {"high", "critical"} or item.get("needs_review") is True:
+            return True
+    return False
 
 
 def _validate_generated_files_candidate(

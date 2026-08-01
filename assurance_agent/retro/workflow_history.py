@@ -21,6 +21,7 @@ from assurance_agent.exceptions import AaError
 from assurance_agent.retro.types import RetroIntegrity, RetroSourceDescriptor
 from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
 from assurance_agent.workflow.core.graph_types import ErrorKind
+from assurance_agent.workflow.healing.projection import project_healing_episode_from_events
 
 
 def _list_dir_names(root: Path) -> list[str]:
@@ -335,20 +336,25 @@ def _extract_from_change(
                 )
             )
             evidence_ids.append(eid)
-        elif event_type == "healing_attempt_allocated":
-            operation_id = event.get("operation_id")
-            if not isinstance(operation_id, str) or not operation_id or eid is None:
-                continue
-            healing_allocations.append(
-                HealingAllocationRecord(
-                    change_id=change_id,
-                    seq=int(event["seq"]),  # type: ignore[arg-type]
-                    ts=str(event.get("ts", "")),
-                    operation_id=operation_id,
-                    evidence_id=eid,
-                )
+    events_by_seq = {
+        seq: event
+        for event in events
+        if isinstance((seq := event.get("seq")), int) and not isinstance(seq, bool)
+    }
+    projection = project_healing_episode_from_events(events)
+    for allocation in projection.allocations:
+        source_event = events_by_seq.get(allocation.source_seq, {})
+        eid = f"{change_id}#seq{allocation.source_seq}"
+        healing_allocations.append(
+            HealingAllocationRecord(
+                change_id=change_id,
+                seq=allocation.source_seq,
+                ts=str(source_event.get("ts", "")),
+                operation_id=allocation.operation_id,
+                evidence_id=eid,
             )
-            evidence_ids.append(eid)
+        )
+        evidence_ids.append(eid)
 
     recovered_task_ids: set[str] = set()
     for failed_task_id, route in recovery_routes.items():

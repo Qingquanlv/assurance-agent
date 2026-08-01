@@ -1283,9 +1283,21 @@ def test_packaged_contracts_select_no_durable_effects() -> None:
         assert contract.durable_effects == ()
 
 
-def test_durable_effects_default_empty_and_reject_unregistered() -> None:
+def test_durable_effects_default_empty_and_accept_registered_healing_kinds() -> None:
     contract = ExecutionContract(target="operation:plain", handler="operation")
     assert contract.durable_effects == ()
+    catalog = parse_execution_contracts(
+        textwrap.dedent(
+            """\
+            schema_version: "1"
+            contracts:
+              operation:x:
+                handler: operation
+                durable_effects: ["healing_allocation/v2"]
+            """
+        )
+    )
+    assert catalog.contracts["operation:x"].durable_effects == ("healing_allocation/v2",)
     with pytest.raises(ContractError, match="unregistered durable effect"):
         parse_execution_contracts(
             textwrap.dedent(
@@ -1294,7 +1306,7 @@ def test_durable_effects_default_empty_and_reject_unregistered() -> None:
                 contracts:
                   operation:x:
                     handler: operation
-                    durable_effects: ["healing_allocation/v2"]
+                    durable_effects: ["not_a_kind/v1"]
                 """
             )
         )
@@ -1315,15 +1327,15 @@ def test_precommit_validator_defaults_none_and_rejects_unknown() -> None:
                 """
             )
         )
-    with pytest.raises(ContractError, match="not implemented until Task 8"):
-        parse_execution_contracts(
-            textwrap.dedent(
-                """\
-                schema_version: "1"
-                contracts:
-                  operation:x:
-                    handler: operation
-                    precommit_validator: codegen_fix_candidate/v1
-                """
-            )
+    catalog = parse_execution_contracts(
+        textwrap.dedent(
+            """\
+            schema_version: "1"
+            contracts:
+              operation:x:
+                handler: operation
+                precommit_validator: codegen_fix_candidate/v1
+            """
         )
+    )
+    assert catalog.contracts["operation:x"].precommit_validator == "codegen_fix_candidate/v1"

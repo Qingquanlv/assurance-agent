@@ -4,8 +4,14 @@ from pydantic import StrictBool, StrictInt, ValidationError
 from assurance_agent.artifacts.canonical import canonical_json_bytes
 from assurance_agent.artifacts.models import (
     ApiCodegenFixApplyIntentV1,
+    ApiCodegenFixApplySummaryV1,
+    ApiCodegenFixerSafetyCheckV1,
     E2eCodegenFixApplyIntentV1,
+    FixerAuthorityPathV1,
+    FixerAuthorityTargetV1,
+    FixerAuthorityV1,
     FixerProposalApprovalReceiptV1,
+    FixerSafetyCheckV1,
     StrictWireModel,
 )
 
@@ -109,6 +115,63 @@ def test_approval_receipt_requires_canonical_nonempty_targets_and_paths() -> Non
     payload["paths"] = []
     with pytest.raises(ValidationError):
         FixerProposalApprovalReceiptV1.model_validate(payload)
+
+
+def test_fixer_authority_and_safety_models_round_trip() -> None:
+    authority = FixerAuthorityV1(
+        schema_version="1",
+        change_id="CH-1",
+        targets=[
+            FixerAuthorityTargetV1(
+                target="api",
+                status="ready",
+                codegen_attempt_id="cg-1",
+                generated_files_sha256="sha256:" + "a" * 64,
+                summary_sha256="sha256:" + "b" * 64,
+                write_set_id="ws-1",
+                execution_batch_id="batch-1",
+                paths=[
+                    FixerAuthorityPathV1(
+                        repo_path="tests/api/test_login.py",
+                        disposition="generated",
+                        content_sha256="sha256:" + "c" * 64,
+                    )
+                ],
+            )
+        ],
+    )
+    assert canonical_json_bytes(authority) == canonical_json_bytes(authority)
+    summary = ApiCodegenFixApplySummaryV1(
+        schema_version="1",
+        target="api",
+        outcome="applied",
+        proposal_ids=["FIX_001"],
+        claimed_modified_paths=["tests/api/test_login.py"],
+        intent_sha256="sha256:" + "d" * 64,
+        write_set_id="ws-2",
+    )
+    fragment = ApiCodegenFixerSafetyCheckV1(
+        schema_version="1",
+        target="api",
+        passed=True,
+        needs_review=False,
+        product_code_modified=False,
+        skip_or_xfail_added=False,
+        unrelated_tests_modified=False,
+        assertion_expected_value_changes_detected=False,
+        high_risk_proposal_applied=False,
+        applied_proposal_count=1,
+    )
+    aggregate = FixerSafetyCheckV1(
+        schema_version="1",
+        passed=True,
+        needs_review=False,
+        active_targets=["api"],
+        target_safety_sha256=["sha256:" + "e" * 64],
+    )
+    assert summary.target == "api"
+    assert fragment.passed is True
+    assert aggregate.active_targets == ["api"]
 
 
 def test_strict_wire_model_rejects_coerced_booleans_and_integers() -> None:

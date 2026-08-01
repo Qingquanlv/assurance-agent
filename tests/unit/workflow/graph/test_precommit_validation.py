@@ -141,13 +141,12 @@ def test_precommit_context_rejects_unsorted_output_keys_and_empty_ids() -> None:
 def test_validator_registry_load_rules() -> None:
     validate_precommit_validator_id(None)
     validate_precommit_validator_id(GENERATED_FILES_CANDIDATE_V1)
-    with pytest.raises(CandidateValidationError, match="not implemented until Task 8"):
-        validate_precommit_validator_id(CODEGEN_FIX_CANDIDATE_V1)
+    validate_precommit_validator_id(CODEGEN_FIX_CANDIDATE_V1)
     with pytest.raises(CandidateValidationError, match="unknown"):
         validate_precommit_validator_id("not_a_validator/v1")
 
 
-def test_contract_load_rejects_unknown_and_deferred_validators() -> None:
+def test_contract_load_rejects_unknown_validators() -> None:
     with pytest.raises(ContractError, match="unknown precommit validator"):
         parse_execution_contracts(
             """
@@ -158,18 +157,18 @@ contracts:
     precommit_validator: mystery/v1
 """
         )
-    with pytest.raises(ContractError, match="not implemented until Task 8"):
-        catalog_from_pinned_contracts(
-            (
-                ExecutionContract(
-                    target="operation:x",
-                    handler="operation",
-                    precommit_validator=CODEGEN_FIX_CANDIDATE_V1,
-                ),
-            )
+    ok = catalog_from_pinned_contracts(
+        (
+            ExecutionContract(
+                target="operation:x",
+                handler="operation",
+                precommit_validator=CODEGEN_FIX_CANDIDATE_V1,
+            ),
         )
-    ok = ExecutionContract(target="operation:y", handler="operation")
-    assert ok.precommit_validator is None
+    )
+    assert ok.contracts["operation:x"].precommit_validator == CODEGEN_FIX_CANDIDATE_V1
+    bare = ExecutionContract(target="operation:y", handler="operation")
+    assert bare.precommit_validator is None
 
 
 # ---------------------------------------------------------------------------
@@ -685,11 +684,11 @@ def test_fold_requires_receipt_when_precommit_validator_named() -> None:
     assert historical.tasks["t1"].precommit_validator is None
 
 
-def test_codegen_fix_candidate_not_dispatchable(tmp_path: Path) -> None:
+def test_codegen_fix_candidate_rejects_missing_intent(tmp_path: Path) -> None:
     _project, store, _sid, write_set_id, context, _tree = _freeze_valid_api_candidate(tmp_path)
     write_set = store.load_write_set(write_set_id)
     snapshot = load_task_input_snapshot(store, context.input_snapshot_id)
-    with pytest.raises(CandidateValidationError, match="not implemented until Task 8"):
+    with pytest.raises(CandidateValidationError, match="missing required intent"):
         validate_candidate(
             CODEGEN_FIX_CANDIDATE_V1,
             context,

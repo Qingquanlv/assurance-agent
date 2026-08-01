@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from assurance_agent.change_location import resolve_change
 from assurance_agent.config import load_config
 from assurance_agent.exceptions import AaError
-from assurance_agent.workflow.core.events import HealRecordApplyEvent, Ledger
+from assurance_agent.workflow.core.events import HealRecordApplyEvent
 from assurance_agent.workflow.core.progression import transaction
 from assurance_agent.workflow.execution.tree_hash import (
     diff_trees,
@@ -22,6 +22,7 @@ from assurance_agent.workflow.execution.tree_hash import (
     hash_test_tree,
     sha256_file,
 )
+from assurance_agent.workflow.healing.projection import project_healing_episode
 from assurance_agent.workflow.orchestration.healing_state import (
     HealingStateSnapshot,
     derive_healing_state,
@@ -66,14 +67,11 @@ class RecordApplySummaryResult(BaseModel):
 def derive_guard_context(project_root: Path, change_id: str) -> HealingGuardContext:
     change_dir = _active_change_dir(project_root, change_id)
     snapshot = derive_healing_state(change_dir)
-    latest = (
-        Ledger(change_dir).latest(type="healing_attempt_allocated", episode_id=snapshot.episode_id)
-        if snapshot.episode_id is not None
-        else None
-    )
+    projection = project_healing_episode(change_dir, episode_id=snapshot.episode_id)
+    latest = projection.latest_allocation
     proposal_path = change_dir / "healing" / "fix-proposal.json"
     proposal_sha = sha256_file(proposal_path)
-    source_batch = str(latest["source_batch_id"]) if latest is not None else None
+    source_batch = latest.source_batch_id if latest is not None else None
     return HealingGuardContext(
         snapshot=snapshot,
         source_batch_id=source_batch,

@@ -44,6 +44,14 @@ from assurance_agent.workflow.report.report_builder import generate_report
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
 from assurance_agent.workflow.graph.task_runner import task_failure, task_with
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
+from assurance_agent.workflow.healing.operations import (
+    enhance_allocate_result_with_authority,
+    operation_combine_fixer_safety,
+    operation_fixer_authority_ready,
+    operation_fixer_dispatch,
+    operation_record_codegen_fix_apply,
+    operation_record_fixer_approval,
+)
 from assurance_agent.workflow.orchestration.operations import BASELINE_REL, HEAL_STATUSES
 from assurance_agent.workflow.graph.handlers.plan_checks import (
     derive_plan_layer_applicability,
@@ -278,9 +286,9 @@ def operation_allocate_healing_attempt(
 ) -> OperationResult:
     """写 entry-baseline artifact 并返回 allocation payload（ids 按 v1 规则结构化派生）。
 
-    strict ``healing_attempt_allocated``/``healing_entry_baseline_pinned`` 事件在
-    scheduler ``_persist_success`` 中写入 canonical ledger；本函数只产出 workspace
-    artifact 与 allocation value。
+    Legacy host-ledger allocation events are appended by the scheduler
+    compatibility hook in ``_persist_success``; this function only produces
+    workspace artifacts, optional fixer-authority output, and allocation value.
     """
     manifest_path = workspace.change_dir / "execution" / "execution-manifest.yaml"
     batch_id: str | None = None
@@ -349,9 +357,16 @@ def operation_allocate_healing_attempt(
         "baseline_sha256": baseline_sha256,
         "entry_batch_id": batch_id,
     }
-    return TaskResult(
-        status="succeeded",
-        value=allocation,
+    # Dark-ship: write fixer-authority hard output. Durable effect only when the
+    # caller/contract opts in via with.emit_durable_effect (Task 15 selects it).
+    emit_effect = bool(task_with(task).get("emit_durable_effect"))
+    return enhance_allocate_result_with_authority(
+        task=task,
+        workspace=workspace,
+        context=context,
+        allocation=allocation,
+        attempt_id=attempt_id,
+        emit_durable_effect=emit_effect,
     )
 
 
@@ -406,6 +421,11 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:inspect": inspect_operation,
         "operation:generate-report": generate_report_operation,
         "operation:allocate-healing-attempt": operation_allocate_healing_attempt,
+        "operation:fixer-authority-ready": operation_fixer_authority_ready,
+        "operation:record-fixer-approval": operation_record_fixer_approval,
+        "operation:fixer-dispatch": operation_fixer_dispatch,
+        "operation:record-codegen-fix-apply": operation_record_codegen_fix_apply,
+        "operation:combine-fixer-safety": operation_combine_fixer_safety,
         "operation:record-healing-status": operation_record_healing_status,
         "operation:stop": stop_operation,
         "operation:retro-collect-v3": retro_collect_v3,

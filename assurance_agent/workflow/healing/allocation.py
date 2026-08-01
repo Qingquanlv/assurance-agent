@@ -1,4 +1,4 @@
-"""Healing attempt allocation ledger commits for graph v2."""
+"""Healing attempt allocation ledger commits for graph v2 (legacy compatibility)."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ from pathlib import Path
 from assurance_agent.workflow.core.events import (
     HealingAttemptAllocatedEvent,
     HealingEntryBaselinePinnedEvent,
-    Ledger,
 )
 from assurance_agent.workflow.core.progression import transaction
+from assurance_agent.workflow.healing.projection import project_healing_episode
 
 
 def commit_healing_allocation_ledger(
@@ -27,16 +27,13 @@ def commit_healing_allocation_ledger(
 
     Returns True when a new allocation event was appended, False on replay.
     """
-    ledger = Ledger(change_dir)
-    if any(
-        e.get("operation_id") == operation_id
-        for e in ledger.filter(type="healing_attempt_allocated", episode_id=episode_id)
-    ):
+    projection = project_healing_episode(change_dir, episode_id=episode_id)
+    if any(item.operation_id == operation_id for item in projection.allocations):
         return False
 
     with transaction(change_dir) as txn:
-        baseline_exists = any(
-            e.get("episode_id") == episode_id for e in txn.ledger.filter(type="healing_entry_baseline_pinned")
+        baseline_exists = (
+            projection.baseline is not None and projection.baseline.episode_id == episode_id
         )
         if not baseline_exists:
             txn.append_strict(

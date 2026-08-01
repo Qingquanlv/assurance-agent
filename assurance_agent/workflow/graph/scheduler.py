@@ -1516,6 +1516,24 @@ class Scheduler:
         )
         return intents_as_wire(intents)
 
+    def _legacy_allocate_ledger_hook_applies(self, task: ExecutableTask) -> bool:
+        """Pre-activation compatibility: host ledger write for packaged allocate only.
+
+        Runs only when the task target is allocate-healing-attempt, the bound
+        contract digest matches the packaged pre-activation contract, and that
+        contract still declares ``durable_effects == ()``. Task 15 flips packaged
+        selection; this frozen consumer stays.
+        """
+        if task.target != "operation:allocate-healing-attempt":
+            return False
+        if self._contracts is None:
+            return False
+        contract = self._contracts.contracts.get(task.target)
+        if contract is None or contract.durable_effects:
+            return False
+        expected = canonical_digest(contract)
+        return bool(task.contract_digest) and task.contract_digest == expected
+
     def _persist_success(
         self,
         *,
@@ -1571,7 +1589,7 @@ class Scheduler:
                             task_id=task.task_id,
                         )
                     )
-        if task.target == "operation:allocate-healing-attempt" and isinstance(result.value, Mapping):
+        if self._legacy_allocate_ledger_hook_applies(task) and isinstance(result.value, Mapping):
             allocation = result.value
             required = (
                 "episode_id",
