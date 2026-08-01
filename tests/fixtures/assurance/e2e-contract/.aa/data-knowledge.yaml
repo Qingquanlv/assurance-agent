@@ -6,6 +6,12 @@ auth:
     notes: depends on adapters.e2e.auth.seed_limited_user
 capabilities:
   domain_factories:
+    account:
+      make_account:
+        kind: async_factory
+        symbol: tests.testdata.domain.account.make_account
+        entity: account
+        cleanup_ref: cleanup.account_delete
     role:
       make_role:
         kind: async_factory

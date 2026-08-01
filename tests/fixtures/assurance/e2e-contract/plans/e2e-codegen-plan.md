@@ -1,4 +1,4 @@
-# E2E Codegen Plan — CH-E2E-CONTRACT-001
+# E2E Codegen Plan — CH-CANONICAL
 
 ## Target Files
 
@@ -21,6 +21,7 @@
 | Role | `tests/testdata/domain/role.py` | `cleanup_role` | reuse | limited-user cleanup |
 | User | `tests/testdata/domain/user.py` | `make_user` | reuse | limited-user seed |
 | User | `tests/testdata/domain/user.py` | `cleanup_user` | reuse | limited-user cleanup |
+| Account | `tests/testdata/domain/account.py` | `make_account` | reuse | shared L1 baseline |
 
 ## Adapter Mapping
 

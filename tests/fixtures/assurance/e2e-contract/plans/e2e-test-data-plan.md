@@ -1,4 +1,4 @@
-# E2E Test Data Plan — CH-E2E-CONTRACT-001
+# E2E Test Data Plan — CH-CANONICAL
 
 ## Scope
 

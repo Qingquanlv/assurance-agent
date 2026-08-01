@@ -1,4 +1,4 @@
-# E2E Plan — CH-E2E-CONTRACT-001
+# E2E Plan — CH-CANONICAL
 
 ## Source
 

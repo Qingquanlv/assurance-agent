@@ -3,12 +3,19 @@ auth:
   api_admin_token:
     method: token
     symbol: tests.conftest.api_admin_token
-    notes: reused by performance adapter for authenticated Locust users
+    notes: reused by performance adapter for authenticated endpoint calls
 capabilities:
   domain_factories:
     account:
       make_account:
         kind: async_factory
-        symbol: tests.factories.account.make_account
+        symbol: tests.testdata.domain.account.make_account
         entity: account
         cleanup_ref: cleanup.account_delete
+  adapters:
+    performance:
+      account:
+        seed_accounts:
+          kind: isolated_worker
+          symbol: tests.perf.adapters.account_seed.seed_accounts
+          create-if-missing: true

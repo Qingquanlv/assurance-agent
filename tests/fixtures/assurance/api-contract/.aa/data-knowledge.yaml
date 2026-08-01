@@ -3,7 +3,7 @@ auth:
   api_admin_token:
     method: token
     symbol: tests.conftest.api_admin_token
-    notes: reused by fuzz adapter for authenticated endpoint calls
+    notes: admin token for account API
 capabilities:
   domain_factories:
     account:
@@ -12,10 +12,18 @@ capabilities:
         symbol: tests.testdata.domain.account.make_account
         entity: account
         cleanup_ref: cleanup.account_delete
+      cleanup_account:
+        kind: async_factory
+        symbol: tests.testdata.domain.account.cleanup_account
+        retry_safe: true
   adapters:
-    fuzz:
+    api:
       account:
         seed_account:
           kind: isolated_worker
-          symbol: tests.fuzz.adapters.account.seed_account
+          symbol: tests.api.adapters.account.seed_account
+          create-if-missing: true
+        cleanup_account:
+          kind: isolated_worker
+          symbol: tests.api.adapters.account.cleanup_account
           create-if-missing: true

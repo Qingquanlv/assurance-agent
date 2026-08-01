@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
-from pathlib import Path
 from typing import cast
 
 import pytest
-import yaml
 
 from assurance_agent.artifacts.models.review import PlanReview, PlanReviewAuthoring
 from assurance_agent.verification.applicability import derive_layer_applicability
@@ -16,52 +13,22 @@ from assurance_agent.verification.checks.base import CheckContext
 from assurance_agent.verification.checks.registry import run_plan_checks
 from assurance_agent.verification.gate_state import plan_assurance_state
 from assurance_agent.verification.profiles import get_layer_assurance_profile
-
-REPO_ROOT = Path(__file__).resolve().parents[3]
-_CANONICAL_CHANGE_ID = "CH-CANONICAL"
-
-
-@dataclass(frozen=True)
-class ContractFixture:
-    root: Path
-    review_bytes: bytes
-    codegen_plan: str
-    plan_texts: dict[str, str]
-    cases: list[dict[str, object]]
-    data_knowledge: dict[str, object]
-    required_capabilities: tuple[str, ...]
+from tests.helpers_assurance_contract import (
+    CANONICAL_CHANGE_ID,
+    CanonicalAssuranceBundle,
+    load_canonical_assurance_bundle,
+)
 
 
-def load_contract_fixture(layer: str) -> ContractFixture:
-    root = REPO_ROOT / "tests" / "fixtures" / "assurance" / f"{layer}-contract"
-    profile = get_layer_assurance_profile(layer)  # type: ignore[arg-type]
-    plan_texts = {path: (root / path).read_text(encoding="utf-8") for path in profile.plan_artifacts}
-    cases = [
-        yaml.safe_load(path.read_text(encoding="utf-8"))
-        for path in sorted((root / "cases").glob("**/case.yaml"))
-    ]
-    data_knowledge = yaml.safe_load((root / ".aa" / "data-knowledge.yaml").read_text(encoding="utf-8"))
-    review_path = root / profile.review_artifact
-    review_bytes = review_path.read_bytes()
-    review = yaml.safe_load(review_bytes.decode("utf-8"))
-    required_capabilities = tuple(review["required_capabilities"])
-    codegen_plan = plan_texts[profile.plan_artifacts[-1]]
-    return ContractFixture(
-        root=root,
-        review_bytes=review_bytes,
-        codegen_plan=codegen_plan,
-        plan_texts=plan_texts,
-        cases=cases,
-        data_knowledge=data_knowledge,
-        required_capabilities=required_capabilities,
-    )
+def load_contract_fixture(layer: str) -> CanonicalAssuranceBundle:
+    return load_canonical_assurance_bundle(layer)
 
 
 def _check(document, check_id: str):
     return next(item for item in document.checks if item.check_id == check_id)
 
 
-def _context(fixture: ContractFixture, layer: str) -> CheckContext:
+def _context(fixture: CanonicalAssuranceBundle, layer: str) -> CheckContext:
     return CheckContext(
         plan_texts=fixture.plan_texts,
         cases=fixture.cases,
@@ -80,8 +47,16 @@ def test_fixture_is_a_strong_review_and_canonical_plan(layer: str) -> None:
     assert review.required_capabilities
     assert review.auto_fix_allowed is False
     assert review.auto_fix_plan == []
-    assert "## Factory Mapping" in fixture.codegen_plan
-    assert "| Shared Module | Function | Ownership |" in fixture.codegen_plan
+    assert "## Factory Mapping" in fixture.plan_texts[get_layer_assurance_profile(layer).plan_artifacts[-1]]
+    assert "| Shared Module | Function | Ownership |" in fixture.plan_texts[
+        get_layer_assurance_profile(layer).plan_artifacts[-1]
+    ]
+    codegen = fixture.plan_texts[get_layer_assurance_profile(layer).plan_artifacts[-1]]
+    if layer == "fuzz":
+        assert "| Case ID | Test Function | Target File |" in codegen
+        assert "## Schema Acquisition" in codegen
+    else:
+        assert "| Case ID | Task Method | Target File |" in codegen
 
 
 @pytest.mark.parametrize("layer", ["fuzz", "performance"])
@@ -98,7 +73,7 @@ def test_fixture_mechanical_round_trip(layer: str) -> None:
         review.model_dump(mode="json"),
         fixture.data_knowledge,
         profile.layer,
-        change_id=_CANONICAL_CHANGE_ID,
+        change_id=CANONICAL_CHANGE_ID,
     )
 
     assert state == "applicable"
