@@ -28,6 +28,8 @@ from assurance_agent.workflow.core.graph_events import (
     GRAPH_EVENT_ADAPTER,
     BudgetConsumedEvent,
     CheckpointImportedEvent,
+    DurableEffectAcknowledgedEvent,
+    DurableEffectIntegrityFailedEvent,
     FanOutExpandedEvent,
     GraphInterruptedEvent,
     GraphInvocationStartedEvent,
@@ -900,6 +902,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
     unconsumed_revision_transitions: dict[str, ManualPlanRevisionEvent] = {}
     consumed_revision_transitions: set[str] = set()
     seen_deferrals: dict[str, TaskSchedulingDeferredEvent] = {}
+    seen_effect_acks: dict[str, DurableEffectAcknowledgedEvent] = {}
 
     for raw in events:
         if raw.get("source") != "graph":
@@ -996,6 +999,23 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                     f"task_attempt_succeeded missing candidate_validation_receipt_id for "
                     f"validator {prev.precommit_validator} on {event.task_id}"
                 )
+            durable_effects = tuple(dict(item) for item in event.durable_effects)
+            effect_ids = []
+            for item in durable_effects:
+                effect_id = item.get("effect_id")
+                if not isinstance(effect_id, str) or not effect_id.strip():
+                    raise LedgerIntegrityError(
+                        f"task_attempt_succeeded durable_effects missing effect_id for {event.task_id}"
+                    )
+                effect_ids.append(effect_id)
+            if len(set(effect_ids)) != len(effect_ids):
+                raise LedgerIntegrityError(
+                    f"task_attempt_succeeded durable_effects duplicate effect_id for {event.task_id}"
+                )
+            if tuple(sorted(effect_ids)) != tuple(effect_ids):
+                raise LedgerIntegrityError(
+                    f"task_attempt_succeeded durable_effects must be sorted by effect_id for {event.task_id}"
+                )
             tasks[event.task_id] = prev.model_copy(
                 update={
                     "status": "succeeded",
@@ -1020,6 +1040,8 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                     if event.candidate_validation_receipt_id is not None
                     else prev.candidate_validation_receipt_id,
                     "precommit_validator": prev.precommit_validator,
+                    "durable_effects": durable_effects,
+                    "acknowledged_effect_ids": prev.acknowledged_effect_ids,
                 }
             )
             generation.apply_task_outcome(event, tasks=tasks, fan_outs=fan_outs)
@@ -1217,6 +1239,47 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
             latest_checkpoint_id = event.checkpoint_id
             current_tree_id = event.target_tree_id
             state_values = dict(event.state_values)
+        elif isinstance(event, DurableEffectAcknowledgedEvent):
+            prior_ack = seen_effect_acks.get(event.effect_id)
+            if prior_ack is not None:
+                if prior_ack.model_dump(mode="json") != event.model_dump(mode="json"):
+                    raise LedgerIntegrityError(
+                        f"conflicting durable_effect_acknowledged payload for {event.effect_id}"
+                    )
+                continue
+            task = tasks.get(event.task_id)
+            if task is None or task.status != "succeeded":
+                raise LedgerIntegrityError(
+                    f"durable_effect_acknowledged without succeeded task {event.task_id}"
+                )
+            if not task.outputs_committed:
+                raise LedgerIntegrityError(
+                    f"durable_effect_acknowledged before superstep commit for {event.effect_id}"
+                )
+            intent_ids = {
+                item.get("effect_id")
+                for item in task.durable_effects
+                if isinstance(item.get("effect_id"), str)
+            }
+            if event.effect_id not in intent_ids:
+                raise LedgerIntegrityError(
+                    f"durable_effect_acknowledged without matching inline intent {event.effect_id}"
+                )
+            if event.attempt_id != task.latest_attempt_id:
+                raise LedgerIntegrityError(
+                    f"durable_effect_acknowledged attempt mismatch for {event.effect_id}"
+                )
+            seen_effect_acks[event.effect_id] = event
+            tasks[event.task_id] = task.model_copy(
+                update={
+                    "acknowledged_effect_ids": tuple(
+                        sorted({*task.acknowledged_effect_ids, event.effect_id})
+                    )
+                }
+            )
+        elif isinstance(event, DurableEffectIntegrityFailedEvent):
+            terminal = "failed"
+            terminal_reason = "durable_effect_integrity_failed"
         elif isinstance(event, GraphTerminalEvent):
             terminal = _TERMINAL_BY_TYPE[event.type]
             terminal_reason = event.reason

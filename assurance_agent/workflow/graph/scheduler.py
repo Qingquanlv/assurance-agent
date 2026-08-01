@@ -97,6 +97,13 @@ from assurance_agent.workflow.graph.precommit import (
     load_plan_text_from_snapshot,
     validate_candidate,
 )
+from assurance_agent.workflow.graph.durable_effects import (
+    DurableEffectValidationError,
+    EffectRegistry,
+    intents_as_wire,
+    production_effect_registry,
+    validate_result_intents,
+)
 from assurance_agent.workflow.graph.task_inputs import (
     TaskInputError,
     capture_task_input_snapshot,
@@ -234,6 +241,7 @@ class Scheduler:
         lease_registry: LeaseRegistry | None = None,
         project_lock_manager: ProjectLockManager | None = None,
         project_lock_timeout_seconds: float = 5.0,
+        effect_registry: EffectRegistry | None = None,
         crash_after_snapshot: Callable[[ExecutableTask, str], None] | None = None,
         crash_after_started: Callable[[ExecutableTask, str], None] | None = None,
     ) -> None:
@@ -253,6 +261,9 @@ class Scheduler:
         self._project_lock_scope_owner = object()
         self._active_project_lock_scopes: set[object] = set()
         self._prepared_wave_lease_owner = object()
+        self._effect_registry = (
+            effect_registry if effect_registry is not None else production_effect_registry()
+        )
         # Test-only crash cuts between snapshot CAS and started append / after started.
         self._crash_after_snapshot = crash_after_snapshot
         self._crash_after_started = crash_after_started
@@ -1363,6 +1374,20 @@ class Scheduler:
                 message=str(exc),
             )
 
+        try:
+            durable_effects = self._validate_durable_effects(
+                prepared=prepared,
+                result=result,
+            )
+        except DurableEffectValidationError as exc:
+            return self._persist_failure(
+                prepared=prepared,
+                plan=plan,
+                context=context,
+                error_kind="invalid_output",
+                message=str(exc),
+            )
+
         prepared.candidate_validation_receipt_id = receipt_id
         self._persist_success(
             prepared=prepared,
@@ -1371,6 +1396,7 @@ class Scheduler:
             result=result,
             write_set_id=write_set_id,
             candidate_validation_receipt_id=receipt_id,
+            durable_effects=durable_effects,
         )
         return _SettledAttempt(
             task_id=task.task_id,
@@ -1467,6 +1493,28 @@ class Scheduler:
         )
         return receipt_id
 
+    def _validate_durable_effects(
+        self,
+        *,
+        prepared: _PreparedAttempt,
+        result: TaskResult,
+    ) -> list[dict[str, object]]:
+        declared: tuple[str, ...] = ()
+        if self._contracts is not None:
+            contract = self._contracts.contracts.get(prepared.task.target)
+            if contract is not None:
+                declared = contract.durable_effects
+        intents = validate_result_intents(
+            declared_kinds=declared,
+            intents=result.durable_effects,
+            invocation_id=prepared.task.invocation_id,
+            task_id=prepared.task.task_id,
+            attempt_id=prepared.attempt_id,
+            target=prepared.task.target,
+            registry=self._effect_registry,
+        )
+        return intents_as_wire(intents)
+
     def _persist_success(
         self,
         *,
@@ -1476,6 +1524,7 @@ class Scheduler:
         result: TaskResult,
         write_set_id: str | None,
         candidate_validation_receipt_id: str | None = None,
+        durable_effects: list[dict[str, object]] | None = None,
     ) -> None:
         task = prepared.task
         outputs = dict(result.outputs_sha256)
@@ -1485,6 +1534,7 @@ class Scheduler:
             except WorkspaceError:
                 outputs = {}
         frozen_wire = dict(result.frozen_outputs)
+        effect_wire = list(durable_effects or ())
         with transaction(context.change_dir) as txn:
             txn.append_strict(
                 TaskAttemptSucceededEvent(
@@ -1503,6 +1553,7 @@ class Scheduler:
                     input_snapshot_id=prepared.input_snapshot_id,
                     runtime_context_sha256=prepared.runtime_context_sha256,
                     candidate_validation_receipt_id=candidate_validation_receipt_id,
+                    durable_effects=effect_wire,
                 )
             )
             if task.budget is not None:

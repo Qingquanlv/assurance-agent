@@ -141,6 +141,8 @@ class TaskAttemptSucceededEvent(_GraphEvent):
     input_snapshot_id: str | None = None
     runtime_context_sha256: str | None = None
     candidate_validation_receipt_id: str | None = None
+    # Full canonical inline intents (optional for historical events; empty default).
+    durable_effects: list[dict[str, object]] = Field(default_factory=list)
 
 
 class TaskSchedulingDeferredEvent(_GraphEvent):
@@ -332,6 +334,31 @@ class SuperstepCommittedEvent(_GraphEvent):
     committed_task_ids: list[str] = Field(default_factory=list)
 
 
+class DurableEffectAcknowledgedEvent(_GraphEvent):
+    type: Literal["durable_effect_acknowledged"]
+    root_invocation_id: str
+    invocation_id: str
+    checkpoint_ns: str
+    task_id: str
+    attempt_id: str
+    effect_id: str
+    kind: str
+    reconciler_semantics_digest: str
+    payload_sha256: str
+    domain_source_sequence: int
+    domain_event_digest: str
+
+
+class DurableEffectIntegrityFailedEvent(_GraphEvent):
+    type: Literal["durable_effect_integrity_failed"]
+    invocation_id: str
+    checkpoint_ns: str
+    task_id: str
+    attempt_id: str
+    effect_id: str
+    reason: str
+
+
 class GraphTerminalEvent(_GraphEvent):
     type: Literal["graph_completed", "graph_stopped", "graph_failed"]
     invocation_id: str
@@ -379,6 +406,8 @@ GraphEvent = Annotated[
     | ManualPlanRevisionEvent
     | GraphResumedEvent
     | SuperstepCommittedEvent
+    | DurableEffectAcknowledgedEvent
+    | DurableEffectIntegrityFailedEvent
     | GraphTerminalEvent
     | TaskImportedEvent
     | CheckpointImportedEvent,
@@ -408,6 +437,8 @@ __all__ = [
     "GraphResumedEvent",
     "ResumeAnchor",
     "SuperstepCommittedEvent",
+    "DurableEffectAcknowledgedEvent",
+    "DurableEffectIntegrityFailedEvent",
     "GraphTerminalEvent",
     "TaskImportedEvent",
     "CheckpointImportedEvent",

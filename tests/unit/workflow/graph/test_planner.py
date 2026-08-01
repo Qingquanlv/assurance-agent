@@ -508,6 +508,9 @@ def _task(task: ExecutableTask, status: str, **overrides: object) -> TaskProject
         "attempts_used": 1,
         "latest_attempt_id": f"{task.task_id}-a1",
     }
+    # D14 predecessor readiness requires a committed superstep for successes.
+    if status == "succeeded" and "outputs_committed" not in overrides:
+        payload["outputs_committed"] = True
     payload.update(overrides)
     return TaskProjection(**payload)  # type: ignore[arg-type]
 

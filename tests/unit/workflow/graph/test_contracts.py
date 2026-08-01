@@ -1271,6 +1271,35 @@ def test_packaged_contracts_select_neither_precommit_validator() -> None:
         assert contract.precommit_validator is None
 
 
+def test_packaged_contracts_select_no_durable_effects() -> None:
+    catalog = load_execution_contracts(Path.cwd())
+    selected = {
+        target: contract.durable_effects
+        for target, contract in catalog.contracts.items()
+        if contract.durable_effects
+    }
+    assert selected == {}
+    for contract in catalog.contracts.values():
+        assert contract.durable_effects == ()
+
+
+def test_durable_effects_default_empty_and_reject_unregistered() -> None:
+    contract = ExecutionContract(target="operation:plain", handler="operation")
+    assert contract.durable_effects == ()
+    with pytest.raises(ContractError, match="unregistered durable effect"):
+        parse_execution_contracts(
+            textwrap.dedent(
+                """\
+                schema_version: "1"
+                contracts:
+                  operation:x:
+                    handler: operation
+                    durable_effects: ["healing_allocation/v2"]
+                """
+            )
+        )
+
+
 def test_precommit_validator_defaults_none_and_rejects_unknown() -> None:
     contract = ExecutionContract(target="operation:plain", handler="operation")
     assert contract.precommit_validator is None

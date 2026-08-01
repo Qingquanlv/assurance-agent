@@ -96,6 +96,22 @@ from assurance_agent.workflow.graph.models import (
 from assurance_agent.workflow.graph.planner import PlanError, plan_superstep
 from assurance_agent.workflow.graph.project_locks import ProjectPublicationStore
 from assurance_agent.workflow.graph.scheduler import Scheduler, SchedulerError
+from assurance_agent.workflow.graph.durable_effects import (
+    DurableEffectContext,
+    DurableEffectIntegrityError,
+    DurableEffectRetryableError,
+    DurableEffectRuntime,
+    production_effect_registry,
+    reconcile_effect,
+    record_integrity_failure,
+    scan_unacknowledged_intents,
+)
+from assurance_agent.workflow.graph.effect_retry import (
+    EffectRetryStore,
+    RootEffectFenceStore,
+    RootTerminalFenceError,
+    parse_rfc3339_z,
+)
 from assurance_agent.workflow.graph.workspace import (
     TaskWorkspace,
     TreeStore,
@@ -237,10 +253,13 @@ class GraphRuntime:
     def status(self, invocation_id: str) -> GraphStatus:
         projection = self._checkpoints.project(invocation_id)
         events = read_events_strict(self._checkpoints._change_dir)  # noqa: SLF001
+        from assurance_agent.workflow.graph.status import unacknowledged_durable_effects
+
         return graph_status_from_projection(
             projection,
             pending_write_sets=self._pending_write_sets(invocation_id),
             recovery_state=derive_revision_recovery_state(events),
+            unacknowledged_durable_effects=unacknowledged_durable_effects(events, invocation_id),
         )
 
     def import_checkpoint(
@@ -1291,6 +1310,9 @@ class GraphRuntime:
             if self._replay_committed_publications(projection, context):
                 progress = True
                 projection = self._checkpoints.project(invocation_id)
+            if self._reconcile_durable_effects(projection, context):
+                progress = True
+                projection = self._checkpoints.project(invocation_id)
 
             if not progress and not self._recovery_work_remains(projection, invocation_id, context):
                 break
@@ -1319,6 +1341,94 @@ class GraphRuntime:
         publication_store = ProjectPublicationStore(context.project_root)
         for publication, status in publication_store.list_publications(invocation_id=invocation_id):
             if status != "applied":
+                return True
+        if self._due_unacknowledged_effects_remain(projection, context):
+            return True
+        return False
+
+    def _reconcile_durable_effects(
+        self,
+        projection: GraphProjection,
+        context: RuntimeContext,
+    ) -> bool:
+        """Reconcile committed-but-unacked inline effects; no handler reinvoke."""
+        pending = scan_unacknowledged_intents(context.change_dir, projection.invocation_id)
+        if not pending:
+            return False
+        fence_store = RootEffectFenceStore(context.project_root)
+        retry_store = EffectRetryStore(context.project_root)
+        effect_runtime = DurableEffectRuntime(
+            change_dir=context.change_dir,
+            project_root=context.project_root,
+            fence_store=fence_store,
+            retry_store=retry_store,
+        )
+        scheduler = self._scheduler_for(projection)
+        registry = getattr(scheduler, "_effect_registry", None) or production_effect_registry()
+        root_id = projection.parent_invocation_id or projection.invocation_id
+        now = self._clock.now()
+        progress = False
+        for success, intent in pending:
+            sidecar = retry_store.load(intent.effect_id)
+            if sidecar is not None and not retry_store.is_due(sidecar, now=now):
+                continue
+            task = projection.tasks.get(success.task_id)
+            outputs = dict(sorted((success.outputs_sha256 or {}).items()))
+            effect_context = DurableEffectContext(
+                root_invocation_id=root_id,
+                invocation_id=success.invocation_id,
+                task_id=success.task_id,
+                attempt_id=success.attempt_id,
+                target=task.node_id if task is not None else success.task_id,
+                output_digests=outputs,
+                write_set_id=success.write_set_id,
+            )
+            try:
+                reconcile_effect(intent, effect_context, effect_runtime, registry=registry)
+                progress = True
+            except RootTerminalFenceError:
+                # Prepared/committed fence suppresses or permanently rejects retry.
+                continue
+            except DurableEffectRetryableError as exc:
+                retry_store.schedule_next(
+                    fence_store=fence_store,
+                    root_invocation_id=root_id,
+                    invocation_id=success.invocation_id,
+                    task_id=success.task_id,
+                    attempt_id=success.attempt_id,
+                    effect_id=intent.effect_id,
+                    kind=intent.kind,
+                    lock_key=f"effect:{intent.effect_id}",
+                    error_code=exc.error_code,
+                    now=now,
+                    expected=sidecar,
+                )
+            except DurableEffectIntegrityError as exc:
+                record_integrity_failure(
+                    context.change_dir,
+                    invocation_id=success.invocation_id,
+                    checkpoint_ns=success.checkpoint_ns,
+                    task_id=success.task_id,
+                    attempt_id=success.attempt_id,
+                    effect_id=intent.effect_id,
+                    reason=str(exc),
+                )
+                progress = True
+        return progress
+
+    def _due_unacknowledged_effects_remain(
+        self,
+        projection: GraphProjection,
+        context: RuntimeContext,
+    ) -> bool:
+        pending = scan_unacknowledged_intents(context.change_dir, projection.invocation_id)
+        if not pending:
+            return False
+        retry_store = EffectRetryStore(context.project_root)
+        now = self._clock.now()
+        for _success, intent in pending:
+            sidecar = retry_store.load(intent.effect_id)
+            if sidecar is None or retry_store.is_due(sidecar, now=now):
                 return True
         return False
 
@@ -1463,14 +1573,19 @@ class GraphRuntime:
     def _pending_write_sets(self, invocation_id: str) -> tuple[str, ...]:
         return _pending_write_sets_fn(read_events_strict(self._checkpoints.change_dir), invocation_id)
 
-    @staticmethod
-    def _earliest_retry_at(projection: GraphProjection) -> datetime | None:
+    def _earliest_retry_at(self, projection: GraphProjection) -> datetime | None:
         times = [
             _parse_ts(task.next_retry_at)
             for task in projection.tasks.values()
             if task.next_retry_at is not None
             and task.status in ("failed", "pending")
         ]
+        context = self._context_for(projection)
+        retry_store = EffectRetryStore(context.project_root)
+        for _success, intent in scan_unacknowledged_intents(context.change_dir, projection.invocation_id):
+            sidecar = retry_store.load(intent.effect_id)
+            if sidecar is not None:
+                times.append(parse_rfc3339_z(sidecar.next_retry_at))
         return min(times) if times else None
 
 

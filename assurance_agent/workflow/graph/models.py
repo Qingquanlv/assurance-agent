@@ -326,6 +326,8 @@ class TaskProjection(BaseModel):
     runtime_context_sha256: str | None = None
     candidate_validation_receipt_id: str | None = None
     precommit_validator: str | None = None
+    durable_effects: tuple[dict[str, object], ...] = ()
+    acknowledged_effect_ids: tuple[str, ...] = ()
     deferral_ordinal: int = 0
     latest_deferral_id: str | None = None
 
@@ -399,6 +401,7 @@ class TaskResult(BaseModel):
     error_kind: ErrorKind | None = None
     error: str | None = None
     interrupt: InterruptProjection | None = None
+    durable_effects: tuple[dict[str, object], ...] = ()
 
 
 class GraphProjection(BaseModel):
@@ -496,6 +499,7 @@ class GraphStatus(BaseModel):
     budgets: dict[str, int]
     terminal_reason: str | None
     recovery_state: Literal["revision_resume_recovery_pending"] | None = None
+    unacknowledged_durable_effects: tuple[str, ...] = ()
 
 
 class RunResult(BaseModel):

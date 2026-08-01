@@ -558,8 +558,12 @@ def _seed_outcomes(
             outcomes[nid] = _Outcome(status="unresolved")
             continue
         latest = _latest_task(graph, projection, nid, node_tasks)
-        if latest.status == "succeeded":
+        if latest.status == "succeeded" and _task_ready_as_predecessor(latest):
             outcomes[nid] = _Outcome(status="succeeded", task=latest)
+            continue
+        if latest.status == "succeeded":
+            # Succeeded but superstep/effects not yet committed-and-acknowledged.
+            outcomes[nid] = _Outcome(status="unresolved", task=latest)
             continue
         if latest.status == "stopped":
             reason = f"task {latest.task_id} (node '{nid}') stopped"
@@ -2123,6 +2127,20 @@ def _node_has_task_or_settled_generation(
     )
 
 
+def _task_ready_as_predecessor(task: TaskProjection) -> bool:
+    """D14: successors require committed superstep and acknowledged effects."""
+    if task.status != "succeeded" or not task.outputs_committed:
+        return False
+    if not task.durable_effects:
+        return True
+    acked = set(task.acknowledged_effect_ids)
+    for raw in task.durable_effects:
+        effect_id = raw.get("effect_id")
+        if not isinstance(effect_id, str) or effect_id not in acked:
+            return False
+    return True
+
+
 def _succeeded_count(projection: GraphProjection, nid: str) -> int:
     """Count non-child successes for successorship gating.
 
@@ -2136,7 +2154,7 @@ def _succeeded_count(projection: GraphProjection, nid: str) -> int:
         1
         for task in projection.tasks.values()
         if task.node_id == nid
-        and task.status == "succeeded"
+        and _task_ready_as_predecessor(task)
         and task.task_id not in child_ids
         and not task.fan_out_child
     )
