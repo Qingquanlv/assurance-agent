@@ -53,7 +53,7 @@ Effects survive success/commit/domain/ack cuts and use independent due-time retr
 - Report-only / terminal-only legacy work may continue.
 - Pending assurance commit work on unbound legacy roots stops with `legacy_commit_safety_semantics_unbound`.
 - `aa workflow supersede` is the sole audited operator exit, with actions `rerun-v6` (one replacement root) and `stop` (terminal disposition only).
-- Imported-codegen healing is intentionally narrowed: imported codegen roots are not auto-healed; healing follows authority → approval → intent → record under v6 commit-safety.
+- Imported-codegen healing is intentionally narrowed: imported codegen roots are not auto-healed (`unverified_imported_codegen`). Non-imported API/E2E codegen can bind ready fixer authority from committed `generated_files_candidate/v1` write sets on the packaged allocate path; a full packaged GraphRuntime E2E healing drive (approval → intent → record) is covered by unit/integration operation proofs, not a single end-to-end healing matrix run.
 
 ## Multi-layer codegen-only and selection
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
@@ -30,6 +30,7 @@ from assurance_agent.verification.generated_files import (
     get_generated_files_contract,
     get_generated_files_model,
 )
+from assurance_agent.workflow.core.events import read_events
 from assurance_agent.workflow.graph.durable_effects import (
     FIXER_PROPOSAL_APPROVED_V1,
     HEAL_RECORD_APPLY_V2,
@@ -40,6 +41,7 @@ from assurance_agent.workflow.graph.durable_effects import (
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
 from assurance_agent.workflow.graph.precommit import (
     CODEGEN_FIX_CANDIDATE_V1,
+    GENERATED_FILES_CANDIDATE_V1,
     CandidateValidationError,
     PrecommitValidationContext,
     bind_receipt_to_success_event,
@@ -61,6 +63,15 @@ AUTHORITY_REL = "healing/fixer-authority.json"
 APPROVAL_REL = "healing/fixer-proposal-approval.json"
 AGGREGATE_SAFETY_REL = "healing/fixer-safety-check.json"
 
+_LAYER_CODEGEN_TARGETS: dict[str, Literal["api", "e2e"]] = {
+    "skill:aa-api-codegen": "api",
+    "skill:aa-e2e-codegen": "e2e",
+}
+_LAYER_MANIFEST_LOGICAL: dict[str, str] = {
+    "api": "change:codegen/api-generated-files.json",
+    "e2e": "change:codegen/e2e-generated-files.json",
+}
+
 
 def _write_json(path: Path, payload: Mapping[str, object] | object) -> str:
     if hasattr(payload, "model_dump"):
@@ -81,7 +92,7 @@ def operation_fixer_authority_ready(
     task: ExecutableTask, workspace: TaskWorkspace, context: RuntimeContext
 ) -> TaskResult:
     """Gate: pass when every active authority target is ready; else stop/unverified."""
-    del task, context
+    del task
     authority_path = workspace.change_dir / AUTHORITY_REL
     if not authority_path.is_file():
         return TaskResult(status="succeeded", value={"route": "stop", "reason": "missing_fixer_authority"})
@@ -92,13 +103,19 @@ def operation_fixer_authority_ready(
             status="succeeded",
             value={"route": "stop", "reason": f"malformed_fixer_authority:{exc}"},
         )
+    if not authority.targets:
+        return TaskResult(status="succeeded", value={"route": "stop", "reason": "no_active_targets"})
     if any(target.status != "ready" for target in authority.targets):
         return TaskResult(
             status="succeeded",
-            value={"route": "stop", "reason": "unverified_imported_codegen"},
+            value={
+                "route": "stop",
+                "reason": _unverified_authority_stop_reason(
+                    authority=authority,
+                    change_dir=context.change_dir,
+                ),
+            },
         )
-    if not authority.targets:
-        return TaskResult(status="succeeded", value={"route": "stop", "reason": "no_active_targets"})
     return TaskResult(status="succeeded", value={"route": "pass"})
 
 
@@ -386,16 +403,28 @@ def enhance_allocate_result_with_authority(
     emit_durable_effect: bool,
 ) -> TaskResult:
     """Write fixer-authority hard output and optionally attach allocation effect."""
-    params = task_with(task)
-    active_raw = params.get("active_targets") or ["api"]
-    active: list[Literal["api", "e2e"]] = [item for item in active_raw if item in {"api", "e2e"}]  # type: ignore[misc]
+    params = dict(task_with(task))
+    active_raw = params.get("active_targets")
+    if isinstance(active_raw, list) and active_raw:
+        active: list[Literal["api", "e2e"]] = [
+            item for item in active_raw if item in {"api", "e2e"}  # type: ignore[misc]
+        ]
+    else:
+        active = _active_targets_from_proposal(workspace)
     if not active:
         active = ["api"]
+    store = TreeStore(context.change_dir)
+    discovered = discover_codegen_authority_inputs(
+        change_dir=context.change_dir,
+        store=store,
+        active_targets=active,
+    )
+    merged_params = _merge_authority_params(discovered, params)
     bindings = allocate_authority_bindings_from_artifacts(
         workspace=workspace,
         context=context,
         active_targets=active,
-        params=params,
+        params=merged_params,
     )
     authority = build_fixer_authority_for_allocate(
         change_id=context.change_id,
@@ -563,6 +592,240 @@ def _snapshot_digest_for_repo_path(
         ):
             return sha if sha.startswith("sha256:") else f"sha256:{sha}"
     return None
+
+
+def _active_targets_from_proposal(workspace: TaskWorkspace) -> list[Literal["api", "e2e"]]:
+    """Derive allocate active targets from the frozen fix-proposal (packaged path)."""
+    proposal_path = workspace.change_dir / "healing" / "fix-proposal.json"
+    if not proposal_path.is_file():
+        return []
+    try:
+        proposal = json.loads(proposal_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    items = proposal.get("proposals") if isinstance(proposal, dict) else None
+    active: list[Literal["api", "e2e"]] = []
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict) or not item.get("eligible"):
+                continue
+            target = item.get("target")
+            if target in {"api", "e2e"} and target not in active:
+                active.append(target)  # type: ignore[arg-type]
+    return active
+
+
+def _layer_from_codegen_outputs(outputs: Mapping[str, object] | None) -> Literal["api", "e2e"] | None:
+    if not isinstance(outputs, Mapping):
+        return None
+    for layer, logical in _LAYER_MANIFEST_LOGICAL.items():
+        if logical in outputs or logical.removeprefix("change:") in outputs:
+            return layer  # type: ignore[return-value]
+        # outputs_sha256 keys are sometimes bare change-relative paths
+        bare = logical.removeprefix("change:")
+        for key in outputs:
+            if str(key) in {logical, bare, f"change:{bare}"}:
+                return layer  # type: ignore[return-value]
+    return None
+
+
+def _layer_from_started_event(started: Mapping[str, object]) -> Literal["api", "e2e"] | None:
+    target = started.get("target")
+    if isinstance(target, str) and target in _LAYER_CODEGEN_TARGETS:
+        return _LAYER_CODEGEN_TARGETS[target]
+    return None
+
+
+def _layer_from_imported_event(imported: Mapping[str, object]) -> Literal["api", "e2e"] | None:
+    layer = _layer_from_codegen_outputs(imported.get("outputs_sha256"))  # type: ignore[arg-type]
+    if layer is not None:
+        return layer
+    structural = str(imported.get("structural_path") or "")
+    node_id = imported.get("node_id")
+    if node_id != "codegen":
+        return None
+    if "/api" in f"/{structural}" or structural.startswith("api") or "api-branch" in structural:
+        return "api"
+    if "/e2e" in f"/{structural}" or structural.startswith("e2e") or "e2e-branch" in structural:
+        return "e2e"
+    graph_id = str(imported.get("graph_id") or "")
+    if graph_id.startswith("api"):
+        return "api"
+    if graph_id.startswith("e2e"):
+        return "e2e"
+    return None
+
+
+def discover_codegen_authority_inputs(
+    *,
+    change_dir: Path,
+    store: TreeStore,
+    active_targets: Sequence[str],
+) -> dict[str, object]:
+    """Resolve committed codegen write-set IDs / snapshot digests from the ledger.
+
+    Packaged ``allocate`` does not receive ``with.codegen_write_set_ids``; the
+    production path discovers them from committed ``generated_files_candidate/v1``
+    successes (and marks ``task_imported`` codegen as imported).
+    """
+    wanted = {layer for layer in active_targets if layer in {"api", "e2e"}}
+    if not wanted:
+        return {}
+    events = read_events(change_dir)
+    started_by_task: dict[str, dict[str, object]] = {}
+    success_by_task: dict[str, dict[str, object]] = {}
+    committed_write_sets: set[str] = set()
+    committed_tasks: set[str] = set()
+    imported_layers: set[str] = set()
+
+    for raw in events:
+        if raw.get("source") != "graph":
+            continue
+        event_type = raw.get("type")
+        if event_type == "task_attempt_started":
+            task_id = raw.get("task_id")
+            if isinstance(task_id, str):
+                started_by_task[task_id] = raw
+        elif event_type == "task_attempt_succeeded":
+            task_id = raw.get("task_id")
+            if isinstance(task_id, str):
+                success_by_task[task_id] = raw
+        elif event_type == "superstep_committed":
+            raw_write_ids = raw.get("write_set_ids")
+            if isinstance(raw_write_ids, list):
+                for write_set_id in raw_write_ids:
+                    if isinstance(write_set_id, str):
+                        committed_write_sets.add(write_set_id)
+            raw_task_ids = raw.get("committed_task_ids")
+            if isinstance(raw_task_ids, list):
+                for task_id in raw_task_ids:
+                    if isinstance(task_id, str):
+                        committed_tasks.add(task_id)
+        elif event_type == "task_imported":
+            layer = _layer_from_imported_event(raw)
+            if layer in wanted:
+                imported_layers.add(layer)
+
+    write_set_ids: dict[str, str] = {}
+    attempt_ids: dict[str, str] = {}
+    snapshot_entries: list[dict[str, object]] = []
+    live_layers: set[str] = set()
+
+    for task_id, started in started_by_task.items():
+        layer = _layer_from_started_event(started)
+        success = success_by_task.get(task_id)
+        if success is not None and layer is None:
+            layer = _layer_from_codegen_outputs(success.get("outputs_sha256"))  # type: ignore[arg-type]
+        if layer not in wanted:
+            continue
+        validator = started.get("precommit_validator")
+        target = started.get("target")
+        if validator != GENERATED_FILES_CANDIDATE_V1 and target not in _LAYER_CODEGEN_TARGETS:
+            continue
+        if success is None:
+            continue
+        write_set_id = success.get("write_set_id")
+        if not isinstance(write_set_id, str) or not write_set_id:
+            continue
+        if task_id not in committed_tasks and write_set_id not in committed_write_sets:
+            continue
+        write_set_ids[layer] = write_set_id
+        live_layers.add(layer)
+        attempt_id = success.get("attempt_id") or started.get("attempt_id") or task_id
+        if isinstance(attempt_id, str):
+            attempt_ids[layer] = attempt_id
+        snap_id = success.get("input_snapshot_id") or started.get("input_snapshot_id")
+        if isinstance(snap_id, str) and snap_id:
+            try:
+                snapshot = load_task_input_snapshot(store, snap_id)
+            except (WorkspaceError, OSError, ValueError, TypeError):
+                continue
+            snapshot_entries.extend(entry.model_dump(mode="json") for entry in snapshot.entries)
+
+    still_imported = sorted(imported_layers - live_layers)
+    result: dict[str, object] = {}
+    if write_set_ids:
+        result["codegen_write_set_ids"] = write_set_ids
+    if attempt_ids:
+        result["codegen_attempt_ids"] = attempt_ids
+    if snapshot_entries:
+        result["input_snapshot_entries"] = snapshot_entries
+    if still_imported:
+        result["imported_targets"] = still_imported
+    return result
+
+
+def _merge_authority_params(
+    discovered: Mapping[str, object],
+    params: Mapping[str, object],
+) -> dict[str, object]:
+    """Fill gaps from ledger discovery; explicit ``with`` params win per key/layer."""
+    merged: dict[str, object] = dict(discovered)
+    for key, value in params.items():
+        if key in {"codegen_write_set_ids", "codegen_attempt_ids"} and isinstance(value, Mapping):
+            existing = merged.get(key)
+            base: dict[str, object] = (
+                {str(item_key): item_val for item_key, item_val in existing.items()}
+                if isinstance(existing, Mapping)
+                else {}
+            )
+            base.update({str(item_key): item_val for item_key, item_val in value.items()})
+            merged[key] = base
+        elif key == "imported_targets" and isinstance(value, list):
+            existing = merged.get(key)
+            prior = [str(item) for item in existing] if isinstance(existing, list) else []
+            merged[key] = sorted({*prior, *(str(item) for item in value)})
+        elif key == "input_snapshot_entries" and isinstance(value, list):
+            merged[key] = value
+        else:
+            merged[key] = value
+    return merged
+
+
+def _unverified_authority_stop_reason(
+    *,
+    authority: FixerAuthorityV1,
+    change_dir: Path,
+) -> str:
+    """Distinguish imported narrowing from missing write-set binding failures."""
+    non_ready = [target for target in authority.targets if target.status != "ready"]
+    if not non_ready:
+        return "unverified_fixer_authority"
+    active = [target.target for target in non_ready]
+    try:
+        discovered = discover_codegen_authority_inputs(
+            change_dir=change_dir,
+            store=TreeStore(change_dir),
+            active_targets=active,
+        )
+    except (OSError, ValueError, TypeError):
+        discovered = {}
+    imported_raw = discovered.get("imported_targets")
+    imported = (
+        {str(item) for item in imported_raw if isinstance(item, str)}
+        if isinstance(imported_raw, list)
+        else set()
+    )
+    live_write_sets = discovered.get("codegen_write_set_ids")
+    live_layers = (
+        {str(key) for key in live_write_sets}
+        if isinstance(live_write_sets, Mapping)
+        else set()
+    )
+    classes: list[str] = []
+    for target in non_ready:
+        layer = target.target
+        if layer in imported and layer not in live_layers:
+            classes.append("imported")
+        elif target.write_set_id is None and layer not in live_layers:
+            classes.append("missing_write_set")
+        else:
+            classes.append("unverified")
+    if classes and all(item == "imported" for item in classes):
+        return "unverified_imported_codegen"
+    if "missing_write_set" in classes:
+        return "missing_codegen_write_set_binding"
+    return "unverified_fixer_authority"
 
 
 def allocate_authority_bindings_from_artifacts(
@@ -767,6 +1030,7 @@ __all__ = [
     "allocate_authority_bindings_from_artifacts",
     "build_fixer_authority_for_allocate",
     "derive_allocation_ids",
+    "discover_codegen_authority_inputs",
     "enhance_allocate_result_with_authority",
     "load_manifest_batch_id",
     "operation_combine_fixer_safety",

@@ -979,6 +979,15 @@ def _validate_generated_files_candidate(
         )
 
     private_targets = selected_private_root_targets(relation, contract.private_test_root)
+    # Fail closed: selected cases / private-root mappings require a non-empty
+    # manifest. Summary+manifest with files:[] (and an empty write-set path set)
+    # must not validate successfully.
+    if (relation.selected_case_ids or private_targets) and not manifest.files:
+        raise CandidateValidationError(
+            "empty generated-files manifest cannot cover selected cases or "
+            f"private-root targets: selected_case_ids={list(relation.selected_case_ids)} "
+            f"private_targets={sorted(private_targets)}"
+        )
     write_bindings: list[dict[str, object]] = []
     for entry in manifest.files:
         expected_cases = mapped_case_ids_for_path(relation, entry.repo_path)

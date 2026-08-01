@@ -541,6 +541,94 @@ def test_generated_files_candidate_rejects_summary_only(tmp_path: Path) -> None:
         )
 
 
+def test_generated_files_candidate_rejects_empty_manifest_with_selected_cases(
+    tmp_path: Path,
+) -> None:
+    """files:[] + empty write-set must fail closed when selected cases exist."""
+    project = _make_project(tmp_path)
+    change = project / "qa" / "changes" / "CH-1"
+    (change / "plans" / "api-codegen-plan.md").write_text(_api_plan_text(), encoding="utf-8")
+    (change / "cases" / "api.yaml").write_text(_api_cases_yaml(), encoding="utf-8")
+    store = TreeStore(change)
+    tree_id = store.capture(project)
+    _seed_invocation(change, tree_id)
+    backend = WorkspaceBackend(change)
+    claims = ResourceClaims(
+        reads=(
+            ResourcePath.parse("change:plans/api-codegen-plan.md"),
+            ResourcePath.parse("change:cases/**"),
+            ResourcePath.parse("repo:tests/api/**"),
+        ),
+        writes=(ResourcePath.parse("change:codegen/**"),),
+        authorization_writes=(ResourcePath.parse("change:codegen/**"),),
+    )
+    workspace = backend.create(
+        task_id="codegen-task",
+        base_tree_id=tree_id,
+        store=store,
+        sidecar_root=backend.sidecar_root_for("codegen-task"),
+        claims=claims,
+        declared_reads_only=False,
+    )
+    summary = b"# summary\n"
+    (workspace.change_dir / "codegen").mkdir(parents=True, exist_ok=True)
+    (workspace.change_dir / "codegen" / "api-codegen-summary.md").write_bytes(summary)
+    manifest = ApiGeneratedFilesV1.model_validate(
+        {
+            "schema_version": "1",
+            "change_id": "CH-1",
+            "layer": "api",
+            "files": [],
+        }
+    )
+    (workspace.change_dir / "codegen" / "api-generated-files.json").write_bytes(
+        canonical_json_bytes(manifest)
+    )
+    write_set = store.freeze_write_set(
+        workspace,
+        claims=claims,
+        outputs=(
+            "change:codegen/api-codegen-summary.md",
+            "change:codegen/api-generated-files.json",
+        ),
+    )
+    snapshot_id = _build_snapshot(
+        store,
+        project=project,
+        attempt_id="codegen-task-a1",
+        base_tree_id=tree_id,
+        plan_text=_api_plan_text(),
+        cases_text=_api_cases_yaml(),
+    )
+    context = PrecommitValidationContext.model_validate(
+        _context_payload(
+            root_invocation_id=_INV,
+            invocation_id=_INV,
+            task_id="codegen-task",
+            attempt_id="codegen-task-a1",
+            base_tree_id=tree_id,
+            current_tree_id=tree_id,
+            input_snapshot_id=snapshot_id,
+            output_digests=dict(sorted(write_set.outputs_sha256.items())),
+            write_set_id=write_set.write_set_id,
+        )
+    )
+    snapshot = load_task_input_snapshot(store, snapshot_id)
+    with pytest.raises(CandidateValidationError, match="empty generated-files manifest"):
+        validate_candidate(
+            GENERATED_FILES_CANDIDATE_V1,
+            context,
+            store=store,
+            write_set=write_set,
+            input_snapshot=snapshot,
+            plan_text=_api_plan_text(),
+            cases=_api_cases(),
+            change_id="CH-1",
+            layer="api",
+            current_change_repo_path="qa/changes/CH-1",
+        )
+
+
 def test_load_plan_and_cases_from_snapshot_fail_closed(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     change = project / "qa" / "changes" / "CH-1"
