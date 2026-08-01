@@ -18,7 +18,7 @@ capabilities:
           id_attr: id
           path_attr: path
           method_attr: method
-        cleanup_ref: cleanup.api_delete
+        cleanup_ref: capabilities.cleanup.api_delete
       cleanup_api:
         kind: async_factory
         symbol: tests.testdata.domain.api.cleanup_api
@@ -40,7 +40,7 @@ capabilities:
           kind: isolated_worker
           symbol: tests.perf.adapters.api.seed_api
           create-if-missing: true
-cleanup:
-  api_delete:
-    kind: async_factory
-    symbol: tests.testdata.domain.api.cleanup_api
+  cleanup:
+    api_delete:
+      symbol: tests.testdata.domain.api.cleanup_api
+      retry_safe: true

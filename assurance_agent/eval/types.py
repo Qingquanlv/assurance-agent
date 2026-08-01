@@ -9,6 +9,20 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from assurance_agent.artifacts.models.assurance import LayerName
 
+# Live workflow-codegen hard gates (activated in Task 22).
+CODEGEN_HARD_METRICS: tuple[str, ...] = (
+    "current_assurance_chain_rate",
+    "current_codegen_attempt_rate",
+    "selected_test_write_rate",
+)
+
+CODEGEN_SUITE_PENDING_TIERS: dict[str, str] = {
+    "workflow-api-codegen": "L2-api-codegen-pending",
+    "workflow-e2e-codegen": "L2-e2e-codegen-pending",
+    "workflow-fuzz-codegen": "L2-fuzz-codegen-pending",
+    "workflow-performance-codegen": "L2-performance-codegen-pending",
+}
+
 
 class SeedResult(BaseModel):
     change_dir: Path

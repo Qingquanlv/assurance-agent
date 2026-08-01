@@ -246,6 +246,7 @@ def execute_attempt(
             fixtures_root=fixtures_root,
             fixture_id=str(fixture_id),
             entrypoint=entrypoint,
+            selected_layers=resolved_layers,
         )
         import_manifest_path = seeded.import_manifest_path
 
@@ -486,7 +487,9 @@ def execute_attempt(
     )
 
     (attempt_dir / "stdout.log").write_text(reason + "\n", encoding="utf-8")
-    (attempt_dir / "stderr.log").write_text((post_error or "") + ("\n" if post_error else ""), encoding="utf-8")
+    (attempt_dir / "stderr.log").write_text(
+        (post_error or "") + ("\n" if post_error else ""), encoding="utf-8"
+    )
     (attempt_dir / "execution.json").write_bytes(canonical_json_bytes(envelope))
 
     missing = [rel for rel in (expected_outputs or []) if not (raw_output / rel).exists()]

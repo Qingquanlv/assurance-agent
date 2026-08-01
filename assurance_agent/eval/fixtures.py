@@ -342,9 +342,7 @@ def validate_tier_for_selection(
     sample_root: Path | None = None,
 ) -> None:
     """Reject selected-layer completion roles/artifacts across the expanded ancestry."""
-    selected: tuple[LayerName, ...] = tuple(
-        layer for layer in LAYER_NAMES if layer in set(selected_layers)
-    )
+    selected: tuple[LayerName, ...] = tuple(layer for layer in LAYER_NAMES if layer in set(selected_layers))
     if tuple(selected_layers) != selected:
         raise AaError("selected_layers must be a unique canonical subset")
     if tier.expected_layers:
@@ -372,9 +370,7 @@ def validate_tier_for_selection(
 
         codegen_key = f"phases.{layer}-codegen.status"
         if tier.resets.workflow_state.get(codegen_key) == "done":
-            raise AaError(
-                f"pending tier {tier.name!r} marks selected {layer} codegen done"
-            )
+            raise AaError(f"pending tier {tier.name!r} marks selected {layer} codegen done")
 
         mapped = _mapped_targets_for_layer(sample_root, layer) if sample_root is not None else frozenset()
         forbidden = _forbidden_artifact_paths(layer, mapped)
@@ -390,9 +386,7 @@ def validate_tier_for_selection(
                     continue
                 if normalized.startswith("tests/testdata/"):
                     continue
-                raise AaError(
-                    f"pending tier {tier.name!r} includes forbidden selected artifact {rel!r}"
-                )
+                raise AaError(f"pending tier {tier.name!r} includes forbidden selected artifact {rel!r}")
 
 
 def _set_dotted(target: dict[str, Any], dotted: str, value: Any) -> None:
@@ -634,9 +628,7 @@ def seed_change(
         if tuple(selected_layers) != resolved_selected:
             raise AaError("selected_layers must be a unique canonical subset")
     elif tier.expected_layers:
-        resolved_selected = tuple(
-            layer for layer in LAYER_NAMES if layer in set(tier.expected_layers)
-        )
+        resolved_selected = tuple(layer for layer in LAYER_NAMES if layer in set(tier.expected_layers))
     else:
         resolved_selected = ()
 
@@ -684,9 +676,7 @@ def seed_change(
         import_def = tier.imports.get(entrypoint)
         if import_def is not None:
             if import_def.entrypoint != entrypoint:
-                raise AaError(
-                    f"tier import key {entrypoint!r} declares entrypoint {import_def.entrypoint!r}"
-                )
+                raise AaError(f"tier import key {entrypoint!r} declares entrypoint {import_def.entrypoint!r}")
             import_manifest_path = _write_import_manifest(
                 change_dir=change_dir,
                 project_root=sut_sandbox,

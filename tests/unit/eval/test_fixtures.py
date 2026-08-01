@@ -484,6 +484,18 @@ def test_complete_tiers_seed_without_dynamic_assurance_helper(tmp_path: Path, ti
         assert (result.change_dir / "review" / "performance-plan-checks.json").is_file()
 
 
+def test_live_codegen_datasets_reference_pending_tiers_only() -> None:
+    from assurance_agent.eval.dataset_loader import load_dataset
+    from assurance_agent.eval.paths import datasets_dir
+    from assurance_agent.eval.types import CODEGEN_SUITE_PENDING_TIERS
+
+    repo = Path(__file__).resolve().parents[3]
+    for suite_name, tier in CODEGEN_SUITE_PENDING_TIERS.items():
+        samples = load_dataset(datasets_dir(repo, suite_name))
+        assert samples
+        assert {sample.input.get("fixture_tier") for sample in samples} == {tier}
+
+
 def test_pending_chain_has_no_complete_ancestry() -> None:
     fixtures = _benchmark_fixtures()
     for tier_name in (

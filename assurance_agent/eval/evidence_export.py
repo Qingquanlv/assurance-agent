@@ -230,10 +230,9 @@ def select_root_event_slice(
     supersedes = root_start.get("supersedes_invocation_id")
     if auth and supersedes and supersede_for_root is not None:
         raw = supersede_for_root[1]
-        if (
-            raw.get("supersede_id") == auth
-            or raw.get("invocation_id") == supersedes
-        ) and raw.get("invocation_id") == supersedes:
+        if (raw.get("supersede_id") == auth or raw.get("invocation_id") == supersedes) and raw.get(
+            "invocation_id"
+        ) == supersedes:
             # Insert supersede before other selected events while preserving source order.
             selected.append(supersede_for_root)
             selected = sorted({item[0]: item for item in selected}.values(), key=lambda pair: pair[0])
@@ -359,7 +358,9 @@ def export_root_execution_closure(
     root_invocation_id: str,
     selected_layers: Sequence[LayerName],
     export_dir: Path,
-) -> tuple[RootEventSliceV1, EvidenceExportManifestV1, BoundArtifactRefV1, BoundArtifactRefV1, list[tuple[int, str]]]:
+) -> tuple[
+    RootEventSliceV1, EvidenceExportManifestV1, BoundArtifactRefV1, BoundArtifactRefV1, list[tuple[int, str]]
+]:
     """One-pass export of the bounded root evidence closure."""
     raw, ledger_digest, ledger_size, event_count, events = _digest_ledger(change_dir)
     del raw  # digest/size/count are authoritative for the envelope
@@ -399,22 +400,48 @@ def export_root_execution_closure(
                     data = canonical_json_bytes(write_set)
                     # Verify roots participate in identity by reloading.
                     store.load_write_set(logical_id)
+                    # Export blob payloads referenced by write-set entries.
+                    for entry in write_set.entries:
+                        blob_id = entry.blob_sha256
+                        if not blob_id:
+                            continue
+                        bare = blob_id.removeprefix("sha256:")
+                        if ("blob", bare) in {(obj.kind, obj.logical_id) for obj in objects}:
+                            continue
+                        try:
+                            blob_data = store.read_object(bare)
+                        except WorkspaceError as exc:
+                            raise EvidenceExportError(f"missing referenced object blob:{bare}") from exc
+                        objects.append(
+                            _object_record(
+                                kind="blob",
+                                logical_id=bare,
+                                relative_path=f"objects/blob/{bare}.bin",
+                                data=blob_data,
+                                dest=export_dir,
+                            )
+                        )
                 else:
-                    # Generic object bytes from the content store when available.
-                    obj_path = change_dir / ".graph-runtime" / "objects" / f"{logical_id}.json"
-                    alt = change_dir / ".graph-runtime" / kind.replace("_", "-") / f"{logical_id}.json"
-                    if obj_path.is_file():
-                        data = obj_path.read_bytes()
-                    elif alt.is_file():
-                        data = alt.read_bytes()
-                    else:
-                        # Blob payloads may live under cas/
-                        cas = change_dir / ".graph-runtime" / "cas" / logical_id
-                        if cas.is_file():
-                            data = cas.read_bytes()
-                            rel = f"objects/blob/{logical_id}.bin"
+                    # Content-addressed objects live in the sharded TreeStore.
+                    digest = logical_id.removeprefix("sha256:")
+                    try:
+                        data = store.read_object(digest)
+                    except WorkspaceError:
+                        # Staged semantics / catalogs may use kind-named dirs.
+                        alt = change_dir / ".graph-runtime" / kind.replace("_", "-") / f"{logical_id}.json"
+                        if alt.is_file():
+                            data = alt.read_bytes()
                         else:
                             raise EvidenceExportError(f"missing referenced object {kind}:{logical_id}")
+                    if kind == "blob":
+                        rel = f"objects/blob/{digest}.bin"
+                    if kind == "input_snapshot":
+                        _export_snapshot_blobs(
+                            store=store,
+                            snapshot_bytes=data,
+                            objects=objects,
+                            export_dir=export_dir,
+                        )
                 objects.append(
                     _object_record(
                         kind=kind,  # type: ignore[arg-type]
@@ -446,7 +473,9 @@ def export_root_execution_closure(
         sha256=sha256_bytes(manifest_bytes),
         size=len(manifest_bytes),
     )
-    pairs = [(item.source_seq, _event_digest(item.event.model_dump(mode="json"))) for item in slice_model.events]
+    pairs = [
+        (item.source_seq, _event_digest(item.event.model_dump(mode="json"))) for item in slice_model.events
+    ]
     return slice_model, manifest, slice_ref, manifest_ref, pairs
 
 
@@ -467,6 +496,49 @@ def replay_root_event_slice(
     if canonical_json_bytes(recomputed) != canonical_json_bytes(slice_model):
         raise EvidenceExportError("root event slice replay mismatch")
     return recomputed
+
+
+def _export_snapshot_blobs(
+    *,
+    store: TreeStore,
+    snapshot_bytes: bytes,
+    objects: list[EvidenceExportObjectV1],
+    export_dir: Path,
+) -> None:
+    """Export content blobs named by a TaskInputSnapshotV1 entry digest map."""
+    import json
+
+    try:
+        payload = json.loads(snapshot_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return
+    entries = payload.get("entries") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        return
+    seen = {(obj.kind, obj.logical_id) for obj in objects}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        digest = entry.get("sha256")
+        if not isinstance(digest, str) or not digest:
+            continue
+        bare = digest.removeprefix("sha256:")
+        if ("blob", bare) in seen:
+            continue
+        try:
+            blob_data = store.read_object(bare)
+        except WorkspaceError:
+            continue
+        objects.append(
+            _object_record(
+                kind="blob",
+                logical_id=bare,
+                relative_path=f"objects/blob/{bare}.bin",
+                data=blob_data,
+                dest=export_dir,
+            )
+        )
+        seen.add(("blob", bare))
 
 
 def verify_export_manifest_closure(

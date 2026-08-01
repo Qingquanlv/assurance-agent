@@ -3,10 +3,10 @@
   "fixtures": {
     "eval-sample-001": {
       "sample_dir": "samples/eval-sample-001",
-      "aggregate_sha256": "ec3e667dbd765a4e420e09635e028a025074ddc9dc67e43f4be86f22fc1bbdf0",
+      "aggregate_sha256": "f433bf9f2a4b391a4f9ed9975fed9e667cbdc17211ab58e9366419eecc7033b5",
       "files": {
         ".aa/config.yaml": "469fa82e83ce9ad7f37abf527192408f676cb89c50d9955bfe189945e198ab4e",
-        ".aa/data-knowledge.yaml": "c0c4395870fe94638f8bcdc3320bbbf301df476f849aed0a274cbcafd5f84ece",
+        ".aa/data-knowledge.yaml": "dc58b6de8af8a55efeda1856ad306ed5a65c94f5801ca44e032bccee55aa08f2",
         ".qa.yaml": "dccabbb8c719b86d5980b856a36a10de28f9e31e2af81e4a8b231527129142a4",
         "cases/system/api/case.yaml": "502cb7351ad63cb3363b08edd153ca3db2296086cac42cdd32591c4a4cd0a2bb",
         "cases/system/e2e/case.yaml": "d776033cb031b46f28e5a029cf6bb9bba3561c87001b2aad420b0aec75e152db",

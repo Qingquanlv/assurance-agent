@@ -64,18 +64,18 @@ def _api_plan(symbol: str = "test_api_001", path: str = "tests/api/test_a.py") -
 """
 
 
-_API_GOOD = '''
+_API_GOOD = """
 def test_api_001(client):
     response = client.get("/api/v1/api/list")
     assert response.status_code == 200
     assert response.json()["items"]
-'''
+"""
 
-_API_ASSERT_TRUE = '''
+_API_ASSERT_TRUE = """
 def test_api_001(client):
     response = client.get("/api/v1/api/list")
     assert True
-'''
+"""
 
 
 def _attempt(
@@ -117,14 +117,14 @@ def _attempt(
 |---------|-------------|-------------|
 | PERF_001 | `list_apis` | `tests/perf/locustfile.py` |
 """
-        source = '''
+        source = """
 from locust import HttpUser, task
 
 class ApiUser(HttpUser):
     @task
     def list_apis(self):
         self.client.get("/api/v1/api/list")
-'''
+"""
     elif layer == "fuzz":
         summary_key = "codegen/fuzz-codegen-summary.md"
         manifest_key = "codegen/fuzz-generated-files.json"
@@ -147,7 +147,7 @@ class ApiUser(HttpUser):
 |---------|----------|-------------|
 | FUZZ_001 | `from_asgi` | `app.main:app` |
 """
-        source = '''
+        source = """
 import schemathesis
 
 schema = schemathesis.openapi.from_asgi("app.main:app")
@@ -155,7 +155,7 @@ schema = schemathesis.openapi.from_asgi("app.main:app")
 @schema.parametrize()
 def test_fuzz_001(case):
     case.call_and_validate()
-'''
+"""
     elif layer == "e2e":
         summary_key = "codegen/e2e-codegen-summary.md"
         manifest_key = "codegen/e2e-generated-files.json"
@@ -172,7 +172,7 @@ def test_fuzz_001(case):
 |---------|---------------|-------------|
 | E2E_001 | `test_e2e_001` | `tests/e2e/test_e2e.py` |
 """
-        source = '''
+        source = """
 from playwright.sync_api import expect
 
 def test_e2e_001(page):
@@ -180,7 +180,7 @@ def test_e2e_001(page):
     page.fill("#user", "admin")
     page.click("button[type=submit]")
     expect(page.locator("h1")).to_be_visible()
-'''
+"""
     else:
         summary_key = "codegen/api-codegen-summary.md"
         manifest_key = "codegen/api-generated-files.json"
@@ -356,7 +356,10 @@ def _api_write_attribution(
         )
     manifest_digest = _bare_digest(canonical_json_bytes(manifest_model))
     plan_digest = _digest(plan.encode("utf-8"))
-    case_payload = {"added": [{"case_id": case_id, "type": case_type, "automation": {"required": True}}], "modified": []}
+    case_payload = {
+        "added": [{"case_id": case_id, "type": case_type, "automation": {"required": True}}],
+        "modified": [],
+    }
     case_bytes = yaml.safe_dump(case_payload).encode("utf-8")
     case_digest = _digest(case_bytes)
     snap_entries = [
@@ -433,7 +436,9 @@ def _api_write_attribution(
     )
 
 
-def test_live_codegen_scorer_still_credits_assert_true_and_omits_hard_metrics(tmp_path: Path) -> None:
+def test_live_codegen_scorer_still_credits_assert_true_and_exposes_hard_metrics(
+    tmp_path: Path,
+) -> None:
     attempt = make_attempt(tmp_path)
     tests_api = attempt / "raw-output" / "tests" / "api"
     tests_api.mkdir(parents=True)
@@ -445,8 +450,9 @@ def test_live_codegen_scorer_still_credits_assert_true_and_omits_hard_metrics(tm
     metrics = get_scorer("workflow-api-codegen")(sample, attempt).metrics
     assert metrics["schema_valid_rate"] == 1.0
     assert metrics["codegen_summary_present_rate"] == 1.0
+    # Task 22 activation: hard metrics are live and zero without export binding.
     for name in cc.HARD_METRIC_NAMES:
-        assert name not in metrics
+        assert metrics[name] == 0.0
 
 
 def test_applicable_full_chain_credits_behavioral_write() -> None:
@@ -520,9 +526,7 @@ def test_policy_integrity_failure_zeros_all_hard_metrics() -> None:
 
 def test_aggregation_applicable_plus_inapplicable() -> None:
     api = cc.evaluate_layer_binding(_attempt(layer="api"))
-    e2e_na = cc.evaluate_layer_binding(
-        _attempt(layer="e2e", applicable=False, with_write=False, na_ok=True)
-    )
+    e2e_na = cc.evaluate_layer_binding(_attempt(layer="e2e", applicable=False, with_write=False, na_ok=True))
     metrics = cc.score_current_codegen_metrics([api, e2e_na])
     assert metrics["current_assurance_chain_rate"] == 1.0
     assert metrics["current_codegen_attempt_rate"] == 1.0
@@ -540,9 +544,7 @@ def test_aggregation_two_applicable_one_write() -> None:
 
 
 def test_aggregation_zero_applicable_returns_zero() -> None:
-    e2e_na = cc.evaluate_layer_binding(
-        _attempt(layer="e2e", applicable=False, with_write=False, na_ok=True)
-    )
+    e2e_na = cc.evaluate_layer_binding(_attempt(layer="e2e", applicable=False, with_write=False, na_ok=True))
     metrics = cc.score_current_codegen_metrics([e2e_na])
     assert metrics["current_assurance_chain_rate"] == 1.0
     assert metrics["current_codegen_attempt_rate"] == 0.0

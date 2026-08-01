@@ -176,7 +176,9 @@ class FourLayerDeterministicAdapter:
                     change_id=request.change_id,
                 )
             )
-            block_event = self._block_events.get(request.target) if request.target in self.block_targets else None
+            block_event = (
+                self._block_events.get(request.target) if request.target in self.block_targets else None
+            )
 
         if request.target in _PLAN_SKILLS and not self.allow_plan_skills:
             return AgentResult(
@@ -202,18 +204,33 @@ class FourLayerDeterministicAdapter:
         mutation = self.mutations.get(request.target, "none")
         change_root, repo_root = _logical_roots(Path(request.workspace_root), request.change_id)
         if request.target in _REVIEWER_BY_LAYER.values():
-            return self._write_review(layer, change_root, mutation=mutation, attempt=attempt)
+            return self._write_review(
+                layer,
+                change_root,
+                repo_root=repo_root,
+                change_id=request.change_id,
+                mutation=mutation,
+                attempt=attempt,
+            )
         if request.target in _PLAN_FIXER_BY_LAYER.values():
             return self._write_plan_fixer(layer, change_root)
         if request.target in _CODEGEN_FIXER_BY_LAYER.values():
             return self._write_codegen_fixer(layer, change_root, repo_root)
-        return self._write_codegen(layer, change_root, repo_root, mutation=mutation)
+        return self._write_codegen(
+            layer,
+            change_root,
+            repo_root,
+            change_id=request.change_id,
+            mutation=mutation,
+        )
 
     def _write_review(
         self,
         layer: str,
         change_root: Path,
         *,
+        repo_root: Path,
+        change_id: str,
         mutation: MutationName,
         attempt: int,
     ) -> AgentResult:
@@ -222,6 +239,7 @@ class FourLayerDeterministicAdapter:
         bundle = load_canonical_assurance_bundle(layer)
         profile = get_layer_assurance_profile(layer)
         payload = json.loads(bundle.review_bytes.decode("utf-8"))
+        payload["change_id"] = change_id
         scripts = list(self.review_scripts.get(layer, ()))
         script: ReviewScript = scripts[attempt - 1] if attempt <= len(scripts) else "pass"
         if script == "needs_fix_auto":
@@ -243,14 +261,20 @@ class FourLayerDeterministicAdapter:
             # Must be a fully-qualified L1 leaf key (PlanReview validation) that is
             # absent from the seeded data-knowledge.yaml so the gate routes to
             # knowledge_remediation rather than pass.
-            payload["required_capabilities"] = [
-                "capabilities.domain_factories.account.missing_fixture_only"
-            ]
+            payload["required_capabilities"] = ["capabilities.domain_factories.account.missing_fixture_only"]
             payload["codegen_readiness"] = "ready"
         else:
             payload["decision"] = "pass"
             payload["auto_fix_allowed"] = False
             payload["codegen_readiness"] = "ready"
+            available = _available_capability_keys(repo_root, change_root)
+            requested = [
+                str(item) for item in payload.get("required_capabilities") or [] if isinstance(item, str)
+            ]
+            kept = [item for item in requested if item in available]
+            if not kept and available:
+                kept = [sorted(available)[0]]
+            payload["required_capabilities"] = kept
         review_path = change_root / profile.review_artifact
         review_path.parent.mkdir(parents=True, exist_ok=True)
         review_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -267,7 +291,9 @@ class FourLayerDeterministicAdapter:
         plan_path.parent.mkdir(parents=True, exist_ok=True)
         existing = plan_path.read_text(encoding="utf-8") if plan_path.is_file() else "# plan\n"
         if "deterministic-plan-fix" not in existing:
-            plan_path.write_text(existing.rstrip() + "\n\n<!-- deterministic-plan-fix -->\n", encoding="utf-8")
+            plan_path.write_text(
+                existing.rstrip() + "\n\n<!-- deterministic-plan-fix -->\n", encoding="utf-8"
+            )
         summary_name = {
             "api": "review/api-plan-review-apply-summary.md",
             "e2e": "review/plan-review-apply-summary.md",
@@ -324,13 +350,18 @@ class FourLayerDeterministicAdapter:
         change_root: Path,
         repo_root: Path,
         *,
+        change_id: str,
         mutation: MutationName,
     ) -> AgentResult:
         gf = get_generated_files_contract(layer)
         summary_rel = gf.summary_path.removeprefix("change:")
         manifest_rel = gf.manifest_path.removeprefix("change:")
-        case_id, test_rel, _symbol = _CODEGEN_TEST_BY_LAYER[layer]
-        test_source = _behavior_source(layer, case_id)
+        case_ids, test_rel, symbols = _resolve_codegen_targets(layer, change_root)
+        chunks = [
+            _behavior_source(layer, case_id, symbol=symbol)
+            for case_id, symbol in zip(case_ids, symbols, strict=True)
+        ]
+        test_source = "\n".join(chunks)
         test_bytes = test_source.encode("utf-8")
         digest = sha256_bytes(test_bytes)
 
@@ -340,7 +371,13 @@ class FourLayerDeterministicAdapter:
             summary_path.write_text(f"# {layer} codegen summary\n", encoding="utf-8")
 
         if mutation != "missing_manifest":
-            manifest = _build_layer_manifest(layer, case_id=case_id, repo_path=test_rel, digest=digest)
+            manifest = _build_layer_manifest(
+                layer,
+                change_id=change_id,
+                case_ids=case_ids,
+                repo_path=test_rel,
+                digest=digest,
+            )
             if mutation == "manifest_write_mismatch":
                 # Claim a path that will not be written.
                 payload = manifest.model_dump(mode="json")
@@ -452,9 +489,7 @@ def seed_four_layer_project(
 
     Returns ``(project_root, change_dir, import_manifest_path)``.
     """
-    selected: tuple[LayerName, ...] = tuple(
-        layer for layer in LAYERS if layer in set(selected_layers)
-    )
+    selected: tuple[LayerName, ...] = tuple(layer for layer in LAYERS if layer in set(selected_layers))
     if not selected:
         raise ValueError("selected_layers must be non-empty")
     applicable: tuple[LayerName, ...] = (
@@ -510,9 +545,7 @@ def seed_four_layer_project(
             dest = project / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
-        knowledge = yaml.safe_load(
-            (bundle.root / ".aa" / "data-knowledge.yaml").read_text(encoding="utf-8")
-        )
+        knowledge = yaml.safe_load((bundle.root / ".aa" / "data-knowledge.yaml").read_text(encoding="utf-8"))
         _deep_merge(merged_knowledge, knowledge)
 
     # Keep a schema-valid project config (fixture configs are observation-only).
@@ -791,7 +824,9 @@ def root_events(change_dir: Path) -> list[dict[str, object]]:
     return list(read_events_strict(change_dir))
 
 
-def events_for_root(events: Sequence[Mapping[str, object]], root_invocation_id: str) -> list[dict[str, object]]:
+def events_for_root(
+    events: Sequence[Mapping[str, object]], root_invocation_id: str
+) -> list[dict[str, object]]:
     """Return events belonging to ``root_invocation_id`` or any nested child thereof."""
     allowed = {root_invocation_id}
     out: list[dict[str, object]] = []
@@ -805,7 +840,9 @@ def events_for_root(events: Sequence[Mapping[str, object]], root_invocation_id: 
     return out
 
 
-def attempt_nodes(events: Sequence[Mapping[str, object]], *, event_type: str = "task_attempt_started") -> list[str]:
+def attempt_nodes(
+    events: Sequence[Mapping[str, object]], *, event_type: str = "task_attempt_started"
+) -> list[str]:
     return [str(e["node_id"]) for e in events if e.get("type") == event_type and e.get("node_id")]
 
 
@@ -869,59 +906,147 @@ def _logical_roots(workspace_root: Path, change_id: str) -> tuple[Path, Path]:
     return workspace_root, workspace_root
 
 
-def _behavior_source(layer: str, case_id: str) -> str:
+def _behavior_source(layer: str, case_id: str, *, symbol: str | None = None) -> str:
     if layer == "api":
+        fn = symbol or "test_api_acc_001__create_account_success"
         return (
-            f"def test_api_acc_001__create_account_success(client):\n"
-            f"    response = client.post('/accounts', json={{'name': '{case_id}'}})\n"
+            f"def {fn}(client):\n"
+            f"    response = client.post('/api/v1/api/create', json={{'name': '{case_id}'}})\n"
             f"    assert response.status_code == 201\n"
             f"    assert 'id' in response.json()\n"
         )
     if layer == "e2e":
+        fn = symbol or "test_tc_e2e_auth_reject__limited_user_denied"
         return (
             "from playwright.sync_api import expect\n\n"
-            "def test_tc_e2e_auth_reject__limited_user_denied(page):\n"
+            f"def {fn}(page):\n"
             "    page.goto('/')\n"
             "    page.click('button')\n"
             "    expect(page.locator('text=denied')).to_be_visible()\n"
         )
     if layer == "fuzz":
+        fn = symbol or "test_fuzz_001__account_create_schema"
         return (
             "import schemathesis\n\n"
             "schema = schemathesis.openapi.from_asgi('/openapi.json', app=None)\n\n"
             "@schema.parametrize()\n"
-            "def test_fuzz_001__account_create_schema(case):\n"
-            "    response = case.call()\n"
-            "    case.validate_response(response)\n"
+            f"def {fn}(case):\n"
+            "    case.call_and_validate()\n"
         )
+    method = symbol or "get_accounts"
     return (
         "from locust import HttpUser, task\n\n"
-        "class AccountsUser(HttpUser):\n"
+        "class ApiUser(HttpUser):\n"
         "    @task\n"
-        "    def get_accounts(self):\n"
-        "        self.client.get('/accounts')\n"
+        f"    def {method}(self):\n"
+        "        self.client.get('/api/v1/api/list')\n"
     )
+
+
+def _resolve_codegen_targets(layer: str, change_root: Path) -> tuple[list[str], str, list[str]]:
+    """Prefer mapped targets from the workspace plan; fall back to helper defaults."""
+    default_case, default_path, default_symbol = _CODEGEN_TEST_BY_LAYER[layer]
+    profile = get_layer_assurance_profile(layer)
+    plan_rel = None
+    for rel in profile.plan_artifacts:
+        if "codegen" in Path(rel).name:
+            plan_rel = rel
+            break
+    if plan_rel is None and profile.plan_artifacts:
+        plan_rel = profile.plan_artifacts[0]
+    if plan_rel is None:
+        return [default_case], default_path, [default_symbol]
+    plan_path = change_root / plan_rel
+    if not plan_path.is_file():
+        return [default_case], default_path, [default_symbol]
+    try:
+        from assurance_agent.verification.generated_entries import extract_layer_mapping
+
+        cases: list[dict[str, object]] = []
+        cases_root = change_root / "cases"
+        if cases_root.is_dir():
+            for case_file in sorted(cases_root.rglob("case.yaml")):
+                payload = yaml.safe_load(case_file.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    cases.append(payload)
+        relation = extract_layer_mapping(
+            layer=layer,
+            plan_text=plan_path.read_text(encoding="utf-8"),
+            cases=cases,
+        )
+        if relation.entries:
+            # Emit one file covering every mapped case that shares the first target.
+            target = relation.entries[0].target_file
+            selected = [entry for entry in relation.entries if entry.target_file == target]
+            return (
+                [entry.case_id for entry in selected],
+                target,
+                [entry.symbol for entry in selected],
+            )
+    except Exception:
+        return [default_case], default_path, [default_symbol]
+    return [default_case], default_path, [default_symbol]
+
+
+def _available_capability_keys(*roots: Path) -> set[str]:
+    keys: set[str] = set()
+    for root in roots:
+        path = root / ".aa" / "data-knowledge.yaml"
+        if not path.is_file():
+            continue
+        try:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        caps = payload.get("capabilities")
+        if not isinstance(caps, dict):
+            continue
+        _walk_capability_keys(caps, "capabilities", keys)
+        auth = payload.get("auth")
+        if isinstance(auth, dict):
+            for name in auth:
+                if isinstance(name, str):
+                    keys.add(f"auth.{name}")
+    return keys
+
+
+def _walk_capability_keys(node: object, prefix: str, out: set[str]) -> None:
+    if not isinstance(node, dict):
+        return
+    for key, value in node.items():
+        if not isinstance(key, str):
+            continue
+        path = f"{prefix}.{key}"
+        if isinstance(value, dict) and ("kind" in value or "symbol" in value):
+            out.add(path)
+            continue
+        _walk_capability_keys(value, path, out)
 
 
 def _build_layer_manifest(
     layer: str,
     *,
-    case_id: str,
+    change_id: str,
+    case_id: str | None = None,
+    case_ids: Sequence[str] | None = None,
     repo_path: str,
     digest: str,
 ) -> GeneratedFilesV1:
     model = get_generated_files_model(layer)
+    ids = list(case_ids) if case_ids is not None else [case_id or "CASE-001"]
     return model.model_validate(
         {
             "schema_version": "1",
-            "change_id": CHANGE_ID,
+            "change_id": change_id,
             "layer": layer,
             "files": [
                 {
                     "repo_path": repo_path,
                     "disposition": "generated",
                     "role": "test_entry",
-                    "case_ids": [case_id],
+                    "case_ids": ids,
                     "content_sha256": digest if digest.startswith("sha256:") else f"sha256:{digest}",
                 }
             ],
@@ -962,6 +1087,7 @@ def _seed_stale_pass_shaped(
         case_id, test_rel, _ = _CODEGEN_TEST_BY_LAYER[layer]
         stale_manifest = _build_layer_manifest(
             layer,
+            change_id=CHANGE_ID,
             case_id=case_id,
             repo_path=test_rel,
             digest=sha256_bytes(b"stale\n"),

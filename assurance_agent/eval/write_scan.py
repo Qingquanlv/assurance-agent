@@ -300,9 +300,7 @@ def build_write_policy_v1(
     change_repo_path: str | None,
 ) -> WritePolicyV1:
     """Construct strict write policy from canonical selection + active change path."""
-    layers: tuple[LayerName, ...] = tuple(
-        layer for layer in LAYER_NAMES if layer in set(selected_layers)
-    )
+    layers: tuple[LayerName, ...] = tuple(layer for layer in LAYER_NAMES if layer in set(selected_layers))
     if len(layers) != len(set(selected_layers)):
         raise WriteScanError("selected_layers must be a unique canonical subset")
     if tuple(selected_layers) != layers:
@@ -364,8 +362,7 @@ def resolve_write_policy(run_mode: str, selected_layers: object) -> WritePolicy:
         layers = ("api", "e2e")
     else:
         raise AaError(
-            "write policy requires a canonical selected_layers sequence; "
-            "do not pass unresolved suite strings"
+            "write policy requires a canonical selected_layers sequence; do not pass unresolved suite strings"
         )
     # Legacy codegen path still single-layer until callers migrate to build_write_policy_v1.
     if run_mode == "codegen-only" and len(layers) != 1:
@@ -526,9 +523,7 @@ def diff_worktree_manifests(before: WorktreeManifestV1, after: WorktreeManifestV
         reasons = sorted(set(reasons), key=_REASON_ORDER.__getitem__)
         if not reasons:
             continue
-        entries.append(
-            WriteDiffEntryV1(path=path, reasons=reasons, before=left, after=right)
-        )
+        entries.append(WriteDiffEntryV1(path=path, reasons=reasons, before=left, after=right))
     return WriteDiffV1(
         schema_version="1",
         before_manifest_sha256=sha256_bytes(canonical_json_bytes(before)),
@@ -586,7 +581,9 @@ def is_path_allowed(relative_path: str, policy: WritePolicy | WritePolicyV1) -> 
     return not _matches_any(normalized, deny_patterns)
 
 
-def scan_forbidden_writes_from_diff(diff: WriteDiffV1, policy: WritePolicy | WritePolicyV1) -> WriteScanResult:
+def scan_forbidden_writes_from_diff(
+    diff: WriteDiffV1, policy: WritePolicy | WritePolicyV1
+) -> WriteScanResult:
     changed_paths = [entry.path for entry in diff.entries]
     violation_paths = [p for p in changed_paths if not is_path_allowed(p, policy)]
     return WriteScanResult(

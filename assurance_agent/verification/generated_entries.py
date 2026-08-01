@@ -58,9 +58,7 @@ _DEFAULT_CLIENT_NAMES: Final[frozenset[str]] = frozenset(
     {"client", "api_client", "http_client", "authenticated_client", "session"}
 )
 _DEFAULT_SCHEMA_CALLS: Final[frozenset[str]] = frozenset({"call_and_validate"})
-_DEFAULT_SCHEMA_DECORATORS: Final[frozenset[str]] = frozenset(
-    {"schema.parametrize", "parametrize"}
-)
+_DEFAULT_SCHEMA_DECORATORS: Final[frozenset[str]] = frozenset({"schema.parametrize", "parametrize"})
 _DEFAULT_USER_BASES: Final[frozenset[str]] = frozenset({"HttpUser", "FastHttpUser"})
 _DEFAULT_TASK_DECORATORS: Final[frozenset[str]] = frozenset({"task"})
 _DEFAULT_NAVIGATION: Final[frozenset[str]] = frozenset({"goto", "go_back", "reload"})
@@ -368,11 +366,7 @@ def _find_function(tree: ast.AST, symbol: str) -> ast.FunctionDef | ast.AsyncFun
 
 
 def _file_has_only_helpers(tree: ast.AST) -> bool:
-    defs = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    ]
+    defs = [node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
     if not defs:
         return False
     return all(not node.name.startswith("test_") for node in defs)
@@ -583,7 +577,11 @@ def _has_page_dependent_assertion(
             func = node.func
             if isinstance(func, ast.Name) and func.id in policy.expect_names:
                 return True
-            if isinstance(func, ast.Attribute) and func.attr in {"to_have_url", "to_be_visible", "to_have_text"}:
+            if isinstance(func, ast.Attribute) and func.attr in {
+                "to_have_url",
+                "to_be_visible",
+                "to_have_text",
+            }:
                 return True
     return False
 
