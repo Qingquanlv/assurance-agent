@@ -809,15 +809,22 @@ def _plan_gate_issues(schema: WorkflowSchemaV2, roles: _LayerRoles) -> list[Assu
     checks_alias = derive_alias(roles.profile.checks_artifact)
     layer = roles.layer
     state_call = f"plan_assurance_state({checks_alias}, {review_alias}, {_DATA_KNOWLEDGE_ALIAS}, '{layer}')"
+    policy_block_reject = (
+        f"({state_call} == 'applicable' and ("
+        f"(check_failed({checks_alias}, 'l1_path') and policy.plan_checks.l1_path == 'block') or "
+        f"(check_failed({checks_alias}, 'shared_factory') and policy.plan_checks.shared_factory == 'block') or "
+        f"(check_failed({checks_alias}, 'assert_ideal') and policy.plan_checks.assert_ideal == 'block') or "
+        f"(check_failed({checks_alias}, 'capability_keys') and policy.plan_checks.capability_keys == 'block')"
+        f"))"
+    )
 
-    def _folded(text: str) -> str:
-        return " ".join(text.split())
-
-    stop_when = _folded(rules.get("stop_when", ""))
-    if stop_when and not expression_has_top_level_predicates(
+    # Presence alone is insufficient: empty/whitespace expressions must fail atom checks.
+    stop_when = rules.get("stop_when", "")
+    if "stop_when" in rules and not expression_has_top_level_predicates(
         stop_when,
         op="or",
         required=(f"{state_call} == 'invalid'",),
+        exact=True,
     ):
         issues.append(
             _issue(
@@ -825,15 +832,16 @@ def _plan_gate_issues(schema: WorkflowSchemaV2, roles: _LayerRoles) -> list[Assu
                 layer=roles.layer,
                 owner="plan-gate",
                 locator=f"{locator}.stop_when",
-                detail="stop_when missing required invalid plan_assurance_state atom",
+                detail="stop_when must be exactly the invalid plan_assurance_state atom",
             )
         )
 
-    skip_when = _folded(rules.get("skip_when", ""))
-    if skip_when and not expression_has_top_level_predicates(
+    skip_when = rules.get("skip_when", "")
+    if "skip_when" in rules and not expression_has_top_level_predicates(
         skip_when,
         op="and",
         required=(f"{state_call} == 'not_applicable'",),
+        exact=True,
     ):
         issues.append(
             _issue(
@@ -841,18 +849,20 @@ def _plan_gate_issues(schema: WorkflowSchemaV2, roles: _LayerRoles) -> list[Assu
                 layer=roles.layer,
                 owner="plan-gate",
                 locator=f"{locator}.skip_when",
-                detail="skip_when missing required not_applicable plan_assurance_state atom",
+                detail="skip_when must be exactly the not_applicable plan_assurance_state atom",
             )
         )
 
-    reject_when = _folded(rules.get("reject_when", ""))
-    if reject_when and not expression_has_top_level_predicates(
+    reject_when = rules.get("reject_when", "")
+    if "reject_when" in rules and not expression_has_top_level_predicates(
         reject_when,
         op="or",
         required=(
             f"{review_alias}.decision == 'reject'",
             f"{review_alias}.codegen_readiness == 'not_ready'",
+            policy_block_reject,
         ),
+        exact=True,
     ):
         issues.append(
             _issue(
@@ -860,12 +870,12 @@ def _plan_gate_issues(schema: WorkflowSchemaV2, roles: _LayerRoles) -> list[Assu
                 layer=roles.layer,
                 owner="plan-gate",
                 locator=f"{locator}.reject_when",
-                detail="reject_when missing required reject/not_ready atoms",
+                detail="reject_when must keep the closed reject/not_ready/policy-block OR set",
             )
         )
 
-    pass_when = _folded(rules.get("pass_when", ""))
-    if pass_when and not expression_has_top_level_predicates(
+    pass_when = rules.get("pass_when", "")
+    if "pass_when" in rules and not expression_has_top_level_predicates(
         pass_when,
         op="and",
         required=(
@@ -959,31 +969,41 @@ def _codegen_precondition_issues(
                 )
             )
 
-    pass_when = rules.get("pass_when", "")
-    required_atoms = [
-        f"node('{roles.cycle_call_node_id}').status == 'succeeded'",
-        "plan_assurance_state",
-        f"gate('{roles.profile.gate_id}').verdict == 'pass'",
-        "capabilities_present",
-        "file_exists",
-    ]
-    for atom in required_atoms:
-        if atom not in pass_when.replace('"', "'"):
-            issues.append(
-                _issue(
-                    "codegen_precondition_mismatch",
-                    layer=roles.layer,
-                    owner="codegen-precheck",
-                    locator=f"{locator}.pass_when",
-                    detail=f"pass_when missing required atom involving {atom!r}",
-                )
-            )
+    review_alias = roles.profile.review_alias
+    checks_alias = derive_alias(roles.profile.checks_artifact)
+    state_call = (
+        f"plan_assurance_state({checks_alias}, {review_alias}, {_DATA_KNOWLEDGE_ALIAS}, '{roles.layer}')"
+    )
+    cycle_status_ok = f"node('{roles.cycle_call_node_id}').status == 'succeeded'"
+    cycle_status_bad = f"node('{roles.cycle_call_node_id}').status != 'succeeded'"
 
-    stop_when = " ".join(rules.get("stop_when", "").split())
-    if stop_when and not expression_has_top_level_predicates(
+    skip_when = rules.get("skip_when", "")
+    if "skip_when" in rules and not expression_has_top_level_predicates(
+        skip_when,
+        op="and",
+        required=(f"{state_call} == 'not_applicable'",),
+        exact=True,
+    ):
+        issues.append(
+            _issue(
+                "codegen_precondition_mismatch",
+                layer=roles.layer,
+                owner="codegen-precheck",
+                locator=f"{locator}.skip_when",
+                detail="skip_when must be exactly the not_applicable plan_assurance_state atom",
+            )
+        )
+
+    stop_when = rules.get("stop_when", "")
+    if "stop_when" in rules and not expression_has_top_level_predicates(
         stop_when,
         op="or",
-        required=(f"node('{roles.cycle_call_node_id}').status != 'succeeded'",),
+        required=(
+            cycle_status_bad,
+            f"{state_call} == 'invalid'",
+            f"not file_exists('{_DATA_KNOWLEDGE_PATH}')",
+        ),
+        exact=True,
     ):
         issues.append(
             _issue(
@@ -991,19 +1011,32 @@ def _codegen_precondition_issues(
                 layer=roles.layer,
                 owner="codegen-precheck",
                 locator=f"{locator}.stop_when",
-                detail="stop_when must retain current child status != succeeded atom",
+                detail="stop_when must keep the closed child-status/invalid/L1-missing OR set",
             )
         )
 
-    # Reject reading review-cycle via wrong status field patterns used in mutations.
-    if "review-cycle" in pass_when and ".status" not in pass_when:
+    pass_when = rules.get("pass_when", "")
+    if "pass_when" in rules and not expression_has_top_level_predicates(
+        pass_when,
+        op="and",
+        required=(
+            cycle_status_ok,
+            f"{state_call} == 'applicable'",
+            f"gate('{roles.profile.gate_id}').verdict == 'pass'",
+            f"capabilities_present({review_alias}, {_DATA_KNOWLEDGE_ALIAS})",
+            f"file_exists('{_DATA_KNOWLEDGE_PATH}')",
+        ),
+    ):
         issues.append(
             _issue(
                 "codegen_precondition_mismatch",
                 layer=roles.layer,
                 owner="codegen-precheck",
                 locator=f"{locator}.pass_when",
-                detail="codegen precondition must read current child status",
+                detail=(
+                    "pass_when missing required child-success/applicable/gate-pass/"
+                    "capabilities_present/file_exists atoms"
+                ),
             )
         )
     return issues

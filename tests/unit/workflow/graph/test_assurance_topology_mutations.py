@@ -274,6 +274,46 @@ def test_codegen_precondition_reads_review_cycle_status_not_bound_child_rejected
     assert "codegen_precondition_mismatch" in _codes(mutated)
 
 
+@pytest.mark.parametrize("field", ["skip_when", "stop_when", "pass_when"])
+def test_codegen_empty_rule_expression_rejected(field: str) -> None:
+    mutated = _replace_gate_rule(_approved(), "api-codegen-precondition-gate", field, "")
+    issues = find_current_assurance_conformance_issues(mutated)
+    assert any(
+        issue.code == "codegen_precondition_mismatch" and issue.locator.endswith(f".{field}")
+        for issue in issues
+    )
+
+
+def test_codegen_stop_when_or_true_broadening_rejected() -> None:
+    schema = _approved()
+    gate_id = "api-codegen-precondition-gate"
+    stop_when = next(rule.expr for rule in schema.gates[gate_id].rules if rule.field == "stop_when")
+    mutated = _replace_gate_rule(schema, gate_id, "stop_when", f"{stop_when} or true")
+    issues = find_current_assurance_conformance_issues(mutated)
+    assert any(
+        issue.code == "codegen_precondition_mismatch" and issue.locator.endswith(".stop_when")
+        for issue in issues
+    )
+
+
+def test_codegen_pass_when_nested_capability_spoof_rejected() -> None:
+    """Substring-visible capabilities_present nested under OR must not satisfy structural atoms."""
+    schema = _approved()
+    gate_id = "api-codegen-precondition-gate"
+    pass_when = next(rule.expr for rule in schema.gates[gate_id].rules if rule.field == "pass_when")
+    spoofed = pass_when.replace(
+        "capabilities_present(api_plan_review, data_knowledge)",
+        "(capabilities_present(api_plan_review, data_knowledge) or true)",
+    )
+    assert "capabilities_present" in spoofed
+    mutated = _replace_gate_rule(schema, gate_id, "pass_when", spoofed)
+    issues = find_current_assurance_conformance_issues(mutated)
+    assert any(
+        issue.code == "codegen_precondition_mismatch" and issue.locator.endswith(".pass_when")
+        for issue in issues
+    )
+
+
 def test_missing_gate_reads_or_wrong_alias_rejected() -> None:
     schema = _approved()
     profile = get_layer_assurance_profile("api")
@@ -310,6 +350,34 @@ def test_plan_gate_reject_when_weakened_to_false_rejected() -> None:
     assert any(
         issue.code == "gate_rule_mismatch" and issue.locator.endswith(".reject_when") for issue in issues
     )
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["skip_when", "reject_when", "pass_when", "stop_when"],
+)
+def test_plan_gate_empty_rule_expression_rejected(field: str) -> None:
+    profile = get_layer_assurance_profile("api")
+    mutated = _replace_gate_rule(_approved(), profile.gate_id, field, "   ")
+    issues = find_current_assurance_conformance_issues(mutated)
+    assert any(issue.code == "gate_rule_mismatch" and issue.locator.endswith(f".{field}") for issue in issues)
+
+
+@pytest.mark.parametrize(
+    ("field", "code"),
+    [
+        ("reject_when", "gate_rule_mismatch"),
+        ("stop_when", "gate_rule_mismatch"),
+    ],
+)
+def test_plan_gate_or_rule_broadened_with_true_rejected(field: str, code: str) -> None:
+    profile = get_layer_assurance_profile("api")
+    schema = _approved()
+    gate = schema.gates[profile.gate_id]
+    expr = next(rule.expr for rule in gate.rules if rule.field == field)
+    mutated = _replace_gate_rule(schema, profile.gate_id, field, f"{expr} or true")
+    issues = find_current_assurance_conformance_issues(mutated)
+    assert any(issue.code == code and issue.locator.endswith(f".{field}") for issue in issues)
 
 
 @pytest.mark.parametrize(

@@ -92,11 +92,41 @@ not truth-equivalent to `params.run_tests == true`) yields
 - `test_broadened_specialty_preflight_rejected` now asserts
   `run_mode_predicate_mismatch`
 
+## Review Fix Pass (post-fa0ba99)
+
+Prior Importants remain closed. New findings:
+
+### P1 — Empty gate-rule expressions
+
+`expression_has_top_level_predicates` treats empty/whitespace as mismatch.
+Plan-gate and codegen checks run whenever the field is present (`if field in
+rules and not ...`), so `""` / `"   "` yield:
+
+- plan-gate → `gate_rule_mismatch` on `.skip_when` / `.reject_when` /
+  `.pass_when` / `.stop_when`
+- codegen → `codegen_precondition_mismatch` on the same fields
+
+### P1 — OR-rule broadening (`… or true`)
+
+`expression_has_top_level_predicates(..., exact=True)` requires the top-level
+OR operand set to equal the closed required atom set (no extra disjuncts):
+
+- plan `stop_when`: exactly invalid `plan_assurance_state` atom
+- plan `reject_when`: closed `{decision==reject, readiness==not_ready, policy-block}`
+- codegen `stop_when`: closed `{child status != succeeded, invalid state, not file_exists(L1)}`
+
+### P2 — Codegen `pass_when` structural atoms
+
+Codegen `pass_when` / `skip_when` / `stop_when` use the same AST top-level
+predicate helper (not substring). Spoof nesting
+`(capabilities_present(...) or true)` is rejected as
+`codegen_precondition_mismatch`.
+
 ## Verification
 
 | Command | Result |
 |---|---|
-| Focused pytest (compiler + mutations + packaged + runtime factory) | **113 passed** |
+| Focused pytest (compiler + mutations + packaged + runtime factory) | **124 passed** |
 | `uv run ruff check` on touched graph/conformance/test files | All checks passed |
 
 ## Files Changed

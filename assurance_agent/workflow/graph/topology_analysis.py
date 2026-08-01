@@ -459,13 +459,20 @@ def expression_has_top_level_predicates(
     *,
     op: Literal["and", "or"],
     required: Sequence[str | Expr],
+    exact: bool = False,
 ) -> bool:
     """Return True when every required predicate is a top-level ``op`` operand.
 
-    A top-level permissive ``or`` around required ``and`` conjuncts is a mismatch.
-    Parse failures also count as a mismatch.
+    Empty/whitespace-only text is a mismatch. A top-level permissive ``or`` around
+    required ``and`` conjuncts is a mismatch. Parse failures count as a mismatch.
+
+    When ``exact`` is True, the top-level operand set must equal ``required``
+    (no extra disjuncts/conjuncts such as ``or true``).
     """
-    expr = _parse_or_none(text)
+    folded = " ".join(text.split())
+    if not folded:
+        return False
+    expr = _parse_or_none(folded)
     if expr is None:
         return False
     if op == "and" and isinstance(expr, BoolOp) and expr.op == "or":
@@ -477,9 +484,21 @@ def expression_has_top_level_predicates(
         if parsed is None:
             return False
         required_exprs.append(parsed)
-    return all(
+    if not required_exprs:
+        return False
+    if not all(
         any(expressions_structurally_equal(part, predicate) for part in parts) for predicate in required_exprs
-    )
+    ):
+        return False
+    if exact:
+        if len(parts) != len(required_exprs):
+            return False
+        if not all(
+            any(expressions_structurally_equal(part, predicate) for predicate in required_exprs)
+            for part in parts
+        ):
+            return False
+    return True
 
 
 def reorder_commutative_and(text: str) -> str:
