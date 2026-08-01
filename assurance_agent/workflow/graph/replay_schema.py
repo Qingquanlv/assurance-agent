@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from assurance_agent.verification.profiles import (
     LayerAssuranceProfile,
@@ -24,6 +24,9 @@ from assurance_agent.workflow.orchestration.dsl import (
     parse_expression,
 )
 from assurance_agent.workflow.orchestration.schema import GateDef, derive_alias
+
+if TYPE_CHECKING:
+    from assurance_agent.workflow.graph.historical_roles import DiscoveredHistoricalAssuranceRoles
 
 WIRED_REPLAY_LAYERS = frozenset({"api", "e2e"})
 _SPECIALTY_PARENT_PREFLIGHT_LAYERS = frozenset({"fuzz", "performance"})
@@ -75,6 +78,8 @@ class PinnedLayerTopology:
     codegen_precondition_node_id: str | None
     codegen_node_id: str | None
     diagnostics: tuple[str, ...]
+    semantics_id: str = "legacy_unspecified"
+    semantics_bound: bool = False
 
 
 def validate_params_only_expression(
@@ -307,37 +312,86 @@ def validate_current_assurance_activation(
 
 def validate_historical_replay_surface(
     schema: WorkflowSchemaV2,
+    *,
+    historical_roles: "DiscoveredHistoricalAssuranceRoles | None" = None,
 ) -> tuple[str, ...]:
-    """Validate syntax, graph integrity, and replay-safe dependencies only."""
+    """Validate syntax, graph integrity, and replay-safe dependencies only.
+
+    When ``historical_roles`` is provided, selection/branch lookup uses the
+    discovered manifest rather than current node IDs.
+    """
     param_names = frozenset(schema.params)
     errors: list[str] = []
 
-    assurance = schema.graphs.get("assurance")
-    if assurance is None:
-        return ("graph:assurance: missing assurance graph",)
-
-    for node_id in _ASSURANCE_BRANCH_NODES:
-        node = assurance.nodes.get(node_id)
-        if node is None:
-            errors.append(f"graph:assurance.nodes.{node_id}: missing branch node")
-            continue
-        if not node.uses.startswith("graph:"):
-            errors.append(f"graph:assurance.nodes.{node_id}: branch must use graph:<id>")
-            continue
-        branch_id = node.uses.removeprefix("graph:")
-        if branch_id not in schema.graphs:
-            errors.append(f"graph:assurance.nodes.{node_id}: missing branch graph {branch_id!r}")
-        when = node.when
-        if not when:
-            errors.append(f"graph:assurance.nodes.{node_id}.when: missing selection predicate")
-            continue
-        errors.extend(
-            validate_params_only_expression(
-                when,
-                param_names,
-                locator=f"graph:assurance.nodes.{node_id}.when",
+    if historical_roles is not None:
+        assurance = schema.graphs.get(historical_roles.assurance_graph_id)
+        if assurance is None:
+            return (f"graph:{historical_roles.assurance_graph_id}: missing assurance graph",)
+        for layer_roles in historical_roles.layers:
+            node_id = layer_roles.selection_event_node_id
+            node = assurance.nodes.get(node_id)
+            if node is None:
+                errors.append(
+                    f"graph:{historical_roles.assurance_graph_id}.nodes.{node_id}: missing branch node"
+                )
+                continue
+            if not node.uses.startswith("graph:"):
+                errors.append(
+                    f"graph:{historical_roles.assurance_graph_id}.nodes.{node_id}: branch must use graph:<id>"
+                )
+                continue
+            branch_id = node.uses.removeprefix("graph:")
+            if branch_id != layer_roles.branch_graph_id:
+                errors.append(
+                    f"graph:{historical_roles.assurance_graph_id}.nodes.{node_id}: "
+                    f"branch graph {branch_id!r} != discovered {layer_roles.branch_graph_id!r}"
+                )
+            if branch_id not in schema.graphs:
+                errors.append(
+                    f"graph:{historical_roles.assurance_graph_id}.nodes.{node_id}: "
+                    f"missing branch graph {branch_id!r}"
+                )
+            when = node.when
+            if not when:
+                errors.append(
+                    f"graph:{historical_roles.assurance_graph_id}.nodes.{node_id}.when: "
+                    "missing selection predicate"
+                )
+                continue
+            errors.extend(
+                validate_params_only_expression(
+                    when,
+                    param_names,
+                    locator=f"graph:{historical_roles.assurance_graph_id}.nodes.{node_id}.when",
+                )
             )
-        )
+    else:
+        assurance = schema.graphs.get("assurance")
+        if assurance is None:
+            return ("graph:assurance: missing assurance graph",)
+
+        for node_id in _ASSURANCE_BRANCH_NODES:
+            node = assurance.nodes.get(node_id)
+            if node is None:
+                errors.append(f"graph:assurance.nodes.{node_id}: missing branch node")
+                continue
+            if not node.uses.startswith("graph:"):
+                errors.append(f"graph:assurance.nodes.{node_id}: branch must use graph:<id>")
+                continue
+            branch_id = node.uses.removeprefix("graph:")
+            if branch_id not in schema.graphs:
+                errors.append(f"graph:assurance.nodes.{node_id}: missing branch graph {branch_id!r}")
+            when = node.when
+            if not when:
+                errors.append(f"graph:assurance.nodes.{node_id}.when: missing selection predicate")
+                continue
+            errors.extend(
+                validate_params_only_expression(
+                    when,
+                    param_names,
+                    locator=f"graph:assurance.nodes.{node_id}.when",
+                )
+            )
 
     for profile in iter_layer_assurance_profiles():
         gate = schema.gates.get(profile.gate_id)
@@ -351,7 +405,105 @@ def classify_pinned_layer_topology(
     schema: WorkflowSchemaV2,
     topology_spec: LayerTopologySpec,
 ) -> PinnedLayerTopology:
-    """Classify one pinned layer as wired, legacy_unwired, or partial."""
+    """Compatibility alias for the frozen unbound display classifier (v5 epoch)."""
+    return classify_pinned_layer_topology_v5(schema, topology_spec)
+
+
+def classify_pinned_layer_topology_v4(
+    schema: WorkflowSchemaV2,
+    topology_spec: LayerTopologySpec,
+) -> PinnedLayerTopology:
+    """Frozen v4 unbound display classification (including known gaps)."""
+    result = _classify_pinned_layer_topology_legacy(schema, topology_spec)
+    return _with_semantics(result, semantics_id="legacy_v4_unbound", semantics_bound=False)
+
+
+def classify_pinned_layer_topology_v5(
+    schema: WorkflowSchemaV2,
+    topology_spec: LayerTopologySpec,
+) -> PinnedLayerTopology:
+    """Frozen v5 unbound display classification (byte-stable, including false negatives)."""
+    result = _classify_pinned_layer_topology_legacy(schema, topology_spec)
+    return _with_semantics(result, semantics_id="legacy_v5_unbound", semantics_bound=False)
+
+
+def classify_pinned_layer_topology_v6(
+    schema: WorkflowSchemaV2,
+    topology_spec: LayerTopologySpec,
+    *,
+    historical_roles: "DiscoveredHistoricalAssuranceRoles",
+) -> PinnedLayerTopology:
+    """V6 semantic role/CFG classifier; replay authorization evidence only."""
+    from assurance_agent.workflow.graph.historical_topology_v6 import (
+        LayerTopologySpecView,
+        classify_historical_layer_topology_v6,
+    )
+
+    classified = classify_historical_layer_topology_v6(
+        schema,
+        LayerTopologySpecView(
+            layer=topology_spec.layer,
+            review_artifact=topology_spec.review_artifact,
+            review_alias=topology_spec.review_alias,
+            checks_artifact=topology_spec.checks_artifact,
+            gate_id=topology_spec.gate_id,
+        ),
+        historical_roles=historical_roles,
+    )
+    roles = classified.roles
+    return PinnedLayerTopology(
+        layer=classified.layer,
+        status=classified.status,
+        assurance_node_id=None if roles is None else roles.selection_event_node_id,
+        branch_graph_id=None if roles is None else roles.branch_graph_id,
+        cycle_call_node_id=None if roles is None else roles.cycle_call_node_id,
+        cycle_graph_id=None if roles is None else roles.cycle_graph_id,
+        applicability_node_id=None if roles is None else roles.applicability_node_id,
+        reviewer_node_id=None if roles is None else roles.reviewer_node_id,
+        mechanical_node_id=None if roles is None else roles.mechanical_node_id,
+        gate_node_id=None if roles is None else roles.plan_gate_node_id,
+        human_review_node_id=None,
+        knowledge_remediation_node_id=None,
+        codegen_precondition_node_id=None if roles is None else roles.precondition_node_id,
+        codegen_node_id=None if roles is None else roles.codegen_node_id,
+        diagnostics=classified.diagnostics,
+        semantics_id=classified.semantics_id,
+        semantics_bound=classified.semantics_bound,
+    )
+
+
+def _with_semantics(
+    topology: PinnedLayerTopology,
+    *,
+    semantics_id: str,
+    semantics_bound: bool,
+) -> PinnedLayerTopology:
+    return PinnedLayerTopology(
+        layer=topology.layer,
+        status=topology.status,
+        assurance_node_id=topology.assurance_node_id,
+        branch_graph_id=topology.branch_graph_id,
+        cycle_call_node_id=topology.cycle_call_node_id,
+        cycle_graph_id=topology.cycle_graph_id,
+        applicability_node_id=topology.applicability_node_id,
+        reviewer_node_id=topology.reviewer_node_id,
+        mechanical_node_id=topology.mechanical_node_id,
+        gate_node_id=topology.gate_node_id,
+        human_review_node_id=topology.human_review_node_id,
+        knowledge_remediation_node_id=topology.knowledge_remediation_node_id,
+        codegen_precondition_node_id=topology.codegen_precondition_node_id,
+        codegen_node_id=topology.codegen_node_id,
+        diagnostics=topology.diagnostics,
+        semantics_id=semantics_id,
+        semantics_bound=semantics_bound,
+    )
+
+
+def _classify_pinned_layer_topology_legacy(
+    schema: WorkflowSchemaV2,
+    topology_spec: LayerTopologySpec,
+) -> PinnedLayerTopology:
+    """Frozen pre-v6 name-coupled classifier body — do not improve."""
     layer = topology_spec.layer
     empty = _empty_topology(layer)
     diagnostics: list[str] = []

@@ -32,6 +32,9 @@ from assurance_agent.workflow.graph.compiler import (
     canonical_digest,
     compile_historical_workflow,
 )
+from assurance_agent.workflow.graph.historical_roles import (
+    discover_historical_assurance_roles,
+)
 from assurance_agent.workflow.graph.contracts import (
     ContractError,
     ExecutionContract,
@@ -64,6 +67,7 @@ PinnedDefinitionReason = Literal[
     "pinned_contract_snapshot_missing",
     "pinned_contract_digest_mismatch",
     "pinned_contract_target_mismatch",
+    "pinned_historical_roles_invalid",
 ]
 
 
@@ -450,6 +454,19 @@ def load_pinned_execution_definition(
             "pinned_contract_digest_mismatch",
             f"unrecorded referenced contract targets: {unrecorded}",
         )
+    historical_roles, role_issues = discover_historical_assurance_roles(schema)
+    if historical_roles is None:
+        detail = "; ".join(f"{issue.code}:{issue.detail}" for issue in role_issues) or "discovery failed"
+        raise PinnedDefinitionError("pinned_historical_roles_invalid", detail)
+    # Duplicate/ambiguous role issues fail closed at the discovery boundary.
+    blocking = [
+        issue
+        for issue in role_issues
+        if issue.code in {"duplicate_role", "ambiguous_alias", "disconnected_lineage", "ambiguous_layer_binding"}
+    ]
+    if blocking:
+        detail = "; ".join(f"{issue.code}:{issue.detail}" for issue in blocking)
+        raise PinnedDefinitionError("pinned_historical_roles_invalid", detail)
     try:
         compiled = compile_historical_workflow(
             schema,
@@ -458,6 +475,7 @@ def load_pinned_execution_definition(
                 ingest_catalog_digest=request.ingest_catalog_digest,
                 contracts=contracts,
                 contract_digests=recorded_contracts,
+                historical_roles=historical_roles,
             ),
         )
     except CompileError as exc:
@@ -498,4 +516,5 @@ def load_pinned_execution_definition(
         compiled=compiled,
         contracts=contracts,
         ingest_catalog=ingest,
+        historical_roles=historical_roles,
     )

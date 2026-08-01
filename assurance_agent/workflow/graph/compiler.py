@@ -58,6 +58,7 @@ from assurance_agent.workflow.graph.ingest_catalog import (
     IngestArtifactCatalog,
     validate_catalog_runtime,
 )
+from assurance_agent.workflow.graph.historical_roles import DiscoveredHistoricalAssuranceRoles
 from assurance_agent.workflow.graph.replay_schema import (
     validate_current_assurance_activation,
     validate_historical_replay_surface,
@@ -159,6 +160,7 @@ class HistoricalCompileContext:
     ingest_catalog_digest: str
     contracts: ExecutionContractCatalog
     contract_digests: Mapping[str, str]
+    historical_roles: DiscoveredHistoricalAssuranceRoles
 
     def validate_identities(self) -> None:
         if self.ingest_catalog.digest != self.ingest_catalog_digest:
@@ -230,6 +232,7 @@ class ResolvedPinnedDefinition:
     compiled: CompiledWorkflow
     contracts: ExecutionContractCatalog
     ingest_catalog: IngestArtifactCatalog
+    historical_roles: DiscoveredHistoricalAssuranceRoles
 
 
 def compile_workflow(
@@ -267,7 +270,10 @@ def compile_historical_workflow(
         schema,
         contracts=context.contracts,
         ingest_catalog=context.ingest_catalog,
-        activation_errors=validate_historical_replay_surface(schema),
+        activation_errors=validate_historical_replay_surface(
+            schema,
+            historical_roles=context.historical_roles,
+        ),
     )
 
 

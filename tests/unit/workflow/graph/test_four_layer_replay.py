@@ -32,6 +32,7 @@ from assurance_agent.workflow.graph.replay_binding import (
 from assurance_agent.verification.profile_manifest import assurance_profile_bytes
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import load_execution_contracts
+from assurance_agent.workflow.graph.historical_roles import fixture_roles_from_schema
 from assurance_agent.workflow.graph.replay_schema import PinnedLayerTopology, validate_params_only_expression
 from assurance_agent.workflow.graph.schema_v2 import EdgeDef, GraphDef, load_workflow_v2
 from assurance_agent.workflow.orchestration.plan_check_replay import replay_plan_check_policy
@@ -46,6 +47,7 @@ from tests.unit.workflow.graph.test_replay_binding import (
 )
 
 _SCHEMA = load_workflow_v2(Path.cwd())
+_ROLES = fixture_roles_from_schema(_SCHEMA)
 
 
 @pytest.mark.parametrize(
@@ -73,7 +75,7 @@ def test_evaluate_layer_selection_from_pinned_predicates(
     params: dict[str, object], expected: dict[str, bool]
 ) -> None:
     merged = {**_PARAMS, **params}
-    facts = evaluate_layer_selection(_SCHEMA, merged)
+    facts = evaluate_layer_selection(_SCHEMA, merged, historical_roles=_ROLES)
     assert {fact.layer: fact.selected for fact in facts} == expected
     assert [fact.layer for fact in facts] == list(LAYER_NAMES)
 
@@ -83,7 +85,7 @@ def test_validate_pinned_layer_selection_rejects_non_params_predicate() -> None:
     api = assurance.nodes["api"].model_copy(update={"when": "state.foo == true"})
     assurance = assurance.model_copy(update={"nodes": {**assurance.nodes, "api": api}})
     schema = _SCHEMA.model_copy(update={"graphs": {**_SCHEMA.graphs, "assurance": assurance}})
-    errors = validate_pinned_layer_selection(schema)
+    errors = validate_pinned_layer_selection(schema, historical_roles=_ROLES)
     assert any("state" in error for error in errors)
 
 
@@ -97,7 +99,7 @@ def test_validate_pinned_layer_selection_rejects_node_gate_and_file_exists() -> 
         api = assurance.nodes["api"].model_copy(update={"when": expr})
         assurance = assurance.model_copy(update={"nodes": {**assurance.nodes, "api": api}})
         schema = _SCHEMA.model_copy(update={"graphs": {**_SCHEMA.graphs, "assurance": assurance}})
-        errors = validate_pinned_layer_selection(schema)
+        errors = validate_pinned_layer_selection(schema, historical_roles=_ROLES)
         assert any(token in error for error in errors), expr
 
 
@@ -190,7 +192,11 @@ def test_validate_pinned_layer_selection_reports_missing_branch_node() -> None:
     del nodes["fuzz"]
     assurance = assurance.model_copy(update={"nodes": nodes})
     schema = _SCHEMA.model_copy(update={"graphs": {**_SCHEMA.graphs, "assurance": assurance}})
-    errors = validate_pinned_layer_selection(schema)
+    from assurance_agent.workflow.graph.historical_roles import discover_historical_assurance_roles
+
+    roles, _issues = discover_historical_assurance_roles(schema)
+    assert roles is not None
+    errors = validate_pinned_layer_selection(schema, historical_roles=roles)
     assert any("fuzz" in error and "missing" in error for error in errors)
 
 
@@ -200,8 +206,12 @@ def test_evaluate_layer_selection_raises_on_topology_incomplete_schema() -> None
     del nodes["performance"]
     assurance = assurance.model_copy(update={"nodes": nodes})
     schema = _SCHEMA.model_copy(update={"graphs": {**_SCHEMA.graphs, "assurance": assurance}})
+    from assurance_agent.workflow.graph.historical_roles import discover_historical_assurance_roles
+
+    roles, _issues = discover_historical_assurance_roles(schema)
+    assert roles is not None
     with pytest.raises(ReplayBindingError, match="ambiguous_graph_wiring"):
-        evaluate_layer_selection(schema, _PARAMS)
+        evaluate_layer_selection(schema, _PARAMS, historical_roles=roles)
 
 
 def _selection_event(
@@ -225,14 +235,24 @@ def test_assert_layer_selection_evidence_agrees_with_activation() -> None:
     assurance_inv = "inv-assurance"
     selections = (LayerSelectionFact(layer="api", selected=True),)
     events = (_selection_event(seq=1, assurance_inv=assurance_inv, layer="api", event_type="node_activated"),)
-    assert_layer_selection_evidence(events, assurance_invocation_id=assurance_inv, selections=selections)
+    assert_layer_selection_evidence(
+        events,
+        assurance_invocation_id=assurance_inv,
+        selections=selections,
+        historical_roles=_ROLES,
+    )
 
 
 def test_assert_layer_selection_evidence_agrees_with_skip() -> None:
     assurance_inv = "inv-assurance"
     selections = (LayerSelectionFact(layer="e2e", selected=False),)
     events = (_selection_event(seq=1, assurance_inv=assurance_inv, layer="e2e", event_type="node_skipped"),)
-    assert_layer_selection_evidence(events, assurance_invocation_id=assurance_inv, selections=selections)
+    assert_layer_selection_evidence(
+        events,
+        assurance_invocation_id=assurance_inv,
+        selections=selections,
+        historical_roles=_ROLES,
+    )
 
 
 def test_assert_layer_selection_evidence_rejects_predicate_event_mismatch() -> None:
@@ -240,7 +260,12 @@ def test_assert_layer_selection_evidence_rejects_predicate_event_mismatch() -> N
     selections = (LayerSelectionFact(layer="api", selected=True),)
     events = (_selection_event(seq=1, assurance_inv=assurance_inv, layer="api", event_type="node_skipped"),)
     with pytest.raises(ReplayBindingError, match="selection_evidence_mismatch"):
-        assert_layer_selection_evidence(events, assurance_invocation_id=assurance_inv, selections=selections)
+        assert_layer_selection_evidence(
+            events,
+            assurance_invocation_id=assurance_inv,
+            selections=selections,
+            historical_roles=_ROLES,
+        )
 
 
 def test_assert_layer_selection_evidence_allows_missing_events() -> None:
@@ -249,7 +274,12 @@ def test_assert_layer_selection_evidence_allows_missing_events() -> None:
         LayerSelectionFact(layer="api", selected=True),
         LayerSelectionFact(layer="e2e", selected=False),
     )
-    assert_layer_selection_evidence((), assurance_invocation_id=assurance_inv, selections=selections)
+    assert_layer_selection_evidence(
+        (),
+        assurance_invocation_id=assurance_inv,
+        selections=selections,
+        historical_roles=_ROLES,
+    )
 
 
 def test_bind_replay_definitions_exposes_selected_layers_and_topologies(tmp_path: Path) -> None:
@@ -462,11 +492,11 @@ def test_v4_forged_wired_fuzz_without_profile_snapshot_is_incomplete(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from assurance_agent.workflow.graph import replay_binding as replay_mod
-    from assurance_agent.workflow.graph.replay_schema import classify_pinned_layer_topology
+    from assurance_agent.workflow.graph.replay_schema import classify_pinned_layer_topology_v4
 
     fixture = _build_fixture(tmp_path, include_e2e=False)
     _rewrite_assurance_params(fixture, {**_PARAMS, "run_mode": "full", "test_types": ["api", "fuzz"]})
-    original = classify_pinned_layer_topology
+    original = classify_pinned_layer_topology_v4
 
     def classify_force_wired(schema, topology_spec):  # type: ignore[no-untyped-def]
         topology = original(schema, topology_spec)
@@ -487,10 +517,12 @@ def test_v4_forged_wired_fuzz_without_profile_snapshot_is_incomplete(
                 codegen_precondition_node_id="codegen-precheck",
                 codegen_node_id="codegen",
                 diagnostics=(),
+                semantics_id="legacy_v4_unbound",
+                semantics_bound=False,
             )
         return topology
 
-    monkeypatch.setattr(replay_mod, "classify_pinned_layer_topology", classify_force_wired)
+    monkeypatch.setattr(replay_mod, "classify_pinned_layer_topology_v4", classify_force_wired)
     replay = _collect(fixture)
     by_layer = {row.layer: row for row in replay.rows}
     assert by_layer["fuzz"].status == "incomplete"

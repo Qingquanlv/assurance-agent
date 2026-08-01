@@ -25,9 +25,7 @@ from assurance_agent.verification.profiles import get_layer_assurance_profile
 from assurance_agent.workflow.graph.replay_binding import (
     FrozenDefinitionBinding,
     ReplayBindingError,
-    assert_layer_selection_evidence,
     bind_replay_definitions,
-    evaluate_layer_selection,
     recover_layer_inputs,
 )
 from assurance_agent.workflow.graph.workspace import TreeStore
@@ -54,12 +52,8 @@ def collect_capability_policy_replay(
     except ReplayBindingError as exc:
         return _incomplete_definition_failure(str(exc.reason_code))
 
-    selections = evaluate_layer_selection(binding.compiled.schema, binding.assurance_params)
-    assert_layer_selection_evidence(
-        binding.sequenced_events,
-        assurance_invocation_id=binding.assurance_invocation_id,
-        selections=selections,
-    )
+    # Selection/evidence already bound via historical_roles inside bind_replay_definitions;
+    # do not rediscover by current node names or re-evaluate predicates here.
     rows = [
         _row_for_layer(binding, layer=layer, case_type=case_type, change_dir=change_dir, store=store)
         for layer, case_type in zip(LAYER_NAMES, CASE_TYPES, strict=True)

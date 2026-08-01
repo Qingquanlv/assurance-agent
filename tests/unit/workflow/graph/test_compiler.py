@@ -6,6 +6,7 @@ import pytest
 import yaml
 
 from assurance_agent.workflow.graph import compiler as compiler_module
+from assurance_agent.workflow.graph.historical_roles import fixture_roles_from_schema
 from assurance_agent.workflow.graph.compiler import (
     CompileError,
     HistoricalCompileContext,
@@ -686,6 +687,7 @@ def test_compile_historical_workflow_uses_pinned_context_not_live_catalog(
             ingest_catalog_digest=ingest.digest,
             contracts=pinned_contracts,
             contract_digests=contract_digests,
+            historical_roles=fixture_roles_from_schema(schema),
         ),
     )
     assert compiled.ingest_catalog_digest == ingest.digest
@@ -704,6 +706,7 @@ def test_historical_compile_context_rejects_identity_mismatch() -> None:
         ingest_catalog_digest="0" * 64,
         contracts=contracts,
         contract_digests={},
+        historical_roles=fixture_roles_from_schema(schema),
     )
     with pytest.raises(CompileError, match="ingest_catalog_digest|identity"):
         compile_historical_workflow(schema, context=context)
@@ -832,6 +835,7 @@ def test_historical_identity_failures_attach_typed_diagnostics() -> None:
         ingest_catalog_digest="0" * 64,
         contracts=contracts,
         contract_digests={},
+        historical_roles=fixture_roles_from_schema(schema),
     )
     with pytest.raises(CompileError) as raised:
         compile_historical_workflow(schema, context=context)

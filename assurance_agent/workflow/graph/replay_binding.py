@@ -43,11 +43,17 @@ from assurance_agent.workflow.graph.definition_pinning import (
     load_pinned_execution_definition,
     policy_snapshot_relpath,
 )
+from assurance_agent.workflow.graph.historical_roles import (
+    DiscoveredHistoricalAssuranceRoles,
+    layer_roles_or_none,
+)
 from assurance_agent.workflow.graph.models import CompiledWorkflow
 from assurance_agent.workflow.graph.replay_schema import (
     LayerTopologySpec,
     PinnedLayerTopology,
-    classify_pinned_layer_topology,
+    classify_pinned_layer_topology_v4,
+    classify_pinned_layer_topology_v5,
+    classify_pinned_layer_topology_v6,
     validate_params_only_expression,
 )
 from assurance_agent.workflow.graph.schema_v2 import WorkflowSchemaV2
@@ -74,6 +80,7 @@ ReplayReasonCode = Literal[
     "pinned_contract_snapshot_missing",
     "pinned_contract_digest_mismatch",
     "pinned_contract_target_mismatch",
+    "pinned_historical_roles_invalid",
     "policy_snapshot_missing",
     "policy_digest_mismatch",
     "policy_origin_mismatch",
@@ -161,6 +168,7 @@ class FrozenDefinitionBinding:
     profile_compatibility: dict[str, bool]
     gate_semantics_compatible: bool
     layer_topologies: dict[str, PinnedLayerTopology]
+    historical_roles: DiscoveredHistoricalAssuranceRoles
     sequenced_events: tuple[SequencedEvent, ...]
 
 
@@ -186,27 +194,42 @@ class BoundLayerReplayInputs:
     route: str
 
 
-def validate_pinned_layer_selection(schema: WorkflowSchemaV2) -> tuple[str, ...]:
+def validate_pinned_layer_selection(
+    schema: WorkflowSchemaV2,
+    *,
+    historical_roles: DiscoveredHistoricalAssuranceRoles,
+) -> tuple[str, ...]:
     """Validate pinned assurance branch predicates are params-only replayable."""
     param_names = frozenset(schema.params)
     errors: list[str] = []
-    assurance = schema.graphs.get("assurance")
+    assurance = schema.graphs.get(historical_roles.assurance_graph_id)
     if assurance is None:
-        return ("graph:assurance: missing assurance graph",)
-    for node_id in _ASSURANCE_BRANCH_NODES:
+        return (f"graph:{historical_roles.assurance_graph_id}: missing assurance graph",)
+    by_layer = {item.layer: item for item in historical_roles.layers}
+    for layer in _ASSURANCE_BRANCH_NODES:
+        layer_roles = by_layer.get(layer)
+        if layer_roles is None:
+            errors.append(f"layer:{layer}: missing discovered selection role")
+            continue
+        node_id = layer_roles.selection_event_node_id
         node = assurance.nodes.get(node_id)
         if node is None:
-            errors.append(f"graph:assurance.nodes.{node_id}: missing branch node")
+            errors.append(
+                f"graph:{historical_roles.assurance_graph_id}.nodes.{node_id}: missing branch node"
+            )
             continue
         when = node.when
         if not when:
-            errors.append(f"graph:assurance.nodes.{node_id}.when: missing selection predicate")
+            errors.append(
+                f"graph:{historical_roles.assurance_graph_id}.nodes.{node_id}.when: "
+                "missing selection predicate"
+            )
             continue
         errors.extend(
             validate_params_only_expression(
                 when,
                 param_names,
-                locator=f"graph:assurance.nodes.{node_id}.when",
+                locator=f"graph:{historical_roles.assurance_graph_id}.nodes.{node_id}.when",
             )
         )
     return tuple(errors)
@@ -215,16 +238,22 @@ def validate_pinned_layer_selection(schema: WorkflowSchemaV2) -> tuple[str, ...]
 def evaluate_layer_selection(
     schema: WorkflowSchemaV2,
     params: Mapping[str, object],
+    *,
+    historical_roles: DiscoveredHistoricalAssuranceRoles,
 ) -> tuple[LayerSelectionFact, ...]:
-    """Evaluate pinned assurance branch predicates from frozen params."""
-    selection_errors = validate_pinned_layer_selection(schema)
+    """Evaluate pinned assurance branch predicates from frozen params and discovered roles."""
+    selection_errors = validate_pinned_layer_selection(schema, historical_roles=historical_roles)
     if selection_errors:
         raise ReplayBindingError("ambiguous_graph_wiring", "; ".join(selection_errors))
-    assurance = schema.graphs["assurance"]
+    assurance = schema.graphs[historical_roles.assurance_graph_id]
     facts: list[LayerSelectionFact] = []
     scope = Scope({"params": dict(params)})
     for layer in _ASSURANCE_BRANCH_NODES:
-        when = assurance.nodes[layer].when
+        layer_roles = layer_roles_or_none(historical_roles, layer)
+        if layer_roles is None:
+            facts.append(LayerSelectionFact(layer=layer, selected=False))
+            continue
+        when = assurance.nodes[layer_roles.selection_event_node_id].when
         if not when:
             raise ReplayBindingError("ambiguous_graph_wiring", f"missing when for layer {layer}")
         expr = parse_expression(when)
@@ -238,15 +267,20 @@ def assert_layer_selection_evidence(
     *,
     assurance_invocation_id: str,
     selections: Sequence[LayerSelectionFact],
+    historical_roles: DiscoveredHistoricalAssuranceRoles,
 ) -> None:
     """Require activation/skip events to agree with predicate classification when present."""
     for fact in selections:
+        layer_roles = layer_roles_or_none(historical_roles, fact.layer)
+        selection_node_id = (
+            layer_roles.selection_event_node_id if layer_roles is not None else fact.layer
+        )
         observed: bool | None = None
         for item in events:
             payload = item.payload
             if payload.get("invocation_id") != assurance_invocation_id:
                 continue
-            if payload.get("node_id") != fact.layer:
+            if payload.get("node_id") != selection_node_id:
                 continue
             event_type = payload.get("type")
             if event_type == "node_activated":
@@ -299,17 +333,22 @@ def bind_replay_definitions(
             f"root invocation {root_invocation_id} has no terminal event",
         )
 
-    compiled, policy = _load_pinned_definitions(change_dir, root_started)
+    compiled, policy, historical_roles = _load_pinned_definitions(change_dir, root_started)
     assurance = _bind_assurance_invocation(
         sequenced,
         root_started=root_started,
-        compiled=compiled,
+        historical_roles=historical_roles,
     )
-    selections = evaluate_layer_selection(compiled.schema, assurance.params)
+    selections = evaluate_layer_selection(
+        compiled.schema,
+        assurance.params,
+        historical_roles=historical_roles,
+    )
     assert_layer_selection_evidence(
         sequenced,
         assurance_invocation_id=assurance.invocation_id,
         selections=selections,
+        historical_roles=historical_roles,
     )
     selected_layers = frozenset(fact.layer for fact in selections if fact.selected)
 
@@ -319,6 +358,7 @@ def bind_replay_definitions(
             change_dir=change_dir,
             root_started=root_started,
             schema=compiled.schema,
+            historical_roles=historical_roles,
         )
     )
 
@@ -343,6 +383,7 @@ def bind_replay_definitions(
         profile_compatibility=profile_compatibility,
         gate_semantics_compatible=gate_semantics_compatible,
         layer_topologies=layer_topologies,
+        historical_roles=historical_roles,
         sequenced_events=tuple(sequenced),
     )
 
@@ -569,7 +610,7 @@ def _has_terminal(events: Sequence[SequencedEvent], invocation_id: str) -> bool:
 def _load_pinned_definitions(
     change_dir: Path,
     started: GraphInvocationStartedEvent,
-) -> tuple[CompiledWorkflow, Policy]:
+) -> tuple[CompiledWorkflow, Policy, DiscoveredHistoricalAssuranceRoles]:
     request = PinnedDefinitionRequest(
         graph_digest=started.graph_digest,
         ingest_catalog_digest=started.ingest_catalog_digest,
@@ -611,7 +652,7 @@ def _load_pinned_definitions(
         _projection_from_started(started),
     ):
         raise ReplayBindingError("policy_origin_mismatch", "definition binding is not replayable")
-    return compiled, snap.policy
+    return compiled, snap.policy, resolved.historical_roles
 
 
 def _bind_profile_and_topologies(
@@ -619,6 +660,7 @@ def _bind_profile_and_topologies(
     change_dir: Path,
     root_started: GraphInvocationStartedEvent,
     schema: WorkflowSchemaV2,
+    historical_roles: DiscoveredHistoricalAssuranceRoles,
 ) -> tuple[
     AssuranceProfileManifest | None,
     tuple[LayerTopologySpec, ...],
@@ -626,10 +668,20 @@ def _bind_profile_and_topologies(
     dict[str, PinnedLayerTopology],
 ]:
     version = root_started.event_schema_version
+
+    def _classify(spec: LayerTopologySpec) -> PinnedLayerTopology:
+        if version >= 6:
+            return classify_pinned_layer_topology_v6(
+                schema, spec, historical_roles=historical_roles
+            )
+        if version >= 5:
+            return classify_pinned_layer_topology_v5(schema, spec)
+        return classify_pinned_layer_topology_v4(schema, spec)
+
     if version >= 5:
         manifest = _load_v5_profile_snapshot(change_dir, root_started.assurance_profile_digest)
         specs = _specs_from_manifest(manifest)
-        topologies = {spec.layer: classify_pinned_layer_topology(schema, spec) for spec in specs}
+        topologies = {spec.layer: _classify(spec) for spec in specs}
         compatibility = _profile_compatibility_from_manifest(manifest)
         return manifest, specs, compatibility, topologies
 
@@ -639,13 +691,13 @@ def _bind_profile_and_topologies(
     if digest_compatible:
         manifest = parse_assurance_profile_snapshot(current_bytes)
         specs = _specs_from_manifest(manifest)
-        topologies = {spec.layer: classify_pinned_layer_topology(schema, spec) for spec in specs}
+        topologies = {spec.layer: _classify(spec) for spec in specs}
         topologies = _force_specialty_incomplete_without_snapshot(topologies)
         compatibility = {layer: True for layer in LAYER_NAMES}
         return manifest, specs, compatibility, topologies
 
     specs = _construct_provisional_specs()
-    topologies = {spec.layer: classify_pinned_layer_topology(schema, spec) for spec in specs}
+    topologies = {spec.layer: _classify(spec) for spec in specs}
     topologies = _force_specialty_incomplete_without_snapshot(topologies)
     compatibility = {layer: False for layer in LAYER_NAMES}
     return None, specs, compatibility, topologies
@@ -679,6 +731,8 @@ def _force_specialty_incomplete_without_snapshot(
                     *topology.diagnostics,
                     f"layer:{layer}: complete activation without profile snapshot is incomplete",
                 ),
+                semantics_id=topology.semantics_id,
+                semantics_bound=topology.semantics_bound,
             )
     return updated
 
@@ -797,17 +851,21 @@ def _bind_assurance_invocation(
     events: Sequence[SequencedEvent],
     *,
     root_started: GraphInvocationStartedEvent,
-    compiled: CompiledWorkflow,
+    historical_roles: DiscoveredHistoricalAssuranceRoles,
 ) -> GraphInvocationStartedEvent:
-    del compiled
-    root_task_id = f"{root_started.structural_path}:assurance"
-    expected_path = f"{root_started.structural_path}/assurance/assurance"
+    root_task_id = (
+        f"{root_started.structural_path}:{historical_roles.assurance_call_node_id}"
+    )
+    expected_path = (
+        f"{root_started.structural_path}/"
+        f"{historical_roles.assurance_call_node_id}/{historical_roles.assurance_graph_id}"
+    )
     matches = _matching_started_events(
         events,
         root_started=root_started,
         parent_invocation_id=root_started.invocation_id,
         parent_task_id=root_task_id,
-        graph_id="assurance",
+        graph_id=historical_roles.assurance_graph_id,
         structural_path=expected_path,
     )
     if len(matches) != 1:

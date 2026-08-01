@@ -200,6 +200,8 @@ def test_historical_compile_still_accepts_legacy_specialty_fixture() -> None:
             if target in contracts.contracts
         }
     )
+    from assurance_agent.workflow.graph.historical_roles import fixture_roles_from_schema
+
     historical = compile_historical_workflow(
         schema,
         context=HistoricalCompileContext(
@@ -207,6 +209,7 @@ def test_historical_compile_still_accepts_legacy_specialty_fixture() -> None:
             ingest_catalog_digest=ingest.digest,
             contracts=pinned_contracts,
             contract_digests=dict(current.contract_digests),
+            historical_roles=fixture_roles_from_schema(schema),
         ),
     )
     assert historical.digest == current.digest

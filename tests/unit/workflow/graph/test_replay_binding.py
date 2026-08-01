@@ -1769,7 +1769,7 @@ def test_load_pinned_execution_definition_maps_structural_compile_failure(
 
     monkeypatch.setattr(
         "assurance_agent.workflow.graph.compiler.validate_historical_replay_surface",
-        lambda _schema: ("historical replay surface is not valid",),
+        lambda _schema, **_kwargs: ("historical replay surface is not valid",),
     )
     with pytest.raises(PinnedDefinitionError) as exc_info:
         load_pinned_execution_definition(fixture.change_dir, request)
@@ -1783,7 +1783,7 @@ def test_bind_replay_definitions_maps_structural_compile_failure(
     fixture = _build_fixture(tmp_path)
     monkeypatch.setattr(
         "assurance_agent.workflow.graph.compiler.validate_historical_replay_surface",
-        lambda _schema: ("historical replay surface is not valid",),
+        lambda _schema, **_kwargs: ("historical replay surface is not valid",),
     )
     with pytest.raises(ReplayBindingError) as exc_info:
         bind_replay_definitions(
@@ -2019,11 +2019,11 @@ def test_v4_activated_specialty_without_snapshot_is_partial(
     from assurance_agent.workflow.graph import replay_binding as replay_mod
     from assurance_agent.workflow.graph.replay_schema import (
         PinnedLayerTopology,
-        classify_pinned_layer_topology,
+        classify_pinned_layer_topology_v4,
     )
 
     fixture = _build_fixture(tmp_path, include_e2e=False)
-    original = classify_pinned_layer_topology
+    original = classify_pinned_layer_topology_v4
 
     def classify_force_wired(schema, topology_spec):  # type: ignore[no-untyped-def]
         topology = original(schema, topology_spec)
@@ -2044,10 +2044,12 @@ def test_v4_activated_specialty_without_snapshot_is_partial(
                 codegen_precondition_node_id="codegen-precheck",
                 codegen_node_id="codegen",
                 diagnostics=(),
+                semantics_id="legacy_v4_unbound",
+                semantics_bound=False,
             )
         return topology
 
-    monkeypatch.setattr(replay_mod, "classify_pinned_layer_topology", classify_force_wired)
+    monkeypatch.setattr(replay_mod, "classify_pinned_layer_topology_v4", classify_force_wired)
     binding = bind_replay_definitions(
         change_dir=fixture.change_dir,
         change_id=_CHANGE_ID,
