@@ -50,10 +50,19 @@ class IngestArtifactCatalog(BaseModel):
 
 
 def resolve_model(model_id: str) -> type[BaseModel]:
+    from assurance_agent.verification.generated_files import (
+        generated_files_contract_for_model_id,
+        get_generated_files_model,
+    )
+
     registry: dict[str, type[BaseModel]] = {"review@1": Review}
-    if model_id not in registry:
-        raise ValueError(f"unknown ingest model id '{model_id}'")
-    return registry[model_id]
+    if model_id in registry:
+        return registry[model_id]
+    try:
+        contract = generated_files_contract_for_model_id(model_id)
+    except ValueError as exc:
+        raise ValueError(f"unknown ingest model id '{model_id}'") from exc
+    return get_generated_files_model(contract.layer)
 
 
 def model_schema_digest(model_id: str) -> str:

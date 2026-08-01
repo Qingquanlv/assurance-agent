@@ -1025,3 +1025,19 @@ def test_v4_epoch_rejects_manual_revision_and_revision_tagged_resume() -> None:
                 _nested_resumed(inv=_LEAF, checkpoint_ns=_LEAF_NS, ordinal=2),
             ],
         )
+
+
+def test_candidate_validation_receipt_id_folds_optionally() -> None:
+    historical = fold_invocation_events(
+        "inv-1",
+        [_started(), _planned(["t1"]), _begin("t1", "node-a"), _succeeded("t1", "ws-1")],
+    )
+    assert historical.tasks["t1"].candidate_validation_receipt_id is None
+
+    with_receipt = dict(_succeeded("t1", "ws-1"))
+    with_receipt["candidate_validation_receipt_id"] = "a" * 64
+    projection = fold_invocation_events(
+        "inv-1",
+        [_started(), _planned(["t1"]), _begin("t1", "node-a"), with_receipt],
+    )
+    assert projection.tasks["t1"].candidate_validation_receipt_id == "a" * 64

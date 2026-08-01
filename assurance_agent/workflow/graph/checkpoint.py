@@ -981,6 +981,13 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                 raise LedgerIntegrityError(
                     f"task_attempt_succeeded runtime_context_sha256 mismatch for {event.task_id}"
                 )
+            if (
+                prev.candidate_validation_receipt_id is not None
+                and event.candidate_validation_receipt_id != prev.candidate_validation_receipt_id
+            ):
+                raise LedgerIntegrityError(
+                    f"task_attempt_succeeded candidate_validation_receipt_id mismatch for {event.task_id}"
+                )
             tasks[event.task_id] = prev.model_copy(
                 update={
                     "status": "succeeded",
@@ -1001,6 +1008,9 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                     "runtime_context_sha256": event.runtime_context_sha256
                     if event.runtime_context_sha256 is not None
                     else prev.runtime_context_sha256,
+                    "candidate_validation_receipt_id": event.candidate_validation_receipt_id
+                    if event.candidate_validation_receipt_id is not None
+                    else prev.candidate_validation_receipt_id,
                 }
             )
             generation.apply_task_outcome(event, tasks=tasks, fan_outs=fan_outs)

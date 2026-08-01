@@ -217,6 +217,7 @@ class ExecutionContract(BaseModel):
     side_effect_free: bool = False
     reconnect: bool = False
     read_isolation: Literal["declared_only"] | None = None
+    precommit_validator: str | None = None
 
 
 class ExecutionContractCatalog(BaseModel):
@@ -351,6 +352,7 @@ def parse_execution_contracts(yaml_text: str) -> ExecutionContractCatalog:
             raise ContractError(f"invalid execution contracts: {exc}") from exc
     catalog = ExecutionContractCatalog(contracts=contracts)
     _validate_catalog_paths(catalog)
+    _validate_catalog_precommit_validators(catalog)
     return catalog
 
 
@@ -378,4 +380,18 @@ def catalog_from_pinned_contracts(
         mapping[contract.target] = contract
     catalog = ExecutionContractCatalog(contracts=mapping)
     _validate_catalog_paths(catalog)
+    _validate_catalog_precommit_validators(catalog)
     return catalog
+
+
+def _validate_catalog_precommit_validators(catalog: ExecutionContractCatalog) -> None:
+    from assurance_agent.workflow.graph.precommit import (
+        CandidateValidationError,
+        validate_precommit_validator_id,
+    )
+
+    for key, contract in catalog.contracts.items():
+        try:
+            validate_precommit_validator_id(contract.precommit_validator)
+        except CandidateValidationError as exc:
+            raise ContractError(f"contract '{key}': {exc}") from exc

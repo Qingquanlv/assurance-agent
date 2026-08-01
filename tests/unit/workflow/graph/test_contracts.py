@@ -1257,3 +1257,44 @@ def test_catalog_from_pinned_contracts_rejects_unsafe_resource_paths() -> None:
     )
     with pytest.raises(ContractError, match="unsafe|invalid"):
         catalog_from_pinned_contracts((bad,))
+
+
+def test_packaged_contracts_select_neither_precommit_validator() -> None:
+    catalog = load_execution_contracts(Path.cwd())
+    selected = {
+        target: contract.precommit_validator
+        for target, contract in catalog.contracts.items()
+        if contract.precommit_validator is not None
+    }
+    assert selected == {}
+    for contract in catalog.contracts.values():
+        assert contract.precommit_validator is None
+
+
+def test_precommit_validator_defaults_none_and_rejects_unknown() -> None:
+    contract = ExecutionContract(target="operation:plain", handler="operation")
+    assert contract.precommit_validator is None
+    with pytest.raises(ContractError, match="unknown precommit validator"):
+        parse_execution_contracts(
+            textwrap.dedent(
+                """\
+                schema_version: "1"
+                contracts:
+                  operation:x:
+                    handler: operation
+                    precommit_validator: not-registered/v1
+                """
+            )
+        )
+    with pytest.raises(ContractError, match="not implemented until Task 8"):
+        parse_execution_contracts(
+            textwrap.dedent(
+                """\
+                schema_version: "1"
+                contracts:
+                  operation:x:
+                    handler: operation
+                    precommit_validator: codegen_fix_candidate/v1
+                """
+            )
+        )

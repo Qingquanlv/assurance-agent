@@ -3,6 +3,9 @@
 handler 只负责业务副作用；本模块在 NodeRunner 成功路径上补齐 NodeDef.outputs /
 NodeDef.gate 合同，使 operation / skill / subgraph 与 builtin:gate 共享同一套
 route 可读的 ``gate_report``。
+
+Candidate precommit validation (D14) runs later in the scheduler, after this
+module's freeze/ingest and before ``task_attempt_succeeded`` is appended.
 """
 
 from __future__ import annotations

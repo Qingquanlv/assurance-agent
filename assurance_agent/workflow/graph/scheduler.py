@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -23,6 +24,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+import yaml
 from pydantic import BaseModel
 
 from assurance_agent.artifacts.canonical import canonical_json_bytes, sha256_bytes
@@ -89,6 +91,13 @@ from assurance_agent.workflow.graph.project_locks import (
 )
 from assurance_agent.workflow.graph.schema_v2 import StateDef
 from assurance_agent.workflow.graph.task_runner import NodeRunner
+from assurance_agent.workflow.graph.precommit import (
+    CandidateValidationError,
+    PrecommitValidationContext,
+    codegen_plan_logical_path,
+    infer_assurance_layer,
+    validate_candidate,
+)
 from assurance_agent.workflow.graph.task_inputs import (
     TaskInputError,
     capture_task_input_snapshot,
@@ -197,6 +206,7 @@ class _PreparedAttempt:
     bypass_write_set_id: str | None = None
     input_snapshot_id: str | None = None
     runtime_context_sha256: str | None = None
+    candidate_validation_receipt_id: str | None = None
 
 
 @dataclass
@@ -205,6 +215,7 @@ class _SettledAttempt:
     status: Literal["succeeded", "failed", "interrupted", "stopped"]
     write_set_id: str | None = None
     retry_at: str | None = None
+    candidate_validation_receipt_id: str | None = None
 
 
 class Scheduler:
@@ -988,6 +999,7 @@ class Scheduler:
                 bypass_write_set_id=existing.write_set_id,
                 input_snapshot_id=existing.input_snapshot_id,
                 runtime_context_sha256=existing.runtime_context_sha256,
+                candidate_validation_receipt_id=existing.candidate_validation_receipt_id,
             )
         if existing is not None and existing.status == "running":
             return None
@@ -1183,6 +1195,7 @@ class Scheduler:
                     return self._persist_result(
                         prepared=prepared,
                         plan=plan,
+                        projection=projection,
                         context=context,
                         result=task_failure("contract", f"evidence resolution failed: {exc}"),
                         workspace=workspace,
@@ -1200,6 +1213,7 @@ class Scheduler:
             return self._persist_result(
                 prepared=prepared,
                 plan=plan,
+                projection=projection,
                 context=context,
                 result=result,
                 workspace=workspace,
@@ -1213,6 +1227,7 @@ class Scheduler:
         *,
         prepared: _PreparedAttempt,
         plan: PlanResult,
+        projection: GraphProjection,
         context: RuntimeContext,
         result: TaskResult,
         workspace: TaskWorkspace,
@@ -1291,14 +1306,38 @@ class Scheduler:
                     )
             return _SettledAttempt(task_id=task.task_id, status="interrupted", write_set_id=write_set_id)
 
+        try:
+            receipt_id = self._run_precommit_if_needed(
+                prepared=prepared,
+                projection=projection,
+                context=context,
+                workspace=workspace,
+                write_set_id=write_set_id,
+            )
+        except CandidateValidationError as exc:
+            return self._persist_failure(
+                prepared=prepared,
+                plan=plan,
+                context=context,
+                error_kind="invalid_output",
+                message=str(exc),
+            )
+
+        prepared.candidate_validation_receipt_id = receipt_id
         self._persist_success(
             prepared=prepared,
             plan=plan,
             context=context,
             result=result,
             write_set_id=write_set_id,
+            candidate_validation_receipt_id=receipt_id,
         )
-        return _SettledAttempt(task_id=task.task_id, status="succeeded", write_set_id=write_set_id)
+        return _SettledAttempt(
+            task_id=task.task_id,
+            status="succeeded",
+            write_set_id=write_set_id,
+            candidate_validation_receipt_id=receipt_id,
+        )
 
     def _freeze_if_needed(
         self,
@@ -1318,6 +1357,79 @@ class Scheduler:
         )
         return write_set.write_set_id
 
+    def _run_precommit_if_needed(
+        self,
+        *,
+        prepared: _PreparedAttempt,
+        projection: GraphProjection,
+        context: RuntimeContext,
+        workspace: TaskWorkspace,
+        write_set_id: str | None,
+    ) -> str | None:
+        """Run contract-selected validator after freeze; return receipt CAS id."""
+        if self._contracts is None:
+            return None
+        contract = self._contracts.contracts.get(prepared.task.target)
+        if contract is None or contract.precommit_validator is None:
+            return None
+        if write_set_id is None:
+            raise CandidateValidationError("precommit validator requires a frozen write set")
+        if prepared.input_snapshot_id is None:
+            raise CandidateValidationError("precommit validator requires an input snapshot")
+        write_set = self._objects.load_write_set(write_set_id)
+        outputs = dict(sorted(write_set.outputs_sha256.items()))
+        snapshot = load_task_input_snapshot(self._objects, prepared.input_snapshot_id)
+        task_input = prepared.task.input if isinstance(prepared.task.input, Mapping) else None
+        layer = infer_assurance_layer(prepared.task.target, task_input)
+        plan_text = _load_codegen_plan_text(
+            store=self._objects,
+            snapshot=snapshot,
+            workspace=workspace,
+            layer=layer,
+            context=context,
+        )
+        cases = _load_case_documents(workspace=workspace, context=context)
+        root_invocation_id = projection.parent_invocation_id or projection.invocation_id
+        policy_digest = projection.policy_digest or ("0" * 64)
+        policy_object_id = policy_digest if len(policy_digest) == 64 else ("0" * 64)
+        definition_semantics = {
+            "assurance_profile_digest": projection.assurance_profile_digest or "unbound",
+            "contract_digest": prepared.task.contract_digest,
+            "gate_semantics_digest": projection.gate_semantics_digest or "unbound",
+            "graph_digest": projection.graph_digest,
+        }
+        context_model = PrecommitValidationContext(
+            root_invocation_id=root_invocation_id,
+            invocation_id=prepared.task.invocation_id,
+            task_id=prepared.task.task_id,
+            attempt_id=prepared.attempt_id,
+            target=prepared.task.target,
+            base_tree_id=write_set.base_tree_id,
+            current_tree_id=projection.current_tree_id,
+            input_snapshot_id=prepared.input_snapshot_id,
+            contract_digest=prepared.task.contract_digest,
+            policy_object_id=policy_object_id,
+            policy_digest=policy_digest if policy_digest.startswith("sha256:") else f"sha256:{policy_digest}",
+            gate_attempt_id=None,
+            interrupt_id=None,
+            output_digests=outputs,
+            write_set_id=write_set_id,
+            definition_semantics=definition_semantics,
+        )
+        receipt_id, _receipt = validate_candidate(
+            contract.precommit_validator,
+            context_model,
+            store=self._objects,
+            write_set=write_set,
+            input_snapshot=snapshot,
+            plan_text=plan_text,
+            cases=cases,
+            change_id=context.change_id,
+            layer=layer,
+            current_change_repo_path=context.change_dir.relative_to(context.project_root).as_posix(),
+        )
+        return receipt_id
+
     def _persist_success(
         self,
         *,
@@ -1326,6 +1438,7 @@ class Scheduler:
         context: RuntimeContext,
         result: TaskResult,
         write_set_id: str | None,
+        candidate_validation_receipt_id: str | None = None,
     ) -> None:
         task = prepared.task
         outputs = dict(result.outputs_sha256)
@@ -1352,6 +1465,7 @@ class Scheduler:
                     value=result.value,
                     input_snapshot_id=prepared.input_snapshot_id,
                     runtime_context_sha256=prepared.runtime_context_sha256,
+                    candidate_validation_receipt_id=candidate_validation_receipt_id,
                 )
             )
             if task.budget is not None:
@@ -1816,6 +1930,68 @@ def _unwritten_activation_events(
             continue
         pending.append(event)
     return tuple(pending)
+
+
+def _load_codegen_plan_text(
+    *,
+    store: TreeStore,
+    snapshot: object,
+    workspace: TaskWorkspace,
+    layer: str,
+    context: RuntimeContext,
+) -> str:
+    from assurance_agent.workflow.graph.task_inputs import TaskInputSnapshotV1
+
+    assert isinstance(snapshot, TaskInputSnapshotV1)
+    logical = codegen_plan_logical_path(layer)
+    for entry in snapshot.entries:
+        if entry.kind != "file" or entry.sha256 is None:
+            continue
+        aliases = set(entry.logical_aliases)
+        if logical in aliases or any(
+            alias.startswith("change:plans/") and alias.endswith(f"{layer}-codegen-plan.md")
+            for alias in aliases
+        ):
+            digest = entry.sha256.removeprefix("sha256:")
+            return store.read_object(digest).decode("utf-8")
+    candidates = (
+        context.change_dir / "plans" / f"{layer}-codegen-plan.md",
+        workspace.change_dir / "plans" / f"{layer}-codegen-plan.md",
+    )
+    for plan_path in candidates:
+        try:
+            return plan_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+    raise CandidateValidationError(f"missing codegen plan for layer {layer}: {logical}")
+
+
+def _load_case_documents(
+    *,
+    workspace: TaskWorkspace,
+    context: RuntimeContext,
+) -> list[dict[str, object]]:
+    roots = (context.change_dir / "cases", workspace.change_dir / "cases")
+    documents: list[dict[str, object]] = []
+    seen: set[Path] = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        resolved = root.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.suffix not in {".yaml", ".yml", ".json"}:
+                continue
+            raw = path.read_bytes()
+            if path.suffix == ".json":
+                data = json.loads(raw.decode("utf-8"))
+            else:
+                data = yaml.safe_load(raw.decode("utf-8"))
+            if isinstance(data, dict):
+                documents.append(data)
+    return documents
 
 
 __all__ = [

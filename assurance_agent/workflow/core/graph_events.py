@@ -139,6 +139,7 @@ class TaskAttemptSucceededEvent(_GraphEvent):
     value: object = None
     input_snapshot_id: str | None = None
     runtime_context_sha256: str | None = None
+    candidate_validation_receipt_id: str | None = None
 
 
 class TaskSchedulingDeferredEvent(_GraphEvent):
