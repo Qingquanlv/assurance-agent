@@ -66,6 +66,7 @@ from assurance_agent.workflow.graph.leases import (
     heartbeat_while,
     new_lease,
     next_attempt_decision,
+    parent_task_has_child_invocation,
 )
 from assurance_agent.workflow.graph.models import (
     ArtifactReader,
@@ -115,6 +116,7 @@ from assurance_agent.workflow.graph.workspace import (
     TreeStore,
     WorkspaceBackend,
     WorkspaceError,
+    WriteSet,
 )
 from assurance_agent.workflow.healing.allocation import commit_healing_allocation_ledger
 
@@ -435,9 +437,15 @@ class Scheduler:
         tokens = lease.lock_tokens
 
         def _run(locked_context: RuntimeContext) -> WaveResult:
-            if compiled is not None and artifacts is not None and lease.invocations:
+            # Verify only the invocation about to execute (and its descendants).
+            # Replanning the lease root would see ancestor graph: wrappers already
+            # marked running by the outer wave and spuriously return no selected wave.
+            if compiled is not None and artifacts is not None:
+                prepared = lease.for_invocation(invocation_id)
+                if prepared is None:
+                    raise SchedulerError(f"no prepared wave for invocation {invocation_id}")
                 self._verify_selected_wave_tree(
-                    lease.invocations[0].preview,
+                    prepared.preview,
                     compiled=compiled,
                     context=locked_context,
                     artifacts=artifacts,
@@ -565,6 +573,7 @@ class Scheduler:
             context.project_root,
             overlaid_target,
             base_tree_id=overlaid_base,
+            restore_change_drift=True,
         )
 
     def _last_committed_tree_edge(
@@ -814,7 +823,14 @@ class Scheduler:
                     # ordinary Change-local execution.
                     prepared = self._begin_attempt(task, plan, projection, context, leases)
                 if prepared is None:
-                    decision = next_attempt_decision(task=task, projection=projection, now=self._clock.now())
+                    decision = next_attempt_decision(
+                        task=task,
+                        projection=projection,
+                        now=self._clock.now(),
+                        allow_graph_wrapper_child_resume=_allow_graph_wrapper_child_resume(
+                            task, context
+                        ),
+                    )
                     if decision.kind == "wait" and decision.next_retry_at is not None:
                         retry_ats.append(decision.next_retry_at)
                     elif decision.kind in ("exhausted", "failed"):
@@ -906,7 +922,12 @@ class Scheduler:
         if task is None:
             detail = f" for token {blocked_token}" if blocked_token is not None else ""
             raise SchedulerError(f"project lock conflict{detail} without an owning synchronized task")
-        decision = next_attempt_decision(task=task, projection=projection, now=self._clock.now())
+        decision = next_attempt_decision(
+            task=task,
+            projection=projection,
+            now=self._clock.now(),
+            allow_graph_wrapper_child_resume=_allow_graph_wrapper_child_resume(task, context),
+        )
         if decision.kind == "wait" and decision.next_retry_at is not None:
             return WaveResult(superstep_id=plan.superstep_id, retry_at=decision.next_retry_at)
         if decision.kind in ("failed", "exhausted"):
@@ -1014,7 +1035,12 @@ class Scheduler:
         if existing is not None and existing.status == "running":
             return None
 
-        decision = next_attempt_decision(task=task, projection=projection, now=self._clock.now())
+        decision = next_attempt_decision(
+            task=task,
+            projection=projection,
+            now=self._clock.now(),
+            allow_graph_wrapper_child_resume=_allow_graph_wrapper_child_resume(task, context),
+        )
         if decision.kind != "start" or decision.attempt_number is None:
             return None
 
@@ -1516,7 +1542,7 @@ class Scheduler:
             cases=cases,
             change_id=context.change_id,
             layer=layer,
-            current_change_repo_path=context.change_dir.relative_to(context.project_root).as_posix(),
+            current_change_repo_path=_current_change_repo_path(context, write_set),
         )
         return receipt_id
 
@@ -1986,6 +2012,36 @@ class Scheduler:
             if contract is not None:
                 return contract.handler == "agent"
         return True
+
+
+def _allow_graph_wrapper_child_resume(task: ExecutableTask, context: RuntimeContext) -> bool:
+    if not (task.target or "").startswith("graph:"):
+        return False
+    return parent_task_has_child_invocation(
+        context.change_dir,
+        parent_invocation_id=task.invocation_id,
+        parent_task_id=task.task_id,
+    )
+
+
+def _current_change_repo_path(context: RuntimeContext, write_set: WriteSet) -> str:
+    """Resolve the repo-relative current change path for precommit evidence.
+
+    Root invocations keep ``project_root`` as the host SUT root, so
+    ``change_dir.relative_to(project_root)`` works. Child subgraph contexts bind
+    ``project_root``/``repo_root`` to the parent task workspace while
+    ``change_dir`` remains the host ledger path — relative_to then fails
+    (including macOS ``/var`` vs ``/private/var`` resolve skew). Prefer the
+    write-set's pinned ``base_tree_roots.change`` map.
+    """
+    roots = write_set.base_tree_roots or {}
+    pinned = roots.get("change")
+    if isinstance(pinned, str) and pinned not in {"", "."}:
+        return pinned
+    try:
+        return context.change_dir.resolve().relative_to(context.project_root.resolve()).as_posix()
+    except ValueError:
+        return f"qa/changes/{context.change_id}"
 
 
 def _task_outputs(task: ExecutableTask) -> tuple[str, ...]:

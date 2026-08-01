@@ -2151,3 +2151,43 @@ def test_deferred_child_outer_wave_reserves_footprint_locks_before_run_child(
         child_projections={},
     )
     assert child_result.succeeded == (child_task_id,)
+
+
+def test_current_change_repo_path_prefers_write_set_roots_for_child_context(tmp_path: Path) -> None:
+    """Child contexts bind project_root to a task workspace; host change_dir must still resolve."""
+    from assurance_agent.workflow.graph.scheduler import _current_change_repo_path
+    from assurance_agent.workflow.graph.workspace import WriteEntry, WriteSet
+
+    host_project = tmp_path / "sut"
+    host_change = host_project / "qa" / "changes" / "CH-1"
+    task_workspace = host_change / ".graph-runtime" / "tasks" / "child"
+    host_change.mkdir(parents=True)
+    task_workspace.mkdir(parents=True)
+
+    context = RuntimeContext(
+        project_root=task_workspace,  # child binding
+        repo_root=task_workspace,
+        change_dir=host_change,  # host ledger
+        change_id="CH-1",
+    )
+    write_set = WriteSet(
+        write_set_id="a" * 64,
+        task_id="task-1",
+        base_tree_id="b" * 64,
+        entries=(
+            WriteEntry(
+                logical_path="change:codegen/api-codegen-summary.md",
+                operation="add",
+                before_sha256=None,
+                after_sha256="c" * 64,
+                blob_sha256="c" * 64,
+            ),
+        ),
+        outputs_sha256={"change:codegen/api-codegen-summary.md": "c" * 64},
+        base_tree_roots={"change": "qa/changes/CH-1", "project": ".", "repo": "."},
+    )
+    assert _current_change_repo_path(context, write_set) == "qa/changes/CH-1"
+
+    # Without pinned roots, fall back without raising on host/workspace skew.
+    bare = write_set.model_copy(update={"base_tree_roots": None})
+    assert _current_change_repo_path(context, bare) == "qa/changes/CH-1"

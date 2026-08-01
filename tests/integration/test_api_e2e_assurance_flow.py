@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.helpers_four_layer_runtime import make_fixture, run_codegen_only
 from assurance_agent.workflow.graph.compiler import compile_workflow, resolve_params
 from assurance_agent.workflow.graph.contracts import load_execution_contracts
 from assurance_agent.workflow.graph.models import (
@@ -76,6 +77,7 @@ def _task(
         "status": status,
         "attempts_used": 1,
         "latest_attempt_id": f"task-{node_id}-a1",
+        "outputs_committed": status == "succeeded",
     }
     if value is not None:
         payload["value"] = value
@@ -233,3 +235,16 @@ def test_codegen_precheck_stops_on_stale_child_without_success(tmp_path: Path) -
     )
     report = check_gate_in_view(schema.gates, "api-codegen-precondition-gate", context)
     assert report.verdict == Verdict.STOP
+
+
+@pytest.mark.parametrize("layer", ["api", "e2e"])
+def test_real_runtime_codegen_only_applicable_smoke(tmp_path: Path, layer: str) -> None:
+    """Thin real-runtime smoke; exhaustive matrix lives in test_four_layer_codegen_only."""
+    from assurance_agent.artifacts.models.assurance import LayerName
+
+    selected: tuple[LayerName, ...] = (layer,)  # type: ignore[assignment]
+    fixture = make_fixture(tmp_path, selected_layers=selected, applicable_layers=selected)
+    result = run_codegen_only(fixture)
+    status = fixture.bundle.runtime.status(result.invocation_id).status
+    assert status == "completed"
+    assert any(inv.target.endswith("-codegen") for inv in fixture.adapter.invocations)
