@@ -230,8 +230,7 @@ def test_broadened_specialty_preflight_rejected() -> None:
     mutated = schema.model_copy(
         update={"graphs": {**schema.graphs, "fuzz-branch": branch.model_copy(update={"edges": edges})}}
     )
-    # May surface as run_mode or bypass depending on edge set; ensure rejection.
-    assert find_current_assurance_conformance_issues(mutated) != ()
+    assert "run_mode_predicate_mismatch" in _codes(mutated)
 
 
 @pytest.mark.parametrize(
@@ -293,6 +292,68 @@ def test_plan_gate_invalid_json_not_stop_rejected() -> None:
     gate = schema.gates[profile.gate_id].model_copy(update={"invalid_json": Verdict.PASS})
     mutated = schema.model_copy(update={"gates": {**schema.gates, profile.gate_id: gate}})
     assert "gate_rule_mismatch" in _codes(mutated)
+
+
+def test_plan_gate_skip_when_weakened_to_false_rejected() -> None:
+    profile = get_layer_assurance_profile("api")
+    mutated = _replace_gate_rule(_approved(), profile.gate_id, "skip_when", "false")
+    issues = find_current_assurance_conformance_issues(mutated)
+    assert any(
+        issue.code == "gate_rule_mismatch" and issue.locator.endswith(".skip_when") for issue in issues
+    )
+
+
+def test_plan_gate_reject_when_weakened_to_false_rejected() -> None:
+    profile = get_layer_assurance_profile("api")
+    mutated = _replace_gate_rule(_approved(), profile.gate_id, "reject_when", "false")
+    issues = find_current_assurance_conformance_issues(mutated)
+    assert any(
+        issue.code == "gate_rule_mismatch" and issue.locator.endswith(".reject_when") for issue in issues
+    )
+
+
+@pytest.mark.parametrize(
+    "removed_atom",
+    [
+        " and api_plan_review.decision == 'pass'",
+        " and api_plan_review.codegen_readiness in ['ready','ready_with_warnings']",
+        " and policy.coverage_floor.risk_high > 0",
+        " and policy.coverage_floor.risk_medium > 0",
+    ],
+)
+def test_plan_gate_pass_when_required_atom_removed_rejected(removed_atom: str) -> None:
+    profile = get_layer_assurance_profile("api")
+    schema = _approved()
+    gate = schema.gates[profile.gate_id]
+    pass_when = next(rule.expr for rule in gate.rules if rule.field == "pass_when")
+    assert removed_atom in pass_when
+    mutated = _replace_gate_rule(schema, profile.gate_id, "pass_when", pass_when.replace(removed_atom, ""))
+    issues = find_current_assurance_conformance_issues(mutated)
+    assert any(
+        issue.code == "gate_rule_mismatch" and issue.locator.endswith(".pass_when") for issue in issues
+    )
+
+
+def test_plan_gate_missing_field_is_not_stop_rejected() -> None:
+    schema = _approved()
+    profile = get_layer_assurance_profile("api")
+    gate = schema.gates[profile.gate_id].model_copy(update={"missing_field_is": Verdict.PASS})
+    mutated = schema.model_copy(update={"gates": {**schema.gates, profile.gate_id: gate}})
+    issues = find_current_assurance_conformance_issues(mutated)
+    assert any(
+        issue.code == "gate_rule_mismatch" and issue.locator.endswith(".missing_field_is") for issue in issues
+    )
+
+
+def test_plan_gate_missing_file_is_not_stop_rejected() -> None:
+    schema = _approved()
+    profile = get_layer_assurance_profile("api")
+    gate = schema.gates[profile.gate_id].model_copy(update={"missing_file_is": Verdict.SKIP})
+    mutated = schema.model_copy(update={"gates": {**schema.gates, profile.gate_id: gate}})
+    issues = find_current_assurance_conformance_issues(mutated)
+    assert any(
+        issue.code == "gate_rule_mismatch" and issue.locator.endswith(".missing_file_is") for issue in issues
+    )
 
 
 def test_plan_gate_pass_atom_removed_rejected() -> None:
@@ -532,6 +593,27 @@ def test_generation_join_bypassed_by_direct_execution_edge_rejected() -> None:
         }
     )
     assert "forbidden_bypass_edge" in _codes(mutated)
+
+
+def test_generation_join_guarded_successor_misrouted_rejected() -> None:
+    schema = _approved()
+    assurance = schema.graphs["assurance"]
+    edges = [
+        edge.model_copy(update={"when": "true"})
+        if edge.from_ == "generation-join" and edge.to == "execution"
+        else edge
+        for edge in assurance.edges
+    ]
+    mutated = schema.model_copy(
+        update={
+            "graphs": {
+                **schema.graphs,
+                "assurance": assurance.model_copy(update={"edges": edges}),
+            }
+        }
+    )
+    issues = find_current_assurance_conformance_issues(mutated)
+    assert any(issue.code == "generation_join_mismatch" and "execution" in issue.locator for issue in issues)
 
 
 def test_layer_missing_chain_subset_rejected() -> None:

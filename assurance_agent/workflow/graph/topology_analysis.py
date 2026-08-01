@@ -415,6 +415,73 @@ def flatten_boolop(expr: Expr, op: str) -> list[Expr]:
     return [expr]
 
 
+def expressions_structurally_equal(left: Expr, right: Expr) -> bool:
+    """Structural AST equality; ``in`` list literals compare as unordered sets."""
+    if isinstance(left, Compare) and isinstance(right, Compare):
+        if left.op != right.op:
+            return False
+        if (
+            left.op in {"in", "not in"}
+            and isinstance(left.right, ListLit)
+            and isinstance(right.right, ListLit)
+        ):
+            return expressions_structurally_equal(left.left, right.left) and set(left.right.elements) == set(
+                right.right.elements
+            )
+        return expressions_structurally_equal(left.left, right.left) and expressions_structurally_equal(
+            left.right, right.right
+        )
+    if isinstance(left, BoolOp) and isinstance(right, BoolOp):
+        return (
+            left.op == right.op
+            and expressions_structurally_equal(left.left, right.left)
+            and expressions_structurally_equal(left.right, right.right)
+        )
+    if isinstance(left, Not) and isinstance(right, Not):
+        return expressions_structurally_equal(left.operand, right.operand)
+    if isinstance(left, Call) and isinstance(right, Call):
+        return (
+            left.callee == right.callee
+            and len(left.args) == len(right.args)
+            and all(expressions_structurally_equal(a, b) for a, b in zip(left.args, right.args, strict=True))
+        )
+    if isinstance(left, Member) and isinstance(right, Member):
+        return left.prop == right.prop and expressions_structurally_equal(left.obj, right.obj)
+    if isinstance(left, Subscript) and isinstance(right, Subscript):
+        return left.index == right.index and expressions_structurally_equal(left.obj, right.obj)
+    if isinstance(left, ListLit) and isinstance(right, ListLit):
+        return left.elements == right.elements
+    return left == right
+
+
+def expression_has_top_level_predicates(
+    text: str,
+    *,
+    op: Literal["and", "or"],
+    required: Sequence[str | Expr],
+) -> bool:
+    """Return True when every required predicate is a top-level ``op`` operand.
+
+    A top-level permissive ``or`` around required ``and`` conjuncts is a mismatch.
+    Parse failures also count as a mismatch.
+    """
+    expr = _parse_or_none(text)
+    if expr is None:
+        return False
+    if op == "and" and isinstance(expr, BoolOp) and expr.op == "or":
+        return False
+    parts = flatten_boolop(expr, op)
+    required_exprs: list[Expr] = []
+    for item in required:
+        parsed = _parse_or_none(item) if isinstance(item, str) else item
+        if parsed is None:
+            return False
+        required_exprs.append(parsed)
+    return all(
+        any(expressions_structurally_equal(part, predicate) for part in parts) for predicate in required_exprs
+    )
+
+
 def reorder_commutative_and(text: str) -> str:
     """Test helper: reverse top-level ``and`` operands while preserving semantics."""
     expr = parse_expression(text)

@@ -17,6 +17,7 @@ from assurance_agent.workflow.graph.topology_analysis import (
     build_cfg,
     can_reach,
     dominates,
+    expression_has_top_level_predicates,
     expression_matches_required,
     expressions_truth_equivalent,
     layer_selection_domain,
@@ -683,15 +684,9 @@ def _route_issues(roles: _LayerRoles) -> list[AssuranceConformanceIssue]:
             expected = expected_gate.get(case)
             actual = gate_route.cases.get(case)
             if expected is not None and actual != expected:
-                # pass routed to human review is a specific failure called out in §8.7
-                code: AssuranceConformanceCode = (
-                    "route_case_mismatch"
-                    if case != "pass" or actual != roles.human_review_node_id
-                    else "route_case_mismatch"
-                )
                 issues.append(
                     _issue(
-                        code,
+                        "route_case_mismatch",
                         layer=roles.layer,
                         owner="plan-gate",
                         locator=f"graph:{roles.cycle_graph_id}.routes.{roles.gate_node_id}.cases.{case}",
@@ -758,6 +753,26 @@ def _plan_gate_issues(schema: WorkflowSchemaV2, roles: _LayerRoles) -> list[Assu
                 detail="invalid_json must stop (fail-closed)",
             )
         )
+    if gate.missing_field_is != Verdict.STOP:
+        issues.append(
+            _issue(
+                "gate_rule_mismatch",
+                layer=roles.layer,
+                owner="plan-gate",
+                locator=f"{locator}.missing_field_is",
+                detail="missing_field_is must stop (fail-closed)",
+            )
+        )
+    if gate.missing_file_is is not None and gate.missing_file_is != Verdict.STOP:
+        issues.append(
+            _issue(
+                "gate_rule_mismatch",
+                layer=roles.layer,
+                owner="plan-gate",
+                locator=f"{locator}.missing_file_is",
+                detail="missing_file_is must stop when declared (fail-closed)",
+            )
+        )
     if gate.default != Verdict.STOP:
         issues.append(
             _issue(
@@ -790,26 +805,88 @@ def _plan_gate_issues(schema: WorkflowSchemaV2, roles: _LayerRoles) -> list[Assu
                 )
             )
 
-    # Fail-closed: pass_when must require capabilities_present and applicable state.
-    pass_when = rules.get("pass_when", "")
-    if pass_when and "capabilities_present" not in pass_when:
+    review_alias = roles.profile.review_alias
+    checks_alias = derive_alias(roles.profile.checks_artifact)
+    layer = roles.layer
+    state_call = f"plan_assurance_state({checks_alias}, {review_alias}, {_DATA_KNOWLEDGE_ALIAS}, '{layer}')"
+
+    def _folded(text: str) -> str:
+        return " ".join(text.split())
+
+    stop_when = _folded(rules.get("stop_when", ""))
+    if stop_when and not expression_has_top_level_predicates(
+        stop_when,
+        op="or",
+        required=(f"{state_call} == 'invalid'",),
+    ):
         issues.append(
             _issue(
                 "gate_rule_mismatch",
                 layer=roles.layer,
                 owner="plan-gate",
-                locator=f"{locator}.pass_when",
-                detail="pass_when must retain capabilities_present atom",
+                locator=f"{locator}.stop_when",
+                detail="stop_when missing required invalid plan_assurance_state atom",
             )
         )
-    if pass_when and "plan_assurance_state" not in pass_when:
+
+    skip_when = _folded(rules.get("skip_when", ""))
+    if skip_when and not expression_has_top_level_predicates(
+        skip_when,
+        op="and",
+        required=(f"{state_call} == 'not_applicable'",),
+    ):
+        issues.append(
+            _issue(
+                "gate_rule_mismatch",
+                layer=roles.layer,
+                owner="plan-gate",
+                locator=f"{locator}.skip_when",
+                detail="skip_when missing required not_applicable plan_assurance_state atom",
+            )
+        )
+
+    reject_when = _folded(rules.get("reject_when", ""))
+    if reject_when and not expression_has_top_level_predicates(
+        reject_when,
+        op="or",
+        required=(
+            f"{review_alias}.decision == 'reject'",
+            f"{review_alias}.codegen_readiness == 'not_ready'",
+        ),
+    ):
+        issues.append(
+            _issue(
+                "gate_rule_mismatch",
+                layer=roles.layer,
+                owner="plan-gate",
+                locator=f"{locator}.reject_when",
+                detail="reject_when missing required reject/not_ready atoms",
+            )
+        )
+
+    pass_when = _folded(rules.get("pass_when", ""))
+    if pass_when and not expression_has_top_level_predicates(
+        pass_when,
+        op="and",
+        required=(
+            f"{state_call} == 'applicable'",
+            f"{review_alias}.decision == 'pass'",
+            f"{review_alias}.codegen_readiness in ['ready','ready_with_warnings']",
+            f"capabilities_present({review_alias}, {_DATA_KNOWLEDGE_ALIAS})",
+            "policy.coverage_floor.risk_high > 0",
+            "policy.coverage_floor.risk_medium > 0",
+        ),
+    ):
         issues.append(
             _issue(
                 "gate_rule_mismatch",
                 layer=roles.layer,
                 owner="plan-gate",
                 locator=f"{locator}.pass_when",
-                detail="pass_when must retain plan_assurance_state applicable atom",
+                detail=(
+                    "pass_when missing required applicable/decision/codegen_readiness/"
+                    "capabilities_present/policy-floor atoms"
+                ),
             )
         )
 
@@ -837,19 +914,6 @@ def _plan_gate_issues(schema: WorkflowSchemaV2, roles: _LayerRoles) -> list[Assu
                     detail="pass_when must not precede skip_when (first-true precedence)",
                 )
             )
-
-    # Weakening probe: stop_when must keep invalid state atom.
-    stop_when = rules.get("stop_when", "")
-    if stop_when and "== 'invalid'" not in stop_when.replace('"', "'"):
-        issues.append(
-            _issue(
-                "gate_rule_mismatch",
-                layer=roles.layer,
-                owner="plan-gate",
-                locator=f"{locator}.stop_when",
-                detail="stop_when must retain invalid plan_assurance_state atom",
-            )
-        )
     return issues
 
 
@@ -915,18 +979,19 @@ def _codegen_precondition_issues(
                 )
             )
 
-    stop_when = rules.get("stop_when", "")
-    if "review-cycle" in stop_when and "status" in stop_when and "succeeded" not in stop_when:
-        # reading review-cycle.status inequality is required; equality-only would weaken
-        pass
-    if roles.cycle_call_node_id not in stop_when and "review-cycle" not in stop_when:
+    stop_when = " ".join(rules.get("stop_when", "").split())
+    if stop_when and not expression_has_top_level_predicates(
+        stop_when,
+        op="or",
+        required=(f"node('{roles.cycle_call_node_id}').status != 'succeeded'",),
+    ):
         issues.append(
             _issue(
                 "codegen_precondition_mismatch",
                 layer=roles.layer,
                 owner="codegen-precheck",
                 locator=f"{locator}.stop_when",
-                detail="stop_when must bind the current child cycle result",
+                detail="stop_when must retain current child status != succeeded atom",
             )
         )
 
@@ -1295,7 +1360,8 @@ def _generation_join_issues(schema: WorkflowSchemaV2) -> list[AssuranceConforman
 
     join_to_execution = [edge for edge in assurance.edges if edge.from_ == join_id and edge.to == "execution"]
     join_to_end = [edge for edge in assurance.edges if edge.from_ == join_id and edge.to == "END"]
-    if len(join_to_execution) != 1 or not (join_to_execution[0].when or "").strip():
+    run_tests_domain: tuple[Assignment, ...] = ({"run_tests": True}, {"run_tests": False})
+    if len(join_to_execution) != 1:
         issues.append(
             _issue(
                 "generation_join_mismatch",
@@ -1305,7 +1371,23 @@ def _generation_join_issues(schema: WorkflowSchemaV2) -> list[AssuranceConforman
                 detail="generation-join must have one guarded edge to execution",
             )
         )
-    if len(join_to_end) != 1 or not (join_to_end[0].when or "").strip():
+    elif not expression_matches_required(
+        join_to_execution[0].when or "",
+        "params.run_tests == true",
+        run_tests_domain,
+        allowed_params=frozenset({"run_tests"}),
+        allowed_builtins=_SELECTION_BUILTINS,
+    ):
+        issues.append(
+            _issue(
+                "generation_join_mismatch",
+                layer=None,
+                owner="generation-join",
+                locator=f"{locator}->execution",
+                detail="generation-join -> execution guard must be truth-equivalent to params.run_tests == true",
+            )
+        )
+    if len(join_to_end) != 1:
         issues.append(
             _issue(
                 "generation_join_mismatch",
@@ -1313,6 +1395,22 @@ def _generation_join_issues(schema: WorkflowSchemaV2) -> list[AssuranceConforman
                 owner="generation-join",
                 locator=f"{locator}->END",
                 detail="generation-join must have one guarded edge to END",
+            )
+        )
+    elif not expression_matches_required(
+        join_to_end[0].when or "",
+        "params.run_tests == false",
+        run_tests_domain,
+        allowed_params=frozenset({"run_tests"}),
+        allowed_builtins=_SELECTION_BUILTINS,
+    ):
+        issues.append(
+            _issue(
+                "generation_join_mismatch",
+                layer=None,
+                owner="generation-join",
+                locator=f"{locator}->END",
+                detail="generation-join -> END guard must be truth-equivalent to params.run_tests == false",
             )
         )
     return issues
@@ -1330,9 +1428,10 @@ def _route_from(graph: GraphDef, node_id: str):
 
 
 def with_approved_api_e2e_capability_atoms(schema: WorkflowSchemaV2) -> WorkflowSchemaV2:
-    """Return a model_copy of ``schema`` with approved API/E2E codegen capability atoms.
+    """Return a model_copy of ``schema`` with approved dark-ship plan/codegen atoms.
 
-    Used by dark-ship tests; does not edit packaged YAML.
+    Used by dark-ship tests; does not edit packaged YAML. Adds API/E2E codegen
+    ``capabilities_present`` atoms and plan-gate policy-floor atoms when absent.
     """
     gates = dict(schema.gates)
     for layer in ("api", "e2e"):
@@ -1347,8 +1446,28 @@ def with_approved_api_e2e_capability_atoms(schema: WorkflowSchemaV2) -> Workflow
         for rule in rules:
             if rule.field == "pass_when" and "capabilities_present" not in rule.expr:
                 expr = rule.expr.rstrip()
-                updated_rules.append(rule.model_copy(update={"expr": f"{expr}\n      and {atom}"}))
+                updated_rules.append(rule.model_copy(update={"expr": f"{expr} and {atom}"}))
             else:
                 updated_rules.append(rule)
         gates[gate_id] = gate.model_copy(update={"rules": updated_rules})
+
+    policy_floor_atoms = (
+        "policy.coverage_floor.risk_high > 0",
+        "policy.coverage_floor.risk_medium > 0",
+    )
+    for profile in iter_layer_assurance_profiles():
+        gate = gates.get(profile.gate_id)
+        if gate is None:
+            continue
+        updated_rules = []
+        for rule in gate.rules:
+            if rule.field != "pass_when":
+                updated_rules.append(rule)
+                continue
+            expr = " ".join(rule.expr.split())
+            for atom in policy_floor_atoms:
+                if not expression_has_top_level_predicates(expr, op="and", required=(atom,)):
+                    expr = f"{expr} and {atom}"
+            updated_rules.append(rule.model_copy(update={"expr": expr}))
+        gates[profile.gate_id] = gate.model_copy(update={"rules": updated_rules})
     return schema.model_copy(update={"gates": gates})
