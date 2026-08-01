@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from assurance_agent.workflow.driver.adapter import DriverError
 from assurance_agent.workflow.graph.checkpoint import CheckpointStore
 from assurance_agent.workflow.graph.models import GraphLifecycleStatus
+from assurance_agent.workflow.graph.resume_compatibility import ResumeCompatibilityDecision
 
 DriverStatus = Literal["running", "paused", "completed", "failed"]
 
@@ -35,6 +36,8 @@ class DriverState(BaseModel):
     invocation_id: str | None = None
     checkpoint_id: str | None = None
     event_seq: int = 0
+    # Typed resume barrier reason (D10/D14); never inferred from exception text.
+    resume_compatibility_reason: str | None = None
 
 
 class StartGuard(BaseModel):
@@ -117,6 +120,31 @@ def project_graph_pointer(
             "updated_at": now_iso(),
         }
     )
+
+
+def resume_compatibility_reason_from_error(exc: BaseException) -> str | None:
+    """Extract the typed resume reason without parsing exception text."""
+    decision = getattr(exc, "decision", None)
+    if isinstance(decision, ResumeCompatibilityDecision):
+        return decision.reason
+    reason_code = getattr(exc, "reason_code", None)
+    if isinstance(reason_code, str) and reason_code:
+        return reason_code
+    return None
+
+
+def project_resume_compatibility(
+    state: DriverState,
+    decision: ResumeCompatibilityDecision,
+) -> DriverState:
+    """Surface a typed resume-compatibility decision on driver status."""
+    updates: dict[str, object] = {
+        "resume_compatibility_reason": decision.reason,
+        "updated_at": now_iso(),
+    }
+    if not decision.allowed:
+        updates["status"] = "failed"
+    return state.model_copy(update=updates)
 
 
 def _write_lock(lock: Path, start_token: str) -> None:

@@ -112,6 +112,13 @@ from assurance_agent.workflow.graph.effect_retry import (
     RootTerminalFenceError,
     parse_rfc3339_z,
 )
+from assurance_agent.workflow.graph.historical_roles import discover_historical_assurance_roles
+from assurance_agent.workflow.graph.resume_compatibility import (
+    ResumeCompatibilityDecision,
+    evaluate_resume_compatibility,
+    event_to_receipt,
+    receipt_to_event,
+)
 from assurance_agent.workflow.graph.workspace import (
     TaskWorkspace,
     TreeStore,
@@ -182,6 +189,16 @@ class GraphRuntimeError(AaError):
 
 class GraphDefinitionChanged(GraphRuntimeError):
     """pinned graph/contract digest 与当前定义漂移；拒绝普通 resume。"""
+
+
+class ResumeCompatibilityBarrier(GraphRuntimeError):
+    """Typed v4/v5 resume barrier; read ``decision.reason``, never parse message text."""
+
+    def __init__(self, decision: ResumeCompatibilityDecision) -> None:
+        self.decision = decision
+        self.reason_code = decision.reason or "resume_compatibility_blocked"
+        super().__init__(self.reason_code)
+
 
 
 def assert_live_semantic_compatibility(request: PinnedDefinitionRequest) -> None:
@@ -1327,6 +1344,12 @@ class GraphRuntime:
     def _reach_recovery_barrier(self, invocation_id: str, context: RuntimeContext) -> GraphProjection:
         """Reconcile and replay durable updates until no recovery seam reports progress."""
         self._recover_open_revision_transitions(context)
+        projection = self._checkpoints.project(invocation_id)
+        # Compatibility evaluation runs before definition-dependent recovery/dispatch.
+        decision = self._enforce_resume_compatibility(projection, context)
+        if not decision.allowed:
+            raise ResumeCompatibilityBarrier(decision)
+
         # Definition-dependent recovery requires a live-compatible resolved bundle.
         projection = self._checkpoints.project(invocation_id)
         self._resolve_bundle(projection)
@@ -1354,6 +1377,84 @@ class GraphRuntime:
         projection = self._checkpoints.project(invocation_id)
         self._repair_ordinary_materialization(projection, context)
         return self._checkpoints.project(invocation_id)
+
+    def _enforce_resume_compatibility(
+        self,
+        projection: GraphProjection,
+        context: RuntimeContext,
+    ) -> ResumeCompatibilityDecision:
+        """Audit v4/v5 roots; append/reuse topology receipt; type-block unbound commit safety."""
+        if projection.event_schema_version < 4 or projection.event_schema_version >= 6:
+            return ResumeCompatibilityDecision(
+                schema_version="1",
+                allowed=True,
+                event_schema_version=projection.event_schema_version,
+                root_invocation_id=projection.parent_invocation_id or projection.invocation_id,
+            )
+
+        root_id = projection.parent_invocation_id or projection.invocation_id
+        root_projection = (
+            projection
+            if projection.invocation_id == root_id
+            else self._checkpoints.project(root_id)
+        )
+        # Load pinned bundle for audit only (no handler dispatch yet).
+        bundle = self._resolve_bundle(root_projection)
+        roles, _issues = discover_historical_assurance_roles(bundle.compiled.schema)
+        existing = self._load_topology_compatibility_receipt(root_id, context.change_dir)
+        profile_ok = self._legacy_profile_reconstructable(root_projection, context.change_dir)
+        decision, new_receipt = evaluate_resume_compatibility(
+            projection=root_projection,
+            compiled=bundle.compiled,
+            contracts=bundle.contracts,
+            historical_roles=roles,
+            existing_receipt=existing,
+            profile_reconstructable=profile_ok,
+            change_dir=context.change_dir,
+        )
+        if new_receipt is not None:
+            event = receipt_to_event(new_receipt, checkpoint_ns=root_projection.checkpoint_ns)
+            with transaction(context.change_dir) as txn:
+                txn.append_strict(event)
+        return decision
+
+    def _load_topology_compatibility_receipt(
+        self,
+        root_invocation_id: str,
+        change_dir: Path,
+    ):
+        from assurance_agent.workflow.core.events import read_events_strict
+        from assurance_agent.workflow.core.graph_events import (
+            TopologySafetyCompatibilityRecordedEvent,
+        )
+
+        for raw in read_events_strict(change_dir):
+            if raw.get("source") != "graph" or raw.get("invocation_id") != root_invocation_id:
+                continue
+            if raw.get("type") != "topology_safety_compatibility_recorded":
+                continue
+            payload = {k: v for k, v in raw.items() if k not in {"seq", "ts"}}
+            event = TopologySafetyCompatibilityRecordedEvent.model_validate(payload)
+            return event_to_receipt(event)
+        return None
+
+    def _legacy_profile_reconstructable(
+        self,
+        projection: GraphProjection,
+        change_dir: Path,
+    ) -> bool:
+        from assurance_agent.verification.profile_manifest import (
+            assurance_profile_digest,
+            assurance_profile_snapshot_relpath,
+        )
+
+        if not projection.assurance_profile_digest:
+            return False
+        if projection.event_schema_version >= 5:
+            path = change_dir / assurance_profile_snapshot_relpath(projection.assurance_profile_digest)
+            return path.is_file()
+        # v4: uniquely reconstruct only when recorded digest equals current runtime bytes.
+        return projection.assurance_profile_digest == assurance_profile_digest()
 
     def _recovery_work_remains(
         self,
@@ -1782,6 +1883,7 @@ __all__ = [
     "GraphIntegrityError",
     "GraphRuntime",
     "GraphRuntimeError",
+    "ResumeCompatibilityBarrier",
     "ensure_retro_params",
     "graph_status_from_projection",
 ]

@@ -443,6 +443,8 @@ class GraphProjection(BaseModel):
     recoveries: dict[str, RecoveryProjection] = Field(default_factory=dict)
     terminal: Literal["completed", "stopped", "failed"] | None = None
     terminal_reason: str | None = None
+    # Append-only v4/v5 topology audit receipt id (D10); never rewrites the root.
+    topology_compatibility_receipt_id: str | None = None
 
 
 class WorkflowStateProjection(BaseModel):

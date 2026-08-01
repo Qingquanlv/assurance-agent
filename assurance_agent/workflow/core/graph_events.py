@@ -392,6 +392,29 @@ class DurableEffectIntegrityFailedEvent(_GraphEvent):
     reason: str
 
 
+class TopologySafetyCompatibilityRecordedEvent(_GraphEvent):
+    """Append-only v4/v5 topology audit receipt (D10). Does not rewrite the root."""
+
+    type: Literal["topology_safety_compatibility_recorded"]
+    invocation_id: str
+    checkpoint_ns: str
+    receipt_id: str
+    event_schema_version: int
+    graph_digest: str
+    ingest_catalog_digest: str
+    contract_digests: dict[str, str]
+    assurance_profile_digest: str
+    discovered_roles_digest: str
+    topology_safety_semantics_object_id: str
+    topology_safety_semantics_digest: str
+    audit_result: str
+    selected_layers: list[str]
+    reachable_layers: list[str]
+    per_layer_results: dict[str, str]
+    reachable_set_digest: str
+    source_sequence: int
+
+
 class GraphTerminalEvent(_GraphEvent):
     type: Literal["graph_completed", "graph_stopped", "graph_failed"]
     invocation_id: str
@@ -441,6 +464,7 @@ GraphEvent = Annotated[
     | SuperstepCommittedEvent
     | DurableEffectAcknowledgedEvent
     | DurableEffectIntegrityFailedEvent
+    | TopologySafetyCompatibilityRecordedEvent
     | GraphTerminalEvent
     | TaskImportedEvent
     | CheckpointImportedEvent,
@@ -472,6 +496,7 @@ __all__ = [
     "SuperstepCommittedEvent",
     "DurableEffectAcknowledgedEvent",
     "DurableEffectIntegrityFailedEvent",
+    "TopologySafetyCompatibilityRecordedEvent",
     "GraphTerminalEvent",
     "TaskImportedEvent",
     "CheckpointImportedEvent",

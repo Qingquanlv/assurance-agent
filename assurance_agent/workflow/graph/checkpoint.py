@@ -30,6 +30,7 @@ from assurance_agent.workflow.core.graph_events import (
     CheckpointImportedEvent,
     DurableEffectAcknowledgedEvent,
     DurableEffectIntegrityFailedEvent,
+    TopologySafetyCompatibilityRecordedEvent,
     FanOutExpandedEvent,
     GraphInterruptedEvent,
     GraphInvocationStartedEvent,
@@ -903,6 +904,8 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
     consumed_revision_transitions: set[str] = set()
     seen_deferrals: dict[str, TaskSchedulingDeferredEvent] = {}
     seen_effect_acks: dict[str, DurableEffectAcknowledgedEvent] = {}
+    seen_topology_receipts: dict[str, TopologySafetyCompatibilityRecordedEvent] = {}
+    topology_compatibility_receipt_id: str | None = None
 
     for raw in events:
         if raw.get("source") != "graph":
@@ -1298,6 +1301,28 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
         elif isinstance(event, DurableEffectIntegrityFailedEvent):
             terminal = "failed"
             terminal_reason = "durable_effect_integrity_failed"
+        elif isinstance(event, TopologySafetyCompatibilityRecordedEvent):
+            prior = seen_topology_receipts.get(event.receipt_id)
+            if prior is not None:
+                if prior.model_dump(mode="json") != event.model_dump(mode="json"):
+                    raise LedgerIntegrityError(
+                        f"conflicting topology_safety_compatibility_recorded payload "
+                        f"for {event.receipt_id}"
+                    )
+                continue
+            if (
+                topology_compatibility_receipt_id is not None
+                and topology_compatibility_receipt_id != event.receipt_id
+            ):
+                raise LedgerIntegrityError(
+                    f"multiple topology compatibility receipts for invocation {invocation_id}"
+                )
+            if started is not None and event.invocation_id != started.invocation_id:
+                raise LedgerIntegrityError(
+                    f"topology compatibility receipt root mismatch for {event.receipt_id}"
+                )
+            seen_topology_receipts[event.receipt_id] = event
+            topology_compatibility_receipt_id = event.receipt_id
         elif isinstance(event, GraphTerminalEvent):
             terminal = _TERMINAL_BY_TYPE[event.type]
             terminal_reason = event.reason
@@ -1363,6 +1388,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
         recoveries=recoveries,
         terminal=terminal,
         terminal_reason=terminal_reason,
+        topology_compatibility_receipt_id=topology_compatibility_receipt_id,
     )
 
 

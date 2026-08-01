@@ -102,6 +102,7 @@ ReplayReasonCode = Literal[
     "invalid_evidence",
     "baseline_gate_mismatch",
     "baseline_route_mismatch",
+    "topology_compatibility_receipt_corrupt",
 ]
 
 _ASSURANCE_BRANCH_NODES = ("api", "e2e", "fuzz", "performance")
@@ -366,6 +367,12 @@ def bind_replay_definitions(
             historical_roles=historical_roles,
         )
     )
+    _validate_topology_compatibility_receipts(
+        sequenced,
+        root_invocation_id=root_invocation_id,
+        root_started=root_started,
+        historical_roles=historical_roles,
+    )
 
     return FrozenDefinitionBinding(
         change_id=change_id,
@@ -566,6 +573,77 @@ def _sequenced_graph_events(raw_events: list[dict[str, object]]) -> list[Sequenc
         sequenced.append(SequencedEvent(seq=seq, payload=payload))
     sequenced.sort(key=lambda item: item.seq)
     return sequenced
+
+
+def _validate_topology_compatibility_receipts(
+    sequenced: Sequence[SequencedEvent],
+    *,
+    root_invocation_id: str,
+    root_started: GraphInvocationStartedEvent,
+    historical_roles: DiscoveredHistoricalAssuranceRoles,
+) -> None:
+    """Exact receipt replay is idempotent; identity/payload drift is corruption."""
+    from assurance_agent.workflow.core.graph_events import TopologySafetyCompatibilityRecordedEvent
+    from assurance_agent.workflow.graph.resume_compatibility import event_to_receipt
+    from assurance_agent.workflow.graph.topology_semantics import (
+        topology_safety_semantics_digest,
+        topology_safety_semantics_object_digest,
+    )
+
+    if root_started.event_schema_version < 4 or root_started.event_schema_version >= 6:
+        return
+    seen: dict[str, dict[str, object]] = {}
+    for item in sequenced:
+        raw = item.payload
+        if raw.get("source") != "graph" or raw.get("type") != "topology_safety_compatibility_recorded":
+            continue
+        if raw.get("invocation_id") != root_invocation_id:
+            raise ReplayBindingError(
+                "topology_compatibility_receipt_corrupt",
+                f"topology receipt belongs to another root: {raw.get('invocation_id')}",
+            )
+        payload = {k: v for k, v in raw.items() if k not in {"seq", "ts"}}
+        try:
+            event = TopologySafetyCompatibilityRecordedEvent.model_validate(payload)
+            receipt = event_to_receipt(event)
+        except Exception as exc:  # noqa: BLE001 — normalize fold/validation failures
+            raise ReplayBindingError(
+                "topology_compatibility_receipt_corrupt",
+                str(exc),
+            ) from exc
+        dumped = receipt.model_dump(mode="json")
+        prior = seen.get(receipt.receipt_id)
+        if prior is not None and prior != dumped:
+            raise ReplayBindingError(
+                "topology_compatibility_receipt_corrupt",
+                f"conflicting topology receipt payload for {receipt.receipt_id}",
+            )
+        seen[receipt.receipt_id] = dumped
+        if receipt.graph_digest != root_started.graph_digest:
+            raise ReplayBindingError(
+                "topology_compatibility_receipt_corrupt",
+                "topology receipt graph_digest does not match root",
+            )
+        if receipt.discovered_roles_digest != historical_roles.canonical_digest:
+            raise ReplayBindingError(
+                "topology_compatibility_receipt_corrupt",
+                "topology receipt discovered_roles_digest does not match pinned roles",
+            )
+        if receipt.topology_safety_semantics_object_id != topology_safety_semantics_object_digest():
+            raise ReplayBindingError(
+                "topology_compatibility_receipt_corrupt",
+                "topology receipt semantics object id mismatch",
+            )
+        if receipt.topology_safety_semantics_digest != topology_safety_semantics_digest():
+            raise ReplayBindingError(
+                "topology_compatibility_receipt_corrupt",
+                "topology receipt semantics digest mismatch",
+            )
+        if len(seen) > 1:
+            raise ReplayBindingError(
+                "topology_compatibility_receipt_corrupt",
+                "multiple distinct topology receipts for one root",
+            )
 
 
 def _require_root_started(

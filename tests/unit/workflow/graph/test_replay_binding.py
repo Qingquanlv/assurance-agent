@@ -2060,3 +2060,46 @@ def test_v4_activated_specialty_without_snapshot_is_partial(
     assert any("without profile snapshot" in item for item in binding.layer_topologies["fuzz"].diagnostics)
     with pytest.raises(ReplayBindingError, match="partial_assurance_wiring"):
         recover_layer_inputs(binding, layer="fuzz", change_dir=fixture.change_dir)
+
+
+
+def test_topology_compatibility_receipt_graph_digest_mismatch_is_corrupt(tmp_path: Path) -> None:
+    """Same-root receipt with drifted graph_digest fails closed during replay bind."""
+    from assurance_agent.workflow.core.graph_events import TopologySafetyCompatibilityRecordedEvent
+    from assurance_agent.workflow.core.progression import transaction
+    from assurance_agent.workflow.graph.topology_semantics import (
+        topology_safety_semantics_digest,
+        topology_safety_semantics_object_digest,
+    )
+
+    fixture = _build_fixture(tmp_path)
+    with transaction(fixture.change_dir) as txn:
+        txn.append_strict(
+            TopologySafetyCompatibilityRecordedEvent(
+                type="topology_safety_compatibility_recorded",
+                invocation_id=_ROOT_INV,
+                checkpoint_ns=_ROOT_INV,
+                receipt_id="cafebabe" * 8,
+                event_schema_version=4,
+                graph_digest="not-the-root-digest",
+                ingest_catalog_digest="c",
+                contract_digests={},
+                assurance_profile_digest="p",
+                discovered_roles_digest="r",
+                topology_safety_semantics_object_id=topology_safety_semantics_object_digest(),
+                topology_safety_semantics_digest=topology_safety_semantics_digest(),
+                audit_result="wired",
+                selected_layers=["api"],
+                reachable_layers=["api"],
+                per_layer_results={"api": "wired"},
+                reachable_set_digest="x",
+                source_sequence=1,
+            )
+        )
+    with pytest.raises(ReplayBindingError, match="topology_compatibility_receipt_corrupt"):
+        bind_replay_definitions(
+            change_dir=fixture.change_dir,
+            change_id=_CHANGE_ID,
+            root_invocation_id=_ROOT_INV,
+            expected_entrypoint=_ENTRYPOINT,
+        )

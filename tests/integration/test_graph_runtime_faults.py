@@ -1250,3 +1250,14 @@ def test_pinned_model_schema_mismatch_refuses_before_recovery(
         (p.relative_to(change), p.read_bytes()) for p in (change / "inspect").rglob("*") if p.is_file()
     )
     assert inspect_after == inspect_before
+
+
+def test_legacy_commit_safety_reason_is_stable_export() -> None:
+    """Task 12 stable reason remains importable for fault/supersede eligibility."""
+    from assurance_agent.workflow.graph.resume_compatibility import (
+        LEGACY_COMMIT_SAFETY_SEMANTICS_UNBOUND,
+    )
+    from assurance_agent.workflow.graph.runtime import ResumeCompatibilityBarrier
+
+    assert LEGACY_COMMIT_SAFETY_SEMANTICS_UNBOUND == "legacy_commit_safety_semantics_unbound"
+    assert issubclass(ResumeCompatibilityBarrier, Exception)
