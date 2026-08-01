@@ -7,6 +7,7 @@
 
 ## Resolutions
 - Task 1 → Minimal now (FixerAuthority/apply-summary/safety → Task 8)
+- Task 6 → B: generated-files validator only; codegen_fix → Task 8
 
 ## Tasks
 1: complete (approved @ ef1a4e4)
