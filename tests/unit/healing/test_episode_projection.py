@@ -12,6 +12,7 @@ from assurance_agent.workflow.healing.projection import (
     HealingProjectionIntegrityError,
     LEGACY_ALLOCATION,
     LEGACY_BASELINE,
+    LEGACY_RECORD,
     project_healing_episode,
     project_healing_episode_from_events,
 )
@@ -172,10 +173,11 @@ def test_ast_consumer_set_allows_raw_legacy_names_only_in_codec_and_projector() 
         if "/tests/" in rel or rel.startswith("tests/"):
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
+        legacy_names = {LEGACY_BASELINE, LEGACY_ALLOCATION, LEGACY_RECORD}
         for node in ast.walk(tree):
-            if isinstance(node, ast.Constant) and node.value in {LEGACY_BASELINE, LEGACY_ALLOCATION}:
+            if isinstance(node, ast.Constant) and node.value in legacy_names:
                 offenders.append(f"{rel}:{node.lineno}")
-            if isinstance(node, ast.Attribute) and node.attr in {LEGACY_BASELINE, LEGACY_ALLOCATION}:
+            if isinstance(node, ast.Attribute) and node.attr in legacy_names:
                 offenders.append(f"{rel}:{node.lineno}")
     assert offenders == []
 

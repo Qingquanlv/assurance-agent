@@ -150,6 +150,8 @@ class CodegenFixApplySummaryV1(StrictWireModel):
     claimed_modified_paths: list[StrictStr]
     intent_sha256: str
     write_set_id: StrictStr
+    # must_compat shim for legacy ApplySummary (extra="allow") readers.
+    applied: StrictBool
 
     @model_validator(mode="after")
     def validate_summary(self) -> "CodegenFixApplySummaryV1":
@@ -160,6 +162,8 @@ class CodegenFixApplySummaryV1(StrictWireModel):
         _validate_prefixed_sha256(self.intent_sha256)
         if not self.write_set_id or not self.write_set_id.strip():
             raise ValueError("write_set_id must not be empty")
+        if self.applied != (self.outcome == "applied"):
+            raise ValueError("applied must equal (outcome == 'applied')")
         return self
 
 
@@ -197,6 +201,12 @@ class FixerSafetyCheckV1(StrictWireModel):
     needs_review: StrictBool
     active_targets: list[Literal["api", "e2e"]]
     target_safety_sha256: list[str]
+    # must_compat shims for legacy SafetyCheck readers on the same path.
+    product_code_modified: StrictBool
+    skip_or_xfail_added: StrictBool
+    unrelated_tests_modified: StrictBool
+    assertion_expected_value_changes_detected: StrictBool
+    high_risk_proposal_applied: StrictBool
 
     @model_validator(mode="after")
     def validate_aggregate(self) -> "FixerSafetyCheckV1":

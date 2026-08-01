@@ -1375,3 +1375,153 @@ def test_named_validator_receipt_cas_missing_fails_verify(tmp_path: Path) -> Non
     receipt_path.unlink()
     with pytest.raises(LedgerIntegrityError, match="candidate receipt CAS verify failed"):
         _verify_candidate_receipts_in_store(change, projection)
+
+
+def test_codegen_fix_high_risk_rejects_forged_approval_digests(tmp_path: Path) -> None:
+    """Approval receipt digests must bind snapshot artifacts, not attacker-chosen values."""
+    from assurance_agent.artifacts.models.healing_codegen import (
+        FixerAuthorityPathV1,
+        FixerAuthorityTargetV1,
+        FixerAuthorityV1,
+        FixerProposalApprovalReceiptV1,
+    )
+    from assurance_agent.workflow.graph.precommit import _bind_approval_to_snapshot_artifacts
+
+    project = _make_project(tmp_path)
+    change = project / "qa" / "changes" / "CH-1"
+    store = TreeStore(change)
+    tree_id = store.capture(project)
+    proposal = {
+        "schema_version": "1.0",
+        "summary": {"eligible_count": 1},
+        "proposals": [
+            {
+                "proposal_id": "FIX-1",
+                "target": "api",
+                "eligible": True,
+                "files_to_modify": ["tests/api/existing.py"],
+                "risk_level": "high",
+            }
+        ],
+    }
+    authority = FixerAuthorityV1(
+        schema_version="1",
+        change_id="CH-1",
+        targets=[
+            FixerAuthorityTargetV1(
+                target="api",
+                status="ready",
+                codegen_attempt_id="cg-1",
+                generated_files_sha256="sha256:" + "a" * 64,
+                summary_sha256="sha256:" + "b" * 64,
+                write_set_id="ws-1",
+                execution_batch_id="batch-1",
+                paths=[
+                    FixerAuthorityPathV1(
+                        repo_path="tests/api/existing.py",
+                        disposition="generated",
+                        content_sha256="sha256:"
+                        + hashlib.sha256(
+                            (project / "tests" / "api" / "existing.py").read_bytes()
+                        ).hexdigest(),
+                    )
+                ],
+            )
+        ],
+    )
+    baseline = {"schema_version": "1", "entry_batch_id": "b1", "episode_id": "ep"}
+    proposal_digest = _store_bytes(store, canonical_json_bytes(proposal))
+    authority_digest = _store_bytes(store, canonical_json_bytes(authority))
+    baseline_digest = _store_bytes(store, canonical_json_bytes(baseline))
+    snapshot_id = _build_snapshot(store, project=project, attempt_id="a1", base_tree_id=tree_id)
+    # Rebuild snapshot with healing artifacts.
+    from assurance_agent.workflow.graph.task_inputs import TaskInputSnapshotEntryV1
+
+    healing_entries = [
+        TaskInputSnapshotEntryV1(
+            physical_relpath="qa/changes/CH-1/healing/fix-proposal.json",
+            repo_relpath="qa/changes/CH-1/healing/fix-proposal.json",
+            logical_aliases=["change:healing/fix-proposal.json"],
+            matched_claims=["change:healing/**"],
+            origins=["contract_read"],
+            kind="file",
+            mode=0o644,
+            sha256=f"sha256:{proposal_digest}",
+            symlink_target=None,
+        ),
+        TaskInputSnapshotEntryV1(
+            physical_relpath="qa/changes/CH-1/healing/fixer-authority.json",
+            repo_relpath="qa/changes/CH-1/healing/fixer-authority.json",
+            logical_aliases=["change:healing/fixer-authority.json"],
+            matched_claims=["change:healing/**"],
+            origins=["contract_read"],
+            kind="file",
+            mode=0o644,
+            sha256=f"sha256:{authority_digest}",
+            symlink_target=None,
+        ),
+        TaskInputSnapshotEntryV1(
+            physical_relpath="qa/changes/CH-1/healing/entry-baseline.json",
+            repo_relpath="qa/changes/CH-1/healing/entry-baseline.json",
+            logical_aliases=["change:healing/entry-baseline.json"],
+            matched_claims=["change:healing/**"],
+            origins=["contract_read"],
+            kind="file",
+            mode=0o644,
+            sha256=f"sha256:{baseline_digest}",
+            symlink_target=None,
+        ),
+    ]
+    base_snapshot = load_task_input_snapshot(store, snapshot_id)
+    entries = sorted(
+        [*base_snapshot.entries, *healing_entries],
+        key=lambda item: item.physical_relpath,
+    )
+    snapshot = TaskInputSnapshotV1(
+        schema_version="1",
+        invocation_id=base_snapshot.invocation_id,
+        task_id=base_snapshot.task_id,
+        attempt_id=base_snapshot.attempt_id,
+        base_tree_id=base_snapshot.base_tree_id,
+        materialized_tree_id=base_snapshot.materialized_tree_id,
+        input_sha256=_entries_input_sha256(entries),
+        runtime_context_sha256=None,
+        contract_digest=base_snapshot.contract_digest,
+        claims_digest=base_snapshot.claims_digest,
+        entries=list(entries),
+    )
+    forged = FixerProposalApprovalReceiptV1(
+        schema_version="1",
+        approval_id="APP-1",
+        root_invocation_id="root",
+        interrupt_task_id="intr",
+        source_gate_attempt_id="gate",
+        source_tree_id=tree_id,
+        proposal_sha256="sha256:" + "0" * 64,
+        fixer_authority_sha256=f"sha256:{authority_digest}",
+        entry_baseline_sha256=f"sha256:{baseline_digest}",
+        policy_sha256="sha256:" + "d" * 64,
+        targets=["api"],
+        paths=["tests/api/existing.py"],
+        action="approve_and_apply",
+    )
+    with pytest.raises(CandidateValidationError, match="proposal_sha256"):
+        _bind_approval_to_snapshot_artifacts(
+            forged,
+            store=store,
+            input_snapshot=snapshot,
+            proposal=proposal,
+            authority=authority,
+            layer="api",
+            policy_digest="sha256:" + "d" * 64,
+        )
+    good = forged.model_copy(update={"proposal_sha256": f"sha256:{proposal_digest}"})
+    _bind_approval_to_snapshot_artifacts(
+        good,
+        store=store,
+        input_snapshot=snapshot,
+        proposal=proposal,
+        authority=authority,
+        layer="api",
+        policy_digest="sha256:" + "d" * 64,
+    )

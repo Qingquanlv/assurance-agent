@@ -617,12 +617,12 @@ def _validate_codegen_fix_candidate(
                         f"reused authority before-digest mismatch for {path}"
                     )
             elif auth_path.disposition in {"generated", "updated"}:
-                after = binding.get("after_sha256")
-                if f"sha256:{after}" != auth_path.content_sha256 and binding["operation"] == "add":
-                    # generated/updated authority binds after digest of codegen write set;
-                    # fixer may further modify, so before must match authority digest.
+                # Authority binds the codegen after digest. Fixer content-modify
+                # must present that digest as before (not only add-with-before).
+                if binding["operation"] == "modify":
                     before = binding.get("before_sha256")
-                    if before is not None and f"sha256:{before}" != auth_path.content_sha256:
+                    expected_before = auth_path.content_sha256.removeprefix("sha256:")
+                    if before != expected_before:
                         raise CandidateValidationError(
                             f"authority before-digest mismatch for {path}"
                         )
@@ -646,10 +646,17 @@ def _validate_codegen_fix_candidate(
         except Exception as exc:
             raise CandidateValidationError(f"invalid approval receipt: {exc}") from exc
         approval_digest = sha256_bytes(canonical_json_bytes(approval))
-        if context.current_tree_id != approval.source_tree_id and context.base_tree_id != approval.source_tree_id:
-            # Allow either bound tree identity; reject when neither matches.
-            if approval.source_tree_id not in {context.current_tree_id, context.base_tree_id}:
-                raise CandidateValidationError("approval receipt tree drift")
+        if approval.source_tree_id not in {context.current_tree_id, context.base_tree_id}:
+            raise CandidateValidationError("approval receipt tree drift")
+        _bind_approval_to_snapshot_artifacts(
+            approval,
+            store=store,
+            input_snapshot=input_snapshot,
+            proposal=proposal,
+            authority=authority,
+            layer=layer,
+            policy_digest=context.policy_digest,
+        )
 
     blobs: dict[str, bytes] = {}
     for binding in write_by_repo.values():
@@ -711,6 +718,82 @@ def _load_snapshot_json(
     if required:
         raise CandidateValidationError(f"missing snapshot artifact: {logical}")
     return {}
+
+
+def _snapshot_entry_prefixed_digest(
+    snapshot: TaskInputSnapshotV1,
+    *,
+    logical: str,
+) -> str:
+    for entry in snapshot.entries:
+        if entry.kind != "file" or entry.sha256 is None:
+            continue
+        if logical not in set(entry.logical_aliases):
+            continue
+        digest = entry.sha256
+        return digest if digest.startswith("sha256:") else f"sha256:{digest}"
+    raise CandidateValidationError(f"missing snapshot artifact digest: {logical}")
+
+
+def _normalize_prefixed_digest(value: str) -> str:
+    if value.startswith("sha256:"):
+        return value
+    return f"sha256:{value}"
+
+
+def _bind_approval_to_snapshot_artifacts(
+    approval: FixerProposalApprovalReceiptV1,
+    *,
+    store: TreeStore,
+    input_snapshot: TaskInputSnapshotV1,
+    proposal: Mapping[str, object],
+    authority: FixerAuthorityV1,
+    layer: str,
+    policy_digest: str,
+) -> None:
+    """Reject forged approval digests/targets/paths that do not match snapshot artifacts."""
+    del store  # bytes already resolved via snapshot digests; keep signature parallel to loaders
+    expected = {
+        "proposal_sha256": _snapshot_entry_prefixed_digest(
+            input_snapshot, logical="change:healing/fix-proposal.json"
+        ),
+        "fixer_authority_sha256": _snapshot_entry_prefixed_digest(
+            input_snapshot, logical="change:healing/fixer-authority.json"
+        ),
+        "entry_baseline_sha256": _snapshot_entry_prefixed_digest(
+            input_snapshot, logical="change:healing/entry-baseline.json"
+        ),
+        "policy_sha256": _normalize_prefixed_digest(policy_digest),
+    }
+    actual = {
+        "proposal_sha256": approval.proposal_sha256,
+        "fixer_authority_sha256": approval.fixer_authority_sha256,
+        "entry_baseline_sha256": approval.entry_baseline_sha256,
+        "policy_sha256": approval.policy_sha256,
+    }
+    for field_name, expected_digest in expected.items():
+        if actual[field_name] != expected_digest:
+            raise CandidateValidationError(
+                f"approval {field_name} does not match snapshot-bound artifact"
+            )
+    if layer not in approval.targets:
+        raise CandidateValidationError("approval targets omit current fixer layer")
+    expected_paths: list[str] = []
+    for target in approval.targets:
+        expected_paths.extend(_proposal_paths_for_target(proposal, target))
+        auth_target = next((item for item in authority.targets if item.target == target), None)
+        if auth_target is None:
+            raise CandidateValidationError(f"approval target missing from fixer-authority: {target}")
+        auth_paths = {path.repo_path for path in auth_target.paths}
+        proposal_paths = set(_proposal_paths_for_target(proposal, target))
+        if not proposal_paths.issubset(auth_paths):
+            raise CandidateValidationError(
+                f"approval target {target} proposal paths exceed fixer-authority"
+            )
+    if list(approval.paths) != sorted(set(expected_paths)):
+        raise CandidateValidationError(
+            "approval paths do not match snapshot-bound proposal authorization"
+        )
 
 
 def _proposal_paths_for_target(proposal: Mapping[str, object], layer: str) -> list[str]:

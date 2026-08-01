@@ -149,6 +149,7 @@ def test_fixer_authority_and_safety_models_round_trip() -> None:
         claimed_modified_paths=["tests/api/test_login.py"],
         intent_sha256="sha256:" + "d" * 64,
         write_set_id="ws-2",
+        applied=True,
     )
     fragment = ApiCodegenFixerSafetyCheckV1(
         schema_version="1",
@@ -168,10 +169,19 @@ def test_fixer_authority_and_safety_models_round_trip() -> None:
         needs_review=False,
         active_targets=["api"],
         target_safety_sha256=["sha256:" + "e" * 64],
+        product_code_modified=False,
+        skip_or_xfail_added=False,
+        unrelated_tests_modified=False,
+        assertion_expected_value_changes_detected=False,
+        high_risk_proposal_applied=False,
     )
     assert summary.target == "api"
     assert fragment.passed is True
     assert aggregate.active_targets == ["api"]
+    from assurance_agent.artifacts.models.healing import ApplySummary, SafetyCheck
+
+    ApplySummary.model_validate(summary.model_dump(mode="json"))
+    SafetyCheck.model_validate(aggregate.model_dump(mode="json"))
 
 
 def test_strict_wire_model_rejects_coerced_booleans_and_integers() -> None:

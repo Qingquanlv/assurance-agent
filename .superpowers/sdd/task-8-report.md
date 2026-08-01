@@ -3,52 +3,34 @@
 ## Status: DONE
 
 **Plan:** `docs/superpowers/plans/2026-08-01-four-layer-assurance-verification.md` Task 8  
-**Worktree tip at start:** `cc15bf0` / current HEAD before edits `78be767`  
-Edit + test only (no git add/commit). Cursor-loop helpers left alone.
+**Worktree tip at start of fix pass:** `231d496`  
+Edit + test only (no git add/commit). Cursor-loop helpers left alone. Packaged topology stays dark-shipped.
 
-## Deferred items closed
+## Fix pass (P1 / P2 / P3)
 
-| Source | Deferred item | Closed in Task 8 |
-|--------|---------------|------------------|
-| Task 1 Minimal now | `FixerAuthorityV1`, path/target models, apply-summary models, target/aggregate safety fragments | Restored from `e9cd9f3` bodies into `healing_codegen.py` + exports/tests |
-| Task 6 Resolution B | Full `codegen_fix_candidate/v1` algorithm + Step 3 mutations + scheduler no-commit path + diff-safety | Implemented; load-reject flipped to real validator registration |
-| Task 6 | Diff-safety predicates | `workflow/graph/diff_safety.py` |
+| Priority | Item | Resolution |
+|----------|------|------------|
+| P1 | High-risk approval digest binding | `_bind_approval_to_snapshot_artifacts` binds proposal/authority/baseline/policy sha256 + targets/paths to snapshot artifacts; forged digests → `CandidateValidationError` |
+| P1 | record verifies candidate receipt | `operation_record_codegen_fix_apply` loads CAS receipt, checks identity/`bind_receipt_to_success_event`, on-disk intent digest, then `verify_candidate_receipt`; fail closed if missing/wrong |
+| P1 | Allocate authority from write-set/snapshot | `allocate_authority_bindings_from_artifacts` binds generated/updated after digests from codegen write set; reused under private root; imported → `unverified`; `with.authority_bindings` remains test seam only when artifacts absent |
+| P2 | before-digest on modify | generated/updated authority before-digest enforced on content-`modify` (not only add-with-before) |
+| P2 | Healing conformance mutation table | Emits `missing_approval_interrupt`, `missing_record_join`, `missing_hard_outputs`, `inactive_target_required`, plus prior codes; positive controls for API-only / E2E-only / both |
+| P2 | Registry compatibility | `CodegenFixApplySummaryV1.applied` + aggregate SafetyCheck boolean shims so legacy `ApplySummary` / `SafetyCheck` must_compat readers accept new ops output (no colliding registry flip) |
+| P3 | AST consumer-set | Guards raw `heal_record_apply` alongside legacy baseline/allocation names |
 
-## What was implemented
+## What was already landed (first pass)
 
-### Projection / consumers
-- `assurance_agent/workflow/healing/projection.py` — `HealingEpisodeProjection` over legacy pair, v2 combined allocation, mixed ledgers; conflict = integrity failure
-- Consumers migrated: `derive_healing_state`, `derive_guard_context`, `commit_healing_allocation_ledger`, retro `workflow_history`
-- AST consumer-set test allows raw legacy event-name literals only in `core/events.py` + `healing/projection.py`
+- Projection / consumers, durable effects + v2 events, dark-ship ops, `codegen_fix_candidate/v1`, `diff_safety.py`, production effect registry registration
+- Packaged YAML / contracts unchanged
 
-### Durable effects + domain events
-- `assurance_agent/workflow/healing/effects.py` — `HealingAllocationEffectV2`, `FixerProposalApprovedEffectV1`, `HealRecordApplyEffectV2` + reconcilers
-- Production registry now registers exactly the three healing kinds (lazy via `production_effect_registry()`)
-- New audit events: `healing_attempt_allocated_v2`, `fixer_proposal_approved`, `heal_record_apply_v2`
-- Packaged contracts still select `durable_effects: ()`
-
-### Operations (registered, unreachable until Task 15)
-- `fixer-authority-ready`, `record-fixer-approval`, `fixer-dispatch`, `record-codegen-fix-apply`, `combine-fixer-safety`
-- Allocate writes fixer-authority hard output; optional durable effect via `with.emit_durable_effect`
-- Scheduler legacy host-ledger hook gated to packaged pre-activation allocate contract digest + empty `durable_effects`
-
-### Precommit / conformance
-- `codegen_fix_candidate/v1` fully dispatchable (intent, proposal/authority subsets, claimed/write equality, reused before-digest, high-risk approval, diff-safety)
-- `healing_conformance.py` + mutation table (`category="healing_conformance"`)
-
-### Dark-ship preserved
-- Packaged workflow YAML / execution-contracts unchanged
-- Legacy event models/readers preserved
-- New ops registered but not routed by packaged topology
-- Aggregate `FixerSafetyCheckV1` not forced onto packaged SafetyCheck registry path
-
-## Verify
+## Verify (fix pass)
 
 ```text
 uv run pytest -q \
   tests/unit/healing/test_episode_projection.py \
   tests/unit/healing/test_allocation.py \
   tests/unit/healing/test_record_apply.py \
+  tests/unit/healing/test_authority_allocate.py \
   tests/unit/test_healing_state.py \
   tests/unit/retro/test_workflow_history.py \
   tests/unit/workflow/graph/test_healing_topology_mutations.py \
@@ -58,33 +40,24 @@ uv run pytest -q \
   tests/unit/workflow/graph/test_precommit_validation.py \
   tests/integration/test_codegen_fixer_record.py \
   tests/unit/artifacts/test_healing_codegen.py
-→ 157 passed
+→ 161 passed
 
-uv run ruff check … → All checks passed
+uv run ruff check assurance_agent/workflow/healing \
+  assurance_agent/workflow/graph/healing_conformance.py \
+  assurance_agent/workflow/graph/diff_safety.py \
+  assurance_agent/workflow/graph/precommit.py \
+  assurance_agent/artifacts/models
+→ All checks passed
+
 uv run pyright → 0 errors
-uv run lint-imports → 6 kept, 0 broken
 ```
 
 ## Files ready to stage (integrator owns commit)
 
-**Created**
-- `assurance_agent/workflow/healing/projection.py`
-- `assurance_agent/workflow/healing/effects.py`
-- `assurance_agent/workflow/healing/operations.py`
-- `assurance_agent/workflow/graph/healing_conformance.py`
-- `assurance_agent/workflow/graph/diff_safety.py`
-- `tests/unit/healing/test_episode_projection.py`
-- `tests/unit/workflow/graph/test_healing_topology_mutations.py`
-- `tests/integration/test_codegen_fixer_record.py`
-
-**Modified (key)**
-- `assurance_agent/artifacts/models/healing_codegen.py` (+ `__init__.py`, `registry.py`)
-- `assurance_agent/workflow/core/events.py`
-- `assurance_agent/workflow/graph/durable_effects.py`, `precommit.py`, `scheduler.py`, `handlers/operation.py`
-- `assurance_agent/workflow/healing/allocation.py`, `safety.py`
-- `assurance_agent/workflow/orchestration/healing_state.py`
-- `assurance_agent/retro/workflow_history.py`
-- Related unit tests (`test_durable_effects`, `test_precommit_validation`, `test_contracts`, `test_task_runner`, `test_healing_codegen`, …)
+**Created / notably extended in fix pass**
+- `tests/unit/healing/test_authority_allocate.py`
+- Updates to `precommit.py`, `operations.py`, `healing_conformance.py`, `healing_codegen.py`
+- `tests/integration/test_codegen_fixer_record.py`, `test_healing_topology_mutations.py`, `test_episode_projection.py`, `test_healing_codegen.py`, `test_precommit_validation.py` (forged approval)
 
 **Do not stage**
 - `benchmark/.../cursor-loop-helpers.sh`
@@ -93,5 +66,6 @@ uv run lint-imports → 6 kept, 0 broken
 Suggested commit message: `feat(healing): normalize episodes and stage graph-owned records`
 
 ## Notes
-- Effect payload field sets follow design §5.3 / D14 prose + `e9cd9f3` authority precedent (not a second invention pass).
-- Full Step 3 codegen_fix mutation matrix and scheduler no-commit cuts are partially covered (missing-intent reject + generated-files suite retained); deeper mutation cases can extend `test_precommit_validation.py` in follow-up without topology flip.
+- Record verification uses `TreeStore(context.change_dir)` (invocation object store), not the materialized task workspace copy.
+- Aggregate `FixerSafetyCheckV1` remains unregistered on the legacy SafetyCheck path; emitted JSON includes legacy required booleans so finalize readers stay must_compat.
+- Packaged topology/YAML still dark-shipped until Task 15.
