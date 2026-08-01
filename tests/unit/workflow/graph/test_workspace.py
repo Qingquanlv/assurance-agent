@@ -244,6 +244,15 @@ def test_capture_preserves_executable_mode(tmp_path: Path) -> None:
 # freeze_write_set
 
 
+def test_tree_roots_accessor_matches_captured_map(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    store = _store(project)
+    tree_id = store.capture(project)
+    roots = store.tree_roots(tree_id)
+    assert roots == {"change": "qa/changes/CH-1", "project": ".", "repo": "."}
+    assert isinstance(roots, dict)
+
+
 def test_freeze_write_set_roundtrip_and_canonical_untouched(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     store = _store(project)
@@ -260,6 +269,7 @@ def test_freeze_write_set_roundtrip_and_canonical_untouched(tmp_path: Path) -> N
         outputs=("repo:tests/api/test_a.py",),
     )
     assert store.load_write_set(write_set.write_set_id) == write_set
+    assert write_set.base_tree_roots == store.tree_roots(base_tree)
     assert (project / "tests/api/test_a.py").read_text() == "base\n"
     assert set(write_set.outputs_sha256) == {"repo:tests/api/test_a.py"}
     assert len(write_set.entries) == 1

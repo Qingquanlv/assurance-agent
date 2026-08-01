@@ -559,6 +559,9 @@ class WriteSet(BaseModel):
     outputs_sha256: dict[str, str]
     synchronized_paths: tuple[str, ...] = ()
     project_exclusive_tokens: tuple[str, ...] = ()
+    # Present on current freezes and covered by write_set_id. Historical write
+    # sets may omit it; current D15 evidence validation requires the map.
+    base_tree_roots: dict[str, str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -644,6 +647,10 @@ class TreeStore:
 
     def _load_tree(self, tree_id: str) -> _TreeManifest:
         return _parse_tree(self._read_object(tree_id))
+
+    def tree_roots(self, tree_id: str) -> Mapping[str, str]:
+        """Read-only logical-root → physical-prefix map for a pinned tree."""
+        return dict(sorted(self._load_tree(tree_id).roots.items()))
 
     def _read_tree_bytes(
         self,
@@ -938,8 +945,10 @@ class TreeStore:
                 )
             )
         outputs_sha256 = self._freeze_outputs(base.roots, current, outputs, workspace=workspace)
+        base_tree_roots = {name: _assert_safe_prefix(prefix) for name, prefix in sorted(base.roots.items())}
         payload: dict[str, object] = {
             "base_tree_id": workspace.base_tree_id,
+            "base_tree_roots": base_tree_roots,
             "entries": [entry.model_dump(mode="json") for entry in entries],
             "kind": "write_set",
             "outputs_sha256": outputs_sha256,
@@ -967,6 +976,7 @@ class TreeStore:
                     if claims.synchronized and token.startswith("project:")
                 )
             ),
+            base_tree_roots=base_tree_roots,
         )
 
     def _freeze_outputs(
@@ -1019,9 +1029,18 @@ class TreeStore:
             raise WorkspaceError(f"invalid write-set manifest: {write_set_id}")
         fields = {k: v for k, v in payload.items() if k not in ("kind", "version")}
         try:
-            return WriteSet.model_validate({**fields, "write_set_id": write_set_id})
+            write_set = WriteSet.model_validate({**fields, "write_set_id": write_set_id})
         except ValueError as exc:
             raise WorkspaceError(f"invalid write-set manifest {write_set_id}: {exc}") from exc
+        if write_set.base_tree_roots is not None:
+            expected = dict(self.tree_roots(write_set.base_tree_id))
+            actual = {
+                name: _assert_safe_prefix(prefix)
+                for name, prefix in sorted(write_set.base_tree_roots.items())
+            }
+            if actual != expected:
+                raise WorkspaceError(f"write-set base_tree_roots disagree with base_tree_id: {write_set_id}")
+        return write_set
 
     # ---- Update：确定性合并 + canonical 幂等物化 ----
 
