@@ -1689,6 +1689,7 @@ def test_nested_compatible_parent_run_child_keeps_child_owned_recovery(
         task_id: str,
         base_tree_id: str,
         store: Any,
+        sidecar_root: Path | None = None,
         side_effect_free: bool = False,
         claims: Any = None,
         declared_reads_only: bool = False,
@@ -1696,18 +1697,27 @@ def test_nested_compatible_parent_run_child_keeps_child_owned_recovery(
         initialize_git: bool = True,
     ) -> TaskWorkspace:
         root = self._tasks_root / task_id  # noqa: SLF001
+        resolved_sidecar = (sidecar_root or self.sidecar_root_for(task_id)).resolve()
         if root.exists():
+            manifest = resolved_sidecar / "tree.json"
+            if not manifest.is_file():
+                legacy = root / ".graph-runtime" / "tree.json"
+                if legacy.is_file():
+                    manifest = legacy
             return TaskWorkspace.from_materialized_root(
                 task_id,
                 root,
                 base_tree_id,
                 materialized_tree_id=base_tree_id,
+                tree_manifest_path=manifest,
+                sidecar_root=resolved_sidecar if manifest.parent == resolved_sidecar else None,
             )
         return orig_create(
             self,
             task_id=task_id,
             base_tree_id=base_tree_id,
             store=store,
+            sidecar_root=resolved_sidecar,
             side_effect_free=side_effect_free,
             claims=claims,
             declared_reads_only=declared_reads_only,

@@ -45,6 +45,7 @@ from assurance_agent.workflow.core.graph_events import (
     TaskAttemptSucceededEvent,
     TaskImportedEvent,
     TaskRecoveryRoutedEvent,
+    TaskSchedulingDeferredEvent,
 )
 from assurance_agent.workflow.core.progression import transaction
 from assurance_agent.workflow.execution.tree_hash import sha256_file
@@ -898,6 +899,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
     generation = GenerationFoldState()
     unconsumed_revision_transitions: dict[str, ManualPlanRevisionEvent] = {}
     consumed_revision_transitions: set[str] = set()
+    seen_deferrals: dict[str, TaskSchedulingDeferredEvent] = {}
 
     for raw in events:
         if raw.get("source") != "graph":
@@ -960,10 +962,25 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                 gate_report=prev.gate_report if prev else None,
                 state_updates=prev.state_updates if prev else {},
                 lease_expires_at=event.lease_expires_at,
+                input_snapshot_id=event.input_snapshot_id,
+                runtime_context_sha256=event.runtime_context_sha256,
+                deferral_ordinal=prev.deferral_ordinal if prev else 0,
+                latest_deferral_id=prev.latest_deferral_id if prev else None,
             )
             generation.apply_task_started(event, tasks=tasks, fan_outs=fan_outs)
         elif isinstance(event, TaskAttemptSucceededEvent):
             prev = _require_task(tasks, event)
+            if prev.input_snapshot_id is not None and event.input_snapshot_id != prev.input_snapshot_id:
+                raise LedgerIntegrityError(
+                    f"task_attempt_succeeded input_snapshot_id mismatch for {event.task_id}"
+                )
+            if (
+                prev.runtime_context_sha256 is not None
+                and event.runtime_context_sha256 != prev.runtime_context_sha256
+            ):
+                raise LedgerIntegrityError(
+                    f"task_attempt_succeeded runtime_context_sha256 mismatch for {event.task_id}"
+                )
             tasks[event.task_id] = prev.model_copy(
                 update={
                     "status": "succeeded",
@@ -978,9 +995,51 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                     "error_kind": None,
                     "error": None,
                     "next_retry_at": None,
+                    "input_snapshot_id": event.input_snapshot_id
+                    if event.input_snapshot_id is not None
+                    else prev.input_snapshot_id,
+                    "runtime_context_sha256": event.runtime_context_sha256
+                    if event.runtime_context_sha256 is not None
+                    else prev.runtime_context_sha256,
                 }
             )
             generation.apply_task_outcome(event, tasks=tasks, fan_outs=fan_outs)
+        elif isinstance(event, TaskSchedulingDeferredEvent):
+            prior = seen_deferrals.get(event.deferral_id)
+            if prior is not None:
+                if prior.model_dump(mode="json") != event.model_dump(mode="json"):
+                    raise LedgerIntegrityError(
+                        f"conflicting task_scheduling_deferred payload for {event.deferral_id}"
+                    )
+                continue
+            seen_deferrals[event.deferral_id] = event
+            prev = tasks.get(event.task_id)
+            if prev is not None and event.deferral_ordinal < prev.deferral_ordinal:
+                continue
+            if prev is not None and event.deferral_ordinal == prev.deferral_ordinal:
+                if prev.latest_deferral_id not in (None, event.deferral_id):
+                    raise LedgerIntegrityError(
+                        f"conflicting deferral ordinal {event.deferral_ordinal} for {event.task_id}"
+                    )
+            if prev is None:
+                tasks[event.task_id] = TaskProjection(
+                    task_id=event.task_id,
+                    node_id=event.node_id,
+                    status="pending",
+                    next_retry_at=event.next_retry_at,
+                    deferral_ordinal=event.deferral_ordinal,
+                    latest_deferral_id=event.deferral_id,
+                )
+            else:
+                tasks[event.task_id] = prev.model_copy(
+                    update={
+                        "next_retry_at": event.next_retry_at,
+                        "deferral_ordinal": event.deferral_ordinal,
+                        "latest_deferral_id": event.deferral_id,
+                        "error_kind": None,
+                        "error": None,
+                    }
+                )
         elif isinstance(event, TaskAttemptStoppedEvent):
             prev = _require_task(tasks, event)
             value = event.value

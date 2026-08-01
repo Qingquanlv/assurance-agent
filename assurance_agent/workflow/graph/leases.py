@@ -138,7 +138,11 @@ def next_attempt_decision(
     """
     proj = projection.tasks.get(task.task_id)
     if proj is None or proj.status == "pending":
-        return AttemptDecision(kind="start", attempt_number=1)
+        # Scheduling deferrals leave status pending but stamp next_retry_at
+        # without consuming an attempt number.
+        if proj is not None and proj.next_retry_at is not None and now < _parse_ts(proj.next_retry_at):
+            return AttemptDecision(kind="wait", next_retry_at=proj.next_retry_at)
+        return AttemptDecision(kind="start", attempt_number=max(proj.attempts_used if proj else 0, 0) + 1)
     if proj.status == "running":
         # 未到期 attempt 绝不重复执行；orphan 由恢复分类（adopt/wait/abandon）处理。
         return AttemptDecision(kind="wait", reason="attempt still running; recovery classification owns it")

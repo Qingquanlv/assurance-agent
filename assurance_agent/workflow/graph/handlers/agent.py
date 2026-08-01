@@ -80,7 +80,12 @@ class AgentHandler:
         outputs = self._outputs(task, node_def)
         allowed = tuple(_display_path(path) for path in claims.authorization_writes)
         skill = task.target.partition(":")[2]
-        link_host_task_paths(workspace, context)
+        contract = self._contracts.contracts.get(task.target)
+        # Declared-only agents must not receive host-link visibility (D11/D13).
+        if contract is None or contract.read_isolation != "declared_only":
+            link_host_task_paths(workspace, context)
+        # Plan-fixer Runtime Context injection stays dormant until Task 15.
+        runtime_context = None
         prompt = build_node_prompt(
             skill,
             task.node_id,
@@ -93,6 +98,7 @@ class AgentHandler:
             prior_error_kind=task.prior_error_kind,
             evidence=task.resolved_evidence or None,
             outputs=outputs,
+            runtime_context=runtime_context,
         )
         request = AgentRequest(
             target=task.target,
@@ -106,6 +112,7 @@ class AgentHandler:
             # The schema binding is the workflow author's explicit capability
             # choice. Name-based routing exists only for legacy/omitted bindings.
             agent=node_def.agent or agent_for_skill(skill),
+            runtime_context_sha256=None,
         )
         try:
             result = self._invoker.invoke(request)

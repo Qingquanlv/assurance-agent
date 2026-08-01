@@ -120,6 +120,8 @@ class TaskAttemptStartedEvent(_GraphEvent):
     attempt_number: int
     lease_expires_at: str
     started_at: str
+    input_snapshot_id: str | None = None
+    runtime_context_sha256: str | None = None
 
 
 class TaskAttemptSucceededEvent(_GraphEvent):
@@ -135,6 +137,25 @@ class TaskAttemptSucceededEvent(_GraphEvent):
     gate_report: dict[str, object] | None = None
     state_updates: dict[str, object] = Field(default_factory=dict)
     value: object = None
+    input_snapshot_id: str | None = None
+    runtime_context_sha256: str | None = None
+
+
+class TaskSchedulingDeferredEvent(_GraphEvent):
+    """Scheduling-level lock deferral: no attempt id/number/budget consumption."""
+
+    type: Literal["task_scheduling_deferred"]
+    deferral_id: str
+    invocation_id: str
+    checkpoint_ns: str
+    superstep_id: str
+    task_id: str
+    node_id: str
+    token: str
+    reason: str
+    deferral_ordinal: int
+    retry_policy_digest: str
+    next_retry_at: str
 
 
 class TaskAttemptStoppedEvent(_GraphEvent):
@@ -348,6 +369,7 @@ GraphEvent = Annotated[
     | TaskAttemptSucceededEvent
     | TaskAttemptStoppedEvent
     | TaskAttemptFailedEvent
+    | TaskSchedulingDeferredEvent
     | TaskRecoveryRoutedEvent
     | TaskAttemptAbandonedEvent
     | BudgetConsumedEvent
@@ -375,6 +397,7 @@ __all__ = [
     "TaskAttemptSucceededEvent",
     "TaskAttemptStoppedEvent",
     "TaskAttemptFailedEvent",
+    "TaskSchedulingDeferredEvent",
     "TaskRecoveryRoutedEvent",
     "TaskAttemptAbandonedEvent",
     "BudgetConsumedEvent",

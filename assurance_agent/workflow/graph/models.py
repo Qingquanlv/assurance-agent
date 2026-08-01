@@ -322,6 +322,10 @@ class TaskProjection(BaseModel):
     # 最近 attempt 的 lease 到期时刻（来自 task_attempt_started）；lease 文件
     # 丢失时恢复分类退回此字段判断，绝不凭空放宽或收紧。
     lease_expires_at: str | None = None
+    input_snapshot_id: str | None = None
+    runtime_context_sha256: str | None = None
+    deferral_ordinal: int = 0
+    latest_deferral_id: str | None = None
 
 
 class FanOutExpansion(BaseModel):

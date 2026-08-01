@@ -450,6 +450,31 @@ def test_workspace_rematerializes_from_object_store_after_cleanup(tmp_path: Path
     assert store.load_write_set(write_set.write_set_id) == write_set
 
 
+def test_create_writes_tree_manifest_to_sidecar(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    store = TreeStore(project / "qa" / "changes" / "CH-1")
+    backend = _backend(project)
+    workspace = backend.create(
+        task_id="task-a",
+        base_tree_id=store.capture(project),
+        store=store,
+        sidecar_root=backend.sidecar_root_for("task-a"),
+    )
+    assert workspace.tree_manifest_path is not None
+    assert workspace.tree_manifest_path.is_file()
+    assert workspace.sidecar_root == backend.sidecar_root_for("task-a").resolve()
+    assert not (workspace.root / ".graph-runtime" / "tree.json").exists()
+    reopened = TaskWorkspace.from_materialized_root(
+        "task-a",
+        workspace.root,
+        workspace.base_tree_id,
+        materialized_tree_id=workspace.materialized_tree_id,
+        tree_manifest_path=workspace.tree_manifest_path,
+        sidecar_root=workspace.sidecar_root,
+    )
+    assert reopened.project_root == workspace.project_root
+
+
 def test_from_materialized_root_rejects_missing_manifest(tmp_path: Path) -> None:
     bare = tmp_path / "bare"
     bare.mkdir()

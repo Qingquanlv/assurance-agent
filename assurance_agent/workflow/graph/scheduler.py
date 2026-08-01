@@ -13,7 +13,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+import hashlib
+import shutil
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -21,6 +23,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from assurance_agent.artifacts.canonical import canonical_json_bytes, sha256_bytes
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.events import read_events_strict
 from assurance_agent.workflow.core.graph_events import (
@@ -30,6 +33,7 @@ from assurance_agent.workflow.core.graph_events import (
     TaskAttemptStartedEvent,
     TaskAttemptStoppedEvent,
     TaskAttemptSucceededEvent,
+    TaskSchedulingDeferredEvent,
 )
 from assurance_agent.workflow.graph.resume_wire import build_graph_interrupted_event
 from assurance_agent.workflow.core.graph_types import ErrorKind
@@ -83,6 +87,12 @@ from assurance_agent.workflow.graph.project_locks import (
 )
 from assurance_agent.workflow.graph.schema_v2 import StateDef
 from assurance_agent.workflow.graph.task_runner import NodeRunner
+from assurance_agent.workflow.graph.task_inputs import (
+    TaskInputError,
+    capture_task_input_snapshot,
+    load_task_input_snapshot,
+    store_task_input_snapshot,
+)
 from assurance_agent.workflow.graph.workspace import (
     TaskWorkspace,
     TreeStore,
@@ -183,6 +193,8 @@ class _PreparedAttempt:
     workspace: TaskWorkspace | None
     bypass: bool = False
     bypass_write_set_id: str | None = None
+    input_snapshot_id: str | None = None
+    runtime_context_sha256: str | None = None
 
 
 @dataclass
@@ -210,6 +222,8 @@ class Scheduler:
         lease_registry: LeaseRegistry | None = None,
         project_lock_manager: ProjectLockManager | None = None,
         project_lock_timeout_seconds: float = 5.0,
+        crash_after_snapshot: Callable[[ExecutableTask, str], None] | None = None,
+        crash_after_started: Callable[[ExecutableTask, str], None] | None = None,
     ) -> None:
         if project_lock_timeout_seconds < 0:
             raise ValueError("project_lock_timeout_seconds must be non-negative")
@@ -227,6 +241,9 @@ class Scheduler:
         self._project_lock_scope_owner = object()
         self._active_project_lock_scopes: set[object] = set()
         self._prepared_wave_lease_owner = object()
+        # Test-only crash cuts between snapshot CAS and started append / after started.
+        self._crash_after_snapshot = crash_after_snapshot
+        self._crash_after_started = crash_after_started
 
     def select(self, plan: PlanResult) -> tuple[ExecutableTask, ...]:
         """Select the next executable wave from a planner result."""
@@ -867,58 +884,50 @@ class Scheduler:
             detail = f" for token {blocked_token}" if blocked_token is not None else ""
             raise SchedulerError(f"project lock conflict{detail} without an owning synchronized task")
         decision = next_attempt_decision(task=task, projection=projection, now=self._clock.now())
-        if decision.kind != "start" or decision.attempt_number is None:
-            retry_at = decision.next_retry_at if decision.kind == "wait" else None
-            failed = (task.task_id,) if decision.kind in ("failed", "exhausted") else ()
-            return WaveResult(
-                superstep_id=plan.superstep_id,
-                failed=failed,
-                retry_at=retry_at,
-            )
+        if decision.kind == "wait" and decision.next_retry_at is not None:
+            return WaveResult(superstep_id=plan.superstep_id, retry_at=decision.next_retry_at)
+        if decision.kind in ("failed", "exhausted"):
+            return WaveResult(superstep_id=plan.superstep_id, failed=(task.task_id,))
 
-        attempt_number = decision.attempt_number
-        attempt_id = f"{task.task_id}-a{attempt_number}"
-        started_at = self._clock.now()
-        lease_seconds = max(
-            task.timeout_policy.heartbeat_seconds * 3.0,
-            task.timeout_policy.heartbeat_seconds + 1.0,
+        token = blocked_token or next(
+            (item for item in task.resources.exclusive if item.startswith("project:")),
+            "project:unknown",
         )
-        lease_expires_at = (started_at + timedelta(seconds=lease_seconds)).isoformat()
+        prev = projection.tasks.get(task.task_id)
+        ordinal = (prev.deferral_ordinal if prev is not None else 0) + 1
+        retry_policy_digest = _retry_policy_digest(task)
+        next_retry = compute_next_retry_at(
+            task.retry_policy,
+            task.task_id,
+            ordinal,
+            self._clock.now(),
+        )
+        deferral_id = _deferral_id(
+            invocation_id=task.invocation_id,
+            checkpoint_ns=task.checkpoint_ns,
+            superstep_id=plan.superstep_id,
+            task_id=task.task_id,
+            token=token,
+            ordinal=ordinal,
+        )
         with transaction(context.change_dir) as txn:
             txn.append_strict(
-                TaskAttemptStartedEvent(
-                    type="task_attempt_started",
+                TaskSchedulingDeferredEvent(
+                    type="task_scheduling_deferred",
+                    deferral_id=deferral_id,
                     invocation_id=task.invocation_id,
                     checkpoint_ns=task.checkpoint_ns,
                     superstep_id=plan.superstep_id,
                     task_id=task.task_id,
-                    attempt_id=attempt_id,
                     node_id=task.node_id,
-                    input_sha256=task.input_sha256,
-                    graph_digest=projection.graph_digest,
-                    contract_digest=task.contract_digest,
-                    attempt_number=attempt_number,
-                    lease_expires_at=lease_expires_at,
-                    started_at=started_at.isoformat(),
+                    token=token,
+                    reason=message,
+                    deferral_ordinal=ordinal,
+                    retry_policy_digest=retry_policy_digest,
+                    next_retry_at=next_retry,
                 )
             )
-        settled = self._persist_failure(
-            prepared=_PreparedAttempt(
-                task=task,
-                attempt_id=attempt_id,
-                attempt_number=attempt_number,
-                workspace=None,
-            ),
-            plan=plan,
-            context=context,
-            error_kind="conflict",
-            message=message,
-        )
-        return WaveResult(
-            superstep_id=plan.superstep_id,
-            failed=(task.task_id,),
-            retry_at=settled.retry_at,
-        )
+        return WaveResult(superstep_id=plan.superstep_id, retry_at=next_retry)
 
     @staticmethod
     def _record_settled(
@@ -968,6 +977,8 @@ class Scheduler:
                 workspace=None,
                 bypass=True,
                 bypass_write_set_id=existing.write_set_id,
+                input_snapshot_id=existing.input_snapshot_id,
+                runtime_context_sha256=existing.runtime_context_sha256,
             )
         if existing is not None and existing.status == "running":
             return None
@@ -985,24 +996,16 @@ class Scheduler:
         )
         lease_expires_at = (started_at + timedelta(seconds=lease_seconds)).isoformat()
 
-        with transaction(context.change_dir) as txn:
-            txn.append_strict(
-                TaskAttemptStartedEvent(
-                    type="task_attempt_started",
-                    invocation_id=task.invocation_id,
-                    checkpoint_ns=task.checkpoint_ns,
-                    superstep_id=plan.superstep_id,
-                    task_id=task.task_id,
-                    attempt_id=attempt_id,
-                    node_id=task.node_id,
-                    input_sha256=task.input_sha256,
-                    graph_digest=projection.graph_digest,
-                    contract_digest=task.contract_digest,
-                    attempt_number=attempt_number,
-                    lease_expires_at=lease_expires_at,
-                    started_at=started_at.isoformat(),
-                )
+        # Reserve identity/lease before materializing the workspace.
+        leases.upsert(
+            new_lease(
+                task_id=task.task_id,
+                attempt_id=attempt_id,
+                session_id=context.parent_session_id,
+                started_at=started_at.isoformat(),
+                lease_expires_at=lease_expires_at,
             )
+        )
 
         effective_base = base_tree_id or projection.current_tree_id
         # Deferred nested capture leaves outer SelectedInvocationWave.synchronized_paths
@@ -1021,31 +1024,127 @@ class Scheduler:
                     )
                 ),
             )
-        workspace = self._workspaces.create(
-            task_id=task.task_id,
-            base_tree_id=effective_base,
-            store=self._objects,
-            side_effect_free=self._is_side_effect_free(task),
-            claims=task.resources,
-            declared_reads_only=self._uses_declared_read_isolation(task),
-            skill_name=(task.target.partition(":")[2] if task.target.startswith("skill:") else None),
-            initialize_git=self._requires_convenience_git(task),
-        )
-        leases.upsert(
-            new_lease(
+        sidecar_root = self._workspaces.sidecar_root_for(task.task_id)
+        workspace: TaskWorkspace | None = None
+        input_snapshot_id: str | None = None
+        runtime_context_sha256: str | None = None
+        started_appended = False
+        try:
+            workspace = self._workspaces.create(
                 task_id=task.task_id,
-                attempt_id=attempt_id,
-                session_id=context.parent_session_id,
-                started_at=started_at.isoformat(),
-                lease_expires_at=lease_expires_at,
+                base_tree_id=effective_base,
+                store=self._objects,
+                sidecar_root=sidecar_root,
+                side_effect_free=self._is_side_effect_free(task),
+                claims=task.resources,
+                declared_reads_only=self._uses_declared_read_isolation(task),
+                skill_name=(task.target.partition(":")[2] if task.target.startswith("skill:") else None),
+                initialize_git=self._requires_convenience_git(task),
             )
-        )
+            if self._uses_declared_read_isolation(task):
+                contract = None if self._contracts is None else self._contracts.contracts.get(task.target)
+                if contract is None:
+                    raise SchedulerError(
+                        f"declared_only task {task.task_id} missing execution contract for {task.target}"
+                    )
+                # Typed runtime context is dormant until Task 15 names injection.
+                runtime_context = None
+                snapshot_id, snapshot_bytes = capture_task_input_snapshot(
+                    invocation_id=task.invocation_id,
+                    task=task,
+                    attempt_id=attempt_id,
+                    workspace=workspace,
+                    contract=contract,
+                    runtime_context=runtime_context,
+                )
+                store_task_input_snapshot(self._objects, snapshot_id, snapshot_bytes)
+                # Require the object be loadable before the started event.
+                loaded = load_task_input_snapshot(self._objects, snapshot_id)
+                if loaded.attempt_id != attempt_id:
+                    raise TaskInputError("captured snapshot attempt_id mismatch")
+                input_snapshot_id = snapshot_id
+                runtime_context_sha256 = loaded.runtime_context_sha256
+                if self._crash_after_snapshot is not None:
+                    self._crash_after_snapshot(task, snapshot_id)
+
+            with transaction(context.change_dir) as txn:
+                txn.append_strict(
+                    TaskAttemptStartedEvent(
+                        type="task_attempt_started",
+                        invocation_id=task.invocation_id,
+                        checkpoint_ns=task.checkpoint_ns,
+                        superstep_id=plan.superstep_id,
+                        task_id=task.task_id,
+                        attempt_id=attempt_id,
+                        node_id=task.node_id,
+                        input_sha256=task.input_sha256,
+                        graph_digest=projection.graph_digest,
+                        contract_digest=task.contract_digest,
+                        attempt_number=attempt_number,
+                        lease_expires_at=lease_expires_at,
+                        started_at=started_at.isoformat(),
+                        input_snapshot_id=input_snapshot_id,
+                        runtime_context_sha256=runtime_context_sha256,
+                    )
+                )
+            started_appended = True
+            if self._crash_after_started is not None:
+                self._crash_after_started(task, attempt_id)
+        except BaseException:
+            if not started_appended:
+                self._cleanup_unreachable_attempt(
+                    context=context,
+                    task_id=task.task_id,
+                    attempt_id=attempt_id,
+                    workspace=workspace,
+                    sidecar_root=sidecar_root,
+                    input_snapshot_id=input_snapshot_id,
+                )
+                leases.remove(task.task_id, attempt_id)
+            raise
+
         return _PreparedAttempt(
             task=task,
             attempt_id=attempt_id,
             attempt_number=attempt_number,
             workspace=workspace,
+            input_snapshot_id=input_snapshot_id,
+            runtime_context_sha256=runtime_context_sha256,
         )
+
+    def _cleanup_unreachable_attempt(
+        self,
+        *,
+        context: RuntimeContext,
+        task_id: str,
+        attempt_id: str,
+        workspace: TaskWorkspace | None,
+        sidecar_root: Path,
+        input_snapshot_id: str | None,
+    ) -> None:
+        """Clean unreachable sidecar/CAS data left by a pre-started crash."""
+        if workspace is not None:
+            workspace.cleanup()
+        else:
+            task_root = context.change_dir / ".graph-runtime" / "tasks" / task_id
+            shutil.rmtree(task_root, ignore_errors=True)
+            shutil.rmtree(sidecar_root, ignore_errors=True)
+        if input_snapshot_id is not None:
+            # Snapshot CAS is content-addressed; deleting the unreachable object
+            # is best-effort and ignored when another attempt already reused it.
+            try:
+                object_path = (
+                    context.change_dir
+                    / ".graph-runtime"
+                    / "objects"
+                    / "sha256"
+                    / input_snapshot_id[:2]
+                    / input_snapshot_id
+                )
+                object_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        _ = attempt_id
 
     def _run_attempt(
         self,
@@ -1169,6 +1268,8 @@ class Scheduler:
                             gate_report=result.gate_report,
                             state_updates=dict(result.state_updates),
                             value=result.value,
+                            input_snapshot_id=prepared.input_snapshot_id,
+                            runtime_context_sha256=prepared.runtime_context_sha256,
                         )
                     )
                     txn.append_strict(
@@ -1240,6 +1341,8 @@ class Scheduler:
                     gate_report=result.gate_report,
                     state_updates=dict(result.state_updates),
                     value=result.value,
+                    input_snapshot_id=prepared.input_snapshot_id,
+                    runtime_context_sha256=prepared.runtime_context_sha256,
                 )
             )
             if task.budget is not None:
@@ -1617,9 +1720,11 @@ class Scheduler:
     def _requires_convenience_git(self, task: ExecutableTask) -> bool:
         """Only agent handlers need a task-local ``git diff`` baseline.
 
-        Unknown targets keep the historical fail-closed behavior. Compiled
-        production workflows always provide a matching execution contract.
+        Declared-only isolation forbids convenience ``.git/**`` inside the agent
+        project root. Unknown targets keep the historical fail-closed behavior.
         """
+        if self._uses_declared_read_isolation(task):
+            return False
         if self._contracts is not None:
             contract = self._contracts.contracts.get(task.target)
             if contract is not None:
@@ -1652,6 +1757,29 @@ def _freeze_error_kind(exc: WorkspaceError) -> ErrorKind:
     if "output" in message:
         return "invalid_output"
     return "forbidden_write"
+
+
+def _retry_policy_digest(task: ExecutableTask) -> str:
+    payload = {
+        "backoff": task.retry_policy.backoff.model_dump(mode="json"),
+        "max_attempts": task.retry_policy.max_attempts,
+        "retry_on": list(task.retry_policy.retry_on),
+        "task_id": task.task_id,
+    }
+    return sha256_bytes(canonical_json_bytes(payload))
+
+
+def _deferral_id(
+    *,
+    invocation_id: str,
+    checkpoint_ns: str,
+    superstep_id: str,
+    task_id: str,
+    token: str,
+    ordinal: int,
+) -> str:
+    material = "|".join((invocation_id, checkpoint_ns, superstep_id, task_id, token, str(ordinal)))
+    return "sha256:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 __all__ = [

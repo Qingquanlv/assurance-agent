@@ -868,17 +868,19 @@ def test_scheduler_persists_project_lock_timeout_as_retryable_conflict(tmp_path:
         _context(project),
     )
 
-    assert result.failed == ("update-issue",)
+    assert result.failed == ()
     assert result.retry_at is not None
     assert runner.calls == []
     events = read_events_strict(change)
     started = [event for event in events if event.get("type") == "task_attempt_started"]
     failures = [event for event in events if event.get("type") == "task_attempt_failed"]
-    assert len(started) == 1
-    assert len(failures) == 1
-    assert failures[0]["attempt_id"] == started[0]["attempt_id"]
-    assert failures[0]["error_kind"] == "conflict"
-    assert failures[0]["next_retry_at"] is not None
+    deferred = [event for event in events if event.get("type") == "task_scheduling_deferred"]
+    assert started == []
+    assert failures == []
+    assert len(deferred) == 1
+    assert deferred[0]["task_id"] == "update-issue"
+    assert "attempt_id" not in deferred[0]
+    assert deferred[0]["next_retry_at"] is not None
     assert locks.calls == [(("project:issue-registry", "project:zzz"), 0.125)]
 
 
@@ -929,7 +931,7 @@ def test_project_lock_timeout_is_attributed_to_task_owning_blocked_token(
 
     result = scheduler.execute(_plan(task_a, task_b), _projection(change, tree_id), _context(project))
 
-    assert result.failed == ("task-b",)
+    assert result.failed == ()
     assert result.retry_at is not None
     assert runner.calls == []
     assert locks.calls == [("project:a", "project:b")]
@@ -938,10 +940,12 @@ def test_project_lock_timeout_is_attributed_to_task_owning_blocked_token(
         for event in read_events_strict(change)
         if event.get("type") in ("task_attempt_started", "task_attempt_failed")
     ]
-    assert [event["task_id"] for event in attempts] == ["task-b", "task-b"]
-    assert [event["error_kind"] for event in attempts if event["type"] == "task_attempt_failed"] == [
-        "conflict"
+    deferred = [
+        event for event in read_events_strict(change) if event.get("type") == "task_scheduling_deferred"
     ]
+    assert attempts == []
+    assert [event["task_id"] for event in deferred] == ["task-b"]
+    assert "attempt_id" not in deferred[0]
 
 
 def test_synchronized_pending_update_reacquires_lock_and_replays_without_handler(

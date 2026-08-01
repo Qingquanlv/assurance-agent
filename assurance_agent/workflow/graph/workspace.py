@@ -805,8 +805,19 @@ class TreeStore:
         self._write_object(filtered_id, raw)
         return filtered_id
 
-    def materialize(self, tree_id: str, dest: Path) -> None:
-        """把 tree 物化到空目录 ``dest``，并写入 ``.graph-runtime/tree.json`` 元数据。"""
+    def materialize(
+        self,
+        tree_id: str,
+        dest: Path,
+        *,
+        tree_manifest_path: Path | None = None,
+    ) -> Path:
+        """把 tree 物化到空目录 ``dest``，并写入 tree manifest 元数据。
+
+        When ``tree_manifest_path`` is provided the control manifest is written
+        there (TaskWorkspace sidecar). Otherwise the legacy in-root location
+        ``.graph-runtime/tree.json`` is retained for non-sidecar callers.
+        """
         manifest = self._load_tree(tree_id)
         dest = dest.resolve()
         dest.mkdir(parents=True, exist_ok=True)
@@ -825,9 +836,14 @@ class TreeStore:
                 os.symlink(link_target, target)
             else:
                 _install_file(target, data, entry.executable)
-        manifest_path = dest / _TREE_MANIFEST_RELPATH
+        manifest_path = (
+            tree_manifest_path.resolve()
+            if tree_manifest_path is not None
+            else (dest / _TREE_MANIFEST_RELPATH)
+        )
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         manifest_path.write_bytes(manifest.raw)
+        return manifest_path
 
     # ---- write-set freeze / load ----
 
@@ -1442,9 +1458,13 @@ class TaskWorkspace:
     change_dir: Path
     base_tree_id: str
     materialized_tree_id: str | None = None
+    tree_manifest_path: Path | None = None
+    sidecar_root: Path | None = None
 
     def cleanup(self) -> None:
         shutil.rmtree(self.root, ignore_errors=True)
+        if self.sidecar_root is not None:
+            shutil.rmtree(self.sidecar_root, ignore_errors=True)
 
     @classmethod
     def from_materialized_root(
@@ -1453,13 +1473,20 @@ class TaskWorkspace:
         root: Path,
         base_tree_id: str,
         materialized_tree_id: str | None = None,
+        *,
+        tree_manifest_path: Path | None = None,
+        sidecar_root: Path | None = None,
     ) -> "TaskWorkspace":
         """从物化 root 的 tree manifest 解析逻辑 project/repo/change root。
 
-        manifest 缺失、root 未声明、root 目录不存在或解析到物化 root 之外，
-        一律拒绝。
+        Prefer an explicit sidecar ``tree_manifest_path``. Legacy callers may omit
+        it and fall back to ``root/.graph-runtime/tree.json``.
         """
-        manifest_path = root / _TREE_MANIFEST_RELPATH
+        manifest_path = (
+            tree_manifest_path.resolve()
+            if tree_manifest_path is not None
+            else (root / _TREE_MANIFEST_RELPATH)
+        )
         try:
             payload = json.loads(manifest_path.read_bytes())
         except (OSError, json.JSONDecodeError) as exc:
@@ -1488,6 +1515,8 @@ class TaskWorkspace:
             change_dir=resolve_logical("change"),
             base_tree_id=base_tree_id,
             materialized_tree_id=materialized_tree_id,
+            tree_manifest_path=manifest_path,
+            sidecar_root=sidecar_root.resolve() if sidecar_root is not None else None,
         )
 
 
@@ -1500,12 +1529,17 @@ class WorkspaceBackend:
     def __init__(self, change_dir: Path) -> None:
         self._tasks_root = change_dir / _TASKS_RELPATH
 
+    def sidecar_root_for(self, task_id: str) -> Path:
+        _assert_safe_task_id(task_id)
+        return self._tasks_root.parent / "task-sidecars" / task_id
+
     def create(
         self,
         *,
         task_id: str,
         base_tree_id: str,
         store: TreeStore,
+        sidecar_root: Path | None = None,
         side_effect_free: bool = False,
         claims: ResourceClaims | None = None,
         declared_reads_only: bool = False,
@@ -1517,6 +1551,10 @@ class WorkspaceBackend:
         if root.exists():
             shutil.rmtree(root)
         root.mkdir(parents=True)
+        resolved_sidecar = (sidecar_root or self.sidecar_root_for(task_id)).resolve()
+        if resolved_sidecar.exists():
+            shutil.rmtree(resolved_sidecar)
+        resolved_sidecar.mkdir(parents=True)
         # Materialize a sibling-omitted view when claims pin a Retro run, but
         # keep freeze/merge base_tree_id on the full overlay/invocation tree.
         materialize_tree = (
@@ -1529,14 +1567,24 @@ class WorkspaceBackend:
             if claims is not None
             else base_tree_id
         )
-        store.materialize(materialize_tree, root)
-        if initialize_git:
+        # Declared-only workspaces always keep tree-control metadata in the
+        # sidecar. Legacy modes may still request convenience Git, but the
+        # manifest itself lives outside the agent-visible project root.
+        manifest_path = store.materialize(
+            materialize_tree,
+            root,
+            tree_manifest_path=resolved_sidecar / "tree.json",
+        )
+        # Declared-only isolation forbids convenience .git inside the agent root.
+        if initialize_git and not declared_reads_only:
             self._init_convenience_git(root, side_effect_free=side_effect_free)
         return TaskWorkspace.from_materialized_root(
             task_id,
             root,
             base_tree_id,
             materialized_tree_id=materialize_tree,
+            tree_manifest_path=manifest_path,
+            sidecar_root=resolved_sidecar,
         )
 
     @staticmethod
