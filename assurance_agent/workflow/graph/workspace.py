@@ -609,6 +609,25 @@ class TreeStore:
 
     # ---- tree capture / materialize ----
 
+    def _change_dir_for_project(self, project_root: Path) -> Path:
+        """Resolve the active change directory under ``project_root``.
+
+        Root invocations capture/apply against the host SUT where
+        ``self._change_dir`` is a real subpath. Nested ``run_child`` contexts
+        bind ``project_root`` to a task workspace that mirrors
+        ``qa/changes/<change-id>/`` while the TreeStore still points at the host
+        ledger — use that mirror so materialization repair can see committed
+        change outputs after a crash mid-wrapper.
+        """
+        project_root = project_root.resolve()
+        host = self._change_dir.resolve()
+        if _is_within(host, project_root):
+            return host
+        mirrored = project_root / "qa" / "changes" / self._change_dir.name
+        if mirrored.is_dir():
+            return mirrored.resolve()
+        return host
+
     def _roots(self, project_root: Path, repo_root: Path | None) -> dict[str, str]:
         def prefix(path: Path) -> str:
             resolved = path.resolve()
@@ -620,7 +639,7 @@ class TreeStore:
                 raise WorkspaceError(f"logical root escapes project root: {path}") from exc
 
         return {
-            "change": prefix(self._change_dir),
+            "change": prefix(self._change_dir_for_project(project_root)),
             "project": ".",
             "repo": prefix(repo_root) if repo_root is not None else ".",
         }
@@ -631,7 +650,7 @@ class TreeStore:
         if not project_root.is_dir():
             raise WorkspaceError(f"project root is not a directory: {project_root}")
         roots = self._roots(project_root, repo_root)
-        entries = _walk(project_root, keep_change_dir=self._change_dir)
+        entries = _walk(project_root, keep_change_dir=self._change_dir_for_project(project_root))
         for rel, entry in entries.items():
             if entry.kind == "file":
                 data = (project_root / rel).read_bytes()
@@ -1227,6 +1246,17 @@ class TreeStore:
                     writes.append((rel, wanted))
                     continue
                 if actual != before:
+                    # Nested materialization repair can leave unexpected change:
+                    # bytes in a parent task workspace before publication replay.
+                    # Committed write-set adds under change: are authoritative.
+                    if (
+                        before is None
+                        and wanted is not None
+                        and logical.root == "change"
+                        and entry.operation != "delete"
+                    ):
+                        writes.append((rel, wanted))
+                        continue
                     raise WorkspaceError(f"canonical workspace drift at targeted path {entry.logical_path}")
                 if wanted is None:
                     deletes.append(rel)
@@ -1240,26 +1270,45 @@ class TreeStore:
             victim.unlink(missing_ok=True)
             _prune_empty_parents(victim, project_root)
 
-    def apply_tree(self, project_root: Path, target_tree_id: str, *, base_tree_id: str) -> None:
+    def apply_tree(
+        self,
+        project_root: Path,
+        target_tree_id: str,
+        *,
+        base_tree_id: str,
+        restore_change_drift: bool = False,
+    ) -> None:
         """把 canonical root 从 base tree 幂等推进到 target tree。
 
         先整体验证：任何落在 ``{base, target}`` 之外的状态都是 canonical 漂移，
         fail closed 且不触碰磁盘。之后写 entry 用 temp-file + ``os.replace``、
         delete 最后执行；partial apply 后重放同一 target 必收敛。
+
+        ``restore_change_drift`` is for ordinary materialization repair only:
+        nested task-workspace resume may leave stale ``change:`` bytes that
+        differ from the committed tree. Repair restores those paths; normal
+        commit-time apply stays fail-closed.
         """
         project_root = project_root.resolve()
         base = self._load_tree(base_tree_id)
         target = self._load_tree(target_tree_id)
-        current = _walk(project_root, keep_change_dir=self._change_dir)
+        active_change = self._change_dir_for_project(project_root)
+        current = _walk(project_root, keep_change_dir=active_change)
         # 本 change 目录（qa/changes/<id>/）是 runtime 独占产出区：落在其中的
         # untracked 路径通常是 agent 把声明产物用绝对路径直写进 canonical（而非
         # 其 task 沙箱）留下的越界残留。此类残留由重跑节点重新生成、只经受控
         # write-set 提升，故 resume 修复时清理而非以 canonical drift 阻断；change
         # 目录之外的 untracked 路径仍是真实源码漂移，一律 fail closed。
-        resolved_change = self._change_dir.resolve()
+        resolved_change = active_change.resolve()
         change_prefix: str | None = None
         if _is_within(resolved_change, project_root):
             change_prefix = resolved_change.relative_to(project_root).as_posix()
+
+        def _under_change(rel: str) -> bool:
+            return change_prefix is not None and (
+                rel == change_prefix or rel.startswith(f"{change_prefix}/")
+            )
+
         writes: list[tuple[str, _Entry]] = []
         deletes: list[str] = []
         change_dir_strays: list[str] = []
@@ -1289,6 +1338,9 @@ class TreeStore:
                         continue
                     if before is not None and _path_matches_entry(project_root / rel, before):
                         continue
+                    if restore_change_drift and before is not None and _under_change(rel):
+                        writes.append((rel, before))
+                        continue
                     raise WorkspaceError(f"canonical workspace drift at {rel}")
                 continue
             if actual == wanted:
@@ -1299,6 +1351,14 @@ class TreeStore:
                 continue
             if actual != before:
                 if wanted is not None and _path_matches_entry(project_root / rel, wanted):
+                    continue
+                if restore_change_drift and _under_change(rel):
+                    if wanted is None:
+                        deletes.append(rel)
+                    else:
+                        if wanted.kind != "file":
+                            raise WorkspaceError(f"cannot materialize non-file entry: {rel}")
+                        writes.append((rel, wanted))
                     continue
                 raise WorkspaceError(f"canonical workspace drift at {rel}")
             if wanted is None:

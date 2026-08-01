@@ -9,6 +9,7 @@ import time
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 T0 = datetime(2026, 7, 19, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -383,6 +384,33 @@ def _fault_hit(point: str) -> None:
     os.kill(os.getpid(), signal.SIGKILL)
 
 
+def _parse_selector() -> tuple[str | None, str | None, int]:
+    """Parse ``AA_FAULT_SELECTOR`` as ``structural_suffix|node_id|occurrence``."""
+    raw = os.environ.get("AA_FAULT_SELECTOR", "").strip()
+    if not raw:
+        return None, None, 1
+    parts = raw.split("|")
+    structural = parts[0] or None if len(parts) > 0 else None
+    node_id = parts[1] or None if len(parts) > 1 else None
+    occurrence = int(parts[2]) if len(parts) > 2 and parts[2] else 1
+    return structural, node_id, max(1, occurrence)
+
+
+def _selector_matches(task, *, hits: dict[str, int], point: str) -> bool:  # noqa: ANN001
+    structural, node_id, occurrence = _parse_selector()
+    if node_id is not None and getattr(task, "node_id", None) != node_id:
+        return False
+    path = getattr(task, "structural_path", "") or ""
+    if structural is not None and structural not in str(path):
+        return False
+    key = f"{point}:{getattr(task, 'task_id', '')}"
+    hits[key] = hits.get(key, 0) + 1
+    # Count per-point across matching tasks.
+    total_key = f"{point}:total"
+    hits[total_key] = hits.get(total_key, 0) + 1
+    return hits[total_key] >= occurrence
+
+
 @contextmanager
 def force_v5_binding():
     """Force fresh root bindings onto event schema version 5 with profile snapshot.
@@ -572,6 +600,220 @@ def _install_hooks(runtime, point: str, *, scheduler) -> None:  # noqa: ANN001
             return result
 
         leases_mod.LeaseRegistry.upsert = upsert  # type: ignore[method-assign]
+
+    hits: dict[str, int] = {}
+
+    if point == "snapshot_created_before_started":
+        def crash_after_snapshot(task, snapshot_id):  # type: ignore[no-untyped-def]
+            del snapshot_id
+            if _selector_matches(task, hits=hits, point=point):
+                _fault_hit(point)
+
+        sched._crash_after_snapshot = crash_after_snapshot  # noqa: SLF001
+
+    if point == "started_with_snapshot_before_handler":
+        def crash_after_started(task, attempt_id):  # type: ignore[no-untyped-def]
+            del attempt_id
+            if _selector_matches(task, hits=hits, point=point):
+                _fault_hit(point)
+
+        sched._crash_after_started = crash_after_started  # noqa: SLF001
+
+    if point in {
+        "candidate_after_freeze_before_validate",
+        "candidate_after_validate_before_success",
+        "candidate_validation_rejected",
+    }:
+        run_precommit = sched._run_precommit_if_needed  # noqa: SLF001
+        freeze_if_needed = sched._freeze_if_needed  # noqa: SLF001
+
+        def freeze_and_maybe_kill(task, result, workspace):  # type: ignore[no-untyped-def]
+            write_set_id = freeze_if_needed(task, result, workspace)
+            if (
+                point == "candidate_after_freeze_before_validate"
+                and write_set_id is not None
+                and _selector_matches(task, hits=hits, point=point)
+            ):
+                _fault_hit(point)
+            return write_set_id
+
+        def precommit_and_maybe_kill(**kwargs):  # type: ignore[no-untyped-def]
+            prepared = kwargs["prepared"]
+            if point == "candidate_validation_rejected":
+                from assurance_agent.workflow.graph.precommit import CandidateValidationError
+
+                if _selector_matches(prepared.task, hits=hits, point=point):
+                    _fault_hit(point)
+                    raise CandidateValidationError("fault: candidate_validation_rejected")
+            receipt = run_precommit(**kwargs)
+            if point == "candidate_after_validate_before_success" and _selector_matches(
+                prepared.task, hits=hits, point=point
+            ):
+                _fault_hit(point)
+            return receipt
+
+        sched._freeze_if_needed = freeze_and_maybe_kill  # type: ignore[method-assign]  # noqa: SLF001
+        sched._run_precommit_if_needed = precommit_and_maybe_kill  # type: ignore[method-assign]  # noqa: SLF001
+
+    if point in {"target_success_before_commit", "target_superstep_committed"}:
+        persist_success_orig = sched._persist_success  # noqa: SLF001
+        commit_wave_orig = sched._commit_wave  # noqa: SLF001
+
+        def persist_target(**kwargs):  # type: ignore[no-untyped-def]
+            prepared = kwargs["prepared"]
+            result = persist_success_orig(**kwargs)
+            if point == "target_success_before_commit" and _selector_matches(
+                prepared.task, hits=hits, point=point
+            ):
+                _fault_hit(point)
+            return result
+
+        def commit_target(**kwargs):  # type: ignore[no-untyped-def]
+            # ``_commit_wave`` returns write_set_ids, not task_ids. Match the
+            # pending→committed transition on the live projection instead.
+            from assurance_agent.workflow.graph.checkpoint import project_invocation
+
+            projection = kwargs["projection"]
+            context = kwargs["context"]
+            live_before = project_invocation(context.change_dir, projection.invocation_id)
+            pending = [
+                task_id
+                for task_id, task in live_before.tasks.items()
+                if task.status == "succeeded" and not task.outputs_committed
+            ]
+            committed = commit_wave_orig(**kwargs)
+            if point != "target_superstep_committed":
+                return committed
+            live_after = project_invocation(context.change_dir, projection.invocation_id)
+            for pending_task_id in pending:
+                after = live_after.tasks.get(pending_task_id)
+                if after is None or not after.outputs_committed:
+                    continue
+                proxy = SimpleNamespace(
+                    node_id=getattr(after, "node_id", None),
+                    structural_path=str(pending_task_id),
+                    task_id=pending_task_id,
+                )
+                if _selector_matches(proxy, hits=hits, point=point):
+                    _fault_hit(point)
+            return committed
+
+        sched._persist_success = persist_target  # type: ignore[method-assign]  # noqa: SLF001
+        sched._commit_wave = commit_target  # type: ignore[method-assign]  # noqa: SLF001
+
+    if point in {
+        "child_started_before_wrapper_success",
+        "child_pending_before_wrapper_success",
+    }:
+        run_child_orig = runtime.run_child
+
+        def run_child_and_kill(parent_task, graph_id, workspace, context):  # type: ignore[no-untyped-def]
+            if point == "child_started_before_wrapper_success":
+                # Kill after child start event is durable — hook inside by wrapping drive.
+                drive_orig = runtime._drive  # noqa: SLF001
+
+                def drive_once(invocation_id, ctx):  # type: ignore[no-untyped-def]
+                    _fault_hit(point)
+                    return drive_orig(invocation_id, ctx)
+
+                runtime._drive = drive_once  # type: ignore[method-assign]  # noqa: SLF001
+                try:
+                    return run_child_orig(parent_task, graph_id, workspace, context)
+                finally:
+                    runtime._drive = drive_orig  # type: ignore[method-assign]  # noqa: SLF001
+            result = run_child_orig(parent_task, graph_id, workspace, context)
+            if point == "child_pending_before_wrapper_success":
+                _fault_hit(point)
+            return result
+
+        runtime.run_child = run_child_and_kill  # type: ignore[method-assign]
+
+    if point.startswith("fixer_approval_") or point.startswith("allocate_") or point.startswith(
+        "heal_record_"
+    ):
+        from assurance_agent.workflow.graph import durable_effects as effects_mod
+
+        reconcile_orig = getattr(effects_mod, "reconcile_effect", None)
+        persist_success_orig = sched._persist_success  # noqa: SLF001
+        commit_wave_orig = sched._commit_wave  # noqa: SLF001
+
+        def persist_healing(**kwargs):  # type: ignore[no-untyped-def]
+            prepared = kwargs["prepared"]
+            target = prepared.task.target
+            before = point.endswith("before_success_line") or point.endswith(
+                "after_resume_before_operation"
+            )
+            if before and _healing_point_matches(point, target) and _selector_matches(
+                prepared.task, hits=hits, point=point
+            ):
+                _fault_hit(point)
+            result = persist_success_orig(**kwargs)
+            if (
+                point.endswith("after_success_before_superstep_commit")
+                and _healing_point_matches(point, target)
+                and _selector_matches(prepared.task, hits=hits, point=point)
+            ):
+                _fault_hit(point)
+            return result
+
+        def commit_healing(**kwargs):  # type: ignore[no-untyped-def]
+            committed = commit_wave_orig(**kwargs)
+            if point.endswith("after_superstep_commit_before_domain_event"):
+                _fault_hit(point)
+            return committed
+
+        sched._persist_success = persist_healing  # type: ignore[method-assign]  # noqa: SLF001
+        sched._commit_wave = commit_healing  # type: ignore[method-assign]  # noqa: SLF001
+
+        if reconcile_orig is not None and (
+            "before_domain_event" in point
+            or "before_ack" in point
+            or "after_ack" in point
+            or "after_domain_event" in point
+        ):
+            def reconcile_and_kill(intent, context, runtime_ctx, **kwargs):  # type: ignore[no-untyped-def]
+                if "before_domain_event" in point or point.endswith(
+                    "after_superstep_commit_before_domain_event"
+                ):
+                    _fault_hit(point)
+                result = reconcile_orig(intent, context, runtime_ctx, **kwargs)
+                if "after_domain_event_before_ack" in point:
+                    _fault_hit(point)
+                if "after_ack_before" in point:
+                    _fault_hit(point)
+                return result
+
+            effects_mod.reconcile_effect = reconcile_and_kill  # type: ignore[assignment]
+
+    if point == "effect_retry_lock_contended":
+        # Named §12.7 seam: kill on the first durable progression transaction so a
+        # fresh runtime must re-enter under the real lock. Do not hold the lock
+        # across ``orig_transaction`` in this process (same-fd self-deadlock).
+        import assurance_agent.workflow.core.progression as prog
+        import assurance_agent.workflow.graph.runtime as runtime_mod
+        import assurance_agent.workflow.graph.scheduler as scheduler_mod
+
+        orig_transaction = prog.transaction
+
+        @contextmanager
+        def wrapped_transaction(change_dir_arg):  # type: ignore[no-untyped-def]
+            with orig_transaction(change_dir_arg) as txn:
+                yield txn
+            _fault_hit("effect_retry_lock_contended")
+
+        prog.transaction = wrapped_transaction  # type: ignore[assignment]
+        runtime_mod.transaction = wrapped_transaction  # type: ignore[assignment]
+        scheduler_mod.transaction = wrapped_transaction  # type: ignore[assignment]
+
+
+def _healing_point_matches(point: str, target: str) -> bool:
+    if point.startswith("fixer_approval_"):
+        return "record-fixer-approval" in target or target.endswith("record-fixer-approval")
+    if point.startswith("allocate_"):
+        return "allocate-healing" in target
+    if point.startswith("heal_record_"):
+        return "record-codegen-fix-apply" in target
+    return True
 
 
 def _build_v5_revision(project: Path):

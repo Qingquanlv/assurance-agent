@@ -1557,6 +1557,9 @@ class GraphRuntime:
                         artifacts=artifacts,  # type: ignore[arg-type]
                         child_projections=child_projections,
                     )
+                    # Inherited prepared entries authorize one reserved wave only.
+                    # Later supersteps must replan against the live projection.
+                    context = context.without_prepared_wave_lease()
                 else:
                     wave = scheduler.execute(
                         plan,
@@ -2046,7 +2049,12 @@ class GraphRuntime:
         assert target is not None
         base = prev if prev is not None else projection.root_tree_id
         try:
-            self._objects.apply_tree(context.project_root, target, base_tree_id=base)
+            self._objects.apply_tree(
+                context.project_root,
+                target,
+                base_tree_id=base,
+                restore_change_drift=True,
+            )
         except WorkspaceError as exc:
             raise GraphRuntimeError(f"failed to repair materialization: {exc}") from exc
 

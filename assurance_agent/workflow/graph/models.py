@@ -138,6 +138,14 @@ class RuntimeContext(BaseModel):
         prepared._prepared_wave_lease = lease
         return prepared
 
+    def without_prepared_wave_lease(self) -> Self:
+        """Copy this context with any prepared-wave lease cleared (single-use per superstep)."""
+        cleared = self.model_copy()
+        cleared._prepared_wave_lease_owner = None
+        cleared._prepared_wave_lease_nonce = None
+        cleared._prepared_wave_lease = None
+        return cleared
+
 
 class ResolvedArtifact(BaseModel):
     """一次 artifact 读取的冻结结果：解析后的 JSON 值 + 实际读取路径的内容 hash。"""

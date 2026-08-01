@@ -696,14 +696,26 @@ def _seed_outcomes(
                     ),
                 )
         elif latest.attempts_used >= policy.max_attempts:  # abandoned
-            return (
-                outcomes,
-                retry,
-                (
-                    f"task {latest.task_id} (node '{nid}') abandoned; retry budget "
-                    f"exhausted ({latest.attempts_used}/{policy.max_attempts})"
-                ),
-            )
+            from assurance_agent.workflow.graph.leases import parent_task_has_child_invocation
+
+            wrapper_target = latest.target or ""
+            if wrapper_target.startswith("graph:") and parent_task_has_child_invocation(
+                context.change_dir,
+                parent_invocation_id=projection.invocation_id,
+                parent_task_id=latest.task_id,
+            ):
+                # Process-death abandon of a graph wrapper that already started its
+                # child must re-enter run_child rather than hard-stop at max_attempts=1.
+                pass
+            else:
+                return (
+                    outcomes,
+                    retry,
+                    (
+                        f"task {latest.task_id} (node '{nid}') abandoned; retry budget "
+                        f"exhausted ({latest.attempts_used}/{policy.max_attempts})"
+                    ),
+                )
         # failed-retryable 或 abandoned 且预算未耗尽：同一 task_id 进入下一 wave。
         outcomes[nid] = _Outcome(status="unresolved", task=latest)
         retry.append(

@@ -35,7 +35,55 @@ FAULT_CASES = [
     ("heartbeat_replacement", "linear"),
     ("sync_apply_pending", "sync"),
     ("sync_ack_pending", "sync"),
+    ("target_success_before_commit", "linear"),
+    ("target_superstep_committed", "linear"),
+    ("effect_retry_lock_contended", "linear"),
 ]
+
+# Design §12.1 named cut IDs that must remain pinned in the worker/tests surface.
+DESIGN_NAMED_CUT_IDS = frozenset(
+    {
+        "before_attempt_started",
+        "after_attempt_started",
+        "handler_before_success",
+        "snapshot_created_before_started",
+        "started_with_snapshot_before_handler",
+        "candidate_after_freeze_before_validate",
+        "candidate_after_validate_before_success",
+        "candidate_validation_rejected",
+        "target_success_before_commit",
+        "target_superstep_committed",
+        "tree_pointer_superstep",
+        "canonical_materialization",
+        "checkpoint_snapshot_write",
+        "sync_apply_pending",
+        "sync_ack_pending",
+        "revision_target_objects",
+        "manual_plan_revision_append",
+        "graph_resumed_ordinal_0",
+        "graph_resumed_ordinal_1",
+        "graph_resumed_ordinal_2",
+        "child_started_before_wrapper_success",
+        "child_pending_before_wrapper_success",
+        "fixer_approval_after_resume_before_operation",
+        "fixer_approval_before_success_line",
+        "fixer_approval_after_success_before_superstep_commit",
+        "fixer_approval_after_superstep_commit_before_domain_event",
+        "fixer_approval_after_domain_event_before_ack",
+        "fixer_approval_after_ack_before_gate",
+        "allocate_before_success_line",
+        "allocate_after_success_before_superstep_commit",
+        "allocate_after_superstep_commit_before_domain_event",
+        "allocate_after_domain_event_before_ack",
+        "allocate_after_ack_before_successor",
+        "heal_record_before_success_line",
+        "heal_record_after_success_before_superstep_commit",
+        "heal_record_after_superstep_commit_before_domain_event",
+        "heal_record_after_domain_event_before_ack",
+        "heal_record_after_ack_before_successor",
+        "effect_retry_lock_contended",
+    }
+)
 
 
 def _project(tmp_path: Path) -> Path:
@@ -1250,6 +1298,31 @@ def test_pinned_model_schema_mismatch_refuses_before_recovery(
         (p.relative_to(change), p.read_bytes()) for p in (change / "inspect").rglob("*") if p.is_file()
     )
     assert inspect_after == inspect_before
+
+
+def test_design_named_cut_ids_are_wired_in_worker() -> None:
+    """Every design §12.1 cut ID has an install branch or revision hook in the worker."""
+    import inspect
+
+    from tests.integration import _graph_fault_worker as worker
+
+    source = inspect.getsource(worker)
+    prefix_ok = (
+        "fixer_approval_",
+        "allocate_",
+        "heal_record_",
+        "graph_resumed_ordinal_",
+    )
+    missing = []
+    for cut in sorted(DESIGN_NAMED_CUT_IDS):
+        if cut in source:
+            continue
+        if any(cut.startswith(prefix) for prefix in prefix_ok) and any(
+            prefix in source for prefix in prefix_ok if cut.startswith(prefix)
+        ):
+            continue
+        missing.append(cut)
+    assert missing == []
 
 
 def test_legacy_commit_safety_reason_is_stable_export() -> None:

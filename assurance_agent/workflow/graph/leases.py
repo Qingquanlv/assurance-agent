@@ -123,11 +123,30 @@ def _parse_ts(value: str) -> datetime:
     return parsed
 
 
+def parent_task_has_child_invocation(
+    change_dir: Path,
+    *,
+    parent_invocation_id: str,
+    parent_task_id: str,
+) -> bool:
+    """True when a child graph invocation was already started for this wrapper task."""
+    for raw in read_events_strict(change_dir):
+        if raw.get("type") != "graph_invocation_started":
+            continue
+        if (
+            raw.get("parent_invocation_id") == parent_invocation_id
+            and raw.get("parent_task_id") == parent_task_id
+        ):
+            return True
+    return False
+
+
 def next_attempt_decision(
     *,
     task: ExecutableTask,
     projection: GraphProjection,
     now: datetime,
+    allow_graph_wrapper_child_resume: bool = False,
 ) -> AttemptDecision:
     """对一个 pending/failed/abandoned task 决定下一次 attempt。
 
@@ -135,6 +154,11 @@ def next_attempt_decision(
     ``retryable_errors`` 中才可重试，否则立即 ``failed``；``max_attempts``
     包含第一次 attempt，用尽即 ``exhausted``（普通 resume 绝不重置）；
     已持久化的 ``next_retry_at`` 未到则 ``wait``，绝不因进程重启提前重试。
+
+    When a ``graph:`` wrapper was abandoned after process death but already has a
+    child invocation, ``allow_graph_wrapper_child_resume`` permits one more
+    attempt so ``run_child`` can resume that child without inventing a duplicate
+    (design §12.1). Ordinary non-wrapper tasks remain hard-exhausted.
     """
     proj = projection.tasks.get(task.task_id)
     if proj is None or proj.status == "pending":
@@ -156,6 +180,8 @@ def next_attempt_decision(
     if proj.status == "abandoned":
         # abandoned 消耗一次 attempt（started 已计入 attempts_used），只看剩余 budget。
         if proj.attempts_used >= task.retry_policy.max_attempts:
+            if allow_graph_wrapper_child_resume and (task.target or "").startswith("graph:"):
+                return AttemptDecision(kind="start", attempt_number=proj.attempts_used + 1)
             return AttemptDecision(
                 kind="exhausted",
                 reason=(
@@ -619,6 +645,7 @@ __all__ = [
     "heartbeat_while",
     "new_lease",
     "next_attempt_decision",
+    "parent_task_has_child_invocation",
     "recover_running_tasks",
     "retry_delay_seconds",
 ]
