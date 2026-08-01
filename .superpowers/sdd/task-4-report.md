@@ -17,9 +17,12 @@ Branch tip at start of fix pass: `8541d36`. Edit + test only (no commit).
   - `crash_after_started`: started event keeps a loadable snapshot; abandon + retry uses attempt 2.
   - Capture-time wrong-tree / wrong-review rejection.
   - Empty `matched_claims` schema reject.
-  - Closed inventory: plan-fixer skills + declared-only agent surface modules must contain zero `events.jsonl` references (text + AST string check).
-- `assurance_agent/_resources/skills/aa-api-plan-fixer/SKILL.md` and `aa-e2e-plan-fixer/SKILL.md` — mode/source-review authority via typed Runtime Context; removed `events.jsonl` reads.
+  - Closed inventory: dormant Runtime Context code surface only (`task_inputs.py`, `agent_api.py`, `handlers/agent.py`) must contain zero `events.jsonl` references (text + AST string check). Packaged plan-fixer `SKILL.md` files are deferred to Task 15.
 - `assurance_agent/workflow/graph/task_inputs.py` — require non-empty `matched_claims`; capture-time `source_review_sha256` byte check against workspace review file.
+
+### P1 — Revert premature plan-fixer skill flip
+- Restored `aa-api-plan-fixer/SKILL.md` and `aa-e2e-plan-fixer/SKILL.md` to `8541d36` text (events.jsonl mode detection retained until Task 15 injects Runtime Context).
+- Do not require packaged skills to drop `events.jsonl` while `AgentHandler` still injects `None`.
 
 ### Left alone (per instructions)
 - `benchmark/vue-fastapi-admin/benchmark/cursor-loop-helpers.sh`
@@ -35,26 +38,21 @@ Branch tip at start of fix pass: `8541d36`. Edit + test only (no commit).
 
 ## Dark-ship status
 
-Unchanged from prior Task 4 landing: no packaged contract flipped to `declared_only`; Runtime Context injection remains dormant until Task 15; snapshot binding activates only for `read_isolation: declared_only`.
+Unchanged from prior Task 4 landing: no packaged contract flipped to `declared_only`; Runtime Context injection remains dormant until Task 15; snapshot binding activates only for `read_isolation: declared_only`. Plan-fixer skills keep ledger-based mode detection until Task 15.
 
 ## Verify commands / results
 
 ```bash
 uv run pytest -q \
   tests/unit/workflow/graph/test_task_input_snapshot.py \
-  tests/unit/workflow/graph/test_workspace.py \
-  tests/unit/workflow/graph/test_read_isolation.py \
-  tests/unit/workflow/graph/test_scheduler.py \
-  tests/unit/workflow/graph/test_checkpoint.py \
-  tests/unit/workflow/graph/test_task_runner.py \
-  tests/integration/test_trace_recovery_workflows.py
-# → 233 passed
+  tests/unit/workflow/graph/test_scheduler.py
+# → 47 passed
 
-uv run ruff check assurance_agent/workflow/core/graph_events.py assurance_agent/workflow/graph tests/unit/workflow/graph
-# → All checks passed
+uv run pytest -q -k 'plan_fixer or skill_parity or runtime_context' --maxfail=5
+# → 5 passed, 4118 deselected
 
-uv run pyright
-# → 0 errors (after typing fixes)
+# Full Task 4 Step 9 suite (prior pass):
+# 233 passed; ruff/pyright clean
 ```
 
 ## Not committed

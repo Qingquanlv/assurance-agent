@@ -627,12 +627,10 @@ def test_ast_consumer_set_guards_for_snapshot_and_runtime_context_fields() -> No
             assert not missing, f"{field} missing AST consumers in {rel}: {sorted(missing)}"
 
 
-def test_plan_fixer_and_declared_only_paths_have_zero_events_jsonl_references() -> None:
-    """Closed inventory: typed Runtime Context must not keep an events.jsonl escape hatch."""
+def test_dormant_runtime_context_surface_has_zero_events_jsonl_references() -> None:
+    """Closed inventory for Task 4 dormant code only; skill SKILL.md flip waits for Task 15."""
     repo = Path(__file__).resolve().parents[4]
     closed_paths = (
-        "assurance_agent/_resources/skills/aa-api-plan-fixer/SKILL.md",
-        "assurance_agent/_resources/skills/aa-e2e-plan-fixer/SKILL.md",
         "assurance_agent/workflow/graph/task_inputs.py",
         "assurance_agent/workflow/graph/agent_api.py",
         "assurance_agent/workflow/graph/handlers/agent.py",
@@ -642,15 +640,14 @@ def test_plan_fixer_and_declared_only_paths_have_zero_events_jsonl_references() 
         path = repo / rel
         text = path.read_text(encoding="utf-8")
         assert needle not in text, f"{rel} must not reference {needle}"
-        if path.suffix == ".py":
-            tree = ast.parse(text, filename=str(path))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                    assert needle not in node.value, f"{rel} AST string references {needle}"
-                if isinstance(node, ast.JoinedStr):
-                    for part in node.values:
-                        if isinstance(part, ast.Constant) and isinstance(part.value, str):
-                            assert needle not in part.value, f"{rel} f-string references {needle}"
+        tree = ast.parse(text, filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                assert needle not in node.value, f"{rel} AST string references {needle}"
+            if isinstance(node, ast.JoinedStr):
+                for part in node.values:
+                    if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                        assert needle not in part.value, f"{rel} f-string references {needle}"
 
 
 def test_capture_rejects_wrong_tree_or_review_bytes(tmp_path: Path) -> None:
