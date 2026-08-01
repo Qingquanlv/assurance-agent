@@ -134,6 +134,35 @@ def test_structural_skill_contract_reader_rejects_duplicates_and_unknown_groups(
     with pytest.raises(SkillContractParseError, match="malformed path row"):
         parse_skill_contract_sections(path)
 
+    path.write_text(
+        """## Inputs
+
+### required
+
+- `change:plans/api-plan.md`
+
+## Unexpected Interrupt
+
+### required
+
+- `change:plans/x.md`
+
+## Outputs
+
+### required
+
+- `change:codegen/api-codegen-summary.md`
+
+## State Authority
+
+- `owner: graph_ledger`
+- `agent_state_writes: forbidden`
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(SkillContractParseError, match="interrupted by unexpected heading"):
+        parse_skill_contract_sections(path)
+
 
 @pytest.mark.parametrize(
     ("layer", "statuses"),

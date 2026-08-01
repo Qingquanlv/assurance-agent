@@ -14,6 +14,7 @@ from assurance_agent.verification.profiles import get_layer_assurance_profile
 from tests.helpers_assurance_contract import (
     BoundaryObservation,
     CanonicalAssuranceBundle,
+    boundary_map,
     check_context_for_bundle,
     load_canonical_assurance_bundle,
     non_owner_boundaries_equal,
@@ -206,7 +207,7 @@ def test_missing_capability_owned_by_mechanical(tmp_path: Path) -> None:
     assert non_owner_boundaries_equal(mutated, canonical, owner="mechanical")
 
 
-def test_wrong_summary_manifest_layer_owned_by_runtime_ingest(tmp_path: Path) -> None:
+def test_wrong_summary_manifest_layer_owned_by_codegen_workspace(tmp_path: Path) -> None:
     bundle, canonical = _canonical(tmp_path, "api")
     mutated = observe_assurance_contract(
         bundle,
@@ -214,10 +215,12 @@ def test_wrong_summary_manifest_layer_owned_by_runtime_ingest(tmp_path: Path) ->
         manifest_layer="e2e",
     )
     owner = _rejecting(mutated)
-    assert owner.boundary == "runtime_ingest"
+    assert owner.boundary == "codegen_workspace"
     assert owner.code == "wrong_summary_manifest_layer"
     assert owner.locator == "change:codegen/api-generated-files.json"
-    assert non_owner_boundaries_equal(mutated, canonical, owner="runtime_ingest")
+    # runtime_ingest must remain the earlier ok status — single status per boundary.
+    assert boundary_map(mutated)["runtime_ingest"].status == "ok"
+    assert non_owner_boundaries_equal(mutated, canonical, owner="codegen_workspace")
 
 
 def test_empty_dynamic_layer_emits_four_layer_not_applicable_entries() -> None:

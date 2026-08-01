@@ -933,28 +933,8 @@ def observe_assurance_contract(
             code = "forbidden_write"
         elif "layer" in detail.casefold() or "validation error" in detail.casefold():
             code = "wrong_summary_manifest_layer"
-            boundary = "runtime_ingest"
+            boundary = "codegen_workspace"
             locator = gf.manifest_path
-            boundaries.append(
-                BoundaryObservation(
-                    boundary=boundary,
-                    status="reject",
-                    code=code,
-                    locator=locator,
-                    detail=detail,
-                )
-            )
-            return _rejected_observation(
-                working,
-                boundaries,
-                authoring_review=authoring,
-                frozen_review=frozen_review,
-                applicability=applicability,
-                checks=checks,
-                plan_gate_verdict=plan_report.verdict.value,
-                codegen_precondition_verdict=precheck_report.verdict.value,
-                visible_codegen_inputs=tuple(visible),
-            )
         boundaries.append(
             BoundaryObservation(
                 boundary=boundary,
