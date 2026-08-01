@@ -134,10 +134,16 @@ class OpenCodeAdapter:
         *,
         directory: str | None = None,
     ) -> httpx.Response:
+        # When ``directory`` is provided (graph invoke / attempt workspace), never
+        # fall back to the adapter host/SUT root. Omitting it keeps v1 ``run_phase``
+        # on ``self._directory``.
+        bound = self._directory if directory is None else directory
+        if not bound:
+            raise _OpenCodeCallError("internal", "opencode directory is required")
         return self._client.request(
             method,
             f"{self._base}{path}",
-            params={"directory": directory if directory is not None else self._directory},
+            params={"directory": bound},
             json=json,
             headers=self._headers,
         )
@@ -232,7 +238,12 @@ class OpenCodeAdapter:
         return PhaseResult(ok=True, output="")
 
     def invoke(self, request: AgentRequest) -> AgentResult:
-        """graph AgentInvoker：每个请求都以 task 私有 workspace root 为 directory。"""
+        """graph AgentInvoker：每个请求都以 task 私有 workspace root 为 directory。
+
+        Create, prompt, every status poll, and reconnect (parent session reuse)
+        bind ``?directory=`` to ``request.workspace_root`` only — never the host
+        SUT root, change root, or a prior attempt directory held on the adapter.
+        """
         directory = str(request.workspace_root)
         session_id: str | None = None
         try:
