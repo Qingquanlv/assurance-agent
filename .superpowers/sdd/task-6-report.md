@@ -4,7 +4,7 @@
 
 **Resolution:** B (`.superpowers/sdd/task-6-resolution.md`)  
 **Worktree tip at start of this pass:** `c7cb27a`  
-Edit + test only (no git add/commit). Cursor-loop-helpers left alone. No `FixerAuthority`.
+Edit + test only (no git add/commit). Cursor-loop left alone. No `FixerAuthority`.
 
 ## Scope applied
 
@@ -19,7 +19,7 @@ Edit + test only (no git add/commit). Cursor-loop-helpers left alone. No `FixerA
 | Scheduler hook | After freeze, before `task_attempt_succeeded`; no-commit on `invalid_output` |
 | Receipt fold | Optional when no validator; **required** when started event names a validator |
 
-## Fail-closed fixes (this pass)
+## Fail-closed fixes
 
 | Gap | Fix |
 |-----|-----|
@@ -27,7 +27,16 @@ Edit + test only (no git add/commit). Cursor-loop-helpers left alone. No `FixerA
 | P2 plan live FS fallback | `load_plan_text_from_snapshot` — snapshot miss → `CandidateValidationError` / `invalid_output` |
 | P2 malformed case JSON/YAML | Parse failures → `CandidateValidationError` (scheduler settles `invalid_output`) |
 | P2 fold without receipt | Named `precommit_validator` + success without receipt → `LedgerIntegrityError`; CAS/identity verify on project |
+| P1 interrupt success without receipt | Same-ns interrupt runs `_run_precommit_if_needed` before success; receipt on event or `invalid_output` (no bare success). Nested bubbles still skip freeze. |
 | Step 2 mutations | summary-only, omit write, wrong `case_ids` covered |
+
+### Interrupt approach chosen
+
+**Prefer precommit-before-interrupt-success** (option 1): same-namespace interrupt still appends `task_attempt_succeeded` (resume routing), so a named validator makes that event commit-shaped. Scheduler now:
+
+1. Freezes same-ns interrupt write-sets (nested `checkpoint_ns != task.checkpoint_ns` still skip freeze).
+2. Runs `_run_precommit_if_needed` before appending interrupt success.
+3. Writes `candidate_validation_receipt_id` on success, or settles `invalid_output` without `task_attempt_succeeded` / `graph_interrupted` when validation cannot pass.
 
 ## Deferred to Task 8
 
@@ -44,9 +53,9 @@ Edit + test only (no git add/commit). Cursor-loop-helpers left alone. No `FixerA
 - `tests/unit/workflow/graph/test_precommit_validation.py`
 - `tests/unit/verification/test_generated_entries.py`
 
-**Modified (this pass)**
+**Modified**
 - `assurance_agent/workflow/graph/precommit.py` — snapshot loaders + `bind_receipt_to_success_event`
-- `assurance_agent/workflow/graph/scheduler.py` — use snapshot loaders; stamp `precommit_validator` on started
+- `assurance_agent/workflow/graph/scheduler.py` — snapshot loaders; stamp validator; interrupt precommit + same-ns freeze
 - `assurance_agent/workflow/core/graph_events.py` / `models.py` — `precommit_validator` on started / task projection
 - `assurance_agent/workflow/graph/checkpoint.py` — required receipt fold + CAS bind verify
 - `tests/unit/workflow/graph/test_precommit_validation.py`
@@ -69,7 +78,7 @@ uv run pytest -q \
   tests/unit/workflow/graph/test_scheduler.py \
   tests/unit/workflow/graph/test_checkpoint.py \
   tests/unit/workflow/graph/test_ingest.py
-→ 188 passed
+→ 190 passed
 
 uv run ruff check … → All checks passed
 uv run pyright → 0 errors, 0 warnings, 0 informations
@@ -78,5 +87,5 @@ uv run pyright → 0 errors, 0 warnings, 0 informations
 ## Notes for integrator
 
 - Do not stage `benchmark/.../cursor-loop-helpers.sh` or its test.
-- Suggested commit message: `fix(graph): fail-closed precommit plan/case snapshot and receipt fold`
+- Suggested commit message: `fix(graph): fail-closed precommit snapshot, receipt fold, and interrupt success`
 - Task 8 should flip `codegen_fix_candidate/v1` from load-reject to implemented without renaming the ID.

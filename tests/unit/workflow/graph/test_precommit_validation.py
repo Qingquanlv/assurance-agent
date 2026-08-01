@@ -35,6 +35,7 @@ from assurance_agent.workflow.graph.contracts import (
 from assurance_agent.workflow.graph.models import (
     ExecutableTask,
     GraphProjection,
+    InterruptProjection,
     PlanResult,
     RuntimeContext,
     TaskProjection,
@@ -1016,6 +1017,220 @@ def test_contract_without_validator_leaves_no_receipt(tmp_path: Path) -> None:
     ]
     assert len(success_events) == 1
     assert success_events[0].get("candidate_validation_receipt_id") is None
+
+
+def test_scheduler_interrupt_with_named_validator_remains_foldable(tmp_path: Path) -> None:
+    """Interrupt still emits task_attempt_succeeded; named validators need a receipt."""
+    project = _make_project(tmp_path)
+    change = project / "qa" / "changes" / "CH-1"
+    (change / "plans" / "api-codegen-plan.md").write_text(_api_plan_text(), encoding="utf-8")
+    (change / "cases" / "api.yaml").write_text(_api_cases_yaml(), encoding="utf-8")
+    store = TreeStore(change)
+    tree_id = store.capture(project)
+    _seed_invocation(change, tree_id)
+    target = "operation:test-api-codegen"
+    outputs = [
+        "change:codegen/api-codegen-summary.md",
+        "change:codegen/api-generated-files.json",
+    ]
+
+    def handler(task, workspace, context) -> TaskResult:
+        body = b"def test_api_001():\n    assert True\n"
+        out = workspace.project_root / "tests" / "api" / "test_new.py"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(body)
+        (workspace.change_dir / "codegen").mkdir(parents=True, exist_ok=True)
+        (workspace.change_dir / "codegen" / "api-codegen-summary.md").write_bytes(b"# s\n")
+        existing_digest = hashlib.sha256(
+            (project / "tests" / "api" / "existing.py").read_bytes()
+        ).hexdigest()
+        manifest = ApiGeneratedFilesV1.model_validate(
+            {
+                "schema_version": "1",
+                "change_id": "CH-1",
+                "layer": "api",
+                "files": [
+                    {
+                        "repo_path": "tests/api/existing.py",
+                        "disposition": "reused",
+                        "role": "test_entry",
+                        "case_ids": ["API_REUSE"],
+                        "content_sha256": f"sha256:{existing_digest}",
+                    },
+                    {
+                        "repo_path": "tests/api/test_new.py",
+                        "disposition": "generated",
+                        "role": "test_entry",
+                        "case_ids": ["API_001"],
+                        "content_sha256": "sha256:" + hashlib.sha256(body).hexdigest(),
+                    },
+                ],
+            }
+        )
+        (workspace.change_dir / "codegen" / "api-generated-files.json").write_bytes(
+            canonical_json_bytes(manifest)
+        )
+        return TaskResult(
+            status="interrupted",
+            interrupt=InterruptProjection(
+                interrupt_id="ir-precommit-1",
+                checkpoint_ns=_INV,
+                node_id="codegen",
+                checkpoint="human-review",
+                actions=("approve", "stop"),
+                audited_reads_sha256={"change:codegen/api-codegen-summary.md": "a" * 64},
+            ),
+        )
+
+    task = _task("codegen-task", target, outputs)
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=_ScriptedRunner(handler),
+        contracts=ExecutionContractCatalog(
+            contracts={
+                target: ExecutionContract(
+                    target=target,
+                    handler="operation",
+                    reads=_CASE_READS,
+                    writes=("change:codegen/**", "repo:tests/api/**"),
+                    authorization_writes=("change:codegen/**", "repo:tests/api/**"),
+                    read_isolation="declared_only",
+                    precommit_validator=GENERATED_FILES_CANDIDATE_V1,
+                    retryable_errors=("invalid_output",),
+                )
+            }
+        ),
+    )
+    result = scheduler.execute(
+        PlanResult(superstep_id="ss-1", checkpoint_id="bootstrap", tasks=(task,)),
+        project_invocation(change, _INV).model_copy(
+            update={"current_tree_id": tree_id, "root_tree_id": tree_id, "graph_digest": _DIGEST}
+        ),
+        RuntimeContext(
+            project_root=project,
+            repo_root=project,
+            change_dir=change,
+            change_id="CH-1",
+        ),
+    )
+    assert result.interrupted == (task.task_id,)
+    assert result.succeeded == ()
+    assert result.failed == ()
+    events = read_events_strict(change)
+    assert any(event.get("type") == "graph_interrupted" for event in events)
+    success_events = [event for event in events if event.get("type") == "task_attempt_succeeded"]
+    assert len(success_events) == 1
+    receipt_id = success_events[0].get("candidate_validation_receipt_id")
+    assert isinstance(receipt_id, str) and receipt_id
+    projection = fold_invocation_events(_INV, events)
+    assert projection.tasks[task.task_id].status == "succeeded"
+    assert projection.tasks[task.task_id].precommit_validator == GENERATED_FILES_CANDIDATE_V1
+    assert projection.tasks[task.task_id].candidate_validation_receipt_id == receipt_id
+    assert "ir-precommit-1" in projection.interrupts
+    _verify_candidate_receipts_in_store(change, projection)
+
+
+def test_scheduler_interrupt_with_named_validator_rejects_invalid_candidate(tmp_path: Path) -> None:
+    """Validator-bearing interrupt that cannot pass precommit must not write bare success."""
+    project = _make_project(tmp_path)
+    change = project / "qa" / "changes" / "CH-1"
+    (change / "plans" / "api-codegen-plan.md").write_text(_api_plan_text(), encoding="utf-8")
+    (change / "cases" / "api.yaml").write_text(_api_cases_yaml(), encoding="utf-8")
+    store = TreeStore(change)
+    tree_id = store.capture(project)
+    _seed_invocation(change, tree_id)
+    target = "operation:test-api-codegen"
+    outputs = [
+        "change:codegen/api-codegen-summary.md",
+        "change:codegen/api-generated-files.json",
+    ]
+
+    def handler(task, workspace, context) -> TaskResult:
+        body = b"def test_api_001():\n    assert True\n"
+        out = workspace.project_root / "tests" / "api" / "test_new.py"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(body)
+        (workspace.change_dir / "codegen").mkdir(parents=True, exist_ok=True)
+        (workspace.change_dir / "codegen" / "api-codegen-summary.md").write_bytes(b"# s\n")
+        # Shape-valid manifest that omits the generated write → precommit invalid_output.
+        manifest = ApiGeneratedFilesV1.model_validate(
+            {
+                "schema_version": "1",
+                "change_id": "CH-1",
+                "layer": "api",
+                "files": [
+                    {
+                        "repo_path": "tests/api/existing.py",
+                        "disposition": "reused",
+                        "role": "test_entry",
+                        "case_ids": ["API_REUSE"],
+                        "content_sha256": "sha256:"
+                        + hashlib.sha256(
+                            (project / "tests" / "api" / "existing.py").read_bytes()
+                        ).hexdigest(),
+                    }
+                ],
+            }
+        )
+        (workspace.change_dir / "codegen" / "api-generated-files.json").write_bytes(
+            canonical_json_bytes(manifest)
+        )
+        return TaskResult(
+            status="interrupted",
+            interrupt=InterruptProjection(
+                interrupt_id="ir-precommit-bad",
+                checkpoint_ns=_INV,
+                node_id="codegen",
+                checkpoint="human-review",
+                actions=("approve", "stop"),
+                audited_reads_sha256={"change:codegen/api-codegen-summary.md": "b" * 64},
+            ),
+        )
+
+    task = _task("codegen-task", target, outputs)
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=_ScriptedRunner(handler),
+        contracts=ExecutionContractCatalog(
+            contracts={
+                target: ExecutionContract(
+                    target=target,
+                    handler="operation",
+                    reads=_CASE_READS,
+                    writes=("change:codegen/**", "repo:tests/api/**"),
+                    authorization_writes=("change:codegen/**", "repo:tests/api/**"),
+                    read_isolation="declared_only",
+                    precommit_validator=GENERATED_FILES_CANDIDATE_V1,
+                    retryable_errors=("invalid_output",),
+                )
+            }
+        ),
+    )
+    result = scheduler.execute(
+        PlanResult(superstep_id="ss-1", checkpoint_id="bootstrap", tasks=(task,)),
+        project_invocation(change, _INV).model_copy(
+            update={"current_tree_id": tree_id, "root_tree_id": tree_id, "graph_digest": _DIGEST}
+        ),
+        RuntimeContext(
+            project_root=project,
+            repo_root=project,
+            change_dir=change,
+            change_id="CH-1",
+        ),
+    )
+    assert result.interrupted == ()
+    assert result.failed == (task.task_id,)
+    events = read_events_strict(change)
+    assert not any(event.get("type") == "task_attempt_succeeded" for event in events)
+    assert not any(event.get("type") == "graph_interrupted" for event in events)
+    failed = [event for event in events if event.get("type") == "task_attempt_failed"]
+    assert len(failed) == 1
+    assert failed[0]["error_kind"] == "invalid_output"
+    fold_invocation_events(_INV, events)
 
 
 def test_scheduler_missing_snapshot_plan_is_invalid_output_not_live_fs(tmp_path: Path) -> None:

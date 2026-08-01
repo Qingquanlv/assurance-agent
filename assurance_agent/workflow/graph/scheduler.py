@@ -1284,8 +1284,34 @@ class Scheduler:
             )
 
         if result.status == "interrupted":
+            # Same-ns interrupt still appends task_attempt_succeeded so resume can
+            # route from a settled attempt. When the contract names a precommit
+            # validator that success is commit-shaped and must carry a receipt —
+            # otherwise fold rejects the ledger as unfoldable.
+            receipt_id: str | None = None
             if result.interrupt is not None:
+                try:
+                    receipt_id = self._run_precommit_if_needed(
+                        prepared=prepared,
+                        projection=projection,
+                        context=context,
+                        write_set_id=write_set_id,
+                    )
+                except CandidateValidationError as exc:
+                    return self._persist_failure(
+                        prepared=prepared,
+                        plan=plan,
+                        context=context,
+                        error_kind="invalid_output",
+                        message=str(exc),
+                    )
                 schema_version = self._checkpoints.project(task.invocation_id).event_schema_version
+                outputs = dict(result.outputs_sha256)
+                if write_set_id is not None and not outputs:
+                    try:
+                        outputs = dict(self._objects.load_write_set(write_set_id).outputs_sha256)
+                    except WorkspaceError:
+                        outputs = {}
                 with transaction(context.change_dir) as txn:
                     txn.append_strict(
                         TaskAttemptSucceededEvent(
@@ -1296,13 +1322,14 @@ class Scheduler:
                             task_id=task.task_id,
                             attempt_id=prepared.attempt_id,
                             write_set_id=write_set_id,
-                            outputs_sha256=dict(result.outputs_sha256),
+                            outputs_sha256=outputs,
                             frozen_outputs=dict(result.frozen_outputs),
                             gate_report=result.gate_report,
                             state_updates=dict(result.state_updates),
                             value=result.value,
                             input_snapshot_id=prepared.input_snapshot_id,
                             runtime_context_sha256=prepared.runtime_context_sha256,
+                            candidate_validation_receipt_id=receipt_id,
                         )
                     )
                     txn.append_strict(
@@ -1313,7 +1340,12 @@ class Scheduler:
                             checkpoint_ns=result.interrupt.checkpoint_ns,
                         )
                     )
-            return _SettledAttempt(task_id=task.task_id, status="interrupted", write_set_id=write_set_id)
+            return _SettledAttempt(
+                task_id=task.task_id,
+                status="interrupted",
+                write_set_id=write_set_id,
+                candidate_validation_receipt_id=receipt_id,
+            )
 
         try:
             receipt_id = self._run_precommit_if_needed(
@@ -1354,8 +1386,12 @@ class Scheduler:
         workspace: TaskWorkspace,
     ) -> str | None:
         if result.status == "interrupted" and result.write_set_id is None:
-            # Nested interrupts publish an audited view, not a partial task write-set.
-            return None
+            interrupt = result.interrupt
+            # Nested child bubbles publish an audited view, not a partial parent
+            # write-set. Same-namespace interrupts still freeze so a named
+            # precommit validator can bind a receipt to the success event.
+            if interrupt is not None and interrupt.checkpoint_ns != task.checkpoint_ns:
+                return None
         if result.write_set_id is not None:
             return result.write_set_id
         if self._is_side_effect_free(task):
