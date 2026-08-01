@@ -1033,6 +1033,7 @@ def test_candidate_validation_receipt_id_folds_optionally() -> None:
         [_started(), _planned(["t1"]), _begin("t1", "node-a"), _succeeded("t1", "ws-1")],
     )
     assert historical.tasks["t1"].candidate_validation_receipt_id is None
+    assert historical.tasks["t1"].precommit_validator is None
 
     with_receipt = dict(_succeeded("t1", "ws-1"))
     with_receipt["candidate_validation_receipt_id"] = "a" * 64
@@ -1040,4 +1041,23 @@ def test_candidate_validation_receipt_id_folds_optionally() -> None:
         "inv-1",
         [_started(), _planned(["t1"]), _begin("t1", "node-a"), with_receipt],
     )
+    assert projection.tasks["t1"].candidate_validation_receipt_id == "a" * 64
+
+
+def test_candidate_validation_receipt_required_when_validator_named() -> None:
+    started = dict(_begin("t1", "node-a"))
+    started["precommit_validator"] = "generated_files_candidate/v1"
+    with pytest.raises(LedgerIntegrityError, match="missing candidate_validation_receipt_id"):
+        fold_invocation_events(
+            "inv-1",
+            [_started(), _planned(["t1"]), started, _succeeded("t1", "ws-1")],
+        )
+
+    with_receipt = dict(_succeeded("t1", "ws-1"))
+    with_receipt["candidate_validation_receipt_id"] = "a" * 64
+    projection = fold_invocation_events(
+        "inv-1",
+        [_started(), _planned(["t1"]), started, with_receipt],
+    )
+    assert projection.tasks["t1"].precommit_validator == "generated_files_candidate/v1"
     assert projection.tasks["t1"].candidate_validation_receipt_id == "a" * 64

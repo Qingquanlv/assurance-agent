@@ -325,6 +325,7 @@ class TaskProjection(BaseModel):
     input_snapshot_id: str | None = None
     runtime_context_sha256: str | None = None
     candidate_validation_receipt_id: str | None = None
+    precommit_validator: str | None = None
     deferral_ordinal: int = 0
     latest_deferral_id: str | None = None
 

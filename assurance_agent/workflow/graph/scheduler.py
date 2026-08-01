@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import shutil
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -24,7 +23,6 @@ from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-import yaml
 from pydantic import BaseModel
 
 from assurance_agent.artifacts.canonical import canonical_json_bytes, sha256_bytes
@@ -94,8 +92,9 @@ from assurance_agent.workflow.graph.task_runner import NodeRunner
 from assurance_agent.workflow.graph.precommit import (
     CandidateValidationError,
     PrecommitValidationContext,
-    codegen_plan_logical_path,
     infer_assurance_layer,
+    load_case_documents_from_snapshot,
+    load_plan_text_from_snapshot,
     validate_candidate,
 )
 from assurance_agent.workflow.graph.task_inputs import (
@@ -1049,6 +1048,15 @@ class Scheduler:
         workspace: TaskWorkspace | None = None
         input_snapshot_id: str | None = None
         runtime_context_sha256: str | None = None
+        precommit_validator = (
+            None
+            if self._contracts is None
+            else (
+                None
+                if self._contracts.contracts.get(task.target) is None
+                else self._contracts.contracts[task.target].precommit_validator
+            )
+        )
         started_appended = False
         try:
             workspace = self._workspaces.create(
@@ -1106,6 +1114,7 @@ class Scheduler:
                         started_at=started_at.isoformat(),
                         input_snapshot_id=input_snapshot_id,
                         runtime_context_sha256=runtime_context_sha256,
+                        precommit_validator=precommit_validator,
                     )
                 )
             started_appended = True
@@ -1311,7 +1320,6 @@ class Scheduler:
                 prepared=prepared,
                 projection=projection,
                 context=context,
-                workspace=workspace,
                 write_set_id=write_set_id,
             )
         except CandidateValidationError as exc:
@@ -1363,7 +1371,6 @@ class Scheduler:
         prepared: _PreparedAttempt,
         projection: GraphProjection,
         context: RuntimeContext,
-        workspace: TaskWorkspace,
         write_set_id: str | None,
     ) -> str | None:
         """Run contract-selected validator after freeze; return receipt CAS id."""
@@ -1381,14 +1388,8 @@ class Scheduler:
         snapshot = load_task_input_snapshot(self._objects, prepared.input_snapshot_id)
         task_input = prepared.task.input if isinstance(prepared.task.input, Mapping) else None
         layer = infer_assurance_layer(prepared.task.target, task_input)
-        plan_text = _load_codegen_plan_text(
-            store=self._objects,
-            snapshot=snapshot,
-            workspace=workspace,
-            layer=layer,
-            context=context,
-        )
-        cases = _load_case_documents(workspace=workspace, context=context)
+        plan_text = load_plan_text_from_snapshot(self._objects, snapshot, layer=layer)
+        cases = load_case_documents_from_snapshot(self._objects, snapshot)
         root_invocation_id = projection.parent_invocation_id or projection.invocation_id
         policy_digest = projection.policy_digest or ("0" * 64)
         policy_object_id = policy_digest if len(policy_digest) == 64 else ("0" * 64)
@@ -1930,68 +1931,6 @@ def _unwritten_activation_events(
             continue
         pending.append(event)
     return tuple(pending)
-
-
-def _load_codegen_plan_text(
-    *,
-    store: TreeStore,
-    snapshot: object,
-    workspace: TaskWorkspace,
-    layer: str,
-    context: RuntimeContext,
-) -> str:
-    from assurance_agent.workflow.graph.task_inputs import TaskInputSnapshotV1
-
-    assert isinstance(snapshot, TaskInputSnapshotV1)
-    logical = codegen_plan_logical_path(layer)
-    for entry in snapshot.entries:
-        if entry.kind != "file" or entry.sha256 is None:
-            continue
-        aliases = set(entry.logical_aliases)
-        if logical in aliases or any(
-            alias.startswith("change:plans/") and alias.endswith(f"{layer}-codegen-plan.md")
-            for alias in aliases
-        ):
-            digest = entry.sha256.removeprefix("sha256:")
-            return store.read_object(digest).decode("utf-8")
-    candidates = (
-        context.change_dir / "plans" / f"{layer}-codegen-plan.md",
-        workspace.change_dir / "plans" / f"{layer}-codegen-plan.md",
-    )
-    for plan_path in candidates:
-        try:
-            return plan_path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-    raise CandidateValidationError(f"missing codegen plan for layer {layer}: {logical}")
-
-
-def _load_case_documents(
-    *,
-    workspace: TaskWorkspace,
-    context: RuntimeContext,
-) -> list[dict[str, object]]:
-    roots = (context.change_dir / "cases", workspace.change_dir / "cases")
-    documents: list[dict[str, object]] = []
-    seen: set[Path] = set()
-    for root in roots:
-        if not root.is_dir():
-            continue
-        resolved = root.resolve()
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        for path in sorted(root.rglob("*")):
-            if not path.is_file() or path.suffix not in {".yaml", ".yml", ".json"}:
-                continue
-            raw = path.read_bytes()
-            if path.suffix == ".json":
-                data = json.loads(raw.decode("utf-8"))
-            else:
-                data = yaml.safe_load(raw.decode("utf-8"))
-            if isinstance(data, dict):
-                documents.append(data)
-    return documents
 
 
 __all__ = [

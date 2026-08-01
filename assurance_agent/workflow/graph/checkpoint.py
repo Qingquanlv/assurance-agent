@@ -964,6 +964,9 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                 lease_expires_at=event.lease_expires_at,
                 input_snapshot_id=event.input_snapshot_id,
                 runtime_context_sha256=event.runtime_context_sha256,
+                precommit_validator=event.precommit_validator
+                if event.precommit_validator is not None
+                else (prev.precommit_validator if prev else None),
                 deferral_ordinal=prev.deferral_ordinal if prev else 0,
                 latest_deferral_id=prev.latest_deferral_id if prev else None,
             )
@@ -988,6 +991,11 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                 raise LedgerIntegrityError(
                     f"task_attempt_succeeded candidate_validation_receipt_id mismatch for {event.task_id}"
                 )
+            if prev.precommit_validator is not None and event.candidate_validation_receipt_id is None:
+                raise LedgerIntegrityError(
+                    f"task_attempt_succeeded missing candidate_validation_receipt_id for "
+                    f"validator {prev.precommit_validator} on {event.task_id}"
+                )
             tasks[event.task_id] = prev.model_copy(
                 update={
                     "status": "succeeded",
@@ -1011,6 +1019,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                     "candidate_validation_receipt_id": event.candidate_validation_receipt_id
                     if event.candidate_validation_receipt_id is not None
                     else prev.candidate_validation_receipt_id,
+                    "precommit_validator": prev.precommit_validator,
                 }
             )
             generation.apply_task_outcome(event, tasks=tasks, fan_outs=fan_outs)
@@ -1273,7 +1282,58 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
 
 def project_invocation(change_dir: Path, invocation_id: str) -> GraphProjection:
     """从 strict ledger 重建指定 invocation 的投影（ledger 是唯一权威）。"""
-    return fold_invocation_events(invocation_id, read_events_strict(change_dir))
+    projection = fold_invocation_events(invocation_id, read_events_strict(change_dir))
+    _verify_candidate_receipts_in_store(change_dir, projection)
+    return projection
+
+
+def _verify_candidate_receipts_in_store(change_dir: Path, projection: GraphProjection) -> None:
+    """Fail closed when a named validator's receipt is missing or unbound in CAS."""
+    from assurance_agent.workflow.graph.precommit import (
+        CandidateValidationError,
+        bind_receipt_to_success_event,
+        load_candidate_receipt,
+    )
+    from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceError
+
+    required = [
+        task
+        for task in projection.tasks.values()
+        if task.status == "succeeded" and task.precommit_validator is not None
+    ]
+    if not required:
+        return
+    store = TreeStore(change_dir)
+    for task in required:
+        validator_id = task.precommit_validator
+        if validator_id is None:
+            continue
+        receipt_id = task.candidate_validation_receipt_id
+        if receipt_id is None:
+            raise LedgerIntegrityError(
+                f"committed task {task.task_id} missing candidate_validation_receipt_id "
+                f"for validator {validator_id}"
+            )
+        try:
+            receipt = load_candidate_receipt(store, receipt_id)
+        except (CandidateValidationError, WorkspaceError) as exc:
+            raise LedgerIntegrityError(
+                f"candidate receipt CAS verify failed for {task.task_id}: {exc}"
+            ) from exc
+        try:
+            bind_receipt_to_success_event(
+                receipt,
+                validator_id=validator_id,
+                invocation_id=projection.invocation_id,
+                task_id=task.task_id,
+                attempt_id=task.latest_attempt_id or "",
+                input_snapshot_id=task.input_snapshot_id,
+                write_set_id=task.write_set_id,
+            )
+        except CandidateValidationError as exc:
+            raise LedgerIntegrityError(
+                f"candidate receipt identity mismatch for {task.task_id}: {exc}"
+            ) from exc
 
 
 def project_workflow_state(projection: GraphProjection) -> WorkflowStateProjection:

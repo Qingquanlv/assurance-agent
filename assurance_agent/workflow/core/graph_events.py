@@ -122,6 +122,7 @@ class TaskAttemptStartedEvent(_GraphEvent):
     started_at: str
     input_snapshot_id: str | None = None
     runtime_context_sha256: str | None = None
+    precommit_validator: str | None = None
 
 
 class TaskAttemptSucceededEvent(_GraphEvent):

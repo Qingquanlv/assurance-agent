@@ -12,6 +12,7 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Literal
 
+import yaml
 from pydantic import field_validator, model_validator
 
 from assurance_agent.artifacts.canonical import canonical_json_bytes, sha256_bytes
@@ -335,6 +336,110 @@ def codegen_plan_logical_path(layer: str) -> str:
     return f"change:plans/{layer}-codegen-plan.md"
 
 
+def load_plan_text_from_snapshot(
+    store: TreeStore,
+    snapshot: TaskInputSnapshotV1,
+    *,
+    layer: str,
+) -> str:
+    """Load the layer codegen plan from the frozen input snapshot only."""
+    logical = codegen_plan_logical_path(layer)
+    for entry in snapshot.entries:
+        if entry.kind != "file" or entry.sha256 is None:
+            continue
+        aliases = set(entry.logical_aliases)
+        if logical in aliases or any(
+            alias.startswith("change:plans/") and alias.endswith(f"{layer}-codegen-plan.md")
+            for alias in aliases
+        ):
+            digest = entry.sha256.removeprefix("sha256:")
+            try:
+                return store.read_object(digest).decode("utf-8")
+            except (WorkspaceError, UnicodeDecodeError) as exc:
+                raise CandidateValidationError(
+                    f"codegen plan blob unreadable for layer {layer}: {logical}"
+                ) from exc
+    raise CandidateValidationError(
+        f"missing codegen plan in input snapshot for layer {layer}: {logical}"
+    )
+
+
+def load_case_documents_from_snapshot(
+    store: TreeStore,
+    snapshot: TaskInputSnapshotV1,
+) -> list[dict[str, object]]:
+    """Load case YAML/JSON documents from the frozen input snapshot only."""
+    documents: list[dict[str, object]] = []
+    seen_aliases: set[str] = set()
+    for entry in snapshot.entries:
+        if entry.kind != "file" or entry.sha256 is None:
+            continue
+        case_aliases = sorted(
+            alias
+            for alias in entry.logical_aliases
+            if alias.startswith("change:cases/")
+            and alias.endswith((".yaml", ".yml", ".json"))
+        )
+        if not case_aliases:
+            continue
+        for alias in case_aliases:
+            if alias in seen_aliases:
+                continue
+            seen_aliases.add(alias)
+        digest = entry.sha256.removeprefix("sha256:")
+        try:
+            raw = store.read_object(digest)
+        except WorkspaceError as exc:
+            raise CandidateValidationError(
+                f"case document blob missing from CAS: {case_aliases[0]}"
+            ) from exc
+        try:
+            text = raw.decode("utf-8")
+            if case_aliases[0].endswith(".json"):
+                data = json.loads(text)
+            else:
+                data = yaml.safe_load(text)
+        except (UnicodeDecodeError, json.JSONDecodeError, yaml.YAMLError) as exc:
+            raise CandidateValidationError(
+                f"malformed case document in input snapshot: {case_aliases[0]}"
+            ) from exc
+        if not isinstance(data, dict):
+            raise CandidateValidationError(
+                f"case document must be a mapping: {case_aliases[0]}"
+            )
+        documents.append(data)
+    if not documents:
+        raise CandidateValidationError(
+            "missing case documents in input snapshot under change:cases/**"
+        )
+    return documents
+
+
+def bind_receipt_to_success_event(
+    receipt: CandidateValidationReceiptV1,
+    *,
+    validator_id: str,
+    invocation_id: str,
+    task_id: str,
+    attempt_id: str,
+    input_snapshot_id: str | None,
+    write_set_id: str | None,
+) -> None:
+    """Fail closed when a folded receipt does not bind the success attempt."""
+    if receipt.validator_id != validator_id:
+        raise CandidateValidationError("receipt validator_id mismatch")
+    if receipt.invocation_id != invocation_id:
+        raise CandidateValidationError("receipt invocation_id mismatch")
+    if receipt.task_id != task_id:
+        raise CandidateValidationError("receipt task_id mismatch")
+    if receipt.attempt_id != attempt_id:
+        raise CandidateValidationError("receipt attempt_id mismatch")
+    if input_snapshot_id is not None and receipt.input_snapshot_id != input_snapshot_id:
+        raise CandidateValidationError("receipt input_snapshot_id mismatch")
+    if write_set_id is not None and receipt.write_set_id != write_set_id:
+        raise CandidateValidationError("receipt write_set_id mismatch")
+
+
 # ---------------------------------------------------------------------------
 # internals
 
@@ -605,9 +710,12 @@ __all__ = [
     "IMPLEMENTED_PRECOMMIT_VALIDATORS",
     "KNOWN_PRECOMMIT_VALIDATORS",
     "PrecommitValidationContext",
+    "bind_receipt_to_success_event",
     "codegen_plan_logical_path",
     "infer_assurance_layer",
     "load_candidate_receipt",
+    "load_case_documents_from_snapshot",
+    "load_plan_text_from_snapshot",
     "validate_candidate",
     "validate_precommit_validator_id",
     "validator_semantics_digest",
