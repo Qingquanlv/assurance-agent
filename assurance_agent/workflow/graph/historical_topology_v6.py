@@ -6,6 +6,7 @@ One-sided safety over the pinned finite domain using CFG dominance. Reports
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 from typing import Literal
 
@@ -19,12 +20,16 @@ from assurance_agent.workflow.graph.schema_v2 import GraphDef, WorkflowSchemaV2
 from assurance_agent.workflow.graph.topology_analysis import (
     build_cfg,
     dominates,
+    expressions_truth_equivalent,
     layer_selection_domain,
     paths_exist_avoiding,
 )
 from assurance_agent.workflow.orchestration.dsl import (
     BUILTIN_ARITY,
     Call,
+    Expr,
+    Member,
+    Ident,
     parse_expression,
     _walk,
 )
@@ -38,6 +43,9 @@ _FORBIDDEN_SELECTION_BUILTINS = frozenset({"node", "gate", "file_exists"})
 _REPLAYABLE_PLAN_BUILTINS = frozenset(
     {"plan_assurance_state", "capabilities_present", "check_failed", "defined", "len"}
 )
+_SELECTION_DOMAIN_PARAMS = frozenset({"test_types", "run_mode"})
+_API_E2E_LAYERS = frozenset({"api", "e2e"})
+_SPECIALTY_LAYERS = frozenset({"fuzz", "performance"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +119,7 @@ def classify_historical_layer_topology_v6(
     diagnostics.extend(_selection_safety_diagnostics(schema, roles))
     diagnostics.extend(_chain_diagnostics(schema, roles))
     diagnostics.extend(_bypass_diagnostics(schema, roles))
+    diagnostics.extend(_remediation_diagnostics(schema, roles))
     diagnostics.extend(_gate_diagnostics(schema, roles, topology_spec))
 
     status: WiringStatus = "wired" if not diagnostics else "partial"
@@ -172,10 +181,104 @@ def _selection_safety_diagnostics(
             errors.append(f"{locator}: disallowed builtin {call.callee!r}")
         elif call.callee not in BUILTIN_ARITY:
             errors.append(f"{locator}: unknown builtin {call.callee!r}")
-    run_modes = _enum_values(schema, "run_mode") or ("full", "codegen-only", "api-only", "e2e-only")
-    # Construct the closed finite domain; unevaluable selection is already partial above.
-    _ = layer_selection_domain(layers=list(LAYER_NAMES), run_modes=list(run_modes))
+    if errors:
+        return errors
+
+    referenced = _referenced_param_names(expr)
+    domain, domain_errors = _finite_selection_domain(schema, referenced, locator=locator)
+    errors.extend(domain_errors)
+    if errors or not domain:
+        return errors
+
+    # One-sided evaluability: every finite-domain assignment must yield a boolean.
+    allowed_builtins = frozenset(BUILTIN_ARITY) - _FORBIDDEN_SELECTION_BUILTINS
+    if not expressions_truth_equivalent(
+        when,
+        when,
+        domain,
+        allowed_params=frozenset(referenced),
+        allowed_builtins=allowed_builtins,
+    ):
+        errors.append(f"{locator}: unevaluable_selection_over_finite_domain")
     return errors
+
+
+def _referenced_param_names(expr: Expr) -> set[str]:
+    names: set[str] = set()
+    for node in _walk(expr):
+        if isinstance(node, Member) and isinstance(node.obj, Ident) and node.obj.name == "params":
+            names.add(node.prop)
+    return names
+
+
+def _finite_selection_domain(
+    schema: WorkflowSchemaV2,
+    referenced: set[str],
+    *,
+    locator: str,
+) -> tuple[tuple[dict[str, object], ...], list[str]]:
+    """Build the pinned finite assignment table for selection evaluation."""
+    errors: list[str] = []
+    if not referenced:
+        return ({},), errors
+
+    extra_domains: dict[str, tuple[object, ...]] = {}
+    for name in sorted(referenced - _SELECTION_DOMAIN_PARAMS):
+        finite = _finite_domain_for_param(schema, name)
+        if finite is None:
+            errors.append(f"{locator}: unbounded_param_domain param={name!r}")
+        else:
+            extra_domains[name] = finite
+    if errors:
+        return (), errors
+
+    uses_layer_domain = bool(referenced & _SELECTION_DOMAIN_PARAMS)
+    if uses_layer_domain:
+        if "run_mode" in referenced:
+            run_modes = _enum_values(schema, "run_mode")
+            if run_modes is None:
+                return (), [f"{locator}: unbounded_param_domain param='run_mode'"]
+        else:
+            run_modes = _enum_values(schema, "run_mode") or ("full",)
+        base = layer_selection_domain(layers=list(LAYER_NAMES), run_modes=list(run_modes))
+        if "test_types" not in referenced:
+            # Keep run_mode variation only.
+            seen: set[str] = set()
+            trimmed: list[dict[str, object]] = []
+            for assignment in base:
+                mode = str(assignment["run_mode"])
+                if mode in seen:
+                    continue
+                seen.add(mode)
+                trimmed.append({"run_mode": assignment["run_mode"]})
+            base = tuple(trimmed)
+    else:
+        base = ({},)
+
+    if not extra_domains:
+        return base, errors
+
+    expanded: list[dict[str, object]] = []
+    keys = sorted(extra_domains)
+    for assignment in base:
+        for values in itertools.product(*(extra_domains[key] for key in keys)):
+            merged = dict(assignment)
+            merged.update(dict(zip(keys, values, strict=True)))
+            expanded.append(merged)
+    return tuple(expanded), errors
+
+
+def _finite_domain_for_param(schema: WorkflowSchemaV2, name: str) -> tuple[object, ...] | None:
+    param = schema.params.get(name)
+    if param is None:
+        return None
+    if param.type == "bool":
+        return (True, False)
+    if param.type == "enum" and param.values is not None:
+        return tuple(param.values)
+    if param.values is not None:
+        return tuple(param.values)
+    return None
 
 
 def _enum_values(schema: WorkflowSchemaV2, name: str) -> tuple[str, ...] | None:
@@ -241,6 +344,46 @@ def _bypass_diagnostics(
             errors.append(
                 f"layer:{roles.layer}: direct edge from {edge.from_!r} to codegen bypasses precondition"
             )
+    return errors
+
+
+def _remediation_diagnostics(
+    schema: WorkflowSchemaV2,
+    roles: DiscoveredHistoricalLayerRoles,
+) -> list[str]:
+    """Require audited remediation returns that regenerate evidence they can change."""
+    errors: list[str] = []
+    cycle = schema.graphs.get(roles.cycle_graph_id)
+    if cycle is None:
+        return [f"layer:{roles.layer}: missing cycle graph for remediation checks"]
+
+    fixer_ids = [
+        node_id
+        for node_id, node in cycle.nodes.items()
+        if node.uses.startswith("skill:") and "fixer" in node.uses
+    ]
+    interrupts = [
+        node_id for node_id, node in cycle.nodes.items() if node.uses == "builtin:interrupt"
+    ]
+    for node_id in interrupts:
+        route = _route_from(cycle, node_id)
+        locator = f"layer:{roles.layer}:remediation:{node_id}"
+        if route is None or "fix_and_proceed" not in route.cases:
+            errors.append(f"{locator}: unaudited_remediation_return missing fix_and_proceed route")
+            continue
+        target = route.cases["fix_and_proceed"]
+        if target == roles.mechanical_node_id:
+            continue
+        if roles.layer in _SPECIALTY_LAYERS and target == roles.reviewer_node_id:
+            continue
+        if roles.layer in _API_E2E_LAYERS and fixer_ids and target in fixer_ids:
+            continue
+        if roles.layer in _API_E2E_LAYERS and not fixer_ids and target == roles.reviewer_node_id:
+            continue
+        errors.append(
+            f"{locator}: unaudited_remediation_return target={target!r} "
+            f"(expected mechanical/reviewer/fixer regeneration)"
+        )
     return errors
 
 

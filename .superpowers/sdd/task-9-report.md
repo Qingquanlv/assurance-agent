@@ -3,20 +3,24 @@
 ## Status: DONE
 
 **Plan:** `docs/superpowers/plans/2026-08-01-four-layer-assurance-verification.md` Task 9  
-**Worktree tip at start:** `2ca8c74`  
+**Worktree tip at start of fix pass:** `139c69c`  
 Edit + test only (no git add/commit). Cursor-loop helpers left alone.
 
-## What landed
+## Fix pass (P1 / P2)
 
-- `historical_roles.py`: one semantic discovery manifest (`DiscoveredHistoricalLayerRoles` / `DiscoveredHistoricalAssuranceRoles`), structured discovery issues, canonical digest; selection-only structural lineage for zero-marker layers
-- `historical_topology_v6.py`: v6 CFG/dominance/one-sided safety classifier (`wired | legacy_unwired | partial`); not a current compile gate
-- Frozen v4/v5 display classifiers moved behind `classify_pinned_layer_topology_v4/v5` without improvement; goldens assert `("legacy_v4_unbound", false)` / `("legacy_v5_unbound", false)`
-- `PinnedLayerTopology.semantics_id` / `semantics_bound`
-- `HistoricalCompileContext.historical_roles` required; `ResolvedPinnedDefinition` / `FrozenDefinitionBinding` carry the same manifest
-- `load_pinned_execution_definition` discovers once; selection / historical surface / bind / classify consume it (no name rediscovery)
-- `specialty_replay` removed second `evaluate_layer_selection` call
+| Priority | Item | Resolution |
+|----------|------|------------|
+| P1 | Finite-domain selection safety | `_selection_safety_diagnostics` builds the pinned finite assignment table, rejects `unbounded_param_domain`, and requires evaluability over that domain via `expressions_truth_equivalent`; unknown/forbidden builtins still fail first |
+| P1 | `missing_unique_role` fail-closed at load | `load_pinned_execution_definition` blocking set now includes `missing_unique_role` → `pinned_historical_roles_invalid` |
+| P2 | Unaudited remediation → partial | `_remediation_diagnostics` requires interrupt `fix_and_proceed` to regenerate via mechanical / reviewer / fixer; mismatch → `unaudited_remediation_return` partial |
 
-## Verify Step 7
+## What was already landed (committed @ 139c69c)
+
+- `historical_roles.py` / `historical_topology_v6.py`
+- Frozen v4/v5 display classifiers + `semantics_id` / `semantics_bound` goldens
+- Roles carriers on compile/pin/bind; specialty_replay no second selection rediscovery
+
+## Verify Step 7 (post-fix)
 
 ```text
 uv run pytest -q \
@@ -28,7 +32,7 @@ uv run pytest -q \
   tests/unit/workflow/graph/test_compiler.py \
   tests/unit/workflow/graph/test_packaged_schema_compiles.py \
   tests/unit/eval/test_specialty_replay.py
-→ 217 passed
+→ 220 passed
 
 uv run ruff check assurance_agent/workflow/graph/historical_roles.py \
   assurance_agent/workflow/graph/historical_topology_v6.py \
@@ -43,25 +47,18 @@ uv run pyright → 0 errors
 
 ## Files ready to stage (integrator owns commit)
 
-**Created**
-- `assurance_agent/workflow/graph/historical_roles.py`
+**Modified in fix pass**
 - `assurance_agent/workflow/graph/historical_topology_v6.py`
+- `assurance_agent/workflow/graph/definition_pinning.py`
 - `tests/unit/workflow/graph/test_historical_roles.py`
-- `tests/unit/eval/test_specialty_replay.py`
-
-**Modified**
-- `assurance_agent/workflow/graph/{definition_pinning,replay_schema,replay_binding,compiler}.py`
-- `assurance_agent/eval/specialty_replay.py`
-- `tests/unit/workflow/graph/test_{compiler,four_layer_replay,packaged_schema_compiles,replay_binding}.py`
 
 **Do not stage**
 - `benchmark/.../cursor-loop-helpers.sh`
 - `tests/unit/benchmark/test_cursor_loop_helpers.py`
 
-Suggested commit message: `refactor(graph): separate historical assurance semantics`
+Suggested commit message: `fix(graph): harden historical selection and remediation safety`
 
 ## Notes
 
-- Current `classify_pinned_layer_topology` remains the frozen v5 unbound display alias
-- Version dispatch in replay binding: v4→v4 classifier, v5→v5, v6+→v6 with discovered roles
-- Topology semantics manifest / event schema v6 root binding deferred to Tasks 10–11
+- Stable diagnostics: `unbounded_param_domain`, `unevaluable_selection_over_finite_domain`, `unaudited_remediation_return`
+- Zero-marker selection-only lineages still load; incomplete activated-cycle discovery with `missing_unique_role` does not

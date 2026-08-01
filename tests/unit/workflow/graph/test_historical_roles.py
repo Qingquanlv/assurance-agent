@@ -319,3 +319,86 @@ def test_v6_not_used_for_frozen_display_alias() -> None:
     schema = _schema()
     topo = classify_pinned_layer_topology(schema, _topology_spec("api"))
     assert (topo.semantics_id, topo.semantics_bound) == ("legacy_v5_unbound", False)
+
+
+def test_v6_unbounded_selection_param_is_partial() -> None:
+    schema = _schema()
+    assurance = schema.graphs["assurance"]
+    when = assurance.nodes["api"].when or ""
+    mutated_when = f"({when}) and params.retro_id == 'x'"
+    api = assurance.nodes["api"].model_copy(update={"when": mutated_when})
+    mutated = schema.model_copy(
+        update={
+            "graphs": {
+                **schema.graphs,
+                "assurance": assurance.model_copy(update={"nodes": {**assurance.nodes, "api": api}}),
+            }
+        }
+    )
+    roles = fixture_roles_from_schema(mutated)
+    topo = classify_pinned_layer_topology_v6(mutated, _topology_spec("api"), historical_roles=roles)
+    assert topo.status == "partial"
+    assert any("unbounded_param_domain" in item and "retro_id" in item for item in topo.diagnostics)
+
+
+def test_v6_unaudited_remediation_return_is_partial() -> None:
+    schema = _schema()
+    cycle = schema.graphs["api-plan-cycle"]
+    routes = [
+        route
+        if route.from_ != "knowledge-remediation"
+        else route.model_copy(update={"cases": {**route.cases, "fix_and_proceed": "review"}})
+        for route in cycle.routes
+    ]
+    mutated = schema.model_copy(
+        update={"graphs": {**schema.graphs, "api-plan-cycle": cycle.model_copy(update={"routes": routes})}}
+    )
+    roles = fixture_roles_from_schema(mutated)
+    topo = classify_pinned_layer_topology_v6(mutated, _topology_spec("api"), historical_roles=roles)
+    assert topo.status == "partial"
+    assert any("unaudited_remediation_return" in item for item in topo.diagnostics)
+
+
+def test_load_pinned_fails_closed_on_missing_unique_role(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from assurance_agent.workflow.graph.compiler import PinnedDefinitionRequest
+    from assurance_agent.workflow.graph.definition_pinning import (
+        PinnedDefinitionError,
+        load_pinned_execution_definition,
+    )
+    from assurance_agent.workflow.graph import historical_roles as roles_mod
+    from assurance_agent.workflow.graph.historical_roles import HistoricalRoleDiscoveryIssue
+    from tests.unit.workflow.graph.test_replay_binding import _build_fixture
+
+    fixture = _build_fixture(tmp_path, include_e2e=False)
+    request = PinnedDefinitionRequest(
+        graph_digest=fixture.compiled.digest,  # type: ignore[attr-defined]
+        ingest_catalog_digest=fixture.compiled.ingest_catalog_digest,  # type: ignore[attr-defined]
+        contract_digests=tuple(sorted(fixture.compiled.contract_digests.items())),  # type: ignore[attr-defined]
+        event_schema_version=4,
+        gate_semantics_digest=fixture.binding.gate_semantics_digest,  # type: ignore[attr-defined]
+        assurance_profile_digest=fixture.binding.assurance_profile_digest,  # type: ignore[attr-defined]
+    )
+    original = roles_mod.discover_historical_assurance_roles
+
+    def discover_with_missing_role(schema):  # type: ignore[no-untyped-def]
+        roles, issues = original(schema)
+        assert roles is not None
+        injected = HistoricalRoleDiscoveryIssue(
+            code="missing_unique_role",
+            layer="api",
+            owner="applicability",
+            locator="graph:api-plan-cycle",
+            detail="expected exactly one applicability, found 0",
+        )
+        return roles, (*issues, injected)
+
+    monkeypatch.setattr(
+        "assurance_agent.workflow.graph.definition_pinning.discover_historical_assurance_roles",
+        discover_with_missing_role,
+    )
+    with pytest.raises(PinnedDefinitionError) as raised:
+        load_pinned_execution_definition(fixture.change_dir, request)
+    assert raised.value.reason_code == "pinned_historical_roles_invalid"
+    assert "missing_unique_role" in raised.value.message

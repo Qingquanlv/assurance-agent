@@ -458,11 +458,18 @@ def load_pinned_execution_definition(
     if historical_roles is None:
         detail = "; ".join(f"{issue.code}:{issue.detail}" for issue in role_issues) or "discovery failed"
         raise PinnedDefinitionError("pinned_historical_roles_invalid", detail)
-    # Duplicate/ambiguous role issues fail closed at the discovery boundary.
+    # Ambiguous/incomplete role discovery fails closed at the load boundary.
     blocking = [
         issue
         for issue in role_issues
-        if issue.code in {"duplicate_role", "ambiguous_alias", "disconnected_lineage", "ambiguous_layer_binding"}
+        if issue.code
+        in {
+            "missing_unique_role",
+            "duplicate_role",
+            "ambiguous_alias",
+            "disconnected_lineage",
+            "ambiguous_layer_binding",
+        }
     ]
     if blocking:
         detail = "; ".join(f"{issue.code}:{issue.detail}" for issue in blocking)
