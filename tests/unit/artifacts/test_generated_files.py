@@ -97,9 +97,44 @@ def test_generated_files_require_prefixed_lowercase_sha256(digest: str) -> None:
 
 
 def test_generated_files_contracts_are_exact_and_unknown_layer_fails() -> None:
-    contract = get_generated_files_contract("performance")
-    assert contract.summary_path == "change:codegen/performance-codegen-summary.md"
-    assert contract.manifest_path == "change:codegen/performance-generated-files.json"
-    assert contract.private_test_root == "tests/perf"
+    expected = {
+        "api": (
+            "change:codegen/api-codegen-summary.md",
+            "change:codegen/api-generated-files.json",
+            "tests/api",
+            "api_generated_files/v1",
+        ),
+        "e2e": (
+            "change:codegen/e2e-codegen-summary.md",
+            "change:codegen/e2e-generated-files.json",
+            "tests/e2e",
+            "e2e_generated_files/v1",
+        ),
+        "fuzz": (
+            "change:codegen/fuzz-codegen-summary.md",
+            "change:codegen/fuzz-generated-files.json",
+            "tests/fuzz",
+            "fuzz_generated_files/v1",
+        ),
+        "performance": (
+            "change:codegen/performance-codegen-summary.md",
+            "change:codegen/performance-generated-files.json",
+            "tests/perf",
+            "performance_generated_files/v1",
+        ),
+    }
+    for layer, (summary, manifest, private_root, model_id) in expected.items():
+        contract = get_generated_files_contract(layer)
+        assert contract.summary_path == summary
+        assert contract.manifest_path == manifest
+        assert contract.private_test_root == private_root
+        assert contract.model_id == model_id
     with pytest.raises(ValueError):
         get_generated_files_contract("unit")
+
+
+def test_generated_files_reject_strict_coercion() -> None:
+    payload = valid_generated_files_payload()
+    payload["change_id"] = 123
+    with pytest.raises(ValidationError):
+        ApiGeneratedFilesV1.model_validate(payload)

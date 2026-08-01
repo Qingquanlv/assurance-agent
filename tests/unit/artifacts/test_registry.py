@@ -2,11 +2,22 @@ from assurance_agent.artifacts.registry import REGISTRY, match_artifact
 
 
 def test_dormant_generated_file_models_are_importable_without_runtime_registration() -> None:
-    from assurance_agent.artifacts.models import ApiGeneratedFilesV1, E2eGeneratedFilesV1
+    from assurance_agent.artifacts.models import (
+        ApiCodegenFixApplyIntentV1,
+        ApiGeneratedFilesV1,
+        E2eGeneratedFilesV1,
+        FixerProposalApprovalReceiptV1,
+        StrictWireModel,
+    )
 
+    assert issubclass(ApiGeneratedFilesV1, StrictWireModel)
+    assert issubclass(ApiCodegenFixApplyIntentV1, StrictWireModel)
+    assert issubclass(FixerProposalApprovalReceiptV1, StrictWireModel)
     assert ApiGeneratedFilesV1.__name__ == "ApiGeneratedFilesV1"
     assert E2eGeneratedFilesV1.__name__ == "E2eGeneratedFilesV1"
     assert match_artifact("codegen/api-generated-files.json") is None
+    assert match_artifact("healing/api-apply-intent.json") is None
+    assert match_artifact("healing/fixer-proposal-approval.json") is None
 
 
 def test_registry_covers_every_expected_artifact_type() -> None:

@@ -1,12 +1,12 @@
 import pytest
-from pydantic import ValidationError
+from pydantic import StrictBool, StrictInt, ValidationError
 
 from assurance_agent.artifacts.canonical import canonical_json_bytes
 from assurance_agent.artifacts.models import (
     ApiCodegenFixApplyIntentV1,
-    ApiCodegenFixerSafetyCheckV1,
     E2eCodegenFixApplyIntentV1,
     FixerProposalApprovalReceiptV1,
+    StrictWireModel,
 )
 
 
@@ -105,27 +105,21 @@ def test_approval_receipt_requires_canonical_nonempty_targets_and_paths() -> Non
     with pytest.raises(ValidationError):
         FixerProposalApprovalReceiptV1.model_validate(payload)
 
-
-def test_safety_wire_model_rejects_coerced_booleans_and_integers() -> None:
-    payload = {
-        "schema_version": "1",
-        "target": "api",
-        "passed": True,
-        "needs_review": False,
-        "product_code_modified": False,
-        "skip_or_xfail_added": False,
-        "unrelated_tests_modified": False,
-        "assertion_expected_value_changes_detected": False,
-        "high_risk_proposal_applied": False,
-        "applied_proposal_count": 1,
-    }
-    ApiCodegenFixerSafetyCheckV1.model_validate(payload)
-
-    payload["passed"] = 1
+    payload["targets"] = ["api", "e2e"]
+    payload["paths"] = []
     with pytest.raises(ValidationError):
-        ApiCodegenFixerSafetyCheckV1.model_validate(payload)
+        FixerProposalApprovalReceiptV1.model_validate(payload)
 
-    payload["passed"] = True
-    payload["applied_proposal_count"] = "1"
+
+def test_strict_wire_model_rejects_coerced_booleans_and_integers() -> None:
+    class Probe(StrictWireModel):
+        flag: StrictBool
+        count: StrictInt
+
+    Probe.model_validate({"flag": True, "count": 1})
+
     with pytest.raises(ValidationError):
-        ApiCodegenFixerSafetyCheckV1.model_validate(payload)
+        Probe.model_validate({"flag": 1, "count": 1})
+
+    with pytest.raises(ValidationError):
+        Probe.model_validate({"flag": True, "count": "1"})
