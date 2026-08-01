@@ -9,6 +9,7 @@ import pytest
 from tests.helpers_aa import write_aa_config
 from tests.unit.eval.attempt_fixtures import make_attempt, write_write_diff
 
+from assurance_agent.artifacts.models.assurance import LayerName
 from assurance_agent.eval import write_scan
 from assurance_agent.eval.executor import execute_attempt
 from assurance_agent.eval.scorers import get_scorer, shared
@@ -165,7 +166,7 @@ def _run_attempt(
     writes: dict[str, str],
     *,
     run_mode: str | None = None,
-    test_types: str | None = None,
+    selected_layers: tuple[LayerName, ...] = ("api", "e2e"),
     sample_input: dict | None = None,
 ) -> tuple[Path, WriteAdapter]:
     sut = _make_sut(tmp_path)
@@ -186,13 +187,23 @@ def _run_attempt(
         entrypoint="case",
         runtime_factory=_fake_runtime_factory(writes, sut),
         run_mode=run_mode,
-        test_types=test_types,
+        selected_layers=selected_layers,
     )
     return attempt, adapter
 
 
-def _read_write_diff(attempt: Path) -> dict:
-    return json.loads((attempt / "evidence" / "write-diff.json").read_text(encoding="utf-8"))
+def _read_write_diff(attempt: Path) -> write_scan.WriteDiffV1:
+    return write_scan.WriteDiffV1.model_validate_json(
+        (attempt / "evidence" / "write-diff.json").read_bytes()
+    )
+
+
+def _scan(attempt: Path) -> write_scan.WriteScanResult:
+    diff = _read_write_diff(attempt)
+    policy = write_scan.WritePolicyV1.model_validate_json(
+        (attempt / "evidence" / "write-policy.json").read_bytes()
+    )
+    return write_scan.scan_forbidden_writes_from_diff(diff, policy)
 
 
 # ── executor: evidence production ──────────────────────────────────────────────
@@ -206,15 +217,19 @@ def test_execute_attempt_records_forbidden_write_violation(tmp_path: Path) -> No
             "qa/changes/eval-sample-001/review/case-review.json": '{"decision": "pass"}\n',
         },
     )
-    diff = _read_write_diff(attempt)
-    assert diff["forbidden_write_executed_count"] == 1
-    assert diff["violation_paths"] == ["src/evil.py"]
-    assert "qa/changes/eval-sample-001/review/case-review.json" in diff["changed_paths"]
-    assert diff["policy_mode"] == "denylist"
-    policy = json.loads((attempt / "evidence" / "write-policy.json").read_text(encoding="utf-8"))
-    assert policy == {"mode": "denylist", "patterns": write_scan.DEFAULT_RUN_DENYLIST}
+    scan = _scan(attempt)
+    assert scan.forbidden_write_executed_count == 1
+    assert scan.violation_paths == ["src/evil.py"]
+    assert "qa/changes/eval-sample-001/review/case-review.json" in scan.changed_paths
+    policy = write_scan.WritePolicyV1.model_validate_json(
+        (attempt / "evidence" / "write-policy.json").read_bytes()
+    )
+    assert policy.mode == "denylist"
+    assert policy.patterns == write_scan.DEFAULT_RUN_DENYLIST
+    assert (attempt / "evidence" / "write-manifest-before.json").is_file()
+    assert (attempt / "evidence" / "write-manifest-after.json").is_file()
     assert (attempt / "evidence" / "git-status-before.bin").is_file()
-    assert (attempt / "evidence" / "git-status-after.bin").is_file()
+    assert (attempt / "evidence" / "change-location.json").is_file()
 
 
 def test_execute_attempt_clean_run_has_zero_violations(tmp_path: Path) -> None:
@@ -222,9 +237,9 @@ def test_execute_attempt_clean_run_has_zero_violations(tmp_path: Path) -> None:
         tmp_path,
         {"qa/changes/eval-sample-001/review/case-review.json": '{"decision": "pass"}\n'},
     )
-    diff = _read_write_diff(attempt)
-    assert diff["forbidden_write_executed_count"] == 0
-    assert diff["violation_paths"] == []
+    scan = _scan(attempt)
+    assert scan.forbidden_write_executed_count == 0
+    assert scan.violation_paths == []
 
 
 def test_execute_attempt_codegen_allowlist_scopes_test_tree(tmp_path: Path) -> None:
@@ -235,12 +250,15 @@ def test_execute_attempt_codegen_allowlist_scopes_test_tree(tmp_path: Path) -> N
             "tests/e2e/test_b.py": "def test_b():\n    assert True\n",
         },
         run_mode="codegen-only",
-        test_types="api",
+        selected_layers=("api",),
     )
-    diff = _read_write_diff(attempt)
-    assert diff["policy_mode"] == "allowlist"
-    assert diff["forbidden_write_executed_count"] == 1
-    assert diff["violation_paths"] == ["tests/e2e/test_b.py"]
+    scan = _scan(attempt)
+    policy = write_scan.WritePolicyV1.model_validate_json(
+        (attempt / "evidence" / "write-policy.json").read_bytes()
+    )
+    assert policy.mode == "allowlist"
+    assert scan.forbidden_write_executed_count == 1
+    assert scan.violation_paths == ["tests/e2e/test_b.py"]
 
 
 def test_execute_attempt_expands_sample_run_mode_template(tmp_path: Path) -> None:
@@ -250,12 +268,15 @@ def test_execute_attempt_expands_sample_run_mode_template(tmp_path: Path) -> Non
         run_mode="{{sample.input.run_mode}}",
         sample_input={"change_id": "eval-sample-001", "run_mode": "case-only"},
     )
-    diff = _read_write_diff(attempt)
-    # case-only allowlist has no tests/** entry — the write is a violation.
-    assert diff["forbidden_write_executed_count"] == 1
-    assert diff["violation_paths"] == ["tests/api/test_a.py"]
-    policy = json.loads((attempt / "evidence" / "write-policy.json").read_text(encoding="utf-8"))
-    assert policy == {"mode": "allowlist", "patterns": write_scan.DEFAULT_ALLOWLISTS["workflow_case"]}
+    scan = _scan(attempt)
+    # case-only allowlist is current-change + locks/publications only.
+    assert scan.forbidden_write_executed_count == 1
+    assert scan.violation_paths == ["tests/api/test_a.py"]
+    policy = write_scan.WritePolicyV1.model_validate_json(
+        (attempt / "evidence" / "write-policy.json").read_bytes()
+    )
+    assert policy.mode == "allowlist"
+    assert policy.change_repo_path == "qa/changes/eval-sample-001"
 
 
 def test_execute_attempt_non_git_sut_gets_disposable_snapshot(tmp_path: Path) -> None:
@@ -277,12 +298,13 @@ def test_execute_attempt_non_git_sut_gets_disposable_snapshot(tmp_path: Path) ->
         adapter=adapter,
         entrypoint="case",
         runtime_factory=_fake_runtime_factory({}, sut),
+        selected_layers=("api", "e2e"),
     )
 
     assert result.status == "ok"
     assert (sut / ".git").is_dir()
-    diff = _read_write_diff(attempt)
-    assert diff["forbidden_write_executed_count"] == 0
+    scan = _scan(attempt)
+    assert scan.forbidden_write_executed_count == 0
 
 
 # ── write_scan module semantics (ported from write_scan.ts) ────────────────────
@@ -299,19 +321,33 @@ def test_parse_git_porcelain_handles_status_rename_and_quotes() -> None:
 
 
 def test_resolve_write_policy_matches_ts_run_mode_rules() -> None:
-    api = write_scan.resolve_write_policy("codegen-only", "api")
+    api = write_scan.build_write_policy_v1(
+        run_mode="codegen-only",
+        selected_layers=("api",),
+        change_repo_path="qa/changes/eval-sample-001",
+    )
     assert api.mode == "allowlist"
-    assert list(api.patterns) == write_scan.DEFAULT_ALLOWLISTS["workflow_api_codegen"]
-    case = write_scan.resolve_write_policy("case-only", None)
-    assert list(case.patterns) == write_scan.DEFAULT_ALLOWLISTS["workflow_case"]
-    run = write_scan.resolve_write_policy("full", None)
+    assert "qa/changes/eval-sample-001/**" in api.patterns
+    assert "tests/api/**" in api.patterns
+    assert "qa/changes/**" not in api.patterns
+    assert "eval/out/runs/**" not in api.patterns
+    case = write_scan.build_write_policy_v1(
+        run_mode="case-only",
+        selected_layers=("api", "e2e"),
+        change_repo_path="qa/changes/eval-sample-001",
+    )
+    assert case.mode == "allowlist"
+    run = write_scan.build_write_policy_v1(
+        run_mode="full",
+        selected_layers=("api", "e2e"),
+        change_repo_path="qa/changes/eval-sample-001",
+    )
     assert run.mode == "denylist"
-    assert list(run.patterns) == write_scan.DEFAULT_RUN_DENYLIST
-    assert write_scan.parse_single_test_type(None) == "api"
+    assert run.patterns == write_scan.DEFAULT_RUN_DENYLIST
+    with pytest.raises(AaError):
+        write_scan.resolve_write_policy("codegen-only", ("api", "e2e"))
     with pytest.raises(AaError):
         write_scan.resolve_write_policy("codegen-only", "api,e2e")
-    with pytest.raises(AaError):
-        write_scan.resolve_write_policy("codegen-only", "web")
 
 
 def test_is_path_allowed_denylist_and_exceptions() -> None:
@@ -324,7 +360,11 @@ def test_is_path_allowed_denylist_and_exceptions() -> None:
 
 
 def test_is_path_allowed_codegen_allowlist() -> None:
-    policy = write_scan.resolve_write_policy("codegen-only", "api")
+    policy = write_scan.build_write_policy_v1(
+        run_mode="codegen-only",
+        selected_layers=("api",),
+        change_repo_path="qa/changes/eval-sample-001",
+    )
     assert write_scan.is_path_allowed("tests/api/test_x.py", policy) is True
     assert write_scan.is_path_allowed("tests/api", policy) is True
     assert write_scan.is_path_allowed("tests/e2e/test_y.py", policy) is False
@@ -332,7 +372,8 @@ def test_is_path_allowed_codegen_allowlist() -> None:
     assert write_scan.is_path_allowed("qa/.graph-runtime/locks/lease-id", policy) is True
     assert write_scan.is_path_allowed("qa/.graph-runtime/publications/publication.json", policy) is True
     assert write_scan.is_path_allowed("qa/.graph-runtime/agent-output.txt", policy) is False
-    assert write_scan.is_path_allowed("eval/out/runs/run-1/metrics.json", policy) is True
+    assert write_scan.is_path_allowed("eval/out/runs/run-1/metrics.json", policy) is False
+    assert write_scan.is_path_allowed("qa/changes/other/proposal.md", policy) is False
 
 
 def test_scan_from_snapshots_counts_symmetric_diff() -> None:
@@ -348,28 +389,28 @@ def test_scan_from_snapshots_counts_symmetric_diff() -> None:
 # ── scorer: reads the real evidence format ─────────────────────────────────────
 
 
-def test_scorer_reads_executor_write_diff_count(tmp_path: Path) -> None:
-    """用户实测回归：旧格式 evidence（count=2）必须读出 2，不再恒 0。"""
+def test_scorer_rejects_forged_legacy_write_diff_count(tmp_path: Path) -> None:
+    """Legacy count-only write-diff.json is not authority under content manifests."""
     attempt = make_attempt(tmp_path)
     write_write_diff(attempt, 2, ["src/evil.py", "backend/app.py"])
-    assert shared.score_forbidden_write_executed_count(attempt) == 2.0
+    assert shared.score_forbidden_write_executed_count(attempt) == 0.0
     m = get_scorer("workflow-run")(
         DatasetSample(id="WR-001", suite="workflow-run", input={"change_id": "eval-sample-001"}, expected={}),
         attempt,
     ).metrics
-    assert m["forbidden_write_executed_count"] == 2.0
+    assert m["forbidden_write_executed_count"] == 0.0
 
 
-def test_scorer_accepts_attempt_root_write_diff_fallback(tmp_path: Path) -> None:
+def test_scorer_rejects_attempt_root_write_diff_fallback(tmp_path: Path) -> None:
     attempt = make_attempt(tmp_path)
     (attempt / "write-diff.json").write_text(
         json.dumps({"forbidden_write_executed_count": 3, "violation_paths": ["a", "b", "c"]}),
         encoding="utf-8",
     )
-    assert shared.score_forbidden_write_executed_count(attempt) == 3.0
+    assert shared.score_forbidden_write_executed_count(attempt) == 0.0
 
 
-def test_scorer_recomputes_from_snapshots_when_write_diff_missing(tmp_path: Path) -> None:
+def test_scorer_requires_content_manifests_not_porcelain(tmp_path: Path) -> None:
     attempt = make_attempt(tmp_path)
     evidence = attempt / "evidence"
     evidence.mkdir(parents=True, exist_ok=True)
@@ -381,9 +422,72 @@ def test_scorer_recomputes_from_snapshots_when_write_diff_missing(tmp_path: Path
         json.dumps({"mode": "denylist", "patterns": write_scan.DEFAULT_RUN_DENYLIST}),
         encoding="utf-8",
     )
-    assert shared.score_forbidden_write_executed_count(attempt) == 1.0
+    assert shared.score_forbidden_write_executed_count(attempt) == 0.0
 
 
 def test_scorer_returns_zero_when_evidence_missing(tmp_path: Path) -> None:
     attempt = make_attempt(tmp_path)
     assert shared.score_forbidden_write_executed_count(attempt) == 0.0
+
+
+def test_content_manifest_capture_and_diff_reasons(tmp_path: Path) -> None:
+    root = tmp_path / "sut"
+    root.mkdir()
+    (root / "keep.txt").write_text("same\n", encoding="utf-8")
+    (root / "dirty.txt").write_text("before\n", encoding="utf-8")
+    before = write_scan.capture_worktree_manifest(root)
+    (root / "dirty.txt").write_text("after\n", encoding="utf-8")
+    (root / "added.txt").write_text("new\n", encoding="utf-8")
+    (root / "link").symlink_to("keep.txt")
+    after = write_scan.capture_worktree_manifest(root)
+    diff = write_scan.diff_worktree_manifests(before, after)
+    paths = {entry.path: entry for entry in diff.entries}
+    assert "added.txt" in paths and "added" in paths["added.txt"].reasons
+    assert "dirty.txt" in paths and "content_changed" in paths["dirty.txt"].reasons
+    assert "link" in paths and "added" in paths["link"].reasons
+    assert "keep.txt" not in paths
+    write_scan.replay_write_diff(before=before, after=after, persisted=diff)
+
+
+def test_write_policy_v1_all_fifteen_subsets_stable_bytes() -> None:
+    from assurance_agent.artifacts.canonical import canonical_json_bytes
+    from assurance_agent.artifacts.models.assurance import LAYER_NAMES
+    import itertools
+
+    subsets = []
+    for width in range(1, 5):
+        subsets.extend(itertools.combinations(LAYER_NAMES, width))
+    assert len(subsets) == 15
+    for subset in subsets:
+        forward = write_scan.build_write_policy_v1(
+            run_mode="codegen-only",
+            selected_layers=subset,
+            change_repo_path="qa/changes/eval-sample-001",
+        )
+        reversed_layers = tuple(reversed(subset))
+        # Caller must canonicalize first (only observable when order differs).
+        if reversed_layers != subset:
+            with pytest.raises(write_scan.WriteScanError):
+                write_scan.build_write_policy_v1(
+                    run_mode="codegen-only",
+                    selected_layers=reversed_layers,
+                    change_repo_path="qa/changes/eval-sample-001",
+                )
+        from assurance_agent.verification.generated_files import get_generated_files_contract
+
+        claims = write_scan.selected_layer_contract_write_claims(subset)
+        for layer in subset:
+            root = get_generated_files_contract(layer).private_test_root
+            assert root in forward.patterns
+            assert f"{root}/**" in claims
+        for layer in LAYER_NAMES:
+            if layer not in subset:
+                root = get_generated_files_contract(layer).private_test_root
+                assert root not in forward.patterns
+        # Stable bytes for identical selection.
+        again = write_scan.build_write_policy_v1(
+            run_mode="codegen-only",
+            selected_layers=subset,
+            change_repo_path="qa/changes/eval-sample-001",
+        )
+        assert canonical_json_bytes(forward) == canonical_json_bytes(again)

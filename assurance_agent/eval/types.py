@@ -137,4 +137,6 @@ class ExecutionResult(BaseModel):
     status: Literal["ok", "error"]
     exit_code: int | None = None
     error: str | None = None
+    selected_layers: tuple[str, ...] | None = None
+    selection_normalizer_version: str | None = None
     extra: dict = Field(default_factory=dict)

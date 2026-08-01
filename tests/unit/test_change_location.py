@@ -4,9 +4,13 @@ import pytest
 
 from assurance_agent.change_location import (
     ChangeLocation,
+    ChangeLocationError,
     ChangeNotFoundError,
     archive_root,
     changes_root,
+    decide_change_location,
+    parse_change_roots,
+    probe_change_location_candidates,
     resolve_change,
 )
 from assurance_agent.config import ConfigNotFoundError
@@ -187,3 +191,34 @@ execution: {entry: cli, self_healing: {mode: proposal-only}}
     loc = resolve_change(tmp_path, "CH-1", prefer="archive")
     assert loc.path == archived
     assert loc.source == "archive"
+
+
+def test_pure_decision_path_escape_and_symlink(tmp_path: Path) -> None:
+    (tmp_path / ".aa").mkdir()
+    (tmp_path / ".aa" / "config.yaml").write_text(
+        """version: 1
+sources: {frontend: ./frontend, backend: ./backend}
+qa: {cases: ./qa/cases, changes: ../escape/changes, archive: ./qa/archive}
+tests: {root: ./tests, api: ./tests/api, e2e: ./tests/e2e}
+frameworks:
+  api: {enabled: true, name: pytest}
+  e2e: {enabled: true, name: playwright}
+generation: {prd_input_mode: prompt, e2e: {default_pom: false}}
+execution: {entry: cli, self_healing: {mode: proposal-only}}
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ChangeLocationError, match=r"\.\."):
+        parse_change_roots((tmp_path / ".aa" / "config.yaml").read_bytes())
+
+    _write_config(tmp_path)
+    target = tmp_path / "real" / "CH-1"
+    target.mkdir(parents=True)
+    link = tmp_path / "qa" / "changes" / "CH-1"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(target)
+    roots = parse_change_roots((tmp_path / ".aa" / "config.yaml").read_bytes())
+    probes = probe_change_location_candidates(tmp_path, "CH-1", roots)
+    assert probes[0].lstat_kind == "symlink"
+    with pytest.raises(ChangeNotFoundError):
+        decide_change_location(change_id="CH-1", preference="active", roots=roots, probes=probes)

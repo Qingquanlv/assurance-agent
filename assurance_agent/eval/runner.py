@@ -19,6 +19,7 @@ from assurance_agent.eval.paths import datasets_dir, run_dir as run_dir_for
 from assurance_agent.eval.plan import load_suite, load_suite_file, read_plan
 from assurance_agent.eval.report import write_run_report
 from assurance_agent.eval.scorers import get_scorer
+from assurance_agent.eval.selection import normalize_selected_layers
 from assurance_agent.eval.types import (
     EvalGateResult,
     JudgeConfig,
@@ -155,7 +156,13 @@ def run_suite(
     entrypoint = str(suite.executor.get("entrypoint", "full"))
     executor_type = str(suite.executor.get("type", "workflow-run"))
     run_mode = suite.executor.get("run_mode")
-    test_types = suite.executor.get("test_type") or suite.executor.get("test_types")
+    # Key presence, never truthiness: explicit empty reaches the normalizer.
+    selection_kwargs: dict[str, object] = {}
+    if "test_type" in suite.executor:
+        selection_kwargs["test_type"] = suite.executor["test_type"]
+    if "test_types" in suite.executor:
+        selection_kwargs["test_types"] = suite.executor["test_types"]
+    selected_layers = normalize_selected_layers(**selection_kwargs)
     run_tests_raw = suite.executor.get("run_tests")
     run_tests = None if run_tests_raw is None else bool(run_tests_raw)
     in_process = executor_type in {"in_process", "score-only"}
@@ -195,7 +202,7 @@ def run_suite(
                 fixtures_root=resolved_fixtures,
                 executor_type=executor_type,
                 run_mode=str(run_mode) if run_mode is not None else None,
-                test_types=str(test_types) if test_types is not None else None,
+                selected_layers=selected_layers,
                 run_tests=run_tests,
             )
             manifest.executed_samples += 1

@@ -229,3 +229,117 @@ def test_eval_report_json(monkeypatch) -> None:
         assert report["run_id"] == run_id
         assert report["verdict"] == "pass"
         assert report["source_change_ids"] == ["RET-user-1", "RET-role-1"]
+
+
+def test_eval_run_list_form_selection_single_resolution(monkeypatch) -> None:
+    """Real aa eval run with YAML list test_types converges on one canonical tuple."""
+    from assurance_agent.eval.selection import SELECTION_NORMALIZER_VERSION
+
+    runner = CliRunner()
+    with runner.isolated_filesystem() as fs:
+        project_root = Path(fs)
+        suites = project_root / "eval" / "suites"
+        suites.mkdir(parents=True)
+        (suites / "workflow-case.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "workflow-case",
+                    "scorer": "workflow-case",
+                    "executor": {
+                        "type": "workflow-run",
+                        "entrypoint": "case",
+                        "run_mode": "case-only",
+                        "test_types": ["performance", "api", "e2e"],
+                        "run_tests": False,
+                    },
+                    "thresholds": [
+                        {
+                            "metric": "case_review_gate_pass_rate",
+                            "gate": "hard",
+                            "op": "gte",
+                            "value": 0.99,
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        ds = project_root / "eval" / "datasets" / "workflow-case"
+        ds.mkdir(parents=True)
+        (ds / "WC-001.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "id": "WC-001",
+                    "suite": "workflow-case",
+                    "input": {"change_id": "eval-sample-001"},
+                    "expected": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+        sut = project_root / "sut"
+        write_aa_config(sut)
+        change = sut / "qa" / "changes" / "eval-sample-001" / "review"
+        change.mkdir(parents=True)
+        (change / "case-review.json").write_text(json.dumps({"decision": "pass"}), encoding="utf-8")
+        subprocess.run(["git", "init"], cwd=sut, check=True, capture_output=True)
+
+        seen: dict = {}
+
+        def fake_execute(sample, attempt_dir, **kwargs):  # noqa: ANN001, ANN003, ANN202
+            from assurance_agent.eval.types import ExecutionResult
+
+            seen["selected_layers"] = kwargs.get("selected_layers")
+            attempt_dir.mkdir(parents=True, exist_ok=True)
+            raw = attempt_dir / "raw-output"
+            raw.mkdir(parents=True, exist_ok=True)
+            review = raw / "review"
+            review.mkdir(parents=True, exist_ok=True)
+            (review / "case-review.json").write_text('{"decision":"pass"}', encoding="utf-8")
+            (attempt_dir / "stdout.log").write_text("ok\n", encoding="utf-8")
+            (attempt_dir / "stderr.log").write_text("", encoding="utf-8")
+            layers = list(kwargs["selected_layers"])
+            (attempt_dir / "execution.json").write_text(
+                json.dumps(
+                    {
+                        "exit_code": 0,
+                        "selected_layers": layers,
+                        "selection_normalizer_version": SELECTION_NORMALIZER_VERSION,
+                        "runtime_params": {"test_types": layers},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return ExecutionResult(
+                sample_id=sample.id,
+                attempt=0,
+                executor="workflow-run",
+                status="ok",
+                exit_code=0,
+                selected_layers=tuple(layers),
+                selection_normalizer_version=SELECTION_NORMALIZER_VERSION,
+            )
+
+        from assurance_agent.eval import runner as runner_mod
+
+        monkeypatch.setattr(runner_mod, "execute_attempt", fake_execute)
+        monkeypatch.setenv("AA_EVAL_FAKE_ADAPTER", "1")
+        result = runner.invoke(
+            main,
+            [
+                "eval",
+                "run",
+                "--suite",
+                "workflow-case",
+                "--sut-dir",
+                str(sut),
+                "--json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert seen["selected_layers"] == ("api", "e2e", "performance")
+        execution = next(sut.joinpath("eval", "out", "runs").rglob("execution.json"))
+        payload = json.loads(execution.read_text(encoding="utf-8"))
+        assert payload["selected_layers"] == ["api", "e2e", "performance"]
+        assert payload["runtime_params"]["test_types"] == ["api", "e2e", "performance"]
+        assert payload["selection_normalizer_version"] == SELECTION_NORMALIZER_VERSION

@@ -73,6 +73,10 @@ _REQUIRED_CONSUMERS: frozenset[str] = frozenset(
         "build_intent",
         "validate_acknowledgement",
         "reconcile_effect",
+        "evidence_export",
+        "evidence_export_root_slice",
+        "evidence_export_manifest",
+        "evidence_export_base_tree_roots",
     }
 )
 
@@ -96,11 +100,37 @@ def _specs_from_tuples(rows: tuple[tuple[str, str, str], ...]) -> tuple[Inventor
     )
 
 
+# Evidence-export consumers (Task 17). Declared here to avoid import cycles with
+# assurance_agent.eval.evidence_export → workspace → runtime_commit_safety.
+_EVIDENCE_EXPORT_INVENTORY: tuple[tuple[str, str, str], ...] = (
+    (
+        "assurance_agent.eval.evidence_export.export_root_execution_closure",
+        "helper",
+        "evidence_export",
+    ),
+    (
+        "assurance_agent.eval.evidence_export.select_root_event_slice",
+        "helper",
+        "evidence_export_root_slice",
+    ),
+    (
+        "assurance_agent.eval.evidence_export.verify_export_manifest_closure",
+        "helper",
+        "evidence_export_manifest",
+    ),
+    (
+        "assurance_agent.workflow.graph.evidence_paths.verify_write_set_base_tree_roots",
+        "helper",
+        "evidence_export_base_tree_roots",
+    ),
+)
+
 _COMMIT_SAFETY_INVENTORY: tuple[InventorySpec, ...] = (
     *_specs_from_tuples(_PRECOMMIT_INVENTORY),
     *_specs_from_tuples(_DURABLE_INVENTORY),
     *_specs_from_tuples(_RETRY_INVENTORY),
     *_specs_from_tuples(_HEALING_INVENTORY),
+    *_specs_from_tuples(_EVIDENCE_EXPORT_INVENTORY),
 )
 
 
