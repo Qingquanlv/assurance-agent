@@ -604,6 +604,7 @@ def _install_hooks(runtime, point: str, *, scheduler) -> None:  # noqa: ANN001
     hits: dict[str, int] = {}
 
     if point == "snapshot_created_before_started":
+
         def crash_after_snapshot(task, snapshot_id):  # type: ignore[no-untyped-def]
             del snapshot_id
             if _selector_matches(task, hits=hits, point=point):
@@ -612,6 +613,7 @@ def _install_hooks(runtime, point: str, *, scheduler) -> None:  # noqa: ANN001
         sched._crash_after_snapshot = crash_after_snapshot  # noqa: SLF001
 
     if point == "started_with_snapshot_before_handler":
+
         def crash_after_started(task, attempt_id):  # type: ignore[no-untyped-def]
             del attempt_id
             if _selector_matches(task, hits=hits, point=point):
@@ -728,8 +730,10 @@ def _install_hooks(runtime, point: str, *, scheduler) -> None:  # noqa: ANN001
 
         runtime.run_child = run_child_and_kill  # type: ignore[method-assign]
 
-    if point.startswith("fixer_approval_") or point.startswith("allocate_") or point.startswith(
-        "heal_record_"
+    if (
+        point.startswith("fixer_approval_")
+        or point.startswith("allocate_")
+        or point.startswith("heal_record_")
     ):
         from assurance_agent.workflow.graph import durable_effects as effects_mod
 
@@ -740,11 +744,11 @@ def _install_hooks(runtime, point: str, *, scheduler) -> None:  # noqa: ANN001
         def persist_healing(**kwargs):  # type: ignore[no-untyped-def]
             prepared = kwargs["prepared"]
             target = prepared.task.target
-            before = point.endswith("before_success_line") or point.endswith(
-                "after_resume_before_operation"
-            )
-            if before and _healing_point_matches(point, target) and _selector_matches(
-                prepared.task, hits=hits, point=point
+            before = point.endswith("before_success_line") or point.endswith("after_resume_before_operation")
+            if (
+                before
+                and _healing_point_matches(point, target)
+                and _selector_matches(prepared.task, hits=hits, point=point)
             ):
                 _fault_hit(point)
             result = persist_success_orig(**kwargs)
@@ -771,6 +775,7 @@ def _install_hooks(runtime, point: str, *, scheduler) -> None:  # noqa: ANN001
             or "after_ack" in point
             or "after_domain_event" in point
         ):
+
             def reconcile_and_kill(intent, context, runtime_ctx, **kwargs):  # type: ignore[no-untyped-def]
                 if "before_domain_event" in point or point.endswith(
                     "after_superstep_commit_before_domain_event"

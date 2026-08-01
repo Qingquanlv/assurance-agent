@@ -937,6 +937,12 @@ class TreeStore:
             ):
                 raise WorkspaceError(f"synchronized write outside declared prefixes: {logical}")
             if not _is_authorized(base.roots, rel, claims):
+                # Out-of-claim deletions are not publishable. Nested resume repair
+                # may drop sibling change: files from a parent sandbox that was
+                # prepared from a newer root tree; omitting them from the write-set
+                # keeps the merge-base copy instead of failing the wrapper freeze.
+                if after is None and before is not None:
+                    continue
                 raise WorkspaceError(f"forbidden write outside authorization_writes: {logical}")
             if after is None:
                 entries.append(
@@ -1305,9 +1311,7 @@ class TreeStore:
             change_prefix = resolved_change.relative_to(project_root).as_posix()
 
         def _under_change(rel: str) -> bool:
-            return change_prefix is not None and (
-                rel == change_prefix or rel.startswith(f"{change_prefix}/")
-            )
+            return change_prefix is not None and (rel == change_prefix or rel.startswith(f"{change_prefix}/"))
 
         writes: list[tuple[str, _Entry]] = []
         deletes: list[str] = []

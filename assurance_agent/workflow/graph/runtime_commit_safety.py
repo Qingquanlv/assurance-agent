@@ -259,9 +259,7 @@ def _validate_closed_inventory(inventory: tuple[InventorySpec, ...]) -> None:
     if extra:
         raise ValueError(f"unregistered commit-safety consumers: {sorted(extra)}")
 
-    validator_constants = [
-        item for item in inventory if item.role == "validator"
-    ]
+    validator_constants = [item for item in inventory if item.role == "validator"]
     effect_constants = [item for item in inventory if item.role == "effect"]
     seen_validators: set[str] = set()
     for item in validator_constants:

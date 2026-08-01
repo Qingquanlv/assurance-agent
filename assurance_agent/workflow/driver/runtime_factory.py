@@ -86,15 +86,9 @@ def request_from_projection(projection: Any) -> PinnedDefinitionRequest:
         gate_semantics_digest=projection.gate_semantics_digest,
         assurance_profile_digest=projection.assurance_profile_digest,
         gate_semantics_object_id=getattr(projection, "gate_semantics_object_id", ""),
-        topology_safety_semantics_object_id=getattr(
-            projection, "topology_safety_semantics_object_id", ""
-        ),
-        topology_safety_semantics_digest=getattr(
-            projection, "topology_safety_semantics_digest", ""
-        ),
-        commit_safety_semantics_object_id=getattr(
-            projection, "commit_safety_semantics_object_id", ""
-        ),
+        topology_safety_semantics_object_id=getattr(projection, "topology_safety_semantics_object_id", ""),
+        topology_safety_semantics_digest=getattr(projection, "topology_safety_semantics_digest", ""),
+        commit_safety_semantics_object_id=getattr(projection, "commit_safety_semantics_object_id", ""),
         commit_safety_semantics_digest=getattr(projection, "commit_safety_semantics_digest", ""),
     )
 

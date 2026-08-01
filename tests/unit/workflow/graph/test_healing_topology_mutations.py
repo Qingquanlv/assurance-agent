@@ -193,16 +193,12 @@ def test_positive_controls_api_only_e2e_only_and_both() -> None:
     )
     for active in cases:
         schema = _approved_schema(active_targets=active)
-        issues = find_current_healing_conformance_issues(
-            schema, contracts, active_targets=active
-        )
+        issues = find_current_healing_conformance_issues(schema, contracts, active_targets=active)
         assert issues == (), (active, issues)
 
     # API-only fixture must not hard-require e2e record outputs.
     api_only = _approved_schema(active_targets=("api",))
-    assert find_current_healing_conformance_issues(
-        api_only, contracts, active_targets=("api",)
-    ) == ()
+    assert find_current_healing_conformance_issues(api_only, contracts, active_targets=("api",)) == ()
     # Inject inactive e2e hard output into allocate — must emit inactive_target_required.
     polluted = _approved_schema(
         active_targets=("api",),
@@ -212,7 +208,5 @@ def test_positive_controls_api_only_e2e_only_and_both() -> None:
             "change:healing/e2e-apply-summary.json",
         ],
     )
-    issues = find_current_healing_conformance_issues(
-        polluted, contracts, active_targets=("api",)
-    )
+    issues = find_current_healing_conformance_issues(polluted, contracts, active_targets=("api",))
     assert any(issue.code == "inactive_target_required" for issue in issues)

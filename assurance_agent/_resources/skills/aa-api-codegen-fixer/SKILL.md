@@ -5,7 +5,7 @@ description: Apply authorized API codegen fixes and emit a path-specific apply i
 
 ## Purpose
 
-Apply authorized API test fixes using the graph-owned fixer-authority projection and emit only `healing/api-apply-intent.json` plus authorized private/shared test writes. Do not invoke `aa heal record-apply`.
+Apply authorized API test fixes using the graph-owned fixer-authority projection and emit only `healing/api-apply-intent.json` plus authorized private/shared test writes. Do not invoke the heal record-apply CLI.
 
 ## Inputs
 

@@ -311,9 +311,7 @@ def test_api_only_record_and_combine_via_operation_handlers(tmp_path: Path) -> N
                 "fixer_attempt_id": "fix-api-1",
                 "fixer_task_id": "fixer-api",
                 "fixer_invocation_id": "inv-heal-1",
-                    "input_snapshot_id": cast(dict[str, object], verify_bundle["context"])[
-                        "input_snapshot_id"
-                    ],
+                "input_snapshot_id": cast(dict[str, object], verify_bundle["context"])["input_snapshot_id"],
                 "candidate_validation_receipt_id": receipt_id,
                 "candidate_receipt_verify": verify_bundle,
                 "attempt_id": "att-record-1",

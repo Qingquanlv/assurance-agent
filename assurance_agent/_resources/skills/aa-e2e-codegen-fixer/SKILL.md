@@ -5,7 +5,7 @@ description: Apply authorized E2E codegen fixes and emit a path-specific apply i
 
 ## Purpose
 
-Apply authorized E2E test fixes using the graph-owned fixer-authority projection and emit only `healing/e2e-apply-intent.json` plus authorized private/shared test writes. Do not invoke `aa heal record-apply`.
+Apply authorized E2E test fixes using the graph-owned fixer-authority projection and emit only `healing/e2e-apply-intent.json` plus authorized private/shared test writes. Do not invoke the heal record-apply CLI.
 
 ## Inputs
 

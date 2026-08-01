@@ -58,8 +58,7 @@ def derive_healing_state(change_dir: Path) -> HealingStateSnapshot:
     return HealingStateSnapshot(
         status=status,
         attempts_used=projection.attempts_used,
-        all_fixers_no_op=bool(apply_records)
-        and all(not record.files_modified for record in apply_records),
+        all_fixers_no_op=bool(apply_records) and all(not record.files_modified for record in apply_records),
         episode_id=episode_id,
         attempt_id=latest.attempt_id if latest is not None else None,
     )

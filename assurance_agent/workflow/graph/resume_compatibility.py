@@ -181,16 +181,16 @@ def assess_remaining_work(
         if task.status != "succeeded":
             continue
         uses = _uses_for_node(compiled, task.node_id) or ""
-        if not _is_commit_safety_bearing_target(uses, contracts) and not _looks_like_assurance_codegen(
-            uses
-        ):
+        if not _is_commit_safety_bearing_target(uses, contracts) and not _looks_like_assurance_codegen(uses):
             continue
         if not task.outputs_committed or task.durable_effects:
             commit_targets.append(uses or task.node_id)
             role_triggers.append(f"uncommitted:{task.task_id}")
 
     reachable_layers = tuple(
-        layer for layer in (selected or LAYER_NAMES) if layer in role_codegen and role_codegen[layer] in reachable_nodes
+        layer
+        for layer in (selected or LAYER_NAMES)
+        if layer in role_codegen and role_codegen[layer] in reachable_nodes
     )
     digest = _digest_sorted(
         {
@@ -240,9 +240,7 @@ def audit_topology_for_resume(
             checks_artifact=profile.checks_artifact,
             gate_id=profile.gate_id,
         )
-        classified = classify_historical_layer_topology_v6(
-            schema, spec, historical_roles=historical_roles
-        )
+        classified = classify_historical_layer_topology_v6(schema, spec, historical_roles=historical_roles)
         results.append(classified)
         per_layer[layer] = classified.status
     statuses = {item.status for item in results}
@@ -394,9 +392,7 @@ def verify_receipt_bindings(
         else projection.parent_invocation_id
     )
     expected = build_topology_compatibility_receipt(
-        projection=projection.model_copy(
-            update={"invocation_id": root_id, "parent_invocation_id": None}
-        )
+        projection=projection.model_copy(update={"invocation_id": root_id, "parent_invocation_id": None})
         if projection.parent_invocation_id is not None
         else projection,
         historical_roles=historical_roles,
@@ -408,9 +404,8 @@ def verify_receipt_bindings(
         reachable_set_digest=reachable_set_digest,
         source_sequence=receipt.source_sequence,
     )
-    if (
-        receipt.receipt_id != expected.receipt_id
-        or receipt.model_dump(mode="json") != expected.model_dump(mode="json")
+    if receipt.receipt_id != expected.receipt_id or receipt.model_dump(mode="json") != expected.model_dump(
+        mode="json"
     ):
         # Allow source_sequence to be the originally recorded sequence when
         # reachable digest/bindings otherwise match the recorded identity.

@@ -193,9 +193,7 @@ def _run_attempt(
 
 
 def _read_write_diff(attempt: Path) -> write_scan.WriteDiffV1:
-    return write_scan.WriteDiffV1.model_validate_json(
-        (attempt / "evidence" / "write-diff.json").read_bytes()
-    )
+    return write_scan.WriteDiffV1.model_validate_json((attempt / "evidence" / "write-diff.json").read_bytes())
 
 
 def _scan(attempt: Path) -> write_scan.WriteScanResult:

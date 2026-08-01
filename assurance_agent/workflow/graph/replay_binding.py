@@ -220,9 +220,7 @@ def validate_pinned_layer_selection(
         node_id = layer_roles.selection_event_node_id
         node = assurance.nodes.get(node_id)
         if node is None:
-            errors.append(
-                f"graph:{historical_roles.assurance_graph_id}.nodes.{node_id}: missing branch node"
-            )
+            errors.append(f"graph:{historical_roles.assurance_graph_id}.nodes.{node_id}: missing branch node")
             continue
         when = node.when
         if not when:
@@ -278,9 +276,7 @@ def assert_layer_selection_evidence(
     """Require activation/skip events to agree with predicate classification when present."""
     for fact in selections:
         layer_roles = layer_roles_or_none(historical_roles, fact.layer)
-        selection_node_id = (
-            layer_roles.selection_event_node_id if layer_roles is not None else fact.layer
-        )
+        selection_node_id = layer_roles.selection_event_node_id if layer_roles is not None else fact.layer
         observed: bool | None = None
         for item in events:
             payload = item.payload
@@ -765,9 +761,7 @@ def _bind_profile_and_topologies(
     def _classify(spec: LayerTopologySpec) -> PinnedLayerTopology:
         if version >= 6:
             _require_verified_v6_topology_semantics(change_dir, root_started)
-            return classify_pinned_layer_topology_v6(
-                schema, spec, historical_roles=historical_roles
-            )
+            return classify_pinned_layer_topology_v6(schema, spec, historical_roles=historical_roles)
         if version >= 5:
             return classify_pinned_layer_topology_v5(schema, spec)
         return classify_pinned_layer_topology_v4(schema, spec)
@@ -952,9 +946,7 @@ def _bind_assurance_invocation(
     root_started: GraphInvocationStartedEvent,
     historical_roles: DiscoveredHistoricalAssuranceRoles,
 ) -> GraphInvocationStartedEvent:
-    root_task_id = (
-        f"{root_started.structural_path}:{historical_roles.assurance_call_node_id}"
-    )
+    root_task_id = f"{root_started.structural_path}:{historical_roles.assurance_call_node_id}"
     expected_path = (
         f"{root_started.structural_path}/"
         f"{historical_roles.assurance_call_node_id}/{historical_roles.assurance_graph_id}"

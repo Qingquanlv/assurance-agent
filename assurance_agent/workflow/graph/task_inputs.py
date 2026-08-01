@@ -253,9 +253,7 @@ def build_automatic_plan_fixer_runtime_context(
     )
 
 
-def write_runtime_context_sidecar(
-    workspace: TaskWorkspace, context: PlanFixerRuntimeContextV1
-) -> None:
+def write_runtime_context_sidecar(workspace: TaskWorkspace, context: PlanFixerRuntimeContextV1) -> None:
     """Persist bound Runtime Context for AgentHandler prompt injection."""
     if workspace.sidecar_root is None:
         raise TaskInputError("runtime context sidecar requires sidecar_root")

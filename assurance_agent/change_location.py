@@ -12,7 +12,13 @@ from typing import Literal
 import yaml
 from pydantic import ValidationError
 
-from assurance_agent.config import CONFIG_RELPATH, AaConfig, ConfigInvalidError, ConfigNotFoundError, load_config
+from assurance_agent.config import (
+    CONFIG_RELPATH,
+    AaConfig,
+    ConfigInvalidError,
+    ConfigNotFoundError,
+    load_config,
+)
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import assert_change_id_safe
 

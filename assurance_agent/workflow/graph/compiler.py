@@ -273,15 +273,11 @@ def compile_packaged_workflow(
 
     assurance_issues = find_current_assurance_conformance_issues(schema)
     if assurance_issues:
-        details = "\n  - ".join(
-            f"{issue.code}@{issue.locator}: {issue.detail}" for issue in assurance_issues
-        )
+        details = "\n  - ".join(f"{issue.code}@{issue.locator}: {issue.detail}" for issue in assurance_issues)
         raise CompileError(f"packaged assurance conformance failed:\n  - {details}")
     healing_issues = find_current_healing_conformance_issues(schema, contracts)
     if healing_issues:
-        details = "\n  - ".join(
-            f"{issue.code}@{issue.locator}: {issue.detail}" for issue in healing_issues
-        )
+        details = "\n  - ".join(f"{issue.code}@{issue.locator}: {issue.detail}" for issue in healing_issues)
         raise CompileError(f"packaged healing conformance failed:\n  - {details}")
     return compile_workflow(schema, contracts)
 

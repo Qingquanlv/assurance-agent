@@ -68,9 +68,7 @@ def test_decide_coexistence_selects_changes_for_active(tmp_path: Path) -> None:
     (tmp_path / "qa" / "archive" / "CH-1").mkdir(parents=True)
     roots = parse_change_roots(raw)
     probes = probe_change_location_candidates(tmp_path, "CH-1", roots)
-    decided = decide_change_location(
-        change_id="CH-1", preference="active", roots=roots, probes=probes
-    )
+    decided = decide_change_location(change_id="CH-1", preference="active", roots=roots, probes=probes)
     assert decided.source == "changes"
     assert decided.repo_path == "qa/changes/CH-1"
     assert probes[0].lstat_kind == "directory"

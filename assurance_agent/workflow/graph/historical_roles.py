@@ -572,8 +572,7 @@ def _codegen_nodes(graph: GraphDef, layer: str) -> list[str]:
     return [
         node_id
         for node_id, node in graph.nodes.items()
-        if (node.uses == f"skill:{suffix}" or node.uses.endswith(f":{suffix}"))
-        and "fixer" not in node.uses
+        if (node.uses == f"skill:{suffix}" or node.uses.endswith(f":{suffix}")) and "fixer" not in node.uses
     ]
 
 

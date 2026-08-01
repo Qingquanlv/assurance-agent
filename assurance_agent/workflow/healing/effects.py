@@ -283,8 +283,7 @@ def reconcile_fixer_proposal_approved(
         runtime=runtime,
         event=event,
         match=lambda raw: (
-            raw.get("type") == "fixer_proposal_approved"
-            and raw.get("approval_id") == payload.approval_id
+            raw.get("type") == "fixer_proposal_approved" and raw.get("approval_id") == payload.approval_id
         ),
         expected_wire=_event_wire(event),
     )

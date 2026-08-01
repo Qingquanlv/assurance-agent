@@ -240,6 +240,8 @@ def test_observe_assurance_contract_crosses_production_boundaries(tmp_path: Path
 
 def test_assurance_fixture_tree_contains_exactly_four_layer_roots() -> None:
     roots = sorted(
-        path.name for path in ASSURANCE_FIXTURE_ROOT.iterdir() if path.is_dir() and path.name.endswith("-contract")
+        path.name
+        for path in ASSURANCE_FIXTURE_ROOT.iterdir()
+        if path.is_dir() and path.name.endswith("-contract")
     )
     assert roots == ["api-contract", "e2e-contract", "fuzz-contract", "performance-contract"]

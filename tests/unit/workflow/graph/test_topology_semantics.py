@@ -137,7 +137,11 @@ def test_topology_closed_consumer_set_ast_import_inventory() -> None:
                     if isinstance(target, ast.Name) and target.id == short:
                         found = True
                         break
-            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == short:
+            if (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Name)
+                and node.target.id == short
+            ):
                 found = True
         assert found, f"inventory member not defined in module AST: {item.qualified_name}"
         assert _implementation_digest(obj) == item.source_digest
@@ -163,7 +167,9 @@ def test_topology_key_reorder_without_byte_change_is_stable() -> None:
 
     payload = json.loads(baseline.decode("utf-8"))
     scrambled = {
-        "runtime_versions": {k: payload["runtime_versions"][k] for k in reversed(list(payload["runtime_versions"]))},
+        "runtime_versions": {
+            k: payload["runtime_versions"][k] for k in reversed(list(payload["runtime_versions"]))
+        },
         "consumers": list(reversed(payload["consumers"])),
         "dependencies": list(reversed(payload["dependencies"])),
         "semantics_id": payload["semantics_id"],
@@ -172,7 +178,9 @@ def test_topology_key_reorder_without_byte_change_is_stable() -> None:
     }
     # Canonical builder always re-sorts; direct re-encode of scrambled must differ,
     # while rebuild from overrides/none stays identical to baseline.
-    scrambled_bytes = (json.dumps(scrambled, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
+    scrambled_bytes = (json.dumps(scrambled, separators=(",", ":"), ensure_ascii=False) + "\n").encode(
+        "utf-8"
+    )
     assert scrambled_bytes != baseline
     assert topology_safety_semantics_bytes() == baseline
     rebuilt = TopologySemanticsManifest.from_canonical_bytes(baseline)

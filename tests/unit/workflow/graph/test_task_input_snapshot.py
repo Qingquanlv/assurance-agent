@@ -939,9 +939,7 @@ gates: {}
     locks = ReleaseAfterFirstConflict()
 
     def update_issue(task, workspace, context):  # noqa: ANN001
-        (workspace.project_root / "qa/issues/ISSUE-1.json").write_text(
-            '{"version":2}\n', encoding="utf-8"
-        )
+        (workspace.project_root / "qa/issues/ISSUE-1.json").write_text('{"version":2}\n', encoding="utf-8")
         result = workspace.change_dir / "results" / "update.json"
         result.parent.mkdir(parents=True)
         result.write_text('{"updated":true}\n', encoding="utf-8")

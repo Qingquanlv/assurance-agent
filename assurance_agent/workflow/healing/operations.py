@@ -317,8 +317,7 @@ def operation_combine_fixer_safety(
         skip_or_xfail_added = skip_or_xfail_added or fragment.skip_or_xfail_added
         unrelated_tests_modified = unrelated_tests_modified or fragment.unrelated_tests_modified
         assertion_expected_value_changes_detected = (
-            assertion_expected_value_changes_detected
-            or fragment.assertion_expected_value_changes_detected
+            assertion_expected_value_changes_detected or fragment.assertion_expected_value_changes_detected
         )
         high_risk_proposal_applied = high_risk_proposal_applied or fragment.high_risk_proposal_applied
     for target in ("api", "e2e"):
@@ -517,8 +516,7 @@ def _verify_fixer_candidate_receipt(
             change_id=context.change_id,
             layer=target,
             current_change_repo_path=str(
-                verify_bundle.get("current_change_repo_path")
-                or f"qa/changes/{context.change_id}"
+                verify_bundle.get("current_change_repo_path") or f"qa/changes/{context.change_id}"
             ),
             project_root=context.project_root,
         )
@@ -684,7 +682,10 @@ def _authority_paths_from_manifest_and_write_set(
                 )
             )
         elif entry.disposition == "reused":
-            if not entry.repo_path.startswith(private_root.rstrip("/") + "/") and entry.repo_path != private_root:
+            if (
+                not entry.repo_path.startswith(private_root.rstrip("/") + "/")
+                and entry.repo_path != private_root
+            ):
                 # Summary-only / shared helpers outside private root do not gain edit authority.
                 continue
             # Fail closed: reuse authority requires a present, matching input-snapshot digest.

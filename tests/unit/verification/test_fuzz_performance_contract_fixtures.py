@@ -49,9 +49,10 @@ def test_fixture_is_a_strong_review_and_canonical_plan(layer: str) -> None:
     assert review.auto_fix_allowed is False
     assert review.auto_fix_plan == []
     assert "## Factory Mapping" in fixture.plan_texts[get_layer_assurance_profile(layer).plan_artifacts[-1]]
-    assert "| Shared Module | Function | Ownership |" in fixture.plan_texts[
-        get_layer_assurance_profile(layer).plan_artifacts[-1]
-    ]
+    assert (
+        "| Shared Module | Function | Ownership |"
+        in fixture.plan_texts[get_layer_assurance_profile(layer).plan_artifacts[-1]]
+    )
     codegen = fixture.plan_texts[get_layer_assurance_profile(layer).plan_artifacts[-1]]
     if layer == "fuzz":
         assert "| Case ID | Test Function | Target File |" in codegen

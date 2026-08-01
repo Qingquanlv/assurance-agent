@@ -1040,9 +1040,7 @@ def test_scheduler_interrupt_with_named_validator_remains_foldable(tmp_path: Pat
         out.write_bytes(body)
         (workspace.change_dir / "codegen").mkdir(parents=True, exist_ok=True)
         (workspace.change_dir / "codegen" / "api-codegen-summary.md").write_bytes(b"# s\n")
-        existing_digest = hashlib.sha256(
-            (project / "tests" / "api" / "existing.py").read_bytes()
-        ).hexdigest()
+        existing_digest = hashlib.sha256((project / "tests" / "api" / "existing.py").read_bytes()).hexdigest()
         manifest = ApiGeneratedFilesV1.model_validate(
             {
                 "schema_version": "1",
@@ -1255,9 +1253,7 @@ def test_scheduler_missing_snapshot_plan_is_invalid_output_not_live_fs(tmp_path:
         out.write_bytes(body)
         (workspace.change_dir / "codegen").mkdir(parents=True, exist_ok=True)
         (workspace.change_dir / "codegen" / "api-codegen-summary.md").write_bytes(b"# s\n")
-        existing_digest = hashlib.sha256(
-            (project / "tests" / "api" / "existing.py").read_bytes()
-        ).hexdigest()
+        existing_digest = hashlib.sha256((project / "tests" / "api" / "existing.py").read_bytes()).hexdigest()
         manifest = ApiGeneratedFilesV1.model_validate(
             {
                 "schema_version": "1",
@@ -1321,9 +1317,7 @@ def test_scheduler_missing_snapshot_plan_is_invalid_output_not_live_fs(tmp_path:
     )
     assert result.succeeded == ()
     assert result.failed == (task.task_id,)
-    failed = [
-        event for event in read_events_strict(change) if event.get("type") == "task_attempt_failed"
-    ]
+    failed = [event for event in read_events_strict(change) if event.get("type") == "task_attempt_failed"]
     assert len(failed) == 1
     assert failed[0]["error_kind"] == "invalid_output"
     assert "missing codegen plan" in str(failed[0]["message"])

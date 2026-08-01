@@ -170,8 +170,7 @@ def _migrate_invocation_started(event: dict[str, object]) -> None:
         missing = [name for name in required if not event.get(name)]
         if missing:
             raise ValueError(
-                "event_schema_version 6 requires complete semantic bindings; "
-                f"missing {', '.join(missing)}"
+                f"event_schema_version 6 requires complete semantic bindings; missing {', '.join(missing)}"
             )
     if "ir_digest" not in event:
         graph_digest = event.get("graph_digest")

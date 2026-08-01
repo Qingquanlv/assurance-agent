@@ -708,9 +708,7 @@ def _binding_fields(event: dict[str, object]) -> dict[str, str]:
         "gate_semantics_digest": str(event["gate_semantics_digest"]),
         "assurance_profile_digest": str(event["assurance_profile_digest"]),
         "gate_semantics_object_id": str(event.get("gate_semantics_object_id", "")),
-        "topology_safety_semantics_object_id": str(
-            event.get("topology_safety_semantics_object_id", "")
-        ),
+        "topology_safety_semantics_object_id": str(event.get("topology_safety_semantics_object_id", "")),
         "topology_safety_semantics_digest": str(event.get("topology_safety_semantics_digest", "")),
         "commit_safety_semantics_object_id": str(event.get("commit_safety_semantics_object_id", "")),
         "commit_safety_semantics_digest": str(event.get("commit_safety_semantics_digest", "")),
@@ -773,8 +771,7 @@ def test_root_start_pins_project_policy_snapshot_and_records_origin(tmp_path: Pa
         change_dir / gate_semantics_snapshot_relpath(str(started["gate_semantics_object_id"]))
     ).read_bytes() == gate_semantics_bytes()
     assert (
-        change_dir
-        / topology_semantics_snapshot_relpath(str(started["topology_safety_semantics_object_id"]))
+        change_dir / topology_semantics_snapshot_relpath(str(started["topology_safety_semantics_object_id"]))
     ).read_bytes() == topology_safety_semantics_bytes()
     assert (
         change_dir
@@ -1187,6 +1184,7 @@ def test_v4_parent_child_inheritance_does_not_fabricate_profile_snapshot(
     assert child.assurance_profile_bytes is None
     assert not (change_dir / assurance_profile_snapshot_relpath(child.assurance_profile_digest)).exists()
 
+
 def test_v6_root_binding_stages_three_semantics_objects_write_once(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     _write_policy(project, _POLICY_A)
@@ -1223,8 +1221,7 @@ def test_v6_root_binding_stages_three_semantics_objects_write_once(tmp_path: Pat
         change_dir / topology_semantics_snapshot_relpath(binding.topology_safety_semantics_object_id)
     ).read_bytes() == binding.topology_safety_semantics_bytes
     assert (
-        change_dir
-        / commit_safety_semantics_snapshot_relpath(binding.commit_safety_semantics_object_id)
+        change_dir / commit_safety_semantics_snapshot_relpath(binding.commit_safety_semantics_object_id)
     ).read_bytes() == binding.commit_safety_semantics_bytes
     with transaction(change_dir) as txn:
         stage_pinned_definitions(txn, compiled, binding, contracts=contracts)
@@ -1412,4 +1409,3 @@ def test_v6_tamper_of_topology_bytes_fails_verify(tmp_path: Path) -> None:
     path.write_bytes(b'{"semantics_id":"tampered"}\n')
     with pytest.raises(PolicyError, match="topology semantics"):
         verify_pinned_definitions(binding, change_dir)
-

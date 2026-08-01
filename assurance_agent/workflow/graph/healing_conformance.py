@@ -55,9 +55,7 @@ def find_current_healing_conformance_issues(
     ``active_targets`` selects which record/combine hard-output expectations apply
     for API-only / E2E-only / both positive controls.
     """
-    contract_map = (
-        contracts.contracts if isinstance(contracts, ExecutionContractCatalog) else dict(contracts)
-    )
+    contract_map = contracts.contracts if isinstance(contracts, ExecutionContractCatalog) else dict(contracts)
     targets: tuple[Literal["api", "e2e"], ...] = (
         tuple(active_targets) if active_targets is not None else ("api", "e2e")
     )

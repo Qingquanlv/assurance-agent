@@ -155,6 +155,11 @@ def test_commit_safety_closed_registry_kinds_exactly_once() -> None:
         assert item.qualified_name in names
 
 
+def test_exact_validator_and_effect_consumer_set() -> None:
+    """Task 23 mechanical scan alias for closed validator/effect consumer sets."""
+    test_commit_safety_closed_registry_kinds_exactly_once()
+
+
 def test_commit_safety_ast_import_inventory_defines_each_member_once() -> None:
     manifest = build_runtime_commit_safety_manifest()
     seen_short: dict[str, str] = {}
@@ -227,10 +232,14 @@ def test_commit_safety_key_reorder_without_byte_change_is_stable() -> None:
         "semantic_digest": payload["semantic_digest"],
         "dependencies": list(reversed(payload["dependencies"])),
         "consumers": list(reversed(payload["consumers"])),
-        "runtime_versions": {k: payload["runtime_versions"][k] for k in reversed(list(payload["runtime_versions"]))},
+        "runtime_versions": {
+            k: payload["runtime_versions"][k] for k in reversed(list(payload["runtime_versions"]))
+        },
         "schema_version": payload["schema_version"],
         "semantics_id": payload["semantics_id"],
     }
-    scrambled_bytes = (json.dumps(scrambled, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
+    scrambled_bytes = (json.dumps(scrambled, separators=(",", ":"), ensure_ascii=False) + "\n").encode(
+        "utf-8"
+    )
     assert scrambled_bytes != baseline
     assert commit_safety_semantics_bytes() == baseline

@@ -504,8 +504,7 @@ def _read_pinned_semantics_bytes(
     recorded_digest = payload.get("semantic_digest")
     if recorded_digest != semantic_digest:
         raise PolicyError(
-            f"{label} semantic digest mismatch for {path}: "
-            f"expected {semantic_digest}, got {recorded_digest}"
+            f"{label} semantic digest mismatch for {path}: expected {semantic_digest}, got {recorded_digest}"
         )
     try:
         recomputed = canonical_descriptor_bytes(

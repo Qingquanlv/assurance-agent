@@ -218,13 +218,8 @@ def _select_baseline(
     # One episode may have legacy+v2 baseline claims only when equivalent.
     chosen = matching[0]
     for other in matching[1:]:
-        if (
-            other.entry_batch_id != chosen.entry_batch_id
-            or other.artifact_sha256 != chosen.artifact_sha256
-        ):
-            raise HealingProjectionIntegrityError(
-                f"conflicting baselines for episode {episode_id}"
-            )
+        if other.entry_batch_id != chosen.entry_batch_id or other.artifact_sha256 != chosen.artifact_sha256:
+            raise HealingProjectionIntegrityError(f"conflicting baselines for episode {episode_id}")
     return min(matching, key=lambda item: item.source_seq)
 
 
@@ -381,13 +376,15 @@ def _project_records(
                 outcome=str(event["outcome"]),
                 proposal_ids=tuple(str(p) for p in (event.get("proposal_ids") or [])),  # type: ignore[arg-type]
                 claimed_modified_paths=tuple(
-                    str(p) for p in (event.get("claimed_modified_paths") or [])  # type: ignore[arg-type]
+                    str(p)
+                    for p in (event.get("claimed_modified_paths") or [])  # type: ignore[arg-type]
                 ),
                 intent_sha256=str(event["intent_sha256"]),
                 write_set_id=str(event["write_set_id"]),
                 safety_payload_sha256=str(event["safety_payload_sha256"]),
                 files_modified=tuple(
-                    str(p) for p in (event.get("claimed_modified_paths") or [])  # type: ignore[arg-type]
+                    str(p)
+                    for p in (event.get("claimed_modified_paths") or [])  # type: ignore[arg-type]
                 ),
                 source_seq=event_seq(event),
                 form="v2",
@@ -409,14 +406,10 @@ def _project_records(
                 or existing.write_set_id != record.write_set_id
                 or existing.safety_payload_sha256 != record.safety_payload_sha256
             ):
-                raise HealingProjectionIntegrityError(
-                    f"record payload conflict for key {record.record_key}"
-                )
+                raise HealingProjectionIntegrityError(f"record payload conflict for key {record.record_key}")
             continue
         if existing.files_modified != record.files_modified or existing.target != record.target:
-            raise HealingProjectionIntegrityError(
-                f"record payload conflict for key {record.record_key}"
-            )
+            raise HealingProjectionIntegrityError(f"record payload conflict for key {record.record_key}")
     return tuple(sorted(by_key.values(), key=lambda item: item.source_seq))
 
 

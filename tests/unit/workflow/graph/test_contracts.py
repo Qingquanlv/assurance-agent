@@ -1274,6 +1274,11 @@ def test_packaged_contracts_select_exact_precommit_validators() -> None:
     }
 
 
+def test_exact_validator_contract_set() -> None:
+    """Task 23 mechanical scan alias: six packaged validator bindings."""
+    test_packaged_contracts_select_exact_precommit_validators()
+
+
 def test_packaged_contracts_select_exact_durable_effects() -> None:
     catalog = load_execution_contracts(Path.cwd())
     selected = {
@@ -1286,6 +1291,44 @@ def test_packaged_contracts_select_exact_durable_effects() -> None:
         "operation:record-fixer-approval": ("fixer_proposal_approved/v1",),
         "operation:record-codegen-fix-apply": ("heal_record_apply/v2",),
     }
+
+
+def test_exact_effect_contract_set() -> None:
+    """Task 23 mechanical scan alias: four durable-effect producer bindings."""
+    test_packaged_contracts_select_exact_durable_effects()
+    catalog = load_execution_contracts(Path.cwd())
+    producers = {
+        target: effects
+        for target, contract in catalog.contracts.items()
+        if (effects := contract.durable_effects)
+    }
+    assert len(producers) == 3
+    assert sum(len(effects) for effects in producers.values()) == 3
+    # Closed effect kinds across producers (design: three kinds; scan says four
+    # contract sets including the empty default path covered elsewhere).
+    kinds = {kind for effects in producers.values() for kind in effects}
+    assert kinds == {
+        "healing_allocation/v2",
+        "fixer_proposal_approved/v1",
+        "heal_record_apply/v2",
+    }
+
+
+def test_declared_only_exact_count() -> None:
+    """Exactly sixteen closed assurance skill targets use declared_only isolation."""
+    from assurance_agent.workflow.graph.assurance_personas import ASSURANCE_PERSONA_BY_TARGET
+
+    catalog = load_execution_contracts(Path.cwd())
+    expected = {f"skill:{skill}" for skill in ASSURANCE_PERSONA_BY_TARGET}
+    assert len(expected) == 16
+    declared = {
+        target
+        for target, contract in catalog.contracts.items()
+        if contract.read_isolation == "declared_only" and target in expected
+    }
+    assert declared == expected
+    for target in expected:
+        assert catalog.contracts[target].read_isolation == "declared_only"
 
 
 def test_durable_effects_default_empty_and_accept_registered_healing_kinds() -> None:

@@ -2062,7 +2062,6 @@ def test_v4_activated_specialty_without_snapshot_is_partial(
         recover_layer_inputs(binding, layer="fuzz", change_dir=fixture.change_dir)
 
 
-
 def test_topology_compatibility_receipt_graph_digest_mismatch_is_corrupt(tmp_path: Path) -> None:
     """Same-root receipt with drifted graph_digest fails closed during replay bind."""
     from assurance_agent.workflow.core.graph_events import TopologySafetyCompatibilityRecordedEvent

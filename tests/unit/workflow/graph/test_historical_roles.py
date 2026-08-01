@@ -216,7 +216,9 @@ def test_renamed_safe_graph_one_manifest_drives_compile_selection_and_v6() -> No
             ingest_catalog=ingest,
             ingest_catalog_digest=ingest.digest,
             contracts=pinned,
-            contract_digests={target: canonical_digest(pinned.contracts[target]) for target in pinned.contracts},
+            contract_digests={
+                target: canonical_digest(pinned.contracts[target]) for target in pinned.contracts
+            },
             historical_roles=roles,
         ),
     )
@@ -241,7 +243,9 @@ def test_v6_safety_mutations() -> None:
 
     bypass = _add_direct_codegen_bypass(schema, "api")
     bypass_roles = fixture_roles_from_schema(bypass)
-    bypass_topo = classify_pinned_layer_topology_v6(bypass, _topology_spec("api"), historical_roles=bypass_roles)
+    bypass_topo = classify_pinned_layer_topology_v6(
+        bypass, _topology_spec("api"), historical_roles=bypass_roles
+    )
     assert bypass_topo.status == "partial"
     assert any("bypass" in item for item in bypass_topo.diagnostics)
 
@@ -249,10 +253,17 @@ def test_v6_safety_mutations() -> None:
     assurance = schema.graphs["assurance"]
     api = assurance.nodes["api"].model_copy(update={"when": "unknown_builtin(params.test_types)"})
     unknown = schema.model_copy(
-        update={"graphs": {**schema.graphs, "assurance": assurance.model_copy(update={"nodes": {**assurance.nodes, "api": api}})}}
+        update={
+            "graphs": {
+                **schema.graphs,
+                "assurance": assurance.model_copy(update={"nodes": {**assurance.nodes, "api": api}}),
+            }
+        }
     )
     unknown_roles = fixture_roles_from_schema(unknown)
-    unknown_topo = classify_pinned_layer_topology_v6(unknown, _topology_spec("api"), historical_roles=unknown_roles)
+    unknown_topo = classify_pinned_layer_topology_v6(
+        unknown, _topology_spec("api"), historical_roles=unknown_roles
+    )
     assert unknown_topo.status == "partial"
     assert any(
         "unknown" in item or "invalid expression" in item or "allow-list" in item
@@ -297,7 +308,9 @@ def test_v6_safety_mutations() -> None:
     from assurance_agent.workflow.graph.compiler import canonical_digest
 
     pinned = ExecutionContractCatalog(
-        contracts={target: contracts.contracts[target] for target in current_targets if target in contracts.contracts}
+        contracts={
+            target: contracts.contracts[target] for target in current_targets if target in contracts.contracts
+        }
     )
     compiled = compile_historical_workflow(
         bypass,
@@ -305,7 +318,9 @@ def test_v6_safety_mutations() -> None:
             ingest_catalog=ingest,
             ingest_catalog_digest=ingest.digest,
             contracts=pinned,
-            contract_digests={target: canonical_digest(pinned.contracts[target]) for target in pinned.contracts},
+            contract_digests={
+                target: canonical_digest(pinned.contracts[target]) for target in pinned.contracts
+            },
             historical_roles=bypass_roles,
         ),
     )

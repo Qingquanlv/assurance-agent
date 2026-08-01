@@ -34,9 +34,7 @@ def _layer_suffix(layer: LayerName) -> str:
 
 @pytest.mark.parametrize("layer", LAYERS)
 @pytest.mark.parametrize("seam", _RESTART_SEAMS)
-def test_ordinary_restart_after_committed_seam(
-    tmp_path: Path, layer: LayerName, seam: str
-) -> None:
+def test_ordinary_restart_after_committed_seam(tmp_path: Path, layer: LayerName, seam: str) -> None:
     fixture = make_fixture(tmp_path, selected_layers=(layer,), applicable_layers=(layer,))
     crash = CrashAfterCommittedNode(node_id=seam, occurrence=1)
     assert fixture.bundle.resolved is not None
@@ -72,9 +70,7 @@ def test_ordinary_restart_after_committed_seam(
 
 
 @pytest.mark.parametrize("layer", ("api", "e2e"))
-def test_wrapper_reuses_child_after_crash_before_wrapper_success(
-    tmp_path: Path, layer: LayerName
-) -> None:
+def test_wrapper_reuses_child_after_crash_before_wrapper_success(tmp_path: Path, layer: LayerName) -> None:
     fixture = make_fixture(tmp_path, selected_layers=(layer,), applicable_layers=(layer,))
     # Crash after the branch wrapper's child has started review (child created)
     # but before the wrapper task itself commits — approximate by crashing after
@@ -130,7 +126,9 @@ def test_api_e2e_auto_fixer_creates_new_epoch(tmp_path: Path, layer: LayerName) 
     assert count_attempts(events, node_id="codegen") == 1
     # First-epoch mechanical evidence must not be the only bound attempt.
     mechanical_started = [
-        e for e in events if e.get("type") == "task_attempt_started" and e.get("node_id") == "mechanical-plan-checks"
+        e
+        for e in events
+        if e.get("type") == "task_attempt_started" and e.get("node_id") == "mechanical-plan-checks"
     ]
     assert len(mechanical_started) >= 2
 
@@ -230,8 +228,7 @@ def test_knowledge_gap_routes_to_knowledge_remediation(tmp_path: Path, layer: La
     reasons = {e.get("checkpoint") or e.get("reason") for e in interrupts}
     # Checkpoint binds the plan-review gate for knowledge remediation.
     assert any(
-        isinstance(r, str) and ("plan-review-gate" in r or "knowledge" in r.lower())
-        for r in reasons
+        isinstance(r, str) and ("plan-review-gate" in r or "knowledge" in r.lower()) for r in reasons
     ) or any(
         e.get("type") == "task_attempt_succeeded" and e.get("node_id") == "knowledge-remediation"
         for e in events
@@ -266,9 +263,7 @@ def test_accept_risk_still_requires_precheck(tmp_path: Path, layer: LayerName) -
     review_path = fixture.change_dir / "review" / review_name
     if review_path.is_file():
         payload = json.loads(review_path.read_text(encoding="utf-8"))
-        payload["required_capabilities"] = [
-            "capabilities.domain_factories.account.missing_fixture_only"
-        ]
+        payload["required_capabilities"] = ["capabilities.domain_factories.account.missing_fixture_only"]
         review_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     fresh = rebuild_runtime(fixture)
     resumed = resume_root(

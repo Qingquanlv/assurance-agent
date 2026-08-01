@@ -296,8 +296,11 @@ def test_uncommitted_predecessor_blocks_preview(tmp_path: Path) -> None:
     prep = _task_projection(tasks["prep"], "succeeded", outputs_committed=False)
     projection = _projection(compiled, tasks=[prep])
 
+    # Fail-closed: succeeded-but-uncommitted predecessors stay unresolved, so
+    # downstream work is not selected and selected-wave preview returns None.
     plan = plan_superstep(compiled, projection, _context(tmp_path), _FakeArtifacts())
-    assert [task.node_id for task in plan.tasks] == ["sync-leaf"]
+    assert plan.tasks == ()
+    assert plan.terminal is None
 
     assert _preview(compiled, projection, tmp_path) is None
 

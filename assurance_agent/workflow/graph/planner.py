@@ -2351,10 +2351,7 @@ def _has_inflight(outcomes: dict[str, _Outcome]) -> bool:
             outcome.task.status in ("running", "interrupted")
             or (outcome.task.status == "pending" and outcome.task.next_retry_at is None)
             # D14: succeeded but uncommitted/unacked still owns recovery work.
-            or (
-                outcome.task.status == "succeeded"
-                and not _task_ready_as_predecessor(outcome.task)
-            )
+            or (outcome.task.status == "succeeded" and not _task_ready_as_predecessor(outcome.task))
         )
         for outcome in outcomes.values()
     )

@@ -32,9 +32,7 @@ def commit_healing_allocation_ledger(
         return False
 
     with transaction(change_dir) as txn:
-        baseline_exists = (
-            projection.baseline is not None and projection.baseline.episode_id == episode_id
-        )
+        baseline_exists = projection.baseline is not None and projection.baseline.episode_id == episode_id
         if not baseline_exists:
             txn.append_strict(
                 HealingEntryBaselinePinnedEvent(

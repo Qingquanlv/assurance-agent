@@ -57,7 +57,10 @@ def _assert_applicable_cell(fixture, layer: str, invocation_id: str) -> None:
     targets = {inv.target for inv in fixture.adapter.invocations}
     assert _REVIEWER[layer] in targets
     assert _CODEGEN[layer] in targets
-    assert not (targets & {"skill:aa-api-plan", "skill:aa-e2e-plan", "skill:aa-fuzz-plan", "skill:aa-performance-plan"})
+    assert not (
+        targets
+        & {"skill:aa-api-plan", "skill:aa-e2e-plan", "skill:aa-fuzz-plan", "skill:aa-performance-plan"}
+    )
     profile = get_layer_assurance_profile(layer)
     assert (fixture.change_dir / profile.review_artifact).is_file()
     assert (fixture.change_dir / profile.checks_artifact).is_file()
@@ -168,9 +171,7 @@ def test_missing_manifest_fails_precommit_without_commit(tmp_path: Path) -> None
     events = events_for_root(root_events(fixture.change_dir), result.invocation_id)
     assert count_attempts(events, node_id="codegen") >= 1
     succeeded_codegen = [
-        e
-        for e in events
-        if e.get("type") == "task_attempt_succeeded" and e.get("node_id") == "codegen"
+        e for e in events if e.get("type") == "task_attempt_succeeded" and e.get("node_id") == "codegen"
     ]
     assert not succeeded_codegen
 

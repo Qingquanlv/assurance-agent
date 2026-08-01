@@ -827,9 +827,7 @@ class Scheduler:
                         task=task,
                         projection=projection,
                         now=self._clock.now(),
-                        allow_graph_wrapper_child_resume=_allow_graph_wrapper_child_resume(
-                            task, context
-                        ),
+                        allow_graph_wrapper_child_resume=_allow_graph_wrapper_child_resume(task, context),
                     )
                     if decision.kind == "wait" and decision.next_retry_at is not None:
                         retry_ats.append(decision.next_retry_at)
@@ -933,6 +931,25 @@ class Scheduler:
         if decision.kind in ("failed", "exhausted"):
             return WaveResult(superstep_id=plan.superstep_id, failed=(task.task_id,))
 
+        # Committed-but-unacked publications are not transient flock contention:
+        # deferral would busy-spin (default backoff is 0s) until the foreign
+        # change resumes. Fail closed so the later owner surfaces ``failed``.
+        # Non-retryable conflict policies also fail closed via an attempt.
+        conflict_retryable = "conflict" in task.retry_policy.retry_on and "conflict" in task.retryable_errors
+        permanent_publication_block = "unacknowledged publication" in message
+        if permanent_publication_block or not conflict_retryable:
+            return self._fail_closed_project_resource_conflict(
+                plan=plan,
+                projection=projection,
+                context=context,
+                task=task,
+                message=message,
+                attempt_number=decision.attempt_number
+                if decision.kind == "start" and decision.attempt_number is not None
+                else 1,
+                force_terminal=permanent_publication_block,
+            )
+
         token = blocked_token or next(
             (item for item in task.resources.exclusive if item.startswith("project:")),
             "project:unknown",
@@ -979,6 +996,80 @@ class Scheduler:
                 )
             )
         return WaveResult(superstep_id=plan.superstep_id, retry_at=next_retry)
+
+    def _fail_closed_project_resource_conflict(
+        self,
+        *,
+        plan: PlanResult,
+        projection: GraphProjection,
+        context: RuntimeContext,
+        task: ExecutableTask,
+        message: str,
+        attempt_number: int,
+        force_terminal: bool,
+    ) -> WaveResult:
+        """Record a conflict attempt failure; optional hard stop for unacked publications."""
+        attempt_id = f"{task.task_id}-a{attempt_number}"
+        started_at = self._clock.now()
+        lease_seconds = max(
+            task.timeout_policy.heartbeat_seconds * 3.0,
+            task.timeout_policy.heartbeat_seconds + 1.0,
+        )
+        lease_expires_at = (started_at + timedelta(seconds=lease_seconds)).isoformat()
+        pending_plan_events = _unwritten_activation_events(context.change_dir, plan.strict_events)
+        with transaction(context.change_dir) as txn:
+            for event in pending_plan_events:
+                txn.append_strict(event)
+            txn.append_strict(
+                TaskAttemptStartedEvent(
+                    type="task_attempt_started",
+                    invocation_id=task.invocation_id,
+                    checkpoint_ns=task.checkpoint_ns,
+                    superstep_id=plan.superstep_id,
+                    task_id=task.task_id,
+                    attempt_id=attempt_id,
+                    node_id=task.node_id,
+                    input_sha256=task.input_sha256,
+                    graph_digest=projection.graph_digest,
+                    contract_digest=task.contract_digest,
+                    attempt_number=attempt_number,
+                    lease_expires_at=lease_expires_at,
+                    started_at=started_at.isoformat(),
+                )
+            )
+        if force_terminal:
+            with transaction(context.change_dir) as txn:
+                txn.append_strict(
+                    TaskAttemptFailedEvent(
+                        type="task_attempt_failed",
+                        invocation_id=task.invocation_id,
+                        checkpoint_ns=task.checkpoint_ns,
+                        superstep_id=plan.superstep_id,
+                        task_id=task.task_id,
+                        attempt_id=attempt_id,
+                        error_kind="conflict",
+                        message=message,
+                        next_retry_at=None,
+                    )
+                )
+            return WaveResult(superstep_id=plan.superstep_id, failed=(task.task_id,))
+        settled = self._persist_failure(
+            prepared=_PreparedAttempt(
+                task=task,
+                attempt_id=attempt_id,
+                attempt_number=attempt_number,
+                workspace=None,
+            ),
+            plan=plan,
+            context=context,
+            error_kind="conflict",
+            message=message,
+        )
+        return WaveResult(
+            superstep_id=plan.superstep_id,
+            failed=(task.task_id,),
+            retry_at=settled.retry_at,
+        )
 
     @staticmethod
     def _record_settled(
@@ -1500,16 +1591,12 @@ class Scheduler:
         definition_semantics = {
             "assurance_profile_digest": projection.assurance_profile_digest or "unbound",
             "commit_safety_semantics_digest": projection.commit_safety_semantics_digest or "unbound",
-            "commit_safety_semantics_object_id": (
-                projection.commit_safety_semantics_object_id or "unbound"
-            ),
+            "commit_safety_semantics_object_id": (projection.commit_safety_semantics_object_id or "unbound"),
             "contract_digest": prepared.task.contract_digest,
             "gate_semantics_digest": projection.gate_semantics_digest or "unbound",
             "gate_semantics_object_id": projection.gate_semantics_object_id or "unbound",
             "graph_digest": projection.graph_digest,
-            "topology_safety_semantics_digest": (
-                projection.topology_safety_semantics_digest or "unbound"
-            ),
+            "topology_safety_semantics_digest": (projection.topology_safety_semantics_digest or "unbound"),
             "topology_safety_semantics_object_id": (
                 projection.topology_safety_semantics_object_id or "unbound"
             ),
@@ -2094,9 +2181,7 @@ def _deferral_id(
     return "sha256:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
-def _unwritten_activation_events(
-    change_dir: Path, events: Sequence[BaseModel]
-) -> tuple[BaseModel, ...]:
+def _unwritten_activation_events(change_dir: Path, events: Sequence[BaseModel]) -> tuple[BaseModel, ...]:
     """Return node_activated events from a plan that are not yet durable."""
     if not events:
         return ()

@@ -363,9 +363,7 @@ def _remediation_diagnostics(
         for node_id, node in cycle.nodes.items()
         if node.uses.startswith("skill:") and "fixer" in node.uses
     ]
-    interrupts = [
-        node_id for node_id, node in cycle.nodes.items() if node.uses == "builtin:interrupt"
-    ]
+    interrupts = [node_id for node_id, node in cycle.nodes.items() if node.uses == "builtin:interrupt"]
     for node_id in interrupts:
         route = _route_from(cycle, node_id)
         locator = f"layer:{roles.layer}:remediation:{node_id}"
@@ -421,9 +419,7 @@ def _gate_diagnostics(
             continue
         for call in (item for item in _walk(expr) if isinstance(item, Call)):
             if call.callee not in BUILTIN_ARITY and call.callee not in _REPLAYABLE_PLAN_BUILTINS:
-                errors.append(
-                    f"gate:{topology_spec.gate_id}:{rule.field}: unknown builtin {call.callee!r}"
-                )
+                errors.append(f"gate:{topology_spec.gate_id}:{rule.field}: unknown builtin {call.callee!r}")
     return errors
 
 

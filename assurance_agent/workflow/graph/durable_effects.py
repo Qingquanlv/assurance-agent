@@ -404,9 +404,7 @@ def validate_result_intents(
     for raw in intents:
         try:
             intent = (
-                raw
-                if isinstance(raw, DurableEffectIntentV1)
-                else DurableEffectIntentV1.model_validate(raw)
+                raw if isinstance(raw, DurableEffectIntentV1) else DurableEffectIntentV1.model_validate(raw)
             )
         except ValidationError as exc:
             raise DurableEffectValidationError(f"malformed durable effect intent: {exc}") from exc
@@ -414,9 +412,7 @@ def validate_result_intents(
         if entry is None:
             raise DurableEffectValidationError(f"unregistered durable effect kind: {intent.kind}")
         if intent.reconciler_semantics_digest != entry.reconciler_semantics_digest:
-            raise DurableEffectValidationError(
-                f"reconciler_semantics_digest mismatch for {intent.kind}"
-            )
+            raise DurableEffectValidationError(f"reconciler_semantics_digest mismatch for {intent.kind}")
         try:
             entry.payload_model.model_validate(intent.payload)
         except ValidationError as exc:
@@ -440,8 +436,7 @@ def validate_result_intents(
     declared = list(declared_kinds)
     if len(parsed) != len(declared):
         raise DurableEffectValidationError(
-            f"durable effect cardinality mismatch for {target}: "
-            f"declared {len(declared)}, got {len(parsed)}"
+            f"durable effect cardinality mismatch for {target}: declared {len(declared)}, got {len(parsed)}"
         )
     by_kind: dict[str, list[DurableEffectIntentV1]] = {}
     for intent in parsed:
@@ -482,7 +477,11 @@ def validate_acknowledgement(
 ) -> DurableEffectAcknowledgementV1:
     """Accept ack only when it binds the exact inline intent and producer identity."""
     try:
-        parsed = ack if isinstance(ack, DurableEffectAcknowledgementV1) else DurableEffectAcknowledgementV1.model_validate(ack)
+        parsed = (
+            ack
+            if isinstance(ack, DurableEffectAcknowledgementV1)
+            else DurableEffectAcknowledgementV1.model_validate(ack)
+        )
     except ValidationError as exc:
         raise DurableEffectValidationError(f"malformed durable effect acknowledgement: {exc}") from exc
     if parsed.effect_id != intent.effect_id:
@@ -515,9 +514,7 @@ def reconcile_effect(
     if entry is None:
         raise DurableEffectIntegrityError(f"unregistered durable effect kind: {intent.kind}")
     if intent.reconciler_semantics_digest != entry.reconciler_semantics_digest:
-        raise DurableEffectIntegrityError(
-            f"reconciler_semantics_digest mismatch for {intent.kind}"
-        )
+        raise DurableEffectIntegrityError(f"reconciler_semantics_digest mismatch for {intent.kind}")
     root_id = context.root_invocation_id
     with runtime.fence_store.guard(root_id):
         runtime.fence_store.reject_if_terminal(root_id)

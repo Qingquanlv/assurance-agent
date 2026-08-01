@@ -422,6 +422,50 @@ Quality Score 由 CLI **确定性**计算，LLM 不参与。Quality Gate 四态�
 
 `aa report inspect` 把执行失败归入固定分类（规则表数据从 TS 源提取为打包 YAML 规则数据 `assurance_agent/_resources/rules/failure-classification.yaml`，随包分发并有单测对拍）。分类决定该失败是否 `fix_proposal_eligible`（进入 Healing Loop）。可自愈类（如 `locator_failure`、`wait_strategy_failure`、`test_code_error`、条件性 `test_data_failure`）与不可自愈类（如 `assertion_failure`、`business_logic_failure`、`known_product_issue`、`coverage_gap`、`fuzz_*`、`perf_*`）的完整清单见规则数据文件与 README「失败分类速查」。
 
+## Four-layer assurance / v6 runtime evidence
+
+### Semantic schema IDs
+
+| ID | Meaning |
+|---|---|
+| `plan_gate_semantics/v1` | Plan-gate semantics bytes/object |
+| `historical_topology_safety/v1` | Topology-safety semantics |
+| `runtime_commit_safety/v1` | Commit-safety inventory (validators + durable effects) |
+| `selection_normalizer/v1` | Eval selected-layer normalization |
+| `write_policy/v1` | Eval content-bound write policy |
+
+### Six v6 projection fields
+
+v6 roots and children bind all six of:
+
+`gate_semantics_digest`, `gate_semantics_object_id`,
+`topology_safety_semantics_digest`, `topology_safety_semantics_object_id`,
+`commit_safety_semantics_digest`, `commit_safety_semantics_object_id`.
+
+v1–v5 event streams remain parseable/displayable. A topology receipt is **not**
+commit-safety proof. Unbound legacy commit-safety-bearing work blocks with
+`legacy_commit_safety_semantics_unbound`.
+
+### Validators and durable effects
+
+Candidate validators: `generated_files_candidate/v1`, `codegen_fix_candidate/v1`.
+Durable effect kinds: `healing_allocation/v2`, `fixer_proposal_approved/v1`,
+`heal_record_apply/v2`.
+
+Generated-files manifests are authority for selected-test writes; summaries are not.
+
+### Operator exit (D18)
+
+Report-only legacy work may continue. Pending assurance commit work on unbound
+legacy roots stops. The sole audited exit is `aa workflow supersede` with
+actions `rerun-v6` and `stop`. Imported-codegen healing is intentionally narrowed
+(imported codegen roots are not auto-healed).
+
+### Declared-only inputs
+
+Assurance agents run under declared-only isolation: reads come from the
+attempt-bound input snapshot / runtime context, not ambient host ledgers.
+
 ## 维护规则
 
 先改机器 schema / 运行期 pydantic 模型的字段约束，再更新本页——且只在契约的**用途、产物映射、解析顺序或用户可见校验行为**变化时更新。不要把完整字段清单复制到本页。

@@ -12,7 +12,12 @@ import yaml
 from assurance_agent.artifacts.models.assurance import LAYER_NAMES
 from assurance_agent.eval.executor import execute_attempt
 from assurance_agent.eval.runner import run_suite
-from assurance_agent.eval.selection import MISSING, SELECTION_NORMALIZER_VERSION, SelectionError, normalize_selected_layers
+from assurance_agent.eval.selection import (
+    MISSING,
+    SELECTION_NORMALIZER_VERSION,
+    SelectionError,
+    normalize_selected_layers,
+)
 from assurance_agent.eval.types import DatasetSample
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
 

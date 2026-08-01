@@ -224,9 +224,7 @@ def _parse_path_groups(body: list[str], *, section: str) -> tuple[SkillPathGroup
                 )
             name = title.casefold()
             if name not in _PATH_GROUP_NAMES:
-                raise SkillContractParseError(
-                    f"section {section!r}: unknown group name {title!r}"
-                )
+                raise SkillContractParseError(f"section {section!r}: unknown group name {title!r}")
             if name in seen:
                 raise SkillContractParseError(f"section {section!r}: duplicate group {name!r}")
             flush()
@@ -247,9 +245,7 @@ def _parse_path_groups(body: list[str], *, section: str) -> tuple[SkillPathGroup
         path_match = _BACKTICK_PATH_RE.match(stripped)
         if path_match is None:
             if stripped.startswith("-") or "`" in stripped:
-                raise SkillContractParseError(
-                    f"section {section!r}: malformed path row: {stripped}"
-                )
+                raise SkillContractParseError(f"section {section!r}: malformed path row: {stripped}")
             raise SkillContractParseError(
                 f"section {section!r} interrupted by unexpected content: {stripped}"
             )
@@ -285,9 +281,7 @@ def _parse_state_authority(body: list[str]) -> tuple[tuple[str, str], ...]:
             )
         kv = _STATE_KV_RE.match(path_match.group(1).strip())
         if kv is None:
-            raise SkillContractParseError(
-                f"section 'State Authority': malformed key/value row: {stripped}"
-            )
+            raise SkillContractParseError(f"section 'State Authority': malformed key/value row: {stripped}")
         pairs.append((kv.group(1), kv.group(2).strip()))
     if not pairs:
         raise SkillContractParseError("section 'State Authority': missing key/value rows")
@@ -462,9 +456,7 @@ def _materialize_project(bundle: CanonicalAssuranceBundle, project: Path) -> Pat
 def _codegen_claims(bundle: CanonicalAssuranceBundle) -> ResourceClaims:
     profile = get_layer_assurance_profile(bundle.layer)
     gf = get_generated_files_contract(bundle.layer)
-    reads = [
-        ResourcePath.parse(f"change:{path}") for path in profile.plan_artifacts
-    ]
+    reads = [ResourcePath.parse(f"change:{path}") for path in profile.plan_artifacts]
     reads.append(ResourcePath.parse(f"change:{bundle.summary_relpath}"))
     reads.append(ResourcePath.parse(f"change:{profile.review_artifact}"))
     reads.append(ResourcePath.parse("change:cases/**"))
@@ -540,9 +532,7 @@ def observe_assurance_contract(
         data_knowledge=data_knowledge if data_knowledge is not None else deepcopy(bundle.data_knowledge),
         review_bytes=review_bytes if review_bytes is not None else bundle.review_bytes,
         required_capabilities=(
-            required_capabilities
-            if required_capabilities is not None
-            else bundle.required_capabilities
+            required_capabilities if required_capabilities is not None else bundle.required_capabilities
         ),
         skill_path=skill_path if skill_path is not None else bundle.skill_path,
     )
@@ -552,10 +542,7 @@ def observe_assurance_contract(
     try:
         sections = parse_skill_contract_sections(working.skill_path)
         required_inputs = [
-            path
-            for group in sections.inputs
-            if group.name == "required"
-            for path in group.paths
+            path for group in sections.inputs if group.name == "required" for path in group.paths
         ]
         missing = []
         for logical in required_inputs:
@@ -918,9 +905,7 @@ def observe_assurance_contract(
             store.freeze_write_set(workspace, claims=claims)
             raise AssertionError("expected forbidden write to fail freeze")
         write_set = store.freeze_write_set(workspace, claims=claims)
-        digests = tuple(
-            sorted((entry.logical_path, entry.after_sha256 or "") for entry in write_set.entries)
-        )
+        digests = tuple(sorted((entry.logical_path, entry.after_sha256 or "") for entry in write_set.entries))
         boundaries.append(BoundaryObservation(boundary="workspace_write", status="ok"))
         boundaries.append(BoundaryObservation(boundary="codegen_workspace", status="ok"))
         manifest_sha = sha256_bytes(manifest_bytes)

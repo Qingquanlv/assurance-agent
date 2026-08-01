@@ -479,9 +479,18 @@ CORPUS["gate:api-codegen-precondition-gate:pass_when"] = (
             **_PLAN_ASSURANCE_RESOLVER,
             **node_result_resolver({"review-cycle": {"status": "succeeded"}}),
             **gvfx("pass", True),
+            "capabilities_present": lambda _r, _d: True,
         },
     ),
-    ({}, {**_PLAN_ASSURANCE_RESOLVER, **gvfx("pass", True)}, False),
+    (
+        {},
+        {
+            **_PLAN_ASSURANCE_RESOLVER,
+            **gvfx("pass", True),
+            "capabilities_present": lambda _r, _d: False,
+        },
+        False,
+    ),
 )
 CORPUS["gate:api-codegen-precondition-gate:stop_when"] = (
     (
@@ -527,9 +536,18 @@ CORPUS["gate:e2e-codegen-precondition-gate:pass_when"] = (
             **_PLAN_ASSURANCE_RESOLVER,
             **node_result_resolver({"review-cycle": {"status": "succeeded"}}),
             **gvfx("pass", True),
+            "capabilities_present": lambda _r, _d: True,
         },
     ),
-    ({}, {**_PLAN_ASSURANCE_RESOLVER, **gvfx("pass", True)}, False),
+    (
+        {},
+        {
+            **_PLAN_ASSURANCE_RESOLVER,
+            **gvfx("pass", True),
+            "capabilities_present": lambda _r, _d: False,
+        },
+        False,
+    ),
 )
 CORPUS["gate:e2e-codegen-precondition-gate:stop_when"] = (
     (
@@ -617,6 +635,39 @@ for _gid, _alias, _checks_key, _review, _checks, _plan_gate in [
             False,
         ),
     )
+
+_ELIGIBLE_FIX_PROPOSAL = {
+    "proposals": [
+        {
+            "eligible": True,
+            "target": "api",
+            "risk_level": "low",
+            "needs_review": False,
+        }
+    ]
+}
+_HIGH_RISK_FIX_PROPOSAL = {
+    "proposals": [
+        {
+            "eligible": True,
+            "target": "api",
+            "risk_level": "high",
+            "needs_review": False,
+        }
+    ]
+}
+CORPUS["gate:fixer-proposal-approval-gate:stop_when"] = (
+    ({"fix_proposal": {"proposals": []}}, {}),
+    ({"fix_proposal": _ELIGIBLE_FIX_PROPOSAL}, {}, False),
+)
+CORPUS["gate:fixer-proposal-approval-gate:needs_human_review_when"] = (
+    ({"fix_proposal": _HIGH_RISK_FIX_PROPOSAL}, fx(False)),
+    ({"fix_proposal": _ELIGIBLE_FIX_PROPOSAL}, fx(False), False),
+)
+CORPUS["gate:fixer-proposal-approval-gate:pass_when"] = (
+    ({"fix_proposal": _ELIGIBLE_FIX_PROPOSAL}, {}),
+    ({"fix_proposal": {"proposals": []}}, {}, False),
+)
 
 CORPUS["gate:fixer-safety-gate:pass_when"] = (
     (

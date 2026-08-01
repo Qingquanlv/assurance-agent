@@ -493,9 +493,7 @@ def load_plan_text_from_snapshot(
                 raise CandidateValidationError(
                     f"codegen plan blob unreadable for layer {layer}: {logical}"
                 ) from exc
-    raise CandidateValidationError(
-        f"missing codegen plan in input snapshot for layer {layer}: {logical}"
-    )
+    raise CandidateValidationError(f"missing codegen plan in input snapshot for layer {layer}: {logical}")
 
 
 def load_case_documents_from_snapshot(
@@ -511,8 +509,7 @@ def load_case_documents_from_snapshot(
         case_aliases = sorted(
             alias
             for alias in entry.logical_aliases
-            if alias.startswith("change:cases/")
-            and alias.endswith((".yaml", ".yml", ".json"))
+            if alias.startswith("change:cases/") and alias.endswith((".yaml", ".yml", ".json"))
         )
         if not case_aliases:
             continue
@@ -524,9 +521,7 @@ def load_case_documents_from_snapshot(
         try:
             raw = store.read_object(digest)
         except WorkspaceError as exc:
-            raise CandidateValidationError(
-                f"case document blob missing from CAS: {case_aliases[0]}"
-            ) from exc
+            raise CandidateValidationError(f"case document blob missing from CAS: {case_aliases[0]}") from exc
         try:
             text = raw.decode("utf-8")
             if case_aliases[0].endswith(".json"):
@@ -538,14 +533,10 @@ def load_case_documents_from_snapshot(
                 f"malformed case document in input snapshot: {case_aliases[0]}"
             ) from exc
         if not isinstance(data, dict):
-            raise CandidateValidationError(
-                f"case document must be a mapping: {case_aliases[0]}"
-            )
+            raise CandidateValidationError(f"case document must be a mapping: {case_aliases[0]}")
         documents.append(data)
     if not documents:
-        raise CandidateValidationError(
-            "missing case documents in input snapshot under change:cases/**"
-        )
+        raise CandidateValidationError("missing case documents in input snapshot under change:cases/**")
     return documents
 
 
@@ -713,9 +704,7 @@ def _validate_codegen_fix_candidate(
                 before = binding.get("before_sha256")
                 expected_before = auth_path.content_sha256.removeprefix("sha256:")
                 if before != expected_before:
-                    raise CandidateValidationError(
-                        f"reused authority before-digest mismatch for {path}"
-                    )
+                    raise CandidateValidationError(f"reused authority before-digest mismatch for {path}")
             elif auth_path.disposition in {"generated", "updated"}:
                 # Authority binds the codegen after digest. Fixer content-modify
                 # must present that digest as before (not only add-with-before).
@@ -723,9 +712,7 @@ def _validate_codegen_fix_candidate(
                     before = binding.get("before_sha256")
                     expected_before = auth_path.content_sha256.removeprefix("sha256:")
                     if before != expected_before:
-                        raise CandidateValidationError(
-                            f"authority before-digest mismatch for {path}"
-                        )
+                        raise CandidateValidationError(f"authority before-digest mismatch for {path}")
     else:
         if write_paths:
             raise CandidateValidationError(f"{intent_model.outcome} intent must have zero test writes")
@@ -873,9 +860,7 @@ def _bind_approval_to_snapshot_artifacts(
     }
     for field_name, expected_digest in expected.items():
         if actual[field_name] != expected_digest:
-            raise CandidateValidationError(
-                f"approval {field_name} does not match snapshot-bound artifact"
-            )
+            raise CandidateValidationError(f"approval {field_name} does not match snapshot-bound artifact")
     if layer not in approval.targets:
         raise CandidateValidationError("approval targets omit current fixer layer")
     expected_paths: list[str] = []
@@ -887,13 +872,9 @@ def _bind_approval_to_snapshot_artifacts(
         auth_paths = {path.repo_path for path in auth_target.paths}
         proposal_paths = set(_proposal_paths_for_target(proposal, target))
         if not proposal_paths.issubset(auth_paths):
-            raise CandidateValidationError(
-                f"approval target {target} proposal paths exceed fixer-authority"
-            )
+            raise CandidateValidationError(f"approval target {target} proposal paths exceed fixer-authority")
     if list(approval.paths) != sorted(set(expected_paths)):
-        raise CandidateValidationError(
-            "approval paths do not match snapshot-bound proposal authorization"
-        )
+        raise CandidateValidationError("approval paths do not match snapshot-bound proposal authorization")
 
 
 def _proposal_paths_for_target(proposal: Mapping[str, object], layer: str) -> list[str]:

@@ -29,9 +29,7 @@ from assurance_agent.exceptions import AaError
 
 _RETRY_RELPATH = Path("qa") / ".graph-runtime" / "effect-retries"
 _FENCE_RELPATH = Path("qa") / ".graph-runtime" / "root-effect-fences"
-_RFC3339_Z = re.compile(
-    r"^(?P<date>\d{4}-\d{2}-\d{2})T(?P<time>\d{2}:\d{2}:\d{2})(?P<frac>\.\d+)?Z$"
-)
+_RFC3339_Z = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})T(?P<time>\d{2}:\d{2}:\d{2})(?P<frac>\.\d+)?Z$")
 _DEFAULT_INITIAL_SECONDS = 1.0
 _DEFAULT_MULTIPLIER = 2.0
 _DEFAULT_MAX_SECONDS = 60.0
