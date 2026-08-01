@@ -6,6 +6,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 
 from assurance_agent.workflow.orchestration.gate_semantics import (
     MANIFEST_SCHEMA_VERSION,
@@ -181,14 +182,17 @@ def build_topology_semantics_manifest(
     )
 
 
+@lru_cache(maxsize=1)
 def topology_safety_semantics_digest() -> str:
     return build_topology_semantics_manifest().semantic_digest
 
 
+@lru_cache(maxsize=1)
 def topology_safety_semantics_bytes() -> bytes:
     return build_topology_semantics_manifest().canonical_bytes
 
 
+@lru_cache(maxsize=1)
 def topology_safety_semantics_object_digest() -> str:
     return build_topology_semantics_manifest().object_digest
 

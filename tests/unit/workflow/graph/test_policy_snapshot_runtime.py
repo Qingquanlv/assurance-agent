@@ -18,12 +18,30 @@ from assurance_agent.verification.profile_manifest import (
     assurance_profile_snapshot_relpath,
 )
 from assurance_agent.workflow.graph.definition_pinning import (
+    V6_SEMANTIC_FIELD_CONSUMERS,
     bind_root_definitions,
+    commit_safety_semantics_snapshot_relpath,
+    gate_semantics_snapshot_relpath,
     inherit_child_definitions,
     policy_snapshot_relpath,
     stage_pinned_definitions,
+    topology_semantics_snapshot_relpath,
 )
-from assurance_agent.workflow.orchestration.gate_semantics import gate_semantics_digest
+from assurance_agent.workflow.graph.runtime_commit_safety import (
+    commit_safety_semantics_bytes,
+    commit_safety_semantics_digest,
+    commit_safety_semantics_object_digest,
+)
+from assurance_agent.workflow.graph.topology_semantics import (
+    topology_safety_semantics_bytes,
+    topology_safety_semantics_digest,
+    topology_safety_semantics_object_digest,
+)
+from assurance_agent.workflow.orchestration.gate_semantics import (
+    gate_semantics_bytes,
+    gate_semantics_digest,
+    gate_semantics_object_digest,
+)
 from assurance_agent.eval.fixtures import write_fixture_lock
 from assurance_agent.workflow.core.events import read_events_strict
 from assurance_agent.workflow.graph.checkpoint import CheckpointStore
@@ -689,6 +707,13 @@ def _binding_fields(event: dict[str, object]) -> dict[str, str]:
         "policy_origin": str(event["policy_origin"]),
         "gate_semantics_digest": str(event["gate_semantics_digest"]),
         "assurance_profile_digest": str(event["assurance_profile_digest"]),
+        "gate_semantics_object_id": str(event.get("gate_semantics_object_id", "")),
+        "topology_safety_semantics_object_id": str(
+            event.get("topology_safety_semantics_object_id", "")
+        ),
+        "topology_safety_semantics_digest": str(event.get("topology_safety_semantics_digest", "")),
+        "commit_safety_semantics_object_id": str(event.get("commit_safety_semantics_object_id", "")),
+        "commit_safety_semantics_digest": str(event.get("commit_safety_semantics_digest", "")),
     }
 
 
@@ -731,14 +756,30 @@ def test_root_start_pins_project_policy_snapshot_and_records_origin(tmp_path: Pa
     snapshot = tmp_path / "root-snapshot"
     store.materialize(started["root_tree_id"], snapshot)  # type: ignore[arg-type]
     tree_digest = policy_digest(load_policy(snapshot))
-    assert started["event_schema_version"] == 5
+    assert started["event_schema_version"] == 6
     assert started["policy_origin"] == "project"
     assert started["policy_digest"] == tree_digest
     assert started["gate_semantics_digest"] == gate_semantics_digest()
     assert started["assurance_profile_digest"] == assurance_profile_digest()
+    assert started["gate_semantics_object_id"] == gate_semantics_object_digest()
+    assert started["topology_safety_semantics_object_id"] == topology_safety_semantics_object_digest()
+    assert started["topology_safety_semantics_digest"] == topology_safety_semantics_digest()
+    assert started["commit_safety_semantics_object_id"] == commit_safety_semantics_object_digest()
+    assert started["commit_safety_semantics_digest"] == commit_safety_semantics_digest()
     pinned = _pinned_policy_bytes(change_dir, str(started["policy_digest"]))
     assert policy_digest(load_policy_snapshot(snapshot).policy) == started["policy_digest"]
     assert pinned == load_policy_snapshot(project).canonical_bytes
+    assert (
+        change_dir / gate_semantics_snapshot_relpath(str(started["gate_semantics_object_id"]))
+    ).read_bytes() == gate_semantics_bytes()
+    assert (
+        change_dir
+        / topology_semantics_snapshot_relpath(str(started["topology_safety_semantics_object_id"]))
+    ).read_bytes() == topology_safety_semantics_bytes()
+    assert (
+        change_dir
+        / commit_safety_semantics_snapshot_relpath(str(started["commit_safety_semantics_object_id"]))
+    ).read_bytes() == commit_safety_semantics_bytes()
 
 
 def test_root_start_without_project_policy_uses_packaged_default_origin(tmp_path: Path) -> None:
@@ -854,8 +895,11 @@ def test_import_start_uses_the_same_root_binding_path(tmp_path: Path) -> None:
 
     started = _started_events(project)[0]
     change_dir = _context(project).change_dir
-    assert started["event_schema_version"] == 5
+    assert started["event_schema_version"] == 6
     assert started["policy_origin"] == "project"
+    assert started["gate_semantics_object_id"] == gate_semantics_object_digest()
+    assert started["topology_safety_semantics_digest"] == topology_safety_semantics_digest()
+    assert started["commit_safety_semantics_digest"] == commit_safety_semantics_digest()
     assert (
         _pinned_policy_bytes(change_dir, str(started["policy_digest"]))
         == load_policy_snapshot(project).canonical_bytes
@@ -1142,3 +1186,230 @@ def test_v4_parent_child_inheritance_does_not_fabricate_profile_snapshot(
     assert child.event_schema_version == 4
     assert child.assurance_profile_bytes is None
     assert not (change_dir / assurance_profile_snapshot_relpath(child.assurance_profile_digest)).exists()
+
+def test_v6_root_binding_stages_three_semantics_objects_write_once(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    _write_policy(project, _POLICY_A)
+    compiled, contracts = _compile(
+        """\
+  main:
+    max_supersteps: 4
+    nodes:
+      observe:
+        uses: operation:observe-policy
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: observe}
+      - {from: observe, to: END}
+"""
+    )
+    change_dir = _context(project).change_dir
+    store = TreeStore(change_dir)
+    root_tree = store.capture(project)
+    binding = bind_root_definitions(store=store, root_tree_id=root_tree, event_schema_version=6)
+    assert binding.event_schema_version == 6
+    assert binding.gate_semantics_bytes == gate_semantics_bytes()
+    assert binding.topology_safety_semantics_bytes == topology_safety_semantics_bytes()
+    assert binding.commit_safety_semantics_bytes == commit_safety_semantics_bytes()
+    from assurance_agent.workflow.core.progression import ProgressionError, transaction
+
+    with transaction(change_dir) as txn:
+        stage_pinned_definitions(txn, compiled, binding, contracts=contracts)
+    assert (
+        change_dir / gate_semantics_snapshot_relpath(binding.gate_semantics_object_id)
+    ).read_bytes() == binding.gate_semantics_bytes
+    assert (
+        change_dir / topology_semantics_snapshot_relpath(binding.topology_safety_semantics_object_id)
+    ).read_bytes() == binding.topology_safety_semantics_bytes
+    assert (
+        change_dir
+        / commit_safety_semantics_snapshot_relpath(binding.commit_safety_semantics_object_id)
+    ).read_bytes() == binding.commit_safety_semantics_bytes
+    with transaction(change_dir) as txn:
+        stage_pinned_definitions(txn, compiled, binding, contracts=contracts)
+    with pytest.raises(ProgressionError, match="runtime file content mismatch"):
+        with transaction(change_dir) as txn:
+            txn.write_runtime_file_once(
+                topology_semantics_snapshot_relpath(binding.topology_safety_semantics_object_id),
+                b'{"semantics_id":"diverged"}\n',
+            )
+
+
+@pytest.mark.parametrize(
+    "entrypoint",
+    ["assurance", "layer-cycle", "retro", "issue-review", "improvement-review"],
+)
+def test_v6_child_inheritance_covers_named_entrypoints(tmp_path: Path, entrypoint: str) -> None:
+    project = _make_project(tmp_path)
+    _write_policy(project, _POLICY_A)
+    change_dir = _context(project).change_dir
+    store = TreeStore(change_dir)
+    root_tree = store.capture(project)
+    binding = bind_root_definitions(store=store, root_tree_id=root_tree, event_schema_version=6)
+    from assurance_agent.workflow.core.progression import transaction
+    from assurance_agent.workflow.graph.models import GraphProjection
+
+    with transaction(change_dir) as txn:
+        txn.write_runtime_file_once(policy_snapshot_relpath(binding.policy_digest), binding.policy_bytes)
+        assert binding.assurance_profile_bytes is not None
+        txn.write_runtime_file_once(
+            assurance_profile_snapshot_relpath(binding.assurance_profile_digest),
+            binding.assurance_profile_bytes,
+        )
+        assert binding.gate_semantics_bytes is not None
+        assert binding.topology_safety_semantics_bytes is not None
+        assert binding.commit_safety_semantics_bytes is not None
+        txn.write_runtime_file_once(
+            gate_semantics_snapshot_relpath(binding.gate_semantics_object_id),
+            binding.gate_semantics_bytes,
+        )
+        txn.write_runtime_file_once(
+            topology_semantics_snapshot_relpath(binding.topology_safety_semantics_object_id),
+            binding.topology_safety_semantics_bytes,
+        )
+        txn.write_runtime_file_once(
+            commit_safety_semantics_snapshot_relpath(binding.commit_safety_semantics_object_id),
+            binding.commit_safety_semantics_bytes,
+        )
+    parent = GraphProjection(
+        invocation_id="root",
+        entrypoint=entrypoint,
+        checkpoint_ns="root",
+        parent_invocation_id=None,
+        parent_task_id=None,
+        structural_path=entrypoint,
+        graph_digest="gd",
+        event_schema_version=6,
+        contract_digests={},
+        policy_digest=binding.policy_digest,
+        policy_origin=binding.policy_origin,
+        gate_semantics_digest=binding.gate_semantics_digest,
+        assurance_profile_digest=binding.assurance_profile_digest,
+        gate_semantics_object_id=binding.gate_semantics_object_id,
+        topology_safety_semantics_object_id=binding.topology_safety_semantics_object_id,
+        topology_safety_semantics_digest=binding.topology_safety_semantics_digest,
+        commit_safety_semantics_object_id=binding.commit_safety_semantics_object_id,
+        commit_safety_semantics_digest=binding.commit_safety_semantics_digest,
+        params={},
+        root_tree_id=root_tree,
+        current_tree_id=root_tree,
+    )
+    child = inherit_child_definitions(parent=parent, change_dir=change_dir)
+    assert child.event_schema_version == 6
+    assert child.gate_semantics_object_id == binding.gate_semantics_object_id
+    assert child.topology_safety_semantics_digest == binding.topology_safety_semantics_digest
+    assert child.commit_safety_semantics_digest == binding.commit_safety_semantics_digest
+    assert child.gate_semantics_bytes == binding.gate_semantics_bytes
+    assert child.topology_safety_semantics_bytes == binding.topology_safety_semantics_bytes
+    assert child.commit_safety_semantics_bytes == binding.commit_safety_semantics_bytes
+
+
+def test_non_assurance_child_inherits_without_classification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _make_project(tmp_path)
+    _write_policy(project, _POLICY_A)
+    change_dir = _context(project).change_dir
+    store = TreeStore(change_dir)
+    root_tree = store.capture(project)
+    binding = bind_root_definitions(store=store, root_tree_id=root_tree, event_schema_version=6)
+    from assurance_agent.workflow.core.progression import transaction
+    from assurance_agent.workflow.graph import replay_schema
+    from assurance_agent.workflow.graph.models import GraphProjection
+
+    def _boom(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("assurance classification must not run during inheritance")
+
+    monkeypatch.setattr(replay_schema, "classify_pinned_layer_topology_v6", _boom)
+    with transaction(change_dir) as txn:
+        txn.write_runtime_file_once(policy_snapshot_relpath(binding.policy_digest), binding.policy_bytes)
+        assert binding.assurance_profile_bytes is not None
+        txn.write_runtime_file_once(
+            assurance_profile_snapshot_relpath(binding.assurance_profile_digest),
+            binding.assurance_profile_bytes,
+        )
+        assert binding.gate_semantics_bytes is not None
+        assert binding.topology_safety_semantics_bytes is not None
+        assert binding.commit_safety_semantics_bytes is not None
+        txn.write_runtime_file_once(
+            gate_semantics_snapshot_relpath(binding.gate_semantics_object_id),
+            binding.gate_semantics_bytes,
+        )
+        txn.write_runtime_file_once(
+            topology_semantics_snapshot_relpath(binding.topology_safety_semantics_object_id),
+            binding.topology_safety_semantics_bytes,
+        )
+        txn.write_runtime_file_once(
+            commit_safety_semantics_snapshot_relpath(binding.commit_safety_semantics_object_id),
+            binding.commit_safety_semantics_bytes,
+        )
+    parent = GraphProjection(
+        invocation_id="root",
+        entrypoint="observe-only",
+        checkpoint_ns="root",
+        parent_invocation_id=None,
+        parent_task_id=None,
+        structural_path="main",
+        graph_digest="gd",
+        event_schema_version=6,
+        contract_digests={},
+        policy_digest=binding.policy_digest,
+        policy_origin=binding.policy_origin,
+        gate_semantics_digest=binding.gate_semantics_digest,
+        assurance_profile_digest=binding.assurance_profile_digest,
+        gate_semantics_object_id=binding.gate_semantics_object_id,
+        topology_safety_semantics_object_id=binding.topology_safety_semantics_object_id,
+        topology_safety_semantics_digest=binding.topology_safety_semantics_digest,
+        commit_safety_semantics_object_id=binding.commit_safety_semantics_object_id,
+        commit_safety_semantics_digest=binding.commit_safety_semantics_digest,
+        params={},
+        root_tree_id=root_tree,
+        current_tree_id=root_tree,
+    )
+    child = inherit_child_definitions(parent=parent, change_dir=change_dir)
+    assert child.topology_safety_semantics_object_id == binding.topology_safety_semantics_object_id
+
+
+def test_v6_semantic_field_consumers_register_evidence_export_obligation() -> None:
+    assert "evidence_export" in V6_SEMANTIC_FIELD_CONSUMERS
+    assert "validator_effect_dispatch" in V6_SEMANTIC_FIELD_CONSUMERS
+
+
+def test_v6_tamper_of_topology_bytes_fails_verify(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    _write_policy(project, _POLICY_A)
+    change_dir = _context(project).change_dir
+    store = TreeStore(change_dir)
+    root_tree = store.capture(project)
+    binding = bind_root_definitions(store=store, root_tree_id=root_tree, event_schema_version=6)
+    from assurance_agent.workflow.core.progression import transaction
+    from assurance_agent.workflow.graph.definition_pinning import verify_pinned_definitions
+
+    with transaction(change_dir) as txn:
+        txn.write_runtime_file_once(policy_snapshot_relpath(binding.policy_digest), binding.policy_bytes)
+        assert binding.assurance_profile_bytes is not None
+        txn.write_runtime_file_once(
+            assurance_profile_snapshot_relpath(binding.assurance_profile_digest),
+            binding.assurance_profile_bytes,
+        )
+        assert binding.gate_semantics_bytes is not None
+        assert binding.topology_safety_semantics_bytes is not None
+        assert binding.commit_safety_semantics_bytes is not None
+        txn.write_runtime_file_once(
+            gate_semantics_snapshot_relpath(binding.gate_semantics_object_id),
+            binding.gate_semantics_bytes,
+        )
+        txn.write_runtime_file_once(
+            topology_semantics_snapshot_relpath(binding.topology_safety_semantics_object_id),
+            binding.topology_safety_semantics_bytes,
+        )
+        txn.write_runtime_file_once(
+            commit_safety_semantics_snapshot_relpath(binding.commit_safety_semantics_object_id),
+            binding.commit_safety_semantics_bytes,
+        )
+    path = change_dir / topology_semantics_snapshot_relpath(binding.topology_safety_semantics_object_id)
+    path.write_bytes(b'{"semantics_id":"tampered"}\n')
+    with pytest.raises(PolicyError, match="topology semantics"):
+        verify_pinned_definitions(binding, change_dir)
+

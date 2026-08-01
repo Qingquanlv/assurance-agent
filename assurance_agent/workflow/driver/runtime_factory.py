@@ -85,6 +85,17 @@ def request_from_projection(projection: Any) -> PinnedDefinitionRequest:
         event_schema_version=projection.event_schema_version,
         gate_semantics_digest=projection.gate_semantics_digest,
         assurance_profile_digest=projection.assurance_profile_digest,
+        gate_semantics_object_id=getattr(projection, "gate_semantics_object_id", ""),
+        topology_safety_semantics_object_id=getattr(
+            projection, "topology_safety_semantics_object_id", ""
+        ),
+        topology_safety_semantics_digest=getattr(
+            projection, "topology_safety_semantics_digest", ""
+        ),
+        commit_safety_semantics_object_id=getattr(
+            projection, "commit_safety_semantics_object_id", ""
+        ),
+        commit_safety_semantics_digest=getattr(projection, "commit_safety_semantics_digest", ""),
     )
 
 
@@ -112,7 +123,7 @@ def one_definition_resolver(
     ingest_catalog: IngestArtifactCatalog,
     node_runner: NodeRunner,
     scheduler: Scheduler,
-    event_schema_version: int = 5,
+    event_schema_version: int = 6,
     enforce_live_semantics: bool = True,
 ) -> Callable[[PinnedDefinitionRequest], ResolvedExecutionBundle]:
     """Synthetic resolver that serves exactly one prebuilt execution bundle."""
@@ -205,7 +216,7 @@ def build_graph_runtime(
         return runner, scheduler
 
     current_runner, current_scheduler = _services_for(compiled, contracts, ingest_catalog, model_map)
-    current_request = request_for_compiled(compiled, event_schema_version=5)
+    current_request = request_for_compiled(compiled, event_schema_version=6)
     current_bundle = ResolvedExecutionBundle(
         request=current_request,
         compiled=compiled,

@@ -1458,9 +1458,20 @@ class Scheduler:
         policy_object_id = policy_digest if len(policy_digest) == 64 else ("0" * 64)
         definition_semantics = {
             "assurance_profile_digest": projection.assurance_profile_digest or "unbound",
+            "commit_safety_semantics_digest": projection.commit_safety_semantics_digest or "unbound",
+            "commit_safety_semantics_object_id": (
+                projection.commit_safety_semantics_object_id or "unbound"
+            ),
             "contract_digest": prepared.task.contract_digest,
             "gate_semantics_digest": projection.gate_semantics_digest or "unbound",
+            "gate_semantics_object_id": projection.gate_semantics_object_id or "unbound",
             "graph_digest": projection.graph_digest,
+            "topology_safety_semantics_digest": (
+                projection.topology_safety_semantics_digest or "unbound"
+            ),
+            "topology_safety_semantics_object_id": (
+                projection.topology_safety_semantics_object_id or "unbound"
+            ),
         }
         context_model = PrecommitValidationContext(
             root_invocation_id=root_invocation_id,

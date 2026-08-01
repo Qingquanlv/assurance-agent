@@ -314,7 +314,10 @@ def test_minimal_graph_run_and_fresh_status(tmp_path: Path) -> None:
     assert [event["type"] for event in events].count("task_attempt_succeeded") == 1
     assert events[-1]["type"] == "graph_completed"
     started = next(e for e in events if e.get("type") == "graph_invocation_started")
-    assert started.get("event_schema_version") == 5
+    assert started.get("event_schema_version") == 6
+    assert started.get("gate_semantics_object_id")
+    assert started.get("topology_safety_semantics_digest")
+    assert started.get("commit_safety_semantics_digest")
 
     fresh_runtime, _scheduler = _build_runtime(project, compiled, contracts)
     assert fresh_runtime.status(result.invocation_id).model_dump() == result.status.model_dump()

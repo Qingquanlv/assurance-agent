@@ -275,11 +275,27 @@ def test_migration_accepts_v5_and_rejects_future_versions() -> None:
     migrated = migrate_graph_event_stream([v5])
     assert migrated[0]["event_schema_version"] == 5
     assert migrated[0]["policy_origin"] == "project"
+    assert migrated[0]["gate_semantics_object_id"] == ""
+    assert migrated[0]["topology_safety_semantics_digest"] == ""
     assert "revision_transition_id" not in migrated[0]
 
-    future: dict[str, object] = dict(v5, event_schema_version=6)
-    with pytest.raises(ValueError, match="unsupported graph event_schema_version 6"):
+    incomplete_v6: dict[str, object] = dict(v5, event_schema_version=6)
+    with pytest.raises(ValueError, match="event_schema_version 6 requires complete"):
+        migrate_graph_event_stream([incomplete_v6])
+
+    future: dict[str, object] = dict(v5, event_schema_version=7)
+    with pytest.raises(ValueError, match="unsupported graph event_schema_version 7"):
         migrate_graph_event_stream([future])
+
+
+def test_migration_accepts_complete_v6_bindings() -> None:
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "workflow" / "graph-events-v6.jsonl"
+    lines = [json.loads(line) for line in fixture.read_text(encoding="utf-8").splitlines() if line.strip()]
+    migrated = migrate_graph_event_stream(lines)
+    assert migrated[0]["event_schema_version"] == 6
+    assert migrated[0]["gate_semantics_object_id"]
+    assert migrated[0]["topology_safety_semantics_digest"]
+    assert migrated[0]["commit_safety_semantics_digest"]
 
 
 def test_migration_does_not_fabricate_v5_fields_for_legacy_events() -> None:

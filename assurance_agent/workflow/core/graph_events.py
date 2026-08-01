@@ -37,6 +37,11 @@ class GraphInvocationStartedEvent(_GraphEvent):
     policy_origin: str = ""
     gate_semantics_digest: str = ""
     assurance_profile_digest: str = ""
+    gate_semantics_object_id: str = ""
+    topology_safety_semantics_object_id: str = ""
+    topology_safety_semantics_digest: str = ""
+    commit_safety_semantics_object_id: str = ""
+    commit_safety_semantics_digest: str = ""
     params: dict[str, object]
     params_sha256: str
     root_tree_id: str
@@ -57,6 +62,32 @@ class GraphInvocationStartedEvent(_GraphEvent):
                 raise ValueError("gate_semantics_digest is required for event_schema_version >= 4")
             if not self.assurance_profile_digest:
                 raise ValueError("assurance_profile_digest is required for event_schema_version >= 4")
+        v6_fields = (
+            ("gate_semantics_object_id", self.gate_semantics_object_id),
+            ("gate_semantics_digest", self.gate_semantics_digest),
+            ("topology_safety_semantics_object_id", self.topology_safety_semantics_object_id),
+            ("topology_safety_semantics_digest", self.topology_safety_semantics_digest),
+            ("commit_safety_semantics_object_id", self.commit_safety_semantics_object_id),
+            ("commit_safety_semantics_digest", self.commit_safety_semantics_digest),
+        )
+        new_fields = (
+            self.gate_semantics_object_id,
+            self.topology_safety_semantics_object_id,
+            self.topology_safety_semantics_digest,
+            self.commit_safety_semantics_object_id,
+            self.commit_safety_semantics_digest,
+        )
+        if self.event_schema_version >= 6:
+            for name, value in v6_fields:
+                if not value:
+                    raise ValueError(f"{name} is required for event_schema_version >= 6")
+        else:
+            # v1-v5 remain valid without object-ID/topology/commit-safety fields and
+            # must not receive synthetic v6 semantic identities.
+            if any(new_fields):
+                if not all(new_fields):
+                    raise ValueError("v6 semantic binding fields must be all-or-none")
+                raise ValueError("v6 semantic binding fields require event_schema_version >= 6")
         return self
 
 

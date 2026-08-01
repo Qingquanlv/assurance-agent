@@ -225,6 +225,11 @@ class PinnedDefinitionRequest:
     event_schema_version: int
     gate_semantics_digest: str
     assurance_profile_digest: str
+    gate_semantics_object_id: str = ""
+    topology_safety_semantics_object_id: str = ""
+    topology_safety_semantics_digest: str = ""
+    commit_safety_semantics_object_id: str = ""
+    commit_safety_semantics_digest: str = ""
 
 
 @dataclass(frozen=True, slots=True)

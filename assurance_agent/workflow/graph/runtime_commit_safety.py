@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Literal
 
 from assurance_agent.workflow.graph.durable_effects import (
@@ -201,14 +202,17 @@ def build_runtime_commit_safety_manifest(
     )
 
 
+@lru_cache(maxsize=1)
 def commit_safety_semantics_digest() -> str:
     return build_runtime_commit_safety_manifest().semantic_digest
 
 
+@lru_cache(maxsize=1)
 def commit_safety_semantics_bytes() -> bytes:
     return build_runtime_commit_safety_manifest().canonical_bytes
 
 
+@lru_cache(maxsize=1)
 def commit_safety_semantics_object_digest() -> str:
     return build_runtime_commit_safety_manifest().object_digest
 

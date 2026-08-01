@@ -8,7 +8,29 @@ from pydantic import ValidationError
 from assurance_agent.artifacts.policy import load_policy, policy_digest
 from assurance_agent.verification.profile_manifest import assurance_profile_digest
 from assurance_agent.workflow.core.graph_events import GraphInvocationStartedEvent
-from assurance_agent.workflow.orchestration.gate_semantics import gate_semantics_digest
+from assurance_agent.workflow.graph.runtime_commit_safety import (
+    commit_safety_semantics_digest,
+    commit_safety_semantics_object_digest,
+)
+from assurance_agent.workflow.graph.topology_semantics import (
+    topology_safety_semantics_digest,
+    topology_safety_semantics_object_digest,
+)
+from assurance_agent.workflow.orchestration.gate_semantics import (
+    gate_semantics_digest,
+    gate_semantics_object_digest,
+)
+
+
+def _v6_binding_fields() -> dict[str, str]:
+    return {
+        "gate_semantics_object_id": gate_semantics_object_digest(),
+        "gate_semantics_digest": gate_semantics_digest(),
+        "topology_safety_semantics_object_id": topology_safety_semantics_object_digest(),
+        "topology_safety_semantics_digest": topology_safety_semantics_digest(),
+        "commit_safety_semantics_object_id": commit_safety_semantics_object_digest(),
+        "commit_safety_semantics_digest": commit_safety_semantics_digest(),
+    }
 
 
 def _v4_started(**overrides: object) -> GraphInvocationStartedEvent:
@@ -98,5 +120,50 @@ def test_v5_started_requires_same_binding_fields() -> None:
     event = _v4_started(event_schema_version=5)
     assert event.event_schema_version == 5
     assert len(event.assurance_profile_digest) == 64
+    assert event.gate_semantics_object_id == ""
+    assert event.topology_safety_semantics_digest == ""
+    assert event.commit_safety_semantics_digest == ""
     with pytest.raises(ValidationError, match="assurance_profile_digest"):
         _v4_started(event_schema_version=5, assurance_profile_digest="")
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "gate_semantics_object_id",
+        "topology_safety_semantics_object_id",
+        "topology_safety_semantics_digest",
+        "commit_safety_semantics_object_id",
+        "commit_safety_semantics_digest",
+    ],
+)
+def test_v6_started_rejects_empty_semantic_binding_field(field: str) -> None:
+    fields = _v6_binding_fields()
+    fields[field] = ""
+    with pytest.raises(ValidationError, match=field):
+        _v4_started(event_schema_version=6, assurance_profile_digest=assurance_profile_digest(), **fields)
+
+
+def test_v6_started_accepts_complete_six_field_binding() -> None:
+    event = _v4_started(
+        event_schema_version=6,
+        assurance_profile_digest=assurance_profile_digest(),
+        **_v6_binding_fields(),
+    )
+    assert event.event_schema_version == 6
+    assert event.gate_semantics_object_id == gate_semantics_object_digest()
+    assert event.topology_safety_semantics_digest == topology_safety_semantics_digest()
+    assert event.commit_safety_semantics_digest == commit_safety_semantics_digest()
+
+
+def test_v5_started_rejects_partial_v6_fields() -> None:
+    with pytest.raises(ValidationError, match="all-or-none"):
+        _v4_started(
+            event_schema_version=5,
+            gate_semantics_object_id=gate_semantics_object_digest(),
+        )
+
+
+def test_v5_started_rejects_complete_v6_fields_without_version_bump() -> None:
+    with pytest.raises(ValidationError, match="event_schema_version >= 6"):
+        _v4_started(event_schema_version=5, **_v6_binding_fields())

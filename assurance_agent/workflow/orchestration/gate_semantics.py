@@ -11,6 +11,7 @@ import sys
 import textwrap
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from importlib import metadata
 from types import MappingProxyType
 from typing import Literal
@@ -238,14 +239,17 @@ def build_gate_semantics_manifest(
     )
 
 
+@lru_cache(maxsize=1)
 def gate_semantics_digest() -> str:
     return build_gate_semantics_manifest().digest
 
 
+@lru_cache(maxsize=1)
 def gate_semantics_bytes() -> bytes:
     return build_gate_semantics_manifest().canonical_bytes
 
 
+@lru_cache(maxsize=1)
 def gate_semantics_object_digest() -> str:
     return build_gate_semantics_manifest().object_digest
 

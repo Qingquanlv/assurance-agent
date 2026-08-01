@@ -423,6 +423,11 @@ class GraphProjection(BaseModel):
     policy_origin: str = ""
     gate_semantics_digest: str = ""
     assurance_profile_digest: str = ""
+    gate_semantics_object_id: str = ""
+    topology_safety_semantics_object_id: str = ""
+    topology_safety_semantics_digest: str = ""
+    commit_safety_semantics_object_id: str = ""
+    commit_safety_semantics_digest: str = ""
     params: dict[str, object]
     root_tree_id: str
     current_tree_id: str

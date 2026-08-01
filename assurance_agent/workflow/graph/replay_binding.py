@@ -170,6 +170,11 @@ class FrozenDefinitionBinding:
     layer_topologies: dict[str, PinnedLayerTopology]
     historical_roles: DiscoveredHistoricalAssuranceRoles
     sequenced_events: tuple[SequencedEvent, ...]
+    gate_semantics_object_id: str = ""
+    topology_safety_semantics_object_id: str = ""
+    topology_safety_semantics_digest: str = ""
+    commit_safety_semantics_object_id: str = ""
+    commit_safety_semantics_digest: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -374,6 +379,11 @@ def bind_replay_definitions(
         policy_origin=root_started.policy_origin,
         gate_semantics_digest=root_started.gate_semantics_digest,
         assurance_profile_digest=root_started.assurance_profile_digest,
+        gate_semantics_object_id=root_started.gate_semantics_object_id,
+        topology_safety_semantics_object_id=root_started.topology_safety_semantics_object_id,
+        topology_safety_semantics_digest=root_started.topology_safety_semantics_digest,
+        commit_safety_semantics_object_id=root_started.commit_safety_semantics_object_id,
+        commit_safety_semantics_digest=root_started.commit_safety_semantics_digest,
         compiled=compiled,
         policy=policy,
         assurance_params=dict(assurance.params),
@@ -618,6 +628,11 @@ def _load_pinned_definitions(
         event_schema_version=started.event_schema_version,
         gate_semantics_digest=started.gate_semantics_digest,
         assurance_profile_digest=started.assurance_profile_digest,
+        gate_semantics_object_id=started.gate_semantics_object_id,
+        topology_safety_semantics_object_id=started.topology_safety_semantics_object_id,
+        topology_safety_semantics_digest=started.topology_safety_semantics_digest,
+        commit_safety_semantics_object_id=started.commit_safety_semantics_object_id,
+        commit_safety_semantics_digest=started.commit_safety_semantics_digest,
     )
     try:
         resolved = load_pinned_execution_definition(change_dir, request)
@@ -671,6 +686,7 @@ def _bind_profile_and_topologies(
 
     def _classify(spec: LayerTopologySpec) -> PinnedLayerTopology:
         if version >= 6:
+            _require_verified_v6_topology_semantics(change_dir, root_started)
             return classify_pinned_layer_topology_v6(
                 schema, spec, historical_roles=historical_roles
             )
@@ -841,6 +857,11 @@ def _projection_from_started(started: GraphInvocationStartedEvent):
         policy_origin=started.policy_origin,
         gate_semantics_digest=started.gate_semantics_digest,
         assurance_profile_digest=started.assurance_profile_digest,
+        gate_semantics_object_id=started.gate_semantics_object_id,
+        topology_safety_semantics_object_id=started.topology_safety_semantics_object_id,
+        topology_safety_semantics_digest=started.topology_safety_semantics_digest,
+        commit_safety_semantics_object_id=started.commit_safety_semantics_object_id,
+        commit_safety_semantics_digest=started.commit_safety_semantics_digest,
         params=dict(started.params),
         root_tree_id=started.root_tree_id,
         current_tree_id=started.root_tree_id,
@@ -993,7 +1014,74 @@ def _same_definition_epoch(
         and child.policy_origin == root.policy_origin
         and child.gate_semantics_digest == root.gate_semantics_digest
         and child.assurance_profile_digest == root.assurance_profile_digest
+        and child.gate_semantics_object_id == root.gate_semantics_object_id
+        and child.topology_safety_semantics_object_id == root.topology_safety_semantics_object_id
+        and child.topology_safety_semantics_digest == root.topology_safety_semantics_digest
+        and child.commit_safety_semantics_object_id == root.commit_safety_semantics_object_id
+        and child.commit_safety_semantics_digest == root.commit_safety_semantics_digest
     )
+
+
+def _require_verified_v6_topology_semantics(
+    change_dir: Path,
+    started: GraphInvocationStartedEvent,
+) -> None:
+    from assurance_agent.workflow.graph.definition_pinning import (
+        topology_semantics_snapshot_relpath,
+    )
+    from assurance_agent.workflow.graph.topology_semantics import SEMANTICS_ID
+    from assurance_agent.workflow.orchestration.gate_semantics import canonical_descriptor_bytes
+
+    object_id = started.topology_safety_semantics_object_id
+    semantic_digest = started.topology_safety_semantics_digest
+    if not object_id or not semantic_digest:
+        raise ReplayBindingError(
+            "pinned_schema_digest_mismatch",
+            "v6 topology semantics binding is incomplete",
+        )
+    path = change_dir / topology_semantics_snapshot_relpath(object_id)
+    if not path.exists():
+        raise ReplayBindingError(
+            "pinned_schema_digest_mismatch",
+            f"topology semantics snapshot missing at {path}",
+        )
+    data = path.read_bytes()
+    actual_object = hashlib.sha256(data).hexdigest()
+    if actual_object != object_id:
+        raise ReplayBindingError(
+            "pinned_schema_digest_mismatch",
+            f"topology semantics object digest mismatch for {path}",
+        )
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ReplayBindingError(
+            "pinned_schema_digest_mismatch",
+            f"topology semantics snapshot malformed: {exc}",
+        ) from exc
+    if not isinstance(payload, dict) or payload.get("semantics_id") != SEMANTICS_ID:
+        raise ReplayBindingError(
+            "pinned_schema_digest_mismatch",
+            f"unknown or missing topology semantics ID in {path}",
+        )
+    if payload.get("semantic_digest") != semantic_digest:
+        raise ReplayBindingError(
+            "pinned_schema_digest_mismatch",
+            f"topology semantics digest mismatch for {path}",
+        )
+    recomputed = canonical_descriptor_bytes(
+        semantics_id=str(payload["semantics_id"]),
+        schema_version=str(payload["schema_version"]),
+        runtime_versions={str(k): str(v) for k, v in dict(payload["runtime_versions"]).items()},
+        dependencies=[dict(item) for item in payload["dependencies"]],
+        consumers=tuple(str(item) for item in payload["consumers"]),
+        semantic_digest=str(payload["semantic_digest"]),
+    )
+    if recomputed != data:
+        raise ReplayBindingError(
+            "pinned_schema_digest_mismatch",
+            f"topology semantics snapshot bytes are not canonical for {path}",
+        )
 
 
 def _select_gate_attempt(

@@ -160,6 +160,11 @@ def _build_invocation_started(
         policy_origin=binding.policy_origin,
         gate_semantics_digest=binding.gate_semantics_digest,
         assurance_profile_digest=binding.assurance_profile_digest,
+        gate_semantics_object_id=binding.gate_semantics_object_id,
+        topology_safety_semantics_object_id=binding.topology_safety_semantics_object_id,
+        topology_safety_semantics_digest=binding.topology_safety_semantics_digest,
+        commit_safety_semantics_object_id=binding.commit_safety_semantics_object_id,
+        commit_safety_semantics_digest=binding.commit_safety_semantics_digest,
         params=params,
         params_sha256=canonical_digest(params),
         root_tree_id=root_tree_id,
@@ -181,6 +186,7 @@ class GraphDefinitionChanged(GraphRuntimeError):
 
 def assert_live_semantic_compatibility(request: PinnedDefinitionRequest) -> None:
     from assurance_agent.verification.profile_manifest import assurance_profile_digest
+    from assurance_agent.workflow.graph.definition_pinning import current_v6_semantic_identity
     from assurance_agent.workflow.orchestration.gate_semantics import gate_semantics_digest
 
     if request.gate_semantics_digest != gate_semantics_digest():
@@ -191,6 +197,27 @@ def assert_live_semantic_compatibility(request: PinnedDefinitionRequest) -> None
         raise GraphDefinitionChanged(
             "graph_definition_changed: assurance profile digest does not match current executable"
         )
+    if request.event_schema_version >= 6:
+        v6 = current_v6_semantic_identity()
+        expected = {
+            "gate_semantics_object_id": v6.gate_object_id,
+            "topology_safety_semantics_object_id": v6.topology_object_id,
+            "topology_safety_semantics_digest": v6.topology_digest,
+            "commit_safety_semantics_object_id": v6.commit_object_id,
+            "commit_safety_semantics_digest": v6.commit_digest,
+        }
+        actual = {
+            "gate_semantics_object_id": request.gate_semantics_object_id,
+            "topology_safety_semantics_object_id": request.topology_safety_semantics_object_id,
+            "topology_safety_semantics_digest": request.topology_safety_semantics_digest,
+            "commit_safety_semantics_object_id": request.commit_safety_semantics_object_id,
+            "commit_safety_semantics_digest": request.commit_safety_semantics_digest,
+        }
+        for name, value in expected.items():
+            if actual[name] != value:
+                raise GraphDefinitionChanged(
+                    f"graph_definition_changed: {name} does not match current executable"
+                )
 
 
 class GraphIntegrityError(GraphRuntimeError):
@@ -302,7 +329,7 @@ class GraphRuntime:
         bound = context.model_copy(update={"params": params})
         try:
             binding = bind_root_definitions(
-                store=self._objects, root_tree_id=root_tree_id, event_schema_version=5
+                store=self._objects, root_tree_id=root_tree_id, event_schema_version=6
             )
         except PolicyError:
             raise
@@ -637,7 +664,7 @@ class GraphRuntime:
 
         try:
             binding = bind_root_definitions(
-                store=self._objects, root_tree_id=root_tree_id, event_schema_version=5
+                store=self._objects, root_tree_id=root_tree_id, event_schema_version=6
             )
         except PolicyError:
             raise
@@ -1244,6 +1271,11 @@ class GraphRuntime:
             event_schema_version=projection.event_schema_version,
             gate_semantics_digest=projection.gate_semantics_digest,
             assurance_profile_digest=projection.assurance_profile_digest,
+            gate_semantics_object_id=projection.gate_semantics_object_id,
+            topology_safety_semantics_object_id=projection.topology_safety_semantics_object_id,
+            topology_safety_semantics_digest=projection.topology_safety_semantics_digest,
+            commit_safety_semantics_object_id=projection.commit_safety_semantics_object_id,
+            commit_safety_semantics_digest=projection.commit_safety_semantics_digest,
         )
 
     def _resolve_bundle(self, projection: GraphProjection) -> Any:
