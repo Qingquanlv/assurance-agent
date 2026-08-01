@@ -1,6 +1,14 @@
 from assurance_agent.artifacts.registry import REGISTRY, match_artifact
 
 
+def test_dormant_generated_file_models_are_importable_without_runtime_registration() -> None:
+    from assurance_agent.artifacts.models import ApiGeneratedFilesV1, E2eGeneratedFilesV1
+
+    assert ApiGeneratedFilesV1.__name__ == "ApiGeneratedFilesV1"
+    assert E2eGeneratedFilesV1.__name__ == "E2eGeneratedFilesV1"
+    assert match_artifact("codegen/api-generated-files.json") is None
+
+
 def test_registry_covers_every_expected_artifact_type() -> None:
     expected = {
         "advisory",
