@@ -280,7 +280,13 @@ def validate_replayable_assurance_schema(schema: WorkflowSchemaV2) -> tuple[str,
 def validate_current_assurance_activation(
     schema: WorkflowSchemaV2,
 ) -> tuple[str, ...]:
-    """Require every current registry profile to classify as fully wired."""
+    """Compatibility wrapper: deterministic string diagnostics for packaged compile.
+
+    Until Task 15 activates the strict structured validator inside
+    ``compile_packaged_workflow``, this retains the wired-classification path.
+    Callers that need structured current-release diagnostics must use
+    ``find_current_assurance_conformance_issues`` instead.
+    """
     errors: list[str] = []
     for profile in iter_layer_assurance_profiles():
         spec = LayerTopologySpec(

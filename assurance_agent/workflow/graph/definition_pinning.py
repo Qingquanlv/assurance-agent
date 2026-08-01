@@ -413,6 +413,14 @@ def _load_pinned_execution_contracts(
 
 
 def _pinned_reason_for_compile_error(exc: CompileError) -> PinnedDefinitionReason:
+    for diagnostic in exc.diagnostics:
+        if diagnostic.category == "historical_ingest_identity":
+            return "pinned_ingest_catalog_digest_mismatch"
+        if diagnostic.category == "historical_contract_identity":
+            return "pinned_contract_digest_mismatch"
+        if diagnostic.category == "workflow_validation":
+            return "pinned_schema_compile_failed"
+    # Compatibility fallback for callers that construct bare string CompileError.
     message = str(exc)
     if "ingest_catalog_digest" in message:
         return "pinned_ingest_catalog_digest_mismatch"

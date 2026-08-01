@@ -742,3 +742,102 @@ def test_compiler_has_no_target_specific_trace_materializer_branch() -> None:
         "operation:materialize-trace-projection",
     ):
         assert target not in source, f"compiler must not special-case {target!r}"
+
+
+def test_compile_error_preserves_sorted_immutable_diagnostics() -> None:
+    from assurance_agent.workflow.graph.compiler import CompileDiagnostic
+
+    later = CompileDiagnostic(
+        category="workflow_validation",
+        code="z_last",
+        layer="e2e",
+        owner="compiler",
+        locator="b",
+        detail="second",
+    )
+    earlier = CompileDiagnostic(
+        category="historical_ingest_identity",
+        code="ingest_catalog_digest_mismatch",
+        layer=None,
+        owner="historical_compile",
+        locator="a",
+        detail="first",
+    )
+    exc = CompileError(diagnostics=(later, earlier))
+    assert exc.diagnostics == (earlier, later)
+    assert isinstance(exc.diagnostics, tuple)
+    text = str(exc)
+    assert "[historical_ingest_identity:ingest_catalog_digest_mismatch]" in text
+    assert "a: first" in text
+    assert text.index("first") < text.index("second")
+
+
+def test_pinned_reason_switches_on_diagnostic_category_not_substrings() -> None:
+    from assurance_agent.workflow.graph.compiler import CompileDiagnostic
+    from assurance_agent.workflow.graph.definition_pinning import _pinned_reason_for_compile_error
+
+    ingest = CompileError(
+        "historical compile identity mismatch: unrelated wording",
+        diagnostics=(
+            CompileDiagnostic(
+                category="historical_ingest_identity",
+                code="ingest_catalog_digest_mismatch",
+                layer=None,
+                owner="historical_compile",
+                locator="ingest_catalog_digest",
+                detail="digest drifted",
+            ),
+        ),
+    )
+    contract = CompileError(
+        "historical compile identity mismatch: unrelated wording",
+        diagnostics=(
+            CompileDiagnostic(
+                category="historical_contract_identity",
+                code="contract_digest_mismatch",
+                layer=None,
+                owner="historical_compile",
+                locator="contract:operation:x",
+                detail="digest drifted",
+            ),
+        ),
+    )
+    structural = CompileError(
+        "workflow v2 compile failed:\n  - unknown node 'missing'",
+        diagnostics=(
+            CompileDiagnostic(
+                category="workflow_validation",
+                code="workflow_validation",
+                layer=None,
+                owner="compiler",
+                locator="workflow",
+                detail="unknown node 'missing'",
+            ),
+        ),
+    )
+    assert _pinned_reason_for_compile_error(ingest) == "pinned_ingest_catalog_digest_mismatch"
+    assert _pinned_reason_for_compile_error(contract) == "pinned_contract_digest_mismatch"
+    assert _pinned_reason_for_compile_error(structural) == "pinned_schema_compile_failed"
+
+
+def test_historical_identity_failures_attach_typed_diagnostics() -> None:
+    from assurance_agent.workflow.graph.contracts import load_execution_contracts
+    from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
+
+    schema = load_workflow_v2(Path.cwd())
+    contracts = load_execution_contracts(Path.cwd())
+    ingest = validate_catalog_runtime()
+    context = HistoricalCompileContext(
+        ingest_catalog=ingest,
+        ingest_catalog_digest="0" * 64,
+        contracts=contracts,
+        contract_digests={},
+    )
+    with pytest.raises(CompileError) as raised:
+        compile_historical_workflow(schema, context=context)
+    exc = raised.value
+    assert len(exc.diagnostics) == 1
+    diagnostic = exc.diagnostics[0]
+    assert diagnostic.category == "historical_ingest_identity"
+    assert diagnostic.code == "ingest_catalog_digest_mismatch"
+    assert "ingest_catalog_digest" in str(exc)

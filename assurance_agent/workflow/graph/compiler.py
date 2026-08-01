@@ -29,11 +29,13 @@ import hashlib
 import json
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 from pydantic import BaseModel
 
+from assurance_agent.artifacts.models.assurance import LayerName
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.graph.contracts import (
     ContractError,
@@ -74,7 +76,7 @@ from assurance_agent.workflow.orchestration.dsl import (
     DslError,
     Expr,
     Ident,
-    Literal,
+    Literal as DslLiteral,
     Member,
     Not,
     Subscript,
@@ -82,9 +84,65 @@ from assurance_agent.workflow.orchestration.dsl import (
 )
 from assurance_agent.workflow.orchestration.schema import derive_alias
 
+CompileDiagnosticCategory = Literal[
+    "assurance_conformance",
+    "healing_conformance",
+    "workflow_validation",
+    "historical_ingest_identity",
+    "historical_contract_identity",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class CompileDiagnostic:
+    category: CompileDiagnosticCategory
+    code: str
+    layer: LayerName | None
+    owner: str
+    locator: str
+    detail: str
+
+
+def _sort_diagnostics(
+    diagnostics: Iterable[CompileDiagnostic],
+) -> tuple[CompileDiagnostic, ...]:
+    return tuple(
+        sorted(
+            diagnostics,
+            key=lambda item: (
+                item.category,
+                item.code,
+                item.layer or "",
+                item.owner,
+                item.locator,
+                item.detail,
+            ),
+        )
+    )
+
 
 class CompileError(AaError):
     """workflow v2 编译期结构校验失败（所有错误一次性报告）。"""
+
+    diagnostics: tuple[CompileDiagnostic, ...]
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        diagnostics: Sequence[CompileDiagnostic] | None = None,
+    ) -> None:
+        self.diagnostics = _sort_diagnostics(diagnostics or ())
+        if message:
+            super().__init__(message)
+            return
+        if self.diagnostics:
+            rendered = "\n  - ".join(
+                f"[{item.category}:{item.code}] {item.locator}: {item.detail}" for item in self.diagnostics
+            )
+            super().__init__(f"workflow v2 compile failed:\n  - {rendered}")
+            return
+        super().__init__("workflow v2 compile failed")
 
 
 _TERMINALS = frozenset({"END", "STOP", "FAIL"})
@@ -104,24 +162,56 @@ class HistoricalCompileContext:
 
     def validate_identities(self) -> None:
         if self.ingest_catalog.digest != self.ingest_catalog_digest:
-            raise CompileError(
-                "historical compile identity mismatch: "
+            detail = (
                 f"ingest_catalog_digest expected {self.ingest_catalog_digest}, "
                 f"got {self.ingest_catalog.digest}"
+            )
+            raise CompileError(
+                f"historical compile identity mismatch: {detail}",
+                diagnostics=(
+                    CompileDiagnostic(
+                        category="historical_ingest_identity",
+                        code="ingest_catalog_digest_mismatch",
+                        layer=None,
+                        owner="historical_compile",
+                        locator="ingest_catalog_digest",
+                        detail=detail,
+                    ),
+                ),
             )
         recorded = dict(self.contract_digests)
         actual_targets = set(self.contracts.contracts)
         if actual_targets != set(recorded):
+            detail = f"contract target set recorded={sorted(recorded)} actual={sorted(actual_targets)}"
             raise CompileError(
-                "historical compile identity mismatch: contract target set "
-                f"recorded={sorted(recorded)} actual={sorted(actual_targets)}"
+                f"historical compile identity mismatch: {detail}",
+                diagnostics=(
+                    CompileDiagnostic(
+                        category="historical_contract_identity",
+                        code="contract_target_set_mismatch",
+                        layer=None,
+                        owner="historical_compile",
+                        locator="contract_digests",
+                        detail=detail,
+                    ),
+                ),
             )
         for target, expected in recorded.items():
             actual = canonical_digest(self.contracts.contracts[target])
             if actual != expected:
+                detail = f"contract {target!r} digest expected {expected}, got {actual}"
                 raise CompileError(
-                    "historical compile identity mismatch: "
-                    f"contract {target!r} digest expected {expected}, got {actual}"
+                    f"historical compile identity mismatch: {detail}",
+                    diagnostics=(
+                        CompileDiagnostic(
+                            category="historical_contract_identity",
+                            code="contract_digest_mismatch",
+                            layer=None,
+                            owner="historical_compile",
+                            locator=f"contract:{target}",
+                            detail=detail,
+                        ),
+                    ),
                 )
 
 
@@ -208,7 +298,21 @@ def _compile_with_catalog(
         errors.extend(_validate_contract_usage(schema, contracts))
     errors.extend(activation_errors)
     if errors:
-        raise CompileError("workflow v2 compile failed:\n  - " + "\n  - ".join(errors))
+        diagnostics = tuple(
+            CompileDiagnostic(
+                category="workflow_validation",
+                code="workflow_validation",
+                layer=None,
+                owner="compiler",
+                locator="workflow",
+                detail=error,
+            )
+            for error in errors
+        )
+        raise CompileError(
+            "workflow v2 compile failed:\n  - " + "\n  - ".join(errors),
+            diagnostics=diagnostics,
+        )
     resolved_catalog = ingest_catalog if ingest_catalog is not None else validate_catalog_runtime()
     footprints, node_claims = _graph_footprints(schema, contracts)
     graphs = {
@@ -682,13 +786,13 @@ def _walk_expression(
             arg = expr.args[0]
             if not allow_node:
                 errors.append(f"{loc}: node() is not allowed here")
-            elif not (isinstance(arg, Literal) and isinstance(arg.value, str)):
+            elif not (isinstance(arg, DslLiteral) and isinstance(arg.value, str)):
                 errors.append(f"{loc}: node() argument must be a string literal")
             elif arg.value not in node_ids:
                 errors.append(f"{loc}: references unknown node('{arg.value}')")
         if expr.callee == "gate":
             arg = expr.args[0]
-            if isinstance(arg, Literal) and isinstance(arg.value, str) and arg.value not in gate_ids:
+            if isinstance(arg, DslLiteral) and isinstance(arg.value, str) and arg.value not in gate_ids:
                 errors.append(f"{loc}: references unknown gate '{arg.value}'")
         for i, arg in enumerate(expr.args):
             # any/all/count 的谓词在 element child scope 求值，裸标识符是元素字段，
@@ -860,7 +964,7 @@ def _gate_verdict_select(expr: Expr) -> str | None:
     if not (isinstance(call, Call) and call.callee == "node"):
         return None
     arg = call.args[0]
-    if isinstance(arg, Literal) and isinstance(arg.value, str):
+    if isinstance(arg, DslLiteral) and isinstance(arg.value, str):
         return arg.value
     return None
 

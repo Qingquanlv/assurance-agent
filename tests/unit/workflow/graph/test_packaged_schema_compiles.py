@@ -145,6 +145,22 @@ def test_current_assurance_activation_accepts_packaged_four_layers() -> None:
     compile_packaged_workflow(schema, contracts=load_execution_contracts(Path.cwd()))
 
 
+def test_strict_current_conformance_stays_dark_shipped_until_activation() -> None:
+    """Packaged compile keeps the compatibility validator; strict API is separate."""
+    from assurance_agent.workflow.graph.assurance_conformance import (
+        find_current_assurance_conformance_issues,
+        with_approved_api_e2e_capability_atoms,
+    )
+
+    schema = load_workflow_v2(Path.cwd())
+    assert validate_current_assurance_activation(schema) == ()
+    # Pre-activation package lacks approved API/E2E capability atoms.
+    assert find_current_assurance_conformance_issues(schema) != ()
+    assert find_current_assurance_conformance_issues(with_approved_api_e2e_capability_atoms(schema)) == ()
+    # compile_packaged_workflow must not consult the strict validator yet.
+    compile_packaged_workflow(schema, contracts=load_execution_contracts(Path.cwd()))
+
+
 def test_core_compile_still_accepts_minimal_non_assurance_graph() -> None:
     schema = parse_workflow_v2(
         """
