@@ -3,7 +3,7 @@
 **Plan:** docs/superpowers/plans/2026-08-01-four-layer-assurance-verification.md
 **Design:** docs/superpowers/specs/2026-07-31-four-layer-assurance-verification-design.md
 **Start HEAD:** 273a202
-**Current HEAD:** 85924f2
+**Current HEAD:** 151d5b8
 
 ## Resolutions
 - Task 1 → Minimal now (FixerAuthority/apply-summary/safety → Task 8) — CLOSED @ 85924f2
@@ -18,7 +18,8 @@
 6: complete (approved @ 9dc5dea)
 7: complete (approved @ 78be767)
 8: complete (approved @ 85924f2)
-9–23: pending
+9: in progress
+10–23: pending
 
 ## Deferred Minors
 - Task 1: applied intents reject non-None reason
