@@ -913,3 +913,80 @@ def test_cli_resume_repairs_v5_manual_revision_prefix(
     ]
     assert len(resumes) == len(rebuilt.resumes) == 3
     assert [e.get("revision_ordinal") for e in resumes] == [0, 1, 2]
+
+
+def test_workflow_supersede_help_and_stop_params_guard() -> None:
+    help_result = CliRunner().invoke(main, ["workflow", "supersede", "--help"])
+    assert help_result.exit_code == 0
+    assert "--invocation" in help_result.output
+    assert "rerun-v6" in help_result.output
+    bad = CliRunner().invoke(
+        main,
+        [
+            "workflow",
+            "supersede",
+            "--change",
+            "CH-1",
+            "--invocation",
+            "root-1",
+            "--action",
+            "stop",
+            "--who",
+            "op",
+            "--reason",
+            "x",
+            "--params",
+            "{}",
+        ],
+    )
+    assert bad.exit_code == EXIT_ERROR
+    assert "stop rejects --params" in bad.output
+
+
+def test_workflow_supersede_typed_ineligible_exit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from assurance_agent.workflow.driver.runtime_factory import RuntimeBundle
+    from assurance_agent.workflow.graph.supersede import SupersedeError
+
+    project = tmp_path / "proj"
+    change = project / "qa" / "changes" / "CH-1"
+    change.mkdir(parents=True)
+    write_aa_config(project)
+    (change / "events.jsonl").write_text("", encoding="utf-8")
+
+    runtime = MagicMock()
+    runtime._checkpoints.project.return_value = MagicMock(
+        entrypoint="full",
+        parent_invocation_id=None,
+    )
+    runtime.supersede.side_effect = SupersedeError("not_legacy_blocked", "not blocked")
+    compiled = MagicMock()
+    monkeypatch.setattr(
+        wf,
+        "build_graph_runtime",
+        lambda **_k: RuntimeBundle(runtime=runtime, compiled=compiled),
+    )
+    monkeypatch.setattr(wf, "resolve_change", lambda *_a, **_k: MagicMock(path=change))
+    monkeypatch.setattr(wf, "_validate_root_invocation", lambda *_a, **_k: None)
+    monkeypatch.setattr(wf, "runtime_context_for", lambda *_a, **_k: MagicMock())
+    monkeypatch.chdir(project)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "workflow",
+            "supersede",
+            "--change",
+            "CH-1",
+            "--invocation",
+            "root-1",
+            "--action",
+            "stop",
+            "--who",
+            "op",
+            "--reason",
+            "manual stop",
+        ],
+    )
+    assert result.exit_code == EXIT_ERROR
+    assert "not_legacy_blocked" in result.output
+    runtime.supersede.assert_called_once()

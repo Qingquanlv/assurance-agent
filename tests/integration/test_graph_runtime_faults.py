@@ -1261,3 +1261,20 @@ def test_legacy_commit_safety_reason_is_stable_export() -> None:
 
     assert LEGACY_COMMIT_SAFETY_SEMANTICS_UNBOUND == "legacy_commit_safety_semantics_unbound"
     assert issubclass(ResumeCompatibilityBarrier, Exception)
+
+
+def test_supersede_api_surface_and_active_root_guard_preserved(tmp_path: Path) -> None:
+    """Task 13: supersede exists; ordinary run still refuses an active nonterminal root."""
+    from assurance_agent.workflow.graph.runtime import GraphRuntime, GraphRuntimeError
+    from assurance_agent.workflow.graph.supersede import SupersedeError
+
+    assert hasattr(GraphRuntime, "supersede")
+    assert issubclass(SupersedeError, Exception)
+
+    # Ordinary active-root guard path remains for generic run (no replacement auth).
+    from tests.integration._graph_fault_worker import prepare_interrupted_v5_graph
+
+    runtime, compiled, context, root_id = prepare_interrupted_v5_graph(tmp_path)
+    assert runtime.latest_root_invocation() == root_id
+    with pytest.raises(GraphRuntimeError, match="active invocation"):
+        runtime.start_invocation(compiled, "root", context)

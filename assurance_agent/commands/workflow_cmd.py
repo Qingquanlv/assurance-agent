@@ -1,4 +1,4 @@
-"""`aa workflow run|status|resume|import-checkpoint|start` — GraphRuntime CLI surface."""
+"""`aa workflow run|status|resume|import-checkpoint|start|supersede` — GraphRuntime CLI."""
 
 from __future__ import annotations
 
@@ -17,7 +17,9 @@ from assurance_agent.workflow.driver.driver_state import (
     driver_status_for_graph,
     evaluate_start_guard,
     project_graph_pointer,
+    project_supersede_reason,
     read_driver_state,
+    supersede_reason_from_error,
     write_driver_state,
 )
 from assurance_agent.workflow.driver.headless_adapter import HeadlessAdapter
@@ -35,6 +37,7 @@ from assurance_agent.workflow.graph.checkpoint import CheckpointImportError, par
 from assurance_agent.workflow.graph.models import ResumeCommand
 from assurance_agent.workflow.graph.runtime import GraphRuntimeError
 from assurance_agent.workflow.graph.runtime import ensure_retro_params
+from assurance_agent.workflow.graph.supersede import SupersedeError
 
 
 def _atomic_write_json(path: Path, payload: dict[str, object]) -> None:
@@ -101,7 +104,7 @@ def _validate_root_invocation(
 
 @click.group("workflow")
 def workflow_group() -> None:
-    """Graph workflow driver (run / status / resume / import-checkpoint)."""
+    """Graph workflow driver (run / status / resume / import-checkpoint / supersede)."""
 
 
 def _parse_json_object(raw: str | None, option_name: str) -> dict[str, object]:
@@ -560,6 +563,147 @@ def workflow_status(change_id: str, next_only: bool, as_json: bool) -> None:
     from assurance_agent.commands.status_cmd import _run_status
 
     raise SystemExit(_run_status(change_id, next_only=next_only, as_json=as_json))
+
+
+@workflow_group.command("supersede")
+@click.option("--change", "change_id", required=True, help="Change ID under qa/changes/.")
+@click.option("--invocation", "invocation_id", required=True, help="Latest active legacy root ID.")
+@click.option(
+    "--action",
+    "action",
+    required=True,
+    type=click.Choice(["rerun-v6", "stop"]),
+    help="rerun-v6 starts one replacement root; stop is terminal disposition only.",
+)
+@click.option("--who", required=True, help="Operator identity (non-empty).")
+@click.option("--reason", required=True, help="Operator reason (non-empty).")
+@click.option(
+    "--params",
+    default=None,
+    help="Optional JSON params for rerun-v6 only; omission reuses the old root params.",
+)
+@click.option("--adapter", "adapter_name", type=_ADAPTER_CHOICE, default="headless", show_default=True)
+@click.option("--server", default=None, help="OpenCode server URL (opencode adapter).")
+@click.option("--directory", default=None, help="SUT directory for OpenCode ?directory=.")
+@click.option(
+    "--model",
+    default=None,
+    help='Model id. OpenCode: "provider/model". Headless/cursor-agent: defaults to cursor-grok-4.5-high-fast.',
+)
+@click.option("--parent-session", "parent_session", default=None, help="Parent session id.")
+@click.option("--agent-cmd", "agent_cmd", default="cursor-agent --print", show_default=True)
+@click.option(
+    "--entrypoint",
+    "expected_entrypoint",
+    type=_ENTRYPOINT_CHOICE,
+    default=None,
+    help="Optional entrypoint check; must match the root when provided.",
+)
+def workflow_supersede(
+    change_id: str,
+    invocation_id: str,
+    action: str,
+    who: str,
+    reason: str,
+    params: str | None,
+    adapter_name: str,
+    server: str | None,
+    directory: str | None,
+    model: str | None,
+    parent_session: str | None,
+    agent_cmd: str,
+    expected_entrypoint: str | None,
+) -> None:
+    """Audited exit for a legacy root blocked on unbound commit-safety semantics."""
+    if not who.strip() or not reason.strip():
+        click.secho("supersede requires non-empty --who and --reason", fg="red")
+        raise SystemExit(EXIT_ERROR)
+    if action == "stop" and params is not None:
+        click.secho("stop rejects --params", fg="red")
+        raise SystemExit(EXIT_ERROR)
+
+    project_root = Path.cwd()
+    try:
+        change_dir = resolve_change(project_root, change_id).path
+    except (UnsafeIdentifierError, ChangeNotFoundError) as err:
+        click.secho(str(err), fg="red")
+        raise SystemExit(EXIT_ERROR) from err
+
+    parsed_params: dict[str, object] | None
+    if params is None:
+        parsed_params = None
+    else:
+        parsed_params = _parse_params(params)
+
+    adapter = _build_adapter(adapter_name, project_root, server, directory, model, parent_session, agent_cmd)
+    try:
+        bundle = build_graph_runtime(
+            project_root=project_root,
+            change_id=change_id,
+            adapter=adapter,
+        )
+        projection = bundle.runtime._checkpoints.project(invocation_id)  # noqa: SLF001
+        entrypoint = expected_entrypoint or projection.entrypoint
+        _validate_root_invocation(
+            bundle.runtime,
+            change_dir=change_dir,
+            change_id=change_id,
+            invocation_id=invocation_id,
+            expected_entrypoint=entrypoint,
+        )
+        context = runtime_context_for(project_root, change_id, {}, parent_session)
+        result = bundle.runtime.supersede(
+            bundle.compiled,
+            context,
+            invocation_id=invocation_id,
+            action=action,  # type: ignore[arg-type]
+            who=who.strip(),
+            reason=reason.strip(),
+            params=parsed_params,
+        )
+    except SupersedeError as err:
+        driver = read_driver_state(change_dir)
+        if driver is not None:
+            write_driver_state(
+                change_dir,
+                project_supersede_reason(driver, supersede_reason_from_error(err)),
+            )
+        click.secho(err.reason_code, fg="red")
+        raise SystemExit(EXIT_ERROR) from err
+    except GraphRuntimeError as err:
+        click.secho(str(err), fg="red")
+        raise SystemExit(EXIT_ERROR) from err
+
+    driver = read_driver_state(change_dir)
+    if driver is not None:
+        pointer_id = result.replacement_invocation_id or result.superseded_invocation_id
+        write_driver_state(
+            change_dir,
+            project_supersede_reason(
+                project_graph_pointer(
+                    driver,
+                    invocation_id=pointer_id,
+                    checkpoint_id=None,
+                    event_seq=driver.event_seq,
+                    status="failed" if result.action == "stop" else "running",
+                ),
+                "superseded",
+            ),
+        )
+
+    if result.replacement_invocation_id:
+        click.secho(
+            f"superseded={result.superseded_invocation_id} "
+            f"replacement={result.replacement_invocation_id} "
+            f"supersede_id={result.supersede_id}",
+            fg="green",
+        )
+    else:
+        click.secho(
+            f"superseded={result.superseded_invocation_id} action=stop supersede_id={result.supersede_id}",
+            fg="green",
+        )
+    raise SystemExit(EXIT_COMPLETED)
 
 
 @workflow_group.command("import-checkpoint")

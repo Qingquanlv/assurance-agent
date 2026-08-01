@@ -50,6 +50,9 @@ class GraphInvocationStartedEvent(_GraphEvent):
     parent_invocation_id: str | None = None
     parent_task_id: str | None = None
     structural_path: str
+    # D18 single-use replacement pair (v6 root only); all-or-none.
+    supersedes_invocation_id: str | None = None
+    replacement_authorization_id: str | None = None
 
     @model_validator(mode="after")
     def _require_v4_definition_binding(self) -> Self:
@@ -88,6 +91,9 @@ class GraphInvocationStartedEvent(_GraphEvent):
                 if not all(new_fields):
                     raise ValueError("v6 semantic binding fields must be all-or-none")
                 raise ValueError("v6 semantic binding fields require event_schema_version >= 6")
+        replacement_fields = (self.supersedes_invocation_id, self.replacement_authorization_id)
+        if any(replacement_fields) and not all(replacement_fields):
+            raise ValueError("supersedes_invocation_id and replacement_authorization_id must be all-or-none")
         return self
 
 
@@ -415,6 +421,49 @@ class TopologySafetyCompatibilityRecordedEvent(_GraphEvent):
     source_sequence: int
 
 
+class GraphInvocationSupersededEvent(_GraphEvent):
+    """Audited legacy-root supersede fence (D18). Terminal for the bound subtree."""
+
+    type: Literal["graph_invocation_superseded"]
+    invocation_id: str
+    checkpoint_ns: str
+    entrypoint: str
+    supersede_id: str
+    reason_code: Literal["legacy_commit_safety_semantics_unbound"]
+    who: str
+    reason: str
+    action: Literal["rerun-v6", "stop"]
+    params_sha256: str | None = None
+    definition_request_digest: str | None = None
+    replacement_authorization_id: str | None = None
+    descendant_invocation_ids: list[str]
+    subtree_digest: str
+    source_sequence: int
+    event_schema_version: int
+
+    @model_validator(mode="after")
+    def _validate_action_fields(self) -> Self:
+        if self.action == "stop":
+            if (
+                self.params_sha256 is not None
+                or self.definition_request_digest is not None
+                or self.replacement_authorization_id is not None
+            ):
+                raise ValueError("stop supersede must leave replacement fields null")
+        else:
+            if (
+                not self.params_sha256
+                or not self.definition_request_digest
+                or not self.replacement_authorization_id
+            ):
+                raise ValueError("rerun-v6 supersede requires params and replacement authority")
+        if list(self.descendant_invocation_ids) != sorted(self.descendant_invocation_ids):
+            raise ValueError("descendant_invocation_ids must be sorted")
+        if len(set(self.descendant_invocation_ids)) != len(self.descendant_invocation_ids):
+            raise ValueError("descendant_invocation_ids must be unique")
+        return self
+
+
 class GraphTerminalEvent(_GraphEvent):
     type: Literal["graph_completed", "graph_stopped", "graph_failed"]
     invocation_id: str
@@ -465,6 +514,7 @@ GraphEvent = Annotated[
     | DurableEffectAcknowledgedEvent
     | DurableEffectIntegrityFailedEvent
     | TopologySafetyCompatibilityRecordedEvent
+    | GraphInvocationSupersededEvent
     | GraphTerminalEvent
     | TaskImportedEvent
     | CheckpointImportedEvent,
@@ -497,6 +547,7 @@ __all__ = [
     "DurableEffectAcknowledgedEvent",
     "DurableEffectIntegrityFailedEvent",
     "TopologySafetyCompatibilityRecordedEvent",
+    "GraphInvocationSupersededEvent",
     "GraphTerminalEvent",
     "TaskImportedEvent",
     "CheckpointImportedEvent",

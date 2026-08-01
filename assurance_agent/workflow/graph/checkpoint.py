@@ -34,6 +34,7 @@ from assurance_agent.workflow.core.graph_events import (
     FanOutExpandedEvent,
     GraphInterruptedEvent,
     GraphInvocationStartedEvent,
+    GraphInvocationSupersededEvent,
     GraphResumedEvent,
     GraphTerminalEvent,
     ManualPlanRevisionEvent,
@@ -906,6 +907,8 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
     seen_effect_acks: dict[str, DurableEffectAcknowledgedEvent] = {}
     seen_topology_receipts: dict[str, TopologySafetyCompatibilityRecordedEvent] = {}
     topology_compatibility_receipt_id: str | None = None
+    supersede_id: str | None = None
+    seen_supersedes: dict[str, GraphInvocationSupersededEvent] = {}
 
     for raw in events:
         if raw.get("source") != "graph":
@@ -915,8 +918,13 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
             event = GRAPH_EVENT_ADAPTER.validate_python(payload)
         except ValidationError as exc:
             raise LedgerIntegrityError(f"invalid graph event payload: {exc}") from exc
+        # Supersede fences the whole bound subtree; descendants see the root event.
         if event.invocation_id != invocation_id:
-            continue
+            if not (
+                isinstance(event, GraphInvocationSupersededEvent)
+                and invocation_id in event.descendant_invocation_ids
+            ):
+                continue
         seq = raw.get("seq")
         if isinstance(seq, int) and not isinstance(seq, bool):
             event_seq = max(event_seq, seq)
@@ -1278,13 +1286,10 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                     f"durable_effect_acknowledged attempt mismatch for {event.effect_id}"
                 )
             if event.kind != intent.get("kind"):
-                raise LedgerIntegrityError(
-                    f"durable_effect_acknowledged kind mismatch for {event.effect_id}"
-                )
+                raise LedgerIntegrityError(f"durable_effect_acknowledged kind mismatch for {event.effect_id}")
             if event.reconciler_semantics_digest != intent.get("reconciler_semantics_digest"):
                 raise LedgerIntegrityError(
-                    f"durable_effect_acknowledged reconciler_semantics_digest mismatch "
-                    f"for {event.effect_id}"
+                    f"durable_effect_acknowledged reconciler_semantics_digest mismatch for {event.effect_id}"
                 )
             if event.payload_sha256 != intent.get("payload_sha256"):
                 raise LedgerIntegrityError(
@@ -1293,9 +1298,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
             seen_effect_acks[event.effect_id] = event
             tasks[event.task_id] = task.model_copy(
                 update={
-                    "acknowledged_effect_ids": tuple(
-                        sorted({*task.acknowledged_effect_ids, event.effect_id})
-                    )
+                    "acknowledged_effect_ids": tuple(sorted({*task.acknowledged_effect_ids, event.effect_id}))
                 }
             )
         elif isinstance(event, DurableEffectIntegrityFailedEvent):
@@ -1306,8 +1309,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
             if prior is not None:
                 if prior.model_dump(mode="json") != event.model_dump(mode="json"):
                     raise LedgerIntegrityError(
-                        f"conflicting topology_safety_compatibility_recorded payload "
-                        f"for {event.receipt_id}"
+                        f"conflicting topology_safety_compatibility_recorded payload for {event.receipt_id}"
                     )
                 continue
             if (
@@ -1323,6 +1325,21 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                 )
             seen_topology_receipts[event.receipt_id] = event
             topology_compatibility_receipt_id = event.receipt_id
+        elif isinstance(event, GraphInvocationSupersededEvent):
+            prior = seen_supersedes.get(event.supersede_id)
+            if prior is not None:
+                if prior.model_dump(mode="json") != event.model_dump(mode="json"):
+                    raise LedgerIntegrityError(
+                        f"conflicting graph_invocation_superseded payload for {event.supersede_id}"
+                    )
+                continue
+            if supersede_id is not None and supersede_id != event.supersede_id:
+                raise LedgerIntegrityError(f"multiple supersede events for invocation {invocation_id}")
+            seen_supersedes[event.supersede_id] = event
+            supersede_id = event.supersede_id
+            # Status renderers may say stopped; typed audit remains on supersede_id.
+            terminal = "stopped"
+            terminal_reason = "superseded"
         elif isinstance(event, GraphTerminalEvent):
             terminal = _TERMINAL_BY_TYPE[event.type]
             terminal_reason = event.reason
@@ -1389,6 +1406,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
         terminal=terminal,
         terminal_reason=terminal_reason,
         topology_compatibility_receipt_id=topology_compatibility_receipt_id,
+        supersede_id=supersede_id,
     )
 
 

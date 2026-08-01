@@ -80,6 +80,11 @@ def unacknowledged_durable_effects(
     return tuple(sorted(pending))
 
 
+def supersede_audit_id(projection: GraphProjection) -> str | None:
+    """Typed D18 supersede id when present; status renderers may still say stopped."""
+    return projection.supersede_id
+
+
 def graph_status_from_projection(
     projection: GraphProjection,
     *,

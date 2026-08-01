@@ -31,6 +31,21 @@ from assurance_agent.workflow.core.graph_events import (
     SuperstepPlannedEvent,
     TaskImportedEvent,
 )
+from assurance_agent.workflow.graph.supersede import (
+    SupersedeAction,
+    SupersedeError,
+    SupersedeResult,
+    authorization_consumed,
+    build_staged_replacement_plan,
+    build_supersede_event,
+    evaluate_supersede_eligibility,
+    fence_blocks_invocation,
+    find_replacement_root,
+    find_supersede_event,
+    load_staged_definition_request,
+    recover_prepared_fence,
+    stage_definition_request_record,
+)
 from assurance_agent.workflow.core.progression import ProgressionError, transaction
 from assurance_agent.workflow.graph.manual_revision import (
     ManualRevisionError,
@@ -47,6 +62,7 @@ from assurance_agent.workflow.execution.tree_hash import sha256_file
 from assurance_agent.workflow.graph.checkpoint import (
     CheckpointImportError,
     CheckpointStore,
+    fold_invocation_events,
     render_workflow_state_yaml,
     validate_import,
 )
@@ -149,6 +165,8 @@ def _build_invocation_started(
     binding: InvocationDefinitionBinding,
     parent_invocation_id: str | None = None,
     parent_task_id: str | None = None,
+    supersedes_invocation_id: str | None = None,
+    replacement_authorization_id: str | None = None,
 ) -> GraphInvocationStartedEvent:
     catalog_digest = _ingest_catalog_digest(compiled)
     if not catalog_digest:
@@ -180,6 +198,8 @@ def _build_invocation_started(
         parent_invocation_id=parent_invocation_id,
         parent_task_id=parent_task_id,
         structural_path=structural_path,
+        supersedes_invocation_id=supersedes_invocation_id,
+        replacement_authorization_id=replacement_authorization_id,
     )
 
 
@@ -198,7 +218,6 @@ class ResumeCompatibilityBarrier(GraphRuntimeError):
         self.decision = decision
         self.reason_code = decision.reason or "resume_compatibility_blocked"
         super().__init__(self.reason_code)
-
 
 
 def assert_live_semantic_compatibility(request: PinnedDefinitionRequest) -> None:
@@ -305,6 +324,299 @@ class GraphRuntime:
             recovery_state=derive_revision_recovery_state(events),
             unacknowledged_durable_effects=unacknowledged_durable_effects(events, invocation_id),
         )
+
+    def supersede(
+        self,
+        compiled: CompiledWorkflow,
+        context: RuntimeContext,
+        *,
+        invocation_id: str,
+        action: SupersedeAction,
+        who: str,
+        reason: str,
+        params: dict[str, object] | None = None,
+    ) -> SupersedeResult:
+        """Audited legacy-root exit: terminal fence + optional single-use v6 replacement."""
+        if not who.strip() or not reason.strip():
+            raise SupersedeError("missing_who_or_reason", "supersede requires nonblank who and reason")
+        if action == "stop" and params is not None:
+            raise SupersedeError("stop_with_params", "stop rejects --params")
+
+        change_dir = context.change_dir
+        fence_store = RootEffectFenceStore(context.project_root)
+        events = read_events_strict(change_dir)
+        existing = recover_prepared_fence(fence_store, root_invocation_id=invocation_id, events=events)
+        if existing is not None:
+            return self._complete_supersede_after_event(
+                compiled=compiled,
+                context=context,
+                event=existing,
+                who=who,
+                reason=reason,
+                params=params,
+            )
+
+        try:
+            projection = self._checkpoints.project(invocation_id)
+        except LedgerIntegrityError as exc:
+            raise GraphIntegrityError(str(exc)) from exc
+
+        # Typed legacy-block decision (never parse exception text).
+        decision = self._enforce_resume_compatibility(projection, context)
+        # Compatibility may have appended a receipt; reload.
+        events = read_events_strict(change_dir)
+        projection = self._checkpoints.project(invocation_id)
+
+        staged_plan = None
+        staged_request = None
+        if action == "rerun-v6":
+            from assurance_agent.workflow.graph.definition_pinning import request_for_compiled
+
+            staged_request = request_for_compiled(compiled, event_schema_version=6)
+            assert_live_semantic_compatibility(staged_request)
+            entry = compiled.entrypoints.get(projection.entrypoint)
+            if entry is None:
+                raise SupersedeError("wrong_entrypoint", f"unknown entrypoint {projection.entrypoint}")
+            overrides = dict(projection.params) if params is None else dict(params)
+            try:
+                resolved = resolve_params(compiled.schema, {**entry.param_overrides, **overrides})
+            except Exception as exc:
+                raise SupersedeError("invalid_params", f"invalid params: {exc}") from exc
+            if projection.entrypoint == "retro":
+                try:
+                    resolved = ensure_retro_params(resolved)
+                except Exception as exc:
+                    raise SupersedeError("invalid_params", f"invalid retro params: {exc}") from exc
+            staged_plan = build_staged_replacement_plan(request=staged_request, params=resolved)
+            stage_definition_request_record(
+                change_dir, digest=staged_plan.definition_request_digest, request=staged_request
+            )
+
+        latest = self.latest_root_invocation()
+        eligibility = evaluate_supersede_eligibility(
+            projection=projection,
+            latest_root_id=latest,
+            expected_entrypoint=projection.entrypoint,
+            decision=decision,
+            action=action,
+            who=who,
+            reason=reason,
+            params_provided=params is not None,
+            staged_request=staged_request,
+            project_root=context.project_root,
+            change_dir=change_dir,
+            events=events,
+        )
+        if not eligibility.eligible:
+            raise SupersedeError(
+                eligibility.reason or "not_eligible",
+                eligibility.detail or eligibility.reason or "not eligible",
+            )
+
+        event = build_supersede_event(
+            eligibility=eligibility,
+            action=action,
+            who=who,
+            reason=reason,
+            event_schema_version=projection.event_schema_version,
+            checkpoint_ns=projection.checkpoint_ns,
+            staged=staged_plan,
+        )
+
+        # Txn 1: prepare fence → progression append → commit fence.
+        # prepare/commit each acquire the frozen guard; hold guard across append.
+        fence_store.prepare_terminal(invocation_id, supersede_id=event.supersede_id)
+        appended = False
+        try:
+            with fence_store.guard(invocation_id):
+                with transaction(change_dir) as txn:
+                    events_locked = txn.read_events_strict()
+                    prior = find_supersede_event(events_locked, invocation_id)
+                    if prior is not None:
+                        if prior.model_dump(mode="json") != event.model_dump(mode="json"):
+                            raise SupersedeError(
+                                "conflicting_supersede",
+                                "conflicting supersede payload under progression lock",
+                            )
+                        event = prior
+                    else:
+                        # Rescan eligibility under the lock.
+                        projection = fold_invocation_events(invocation_id, events_locked)
+                        decision = self._compatibility_decision_readonly(projection, context)
+                        eligibility = evaluate_supersede_eligibility(
+                            projection=projection,
+                            latest_root_id=self.latest_root_invocation(),
+                            expected_entrypoint=projection.entrypoint,
+                            decision=decision,
+                            action=action,
+                            who=who,
+                            reason=reason,
+                            params_provided=params is not None,
+                            staged_request=staged_request,
+                            project_root=context.project_root,
+                            change_dir=change_dir,
+                            events=events_locked,
+                        )
+                        if not eligibility.eligible:
+                            raise SupersedeError(
+                                eligibility.reason or "not_eligible",
+                                eligibility.detail or eligibility.reason or "not eligible",
+                            )
+                        event = build_supersede_event(
+                            eligibility=eligibility,
+                            action=action,
+                            who=who,
+                            reason=reason,
+                            event_schema_version=projection.event_schema_version,
+                            checkpoint_ns=projection.checkpoint_ns,
+                            staged=staged_plan,
+                        )
+                        txn.append_strict(event)
+                        appended = True
+            fence_store.commit_terminal(invocation_id)
+        except Exception:
+            events_now = read_events_strict(change_dir)
+            if find_supersede_event(events_now, invocation_id) is None:
+                try:
+                    fence_store.abort_prepared(invocation_id)
+                except RootTerminalFenceError:
+                    pass
+            else:
+                try:
+                    fence_store.commit_terminal(invocation_id)
+                except RootTerminalFenceError:
+                    pass
+            raise
+
+        _ = appended
+        return self._complete_supersede_after_event(
+            compiled=compiled,
+            context=context,
+            event=event,
+            who=who,
+            reason=reason,
+            params=params,
+        )
+
+    def _complete_supersede_after_event(
+        self,
+        *,
+        compiled: CompiledWorkflow,
+        context: RuntimeContext,
+        event: object,
+        who: str,
+        reason: str,
+        params: dict[str, object] | None,
+    ) -> SupersedeResult:
+        from assurance_agent.workflow.core.graph_events import GraphInvocationSupersededEvent as _Evt
+
+        assert isinstance(event, _Evt)
+        if event.action == "stop":
+            return SupersedeResult(
+                superseded_invocation_id=event.invocation_id,
+                supersede_id=event.supersede_id,
+                action="stop",
+                replacement_invocation_id=None,
+                replacement_authorization_id=None,
+                exit_code=0,
+                reason="superseded",
+            )
+        assert event.replacement_authorization_id is not None
+        assert event.definition_request_digest is not None
+        assert event.params_sha256 is not None
+
+        # Txn 2: consume authorization / recover the one replacement root.
+        events = read_events_strict(context.change_dir)
+        existing_root = find_replacement_root(
+            events,
+            supersedes_invocation_id=event.invocation_id,
+            replacement_authorization_id=event.replacement_authorization_id,
+        )
+        if existing_root is not None:
+            return SupersedeResult(
+                superseded_invocation_id=event.invocation_id,
+                supersede_id=event.supersede_id,
+                action="rerun-v6",
+                replacement_invocation_id=existing_root,
+                replacement_authorization_id=event.replacement_authorization_id,
+                exit_code=0,
+                reason="replacement_resumed",
+            )
+
+        staged_request = load_staged_definition_request(context.change_dir, event.definition_request_digest)
+        if authorization_consumed(events, event.replacement_authorization_id):
+            raise SupersedeError("conflicting_supersede", "replacement authorization already consumed")
+
+        # Resolve params from staged digest binding: reuse event params_sha256.
+        entry = compiled.entrypoints[event.entrypoint]
+        overrides = dict(params) if params is not None else {}
+        if not overrides:
+            # Reload superseded root params as overrides.
+            old = self._checkpoints.project(event.invocation_id)
+            overrides = dict(old.params)
+        try:
+            resolved = resolve_params(compiled.schema, {**entry.param_overrides, **overrides})
+        except Exception as exc:
+            raise SupersedeError("invalid_params", f"invalid params: {exc}") from exc
+        if canonical_digest(resolved) != event.params_sha256:
+            # Prefer exact authorized digest: when CLI retries with same logical
+            # params the resolver must match; conflicting params refuse.
+            if params is not None:
+                raise SupersedeError("conflicting_supersede", "params digest conflicts with authorization")
+            # Fall back: use old root projection params already authorized.
+            old = self._checkpoints.project(event.invocation_id)
+            resolved = dict(old.params)
+
+        replacement_context = context.model_copy(update={"params": resolved})
+        new_id = self._start_invocation(
+            compiled,
+            event.entrypoint,
+            replacement_context,
+            supersedes_invocation_id=event.invocation_id,
+            replacement_authorization_id=event.replacement_authorization_id,
+            expected_definition_request=staged_request,
+        )
+        return SupersedeResult(
+            superseded_invocation_id=event.invocation_id,
+            supersede_id=event.supersede_id,
+            action="rerun-v6",
+            replacement_invocation_id=new_id,
+            replacement_authorization_id=event.replacement_authorization_id,
+            exit_code=0,
+            reason="replacement_started",
+        )
+
+    def _compatibility_decision_readonly(
+        self,
+        projection: GraphProjection,
+        context: RuntimeContext,
+    ) -> ResumeCompatibilityDecision:
+        """Evaluate resume compatibility without appending a new receipt."""
+        if projection.event_schema_version < 4 or projection.event_schema_version >= 6:
+            return ResumeCompatibilityDecision(
+                schema_version="1",
+                allowed=True,
+                event_schema_version=projection.event_schema_version,
+                root_invocation_id=projection.parent_invocation_id or projection.invocation_id,
+            )
+        root_id = projection.parent_invocation_id or projection.invocation_id
+        root_projection = (
+            projection if projection.invocation_id == root_id else self._checkpoints.project(root_id)
+        )
+        bundle = self._resolve_bundle(root_projection)
+        roles, _issues = discover_historical_assurance_roles(bundle.compiled.schema)
+        existing = self._load_topology_compatibility_receipt(root_id, context.change_dir)
+        profile_ok = self._legacy_profile_reconstructable(root_projection, context.change_dir)
+        decision, _new = evaluate_resume_compatibility(
+            projection=root_projection,
+            compiled=bundle.compiled,
+            contracts=bundle.contracts,
+            historical_roles=roles,
+            existing_receipt=existing,
+            profile_reconstructable=profile_ok,
+            change_dir=context.change_dir,
+        )
+        return decision
 
     def import_checkpoint(
         self,
@@ -625,13 +937,22 @@ class GraphRuntime:
         compiled: CompiledWorkflow,
         entrypoint: str,
         context: RuntimeContext,
+        *,
+        supersedes_invocation_id: str | None = None,
+        replacement_authorization_id: str | None = None,
+        expected_definition_request: PinnedDefinitionRequest | None = None,
     ) -> str:
+        replacement = supersedes_invocation_id is not None and replacement_authorization_id is not None
+        if (supersedes_invocation_id is None) ^ (replacement_authorization_id is None):
+            raise GraphRuntimeError(
+                "supersedes_invocation_id and replacement_authorization_id must be all-or-none"
+            )
+
         # --- Entrypoint restart policy safety net ---
         # For "once" entrypoints, refuse if this entrypoint has a completed
-        # invocation.  loop.py enforces this earlier; this is a secondary guard
-        # for callers that invoke run() directly without going through the driver.
+        # invocation.  Exact unused D18 replacement authorization is the only bypass.
         ep = compiled.entrypoints.get(entrypoint)
-        if ep is not None and ep.restart == "once":
+        if not replacement and ep is not None and ep.restart == "once":
             scoped_latest = self.latest_root_invocation(entrypoint)
             if scoped_latest is not None:
                 try:
@@ -645,16 +966,17 @@ class GraphRuntime:
                     )
 
         # --- Active invocation guard (any entrypoint) ---
-        latest = self.latest_root_invocation()
-        if latest is not None:
-            try:
-                existing = self._checkpoints.project(latest)
-            except LedgerIntegrityError as exc:
-                raise GraphIntegrityError(str(exc)) from exc
-            if existing.terminal is None:
-                raise GraphRuntimeError(
-                    f"change already has active invocation {latest}; resume instead of run"
-                )
+        if not replacement:
+            latest = self.latest_root_invocation()
+            if latest is not None:
+                try:
+                    existing = self._checkpoints.project(latest)
+                except LedgerIntegrityError as exc:
+                    raise GraphIntegrityError(str(exc)) from exc
+                if existing.terminal is None:
+                    raise GraphRuntimeError(
+                        f"change already has active invocation {latest}; resume instead of run"
+                    )
 
         if entrypoint not in compiled.entrypoints:
             raise GraphRuntimeError(f"unknown entrypoint '{entrypoint}'")
@@ -685,6 +1007,16 @@ class GraphRuntime:
             )
         except PolicyError:
             raise
+        if expected_definition_request is not None:
+            from assurance_agent.workflow.graph.definition_pinning import request_for_compiled
+            from assurance_agent.workflow.graph.supersede import definition_request_digest
+
+            live = request_for_compiled(compiled, event_schema_version=6)
+            if definition_request_digest(live) != definition_request_digest(expected_definition_request):
+                raise SupersedeError(
+                    "conflicting_supersede",
+                    "staged definition request digest drift on replacement start",
+                )
         started = _build_invocation_started(
             invocation_id=invocation_id,
             entrypoint=entrypoint,
@@ -696,9 +1028,53 @@ class GraphRuntime:
             checkpoint_ns=checkpoint_ns,
             structural_path=graph_id,
             binding=binding,
+            supersedes_invocation_id=supersedes_invocation_id,
+            replacement_authorization_id=replacement_authorization_id,
         )
         try:
             with transaction(context.change_dir) as txn:
+                if replacement:
+                    assert supersedes_invocation_id is not None
+                    assert replacement_authorization_id is not None
+                    events_locked = txn.read_events_strict()
+                    supersede_event = find_supersede_event(events_locked, supersedes_invocation_id)
+                    if supersede_event is None:
+                        raise SupersedeError(
+                            "not_eligible",
+                            "replacement authorization missing supersede event",
+                        )
+                    if supersede_event.action != "rerun-v6":
+                        raise SupersedeError("not_eligible", "stop supersede has no replacement authority")
+                    if supersede_event.replacement_authorization_id != replacement_authorization_id:
+                        raise SupersedeError(
+                            "conflicting_supersede",
+                            "replacement_authorization_id mismatch",
+                        )
+                    if supersede_event.entrypoint != entrypoint:
+                        raise SupersedeError(
+                            "wrong_entrypoint",
+                            "replacement entrypoint must match superseded root",
+                        )
+                    if authorization_consumed(events_locked, replacement_authorization_id):
+                        existing_root = find_replacement_root(
+                            events_locked,
+                            supersedes_invocation_id=supersedes_invocation_id,
+                            replacement_authorization_id=replacement_authorization_id,
+                        )
+                        if existing_root is not None:
+                            return existing_root
+                        raise SupersedeError(
+                            "conflicting_supersede",
+                            "replacement authorization already consumed",
+                        )
+                    if (
+                        supersede_event.params_sha256 is not None
+                        and canonical_digest(params) != supersede_event.params_sha256
+                    ):
+                        raise SupersedeError(
+                            "conflicting_supersede",
+                            "replacement params digest mismatch",
+                        )
                 txn.append_strict(started)
                 self._stage_pinned_definitions(txn, compiled, binding)
                 txn.write_runtime_file(
@@ -713,6 +1089,8 @@ class GraphRuntime:
                         sort_keys=True,
                     ).encode("utf-8"),
                 )
+        except SupersedeError:
+            raise
         except Exception as exc:
             if "duplicate" in str(exc).lower():
                 raise GraphRuntimeError(f"duplicate invocation start: {invocation_id}") from exc
@@ -760,6 +1138,16 @@ class GraphRuntime:
         except LedgerIntegrityError as exc:
             raise GraphIntegrityError(str(exc)) from exc
         context = self._context_for(projection)
+        events = read_events_strict(context.change_dir)
+        fenced = fence_blocks_invocation(events, invocation_id)
+        if fenced is not None or projection.supersede_id is not None:
+            status = self.status(invocation_id)
+            return RunResult(
+                invocation_id=invocation_id,
+                status=status,
+                exit_code=EXIT_STOPPED,
+                reason="superseded",
+            )
         # Manual-revision fix_and_proceed must reach _commit_manual_revision_resume
         # before open-prefix recovery can resolve the interrupt. Otherwise an
         # identical CLI retry after a repaired open prefix hits "not pending",
@@ -1394,9 +1782,7 @@ class GraphRuntime:
 
         root_id = projection.parent_invocation_id or projection.invocation_id
         root_projection = (
-            projection
-            if projection.invocation_id == root_id
-            else self._checkpoints.project(root_id)
+            projection if projection.invocation_id == root_id else self._checkpoints.project(root_id)
         )
         # Load pinned bundle for audit only (no handler dispatch yet).
         bundle = self._resolve_bundle(root_projection)
@@ -1575,6 +1961,15 @@ class GraphRuntime:
         return False
 
     def _commit_pending_write_sets(self, projection: GraphProjection, context: RuntimeContext) -> bool:
+        events = read_events_strict(context.change_dir)
+        if fence_blocks_invocation(events, projection.invocation_id) is not None:
+            return False
+        fence_store = RootEffectFenceStore(context.project_root)
+        root_id = projection.parent_invocation_id or projection.invocation_id
+        try:
+            fence_store.reject_if_terminal(root_id)
+        except RootTerminalFenceError as exc:
+            raise GraphRuntimeError(f"supersede fence rejects write-set commit: {exc}") from exc
         planned = self._last_uncommitted_plan(projection.invocation_id)
         if planned is None:
             return False
@@ -1605,8 +2000,17 @@ class GraphRuntime:
         projection: GraphProjection,
         context: RuntimeContext,
     ) -> bool:
+        events = read_events_strict(self._checkpoints._change_dir)  # noqa: SLF001
+        if fence_blocks_invocation(events, projection.invocation_id) is not None:
+            return False
+        fence_store = RootEffectFenceStore(context.project_root)
+        root_id = projection.parent_invocation_id or projection.invocation_id
+        try:
+            fence_store.reject_if_terminal(root_id)
+        except RootTerminalFenceError as exc:
+            raise GraphRuntimeError(f"supersede fence rejects publication replay: {exc}") from exc
         progress = False
-        for raw in read_events_strict(self._checkpoints._change_dir):  # noqa: SLF001
+        for raw in events:
             if raw.get("source") != "graph" or raw.get("invocation_id") != projection.invocation_id:
                 continue
             if raw.get("type") != "superstep_committed":
@@ -1719,8 +2123,7 @@ class GraphRuntime:
         times = [
             _parse_ts(task.next_retry_at)
             for task in projection.tasks.values()
-            if task.next_retry_at is not None
-            and task.status in ("failed", "pending")
+            if task.next_retry_at is not None and task.status in ("failed", "pending")
         ]
         context = self._context_for(projection)
         retry_store = EffectRetryStore(context.project_root)
