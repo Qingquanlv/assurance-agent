@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from collections.abc import Callable
 from typing import Any
 
@@ -11,9 +12,12 @@ import pytest
 from assurance_agent.artifacts.models.plan_checks import CheckEvidence
 from assurance_agent.artifacts.models.review import Review
 from assurance_agent.workflow.orchestration.gate_semantics import (
+    SEMANTICS_ID,
     build_gate_semantics_manifest,
     discover_replay_semantic_dependencies,
+    gate_semantics_bytes,
     gate_semantics_digest,
+    gate_semantics_object_digest,
     normalized_ast_digest,
     symbol_implementation_digest,
 )
@@ -24,16 +28,47 @@ def test_discover_replay_dependencies_match_manifest_symbols() -> None:
     assert discover_replay_semantic_dependencies() == {symbol.qualified_name for symbol in manifest.symbols}
 
 
+def test_gate_semantics_id_and_recoverable_bytes() -> None:
+    manifest = build_gate_semantics_manifest()
+    assert SEMANTICS_ID == "plan_gate_semantics/v1"
+    assert manifest.semantics_id == SEMANTICS_ID
+    assert manifest.canonical_bytes == gate_semantics_bytes()
+    assert manifest.canonical_bytes.endswith(b"\n")
+    assert manifest.object_digest == gate_semantics_object_digest()
+    assert manifest.digest == gate_semantics_digest()
+    assert manifest.object_digest != manifest.digest
+    payload = json.loads(manifest.canonical_bytes.decode("utf-8"))
+    assert payload["semantics_id"] == SEMANTICS_ID
+    assert payload["schema_version"] == manifest.schema_version
+    assert payload["semantic_digest"] == manifest.digest
+    assert list(payload["consumers"]) == sorted(payload["consumers"])
+
+
 def test_repeated_gate_semantics_construction_is_identical() -> None:
     first = build_gate_semantics_manifest()
     second = build_gate_semantics_manifest()
     assert first.digest == second.digest
+    assert first.canonical_bytes == second.canonical_bytes
+    assert first.object_digest == second.object_digest
     assert gate_semantics_digest() == first.digest
 
 
 def test_runtime_versions_are_present() -> None:
     manifest = build_gate_semantics_manifest()
     assert set(manifest.runtime_versions) >= {"python", "pydantic", "pydantic_core", "pyyaml"}
+
+
+@pytest.mark.parametrize(
+    "qualified_name",
+    sorted(discover_replay_semantic_dependencies()),
+)
+def test_gate_mutate_each_dependency_source_digest_changes_semantic_digest(qualified_name: str) -> None:
+    baseline = build_gate_semantics_manifest()
+    distinct = "e" * 64 if baseline.symbols[0].implementation_digest != "e" * 64 else "f" * 64
+    mutated = build_gate_semantics_manifest(source_digest_overrides={qualified_name: distinct})
+    assert mutated.digest != baseline.digest
+    assert mutated.object_digest != baseline.object_digest
+    assert gate_semantics_digest() == baseline.digest
 
 
 @pytest.mark.parametrize(

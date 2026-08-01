@@ -36,6 +36,7 @@ from assurance_agent.workflow.orchestration.dsl import (
 from assurance_agent.workflow.orchestration.schema import GateDef, derive_alias
 
 V6_SEMANTICS_ID = "historical_topology_safety/v1"
+WIRING_STATUSES: frozenset[str] = frozenset({"wired", "legacy_unwired", "partial"})
 WiringStatus = Literal["wired", "legacy_unwired", "partial"]
 
 _MECHANICAL_OPERATION = "operation:verify-plan-mechanical"
@@ -458,6 +459,7 @@ def _has_edge(graph: GraphDef, source: str, target: str) -> bool:
 
 __all__ = [
     "V6_SEMANTICS_ID",
+    "WIRING_STATUSES",
     "LayerTopologySpecView",
     "V6LayerClassification",
     "classify_historical_layer_topology_v6",

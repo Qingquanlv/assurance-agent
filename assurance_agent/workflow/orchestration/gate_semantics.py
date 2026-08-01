@@ -1,4 +1,4 @@
-"""AST- and constant-bound manifest for replayable plan-gate semantics."""
+"""AST- and constant-bound manifest for recoverable plan-gate semantics."""
 
 from __future__ import annotations
 
@@ -8,12 +8,14 @@ import importlib
 import inspect
 import json
 import sys
-from collections.abc import Mapping
+import textwrap
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from importlib import metadata
 from types import MappingProxyType
 from typing import Literal
 
+SEMANTICS_ID = "plan_gate_semantics/v1"
 MANIFEST_SCHEMA_VERSION = "1"
 
 SymbolKind = Literal["function", "class", "constant"]
@@ -75,6 +77,13 @@ _REPLAY_SEMANTIC_DEPENDENCIES: tuple[str, ...] = (
     "assurance_agent.artifacts.models.data_knowledge.CapabilityLeaf",
 )
 
+_GATE_SEMANTIC_CONSUMERS: tuple[str, ...] = (
+    "check_gate_in_view",
+    "plan_assurance_state",
+    "plan_check_replay",
+    "runtime_versions",
+)
+
 _SEMANTIC_VERSIONS: dict[str, str] = dict.fromkeys(_REPLAY_SEMANTIC_DEPENDENCIES, "1")
 
 
@@ -89,13 +98,17 @@ class SemanticSymbol:
 @dataclass(frozen=True, slots=True)
 class GateSemanticsManifest:
     schema_version: str
+    semantics_id: str
     symbols: tuple[SemanticSymbol, ...]
+    consumers: tuple[str, ...]
     runtime_versions: dict[str, str]
     digest: str
+    object_digest: str
+    canonical_bytes: bytes
 
 
 def normalized_ast_digest(source: str) -> str:
-    tree = ast.parse(source)
+    tree = ast.parse(textwrap.dedent(source))
     dumped = ast.dump(tree, include_attributes=False)
     return hashlib.sha256(dumped.encode("utf-8")).hexdigest()
 
@@ -123,37 +136,69 @@ def resolve_runtime_versions() -> dict[str, str]:
     }
 
 
+def resolve_qualified_object(qualified_name: str) -> object:
+    """Resolve ``package.module.Attr`` or ``package.module.Class.method``."""
+    parts = qualified_name.split(".")
+    last_error: Exception | None = None
+    for i in range(len(parts), 0, -1):
+        module_name = ".".join(parts[:i])
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError as exc:
+            last_error = exc
+            continue
+        obj: object = module
+        try:
+            for attr in parts[i:]:
+                obj = getattr(obj, attr)
+        except AttributeError as exc:
+            last_error = exc
+            continue
+        return obj
+    raise ImportError(f"cannot resolve semantic dependency: {qualified_name}") from last_error
+
+
 def symbol_implementation_digest(
     qualified_name: str,
     *,
     source_override: str | None = None,
     constant_override: object | None = None,
 ) -> str:
-    obj = _resolve_object(qualified_name)
+    obj = resolve_qualified_object(qualified_name)
     if constant_override is not None:
         return normalized_value_digest(constant_override)
     if source_override is not None:
         return normalized_ast_digest(source_override)
-    return _implementation_digest_for(obj)
+    return implementation_digest_for(obj)
+
+
+def implementation_digest_for(obj: object) -> str:
+    if inspect.isfunction(obj) or inspect.isclass(obj) or inspect.ismethod(obj):
+        return normalized_ast_digest(inspect.getsource(obj))
+    return normalized_value_digest(obj)
 
 
 def build_gate_semantics_manifest(
     *,
     source_overrides: Mapping[str, str] | None = None,
     constant_overrides: Mapping[str, object] | None = None,
+    source_digest_overrides: Mapping[str, str] | None = None,
 ) -> GateSemanticsManifest:
     overrides = dict(source_overrides or {})
     constants = dict(constant_overrides or {})
+    digest_overrides = dict(source_digest_overrides or {})
     symbols: list[SemanticSymbol] = []
     for qualified_name in _REPLAY_SEMANTIC_DEPENDENCIES:
-        obj = _resolve_object(qualified_name)
+        obj = resolve_qualified_object(qualified_name)
         kind = _symbol_kind(obj)
-        if qualified_name in constants:
+        if qualified_name in digest_overrides:
+            impl_digest = digest_overrides[qualified_name]
+        elif qualified_name in constants:
             impl_digest = normalized_value_digest(constants[qualified_name])
         elif qualified_name in overrides:
             impl_digest = normalized_ast_digest(overrides[qualified_name])
         else:
-            impl_digest = _implementation_digest_for(obj)
+            impl_digest = implementation_digest_for(obj)
         symbols.append(
             SemanticSymbol(
                 qualified_name=qualified_name,
@@ -163,12 +208,33 @@ def build_gate_semantics_manifest(
             )
         )
     runtime_versions = resolve_runtime_versions()
-    digest = _aggregate_digest(tuple(symbols), runtime_versions)
+    consumers = tuple(sorted(_GATE_SEMANTIC_CONSUMERS))
+    digest = _aggregate_semantic_digest(tuple(symbols), runtime_versions)
+    canonical_bytes = _canonical_descriptor_bytes(
+        semantics_id=SEMANTICS_ID,
+        schema_version=MANIFEST_SCHEMA_VERSION,
+        runtime_versions=runtime_versions,
+        dependencies=[
+            {
+                "implementation_digest": symbol.implementation_digest,
+                "kind": symbol.kind,
+                "qualified_name": symbol.qualified_name,
+                "semantic_version": symbol.semantic_version,
+            }
+            for symbol in symbols
+        ],
+        consumers=consumers,
+        semantic_digest=digest,
+    )
     return GateSemanticsManifest(
         schema_version=MANIFEST_SCHEMA_VERSION,
+        semantics_id=SEMANTICS_ID,
         symbols=tuple(symbols),
+        consumers=consumers,
         runtime_versions=runtime_versions,
         digest=digest,
+        object_digest=hashlib.sha256(canonical_bytes).hexdigest(),
+        canonical_bytes=canonical_bytes,
     )
 
 
@@ -176,11 +242,61 @@ def gate_semantics_digest() -> str:
     return build_gate_semantics_manifest().digest
 
 
-def _aggregate_digest(symbols: tuple[SemanticSymbol, ...], runtime_versions: Mapping[str, str]) -> str:
+def gate_semantics_bytes() -> bytes:
+    return build_gate_semantics_manifest().canonical_bytes
+
+
+def gate_semantics_object_digest() -> str:
+    return build_gate_semantics_manifest().object_digest
+
+
+def canonical_descriptor_bytes(
+    *,
+    semantics_id: str,
+    schema_version: str,
+    runtime_versions: Mapping[str, str],
+    dependencies: Sequence[Mapping[str, object]],
+    consumers: tuple[str, ...],
+    semantic_digest: str,
+) -> bytes:
+    return _canonical_descriptor_bytes(
+        semantics_id=semantics_id,
+        schema_version=schema_version,
+        runtime_versions=runtime_versions,
+        dependencies=dependencies,
+        consumers=consumers,
+        semantic_digest=semantic_digest,
+    )
+
+
+def aggregate_semantic_digest(
+    dependencies: Sequence[Mapping[str, object]],
+    runtime_versions: Mapping[str, str],
+    *,
+    schema_version: str,
+) -> str:
     payload = {
-        "schema_version": MANIFEST_SCHEMA_VERSION,
         "runtime_versions": {key: runtime_versions[key] for key in sorted(runtime_versions)},
+        "schema_version": schema_version,
         "symbols": [
+            {
+                "implementation_digest": item["implementation_digest"],
+                "qualified_name": item["qualified_name"],
+                "semantic_version": item["semantic_version"],
+            }
+            for item in dependencies
+        ],
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256((canonical + "\n").encode("utf-8")).hexdigest()
+
+
+def _aggregate_semantic_digest(
+    symbols: tuple[SemanticSymbol, ...],
+    runtime_versions: Mapping[str, str],
+) -> str:
+    return aggregate_semantic_digest(
+        [
             {
                 "implementation_digest": symbol.implementation_digest,
                 "qualified_name": symbol.qualified_name,
@@ -188,29 +304,39 @@ def _aggregate_digest(symbols: tuple[SemanticSymbol, ...], runtime_versions: Map
             }
             for symbol in symbols
         ],
+        runtime_versions,
+        schema_version=MANIFEST_SCHEMA_VERSION,
+    )
+
+
+def _canonical_descriptor_bytes(
+    *,
+    semantics_id: str,
+    schema_version: str,
+    runtime_versions: Mapping[str, str],
+    dependencies: Sequence[Mapping[str, object]],
+    consumers: tuple[str, ...],
+    semantic_digest: str,
+) -> bytes:
+    payload = {
+        "consumers": list(consumers),
+        "dependencies": [dict(item) for item in dependencies],
+        "runtime_versions": {key: runtime_versions[key] for key in sorted(runtime_versions)},
+        "schema_version": schema_version,
+        "semantic_digest": semantic_digest,
+        "semantics_id": semantics_id,
     }
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256((canonical + "\n").encode("utf-8")).hexdigest()
-
-
-def _implementation_digest_for(obj: object) -> str:
-    if inspect.isfunction(obj) or inspect.isclass(obj):
-        return normalized_ast_digest(inspect.getsource(obj))
-    return normalized_value_digest(obj)
+    return (json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode(
+        "utf-8"
+    )
 
 
 def _symbol_kind(obj: object) -> SymbolKind:
-    if inspect.isfunction(obj):
+    if inspect.isfunction(obj) or inspect.ismethod(obj):
         return "function"
     if inspect.isclass(obj):
         return "class"
     return "constant"
-
-
-def _resolve_object(qualified_name: str) -> object:
-    module_name, _, attr = qualified_name.rpartition(".")
-    module = importlib.import_module(module_name)
-    return getattr(module, attr)
 
 
 def _normalize_value(value: object) -> object:
@@ -228,3 +354,24 @@ def _normalize_value(value: object) -> object:
     if isinstance(value, (set, tuple, list)):
         return [_normalize_value(item) for item in sorted(value, key=repr)]
     raise TypeError(f"unsupported constant type for digest: {type(value)!r}")
+
+
+__all__ = [
+    "SEMANTICS_ID",
+    "MANIFEST_SCHEMA_VERSION",
+    "SemanticSymbol",
+    "GateSemanticsManifest",
+    "aggregate_semantic_digest",
+    "canonical_descriptor_bytes",
+    "discover_replay_semantic_dependencies",
+    "gate_semantics_bytes",
+    "gate_semantics_digest",
+    "gate_semantics_object_digest",
+    "build_gate_semantics_manifest",
+    "implementation_digest_for",
+    "normalized_ast_digest",
+    "normalized_value_digest",
+    "resolve_qualified_object",
+    "resolve_runtime_versions",
+    "symbol_implementation_digest",
+]

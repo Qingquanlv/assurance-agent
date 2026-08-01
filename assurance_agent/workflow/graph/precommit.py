@@ -54,6 +54,106 @@ IMPLEMENTED_PRECOMMIT_VALIDATORS: frozenset[str] = frozenset(
     {GENERATED_FILES_CANDIDATE_V1, CODEGEN_FIX_CANDIDATE_V1}
 )
 
+# Closed commit-safety dependency inventory for runtime_commit_safety/v1 (Task 10).
+# Keep beside the validator registry; do not accept caller-supplied lists.
+COMMIT_SAFETY_INVENTORY: tuple[tuple[str, str, str], ...] = (
+    (
+        "assurance_agent.workflow.graph.precommit.GENERATED_FILES_CANDIDATE_V1",
+        "validator",
+        GENERATED_FILES_CANDIDATE_V1,
+    ),
+    (
+        "assurance_agent.workflow.graph.precommit.CODEGEN_FIX_CANDIDATE_V1",
+        "validator",
+        CODEGEN_FIX_CANDIDATE_V1,
+    ),
+    (
+        "assurance_agent.workflow.graph.precommit.KNOWN_PRECOMMIT_VALIDATORS",
+        "helper",
+        "precommit_validator_registry",
+    ),
+    (
+        "assurance_agent.workflow.graph.precommit.PrecommitValidationContext",
+        "model",
+        "precommit_validation_context",
+    ),
+    (
+        "assurance_agent.workflow.graph.precommit.CandidateValidationReceiptV1",
+        "model",
+        "candidate_validation_receipt",
+    ),
+    (
+        "assurance_agent.workflow.graph.precommit.validate_candidate",
+        "helper",
+        "validate_candidate",
+    ),
+    (
+        "assurance_agent.workflow.graph.precommit.verify_candidate_receipt",
+        "helper",
+        "verify_candidate_receipt",
+    ),
+    (
+        "assurance_agent.workflow.graph.precommit.validator_semantics_digest",
+        "helper",
+        "validator_semantics_digest",
+    ),
+    (
+        "assurance_agent.workflow.graph.precommit._validate_generated_files_candidate",
+        "helper",
+        GENERATED_FILES_CANDIDATE_V1,
+    ),
+    (
+        "assurance_agent.workflow.graph.precommit._validate_codegen_fix_candidate",
+        "helper",
+        CODEGEN_FIX_CANDIDATE_V1,
+    ),
+    (
+        "assurance_agent.workflow.graph.diff_safety.evaluate_diff_safety",
+        "helper",
+        "diff_safety",
+    ),
+    (
+        "assurance_agent.workflow.graph.evidence_paths.resolve_evidence_path",
+        "helper",
+        "evidence_path_resolver",
+    ),
+    (
+        "assurance_agent.workflow.graph.evidence_paths.pinned_write_set_roots",
+        "helper",
+        "evidence_path_resolver",
+    ),
+    (
+        "assurance_agent.verification.generated_entries.extract_layer_mapping",
+        "helper",
+        "generated_entries_mapping",
+    ),
+    (
+        "assurance_agent.verification.generated_entries.mapped_case_ids_for_path",
+        "helper",
+        "generated_entries_mapping",
+    ),
+    (
+        "assurance_agent.verification.generated_entries.selected_private_root_targets",
+        "helper",
+        "generated_entries_mapping",
+    ),
+    (
+        "assurance_agent.verification.generated_files.get_generated_files_contract",
+        "helper",
+        "generated_files_registry",
+    ),
+    (
+        "assurance_agent.verification.generated_files.get_generated_files_model",
+        "helper",
+        "generated_files_registry",
+    ),
+    (
+        "assurance_agent.workflow.healing.safety.load_product_code_roots",
+        "helper",
+        "product_code_roots",
+    ),
+)
+
 _TESTDATA_ROOT = "tests/testdata"
 
 
@@ -1038,6 +1138,7 @@ def _snapshot_digest_for_repo_path(snapshot: TaskInputSnapshotV1, repo_path: str
 
 __all__ = [
     "CODEGEN_FIX_CANDIDATE_V1",
+    "COMMIT_SAFETY_INVENTORY",
     "CandidateValidationError",
     "CandidateValidationReceiptV1",
     "GENERATED_FILES_CANDIDATE_V1",

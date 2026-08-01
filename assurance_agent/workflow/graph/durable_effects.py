@@ -44,6 +44,75 @@ KNOWN_DURABLE_EFFECT_KINDS: frozenset[str] = frozenset(
     }
 )
 
+# Closed commit-safety dependency inventory for runtime_commit_safety/v1 (Task 10).
+COMMIT_SAFETY_INVENTORY: tuple[tuple[str, str, str], ...] = (
+    (
+        "assurance_agent.workflow.graph.durable_effects.HEALING_ALLOCATION_V2",
+        "effect",
+        HEALING_ALLOCATION_V2,
+    ),
+    (
+        "assurance_agent.workflow.graph.durable_effects.FIXER_PROPOSAL_APPROVED_V1",
+        "effect",
+        FIXER_PROPOSAL_APPROVED_V1,
+    ),
+    (
+        "assurance_agent.workflow.graph.durable_effects.HEAL_RECORD_APPLY_V2",
+        "effect",
+        HEAL_RECORD_APPLY_V2,
+    ),
+    (
+        "assurance_agent.workflow.graph.durable_effects.KNOWN_DURABLE_EFFECT_KINDS",
+        "helper",
+        "durable_effect_registry",
+    ),
+    (
+        "assurance_agent.workflow.graph.durable_effects.DurableEffectIntentV1",
+        "model",
+        "durable_effect_intent",
+    ),
+    (
+        "assurance_agent.workflow.graph.durable_effects.DurableEffectAcknowledgementV1",
+        "model",
+        "durable_effect_acknowledgement",
+    ),
+    (
+        "assurance_agent.workflow.graph.durable_effects.DurableEffectContext",
+        "model",
+        "durable_effect_context",
+    ),
+    (
+        "assurance_agent.workflow.graph.durable_effects.payload_sha256",
+        "helper",
+        "payload_sha256",
+    ),
+    (
+        "assurance_agent.workflow.graph.durable_effects.reconciler_semantics_digest",
+        "helper",
+        "reconciler_semantics_digest",
+    ),
+    (
+        "assurance_agent.workflow.graph.durable_effects.derive_effect_id",
+        "helper",
+        "derive_effect_id",
+    ),
+    (
+        "assurance_agent.workflow.graph.durable_effects.build_intent",
+        "helper",
+        "build_intent",
+    ),
+    (
+        "assurance_agent.workflow.graph.durable_effects.validate_acknowledgement",
+        "helper",
+        "validate_acknowledgement",
+    ),
+    (
+        "assurance_agent.workflow.graph.durable_effects.reconcile_effect",
+        "helper",
+        "reconcile_effect",
+    ),
+)
+
 
 class DurableEffectError(AaError):
     """Base error for durable-effect validation or reconciliation."""
@@ -632,6 +701,7 @@ def intents_as_wire(
 
 __all__ = [
     "KNOWN_DURABLE_EFFECT_KINDS",
+    "COMMIT_SAFETY_INVENTORY",
     "HEALING_ALLOCATION_V2",
     "FIXER_PROPOSAL_APPROVED_V1",
     "HEAL_RECORD_APPLY_V2",

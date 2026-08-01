@@ -37,6 +37,61 @@ from assurance_agent.workflow.graph.durable_effects import (
 )
 
 
+# Closed commit-safety dependency inventory for runtime_commit_safety/v1 (Task 10).
+COMMIT_SAFETY_INVENTORY: tuple[tuple[str, str, str], ...] = (
+    (
+        "assurance_agent.workflow.healing.effects.HealingAllocationEffectV2",
+        "model",
+        HEALING_ALLOCATION_V2,
+    ),
+    (
+        "assurance_agent.workflow.healing.effects.FixerProposalApprovedEffectV1",
+        "model",
+        FIXER_PROPOSAL_APPROVED_V1,
+    ),
+    (
+        "assurance_agent.workflow.healing.effects.HealRecordApplyEffectV2",
+        "model",
+        HEAL_RECORD_APPLY_V2,
+    ),
+    (
+        "assurance_agent.workflow.healing.effects.allocation_idempotency_key",
+        "helper",
+        HEALING_ALLOCATION_V2,
+    ),
+    (
+        "assurance_agent.workflow.healing.effects.approval_idempotency_key",
+        "helper",
+        FIXER_PROPOSAL_APPROVED_V1,
+    ),
+    (
+        "assurance_agent.workflow.healing.effects.record_idempotency_key",
+        "helper",
+        HEAL_RECORD_APPLY_V2,
+    ),
+    (
+        "assurance_agent.workflow.healing.effects.reconcile_healing_allocation",
+        "helper",
+        HEALING_ALLOCATION_V2,
+    ),
+    (
+        "assurance_agent.workflow.healing.effects.reconcile_fixer_proposal_approved",
+        "helper",
+        FIXER_PROPOSAL_APPROVED_V1,
+    ),
+    (
+        "assurance_agent.workflow.healing.effects.reconcile_heal_record_apply",
+        "helper",
+        HEAL_RECORD_APPLY_V2,
+    ),
+    (
+        "assurance_agent.workflow.healing.effects.register_healing_effects",
+        "helper",
+        "durable_effect_registry",
+    ),
+)
+
+
 class HealingAllocationEffectV2(StrictWireModel):
     schema_version: Literal["2"] = "2"
     episode_id: StrictStr
@@ -380,6 +435,7 @@ def _append_or_reuse(
 
 
 __all__ = [
+    "COMMIT_SAFETY_INVENTORY",
     "FixerProposalApprovedEffectV1",
     "HealRecordApplyEffectV2",
     "HealingAllocationEffectV2",

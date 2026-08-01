@@ -36,6 +36,76 @@ _DEFAULT_INITIAL_SECONDS = 1.0
 _DEFAULT_MULTIPLIER = 2.0
 _DEFAULT_MAX_SECONDS = 60.0
 
+# Named fence/retry descriptors for runtime_commit_safety/v1 (Task 10).
+# Digest these methods/models — not unrelated mutable module bytes.
+COMMIT_SAFETY_INVENTORY: tuple[tuple[str, str, str], ...] = (
+    (
+        "assurance_agent.workflow.graph.effect_retry.EffectRetryStateV1",
+        "model",
+        "effect_retry_sidecar",
+    ),
+    (
+        "assurance_agent.workflow.graph.effect_retry.EffectRetryStore.load",
+        "protocol",
+        "effect_retry_sidecar",
+    ),
+    (
+        "assurance_agent.workflow.graph.effect_retry.EffectRetryStore.schedule_next",
+        "protocol",
+        "effect_retry_sidecar",
+    ),
+    (
+        "assurance_agent.workflow.graph.effect_retry.EffectRetryStore.clear_if_acknowledged",
+        "protocol",
+        "effect_retry_sidecar",
+    ),
+    (
+        "assurance_agent.workflow.graph.effect_retry.default_retry_policy_digest",
+        "helper",
+        "effect_retry_sidecar",
+    ),
+    (
+        "assurance_agent.workflow.graph.effect_retry.capped_backoff_seconds",
+        "helper",
+        "effect_retry_sidecar",
+    ),
+    (
+        "assurance_agent.workflow.graph.effect_retry.parse_rfc3339_z",
+        "helper",
+        "effect_retry_sidecar",
+    ),
+    (
+        "assurance_agent.workflow.graph.effect_retry.RootTerminalFenceStateV1",
+        "model",
+        "root_terminal_fence.prepare_terminal",
+    ),
+    (
+        "assurance_agent.workflow.graph.effect_retry.RootEffectFenceStore.guard",
+        "protocol",
+        "root_terminal_fence.guard",
+    ),
+    (
+        "assurance_agent.workflow.graph.effect_retry.RootEffectFenceStore.reject_if_terminal",
+        "protocol",
+        "root_terminal_fence.reject_if_terminal",
+    ),
+    (
+        "assurance_agent.workflow.graph.effect_retry.RootEffectFenceStore.prepare_terminal",
+        "protocol",
+        "root_terminal_fence.prepare_terminal",
+    ),
+    (
+        "assurance_agent.workflow.graph.effect_retry.RootEffectFenceStore.commit_terminal",
+        "protocol",
+        "root_terminal_fence.commit_terminal",
+    ),
+    (
+        "assurance_agent.workflow.graph.effect_retry.RootEffectFenceStore.abort_prepared",
+        "protocol",
+        "root_terminal_fence.abort_prepared",
+    ),
+)
+
 
 class EffectRetryError(AaError):
     """Retry sidecar is missing, malformed, or CAS-conflicted."""
@@ -523,6 +593,7 @@ def _prepare_confined_directory(project_root: Path, relpath: Path) -> Path:
 
 
 __all__ = [
+    "COMMIT_SAFETY_INVENTORY",
     "EffectRetryError",
     "RootTerminalFenceError",
     "EffectRetryStateV1",
