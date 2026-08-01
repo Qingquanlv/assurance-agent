@@ -33,7 +33,7 @@ Rules:
 - **Driver mode** (`aa workflow run`): `explore` is dispatched to this agent like any other phase. Bash allowlist includes `aa risk *` so advisory generation works.
 - **Fallback task mode** (`aa-workflow` without driver): the orchestrator may still run `explore` inline in the primary agent when the task subagent lacks Bash — that is an orchestrator choice, not a permission of this agent.
 - Do NOT run `aa gate check`, `aa status`, or any other `aa` command except `aa risk *`.
-- Do NOT write or modify `workflow-state.yaml`. The orchestrator / driver owns it.
+- Do NOT write or modify `workflow-state.yaml`. Graph ledger events are the only state authority (`owner: graph_ledger`; `agent_state_writes: forbidden`).
 - Do NOT read or follow `aa-workflow/SKILL.md`. You are a phase worker, not the orchestrator.
 - Write only to the paths allowed by your permission floor above.
 - When done, state which files you wrote and confirm the phase's expected outputs exist.

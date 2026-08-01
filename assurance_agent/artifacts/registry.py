@@ -17,13 +17,19 @@ from pydantic import BaseModel
 from assurance_agent.artifacts.models import (
     Advisory,
     ApiCodegenFixApplyIntentV1,
+    ApiCodegenFixApplySummaryV1,
     ApiCodegenFixerSafetyCheckV1,
+    ApiGeneratedFilesV1,
     ApplySummary,
     CaseYaml,
     ChangeIssueSnapshot,
     DataKnowledgeProposal,
     E2eCodegenFixApplyIntentV1,
+    E2eCodegenFixApplySummaryV1,
     E2eCodegenFixerSafetyCheckV1,
+    E2eGeneratedFilesV1,
+    FuzzGeneratedFilesV1,
+    PerformanceGeneratedFilesV1,
     EvalEvidenceSlice,
     EvalRunProjection,
     ExecutionManifest,
@@ -256,6 +262,30 @@ REGISTRY: list[ArtifactSpec] = [
         compat="versioned",
     ),
     ArtifactSpec(
+        artifact_type="api_generated_files_v1",
+        pattern="codegen/api-generated-files.json",
+        model=ApiGeneratedFilesV1,
+        compat="versioned",
+    ),
+    ArtifactSpec(
+        artifact_type="e2e_generated_files_v1",
+        pattern="codegen/e2e-generated-files.json",
+        model=E2eGeneratedFilesV1,
+        compat="versioned",
+    ),
+    ArtifactSpec(
+        artifact_type="fuzz_generated_files_v1",
+        pattern="codegen/fuzz-generated-files.json",
+        model=FuzzGeneratedFilesV1,
+        compat="versioned",
+    ),
+    ArtifactSpec(
+        artifact_type="performance_generated_files_v1",
+        pattern="codegen/performance-generated-files.json",
+        model=PerformanceGeneratedFilesV1,
+        compat="versioned",
+    ),
+    ArtifactSpec(
         artifact_type="fix_proposal",
         pattern="healing/fix-proposal.json",
         model=FixProposal,
@@ -286,6 +316,18 @@ REGISTRY: list[ArtifactSpec] = [
         compat="versioned",
     ),
     ArtifactSpec(
+        artifact_type="api_codegen_fix_apply_summary_v1",
+        pattern="healing/api-apply-summary.json",
+        model=ApiCodegenFixApplySummaryV1,
+        compat="versioned",
+    ),
+    ArtifactSpec(
+        artifact_type="e2e_codegen_fix_apply_summary_v1",
+        pattern="healing/e2e-apply-summary.json",
+        model=E2eCodegenFixApplySummaryV1,
+        compat="versioned",
+    ),
+    ArtifactSpec(
         artifact_type="api_codegen_fixer_safety_check_v1",
         pattern="healing/api-fixer-safety-check.json",
         model=ApiCodegenFixerSafetyCheckV1,
@@ -297,6 +339,7 @@ REGISTRY: list[ArtifactSpec] = [
         model=E2eCodegenFixerSafetyCheckV1,
         compat="versioned",
     ),
+    # Legacy wildcard retained for non-api/e2e apply summaries only after exact paths above.
     ArtifactSpec(
         artifact_type="apply_summary",
         pattern="healing/*-apply-summary.json",

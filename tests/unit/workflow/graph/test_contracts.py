@@ -896,13 +896,13 @@ def _covers(pattern: str, claim: str) -> bool:
 
 
 _FUZZ_PLAN_READS = (
-    "change:facts/fact-baseline.json",
     "change:cases/**/case.yaml",
     "change:proposal.md",
+    "change:facts/fact-baseline.json",
     "repo:.aa/config.yaml",
     "repo:.aa/data-knowledge.yaml",
-    "project:.aa/memory/aa-fuzz-plan.md",
     "repo:tests/fuzz/**",
+    "repo:tests/testdata/domain/**",
 )
 _FUZZ_PLAN_WRITES = (
     "change:plans/fuzz-plan.md",
@@ -913,8 +913,8 @@ _FUZZ_REVIEWER_READS = (
     "change:plans/fuzz-plan.md",
     "change:plans/fuzz-codegen-plan.md",
     "change:plans/fuzz-review-summary.md",
+    "change:review/fuzz-plan-checks.json",
     "change:cases/**/case.yaml",
-    "repo:.aa/config.yaml",
     "repo:.aa/data-knowledge.yaml",
 )
 _FUZZ_REVIEWER_WRITES = (
@@ -930,25 +930,24 @@ _FUZZ_CODEGEN_READS = (
     "change:cases/**/case.yaml",
     "repo:.aa/config.yaml",
     "repo:.aa/data-knowledge.yaml",
-    "project:.aa/memory/aa-fuzz-codegen.md",
     "repo:tests/fuzz/**",
-    "repo:tests/testdata/**",
-    "repo:tests/config.py",
+    "repo:tests/testdata/domain/**",
 )
 _FUZZ_CODEGEN_WRITES = (
     "change:codegen/fuzz-codegen-summary.md",
+    "change:codegen/fuzz-generated-files.json",
     "repo:tests/fuzz/**",
     "repo:tests/testdata/**",
 )
 
 _PERF_PLAN_READS = (
-    "change:facts/fact-baseline.json",
     "change:cases/**/case.yaml",
     "change:proposal.md",
+    "change:facts/fact-baseline.json",
     "repo:.aa/config.yaml",
     "repo:.aa/data-knowledge.yaml",
-    "project:.aa/memory/aa-performance-plan.md",
     "repo:tests/perf/**",
+    "repo:tests/testdata/domain/**",
 )
 _PERF_PLAN_WRITES = (
     "change:plans/performance-plan.md",
@@ -959,8 +958,8 @@ _PERF_REVIEWER_READS = (
     "change:plans/performance-plan.md",
     "change:plans/performance-codegen-plan.md",
     "change:plans/performance-review-summary.md",
+    "change:review/performance-plan-checks.json",
     "change:cases/**/case.yaml",
-    "repo:.aa/config.yaml",
     "repo:.aa/data-knowledge.yaml",
 )
 _PERF_REVIEWER_WRITES = (
@@ -976,13 +975,12 @@ _PERF_CODEGEN_READS = (
     "change:cases/**/case.yaml",
     "repo:.aa/config.yaml",
     "repo:.aa/data-knowledge.yaml",
-    "project:.aa/memory/aa-performance-codegen.md",
     "repo:tests/perf/**",
-    "repo:tests/testdata/**",
-    "repo:tests/config.py",
+    "repo:tests/testdata/domain/**",
 )
 _PERF_CODEGEN_WRITES = (
     "change:codegen/performance-codegen-summary.md",
+    "change:codegen/performance-generated-files.json",
     "repo:tests/perf/**",
     "repo:tests/testdata/**",
 )
@@ -1259,28 +1257,35 @@ def test_catalog_from_pinned_contracts_rejects_unsafe_resource_paths() -> None:
         catalog_from_pinned_contracts((bad,))
 
 
-def test_packaged_contracts_select_neither_precommit_validator() -> None:
+def test_packaged_contracts_select_exact_precommit_validators() -> None:
     catalog = load_execution_contracts(Path.cwd())
     selected = {
         target: contract.precommit_validator
         for target, contract in catalog.contracts.items()
         if contract.precommit_validator is not None
     }
-    assert selected == {}
-    for contract in catalog.contracts.values():
-        assert contract.precommit_validator is None
+    assert selected == {
+        "skill:aa-api-codegen": "generated_files_candidate/v1",
+        "skill:aa-e2e-codegen": "generated_files_candidate/v1",
+        "skill:aa-fuzz-codegen": "generated_files_candidate/v1",
+        "skill:aa-performance-codegen": "generated_files_candidate/v1",
+        "skill:aa-api-codegen-fixer": "codegen_fix_candidate/v1",
+        "skill:aa-e2e-codegen-fixer": "codegen_fix_candidate/v1",
+    }
 
 
-def test_packaged_contracts_select_no_durable_effects() -> None:
+def test_packaged_contracts_select_exact_durable_effects() -> None:
     catalog = load_execution_contracts(Path.cwd())
     selected = {
         target: contract.durable_effects
         for target, contract in catalog.contracts.items()
         if contract.durable_effects
     }
-    assert selected == {}
-    for contract in catalog.contracts.values():
-        assert contract.durable_effects == ()
+    assert selected == {
+        "operation:allocate-healing-attempt": ("healing_allocation/v2",),
+        "operation:record-fixer-approval": ("fixer_proposal_approved/v1",),
+        "operation:record-codegen-fix-apply": ("heal_record_apply/v2",),
+    }
 
 
 def test_durable_effects_default_empty_and_accept_registered_healing_kinds() -> None:

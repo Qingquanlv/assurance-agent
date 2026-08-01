@@ -60,6 +60,7 @@ imports:
       node: codegen
       outputs:
       - change:codegen/fuzz-codegen-summary.md
+      - change:codegen/fuzz-generated-files.json
     - path: execute-workflow/assurance/assurance
       graph: assurance
       node: fuzz

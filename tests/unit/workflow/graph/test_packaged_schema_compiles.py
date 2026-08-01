@@ -145,20 +145,23 @@ def test_current_assurance_activation_accepts_packaged_four_layers() -> None:
     compile_packaged_workflow(schema, contracts=load_execution_contracts(Path.cwd()))
 
 
-def test_strict_current_conformance_stays_dark_shipped_until_activation() -> None:
-    """Packaged compile keeps the compatibility validator; strict API is separate."""
+def test_strict_current_conformance_is_compile_gate_after_activation() -> None:
+    """Packaged compile requires assurance + healing conformance."""
     from assurance_agent.workflow.graph.assurance_conformance import (
         find_current_assurance_conformance_issues,
-        with_approved_api_e2e_capability_atoms,
+    )
+    from assurance_agent.workflow.graph.healing_conformance import (
+        find_current_healing_conformance_issues,
     )
 
     schema = load_workflow_v2(Path.cwd())
+    contracts = load_execution_contracts(Path.cwd())
     assert validate_current_assurance_activation(schema) == ()
-    # Pre-activation package lacks approved API/E2E capability atoms.
-    assert find_current_assurance_conformance_issues(schema) != ()
-    assert find_current_assurance_conformance_issues(with_approved_api_e2e_capability_atoms(schema)) == ()
-    # compile_packaged_workflow must not consult the strict validator yet.
-    compile_packaged_workflow(schema, contracts=load_execution_contracts(Path.cwd()))
+    assert find_current_assurance_conformance_issues(schema) == ()
+    assert find_current_healing_conformance_issues(schema, contracts) == ()
+    compile_packaged_workflow(schema, contracts=contracts)
+    with pytest.raises(CompileError, match="requires a non-null contracts catalog"):
+        compile_packaged_workflow(schema, contracts=None)
 
 
 def test_core_compile_still_accepts_minimal_non_assurance_graph() -> None:

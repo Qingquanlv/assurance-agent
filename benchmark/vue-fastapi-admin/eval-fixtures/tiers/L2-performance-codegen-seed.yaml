@@ -60,6 +60,7 @@ imports:
       node: codegen
       outputs:
       - change:codegen/performance-codegen-summary.md
+      - change:codegen/performance-generated-files.json
     - path: execute-workflow/assurance/assurance
       graph: assurance
       node: performance

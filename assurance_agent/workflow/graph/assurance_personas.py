@@ -1,8 +1,7 @@
-"""Exact dormant assurance skill → OpenCode persona registry (D11).
+"""Exact assurance skill → OpenCode persona registry (D11).
 
-Task 14 dark-ships the closed sixteen-target table. ``AgentHandler`` keeps its
-keyword fallback until Task 15 activates this registry and tightens packaged
-persona permission floors. Do not import this module from the handler yet.
+Task 15 activates this closed sixteen-target table in ``AgentHandler``. Unknown
+and non-assurance targets keep the keyword fallback in ``agent_for_skill``.
 """
 
 from __future__ import annotations

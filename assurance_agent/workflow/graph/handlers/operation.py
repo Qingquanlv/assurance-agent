@@ -357,9 +357,10 @@ def operation_allocate_healing_attempt(
         "baseline_sha256": baseline_sha256,
         "entry_batch_id": batch_id,
     }
-    # Dark-ship: write fixer-authority hard output. Durable effect only when the
-    # caller/contract opts in via with.emit_durable_effect (Task 15 selects it).
-    emit_effect = bool(task_with(task).get("emit_durable_effect"))
+    # Activated path: always write fixer-authority and emit healing_allocation/v2.
+    # Callers may still force-disable via with.emit_durable_effect=false for tests.
+    params = task_with(task)
+    emit_effect = True if "emit_durable_effect" not in params else bool(params.get("emit_durable_effect"))
     return enhance_allocate_result_with_authority(
         task=task,
         workspace=workspace,

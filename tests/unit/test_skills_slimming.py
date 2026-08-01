@@ -10,7 +10,7 @@ from assurance_agent.verification.checks.registry import PLAN_CHECKS
 
 PILOT = ("aa-api-plan", "aa-api-plan-reviewer")
 E2E_PILOT = ("aa-e2e-plan", "aa-e2e-plan-reviewer")
-SECTIONS = ("## Purpose", "## Inputs", "## Outputs", "## Boundaries", "## Domain Notes")
+SECTIONS = ("## Purpose", "## Inputs", "## Outputs", "## State Authority", "## Boundaries", "## Domain Notes")
 PLAN_TABLES = {
     "Scope": "Case ID | Title",
     "API Targets": "Case ID | Scenario | Method | Path | Expected",
@@ -93,36 +93,36 @@ def test_pilot_skills_stay_below_the_task_9_line_baselines() -> None:
 
 def test_api_plan_retains_the_markdown_authoring_contract() -> None:
     text = resources.read_text("skills", "aa-api-plan", "SKILL.md")
-    outputs = _section(text, "## Outputs", "## Boundaries")
+    domain = _section(text, "## Domain Notes")
 
     for table, columns in PLAN_TABLES.items():
-        assert f"{table} uses `{columns}`" in outputs, table
-    assert "test_<case_id_lowercase>__<desc>" in outputs
+        assert f"{table} uses `{columns}`" in domain, table
+    assert "test_<case_id_lowercase>__<desc>" in domain
     assert "full case_id" in text.lower()
 
 
 def test_api_plan_ownership_matches_shared_factory_runtime_policy() -> None:
     text = resources.read_text("skills", "aa-api-plan", "SKILL.md")
-    outputs = _section(text, "## Outputs", "## Boundaries")
+    domain = _section(text, "## Domain Notes")
 
-    assert "`reuse` for every symbol already declared by L1 knowledge" in outputs
-    assert "`create-if-missing` only when L1 does not declare that shared symbol" in outputs
+    assert "`reuse` for every symbol already declared by L1 knowledge" in domain
+    assert "`create-if-missing` only when L1 does not declare that shared symbol" in domain
     assert "check_shared_factory" in {check.__name__ for check in PLAN_CHECKS}
 
 
 def test_reviewer_consumes_mechanical_checks_as_facts_not_policy() -> None:
     text = resources.read_text("skills", "aa-api-plan-reviewer", "SKILL.md")
-    inputs = _section(text, "## Inputs", "## Outputs")
+    purpose = _section(text, "## Purpose", "## Inputs")
 
-    assert "PlanCheckDocument" in inputs
-    assert "facts" in inputs
-    assert "do not infer or apply a policy action" in inputs.lower()
-    assert "downstream gate" in inputs.lower()
+    assert "PlanCheckDocument" in purpose
+    assert "facts" in purpose
+    assert "do not infer or apply a policy action" in purpose.lower()
+    assert "downstream gate" in purpose.lower()
 
 
 def test_reviewer_declares_its_gate_routing_contract() -> None:
     text = resources.read_text("skills", "aa-api-plan-reviewer", "SKILL.md")
-    outputs = _section(text, "## Outputs", "## Boundaries")
+    outputs = _section(text, "## Domain Notes")
 
     assert "schema contract is supplied by the runtime" in outputs
     for field in (
@@ -191,18 +191,17 @@ def test_shared_factory_mutation_guard_rejects_mechanical_policy_in_reviewer(rul
 
 def test_reviewer_does_not_own_workflow_state() -> None:
     text = resources.read_text("skills", "aa-api-plan-reviewer", "SKILL.md")
-    outputs = _section(text, "## Outputs", "## Boundaries")
-    boundaries = _section(text, "## Boundaries", "## Domain Notes")
+    state = _section(text, "## State Authority", "## Boundaries")
+    domain = _section(text, "## Domain Notes")
 
-    assert "no `workflow-state.yaml` state delta" in outputs
-    assert "graph coordinator" in outputs.lower()
-    assert "ledger" in outputs.lower()
-    assert "Do not write or propose updates to `workflow-state.yaml`" in boundaries
+    assert "`owner: graph_ledger`" in state
+    assert "`agent_state_writes: forbidden`" in state
+    assert "graph coordinator" in domain.lower() or "ledger" in domain.lower()
 
 
 def test_e2e_plan_retains_the_markdown_authoring_contract() -> None:
     text = resources.read_text("skills", "aa-e2e-plan", "SKILL.md")
-    contract = _section(text, "## Output Contract", "## Data Setup Strategy")
+    contract = _section(text, "## Domain Notes")
 
     for table, columns in E2E_PLAN_TABLES.items():
         assert f"{table} uses `{columns}`" in contract, table
@@ -212,7 +211,7 @@ def test_e2e_plan_retains_the_markdown_authoring_contract() -> None:
 
 def test_e2e_plan_ownership_matches_shared_factory_runtime_policy() -> None:
     text = resources.read_text("skills", "aa-e2e-plan", "SKILL.md")
-    contract = _section(text, "## Output Contract", "## Data Setup Strategy")
+    contract = _section(text, "## Domain Notes")
 
     assert "`reuse` for every symbol already declared by L1 knowledge" in contract
     assert "`create-if-missing` only when L1 does not declare that shared symbol" in contract
@@ -221,18 +220,18 @@ def test_e2e_plan_ownership_matches_shared_factory_runtime_policy() -> None:
 
 def test_e2e_reviewer_consumes_mechanical_checks_as_facts_not_policy() -> None:
     text = resources.read_text("skills", "aa-e2e-plan-reviewer", "SKILL.md")
-    inputs = _section(text, "## Inputs", "## Outputs")
+    purpose = _section(text, "## Purpose", "## Inputs")
 
-    assert "PlanCheckDocument" in inputs
-    assert "review/e2e-plan-checks.json" in inputs
-    assert "facts" in inputs.lower()
-    assert "do not infer or apply a policy action" in inputs.lower()
-    assert "downstream gate" in inputs.lower()
+    assert "PlanCheckDocument" in purpose
+    assert "review/e2e-plan-checks.json" in purpose
+    assert "facts" in purpose.lower()
+    assert "do not infer or apply a policy action" in purpose.lower()
+    assert "downstream gate" in purpose.lower()
 
 
 def test_e2e_reviewer_declares_its_gate_routing_contract() -> None:
     text = resources.read_text("skills", "aa-e2e-plan-reviewer", "SKILL.md")
-    outputs = _section(text, "## Mandatory Output Contract", "## User Approval Handling")
+    outputs = _section(text, "## Domain Notes")
 
     assert "schema contract is supplied by the runtime" in outputs
     for field in (

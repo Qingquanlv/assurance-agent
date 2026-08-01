@@ -1,59 +1,54 @@
 ---
 name: aa-fuzz-plan
-description: Use when a QA Case Delta contains Fuzz automation cases and you need reviewable fuzz plan files before test code is written. Processes added or modified Fuzz cases with automation.required = true and never generates tests.
+description: Produce reviewable fuzz plan files before test code is written.
 ---
 
 ## Purpose
 
 Turn the approved Fuzz portion of a QA Case Delta into reviewable implementation plans for `aa-fuzz-plan-reviewer` and, after that gate passes, `aa-fuzz-codegen`.
 
-Read the change from disk; do not rely on conversation history. Apply non-deprecated guidance from `.aa/memory/aa-fuzz-plan.md` when that read-only file exists. Select only `added` and `modified` entries whose type is Fuzz and whose automation is required; retain `removed` entries only as context. If none remain, stop and report — do not invent empty plans.
+## Inputs
 
-Fuzz planning establishes schema source, related API case linkage, auth strategy, seed/corpus adequacy, and robustness-only expectations. Unknown product facts remain explicit review items or blockers; they are never guessed. ## Inputs
+### required
 
-Required; stop if any is missing:
+- `change:cases/**/case.yaml`
+- `change:proposal.md`
 
-- `qa/changes/<change-id>/cases/**/case.yaml`
-- `qa/changes/<change-id>/proposal.md`
+### optional
 
-Optional; warn if absent:
-
-- `.aa/config.yaml`
-- `.aa/data-knowledge.yaml`
-- `qa/changes/<change-id>/facts/fact-baseline.json`
-- existing `tests/fuzz/**`
+- `change:facts/fact-baseline.json`
+- `repo:.aa/config.yaml`
+- `repo:.aa/data-knowledge.yaml`
+- `repo:tests/fuzz/**`
+- `repo:tests/testdata/domain/**`
 
 ## Outputs
 
-Write only below `qa/changes/<change-id>/plans/`:
+### required
 
-| Path | Required structure |
-|---|---|
-| `fuzz-plan.md` | Scope; Fuzz targets; schema source; related API cases; auth; seed/corpus; robustness expectations; Needs Review; Blockers |
-| `fuzz-codegen-plan.md` | Target Files; Factory Mapping; Adapter/Strategy Mapping; Auth Strategy; Codegen Preconditions |
-| `fuzz-review-summary.md` | change and loaded cases; generated files; knowledge status; Blockers; Needs Review; Plan Readiness; Codegen Readiness; next reviewer |
+- `change:plans/fuzz-plan.md`
+- `change:plans/fuzz-codegen-plan.md`
+- `change:plans/fuzz-review-summary.md`
 
-Keep every column name and order exact for mechanically parsed tables.
+## State Authority
 
-- At least one table in `fuzz-plan.md` must contain `Case ID`, and every in-scope case must appear as its full case_id.
-- `fuzz-codegen-plan.md` must include a canonical Factory Mapping section:
+- `owner: graph_ledger`
+- `agent_state_writes: forbidden`
+
+## Boundaries
+
+Write only the plan artifacts listed in Outputs. Do not write tests or continue into codegen. The graph gate is the progression authority.
+
+## Domain Notes
+
+Test Function Mapping uses `Case ID | Test Function | Target File` plus Schema Acquisition fields.
+
+Factory Mapping section (required):
 
 ```markdown
 ## Factory Mapping
 
 | Shared Module | Function | Ownership |
 |---|---|---|
-| tests/factories/account.py | make_account | reuse |
+| tests/testdata/domain/account.py | make_account | reuse |
 ```
-
-Domain-specific Capability Mapping or Seed Mapping sections may remain, but they do not replace Factory Mapping.
-
-## Boundaries
-
-Write only the plan artifacts listed in Outputs.
-
-Do not write `.aa/data-knowledge.yaml`, `.aa/memory/**`, review JSON, checks JSON, or test code.
-
-Do not invent schema sources, auth tokens, related API cases, or product intent.
-
-Do not continue into code generation. The graph gate is the progression authority.

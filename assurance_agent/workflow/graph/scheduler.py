@@ -1087,8 +1087,23 @@ class Scheduler:
                     raise SchedulerError(
                         f"declared_only task {task.task_id} missing execution contract for {task.target}"
                     )
-                # Typed runtime context is dormant until Task 15 names injection.
-                runtime_context = None
+                from assurance_agent.workflow.graph.task_inputs import (
+                    build_automatic_plan_fixer_runtime_context,
+                    write_runtime_context_sidecar,
+                )
+
+                runtime_context = build_automatic_plan_fixer_runtime_context(
+                    target=task.target,
+                    change_id=context.change_id,
+                    root_invocation_id=task.invocation_id,
+                    invocation_id=task.invocation_id,
+                    task_id=task.task_id,
+                    attempt_id=attempt_id,
+                    base_tree_id=workspace.base_tree_id,
+                    workspace=workspace,
+                )
+                if runtime_context is not None:
+                    write_runtime_context_sidecar(workspace, runtime_context)
                 snapshot_id, snapshot_bytes = capture_task_input_snapshot(
                     invocation_id=task.invocation_id,
                     task=task,

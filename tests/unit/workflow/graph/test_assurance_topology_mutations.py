@@ -137,11 +137,10 @@ def _remove_node(schema: WorkflowSchemaV2, graph_id: str, node_id: str) -> Workf
     )
 
 
-def test_unmodified_packaged_stays_on_compatibility_validator() -> None:
+def test_unmodified_packaged_passes_strict_current_conformance() -> None:
     schema = _packaged()
     assert validate_current_assurance_activation(schema) == ()
-    # Strict dark-ship validator requires approved API/E2E capability atoms.
-    assert "codegen_precondition_mismatch" in _codes(schema)
+    assert find_current_assurance_conformance_issues(schema) == ()
 
 
 def test_approved_target_has_no_conformance_issues() -> None:

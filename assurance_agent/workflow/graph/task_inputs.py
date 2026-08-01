@@ -7,7 +7,8 @@ import json
 import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Literal
+from types import MappingProxyType
+from typing import Final, Literal
 
 from pydantic import StrictStr, model_validator
 
@@ -194,6 +195,82 @@ def prepare_plan_fixer_runtime_context(
     """Validate and return ``(context, runtime_context_sha256)`` for attempt prep."""
     runtime_context_sha256 = runtime_context_digest(context)
     return context, runtime_context_sha256
+
+
+_PLAN_FIXER_TARGETS: Final[Mapping[str, Literal["api", "e2e"]]] = MappingProxyType(
+    {
+        "skill:aa-api-plan-fixer": "api",
+        "skill:aa-e2e-plan-fixer": "e2e",
+        "aa-api-plan-fixer": "api",
+        "aa-e2e-plan-fixer": "e2e",
+    }
+)
+_RUNTIME_CONTEXT_SIDECAR = "runtime-context.json"
+
+
+def plan_fixer_layer_for_target(target: str) -> Literal["api", "e2e"] | None:
+    return _PLAN_FIXER_TARGETS.get(target) or _PLAN_FIXER_TARGETS.get(target.removeprefix("skill:"))
+
+
+def build_automatic_plan_fixer_runtime_context(
+    *,
+    target: str,
+    change_id: str,
+    root_invocation_id: str,
+    invocation_id: str,
+    task_id: str,
+    attempt_id: str,
+    base_tree_id: str,
+    workspace: TaskWorkspace,
+) -> PlanFixerRuntimeContextV1 | None:
+    """Build the automatic-healing Runtime Context for API/E2E plan-fixer skills."""
+    layer = plan_fixer_layer_for_target(target)
+    if layer is None:
+        return None
+    review_rel = "review/api-plan-review.json" if layer == "api" else "review/plan-review.json"
+    review_path = workspace.change_dir / review_rel
+    if not review_path.is_file():
+        raise TaskInputError(f"plan-fixer runtime context missing source review: {review_rel}")
+    digest = sha256_bytes(review_path.read_bytes())
+    return PlanFixerRuntimeContextV1.model_validate(
+        {
+            "schema_version": "1",
+            "mode": "automatic_healing",
+            "target": layer,
+            "change_id": change_id,
+            "root_invocation_id": root_invocation_id,
+            "invocation_id": invocation_id,
+            "task_id": task_id,
+            "attempt_id": attempt_id,
+            "base_tree_id": base_tree_id,
+            "source_review_path": f"change:{review_rel}",
+            "source_review_sha256": digest,
+            "source_interrupt_task_id": None,
+            "resume_action": None,
+            "human_reason": None,
+            "human_decision_sha256": None,
+        }
+    )
+
+
+def write_runtime_context_sidecar(
+    workspace: TaskWorkspace, context: PlanFixerRuntimeContextV1
+) -> None:
+    """Persist bound Runtime Context for AgentHandler prompt injection."""
+    if workspace.sidecar_root is None:
+        raise TaskInputError("runtime context sidecar requires sidecar_root")
+    path = workspace.sidecar_root / _RUNTIME_CONTEXT_SIDECAR
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(canonical_json_bytes(context) + b"\n")
+
+
+def load_runtime_context_sidecar(workspace: TaskWorkspace) -> PlanFixerRuntimeContextV1 | None:
+    if workspace.sidecar_root is None:
+        return None
+    path = workspace.sidecar_root / _RUNTIME_CONTEXT_SIDECAR
+    if not path.is_file():
+        return None
+    return PlanFixerRuntimeContextV1.model_validate_json(path.read_bytes().strip())
 
 
 def resume_plan_fixer_runtime_context(
@@ -507,12 +584,16 @@ __all__ = [
     "TaskInputSnapshotV1",
     "assert_prompt_runtime_context_match",
     "bind_runtime_context_to_prompt",
+    "build_automatic_plan_fixer_runtime_context",
     "capture_task_input_snapshot",
     "claims_digest_for",
+    "load_runtime_context_sidecar",
     "load_task_input_snapshot",
+    "plan_fixer_layer_for_target",
     "prepare_plan_fixer_runtime_context",
     "render_plan_fixer_runtime_context_block",
     "resume_plan_fixer_runtime_context",
     "runtime_context_digest",
     "store_task_input_snapshot",
+    "write_runtime_context_sidecar",
 ]

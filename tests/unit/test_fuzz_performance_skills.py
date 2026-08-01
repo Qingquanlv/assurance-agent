@@ -47,7 +47,7 @@ def test_six_skills_exist_and_forbid_legacy_control_plane_instructions() -> None
 def test_plan_skills_require_factory_mapping() -> None:
     for name in ("aa-fuzz-plan", "aa-performance-plan"):
         text = _skill_text(name)
-        assert "## Factory Mapping" in text
+        assert "Factory Mapping" in text
         assert "| Shared Module | Function | Ownership |" in text
 
 

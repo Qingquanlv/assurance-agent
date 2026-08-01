@@ -167,16 +167,18 @@ def test_production_registry_has_exact_healing_kinds() -> None:
     assert len(registry) == 3
 
 
-def test_packaged_contracts_select_no_durable_effects() -> None:
+def test_packaged_contracts_select_exact_healing_durable_effects() -> None:
     catalog = load_execution_contracts(Path.cwd())
     selected = {
         target: contract.durable_effects
         for target, contract in catalog.contracts.items()
         if contract.durable_effects
     }
-    assert selected == {}
-    for contract in catalog.contracts.values():
-        assert contract.durable_effects == ()
+    assert selected == {
+        "operation:allocate-healing-attempt": ("healing_allocation/v2",),
+        "operation:record-fixer-approval": ("fixer_proposal_approved/v1",),
+        "operation:record-codegen-fix-apply": ("heal_record_apply/v2",),
+    }
 
 
 def test_strict_intent_and_ack_round_trip(tmp_path: Path) -> None:

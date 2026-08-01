@@ -28,7 +28,7 @@ from assurance_agent.workflow.graph.models import (
     RuntimeContext,
     TaskProjection,
 )
-from assurance_agent.workflow.graph.planner import PlanError, plan_superstep
+from assurance_agent.workflow.graph.planner import plan_superstep
 from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
 
 EXPECTED_GRAPHS = {
@@ -100,6 +100,11 @@ EXPECTED_CONTRACTS = {
     "operation:inspect",
     "operation:generate-report",
     "operation:allocate-healing-attempt",
+    "operation:fixer-authority-ready",
+    "operation:fixer-dispatch",
+    "operation:record-fixer-approval",
+    "operation:record-codegen-fix-apply",
+    "operation:combine-fixer-safety",
     "operation:record-healing-status",
     "operation:stop",
     "operation:retro-collect-v3",
@@ -219,6 +224,8 @@ def _task(task: ExecutableTask, status: str = "succeeded", **overrides: object) 
         "status": status,
         "attempts_used": 1,
         "latest_attempt_id": f"{task.task_id}-a1",
+        # D14: successors require a committed predecessor superstep.
+        "outputs_committed": status == "succeeded",
     }
     payload.update(overrides)
     return TaskProjection(**payload)  # type: ignore[arg-type]
@@ -498,10 +505,8 @@ def test_healing_fixer_activation_after_allocate(
 ) -> None:
     compiled, _ = _load_compiled()
     params = resolve_params(compiled.schema, {"run_mode": "full"})
-    # Seed allocate as succeeded; planner re-evaluates fixer `when` against artifacts.
-    # Without fix_proposal artifact symbols, any(...) is MISSING → skip. Simulate by
-    # injecting succeeded allocate and using node.when against empty scope: both skip
-    # when proposals missing (zero eligible). For non-empty, we assert route targets only.
+    # Packaged healing no longer fans allocate → fixers. Activation is:
+    # allocate → fixer-authority-ready → fixer-proposal-approval → fixer-dispatch → fix-*.
     if not eligible:
         first = _plan_healing(compiled, tmp_path, params)
         assert [task.node_id for task in first.tasks] == ["entry"]
@@ -576,6 +581,45 @@ def test_healing_fixer_activation_after_allocate(
         _task(proposal_eligible, value=True, gate_report={"expression": "...", "value": True}),
         _task(allocate),
     ]
+    authority_plan = _plan_healing(
+        compiled,
+        tmp_path,
+        params,
+        artifacts=artifacts,
+        tasks=seeded,
+    )
+    assert [task.node_id for task in authority_plan.tasks] == ["fixer-authority-ready"]
+    authority = authority_plan.tasks[0]
+    seeded.append(_task(authority, value={"route": "pass"}))
+    approval_plan = _plan_healing(
+        compiled,
+        tmp_path,
+        params,
+        artifacts=artifacts,
+        tasks=seeded,
+    )
+    assert [task.node_id for task in approval_plan.tasks] == ["fixer-proposal-approval"]
+    approval = approval_plan.tasks[0]
+    seeded.append(
+        _task(
+            approval,
+            gate_report={
+                "gate_id": "fixer-proposal-approval-gate",
+                "verdict": "pass",
+                "value": "pass",
+            },
+        )
+    )
+    dispatch_plan = _plan_healing(
+        compiled,
+        tmp_path,
+        params,
+        artifacts=artifacts,
+        tasks=seeded,
+    )
+    assert [task.node_id for task in dispatch_plan.tasks] == ["fixer-dispatch"]
+    dispatch = dispatch_plan.tasks[0]
+    seeded.append(_task(dispatch))
     fixer_plan = _plan_healing(
         compiled,
         tmp_path,
@@ -584,17 +628,14 @@ def test_healing_fixer_activation_after_allocate(
         tasks=seeded,
     )
     activated = {task.node_id for task in fixer_plan.tasks}
-    assert expected_fixers.issubset(activated)
-
-    with pytest.raises(PlanError, match="all_active"):
-        _plan_healing(compiled, tmp_path, params, tasks=seeded)
+    assert activated == expected_fixers
 
     healing = compiled.schema.graphs["healing"]
     assert healing.nodes["fix-api"].when is not None
     assert healing.nodes["fix-e2e"].when is not None
-    if expected_fixers == {"fix-api", "fix-e2e"}:
-        assert healing.nodes["fixer-join"].join is not None
-        assert healing.nodes["fixer-join"].join.mode == "all_active"
+    assert healing.nodes["fixer-join"].join is not None
+    assert healing.nodes["fixer-join"].join.mode == "all_active"
+    assert set(healing.nodes["fixer-join"].join.sources) == {"record-api", "record-e2e"}
 
 
 def test_healing_completion_and_interrupt_terminals() -> None:

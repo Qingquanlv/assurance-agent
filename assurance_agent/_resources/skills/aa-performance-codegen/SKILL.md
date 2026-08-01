@@ -1,49 +1,47 @@
 ---
 name: aa-performance-codegen
-description: Generate performance tests from a reviewed performance plan after the graph gate has passed. Reads exact plan, review, checks, cases, config, and L1 inputs. Does not execute pytest.
+description: Generate performance tests and a strict generated-files manifest after the plan gate passes.
 ---
 
 ## Purpose
 
-Translate a reviewed performance plan into executable load tests. This skill does **not** execute pytest and does **not** decide workflow progression — the graph gate is the progression authority.
-
-Apply non-deprecated guidance from `.aa/memory/aa-performance-codegen.md` when that read-only file exists.
+Generate performance tests under `tests/perf/**`, shared builders under `tests/testdata/**` when authorized, a human summary, and a strict generated-files manifest. The graph gate is the progression authority.
 
 ## Inputs
 
-Required; stop if any is missing:
+### required
 
-- `qa/changes/<change-id>/plans/performance-plan.md`
-- `qa/changes/<change-id>/plans/performance-codegen-plan.md`
-- `qa/changes/<change-id>/plans/performance-review-summary.md`
-- `qa/changes/<change-id>/review/performance-plan-review.json`
-- `qa/changes/<change-id>/review/performance-plan-checks.json`
-- `qa/changes/<change-id>/cases/**/case.yaml`
-- `.aa/config.yaml`
-- `.aa/data-knowledge.yaml`
+- `change:plans/performance-plan.md`
+- `change:plans/performance-codegen-plan.md`
+- `change:plans/performance-review-summary.md`
+- `change:review/performance-plan-review.json`
+- `change:review/performance-plan-checks.json`
+- `change:cases/**/case.yaml`
+- `repo:.aa/data-knowledge.yaml`
 
-Bounded style inputs when present:
+### optional
 
-- existing `tests/perf/**`
-- existing `tests/testdata/**`
-- `tests/config.py`
-
-Do not re-evaluate gate verdicts from review prose. Trust the graph precondition that scheduled this skill.
+- `repo:.aa/config.yaml`
+- `repo:tests/perf/**`
+- `repo:tests/testdata/domain/**`
 
 ## Outputs
 
-Write:
+### required
 
-- generated performance tests under `tests/perf/` per the plan Target Files
-- shared builders under `tests/testdata/` only when marked create-if-missing
-- `qa/changes/<change-id>/codegen/performance-codegen-summary.md`
+- `change:codegen/performance-codegen-summary.md`
+- `change:codegen/performance-generated-files.json`
 
-Test function names MUST be `test_<case_id_lowercase>__<description>`.
+### conditional
+
+- `repo:tests/perf/**`
+- `repo:tests/testdata/domain/**`
+
+## State Authority
+
+- `owner: graph_ledger`
+- `agent_state_writes: forbidden`
 
 ## Boundaries
 
-Do not write plan files, review JSON, or checks JSON.
-
-Do not invent thresholds or import unrelated layer adapters.
-
-Do not run pytest.
+Write only authorized test/testdata paths plus the summary and manifest. Do not modify product source.

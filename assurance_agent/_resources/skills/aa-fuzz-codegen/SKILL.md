@@ -1,49 +1,47 @@
 ---
 name: aa-fuzz-codegen
-description: Generate schemathesis fuzz tests from a reviewed fuzz plan after the graph gate has passed. Reads exact plan, review, checks, cases, config, and L1 inputs. Does not execute pytest.
+description: Generate fuzz tests and a strict generated-files manifest after the plan gate passes.
 ---
 
 ## Purpose
 
-Translate a reviewed fuzz plan into executable schemathesis tests. This skill does **not** execute pytest and does **not** decide workflow progression — the graph gate is the progression authority.
-
-Apply non-deprecated guidance from `.aa/memory/aa-fuzz-codegen.md` when that read-only file exists.
+Generate fuzz tests under `tests/fuzz/**`, shared builders under `tests/testdata/**` when authorized, a human summary, and a strict generated-files manifest. The graph gate is the progression authority.
 
 ## Inputs
 
-Required; stop if any is missing:
+### required
 
-- `qa/changes/<change-id>/plans/fuzz-plan.md`
-- `qa/changes/<change-id>/plans/fuzz-codegen-plan.md`
-- `qa/changes/<change-id>/plans/fuzz-review-summary.md`
-- `qa/changes/<change-id>/review/fuzz-plan-review.json`
-- `qa/changes/<change-id>/review/fuzz-plan-checks.json`
-- `qa/changes/<change-id>/cases/**/case.yaml`
-- `.aa/config.yaml`
-- `.aa/data-knowledge.yaml`
+- `change:plans/fuzz-plan.md`
+- `change:plans/fuzz-codegen-plan.md`
+- `change:plans/fuzz-review-summary.md`
+- `change:review/fuzz-plan-review.json`
+- `change:review/fuzz-plan-checks.json`
+- `change:cases/**/case.yaml`
+- `repo:.aa/data-knowledge.yaml`
 
-Bounded style inputs when present:
+### optional
 
-- existing `tests/fuzz/**`
-- existing `tests/testdata/**`
-- `tests/config.py`
-
-Do not re-evaluate gate verdicts from review prose. Trust the graph precondition that scheduled this skill.
+- `repo:.aa/config.yaml`
+- `repo:tests/fuzz/**`
+- `repo:tests/testdata/domain/**`
 
 ## Outputs
 
-Write:
+### required
 
-- generated fuzz tests under `tests/fuzz/` per the plan Target Files
-- shared builders under `tests/testdata/` only when marked create-if-missing
-- `qa/changes/<change-id>/codegen/fuzz-codegen-summary.md`
+- `change:codegen/fuzz-codegen-summary.md`
+- `change:codegen/fuzz-generated-files.json`
 
-Test function names MUST be `test_<case_id_lowercase>__<description>`.
+### conditional
+
+- `repo:tests/fuzz/**`
+- `repo:tests/testdata/domain/**`
+
+## State Authority
+
+- `owner: graph_ledger`
+- `agent_state_writes: forbidden`
 
 ## Boundaries
 
-Do not write plan files, review JSON, or checks JSON.
-
-Do not invent auth tokens or import API/E2E adapters.
-
-Do not run pytest.
+Write only authorized test/testdata paths plus the summary and manifest. Do not modify product source.

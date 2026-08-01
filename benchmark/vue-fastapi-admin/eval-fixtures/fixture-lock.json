@@ -3,16 +3,20 @@
   "fixtures": {
     "eval-sample-001": {
       "sample_dir": "samples/eval-sample-001",
-      "aggregate_sha256": "cee8cc98b3d848408087c1b6b92d23c8cfea8ab43543d511f0d15da1b0d144fa",
+      "aggregate_sha256": "b6b2b3460c210e8921187179054b5ab54265cabb9c931fe8d8013869ab7a63c9",
       "files": {
         ".qa.yaml": "dccabbb8c719b86d5980b856a36a10de28f9e31e2af81e4a8b231527129142a4",
         "cases/system/api/case.yaml": "502cb7351ad63cb3363b08edd153ca3db2296086cac42cdd32591c4a4cd0a2bb",
         "cases/system/fuzz/case.yaml": "d064d2ef060cc08f598ff919a01ff20c705d4d1f7c91c3524b7cf5b776dd0349",
         "cases/system/performance/case.yaml": "2697bedc145380de946b3821c9c1b1fca2dda35b2f5fc8072663d632aab74158",
         "codegen/api-codegen-summary.md": "b7a11150d8ee2b91694bc821347b3b1e00bb43ec6c55b60cee16ccd5a94ddf6a",
+        "codegen/api-generated-files.json": "7fc391cad300e95879ef79d16892fe8cb9fddc0b582b30a8b7ceae233b310be3",
         "codegen/e2e-codegen-summary.md": "ad5d8f5f6bf30926b531298ae83f2232d38d497abf5cc75f00e5cc6851aafe09",
+        "codegen/e2e-generated-files.json": "8342315e0aca4842cc6b91d1a9f4c7186bac1b416b8bf78179610eb85f1ec5e3",
         "codegen/fuzz-codegen-summary.md": "c035c97b5972ece070bfe31cb021d28b9e75045ccd6abeb831906893268f0075",
+        "codegen/fuzz-generated-files.json": "29ad17379b7e65a334d65d72755e091dd6d9996d13e268e2e0b8d59aecbabbc2",
         "codegen/performance-codegen-summary.md": "fd239051f017cb3bd5cb31c7575c53b99e3b93461368b54e346496555b1f5520",
+        "codegen/performance-generated-files.json": "d8828b960c5f92175433d2ca46c86bb565149d80a78a53f50ec5b7c722fd477e",
         "execution/api-result.json": "e38fe19395959fd591e5728390aaf30cbfbbd359bf28588e7d47f805df7bce83",
         "execution/coverage-result.json": "bde5b09119ea0be807183b1f39a71928e6ec0856f2a2bdc95b92d4cbe020c294",
         "execution/e2e-result.json": "081ea4ab7ef31ccfe22c463c7f78f7622d855dd3bf2f5b07017bb3392ea9527d",
