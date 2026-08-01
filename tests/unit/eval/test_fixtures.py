@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import ast
+import importlib.util
 from pathlib import Path
 
 import yaml
 import pytest
 
 from assurance_agent.artifacts.models.plan_checks import PlanCheckDocument
-from assurance_agent.eval.fixtures import load_tier, seed_change, write_fixture_lock
+from assurance_agent.eval.fixtures import (
+    load_tier,
+    seed_change,
+    validate_tier_for_selection,
+    write_fixture_lock,
+)
+from assurance_agent.eval.types import FixtureImportDef, FixtureResets, TierManifest
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.state import verify_state_integrity, write_state
 from assurance_agent.workflow.graph.compiler import compile_workflow
@@ -234,3 +242,260 @@ def test_benchmark_fixture_import_nodes_exist_in_packaged_schema() -> None:
                     task.graph,
                     task.node,
                 )
+
+
+def _benchmark_fixtures() -> Path:
+    return Path(__file__).resolve().parents[3] / "benchmark" / "vue-fastapi-admin" / "eval-fixtures"
+
+
+@pytest.mark.parametrize(
+    ("role_node", "graph", "path"),
+    [
+        (
+            "applicability",
+            "api-plan-cycle",
+            "execute-workflow/assurance/assurance/api/api-branch/review-cycle/api-plan-cycle",
+        ),
+        (
+            "review",
+            "api-plan-cycle",
+            "execute-workflow/assurance/assurance/api/api-branch/review-cycle/api-plan-cycle",
+        ),
+        (
+            "mechanical-plan-checks",
+            "api-plan-cycle",
+            "execute-workflow/assurance/assurance/api/api-branch/review-cycle/api-plan-cycle",
+        ),
+        (
+            "review-gate",
+            "api-plan-cycle",
+            "execute-workflow/assurance/assurance/api/api-branch/review-cycle/api-plan-cycle",
+        ),
+        (
+            "review-cycle",
+            "api-branch",
+            "execute-workflow/assurance/assurance/api/api-branch",
+        ),
+        (
+            "codegen-precheck",
+            "api-branch",
+            "execute-workflow/assurance/assurance/api/api-branch",
+        ),
+        (
+            "codegen",
+            "api-branch",
+            "execute-workflow/assurance/assurance/api/api-branch",
+        ),
+        (
+            "api",
+            "assurance",
+            "execute-workflow/assurance/assurance",
+        ),
+    ],
+)
+def test_pending_tier_rejects_selected_roles_direct_and_inherited(
+    tmp_path: Path, role_node: str, graph: str, path: str
+) -> None:
+    fixtures = tmp_path / "eval-fixtures"
+    tiers = fixtures / "tiers"
+    tiers.mkdir(parents=True)
+    sample = fixtures / "samples" / "s"
+    sample.mkdir(parents=True)
+    (sample / "proposal.md").write_text("x\n", encoding="utf-8")
+    write_fixture_lock(fixtures, {"f": "samples/s"})
+    (tiers / "parent.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": "parent",
+                "expected_layers": ["api"],
+                "imports": {
+                    "execute": {
+                        "entrypoint": "execute",
+                        "completed": [
+                            {
+                                "path": path,
+                                "graph": graph,
+                                "node": role_node,
+                                "outputs": [],
+                                "gate": "api-plan-review-gate" if role_node == "review" else None,
+                            }
+                        ],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tiers / "child.yaml").write_text(
+        yaml.safe_dump({"name": "child", "extends": "parent", "expected_layers": ["api"]}),
+        encoding="utf-8",
+    )
+    child = load_tier(fixtures, "child")
+    with pytest.raises(AaError, match="selected api"):
+        validate_tier_for_selection(child, selected_layers=("api",), sample_root=sample)
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    [
+        "review/api-plan-review.json",
+        "review/api-plan-checks.json",
+        "codegen/api-codegen-summary.md",
+        "codegen/api-generated-files.json",
+        "tests/api/test_api_management_api.py",
+    ],
+)
+def test_pending_tier_rejects_forbidden_artifacts(artifact: str) -> None:
+    fixtures = _benchmark_fixtures()
+    sample = fixtures / "samples" / "eval-sample-001"
+    tier = TierManifest(
+        name="bad-pending",
+        expected_layers=["api"],
+        paths=[artifact],
+        imports={"execute": FixtureImportDef(entrypoint="execute")},
+    )
+    with pytest.raises(AaError, match="forbidden selected artifact"):
+        validate_tier_for_selection(tier, selected_layers=("api",), sample_root=sample)
+
+
+def test_pending_tier_rejects_codegen_done_reset() -> None:
+    tier = TierManifest(
+        name="bad-reset",
+        expected_layers=["api"],
+        resets=FixtureResets(workflow_state={"phases.api-codegen.status": "done"}),
+        imports={"execute": FixtureImportDef(entrypoint="execute")},
+    )
+    with pytest.raises(AaError, match="codegen done"):
+        validate_tier_for_selection(tier, selected_layers=("api",))
+
+
+def test_repo_paths_reject_unsafe_and_digest_mismatch(tmp_path: Path) -> None:
+    fixtures = _write_synth_fixtures(tmp_path)
+    tiers = fixtures / "tiers"
+    (tiers / "bad-repo.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": "bad-repo",
+                "paths": ["proposal.md", "workflow-state.yaml"],
+                "repo_paths": ["../escape.yaml"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(AaError, match="unsafe repo_paths"):
+        seed_change(
+            sut_sandbox=tmp_path / "sut",
+            change_id="eval-sample-001",
+            tier_name="bad-repo",
+            fixtures_root=fixtures,
+            fixture_id="fixture-001",
+        )
+
+
+def test_domain_api_module_import_smoke_without_app_installed() -> None:
+    sample = _benchmark_fixtures() / "samples" / "eval-sample-001"
+    module_path = sample / "tests" / "testdata" / "domain" / "api.py"
+    tree = ast.parse(module_path.read_text(encoding="utf-8"))
+    # Product deps must not be imported at module top-level.
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            module = getattr(node, "module", None) or ""
+            names = [alias.name for alias in node.names]
+            assert not module.startswith("app.")
+            assert "app" not in names
+    spec = importlib.util.spec_from_file_location("fixture_domain_api", module_path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert callable(mod.make_api)
+    assert mod.MAKE_API.endswith("make_api")
+
+
+@pytest.mark.parametrize(
+    "tier_name",
+    [
+        "L2-api-codegen-pending",
+        "L2-e2e-codegen-pending",
+        "L2-fuzz-codegen-pending",
+        "L2-performance-codegen-pending",
+    ],
+)
+def test_pending_tiers_seed_without_selected_completion(tmp_path: Path, tier_name: str) -> None:
+    fixtures = _benchmark_fixtures()
+    sut = tmp_path / "sut"
+    sut.mkdir()
+    layer = tier_name.split("-")[1]
+    result = seed_change(
+        sut_sandbox=sut,
+        change_id="eval-sample-001",
+        tier_name=tier_name,
+        fixtures_root=fixtures,
+        fixture_id="eval-sample-001",
+        entrypoint="execute",
+        selected_layers=(layer,),  # type: ignore[arg-type]
+    )
+    assert (sut / ".aa" / "data-knowledge.yaml").is_file()
+    assert (sut / "tests" / "testdata" / "domain" / "api.py").is_file()
+    assert not (result.change_dir / "review" / f"{layer}-plan-review.json").exists()
+    assert not (result.change_dir / "codegen").exists()
+    private = {
+        "api": "tests/api/test_api_management_api.py",
+        "e2e": "tests/e2e/test_api_management_e2e.py",
+        "fuzz": "tests/fuzz/test_api_fuzz.py",
+        "performance": "tests/perf/locustfile_api.py",
+    }[layer]
+    assert not (sut / private).exists()
+
+
+@pytest.mark.parametrize(
+    "tier_name",
+    [
+        "L2-api-codegen-seed",
+        "L2-e2e-codegen-seed",
+        "L2-fuzz-codegen-seed",
+        "L2-performance-codegen-seed",
+        "L3-run-seed",
+        "L3-run-done",
+    ],
+)
+def test_complete_tiers_seed_without_dynamic_assurance_helper(tmp_path: Path, tier_name: str) -> None:
+    fixtures = _benchmark_fixtures()
+    # Dynamic helper must be gone.
+    import assurance_agent.eval.fixtures as fixtures_mod
+
+    assert not hasattr(fixtures_mod, "_ensure_assurance_seed_artifacts")
+    sut = tmp_path / "sut"
+    sut.mkdir()
+    result = seed_change(
+        sut_sandbox=sut,
+        change_id="eval-sample-001",
+        tier_name=tier_name,
+        fixtures_root=fixtures,
+        fixture_id="eval-sample-001",
+        entrypoint="execute",
+    )
+    assert result.import_manifest_path is not None
+    assert result.import_manifest_path.is_file()
+    if "fuzz" in tier_name:
+        assert (result.change_dir / "review" / "fuzz-plan-review.json").is_file()
+        assert (result.change_dir / "review" / "fuzz-plan-checks.json").is_file()
+    if "performance" in tier_name:
+        assert (result.change_dir / "review" / "performance-plan-review.json").is_file()
+        assert (result.change_dir / "review" / "performance-plan-checks.json").is_file()
+
+
+def test_pending_chain_has_no_complete_ancestry() -> None:
+    fixtures = _benchmark_fixtures()
+    for tier_name in (
+        "L2-api-codegen-pending",
+        "L2-e2e-codegen-pending",
+        "L2-fuzz-codegen-pending",
+        "L2-performance-codegen-pending",
+    ):
+        tier = load_tier(fixtures, tier_name)
+        assert tier.extends == "L1-assurance-input-ready"
+        assert "L1-plan-seed" not in (tier.extends or "")
+        assert tier.expected_layers
+        # Expanded imports must not include selected codegen completion.
+        for task in tier.imports.get("execute", FixtureImportDef(entrypoint="execute")).completed:
+            assert task.node not in {"codegen", "codegen-precheck", "review", "applicability"}

@@ -1,20 +1,20 @@
 schema_version: "1.0"
 added:
   - case_id: FUZZ-001
-    title: Account create endpoint input robustness
+    title: API create endpoint input robustness
     priority: P1
     severity: high
     type: Fuzz
-    objective: Harden POST /accounts against schema-derived and boundary inputs without server crashes.
-    summary: Schemathesis exercises account creation with generated payloads; related API case covers functional happy path.
+    objective: Harden POST /api/v1/api/create against schema-derived and boundary inputs without server crashes.
+    summary: Schemathesis exercises API metadata creation with generated payloads; related API case covers functional happy path.
     related_cases:
-      - API-ACC-001
+      - TC_APIS_API_001
     preconditions:
       - OpenAPI schema is available in-process via ASGI app
       - Authenticated admin token can be acquired from `.aa/data-knowledge.yaml`
     steps:
       - Acquire admin auth using declared L1 auth capability
-      - Run schemathesis against POST /accounts with seed corpus and generated cases
+      - Run schemathesis against POST /api/v1/api/create with seed corpus and generated cases
       - Observe HTTP status and response shape for each generated call
     assertions:
       - Must not return unhandled 5xx
@@ -26,11 +26,11 @@ added:
       fuzz:
         endpoints:
           - method: POST
-            path: /accounts
+            path: /api/v1/api/create
         expectations:
           - no_5xx
           - valid_input_not_rejected
           - response_conforms_to_schema
-        seed_corpus: tests/fuzz/corpus/account_create.json
+        seed_corpus: tests/fuzz/corpus/api_create.json
 modified: []
 removed: []

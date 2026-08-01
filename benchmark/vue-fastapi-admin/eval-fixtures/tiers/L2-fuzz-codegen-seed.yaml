@@ -1,6 +1,11 @@
 name: L2-fuzz-codegen-seed
 extends: L1-plan-seed
 description: Fuzz codegen seed with full assurance predecessor chain
+repo_paths:
+- .aa/config.yaml
+- .aa/data-knowledge.yaml
+- tests/testdata/domain/api.py
+- tests/testdata/domain/__init__.py
 paths:
 - codegen
 - tests/config.py
@@ -11,6 +16,9 @@ paths:
 - plans/fuzz-plan.md
 - plans/fuzz-codegen-plan.md
 - plans/fuzz-review-summary.md
+- review/fuzz-plan-review.json
+- review/fuzz-plan-review-summary.md
+- review/fuzz-plan-checks.json
 resets:
   workflow_state:
     phases.execution.status: pending

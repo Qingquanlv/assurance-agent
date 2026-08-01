@@ -118,6 +118,10 @@ def test_codegen_scorer_py_syntax_and_summary(tmp_path: Path) -> None:
     m = get_scorer("workflow-api-codegen")(_sample("workflow-api-codegen", "WAC-001"), attempt).metrics
     assert m["schema_valid_rate"] == pytest.approx(0.5)  # 1 of 2 py compiles
     assert m["codegen_summary_present_rate"] == 1.0
+    # Task 18 dark-ship: live scorer must not expose the three future hard metrics.
+    assert "current_assurance_chain_rate" not in m
+    assert "current_codegen_attempt_rate" not in m
+    assert "selected_test_write_rate" not in m
 
 
 def test_workflow_full_observe_only(tmp_path: Path) -> None:

@@ -585,6 +585,11 @@ def test_ast_consumer_set_guards_for_snapshot_and_runtime_context_fields() -> No
                 "TaskAttemptStartedEvent",
                 "TaskAttemptSucceededEvent",
             },
+            "assurance_agent/eval/scorers/current_codegen.py": {
+                "WriteAttribution",
+                "classify_write_set_entries",
+                "load_plan_case_bytes_from_snapshot",
+            },
         },
         "runtime_context_sha256": {
             "assurance_agent/workflow/graph/scheduler.py": {
@@ -603,6 +608,10 @@ def test_ast_consumer_set_guards_for_snapshot_and_runtime_context_fields() -> No
             "assurance_agent/workflow/core/graph_events.py": {
                 "TaskAttemptStartedEvent",
                 "TaskAttemptSucceededEvent",
+            },
+            "assurance_agent/eval/scorers/current_codegen.py": {
+                "WriteAttribution",
+                "load_plan_case_bytes_from_snapshot",
             },
         },
     }

@@ -7,23 +7,34 @@ an isolated SUT sandbox, then reset ``workflow-state.yaml`` via
 
 v2: tiers may declare structural ``imports`` per entrypoint; seeding hashes
 inputs/outputs/gates and writes ``.graph-runtime/import-manifest.yaml``.
+
+Task 19: ``repo_paths`` / ``expected_layers``, selected-role-aware full-ancestry
+validation, and locked SUT copies without dynamic review/check seeding.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 import shutil
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
-from assurance_agent.eval.types import SeedResult
+from assurance_agent.artifacts.models.assurance import LAYER_NAMES, LayerName
+from assurance_agent.eval.types import (
+    FixtureImportDef,
+    FixtureImportTask,
+    FixtureResets,
+    SeedResult,
+    TierManifest,
+)
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import assert_change_id_safe
+from assurance_agent.verification.generated_entries import extract_layer_mapping
+from assurance_agent.verification.generated_files import get_generated_files_contract
 from assurance_agent.workflow.core.state import read_state_lenient, write_state
 from assurance_agent.workflow.execution.tree_hash import sha256_file
 from assurance_agent.workflow.orchestration.gates import (
@@ -31,39 +42,21 @@ from assurance_agent.workflow.orchestration.gates import (
     check_gate_in_view,
 )
 
-
-class FixtureResets(BaseModel):
-    workflow_state: dict[str, Any] = Field(default_factory=dict)
-    qa_yaml: dict[str, Any] = Field(default_factory=dict)
-
-
-class FixtureImportTask(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    path: str
-    graph: str
-    node: str
-    task_key: str | None = None
-    outputs: list[str] = Field(default_factory=list)
-    gate: str | None = None
-
-
-class FixtureImportDef(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    entrypoint: str
-    inputs: list[str] = Field(default_factory=list)
-    completed: list[FixtureImportTask] = Field(default_factory=list)
-
-
-class TierManifest(BaseModel):
-    name: str
-    extends: str | None = None
-    description: str = ""
-    paths: list[str] = Field(default_factory=list)
-    resets: FixtureResets = Field(default_factory=FixtureResets)
-    source_prefix: str | None = None
-    imports: dict[str, FixtureImportDef] = Field(default_factory=dict)
+# Re-export for callers/tests that historically imported models from fixtures.
+__all__ = [
+    "FixtureImportDef",
+    "FixtureImportTask",
+    "FixtureLock",
+    "FixtureLockEntry",
+    "FixtureResets",
+    "TierManifest",
+    "fixture_digest",
+    "load_tier",
+    "resolve_locked_fixture",
+    "seed_change",
+    "validate_tier_for_selection",
+    "write_fixture_lock",
+]
 
 
 class FixtureLockEntry(BaseModel):
@@ -81,7 +74,30 @@ class FixtureLock(BaseModel):
     fixtures: dict[str, FixtureLockEntry]
 
 
-_ASSURANCE_SEED_LAYERS = ("fuzz", "performance")
+_FORBIDDEN_SELECTED_NODES: frozenset[str] = frozenset(
+    {
+        "applicability",
+        "review",
+        "mechanical-plan-checks",
+        "review-gate",
+        "review-cycle",
+        "codegen-precheck",
+        "codegen",
+        "plan",  # selected-layer plan attempt is completion authority for pending
+    }
+)
+
+_SUPPORT_PATH_ALLOWLIST_SUFFIXES: frozenset[str] = frozenset(
+    {
+        "tests/config.py",
+        "tests/conftest.py",
+        "tests/schema_validation.py",
+        ".aa/config.yaml",
+        ".aa/data-knowledge.yaml",
+        "tests/testdata/domain/api.py",
+        "tests/testdata/domain/__init__.py",
+    }
+)
 
 
 def _fixture_entry(fixtures_root: Path, sample_dir: str) -> FixtureLockEntry:
@@ -97,6 +113,8 @@ def _fixture_entry(fixtures_root: Path, sample_dir: str) -> FixtureLockEntry:
             raise AaError(f"fixture contains symlink: {path}")
         if path.is_file():
             rel = path.relative_to(sample_root).as_posix()
+            if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
+                continue
             files[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
     canonical = "\n".join(f"{name}:{digest}" for name, digest in sorted(files.items()))
     return FixtureLockEntry(
@@ -215,10 +233,166 @@ def load_tier(fixtures_root: Path, tier_name: str, *, _seen: set[str] | None = N
         extends=child.extends,
         description=child.description or parent.description,
         paths=list(dict.fromkeys([*parent.paths, *child.paths])),
+        repo_paths=list(dict.fromkeys([*parent.repo_paths, *child.repo_paths])),
+        # expected_layers is child metadata only — never inherited as completion authority.
+        expected_layers=list(child.expected_layers),
         resets=_deep_merge_resets(parent.resets, child.resets),
         source_prefix=child.source_prefix or parent.source_prefix,
         imports=_merge_imports(parent.imports, child.imports),
     )
+
+
+def _validate_rel_path(rel: str, *, label: str) -> str:
+    if (
+        not rel
+        or rel.startswith("/")
+        or "\\" in rel
+        or any(part in {"", ".", ".."} for part in Path(rel).parts)
+    ):
+        raise AaError(f"unsafe {label}: {rel!r}")
+    return rel
+
+
+def _layer_touches_task(layer: LayerName, task: FixtureImportTask) -> bool:
+    token = f"/{layer}/"
+    graph_token = f"{layer}-"
+    return (
+        token in f"/{task.path}/"
+        or task.graph == layer
+        or task.graph.startswith(graph_token)
+        or task.node == layer
+    )
+
+
+def _is_forbidden_selected_role(layer: LayerName, task: FixtureImportTask) -> bool:
+    if not _layer_touches_task(layer, task):
+        return False
+    if task.node in _FORBIDDEN_SELECTED_NODES:
+        return True
+    if task.node == "generation-join":
+        return True
+    # Branch wrapper: assurance graph node named for the layer.
+    if task.graph == "assurance" and task.node == layer:
+        return True
+    # Branch graph itself as a completed wrapper.
+    if task.graph == f"{layer}-branch" and task.node in {
+        "review-cycle",
+        "codegen-precheck",
+        "codegen",
+        "plan",
+    }:
+        return True
+    if task.gate and (
+        task.gate.startswith(f"{layer}-")
+        or task.gate in {f"{layer}-plan-review-gate", f"{layer}-codegen-precondition-gate"}
+    ):
+        return True
+    return False
+
+
+def _mapped_targets_for_layer(sample_root: Path, layer: LayerName) -> frozenset[str]:
+    contract = get_generated_files_contract(layer)
+    plan_name = contract.summary_path.removeprefix("change:").replace(
+        "-codegen-summary.md", "-codegen-plan.md"
+    )
+    # Prefer explicit codegen plan under plans/.
+    candidates = [
+        sample_root / "plans" / f"{layer}-codegen-plan.md",
+        sample_root / plan_name,
+    ]
+    plan_path = next((path for path in candidates if path.is_file()), None)
+    if plan_path is None:
+        return frozenset()
+    cases: list[dict[str, object]] = []
+    for case_path in sorted((sample_root / "cases").glob("**/case.yaml")):
+        payload = yaml.safe_load(case_path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            cases.append(payload)
+    try:
+        relation = extract_layer_mapping(
+            layer=layer,
+            plan_text=plan_path.read_text(encoding="utf-8"),
+            cases=cases,
+        )
+    except Exception:
+        return frozenset()
+    return frozenset(entry.target_file for entry in relation.entries)
+
+
+def _forbidden_artifact_paths(layer: LayerName, mapped_targets: frozenset[str]) -> frozenset[str]:
+    contract = get_generated_files_contract(layer)
+    forbidden = {
+        f"review/{layer}-plan-review.json",
+        f"review/{layer}-plan-checks.json",
+        f"review/{layer}-plan-review-summary.md",
+        contract.summary_path.removeprefix("change:"),
+        contract.manifest_path.removeprefix("change:"),
+        *mapped_targets,
+    }
+    # E2E historical review filename differs.
+    if layer == "e2e":
+        forbidden.add("review/plan-review.json")
+    return frozenset(forbidden)
+
+
+def validate_tier_for_selection(
+    tier: TierManifest,
+    *,
+    selected_layers: Sequence[LayerName],
+    sample_root: Path | None = None,
+) -> None:
+    """Reject selected-layer completion roles/artifacts across the expanded ancestry."""
+    selected: tuple[LayerName, ...] = tuple(
+        layer for layer in LAYER_NAMES if layer in set(selected_layers)
+    )
+    if tuple(selected_layers) != selected:
+        raise AaError("selected_layers must be a unique canonical subset")
+    if tier.expected_layers:
+        expected: tuple[LayerName, ...] = tuple(
+            layer for layer in LAYER_NAMES if layer in set(tier.expected_layers)
+        )
+        if expected != selected:
+            raise AaError(
+                f"tier {tier.name!r} expected_layers {list(tier.expected_layers)} "
+                f"do not match selected {list(selected)}"
+            )
+
+    # Pending-style validation only when expected_layers is declared.
+    if not tier.expected_layers:
+        return
+
+    for layer in selected:
+        for import_def in tier.imports.values():
+            for task in import_def.completed:
+                if _is_forbidden_selected_role(layer, task):
+                    raise AaError(
+                        f"pending tier {tier.name!r} inherits selected {layer} "
+                        f"assurance role {task.node!r} via {task.path}"
+                    )
+
+        codegen_key = f"phases.{layer}-codegen.status"
+        if tier.resets.workflow_state.get(codegen_key) == "done":
+            raise AaError(
+                f"pending tier {tier.name!r} marks selected {layer} codegen done"
+            )
+
+        mapped = _mapped_targets_for_layer(sample_root, layer) if sample_root is not None else frozenset()
+        forbidden = _forbidden_artifact_paths(layer, mapped)
+        for rel in [*tier.paths, *tier.repo_paths]:
+            normalized = rel.rstrip("/")
+            if normalized in forbidden or any(
+                normalized == item or normalized.startswith(item.rstrip("/") + "/") for item in forbidden
+            ):
+                # Permit declared reusable support under private roots.
+                if normalized in _SUPPORT_PATH_ALLOWLIST_SUFFIXES:
+                    continue
+                if "/adapters/" in f"/{normalized}/" or normalized.endswith("/conftest.py"):
+                    continue
+                if normalized.startswith("tests/testdata/"):
+                    continue
+                raise AaError(
+                    f"pending tier {tier.name!r} includes forbidden selected artifact {rel!r}"
+                )
 
 
 def _set_dotted(target: dict[str, Any], dotted: str, value: Any) -> None:
@@ -248,19 +422,20 @@ def _copy_rel(src_root: Path, dest_root: Path, rel: str) -> None:
     src = src_root / rel
     if not src.exists():
         raise AaError(f"fixture path missing: {src}")
+    if src.is_symlink():
+        raise AaError(f"fixture path is symlink: {src}")
     dest = dest_root / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
     if src.is_dir():
         if dest.exists():
             shutil.rmtree(dest)
-        shutil.copytree(src, dest)
+        shutil.copytree(src, dest, symlinks=False)
     else:
         shutil.copy2(src, dest)
 
 
 def _apply_workflow_state_resets(change_dir: Path, resets: dict[str, Any]) -> None:
     if not resets:
-        # Still re-hash if a state file was copied from archive with stale integrity.
         if (change_dir / "workflow-state.yaml").exists():
             state = read_state_lenient(change_dir)
             write_state(change_dir, state)
@@ -304,111 +479,6 @@ def _hash_logical(change_dir: Path, project_root: Path, logical: str) -> str:
     if digest is None:
         raise AaError(f"fixture import source missing or not a file: {logical} ({path})")
     return digest
-
-
-def _ensure_assurance_seed_artifacts(
-    change_dir: Path,
-    project_root: Path,
-    change_id: str,
-    import_def: FixtureImportDef,
-) -> None:
-    """Materialize typed PlanReview + mechanical checks for gated Fuzz/Performance imports."""
-    from assurance_agent.artifacts.models.review import PlanReview
-    from assurance_agent.verification.checks.registry import run_plan_checks
-    from assurance_agent.verification.profiles import get_layer_assurance_profile
-
-    gate_ids = {t.gate for t in import_def.completed if t.gate}
-    logicals = set(import_def.inputs)
-    for task in import_def.completed:
-        logicals.update(task.outputs)
-
-    fixture_root = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "assurance"
-    for layer in _ASSURANCE_SEED_LAYERS:
-        profile = get_layer_assurance_profile(layer)
-        needed = bool(
-            gate_ids
-            & {
-                profile.gate_id,
-                f"{layer}-codegen-precondition-gate",
-            }
-        ) or any(f"change:review/{layer}-" in item for item in logicals)
-        if not needed:
-            continue
-
-        contract_dir = fixture_root / f"{layer}-contract"
-        knowledge_src = contract_dir / ".aa" / "data-knowledge.yaml"
-        knowledge_dst = project_root / ".aa" / "data-knowledge.yaml"
-        if knowledge_src.is_file() and (
-            not knowledge_dst.is_file()
-            or knowledge_dst.read_text(encoding="utf-8").strip() == "capabilities: {}"
-        ):
-            knowledge_dst.parent.mkdir(parents=True, exist_ok=True)
-            knowledge_dst.write_text(knowledge_src.read_text(encoding="utf-8"), encoding="utf-8")
-
-        review_rel = profile.review_artifact
-        review_path = change_dir / review_rel
-        if not review_path.is_file():
-            src = contract_dir / "review" / Path(review_rel).name
-            payload = json.loads(src.read_text(encoding="utf-8"))
-            payload["change_id"] = change_id
-            review = PlanReview.model_validate(payload)
-            review_path.parent.mkdir(parents=True, exist_ok=True)
-            review_path.write_text(
-                json.dumps(review.model_dump(mode="json"), indent=2) + "\n",
-                encoding="utf-8",
-            )
-
-        summary_rel = review_rel.replace(".json", "-summary.md")
-        summary_path = change_dir / summary_rel
-        if not summary_path.is_file():
-            summary_path.parent.mkdir(parents=True, exist_ok=True)
-            summary_path.write_text(
-                f"# {layer} plan review summary\n\ndecision: pass\n",
-                encoding="utf-8",
-            )
-
-        checks_path = change_dir / profile.checks_artifact
-        if not checks_path.is_file():
-            from assurance_agent.verification.checks.base import CheckContext
-
-            plan_texts = {
-                path: (change_dir / path).read_text(encoding="utf-8")
-                for path in profile.plan_artifacts
-                if (change_dir / path).is_file()
-            }
-            cases = []
-            for case_path in sorted((change_dir / "cases").glob("**/case.yaml")):
-                payload = yaml.safe_load(case_path.read_text(encoding="utf-8"))
-                if isinstance(payload, dict):
-                    cases.append(payload)
-            knowledge_payload = yaml.safe_load(knowledge_dst.read_text(encoding="utf-8")) or {}
-            review_payload = json.loads(review_path.read_text(encoding="utf-8"))
-            document = run_plan_checks(
-                CheckContext(
-                    plan_texts=plan_texts,
-                    cases=cases,
-                    data_knowledge=knowledge_payload if isinstance(knowledge_payload, dict) else {},
-                    layer=profile.layer,
-                    required_capabilities=tuple(review_payload.get("required_capabilities") or ()),
-                )
-            )
-            checks_path.parent.mkdir(parents=True, exist_ok=True)
-            checks_path.write_text(
-                json.dumps(document.model_dump(mode="json"), indent=2) + "\n",
-                encoding="utf-8",
-            )
-
-    knowledge = project_root / ".aa" / "data-knowledge.yaml"
-    if not knowledge.is_file():
-        knowledge.parent.mkdir(parents=True, exist_ok=True)
-        knowledge.write_text("capabilities: {}\n", encoding="utf-8")
-
-    for name in ("failure-analysis.json", "quality-gate-result.json"):
-        legacy = change_dir / "execution" / name
-        target = change_dir / "inspect" / name
-        if legacy.is_file() and not target.is_file():
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(legacy, target)
 
 
 def _state_values(change_dir: Path) -> dict[str, Any]:
@@ -471,7 +541,6 @@ def _write_import_manifest(
     fixtures_root: Path,
     import_def: FixtureImportDef,
 ) -> Path:
-    _ensure_assurance_seed_artifacts(change_dir, project_root, change_id, import_def)
     digest = fixture_digest(fixtures_root, fixture_id)
     inputs: dict[str, str] = {}
     for logical in import_def.inputs:
@@ -543,6 +612,7 @@ def seed_change(
     fixtures_root: Path,
     fixture_id: str,
     entrypoint: str | None = None,
+    selected_layers: Sequence[LayerName] | None = None,
 ) -> SeedResult:
     """Reset a sandbox change directory from a golden fixture tier.
 
@@ -552,6 +622,30 @@ def seed_change(
     assert_change_id_safe(change_id)
     tier = load_tier(fixtures_root, tier_name)
     sample_root = resolve_locked_fixture(fixtures_root, fixture_id)
+
+    for rel in tier.repo_paths:
+        _validate_rel_path(rel, label="repo_paths entry")
+    for rel in tier.paths:
+        _validate_rel_path(rel, label="paths entry")
+
+    resolved_selected: tuple[LayerName, ...]
+    if selected_layers is not None:
+        resolved_selected = tuple(layer for layer in LAYER_NAMES if layer in set(selected_layers))
+        if tuple(selected_layers) != resolved_selected:
+            raise AaError("selected_layers must be a unique canonical subset")
+    elif tier.expected_layers:
+        resolved_selected = tuple(
+            layer for layer in LAYER_NAMES if layer in set(tier.expected_layers)
+        )
+    else:
+        resolved_selected = ()
+
+    if tier.expected_layers or selected_layers is not None:
+        validate_tier_for_selection(
+            tier,
+            selected_layers=resolved_selected or tuple(tier.expected_layers),
+            sample_root=sample_root,
+        )
 
     change_dir = sut_sandbox / "qa" / "changes" / change_id
     staging = sut_sandbox / "qa" / "changes" / f".seed-staging-{change_id}"
@@ -574,6 +668,9 @@ def seed_change(
         _copy_rel(sample_root, staging, rel)
     for rel in test_paths:
         _copy_rel(sample_root, sut_sandbox, rel)
+    for rel in tier.repo_paths:
+        # Sandbox-only SUT copies verified through fixture-lock digests.
+        _copy_rel(sample_root, sut_sandbox, rel)
 
     if change_dir.exists():
         shutil.rmtree(change_dir)
@@ -587,7 +684,9 @@ def seed_change(
         import_def = tier.imports.get(entrypoint)
         if import_def is not None:
             if import_def.entrypoint != entrypoint:
-                raise AaError(f"tier import key {entrypoint!r} declares entrypoint {import_def.entrypoint!r}")
+                raise AaError(
+                    f"tier import key {entrypoint!r} declares entrypoint {import_def.entrypoint!r}"
+                )
             import_manifest_path = _write_import_manifest(
                 change_dir=change_dir,
                 project_root=sut_sandbox,

@@ -1,6 +1,11 @@
 name: L2-performance-codegen-seed
 extends: L1-plan-seed
 description: Performance codegen seed with full assurance predecessor chain
+repo_paths:
+- .aa/config.yaml
+- .aa/data-knowledge.yaml
+- tests/testdata/domain/api.py
+- tests/testdata/domain/__init__.py
 paths:
 - codegen
 - tests/config.py
@@ -11,6 +16,9 @@ paths:
 - plans/performance-plan.md
 - plans/performance-codegen-plan.md
 - plans/performance-review-summary.md
+- review/performance-plan-review.json
+- review/performance-plan-review-summary.md
+- review/performance-plan-checks.json
 resets:
   workflow_state:
     phases.execution.status: pending

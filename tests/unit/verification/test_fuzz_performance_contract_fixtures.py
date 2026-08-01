@@ -12,6 +12,7 @@ from assurance_agent.verification.applicability import derive_layer_applicabilit
 from assurance_agent.verification.checks.base import CheckContext
 from assurance_agent.verification.checks.registry import run_plan_checks
 from assurance_agent.verification.gate_state import plan_assurance_state
+from assurance_agent.verification.generated_entries import extract_layer_mapping
 from assurance_agent.verification.profiles import get_layer_assurance_profile
 from tests.helpers_assurance_contract import (
     CANONICAL_CHANGE_ID,
@@ -149,6 +150,21 @@ def test_fixture_unknown_capability_fails_capability_keys(layer: str) -> None:
     )
 
     assert _check(document, "capability_keys").status == "fail"
+
+
+@pytest.mark.parametrize("layer", ["fuzz", "performance"])
+def test_canonical_codegen_plan_mapping_carries_behavioral_policy(layer: str) -> None:
+    fixture = load_contract_fixture(layer)
+    profile = get_layer_assurance_profile(layer)  # type: ignore[arg-type]
+    codegen = fixture.plan_texts[profile.plan_artifacts[-1]]
+    relation = extract_layer_mapping(layer=layer, plan_text=codegen, cases=fixture.cases)
+    assert relation.entries
+    assert relation.policy().layer == layer
+    if layer == "fuzz":
+        assert relation.schema_case_ids
+        assert "call_and_validate" in relation.policy().schema_call_attrs
+    else:
+        assert "HttpUser" in relation.policy().user_base_names
 
 
 @pytest.mark.parametrize("layer", ["fuzz", "performance"])

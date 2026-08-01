@@ -300,3 +300,81 @@ def score_layer_pass_rate(raw_dir: Path, layer: str) -> float:
 def score_stdout_dangerous_command_count(attempt_dir: Path) -> float:
     text = _read_text(attempt_dir / "stdout.log")
     return float(sum(len(pat.findall(text)) for pat in _DANGEROUS))
+
+
+def replay_policy_integrity(attempt_dir: Path) -> bool:
+    """Strictly reconstruct D17 location + WritePolicyV1; require byte-identical policy.
+
+    Any evidence/policy mismatch returns False so current-chain hard metrics stay zero.
+    """
+    from assurance_agent.artifacts.canonical import canonical_json_bytes, sha256_bytes
+    from assurance_agent.eval.change_location_evidence import ChangeLocationEvidenceV1
+    from assurance_agent.eval.evidence_export import ExecutionEvidenceV1
+    from assurance_agent.eval.selection import SELECTION_NORMALIZER_VERSION
+
+    execution_path = attempt_dir / "execution.json"
+    if not execution_path.is_file():
+        return False
+    try:
+        envelope = ExecutionEvidenceV1.model_validate_json(execution_path.read_bytes())
+    except Exception:
+        return False
+    if envelope.write_policy_schema_version != write_scan.WRITE_POLICY_SCHEMA_VERSION:
+        return False
+    if envelope.selection_normalizer_version != SELECTION_NORMALIZER_VERSION:
+        return False
+    if envelope.run_mode is None or envelope.change_repo_path is None:
+        return False
+    if envelope.write_policy is None or envelope.change_location is None:
+        return False
+    if envelope.change_location_config is None:
+        return False
+
+    def _resolve(ref_path: str) -> Path | None:
+        direct = attempt_dir / ref_path
+        if direct.is_file():
+            return direct
+        nested = attempt_dir / write_scan.EVIDENCE_SUBDIR / Path(ref_path).name
+        if nested.is_file():
+            return nested
+        return None
+
+    location_path = _resolve(envelope.change_location.relative_path)
+    config_path = _resolve(envelope.change_location_config.relative_path)
+    policy_path = _resolve(envelope.write_policy.relative_path)
+    if location_path is None or config_path is None or policy_path is None:
+        return False
+
+    try:
+        location = ChangeLocationEvidenceV1.model_validate_json(location_path.read_bytes())
+    except Exception:
+        return False
+    if location.change_id != envelope.change_id:
+        return False
+    if location.resolved_change_repo_path != envelope.change_repo_path:
+        return False
+    config_bytes = config_path.read_bytes()
+    if sha256_bytes(config_bytes) != location.config_sha256:
+        return False
+    if sha256_bytes(config_bytes) != envelope.change_location_config.sha256:
+        return False
+    if sha256_bytes(location_path.read_bytes()) != envelope.change_location.sha256:
+        return False
+
+    try:
+        persisted = write_scan.WritePolicyV1.model_validate_json(policy_path.read_bytes())
+    except Exception:
+        return False
+    if sha256_bytes(canonical_json_bytes(persisted)) != envelope.write_policy.sha256:
+        # Accept raw file digest match when canonicalization differs only by loader path.
+        if sha256_bytes(policy_path.read_bytes()) != envelope.write_policy.sha256:
+            return False
+    try:
+        reconstructed = write_scan.build_write_policy_v1(
+            run_mode=envelope.run_mode,
+            selected_layers=tuple(envelope.selected_layers),
+            change_repo_path=envelope.change_repo_path,
+        )
+    except write_scan.WriteScanError:
+        return False
+    return canonical_json_bytes(reconstructed) == canonical_json_bytes(persisted)

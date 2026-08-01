@@ -1,11 +1,20 @@
-"""Structural mapping extraction for D16 generated-file authority."""
+"""Structural mapping extraction and selected-test AST classifiers."""
 
 from __future__ import annotations
+
+from dataclasses import replace
 
 import pytest
 
 from assurance_agent.verification.generated_entries import (
+    MappedTestEntry,
     MappingExtractionError,
+    behavioral_policy_for_layer,
+    classify_api_entry,
+    classify_e2e_entry,
+    classify_fuzz_entry,
+    classify_generated_entry,
+    classify_performance_entry,
     extract_layer_mapping,
     mapped_case_ids_for_path,
 )
@@ -142,3 +151,178 @@ def test_selected_case_ids_filter_unautomated() -> None:
     relation = extract_layer_mapping(layer="api", plan_text=plan, cases=cases)
     assert relation.selected_case_ids == ("API_001",)
     assert mapped_case_ids_for_path(relation, "tests/api/b.py") == ()
+    assert relation.behavioral_policy is not None
+    assert relation.policy().layer == "api"
+
+
+def _entry(symbol: str = "test_api_001", path: str = "tests/api/test_a.py") -> MappedTestEntry:
+    return MappedTestEntry(case_id="API_001", symbol=symbol, target_file=path)
+
+
+def test_api_positive_requires_client_request_and_response_assertion() -> None:
+    source = """
+def test_api_001(client):
+    response = client.get("/x")
+    assert response.status_code == 200
+    assert "id" in response.json()
+"""
+    decision = classify_api_entry(source, entry=_entry())
+    assert decision.accepted
+    assert decision.reason_code == "accepted"
+
+
+def test_e2e_positive_requires_navigation_interaction_and_expect() -> None:
+    source = """
+from playwright.sync_api import expect
+
+def test_e2e_001(page):
+    page.goto("/")
+    page.click("button")
+    expect(page.locator("h1")).to_be_visible()
+"""
+    decision = classify_e2e_entry(
+        source,
+        entry=MappedTestEntry(case_id="E2E_001", symbol="test_e2e_001", target_file="tests/e2e/t.py"),
+    )
+    assert decision.accepted
+
+
+def test_fuzz_positive_requires_schema_binding_and_call_and_validate() -> None:
+    source = """
+@schema.parametrize()
+def test_fuzz_001(case):
+    case.call_and_validate()
+"""
+    decision = classify_fuzz_entry(
+        source,
+        entry=MappedTestEntry(case_id="FUZZ_001", symbol="test_fuzz_001", target_file="tests/fuzz/t.py"),
+    )
+    assert decision.accepted
+
+
+def test_performance_positive_requires_user_task_and_self_client() -> None:
+    source = """
+from locust import HttpUser, task
+
+class ApiUser(HttpUser):
+    @task
+    def list_apis(self):
+        self.client.get("/api/v1/api/list")
+"""
+    decision = classify_performance_entry(
+        source,
+        entry=MappedTestEntry(case_id="PERF_001", symbol="list_apis", target_file="tests/perf/l.py"),
+    )
+    assert decision.accepted
+
+
+@pytest.mark.parametrize(
+    ("source", "reason"),
+    [
+        ("def test_api_001():\n    x = 1\n", "behaviorless_assignment"),
+        ("def test_api_001():\n    return 1\n", "behaviorless_return"),
+        ("def test_api_001():\n    assert True\n", "behaviorless_assert_true"),
+        ("def test_api_001():\n    assert 1 == 1\n", "behaviorless_constant_compare"),
+        ("@pytest.mark.skip\ndef test_api_001():\n    pass\n", "decorator_only"),
+        ("def helper():\n    return 1\n", "helper_only"),
+        (
+            "def test_other(client):\n    response = client.get('/x')\n    assert response.status_code == 200\n",
+            "unmapped_symbol",
+        ),
+        (
+            "def not_a_test(client):\n    response = client.get('/x')\n    assert response.status_code == 200\n",
+            "wrong_case_symbol",
+        ),
+        (
+            "def test_api_001(client):\n    client.get('/x')\n",
+            "missing_client_request",
+        ),
+        (
+            "def test_api_001(client):\n    response = client.get('/x')\n    assert True\n",
+            "missing_response_assertion",
+        ),
+        (
+            "def test_api_001():\n    x = 1\n    assert True\n",
+            "missing_client_request",
+        ),
+    ],
+)
+def test_api_rejects_behaviorless_and_incomplete_shapes(source: str, reason: str) -> None:
+    symbol = "not_a_test" if "not_a_test" in source else "test_api_001"
+    decision = classify_api_entry(source, entry=_entry(symbol=symbol))
+    assert not decision.accepted
+    assert decision.reason_code == reason
+
+
+def test_e2e_rejects_navigation_without_interaction_or_assertion() -> None:
+    source = """
+def test_e2e_001(page):
+    page.goto("/")
+"""
+    decision = classify_e2e_entry(
+        source,
+        entry=MappedTestEntry(case_id="E2E_001", symbol="test_e2e_001", target_file="tests/e2e/t.py"),
+    )
+    assert decision.reason_code == "missing_interaction"
+
+
+def test_fuzz_rejects_missing_bound_schema_call() -> None:
+    source = """
+@schema.parametrize()
+def test_fuzz_001(case):
+    assert True
+"""
+    decision = classify_fuzz_entry(
+        source,
+        entry=MappedTestEntry(case_id="FUZZ_001", symbol="test_fuzz_001", target_file="tests/fuzz/t.py"),
+    )
+    assert decision.reason_code in {"behaviorless_assert_true", "missing_schema_call"}
+
+
+def test_performance_rejects_task_without_request_or_outside_user() -> None:
+    outside = """
+@task
+def list_apis(self):
+    self.client.get("/x")
+"""
+    decision = classify_performance_entry(
+        outside,
+        entry=MappedTestEntry(case_id="PERF_001", symbol="list_apis", target_file="tests/perf/l.py"),
+    )
+    assert decision.reason_code == "missing_user_ownership"
+
+    no_request = """
+from locust import HttpUser, task
+
+class ApiUser(HttpUser):
+    @task
+    def list_apis(self):
+        return None
+"""
+    decision = classify_performance_entry(
+        no_request,
+        entry=MappedTestEntry(case_id="PERF_001", symbol="list_apis", target_file="tests/perf/l.py"),
+    )
+    assert decision.reason_code in {"behaviorless_return", "missing_client_request_in_task"}
+
+
+def test_registered_client_forms_are_closed_policy_with_direct_mutation_coverage() -> None:
+    policy = behavioral_policy_for_layer("api")
+    mutated = replace(policy, client_names=frozenset({"custom_client"}))
+    source = """
+def test_api_001(custom_client):
+    response = custom_client.get("/x")
+    assert response.status_code == 200
+"""
+    assert classify_api_entry(source, entry=_entry(), policy=mutated).accepted
+    assert not classify_api_entry(source, entry=_entry(), policy=policy).accepted
+
+
+def test_classify_generated_entry_dispatches_by_layer() -> None:
+    source = """
+def test_api_001(client):
+    response = client.post("/x", json={})
+    assert response.status_code == 201
+"""
+    decision = classify_generated_entry(layer="api", source=source, entry=_entry())
+    assert decision.accepted

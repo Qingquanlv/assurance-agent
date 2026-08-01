@@ -1,14 +1,14 @@
-# Performance Plan — CH-CANONICAL
+# Performance Plan — eval-sample-001
 
 ## Source
 
-- `cases/PERF-001/case.yaml`
+- `cases/system/performance/case.yaml`
 
 ## Scope
 
 | Case ID | Title |
 |---------|-------|
-| PERF-001 | Account list endpoint load threshold |
+| PERF-001 | API list endpoint load threshold |
 
 ## Absolute Thresholds
 
@@ -26,7 +26,7 @@
 
 | Case ID | Capability / Endpoint | Weight |
 |---------|----------------------|--------|
-| PERF-001 | GET /accounts | 100 |
+| PERF-001 | GET /api/v1/api/list | 100 |
 
 ## Statistical Interpretation
 
@@ -38,7 +38,3 @@
 ## Target Environment
 
 Base URL comes from `.aa/config.yaml`; auth uses `auth.api_admin_token` declared in `.aa/data-knowledge.yaml`.
-
-## Out of Scope
-
-Performance does not replace functional API/E2E coverage and does not compare against prior baselines.

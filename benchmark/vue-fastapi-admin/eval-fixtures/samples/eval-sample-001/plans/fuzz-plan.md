@@ -1,14 +1,14 @@
-# Fuzz Plan — CH-CANONICAL
+# Fuzz Plan — eval-sample-001
 
 ## Source
 
-- `cases/FUZZ-001/case.yaml`
+- `cases/system/fuzz/case.yaml`
 
 ## Scope
 
 | Case ID | Title |
 |---------|-------|
-| FUZZ-001 | Account create endpoint input robustness |
+| FUZZ-001 | API create endpoint input robustness |
 
 ## Schema Source
 
@@ -20,7 +20,7 @@
 
 | Fuzz Case ID | Related API Case | Purpose |
 |--------------|------------------|---------|
-| FUZZ-001 | API-ACC-001 | Functional happy-path coverage remains authoritative; fuzz hardens input robustness only |
+| FUZZ-001 | TC_APIS_API_001 | Functional happy-path coverage remains authoritative; fuzz hardens input robustness only |
 
 ## Authentication Semantics
 
@@ -32,14 +32,10 @@
 
 | Case ID | Seed Corpus | Coverage |
 |---------|-------------|----------|
-| FUZZ-001 | `tests/fuzz/corpus/account_create.json` | Valid baseline payload plus boundary variants for required fields |
+| FUZZ-001 | `tests/fuzz/corpus/api_create.json` | Valid baseline payload plus boundary variants for required fields |
 
 ## Expectations
 
 | Case ID | Checks |
 |---------|--------|
-| FUZZ-001 | no 5xx; schema-valid input not rejected with 400; response conforms to declared schema |
-
-## Out of Scope
-
-Fuzz does not assert business outcomes covered by API-ACC-001.
+| FUZZ-001 | no_5xx; valid_input_not_rejected; response_conforms_to_schema |

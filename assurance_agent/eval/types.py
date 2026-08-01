@@ -3,14 +3,52 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+from assurance_agent.artifacts.models.assurance import LayerName
 
 
 class SeedResult(BaseModel):
     change_dir: Path
     import_manifest_path: Path | None = None
+
+
+class FixtureResets(BaseModel):
+    workflow_state: dict[str, Any] = Field(default_factory=dict)
+    qa_yaml: dict[str, Any] = Field(default_factory=dict)
+
+
+class FixtureImportTask(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    graph: str
+    node: str
+    task_key: str | None = None
+    outputs: list[str] = Field(default_factory=list)
+    gate: str | None = None
+
+
+class FixtureImportDef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    entrypoint: str
+    inputs: list[str] = Field(default_factory=list)
+    completed: list[FixtureImportTask] = Field(default_factory=list)
+
+
+class TierManifest(BaseModel):
+    name: str
+    extends: str | None = None
+    description: str = ""
+    paths: list[str] = Field(default_factory=list)
+    repo_paths: list[str] = Field(default_factory=list)
+    expected_layers: list[LayerName] = Field(default_factory=list)
+    resets: FixtureResets = Field(default_factory=FixtureResets)
+    source_prefix: str | None = None
+    imports: dict[str, FixtureImportDef] = Field(default_factory=dict)
 
 
 Gate = Literal["hard", "advisory", "observe"]
