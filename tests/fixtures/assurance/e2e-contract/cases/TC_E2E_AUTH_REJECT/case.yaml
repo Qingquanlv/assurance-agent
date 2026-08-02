@@ -1,0 +1,25 @@
+schema_version: "1.0"
+added:
+  - case_id: TC_E2E_AUTH_REJECT
+    title: Non-admin user denied API management access
+    priority: P0
+    severity: critical
+    type: E2E
+    objective: Verify a limited-role user cannot operate API management UI controls.
+    summary: Direct navigation to the API management route must return 4xx or a permission-masked shell without operable CRUD controls.
+    preconditions:
+      - Frontend is reachable
+      - A limited-role user exists with no API management permissions
+    steps:
+      - Log in as the limited-role user
+      - Navigate directly to the API management route
+      - Observe the permission-denial UX
+    assertions:
+      - assert_ideal HTTP 4xx or permission-masked UI without operable CRUD controls
+      - Must not surface unhandled 5xx
+    automation:
+      required: true
+      framework: playwright
+      status: planned
+modified: []
+removed: []

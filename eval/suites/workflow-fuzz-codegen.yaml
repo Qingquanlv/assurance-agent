@@ -19,6 +19,15 @@ regression:
     forbidden_write_executed_count:
       direction: lower_is_better
       max_regression: 0.0
+    current_assurance_chain_rate:
+      direction: higher_is_better
+      max_regression: 0.0
+    current_codegen_attempt_rate:
+      direction: higher_is_better
+      max_regression: 0.0
+    selected_test_write_rate:
+      direction: higher_is_better
+      max_regression: 0.0
 executor:
   type: workflow-run
   run_mode: codegen-only
@@ -41,3 +50,15 @@ thresholds:
   gate: hard
   op: eq
   value: 0.0
+- metric: current_assurance_chain_rate
+  gate: hard
+  op: gte
+  value: 1.0
+- metric: current_codegen_attempt_rate
+  gate: hard
+  op: gte
+  value: 1.0
+- metric: selected_test_write_rate
+  gate: hard
+  op: gte
+  value: 1.0

@@ -4,6 +4,19 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from assurance_agent.workflow.graph.runtime_commit_safety import (
+    commit_safety_semantics_digest,
+    commit_safety_semantics_object_digest,
+)
+from assurance_agent.workflow.graph.topology_semantics import (
+    topology_safety_semantics_digest,
+    topology_safety_semantics_object_digest,
+)
+from assurance_agent.workflow.orchestration.gate_semantics import (
+    gate_semantics_digest,
+    gate_semantics_object_digest,
+)
+
 
 def invocation_ids_along_ns(checkpoint_ns: str) -> list[str]:
     parts = [part for part in checkpoint_ns.split("/") if part]
@@ -11,9 +24,27 @@ def invocation_ids_along_ns(checkpoint_ns: str) -> list[str]:
 
 
 def assert_event_schema_version_3(events: Sequence[dict[str, object]]) -> None:
+    """Fresh packaged roots emit event schema version 6 with complete semantic bindings."""
     started = [event for event in events if event.get("type") == "graph_invocation_started"]
     assert started, "expected graph_invocation_started"
-    assert started[0].get("event_schema_version") == 3
+    root = started[0]
+    assert root.get("event_schema_version") == 6
+    assert root.get("gate_semantics_object_id") == gate_semantics_object_digest()
+    assert root.get("gate_semantics_digest") == gate_semantics_digest()
+    assert root.get("topology_safety_semantics_object_id") == topology_safety_semantics_object_digest()
+    assert root.get("topology_safety_semantics_digest") == topology_safety_semantics_digest()
+    assert root.get("commit_safety_semantics_object_id") == commit_safety_semantics_object_digest()
+    assert root.get("commit_safety_semantics_digest") == commit_safety_semantics_digest()
+
+
+def assert_no_revision_resume_fields(events: Sequence[dict[str, object]]) -> None:
+    """Ordinary non-revision resumes must remain pairless (no revision lineage fields)."""
+    for event in events:
+        if event.get("type") != "graph_resumed":
+            continue
+        assert event.get("revision_transition_id") is None
+        assert event.get("revision_ordinal") is None
+        assert event.get("revision_chain_length") is None
 
 
 def assert_v3_interrupt_anchors(events: Sequence[dict[str, object]]) -> None:

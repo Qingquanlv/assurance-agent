@@ -1,15 +1,22 @@
+import inspect
 import textwrap
 from pathlib import Path
 
 import pytest
 import yaml
 
+from assurance_agent.workflow.graph import compiler as compiler_module
+from assurance_agent.workflow.graph.historical_roles import fixture_roles_from_schema
 from assurance_agent.workflow.graph.compiler import (
     CompileError,
+    HistoricalCompileContext,
+    PinnedDefinitionRequest,
+    compile_historical_workflow,
     compile_workflow,
     resolve_params,
 )
 from assurance_agent.workflow.graph.contracts import ExecutionContract, ExecutionContractCatalog
+from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
 
 _DEFAULT_HEADER = """\
@@ -600,3 +607,241 @@ def test_subgraph_recovery_has_stable_digest() -> None:
     )
 
     assert compile_text(text).digest == compile_text(text).digest
+
+
+def test_packaged_schema_compile_invokes_replay_assurance_guard() -> None:
+    from assurance_agent.workflow.graph.contracts import load_execution_contracts
+    from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
+
+    schema = load_workflow_v2(Path.cwd())
+    compiled = compile_workflow(schema, load_execution_contracts(Path.cwd()))
+    assert compiled.digest
+    assert "api-plan-cycle" in compiled.graphs
+
+
+def test_compile_workflow_uses_live_ingest_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from assurance_agent.workflow.graph.contracts import load_execution_contracts
+    from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
+
+    calls: list[str] = []
+    real = validate_catalog_runtime
+
+    def tracked() -> object:
+        calls.append("live")
+        return real()
+
+    monkeypatch.setattr(
+        "assurance_agent.workflow.graph.compiler.validate_catalog_runtime",
+        tracked,
+    )
+    schema = load_workflow_v2(Path.cwd())
+    compiled = compile_workflow(schema, load_execution_contracts(Path.cwd()))
+    assert calls == ["live"]
+    assert compiled.ingest_catalog_digest == real().digest
+
+
+def test_compile_historical_workflow_uses_pinned_context_not_live_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from assurance_agent.workflow.graph.compiler import canonical_digest
+    from assurance_agent.workflow.graph.contracts import (
+        catalog_from_pinned_contracts,
+        load_execution_contracts,
+    )
+    from assurance_agent.workflow.graph.replay_schema import validate_historical_replay_surface
+    from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
+
+    schema = load_workflow_v2(Path.cwd())
+    contracts = load_execution_contracts(Path.cwd())
+    ingest = validate_catalog_runtime()
+    referenced_targets = sorted(
+        {
+            node.uses
+            for graph in schema.graphs.values()
+            for node in graph.nodes.values()
+            if node.uses in contracts.contracts
+        }
+    )
+    pinned_contracts = catalog_from_pinned_contracts(
+        tuple(contracts.contracts[target] for target in referenced_targets)
+    )
+    contract_digests = {
+        target: canonical_digest(pinned_contracts.contracts[target]) for target in pinned_contracts.contracts
+    }
+
+    def explode(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("historical compile must not load the live ingest catalog")
+
+    monkeypatch.setattr("assurance_agent.workflow.graph.compiler.validate_catalog_runtime", explode)
+    monkeypatch.setattr(
+        "assurance_agent.workflow.graph.ingest_catalog.validate_catalog_runtime",
+        explode,
+    )
+    assert validate_historical_replay_surface(schema) == ()
+    compiled = compile_historical_workflow(
+        schema,
+        context=HistoricalCompileContext(
+            ingest_catalog=ingest,
+            ingest_catalog_digest=ingest.digest,
+            contracts=pinned_contracts,
+            contract_digests=contract_digests,
+            historical_roles=fixture_roles_from_schema(schema),
+        ),
+    )
+    assert compiled.ingest_catalog_digest == ingest.digest
+    assert compiled.contract_digests == contract_digests
+
+
+def test_historical_compile_context_rejects_identity_mismatch() -> None:
+    from assurance_agent.workflow.graph.contracts import load_execution_contracts
+    from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
+
+    schema = load_workflow_v2(Path.cwd())
+    contracts = load_execution_contracts(Path.cwd())
+    ingest = validate_catalog_runtime()
+    context = HistoricalCompileContext(
+        ingest_catalog=ingest,
+        ingest_catalog_digest="0" * 64,
+        contracts=contracts,
+        contract_digests={},
+        historical_roles=fixture_roles_from_schema(schema),
+    )
+    with pytest.raises(CompileError, match="ingest_catalog_digest|identity"):
+        compile_historical_workflow(schema, context=context)
+
+
+def test_pinned_definition_request_differs_when_one_contract_digest_changes() -> None:
+    base = PinnedDefinitionRequest(
+        graph_digest="g" * 64,
+        ingest_catalog_digest="i" * 64,
+        contract_digests=(("operation:a", "a" * 64), ("operation:b", "b" * 64)),
+        event_schema_version=4,
+        gate_semantics_digest="s" * 64,
+        assurance_profile_digest="p" * 64,
+    )
+    mutated = PinnedDefinitionRequest(
+        graph_digest=base.graph_digest,
+        ingest_catalog_digest=base.ingest_catalog_digest,
+        contract_digests=(("operation:a", "a" * 64), ("operation:b", "c" * 64)),
+        event_schema_version=base.event_schema_version,
+        gate_semantics_digest=base.gate_semantics_digest,
+        assurance_profile_digest=base.assurance_profile_digest,
+    )
+    cache: dict[PinnedDefinitionRequest, str] = {base: "base"}
+    assert mutated not in cache
+    assert hash(base) != hash(mutated)
+
+
+def test_compiler_has_no_target_specific_trace_materializer_branch() -> None:
+    """Schema edges + recovery continuations are the control plane — no compiler forks."""
+    source = inspect.getsource(compiler_module)
+    for target in (
+        "inspect-with-issues",
+        "issue-analyze-workflow",
+        "issue-reconcile-workflow",
+        "materialize-trace-projection",
+        "operation:materialize-trace-projection",
+    ):
+        assert target not in source, f"compiler must not special-case {target!r}"
+
+
+def test_compile_error_preserves_sorted_immutable_diagnostics() -> None:
+    from assurance_agent.workflow.graph.compiler import CompileDiagnostic
+
+    later = CompileDiagnostic(
+        category="workflow_validation",
+        code="z_last",
+        layer="e2e",
+        owner="compiler",
+        locator="b",
+        detail="second",
+    )
+    earlier = CompileDiagnostic(
+        category="historical_ingest_identity",
+        code="ingest_catalog_digest_mismatch",
+        layer=None,
+        owner="historical_compile",
+        locator="a",
+        detail="first",
+    )
+    exc = CompileError(diagnostics=(later, earlier))
+    assert exc.diagnostics == (earlier, later)
+    assert isinstance(exc.diagnostics, tuple)
+    text = str(exc)
+    assert "[historical_ingest_identity:ingest_catalog_digest_mismatch]" in text
+    assert "a: first" in text
+    assert text.index("first") < text.index("second")
+
+
+def test_pinned_reason_switches_on_diagnostic_category_not_substrings() -> None:
+    from assurance_agent.workflow.graph.compiler import CompileDiagnostic
+    from assurance_agent.workflow.graph.definition_pinning import _pinned_reason_for_compile_error
+
+    ingest = CompileError(
+        "historical compile identity mismatch: unrelated wording",
+        diagnostics=(
+            CompileDiagnostic(
+                category="historical_ingest_identity",
+                code="ingest_catalog_digest_mismatch",
+                layer=None,
+                owner="historical_compile",
+                locator="ingest_catalog_digest",
+                detail="digest drifted",
+            ),
+        ),
+    )
+    contract = CompileError(
+        "historical compile identity mismatch: unrelated wording",
+        diagnostics=(
+            CompileDiagnostic(
+                category="historical_contract_identity",
+                code="contract_digest_mismatch",
+                layer=None,
+                owner="historical_compile",
+                locator="contract:operation:x",
+                detail="digest drifted",
+            ),
+        ),
+    )
+    structural = CompileError(
+        "workflow v2 compile failed:\n  - unknown node 'missing'",
+        diagnostics=(
+            CompileDiagnostic(
+                category="workflow_validation",
+                code="workflow_validation",
+                layer=None,
+                owner="compiler",
+                locator="workflow",
+                detail="unknown node 'missing'",
+            ),
+        ),
+    )
+    assert _pinned_reason_for_compile_error(ingest) == "pinned_ingest_catalog_digest_mismatch"
+    assert _pinned_reason_for_compile_error(contract) == "pinned_contract_digest_mismatch"
+    assert _pinned_reason_for_compile_error(structural) == "pinned_schema_compile_failed"
+
+
+def test_historical_identity_failures_attach_typed_diagnostics() -> None:
+    from assurance_agent.workflow.graph.contracts import load_execution_contracts
+    from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
+
+    schema = load_workflow_v2(Path.cwd())
+    contracts = load_execution_contracts(Path.cwd())
+    ingest = validate_catalog_runtime()
+    context = HistoricalCompileContext(
+        ingest_catalog=ingest,
+        ingest_catalog_digest="0" * 64,
+        contracts=contracts,
+        contract_digests={},
+        historical_roles=fixture_roles_from_schema(schema),
+    )
+    with pytest.raises(CompileError) as raised:
+        compile_historical_workflow(schema, context=context)
+    exc = raised.value
+    assert len(exc.diagnostics) == 1
+    diagnostic = exc.diagnostics[0]
+    assert diagnostic.category == "historical_ingest_identity"
+    assert diagnostic.code == "ingest_catalog_digest_mismatch"
+    assert "ingest_catalog_digest" in str(exc)

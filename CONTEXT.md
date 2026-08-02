@@ -44,3 +44,20 @@ _Avoid_: hardcoded loop, special-case loop
 **Checkpoint**:
 A driver main-loop boundary (one committed phase outcome or control action); the checkpoint payload is `workflow-state.yaml` + `events.jsonl`, `driver.json` is only the non-authoritative process pointer (`invocation_id` / `checkpoint_id` / `event_seq`).
 _Avoid_: snapshot, savepoint (recovery is re-projection, not snapshot restore)
+
+## Evidence coverage gate (Task 9)
+
+`QualityGateResult.dimensions.coverage.status` is adjudicated solely from `EvidenceCoverageEvaluation` (trace projection × `policy.evidence_sufficiency`), not line/branch thresholds. Legacy `CoverageDimension` numeric fields remain for artifact compatibility but do not affect status. `exec_config.coverage.gate_mode` is deprecated (D3).
+
+**Golden attribution (vue-fastapi-admin eval-sample-001, default `on_insufficient: require_human`):**
+
+| Scenario | Old verdict | New verdict | Reason |
+|---|---|---|---|
+| Line coverage PASS, required API case never executed | PASS_WITH_WARNINGS (`gate_mode: warn`) | FAIL | `never_run` / `execution_recent` insufficient under `require_human` |
+| Line coverage PASS, required case uncovered in tests tree | PASS | FAIL | `uncovered` / `covered` kind missing |
+
+Migration: set project `.aa/policy.yaml` `evidence_sufficiency.on_insufficient: warn` to soften evidence gaps to `PASS_WITH_WARNINGS` (cannot soften missing projection or policy errors).
+
+## `aa verify` (Task 12)
+
+Read-only reconciled-phase verdict: `fold_trace(..., phase="reconciled")` then `evaluate_sufficiency(..., as_of=aware UTC now)`. Verdict order: blocking gaps or `integrity == incomplete` → fail; non-empty `open_problem_ids` → fail; insufficient × `on_insufficient` (`block`→fail, `require_human`→needs_human, `warn`→pass+warnings); all sufficient → pass with scope (`cases`, `batch`, `policy_digest`, `projection_digest`). `VERIFY_BLOCKING_GAP_CODES` fail-closed even when `on_insufficient: warn`; `mapped_test_missing_from_tree` is sufficiency-only. Exit codes: pass=0, needs_human=30, fail=40.

@@ -87,3 +87,16 @@ def test_rejects_disallowed_nodes():
 def test_rejects_bare_equals():
     with pytest.raises(DslError):
         parse_expression("a = b")  # 语法错误（Python 赋值非表达式）
+
+
+def test_plan_assurance_state_parses_with_four_args() -> None:
+    node = parse_expression("plan_assurance_state(api_plan_checks, api_plan_review, data_knowledge, 'api')")
+    assert isinstance(node, Call)
+    assert node.callee == "plan_assurance_state"
+    assert len(node.args) == 4
+    assert BUILTIN_ARITY["plan_assurance_state"] == 4
+
+
+def test_plan_assurance_state_rejects_wrong_arity() -> None:
+    with pytest.raises(DslError, match="expects 4 arg"):
+        parse_expression("plan_assurance_state(api_plan_checks, api_plan_review, data_knowledge)")

@@ -28,11 +28,16 @@ from assurance_agent.workflow.core.graph_events import (
     GRAPH_EVENT_ADAPTER,
     BudgetConsumedEvent,
     CheckpointImportedEvent,
+    DurableEffectAcknowledgedEvent,
+    DurableEffectIntegrityFailedEvent,
+    TopologySafetyCompatibilityRecordedEvent,
     FanOutExpandedEvent,
     GraphInterruptedEvent,
     GraphInvocationStartedEvent,
+    GraphInvocationSupersededEvent,
     GraphResumedEvent,
     GraphTerminalEvent,
+    ManualPlanRevisionEvent,
     NodeActivatedEvent,
     NodeSkippedEvent,
     SuperstepCommittedEvent,
@@ -44,6 +49,7 @@ from assurance_agent.workflow.core.graph_events import (
     TaskAttemptSucceededEvent,
     TaskImportedEvent,
     TaskRecoveryRoutedEvent,
+    TaskSchedulingDeferredEvent,
 )
 from assurance_agent.workflow.core.progression import transaction
 from assurance_agent.workflow.execution.tree_hash import sha256_file
@@ -64,6 +70,14 @@ from assurance_agent.workflow.graph.models import (
 )
 from assurance_agent.workflow.graph.node_history import GenerationFoldState
 from assurance_agent.workflow.graph.schema_v2 import NodeDef
+from assurance_agent.workflow.orchestration.dsl import (
+    DslError,
+    MISSING,
+    Scope,
+    evaluate,
+    is_satisfied,
+    parse_expression,
+)
 from assurance_agent.workflow.orchestration.gates import (
     GateEvaluationContext,
     check_gate_in_view,
@@ -174,9 +188,11 @@ def validate_import(
     imported_ids: set[str] = set()
     ledger_complete = _ledger_succeeded_nodes(projection) if projection is not None else set()
     resolved: list[ResolvedImportTask] = []
-    # Accumulate prior imported gate reports so later gate() DSL refs resolve
-    # (e.g. codegen precondition → plan-review verdict).
-    node_results: dict[str, object] = {}
+    # Same-named nodes in nested/sibling graphs must not overwrite one another;
+    # gate/edge/route evaluation only sees the current graph instance's locals.
+    node_results_by_structural_path: dict[str, dict[str, dict[str, object]]] = {}
+    if projection is not None:
+        _seed_node_results_from_projection(projection, node_results_by_structural_path)
     state_values = _state_values_from_change(context)
 
     for task in manifest.completed:
@@ -193,6 +209,7 @@ def validate_import(
                 )
 
         task_id = _import_task_id(structural_path, task.node, task.task_key)
+        local_results = node_results_by_structural_path.setdefault(structural_path, {})
         _assert_predecessor_closure(
             compiled,
             entrypoint=manifest.entrypoint,
@@ -201,6 +218,8 @@ def validate_import(
             imported_ids=imported_ids,
             ledger_complete=ledger_complete,
             params=context.params,
+            state_values=state_values,
+            local_results=local_results,
         )
 
         for logical, expected in sorted(task.outputs.items()):
@@ -209,11 +228,17 @@ def validate_import(
             if actual is None or actual != _strip_sha_prefix(expected):
                 raise CheckpointImportError(f"output hash mismatch for {logical}")
 
+        local_payload = local_results.setdefault(task.node, {})
+        local_payload["status"] = "succeeded"
         gate_report = _reevaluate_gate(
-            compiled, context, task, state_values=state_values, node_results=node_results
+            compiled, context, task, state_values=state_values, node_results=local_results
         )
         if gate_report is not None:
-            node_results[task.node] = {"gate": gate_report}
+            gate_payload = local_payload.setdefault("gate", {})
+            if isinstance(gate_payload, dict):
+                gate_payload.update(gate_report)
+            else:
+                local_payload["gate"] = dict(gate_report)
         imported_ids.add(_node_identity(structural_path, task.node, task.task_key))
         resolved.append(
             ResolvedImportTask(
@@ -405,6 +430,118 @@ def _is_mandatory_predecessor(graph: CompiledGraph, *, pred: str, node: str) -> 
     return not _can_reach_without_node(graph, start="START", target=node, avoid=pred)
 
 
+def _seed_node_results_from_projection(
+    projection: GraphProjection,
+    node_results_by_structural_path: dict[str, dict[str, dict[str, object]]],
+) -> None:
+    """Mirror committed succeeded tasks into structural-path local node results."""
+    for task in projection.tasks.values():
+        if task.status != "succeeded":
+            continue
+        suffix = f":{task.node_id}"
+        if task.task_key is not None:
+            suffix = f":{task.node_id}:{task.task_key}"
+        if not task.task_id.endswith(suffix):
+            continue
+        structural_path = task.task_id[: -len(suffix)]
+        local_results = node_results_by_structural_path.setdefault(structural_path, {})
+        payload = local_results.setdefault(task.node_id, {})
+        payload["status"] = "succeeded"
+        if task.value is not None:
+            payload["value"] = task.value
+        if task.gate_report is not None:
+            gate_payload = payload.setdefault("gate", {})
+            if isinstance(gate_payload, dict):
+                gate_payload.update(task.gate_report)
+            else:
+                payload["gate"] = dict(task.gate_report)
+
+
+def _import_eval_scope(
+    *,
+    params: Mapping[str, object],
+    state_values: Mapping[str, object],
+    local_results: Mapping[str, Mapping[str, object]],
+) -> Scope:
+    def node_result(node_id: str) -> object:
+        result = local_results.get(node_id)
+        return dict(result) if isinstance(result, Mapping) else {}
+
+    return Scope(
+        {"params": dict(params), "state": dict(state_values)},
+        node_result=node_result,
+    )
+
+
+def _condition_satisfied(expression: str, scope: Scope, *, nid: str) -> bool:
+    try:
+        return is_satisfied(parse_expression(expression), scope)
+    except DslError as exc:
+        raise CheckpointImportError(
+            f"import predecessor condition on '{nid}' failed to evaluate: {exc}"
+        ) from exc
+
+
+def _resolve_import_route_target(route, scope: Scope, *, src: str) -> str | None:
+    """Resolve a route select to a target label; missing/default-less → None (no delivery)."""
+    try:
+        label = evaluate(parse_expression(route.select), scope)
+    except DslError as exc:
+        raise CheckpointImportError(f"import route from '{src}' select failed to evaluate: {exc}") from exc
+    case_label: str | None = None
+    if isinstance(label, bool):
+        case_label = "true" if label else "false"
+    elif label is not MISSING and isinstance(label, str):
+        case_label = label
+    chosen = route.cases.get(case_label) if case_label is not None else None
+    if chosen is not None:
+        return chosen
+    return route.default
+
+
+def _known_structural_deliverers(
+    graph: CompiledGraph,
+    *,
+    structural_path: str,
+    known: set[str],
+    target: str,
+) -> tuple[str, ...]:
+    """Already-validated predecessors that have an edge/route case targeting ``target``."""
+    deliverers: list[str] = []
+    for pred_id, compiled_node in graph.nodes.items():
+        if _import_task_id(structural_path, pred_id, None) not in known:
+            continue
+        if any(edge.to == target for edge in compiled_node.outgoing):
+            deliverers.append(pred_id)
+            continue
+        if any(target in route.cases.values() or route.default == target for route in compiled_node.routes):
+            deliverers.append(pred_id)
+    return tuple(deliverers)
+
+
+def _selected_by_known_predecessors(
+    graph: CompiledGraph,
+    *,
+    structural_path: str,
+    known: set[str],
+    scope: Scope,
+) -> set[str]:
+    """Targets currently selected by already-validated predecessors under frozen scope."""
+    selected: set[str] = set()
+    for pred_id, compiled_node in graph.nodes.items():
+        if _import_task_id(structural_path, pred_id, None) not in known:
+            continue
+        for edge in compiled_node.outgoing:
+            if edge.when is not None and not _condition_satisfied(edge.when, scope, nid=pred_id):
+                continue
+            selected.add(edge.to)
+        for route in compiled_node.routes:
+            target = _resolve_import_route_target(route, scope, src=pred_id)
+            if target is not None and target not in {"END", "STOP", "FAIL"}:
+                selected.add(target)
+    return selected
+
+
 def _assert_predecessor_closure(
     compiled: CompiledWorkflow,
     *,
@@ -414,9 +551,11 @@ def _assert_predecessor_closure(
     imported_ids: set[str],
     ledger_complete: set[str],
     params: Mapping[str, object],
+    state_values: Mapping[str, object],
+    local_results: Mapping[str, Mapping[str, object]],
 ) -> None:
-    """Each mandatory predecessor must be imported, START-skipped, or ledger-complete."""
-    del entrypoint, params  # when/run_mode 跳过留给后续加深；首版要求同图前驱已导入
+    """Mandatory predecessors present; known deliverers must actually select the successor."""
+    del entrypoint
     graph = compiled.graphs[task.graph]
     node = graph.nodes[task.node]
     known = imported_ids | ledger_complete
@@ -430,6 +569,30 @@ def _assert_predecessor_closure(
             continue
         raise CheckpointImportError(
             f"missing predecessor closure: node '{task.node}' requires predecessor '{edge.from_}'"
+        )
+
+    # Join tokens are declared via join.sources, not ordinary edge/route delivery.
+    if node.definition.join is not None:
+        return
+
+    deliverers = _known_structural_deliverers(
+        graph, structural_path=structural_path, known=known, target=task.node
+    )
+    if not deliverers:
+        # Fixture imports may omit optional alternate-path predecessors; presence
+        # of mandatory preds (above) remains the baseline. Selection is enforced
+        # only when a known deliverer already claims this successor.
+        return
+
+    scope = _import_eval_scope(params=params, state_values=state_values, local_results=local_results)
+    selected = _selected_by_known_predecessors(
+        graph, structural_path=structural_path, known=known, scope=scope
+    )
+    if task.node not in selected:
+        raise CheckpointImportError(
+            f"missing predecessor closure: node '{task.node}' is not selected by any "
+            "validated predecessor edge/route under frozen params/state "
+            "(stop/skip precheck cannot satisfy codegen)"
         )
 
 
@@ -608,6 +771,111 @@ def _imported_task_id(event: TaskImportedEvent, fan_outs: dict[str, FanOutExpans
     return f"{event.structural_path}:{event.node_id}"
 
 
+def _require_v5_epoch(started: GraphInvocationStartedEvent | None, *, what: str) -> None:
+    if started is None or started.event_schema_version < 5:
+        raise LedgerIntegrityError(f"{what} requires event_schema_version >= 5")
+
+
+def _fold_manual_plan_revision(
+    *,
+    event: ManualPlanRevisionEvent,
+    started: GraphInvocationStartedEvent | None,
+    invocation_id: str,
+    current_tree_id: str,
+    interrupts: dict[str, InterruptProjection],
+    unconsumed_revision_transitions: dict[str, ManualPlanRevisionEvent],
+    consumed_revision_transitions: set[str],
+) -> None:
+    _require_v5_epoch(started, what="manual_plan_revision")
+    pending = interrupts.get(event.interrupt_id)
+    if pending is None or pending.resolved_action is not None:
+        raise LedgerIntegrityError(
+            f"manual_plan_revision requires unresolved interrupt {event.interrupt_id} "
+            f"in invocation {invocation_id}"
+        )
+    if pending.revision_owner_invocation_id != event.invocation_id:
+        raise LedgerIntegrityError(
+            f"manual_plan_revision owner mismatch for interrupt {event.interrupt_id}: "
+            f"expected {pending.revision_owner_invocation_id!r}, got {event.invocation_id!r}"
+        )
+    if event.base_tree_id != current_tree_id:
+        raise LedgerIntegrityError(
+            f"manual_plan_revision base_tree mismatch for invocation {invocation_id}: "
+            f"expected {current_tree_id}, got {event.base_tree_id}"
+        )
+    if event.target_tree_id == event.base_tree_id:
+        raise LedgerIntegrityError(
+            f"manual_plan_revision target_tree must differ from base_tree in invocation {invocation_id}"
+        )
+    logical = list(event.logical_paths)
+    before = dict(event.before_sha256)
+    after = dict(event.after_sha256)
+    if set(logical) != set(before) or set(logical) != set(after):
+        raise LedgerIntegrityError(
+            f"manual_plan_revision path/digest mismatch for invocation {invocation_id}"
+        )
+    if pending.revision_paths is not None and list(pending.revision_paths) != logical:
+        raise LedgerIntegrityError(
+            f"manual_plan_revision path/digest mismatch for invocation {invocation_id}"
+        )
+    if pending.revision_before_sha256 is not None and dict(pending.revision_before_sha256) != before:
+        raise LedgerIntegrityError(
+            f"manual_plan_revision path/digest mismatch for invocation {invocation_id}"
+        )
+    transition_id = event.revision_transition_id
+    if transition_id in unconsumed_revision_transitions or transition_id in consumed_revision_transitions:
+        raise LedgerIntegrityError(
+            f"manual_plan_revision reuses revision transition {transition_id} in invocation {invocation_id}"
+        )
+    unconsumed_revision_transitions[transition_id] = event
+
+
+def _fold_graph_resumed_revision_and_source(
+    *,
+    event: GraphResumedEvent,
+    pending: InterruptProjection,
+    started: GraphInvocationStartedEvent | None,
+    invocation_id: str,
+    unconsumed_revision_transitions: dict[str, ManualPlanRevisionEvent],
+    consumed_revision_transitions: set[str],
+) -> None:
+    has_revision_triple = event.revision_transition_id is not None
+    if has_revision_triple:
+        _require_v5_epoch(started, what="revision-tagged graph_resumed")
+    if started is not None and started.event_schema_version >= 5:
+        pending_pair = (pending.source_gate_attempt_id, pending.source_gate_tree_id)
+        resume_pair = (event.source_gate_attempt_id, event.source_gate_tree_id)
+        if pending_pair != resume_pair:
+            raise LedgerIntegrityError(
+                f"graph_resumed source_gate pair mismatch for interrupt {event.interrupt_id} "
+                f"in invocation {invocation_id}"
+            )
+    if not has_revision_triple:
+        return
+    transition_id = event.revision_transition_id
+    assert transition_id is not None
+    is_revision_owner = pending.revision_owner_invocation_id == event.invocation_id
+    if not is_revision_owner:
+        # Ancestor resume: validate the ordered triple only; tree stays unchanged.
+        return
+    if transition_id in consumed_revision_transitions:
+        raise LedgerIntegrityError(
+            f"graph_resumed reuses revision transition {transition_id} in invocation {invocation_id}"
+        )
+    prior = unconsumed_revision_transitions.pop(transition_id, None)
+    if prior is None:
+        raise LedgerIntegrityError(
+            f"graph_resumed missing prior unconsumed revision transition {transition_id} "
+            f"in invocation {invocation_id}"
+        )
+    if prior.interrupt_id != event.interrupt_id:
+        raise LedgerIntegrityError(
+            f"graph_resumed revision transition {transition_id} interrupt mismatch "
+            f"in invocation {invocation_id}"
+        )
+    consumed_revision_transitions.add(transition_id)
+
+
 def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) -> GraphProjection:
     """纯函数：把 strict ledger 事件折叠成 ``GraphProjection``（不触碰磁盘）。
 
@@ -633,6 +901,14 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
     terminal: Literal["completed", "stopped", "failed"] | None = None
     terminal_reason: str | None = None
     generation = GenerationFoldState()
+    unconsumed_revision_transitions: dict[str, ManualPlanRevisionEvent] = {}
+    consumed_revision_transitions: set[str] = set()
+    seen_deferrals: dict[str, TaskSchedulingDeferredEvent] = {}
+    seen_effect_acks: dict[str, DurableEffectAcknowledgedEvent] = {}
+    seen_topology_receipts: dict[str, TopologySafetyCompatibilityRecordedEvent] = {}
+    topology_compatibility_receipt_id: str | None = None
+    supersede_id: str | None = None
+    seen_supersedes: dict[str, GraphInvocationSupersededEvent] = {}
 
     for raw in events:
         if raw.get("source") != "graph":
@@ -642,8 +918,13 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
             event = GRAPH_EVENT_ADAPTER.validate_python(payload)
         except ValidationError as exc:
             raise LedgerIntegrityError(f"invalid graph event payload: {exc}") from exc
+        # Supersede fences the whole bound subtree; descendants see the root event.
         if event.invocation_id != invocation_id:
-            continue
+            if not (
+                isinstance(event, GraphInvocationSupersededEvent)
+                and invocation_id in event.descendant_invocation_ids
+            ):
+                continue
         seq = raw.get("seq")
         if isinstance(seq, int) and not isinstance(seq, bool):
             event_seq = max(event_seq, seq)
@@ -695,10 +976,58 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                 gate_report=prev.gate_report if prev else None,
                 state_updates=prev.state_updates if prev else {},
                 lease_expires_at=event.lease_expires_at,
+                input_snapshot_id=event.input_snapshot_id,
+                runtime_context_sha256=event.runtime_context_sha256,
+                precommit_validator=event.precommit_validator
+                if event.precommit_validator is not None
+                else (prev.precommit_validator if prev else None),
+                target=event.target if event.target is not None else (prev.target if prev else None),
+                deferral_ordinal=prev.deferral_ordinal if prev else 0,
+                latest_deferral_id=prev.latest_deferral_id if prev else None,
             )
             generation.apply_task_started(event, tasks=tasks, fan_outs=fan_outs)
         elif isinstance(event, TaskAttemptSucceededEvent):
             prev = _require_task(tasks, event)
+            if prev.input_snapshot_id is not None and event.input_snapshot_id != prev.input_snapshot_id:
+                raise LedgerIntegrityError(
+                    f"task_attempt_succeeded input_snapshot_id mismatch for {event.task_id}"
+                )
+            if (
+                prev.runtime_context_sha256 is not None
+                and event.runtime_context_sha256 != prev.runtime_context_sha256
+            ):
+                raise LedgerIntegrityError(
+                    f"task_attempt_succeeded runtime_context_sha256 mismatch for {event.task_id}"
+                )
+            if (
+                prev.candidate_validation_receipt_id is not None
+                and event.candidate_validation_receipt_id != prev.candidate_validation_receipt_id
+            ):
+                raise LedgerIntegrityError(
+                    f"task_attempt_succeeded candidate_validation_receipt_id mismatch for {event.task_id}"
+                )
+            if prev.precommit_validator is not None and event.candidate_validation_receipt_id is None:
+                raise LedgerIntegrityError(
+                    f"task_attempt_succeeded missing candidate_validation_receipt_id for "
+                    f"validator {prev.precommit_validator} on {event.task_id}"
+                )
+            durable_effects = tuple(dict(item) for item in event.durable_effects)
+            effect_ids = []
+            for item in durable_effects:
+                effect_id = item.get("effect_id")
+                if not isinstance(effect_id, str) or not effect_id.strip():
+                    raise LedgerIntegrityError(
+                        f"task_attempt_succeeded durable_effects missing effect_id for {event.task_id}"
+                    )
+                effect_ids.append(effect_id)
+            if len(set(effect_ids)) != len(effect_ids):
+                raise LedgerIntegrityError(
+                    f"task_attempt_succeeded durable_effects duplicate effect_id for {event.task_id}"
+                )
+            if tuple(sorted(effect_ids)) != tuple(effect_ids):
+                raise LedgerIntegrityError(
+                    f"task_attempt_succeeded durable_effects must be sorted by effect_id for {event.task_id}"
+                )
             tasks[event.task_id] = prev.model_copy(
                 update={
                     "status": "succeeded",
@@ -713,9 +1042,58 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                     "error_kind": None,
                     "error": None,
                     "next_retry_at": None,
+                    "input_snapshot_id": event.input_snapshot_id
+                    if event.input_snapshot_id is not None
+                    else prev.input_snapshot_id,
+                    "runtime_context_sha256": event.runtime_context_sha256
+                    if event.runtime_context_sha256 is not None
+                    else prev.runtime_context_sha256,
+                    "candidate_validation_receipt_id": event.candidate_validation_receipt_id
+                    if event.candidate_validation_receipt_id is not None
+                    else prev.candidate_validation_receipt_id,
+                    "precommit_validator": prev.precommit_validator,
+                    "target": prev.target,
+                    "durable_effects": durable_effects,
+                    "acknowledged_effect_ids": prev.acknowledged_effect_ids,
                 }
             )
             generation.apply_task_outcome(event, tasks=tasks, fan_outs=fan_outs)
+        elif isinstance(event, TaskSchedulingDeferredEvent):
+            prior = seen_deferrals.get(event.deferral_id)
+            if prior is not None:
+                if prior.model_dump(mode="json") != event.model_dump(mode="json"):
+                    raise LedgerIntegrityError(
+                        f"conflicting task_scheduling_deferred payload for {event.deferral_id}"
+                    )
+                continue
+            seen_deferrals[event.deferral_id] = event
+            prev = tasks.get(event.task_id)
+            if prev is not None and event.deferral_ordinal < prev.deferral_ordinal:
+                continue
+            if prev is not None and event.deferral_ordinal == prev.deferral_ordinal:
+                if prev.latest_deferral_id not in (None, event.deferral_id):
+                    raise LedgerIntegrityError(
+                        f"conflicting deferral ordinal {event.deferral_ordinal} for {event.task_id}"
+                    )
+            if prev is None:
+                tasks[event.task_id] = TaskProjection(
+                    task_id=event.task_id,
+                    node_id=event.node_id,
+                    status="pending",
+                    next_retry_at=event.next_retry_at,
+                    deferral_ordinal=event.deferral_ordinal,
+                    latest_deferral_id=event.deferral_id,
+                )
+            else:
+                tasks[event.task_id] = prev.model_copy(
+                    update={
+                        "next_retry_at": event.next_retry_at,
+                        "deferral_ordinal": event.deferral_ordinal,
+                        "latest_deferral_id": event.deferral_id,
+                        "error_kind": None,
+                        "error": None,
+                    }
+                )
         elif isinstance(event, TaskAttemptStoppedEvent):
             prev = _require_task(tasks, event)
             value = event.value
@@ -811,6 +1189,15 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                 actions=tuple(event.actions),
                 audited_reads_sha256=dict(event.audited_reads_sha256),
                 artifact_view=event.artifact_view,
+                revision_owner_invocation_id=event.revision_owner_invocation_id,
+                revision_base_tree_id=event.revision_base_tree_id,
+                revision_view=event.revision_view,
+                revision_paths=(tuple(event.revision_paths) if event.revision_paths is not None else None),
+                revision_before_sha256=(
+                    dict(event.revision_before_sha256) if event.revision_before_sha256 is not None else None
+                ),
+                source_gate_attempt_id=event.source_gate_attempt_id,
+                source_gate_tree_id=event.source_gate_tree_id,
             )
             # 嵌套 child 上抛的 interrupt：父 task 不能算成功完成，否则 resume
             # 不会重进 SubgraphHandler。同 namespace 的 builtin:interrupt 节点保持
@@ -822,6 +1209,17 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
             # §5.5：interrupt 落在本图某代时，驱动 NodeGeneration.status=interrupted。
             if started is not None and event.checkpoint_ns == started.checkpoint_ns:
                 generation.apply_graph_interrupted(event.node_id)
+        elif isinstance(event, ManualPlanRevisionEvent):
+            _fold_manual_plan_revision(
+                event=event,
+                started=started,
+                invocation_id=invocation_id,
+                current_tree_id=current_tree_id,
+                interrupts=interrupts,
+                unconsumed_revision_transitions=unconsumed_revision_transitions,
+                consumed_revision_transitions=consumed_revision_transitions,
+            )
+            current_tree_id = event.target_tree_id
         elif isinstance(event, GraphResumedEvent):
             pending = interrupts.get(event.interrupt_id)
             if pending is None:
@@ -829,6 +1227,14 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                     f"graph_resumed references unknown interrupt {event.interrupt_id} "
                     f"in invocation {invocation_id}"
                 )
+            _fold_graph_resumed_revision_and_source(
+                event=event,
+                pending=pending,
+                started=started,
+                invocation_id=invocation_id,
+                unconsumed_revision_transitions=unconsumed_revision_transitions,
+                consumed_revision_transitions=consumed_revision_transitions,
+            )
             interrupts[event.interrupt_id] = pending.model_copy(update={"resolved_action": event.action})
         elif isinstance(event, SuperstepCommittedEvent):
             # sibling state 直到 Update（commit）才可见：state_values 只在这里推进。
@@ -846,6 +1252,94 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
             latest_checkpoint_id = event.checkpoint_id
             current_tree_id = event.target_tree_id
             state_values = dict(event.state_values)
+        elif isinstance(event, DurableEffectAcknowledgedEvent):
+            prior_ack = seen_effect_acks.get(event.effect_id)
+            if prior_ack is not None:
+                if prior_ack.model_dump(mode="json") != event.model_dump(mode="json"):
+                    raise LedgerIntegrityError(
+                        f"conflicting durable_effect_acknowledged payload for {event.effect_id}"
+                    )
+                continue
+            task = tasks.get(event.task_id)
+            if task is None or task.status != "succeeded":
+                raise LedgerIntegrityError(
+                    f"durable_effect_acknowledged without succeeded task {event.task_id}"
+                )
+            if not task.outputs_committed:
+                raise LedgerIntegrityError(
+                    f"durable_effect_acknowledged before superstep commit for {event.effect_id}"
+                )
+            intent = next(
+                (
+                    item
+                    for item in task.durable_effects
+                    if isinstance(item, dict) and item.get("effect_id") == event.effect_id
+                ),
+                None,
+            )
+            if intent is None:
+                raise LedgerIntegrityError(
+                    f"durable_effect_acknowledged without matching inline intent {event.effect_id}"
+                )
+            if event.attempt_id != task.latest_attempt_id:
+                raise LedgerIntegrityError(
+                    f"durable_effect_acknowledged attempt mismatch for {event.effect_id}"
+                )
+            if event.kind != intent.get("kind"):
+                raise LedgerIntegrityError(f"durable_effect_acknowledged kind mismatch for {event.effect_id}")
+            if event.reconciler_semantics_digest != intent.get("reconciler_semantics_digest"):
+                raise LedgerIntegrityError(
+                    f"durable_effect_acknowledged reconciler_semantics_digest mismatch for {event.effect_id}"
+                )
+            if event.payload_sha256 != intent.get("payload_sha256"):
+                raise LedgerIntegrityError(
+                    f"durable_effect_acknowledged payload_sha256 mismatch for {event.effect_id}"
+                )
+            seen_effect_acks[event.effect_id] = event
+            tasks[event.task_id] = task.model_copy(
+                update={
+                    "acknowledged_effect_ids": tuple(sorted({*task.acknowledged_effect_ids, event.effect_id}))
+                }
+            )
+        elif isinstance(event, DurableEffectIntegrityFailedEvent):
+            terminal = "failed"
+            terminal_reason = "durable_effect_integrity_failed"
+        elif isinstance(event, TopologySafetyCompatibilityRecordedEvent):
+            prior = seen_topology_receipts.get(event.receipt_id)
+            if prior is not None:
+                if prior.model_dump(mode="json") != event.model_dump(mode="json"):
+                    raise LedgerIntegrityError(
+                        f"conflicting topology_safety_compatibility_recorded payload for {event.receipt_id}"
+                    )
+                continue
+            if (
+                topology_compatibility_receipt_id is not None
+                and topology_compatibility_receipt_id != event.receipt_id
+            ):
+                raise LedgerIntegrityError(
+                    f"multiple topology compatibility receipts for invocation {invocation_id}"
+                )
+            if started is not None and event.invocation_id != started.invocation_id:
+                raise LedgerIntegrityError(
+                    f"topology compatibility receipt root mismatch for {event.receipt_id}"
+                )
+            seen_topology_receipts[event.receipt_id] = event
+            topology_compatibility_receipt_id = event.receipt_id
+        elif isinstance(event, GraphInvocationSupersededEvent):
+            prior = seen_supersedes.get(event.supersede_id)
+            if prior is not None:
+                if prior.model_dump(mode="json") != event.model_dump(mode="json"):
+                    raise LedgerIntegrityError(
+                        f"conflicting graph_invocation_superseded payload for {event.supersede_id}"
+                    )
+                continue
+            if supersede_id is not None and supersede_id != event.supersede_id:
+                raise LedgerIntegrityError(f"multiple supersede events for invocation {invocation_id}")
+            seen_supersedes[event.supersede_id] = event
+            supersede_id = event.supersede_id
+            # Status renderers may say stopped; typed audit remains on supersede_id.
+            terminal = "stopped"
+            terminal_reason = "superseded"
         elif isinstance(event, GraphTerminalEvent):
             terminal = _TERMINAL_BY_TYPE[event.type]
             terminal_reason = event.reason
@@ -887,6 +1381,15 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
         ir_digest=ir_digest,
         ingest_catalog_digest=started.ingest_catalog_digest,
         contract_digests=dict(started.contract_digests),
+        policy_digest=started.policy_digest,
+        policy_origin=started.policy_origin,
+        gate_semantics_digest=started.gate_semantics_digest,
+        assurance_profile_digest=started.assurance_profile_digest,
+        gate_semantics_object_id=started.gate_semantics_object_id,
+        topology_safety_semantics_object_id=started.topology_safety_semantics_object_id,
+        topology_safety_semantics_digest=started.topology_safety_semantics_digest,
+        commit_safety_semantics_object_id=started.commit_safety_semantics_object_id,
+        commit_safety_semantics_digest=started.commit_safety_semantics_digest,
         params=dict(started.params),
         root_tree_id=started.root_tree_id,
         current_tree_id=current_tree_id,
@@ -902,12 +1405,65 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
         recoveries=recoveries,
         terminal=terminal,
         terminal_reason=terminal_reason,
+        topology_compatibility_receipt_id=topology_compatibility_receipt_id,
+        supersede_id=supersede_id,
     )
 
 
 def project_invocation(change_dir: Path, invocation_id: str) -> GraphProjection:
     """从 strict ledger 重建指定 invocation 的投影（ledger 是唯一权威）。"""
-    return fold_invocation_events(invocation_id, read_events_strict(change_dir))
+    projection = fold_invocation_events(invocation_id, read_events_strict(change_dir))
+    _verify_candidate_receipts_in_store(change_dir, projection)
+    return projection
+
+
+def _verify_candidate_receipts_in_store(change_dir: Path, projection: GraphProjection) -> None:
+    """Fail closed when a named validator's receipt is missing or unbound in CAS."""
+    from assurance_agent.workflow.graph.precommit import (
+        CandidateValidationError,
+        bind_receipt_to_success_event,
+        load_candidate_receipt,
+    )
+    from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceError
+
+    required = [
+        task
+        for task in projection.tasks.values()
+        if task.status == "succeeded" and task.precommit_validator is not None
+    ]
+    if not required:
+        return
+    store = TreeStore(change_dir)
+    for task in required:
+        validator_id = task.precommit_validator
+        if validator_id is None:
+            continue
+        receipt_id = task.candidate_validation_receipt_id
+        if receipt_id is None:
+            raise LedgerIntegrityError(
+                f"committed task {task.task_id} missing candidate_validation_receipt_id "
+                f"for validator {validator_id}"
+            )
+        try:
+            receipt = load_candidate_receipt(store, receipt_id)
+        except (CandidateValidationError, WorkspaceError) as exc:
+            raise LedgerIntegrityError(
+                f"candidate receipt CAS verify failed for {task.task_id}: {exc}"
+            ) from exc
+        try:
+            bind_receipt_to_success_event(
+                receipt,
+                validator_id=validator_id,
+                invocation_id=projection.invocation_id,
+                task_id=task.task_id,
+                attempt_id=task.latest_attempt_id or "",
+                input_snapshot_id=task.input_snapshot_id,
+                write_set_id=task.write_set_id,
+            )
+        except CandidateValidationError as exc:
+            raise LedgerIntegrityError(
+                f"candidate receipt identity mismatch for {task.task_id}: {exc}"
+            ) from exc
 
 
 def project_workflow_state(projection: GraphProjection) -> WorkflowStateProjection:

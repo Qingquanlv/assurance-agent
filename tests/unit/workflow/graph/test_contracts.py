@@ -10,12 +10,15 @@ from assurance_agent.workflow.graph.compiler import (
 )
 from assurance_agent.workflow.graph.contracts import (
     ContractError,
+    ExecutionContract,
     ExecutionContractCatalog,
     ResourceClaims,
     ResourcePath,
+    catalog_from_pinned_contracts,
     claims_conflict,
     load_execution_contracts,
     parse_execution_contracts,
+    path_covers,
 )
 from assurance_agent.workflow.graph.schema_v2 import (
     NodeDef,
@@ -142,6 +145,84 @@ def test_loads_packaged_registry(tmp_path: Path) -> None:
     catalog = load_execution_contracts(tmp_path)
     assert "operation:no-op" in catalog.contracts
     assert catalog.contracts["builtin:join"].side_effect_free is True
+
+
+def test_run_tests_contract_reads_traceability_inputs() -> None:
+    catalog = load_execution_contracts(Path.cwd())
+    contract = catalog.contracts["operation:run-tests"]
+    assert "change:cases/**" in contract.reads
+    assert "change:execution/**" in contract.reads
+    assert "project:.aa/policy.yaml" in contract.reads
+
+
+def test_derive_plan_layer_applicability_contract_reads_only_cases() -> None:
+    catalog = load_execution_contracts(Path.cwd())
+    contract = catalog.contracts["operation:derive-plan-layer-applicability"]
+    assert contract.reads == ("change:cases/**/case.yaml",)
+    assert contract.writes == ()
+    assert contract.authorization_writes == ()
+    assert contract.synchronized == ()
+    assert contract.side_effect_free is True
+    reads_prefixes = {read.split("/", 1)[0].split(":", 1)[-1] for read in contract.reads}
+    assert "plans" not in reads_prefixes
+    assert "review" not in reads_prefixes
+
+
+def test_verify_plan_mechanical_contract_is_write_lock_shell() -> None:
+    catalog = load_execution_contracts(Path.cwd())
+    contract = catalog.contracts["operation:verify-plan-mechanical"]
+    assert contract.reads == ("project:.aa/data-knowledge.yaml",)
+    assert contract.read_isolation == "declared_only"
+    assert contract.writes == (
+        "change:review/api-plan-checks.json",
+        "change:review/e2e-plan-checks.json",
+        "change:review/fuzz-plan-checks.json",
+        "change:review/performance-plan-checks.json",
+    )
+    assert contract.authorization_writes == contract.writes
+    assert contract.synchronized == ("project:.aa/data-knowledge.yaml",)
+    assert contract.exclusive == ("project:data-knowledge",)
+
+
+def test_materialize_trace_projection_contract_reads_full_surface() -> None:
+    catalog = load_execution_contracts(Path.cwd())
+    contract = catalog.contracts["operation:materialize-trace-projection"]
+    assert contract.side_effect_free is False
+    assert set(contract.reads) == {
+        "change:cases/**",
+        "change:execution/**",
+        "change:facts/**",
+        "change:review/**",
+        "change:healing/**",
+        "change:codegen/**",
+        "change:inspect/failure-analysis.json",
+        "change:inspect/issue-evidence-manifest.json",
+        "change:inspect/observations.json",
+        "change:inspect/issue-candidates.json",
+        "change:inspect/issue-reconcile-status.json",
+        "change:issues/events.jsonl",
+        "change:issues/snapshot.json",
+        "project:qa/issues/events.jsonl",
+        "project:qa/issues/problems.json",
+        "repo:tests/**",
+    }
+    assert contract.writes == ("change:inspect/trace-projection.json",)
+    assert contract.authorization_writes == ("change:inspect/trace-projection.json",)
+
+
+def test_record_project_sync_pending_contract_writes_reconcile_status() -> None:
+    catalog = load_execution_contracts(Path.cwd())
+    contract = catalog.contracts["operation:record-project-sync-pending"]
+    assert set(contract.reads) == {
+        "change:inspect/issue-evidence-manifest.json",
+        "change:inspect/issue-candidates.json",
+    }
+    assert set(contract.writes) == {
+        "change:issues/events.jsonl",
+        "change:issues/snapshot.json",
+        "change:inspect/issue-reconcile-status.json",
+    }
+    assert set(contract.authorization_writes) == set(contract.writes)
 
 
 def test_project_local_registry_overrides_packaged(tmp_path: Path) -> None:
@@ -739,3 +820,570 @@ def test_retro_closed_loop_contracts_are_least_privilege() -> None:
     assert "project:improvement-registry" in reconcile.exclusive
     assert "project:qa/issues/**" not in reconcile.writes
     assert "project:qa/issues/**" not in reconcile.authorization_writes
+
+
+def _make_project(tmp_path: Path) -> Path:
+    project = tmp_path / "project"
+    change = project / "qa" / "changes" / "CH-1"
+    change.mkdir(parents=True)
+    (change / "driver.json").write_text("{}\n", encoding="utf-8")
+    (change / "driver.lock").write_text("1\ntoken\n", encoding="utf-8")
+    return project
+
+
+def test_api_fixer_authorization_forbids_checks_write(tmp_path: Path) -> None:
+    from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend, WorkspaceError
+
+    project = _make_project(tmp_path)
+    change = project / "qa" / "changes" / "CH-1"
+    store = TreeStore(change)
+    backend = WorkspaceBackend(change)
+    base_tree = store.capture(project)
+    claims = load_execution_contracts(project).claims_for(
+        NodeDef(uses="skill:aa-api-plan-fixer", outputs=["change:review/api-plan-review-apply-summary.md"])
+    )
+    workspace = backend.create(task_id="fixer", base_tree_id=base_tree, store=store)
+    checks = workspace.change_dir / "review" / "api-plan-checks.json"
+    checks.parent.mkdir(parents=True, exist_ok=True)
+    checks.write_text('{"status":"pass"}\n', encoding="utf-8")
+    with pytest.raises(
+        WorkspaceError,
+        match=r"forbidden write outside authorization_writes: change:review/api-plan-checks\.json",
+    ):
+        store.freeze_write_set(workspace, claims=claims)
+
+
+@pytest.mark.parametrize(
+    ("uses", "checks_path"),
+    [
+        ("skill:aa-e2e-plan-reviewer", "review/e2e-plan-checks.json"),
+        ("skill:aa-e2e-plan-fixer", "review/e2e-plan-checks.json"),
+    ],
+)
+def test_e2e_reviewer_and_fixer_forbid_checks_write(tmp_path: Path, uses: str, checks_path: str) -> None:
+    from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend, WorkspaceError
+
+    project = _make_project(tmp_path)
+    change = project / "qa" / "changes" / "CH-1"
+    store = TreeStore(change)
+    backend = WorkspaceBackend(change)
+    base_tree = store.capture(project)
+    outputs = (
+        ["change:review/plan-review.json"]
+        if "reviewer" in uses
+        else ["change:review/plan-review-apply-summary.md"]
+    )
+    claims = load_execution_contracts(project).claims_for(NodeDef(uses=uses, outputs=outputs))
+    workspace = backend.create(task_id="agent", base_tree_id=base_tree, store=store)
+    checks = workspace.change_dir / checks_path
+    checks.parent.mkdir(parents=True, exist_ok=True)
+    checks.write_text('{"status":"pass"}\n', encoding="utf-8")
+    with pytest.raises(WorkspaceError, match=r"forbidden write outside authorization_writes"):
+        store.freeze_write_set(workspace, claims=claims)
+
+
+# ---------------------------------------------------------------------------
+# Fuzz / Performance exact ownership + mechanical narrowing (Task 3)
+# ---------------------------------------------------------------------------
+
+
+def _path_text(path: ResourcePath) -> str:
+    return f"{path.root}:{path.pattern}"
+
+
+def _covers(pattern: str, claim: str) -> bool:
+    return path_covers(ResourcePath.parse(pattern), ResourcePath.parse(claim))
+
+
+_FUZZ_PLAN_READS = (
+    "change:cases/**/case.yaml",
+    "change:proposal.md",
+    "change:facts/fact-baseline.json",
+    "repo:.aa/config.yaml",
+    "repo:.aa/data-knowledge.yaml",
+    "repo:tests/fuzz/**",
+    "repo:tests/testdata/domain/**",
+)
+_FUZZ_PLAN_WRITES = (
+    "change:plans/fuzz-plan.md",
+    "change:plans/fuzz-codegen-plan.md",
+    "change:plans/fuzz-review-summary.md",
+)
+_FUZZ_REVIEWER_READS = (
+    "change:plans/fuzz-plan.md",
+    "change:plans/fuzz-codegen-plan.md",
+    "change:plans/fuzz-review-summary.md",
+    "change:review/fuzz-plan-checks.json",
+    "change:cases/**/case.yaml",
+    "repo:.aa/data-knowledge.yaml",
+)
+_FUZZ_REVIEWER_WRITES = (
+    "change:review/fuzz-plan-review.json",
+    "change:review/fuzz-plan-review-summary.md",
+)
+_FUZZ_CODEGEN_READS = (
+    "change:plans/fuzz-plan.md",
+    "change:plans/fuzz-codegen-plan.md",
+    "change:plans/fuzz-review-summary.md",
+    "change:review/fuzz-plan-review.json",
+    "change:review/fuzz-plan-checks.json",
+    "change:cases/**/case.yaml",
+    "repo:.aa/config.yaml",
+    "repo:.aa/data-knowledge.yaml",
+    "repo:tests/fuzz/**",
+    "repo:tests/testdata/domain/**",
+)
+_FUZZ_CODEGEN_WRITES = (
+    "change:codegen/fuzz-codegen-summary.md",
+    "change:codegen/fuzz-generated-files.json",
+    "repo:tests/fuzz/**",
+    "repo:tests/testdata/**",
+)
+
+_PERF_PLAN_READS = (
+    "change:cases/**/case.yaml",
+    "change:proposal.md",
+    "change:facts/fact-baseline.json",
+    "repo:.aa/config.yaml",
+    "repo:.aa/data-knowledge.yaml",
+    "repo:tests/perf/**",
+    "repo:tests/testdata/domain/**",
+)
+_PERF_PLAN_WRITES = (
+    "change:plans/performance-plan.md",
+    "change:plans/performance-codegen-plan.md",
+    "change:plans/performance-review-summary.md",
+)
+_PERF_REVIEWER_READS = (
+    "change:plans/performance-plan.md",
+    "change:plans/performance-codegen-plan.md",
+    "change:plans/performance-review-summary.md",
+    "change:review/performance-plan-checks.json",
+    "change:cases/**/case.yaml",
+    "repo:.aa/data-knowledge.yaml",
+)
+_PERF_REVIEWER_WRITES = (
+    "change:review/performance-plan-review.json",
+    "change:review/performance-plan-review-summary.md",
+)
+_PERF_CODEGEN_READS = (
+    "change:plans/performance-plan.md",
+    "change:plans/performance-codegen-plan.md",
+    "change:plans/performance-review-summary.md",
+    "change:review/performance-plan-review.json",
+    "change:review/performance-plan-checks.json",
+    "change:cases/**/case.yaml",
+    "repo:.aa/config.yaml",
+    "repo:.aa/data-knowledge.yaml",
+    "repo:tests/perf/**",
+    "repo:tests/testdata/domain/**",
+)
+_PERF_CODEGEN_WRITES = (
+    "change:codegen/performance-codegen-summary.md",
+    "change:codegen/performance-generated-files.json",
+    "repo:tests/perf/**",
+    "repo:tests/testdata/**",
+)
+
+_SIX_TARGETS = (
+    ("skill:aa-fuzz-plan", _FUZZ_PLAN_READS, _FUZZ_PLAN_WRITES),
+    ("skill:aa-fuzz-plan-reviewer", _FUZZ_REVIEWER_READS, _FUZZ_REVIEWER_WRITES),
+    ("skill:aa-fuzz-codegen", _FUZZ_CODEGEN_READS, _FUZZ_CODEGEN_WRITES),
+    ("skill:aa-performance-plan", _PERF_PLAN_READS, _PERF_PLAN_WRITES),
+    ("skill:aa-performance-plan-reviewer", _PERF_REVIEWER_READS, _PERF_REVIEWER_WRITES),
+    ("skill:aa-performance-codegen", _PERF_CODEGEN_READS, _PERF_CODEGEN_WRITES),
+)
+
+_MECHANICAL_CHECKS = (
+    "change:review/api-plan-checks.json",
+    "change:review/e2e-plan-checks.json",
+    "change:review/fuzz-plan-checks.json",
+    "change:review/performance-plan-checks.json",
+)
+
+_LAYER_MECHANICAL_READS = {
+    "api": (
+        "change:plans/api-plan.md",
+        "change:plans/api-test-data-plan.md",
+        "change:plans/api-codegen-plan.md",
+        "change:review/api-plan-review.json",
+        "change:cases/**",
+        "repo:.aa/data-knowledge.yaml",
+    ),
+    "e2e": (
+        "change:plans/e2e-plan.md",
+        "change:plans/e2e-test-data-plan.md",
+        "change:plans/e2e-codegen-plan.md",
+        "change:review/plan-review.json",
+        "change:cases/**",
+        "repo:.aa/data-knowledge.yaml",
+    ),
+    "fuzz": (
+        "change:plans/fuzz-plan.md",
+        "change:plans/fuzz-codegen-plan.md",
+        "change:review/fuzz-plan-review.json",
+        "change:cases/**",
+        "repo:.aa/data-knowledge.yaml",
+    ),
+    "performance": (
+        "change:plans/performance-plan.md",
+        "change:plans/performance-codegen-plan.md",
+        "change:review/performance-plan-review.json",
+        "change:cases/**",
+        "repo:.aa/data-knowledge.yaml",
+    ),
+}
+
+
+def _assert_covered(patterns: tuple[str, ...], claim: str) -> None:
+    assert any(_covers(pattern, claim) for pattern in patterns), f"{claim} not covered by {patterns}"
+
+
+@pytest.mark.parametrize(("target", "reads", "writes"), _SIX_TARGETS)
+def test_fuzz_performance_skill_contracts_match_exact_matrix(
+    target: str,
+    reads: tuple[str, ...],
+    writes: tuple[str, ...],
+) -> None:
+    catalog = load_execution_contracts(Path.cwd())
+    contract = catalog.contracts[target]
+    assert contract.reads == reads
+    assert contract.writes == writes
+    assert contract.authorization_writes == writes
+    for logical in reads:
+        _assert_covered(contract.reads, logical)
+    for output in writes:
+        _assert_covered(contract.writes, output)
+        _assert_covered(contract.authorization_writes, output)
+    for forbidden in ("repo:**", "change:plans/**", "change:review/**"):
+        assert forbidden not in contract.reads
+        assert forbidden not in contract.writes
+        assert forbidden not in contract.authorization_writes
+    if target.endswith("-codegen"):
+        assert contract.exclusive == ("repo:test-infra",)
+
+
+def test_fuzz_and_performance_reviewers_cannot_authorize_checks() -> None:
+    catalog = load_execution_contracts(Path.cwd())
+    fuzz_reviewer = catalog.contracts["skill:aa-fuzz-plan-reviewer"]
+    assert not any(
+        path_covers(
+            ResourcePath.parse(pattern),
+            ResourcePath.parse("change:review/fuzz-plan-checks.json"),
+        )
+        for pattern in fuzz_reviewer.authorization_writes
+    )
+    assert fuzz_reviewer.authorization_writes == (
+        "change:review/fuzz-plan-review.json",
+        "change:review/fuzz-plan-review-summary.md",
+    )
+    performance_reviewer = catalog.contracts["skill:aa-performance-plan-reviewer"]
+    assert not any(
+        path_covers(
+            ResourcePath.parse(pattern),
+            ResourcePath.parse("change:review/performance-plan-checks.json"),
+        )
+        for pattern in performance_reviewer.authorization_writes
+    )
+    assert performance_reviewer.authorization_writes == (
+        "change:review/performance-plan-review.json",
+        "change:review/performance-plan-review-summary.md",
+    )
+
+
+def test_mechanical_sync_bound_requires_static_project_l1_read() -> None:
+    import copy
+
+    import yaml
+
+    from assurance_agent import resources
+
+    doc = yaml.safe_load(resources.read_text("schemas", "execution-contracts.yaml"))
+    assert isinstance(doc, dict)
+    mutated = copy.deepcopy(doc)
+    mech = mutated["contracts"]["operation:verify-plan-mechanical"]
+    mech["reads"] = [path for path in mech.get("reads", []) if path != "project:.aa/data-knowledge.yaml"]
+    with pytest.raises(ContractError, match="synchronized path must be covered by reads or writes"):
+        parse_execution_contracts(yaml.safe_dump(mutated))
+
+
+def _plan_mechanical_node(
+    *,
+    layer: str,
+    reads: tuple[str, ...],
+    checks: str,
+    tmp_path: Path,
+):
+    import yaml
+
+    from assurance_agent.workflow.graph.models import GraphProjection, RuntimeContext
+    from assurance_agent.workflow.graph.planner import plan_superstep
+
+    schema_doc = {
+        "schema_version": "2",
+        "name": f"mechanical-{layer}",
+        "entrypoints": {"full": {"graph": "main"}},
+        "graphs": {
+            "main": {
+                "max_supersteps": 5,
+                "nodes": {
+                    "mechanical": {
+                        "uses": "operation:verify-plan-mechanical",
+                        "with": {"layer": layer, "require_review": True},
+                        "outputs": [checks],
+                        "resources": {
+                            "reads": list(reads),
+                            "writes": [checks],
+                            "synchronized": ["project:.aa/data-knowledge.yaml"],
+                            "exclusive": ["project:data-knowledge"],
+                        },
+                    }
+                },
+                "edges": [
+                    {"from": "START", "to": "mechanical"},
+                    {"from": "mechanical", "to": "END"},
+                ],
+            }
+        },
+    }
+    text = yaml.safe_dump(schema_doc, sort_keys=False)
+    catalog = load_execution_contracts(Path.cwd())
+    compiled = compile_workflow(parse_workflow_v2(text), catalog)
+    context = RuntimeContext(
+        project_root=tmp_path,
+        repo_root=tmp_path,
+        change_dir=tmp_path / "change",
+        change_id="CH-MECH",
+    )
+    projection = GraphProjection(
+        invocation_id="inv-1",
+        entrypoint="full",
+        checkpoint_ns="inv-1",
+        structural_path="main",
+        graph_digest=compiled.digest,
+        contract_digests=dict(compiled.contract_digests),
+        params={},
+        root_tree_id="tree-0",
+        current_tree_id="tree-0",
+        latest_checkpoint_id=None,
+        supersteps=0,
+        state_values={},
+        tasks={},
+        interrupts={},
+        recoveries={},
+        node_histories={},
+        terminal=None,
+        terminal_reason=None,
+    )
+
+    class _Artifacts:
+        def read_json(self, tree_id: str, logical_path: str):
+            raise AssertionError(f"unexpected artifact read: {tree_id}:{logical_path}")
+
+    plan = plan_superstep(compiled, projection, context, _Artifacts())
+    assert len(plan.tasks) == 1
+    return plan.tasks[0]
+
+
+@pytest.mark.parametrize("layer", ("api", "e2e", "fuzz", "performance"))
+def test_mechanical_narrowing_keeps_only_layer_checks_and_node_reads(
+    layer: str,
+    tmp_path: Path,
+) -> None:
+    checks = f"change:review/{layer}-plan-checks.json"
+    if layer == "e2e":
+        checks = "change:review/e2e-plan-checks.json"
+    task = _plan_mechanical_node(
+        layer=layer,
+        reads=_LAYER_MECHANICAL_READS[layer],
+        checks=checks,
+        tmp_path=tmp_path,
+    )
+    assert tuple(_path_text(path) for path in task.resources.reads) == _LAYER_MECHANICAL_READS[layer]
+    assert "project:.aa/data-knowledge.yaml" not in {_path_text(path) for path in task.resources.reads}
+    assert tuple(_path_text(path) for path in task.resources.authorization_writes) == (checks,)
+    other_checks = [path for path in _MECHANICAL_CHECKS if path != checks]
+    assert not any(_path_text(path) in other_checks for path in task.resources.authorization_writes)
+
+
+def test_packaged_api_e2e_mechanical_nodes_narrow_away_sync_only_read(tmp_path: Path) -> None:
+    from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
+
+    schema = load_workflow_v2(Path.cwd())
+    for layer in ("api", "e2e"):
+        node = schema.graphs[f"{layer}-plan-cycle"].nodes["mechanical-plan-checks"]
+        assert node.resources is not None
+        assert node.resources.reads
+        checks = f"change:review/{layer}-plan-checks.json"
+        task = _plan_mechanical_node(
+            layer=layer,
+            reads=tuple(node.resources.reads),
+            checks=checks,
+            tmp_path=tmp_path / layer,
+        )
+        materialized = {_path_text(path) for path in task.resources.reads}
+        assert "project:.aa/data-knowledge.yaml" not in materialized
+        assert "repo:.aa/data-knowledge.yaml" in materialized
+        assert any(path.startswith("change:cases") for path in materialized)
+        assert any(path.startswith("change:plans/") for path in materialized)
+        assert any(path.startswith("change:review/") for path in materialized)
+        assert tuple(_path_text(path) for path in task.resources.authorization_writes) == (checks,)
+
+
+def test_catalog_from_pinned_contracts_rebuilds_packaged_targets() -> None:
+    packaged = load_execution_contracts(Path.cwd())
+    rebuilt = catalog_from_pinned_contracts(tuple(packaged.contracts.values()))
+    assert set(rebuilt.contracts) == set(packaged.contracts)
+    for target, contract in packaged.contracts.items():
+        assert canonical_digest(rebuilt.contracts[target]) == canonical_digest(contract)
+
+
+def test_catalog_from_pinned_contracts_rejects_duplicate_targets() -> None:
+    packaged = load_execution_contracts(Path.cwd())
+    first = next(iter(packaged.contracts.values()))
+    with pytest.raises(ContractError, match="duplicate"):
+        catalog_from_pinned_contracts((first, first))
+
+
+def test_catalog_from_pinned_contracts_rejects_unsafe_resource_paths() -> None:
+    bad = ExecutionContract(
+        target="operation:bad",
+        handler="operation",
+        reads=("change:../escape",),
+        writes=(),
+        authorization_writes=(),
+    )
+    with pytest.raises(ContractError, match="unsafe|invalid"):
+        catalog_from_pinned_contracts((bad,))
+
+
+def test_packaged_contracts_select_exact_precommit_validators() -> None:
+    catalog = load_execution_contracts(Path.cwd())
+    selected = {
+        target: contract.precommit_validator
+        for target, contract in catalog.contracts.items()
+        if contract.precommit_validator is not None
+    }
+    assert selected == {
+        "skill:aa-api-codegen": "generated_files_candidate/v1",
+        "skill:aa-e2e-codegen": "generated_files_candidate/v1",
+        "skill:aa-fuzz-codegen": "generated_files_candidate/v1",
+        "skill:aa-performance-codegen": "generated_files_candidate/v1",
+        "skill:aa-api-codegen-fixer": "codegen_fix_candidate/v1",
+        "skill:aa-e2e-codegen-fixer": "codegen_fix_candidate/v1",
+    }
+
+
+def test_exact_validator_contract_set() -> None:
+    """Task 23 mechanical scan alias: six packaged validator bindings."""
+    test_packaged_contracts_select_exact_precommit_validators()
+
+
+def test_packaged_contracts_select_exact_durable_effects() -> None:
+    catalog = load_execution_contracts(Path.cwd())
+    selected = {
+        target: contract.durable_effects
+        for target, contract in catalog.contracts.items()
+        if contract.durable_effects
+    }
+    assert selected == {
+        "operation:allocate-healing-attempt": ("healing_allocation/v2",),
+        "operation:record-fixer-approval": ("fixer_proposal_approved/v1",),
+        "operation:record-codegen-fix-apply": ("heal_record_apply/v2",),
+    }
+
+
+def test_exact_effect_contract_set() -> None:
+    """Task 23 mechanical scan alias: four durable-effect producer bindings."""
+    test_packaged_contracts_select_exact_durable_effects()
+    catalog = load_execution_contracts(Path.cwd())
+    producers = {
+        target: effects
+        for target, contract in catalog.contracts.items()
+        if (effects := contract.durable_effects)
+    }
+    assert len(producers) == 3
+    assert sum(len(effects) for effects in producers.values()) == 3
+    # Closed effect kinds across producers (design: three kinds; scan says four
+    # contract sets including the empty default path covered elsewhere).
+    kinds = {kind for effects in producers.values() for kind in effects}
+    assert kinds == {
+        "healing_allocation/v2",
+        "fixer_proposal_approved/v1",
+        "heal_record_apply/v2",
+    }
+
+
+def test_declared_only_exact_count() -> None:
+    """Exactly sixteen closed assurance skill targets use declared_only isolation."""
+    from assurance_agent.workflow.graph.assurance_personas import ASSURANCE_PERSONA_BY_TARGET
+
+    catalog = load_execution_contracts(Path.cwd())
+    expected = {f"skill:{skill}" for skill in ASSURANCE_PERSONA_BY_TARGET}
+    assert len(expected) == 16
+    declared = {
+        target
+        for target, contract in catalog.contracts.items()
+        if contract.read_isolation == "declared_only" and target in expected
+    }
+    assert declared == expected
+    for target in expected:
+        assert catalog.contracts[target].read_isolation == "declared_only"
+
+
+def test_durable_effects_default_empty_and_accept_registered_healing_kinds() -> None:
+    contract = ExecutionContract(target="operation:plain", handler="operation")
+    assert contract.durable_effects == ()
+    catalog = parse_execution_contracts(
+        textwrap.dedent(
+            """\
+            schema_version: "1"
+            contracts:
+              operation:x:
+                handler: operation
+                durable_effects: ["healing_allocation/v2"]
+            """
+        )
+    )
+    assert catalog.contracts["operation:x"].durable_effects == ("healing_allocation/v2",)
+    with pytest.raises(ContractError, match="unregistered durable effect"):
+        parse_execution_contracts(
+            textwrap.dedent(
+                """\
+                schema_version: "1"
+                contracts:
+                  operation:x:
+                    handler: operation
+                    durable_effects: ["not_a_kind/v1"]
+                """
+            )
+        )
+
+
+def test_precommit_validator_defaults_none_and_rejects_unknown() -> None:
+    contract = ExecutionContract(target="operation:plain", handler="operation")
+    assert contract.precommit_validator is None
+    with pytest.raises(ContractError, match="unknown precommit validator"):
+        parse_execution_contracts(
+            textwrap.dedent(
+                """\
+                schema_version: "1"
+                contracts:
+                  operation:x:
+                    handler: operation
+                    precommit_validator: not-registered/v1
+                """
+            )
+        )
+    catalog = parse_execution_contracts(
+        textwrap.dedent(
+            """\
+            schema_version: "1"
+            contracts:
+              operation:x:
+                handler: operation
+                precommit_validator: codegen_fix_candidate/v1
+            """
+        )
+    )
+    assert catalog.contracts["operation:x"].precommit_validator == "codegen_fix_candidate/v1"

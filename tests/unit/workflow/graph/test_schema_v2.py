@@ -5,6 +5,7 @@ import pytest
 from assurance_agent.workflow.graph.compiler import CompileError, compile_workflow
 from assurance_agent.workflow.graph.schema_v2 import (
     InterruptDef,
+    ManualRevisionDef,
     NodeDef,
     ParamDef,
     SchemaV2Error,
@@ -118,6 +119,71 @@ def test_interrupt_actions_reject_empty_duplicate_or_blank_values(actions: list[
                 "checkpoint": "case-review",
                 "bind": "audited_gate_read",
                 "actions": actions,
+            }
+        )
+
+
+def test_manual_revision_accepts_exact_change_plan_paths() -> None:
+    interrupt = InterruptDef.model_validate(
+        {
+            "reason": "fuzz plan requires a manual revision",
+            "checkpoint": "fuzz-plan-gate",
+            "bind": "audited_gate_read",
+            "actions": ["fix_and_proceed", "accept_risk", "stop"],
+            "manual_revision": {
+                "action": "fix_and_proceed",
+                "paths": [
+                    "change:plans/fuzz-plan.md",
+                    "change:plans/fuzz-codegen-plan.md",
+                ],
+            },
+        }
+    )
+
+    assert interrupt.manual_revision is not None
+    assert interrupt.manual_revision.action == "fix_and_proceed"
+    assert interrupt.manual_revision.paths == [
+        "change:plans/fuzz-plan.md",
+        "change:plans/fuzz-codegen-plan.md",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("paths", "match"),
+    [
+        (
+            ["change:plans/fuzz-plan.md", "change:plans/fuzz-plan.md"],
+            "duplicate",
+        ),
+        (["change:plans/*.md"], "glob"),
+        (["change:plans/fuzz-*.md"], "glob"),
+        (["change:plans/${plan}.md"], "template"),
+        (["change:plans/{plan}.md"], "template"),
+        (["change:plans/"], "directory"),
+        (["change:plans/subdir/"], "directory"),
+        (["repo:plans/fuzz-plan.md"], "change:"),
+        (["plans/fuzz-plan.md"], "change:"),
+        (["change:review/fuzz-plan-review.json"], "plans/"),
+        (["change:plans/../secrets.txt"], r"\.\.|plans/"),
+    ],
+)
+def test_manual_revision_rejects_non_exact_plan_paths(paths: list[str], match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        ManualRevisionDef.model_validate({"action": "fix_and_proceed", "paths": paths})
+
+
+def test_manual_revision_action_must_be_declared_on_interrupt() -> None:
+    with pytest.raises(ValueError, match="manual_revision.action"):
+        InterruptDef.model_validate(
+            {
+                "reason": "fuzz plan requires a manual revision",
+                "checkpoint": "fuzz-plan-gate",
+                "bind": "audited_gate_read",
+                "actions": ["accept_risk", "stop"],
+                "manual_revision": {
+                    "action": "fix_and_proceed",
+                    "paths": ["change:plans/fuzz-plan.md"],
+                },
             }
         )
 

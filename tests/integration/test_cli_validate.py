@@ -1,11 +1,19 @@
 import json
 from pathlib import Path
 
-from tests.helpers_aa import write_aa_config
-
+import pytest
 from click.testing import CliRunner
 
 from assurance_agent.cli import main
+from tests.helpers_aa import write_aa_config
+from tests.unit.artifacts.test_validate import (
+    VALID_QUALITY_V1,
+    VALID_QUALITY_V2,
+    VALID_RECONCILE_V1,
+    VALID_RECONCILE_V2,
+    VALID_TRACE_V1,
+    VALID_TRACE_V2,
+)
 
 VALID_REVIEW = '{"schema_version": "1.0", "decision": "pass", "findings": []}'
 INVALID_REVIEW = '{"schema_version": "1.0", "decision": "maybe", "findings": []}'
@@ -16,6 +24,12 @@ def make_change(change_id: str = "CH-1") -> Path:
     change_dir = Path("qa/changes") / change_id
     (change_dir / "review").mkdir(parents=True)
     return change_dir
+
+
+def _write_inspect(change_dir: Path, rel: str, payload: dict[str, object]) -> None:
+    path = change_dir / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
 
 
 def test_validate_missing_change_exits_1() -> None:
@@ -122,3 +136,103 @@ def test_validate_no_registered_artifact_exits_1() -> None:
         result = runner.invoke(main, ["validate", "--change", "CH-1"])
         assert result.exit_code == 1
         assert "no registered artifacts found" in result.output
+
+
+@pytest.mark.parametrize(
+    ("relpath", "payload", "artifact_label"),
+    [
+        ("inspect/trace-projection.json", VALID_TRACE_V1, "trace_projection"),
+        ("inspect/trace-projection.json", VALID_TRACE_V2, "trace_projection"),
+        (
+            "inspect/quality-gate-result.json",
+            {**VALID_QUALITY_V1, "change_id": "CH-1"},
+            "quality_gate_result",
+        ),
+        (
+            "inspect/quality-gate-result.json",
+            {**VALID_QUALITY_V2, "change_id": "CH-1"},
+            "quality_gate_result",
+        ),
+        ("inspect/issue-reconcile-status.json", VALID_RECONCILE_V1, "issue_reconcile_status"),
+        ("inspect/issue-reconcile-status.json", VALID_RECONCILE_V2, "issue_reconcile_status"),
+    ],
+)
+def test_validate_cli_accepts_wire_compat_versions(
+    relpath: str,
+    payload: dict[str, object],
+    artifact_label: str,
+) -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        change_dir = make_change()
+        _write_inspect(change_dir, relpath, payload)
+        result = runner.invoke(
+            main,
+            ["validate", "--change", "CH-1", "--artifact", relpath, "--json"],
+        )
+        assert result.exit_code == 0, result.output
+        doc = json.loads(result.output)
+        assert doc["ok"] is True
+        assert doc["results"][0]["artifact_type"] == artifact_label
+
+
+@pytest.mark.parametrize(
+    ("relpath", "payload"),
+    [
+        ("inspect/trace-projection.json", {**VALID_TRACE_V1, "schema_version": None}),
+        ("inspect/trace-projection.json", {**VALID_TRACE_V1, "schema_version": "99"}),
+        (
+            "inspect/quality-gate-result.json",
+            {**VALID_QUALITY_V1, "schema_version": None, "change_id": "CH-1"},
+        ),
+        (
+            "inspect/quality-gate-result.json",
+            {**VALID_QUALITY_V1, "schema_version": "99", "change_id": "CH-1"},
+        ),
+        ("inspect/issue-reconcile-status.json", {**VALID_RECONCILE_V2, "schema_version": None}),
+        ("inspect/issue-reconcile-status.json", {**VALID_RECONCILE_V2, "schema_version": "99"}),
+    ],
+)
+def test_validate_cli_rejects_null_or_unknown_schema_version(
+    relpath: str,
+    payload: dict[str, object],
+) -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        change_dir = make_change()
+        _write_inspect(change_dir, relpath, payload)
+        result = runner.invoke(
+            main,
+            ["validate", "--change", "CH-1", "--artifact", relpath, "--json"],
+        )
+        assert result.exit_code == 1, result.output
+        doc = json.loads(result.output)
+        assert doc["ok"] is False
+        assert doc["results"][0]["errors"]
+
+
+def test_validate_cli_accepts_mixed_legacy_and_current_wire_tree() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        change_dir = make_change("CH-MIX")
+        _write_inspect(change_dir, "inspect/trace-projection.json", VALID_TRACE_V1)  # missing version
+        _write_inspect(
+            change_dir,
+            "inspect/quality-gate-result.json",
+            {**VALID_QUALITY_V2, "change_id": "CH-MIX"},
+        )
+        _write_inspect(
+            change_dir,
+            "inspect/issue-reconcile-status.json",
+            {**VALID_RECONCILE_V1, "change_id": "CH-MIX"},
+        )
+        result = runner.invoke(main, ["validate", "--change", "CH-MIX", "--json"])
+        assert result.exit_code == 0, result.output
+        doc = json.loads(result.output)
+        assert doc["ok"] is True
+        types = {r["artifact_type"] for r in doc["results"]}
+        assert types == {
+            "trace_projection",
+            "quality_gate_result",
+            "issue_reconcile_status",
+        }

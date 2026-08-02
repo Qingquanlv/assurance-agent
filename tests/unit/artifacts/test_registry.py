@@ -1,6 +1,28 @@
 from assurance_agent.artifacts.registry import REGISTRY, match_artifact
 
 
+def test_activated_generated_file_and_healing_paths_match_exact_models() -> None:
+    from assurance_agent.artifacts.models import (
+        ApiCodegenFixApplyIntentV1,
+        ApiGeneratedFilesV1,
+        E2eGeneratedFilesV1,
+        FixerProposalApprovalReceiptV1,
+        StrictWireModel,
+    )
+
+    assert issubclass(ApiGeneratedFilesV1, StrictWireModel)
+    assert issubclass(ApiCodegenFixApplyIntentV1, StrictWireModel)
+    assert issubclass(FixerProposalApprovalReceiptV1, StrictWireModel)
+    api_files = match_artifact("codegen/api-generated-files.json")
+    e2e_files = match_artifact("codegen/e2e-generated-files.json")
+    api_intent = match_artifact("healing/api-apply-intent.json")
+    approval = match_artifact("healing/fixer-proposal-approval.json")
+    assert api_files is not None and api_files.model is ApiGeneratedFilesV1
+    assert e2e_files is not None and e2e_files.model is E2eGeneratedFilesV1
+    assert api_intent is not None and api_intent.model is ApiCodegenFixApplyIntentV1
+    assert approval is not None and approval.model is FixerProposalApprovalReceiptV1
+
+
 def test_registry_covers_every_expected_artifact_type() -> None:
     expected = {
         "advisory",
@@ -12,7 +34,19 @@ def test_registry_covers_every_expected_artifact_type() -> None:
         "eval_run_projection_v1",
         "fact_baseline",
         "failure_analysis",
+        "api_generated_files_v1",
+        "e2e_generated_files_v1",
+        "fuzz_generated_files_v1",
+        "performance_generated_files_v1",
         "fix_proposal",
+        "fixer_authority_v1",
+        "fixer_proposal_approval_receipt_v1",
+        "api_codegen_fix_apply_intent_v1",
+        "e2e_codegen_fix_apply_intent_v1",
+        "api_codegen_fix_apply_summary_v1",
+        "e2e_codegen_fix_apply_summary_v1",
+        "api_codegen_fixer_safety_check_v1",
+        "e2e_codegen_fixer_safety_check_v1",
         "issue_analysis_status",
         "issue_candidate_document",
         "issue_evidence_manifest",
@@ -40,10 +74,14 @@ def test_registry_covers_every_expected_artifact_type() -> None:
         "retro_eval_signal_v3",
         "review",
         "safety_check",
+        "trace_projection",
         "workflow_state",
     }
     assert {spec.artifact_type for spec in REGISTRY} == expected
-    assert len(REGISTRY) == 40
+    # Multiple review path entries share one artifact_type; pin exact activated paths instead.
+    assert match_artifact("codegen/api-generated-files.json") is not None
+    assert match_artifact("healing/api-apply-intent.json") is not None
+    assert match_artifact("healing/fixer-authority.json") is not None
 
 
 def test_retro_closure_artifacts_match_only_their_run_paths() -> None:
@@ -79,7 +117,9 @@ def test_star_does_not_cross_directory_boundaries() -> None:
 
 def test_apply_summary_wildcard_and_fixed_healing_paths() -> None:
     api = match_artifact("healing/api-apply-summary.json")
-    assert api is not None and api.artifact_type == "apply_summary"
+    assert api is not None and api.artifact_type == "api_codegen_fix_apply_summary_v1"
+    e2e = match_artifact("healing/e2e-apply-summary.json")
+    assert e2e is not None and e2e.artifact_type == "e2e_codegen_fix_apply_summary_v1"
     fp = match_artifact("healing/fix-proposal.json")
     assert fp is not None and fp.artifact_type == "fix_proposal"
     sc = match_artifact("healing/fixer-safety-check.json")
@@ -105,12 +145,41 @@ def test_compat_grades_match_spec_4a() -> None:
     assert grades["workflow_state"] == "versioned"
     assert grades["execution_manifest"] == "versioned"
     assert grades["quality_report"] == "versioned"
+    assert grades["quality_gate_result"] == "versioned"
     assert grades["observation_document"] == "versioned"
     assert grades["issue_evidence_manifest"] == "versioned"
     assert grades["issue_candidate_document"] == "must_compat"
     assert grades["issue_analysis_status"] == "must_compat"
     assert grades["issue_reconcile_status"] == "versioned"
     assert grades["change_issue_snapshot"] == "versioned"
+    assert grades["trace_projection"] == "versioned"
+
+
+def test_trace_projection_registry_uses_document_wrapper() -> None:
+    from assurance_agent.artifacts.models.trace import TraceProjectionDocument
+
+    spec = match_artifact("inspect/trace-projection.json")
+    assert spec is not None
+    assert spec.model is TraceProjectionDocument
+    assert spec.compat == "versioned"
+
+
+def test_quality_gate_result_registry_uses_document_wrapper() -> None:
+    from assurance_agent.artifacts.models.inspect import QualityGateResultDocument
+
+    spec = match_artifact("inspect/quality-gate-result.json")
+    assert spec is not None
+    assert spec.model is QualityGateResultDocument
+    assert spec.compat == "versioned"
+
+
+def test_issue_reconcile_status_registry_uses_document_wrapper() -> None:
+    from assurance_agent.artifacts.models.issues import IssueReconcileStatusDocument
+
+    spec = match_artifact("inspect/issue-reconcile-status.json")
+    assert spec is not None
+    assert spec.model is IssueReconcileStatusDocument
+    assert spec.compat == "versioned"
 
 
 def test_issue_artifact_patterns_match_exact_paths() -> None:

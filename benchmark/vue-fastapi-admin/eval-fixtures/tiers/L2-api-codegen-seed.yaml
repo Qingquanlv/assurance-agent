@@ -52,6 +52,7 @@ imports:
       node: codegen
       outputs:
       - change:codegen/api-codegen-summary.md
+      - change:codegen/api-generated-files.json
     - path: execute-workflow/assurance/assurance
       graph: assurance
       node: api

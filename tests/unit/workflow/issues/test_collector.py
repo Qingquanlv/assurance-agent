@@ -21,13 +21,42 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
 import yaml
 
+from assurance_agent.evidence.digests import (
+    evidence_bundle_digest_v1,
+    evidence_entry_digest_v1,
+    raw_sha256,
+    read_evidence_entry_v1,
+)
 from assurance_agent.workflow.execution.evidence import EvidenceError
 from assurance_agent.workflow.issues.collector import collect_observations
+
+# Pinned from pre-extraction collector on fixed UTF-8 fixture bytes (not via new helpers).
+_CLEAN_MANIFEST_YAML = (
+    "batch_id: '20260725-100000'\n"
+    "change_id: CH-GOLDEN\n"
+    "result_files:\n"
+    "  api: runs/20260725-100000/api-result.json\n"
+    "schema_version: '1.0'\n"
+    "selected_targets:\n"
+    "  api: true\n"
+    "  e2e: false\n"
+    "  fuzz: false\n"
+    "  performance: false\n"
+)
+_CLEAN_API_RESULT_JSON = (
+    '{"schema_version":"1.0","change_id":"CH-GOLDEN","batch_id":"20260725-100000",'
+    '"target":"api","status":"passed","command":"pytest tests/api",'
+    '"source":{"framework":"pytest","raw_log":""},"total":0,"passed":0,"failed":0,'
+    '"skipped":0,"cases":[],"unmapped_tests":[]}'
+)
+_CLEAN_BUNDLE_DIGEST_GOLDEN = "sha256:9da76743d2f43bbd1e7c4f06fe9efad23cc884ad2ff77b56b47a869dd3c59957"
+_CLEAN_ANCHOR_DIGEST_GOLDEN = "sha256:41ff3f27309c753c0ff67537a3b528d1ea788ec9319d9deae4c581ec683c461f"
 
 
 # ---------------------------------------------------------------------------
@@ -1014,3 +1043,157 @@ def test_fuzz_failed_case_produces_test_failure(tmp_path: Path) -> None:
     obs = result.observations[0]
     assert obs.kind == "test_failure"
     assert obs.target == "fuzz"
+
+
+# ---------------------------------------------------------------------------
+# Safe evidence-entry digests (Task 6)
+# ---------------------------------------------------------------------------
+
+
+def test_clean_batch_manifest_digest_bytes_remain_pinned(tmp_path: Path) -> None:
+    change_id = "CH-GOLDEN"
+    change_dir = tmp_path / change_id
+    batch_id = "20260725-100000"
+    execution_dir = change_dir / "execution"
+    batch_dir = execution_dir / "runs" / batch_id
+    batch_dir.mkdir(parents=True)
+    (execution_dir / "execution-manifest.yaml").write_text(_CLEAN_MANIFEST_YAML, encoding="utf-8")
+    (batch_dir / "api-result.json").write_text(_CLEAN_API_RESULT_JSON, encoding="utf-8")
+
+    result = collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
+
+    assert result.evidence_bundle_digest == _CLEAN_BUNDLE_DIGEST_GOLDEN
+    assert result.manifest.digest == _CLEAN_BUNDLE_DIGEST_GOLDEN
+    assert len(result.manifest.entries) == 1
+    assert result.manifest.entries[0].path == "execution/execution-manifest.yaml"
+    assert result.manifest.entries[0].digest == _CLEAN_ANCHOR_DIGEST_GOLDEN
+    assert result.manifest.digest == evidence_bundle_digest_v1(result.manifest.entries)
+    anchor_bytes = _CLEAN_MANIFEST_YAML.encode("utf-8")
+    assert result.manifest.entries[0].digest == evidence_entry_digest_v1(anchor_bytes)
+
+
+def test_collector_manifest_entry_matches_one_read_validated_entry(tmp_path: Path) -> None:
+    change_id = "CH-one-read"
+    change_dir = tmp_path / change_id
+    batch_id = "20260725-100018"
+    _write_manifest(change_dir, batch_id=batch_id)
+    _write_api_result(
+        change_dir,
+        batch_id,
+        cases=[_make_case("API-001", "failed", message="boom")],
+        status="failed",
+    )
+
+    result = collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
+    for entry in result.manifest.entries:
+        validated = read_evidence_entry_v1(change_dir, entry.path)
+        assert validated.entry_digest == entry.digest
+        assert validated.raw_sha256 == raw_sha256(validated.data)
+        assert validated.entry_digest == evidence_entry_digest_v1(validated.data)
+
+
+def test_collector_rejects_symlinked_evidence_file_under_allowlist(tmp_path: Path) -> None:
+    """Even an in-tree symlink target must not be hashed (O_NOFOLLOW)."""
+    change_id = "CH-symlink-file"
+    change_dir = tmp_path / change_id
+    batch_id = "20260725-100019"
+    real = change_dir / "execution" / "runs" / batch_id / "raw" / "real.log"
+    real.parent.mkdir(parents=True)
+    real.write_text("real\n", encoding="utf-8")
+    link = change_dir / "execution" / "runs" / batch_id / "raw" / "api.log"
+    os.symlink(real.name, link)  # relative symlink within same directory
+    _write_manifest(change_dir, batch_id=batch_id)
+    _write_api_result(
+        change_dir,
+        batch_id,
+        cases=[
+            _make_case(
+                "API-001",
+                "failed",
+                message="fail",
+                raw_log_ref=f"execution/runs/{batch_id}/raw/api.log",
+            )
+        ],
+        status="failed",
+    )
+
+    with pytest.raises(EvidenceError):
+        collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
+
+
+def test_collector_manifest_paths_are_unique_and_non_aliasing(tmp_path: Path) -> None:
+    """Alias forms are rejected; accepted manifest entry paths stay unique."""
+    from assurance_agent.evidence.digests import EvidenceEntryPathError, normalize_evidence_entry_path
+
+    with pytest.raises(EvidenceEntryPathError):
+        normalize_evidence_entry_path("execution/./api-result.json")
+
+    change_id = "CH-dup-path"
+    change_dir = tmp_path / change_id
+    batch_id = "20260725-100020"
+    _write_manifest(change_dir, batch_id=batch_id)
+    _write_api_result(
+        change_dir,
+        batch_id,
+        cases=[_make_case("API-001", "failed", message="fail")],
+        status="failed",
+    )
+    result = collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
+    paths = [e.path for e in result.manifest.entries]
+    assert len(paths) == len(set(paths))
+    assert all(normalize_evidence_entry_path(p) == p for p in paths)
+
+
+def test_build_evidence_manifest_rejects_duplicate_normalized_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Distinct manifest refs that normalize to the same path must fail closed."""
+    from assurance_agent.artifacts.models.issues import Observation, ObservationSource
+    from assurance_agent.evidence.digests import ValidatedEvidenceEntry
+    from assurance_agent.workflow.issues.collector import _build_evidence_manifest
+
+    change_id = "CH-dup-normalized"
+    batch_id = "20260725-100021"
+    change_dir = tmp_path / change_id
+    change_dir.mkdir()
+    normalized_path = "execution/runs/b/result.json"
+
+    def fake_read(_change_dir: Path, _path: str) -> ValidatedEvidenceEntry:
+        return ValidatedEvidenceEntry(
+            path=normalized_path,
+            data=b"payload",
+            entry_digest="sha256:abc",
+            raw_sha256="abc",
+        )
+
+    monkeypatch.setattr(
+        "assurance_agent.workflow.issues.collector.read_evidence_entry_v1",
+        fake_read,
+    )
+
+    observation = Observation(
+        observation_id="OBS-dup-path",
+        change_id=change_id,
+        batch_id=batch_id,
+        kind="test_failure",
+        target="api",
+        source=ObservationSource(
+            artifact="execution/runs/b/api-result.json",
+            json_pointer="/cases/0",
+        ),
+        evidence_refs=[
+            "execution/runs/b/alias-result.json",
+            normalized_path,
+        ],
+        signature="sig-dup-path",
+        observed_at="2026-07-25T10:00:00Z",
+    )
+
+    with pytest.raises(EvidenceError, match=f"duplicate evidence path: {normalized_path}"):
+        _build_evidence_manifest(
+            change_id=change_id,
+            batch_id=batch_id,
+            anchor_path="execution/execution-manifest.yaml",
+            observations=[observation],
+            change_dir=change_dir,
+        )

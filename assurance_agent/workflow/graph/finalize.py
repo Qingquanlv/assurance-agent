@@ -3,6 +3,9 @@
 handler 只负责业务副作用；本模块在 NodeRunner 成功路径上补齐 NodeDef.outputs /
 NodeDef.gate 合同，使 operation / skill / subgraph 与 builtin:gate 共享同一套
 route 可读的 ``gate_report``。
+
+Candidate precommit validation (D14) runs later in the scheduler, after this
+module's freeze/ingest and before ``task_attempt_succeeded`` is appended.
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ from assurance_agent.workflow.graph.models import (
 )
 from assurance_agent.workflow.graph.node_history import build_node_results_for_gate
 from assurance_agent.workflow.graph.schema_v2 import NodeDef
-from assurance_agent.workflow.graph.compiler import canonical_digest
+from assurance_agent.workflow.graph.selected_wave import derive_child_invocation_id
 from assurance_agent.workflow.graph.task_runner import task_failure
 from assurance_agent.workflow.graph.workspace import TaskWorkspace, TreeStore, WorkspaceError
 from assurance_agent.workflow.orchestration.gates import (
@@ -54,6 +57,8 @@ def finalize_task_result(
     result: TaskResult,
     workspace: TaskWorkspace,
     context: RuntimeContext,
+    ingest_catalog: object | None = None,
+    model_map: object | None = None,
 ) -> TaskResult:
     """在 handler 返回 succeeded/stopped 后执行 output + attached-gate 合同。"""
     if result.status not in ("succeeded", "stopped"):
@@ -77,6 +82,8 @@ def finalize_task_result(
             task=task,
             result=result,
             outputs=outputs,
+            ingest_catalog=ingest_catalog,
+            model_map=model_map,
         )
         if result.status != "succeeded":
             return result
@@ -154,6 +161,8 @@ def _ingest_frozen_outputs(
     task: ExecutableTask,
     result: TaskResult,
     outputs: tuple[str, ...],
+    ingest_catalog: object | None = None,
+    model_map: object | None = None,
 ) -> TaskResult:
     """Blob 摄入 → ``frozen_outputs`` wire map + ``candidate_outputs`` value map。"""
     frozen: dict[str, FrozenOutput] = {}
@@ -163,6 +172,8 @@ def _ingest_frozen_outputs(
                 store,
                 write_set_id=result.write_set_id,
                 output_paths=outputs,
+                catalog=ingest_catalog,  # type: ignore[arg-type]
+                model_map=model_map,  # type: ignore[arg-type]
             )
         except (ValueError, WorkspaceError) as exc:
             return task_failure("invalid_output", str(exc))
@@ -187,7 +198,7 @@ def _apply_subgraph_exports(
     if node is None or not node.exports:
         return result
     child_graph_id = task.target.split(":", 1)[1]
-    child_invocation_id = canonical_digest({"parent_task_id": task.task_id, "graph_id": child_graph_id})
+    child_invocation_id = derive_child_invocation_id(task, child_graph_id)
     try:
         # Nested subgraph events are written to the single per-change ledger
         # (context.change_dir), not the parent task's private workspace — the

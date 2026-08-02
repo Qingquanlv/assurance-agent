@@ -854,7 +854,9 @@ graphs:
         uses: skill:aa-api-codegen
         agent: aa-test-author
         when: "params.run_mode in ['full','api-only','codegen-only']"
-        outputs: [change:codegen/api-codegen-summary.md]
+        outputs:
+          - change:codegen/api-codegen-summary.md
+          - change:codegen/api-generated-files.json
         retry: agent-transient
         timeout: agent
 
@@ -869,7 +871,7 @@ graphs:
     routes:
       - from: codegen-precheck
         select: "node('codegen-precheck').gate.verdict"
-        cases: {pass: codegen, stop: STOP}
+        cases: {pass: codegen, skip: END, stop: STOP}
         default: STOP
 
   api-plan-cycle:
@@ -878,18 +880,39 @@ graphs:
       fix_attempts:
         limit: "params.max_plan_fix_attempts"
     nodes:
-      mechanical-plan-checks:
-        uses: operation:verify-plan-mechanical
+      applicability:
+        uses: operation:derive-plan-layer-applicability
         with: {layer: api}
-        outputs: [change:review/api-plan-checks.json]
 
       review:
         uses: skill:aa-api-plan-reviewer
         agent: aa-reviewer
         outputs: [change:review/api-plan-review.json, change:review/api-plan-review-summary.md]
-        gate: api-plan-review-gate
         retry: agent-transient
         timeout: agent
+
+      mechanical-plan-checks:
+        uses: operation:verify-plan-mechanical
+        with: {layer: api, require_review: true}
+        outputs: [change:review/api-plan-checks.json]
+        resources:
+          writes:
+            - change:review/api-plan-checks.json
+          reads:
+            - change:plans/api-plan.md
+            - change:plans/api-test-data-plan.md
+            - change:plans/api-codegen-plan.md
+            - change:review/api-plan-review.json
+            - change:cases/**
+            - repo:.aa/data-knowledge.yaml
+          synchronized:
+            - project:.aa/data-knowledge.yaml
+          exclusive:
+            - project:data-knowledge
+
+      review-gate:
+        uses: builtin:gate
+        with: {gate: api-plan-review-gate}
 
       fix:
         uses: skill:aa-api-plan-fixer
@@ -923,16 +946,22 @@ graphs:
         with: {reason: "api plan fix attempts exhausted"}
 
     edges:
-      - {from: START, to: mechanical-plan-checks}
-      - {from: mechanical-plan-checks, to: review}
-      - {from: fix, to: mechanical-plan-checks}
+      - {from: START, to: applicability}
+      - {from: review, to: mechanical-plan-checks}
+      - {from: mechanical-plan-checks, to: review-gate}
+      - {from: fix, to: review}
       - {from: exhausted, to: STOP}
 
     routes:
-      - from: review
-        select: "plan_review_route('review')"
+      - from: applicability
+        select: "node('applicability').value.applicable"
+        cases: {"true": review, "false": mechanical-plan-checks}
+        default: STOP
+      - from: review-gate
+        select: "plan_review_route('review-gate')"
         cases:
           pass: END
+          skip: END
           needs_fix: fix
           knowledge_remediation: knowledge-remediation
           needs_human_review: human-review
@@ -980,7 +1009,9 @@ graphs:
         uses: skill:aa-e2e-codegen
         agent: aa-test-author
         when: "params.run_mode in ['full','e2e-only','codegen-only']"
-        outputs: [change:codegen/e2e-codegen-summary.md]
+        outputs:
+          - change:codegen/e2e-codegen-summary.md
+          - change:codegen/e2e-generated-files.json
         retry: agent-transient
         timeout: agent
 
@@ -995,7 +1026,7 @@ graphs:
     routes:
       - from: codegen-precheck
         select: "node('codegen-precheck').gate.verdict"
-        cases: {pass: codegen, stop: STOP}
+        cases: {pass: codegen, skip: END, stop: STOP}
         default: STOP
 
   e2e-plan-cycle:
@@ -1004,13 +1035,39 @@ graphs:
       fix_attempts:
         limit: "params.max_plan_fix_attempts"
     nodes:
+      applicability:
+        uses: operation:derive-plan-layer-applicability
+        with: {layer: e2e}
+
       review:
         uses: skill:aa-e2e-plan-reviewer
         agent: aa-reviewer
         outputs: [change:review/plan-review.json, change:review/plan-review-summary.md]
-        gate: e2e-plan-review-gate
         retry: agent-transient
         timeout: agent
+
+      mechanical-plan-checks:
+        uses: operation:verify-plan-mechanical
+        with: {layer: e2e, require_review: true}
+        outputs: [change:review/e2e-plan-checks.json]
+        resources:
+          writes:
+            - change:review/e2e-plan-checks.json
+          reads:
+            - change:plans/e2e-plan.md
+            - change:plans/e2e-test-data-plan.md
+            - change:plans/e2e-codegen-plan.md
+            - change:review/plan-review.json
+            - change:cases/**
+            - repo:.aa/data-knowledge.yaml
+          synchronized:
+            - project:.aa/data-knowledge.yaml
+          exclusive:
+            - project:data-knowledge
+
+      review-gate:
+        uses: builtin:gate
+        with: {gate: e2e-plan-review-gate}
 
       fix:
         uses: skill:aa-e2e-plan-fixer
@@ -1044,15 +1101,22 @@ graphs:
         with: {reason: "e2e plan fix attempts exhausted"}
 
     edges:
-      - {from: START, to: review}
+      - {from: START, to: applicability}
+      - {from: review, to: mechanical-plan-checks}
+      - {from: mechanical-plan-checks, to: review-gate}
       - {from: fix, to: review}
       - {from: exhausted, to: STOP}
 
     routes:
-      - from: review
-        select: "plan_review_route('review')"
+      - from: applicability
+        select: "node('applicability').value.applicable"
+        cases: {"true": review, "false": mechanical-plan-checks}
+        default: STOP
+      - from: review-gate
+        select: "plan_review_route('review-gate')"
         cases:
           pass: END
+          skip: END
           needs_fix: fix
           knowledge_remediation: knowledge-remediation
           needs_human_review: human-review
@@ -1069,7 +1133,7 @@ graphs:
       - from: knowledge-remediation
         select: "resume.action"
         cases:
-          fix_and_proceed: review
+          fix_and_proceed: mechanical-plan-checks
           accept_risk: END
           stop: STOP
         default: STOP
@@ -1077,6 +1141,10 @@ graphs:
   fuzz-branch:
     max_supersteps: 30
     nodes:
+      applicability-preflight:
+        uses: operation:derive-plan-layer-applicability
+        with: {layer: fuzz}
+
       plan:
         uses: skill:aa-fuzz-plan
         agent: aa-doc-author
@@ -1089,54 +1157,79 @@ graphs:
         timeout: agent
 
       review-cycle:
-        uses: graph:fuzz-plan-review-cycle
+        uses: graph:fuzz-plan-cycle
 
-      # Re-reads the fuzz plan-review verdict so the branch can route an
-      # empty-scope `skip` (layer selected but no cases) straight to END,
-      # bypassing codegen. gate() is only resolvable inside a builtin:gate
-      # node — never in a node/edge `when` — so the branch cannot inline it.
-      # This routed node is also the codegen precondition: `pass` is the sole
-      # edge into codegen, which is exactly what fuzz-codegen-precondition-gate
-      # asserts, so attaching that gate to `codegen` only duplicated the check
-      # after the fact.
-      codegen-gate:
+      codegen-precheck:
         uses: builtin:gate
-        with: {gate: fuzz-plan-review-gate}
+        with: {gate: fuzz-codegen-precondition-gate}
 
       codegen:
         uses: skill:aa-fuzz-codegen
         agent: aa-test-author
         when: "params.run_mode in ['full','codegen-only']"
-        outputs: [change:codegen/fuzz-codegen-summary.md]
+        outputs:
+          - change:codegen/fuzz-codegen-summary.md
+          - change:codegen/fuzz-generated-files.json
         retry: agent-transient
         timeout: agent
 
     edges:
-      - {from: START, to: plan, when: "params.run_mode != 'codegen-only'"}
-      - {from: START, to: review-cycle, when: "params.run_mode == 'codegen-only'"}
+      - {from: START, to: applicability-preflight}
       - {from: plan, to: review-cycle}
-      - {from: review-cycle, to: codegen-gate, when: "params.run_mode in ['full','codegen-only']"}
+      # Mutually exclusive with the false route: only applicable codegen-only bypasses plan.
+      - {from: applicability-preflight, to: review-cycle, when: "params.run_mode == 'codegen-only' and node('applicability-preflight').value.applicable == true"}
+      - {from: review-cycle, to: codegen-precheck, when: "params.run_mode in ['full','codegen-only']"}
       - {from: review-cycle, to: END, when: "params.run_mode in ['plan-only','review-plan']"}
       - {from: codegen, to: END}
 
     routes:
-      - from: codegen-gate
-        select: "node('codegen-gate').gate.verdict"
-        cases:
-          pass: codegen
-          skip: END
-        default: END
+      - from: applicability-preflight
+        select: "node('applicability-preflight').value.applicable"
+        cases: {"true": plan, "false": review-cycle}
+        default: STOP
+      - from: codegen-precheck
+        select: "node('codegen-precheck').gate.verdict"
+        cases: {pass: codegen, skip: END, stop: STOP}
+        default: STOP
 
-  fuzz-plan-review-cycle:
-    max_supersteps: 10
+  fuzz-plan-cycle:
+    max_supersteps: 20
+    budgets:
+      fix_attempts:
+        limit: "params.max_plan_fix_attempts"
     nodes:
+      applicability:
+        uses: operation:derive-plan-layer-applicability
+        with: {layer: fuzz}
+
       review:
         uses: skill:aa-fuzz-plan-reviewer
         agent: aa-reviewer
         outputs: [change:review/fuzz-plan-review.json, change:review/fuzz-plan-review-summary.md]
-        gate: fuzz-plan-review-gate
         retry: agent-transient
         timeout: agent
+
+      mechanical-plan-checks:
+        uses: operation:verify-plan-mechanical
+        with: {layer: fuzz, require_review: true}
+        outputs: [change:review/fuzz-plan-checks.json]
+        resources:
+          writes:
+            - change:review/fuzz-plan-checks.json
+          reads:
+            - change:plans/fuzz-plan.md
+            - change:plans/fuzz-codegen-plan.md
+            - change:review/fuzz-plan-review.json
+            - change:cases/**
+            - repo:.aa/data-knowledge.yaml
+          synchronized:
+            - project:.aa/data-knowledge.yaml
+          exclusive:
+            - project:data-knowledge
+
+      review-gate:
+        uses: builtin:gate
+        with: {gate: fuzz-plan-review-gate}
 
       human-review:
         uses: builtin:interrupt
@@ -1145,17 +1238,46 @@ graphs:
           checkpoint: fuzz-plan-review-gate
           bind: audited_gate_read
           actions: [fix_and_proceed, accept_risk, stop]
+          manual_revision:
+            action: fix_and_proceed
+            paths:
+              - change:plans/fuzz-plan.md
+              - change:plans/fuzz-codegen-plan.md
+        budget:
+          consume: fix_attempts
+          "on": committed
+          exhausted_to: exhausted
+
+      exhausted:
+        uses: operation:stop
+        with: {reason: "fuzz plan fix attempts exhausted"}
+
+      knowledge-remediation:
+        uses: builtin:interrupt
+        interrupt:
+          reason: "fuzz plan review requires L1 capability remediation (aa knowledge promote)"
+          checkpoint: fuzz-plan-review-gate
+          bind: audited_gate_read
+          actions: [fix_and_proceed, accept_risk, stop]
 
     edges:
-      - {from: START, to: review}
+      - {from: START, to: applicability}
+      - {from: review, to: mechanical-plan-checks}
+      - {from: mechanical-plan-checks, to: review-gate}
+      - {from: exhausted, to: STOP}
 
     routes:
-      - from: review
-        select: "node('review').gate.verdict"
+      - from: applicability
+        select: "node('applicability').value.applicable"
+        cases: {"true": review, "false": mechanical-plan-checks}
+        default: STOP
+      - from: review-gate
+        select: "plan_review_route('review-gate')"
         cases:
           pass: END
           skip: END
           needs_fix: human-review
+          knowledge_remediation: knowledge-remediation
           needs_human_review: human-review
           reject: STOP
           stop: STOP
@@ -1163,7 +1285,14 @@ graphs:
       - from: human-review
         select: "resume.action"
         cases:
-          fix_and_proceed: END
+          fix_and_proceed: review
+          accept_risk: END
+          stop: STOP
+        default: STOP
+      - from: knowledge-remediation
+        select: "resume.action"
+        cases:
+          fix_and_proceed: mechanical-plan-checks
           accept_risk: END
           stop: STOP
         default: STOP
@@ -1171,6 +1300,10 @@ graphs:
   performance-branch:
     max_supersteps: 30
     nodes:
+      applicability-preflight:
+        uses: operation:derive-plan-layer-applicability
+        with: {layer: performance}
+
       plan:
         uses: skill:aa-performance-plan
         agent: aa-doc-author
@@ -1183,54 +1316,79 @@ graphs:
         timeout: agent
 
       review-cycle:
-        uses: graph:performance-plan-review-cycle
+        uses: graph:performance-plan-cycle
 
-      # Re-reads the performance plan-review verdict so the branch can route an
-      # empty-scope `skip` (layer selected but no cases) straight to END,
-      # bypassing codegen. gate() is only resolvable inside a builtin:gate
-      # node — never in a node/edge `when` — so the branch cannot inline it.
-      # This routed node is also the codegen precondition: `pass` is the sole
-      # edge into codegen, which is exactly what
-      # performance-codegen-precondition-gate asserts, so attaching that gate to
-      # `codegen` only duplicated the check after the fact.
-      codegen-gate:
+      codegen-precheck:
         uses: builtin:gate
-        with: {gate: performance-plan-review-gate}
+        with: {gate: performance-codegen-precondition-gate}
 
       codegen:
         uses: skill:aa-performance-codegen
         agent: aa-test-author
         when: "params.run_mode in ['full','codegen-only']"
-        outputs: [change:codegen/performance-codegen-summary.md]
+        outputs:
+          - change:codegen/performance-codegen-summary.md
+          - change:codegen/performance-generated-files.json
         retry: agent-transient
         timeout: agent
 
     edges:
-      - {from: START, to: plan, when: "params.run_mode != 'codegen-only'"}
-      - {from: START, to: review-cycle, when: "params.run_mode == 'codegen-only'"}
+      - {from: START, to: applicability-preflight}
       - {from: plan, to: review-cycle}
-      - {from: review-cycle, to: codegen-gate, when: "params.run_mode in ['full','codegen-only']"}
+      # Mutually exclusive with the false route: only applicable codegen-only bypasses plan.
+      - {from: applicability-preflight, to: review-cycle, when: "params.run_mode == 'codegen-only' and node('applicability-preflight').value.applicable == true"}
+      - {from: review-cycle, to: codegen-precheck, when: "params.run_mode in ['full','codegen-only']"}
       - {from: review-cycle, to: END, when: "params.run_mode in ['plan-only','review-plan']"}
       - {from: codegen, to: END}
 
     routes:
-      - from: codegen-gate
-        select: "node('codegen-gate').gate.verdict"
-        cases:
-          pass: codegen
-          skip: END
-        default: END
+      - from: applicability-preflight
+        select: "node('applicability-preflight').value.applicable"
+        cases: {"true": plan, "false": review-cycle}
+        default: STOP
+      - from: codegen-precheck
+        select: "node('codegen-precheck').gate.verdict"
+        cases: {pass: codegen, skip: END, stop: STOP}
+        default: STOP
 
-  performance-plan-review-cycle:
-    max_supersteps: 10
+  performance-plan-cycle:
+    max_supersteps: 20
+    budgets:
+      fix_attempts:
+        limit: "params.max_plan_fix_attempts"
     nodes:
+      applicability:
+        uses: operation:derive-plan-layer-applicability
+        with: {layer: performance}
+
       review:
         uses: skill:aa-performance-plan-reviewer
         agent: aa-reviewer
         outputs: [change:review/performance-plan-review.json, change:review/performance-plan-review-summary.md]
-        gate: performance-plan-review-gate
         retry: agent-transient
         timeout: agent
+
+      mechanical-plan-checks:
+        uses: operation:verify-plan-mechanical
+        with: {layer: performance, require_review: true}
+        outputs: [change:review/performance-plan-checks.json]
+        resources:
+          writes:
+            - change:review/performance-plan-checks.json
+          reads:
+            - change:plans/performance-plan.md
+            - change:plans/performance-codegen-plan.md
+            - change:review/performance-plan-review.json
+            - change:cases/**
+            - repo:.aa/data-knowledge.yaml
+          synchronized:
+            - project:.aa/data-knowledge.yaml
+          exclusive:
+            - project:data-knowledge
+
+      review-gate:
+        uses: builtin:gate
+        with: {gate: performance-plan-review-gate}
 
       human-review:
         uses: builtin:interrupt
@@ -1239,17 +1397,46 @@ graphs:
           checkpoint: performance-plan-review-gate
           bind: audited_gate_read
           actions: [fix_and_proceed, accept_risk, stop]
+          manual_revision:
+            action: fix_and_proceed
+            paths:
+              - change:plans/performance-plan.md
+              - change:plans/performance-codegen-plan.md
+        budget:
+          consume: fix_attempts
+          "on": committed
+          exhausted_to: exhausted
+
+      exhausted:
+        uses: operation:stop
+        with: {reason: "performance plan fix attempts exhausted"}
+
+      knowledge-remediation:
+        uses: builtin:interrupt
+        interrupt:
+          reason: "performance plan review requires L1 capability remediation (aa knowledge promote)"
+          checkpoint: performance-plan-review-gate
+          bind: audited_gate_read
+          actions: [fix_and_proceed, accept_risk, stop]
 
     edges:
-      - {from: START, to: review}
+      - {from: START, to: applicability}
+      - {from: review, to: mechanical-plan-checks}
+      - {from: mechanical-plan-checks, to: review-gate}
+      - {from: exhausted, to: STOP}
 
     routes:
-      - from: review
-        select: "node('review').gate.verdict"
+      - from: applicability
+        select: "node('applicability').value.applicable"
+        cases: {"true": review, "false": mechanical-plan-checks}
+        default: STOP
+      - from: review-gate
+        select: "plan_review_route('review-gate')"
         cases:
           pass: END
           skip: END
           needs_fix: human-review
+          knowledge_remediation: knowledge-remediation
           needs_human_review: human-review
           reject: STOP
           stop: STOP
@@ -1257,10 +1444,18 @@ graphs:
       - from: human-review
         select: "resume.action"
         cases:
-          fix_and_proceed: END
+          fix_and_proceed: review
           accept_risk: END
           stop: STOP
         default: STOP
+      - from: knowledge-remediation
+        select: "resume.action"
+        cases:
+          fix_and_proceed: mechanical-plan-checks
+          accept_risk: END
+          stop: STOP
+        default: STOP
+
 
   inspect-with-issues:
     # Runs after every authoritative execution batch (initial run and every
@@ -1293,7 +1488,7 @@ graphs:
         recover:
           errors: [timeout, transport, rate_limit, invalid_output]
           via: record-analysis-failure
-          continue_to: inspect-complete
+          continue_to: materialize-trace-projection
 
       record-empty-analysis:
         uses: operation:record-empty-issue-analysis
@@ -1307,7 +1502,7 @@ graphs:
         recover:
           errors: [conflict, transport]
           via: record-project-sync-pending
-          continue_to: inspect-complete
+          continue_to: materialize-trace-projection
 
       record-analysis-failure:
         uses: operation:record-issue-analysis-failure
@@ -1318,6 +1513,11 @@ graphs:
         uses: operation:record-project-sync-pending
         retry: never
         timeout: local-operation
+
+      materialize-trace-projection:
+        uses: operation:materialize-trace-projection
+        outputs:
+          - change:inspect/trace-projection.json
 
       inspect-complete:
         uses: operation:no-op
@@ -1331,7 +1531,8 @@ graphs:
          when: "node('collect-observations').value.abnormal_count == 0"}
       - {from: record-empty-analysis, to: reconcile-issues}
       - {from: analyze-issues, to: reconcile-issues}
-      - {from: reconcile-issues, to: inspect-complete}
+      - {from: reconcile-issues, to: materialize-trace-projection}
+      - {from: materialize-trace-projection, to: inspect-complete}
       - {from: inspect-complete, to: END}
 
   healing:
@@ -1362,6 +1563,9 @@ graphs:
 
       allocate:
         uses: operation:allocate-healing-attempt
+        outputs:
+          - change:healing/entry-baseline.json
+          - change:healing/fixer-authority.json
         retry: never
         timeout: local-operation
         budget:
@@ -1369,11 +1573,39 @@ graphs:
           "on": committed
           exhausted_to: complete-exhausted
 
+      fixer-authority-ready:
+        uses: operation:fixer-authority-ready
+        retry: never
+        timeout: local-operation
+
+      fixer-proposal-approval:
+        uses: builtin:gate
+        with: {gate: fixer-proposal-approval-gate}
+
+      fixer-approval-interrupt:
+        uses: builtin:interrupt
+        interrupt:
+          reason: healing.fixer_approval
+          checkpoint: healing.fixer_approval
+          bind: audited_gate_read
+          actions: [approve_and_apply, stop]
+
+      record-fixer-approval:
+        uses: operation:record-fixer-approval
+        outputs: [change:healing/fixer-proposal-approval.json]
+        retry: never
+        timeout: local-operation
+
+      fixer-dispatch:
+        uses: operation:fixer-dispatch
+        retry: never
+        timeout: local-operation
+
       fix-api:
         uses: skill:aa-api-codegen-fixer
         agent: aa-test-author
         when: "any(fix_proposal.proposals, target == 'api' and eligible == true)"
-        outputs: [change:healing/api-apply-summary.json]
+        outputs: [change:healing/api-apply-intent.json]
         retry: agent-transient
         timeout: agent
 
@@ -1381,15 +1613,41 @@ graphs:
         uses: skill:aa-e2e-codegen-fixer
         agent: aa-test-author
         when: "any(fix_proposal.proposals, target == 'e2e' and eligible == true)"
-        outputs: [change:healing/e2e-apply-summary.json]
+        outputs: [change:healing/e2e-apply-intent.json]
         retry: agent-transient
         timeout: agent
+
+      record-api:
+        uses: operation:record-codegen-fix-apply
+        with: {target: api}
+        when: "any(fix_proposal.proposals, target == 'api' and eligible == true)"
+        outputs:
+          - change:healing/api-apply-summary.json
+          - change:healing/api-fixer-safety-check.json
+        retry: never
+        timeout: local-operation
+
+      record-e2e:
+        uses: operation:record-codegen-fix-apply
+        with: {target: e2e}
+        when: "any(fix_proposal.proposals, target == 'e2e' and eligible == true)"
+        outputs:
+          - change:healing/e2e-apply-summary.json
+          - change:healing/e2e-fixer-safety-check.json
+        retry: never
+        timeout: local-operation
 
       fixer-join:
         uses: builtin:join
         join:
-          sources: [fix-api, fix-e2e]
+          sources: [record-api, record-e2e]
           mode: all_active
+
+      combine-fixer-safety:
+        uses: operation:combine-fixer-safety
+        outputs: [change:healing/fixer-safety-check.json]
+        retry: never
+        timeout: local-operation
 
       safety:
         uses: builtin:gate
@@ -1446,11 +1704,16 @@ graphs:
       - {from: proposal, to: proposal-eligible}
       - {from: proposal-eligible, to: allocate, when: "node('proposal-eligible').value == true"}
       - {from: proposal-eligible, to: complete-skipped, when: "node('proposal-eligible').value == false"}
-      - {from: allocate, to: fix-api}
-      - {from: allocate, to: fix-e2e}
-      - {from: fix-api, to: fixer-join}
-      - {from: fix-e2e, to: fixer-join}
-      - {from: fixer-join, to: safety}
+      - {from: allocate, to: fixer-authority-ready}
+      - {from: record-fixer-approval, to: fixer-proposal-approval}
+      - {from: fixer-dispatch, to: fix-api, when: "any(fix_proposal.proposals, target == 'api' and eligible == true)"}
+      - {from: fixer-dispatch, to: fix-e2e, when: "any(fix_proposal.proposals, target == 'e2e' and eligible == true)"}
+      - {from: fix-api, to: record-api}
+      - {from: fix-e2e, to: record-e2e}
+      - {from: record-api, to: fixer-join}
+      - {from: record-e2e, to: fixer-join}
+      - {from: fixer-join, to: combine-fixer-safety}
+      - {from: combine-fixer-safety, to: safety}
       - {from: rerun, to: inspect-with-issues}
       - {from: inspect-with-issues, to: decide}
       - {from: complete-not-needed, to: END}
@@ -1467,6 +1730,29 @@ graphs:
           skip: complete-not-needed
           stop: complete-failed
           reject: complete-failed
+        default: complete-failed
+
+      - from: fixer-authority-ready
+        select: "node('fixer-authority-ready').value.route"
+        cases:
+          pass: fixer-proposal-approval
+          stop: complete-failed
+        default: complete-failed
+
+      - from: fixer-proposal-approval
+        select: "node('fixer-proposal-approval').gate.verdict"
+        cases:
+          pass: fixer-dispatch
+          needs_human_review: fixer-approval-interrupt
+          stop: complete-failed
+          reject: complete-failed
+        default: complete-failed
+
+      - from: fixer-approval-interrupt
+        select: "resume.action"
+        cases:
+          approve_and_apply: record-fixer-approval
+          stop: complete-failed
         default: complete-failed
 
       - from: safety
@@ -1717,7 +2003,7 @@ graphs:
     # Reruns the LLM analyzer against the latest existing Observation/evidence
     # digest and then reconciles on success.  Never re-collects evidence.
     # Repeatable: can be retried as many times as needed after analysis failure.
-    max_supersteps: 8
+    max_supersteps: 9
     nodes:
       analyze-issues:
         uses: skill:aa-issue-analyzer
@@ -1730,7 +2016,7 @@ graphs:
         recover:
           errors: [timeout, transport, rate_limit, invalid_output]
           via: record-analysis-failure
-          continue_to: END
+          continue_to: materialize-trace-projection
 
       record-analysis-failure:
         uses: operation:record-issue-analysis-failure
@@ -1744,24 +2030,30 @@ graphs:
         recover:
           errors: [conflict, transport]
           via: record-project-sync-pending
-          continue_to: END
+          continue_to: materialize-trace-projection
 
       record-project-sync-pending:
         uses: operation:record-project-sync-pending
         retry: never
         timeout: local-operation
 
+      materialize-trace-projection:
+        uses: operation:materialize-trace-projection
+        outputs:
+          - change:inspect/trace-projection.json
+
     edges:
       - {from: START, to: analyze-issues}
       - {from: analyze-issues, to: reconcile-issues}
-      - {from: reconcile-issues, to: END}
+      - {from: reconcile-issues, to: materialize-trace-projection}
+      - {from: materialize-trace-projection, to: END}
 
   # ---- issue-reconcile-workflow: idempotent reconcile retry --------------
   issue-reconcile-workflow:
     # Reruns only operation:reconcile-issues for the latest pinned
     # candidate/evidence digest.  Idempotent retry path for project_sync_pending.
     # Never calls the LLM.
-    max_supersteps: 4
+    max_supersteps: 6
     nodes:
       reconcile-issues:
         uses: operation:reconcile-issues
@@ -1770,16 +2062,22 @@ graphs:
         recover:
           errors: [conflict, transport]
           via: record-project-sync-pending
-          continue_to: END
+          continue_to: materialize-trace-projection
 
       record-project-sync-pending:
         uses: operation:record-project-sync-pending
         retry: never
         timeout: local-operation
 
+      materialize-trace-projection:
+        uses: operation:materialize-trace-projection
+        outputs:
+          - change:inspect/trace-projection.json
+
     edges:
       - {from: START, to: reconcile-issues}
-      - {from: reconcile-issues, to: END}
+      - {from: reconcile-issues, to: materialize-trace-projection}
+      - {from: materialize-trace-projection, to: END}
 
 gates:
   registry-gate:
@@ -1822,28 +2120,21 @@ gates:
 
   api-plan-review-gate: &plan-review-gate
     reads:
-      - review/api-plan-review.json
+      - { path: review/api-plan-review.json, as: api_plan_review }
       - { path: review/api-plan-checks.json, as: api_plan_checks }
       - { path: repo:.aa/data-knowledge.yaml, as: data_knowledge }
     invalid_json: stop
     missing_field_is: stop
     stop_when: >
-      not defined(api_plan_review.required_capabilities)
-      or api_plan_review.required_capabilities == null
-      or len(api_plan_review.required_capabilities) == 0
-      or (
-        node('mechanical-plan-checks').status == 'succeeded'
-        and not defined(api_plan_checks.status)
-      )
+      plan_assurance_state(api_plan_checks, api_plan_review, data_knowledge, 'api') == 'invalid'
+    skip_when: >
+      plan_assurance_state(api_plan_checks, api_plan_review, data_knowledge, 'api') == 'not_applicable'
     needs_fix_when: "api_plan_review.decision == 'needs_fix' and api_plan_review.auto_fix_allowed == true"
     needs_human_review_when: >
       api_plan_review.decision != 'reject'
+      and plan_assurance_state(api_plan_checks, api_plan_review, data_knowledge, 'api') == 'applicable'
       and (
-        (
-          defined(api_plan_review.required_capabilities)
-          and len(api_plan_review.required_capabilities) > 0
-          and not capabilities_present(api_plan_review, data_knowledge)
-        )
+        not capabilities_present(api_plan_review, data_knowledge)
         or api_plan_review.decision == 'needs_human_review'
         or (
           (api_plan_review.human_review_required == true or api_plan_review.risk_level in policy.human_review_risk_levels)
@@ -1871,19 +2162,17 @@ gates:
       api_plan_review.decision == 'reject'
       or api_plan_review.codegen_readiness == 'not_ready'
       or (
-        check_failed(api_plan_checks, 'l1_path') and policy.plan_checks.l1_path == 'block'
-      )
-      or (
-        check_failed(api_plan_checks, 'shared_factory') and policy.plan_checks.shared_factory == 'block'
-      )
-      or (
-        check_failed(api_plan_checks, 'assert_ideal') and policy.plan_checks.assert_ideal == 'block'
-      )
-      or (
-        check_failed(api_plan_checks, 'capability_keys') and policy.plan_checks.capability_keys == 'block'
+        plan_assurance_state(api_plan_checks, api_plan_review, data_knowledge, 'api') == 'applicable'
+        and (
+          (check_failed(api_plan_checks, 'l1_path') and policy.plan_checks.l1_path == 'block')
+          or (check_failed(api_plan_checks, 'shared_factory') and policy.plan_checks.shared_factory == 'block')
+          or (check_failed(api_plan_checks, 'assert_ideal') and policy.plan_checks.assert_ideal == 'block')
+          or (check_failed(api_plan_checks, 'capability_keys') and policy.plan_checks.capability_keys == 'block')
+        )
       )
     pass_when: >
-      api_plan_review.decision == 'pass'
+      plan_assurance_state(api_plan_checks, api_plan_review, data_knowledge, 'api') == 'applicable'
+      and api_plan_review.decision == 'pass'
       and api_plan_review.codegen_readiness in ['ready','ready_with_warnings']
       and capabilities_present(api_plan_review, data_knowledge)
       and policy.coverage_floor.risk_high > 0
@@ -1891,108 +2180,283 @@ gates:
 
   e2e-plan-review-gate:
     reads:
-      - review/plan-review.json
+      - { path: review/plan-review.json, as: plan_review }
+      - { path: review/e2e-plan-checks.json, as: e2e_plan_checks }
       - { path: repo:.aa/data-knowledge.yaml, as: data_knowledge }
     invalid_json: stop
     missing_field_is: stop
     stop_when: >
-      not defined(plan_review.required_capabilities)
-      or plan_review.required_capabilities == null
-      or len(plan_review.required_capabilities) == 0
+      plan_assurance_state(e2e_plan_checks, plan_review, data_knowledge, 'e2e') == 'invalid'
+    skip_when: >
+      plan_assurance_state(e2e_plan_checks, plan_review, data_knowledge, 'e2e') == 'not_applicable'
     needs_fix_when: "plan_review.decision == 'needs_fix' and plan_review.auto_fix_allowed == true"
     needs_human_review_when: >
-      (
-        defined(plan_review.required_capabilities)
-        and len(plan_review.required_capabilities) > 0
-        and not capabilities_present(plan_review, data_knowledge)
-      )
-      or plan_review.decision == 'needs_human_review'
-      or (
-        (plan_review.human_review_required == true or plan_review.risk_level in policy.human_review_risk_levels)
-        and not (
-          params.force_continue == true
-          and policy.force_continue_allowed == true
-          and plan_review.decision == 'pass'
-          and plan_review.codegen_readiness in ['ready','ready_with_warnings']
+      plan_review.decision != 'reject'
+      and plan_assurance_state(e2e_plan_checks, plan_review, data_knowledge, 'e2e') == 'applicable'
+      and (
+        not capabilities_present(plan_review, data_knowledge)
+        or plan_review.decision == 'needs_human_review'
+        or (
+          (plan_review.human_review_required == true or plan_review.risk_level in policy.human_review_risk_levels)
+          and not (
+            params.force_continue == true
+            and policy.force_continue_allowed == true
+            and plan_review.decision == 'pass'
+            and plan_review.codegen_readiness in ['ready','ready_with_warnings']
+          )
+        )
+        or (
+          check_failed(e2e_plan_checks, 'l1_path') and policy.plan_checks.l1_path == 'require_human'
+        )
+        or (
+          check_failed(e2e_plan_checks, 'shared_factory') and policy.plan_checks.shared_factory == 'require_human'
+        )
+        or (
+          check_failed(e2e_plan_checks, 'assert_ideal') and policy.plan_checks.assert_ideal == 'require_human'
+        )
+        or (
+          check_failed(e2e_plan_checks, 'capability_keys') and policy.plan_checks.capability_keys == 'require_human'
         )
       )
-    reject_when: "plan_review.decision == 'reject' or plan_review.codegen_readiness == 'not_ready'"
+    reject_when: >
+      plan_review.decision == 'reject'
+      or plan_review.codegen_readiness == 'not_ready'
+      or (
+        plan_assurance_state(e2e_plan_checks, plan_review, data_knowledge, 'e2e') == 'applicable'
+        and (
+          (check_failed(e2e_plan_checks, 'l1_path') and policy.plan_checks.l1_path == 'block')
+          or (check_failed(e2e_plan_checks, 'shared_factory') and policy.plan_checks.shared_factory == 'block')
+          or (check_failed(e2e_plan_checks, 'assert_ideal') and policy.plan_checks.assert_ideal == 'block')
+          or (check_failed(e2e_plan_checks, 'capability_keys') and policy.plan_checks.capability_keys == 'block')
+        )
+      )
     pass_when: >
-      plan_review.decision == 'pass'
+      plan_assurance_state(e2e_plan_checks, plan_review, data_knowledge, 'e2e') == 'applicable'
+      and plan_review.decision == 'pass'
       and plan_review.codegen_readiness in ['ready','ready_with_warnings']
       and capabilities_present(plan_review, data_knowledge)
+      and policy.coverage_floor.risk_high > 0
+      and policy.coverage_floor.risk_medium > 0
 
   fuzz-plan-review-gate:
-    reads: [review/fuzz-plan-review.json]
+    reads:
+      - {path: review/fuzz-plan-review.json, as: fuzz_plan_review}
+      - {path: review/fuzz-plan-checks.json, as: fuzz_plan_checks}
+      - {path: repo:.aa/data-knowledge.yaml, as: data_knowledge}
     invalid_json: stop
     missing_field_is: stop
-    needs_fix_when: "fuzz_plan_review.decision == 'needs_fix' and fuzz_plan_review.auto_fix_allowed == true"
+    stop_when: >
+      plan_assurance_state(fuzz_plan_checks, fuzz_plan_review, data_knowledge, 'fuzz') == 'invalid'
+    skip_when: >
+      plan_assurance_state(fuzz_plan_checks, fuzz_plan_review, data_knowledge, 'fuzz') == 'not_applicable'
+    needs_fix_when: "fuzz_plan_review.decision == 'needs_fix'"
     needs_human_review_when: >
-      fuzz_plan_review.decision in ['needs_human_review','changes_requested']
-      or (
-        fuzz_plan_review.human_review_required == true
-        and not (
-          params.force_continue == true
-          and policy.force_continue_allowed == true
-          and fuzz_plan_review.decision in ['pass','approved']
+      fuzz_plan_review.decision != 'reject'
+      and plan_assurance_state(fuzz_plan_checks, fuzz_plan_review, data_knowledge, 'fuzz') == 'applicable'
+      and (
+        not capabilities_present(fuzz_plan_review, data_knowledge)
+        or fuzz_plan_review.decision == 'needs_human_review'
+        or fuzz_plan_review.decision == 'changes_requested'
+        or (
+          (fuzz_plan_review.human_review_required == true or fuzz_plan_review.risk_level in policy.human_review_risk_levels)
+          and not (
+            params.force_continue == true
+            and policy.force_continue_allowed == true
+            and fuzz_plan_review.decision == 'pass'
+            and fuzz_plan_review.codegen_readiness in ['ready','ready_with_warnings']
+          )
+        )
+        or (
+          check_failed(fuzz_plan_checks, 'l1_path') and policy.plan_checks.l1_path == 'require_human'
+        )
+        or (
+          check_failed(fuzz_plan_checks, 'shared_factory') and policy.plan_checks.shared_factory == 'require_human'
+        )
+        or (
+          check_failed(fuzz_plan_checks, 'assert_ideal') and policy.plan_checks.assert_ideal == 'require_human'
+        )
+        or (
+          check_failed(fuzz_plan_checks, 'capability_keys') and policy.plan_checks.capability_keys == 'require_human'
         )
       )
-    # Empty-scope skip: the layer was selected but has no applicable cases, so
-    # there is nothing to fuzz. Route a graceful skip (branch ends, codegen is
-    # skipped) rather than a dead-end reject that halts the whole run.
-    skip_when: "fuzz_plan_review.layer_applicable == false"
-    reject_when: "fuzz_plan_review.decision == 'reject'"
+    reject_when: >
+      fuzz_plan_review.decision == 'reject'
+      or fuzz_plan_review.codegen_readiness == 'not_ready'
+      or (
+        plan_assurance_state(fuzz_plan_checks, fuzz_plan_review, data_knowledge, 'fuzz') == 'applicable'
+        and (
+          (check_failed(fuzz_plan_checks, 'l1_path') and policy.plan_checks.l1_path == 'block')
+          or (check_failed(fuzz_plan_checks, 'shared_factory') and policy.plan_checks.shared_factory == 'block')
+          or (check_failed(fuzz_plan_checks, 'assert_ideal') and policy.plan_checks.assert_ideal == 'block')
+          or (check_failed(fuzz_plan_checks, 'capability_keys') and policy.plan_checks.capability_keys == 'block')
+        )
+      )
     pass_when: >
-      fuzz_plan_review.decision in ['pass','approved']
-      and policy.fuzz.required_when_endpoint_has_auth != null
+      plan_assurance_state(fuzz_plan_checks, fuzz_plan_review, data_knowledge, 'fuzz') == 'applicable'
+      and fuzz_plan_review.decision == 'pass'
+      and fuzz_plan_review.codegen_readiness in ['ready','ready_with_warnings']
+      and capabilities_present(fuzz_plan_review, data_knowledge)
+      and policy.coverage_floor.risk_high > 0
+      and policy.coverage_floor.risk_medium > 0
 
   performance-plan-review-gate:
-    reads: [review/performance-plan-review.json]
+    reads:
+      - {path: review/performance-plan-review.json, as: performance_plan_review}
+      - {path: review/performance-plan-checks.json, as: performance_plan_checks}
+      - {path: repo:.aa/data-knowledge.yaml, as: data_knowledge}
     invalid_json: stop
     missing_field_is: stop
-    needs_fix_when: "performance_plan_review.decision == 'needs_fix' and performance_plan_review.auto_fix_allowed == true"
+    stop_when: >
+      plan_assurance_state(performance_plan_checks, performance_plan_review, data_knowledge, 'performance') == 'invalid'
+    skip_when: >
+      plan_assurance_state(performance_plan_checks, performance_plan_review, data_knowledge, 'performance') == 'not_applicable'
+    needs_fix_when: "performance_plan_review.decision == 'needs_fix'"
     needs_human_review_when: >
-      performance_plan_review.decision in ['needs_human_review','changes_requested']
-      or (
-        performance_plan_review.human_review_required == true
-        and not (
-          params.force_continue == true
-          and policy.force_continue_allowed == true
-          and performance_plan_review.decision in ['pass','approved']
+      performance_plan_review.decision != 'reject'
+      and plan_assurance_state(performance_plan_checks, performance_plan_review, data_knowledge, 'performance') == 'applicable'
+      and (
+        not capabilities_present(performance_plan_review, data_knowledge)
+        or performance_plan_review.decision == 'needs_human_review'
+        or performance_plan_review.decision == 'changes_requested'
+        or (
+          (performance_plan_review.human_review_required == true or performance_plan_review.risk_level in policy.human_review_risk_levels)
+          and not (
+            params.force_continue == true
+            and policy.force_continue_allowed == true
+            and performance_plan_review.decision == 'pass'
+            and performance_plan_review.codegen_readiness in ['ready','ready_with_warnings']
+          )
+        )
+        or (
+          check_failed(performance_plan_checks, 'l1_path') and policy.plan_checks.l1_path == 'require_human'
+        )
+        or (
+          check_failed(performance_plan_checks, 'shared_factory') and policy.plan_checks.shared_factory == 'require_human'
+        )
+        or (
+          check_failed(performance_plan_checks, 'assert_ideal') and policy.plan_checks.assert_ideal == 'require_human'
+        )
+        or (
+          check_failed(performance_plan_checks, 'capability_keys') and policy.plan_checks.capability_keys == 'require_human'
         )
       )
-    # Empty-scope skip: the layer was selected but has no applicable cases, so
-    # there is nothing to load-test. Route a graceful skip (branch ends, codegen
-    # is skipped) rather than a dead-end reject that halts the whole run.
-    skip_when: "performance_plan_review.layer_applicable == false"
-    reject_when: "performance_plan_review.decision == 'reject'"
-    pass_when: "performance_plan_review.decision in ['pass','approved']"
+    reject_when: >
+      performance_plan_review.decision == 'reject'
+      or performance_plan_review.codegen_readiness == 'not_ready'
+      or (
+        plan_assurance_state(performance_plan_checks, performance_plan_review, data_knowledge, 'performance') == 'applicable'
+        and (
+          (check_failed(performance_plan_checks, 'l1_path') and policy.plan_checks.l1_path == 'block')
+          or (check_failed(performance_plan_checks, 'shared_factory') and policy.plan_checks.shared_factory == 'block')
+          or (check_failed(performance_plan_checks, 'assert_ideal') and policy.plan_checks.assert_ideal == 'block')
+          or (check_failed(performance_plan_checks, 'capability_keys') and policy.plan_checks.capability_keys == 'block')
+        )
+      )
+    pass_when: >
+      plan_assurance_state(performance_plan_checks, performance_plan_review, data_knowledge, 'performance') == 'applicable'
+      and performance_plan_review.decision == 'pass'
+      and performance_plan_review.codegen_readiness in ['ready','ready_with_warnings']
+      and capabilities_present(performance_plan_review, data_knowledge)
+      and policy.coverage_floor.risk_high > 0
+      and policy.coverage_floor.risk_medium > 0
 
   api-codegen-precondition-gate:
     reads:
+      - { path: review/api-plan-review.json, as: api_plan_review }
       - { path: review/api-plan-checks.json, as: api_plan_checks }
+      - { path: repo:.aa/data-knowledge.yaml, as: data_knowledge }
+    skip_when: >
+      plan_assurance_state(api_plan_checks, api_plan_review, data_knowledge, 'api') == 'not_applicable'
+    stop_when: >
+      node('review-cycle').status != 'succeeded'
+      or plan_assurance_state(api_plan_checks, api_plan_review, data_knowledge, 'api') == 'invalid'
+      or not file_exists('repo:.aa/data-knowledge.yaml')
     pass_when: >
-      defined(api_plan_checks.status)
+      node('review-cycle').status == 'succeeded'
+      and plan_assurance_state(api_plan_checks, api_plan_review, data_knowledge, 'api') == 'applicable'
       and gate('api-plan-review-gate').verdict == 'pass'
       and file_exists('repo:.aa/data-knowledge.yaml')
-    stop_when: >
-      not defined(api_plan_checks.status)
-      or not file_exists('repo:.aa/data-knowledge.yaml')
+      and capabilities_present(api_plan_review, data_knowledge)
 
   e2e-codegen-precondition-gate:
-    reads: []
-    pass_when: "gate('e2e-plan-review-gate').verdict == 'pass' and file_exists('repo:.aa/data-knowledge.yaml')"
-    stop_when: "not file_exists('repo:.aa/data-knowledge.yaml')"
+    reads:
+      - { path: review/plan-review.json, as: plan_review }
+      - { path: review/e2e-plan-checks.json, as: e2e_plan_checks }
+      - { path: repo:.aa/data-knowledge.yaml, as: data_knowledge }
+    skip_when: >
+      plan_assurance_state(e2e_plan_checks, plan_review, data_knowledge, 'e2e') == 'not_applicable'
+    stop_when: >
+      node('review-cycle').status != 'succeeded'
+      or plan_assurance_state(e2e_plan_checks, plan_review, data_knowledge, 'e2e') == 'invalid'
+      or not file_exists('repo:.aa/data-knowledge.yaml')
+    pass_when: >
+      node('review-cycle').status == 'succeeded'
+      and plan_assurance_state(e2e_plan_checks, plan_review, data_knowledge, 'e2e') == 'applicable'
+      and gate('e2e-plan-review-gate').verdict == 'pass'
+      and file_exists('repo:.aa/data-knowledge.yaml')
+      and capabilities_present(plan_review, data_knowledge)
 
   fuzz-codegen-precondition-gate:
-    reads: []
-    pass_when: "gate('fuzz-plan-review-gate').verdict == 'pass'"
-    stop_when: "gate('fuzz-plan-review-gate').verdict == 'stop'"
+    reads:
+      - {path: review/fuzz-plan-review.json, as: fuzz_plan_review}
+      - {path: review/fuzz-plan-checks.json, as: fuzz_plan_checks}
+      - {path: repo:.aa/data-knowledge.yaml, as: data_knowledge}
+    skip_when: >
+      plan_assurance_state(fuzz_plan_checks, fuzz_plan_review, data_knowledge, 'fuzz') == 'not_applicable'
+    stop_when: >
+      node('review-cycle').status != 'succeeded'
+      or plan_assurance_state(fuzz_plan_checks, fuzz_plan_review, data_knowledge, 'fuzz') == 'invalid'
+      or not file_exists('repo:.aa/data-knowledge.yaml')
+    pass_when: >
+      node('review-cycle').status == 'succeeded'
+      and plan_assurance_state(fuzz_plan_checks, fuzz_plan_review, data_knowledge, 'fuzz') == 'applicable'
+      and gate('fuzz-plan-review-gate').verdict == 'pass'
+      and capabilities_present(fuzz_plan_review, data_knowledge)
+      and file_exists('repo:.aa/data-knowledge.yaml')
 
   performance-codegen-precondition-gate:
-    reads: []
-    pass_when: "gate('performance-plan-review-gate').verdict == 'pass'"
-    stop_when: "gate('performance-plan-review-gate').verdict == 'stop'"
+    reads:
+      - {path: review/performance-plan-review.json, as: performance_plan_review}
+      - {path: review/performance-plan-checks.json, as: performance_plan_checks}
+      - {path: repo:.aa/data-knowledge.yaml, as: data_knowledge}
+    skip_when: >
+      plan_assurance_state(performance_plan_checks, performance_plan_review, data_knowledge, 'performance') == 'not_applicable'
+    stop_when: >
+      node('review-cycle').status != 'succeeded'
+      or plan_assurance_state(performance_plan_checks, performance_plan_review, data_knowledge, 'performance') == 'invalid'
+      or not file_exists('repo:.aa/data-knowledge.yaml')
+    pass_when: >
+      node('review-cycle').status == 'succeeded'
+      and plan_assurance_state(performance_plan_checks, performance_plan_review, data_knowledge, 'performance') == 'applicable'
+      and gate('performance-plan-review-gate').verdict == 'pass'
+      and capabilities_present(performance_plan_review, data_knowledge)
+      and file_exists('repo:.aa/data-knowledge.yaml')
+
+  fixer-proposal-approval-gate:
+    reads:
+      - { path: healing/fix-proposal.json, as: fix_proposal }
+    missing_file_is: stop
+    stop_when: >
+      not any(fix_proposal.proposals, eligible == true and target in ['api', 'e2e'])
+    needs_human_review_when: >
+      any(
+        fix_proposal.proposals,
+        eligible == true
+        and target in ['api', 'e2e']
+        and (risk_level in ['high', 'critical'] or needs_review == true)
+      )
+      and not file_exists('healing/fixer-proposal-approval.json')
+    pass_when: >
+      any(fix_proposal.proposals, eligible == true and target in ['api', 'e2e'])
+      and (
+        not any(
+          fix_proposal.proposals,
+          eligible == true
+          and target in ['api', 'e2e']
+          and (risk_level in ['high', 'critical'] or needs_review == true)
+        )
+        or file_exists('healing/fixer-proposal-approval.json')
+      )
 
   fixer-safety-gate:
     reads: [healing/fixer-safety-check.json]

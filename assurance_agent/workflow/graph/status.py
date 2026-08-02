@@ -36,10 +36,61 @@ def pending_write_sets(events: list[dict[str, object]], invocation_id: str) -> t
     return tuple(ws for ws in succeeded if ws not in committed)
 
 
+def unacknowledged_durable_effects(
+    events: list[dict[str, object]],
+    invocation_id: str,
+) -> tuple[str, ...]:
+    """Committed success intents that still lack durable_effect_acknowledged."""
+    committed_tasks: set[str] = set()
+    effect_ids_by_task: dict[str, list[str]] = {}
+    acked: set[str] = set()
+    for raw in events:
+        if raw.get("source") != "graph" or raw.get("invocation_id") != invocation_id:
+            continue
+        event_type = raw.get("type")
+        if event_type == "superstep_committed":
+            raw_ids = raw.get("committed_task_ids")
+            if isinstance(raw_ids, list):
+                for task_id in raw_ids:
+                    if isinstance(task_id, str):
+                        committed_tasks.add(task_id)
+        elif event_type == "task_attempt_succeeded":
+            task_id = raw.get("task_id")
+            effects = raw.get("durable_effects")
+            if not isinstance(task_id, str) or not isinstance(effects, list):
+                continue
+            ids: list[str] = []
+            for item in effects:
+                if isinstance(item, dict):
+                    effect_id = item.get("effect_id")
+                    if isinstance(effect_id, str):
+                        ids.append(effect_id)
+            effect_ids_by_task[task_id] = ids
+        elif event_type == "durable_effect_acknowledged":
+            effect_id = raw.get("effect_id")
+            if isinstance(effect_id, str):
+                acked.add(effect_id)
+    pending: list[str] = []
+    for task_id, ids in effect_ids_by_task.items():
+        if task_id not in committed_tasks:
+            continue
+        for effect_id in ids:
+            if effect_id not in acked:
+                pending.append(effect_id)
+    return tuple(sorted(pending))
+
+
+def supersede_audit_id(projection: GraphProjection) -> str | None:
+    """Typed D18 supersede id when present; status renderers may still say stopped."""
+    return projection.supersede_id
+
+
 def graph_status_from_projection(
     projection: GraphProjection,
     *,
     pending_write_sets: tuple[str, ...] = (),
+    recovery_state: Literal["revision_resume_recovery_pending"] | None = None,
+    unacknowledged_durable_effects: tuple[str, ...] = (),
 ) -> GraphStatus:
     """从 ledger 投影派生公开 GraphStatus（不读 workflow-state.yaml）。"""
     pending_interrupts = tuple(
@@ -78,16 +129,23 @@ def graph_status_from_projection(
         next_retry_at=min(retry_ats) if retry_ats else None,
         budgets=dict(sorted(projection.budgets.items())),
         terminal_reason=projection.terminal_reason,
+        recovery_state=recovery_state,
+        unacknowledged_durable_effects=unacknowledged_durable_effects,
     )
 
 
 def read_latest_graph_status(change_dir: Path, entrypoint: str | None = None) -> GraphStatus | None:
     """单一 ledger 快照：读一次 events，latest/projection/pending_write_sets 共用。"""
+    from assurance_agent.workflow.graph.manual_revision import derive_revision_recovery_state
+
     events = read_events_strict(change_dir)
     invocation_id = latest_root_invocation_id(events, entrypoint)
     if invocation_id is None:
         return None
     projection = fold_invocation_events(invocation_id, events)
     return graph_status_from_projection(
-        projection, pending_write_sets=pending_write_sets(events, invocation_id)
+        projection,
+        pending_write_sets=pending_write_sets(events, invocation_id),
+        recovery_state=derive_revision_recovery_state(events),
+        unacknowledged_durable_effects=unacknowledged_durable_effects(events, invocation_id),
     )

@@ -6,13 +6,19 @@ Enum values transcribed from the TS source `src/schema/contracts.ts`
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 GateStatus = Literal["PASS", "PASS_WITH_WARNINGS", "FAIL", "SKIPPED"]
 ReportRiskLevel = Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]
 NonEmptyStr = Annotated[str, Field(min_length=1)]
 # TS case_yaml.ts: case_id must be underscore-only (hyphens not allowed).
 CaseId = Annotated[str, Field(pattern=r"^[A-Za-z0-9_]+$")]
+
+
+class StrictWireModel(BaseModel):
+    """Immutable, non-coercing base for new canonical JSON wire artifacts."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
 
 class FunctionalCounts(BaseModel):
@@ -43,3 +49,4 @@ class CoverageDimension(BaseModel):
     branch_coverage: float
     threshold: CoverageThreshold
     scope: Any = None
+    evidence: dict | None = None

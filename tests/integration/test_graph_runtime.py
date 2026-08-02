@@ -13,13 +13,17 @@ from assurance_agent.workflow.core.events import read_events_strict
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
 from assurance_agent.workflow.graph.checkpoint import CheckpointStore
 from assurance_agent.workflow.graph.compiler import compile_workflow
-from assurance_agent.workflow.graph.contracts import load_execution_contracts, parse_execution_contracts
+from assurance_agent.workflow.graph.contracts import (
+    ExecutionContractCatalog,
+    load_execution_contracts,
+    parse_execution_contracts,
+)
 from assurance_agent.workflow.graph.handlers.operation import (
     OperationFn,
     OperationHandler,
     default_operations,
 )
-from assurance_agent.workflow.graph.leases import SystemClock
+from assurance_agent.workflow.graph.leases import LeaseRegistry, SystemClock, new_lease
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
@@ -28,6 +32,8 @@ from assurance_agent.workflow.graph.models import (
 )
 from assurance_agent.workflow.graph.planner import PlanError
 from assurance_agent.workflow.graph import runtime as runtime_mod
+from assurance_agent.workflow.driver.runtime_factory import one_definition_resolver
+from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 from assurance_agent.workflow.graph.runtime import (
     GraphDefinitionChanged,
     GraphRuntime,
@@ -250,7 +256,7 @@ def _build_runtime(
     clock=None,
     node_runner=None,
     change_id: str = "CH-1",
-) -> GraphRuntime:
+) -> tuple[GraphRuntime, Scheduler]:
     change = project / "qa" / "changes" / change_id
     store = TreeStore(change)
     checkpoints = CheckpointStore(change)
@@ -277,25 +283,27 @@ def _build_runtime(
         contracts=contracts,
         state_defs=state_defs,
     )
-    schemas = {compiled.digest: compiled}
     runtime = GraphRuntime(
         checkpoint_store=checkpoints,
         object_store=store,
         workspace_backend=workspaces,
-        contracts=contracts,
-        node_runner=node_runner,
-        scheduler=scheduler,
-        schema_resolver=lambda digest: schemas[digest],
+        definition_resolver=one_definition_resolver(
+            compiled=compiled,
+            contracts=contracts,
+            ingest_catalog=validate_catalog_runtime(),
+            node_runner=node_runner,
+            scheduler=scheduler,
+        ),
         clock=clock,
     )
     holder["rt"] = runtime
-    return runtime
+    return runtime, scheduler
 
 
 def test_minimal_graph_run_and_fresh_status(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     compiled, contracts = _minimal_compiled()
-    runtime = _build_runtime(project, compiled, contracts)
+    runtime, scheduler = _build_runtime(project, compiled, contracts)
     context = _context(project)
 
     result = runtime.run(compiled, "full", context)
@@ -306,9 +314,12 @@ def test_minimal_graph_run_and_fresh_status(tmp_path: Path) -> None:
     assert [event["type"] for event in events].count("task_attempt_succeeded") == 1
     assert events[-1]["type"] == "graph_completed"
     started = next(e for e in events if e.get("type") == "graph_invocation_started")
-    assert started.get("event_schema_version") == 3
+    assert started.get("event_schema_version") == 6
+    assert started.get("gate_semantics_object_id")
+    assert started.get("topology_safety_semantics_digest")
+    assert started.get("commit_safety_semantics_digest")
 
-    fresh_runtime = _build_runtime(project, compiled, contracts)
+    fresh_runtime, _scheduler = _build_runtime(project, compiled, contracts)
     assert fresh_runtime.status(result.invocation_id).model_dump() == result.status.model_dump()
 
 
@@ -318,7 +329,7 @@ def test_runtime_maps_structured_plan_error_without_reading_its_message(
 ) -> None:
     project = _make_project(tmp_path)
     compiled, contracts = _minimal_compiled()
-    runtime = _build_runtime(project, compiled, contracts)
+    runtime, scheduler = _build_runtime(project, compiled, contracts)
 
     def reject_plan(*args, **kwargs):  # type: ignore[no-untyped-def]
         raise PlanError("compiled pins drifted", error_kind="graph_definition_changed")
@@ -335,7 +346,7 @@ def test_runtime_does_not_infer_plan_error_kind_from_message(
 ) -> None:
     project = _make_project(tmp_path)
     compiled, contracts = _minimal_compiled()
-    runtime = _build_runtime(project, compiled, contracts)
+    runtime, scheduler = _build_runtime(project, compiled, contracts)
 
     def reject_plan(*args, **kwargs):  # type: ignore[no-untyped-def]
         raise PlanError("graph_definition_changed appeared in ordinary diagnostics")
@@ -352,12 +363,14 @@ def test_crash_after_attempt_started_abandons_and_retries(tmp_path: Path) -> Non
     compiled, contracts = _write_compiled()
     clock = FakeClock()
     ops = _write_ops()
-    runtime = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(ops))
+    runtime, scheduler = _build_runtime(
+        project, compiled, contracts, clock=clock, node_runner=_op_runner(ops)
+    )
 
     def crash_run(prepared, plan, projection, context, leases):  # type: ignore[no-untyped-def]
         raise _InjectedCrash("after task_attempt_started")
 
-    runtime._scheduler._run_attempt = crash_run  # type: ignore[method-assign]  # noqa: SLF001
+    scheduler._run_attempt = crash_run  # type: ignore[method-assign]  # noqa: SLF001
     with pytest.raises(_InjectedCrash):
         runtime.run(compiled, "full", _context(project))
 
@@ -370,7 +383,9 @@ def test_crash_after_attempt_started_abandons_and_retries(tmp_path: Path) -> Non
     )
 
     clock.advance(3600)
-    fresh = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(ops))
+    fresh, fresh_scheduler = _build_runtime(
+        project, compiled, contracts, clock=clock, node_runner=_op_runner(ops)
+    )
     result = fresh.resume(invocation_id)
     assert result.exit_code == 0
     events = read_events_strict(change)
@@ -393,12 +408,12 @@ def test_crash_after_success_retries_update_only(tmp_path: Path) -> None:
 
     counting = CountingHandler(ops)
     runner = HandlerNodeRunner({target: counting for target in ops})
-    runtime = _build_runtime(project, compiled, contracts, node_runner=runner)
+    runtime, scheduler = _build_runtime(project, compiled, contracts, node_runner=runner)
 
     def crash_commit(*args, **kwargs):  # type: ignore[no-untyped-def]
         raise _InjectedCrash("after task_attempt_succeeded")
 
-    runtime._scheduler._commit_wave = crash_commit  # type: ignore[method-assign]  # noqa: SLF001
+    scheduler._commit_wave = crash_commit  # type: ignore[method-assign]  # noqa: SLF001
     with pytest.raises(_InjectedCrash):
         runtime.run(compiled, "full", _context(project))
 
@@ -419,7 +434,7 @@ def test_crash_after_success_retries_update_only(tmp_path: Path) -> None:
             return base.execute(task, workspace, context)
 
     fresh_handler = FreshCounting(ops)
-    fresh = _build_runtime(
+    fresh, fresh_scheduler = _build_runtime(
         project,
         compiled,
         contracts,
@@ -447,7 +462,7 @@ def test_crash_during_materialization_repairs_without_reexec(tmp_path: Path) -> 
             return base.execute(task, workspace, context)
 
     counting = CountingHandler(ops)
-    runtime = _build_runtime(
+    runtime, scheduler = _build_runtime(
         project,
         compiled,
         contracts,
@@ -483,7 +498,7 @@ def test_crash_during_materialization_repairs_without_reexec(tmp_path: Path) -> 
             return base.execute(task, workspace, context)
 
     fresh_handler = FreshCounting(ops)
-    fresh = _build_runtime(
+    fresh, fresh_scheduler = _build_runtime(
         project,
         compiled,
         contracts,
@@ -509,7 +524,7 @@ def test_synchronized_commit_next_loop_replays_targeted_publication_only(tmp_pat
     project = _make_project(tmp_path)
     _seed_synchronized_project(project)
     compiled, contracts = _sync_compiled()
-    runtime = _build_runtime(
+    runtime, scheduler = _build_runtime(
         project,
         compiled,
         contracts,
@@ -529,7 +544,7 @@ def test_synchronized_commit_before_apply_is_repaired_by_fresh_runtime(tmp_path:
     _seed_synchronized_project(project)
     compiled, contracts = _sync_compiled()
     calls = {"n": 0}
-    runtime = _build_runtime(
+    runtime, scheduler = _build_runtime(
         project,
         compiled,
         contracts,
@@ -553,7 +568,7 @@ def test_synchronized_commit_before_apply_is_repaired_by_fresh_runtime(tmp_path:
     assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version":1}\n'
 
     fresh_calls = {"n": 0}
-    fresh = _build_runtime(
+    fresh, fresh_scheduler = _build_runtime(
         project,
         compiled,
         contracts,
@@ -575,7 +590,7 @@ def test_synchronized_partial_apply_is_repaired_by_fresh_runtime(
     _seed_synchronized_project(project)
     compiled, contracts = _sync_compiled()
     calls = {"n": 0}
-    runtime = _build_runtime(
+    runtime, scheduler = _build_runtime(
         project,
         compiled,
         contracts,
@@ -612,7 +627,7 @@ def test_synchronized_partial_apply_is_repaired_by_fresh_runtime(
     assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version":1}\n'
 
     fresh_calls = {"n": 0}
-    fresh = _build_runtime(
+    fresh, fresh_scheduler = _build_runtime(
         project,
         compiled,
         contracts,
@@ -659,14 +674,14 @@ def test_applied_marker_prevents_stale_replay_after_later_change_advances_resour
 ) -> None:
     project = _two_change_project(tmp_path)
     compiled, contracts = _sync_compiled()
-    runtime_a = _build_runtime(
+    runtime_a, scheduler_a = _build_runtime(
         project,
         compiled,
         contracts,
         node_runner=_op_runner(_versioned_sync_ops(2)),
         change_id="CH-A",
     )
-    runtime_b = _build_runtime(
+    runtime_b, scheduler_b = _build_runtime(
         project,
         compiled,
         contracts,
@@ -675,7 +690,7 @@ def test_applied_marker_prevents_stale_replay_after_later_change_advances_resour
     )
     a_applied = threading.Event()
     continue_a = threading.Event()
-    execute_a = runtime_a._scheduler.execute  # noqa: SLF001
+    execute_a = scheduler_a.execute  # noqa: SLF001
 
     def pause_after_a_releases_lock(*args, **kwargs):  # type: ignore[no-untyped-def]
         result = execute_a(*args, **kwargs)
@@ -684,7 +699,7 @@ def test_applied_marker_prevents_stale_replay_after_later_change_advances_resour
             raise RuntimeError("timed out waiting for Change B")
         return result
 
-    runtime_a._scheduler.execute = pause_after_a_releases_lock  # type: ignore[method-assign]  # noqa: SLF001
+    scheduler_a.execute = pause_after_a_releases_lock  # type: ignore[method-assign]  # noqa: SLF001
     a_results: list[object] = []
     a_errors: list[BaseException] = []
 
@@ -720,7 +735,7 @@ def test_prepared_publication_before_commit_does_not_permanently_block_later_cha
 
     project = _two_change_project(tmp_path)
     compiled, contracts = _sync_compiled()
-    runtime_a = _build_runtime(
+    runtime_a, scheduler_a = _build_runtime(
         project,
         compiled,
         contracts,
@@ -740,7 +755,7 @@ def test_prepared_publication_before_commit_does_not_permanently_block_later_cha
     assert not any(event.get("type") == "superstep_committed" for event in events_a)
     assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version": 1}\n'
 
-    runtime_b = _build_runtime(
+    runtime_b, scheduler_b = _build_runtime(
         project,
         compiled,
         contracts,
@@ -757,7 +772,7 @@ def test_prepared_publication_blocks_later_change_after_apply_before_ack_crash(
 ) -> None:
     project = _two_change_project(tmp_path)
     compiled, contracts = _sync_compiled()
-    runtime_a = _build_runtime(
+    runtime_a, scheduler_a = _build_runtime(
         project,
         compiled,
         contracts,
@@ -775,7 +790,7 @@ def test_prepared_publication_blocks_later_change_after_apply_before_ack_crash(
         runtime_a.run(compiled, "full", _context(project, change_id="CH-A"))
     assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version": 2}\n'
 
-    runtime_b = _build_runtime(
+    runtime_b, scheduler_b = _build_runtime(
         project,
         compiled,
         contracts,
@@ -790,7 +805,7 @@ def test_prepared_publication_blocks_later_change_after_apply_before_ack_crash(
     invocation_a = next(
         str(event["invocation_id"]) for event in events_a if event.get("type") == "graph_invocation_started"
     )
-    fresh_a = _build_runtime(
+    fresh_a, _scheduler_a = _build_runtime(
         project,
         compiled,
         contracts,
@@ -799,7 +814,7 @@ def test_prepared_publication_blocks_later_change_after_apply_before_ack_crash(
     )
     assert fresh_a.resume(invocation_a).exit_code == 0
 
-    runtime_c = _build_runtime(
+    runtime_c, _scheduler_c = _build_runtime(
         project,
         compiled,
         contracts,
@@ -815,7 +830,9 @@ def test_crash_after_write_set_freeze_before_success_retries_attempt(tmp_path: P
     compiled, contracts = _write_compiled()
     ops = _write_ops()
     clock = FakeClock()
-    runtime = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(ops))
+    runtime, scheduler = _build_runtime(
+        project, compiled, contracts, clock=clock, node_runner=_op_runner(ops)
+    )
     store = runtime._objects  # noqa: SLF001
     original_freeze = store.freeze_write_set
 
@@ -837,9 +854,510 @@ def test_crash_after_write_set_freeze_before_success_retries_attempt(tmp_path: P
 
     clock.advance(3600)
     store.freeze_write_set = original_freeze  # type: ignore[method-assign]
-    fresh = _build_runtime(project, compiled, contracts, clock=clock, node_runner=_op_runner(ops))
+    fresh, fresh_scheduler = _build_runtime(
+        project, compiled, contracts, clock=clock, node_runner=_op_runner(ops)
+    )
     result = fresh.resume(invocation_id)
     assert result.exit_code == 0
     events = read_events_strict(change)
     assert any(e.get("type") == "task_attempt_abandoned" for e in events)
     assert [e.get("type") for e in events].count("task_attempt_succeeded") == 1
+
+
+def test_recovery_barrier_orders_reconcile_before_pending_commit_before_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _make_project(tmp_path)
+    compiled, contracts = _write_compiled()
+    runtime, scheduler = _build_runtime(project, compiled, contracts, node_runner=_op_runner(_write_ops()))
+    order: list[str] = []
+    original_reconcile = runtime._reconcile_running
+    original_commit_pending = runtime._commit_pending_write_sets
+    original_replay = runtime._replay_committed_publications
+    original_repair_ordinary = runtime._repair_ordinary_materialization
+
+    def track_reconcile(projection, context):  # type: ignore[no-untyped-def]
+        order.append("reconcile")
+        return original_reconcile(projection, context)
+
+    def track_commit_pending(projection, context):  # type: ignore[no-untyped-def]
+        order.append("pending_commit")
+        return original_commit_pending(projection, context)
+
+    def track_replay(projection, context):  # type: ignore[no-untyped-def]
+        order.append("replay_publications")
+        return original_replay(projection, context)
+
+    def track_repair_ordinary(projection, context):  # type: ignore[no-untyped-def]
+        order.append("repair_ordinary")
+        return original_repair_ordinary(projection, context)
+
+    def track_plan(*args, **kwargs):  # type: ignore[no-untyped-def]
+        order.append("plan")
+        raise GraphRuntimeError("stop after first plan")
+
+    monkeypatch.setattr(runtime, "_reconcile_running", track_reconcile)
+    monkeypatch.setattr(runtime, "_commit_pending_write_sets", track_commit_pending)
+    monkeypatch.setattr(runtime, "_replay_committed_publications", track_replay)
+    monkeypatch.setattr(runtime, "_repair_ordinary_materialization", track_repair_ordinary)
+    monkeypatch.setattr(runtime_mod, "plan_superstep", track_plan)
+
+    with pytest.raises(GraphRuntimeError, match="stop after first plan"):
+        runtime.run(compiled, "full", _context(project))
+
+    assert "reconcile" in order
+    assert order.index("reconcile") < order.index("plan")
+    assert "pending_commit" in order
+    assert order.index("pending_commit") < order.index("plan")
+    assert "replay_publications" in order
+    assert order.index("replay_publications") < order.index("plan")
+    assert "repair_ordinary" in order
+    assert order.index("repair_ordinary") < order.index("plan")
+
+
+def test_pending_commit_recovery_failure_raises_graph_runtime_error(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    compiled, contracts = _write_compiled()
+    ops = _write_ops()
+    runtime, scheduler = _build_runtime(project, compiled, contracts, node_runner=_op_runner(ops))
+
+    def crash_commit(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise _InjectedCrash("after task_attempt_succeeded")
+
+    scheduler._commit_wave = crash_commit  # type: ignore[method-assign]  # noqa: SLF001
+    with pytest.raises(_InjectedCrash):
+        runtime.run(compiled, "full", _context(project))
+
+    change = _context(project).change_dir
+    events = read_events_strict(change)
+    invocation_id = next(
+        str(e["invocation_id"]) for e in events if e.get("type") == "graph_invocation_started"
+    )
+
+    fresh, fresh_scheduler = _build_runtime(project, compiled, contracts, node_runner=_op_runner(ops))
+
+    def refuse_pending(**_kwargs):  # type: ignore[no-untyped-def]
+        raise ValueError("pending commit refused")
+
+    fresh_scheduler.commit_pending_write_sets = refuse_pending  # type: ignore[method-assign]
+    with pytest.raises(GraphRuntimeError, match="pending commit refused"):
+        fresh.resume(invocation_id)
+
+
+def test_recovery_barrier_blocks_plan_while_task_still_running(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _make_project(tmp_path)
+    compiled, contracts = _write_compiled()
+    clock = FakeClock()
+    runtime, scheduler = _build_runtime(
+        project, compiled, contracts, clock=clock, node_runner=_op_runner(_write_ops())
+    )
+
+    def crash_run(prepared, plan, projection, context, leases):  # type: ignore[no-untyped-def]
+        raise _InjectedCrash("after task_attempt_started")
+
+    scheduler._run_attempt = crash_run  # type: ignore[method-assign]  # noqa: SLF001
+    with pytest.raises(_InjectedCrash):
+        runtime.run(compiled, "full", _context(project))
+
+    change = _context(project).change_dir
+    events = read_events_strict(change)
+    started = next(e for e in events if e.get("type") == "task_attempt_started")
+    invocation_id = next(
+        str(e["invocation_id"]) for e in events if e.get("type") == "graph_invocation_started"
+    )
+    LeaseRegistry(change).upsert(
+        new_lease(
+            task_id=str(started["task_id"]),
+            attempt_id=str(started["attempt_id"]),
+            session_id=None,
+            started_at=str(started["started_at"]),
+            lease_expires_at=(clock.now() + timedelta(hours=1)).isoformat(),
+        )
+    )
+
+    plan_calls: list[str] = []
+
+    def reject_plan(*args, **kwargs):  # type: ignore[no-untyped-def]
+        plan_calls.append("plan")
+        raise AssertionError("plan_superstep must not run while a task is still running")
+
+    monkeypatch.setattr(runtime_mod, "plan_superstep", reject_plan)
+    fresh, fresh_scheduler = _build_runtime(
+        project, compiled, contracts, clock=clock, node_runner=_op_runner(_write_ops())
+    )
+    with pytest.raises(GraphRuntimeError, match="recovery barrier stalled"):
+        fresh.resume(invocation_id)
+    assert plan_calls == []
+
+
+def test_recovery_barrier_skips_plan_while_pending_write_sets_remain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _make_project(tmp_path)
+    compiled, contracts = _write_compiled()
+    ops = _write_ops()
+    runtime, scheduler = _build_runtime(project, compiled, contracts, node_runner=_op_runner(ops))
+
+    def crash_commit(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise _InjectedCrash("after task_attempt_succeeded")
+
+    scheduler._commit_wave = crash_commit  # type: ignore[method-assign]  # noqa: SLF001
+    with pytest.raises(_InjectedCrash):
+        runtime.run(compiled, "full", _context(project))
+
+    change = _context(project).change_dir
+    events = read_events_strict(change)
+    invocation_id = next(
+        str(e["invocation_id"]) for e in events if e.get("type") == "graph_invocation_started"
+    )
+
+    plan_calls: list[str] = []
+
+    def reject_plan(*args, **kwargs):  # type: ignore[no-untyped-def]
+        plan_calls.append("plan")
+        raise AssertionError("plan_superstep must not run while pending write sets remain")
+
+    monkeypatch.setattr(runtime_mod, "plan_superstep", reject_plan)
+    fresh, fresh_scheduler = _build_runtime(project, compiled, contracts, node_runner=_op_runner(ops))
+
+    def refuse_pending(**_kwargs):  # type: ignore[no-untyped-def]
+        return False
+
+    fresh_scheduler.commit_pending_write_sets = refuse_pending  # type: ignore[method-assign]
+    with pytest.raises(GraphRuntimeError, match="recovery barrier stalled"):
+        fresh.resume(invocation_id)
+    assert plan_calls == []
+
+
+_NESTED_SYNC_CONTRACTS = """\
+schema_version: "1"
+contracts:
+  operation:sync-knowledge:
+    handler: operation
+    reads: [project:.aa/data-knowledge.yaml]
+    writes: [project:.aa/data-knowledge.yaml]
+    synchronized: [project:.aa/data-knowledge.yaml]
+    exclusive: [project:knowledge-registry]
+    authorization_writes: [project:.aa/data-knowledge.yaml]
+    retryable_errors: []
+  operation:plain:
+    handler: operation
+    side_effect_free: true
+    retryable_errors: []
+"""
+
+_NESTED_SYNC_WORKFLOW = """\
+schema_version: "2"
+name: nested-sync-runtime
+params:
+  run_mode: {type: enum, values: [full], default: full}
+entrypoints:
+  full: {graph: main, allow: "params.run_mode == 'full'"}
+policies:
+  retry:
+    never: {max_attempts: 1, retry_on: []}
+  timeout:
+    local: {run_seconds: 60, heartbeat_seconds: 0.05}
+  scheduler: {max_parallel_tasks: 4}
+graphs:
+  main:
+    max_supersteps: 8
+    nodes:
+      child-run:
+        uses: graph:leaf
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: child-run}
+      - {from: child-run, to: END}
+  leaf:
+    max_supersteps: 8
+    nodes:
+      sync-knowledge:
+        uses: operation:sync-knowledge
+        outputs: [project:.aa/data-knowledge.yaml]
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: sync-knowledge}
+      - {from: sync-knowledge, to: END}
+gates: {}
+"""
+
+
+def _nested_sync_compiled() -> tuple[CompiledWorkflow, ExecutionContractCatalog]:
+    contracts = parse_execution_contracts(_NESTED_SYNC_CONTRACTS)
+    compiled = compile_workflow(parse_workflow_v2(_NESTED_SYNC_WORKFLOW), contracts)
+    return compiled, contracts
+
+
+def _nested_sync_project(tmp_path: Path) -> tuple[Path, TreeStore]:
+    project = tmp_path / "proj"
+    change = project / "qa/changes/CH-1"
+    change.mkdir(parents=True)
+    aa = project / ".aa"
+    aa.mkdir()
+    (aa / "data-knowledge.yaml").write_text("snapshot v1\n", encoding="utf-8")
+    write_aa_config(project)
+    store = TreeStore(change)
+    store.capture(project)
+    (aa / "data-knowledge.yaml").write_text("promoted live v2\n", encoding="utf-8")
+    return project, store
+
+
+def test_nested_drive_run_child_single_synchronized_capture(tmp_path: Path) -> None:
+    """Outer _drive → run_child → nested _drive performs exactly one overlay capture."""
+    project, store = _nested_sync_project(tmp_path)
+    compiled, contracts = _nested_sync_compiled()
+    overlay_calls: list[int] = []
+    overlay_many = store.overlay_synchronized_paths_many
+    nested_capture = {"active": False}
+
+    def observed_overlay_many(tree_ids, project_root, paths):
+        if nested_capture["active"]:
+            overlay_calls.append(len(tree_ids))
+        return overlay_many(tree_ids, project_root, paths)
+
+    store.overlay_synchronized_paths_many = observed_overlay_many  # type: ignore[method-assign]
+
+    ops = default_operations()
+
+    def sync_knowledge(task: ExecutableTask, workspace, context: RuntimeContext) -> TaskResult:
+        path = workspace.project_root / ".aa/data-knowledge.yaml"
+        path.write_text("written from nested leaf\n", encoding="utf-8")
+        return TaskResult(status="succeeded")
+
+    ops["operation:sync-knowledge"] = sync_knowledge
+    change = project / "qa/changes/CH-1"
+    checkpoints = CheckpointStore(change)
+    workspaces = WorkspaceBackend(change)
+    clock = SystemClock()
+    holder: dict[str, GraphRuntime] = {}
+
+    def run_child(task, graph_id, workspace, context):  # type: ignore[no-untyped-def]
+        nested_capture["active"] = True
+        try:
+            return holder["rt"].run_child(task, graph_id, workspace, context)
+        finally:
+            nested_capture["active"] = False
+
+    from assurance_agent.workflow.graph.handlers.subgraph import SubgraphHandler
+
+    operation = OperationHandler(ops)
+    node_runner = HandlerNodeRunner(
+        {target: operation for target in ops},
+        namespace_handlers={"graph": SubgraphHandler(run_child)},
+        compiled=compiled,
+        object_store=store,
+    )
+    graph_id = compiled.entrypoints["full"].graph_id
+    state_defs = dict(compiled.schema.graphs[graph_id].state)
+    scheduler = Scheduler(
+        checkpoints=checkpoints,
+        object_store=store,
+        clock=clock,
+        workspace_backend=workspaces,
+        node_runner=node_runner,
+        max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
+        contracts=contracts,
+        state_defs=state_defs,
+    )
+    runtime = GraphRuntime(
+        checkpoint_store=checkpoints,
+        object_store=store,
+        workspace_backend=workspaces,
+        definition_resolver=one_definition_resolver(
+            compiled=compiled,
+            contracts=contracts,
+            ingest_catalog=validate_catalog_runtime(),
+            node_runner=node_runner,
+            scheduler=scheduler,
+        ),
+        clock=clock,
+    )
+    holder["rt"] = runtime
+    result = runtime.run(compiled, "full", _context(project))
+
+    assert result.exit_code == 0
+    assert overlay_calls == [1]
+    assert (project / ".aa/data-knowledge.yaml").read_text() == "written from nested leaf\n"
+
+
+# ---------------------------------------------------------------------------
+# Task 14 Step 4/5 — publication seams + incompatible epoch fail-closed
+# ---------------------------------------------------------------------------
+
+
+def test_sync_apply_pending_resume_replays_before_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _make_project(tmp_path)
+    _seed_synchronized_project(project)
+    (project / "qa/issues/ISSUE-1.json").write_text(
+        '{"version":1,"seed":"apply-pending"}\n', encoding="utf-8"
+    )
+    compiled, contracts = _sync_compiled()
+    calls = {"n": 0}
+    runtime, _scheduler = _build_runtime(
+        project, compiled, contracts, node_runner=_op_runner(_sync_ops(calls=calls))
+    )
+    store = runtime._objects  # noqa: SLF001
+
+    def crash_before_apply(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise _InjectedCrash("sync apply pending")
+
+    store.apply_write_sets_to_synchronized_paths = crash_before_apply  # type: ignore[method-assign]
+    with pytest.raises(_InjectedCrash, match="sync apply pending"):
+        runtime.run(compiled, "full", _context(project))
+
+    change = _context(project).change_dir
+    events = read_events_strict(change)
+    assert any(e.get("type") == "superstep_committed" for e in events)
+    invocation_id = next(
+        str(e["invocation_id"]) for e in events if e.get("type") == "graph_invocation_started"
+    )
+    assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version":1,"seed":"apply-pending"}\n'
+
+    order: list[str] = []
+    fresh_calls = {"n": 0}
+    fresh, _ = _build_runtime(
+        project, compiled, contracts, node_runner=_op_runner(_sync_ops(calls=fresh_calls))
+    )
+    original_replay = fresh._replay_committed_publications
+    original_plan = runtime_mod.plan_superstep
+
+    def track_replay(projection, context):  # type: ignore[no-untyped-def]
+        order.append("replay_publications")
+        return original_replay(projection, context)
+
+    def track_plan(*args, **kwargs):  # type: ignore[no-untyped-def]
+        order.append("plan")
+        return original_plan(*args, **kwargs)
+
+    monkeypatch.setattr(fresh, "_replay_committed_publications", track_replay)
+    monkeypatch.setattr(runtime_mod, "plan_superstep", track_plan)
+    result = fresh.resume(invocation_id)
+    assert result.exit_code == 0
+    assert fresh_calls["n"] == 0
+    assert "replay_publications" in order
+    assert order.index("replay_publications") < order.index("plan")
+    assert (project / "qa/issues/ISSUE-1.json").read_text() == '{"version":2}\n'
+
+
+def test_ordinary_pending_commit_resume_commits_frozen_write_set_once(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    compiled, contracts = _write_compiled()
+    ops = _write_ops()
+    calls = {"n": 0}
+    base = OperationHandler(ops)
+
+    class CountingHandler(OperationHandler):
+        def execute(self, task, workspace, context):  # type: ignore[no-untyped-def]
+            calls["n"] += 1
+            return base.execute(task, workspace, context)
+
+    runtime, scheduler = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        node_runner=HandlerNodeRunner({target: CountingHandler(ops) for target in ops}),
+    )
+
+    def crash_commit(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise _InjectedCrash("ordinary pending commit seam")
+
+    scheduler._commit_wave = crash_commit  # type: ignore[method-assign]  # noqa: SLF001
+    with pytest.raises(_InjectedCrash):
+        runtime.run(compiled, "full", _context(project))
+    change = _context(project).change_dir
+    events = read_events_strict(change)
+    assert any(e.get("type") == "task_attempt_succeeded" for e in events)
+    assert not any(e.get("type") == "superstep_committed" for e in events)
+    invocation_id = next(
+        str(e["invocation_id"]) for e in events if e.get("type") == "graph_invocation_started"
+    )
+    assert calls["n"] == 1
+
+    fresh_calls = {"n": 0}
+
+    class FreshCounting(OperationHandler):
+        def execute(self, task, workspace, context):  # type: ignore[no-untyped-def]
+            fresh_calls["n"] += 1
+            return base.execute(task, workspace, context)
+
+    fresh, _ = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        node_runner=HandlerNodeRunner({target: FreshCounting(ops) for target in ops}),
+    )
+    result = fresh.resume(invocation_id)
+    assert result.exit_code == 0
+    assert fresh_calls["n"] == 0
+    assert [e.get("type") for e in read_events_strict(change)].count("task_attempt_succeeded") == 1
+    assert (project / "tests" / "api" / "marker.py").read_text(encoding="utf-8") == "marker\n"
+
+
+def test_incompatible_gate_semantics_refuses_before_pending_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import assurance_agent.workflow.orchestration.gate_semantics as gate_sem
+
+    project = _make_project(tmp_path)
+    compiled, contracts = _write_compiled()
+    runtime, scheduler = _build_runtime(project, compiled, contracts, node_runner=_op_runner(_write_ops()))
+
+    def crash_commit(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise _InjectedCrash("after success before commit")
+
+    scheduler._commit_wave = crash_commit  # type: ignore[method-assign]  # noqa: SLF001
+    with pytest.raises(_InjectedCrash):
+        runtime.run(compiled, "full", _context(project))
+    change = _context(project).change_dir
+    invocation_id = next(
+        str(e["invocation_id"])
+        for e in read_events_strict(change)
+        if e.get("type") == "graph_invocation_started"
+    )
+    marker_path = project / "tests" / "api" / "marker.py"
+    marker_before = marker_path.read_text(encoding="utf-8") if marker_path.exists() else None
+
+    fresh, _ = _build_runtime(project, compiled, contracts, node_runner=_op_runner(_write_ops()))
+    monkeypatch.setattr(gate_sem, "gate_semantics_digest", lambda: "sha256:" + "0" * 64)
+    with pytest.raises(GraphDefinitionChanged, match="gate semantics"):
+        fresh.resume(invocation_id)
+    marker_after = marker_path.read_text(encoding="utf-8") if marker_path.exists() else None
+    assert marker_after == marker_before
+    assert not any(e.get("type") == "superstep_committed" for e in read_events_strict(change))
+
+
+def test_incompatible_assurance_profile_refuses_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import assurance_agent.verification.profile_manifest as profile_mod
+
+    project = _make_project(tmp_path)
+    compiled, contracts = _write_compiled()
+    runtime, scheduler = _build_runtime(project, compiled, contracts, node_runner=_op_runner(_write_ops()))
+
+    def crash_commit(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise _InjectedCrash("after success")
+
+    scheduler._commit_wave = crash_commit  # type: ignore[method-assign]  # noqa: SLF001
+    with pytest.raises(_InjectedCrash):
+        runtime.run(compiled, "full", _context(project))
+    change = _context(project).change_dir
+    invocation_id = next(
+        str(e["invocation_id"])
+        for e in read_events_strict(change)
+        if e.get("type") == "graph_invocation_started"
+    )
+    fresh, _ = _build_runtime(project, compiled, contracts, node_runner=_op_runner(_write_ops()))
+    monkeypatch.setattr(profile_mod, "assurance_profile_digest", lambda: "sha256:" + "1" * 64)
+    with pytest.raises(GraphDefinitionChanged, match="assurance profile"):
+        fresh.resume(invocation_id)

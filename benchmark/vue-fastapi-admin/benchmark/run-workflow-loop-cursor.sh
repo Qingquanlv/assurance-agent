@@ -11,9 +11,11 @@
 #   2. `aa workflow run --entrypoint full|… --adapter headless --agent-cmd …`
 #      drives the change to a terminal state (one cursor-agent spawn per task).
 #   3. Verify completion with deterministic `aa workflow status`.
-#   4. Archive via GraphRuntime: `aa workflow run --entrypoint archive`
+#   4. Fold `aa trace --json` and adjudicate `aa verify --json`; persist both
+#      outputs and require a pass verdict for benchmark acceptance.
+#   5. Archive via GraphRuntime: `aa workflow run --entrypoint archive`
 #      (skill:aa-archive + archive-gate; not a free-form agent prompt).
-#   5. After every item settles, run one explicit Batch Retro through
+#   6. After every item settles, run one explicit Batch Retro through
 #      `aa retro --batch-manifest ...`. Failed/stopped/timed-out items remain
 #      members and become typed evidence gaps instead of blocking analysis.
 #      Artifacts: context.json, proposal-candidates.json, accept-status.json,
@@ -29,6 +31,9 @@
 #   ./benchmark/run-workflow-loop-cursor.sh
 #   CURSOR_MODEL=cursor-grok-4.5-high-fast ./benchmark/run-workflow-loop-cursor.sh
 #   CURSOR_MAX_WORKFLOW_ATTEMPTS=4 ./benchmark/run-workflow-loop-cursor.sh
+#   PROJECT_ROOT=/path/to/vue-fastapi-admin ./benchmark/run-workflow-loop-cursor.sh
+#   DO_TRACE_VERIFY=false                   # skip trace/verify collection + gate
+#   DO_SPECIALTY_REPORT=false               # skip architecture-specific report + policy replay
 #   USE_WORKFLOW_ARCHIVE=false              # legacy free-form archive prompt
 #   RESUME_RUNSTAMP=20260713-113457 ./benchmark/run-workflow-loop-cursor.sh
 #   DAEMON=1 ./benchmark/run-workflow-loop-cursor.sh   # detach + write PID/log symlinks
@@ -40,17 +45,22 @@ set -uo pipefail
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOOP_HELPERS="$SCRIPT_DIR/cursor-loop-helpers.sh"
+SPECIALTY_REPORT_PY="$SCRIPT_DIR/benchmark_specialty_report.py"
 if [ ! -f "$LOOP_HELPERS" ]; then
   printf 'ERROR: missing %s\n' "$LOOP_HELPERS" >&2
   exit 1
 fi
 # shellcheck disable=SC1090
 source "$LOOP_HELPERS"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(resolve_cursor_project_root "$SCRIPT_DIR" "${PROJECT_ROOT:-}")" || {
+  printf 'ERROR: invalid PROJECT_ROOT override: %s\n' "${PROJECT_ROOT:-}" >&2
+  exit 1
+}
 # Python migration: skills are synced INTO the SUT project by `aa skill refresh`.
 AA_SKILLS_ROOT="${AA_SKILLS_ROOT:-$PROJECT_ROOT/skills}"
 # SCRIPT_DIR = <aa-repo>/benchmark/vue-fastapi-admin/benchmark → repo root is ../../..
 AA_REPO_ROOT="${AA_REPO_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
+AA_PYTHON_BIN="${AA_PYTHON_BIN:-}"
 RESUME_LOG_DIR="${RESUME_LOG_DIR:-$SCRIPT_DIR/resume-logs}"
 AUTO_DECIDE_BENCHMARK="${AUTO_DECIDE_BENCHMARK:-true}"
 # When set, log non-terminal / needs-human stalls (does not mutate state).
@@ -77,6 +87,11 @@ BENCHMARK_EVAL_SUITES="$(benchmark_eval_setting \
   "${BENCHMARK_EVAL_SUITES-}" \
   "${EVAL_REGRESSION_SUITES-}" \
   "workflow-run,classification-unit,safety-lite,eval-smoke,case-generation,workflow-case,workflow-api-codegen,workflow-e2e-codegen,workflow-fuzz-codegen,workflow-performance-codegen,workflow-full")"
+# Exercise the current traceability/evidence read side for every completed item.
+# Both JSON artifacts are retained in RUN_DIR and verify is part of the final
+# benchmark acceptance gate (0/pass succeeds; 30/needs_human and 40/fail fail).
+DO_TRACE_VERIFY="${DO_TRACE_VERIFY:-true}"
+DO_SPECIALTY_REPORT="${DO_SPECIALTY_REPORT:-true}"
 EVAL_ENGINE_ROOT="${EVAL_ENGINE_ROOT:-$AA_REPO_ROOT}"   # holds eval/suites + eval/baselines
 STEP_TIMEOUT="${STEP_TIMEOUT:-5400}"
 STATUS_POLL_INTERVAL="${STATUS_POLL_INTERVAL:-120}"
@@ -456,29 +471,33 @@ run_hard_timeout() {
 # $1=logfile $2=change_id
 run_driver() {
   local logf="$1" change_id="$2"
-  local params agent_cmd
+  local params agent_cmd result_json root_state root_id root_entrypoint
   params="$(driver_params_json)"
   agent_cmd="$(cursor_agent_cmd_prefix)"
-  local has_invocation="false"
-  if "$AA_BIN" workflow status --change "$change_id" --json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("status") else 1)'; then
-    has_invocation="true"
-  fi
-  if [ "$has_invocation" = "true" ]; then
-    # resume has no --params (params are pinned on the invocation); only adapter/agent.
+  result_json="$RUN_DIR/${change_id}.workflow-result.json"
+  if root_state="$(read_workflow_root_state "$RUN_DIR" "$change_id" 2>/dev/null)"; then
+    IFS='|' read -r root_id root_entrypoint <<<"$root_state"
     run_hard_timeout "$logf" "$change_id" \
       "$AA_BIN" workflow resume \
       --change "$change_id" \
+      --invocation "$root_id" \
+      --entrypoint "$root_entrypoint" \
       --adapter headless \
       --agent-cmd "$agent_cmd"
-  else
-    run_hard_timeout "$logf" "$change_id" \
-      "$AA_BIN" workflow run \
-      --change "$change_id" \
-      --entrypoint "$DRIVER_ENTRYPOINT" \
-      --adapter headless \
-      --params "$params" \
-      --agent-cmd "$agent_cmd"
+    return $?
   fi
+  run_hard_timeout "$logf" "$change_id" \
+    "$AA_BIN" workflow run \
+    --change "$change_id" \
+    --entrypoint "$DRIVER_ENTRYPOINT" \
+    --adapter headless \
+    --params "$params" \
+    --agent-cmd "$agent_cmd" \
+    --result-json "$result_json"
+  local driver_exit=$?
+  pin_workflow_root_from_result "$RUN_DIR" "$change_id" "$result_json" "$DRIVER_ENTRYPOINT" \
+    || log "[$change_id] WARN: workflow root not pinned from $(basename "$result_json")"
+  return "$driver_exit"
 }
 
 # One-shot cursor-agent prompt (legacy archive path only).
@@ -726,6 +745,151 @@ record_item_result() {
   ROW_RESULTS+=("$change_id|$terminal|$detail|$archive_field")
 }
 
+run_trace_verify_stage() {
+  local change_id="$1" row
+  local trace_file="$RUN_DIR/${change_id}.trace.json"
+  local verify_file="$RUN_DIR/${change_id}.verify.json"
+  local evidence_log="$RUN_DIR/${change_id}.trace-verify.log"
+  local cid collection_status reason_code trace_exit integrity gap_count
+  local verify_exit verdict blocking insufficient
+
+  [ "$DO_TRACE_VERIFY" = "true" ] || return 0
+  row="$(collect_trace_verify_evidence \
+    "$AA_BIN" "$change_id" "$trace_file" "$verify_file" "$evidence_log" "$AA_PYTHON_BIN")"
+  EVIDENCE_ROWS+=("$row")
+  IFS='|' read -r \
+    cid collection_status reason_code trace_exit integrity gap_count \
+    verify_exit verdict blocking insufficient \
+    <<<"$row"
+  log "[$change_id] trace/verify: status=$collection_status trace_exit=$trace_exit integrity=$integrity gaps=$gap_count verify_exit=$verify_exit verdict=$verdict blocking=$blocking insufficient=$insufficient"
+  case "$collection_status" in
+    raw)
+      if [ "$integrity" = "unknown" ] || [ "$gap_count" = "unknown" ] \
+        || [ "$verdict" = "unknown" ] || [ "$blocking" = "unknown" ] \
+        || [ "$insufficient" = "unknown" ]; then
+        SPECIALTY_REPORT_FAILED="true"
+      fi
+      ;;
+  esac
+}
+
+run_specialty_report_stage() {
+  local change_id="$1" evidence_row cid collection_status reason_code
+  local trace_exit integrity gap_count verify_exit verdict blocking insufficient
+  local trace_file="$RUN_DIR/${change_id}.trace.json"
+  local verify_file="$RUN_DIR/${change_id}.verify.json"
+  local report_file="$RUN_DIR/${change_id}.specialty-report.json"
+  local report_log="$RUN_DIR/${change_id}.specialty-report.log"
+  local root_state root_invocation_id workflow_entrypoint collect_exit finalize_out registered
+  local attempt_id report_path specialty_row replaced
+  local -a next_rows=()
+
+  [ "$DO_SPECIALTY_REPORT" = "true" ] || return 0
+  trace_exit=""
+  verify_exit=""
+  for evidence_row in "${EVIDENCE_ROWS[@]}"; do
+    IFS='|' read -r \
+      cid collection_status reason_code trace_exit integrity gap_count \
+      verify_exit verdict blocking insufficient \
+      <<<"$evidence_row"
+    if [ "$cid" = "$change_id" ]; then
+      break
+    fi
+    trace_exit=""
+    verify_exit=""
+  done
+  if [ -z "$trace_exit" ] || [ -z "$verify_exit" ]; then
+    SPECIALTY_REPORT_FAILED="true"
+    log "[$change_id] ERROR: trace/verify command status missing before specialty collection"
+    return 1
+  fi
+  root_invocation_id=""
+  workflow_entrypoint="$DRIVER_ENTRYPOINT"
+  if root_state="$(read_workflow_root_state "$RUN_DIR" "$change_id" 2>/dev/null)"; then
+    IFS='|' read -r root_invocation_id workflow_entrypoint <<<"$root_state"
+  fi
+  attempt_id="${change_id}-$(date +%s)-$$"
+  collect_exit=0
+  collect_benchmark_specialty_report \
+    "$AA_PYTHON_BIN" "$SPECIALTY_REPORT_PY" "$PROJECT_ROOT" \
+    "$change_id" "$trace_file" "$verify_file" "$report_file" "$report_log" \
+    "$trace_exit" "$verify_exit" "$root_invocation_id" "$workflow_entrypoint" \
+    "$attempt_id" \
+    || collect_exit=$?
+  finalize_out="$(finalize_benchmark_specialty_report \
+    "$AA_PYTHON_BIN" "$SPECIALTY_REPORT_PY" "$change_id" "$report_file" "$collect_exit" "$attempt_id")"
+  registered="${finalize_out##*$'\n'}"
+  registered="${registered#registered=}"
+  if [ "$registered" = "true" ]; then
+    report_path="$(printf '%s\n' "$finalize_out" | sed -n '1p')"
+    specialty_row="$(printf '%s\n' "$finalize_out" | sed -n '2p')"
+    SPECIALTY_REPORT_FILES+=("$report_path")
+    while IFS= read -r replaced; do
+      [ -n "$replaced" ] || continue
+      next_rows+=("$replaced")
+    done < <(replace_evidence_row_for_change "$change_id" "$specialty_row" "${EVIDENCE_ROWS[@]+"${EVIDENCE_ROWS[@]}"}")
+    EVIDENCE_ROWS=("${next_rows[@]}")
+    IFS='|' read -r \
+      cid collection_status reason_code trace_exit integrity gap_count \
+      verify_exit verdict blocking insufficient \
+      <<<"$specialty_row"
+    case "$collection_status" in
+      incomplete)
+        SPECIALTY_REPORT_FAILED="true"
+        ;;
+    esac
+    log "[$change_id] specialty report: $(basename "$report_path") status=$collection_status reason=$reason_code"
+  fi
+  if [ "$collect_exit" -ne 0 ]; then
+    SPECIALTY_REPORT_FAILED="true"
+    log "[$change_id] ERROR: specialty report/policy replay failed (see $(basename "$report_log"))"
+    return 1
+  fi
+}
+
+reuse_specialty_report_stage() {
+  local change_id="$1" row
+  local report_file="$RUN_DIR/${change_id}.specialty-report.json"
+  local cid collection_status reason_code trace_exit integrity gap_count
+  local verify_exit verdict blocking insufficient
+  local -a next_rows=()
+  local replaced
+
+  if ! row="$(reuse_benchmark_specialty_report \
+    "$AA_PYTHON_BIN" "$SPECIALTY_REPORT_PY" "$change_id" "$report_file")"; then
+    SPECIALTY_REPORT_FAILED="true"
+    log "[$change_id] ERROR: frozen specialty report is invalid: $(basename "$report_file")"
+    return 1
+  fi
+  SPECIALTY_REPORT_FILES+=("$report_file")
+  while IFS= read -r replaced; do
+    [ -n "$replaced" ] || continue
+    next_rows+=("$replaced")
+  done < <(replace_evidence_row_for_change "$change_id" "$row" "${EVIDENCE_ROWS[@]+"${EVIDENCE_ROWS[@]}"}")
+  EVIDENCE_ROWS=("${next_rows[@]}")
+  IFS='|' read -r \
+    cid collection_status reason_code trace_exit integrity gap_count \
+    verify_exit verdict blocking insufficient \
+    <<<"$row"
+  case "$collection_status" in
+    incomplete)
+      SPECIALTY_REPORT_FAILED="true"
+      ;;
+    complete|legacy_unlayered)
+      # Trace integrity incomplete or non-pass verify marks the specialty stage failed.
+      if [ "$integrity" = "incomplete" ] || [ "$verdict" != "pass" ]; then
+        SPECIALTY_REPORT_FAILED="true"
+      fi
+      ;;
+  esac
+  # Capability replay incomplete is encoded in report_collection_exit / evidence-row exit.
+  if ! "$AA_PYTHON_BIN" "$SPECIALTY_REPORT_PY" evidence-row \
+    --change-id "$change_id" "$report_file" >/dev/null 2>&1; then
+    SPECIALTY_REPORT_FAILED="true"
+  fi
+  log "[$change_id] reused frozen specialty and trace/verify evidence status=$collection_status reason=$reason_code"
+}
+
 # Deterministic benchmark metrics over golden fixtures. This is observational:
 # suite verdicts are reported but do not alter the workflow/archive gate.
 declare -a BENCHMARK_EVAL_ROWS=()
@@ -772,6 +936,20 @@ if ! command -v "$AA_BIN" >/dev/null 2>&1; then
   log "ERROR: aa CLI not found: $AA_BIN (install with 'uv tool install .' in $AA_REPO_ROOT)"
   exit 1
 fi
+if [ "$DO_SPECIALTY_REPORT" = "true" ] && [ "$DO_TRACE_VERIFY" != "true" ]; then
+  log "ERROR: DO_SPECIALTY_REPORT=true requires DO_TRACE_VERIFY=true"
+  exit 1
+fi
+if [ "$DO_SPECIALTY_REPORT" = "true" ] && [ ! -f "$SPECIALTY_REPORT_PY" ]; then
+  log "ERROR: missing specialty reporter: $SPECIALTY_REPORT_PY"
+  exit 1
+fi
+if [ "$DO_TRACE_VERIFY" = "true" ] || [ "$DO_SPECIALTY_REPORT" = "true" ]; then
+  if ! AA_PYTHON_BIN="$(resolve_aa_python_bin "$AA_BIN" "$AA_PYTHON_BIN")"; then
+    log "ERROR: cannot resolve the Python interpreter backing $AA_BIN"
+    exit 1
+  fi
+fi
 
 if [ ! -d "$AA_SKILLS_ROOT" ]; then
   log "materializing aa skills into $AA_SKILLS_ROOT via aa skill refresh"
@@ -786,6 +964,8 @@ log "cursor_agent=$CURSOR_AGENT_BIN model=${CURSOR_MODEL:-default} max_attempts=
 log "do_archive=$DO_ARCHIVE use_workflow_archive=$USE_WORKFLOW_ARCHIVE entrypoint=$ARCHIVE_ENTRYPOINT"
 log "retro: canonical_batch_cli id=$RETRO_ID manifest=$BATCH_MANIFEST dry_run=$RETRO_DRY_RUN"
 log "do_benchmark_eval=$DO_BENCHMARK_EVAL suites=[$BENCHMARK_EVAL_SUITES]"
+log "do_trace_verify=$DO_TRACE_VERIFY"
+log "do_specialty_report=$DO_SPECIALTY_REPORT"
 log "auto_decide=$AUTO_DECIDE_BENCHMARK recover_healing=$RECOVER_HEALING_DEADLOCK"
 
 setup_run_tracking
@@ -809,6 +989,9 @@ fi
 ensure_test_infra
 
 declare -a ROW_RESULTS=()
+declare -a EVIDENCE_ROWS=()
+declare -a SPECIALTY_REPORT_FILES=()
+SPECIALTY_REPORT_FAILED="false"
 item_idx=0
 total_items=${#BENCHMARK_ITEMS[@]}
 
@@ -842,6 +1025,23 @@ for item in "${BENCHMARK_ITEMS[@]}"; do
 
   if [ "$workflow_kind" = "completed" ]; then
     log "[$change_id] already completed — skip driver"
+    if [ "$DO_SPECIALTY_REPORT" = "true" ]; then
+      specialty_report="$RUN_DIR/${change_id}.specialty-report.json"
+      if specialty_action="$(benchmark_specialty_resume_action \
+        "$specialty_report" "qa/archive/$change_id")"; then
+        if [ "$specialty_action" = "reuse" ]; then
+          reuse_specialty_report_stage "$change_id" || true
+        else
+          run_trace_verify_stage "$change_id"
+          run_specialty_report_stage "$change_id" || true
+        fi
+      else
+        SPECIALTY_REPORT_FAILED="true"
+        log "[$change_id] ERROR: specialty evidence missing after archive; refusing post-archive collection"
+      fi
+    else
+      run_trace_verify_stage "$change_id"
+    fi
     final_status="$(execution_final_status "$change_id")"
     archived="no"
     if [ -d "qa/archive/$change_id" ]; then
@@ -937,6 +1137,9 @@ PYASSERT
     continue
   fi
 
+  run_trace_verify_stage "$change_id"
+  run_specialty_report_stage "$change_id" || true
+
   if benchmark_should_run_archive "$DO_ARCHIVE" "$workflow_kind" "$final_status"; then
     log "[$change_id] stage 2/2 archive ..."
     if run_archive_stage "$change_id"; then
@@ -1018,6 +1221,43 @@ for member in payload["members"]:
         f"{member['evidence_availability']} |"
     )
 PY
+  if [ "$DO_TRACE_VERIFY" = "true" ]; then
+    echo
+    echo "## Trace / Verify Evidence"
+    echo
+    echo "| change_id | collection_status | reason_code | trace exit | integrity | gaps | verify exit | verdict | blocking gaps | insufficient |"
+    echo "|---|---|---|---:|---|---:|---:|---|---:|---:|"
+    for row in "${EVIDENCE_ROWS[@]}"; do
+      IFS='|' read -r \
+        cid collection_status reason_code trace_exit integrity gap_count \
+        verify_exit verdict blocking insufficient <<<"$row"
+      echo "| \`$cid\` | $collection_status | $reason_code | $trace_exit | $integrity | $gap_count | $verify_exit | $verdict | $blocking | $insufficient |"
+    done
+  fi
+  if [ "$DO_SPECIALTY_REPORT" = "true" ]; then
+    echo
+    if [ "${#SPECIALTY_REPORT_FILES[@]}" -gt 0 ]; then
+      if ! render_benchmark_specialty_sections \
+        "$AA_PYTHON_BIN" "$SPECIALTY_REPORT_PY" "${SPECIALTY_REPORT_FILES[@]}"; then
+        SPECIALTY_REPORT_FAILED="true"
+        echo "## Capability + Contract + Policy"
+        echo
+        echo "Specialty report rendering failed; inspect per-item logs."
+        echo
+        echo "## Traceability / Evidence Projection"
+        echo
+        echo "Specialty report rendering failed; inspect per-item logs."
+      fi
+    else
+      echo "## Capability + Contract + Policy"
+      echo
+      echo "No completed item produced specialty evidence."
+      echo
+      echo "## Traceability / Evidence Projection"
+      echo
+      echo "No completed item produced specialty evidence."
+    fi
+  fi
   echo
   echo "## Retro → Improvements"
   echo
@@ -1063,6 +1303,15 @@ PY
   echo "- archive logs: \`benchmark/runs/$RUNSTAMP-cursor/*.archive.workflow.log\` (or \`*.archive.cursor.jsonl\` if legacy)"
   echo "- retro collect log: \`benchmark/runs/$RUNSTAMP-cursor/retro-collect.log\`"
   echo "- status snapshots: \`benchmark/runs/$RUNSTAMP-cursor/*.status.json\`"
+  if [ "$DO_TRACE_VERIFY" = "true" ]; then
+    echo "- trace projections: \`benchmark/runs/$RUNSTAMP-cursor/*.trace.json\`"
+    echo "- verify verdicts: \`benchmark/runs/$RUNSTAMP-cursor/*.verify.json\`"
+    echo "- trace/verify logs: \`benchmark/runs/$RUNSTAMP-cursor/*.trace-verify.log\`"
+  fi
+  if [ "$DO_SPECIALTY_REPORT" = "true" ]; then
+    echo "- specialty evidence + policy replay: \`benchmark/runs/$RUNSTAMP-cursor/*.specialty-report.json\`"
+    echo "- specialty collection logs: \`benchmark/runs/$RUNSTAMP-cursor/*.specialty-report.log\`"
+  fi
   echo "- loop log: \`benchmark/runs/$RUNSTAMP-cursor/loop.log\`"
 } >"$SUMMARY"
 
@@ -1075,5 +1324,15 @@ if ! benchmark_result_exit_code \
   "$DO_ARCHIVE" \
   "${ROW_RESULTS[@]+"${ROW_RESULTS[@]}"}"; then
   log "ERROR: benchmark result gate failed (workflow/archive result is not closed)"
+  exit 1
+fi
+if ! benchmark_evidence_exit_code \
+  "$DO_TRACE_VERIFY" \
+  "${EVIDENCE_ROWS[@]+"${EVIDENCE_ROWS[@]}"}"; then
+  log "ERROR: benchmark evidence gate failed (trace/verify result is not pass)"
+  exit 1
+fi
+if [ "$DO_SPECIALTY_REPORT" = "true" ] && [ "$SPECIALTY_REPORT_FAILED" = "true" ]; then
+  log "ERROR: benchmark specialty report/policy replay failed"
   exit 1
 fi

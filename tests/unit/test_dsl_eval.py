@@ -90,3 +90,49 @@ def test_subscript_eval():
 
 def test_is_satisfied_fail_closed():
     assert is_satisfied(parse_expression("state.x == 'y'"), Scope({"state": {}})) is False
+
+
+def test_plan_assurance_state_invokes_resolver_with_four_values() -> None:
+    seen: list[object] = []
+
+    def resolver(checks, review, dk, layer):
+        seen.extend([checks, review, dk, layer])
+        return "applicable"
+
+    result = ev(
+        "plan_assurance_state(api_plan_checks, api_plan_review, data_knowledge, 'api')",
+        {
+            "api_plan_checks": {"status": "pass"},
+            "api_plan_review": {"decision": "pass"},
+            "data_knowledge": {"version": 1},
+        },
+        plan_assurance_state=resolver,
+    )
+    assert result == "applicable"
+    assert seen == [
+        {"status": "pass"},
+        {"decision": "pass"},
+        {"version": 1},
+        "api",
+    ]
+
+
+def test_plan_assurance_state_resolver_inherits_through_child_scope() -> None:
+    captured: list[str] = []
+
+    def resolver(_checks, _review, _dk, layer):
+        captured.append(str(layer))
+        return "not_applicable"
+
+    scope = Scope(
+        {"items": [{"layer": "api"}, {"layer": "e2e"}]},
+        plan_assurance_state=resolver,
+    )
+    expr = parse_expression("all(items, plan_assurance_state(null, null, null, layer) == 'not_applicable')")
+    assert evaluate(expr, scope) is True
+    assert captured == ["api", "e2e"]
+
+
+def test_plan_assurance_state_without_resolver_raises_dsl_error() -> None:
+    with pytest.raises(DslError, match="no resolver"):
+        ev("plan_assurance_state(null, null, null, 'api')", {})

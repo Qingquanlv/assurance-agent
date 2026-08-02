@@ -56,6 +56,9 @@ def stub_pytest_run(outcome_by_target: dict[str, str]):
 
 @pytest.fixture
 def change_dir(tmp_path: Path) -> Path:
+    from tests.helpers_aa import write_aa_config
+
+    write_aa_config(tmp_path)
     (tmp_path / "tests" / "api").mkdir(parents=True)
     (tmp_path / "tests" / "e2e").mkdir(parents=True)
     change = tmp_path / "qa" / "changes" / "CH-1"
@@ -295,6 +298,9 @@ def test_run_change_fails_when_mapped_performance_locustfile_is_missing(
 
 
 def test_run_change_missing_test_dirs_all_skipped(tmp_path: Path, monkeypatch) -> None:
+    from tests.helpers_aa import write_aa_config
+
+    write_aa_config(tmp_path)
     monkeypatch.setattr(runner_mod, "generate_batch_id", lambda: "20260715-000002")
 
     def boom(*a, **k):
@@ -309,4 +315,5 @@ def test_run_change_missing_test_dirs_all_skipped(tmp_path: Path, monkeypatch) -
         encoding="utf-8",
     )
     manifest = run_change(tmp_path, change, make_config())
-    assert manifest.final_status == "SKIPPED"
+    # Task 9: vacuous evidence sufficiency (no cases) yields coverage PASS; functional SKIPPED → final PASS.
+    assert manifest.final_status == "PASS"

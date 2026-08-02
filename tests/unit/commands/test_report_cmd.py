@@ -1,7 +1,7 @@
+import json
 from pathlib import Path
 
-from tests.helpers_aa import write_aa_config
-
+import pytest
 from click.testing import CliRunner
 
 from assurance_agent.artifacts.models import CoverageThreshold, SelectedTargets
@@ -9,6 +9,8 @@ from assurance_agent.cli import main
 from assurance_agent.workflow.execution.evidence import publish_execution_evidence
 from assurance_agent.workflow.execution.results import CaseResult, CoverageResult, ResultSource, TargetResult
 from assurance_agent.workflow.report.quality_gate import build_quality_gate
+from tests.helpers_aa import make_report_v2, sufficient_evidence_coverage, write_aa_config
+from tests.unit.artifacts.test_models_inspect_report import make_coverage, make_functional
 
 
 def _seed(root: Path, failed: bool) -> None:
@@ -66,7 +68,7 @@ def _seed(root: Path, failed: bool) -> None:
         api=api,
         e2e=None,
         coverage=cov,
-        coverage_gate_mode="warn",
+        evidence_coverage=sufficient_evidence_coverage(),
     )
     publish_execution_evidence(
         execution_dir=root / "qa" / "changes" / "CH-1" / "execution",
@@ -110,3 +112,59 @@ def test_report_inspect_missing_evidence_exit_one(tmp_path: Path, monkeypatch) -
     result = CliRunner().invoke(main, ["report", "inspect", "--change", "CH-2"])
     assert result.exit_code == 1
     assert "run" in result.output.lower()
+
+
+@pytest.mark.parametrize("version", ["1.0", "2.0"])
+def test_report_cli_accepts_persisted_quality_versions(
+    tmp_path: Path,
+    monkeypatch,
+    version: str,
+) -> None:
+    """V1-only and V2-only quality artifacts dispatch concretely; QualityReport stays 1.1."""
+    _seed(tmp_path, failed=False)
+    gate_path = (
+        tmp_path
+        / "qa"
+        / "changes"
+        / "CH-1"
+        / "execution"
+        / "runs"
+        / "20260715-000000"
+        / "quality-gate-result.json"
+    )
+    if version == "1.0":
+        doc = {
+            "schema_version": "1.0",
+            "change_id": "CH-1",
+            "batch_id": "20260715-000000",
+            "dimensions": {"functional": make_functional(), "coverage": make_coverage()},
+            "final_status": "PASS",
+        }
+        assert "evidence" not in doc["dimensions"]["coverage"]
+    else:
+        coverage = {
+            **make_coverage(),
+            "evidence": {"kind": "sufficiency", "report": make_report_v2(verdicts=[])},
+        }
+        doc = {
+            "schema_version": "2.0",
+            "change_id": "CH-1",
+            "batch_id": "20260715-000000",
+            "dimensions": {"functional": make_functional(), "coverage": coverage},
+            "final_status": "PASS",
+        }
+        assert doc["dimensions"]["coverage"]["evidence"]["kind"] == "sufficiency"
+    gate_path.write_text(json.dumps(doc), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    inspect = runner.invoke(main, ["report", "inspect", "--change", "CH-1"])
+    assert inspect.exit_code == 0, inspect.output
+    generate = runner.invoke(main, ["report", "generate", "--change", "CH-1"])
+    assert generate.exit_code == 0, generate.output
+    report = json.loads(
+        (tmp_path / "qa" / "changes" / "CH-1" / "report" / "quality-report.json").read_text(encoding="utf-8")
+    )
+    assert report["schema_version"] == "1.1"
+    # Concrete dispatch must not upgrade the on-disk quality gate artifact.
+    persisted = json.loads(gate_path.read_text(encoding="utf-8"))
+    assert persisted["schema_version"] == version

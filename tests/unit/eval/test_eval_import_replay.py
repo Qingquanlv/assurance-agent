@@ -15,6 +15,7 @@ import yaml
 
 from tests.helpers_aa import write_aa_config
 
+from assurance_agent.eval import write_scan
 from assurance_agent.eval.executor import execute_attempt
 from assurance_agent.eval.fixtures import write_fixture_lock
 from assurance_agent.eval.types import DatasetSample
@@ -32,6 +33,8 @@ from assurance_agent.workflow.graph.handlers.operation import (
 from assurance_agent.workflow.graph.leases import SystemClock
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
 from assurance_agent.workflow.graph.runtime import GraphRuntime
+from assurance_agent.workflow.driver.runtime_factory import one_definition_resolver
+from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
 from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
@@ -153,15 +156,17 @@ def _runtime_factory(*, write_forbidden: bool = False):
             contracts=contracts,
             state_defs=dict(compiled.schema.graphs[entry_graph].state),
         )
-        schemas = {compiled.digest: compiled}
         runtime = GraphRuntime(
             checkpoint_store=checkpoints,
             object_store=store,
             workspace_backend=workspaces,
-            contracts=contracts,
-            node_runner=runner,
-            scheduler=scheduler,
-            schema_resolver=lambda digest: schemas[digest],
+            definition_resolver=one_definition_resolver(
+                compiled=compiled,
+                contracts=contracts,
+                ingest_catalog=validate_catalog_runtime(),
+                node_runner=runner,
+                scheduler=scheduler,
+            ),
             clock=SystemClock(),
         )
         holder["rt"] = runtime
@@ -282,7 +287,7 @@ def _run_import_attempt(
         runtime_factory=_runtime_factory(write_forbidden=write_forbidden),
         fixtures_root=fixtures,
         run_mode=run_mode,
-        test_types="api",
+        selected_layers=("api",),
         run_tests=False,
     )
     assert result.exit_code == 0, result.error
@@ -324,10 +329,15 @@ def test_eval_codegen_only_starts_only_unimported_task(tmp_path: Path) -> None:
 def test_eval_import_path_forbidden_write_reports_project_diff(tmp_path: Path) -> None:
     attempt, _change = _run_import_attempt(tmp_path, write_forbidden=True)
     diff_path = attempt / "evidence" / "write-diff.json"
+    policy_path = attempt / "evidence" / "write-policy.json"
     assert diff_path.is_file()
-    diff = json.loads(diff_path.read_text(encoding="utf-8"))
-    assert "src/evil.py" in diff["violation_paths"]
-    assert diff["forbidden_write_executed_count"] >= 1
-    assert "src/evil.py" in diff["changed_paths"]
+    assert policy_path.is_file()
+    # Task 17: write-diff.json is WriteDiffV1; forbidden count comes from policy scan.
+    diff = write_scan.WriteDiffV1.model_validate_json(diff_path.read_bytes())
+    policy = write_scan.WritePolicyV1.model_validate_json(policy_path.read_bytes())
+    scan = write_scan.scan_forbidden_writes_from_diff(diff, policy)
+    assert "src/evil.py" in scan.violation_paths
+    assert scan.forbidden_write_executed_count >= 1
+    assert "src/evil.py" in scan.changed_paths
     # Allowed change-dir artifact from the unimported codegen task still appears.
-    assert any(p.startswith("qa/changes/") for p in diff["changed_paths"])
+    assert any(p.startswith("qa/changes/") for p in scan.changed_paths)

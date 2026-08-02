@@ -83,11 +83,15 @@ def _print_human(change_id: str, status: GraphStatus) -> None:
     click.echo(f"  status     : {status.status}")
     click.echo(f"  checkpoint : {status.checkpoint_id}")
     click.echo(f"  event_seq  : {status.event_seq}")
+    if status.recovery_state is not None:
+        click.echo(f"  recovery   : {status.recovery_state}")
     click.echo(f"  pending    : {', '.join(status.pending_tasks) or '(none)'}")
     for interrupt in status.pending_interrupts:
         click.echo(
             f"  interrupt  : {interrupt.interrupt_id} @ {interrupt.node_id} actions={list(interrupt.actions)}"
         )
+        if interrupt.revision_view:
+            click.echo(f"  revision   : {interrupt.revision_view}")
     if status.terminal_reason and status.status in {"completed", "failed", "stopped"}:
         color = "green" if status.status == "completed" else "red"
         click.echo("  terminal   : " + click.style(f"{status.status} — {status.terminal_reason}", fg=color))

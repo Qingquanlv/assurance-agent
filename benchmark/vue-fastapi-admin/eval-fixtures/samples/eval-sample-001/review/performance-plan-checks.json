@@ -1,0 +1,52 @@
+{
+  "schema_version": "2",
+  "layer": "performance",
+  "applicability": {
+    "layer": "performance",
+    "applicable": true,
+    "reason_code": "automated_cases_present",
+    "case_ids": [
+      "PERF-001"
+    ]
+  },
+  "status": "pass",
+  "checks": [
+    {
+      "check_id": "l1_path",
+      "status": "pass",
+      "findings": [],
+      "refs": [
+        "plans/performance-codegen-plan.md",
+        "plans/performance-plan.md"
+      ],
+      "applicability_reason": null
+    },
+    {
+      "check_id": "shared_factory",
+      "status": "pass",
+      "findings": [],
+      "refs": [
+        "plans/performance-codegen-plan.md",
+        "plans/performance-plan.md"
+      ],
+      "applicability_reason": null
+    },
+    {
+      "check_id": "assert_ideal",
+      "status": "not_applicable",
+      "findings": [],
+      "refs": [],
+      "applicability_reason": "check_not_in_profile"
+    },
+    {
+      "check_id": "capability_keys",
+      "status": "pass",
+      "findings": [],
+      "refs": [
+        ".aa/data-knowledge.yaml",
+        "review/performance-plan-review.json"
+      ],
+      "applicability_reason": null
+    }
+  ]
+}

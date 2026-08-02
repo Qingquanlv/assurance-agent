@@ -8,10 +8,14 @@ operation 是进程内函数调用，绝不 spawn ``aa`` 子进程（无 subproc
   value 含 ``healing_available`` / ``status``；output 与 gate 冻结由 runner finalize；
 - ``operation:verify-plan-mechanical``：对 plan 跑确定性 check，写出
   ``review/<layer>-plan-checks.json``；check 失败不构成 task 失败；
+- ``operation:derive-plan-layer-applicability``：只读 cases 的确定性纯派生，
+  返回 ``LayerApplicability``；无写、无 plans/review/L1 访问（preflight）；
 - ``operation:run-tests``：直接调用 ``workflow.execution.runner.run_change``，
   project/change 路径 remap 到 task 私有 workspace；
 - ``operation:inspect``：直接调用 ``workflow.report.inspector.inspect_change``，
   写出 ``inspect/failure-analysis.json`` 与 ``inspect/quality-gate-result.json``；
+- ``operation:materialize-trace-projection``：调用 ``evidence.trace.fold_trace``
+  （``phase=reconciled``），写出权威 ``inspect/trace-projection.json``；
 - ``operation:allocate-healing-attempt``：把 entry-baseline artifact 写进 task
   workspace 并返回 state updates；``budget_consumed`` strict 事件归 scheduler；
 - ``operation:record-healing-status``：返回 healing 终局判定；
@@ -40,8 +44,20 @@ from assurance_agent.workflow.report.report_builder import generate_report
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
 from assurance_agent.workflow.graph.task_runner import task_failure, task_with
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
+from assurance_agent.workflow.healing.operations import (
+    enhance_allocate_result_with_authority,
+    operation_combine_fixer_safety,
+    operation_fixer_authority_ready,
+    operation_fixer_dispatch,
+    operation_record_codegen_fix_apply,
+    operation_record_fixer_approval,
+)
 from assurance_agent.workflow.orchestration.operations import BASELINE_REL, HEAL_STATUSES
-from assurance_agent.workflow.graph.handlers.plan_checks import verify_plan_mechanical
+from assurance_agent.workflow.graph.handlers.plan_checks import (
+    derive_plan_layer_applicability,
+    verify_plan_mechanical,
+)
+from assurance_agent.workflow.graph.handlers.trace_projection import materialize_trace_projection
 from assurance_agent.workflow.graph.handlers.retro_ops import (
     apply_improvement_auto_review,
     assemble_retro_context_v3,
@@ -270,9 +286,9 @@ def operation_allocate_healing_attempt(
 ) -> OperationResult:
     """写 entry-baseline artifact 并返回 allocation payload（ids 按 v1 规则结构化派生）。
 
-    strict ``healing_attempt_allocated``/``healing_entry_baseline_pinned`` 事件在
-    scheduler ``_persist_success`` 中写入 canonical ledger；本函数只产出 workspace
-    artifact 与 allocation value。
+    Legacy host-ledger allocation events are appended by the scheduler
+    compatibility hook in ``_persist_success``; this function only produces
+    workspace artifacts, optional fixer-authority output, and allocation value.
     """
     manifest_path = workspace.change_dir / "execution" / "execution-manifest.yaml"
     batch_id: str | None = None
@@ -341,9 +357,17 @@ def operation_allocate_healing_attempt(
         "baseline_sha256": baseline_sha256,
         "entry_batch_id": batch_id,
     }
-    return TaskResult(
-        status="succeeded",
-        value=allocation,
+    # Activated path: always write fixer-authority and emit healing_allocation/v2.
+    # Callers may still force-disable via with.emit_durable_effect=false for tests.
+    params = task_with(task)
+    emit_effect = True if "emit_durable_effect" not in params else bool(params.get("emit_durable_effect"))
+    return enhance_allocate_result_with_authority(
+        task=task,
+        workspace=workspace,
+        context=context,
+        allocation=allocation,
+        attempt_id=attempt_id,
+        emit_durable_effect=emit_effect,
     )
 
 
@@ -393,10 +417,16 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:no-op": no_op,
         "operation:skill-registry-check": skill_registry_check,
         "operation:verify-plan-mechanical": verify_plan_mechanical,
+        "operation:derive-plan-layer-applicability": derive_plan_layer_applicability,
         "operation:run-tests": run_tests,
         "operation:inspect": inspect_operation,
         "operation:generate-report": generate_report_operation,
         "operation:allocate-healing-attempt": operation_allocate_healing_attempt,
+        "operation:fixer-authority-ready": operation_fixer_authority_ready,
+        "operation:record-fixer-approval": operation_record_fixer_approval,
+        "operation:fixer-dispatch": operation_fixer_dispatch,
+        "operation:record-codegen-fix-apply": operation_record_codegen_fix_apply,
+        "operation:combine-fixer-safety": operation_combine_fixer_safety,
         "operation:record-healing-status": operation_record_healing_status,
         "operation:stop": stop_operation,
         "operation:retro-collect-v3": retro_collect_v3,
@@ -421,6 +451,7 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:record-issue-analysis-failure": record_issue_analysis_failure_operation,
         "operation:record-project-sync-pending": record_project_sync_pending_operation,
         "operation:reconcile-issues": reconcile_issues_operation,
+        "operation:materialize-trace-projection": materialize_trace_projection,
         "operation:load-problem-review-context": load_problem_review_context_operation,
         "operation:apply-problem-review": apply_problem_review_operation,
         "operation:load-improvement-review-context": load_improvement_review_context_operation,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 
 import pytest
@@ -15,6 +17,13 @@ from assurance_agent.artifacts.models.issues import (
     ObservationSource,
     ProblemFingerprint,
     ProvisionalAssessment,
+)
+from assurance_agent.evidence.issue_identity import (
+    ObservationIdentityInput,
+    event_id,
+    observation_id,
+    occurrence_id,
+    problem_id,
 )
 from assurance_agent.retro.context import (
     RetroContextImmutableError,
@@ -50,34 +59,60 @@ from assurance_agent.workflow.issues.history_models import IssueTypedEvents
 from assurance_agent.workflow.issues.ledger import ChangeIssueStore, ProjectProblemStore
 from tests.helpers_aa import write_aa_config
 
-PROB_1 = "PROB-1"
-PROB_2 = "PROB-2"
-OCC_1 = "OCC-1"
-OCC_2 = "OCC-2"
-OBS_1 = "OBS-1"
-OBS_2 = "OBS-2"
 FINGERPRINT = ProblemFingerprint(version="1", digest="sha256:" + "a" * 64)
 FINGERPRINT_B = ProblemFingerprint(version="1", digest="sha256:" + "b" * 64)
+PROB_1 = problem_id(FINGERPRINT)
+PROB_2 = problem_id(FINGERPRINT_B)
+CANDIDATE_DIGEST = "sha256:11223344"
+EVIDENCE_DIGEST = "sha256:aabbccdd"
+
+
+def _evidence_refs_digest(evidence_refs: list[str]) -> str:
+    canonical = json.dumps(sorted(evidence_refs), sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _ce(
     *,
     seq: int,
-    event_id: str,
     type_: str,
     change_id: str,
     ts: str = "2026-07-25T10:00:00Z",
     batch_id: str = "B-001",
+    evidence_digest: str = EVIDENCE_DIGEST,
+    idempotency_key: str | None = None,
     **extra: object,
 ) -> ChangeIssueEvent:
+    if idempotency_key is None:
+        if type_ == "observation_recorded":
+            obs = extra["observation"]
+            assert isinstance(obs, dict)
+            idempotency_key = f"observation_recorded:{change_id}:{batch_id}:{obs['observation_id']}"
+        elif type_ == "issue_analysis_completed":
+            status = extra["analysis_status"]
+            assert isinstance(status, dict)
+            idempotency_key = f"issue_analysis_completed:{change_id}:{batch_id}:{status['candidate_digest']}"
+        elif type_ == "issue_analysis_failed":
+            status = extra["analysis_status"]
+            assert isinstance(status, dict)
+            idempotency_key = (
+                f"issue_analysis_failed:{change_id}:{batch_id}:{status['evidence_bundle_digest']}"
+            )
+        elif type_ in {"occurrence_detected", "occurrence_linked"}:
+            occ = extra["occurrence"]
+            assert isinstance(occ, dict)
+            digest = occ["analysis"]["candidate_digest"]
+            idempotency_key = f"{type_}:{change_id}:{batch_id}:{digest}"
+        else:
+            idempotency_key = f"test:{type_}:{change_id}:{seq}"
     return CHANGE_ISSUE_EVENT_ADAPTER.validate_python(
         {
             "schema_version": "1.0",
             "seq": seq,
-            "event_id": event_id,
-            "idempotency_key": f"IDEM-{event_id}",
+            "event_id": event_id(idempotency_key),
+            "idempotency_key": idempotency_key,
             "ts": ts,
-            "evidence_digest": "sha256:aabbccdd",
+            "evidence_digest": evidence_digest,
             "type": type_,
             "change_id": change_id,
             "batch_id": batch_id,
@@ -89,21 +124,44 @@ def _ce(
 def _pe(
     *,
     seq: int,
-    event_id: str,
     type_: str,
     problem_id: str = PROB_1,
     expected_problem_version: int = 0,
     ts: str = "2026-07-25T10:05:00Z",
+    evidence_digest: str | None = None,
+    idempotency_key: str | None = None,
     **extra: object,
 ) -> ProblemEvent:
+    refs = extra.get("evidence_refs")
+    if evidence_digest is None:
+        if isinstance(refs, list):
+            evidence_digest = _evidence_refs_digest([str(r) for r in refs])
+        else:
+            evidence_digest = EVIDENCE_DIGEST
+    if idempotency_key is None:
+        if type_ == "problem_assessment_confirmed":
+            idempotency_key = (
+                f"review:confirm_assessment:{problem_id}:{expected_problem_version}:{evidence_digest}"
+            )
+        elif type_ == "problem_work_started":
+            idempotency_key = f"review:start_work:{problem_id}:{expected_problem_version}:{evidence_digest}"
+        elif type_ == "problem_resolved":
+            idempotency_key = f"problem_resolved:{problem_id}:{extra['batch_id']}:{evidence_digest}"
+        elif type_ == "problem_marked_not_an_issue":
+            idempotency_key = (
+                f"review:mark_not_an_issue:{problem_id}:{expected_problem_version}:{evidence_digest}"
+            )
+        else:
+            # problem_detected / regressed omit per-candidate digest from the envelope.
+            idempotency_key = f"test:{type_}:{problem_id}:{seq}"
     return PROBLEM_EVENT_ADAPTER.validate_python(
         {
             "schema_version": "1.0",
             "seq": seq,
-            "event_id": event_id,
-            "idempotency_key": f"IDEM-{event_id}",
+            "event_id": event_id(idempotency_key),
+            "idempotency_key": idempotency_key,
             "ts": ts,
-            "evidence_digest": "sha256:aabbccdd",
+            "evidence_digest": evidence_digest,
             "type": type_,
             "problem_id": problem_id,
             "expected_problem_version": expected_problem_version,
@@ -112,23 +170,35 @@ def _pe(
     )
 
 
-def _observation(observation_id: str, change_id: str, *, kind: str = "test_failure") -> Observation:
+def _observation(change_id: str, *, signature: str, kind: str = "test_failure") -> Observation:
+    artifact = "execution/runs/B-001/api-result.json"
+    obs_id = observation_id(
+        ObservationIdentityInput(
+            change_id=change_id,
+            batch_id="B-001",
+            kind=kind,
+            target="api",
+            case_id=None,
+            source_artifact=artifact,
+            source_json_pointer="/cases/0",
+            signature=signature,
+        )
+    )
     return Observation(
-        observation_id=observation_id,
+        observation_id=obs_id,
         change_id=change_id,
         batch_id="B-001",
         kind=kind,  # type: ignore[arg-type]
         target="api",
         case_id=None,
-        source=ObservationSource(artifact="execution/runs/B-001/api-result.json", json_pointer="/cases/0"),
-        evidence_refs=["execution/runs/B-001/api-result.json"],
-        signature=f"sig-{observation_id}",
+        source=ObservationSource(artifact=artifact, json_pointer="/cases/0"),
+        evidence_refs=[artifact],
+        signature=signature,
         observed_at="2026-07-25T10:00:00Z",
     )
 
 
 def _occurrence(
-    occurrence_id: str,
     change_id: str,
     problem_id: str,
     observation_id: str,
@@ -136,7 +206,7 @@ def _occurrence(
     classification: str = "product_bug",
 ) -> IssueOccurrence:
     return IssueOccurrence(
-        occurrence_id=occurrence_id,
+        occurrence_id=occurrence_id(change_id, "B-001", CANDIDATE_DIGEST),
         change_id=change_id,
         batch_id="B-001",
         observation_ids=[observation_id],
@@ -148,47 +218,51 @@ def _occurrence(
             root_cause_hypothesis="null pointer",
         ),
         analysis=OccurrenceAnalysis(
-            evidence_bundle_digest="sha256:aabbccdd",
+            evidence_bundle_digest=EVIDENCE_DIGEST,
             analyzer="aa-issue-analyzer",
             prompt_version="v1",
-            candidate_digest="sha256:11223344",
+            candidate_digest=CANDIDATE_DIGEST,
         ),
     )
+
+
+OBS_RET1 = _observation("RET-1", signature="sig-obs-1")
+OBS_RET2 = _observation("RET-2", signature="sig-obs-2")
+OBS_1 = OBS_RET1.observation_id
+OBS_2 = OBS_RET2.observation_id
+OCC_1 = occurrence_id("RET-1", "B-001", CANDIDATE_DIGEST)
+OCC_2 = occurrence_id("RET-2", "B-001", CANDIDATE_DIGEST)
 
 
 def _change_events(
     change_id: str,
     *,
-    observation_id: str,
-    occurrence_id: str,
+    obs: Observation,
     problem_id: str,
     classification: str = "product_bug",
     analysis_failed: bool = False,
 ) -> list[ChangeIssueEvent]:
-    obs = _observation(observation_id, change_id)
-    occ = _occurrence(occurrence_id, change_id, problem_id, observation_id, classification=classification)
+    occ = _occurrence(change_id, problem_id, obs.observation_id, classification=classification)
     analysis = IssueAnalysisStatus(
         schema_version="1.0",
         change_id=change_id,
         batch_id="B-001",
         status="failed" if analysis_failed else "completed",
-        evidence_bundle_digest="sha256:aabbccdd",
+        evidence_bundle_digest=EVIDENCE_DIGEST,
         candidate_count=0 if analysis_failed else 1,
-        candidate_digest=None if analysis_failed else "sha256:11223344",
+        candidate_digest=None if analysis_failed else CANDIDATE_DIGEST,
         reason="timeout" if analysis_failed else None,
         retryable=True if analysis_failed else None,
     )
     events = [
         _ce(
             seq=1,
-            event_id=f"CEVT-{change_id}-1",
             type_="observation_recorded",
             change_id=change_id,
             observation=obs.model_dump(mode="json"),
         ),
         _ce(
             seq=2,
-            event_id=f"CEVT-{change_id}-2",
             type_="issue_analysis_failed" if analysis_failed else "issue_analysis_completed",
             change_id=change_id,
             analysis_status=analysis.model_dump(mode="json"),
@@ -199,7 +273,6 @@ def _change_events(
         events.append(
             _ce(
                 seq=3,
-                event_id=f"CEVT-{change_id}-3",
                 type_="occurrence_detected",
                 change_id=change_id,
                 occurrence=occ.model_dump(mode="json"),
@@ -213,7 +286,6 @@ def _rich_problem_events() -> list[ProblemEvent]:
     return [
         _pe(
             seq=1,
-            event_id="PEVT-1",
             type_="problem_detected",
             occurrence_id=OCC_1,
             change_id="RET-1",
@@ -227,7 +299,6 @@ def _rich_problem_events() -> list[ProblemEvent]:
         ),
         _pe(
             seq=2,
-            event_id="PEVT-2",
             type_="problem_assessment_confirmed",
             expected_problem_version=1,
             classification="test_bug",
@@ -239,7 +310,6 @@ def _rich_problem_events() -> list[ProblemEvent]:
         ),
         _pe(
             seq=3,
-            event_id="PEVT-3",
             type_="problem_work_started",
             expected_problem_version=2,
             reason="fix started",
@@ -248,7 +318,6 @@ def _rich_problem_events() -> list[ProblemEvent]:
         ),
         _pe(
             seq=4,
-            event_id="PEVT-4",
             type_="problem_resolved",
             expected_problem_version=3,
             resolved_at="2026-07-25T14:00:00Z",
@@ -260,7 +329,6 @@ def _rich_problem_events() -> list[ProblemEvent]:
         ),
         _pe(
             seq=5,
-            event_id="PEVT-5",
             type_="problem_detected",
             problem_id=PROB_2,
             expected_problem_version=0,
@@ -275,7 +343,6 @@ def _rich_problem_events() -> list[ProblemEvent]:
         ),
         _pe(
             seq=6,
-            event_id="PEVT-6",
             type_="problem_marked_not_an_issue",
             problem_id=PROB_2,
             expected_problem_version=1,
@@ -285,7 +352,6 @@ def _rich_problem_events() -> list[ProblemEvent]:
         ),
         _pe(
             seq=7,
-            event_id="PEVT-7",
             type_="problem_regressed",
             expected_problem_version=4,
             occurrence_id=OCC_1,
@@ -295,19 +361,20 @@ def _rich_problem_events() -> list[ProblemEvent]:
     ]
 
 
+ASSESSMENT_CONFIRMED_EVENT_ID = _rich_problem_events()[1].event_id
+
+
 def _typed_events(*, analysis_failed: bool = False) -> IssueTypedEvents:
     change_events = {
         "RET-1": _change_events(
             "RET-1",
-            observation_id=OBS_1,
-            occurrence_id=OCC_1,
+            obs=OBS_RET1,
             problem_id=PROB_1,
             analysis_failed=analysis_failed,
         ),
         "RET-2": _change_events(
             "RET-2",
-            observation_id=OBS_2,
-            occurrence_id=OCC_2,
+            obs=OBS_RET2,
             problem_id=PROB_2,
             classification="test_bug",
         ),
@@ -503,7 +570,7 @@ def test_context_aggregates_assessment_corrections(readers: _Readers) -> None:
     corrections = context.signals.issue.assessment_corrections
     assert corrections
     assert corrections[0].source_refs.problem_ids == (PROB_1,)
-    assert corrections[0].source_refs.issue_event_ids == ("PEVT-2",)
+    assert corrections[0].source_refs.issue_event_ids == (ASSESSMENT_CONFIRMED_EVENT_ID,)
     assert "severity" not in corrections[0].model_dump()
 
 

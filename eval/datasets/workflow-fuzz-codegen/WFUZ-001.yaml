@@ -4,5 +4,5 @@ tags: [workflow-fuzz-codegen]
 input:
   change_id: eval-sample-001
   fixture_id: eval-sample-001
-  fixture_tier: L2-fuzz-codegen-seed
+  fixture_tier: L2-fuzz-codegen-pending
 expected: {}

@@ -1,12 +1,21 @@
+import json
 from pathlib import Path
 
-from tests.helpers_aa import write_aa_config
+import pytest
 
-from assurance_agent.artifacts.models import CoverageThreshold, SelectedTargets
+from assurance_agent.artifacts.models import (
+    CoverageThreshold,
+    EvidenceCoverageErrorV2,
+    QualityGateResultV1,
+    QualityGateResultV2,
+    SelectedTargets,
+)
 from assurance_agent.workflow.execution.evidence import publish_execution_evidence
 from assurance_agent.workflow.execution.results import CaseResult, CoverageResult, ResultSource, TargetResult
 from assurance_agent.workflow.report.inspector import inspect_change
 from assurance_agent.workflow.report.quality_gate import build_quality_gate
+from tests.helpers_aa import make_report_v2, sufficient_evidence_coverage, write_aa_config
+from tests.unit.artifacts.test_models_inspect_report import make_coverage, make_functional
 
 
 def _seed_change(tmp_path: Path, api: TargetResult, cov: CoverageResult) -> str:
@@ -19,7 +28,7 @@ def _seed_change(tmp_path: Path, api: TargetResult, cov: CoverageResult) -> str:
         api=api,
         e2e=None,
         coverage=cov,
-        coverage_gate_mode="warn",
+        evidence_coverage=sufficient_evidence_coverage(),
     )
     publish_execution_evidence(
         execution_dir=change_dir / "execution",
@@ -35,6 +44,52 @@ def _seed_change(tmp_path: Path, api: TargetResult, cov: CoverageResult) -> str:
         summary="# summary\n",
     )
     return "CH-1"
+
+
+def _overwrite_quality(tmp_path: Path, *, version: str, error: bool = False) -> None:
+    gate_path = (
+        tmp_path
+        / "qa"
+        / "changes"
+        / "CH-1"
+        / "execution"
+        / "runs"
+        / "20260715-000000"
+        / "quality-gate-result.json"
+    )
+    if version == "1.0":
+        coverage = make_coverage()
+        if error:
+            coverage = {
+                **coverage,
+                "status": "FAIL",
+                "evidence": {"error_code": "evidence_projection_missing"},
+            }
+        doc = {
+            "schema_version": "1.0",
+            "change_id": "CH-1",
+            "batch_id": "20260715-000000",
+            "dimensions": {"functional": make_functional(), "coverage": coverage},
+            "final_status": "FAIL" if error else "PASS",
+        }
+    else:
+        if error:
+            evidence: dict = {"kind": "error", "error_code": "evidence_projection_missing"}
+            status = "FAIL"
+            final = "FAIL"
+        else:
+            evidence = {"kind": "sufficiency", "report": make_report_v2(verdicts=[])}
+            status = "PASS"
+            final = "PASS"
+        coverage = {**make_coverage(), "status": status, "evidence": evidence}
+        doc = {
+            "schema_version": "2.0",
+            "change_id": "CH-1",
+            "batch_id": "20260715-000000",
+            "dimensions": {"functional": make_functional(), "coverage": coverage},
+            "final_status": final,
+        }
+    gate_path.write_text(json.dumps(doc), encoding="utf-8")
 
 
 def _api(failed_message: str | None) -> TargetResult:
@@ -136,7 +191,7 @@ def test_inspect_skipped_execution_writes_no_failures(tmp_path: Path) -> None:
     change_id = _seed_change(tmp_path, skipped, skipped_cov)
     result = inspect_change(tmp_path, change_id)
     assert result.analysis.status == "no_failures"
-    assert result.analysis.final_status == "SKIPPED"
+    assert result.analysis.final_status == "PASS"
     assert result.analysis.failures == []
     assert (tmp_path / "qa" / "changes" / "CH-1" / "inspect" / "failure-analysis.json").is_file()
 
@@ -154,9 +209,27 @@ def test_inspect_classifies_locator_failure_as_fixable(tmp_path: Path) -> None:
 def test_inspect_missing_manifest_raises(tmp_path: Path) -> None:
     write_aa_config(tmp_path)
     (tmp_path / "qa" / "changes" / "CH-9").mkdir(parents=True)
-    import pytest
 
     from assurance_agent.workflow.execution.evidence import EvidenceError
 
     with pytest.raises(EvidenceError):
         inspect_change(tmp_path, "CH-9")
+
+
+@pytest.mark.parametrize("version", ["1.0", "2.0"])
+def test_inspect_loads_concrete_quality_variant(tmp_path: Path, version: str) -> None:
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    _overwrite_quality(tmp_path, version=version)
+    result = inspect_change(tmp_path, change_id)
+    expected = QualityGateResultV1 if version == "1.0" else QualityGateResultV2
+    assert isinstance(result.quality_gate, expected)
+    assert result.analysis.inspect_mode == "primary"
+
+
+def test_inspect_v2_error_evidence_without_traceback(tmp_path: Path) -> None:
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    _overwrite_quality(tmp_path, version="2.0", error=True)
+    result = inspect_change(tmp_path, change_id)
+    assert isinstance(result.quality_gate, QualityGateResultV2)
+    assert isinstance(result.quality_gate.dimensions.coverage.evidence, EvidenceCoverageErrorV2)
+    assert result.analysis.final_status == "FAIL"

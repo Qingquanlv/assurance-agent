@@ -4,7 +4,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from assurance_agent.artifacts.models import CoverageThreshold, SelectedTargets
+from assurance_agent.artifacts.models import (
+    CoverageThreshold,
+    QualityGateResultV1,
+    QualityGateResultV2,
+    SelectedTargets,
+)
 from assurance_agent.workflow.execution.evidence import (
     EvidenceError,
     load_execution_evidence,
@@ -12,6 +17,12 @@ from assurance_agent.workflow.execution.evidence import (
 )
 from assurance_agent.workflow.execution.results import CoverageResult, ResultSource, TargetResult
 from assurance_agent.workflow.report.quality_gate import build_quality_gate
+from tests.helpers_aa import make_report_v2, sufficient_evidence_coverage
+from tests.unit.artifacts.test_models_inspect_report import (
+    make_coverage,
+    make_functional,
+    make_quality_gate_result,
+)
 
 
 def make_api(passed: int = 2, failed: int = 0) -> TargetResult:
@@ -52,7 +63,7 @@ def publish(tmp_path: Path, api: TargetResult, cov: CoverageResult):
         api=api_result,
         e2e=None,
         coverage=cov,
-        coverage_gate_mode="warn",
+        evidence_coverage=sufficient_evidence_coverage(),
     )
     manifest = publish_execution_evidence(
         execution_dir=execution_dir,
@@ -137,3 +148,60 @@ def test_result_identity_mismatch_is_integrity_issue(tmp_path: Path) -> None:
     result_path.write_text(json.dumps(doc), encoding="utf-8")
     evidence = load_execution_evidence(execution_dir)
     assert any("identity mismatch" in issue.reason for issue in evidence.integrity_issues)
+
+
+def _quality_doc(version: str) -> dict:
+    if version == "1.0":
+        return make_quality_gate_result(
+            change_id="CH-1",
+            batch_id="20260715-000000",
+            dimensions={"functional": make_functional(), "coverage": make_coverage()},
+            final_status="PASS",
+        )
+    coverage = {
+        **make_coverage(),
+        "evidence": {"kind": "sufficiency", "report": make_report_v2(verdicts=[])},
+    }
+    return {
+        "schema_version": "2.0",
+        "change_id": "CH-1",
+        "batch_id": "20260715-000000",
+        "dimensions": {"functional": make_functional(), "coverage": coverage},
+        "final_status": "PASS",
+    }
+
+
+def write_execution_fixture(tmp_path: Path, *, quality_version: str) -> Path:
+    execution_dir, _ = publish(tmp_path, make_api(), make_cov())
+    gate_path = execution_dir / "runs" / "20260715-000000" / "quality-gate-result.json"
+    gate_path.write_text(json.dumps(_quality_doc(quality_version)), encoding="utf-8")
+    return execution_dir
+
+
+@pytest.mark.parametrize("version", ["1.0", "2.0"])
+def test_execution_evidence_loads_concrete_quality_variant(
+    tmp_path: Path,
+    version: str,
+) -> None:
+    write_execution_fixture(tmp_path, quality_version=version)
+    loaded = load_execution_evidence(tmp_path / "execution")
+    expected = QualityGateResultV1 if version == "1.0" else QualityGateResultV2
+    assert isinstance(loaded.quality_gate, expected)
+
+
+def test_execution_evidence_rejects_unknown_quality_version(tmp_path: Path) -> None:
+    execution_dir = write_execution_fixture(tmp_path, quality_version="1.0")
+    gate_path = execution_dir / "runs" / "20260715-000000" / "quality-gate-result.json"
+    doc = json.loads(gate_path.read_text(encoding="utf-8"))
+    doc["schema_version"] = "99"
+    gate_path.write_text(json.dumps(doc), encoding="utf-8")
+    loaded = load_execution_evidence(execution_dir)
+    assert loaded.quality_gate is None
+
+
+def test_execution_evidence_rejects_invalid_utf8_quality(tmp_path: Path) -> None:
+    execution_dir = write_execution_fixture(tmp_path, quality_version="1.0")
+    gate_path = execution_dir / "runs" / "20260715-000000" / "quality-gate-result.json"
+    gate_path.write_bytes(b"\xff\xfe{not-utf8")
+    loaded = load_execution_evidence(execution_dir)
+    assert loaded.quality_gate is None

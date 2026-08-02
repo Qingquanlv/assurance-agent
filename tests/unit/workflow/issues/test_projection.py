@@ -958,3 +958,176 @@ class TestDumpProjection:
         # Compact separators mean no ": " or ", " in output
         assert ": " not in raw
         assert ", " not in raw
+
+
+def test_workflow_and_foundational_projectors_are_byte_identical() -> None:
+    from assurance_agent.artifacts.models.issue_events import (
+        IssueAnalysisCompletedEvent,
+        ObservationRecordedEvent,
+        OccurrenceDetectedEvent,
+        ProblemDetectedEvent,
+        ProjectSyncPendingEvent,
+    )
+    from assurance_agent.artifacts.models.issues import (
+        IssueAnalysisStatus,
+        IssueOccurrence,
+        OccurrenceAnalysis,
+        Observation,
+        ObservationSource,
+        ProblemFingerprint,
+        ProvisionalAssessment,
+    )
+    from assurance_agent.evidence.issue_identity import (
+        ObservationIdentityInput,
+        event_id,
+        observation_id,
+        occurrence_id,
+        problem_id,
+    )
+    from assurance_agent.evidence import issue_replay as foundational
+    from assurance_agent.workflow.issues import projection as workflow_projection
+
+    obs_id = observation_id(
+        ObservationIdentityInput(
+            change_id="CH-001",
+            batch_id="B-001",
+            kind="test_failure",
+            target="api",
+            case_id=None,
+            source_artifact="execution/runs/B-001/api-result.json",
+            source_json_pointer="/cases/0",
+            signature="http_500_on_empty_name",
+        )
+    )
+    observation = Observation(
+        observation_id=obs_id,
+        change_id="CH-001",
+        batch_id="B-001",
+        kind="test_failure",
+        target="api",
+        case_id=None,
+        source=ObservationSource(
+            artifact="execution/runs/B-001/api-result.json",
+            json_pointer="/cases/0",
+        ),
+        evidence_refs=["execution/runs/B-001/api-result.json"],
+        signature="http_500_on_empty_name",
+        observed_at="2026-07-25T10:00:00Z",
+    )
+    cand = "sha256:11223344"
+    occ_id = occurrence_id("CH-001", "B-001", cand)
+    fingerprint = ProblemFingerprint(version="1", digest="sha256:" + "a" * 64)
+    pid = problem_id(fingerprint)
+    occurrence = IssueOccurrence(
+        occurrence_id=occ_id,
+        change_id="CH-001",
+        batch_id="B-001",
+        observation_ids=[obs_id],
+        problem_id=pid,
+        provisional_assessment=ProvisionalAssessment(
+            classification="product_bug",
+            severity="high",
+            authority="llm_provisional",
+            root_cause_hypothesis="Null pointer on empty name",
+        ),
+        analysis=OccurrenceAnalysis(
+            evidence_bundle_digest="sha256:aabbccdd",
+            analyzer="aa-issue-analyzer",
+            prompt_version="v1",
+            candidate_digest=cand,
+        ),
+    )
+    analysis = IssueAnalysisStatus(
+        schema_version="1.0",
+        change_id="CH-001",
+        batch_id="B-001",
+        status="completed",
+        evidence_bundle_digest="sha256:aabbccdd",
+        candidate_count=1,
+        candidate_digest="sha256:batch",
+    )
+
+    def env_c(seq: int, key: str, **kwargs: object) -> dict:
+        return {
+            "schema_version": "1.0",
+            "seq": seq,
+            "event_id": event_id(key),
+            "idempotency_key": key,
+            "ts": "2026-07-25T10:00:00Z",
+            "evidence_digest": "sha256:aabbccdd",
+            "change_id": "CH-001",
+            "batch_id": "B-001",
+            **kwargs,
+        }
+
+    k1 = f"observation_recorded:CH-001:B-001:{obs_id}"
+    k2 = "issue_analysis_completed:CH-001:B-001:sha256:batch"
+    k3 = f"occurrence_detected:CH-001:B-001:{cand}"
+    k4 = "project_sync_pending:CH-001:B-001:sha256:batch"
+    typed_change_events = (
+        ObservationRecordedEvent(**env_c(1, k1, type="observation_recorded", observation=observation)),
+        IssueAnalysisCompletedEvent(
+            **env_c(2, k2, type="issue_analysis_completed", analysis_status=analysis)
+        ),
+        OccurrenceDetectedEvent(**env_c(3, k3, type="occurrence_detected", occurrence=occurrence)),
+        ProjectSyncPendingEvent(**env_c(4, k4, type="project_sync_pending", candidate_digest="sha256:batch")),
+    )
+    kd = f"problem_detected:{pid}:CH-001:B-001:{cand}"
+    typed_problem_events = (
+        ProblemDetectedEvent(
+            schema_version="1.0",
+            seq=1,
+            event_id=event_id(kd),
+            idempotency_key=kd,
+            ts="2026-07-25T10:00:00Z",
+            evidence_digest="sha256:aabbccdd",
+            problem_id=pid,
+            expected_problem_version=0,
+            type="problem_detected",
+            occurrence_id=occ_id,
+            change_id="CH-001",
+            batch_id="B-001",
+            fingerprint=fingerprint,
+            title="t",
+            classification="product_bug",
+            severity="high",
+            root_cause_hypothesis="h",
+        ),
+    )
+
+    expected_change = foundational.dump_projection(foundational.project_change_issues(typed_change_events))
+    expected_project = foundational.dump_projection(foundational.project_problems(typed_problem_events))
+    assert (
+        workflow_projection.dump_projection(workflow_projection.project_change_issues(typed_change_events))
+        == expected_change
+    )
+    assert (
+        workflow_projection.dump_projection(workflow_projection.project_problems(typed_problem_events))
+        == expected_project
+    )
+    assert expected_change == (
+        b'{"analysis_status":{"batch_id":"B-001","candidate_count":1,"candidate_digest":"sha256:batch",'
+        b'"change_id":"CH-001","evidence_bundle_digest":"sha256:aabbccdd","reason":null,"retryable":null,'
+        b'"schema_version":"1.0","status":"completed"},"authoritative_batch_id":"B-001","batches":["B-001"],'
+        b'"change_id":"CH-001","observations":[{"batch_id":"B-001","case_id":null,"change_id":"CH-001",'
+        b'"evidence_refs":["execution/runs/B-001/api-result.json"],"kind":"test_failure",'
+        b'"observation_id":"OBS-453cf61e86a35d07","observed_at":"2026-07-25T10:00:00Z",'
+        b'"signature":"http_500_on_empty_name","source":{"artifact":"execution/runs/B-001/api-result.json",'
+        b'"json_pointer":"/cases/0"},"target":"api"}],"occurrences":[{"analysis":{"analyzer":"aa-issue-analyzer",'
+        b'"candidate_digest":"sha256:11223344","evidence_bundle_digest":"sha256:aabbccdd","prompt_version":"v1"},'
+        b'"batch_id":"B-001","change_id":"CH-001","observation_ids":["OBS-453cf61e86a35d07"],'
+        b'"occurrence_id":"OCC-e357efc0e8e6aa4e","problem_id":"PROB-aaaaaaaaaaaaaaaa",'
+        b'"provisional_assessment":{"authority":"llm_provisional","classification":"product_bug",'
+        b'"root_cause_hypothesis":"Null pointer on empty name","severity":"high"}}],'
+        b'"project_sync_status":"pending","schema_version":"1.0"}\n'
+    )
+    assert expected_project == (
+        b'{"generated_at":"2026-07-25T10:00:00Z","problems":[{"assessment":{"authority":"llm_provisional",'
+        b'"classification":"product_bug","root_cause_hypothesis":"h","severity":"high"},'
+        b'"fingerprint":{"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'
+        b'"preimage":null,"version":"1"},"first_seen":{"change_id":"CH-001",'
+        b'"occurrence_id":"OCC-e357efc0e8e6aa4e"},"last_seen":{"change_id":"CH-001",'
+        b'"occurrence_id":"OCC-e357efc0e8e6aa4e"},"occurrences":["OCC-e357efc0e8e6aa4e"],'
+        b'"problem_id":"PROB-aaaaaaaaaaaaaaaa","resolution":null,"status":"detected","title":"t",'
+        b'"verification_request":null,"version":1}],"schema_version":"1.0"}\n'
+    )

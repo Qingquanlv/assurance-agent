@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0",
+  "review_type": "fuzz-plan",
+  "change_id": "CH-CANONICAL",
+  "decision": "pass",
+  "risk_level": "low",
+  "codegen_readiness": "ready",
+  "auto_fix_allowed": false,
+  "human_review_required": false,
+  "summary": "Account POST fuzz plan maps schema source, related API case API-ACC-001, admin auth, and seed corpus through L1-declared factories.",
+  "reviewed_files": [
+    "plans/fuzz-plan.md",
+    "plans/fuzz-codegen-plan.md",
+    ".aa/data-knowledge.yaml"
+  ],
+  "blockers": [],
+  "findings": [],
+  "needs_review": [],
+  "auto_fix_plan": [],
+  "required_capabilities": [
+    "capabilities.domain_factories.account.make_account"
+  ],
+  "next_action": "continue",
+  "created_at": "2026-07-31T00:00:00Z"
+}

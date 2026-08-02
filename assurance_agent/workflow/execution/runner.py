@@ -5,12 +5,21 @@ unselected or missing layer becomes a SKIPPED result and the quality gate
 degrades accordingly.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from assurance_agent.artifacts.models import ExecutionManifest
+from assurance_agent.artifacts.policy import PolicyError, load_policy
 from assurance_agent.config import AaConfig
-from assurance_agent.workflow.execution.evidence import publish_execution_evidence
+from assurance_agent.evidence.sufficiency import (
+    EvidenceCoverageEvaluation,
+    build_evidence_coverage_evaluation,
+)
+from assurance_agent.evidence.trace import ExecutionFoldInput, canonical_json_bytes, fold_trace
+from assurance_agent.workflow.execution.evidence import (
+    publish_execution_evidence,
+    write_batch_result_files,
+)
 from assurance_agent.workflow.execution.exec_config import load_coverage_config, load_perf_config
 from assurance_agent.workflow.execution.results import CoverageResult
 from assurance_agent.workflow.execution.runners import (
@@ -29,6 +38,10 @@ def generate_batch_id() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S")
 
 
+def _now_aware() -> datetime:
+    return datetime.now(UTC)
+
+
 def _strip(rel: str) -> str:
     return rel[2:] if rel.startswith("./") else rel
 
@@ -37,6 +50,41 @@ def _test_dir(config: AaConfig, attr: str, default: str) -> str:
     tests = getattr(config, "tests", None)
     value = getattr(tests, attr, None) if tests is not None else None
     return _strip(value) if isinstance(value, str) else default
+
+
+def _evidence_diagnostics(
+    evaluation: EvidenceCoverageEvaluation,
+) -> dict:
+    payload: dict = {}
+    if evaluation.error_code == "policy_error":
+        payload["policy_error"] = "invalid or unreadable .aa/policy.yaml"
+    elif evaluation.report is not None:
+        payload.update(evaluation.report.model_dump(mode="json"))
+    return {"evidence_sufficiency": payload}
+
+
+def _evaluate_evidence_coverage(
+    project_root: Path,
+    projection,
+    *,
+    as_of: datetime,
+) -> EvidenceCoverageEvaluation:
+    try:
+        policy = load_policy(project_root)
+    except PolicyError:
+        return EvidenceCoverageEvaluation(
+            report=None,
+            action=None,
+            error_code="policy_error",
+        )
+    return build_evidence_coverage_evaluation(projection, policy, as_of=as_of)
+
+
+def _assert_gate_projection_matches_disk_fold(gate_projection, disk_projection) -> None:  # noqa: ANN001
+    gate_bytes = canonical_json_bytes(gate_projection.model_dump(mode="json"))
+    disk_bytes = canonical_json_bytes(disk_projection.model_dump(mode="json"))
+    if gate_bytes != disk_bytes:
+        raise RuntimeError("gate trace projection diverged from post-publish disk fold")
 
 
 def run_change(
@@ -130,22 +178,42 @@ def run_change(
         else None
     )
 
+    test_tree = hash_test_tree(project_root)
+    now_aware = _now_aware()
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    write_batch_result_files(
+        batch_dir,
+        api=api,
+        e2e=e2e,
+        fuzz=fuzz,
+        performance=performance,
+    )
+    current = ExecutionFoldInput(
+        batch_id=batch_id,
+        executed_at=now_aware,
+        selected_targets=selected,
+        test_files_sha256=test_tree.files,
+    )
+    gate_projection = fold_trace(project_root, change_id, phase="execution", current=current)
+    evidence_coverage = _evaluate_evidence_coverage(project_root, gate_projection, as_of=now_aware)
+    diagnostics = _evidence_diagnostics(evidence_coverage)
+
     quality_gate = build_quality_gate(
         change_id=change_id,
         batch_id=batch_id,
         api=api,
         e2e=e2e,
         coverage=coverage,
-        coverage_gate_mode=cov_config.gate_mode,
+        evidence_coverage=evidence_coverage,
         fuzz=fuzz,
         performance=performance,
     )
+    quality_gate = quality_gate.model_copy(update={"diagnostics": diagnostics})
     summary = _build_summary(change_id, batch_id, api, e2e, fuzz, coverage, performance, quality_gate)
 
-    test_tree = hash_test_tree(project_root)
     product_tree = hash_product_tree(project_root, load_product_code_roots(project_root))
 
-    return publish_execution_evidence(
+    manifest = publish_execution_evidence(
         execution_dir=execution_dir,
         change_id=change_id,
         batch_id=batch_id,
@@ -160,7 +228,15 @@ def run_change(
         tests_tree_sha256=test_tree.aggregate,
         test_files_sha256=test_tree.files,
         product_tree_sha256=product_tree.aggregate,
+        executed_at=now_aware,
     )
+    disk_projection = fold_trace(project_root, change_id, phase="execution", current=None)
+    (batch_dir / "trace-projection.json").write_text(
+        gate_projection.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+    _assert_gate_projection_matches_disk_fold(gate_projection, disk_projection)
+    return manifest
 
 
 def _build_summary(change_id, batch_id, api, e2e, fuzz, coverage, performance, gate) -> str:  # noqa: ANN001

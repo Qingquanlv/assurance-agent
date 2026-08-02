@@ -6,15 +6,21 @@ and the type definitions in src/schema/contracts.ts. Healing gates reference
 source_batch_id, failures[].fix_proposal_eligible and final_status verbatim.
 """
 
-from typing import Literal
+from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Annotated, Any, Literal, Self
+
+from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 
 from assurance_agent.artifacts.models.common import (
     CoverageDimension,
+    CoverageThreshold,
     FunctionalDimension,
     GateStatus,
 )
+from assurance_agent.artifacts.models.sufficiency import SufficiencyReportV2
+
+_FROZEN = ConfigDict(frozen=True, extra="forbid")
 
 FailureCategory = Literal[
     "environment_failure",
@@ -121,10 +127,83 @@ class QualityGateDimensions(BaseModel):
     non_functional: NonFunctionalDimension | None = None
 
 
-class QualityGateResult(BaseModel):
+class QualityGateResultV1(BaseModel):
     schema_version: Literal["1.0"]
     change_id: str
     batch_id: str
     dimensions: QualityGateDimensions
     final_status: GateStatus
     warnings: list[str] | None = None
+    diagnostics: dict | None = None
+
+
+QualityGateResult = QualityGateResultV1
+
+
+class EvidenceCoverageSuccessV2(BaseModel):
+    model_config = _FROZEN
+    kind: Literal["sufficiency"]
+    report: SufficiencyReportV2
+
+    @model_validator(mode="after")
+    def _require_current_batch(self) -> Self:
+        if self.report.require_current_batch is not True:
+            raise ValueError("quality v2 sufficiency must require current batch")
+        return self
+
+
+class EvidenceCoverageErrorV2(BaseModel):
+    model_config = _FROZEN
+    kind: Literal["error"]
+    error_code: Literal["evidence_projection_missing", "policy_error"]
+
+
+EvidenceCoveragePayloadV2 = Annotated[
+    EvidenceCoverageSuccessV2 | EvidenceCoverageErrorV2,
+    Field(discriminator="kind"),
+]
+
+
+class CoverageDimensionV2(BaseModel):
+    model_config = _FROZEN
+    status: GateStatus
+    available: bool
+    line_coverage: float
+    branch_coverage: float
+    threshold: CoverageThreshold
+    scope: Any = None
+    evidence: EvidenceCoveragePayloadV2
+
+
+class QualityGateDimensionsV2(BaseModel):
+    model_config = _FROZEN
+    functional: FunctionalDimension
+    coverage: CoverageDimensionV2
+    non_functional: NonFunctionalDimension | None = None
+
+
+class QualityGateResultV2(BaseModel):
+    model_config = _FROZEN
+    schema_version: Literal["2.0"] = "2.0"
+    change_id: str
+    batch_id: str
+    dimensions: QualityGateDimensionsV2
+    final_status: GateStatus
+    warnings: list[str] | None = None
+    diagnostics: dict | None = None
+
+
+QualityGateResultLike = QualityGateResultV1 | QualityGateResultV2
+
+QualityGateResultVariant = Annotated[
+    QualityGateResultV1 | QualityGateResultV2,
+    Field(discriminator="schema_version"),
+]
+
+
+class QualityGateResultDocument(RootModel[QualityGateResultVariant]):
+    pass
+
+
+def load_quality_gate_result_document(raw: object) -> QualityGateResultV1 | QualityGateResultV2:
+    return QualityGateResultDocument.model_validate(raw).root

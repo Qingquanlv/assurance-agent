@@ -1,3 +1,5 @@
+from typing import Literal
+
 import pytest
 from pydantic import ValidationError
 
@@ -10,12 +12,16 @@ from assurance_agent.artifacts.models.issues import (
     IssueEvidenceManifest,
     IssueOccurrence,
     IssueReconcileStatus,
+    IssueReconcileStatusDocument,
+    IssueReconcileStatusV1,
+    IssueReconcileStatusV2,
     Observation,
     ObservationDocument,
     ObservationSource,
     Problem,
     ProblemProjection,
     ProblemReviewQueue,
+    load_issue_reconcile_status_document,
 )
 
 
@@ -248,6 +254,125 @@ def test_issue_reconcile_status_completed_parses() -> None:
     )
     assert model.status == "completed"
     assert model.occurrence_count == 1
+    assert IssueReconcileStatus is IssueReconcileStatusV1
+
+
+def _valid_reconcile_status_v2(
+    *,
+    status: str = "completed",
+    occurrence_count: int | None = 1,
+    error: str | None = None,
+    candidate_digest: str | None = "sha256:candidate",
+) -> dict:
+    doc: dict = {
+        "schema_version": "2.0",
+        "change_id": "CH-1",
+        "batch_id": "B1",
+        "status": status,
+        "evidence_bundle_digest": "sha256:evidence",
+        "candidate_digest": candidate_digest,
+        "occurrence_count": occurrence_count,
+        "error": error,
+    }
+    return doc
+
+
+@pytest.mark.parametrize(
+    ("status", "count", "error"),
+    [
+        ("completed", 0, None),
+        ("failed", None, "candidate validation failed"),
+        ("pending", None, None),
+    ],
+)
+def test_reconcile_status_v2_state_shapes(
+    status: Literal["completed", "failed", "pending"],
+    count: int | None,
+    error: str | None,
+) -> None:
+    loaded = IssueReconcileStatusV2(
+        schema_version="2.0",
+        change_id="CH-1",
+        batch_id="B1",
+        status=status,
+        evidence_bundle_digest="sha256:evidence",
+        candidate_digest="sha256:candidate",
+        occurrence_count=count,
+        error=error,
+    )
+    assert loaded.status == status
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_candidate_digest",
+        "completed_missing_count",
+        "completed_with_error",
+        "failed_with_count",
+        "failed_null_error",
+        "pending_with_count",
+        "pending_with_error",
+        "unknown_version",
+        "v1_pending",
+    ],
+)
+def test_reconcile_status_rejects_invalid_shapes(mutation: str) -> None:
+    if mutation == "v1_pending":
+        with pytest.raises(ValidationError):
+            IssueReconcileStatusV1.model_validate(
+                {
+                    "schema_version": "1.0",
+                    "change_id": "CH-1",
+                    "batch_id": "B1",
+                    "status": "pending",
+                    "evidence_bundle_digest": "sha256:evidence",
+                }
+            )
+        return
+
+    if mutation == "unknown_version":
+        with pytest.raises(ValidationError):
+            load_issue_reconcile_status_document({**_valid_reconcile_status_v2(), "schema_version": "99"})
+        return
+
+    payload = _valid_reconcile_status_v2()
+    if mutation == "missing_candidate_digest":
+        payload["candidate_digest"] = ""
+    elif mutation == "completed_missing_count":
+        payload["occurrence_count"] = None
+    elif mutation == "completed_with_error":
+        payload["error"] = "boom"
+    elif mutation == "failed_with_count":
+        payload.update(status="failed", occurrence_count=1, error="boom")
+    elif mutation == "failed_null_error":
+        payload.update(status="failed", occurrence_count=None, error=None)
+    elif mutation == "pending_with_count":
+        payload.update(status="pending", occurrence_count=0, error=None)
+    elif mutation == "pending_with_error":
+        payload.update(status="pending", occurrence_count=None, error="boom")
+
+    with pytest.raises(ValidationError):
+        IssueReconcileStatusV2.model_validate(payload)
+
+
+def test_reconcile_status_document_dispatches_v1_and_v2() -> None:
+    v1 = load_issue_reconcile_status_document(
+        {
+            "schema_version": "1.0",
+            "change_id": "CH-1",
+            "batch_id": "B1",
+            "status": "failed",
+            "evidence_bundle_digest": "sha256:evidence",
+            "error": "legacy failure",
+        }
+    )
+    v2 = load_issue_reconcile_status_document(
+        _valid_reconcile_status_v2(status="pending", occurrence_count=None, error=None)
+    )
+    assert isinstance(v1, IssueReconcileStatusV1)
+    assert isinstance(v2, IssueReconcileStatusV2)
+    assert IssueReconcileStatusDocument.model_validate(v2.model_dump(mode="json")).root == v2
 
 
 def test_issue_occurrence_valid_fixture_parses() -> None:

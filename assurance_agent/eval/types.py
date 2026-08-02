@@ -3,14 +3,66 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+from assurance_agent.artifacts.models.assurance import LayerName
+
+# Live workflow-codegen hard gates (activated in Task 22).
+CODEGEN_HARD_METRICS: tuple[str, ...] = (
+    "current_assurance_chain_rate",
+    "current_codegen_attempt_rate",
+    "selected_test_write_rate",
+)
+
+CODEGEN_SUITE_PENDING_TIERS: dict[str, str] = {
+    "workflow-api-codegen": "L2-api-codegen-pending",
+    "workflow-e2e-codegen": "L2-e2e-codegen-pending",
+    "workflow-fuzz-codegen": "L2-fuzz-codegen-pending",
+    "workflow-performance-codegen": "L2-performance-codegen-pending",
+}
 
 
 class SeedResult(BaseModel):
     change_dir: Path
     import_manifest_path: Path | None = None
+
+
+class FixtureResets(BaseModel):
+    workflow_state: dict[str, Any] = Field(default_factory=dict)
+    qa_yaml: dict[str, Any] = Field(default_factory=dict)
+
+
+class FixtureImportTask(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    graph: str
+    node: str
+    task_key: str | None = None
+    outputs: list[str] = Field(default_factory=list)
+    gate: str | None = None
+
+
+class FixtureImportDef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    entrypoint: str
+    inputs: list[str] = Field(default_factory=list)
+    completed: list[FixtureImportTask] = Field(default_factory=list)
+
+
+class TierManifest(BaseModel):
+    name: str
+    extends: str | None = None
+    description: str = ""
+    paths: list[str] = Field(default_factory=list)
+    repo_paths: list[str] = Field(default_factory=list)
+    expected_layers: list[LayerName] = Field(default_factory=list)
+    resets: FixtureResets = Field(default_factory=FixtureResets)
+    source_prefix: str | None = None
+    imports: dict[str, FixtureImportDef] = Field(default_factory=dict)
 
 
 Gate = Literal["hard", "advisory", "observe"]
@@ -137,4 +189,6 @@ class ExecutionResult(BaseModel):
     status: Literal["ok", "error"]
     exit_code: int | None = None
     error: str | None = None
+    selected_layers: tuple[str, ...] | None = None
+    selection_normalizer_version: str | None = None
     extra: dict = Field(default_factory=dict)

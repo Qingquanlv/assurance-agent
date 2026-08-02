@@ -558,8 +558,12 @@ def _seed_outcomes(
             outcomes[nid] = _Outcome(status="unresolved")
             continue
         latest = _latest_task(graph, projection, nid, node_tasks)
-        if latest.status == "succeeded":
+        if latest.status == "succeeded" and _task_ready_as_predecessor(latest):
             outcomes[nid] = _Outcome(status="succeeded", task=latest)
+            continue
+        if latest.status == "succeeded":
+            # Succeeded but superstep/effects not yet committed-and-acknowledged.
+            outcomes[nid] = _Outcome(status="unresolved", task=latest)
             continue
         if latest.status == "stopped":
             reason = f"task {latest.task_id} (node '{nid}') stopped"
@@ -584,9 +588,29 @@ def _seed_outcomes(
                     )
                 )
             continue
-        if latest.status in ("running", "pending"):
+        if latest.status == "running":
             # wave 仍在飞行：交由 lease/scheduler 对账，planner 不重复执行。
             outcomes[nid] = _Outcome(status="unresolved", task=latest)
+            continue
+        if latest.status == "pending" and latest.next_retry_at is None:
+            # Non-deferral pending remains in-flight. Scheduling deferrals always
+            # stamp next_retry_at and are reselected below without attempt credit.
+            outcomes[nid] = _Outcome(status="unresolved", task=latest)
+            continue
+        if latest.status == "pending" and latest.next_retry_at is not None:
+            # D13 lock deferral: durable scheduling state, not a failed attempt.
+            # Reselect the same task_id; scheduler honors next_retry_at / attempt 1.
+            outcomes[nid] = _Outcome(status="unresolved", task=latest)
+            retry.append(
+                _build_task(
+                    compiled,
+                    graph,
+                    projection,
+                    context,
+                    nid,
+                    max(len(node_tasks) - 1, 0),
+                )
+            )
             continue
         policy = _retry_policy(compiled, definition)
         if latest.status == "failed":
@@ -672,14 +696,26 @@ def _seed_outcomes(
                     ),
                 )
         elif latest.attempts_used >= policy.max_attempts:  # abandoned
-            return (
-                outcomes,
-                retry,
-                (
-                    f"task {latest.task_id} (node '{nid}') abandoned; retry budget "
-                    f"exhausted ({latest.attempts_used}/{policy.max_attempts})"
-                ),
-            )
+            from assurance_agent.workflow.graph.leases import parent_task_has_child_invocation
+
+            wrapper_target = latest.target or ""
+            if wrapper_target.startswith("graph:") and parent_task_has_child_invocation(
+                context.change_dir,
+                parent_invocation_id=projection.invocation_id,
+                parent_task_id=latest.task_id,
+            ):
+                # Process-death abandon of a graph wrapper that already started its
+                # child must re-enter run_child rather than hard-stop at max_attempts=1.
+                pass
+            else:
+                return (
+                    outcomes,
+                    retry,
+                    (
+                        f"task {latest.task_id} (node '{nid}') abandoned; retry budget "
+                        f"exhausted ({latest.attempts_used}/{policy.max_attempts})"
+                    ),
+                )
         # failed-retryable 或 abandoned 且预算未耗尽：同一 task_id 进入下一 wave。
         outcomes[nid] = _Outcome(status="unresolved", task=latest)
         retry.append(
@@ -1090,7 +1126,26 @@ def _seed_fan_out(
             # 冻结后、分发前的崩溃窗口：child 由 _decide_fan_out 按冻结数据重建。
             missing += 1
             continue
+        if child.status == "succeeded" and _task_ready_as_predecessor(child):
+            continue
         if child.status == "succeeded":
+            # Succeeded but uncommitted/unacked: keep fan-out unresolved.
+            if waiting is None:
+                waiting = child
+            continue
+        if child.status == "pending" and child.next_retry_at is not None:
+            # Scheduling deferral: reselect the same fan-out child without budget use.
+            retry.append(
+                _build_fan_out_task(
+                    compiled,
+                    graph,
+                    projection,
+                    context,
+                    nid,
+                    expansion,
+                    index,
+                )
+            )
             continue
         if child.status in ("running", "pending", "interrupted"):
             if waiting is None:
@@ -1157,7 +1212,7 @@ def _seed_fan_out(
             child_count=len(expansion.task_ids),
         )
         aggregate = by_id.get(aggregate_id) or projection.tasks.get(aggregate_id)
-        if aggregate is None or aggregate.status != "succeeded":
+        if aggregate is None or not _task_ready_as_predecessor(aggregate):
             if aggregate is not None:
                 return _Outcome(status="unresolved", task=aggregate), retry, None
             return _Outcome(status="unresolved"), retry, None
@@ -1207,7 +1262,7 @@ def _decide_fan_out(
             if task_id not in projection.tasks:
                 ready.append(_build_fan_out_task(compiled, graph, projection, context, nid, expansion, index))
         if all(
-            (child := projection.tasks.get(task_id)) is not None and child.status == "succeeded"
+            (child := projection.tasks.get(task_id)) is not None and _task_ready_as_predecessor(child)
             for task_id in expansion.task_ids
         ):
             aggregate_id = fan_out_aggregate_task_id(
@@ -1219,7 +1274,9 @@ def _decide_fan_out(
                 child_count=len(expansion.task_ids),
             )
             aggregate = projection.tasks.get(aggregate_id)
-            if aggregate is None or aggregate.status not in ("succeeded", "running"):
+            if aggregate is None or (
+                aggregate.status != "running" and not _task_ready_as_predecessor(aggregate)
+            ):
                 ready.append(
                     _build_fan_out_aggregate_task(compiled, graph, projection, context, nid, expansion)
                 )
@@ -1561,7 +1618,7 @@ def fan_out_state_updates(
             continue
         _validate_expansion_shape(graph, expansion, nid)
         children = [projection.tasks.get(task_id) for task_id in expansion.task_ids]
-        if any(child is None or child.status != "succeeded" for child in children):
+        if any(child is None or not _task_ready_as_predecessor(child) for child in children):
             continue
         reduced = _reduce_fan_out(compiled, graph, projection, nid, fan_out.reduce, expansion)
         updates.append((f"reduce:{projection.structural_path}:{nid}", {fan_out.reduce.into: reduced}))
@@ -2089,6 +2146,20 @@ def _node_has_task_or_settled_generation(
     )
 
 
+def _task_ready_as_predecessor(task: TaskProjection) -> bool:
+    """D14: successors require committed superstep and acknowledged effects."""
+    if task.status != "succeeded" or not task.outputs_committed:
+        return False
+    if not task.durable_effects:
+        return True
+    acked = set(task.acknowledged_effect_ids)
+    for raw in task.durable_effects:
+        effect_id = raw.get("effect_id")
+        if not isinstance(effect_id, str) or effect_id not in acked:
+            return False
+    return True
+
+
 def _succeeded_count(projection: GraphProjection, nid: str) -> int:
     """Count non-child successes for successorship gating.
 
@@ -2102,7 +2173,7 @@ def _succeeded_count(projection: GraphProjection, nid: str) -> int:
         1
         for task in projection.tasks.values()
         if task.node_id == nid
-        and task.status == "succeeded"
+        and _task_ready_as_predecessor(task)
         and task.task_id not in child_ids
         and not task.fan_out_child
     )
@@ -2276,7 +2347,12 @@ def _has_inflight(outcomes: dict[str, _Outcome]) -> bool:
     return any(
         outcome.status == "unresolved"
         and outcome.task is not None
-        and outcome.task.status in ("running", "pending", "interrupted")
+        and (
+            outcome.task.status in ("running", "interrupted")
+            or (outcome.task.status == "pending" and outcome.task.next_retry_at is None)
+            # D14: succeeded but uncommitted/unacked still owns recovery work.
+            or (outcome.task.status == "succeeded" and not _task_ready_as_predecessor(outcome.task))
+        )
         for outcome in outcomes.values()
     )
 

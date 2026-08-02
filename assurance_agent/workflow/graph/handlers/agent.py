@@ -18,6 +18,10 @@ from pathlib import Path
 
 from assurance_agent.workflow.core.graph_types import ErrorKind
 from assurance_agent.workflow.graph.agent_api import AgentInvoker, AgentRequest, build_node_prompt
+from assurance_agent.workflow.graph.assurance_personas import (
+    ASSURANCE_PERSONA_BY_TARGET,
+    expected_assurance_persona,
+)
 from assurance_agent.workflow.graph.contracts import (
     ExecutionContractCatalog,
     ResourceClaims,
@@ -30,6 +34,10 @@ from assurance_agent.workflow.graph.models import (
     TaskResult,
 )
 from assurance_agent.workflow.graph.schema_v2 import NodeDef
+from assurance_agent.workflow.graph.task_inputs import (
+    load_runtime_context_sidecar,
+    runtime_context_digest,
+)
 from assurance_agent.workflow.graph.task_runner import task_failure
 from assurance_agent.workflow.graph.handlers.operation import link_host_task_paths
 from assurance_agent.workflow.graph.workspace import TaskWorkspace, TreeStore, WorkspaceError
@@ -80,7 +88,11 @@ class AgentHandler:
         outputs = self._outputs(task, node_def)
         allowed = tuple(_display_path(path) for path in claims.authorization_writes)
         skill = task.target.partition(":")[2]
-        link_host_task_paths(workspace, context)
+        contract = self._contracts.contracts.get(task.target)
+        # Declared-only agents must not receive host-link visibility (D11/D13).
+        if contract is None or contract.read_isolation != "declared_only":
+            link_host_task_paths(workspace, context)
+        runtime_context = load_runtime_context_sidecar(workspace)
         prompt = build_node_prompt(
             skill,
             task.node_id,
@@ -93,7 +105,18 @@ class AgentHandler:
             prior_error_kind=task.prior_error_kind,
             evidence=task.resolved_evidence or None,
             outputs=outputs,
+            runtime_context=runtime_context,
         )
+        if skill in ASSURANCE_PERSONA_BY_TARGET:
+            if node_def.agent is not None and node_def.agent != expected_assurance_persona(skill):
+                return task_failure(
+                    "contract",
+                    f"schema persona {node_def.agent!r} mismatches assurance registry "
+                    f"{expected_assurance_persona(skill)!r} for {skill}",
+                )
+            agent = expected_assurance_persona(skill)
+        else:
+            agent = node_def.agent or agent_for_skill(skill)
         request = AgentRequest(
             target=task.target,
             node_id=task.node_id,
@@ -105,7 +128,10 @@ class AgentHandler:
             reconnect_session_id=context.parent_session_id,
             # The schema binding is the workflow author's explicit capability
             # choice. Name-based routing exists only for legacy/omitted bindings.
-            agent=node_def.agent or agent_for_skill(skill),
+            agent=agent,
+            runtime_context_sha256=(
+                runtime_context_digest(runtime_context) if runtime_context is not None else None
+            ),
         )
         try:
             result = self._invoker.invoke(request)

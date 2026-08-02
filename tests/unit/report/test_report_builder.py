@@ -3,14 +3,15 @@ from pathlib import Path
 
 import pytest
 
-from tests.helpers_aa import write_aa_config
-
 from assurance_agent.artifacts.models import CoverageThreshold, SelectedTargets
+from assurance_agent.evidence.issue_identity import event_id
 from assurance_agent.workflow.execution.evidence import publish_execution_evidence
 from assurance_agent.workflow.execution.results import CaseResult, CoverageResult, ResultSource, TargetResult
 from assurance_agent.workflow.report.inspector import inspect_change
 from assurance_agent.workflow.report.quality_gate import build_quality_gate
 from assurance_agent.workflow.report.report_builder import generate_report
+from tests.helpers_aa import make_report_v2, sufficient_evidence_coverage, write_aa_config
+from tests.unit.artifacts.test_models_inspect_report import make_coverage, make_functional
 
 
 def _api(failed_message: str | None) -> TargetResult:
@@ -75,7 +76,7 @@ def _seed_change(tmp_path: Path, api: TargetResult, cov: CoverageResult) -> str:
         api=api,
         e2e=None,
         coverage=cov,
-        coverage_gate_mode="warn",
+        evidence_coverage=sufficient_evidence_coverage(),
     )
     publish_execution_evidence(
         execution_dir=change_dir / "execution",
@@ -358,13 +359,16 @@ def test_generate_report_counts_regression_separately_from_recurrence(tmp_path: 
         ),
         encoding="utf-8",
     )
+    # Ledger V2 derives event_id from idempotency_key; forged ids fail closed
+    # and report_builder then cannot attribute the occurrence as regressed.
+    regressed_idem = "problem_regressed:PROB-regressed:OCC-regressed"
     (problems_dir / "events.jsonl").write_text(
         json.dumps(
             {
                 "schema_version": "1.0",
                 "seq": 1,
-                "event_id": "EVT-regressed",
-                "idempotency_key": "problem_regressed:PROB-regressed:OCC-regressed",
+                "event_id": event_id(regressed_idem),
+                "idempotency_key": regressed_idem,
                 "ts": "2026-07-25T10:00:00Z",
                 "evidence_digest": "sha256:evidence",
                 "problem_id": "PROB-regressed",
@@ -482,6 +486,38 @@ def test_generate_report_failed_reconcile_status_yields_unknown_without_snapshot
     assert result.report.final_status == "PASS"
 
 
+def test_generate_report_failed_reconcile_status_v2_yields_unknown_without_snapshot(
+    tmp_path: Path,
+) -> None:
+    """V2 failed reconcile status remains fail-visible via the shared document loader."""
+    import json
+
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    inspect_dir = change_dir / "inspect"
+    inspect_dir.mkdir(parents=True, exist_ok=True)
+    (inspect_dir / "issue-reconcile-status.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "2.0",
+                "change_id": "CH-1",
+                "batch_id": "20260715-000000",
+                "status": "failed",
+                "evidence_bundle_digest": "sha256:" + "a" * 64,
+                "candidate_digest": "sha256:" + "b" * 64,
+                "error": "unknown observation_id",
+            }
+        ),
+        encoding="utf-8",
+    )
+    inspect_change(tmp_path, change_id)
+    result = generate_report(tmp_path, change_id)
+    assert result.report.issues is not None
+    assert result.report.issues.issue_risk == "unknown"
+    assert result.report.issues.analysis_status == "failed"
+    assert result.report.final_status == "PASS"
+
+
 def test_generate_report_missing_analysis_status_is_not_treated_as_completed(
     tmp_path: Path,
 ) -> None:
@@ -534,3 +570,78 @@ def test_generate_report_issue_risk_in_exec_summary(tmp_path: Path) -> None:
     generate_report(tmp_path, change_id)
     exec_summary = (tmp_path / "qa" / "changes" / "CH-1" / "report" / "executive-summary.md").read_text()
     assert "**Issue Risk**: unknown" in exec_summary
+
+
+def _write_inspect_quality(tmp_path: Path, *, version: str) -> None:
+    inspect_dir = tmp_path / "qa" / "changes" / "CH-1" / "inspect"
+    inspect_dir.mkdir(parents=True, exist_ok=True)
+    if version == "1.0":
+        coverage = {**make_coverage(), "evidence": {"legacy": True}}
+        doc = {
+            "schema_version": "1.0",
+            "change_id": "CH-1",
+            "batch_id": "20260715-000000",
+            "dimensions": {"functional": make_functional(), "coverage": coverage},
+            "final_status": "PASS",
+        }
+    else:
+        coverage = {
+            **make_coverage(),
+            "evidence": {"kind": "sufficiency", "report": make_report_v2(verdicts=[])},
+        }
+        doc = {
+            "schema_version": "2.0",
+            "change_id": "CH-1",
+            "batch_id": "20260715-000000",
+            "dimensions": {"functional": make_functional(), "coverage": coverage},
+            "final_status": "PASS",
+        }
+    (inspect_dir / "quality-gate-result.json").write_text(json.dumps(doc), encoding="utf-8")
+    (inspect_dir / "failure-analysis.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "change_id": "CH-1",
+                "source_manifest": "execution/execution-manifest.yaml",
+                "inspection_status": "completed",
+                "batch_id": "20260715-000000",
+                "source_batch_id": "20260715-000000",
+                "final_status": "PASS",
+                "inspect_mode": "primary",
+                "classification_performed": True,
+                "status": "no_failures",
+                "failures": [],
+                "hard_fails": [],
+                "needs_review": [],
+                "known_product_issues": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize("version", ["1.0", "2.0"])
+def test_generate_report_equivalent_score_risk_across_quality_versions(
+    tmp_path: Path,
+    version: str,
+) -> None:
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    _write_inspect_quality(tmp_path, version=version)
+    result = generate_report(tmp_path, change_id)
+    assert result.report.schema_version == "1.1"
+    assert result.report.final_status == "PASS"
+    assert result.report.quality_score == 100
+    assert result.report.risk_level == "LOW"
+
+
+def test_generate_report_v1_v2_semantically_equivalent(tmp_path: Path) -> None:
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    _write_inspect_quality(tmp_path, version="1.0")
+    v1 = generate_report(tmp_path, change_id).report
+    _write_inspect_quality(tmp_path, version="2.0")
+    v2 = generate_report(tmp_path, change_id).report
+    assert v1.schema_version == v2.schema_version == "1.1"
+    assert v1.quality_score == v2.quality_score
+    assert v1.risk_level == v2.risk_level
+    assert v1.final_status == v2.final_status
+    assert v1.score_breakdown == v2.score_breakdown

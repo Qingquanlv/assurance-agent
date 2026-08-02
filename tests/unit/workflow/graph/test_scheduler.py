@@ -23,6 +23,7 @@ from assurance_agent.workflow.graph.contracts import (
     ExecutionContractCatalog,
     ResourceClaims,
     ResourcePath,
+    parse_execution_contracts,
 )
 from assurance_agent.workflow.graph.models import (
     ExecutableTask,
@@ -35,6 +36,7 @@ from assurance_agent.workflow.graph.models import (
 from assurance_agent.workflow.graph.handlers.operation import OperationHandler
 from assurance_agent.workflow.graph.project_locks import ProjectResourceConflict
 from assurance_agent.workflow.graph.scheduler import Scheduler, select_wave
+from assurance_agent.workflow.graph.selected_wave import PreparedWaveLease
 from assurance_agent.workflow.graph.schema_v2 import (
     BackoffDef,
     RetryPolicyDef,
@@ -166,25 +168,23 @@ def _make_project(tmp_path: Path) -> Path:
     return project
 
 
-def _seed_invocation(change: Path, tree_id: str) -> None:
-    append_event_strict(
-        change,
-        {
-            "source": "graph",
-            "type": "graph_invocation_started",
-            "invocation_id": _INV,
-            "entrypoint": "full",
-            "graph_id": "main",
-            "graph_digest": _DIGEST,
-            "contract_digests": {},
-            "params": {},
-            "params_sha256": "p" * 64,
-            "root_tree_id": tree_id,
-            "max_parallel_tasks": 4,
-            "checkpoint_ns": _INV,
-            "structural_path": "main",
-        },
-    )
+def _seed_invocation(change: Path, tree_id: str, *, compiled=None) -> None:
+    payload = {
+        "source": "graph",
+        "type": "graph_invocation_started",
+        "invocation_id": _INV,
+        "entrypoint": "full",
+        "graph_id": "main",
+        "graph_digest": compiled.digest if compiled is not None else _DIGEST,
+        "contract_digests": dict(compiled.contract_digests) if compiled is not None else {},
+        "params": {},
+        "params_sha256": "p" * 64,
+        "root_tree_id": tree_id,
+        "max_parallel_tasks": 4,
+        "checkpoint_ns": _INV,
+        "structural_path": "main",
+    }
+    append_event_strict(change, payload)
 
 
 def _context(project: Path) -> RuntimeContext:
@@ -868,17 +868,19 @@ def test_scheduler_persists_project_lock_timeout_as_retryable_conflict(tmp_path:
         _context(project),
     )
 
-    assert result.failed == ("update-issue",)
+    assert result.failed == ()
     assert result.retry_at is not None
     assert runner.calls == []
     events = read_events_strict(change)
     started = [event for event in events if event.get("type") == "task_attempt_started"]
     failures = [event for event in events if event.get("type") == "task_attempt_failed"]
-    assert len(started) == 1
-    assert len(failures) == 1
-    assert failures[0]["attempt_id"] == started[0]["attempt_id"]
-    assert failures[0]["error_kind"] == "conflict"
-    assert failures[0]["next_retry_at"] is not None
+    deferred = [event for event in events if event.get("type") == "task_scheduling_deferred"]
+    assert started == []
+    assert failures == []
+    assert len(deferred) == 1
+    assert deferred[0]["task_id"] == "update-issue"
+    assert "attempt_id" not in deferred[0]
+    assert deferred[0]["next_retry_at"] is not None
     assert locks.calls == [(("project:issue-registry", "project:zzz"), 0.125)]
 
 
@@ -929,7 +931,7 @@ def test_project_lock_timeout_is_attributed_to_task_owning_blocked_token(
 
     result = scheduler.execute(_plan(task_a, task_b), _projection(change, tree_id), _context(project))
 
-    assert result.failed == ("task-b",)
+    assert result.failed == ()
     assert result.retry_at is not None
     assert runner.calls == []
     assert locks.calls == [("project:a", "project:b")]
@@ -938,10 +940,12 @@ def test_project_lock_timeout_is_attributed_to_task_owning_blocked_token(
         for event in read_events_strict(change)
         if event.get("type") in ("task_attempt_started", "task_attempt_failed")
     ]
-    assert [event["task_id"] for event in attempts] == ["task-b", "task-b"]
-    assert [event["error_kind"] for event in attempts if event["type"] == "task_attempt_failed"] == [
-        "conflict"
+    deferred = [
+        event for event in read_events_strict(change) if event.get("type") == "task_scheduling_deferred"
     ]
+    assert attempts == []
+    assert [event["task_id"] for event in deferred] == ["task-b"]
+    assert "attempt_id" not in deferred[0]
 
 
 def test_synchronized_pending_update_reacquires_lock_and_replays_without_handler(
@@ -1005,3 +1009,1185 @@ def test_synchronized_pending_update_reacquires_lock_and_replays_without_handler
         (("project:issue-registry", "project:zzz"), 0.25),
         (("project:issue-registry", "project:zzz"), 0.25),
     ]
+
+
+def test_commit_pending_write_sets_replays_uncommitted_superstep(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    change = project / "qa/changes/CH-1"
+    issue = project / "qa/issues/ISSUE-1.json"
+    issue.parent.mkdir(parents=True)
+    issue.write_text('{"version":1}\n', encoding="utf-8")
+    store = TreeStore(change)
+    invocation_tree = store.capture(project)
+    _seed_invocation(change, invocation_tree)
+    calls = 0
+
+    def update_issue(task, workspace, context) -> TaskResult:
+        nonlocal calls
+        calls += 1
+        (workspace.project_root / "qa/issues/ISSUE-1.json").write_text('{"version":2}\n', encoding="utf-8")
+        result = workspace.change_dir / "results/update.json"
+        result.parent.mkdir(parents=True)
+        result.write_text('{"updated":true}\n', encoding="utf-8")
+        return TaskResult(status="succeeded")
+
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=_ScriptedRunner({"update-issue": update_issue}),
+    )
+    plan = _plan(_synchronized_task())
+    projection = _projection(change, invocation_tree)
+    commit_wave = scheduler._commit_wave
+
+    def crash_before_update(**kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("simulated crash before Update")
+
+    scheduler._commit_wave = crash_before_update  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        scheduler.execute(plan, projection, _context(project))
+    scheduler._commit_wave = commit_wave  # type: ignore[method-assign]
+
+    assert calls == 1
+    live = project_invocation(change, _INV)
+    committed = scheduler.commit_pending_write_sets(
+        plan=plan,
+        projection=live,
+        context=_context(project),
+        succeeded_ids=["update-issue"],
+    )
+
+    assert committed is True
+    assert calls == 1
+    assert issue.read_text() == '{"version":2}\n'
+    assert any(event.get("type") == "superstep_committed" for event in read_events_strict(change))
+
+
+def test_commit_pending_write_sets_propagates_errors(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    change = project / "qa/changes/CH-1"
+    store = TreeStore(change)
+    invocation_tree = store.capture(project)
+    _seed_invocation(change, invocation_tree)
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=_ScriptedRunner({}),
+    )
+    plan = _plan(_task("only-task"))
+    projection = _projection(change, invocation_tree)
+
+    def boom(**_kwargs):  # type: ignore[no-untyped-def]
+        raise ValueError("commit refused")
+
+    scheduler._commit_wave = boom  # type: ignore[method-assign]  # noqa: SLF001
+    with pytest.raises(ValueError, match="commit refused"):
+        scheduler.commit_pending_write_sets(
+            plan=plan,
+            projection=projection,
+            context=_context(project),
+            succeeded_ids=["only-task"],
+        )
+
+
+# ---------------------------------------------------------------------------
+# prepared synchronized nested waves (Task 9)
+
+
+_SYNC_KNOWLEDGE_CONTRACTS = """\
+schema_version: "1"
+contracts:
+  operation:sync-knowledge:
+    handler: operation
+    reads: [project:.aa/data-knowledge.yaml]
+    writes: [project:.aa/data-knowledge.yaml]
+    synchronized: [project:.aa/data-knowledge.yaml]
+    exclusive: [project:knowledge-registry]
+    authorization_writes: [project:.aa/data-knowledge.yaml]
+    retryable_errors: []
+  operation:inactive-knowledge:
+    handler: operation
+    reads: [project:.aa/inactive-knowledge.yaml]
+    writes: [project:.aa/inactive-knowledge.yaml]
+    synchronized: [project:.aa/inactive-knowledge.yaml]
+    exclusive: [project:inactive-registry]
+    authorization_writes: [project:.aa/inactive-knowledge.yaml]
+    retryable_errors: []
+  operation:plain:
+    handler: operation
+    side_effect_free: true
+    retryable_errors: []
+"""
+
+_ONE_LEVEL_NESTED = """
+  main:
+    max_supersteps: 8
+    nodes:
+      child-run:
+        uses: graph:leaf
+        retry: never
+    edges:
+      - {from: START, to: child-run}
+      - {from: child-run, to: END}
+  leaf:
+    max_supersteps: 8
+    nodes:
+      sync-knowledge:
+        uses: operation:sync-knowledge
+        retry: never
+    edges:
+      - {from: START, to: sync-knowledge}
+      - {from: sync-knowledge, to: END}
+"""
+
+_TWO_LEVEL_NESTED = """
+  main:
+    max_supersteps: 8
+    nodes:
+      mid:
+        uses: graph:mid
+        retry: never
+    edges:
+      - {from: START, to: mid}
+      - {from: mid, to: END}
+  mid:
+    max_supersteps: 8
+    nodes:
+      leaf-run:
+        uses: graph:leaf
+        retry: never
+    edges:
+      - {from: START, to: leaf-run}
+      - {from: leaf-run, to: END}
+  leaf:
+    max_supersteps: 8
+    nodes:
+      sync-knowledge:
+        uses: operation:sync-knowledge
+        retry: never
+    edges:
+      - {from: START, to: sync-knowledge}
+      - {from: sync-knowledge, to: END}
+"""
+
+_THREE_LEVEL_NESTED = """
+  main:
+    max_supersteps: 8
+    nodes:
+      l1:
+        uses: graph:l2
+        retry: never
+    edges:
+      - {from: START, to: l1}
+      - {from: l1, to: END}
+  l2:
+    max_supersteps: 8
+    nodes:
+      l2-run:
+        uses: graph:l3
+        retry: never
+    edges:
+      - {from: START, to: l2-run}
+      - {from: l2-run, to: END}
+  l3:
+    max_supersteps: 8
+    nodes:
+      l3-run:
+        uses: graph:leaf
+        retry: never
+    edges:
+      - {from: START, to: l3-run}
+      - {from: l3-run, to: END}
+  leaf:
+    max_supersteps: 8
+    nodes:
+      sync-knowledge:
+        uses: operation:sync-knowledge
+        retry: never
+    edges:
+      - {from: START, to: sync-knowledge}
+      - {from: sync-knowledge, to: END}
+"""
+
+
+def _compile_nested(body: str):
+    from assurance_agent.workflow.graph.compiler import compile_workflow
+    from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
+
+    text = (
+        'schema_version: "2"\nname: nested-sync\n'
+        "entrypoints:\n  full: {graph: main}\n"
+        "policies:\n"
+        "  retry:\n    never: {max_attempts: 1, retry_on: []}\n"
+        "  scheduler: {max_parallel_tasks: 4}\n"
+        "graphs:\n" + body
+    )
+    contracts = parse_execution_contracts(_SYNC_KNOWLEDGE_CONTRACTS)
+    return compile_workflow(parse_workflow_v2(text), contracts), contracts
+
+
+class _KnowledgeArtifacts:
+    def read_json(self, tree_id: str, logical_path: str):
+        raise KeyError(logical_path)
+
+
+def _seed_child_invocation(
+    change: Path,
+    *,
+    invocation_id: str,
+    parent_invocation_id: str,
+    entrypoint: str,
+    compiled,
+    tree_id: str,
+    structural_path: str,
+) -> None:
+    append_event_strict(
+        change,
+        {
+            "source": "graph",
+            "type": "graph_invocation_started",
+            "invocation_id": invocation_id,
+            "entrypoint": entrypoint,
+            "graph_id": entrypoint,
+            "graph_digest": compiled.digest,
+            "contract_digests": dict(compiled.contract_digests),
+            "params": {},
+            "params_sha256": "p" * 64,
+            "root_tree_id": tree_id,
+            "max_parallel_tasks": 4,
+            "checkpoint_ns": invocation_id,
+            "parent_invocation_id": parent_invocation_id,
+            "structural_path": structural_path,
+        },
+    )
+
+
+def _prepare_nested_project(tmp_path: Path, compiled) -> tuple[Path, TreeStore, str]:
+    project = tmp_path / "proj"
+    change = project / "qa" / "changes" / "CH-1"
+    change.mkdir(parents=True)
+    aa = project / ".aa"
+    aa.mkdir()
+    knowledge = aa / "data-knowledge.yaml"
+    knowledge.write_text("snapshot v1\n", encoding="utf-8")
+    (project / "app").mkdir()
+    (project / "app" / "source.py").write_text("app base\n", encoding="utf-8")
+    store = TreeStore(change)
+    tree_id = store.capture(project)
+    _seed_invocation(change, tree_id, compiled=compiled)
+    knowledge.write_text("promoted live v2\n", encoding="utf-8")
+    (project / "app" / "source.py").write_text("unrelated drift\n", encoding="utf-8")
+    return project, store, tree_id
+
+
+def _reserve_and_execute_nested(
+    tmp_path: Path,
+    body: str,
+    *,
+    overlay_calls: list[int] | None = None,
+) -> None:
+    from assurance_agent.workflow.graph.checkpoint import project_invocation
+    from assurance_agent.workflow.graph.selected_wave import preview_selected_wave
+
+    compiled, contracts = _compile_nested(body)
+    project, store, tree_id = _prepare_nested_project(tmp_path, compiled)
+    change = project / "qa/changes/CH-1"
+    projection = project_invocation(change, _INV).model_copy(
+        update={
+            "current_tree_id": tree_id,
+            "root_tree_id": tree_id,
+            "graph_digest": compiled.digest,
+            "contract_digests": dict(compiled.contract_digests),
+        }
+    )
+    context = _context(project)
+    artifacts = _KnowledgeArtifacts()
+    child_projections: dict[str, GraphProjection] = {}
+
+    def _child_projection(invocation_id: str) -> GraphProjection:
+        return project_invocation(change, invocation_id).model_copy(
+            update={
+                "graph_digest": compiled.digest,
+                "contract_digests": dict(compiled.contract_digests),
+            }
+        )
+
+    if "graph:leaf" in body or "graph:mid" in body:
+        from assurance_agent.workflow.graph.planner import plan_superstep
+        from assurance_agent.workflow.graph.selected_wave import derive_child_invocation_id
+
+        parent_tasks = {t.node_id: t for t in plan_superstep(compiled, projection, context, artifacts).tasks}
+        if "child-run" in parent_tasks:
+            child_id = derive_child_invocation_id(parent_tasks["child-run"], "leaf")
+            _seed_child_invocation(
+                change,
+                invocation_id=child_id,
+                parent_invocation_id=_INV,
+                entrypoint="leaf",
+                compiled=compiled,
+                tree_id=tree_id,
+                structural_path="main/child-run/leaf",
+            )
+            child_projections[child_id] = _child_projection(child_id)
+        if "mid" in parent_tasks:
+            mid_id = derive_child_invocation_id(parent_tasks["mid"], "mid")
+            _seed_child_invocation(
+                change,
+                invocation_id=mid_id,
+                parent_invocation_id=_INV,
+                entrypoint="mid",
+                compiled=compiled,
+                tree_id=tree_id,
+                structural_path="main/mid/mid",
+            )
+            child_projections[mid_id] = _child_projection(mid_id)
+            mid_tasks = {
+                t.node_id: t
+                for t in plan_superstep(compiled, child_projections[mid_id], context, artifacts).tasks
+            }
+            if "leaf-run" in mid_tasks:
+                leaf_id = derive_child_invocation_id(mid_tasks["leaf-run"], "leaf")
+                _seed_child_invocation(
+                    change,
+                    invocation_id=leaf_id,
+                    parent_invocation_id=mid_id,
+                    entrypoint="leaf",
+                    compiled=compiled,
+                    tree_id=tree_id,
+                    structural_path="main/mid/mid/leaf-run/leaf",
+                )
+                child_projections[leaf_id] = _child_projection(leaf_id)
+        if "l1" in parent_tasks:
+            l2_id = derive_child_invocation_id(parent_tasks["l1"], "l2")
+            _seed_child_invocation(
+                change,
+                invocation_id=l2_id,
+                parent_invocation_id=_INV,
+                entrypoint="l2",
+                compiled=compiled,
+                tree_id=tree_id,
+                structural_path="main/l1/l2",
+            )
+            child_projections[l2_id] = _child_projection(l2_id)
+            l2_tasks = {
+                t.node_id: t
+                for t in plan_superstep(compiled, child_projections[l2_id], context, artifacts).tasks
+            }
+            l3_id = derive_child_invocation_id(l2_tasks["l2-run"], "l3")
+            _seed_child_invocation(
+                change,
+                invocation_id=l3_id,
+                parent_invocation_id=l2_id,
+                entrypoint="l3",
+                compiled=compiled,
+                tree_id=tree_id,
+                structural_path="main/l1/l2/l2-run/l3",
+            )
+            child_projections[l3_id] = _child_projection(l3_id)
+            l3_tasks = {
+                t.node_id: t
+                for t in plan_superstep(compiled, child_projections[l3_id], context, artifacts).tasks
+            }
+            leaf_id = derive_child_invocation_id(l3_tasks["l3-run"], "leaf")
+            _seed_child_invocation(
+                change,
+                invocation_id=leaf_id,
+                parent_invocation_id=l3_id,
+                entrypoint="leaf",
+                compiled=compiled,
+                tree_id=tree_id,
+                structural_path="main/l1/l2/l2-run/l3/l3-run/leaf",
+            )
+            child_projections[leaf_id] = project_invocation(change, leaf_id)
+
+    selected = preview_selected_wave(
+        compiled,
+        projection,
+        context,
+        artifacts,
+        max_parallel_tasks=4,
+        child_projections=child_projections,
+    )
+    assert selected is not None
+
+    read_count = 0
+    knowledge = project / ".aa/data-knowledge.yaml"
+    real_read_bytes = Path.read_bytes
+
+    def counting_read(self: Path) -> bytes:
+        nonlocal read_count
+        if self.resolve() == knowledge.resolve():
+            read_count += 1
+        return real_read_bytes(self)
+
+    overlay_many = store.overlay_synchronized_paths_many
+
+    def observed_overlay_many(tree_ids, project_root, paths):
+        if overlay_calls is not None:
+            overlay_calls.append(len(tree_ids))
+        return overlay_many(tree_ids, project_root, paths)
+
+    store.overlay_synchronized_paths_many = observed_overlay_many  # type: ignore[method-assign]
+
+    locks = _TrackingProjectLocks()
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=_ScriptedRunner({}),
+        project_lock_manager=locks,
+        contracts=contracts,
+    )
+
+    import pytest as pytest_mod
+
+    monkeypatch = pytest_mod.MonkeyPatch()
+    monkeypatch.setattr(Path, "read_bytes", counting_read)
+    try:
+        locked, lease = scheduler.reserve_selected_wave(
+            selected,
+            context,
+            compiled=compiled,
+            artifacts=artifacts,
+            child_projections=child_projections,
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert read_count == 1
+    if overlay_calls is not None:
+        assert overlay_calls == [1]
+    assert lease.synchronized_paths
+    assert lease.capture_sealed is True
+
+
+def test_prepared_direct_leaf_reads_promoted_digest(tmp_path: Path) -> None:
+    from assurance_agent.workflow.graph.checkpoint import project_invocation
+    from assurance_agent.workflow.graph.selected_wave import preview_selected_wave
+
+    linear = """
+  main:
+    max_supersteps: 8
+    nodes:
+      sync-knowledge:
+        uses: operation:sync-knowledge
+        retry: never
+    edges:
+      - {from: START, to: sync-knowledge}
+      - {from: sync-knowledge, to: END}
+"""
+    compiled, contracts = _compile_nested(linear)
+    project, store, tree_id = _prepare_nested_project(tmp_path, compiled)
+    change = project / "qa/changes/CH-1"
+    projection = project_invocation(change, _INV).model_copy(
+        update={
+            "current_tree_id": tree_id,
+            "root_tree_id": tree_id,
+            "graph_digest": compiled.digest,
+            "contract_digests": dict(compiled.contract_digests),
+        }
+    )
+    context = _context(project)
+    artifacts = _KnowledgeArtifacts()
+    selected = preview_selected_wave(
+        compiled, projection, context, artifacts, max_parallel_tasks=4, child_projections={}
+    )
+    assert selected is not None
+    task_id = selected.selected_tasks[0].task_id
+    observed: list[bytes] = []
+
+    def sync_knowledge(task, workspace, ctx) -> TaskResult:
+        observed.append((workspace.project_root / ".aa/data-knowledge.yaml").read_bytes())
+        assert (workspace.project_root / "app/source.py").read_text() == "app base\n"
+        return TaskResult(status="succeeded")
+
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=_ScriptedRunner({task_id: sync_knowledge}),
+        project_lock_manager=_TrackingProjectLocks(),
+        contracts=contracts,
+    )
+    locked, lease = scheduler.reserve_selected_wave(
+        selected, context, compiled=compiled, artifacts=artifacts, child_projections={}
+    )
+    result = scheduler.execute_selected_wave(lease, locked, invocation_id=_INV)
+    assert result.succeeded == (task_id,)
+    assert observed == [b"promoted live v2\n"]
+
+
+def test_prepared_wave_one_level_nested_single_capture(tmp_path: Path) -> None:
+    overlay_calls: list[int] = []
+    _reserve_and_execute_nested(tmp_path, _ONE_LEVEL_NESTED, overlay_calls=overlay_calls)
+
+
+def test_prepared_wave_two_level_nested_single_capture(tmp_path: Path) -> None:
+    overlay_calls: list[int] = []
+    _reserve_and_execute_nested(tmp_path, _TWO_LEVEL_NESTED, overlay_calls=overlay_calls)
+
+
+def test_prepared_wave_three_level_nested_single_capture(tmp_path: Path) -> None:
+    overlay_calls: list[int] = []
+    _reserve_and_execute_nested(tmp_path, _THREE_LEVEL_NESTED, overlay_calls=overlay_calls)
+
+
+def test_reserve_selected_wave_fails_on_identity_mutation(tmp_path: Path) -> None:
+    from assurance_agent.workflow.graph.checkpoint import project_invocation
+    from assurance_agent.workflow.graph.selected_wave import SelectedWaveDriftError, preview_selected_wave
+
+    linear = """
+  main:
+    max_supersteps: 8
+    nodes:
+      sync-knowledge:
+        uses: operation:sync-knowledge
+        retry: never
+    edges:
+      - {from: START, to: sync-knowledge}
+      - {from: sync-knowledge, to: END}
+"""
+    compiled, contracts = _compile_nested(linear)
+    project, store, tree_id = _prepare_nested_project(tmp_path, compiled)
+    change = project / "qa/changes/CH-1"
+    projection = project_invocation(change, _INV).model_copy(
+        update={
+            "current_tree_id": tree_id,
+            "root_tree_id": tree_id,
+            "graph_digest": compiled.digest,
+            "contract_digests": dict(compiled.contract_digests),
+        }
+    )
+    context = _context(project)
+    artifacts = _KnowledgeArtifacts()
+    selected = preview_selected_wave(
+        compiled, projection, context, artifacts, max_parallel_tasks=4, child_projections={}
+    )
+    assert selected is not None
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=_ScriptedRunner({}),
+        project_lock_manager=_TrackingProjectLocks(),
+        contracts=contracts,
+    )
+    locked, lease = scheduler.reserve_selected_wave(
+        selected, context, compiled=compiled, artifacts=artifacts, child_projections={}
+    )
+    from dataclasses import replace
+
+    from assurance_agent.workflow.graph.compiler import canonical_digest
+
+    mutated_task = selected.selected_tasks[0].model_copy(update={"target": "operation:plain"})
+    mutated = replace(
+        selected,
+        selected_tasks=(mutated_task,),
+        identity_digest=canonical_digest({"mutated": True}),
+    )
+    with pytest.raises(SelectedWaveDriftError):
+        scheduler.reserve_selected_wave(
+            mutated,
+            locked,
+            compiled=compiled,
+            artifacts=artifacts,
+            child_projections={},
+            inherited_lease=lease,
+        )
+    started = [e for e in read_events_strict(change) if e.get("type") == "task_attempt_started"]
+    assert started == []
+
+
+def test_prepared_wave_holds_project_locks_during_handler(tmp_path: Path) -> None:
+    from assurance_agent.workflow.graph.checkpoint import project_invocation
+    from assurance_agent.workflow.graph.planner import plan_superstep
+    from assurance_agent.workflow.graph.selected_wave import preview_selected_wave
+
+    linear = """
+  main:
+    max_supersteps: 8
+    nodes:
+      sync-knowledge:
+        uses: operation:sync-knowledge
+        retry: never
+    edges:
+      - {from: START, to: sync-knowledge}
+      - {from: sync-knowledge, to: END}
+"""
+    compiled, contracts = _compile_nested(linear)
+    project, store, tree_id = _prepare_nested_project(tmp_path, compiled)
+    change = project / "qa/changes/CH-1"
+    projection = project_invocation(change, _INV).model_copy(
+        update={
+            "current_tree_id": tree_id,
+            "root_tree_id": tree_id,
+            "graph_digest": compiled.digest,
+            "contract_digests": dict(compiled.contract_digests),
+        }
+    )
+    context = _context(project)
+    artifacts = _KnowledgeArtifacts()
+    selected = preview_selected_wave(
+        compiled, projection, context, artifacts, max_parallel_tasks=4, child_projections={}
+    )
+    assert selected is not None
+    plan = plan_superstep(compiled, projection, context, artifacts)
+    task_id = selected.selected_tasks[0].task_id
+    locks = _TrackingProjectLocks()
+    phases: list[str] = []
+
+    overlay_many = store.overlay_synchronized_paths_many
+
+    def observed_overlay_many(tree_ids, project_root, paths):
+        assert locks.held
+        phases.append("overlay")
+        return overlay_many(tree_ids, project_root, paths)
+
+    apply_targeted = store.apply_write_sets_to_synchronized_paths
+
+    def observed_apply(project_root, write_sets, paths):
+        assert locks.held
+        phases.append("apply")
+        return apply_targeted(project_root, write_sets, paths)
+
+    store.overlay_synchronized_paths_many = observed_overlay_many  # type: ignore[method-assign]
+    store.apply_write_sets_to_synchronized_paths = observed_apply  # type: ignore[method-assign]
+
+    def sync_knowledge(task, workspace, ctx) -> TaskResult:
+        assert locks.held
+        phases.append("handler")
+        return TaskResult(status="succeeded")
+
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=_ScriptedRunner({task_id: sync_knowledge}),
+        project_lock_manager=locks,
+        contracts=contracts,
+    )
+    result = scheduler.execute(
+        plan,
+        projection,
+        context,
+        selected_wave=selected,
+        compiled=compiled,
+        artifacts=artifacts,
+        child_projections={},
+    )
+
+    assert result.succeeded == (task_id,)
+    assert locks.calls == [(("project:knowledge-registry",), 5.0)]
+    assert phases == ["overlay", "handler", "apply"]
+    assert locks.held is False
+
+
+def test_execute_selected_wave_fails_on_task_mutation_after_reserve(tmp_path: Path) -> None:
+    from assurance_agent.workflow.graph import selected_wave as selected_wave_mod
+    from assurance_agent.workflow.graph.checkpoint import project_invocation
+    from assurance_agent.workflow.graph.compiler import canonical_digest
+    from assurance_agent.workflow.graph.selected_wave import SelectedWaveDriftError, preview_selected_wave
+
+    linear = """
+  main:
+    max_supersteps: 8
+    nodes:
+      sync-knowledge:
+        uses: operation:sync-knowledge
+        retry: never
+    edges:
+      - {from: START, to: sync-knowledge}
+      - {from: sync-knowledge, to: END}
+"""
+    compiled, contracts = _compile_nested(linear)
+    project, store, tree_id = _prepare_nested_project(tmp_path, compiled)
+    change = project / "qa/changes/CH-1"
+    projection = project_invocation(change, _INV).model_copy(
+        update={
+            "current_tree_id": tree_id,
+            "root_tree_id": tree_id,
+            "graph_digest": compiled.digest,
+            "contract_digests": dict(compiled.contract_digests),
+        }
+    )
+    context = _context(project)
+    artifacts = _KnowledgeArtifacts()
+    selected = preview_selected_wave(
+        compiled, projection, context, artifacts, max_parallel_tasks=4, child_projections={}
+    )
+    assert selected is not None
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=_ScriptedRunner(
+            {selected.selected_tasks[0].task_id: lambda *_: TaskResult(status="succeeded")}
+        ),
+        project_lock_manager=_TrackingProjectLocks(),
+        contracts=contracts,
+    )
+    locked, lease = scheduler.reserve_selected_wave(
+        selected, context, compiled=compiled, artifacts=artifacts, child_projections={}
+    )
+
+    original_preview = selected_wave_mod.preview_selected_wave
+    reserve_done = {"done": True}
+
+    def drifted_preview(*args, **kwargs):
+        wave = original_preview(*args, **kwargs)
+        if reserve_done["done"] and wave is not None:
+            mutated_task = wave.selected_tasks[0].model_copy(update={"target": "operation:plain"})
+            from dataclasses import replace
+
+            return replace(
+                wave,
+                selected_tasks=(mutated_task,),
+                identity_digest=canonical_digest({"mutated": True}),
+            )
+        return wave
+
+    import pytest as pytest_mod
+
+    monkeypatch = pytest_mod.MonkeyPatch()
+    monkeypatch.setattr(selected_wave_mod, "preview_selected_wave", drifted_preview)
+    try:
+        with pytest.raises(SelectedWaveDriftError):
+            scheduler.execute_selected_wave(
+                lease,
+                locked,
+                invocation_id=_INV,
+                compiled=compiled,
+                artifacts=artifacts,
+                child_projections={},
+            )
+    finally:
+        monkeypatch.undo()
+
+    started = [e for e in read_events_strict(change) if e.get("type") == "task_attempt_started"]
+    assert started == []
+
+
+def test_execute_selected_wave_fails_on_child_plan_change_after_reserve(tmp_path: Path) -> None:
+    from assurance_agent.workflow.graph.checkpoint import project_invocation
+    from assurance_agent.workflow.graph.planner import plan_superstep
+    from assurance_agent.workflow.graph.selected_wave import (
+        SelectedWaveDriftError,
+        derive_child_invocation_id,
+        preview_selected_wave,
+    )
+
+    compiled, contracts = _compile_nested(_ONE_LEVEL_NESTED)
+    project, store, tree_id = _prepare_nested_project(tmp_path, compiled)
+    change = project / "qa/changes/CH-1"
+    projection = project_invocation(change, _INV).model_copy(
+        update={
+            "current_tree_id": tree_id,
+            "root_tree_id": tree_id,
+            "graph_digest": compiled.digest,
+            "contract_digests": dict(compiled.contract_digests),
+        }
+    )
+    context = _context(project)
+    artifacts = _KnowledgeArtifacts()
+    parent_tasks = {t.node_id: t for t in plan_superstep(compiled, projection, context, artifacts).tasks}
+    child_id = derive_child_invocation_id(parent_tasks["child-run"], "leaf")
+    _seed_child_invocation(
+        change,
+        invocation_id=child_id,
+        parent_invocation_id=_INV,
+        entrypoint="leaf",
+        compiled=compiled,
+        tree_id=tree_id,
+        structural_path="main/child-run/leaf",
+    )
+    child_projections = {
+        child_id: project_invocation(change, child_id).model_copy(
+            update={
+                "graph_digest": compiled.digest,
+                "contract_digests": dict(compiled.contract_digests),
+            }
+        )
+    }
+    selected = preview_selected_wave(
+        compiled,
+        projection,
+        context,
+        artifacts,
+        max_parallel_tasks=4,
+        child_projections=child_projections,
+    )
+    assert selected is not None
+    child_task_id = selected.child_waves[0].selected_tasks[0].task_id
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=_ScriptedRunner(
+            {
+                parent_tasks["child-run"].task_id: lambda *_: TaskResult(status="succeeded"),
+                child_task_id: lambda *_: TaskResult(status="succeeded"),
+            }
+        ),
+        project_lock_manager=_TrackingProjectLocks(),
+        contracts=contracts,
+    )
+    locked, lease = scheduler.reserve_selected_wave(
+        selected,
+        context,
+        compiled=compiled,
+        artifacts=artifacts,
+        child_projections=child_projections,
+    )
+
+    from assurance_agent.workflow.graph import selected_wave as selected_wave_mod
+
+    original_preview = selected_wave_mod.preview_selected_wave
+    reserve_done = {"done": True}
+
+    def drifted_child_preview(*args, **kwargs):
+        wave = original_preview(*args, **kwargs)
+        if reserve_done["done"] and wave is not None and wave.invocation_id == child_id:
+            from dataclasses import replace
+
+            from assurance_agent.workflow.graph.compiler import canonical_digest
+
+            return replace(
+                wave,
+                selected_tasks=(),
+                identity_digest=canonical_digest({"child-plan-changed": True}),
+            )
+        return wave
+
+    import pytest as pytest_mod
+
+    monkeypatch = pytest_mod.MonkeyPatch()
+    monkeypatch.setattr(selected_wave_mod, "preview_selected_wave", drifted_child_preview)
+    try:
+        with pytest.raises(SelectedWaveDriftError):
+            scheduler.execute_selected_wave(
+                lease,
+                locked,
+                invocation_id=_INV,
+                compiled=compiled,
+                artifacts=artifacts,
+                child_projections=child_projections,
+            )
+    finally:
+        monkeypatch.undo()
+    started = [e for e in read_events_strict(change) if e.get("type") == "task_attempt_started"]
+    assert started == []
+
+
+def test_execute_selected_wave_fails_on_inactive_branch_synchronized_path_drift(
+    tmp_path: Path,
+) -> None:
+    from assurance_agent.workflow.graph import selected_wave as selected_wave_mod
+    from assurance_agent.workflow.graph.checkpoint import project_invocation
+    from assurance_agent.workflow.graph.contracts import ResourcePath
+    from assurance_agent.workflow.graph.selected_wave import SelectedWaveDriftError, preview_selected_wave
+
+    nested = """
+  main:
+    max_supersteps: 8
+    nodes:
+      bootstrap:
+        uses: graph:child
+        retry: never
+    edges:
+      - {from: START, to: bootstrap}
+      - {from: bootstrap, to: END}
+  child:
+    max_supersteps: 8
+    nodes:
+      active-sync:
+        uses: operation:sync-knowledge
+        retry: never
+      dormant-sync:
+        uses: operation:inactive-knowledge
+        retry: never
+    edges:
+      - {from: START, to: active-sync}
+      - {from: START, to: dormant-sync, when: "false"}
+      - {from: active-sync, to: END}
+      - {from: dormant-sync, to: END}
+"""
+    compiled, contracts = _compile_nested(nested)
+    project, store, tree_id = _prepare_nested_project(tmp_path, compiled)
+    change = project / "qa/changes/CH-1"
+    projection = project_invocation(change, _INV).model_copy(
+        update={
+            "current_tree_id": tree_id,
+            "root_tree_id": tree_id,
+            "graph_digest": compiled.digest,
+            "contract_digests": dict(compiled.contract_digests),
+        }
+    )
+    context = _context(project)
+    artifacts = _KnowledgeArtifacts()
+    selected = preview_selected_wave(
+        compiled, projection, context, artifacts, max_parallel_tasks=4, child_projections={}
+    )
+    assert selected is not None
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=_ScriptedRunner({}),
+        project_lock_manager=_TrackingProjectLocks(),
+        contracts=contracts,
+    )
+    locked, lease = scheduler.reserve_selected_wave(
+        selected, context, compiled=compiled, artifacts=artifacts, child_projections={}
+    )
+
+    inactive_path = ResourcePath.parse("project:.aa/inactive-knowledge.yaml")
+    original_preview = selected_wave_mod.preview_selected_wave
+    reserve_done = {"done": True}
+
+    def drifted_preview(*args, **kwargs):
+        wave = original_preview(*args, **kwargs)
+        if reserve_done["done"] and wave is not None and wave.synchronized_paths == ():
+            from dataclasses import replace
+
+            return replace(
+                wave,
+                synchronized_paths=(inactive_path,),
+                identity_digest=wave.identity_digest + "-drift",
+            )
+        return wave
+
+    import pytest as pytest_mod
+
+    monkeypatch = pytest_mod.MonkeyPatch()
+    monkeypatch.setattr(selected_wave_mod, "preview_selected_wave", drifted_preview)
+    try:
+        with pytest.raises(SelectedWaveDriftError):
+            scheduler.execute_selected_wave(
+                lease,
+                locked,
+                invocation_id=_INV,
+                compiled=compiled,
+                artifacts=artifacts,
+                child_projections={},
+            )
+    finally:
+        monkeypatch.undo()
+
+    started = [e for e in read_events_strict(change) if e.get("type") == "task_attempt_started"]
+    assert started == []
+
+
+def test_deferred_child_outer_wave_reserves_footprint_locks_before_run_child(
+    tmp_path: Path,
+) -> None:
+    """Outer graph:* with footprint locks but no child uses prepared path, not legacy execute."""
+    from assurance_agent.workflow.graph.checkpoint import project_invocation
+    from assurance_agent.workflow.graph.planner import plan_superstep
+    from assurance_agent.workflow.graph.selected_wave import (
+        derive_child_invocation_id,
+        preview_selected_wave,
+    )
+
+    nested = """
+  main:
+    max_supersteps: 8
+    nodes:
+      bootstrap:
+        uses: graph:child
+        retry: never
+    edges:
+      - {from: START, to: bootstrap}
+      - {from: bootstrap, to: END}
+  child:
+    max_supersteps: 8
+    nodes:
+      active-sync:
+        uses: operation:sync-knowledge
+        retry: never
+      dormant-sync:
+        uses: operation:inactive-knowledge
+        retry: never
+    edges:
+      - {from: START, to: active-sync}
+      - {from: START, to: dormant-sync, when: "false"}
+      - {from: active-sync, to: END}
+      - {from: dormant-sync, to: END}
+"""
+    compiled, contracts = _compile_nested(nested)
+    project, store, tree_id = _prepare_nested_project(tmp_path, compiled)
+    change = project / "qa/changes/CH-1"
+    projection = project_invocation(change, _INV).model_copy(
+        update={
+            "current_tree_id": tree_id,
+            "root_tree_id": tree_id,
+            "graph_digest": compiled.digest,
+            "contract_digests": dict(compiled.contract_digests),
+        }
+    )
+    context = _context(project)
+    artifacts = _KnowledgeArtifacts()
+    selected = preview_selected_wave(
+        compiled, projection, context, artifacts, max_parallel_tasks=4, child_projections={}
+    )
+    assert selected is not None
+    assert selected.lock_tokens == ("project:inactive-registry", "project:knowledge-registry")
+    assert selected.synchronized_paths == ()
+    assert selected.child_waves == ()
+
+    bootstrap = selected.selected_tasks[0]
+    locks = _TrackingProjectLocks()
+    overlay_calls: list[int] = []
+    overlay_many = store.overlay_synchronized_paths_many
+
+    def observed_overlay_many(tree_ids, project_root, paths):
+        overlay_calls.append(len(tree_ids))
+        return overlay_many(tree_ids, project_root, paths)
+
+    store.overlay_synchronized_paths_many = observed_overlay_many  # type: ignore[method-assign]
+
+    def bootstrap_handler(task, workspace, ctx) -> TaskResult:
+        assert locks.held
+        assert tuple(sorted(locks.calls[-1][0])) == tuple(sorted(selected.lock_tokens))
+        return TaskResult(status="succeeded")
+
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=_ScriptedRunner({bootstrap.task_id: bootstrap_handler}),
+        project_lock_manager=locks,
+        contracts=contracts,
+    )
+
+    def failing_select(*args, **kwargs):
+        raise AssertionError("legacy execute must not run when selected_wave carries footprint lock_tokens")
+
+    scheduler.select = failing_select  # type: ignore[method-assign]
+
+    captured_leases: list[PreparedWaveLease] = []
+    original_finalize = scheduler._finalize_selected_wave_reservation  # noqa: SLF001
+
+    def spy_finalize(*args, **kwargs):
+        locked_context, lease = original_finalize(*args, **kwargs)
+        captured_leases.append(lease)
+        return locked_context, lease
+
+    scheduler._finalize_selected_wave_reservation = spy_finalize  # type: ignore[method-assign]
+
+    plan = plan_superstep(compiled, projection, context, artifacts)
+    result = scheduler.execute(
+        plan,
+        projection,
+        context,
+        selected_wave=selected,
+        compiled=compiled,
+        artifacts=artifacts,
+        child_projections={},
+    )
+    assert result.succeeded == (bootstrap.task_id,)
+    assert len(captured_leases) == 1
+    assert captured_leases[0].capture_sealed is False
+    lease = captured_leases[0]
+
+    parent_tasks = {t.node_id: t for t in plan.tasks}
+    child_id = derive_child_invocation_id(parent_tasks["bootstrap"], "child")
+    _seed_child_invocation(
+        change,
+        invocation_id=child_id,
+        parent_invocation_id=_INV,
+        entrypoint="child",
+        compiled=compiled,
+        tree_id=tree_id,
+        structural_path="main/bootstrap/child",
+    )
+    child_projections = {
+        child_id: project_invocation(change, child_id).model_copy(
+            update={
+                "graph_digest": compiled.digest,
+                "contract_digests": dict(compiled.contract_digests),
+            }
+        )
+    }
+    child_selected = preview_selected_wave(
+        compiled,
+        child_projections[child_id],
+        context,
+        artifacts,
+        max_parallel_tasks=4,
+        child_projections={},
+    )
+    assert child_selected is not None
+    child_task_id = child_selected.selected_tasks[0].task_id
+
+    def sync_knowledge(task, workspace, ctx) -> TaskResult:
+        return TaskResult(status="succeeded")
+
+    scheduler._runner = _ScriptedRunner(  # noqa: SLF001
+        {
+            bootstrap.task_id: bootstrap_handler,
+            child_task_id: sync_knowledge,
+        }
+    )
+    child_overlay_before = len(overlay_calls)
+    locked_child, child_lease = scheduler.reserve_selected_wave(
+        child_selected,
+        context,
+        compiled=compiled,
+        artifacts=artifacts,
+        child_projections={},
+        inherited_lease=lease,
+    )
+    assert child_lease.capture_sealed is True
+    assert len(overlay_calls) == child_overlay_before + 1
+
+    child_result = scheduler.execute_selected_wave(
+        child_lease,
+        locked_child,
+        invocation_id=child_id,
+        compiled=compiled,
+        artifacts=artifacts,
+        child_projections={},
+    )
+    assert child_result.succeeded == (child_task_id,)
+
+
+def test_current_change_repo_path_prefers_write_set_roots_for_child_context(tmp_path: Path) -> None:
+    """Child contexts bind project_root to a task workspace; host change_dir must still resolve."""
+    from assurance_agent.workflow.graph.scheduler import _current_change_repo_path
+    from assurance_agent.workflow.graph.workspace import WriteEntry, WriteSet
+
+    host_project = tmp_path / "sut"
+    host_change = host_project / "qa" / "changes" / "CH-1"
+    task_workspace = host_change / ".graph-runtime" / "tasks" / "child"
+    host_change.mkdir(parents=True)
+    task_workspace.mkdir(parents=True)
+
+    context = RuntimeContext(
+        project_root=task_workspace,  # child binding
+        repo_root=task_workspace,
+        change_dir=host_change,  # host ledger
+        change_id="CH-1",
+    )
+    write_set = WriteSet(
+        write_set_id="a" * 64,
+        task_id="task-1",
+        base_tree_id="b" * 64,
+        entries=(
+            WriteEntry(
+                logical_path="change:codegen/api-codegen-summary.md",
+                operation="add",
+                before_sha256=None,
+                after_sha256="c" * 64,
+                blob_sha256="c" * 64,
+            ),
+        ),
+        outputs_sha256={"change:codegen/api-codegen-summary.md": "c" * 64},
+        base_tree_roots={"change": "qa/changes/CH-1", "project": ".", "repo": "."},
+    )
+    assert _current_change_repo_path(context, write_set) == "qa/changes/CH-1"
+
+    # Without pinned roots, fall back without raising on host/workspace skew.
+    bare = write_set.model_copy(update={"base_tree_roots": None})
+    assert _current_change_repo_path(context, bare) == "qa/changes/CH-1"

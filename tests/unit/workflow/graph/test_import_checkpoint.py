@@ -21,6 +21,7 @@ from assurance_agent.workflow.graph.checkpoint import (
     CheckpointImportError,
     CheckpointStore,
     parse_import_manifest,
+    validate_import,
 )
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import parse_execution_contracts
@@ -33,6 +34,8 @@ from assurance_agent.workflow.graph.models import (
     RuntimeContext,
 )
 from assurance_agent.workflow.graph.runtime import GraphRuntime
+from assurance_agent.workflow.driver.runtime_factory import one_definition_resolver
+from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
 from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
@@ -376,15 +379,17 @@ def _build_runtime(project: Path, compiled, contracts) -> GraphRuntime:
         contracts=contracts,
         state_defs=dict(compiled.schema.graphs[entry_graph].state),
     )
-    schemas = {compiled.digest: compiled}
     runtime = GraphRuntime(
         checkpoint_store=checkpoints,
         object_store=store,
         workspace_backend=workspaces,
-        contracts=contracts,
-        node_runner=runner,
-        scheduler=scheduler,
-        schema_resolver=lambda digest: schemas[digest],
+        definition_resolver=one_definition_resolver(
+            compiled=compiled,
+            contracts=contracts,
+            ingest_catalog=validate_catalog_runtime(),
+            node_runner=runner,
+            scheduler=scheduler,
+        ),
         clock=SystemClock(),
     )
     holder["rt"] = runtime
@@ -821,6 +826,140 @@ def test_valid_nested_structural_path_import(tmp_path: Path) -> None:
     if leaf is not None:
         assert leaf.attempts_used == 0
         assert leaf.status == "succeeded"
+
+
+_PRECHECK = """\
+schema_version: "2"
+name: import-precheck
+params:
+  run_mode: {type: enum, values: [full, codegen-only], default: full}
+entrypoints:
+  full: {graph: main, allow: "params.run_mode in ['full','codegen-only']"}
+policies:
+  retry:
+    never: {max_attempts: 1, retry_on: []}
+  timeout:
+    local: {run_seconds: 60, heartbeat_seconds: 10}
+  scheduler: {max_parallel_tasks: 2}
+graphs:
+  main:
+    max_supersteps: 8
+    nodes:
+      review-cycle:
+        uses: operation:no-op
+        retry: never
+        timeout: local
+      codegen-precheck:
+        uses: builtin:gate
+        with: {gate: codegen-precondition-gate}
+        retry: never
+        timeout: local
+      codegen:
+        uses: operation:no-op
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: review-cycle}
+      - {from: review-cycle, to: codegen-precheck}
+      - {from: codegen, to: END}
+    routes:
+      - from: codegen-precheck
+        select: "node('codegen-precheck').gate.verdict"
+        cases: {pass: codegen, skip: END, stop: STOP}
+        default: STOP
+gates:
+  codegen-precondition-gate:
+    reads: []
+    stop_when: "node('review-cycle').status != 'succeeded'"
+    pass_when: "node('review-cycle').status == 'succeeded'"
+"""
+
+
+def test_import_precheck_pass_requires_review_cycle_status(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    digest = _seed_fixture(project)
+    compiled, _contracts = _compile(_PRECHECK)
+    context = _context(project)
+    manifest = _base_manifest(
+        fixture_digest=digest,
+        completed=(
+            ImportedTask(path="main", graph="main", node="review-cycle"),
+            ImportedTask(
+                path="main",
+                graph="main",
+                node="codegen-precheck",
+                gate=ImportedGate(id="codegen-precondition-gate", verdict="pass", reads_sha256={}),
+            ),
+            ImportedTask(path="main", graph="main", node="codegen"),
+        ),
+    )
+    validated = validate_import(compiled, manifest, context)
+    assert [item.task.node for item in validated.resolved] == [
+        "review-cycle",
+        "codegen-precheck",
+        "codegen",
+    ]
+    assert validated.resolved[1].gate_report is not None
+    assert validated.resolved[1].gate_report["verdict"] == "pass"
+
+
+def test_import_rejects_codegen_after_stop_precheck(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    digest = _seed_fixture(project)
+    stop_schema = _PRECHECK.replace(
+        "stop_when: \"node('review-cycle').status != 'succeeded'\"",
+        'stop_when: "true"',
+    ).replace(
+        "pass_when: \"node('review-cycle').status == 'succeeded'\"",
+        'pass_when: "false"',
+    )
+    compiled, _contracts = _compile(stop_schema)
+    context = _context(project)
+    # Full structural chain is present; recomputed stop must still block codegen closure.
+    manifest = _base_manifest(
+        fixture_digest=digest,
+        completed=(
+            ImportedTask(path="main", graph="main", node="review-cycle"),
+            ImportedTask(
+                path="main",
+                graph="main",
+                node="codegen-precheck",
+                gate=ImportedGate(id="codegen-precondition-gate", verdict="stop", reads_sha256={}),
+            ),
+            ImportedTask(path="main", graph="main", node="codegen"),
+        ),
+    )
+    with pytest.raises(CheckpointImportError, match="predecessor closure|stop/skip"):
+        validate_import(compiled, manifest, context)
+
+
+def test_import_rejects_codegen_when_precheck_skips(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    digest = _seed_fixture(project)
+    skip_schema = _PRECHECK.replace(
+        "stop_when: \"node('review-cycle').status != 'succeeded'\"",
+        'skip_when: "true"\n    stop_when: "false"',
+    ).replace(
+        "pass_when: \"node('review-cycle').status == 'succeeded'\"",
+        'pass_when: "false"',
+    )
+    compiled, _contracts = _compile(skip_schema)
+    context = _context(project)
+    manifest = _base_manifest(
+        fixture_digest=digest,
+        completed=(
+            ImportedTask(path="main", graph="main", node="review-cycle"),
+            ImportedTask(
+                path="main",
+                graph="main",
+                node="codegen-precheck",
+                gate=ImportedGate(id="codegen-precondition-gate", verdict="skip", reads_sha256={}),
+            ),
+            ImportedTask(path="main", graph="main", node="codegen"),
+        ),
+    )
+    with pytest.raises(CheckpointImportError, match="predecessor closure|stop/skip"):
+        validate_import(compiled, manifest, context)
 
 
 def test_valid_budget_import_appends_budget_consumed(tmp_path: Path) -> None:

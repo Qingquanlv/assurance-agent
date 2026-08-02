@@ -6,10 +6,10 @@ import json
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
-from assurance_agent.artifacts.policy import PolicyError, load_policy, load_policy_bytes, policy_digest
+from assurance_agent.artifacts.policy import PolicyError
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
 from assurance_agent.workflow.core.exit_codes import (
@@ -21,19 +21,48 @@ from assurance_agent.workflow.core.exit_codes import (
 from assurance_agent.workflow.core.graph_events import (
     BudgetConsumedEvent,
     CheckpointImportedEvent,
+    GraphInterruptedEvent,
     GraphInvocationStartedEvent,
     GraphResumedEvent,
     GraphTerminalEvent,
+    ManualPlanRevisionEvent,
     ResumeAnchor,
     SuperstepCommittedEvent,
     SuperstepPlannedEvent,
     TaskImportedEvent,
 )
+from assurance_agent.workflow.graph.supersede import (
+    SupersedeAction,
+    SupersedeError,
+    SupersedeResult,
+    authorization_consumed,
+    build_staged_replacement_plan,
+    build_supersede_event,
+    evaluate_supersede_eligibility,
+    fence_blocks_invocation,
+    find_replacement_root,
+    find_supersede_event,
+    load_staged_definition_request,
+    recover_prepared_fence,
+    stage_definition_request_record,
+)
 from assurance_agent.workflow.core.progression import ProgressionError, transaction
+from assurance_agent.workflow.graph.manual_revision import (
+    ManualRevisionError,
+    RevisionPathBaseline,
+    RevisionViewBinding,
+    build_manual_revision_transition,
+    capture_revision_candidate,
+    derive_revision_recovery_state,
+    find_open_revision_transition,
+    stage_missing_resume_suffix,
+    transition_from_committed_revision,
+)
 from assurance_agent.workflow.execution.tree_hash import sha256_file
 from assurance_agent.workflow.graph.checkpoint import (
     CheckpointImportError,
     CheckpointStore,
+    fold_invocation_events,
     render_workflow_state_yaml,
     validate_import,
 )
@@ -41,7 +70,23 @@ from assurance_agent.workflow.graph.status import (
     graph_status_from_projection,
     pending_write_sets as _pending_write_sets_fn,
 )
-from assurance_agent.workflow.graph.compiler import canonical_digest, resolve_params
+from assurance_agent.workflow.graph.definition_pinning import (
+    InvocationDefinitionBinding,
+    bind_root_definitions,
+    inherit_child_definitions,
+    stage_pinned_definitions,
+    verify_pinned_definitions,
+)
+from assurance_agent.workflow.graph.compiler import (
+    PinnedDefinitionRequest,
+    canonical_digest,
+    resolve_params,
+)
+from assurance_agent.workflow.graph.selected_wave import (
+    SelectedWaveDriftError,
+    derive_child_invocation_id,
+    preview_selected_wave,
+)
 from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog
 from assurance_agent.workflow.graph.leases import (
@@ -65,8 +110,31 @@ from assurance_agent.workflow.graph.models import (
     TaskResult,
 )
 from assurance_agent.workflow.graph.planner import PlanError, plan_superstep
+from assurance_agent.workflow.graph.project_locks import ProjectPublicationStore
 from assurance_agent.workflow.graph.scheduler import Scheduler, SchedulerError
-from assurance_agent.workflow.graph.task_runner import NodeRunner
+from assurance_agent.workflow.graph.durable_effects import (
+    DurableEffectContext,
+    DurableEffectIntegrityError,
+    DurableEffectRetryableError,
+    DurableEffectRuntime,
+    production_effect_registry,
+    reconcile_effect,
+    record_integrity_failure,
+    scan_unacknowledged_intents,
+)
+from assurance_agent.workflow.graph.effect_retry import (
+    EffectRetryStore,
+    RootEffectFenceStore,
+    RootTerminalFenceError,
+    parse_rfc3339_z,
+)
+from assurance_agent.workflow.graph.historical_roles import discover_historical_assurance_roles
+from assurance_agent.workflow.graph.resume_compatibility import (
+    ResumeCompatibilityDecision,
+    evaluate_resume_compatibility,
+    event_to_receipt,
+    receipt_to_event,
+)
 from assurance_agent.workflow.graph.workspace import (
     TaskWorkspace,
     TreeStore,
@@ -75,29 +143,12 @@ from assurance_agent.workflow.graph.workspace import (
 )
 from assurance_agent.workflow.orchestration.dsl import Scope, is_satisfied
 
-_SCHEMA_DIR = ".graph-runtime/schemas"
-_CONTRACT_DIR = ".graph-runtime/contracts"
-_CATALOG_DIR = ".graph-runtime/ingest-catalogs"
-_POLICY_LOGICAL_PATH = "project:.aa/policy.yaml"
-
 
 def _ingest_catalog_digest(compiled: CompiledWorkflow) -> str:
     digest = compiled.ingest_catalog_digest
     if digest:
         return digest
     return validate_catalog_runtime().digest
-
-
-def _policy_digest_from_tree(store: TreeStore, tree_id: str) -> str:
-    origin = f"tree {tree_id}:{_POLICY_LOGICAL_PATH}"
-    try:
-        data = store.read_bytes(tree_id, _POLICY_LOGICAL_PATH)
-    except FileNotFoundError:
-        data = None
-    except OSError as exc:
-        raise PolicyError(f"cannot read {origin}: {exc}") from exc
-    policy = load_policy_bytes(data, origin=origin)
-    return policy_digest(policy)
 
 
 def _build_invocation_started(
@@ -111,9 +162,11 @@ def _build_invocation_started(
     max_parallel_tasks: int,
     checkpoint_ns: str,
     structural_path: str,
-    policy_digest: str = "",
+    binding: InvocationDefinitionBinding,
     parent_invocation_id: str | None = None,
     parent_task_id: str | None = None,
+    supersedes_invocation_id: str | None = None,
+    replacement_authorization_id: str | None = None,
 ) -> GraphInvocationStartedEvent:
     catalog_digest = _ingest_catalog_digest(compiled)
     if not catalog_digest:
@@ -124,11 +177,19 @@ def _build_invocation_started(
         entrypoint=entrypoint,
         graph_id=graph_id,
         graph_digest=compiled.digest,
-        event_schema_version=3,
+        event_schema_version=binding.event_schema_version,
         ir_digest=compiled.digest,
         ingest_catalog_digest=catalog_digest,
         contract_digests=dict(compiled.contract_digests),
-        policy_digest=policy_digest,
+        policy_digest=binding.policy_digest,
+        policy_origin=binding.policy_origin,
+        gate_semantics_digest=binding.gate_semantics_digest,
+        assurance_profile_digest=binding.assurance_profile_digest,
+        gate_semantics_object_id=binding.gate_semantics_object_id,
+        topology_safety_semantics_object_id=binding.topology_safety_semantics_object_id,
+        topology_safety_semantics_digest=binding.topology_safety_semantics_digest,
+        commit_safety_semantics_object_id=binding.commit_safety_semantics_object_id,
+        commit_safety_semantics_digest=binding.commit_safety_semantics_digest,
         params=params,
         params_sha256=canonical_digest(params),
         root_tree_id=root_tree_id,
@@ -137,6 +198,8 @@ def _build_invocation_started(
         parent_invocation_id=parent_invocation_id,
         parent_task_id=parent_task_id,
         structural_path=structural_path,
+        supersedes_invocation_id=supersedes_invocation_id,
+        replacement_authorization_id=replacement_authorization_id,
     )
 
 
@@ -146,6 +209,51 @@ class GraphRuntimeError(AaError):
 
 class GraphDefinitionChanged(GraphRuntimeError):
     """pinned graph/contract digest 与当前定义漂移；拒绝普通 resume。"""
+
+
+class ResumeCompatibilityBarrier(GraphRuntimeError):
+    """Typed v4/v5 resume barrier; read ``decision.reason``, never parse message text."""
+
+    def __init__(self, decision: ResumeCompatibilityDecision) -> None:
+        self.decision = decision
+        self.reason_code = decision.reason or "resume_compatibility_blocked"
+        super().__init__(self.reason_code)
+
+
+def assert_live_semantic_compatibility(request: PinnedDefinitionRequest) -> None:
+    from assurance_agent.verification.profile_manifest import assurance_profile_digest
+    from assurance_agent.workflow.graph.definition_pinning import current_v6_semantic_identity
+    from assurance_agent.workflow.orchestration.gate_semantics import gate_semantics_digest
+
+    if request.gate_semantics_digest != gate_semantics_digest():
+        raise GraphDefinitionChanged(
+            "graph_definition_changed: gate semantics digest does not match current executable"
+        )
+    if request.assurance_profile_digest != assurance_profile_digest():
+        raise GraphDefinitionChanged(
+            "graph_definition_changed: assurance profile digest does not match current executable"
+        )
+    if request.event_schema_version >= 6:
+        v6 = current_v6_semantic_identity()
+        expected = {
+            "gate_semantics_object_id": v6.gate_object_id,
+            "topology_safety_semantics_object_id": v6.topology_object_id,
+            "topology_safety_semantics_digest": v6.topology_digest,
+            "commit_safety_semantics_object_id": v6.commit_object_id,
+            "commit_safety_semantics_digest": v6.commit_digest,
+        }
+        actual = {
+            "gate_semantics_object_id": request.gate_semantics_object_id,
+            "topology_safety_semantics_object_id": request.topology_safety_semantics_object_id,
+            "topology_safety_semantics_digest": request.topology_safety_semantics_digest,
+            "commit_safety_semantics_object_id": request.commit_safety_semantics_object_id,
+            "commit_safety_semantics_digest": request.commit_safety_semantics_digest,
+        }
+        for name, value in expected.items():
+            if actual[name] != value:
+                raise GraphDefinitionChanged(
+                    f"graph_definition_changed: {name} does not match current executable"
+                )
 
 
 class GraphIntegrityError(GraphRuntimeError):
@@ -161,20 +269,15 @@ class GraphRuntime:
         checkpoint_store: CheckpointStore,
         object_store: TreeStore,
         workspace_backend: WorkspaceBackend,
-        contracts: ExecutionContractCatalog,
-        node_runner: NodeRunner,
-        scheduler: Scheduler,
-        schema_resolver: Callable[[str], CompiledWorkflow],
+        definition_resolver: Callable[[PinnedDefinitionRequest], Any],
         clock: Clock,
     ) -> None:
         self._checkpoints = checkpoint_store
         self._objects = object_store
         self._workspaces = workspace_backend
-        self._contracts = contracts
-        self._node_runner = node_runner
-        self._scheduler = scheduler
-        self._schema_resolver = schema_resolver
+        self._definition_resolver = definition_resolver
         self._clock = clock
+        self._bundle_cache: dict[PinnedDefinitionRequest, Any] = {}
 
     def run(
         self,
@@ -182,7 +285,26 @@ class GraphRuntime:
         entrypoint: str,
         context: RuntimeContext,
     ) -> RunResult:
-        return self._start_and_drive(schema, entrypoint, context)
+        invocation_id = self.start_invocation(schema, entrypoint, context)
+        return self.drive_started(invocation_id)
+
+    def start_invocation(
+        self,
+        compiled: CompiledWorkflow,
+        entrypoint: str,
+        context: RuntimeContext,
+    ) -> str:
+        """Validate params and atomically commit graph_invocation_started (+ pin defs)."""
+        return self._start_invocation(compiled, entrypoint, context)
+
+    def drive_started(self, invocation_id: str) -> RunResult:
+        """Drive an already-started root invocation to completion or interrupt."""
+        try:
+            projection = self._checkpoints.project(invocation_id)
+        except LedgerIntegrityError as exc:
+            raise GraphIntegrityError(str(exc)) from exc
+        context = self._context_for(projection)
+        return self._drive(invocation_id, context)
 
     def resume(
         self,
@@ -193,10 +315,308 @@ class GraphRuntime:
 
     def status(self, invocation_id: str) -> GraphStatus:
         projection = self._checkpoints.project(invocation_id)
+        events = read_events_strict(self._checkpoints._change_dir)  # noqa: SLF001
+        from assurance_agent.workflow.graph.status import unacknowledged_durable_effects
+
         return graph_status_from_projection(
             projection,
             pending_write_sets=self._pending_write_sets(invocation_id),
+            recovery_state=derive_revision_recovery_state(events),
+            unacknowledged_durable_effects=unacknowledged_durable_effects(events, invocation_id),
         )
+
+    def supersede(
+        self,
+        compiled: CompiledWorkflow,
+        context: RuntimeContext,
+        *,
+        invocation_id: str,
+        action: SupersedeAction,
+        who: str,
+        reason: str,
+        params: dict[str, object] | None = None,
+    ) -> SupersedeResult:
+        """Audited legacy-root exit: terminal fence + optional single-use v6 replacement."""
+        if not who.strip() or not reason.strip():
+            raise SupersedeError("missing_who_or_reason", "supersede requires nonblank who and reason")
+        if action == "stop" and params is not None:
+            raise SupersedeError("stop_with_params", "stop rejects --params")
+
+        change_dir = context.change_dir
+        fence_store = RootEffectFenceStore(context.project_root)
+        events = read_events_strict(change_dir)
+        existing = recover_prepared_fence(fence_store, root_invocation_id=invocation_id, events=events)
+        if existing is not None:
+            return self._complete_supersede_after_event(
+                compiled=compiled,
+                context=context,
+                event=existing,
+                who=who,
+                reason=reason,
+                params=params,
+            )
+
+        try:
+            projection = self._checkpoints.project(invocation_id)
+        except LedgerIntegrityError as exc:
+            raise GraphIntegrityError(str(exc)) from exc
+
+        # Typed legacy-block decision (never parse exception text).
+        decision = self._enforce_resume_compatibility(projection, context)
+        # Compatibility may have appended a receipt; reload.
+        events = read_events_strict(change_dir)
+        projection = self._checkpoints.project(invocation_id)
+
+        staged_plan = None
+        staged_request = None
+        if action == "rerun-v6":
+            from assurance_agent.workflow.graph.definition_pinning import request_for_compiled
+
+            staged_request = request_for_compiled(compiled, event_schema_version=6)
+            assert_live_semantic_compatibility(staged_request)
+            entry = compiled.entrypoints.get(projection.entrypoint)
+            if entry is None:
+                raise SupersedeError("wrong_entrypoint", f"unknown entrypoint {projection.entrypoint}")
+            overrides = dict(projection.params) if params is None else dict(params)
+            try:
+                resolved = resolve_params(compiled.schema, {**entry.param_overrides, **overrides})
+            except Exception as exc:
+                raise SupersedeError("invalid_params", f"invalid params: {exc}") from exc
+            if projection.entrypoint == "retro":
+                try:
+                    resolved = ensure_retro_params(resolved)
+                except Exception as exc:
+                    raise SupersedeError("invalid_params", f"invalid retro params: {exc}") from exc
+            staged_plan = build_staged_replacement_plan(request=staged_request, params=resolved)
+            stage_definition_request_record(
+                change_dir, digest=staged_plan.definition_request_digest, request=staged_request
+            )
+
+        latest = self.latest_root_invocation()
+        eligibility = evaluate_supersede_eligibility(
+            projection=projection,
+            latest_root_id=latest,
+            expected_entrypoint=projection.entrypoint,
+            decision=decision,
+            action=action,
+            who=who,
+            reason=reason,
+            params_provided=params is not None,
+            staged_request=staged_request,
+            project_root=context.project_root,
+            change_dir=change_dir,
+            events=events,
+        )
+        if not eligibility.eligible:
+            raise SupersedeError(
+                eligibility.reason or "not_eligible",
+                eligibility.detail or eligibility.reason or "not eligible",
+            )
+
+        event = build_supersede_event(
+            eligibility=eligibility,
+            action=action,
+            who=who,
+            reason=reason,
+            event_schema_version=projection.event_schema_version,
+            checkpoint_ns=projection.checkpoint_ns,
+            staged=staged_plan,
+        )
+
+        # Txn 1: prepare fence → progression append → commit fence.
+        # prepare/commit each acquire the frozen guard; hold guard across append.
+        fence_store.prepare_terminal(invocation_id, supersede_id=event.supersede_id)
+        appended = False
+        try:
+            with fence_store.guard(invocation_id):
+                with transaction(change_dir) as txn:
+                    events_locked = txn.read_events_strict()
+                    prior = find_supersede_event(events_locked, invocation_id)
+                    if prior is not None:
+                        if prior.model_dump(mode="json") != event.model_dump(mode="json"):
+                            raise SupersedeError(
+                                "conflicting_supersede",
+                                "conflicting supersede payload under progression lock",
+                            )
+                        event = prior
+                    else:
+                        # Rescan eligibility under the lock.
+                        projection = fold_invocation_events(invocation_id, events_locked)
+                        decision = self._compatibility_decision_readonly(projection, context)
+                        eligibility = evaluate_supersede_eligibility(
+                            projection=projection,
+                            latest_root_id=self.latest_root_invocation(),
+                            expected_entrypoint=projection.entrypoint,
+                            decision=decision,
+                            action=action,
+                            who=who,
+                            reason=reason,
+                            params_provided=params is not None,
+                            staged_request=staged_request,
+                            project_root=context.project_root,
+                            change_dir=change_dir,
+                            events=events_locked,
+                        )
+                        if not eligibility.eligible:
+                            raise SupersedeError(
+                                eligibility.reason or "not_eligible",
+                                eligibility.detail or eligibility.reason or "not eligible",
+                            )
+                        event = build_supersede_event(
+                            eligibility=eligibility,
+                            action=action,
+                            who=who,
+                            reason=reason,
+                            event_schema_version=projection.event_schema_version,
+                            checkpoint_ns=projection.checkpoint_ns,
+                            staged=staged_plan,
+                        )
+                        txn.append_strict(event)
+                        appended = True
+            fence_store.commit_terminal(invocation_id)
+        except Exception:
+            events_now = read_events_strict(change_dir)
+            if find_supersede_event(events_now, invocation_id) is None:
+                try:
+                    fence_store.abort_prepared(invocation_id)
+                except RootTerminalFenceError:
+                    pass
+            else:
+                try:
+                    fence_store.commit_terminal(invocation_id)
+                except RootTerminalFenceError:
+                    pass
+            raise
+
+        _ = appended
+        return self._complete_supersede_after_event(
+            compiled=compiled,
+            context=context,
+            event=event,
+            who=who,
+            reason=reason,
+            params=params,
+        )
+
+    def _complete_supersede_after_event(
+        self,
+        *,
+        compiled: CompiledWorkflow,
+        context: RuntimeContext,
+        event: object,
+        who: str,
+        reason: str,
+        params: dict[str, object] | None,
+    ) -> SupersedeResult:
+        from assurance_agent.workflow.core.graph_events import GraphInvocationSupersededEvent as _Evt
+
+        assert isinstance(event, _Evt)
+        if event.action == "stop":
+            return SupersedeResult(
+                superseded_invocation_id=event.invocation_id,
+                supersede_id=event.supersede_id,
+                action="stop",
+                replacement_invocation_id=None,
+                replacement_authorization_id=None,
+                exit_code=0,
+                reason="superseded",
+            )
+        assert event.replacement_authorization_id is not None
+        assert event.definition_request_digest is not None
+        assert event.params_sha256 is not None
+
+        # Txn 2: consume authorization / recover the one replacement root.
+        events = read_events_strict(context.change_dir)
+        existing_root = find_replacement_root(
+            events,
+            supersedes_invocation_id=event.invocation_id,
+            replacement_authorization_id=event.replacement_authorization_id,
+        )
+        if existing_root is not None:
+            return SupersedeResult(
+                superseded_invocation_id=event.invocation_id,
+                supersede_id=event.supersede_id,
+                action="rerun-v6",
+                replacement_invocation_id=existing_root,
+                replacement_authorization_id=event.replacement_authorization_id,
+                exit_code=0,
+                reason="replacement_resumed",
+            )
+
+        staged_request = load_staged_definition_request(context.change_dir, event.definition_request_digest)
+        if authorization_consumed(events, event.replacement_authorization_id):
+            raise SupersedeError("conflicting_supersede", "replacement authorization already consumed")
+
+        # Resolve params from staged digest binding: reuse event params_sha256.
+        entry = compiled.entrypoints[event.entrypoint]
+        overrides = dict(params) if params is not None else {}
+        if not overrides:
+            # Reload superseded root params as overrides.
+            old = self._checkpoints.project(event.invocation_id)
+            overrides = dict(old.params)
+        try:
+            resolved = resolve_params(compiled.schema, {**entry.param_overrides, **overrides})
+        except Exception as exc:
+            raise SupersedeError("invalid_params", f"invalid params: {exc}") from exc
+        if canonical_digest(resolved) != event.params_sha256:
+            # Prefer exact authorized digest: when CLI retries with same logical
+            # params the resolver must match; conflicting params refuse.
+            if params is not None:
+                raise SupersedeError("conflicting_supersede", "params digest conflicts with authorization")
+            # Fall back: use old root projection params already authorized.
+            old = self._checkpoints.project(event.invocation_id)
+            resolved = dict(old.params)
+
+        replacement_context = context.model_copy(update={"params": resolved})
+        new_id = self._start_invocation(
+            compiled,
+            event.entrypoint,
+            replacement_context,
+            supersedes_invocation_id=event.invocation_id,
+            replacement_authorization_id=event.replacement_authorization_id,
+            expected_definition_request=staged_request,
+        )
+        return SupersedeResult(
+            superseded_invocation_id=event.invocation_id,
+            supersede_id=event.supersede_id,
+            action="rerun-v6",
+            replacement_invocation_id=new_id,
+            replacement_authorization_id=event.replacement_authorization_id,
+            exit_code=0,
+            reason="replacement_started",
+        )
+
+    def _compatibility_decision_readonly(
+        self,
+        projection: GraphProjection,
+        context: RuntimeContext,
+    ) -> ResumeCompatibilityDecision:
+        """Evaluate resume compatibility without appending a new receipt."""
+        if projection.event_schema_version < 4 or projection.event_schema_version >= 6:
+            return ResumeCompatibilityDecision(
+                schema_version="1",
+                allowed=True,
+                event_schema_version=projection.event_schema_version,
+                root_invocation_id=projection.parent_invocation_id or projection.invocation_id,
+            )
+        root_id = projection.parent_invocation_id or projection.invocation_id
+        root_projection = (
+            projection if projection.invocation_id == root_id else self._checkpoints.project(root_id)
+        )
+        bundle = self._resolve_bundle(root_projection)
+        roles, _issues = discover_historical_assurance_roles(bundle.compiled.schema)
+        existing = self._load_topology_compatibility_receipt(root_id, context.change_dir)
+        profile_ok = self._legacy_profile_reconstructable(root_projection, context.change_dir)
+        decision, _new = evaluate_resume_compatibility(
+            projection=root_projection,
+            compiled=bundle.compiled,
+            contracts=bundle.contracts,
+            historical_roles=roles,
+            existing_receipt=existing,
+            profile_reconstructable=profile_ok,
+            change_dir=context.change_dir,
+        )
+        return decision
 
     def import_checkpoint(
         self,
@@ -236,7 +656,12 @@ class GraphRuntime:
         invocation_id = str(uuid4())
         checkpoint_ns = invocation_id
         bound = context.model_copy(update={"params": params})
-        digest = _policy_digest_from_tree(self._objects, root_tree_id)
+        try:
+            binding = bind_root_definitions(
+                store=self._objects, root_tree_id=root_tree_id, event_schema_version=6
+            )
+        except PolicyError:
+            raise
         started = _build_invocation_started(
             invocation_id=invocation_id,
             entrypoint=manifest.entrypoint,
@@ -247,14 +672,14 @@ class GraphRuntime:
             max_parallel_tasks=schema.schema.policies.scheduler.max_parallel_tasks,
             checkpoint_ns=checkpoint_ns,
             structural_path=entry.graph_id,
-            policy_digest=digest,
+            binding=binding,
         )
 
         imported_task_ids: list[str] = []
         try:
             with transaction(context.change_dir) as txn:
                 txn.append_strict(started)
-                self._stage_pinned_definitions(txn, schema)
+                self._stage_pinned_definitions(txn, schema, binding)
                 txn.write_runtime_file(
                     f".graph-runtime/invocations/{invocation_id}.json",
                     json.dumps(
@@ -382,7 +807,7 @@ class GraphRuntime:
                 error_kind="contract",
                 error=f"unknown subgraph '{graph_id}'",
             )
-        child_invocation_id = canonical_digest({"parent_task_id": parent_task.task_id, "graph_id": graph_id})
+        child_invocation_id = derive_child_invocation_id(parent_task, graph_id)
         checkpoint_ns = f"{parent_task.checkpoint_ns}/{parent_task.node_id}/{child_invocation_id}"
         structural_path = f"{parent_task.structural_path}/{parent_task.node_id}/{graph_id}"
         child_params = dict(context.params)
@@ -398,11 +823,18 @@ class GraphRuntime:
             }
         )
         existing = self._try_project(child_invocation_id)
+        parent_projection = self._checkpoints.project(parent_task.invocation_id)
         if existing is None:
             # 父 task workspace 已物化；child 继承同一 base tree，避免以 workspace
             # project_root 调用 TreeStore.capture（change_dir 在 workspace 外）。
             root_tree_id = workspace.base_tree_id
-            digest = policy_digest(load_policy(workspace.project_root))
+            try:
+                binding = inherit_child_definitions(
+                    parent=parent_projection,
+                    change_dir=context.change_dir,
+                )
+            except PolicyError as exc:
+                raise GraphRuntimeError(f"policy snapshot: {exc}") from exc
             started = _build_invocation_started(
                 invocation_id=child_invocation_id,
                 entrypoint=graph_id,
@@ -413,13 +845,13 @@ class GraphRuntime:
                 max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
                 checkpoint_ns=checkpoint_ns,
                 structural_path=structural_path,
-                policy_digest=digest,
+                binding=binding,
                 parent_invocation_id=parent_task.invocation_id,
                 parent_task_id=parent_task.task_id,
             )
             with transaction(context.change_dir) as txn:
                 txn.append_strict(started)
-                self._stage_pinned_definitions(txn, compiled)
+                self._stage_pinned_definitions(txn, compiled, binding)
                 txn.write_runtime_file(
                     f".graph-runtime/invocations/{child_invocation_id}.json",
                     json.dumps(
@@ -434,12 +866,21 @@ class GraphRuntime:
                         sort_keys=True,
                     ).encode("utf-8"),
                 )
+        else:
+            try:
+                binding = inherit_child_definitions(
+                    parent=parent_projection,
+                    change_dir=context.change_dir,
+                )
+                verify_pinned_definitions(binding, context.change_dir)
+            except PolicyError as exc:
+                raise GraphRuntimeError(f"policy snapshot: {exc}") from exc
         result = self._drive(child_invocation_id, child_context)
         return self._child_result_to_task_result(result, parent_task=parent_task, workspace=workspace)
 
     def _schema_resolver_for_parent(self, parent_task: ExecutableTask) -> CompiledWorkflow:
         parent = self._checkpoints.project(parent_task.invocation_id)
-        return self._resolve_compiled(parent)
+        return self._resolve_bundle(parent).compiled
 
     def _try_project(self, invocation_id: str) -> GraphProjection | None:
         try:
@@ -491,18 +932,27 @@ class GraphRuntime:
 
     # ------------------------------------------------------------------ start
 
-    def _start_and_drive(
+    def _start_invocation(
         self,
         compiled: CompiledWorkflow,
         entrypoint: str,
         context: RuntimeContext,
-    ) -> RunResult:
+        *,
+        supersedes_invocation_id: str | None = None,
+        replacement_authorization_id: str | None = None,
+        expected_definition_request: PinnedDefinitionRequest | None = None,
+    ) -> str:
+        replacement = supersedes_invocation_id is not None and replacement_authorization_id is not None
+        if (supersedes_invocation_id is None) ^ (replacement_authorization_id is None):
+            raise GraphRuntimeError(
+                "supersedes_invocation_id and replacement_authorization_id must be all-or-none"
+            )
+
         # --- Entrypoint restart policy safety net ---
         # For "once" entrypoints, refuse if this entrypoint has a completed
-        # invocation.  loop.py enforces this earlier; this is a secondary guard
-        # for callers that invoke run() directly without going through the driver.
+        # invocation.  Exact unused D18 replacement authorization is the only bypass.
         ep = compiled.entrypoints.get(entrypoint)
-        if ep is not None and ep.restart == "once":
+        if not replacement and ep is not None and ep.restart == "once":
             scoped_latest = self.latest_root_invocation(entrypoint)
             if scoped_latest is not None:
                 try:
@@ -516,16 +966,17 @@ class GraphRuntime:
                     )
 
         # --- Active invocation guard (any entrypoint) ---
-        latest = self.latest_root_invocation()
-        if latest is not None:
-            try:
-                existing = self._checkpoints.project(latest)
-            except LedgerIntegrityError as exc:
-                raise GraphIntegrityError(str(exc)) from exc
-            if existing.terminal is None:
-                raise GraphRuntimeError(
-                    f"change already has active invocation {latest}; resume instead of run"
-                )
+        if not replacement:
+            latest = self.latest_root_invocation()
+            if latest is not None:
+                try:
+                    existing = self._checkpoints.project(latest)
+                except LedgerIntegrityError as exc:
+                    raise GraphIntegrityError(str(exc)) from exc
+                if existing.terminal is None:
+                    raise GraphRuntimeError(
+                        f"change already has active invocation {latest}; resume instead of run"
+                    )
 
         if entrypoint not in compiled.entrypoints:
             raise GraphRuntimeError(f"unknown entrypoint '{entrypoint}'")
@@ -550,7 +1001,22 @@ class GraphRuntime:
         max_parallel = compiled.schema.policies.scheduler.max_parallel_tasks
         graph_id = entry.graph_id
 
-        digest = _policy_digest_from_tree(self._objects, root_tree_id)
+        try:
+            binding = bind_root_definitions(
+                store=self._objects, root_tree_id=root_tree_id, event_schema_version=6
+            )
+        except PolicyError:
+            raise
+        if expected_definition_request is not None:
+            from assurance_agent.workflow.graph.definition_pinning import request_for_compiled
+            from assurance_agent.workflow.graph.supersede import definition_request_digest
+
+            live = request_for_compiled(compiled, event_schema_version=6)
+            if definition_request_digest(live) != definition_request_digest(expected_definition_request):
+                raise SupersedeError(
+                    "conflicting_supersede",
+                    "staged definition request digest drift on replacement start",
+                )
         started = _build_invocation_started(
             invocation_id=invocation_id,
             entrypoint=entrypoint,
@@ -561,13 +1027,56 @@ class GraphRuntime:
             max_parallel_tasks=max_parallel,
             checkpoint_ns=checkpoint_ns,
             structural_path=graph_id,
-            policy_digest=digest,
+            binding=binding,
+            supersedes_invocation_id=supersedes_invocation_id,
+            replacement_authorization_id=replacement_authorization_id,
         )
-        bound = context.model_copy(update={"params": params})
         try:
             with transaction(context.change_dir) as txn:
+                if replacement:
+                    assert supersedes_invocation_id is not None
+                    assert replacement_authorization_id is not None
+                    events_locked = txn.read_events_strict()
+                    supersede_event = find_supersede_event(events_locked, supersedes_invocation_id)
+                    if supersede_event is None:
+                        raise SupersedeError(
+                            "not_eligible",
+                            "replacement authorization missing supersede event",
+                        )
+                    if supersede_event.action != "rerun-v6":
+                        raise SupersedeError("not_eligible", "stop supersede has no replacement authority")
+                    if supersede_event.replacement_authorization_id != replacement_authorization_id:
+                        raise SupersedeError(
+                            "conflicting_supersede",
+                            "replacement_authorization_id mismatch",
+                        )
+                    if supersede_event.entrypoint != entrypoint:
+                        raise SupersedeError(
+                            "wrong_entrypoint",
+                            "replacement entrypoint must match superseded root",
+                        )
+                    if authorization_consumed(events_locked, replacement_authorization_id):
+                        existing_root = find_replacement_root(
+                            events_locked,
+                            supersedes_invocation_id=supersedes_invocation_id,
+                            replacement_authorization_id=replacement_authorization_id,
+                        )
+                        if existing_root is not None:
+                            return existing_root
+                        raise SupersedeError(
+                            "conflicting_supersede",
+                            "replacement authorization already consumed",
+                        )
+                    if (
+                        supersede_event.params_sha256 is not None
+                        and canonical_digest(params) != supersede_event.params_sha256
+                    ):
+                        raise SupersedeError(
+                            "conflicting_supersede",
+                            "replacement params digest mismatch",
+                        )
                 txn.append_strict(started)
-                self._stage_pinned_definitions(txn, compiled)
+                self._stage_pinned_definitions(txn, compiled, binding)
                 txn.write_runtime_file(
                     f".graph-runtime/invocations/{invocation_id}.json",
                     json.dumps(
@@ -580,48 +1089,42 @@ class GraphRuntime:
                         sort_keys=True,
                     ).encode("utf-8"),
                 )
+        except SupersedeError:
+            raise
         except Exception as exc:
             if "duplicate" in str(exc).lower():
                 raise GraphRuntimeError(f"duplicate invocation start: {invocation_id}") from exc
             raise
-        return self._drive(invocation_id, bound)
+        return invocation_id
 
-    def _stage_pinned_definitions(self, txn: object, compiled: CompiledWorkflow) -> None:
-        schema_bytes = (
-            json.dumps(
-                compiled.schema.model_dump(mode="json", by_alias=True, exclude_none=True),
-                sort_keys=True,
-                separators=(",", ":"),
-                ensure_ascii=False,
-            )
-            + "\n"
-        ).encode("utf-8")
-        txn.write_runtime_file(f"{_SCHEMA_DIR}/{compiled.digest}.json", schema_bytes)  # type: ignore[attr-defined]
-        catalog = validate_catalog_runtime()
-        catalog_bytes = (
-            json.dumps(
-                catalog.model_dump(mode="json"),
-                sort_keys=True,
-                separators=(",", ":"),
-                ensure_ascii=False,
-            )
-            + "\n"
-        ).encode("utf-8")
-        txn.write_runtime_file(f"{_CATALOG_DIR}/{catalog.digest}.json", catalog_bytes)  # type: ignore[attr-defined]
-        for target, digest in sorted(compiled.contract_digests.items()):
-            contract = self._contracts.contracts.get(target)
-            if contract is None:
-                continue
-            payload = (
-                json.dumps(
-                    contract.model_dump(mode="json", by_alias=True, exclude_none=True),
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                )
-                + "\n"
-            ).encode("utf-8")
-            txn.write_runtime_file(f"{_CONTRACT_DIR}/{digest}.json", payload)  # type: ignore[attr-defined]
+    def _bundle_for_compiled(self, compiled: CompiledWorkflow, *, event_schema_version: int) -> Any:
+        from assurance_agent.workflow.graph.definition_pinning import request_for_compiled
+
+        request = request_for_compiled(compiled, event_schema_version=event_schema_version)
+        assert_live_semantic_compatibility(request)
+        try:
+            return self._definition_resolver(request)
+        except GraphDefinitionChanged:
+            raise
+        except Exception as exc:
+            raise GraphDefinitionChanged(
+                f"definition_resolver failed for digest {compiled.digest}: {exc}"
+            ) from exc
+
+    def _stage_pinned_definitions(
+        self,
+        txn: object,
+        compiled: CompiledWorkflow,
+        binding: InvocationDefinitionBinding,
+    ) -> None:
+        bundle = self._bundle_for_compiled(compiled, event_schema_version=binding.event_schema_version)
+        stage_pinned_definitions(
+            txn,  # type: ignore[arg-type]
+            compiled,
+            binding,
+            contracts=bundle.contracts,
+            ingest_catalog=bundle.ingest_catalog,
+        )
 
     # ------------------------------------------------------------------ resume
 
@@ -635,11 +1138,30 @@ class GraphRuntime:
         except LedgerIntegrityError as exc:
             raise GraphIntegrityError(str(exc)) from exc
         context = self._context_for(projection)
-        if projection.terminal is not None:
-            status = graph_status_from_projection(
-                projection,
-                pending_write_sets=self._pending_write_sets(invocation_id),
+        events = read_events_strict(context.change_dir)
+        fenced = fence_blocks_invocation(events, invocation_id)
+        if fenced is not None or projection.supersede_id is not None:
+            status = self.status(invocation_id)
+            return RunResult(
+                invocation_id=invocation_id,
+                status=status,
+                exit_code=EXIT_STOPPED,
+                reason="superseded",
             )
+        # Manual-revision fix_and_proceed must reach _commit_manual_revision_resume
+        # before open-prefix recovery can resolve the interrupt. Otherwise an
+        # identical CLI retry after a repaired open prefix hits "not pending",
+        # and a non-identical retry never reaches the integrity-conflict path.
+        # resume(None) / ordinary actions still recover first.
+        uses_manual_revision_command = self._is_manual_revision_resume_command(projection, command)
+        if not uses_manual_revision_command:
+            self._recover_open_revision_transitions(context)
+            try:
+                projection = self._checkpoints.project(invocation_id)
+            except LedgerIntegrityError as exc:
+                raise GraphIntegrityError(str(exc)) from exc
+        if projection.terminal is not None:
+            status = self.status(invocation_id)
             return RunResult(
                 invocation_id=invocation_id,
                 status=status,
@@ -656,7 +1178,35 @@ class GraphRuntime:
                     exit_code=EXIT_STOPPED,
                     reason=command.reason,
                 )
+            if uses_manual_revision_command:
+                # Commit stages the missing suffix; recover is a no-op afterward
+                # unless a concurrent open prefix remains.
+                self._recover_open_revision_transitions(context)
         return self._drive(invocation_id, context)
+
+    @staticmethod
+    def _is_manual_revision_resume_command(
+        projection: GraphProjection,
+        command: ResumeCommand | None,
+    ) -> bool:
+        if command is None or command.action != "fix_and_proceed":
+            return False
+        if projection.event_schema_version < 5:
+            return False
+        pending = projection.interrupts.get(command.interrupt_id)
+        return pending is not None and pending.revision_view is not None
+
+    def _recover_open_revision_transitions(self, context: RuntimeContext) -> None:
+        """Repair any open manual-revision resume prefix before ordinary recovery."""
+        try:
+            with transaction(context.change_dir) as txn:
+                events = txn.read_events_strict()
+                open_transition = find_open_revision_transition(events)
+                if open_transition is None:
+                    return
+                stage_missing_resume_suffix(txn=txn, transition=open_transition)
+        except ManualRevisionError as exc:
+            raise GraphIntegrityError(str(exc)) from exc
 
     def _commit_resume_command(
         self,
@@ -667,12 +1217,30 @@ class GraphRuntime:
         if not command.reason.strip() or not command.who.strip():
             raise GraphRuntimeError("resume requires nonblank reason and who")
         pending = projection.interrupts.get(command.interrupt_id)
-        if pending is None or pending.resolved_action is not None:
+        if pending is None:
+            raise GraphRuntimeError(f"interrupt {command.interrupt_id} is not pending")
+        uses_manual_revision = (
+            command.action == "fix_and_proceed"
+            and projection.event_schema_version >= 5
+            and pending.revision_view is not None
+        )
+        # After a crash that wrote root resume ordinal(s), the root interrupt is
+        # already resolved while the revision resume suffix may still be open.
+        # Identical fix_and_proceed retries must still reach the revision commit
+        # path for suffix repair / no-op ack (and non-identical conflict).
+        if pending.resolved_action is not None:
+            if uses_manual_revision:
+                self._commit_manual_revision_resume(projection, context, command, pending)
+                return
             raise GraphRuntimeError(f"interrupt {command.interrupt_id} is not pending")
         if command.action not in pending.actions:
             raise GraphRuntimeError(
                 f"action {command.action!r} not allowed for interrupt {command.interrupt_id}"
             )
+        if uses_manual_revision:
+            self._commit_manual_revision_resume(projection, context, command, pending)
+            return
+
         audited = self._rehash_artifact_view(context.change_dir, pending)
         # Emit graph_resumed for every invocation along the interrupt ns
         # (root → mid → leaf). Writing only root+leaf leaves intermediate
@@ -681,6 +1249,8 @@ class GraphRuntime:
         resume_invocation_ids = _invocation_ids_along_ns(pending.checkpoint_ns)
         if projection.invocation_id not in resume_invocation_ids:
             resume_invocation_ids.insert(0, projection.invocation_id)
+        source_attempt = pending.source_gate_attempt_id if projection.event_schema_version >= 5 else None
+        source_tree = pending.source_gate_tree_id if projection.event_schema_version >= 5 else None
         with transaction(context.change_dir) as txn:
             if projection.event_schema_version >= 3:
                 parent_anchor_ref: str | None = None
@@ -708,6 +1278,8 @@ class GraphRuntime:
                             anchor=anchor,
                             parent_anchor_ref=parent_anchor_ref,
                             payload=command.payload if index == 0 else {},
+                            source_gate_attempt_id=source_attempt,
+                            source_gate_tree_id=source_tree,
                         )
                     )
                     parent_anchor_ref = canonical_digest(anchor.model_dump(mode="json"))
@@ -747,6 +1319,103 @@ class GraphRuntime:
                     projection,
                 )
                 txn.set_workflow_state_projection(render_workflow_state_yaml(live))
+
+    def _commit_manual_revision_resume(
+        self,
+        projection: GraphProjection,
+        context: RuntimeContext,
+        command: ResumeCommand,
+        pending: InterruptProjection,
+    ) -> None:
+        """Ingest the revision view, then append revision + ordered resume prefix."""
+        if (
+            pending.revision_owner_invocation_id is None
+            or pending.revision_base_tree_id is None
+            or pending.revision_view is None
+            or pending.revision_paths is None
+            or pending.revision_before_sha256 is None
+        ):
+            raise GraphRuntimeError(f"interrupt {pending.interrupt_id} lacks committed revision metadata")
+        binding = RevisionViewBinding(
+            interrupt_id=pending.interrupt_id,
+            owner_invocation_id=pending.revision_owner_invocation_id,
+            base_tree_id=pending.revision_base_tree_id,
+            view_relpath=pending.revision_view,
+            logical_paths=tuple(pending.revision_paths),
+            baseline=tuple(
+                RevisionPathBaseline(logical_path=path, sha256=pending.revision_before_sha256[path])
+                for path in pending.revision_paths
+            ),
+        )
+        try:
+            tree_revision = capture_revision_candidate(
+                change_dir=context.change_dir,
+                store=self._objects,
+                binding=binding,
+            )
+        except (WorkspaceError, ManualRevisionError) as exc:
+            message = str(exc)
+            if "manual_plan_revision_noop" in message:
+                raise GraphRuntimeError("manual_plan_revision_noop") from exc
+            raise GraphRuntimeError(message) from exc
+
+        events = read_events_strict(context.change_dir)
+        interrupted = _committed_leaf_interrupt(
+            events,
+            interrupt_id=pending.interrupt_id,
+            owner_invocation_id=pending.revision_owner_invocation_id,
+        )
+        owner = self._checkpoints.project(pending.revision_owner_invocation_id)
+        pinned = {
+            "policy_digest": owner.policy_digest,
+            "gate_semantics_digest": owner.gate_semantics_digest,
+            "assurance_profile_digest": owner.assurance_profile_digest,
+            "graph_digest": owner.graph_digest,
+            "ir_digest": owner.ir_digest,
+        }
+        anchors = _resume_anchors_for(pending)
+        try:
+            transition = build_manual_revision_transition(
+                interrupted=interrupted,
+                command=command,
+                revision=tree_revision,
+                pinned_definition_digests=pinned,
+                resume_anchors=anchors,
+            )
+        except ManualRevisionError as exc:
+            raise GraphRuntimeError(str(exc)) from exc
+
+        try:
+            with transaction(context.change_dir) as txn:
+                live_events = txn.read_events_strict()
+                existing = next(
+                    (
+                        event
+                        for event in live_events
+                        if event.get("type") == "manual_plan_revision"
+                        and event.get("interrupt_id") == pending.interrupt_id
+                    ),
+                    None,
+                )
+                if existing is not None:
+                    committed = transition_from_committed_revision(
+                        ManualPlanRevisionEvent.model_validate(
+                            {k: v for k, v in existing.items() if k not in {"seq", "ts"}}
+                        )
+                    )
+                    if (
+                        committed.revision.revision_transition_id
+                        != transition.revision.revision_transition_id
+                    ):
+                        raise GraphIntegrityError(
+                            "manual revision integrity conflict: non-identical retry after commit"
+                        )
+                    stage_missing_resume_suffix(txn=txn, transition=committed)
+                    return
+                txn.append_strict(transition.revision)
+                stage_missing_resume_suffix(txn=txn, transition=transition)
+        except ManualRevisionError as exc:
+            raise GraphIntegrityError(str(exc)) from exc
 
     def _rehash_artifact_view(
         self,
@@ -793,31 +1462,38 @@ class GraphRuntime:
             parent_session_id=parent_session_id,
         )
 
+    def _child_projections(self, invocation_id: str) -> dict[str, GraphProjection]:
+        projections: dict[str, GraphProjection] = {}
+        for raw in read_events_strict(self._checkpoints._change_dir):  # noqa: SLF001
+            if raw.get("source") != "graph" or raw.get("type") != "graph_invocation_started":
+                continue
+            if raw.get("parent_invocation_id") != invocation_id:
+                continue
+            child_id = raw.get("invocation_id")
+            if not isinstance(child_id, str):
+                continue
+            try:
+                projections[child_id] = self._checkpoints.project(child_id)
+            except LedgerIntegrityError:
+                continue
+        return projections
+
     # ------------------------------------------------------------------ drive
 
     def _drive(self, invocation_id: str, context: RuntimeContext) -> RunResult:
         artifacts = self._objects
         while True:
             try:
-                projection = self._checkpoints.project(invocation_id)
+                projection = self._reach_recovery_barrier(invocation_id, context)
             except LedgerIntegrityError as exc:
                 raise GraphIntegrityError(str(exc)) from exc
 
-            self._repair_materialization(projection, context)
-            compiled = self._resolve_compiled(projection)
-            self._reconcile_running(projection, context)
-
-            projection = self._checkpoints.project(invocation_id)
             if projection.terminal is not None:
                 return self._result_from_projection(projection)
 
-            pending_writes = self._pending_write_sets(invocation_id)
-            if pending_writes:
-                self._retry_pending_update(projection, context)
-                projection = self._checkpoints.project(invocation_id)
-                if projection.terminal is not None:
-                    return self._result_from_projection(projection)
-                pending_writes = self._pending_write_sets(invocation_id)
+            bundle = self._resolve_bundle(projection)
+            compiled = bundle.compiled
+            scheduler = bundle.scheduler
 
             wait_until = self._earliest_retry_at(projection)
             if wait_until is not None and wait_until > self._clock.now():
@@ -834,7 +1510,26 @@ class GraphRuntime:
                     raise GraphDefinitionChanged(message) from exc
                 raise GraphRuntimeError(message) from exc
 
-            if plan.strict_events:
+            child_projections = self._child_projections(invocation_id)
+            inherited_lease = context.inherited_prepared_wave_lease(
+                scheduler._prepared_wave_lease_owner  # noqa: SLF001
+            )
+            from assurance_agent.workflow.graph.selected_wave import PreparedWaveLease
+
+            typed_lease = inherited_lease if isinstance(inherited_lease, PreparedWaveLease) else None
+            prepared_entry = typed_lease.for_invocation(invocation_id) if typed_lease is not None else None
+            selected = preview_selected_wave(
+                compiled,
+                projection,
+                context,
+                artifacts,  # type: ignore[arg-type]
+                max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
+                child_projections=child_projections,
+            )
+            uses_prepared = prepared_entry is not None or (
+                selected is not None and (selected.synchronized_paths or selected.lock_tokens)
+            )
+            if plan.strict_events and not uses_prepared:
                 with transaction(context.change_dir) as txn:
                     for event in plan.strict_events:
                         txn.append_strict(event)
@@ -844,12 +1539,40 @@ class GraphRuntime:
 
             if not plan.tasks:
                 if plan.strict_events:
+                    if uses_prepared:
+                        with transaction(context.change_dir) as txn:
+                            for event in plan.strict_events:
+                                txn.append_strict(event)
                     continue
                 raise GraphRuntimeError("planner returned no tasks and no terminal")
 
-            projection = self._checkpoints.project(invocation_id)
             try:
-                wave = self._scheduler.execute(plan, projection, context)
+                if prepared_entry is not None:
+                    assert typed_lease is not None
+                    wave = scheduler.execute_selected_wave(
+                        typed_lease,
+                        context,
+                        invocation_id=invocation_id,
+                        compiled=compiled,
+                        artifacts=artifacts,  # type: ignore[arg-type]
+                        child_projections=child_projections,
+                    )
+                    # Inherited prepared entries authorize one reserved wave only.
+                    # Later supersteps must replan against the live projection.
+                    context = context.without_prepared_wave_lease()
+                else:
+                    wave = scheduler.execute(
+                        plan,
+                        projection,
+                        context,
+                        selected_wave=selected if uses_prepared else None,
+                        compiled=compiled if uses_prepared else None,
+                        artifacts=artifacts if uses_prepared else None,  # type: ignore[arg-type]
+                        child_projections=child_projections if uses_prepared else None,
+                        inherited_lease=typed_lease,
+                    )
+            except SelectedWaveDriftError as exc:
+                raise GraphRuntimeError(str(exc)) from exc
             except (SchedulerError, ProgressionError, WorkspaceError) as exc:
                 raise GraphRuntimeError(str(exc)) from exc
 
@@ -909,11 +1632,11 @@ class GraphRuntime:
             return self._result_from_projection(projection)
 
         projection = self._checkpoints.project(invocation_id)
-        if self._pending_write_sets(invocation_id):
-            self._retry_pending_update(projection, context)
+        if self._recovery_work_remains(projection, invocation_id, context):
+            self._reach_recovery_barrier(invocation_id, context)
             projection = self._checkpoints.project(invocation_id)
-            if self._pending_write_sets(invocation_id):
-                raise GraphRuntimeError("cannot terminal while write-sets remain pending")
+            if self._recovery_work_remains(projection, invocation_id, context):
+                raise GraphRuntimeError("cannot terminal while durable recovery work remains")
 
         event_type: Literal["graph_completed", "graph_stopped", "graph_failed"]
         if plan.terminal == "end":
@@ -948,21 +1671,55 @@ class GraphRuntime:
             reason=status.terminal_reason or status.status,
         )
 
-    def _resolve_compiled(self, projection: GraphProjection) -> CompiledWorkflow:
+    def _request_from_projection(self, projection: GraphProjection) -> PinnedDefinitionRequest:
+        return PinnedDefinitionRequest(
+            graph_digest=projection.graph_digest,
+            ingest_catalog_digest=projection.ingest_catalog_digest,
+            contract_digests=tuple(sorted(projection.contract_digests.items())),
+            event_schema_version=projection.event_schema_version,
+            gate_semantics_digest=projection.gate_semantics_digest,
+            assurance_profile_digest=projection.assurance_profile_digest,
+            gate_semantics_object_id=projection.gate_semantics_object_id,
+            topology_safety_semantics_object_id=projection.topology_safety_semantics_object_id,
+            topology_safety_semantics_digest=projection.topology_safety_semantics_digest,
+            commit_safety_semantics_object_id=projection.commit_safety_semantics_object_id,
+            commit_safety_semantics_digest=projection.commit_safety_semantics_digest,
+        )
+
+    def _resolve_bundle(self, projection: GraphProjection) -> Any:
+        request = self._request_from_projection(projection)
+        assert_live_semantic_compatibility(request)
         try:
-            compiled = self._schema_resolver(projection.graph_digest)
+            bundle = self._definition_resolver(request)
+        except GraphDefinitionChanged:
+            raise
         except Exception as exc:
             raise GraphDefinitionChanged(
-                f"schema_resolver failed for digest {projection.graph_digest}: {exc}"
+                f"definition_resolver failed for request {request.graph_digest}: {exc}"
             ) from exc
-        if compiled.digest != projection.graph_digest:
+        if bundle.compiled.digest != projection.graph_digest:
             raise GraphDefinitionChanged(
-                f"graph_definition_changed: resolver digest {compiled.digest} != "
+                f"graph_definition_changed: resolver digest {bundle.compiled.digest} != "
                 f"pinned {projection.graph_digest}"
             )
-        if compiled.contract_digests != projection.contract_digests:
+        if bundle.compiled.contract_digests != projection.contract_digests:
             raise GraphDefinitionChanged("graph_definition_changed: contract digests drifted")
-        return compiled
+        if (
+            projection.ingest_catalog_digest
+            and bundle.compiled.ingest_catalog_digest != projection.ingest_catalog_digest
+        ):
+            raise GraphDefinitionChanged("graph_definition_changed: ingest catalog digest drifted")
+        self._bundle_cache[request] = bundle
+        return bundle
+
+    def _resolve_compiled(self, projection: GraphProjection) -> CompiledWorkflow:
+        return self._resolve_bundle(projection).compiled
+
+    def _scheduler_for(self, projection: GraphProjection) -> Scheduler:
+        return self._resolve_bundle(projection).scheduler
+
+    def _contracts_for(self, projection: GraphProjection) -> ExecutionContractCatalog:
+        return self._resolve_bundle(projection).contracts
 
     def _reconcile_running(self, projection: GraphProjection, context: RuntimeContext) -> None:
         leases = LeaseRegistry(context.change_dir)
@@ -975,37 +1732,349 @@ class GraphRuntime:
             now=self._clock.now(),
         )
 
-    def _repair_materialization(
+    def _reach_recovery_barrier(self, invocation_id: str, context: RuntimeContext) -> GraphProjection:
+        """Reconcile and replay durable updates until no recovery seam reports progress."""
+        self._recover_open_revision_transitions(context)
+        projection = self._checkpoints.project(invocation_id)
+        # Compatibility evaluation runs before definition-dependent recovery/dispatch.
+        decision = self._enforce_resume_compatibility(projection, context)
+        if not decision.allowed:
+            raise ResumeCompatibilityBarrier(decision)
+
+        # Definition-dependent recovery requires a live-compatible resolved bundle.
+        projection = self._checkpoints.project(invocation_id)
+        self._resolve_bundle(projection)
+        while True:
+            projection = self._checkpoints.project(invocation_id)
+            self._reconcile_running(projection, context)
+            projection = self._checkpoints.project(invocation_id)
+
+            progress = False
+            if self._commit_pending_write_sets(projection, context):
+                progress = True
+                projection = self._checkpoints.project(invocation_id)
+            if self._replay_committed_publications(projection, context):
+                progress = True
+                projection = self._checkpoints.project(invocation_id)
+            if self._reconcile_durable_effects(projection, context):
+                progress = True
+                projection = self._checkpoints.project(invocation_id)
+
+            if not progress and not self._recovery_work_remains(projection, invocation_id, context):
+                break
+            if not progress:
+                raise GraphRuntimeError("recovery barrier stalled with durable work remaining")
+
+        projection = self._checkpoints.project(invocation_id)
+        self._repair_ordinary_materialization(projection, context)
+        return self._checkpoints.project(invocation_id)
+
+    def _enforce_resume_compatibility(
+        self,
+        projection: GraphProjection,
+        context: RuntimeContext,
+    ) -> ResumeCompatibilityDecision:
+        """Audit v4/v5 roots; append/reuse topology receipt; type-block unbound commit safety."""
+        if projection.event_schema_version < 4 or projection.event_schema_version >= 6:
+            return ResumeCompatibilityDecision(
+                schema_version="1",
+                allowed=True,
+                event_schema_version=projection.event_schema_version,
+                root_invocation_id=projection.parent_invocation_id or projection.invocation_id,
+            )
+
+        root_id = projection.parent_invocation_id or projection.invocation_id
+        root_projection = (
+            projection if projection.invocation_id == root_id else self._checkpoints.project(root_id)
+        )
+        # Load pinned bundle for audit only (no handler dispatch yet).
+        bundle = self._resolve_bundle(root_projection)
+        roles, _issues = discover_historical_assurance_roles(bundle.compiled.schema)
+        existing = self._load_topology_compatibility_receipt(root_id, context.change_dir)
+        profile_ok = self._legacy_profile_reconstructable(root_projection, context.change_dir)
+        decision, new_receipt = evaluate_resume_compatibility(
+            projection=root_projection,
+            compiled=bundle.compiled,
+            contracts=bundle.contracts,
+            historical_roles=roles,
+            existing_receipt=existing,
+            profile_reconstructable=profile_ok,
+            change_dir=context.change_dir,
+        )
+        if new_receipt is not None:
+            event = receipt_to_event(new_receipt, checkpoint_ns=root_projection.checkpoint_ns)
+            with transaction(context.change_dir) as txn:
+                txn.append_strict(event)
+        return decision
+
+    def _load_topology_compatibility_receipt(
+        self,
+        root_invocation_id: str,
+        change_dir: Path,
+    ):
+        from assurance_agent.workflow.core.events import read_events_strict
+        from assurance_agent.workflow.core.graph_events import (
+            TopologySafetyCompatibilityRecordedEvent,
+        )
+
+        for raw in read_events_strict(change_dir):
+            if raw.get("source") != "graph" or raw.get("invocation_id") != root_invocation_id:
+                continue
+            if raw.get("type") != "topology_safety_compatibility_recorded":
+                continue
+            payload = {k: v for k, v in raw.items() if k not in {"seq", "ts"}}
+            event = TopologySafetyCompatibilityRecordedEvent.model_validate(payload)
+            return event_to_receipt(event)
+        return None
+
+    def _legacy_profile_reconstructable(
+        self,
+        projection: GraphProjection,
+        change_dir: Path,
+    ) -> bool:
+        from assurance_agent.verification.profile_manifest import (
+            assurance_profile_digest,
+            assurance_profile_snapshot_relpath,
+        )
+
+        if not projection.assurance_profile_digest:
+            return False
+        if projection.event_schema_version >= 5:
+            path = change_dir / assurance_profile_snapshot_relpath(projection.assurance_profile_digest)
+            return path.is_file()
+        # v4: uniquely reconstruct only when recorded digest equals current runtime bytes.
+        return projection.assurance_profile_digest == assurance_profile_digest()
+
+    def _recovery_work_remains(
+        self,
+        projection: GraphProjection,
+        invocation_id: str,
+        context: RuntimeContext,
+    ) -> bool:
+        if any(task.status == "running" for task in projection.tasks.values()):
+            return True
+        if self._pending_write_sets(invocation_id):
+            return True
+        planned = self._last_uncommitted_plan(invocation_id)
+        if planned is not None and any(
+            task.status == "succeeded" and not task.outputs_committed for task in projection.tasks.values()
+        ):
+            return True
+        publication_store = ProjectPublicationStore(context.project_root)
+        for publication, status in publication_store.list_publications(invocation_id=invocation_id):
+            if status != "applied":
+                return True
+        if self._due_unacknowledged_effects_remain(projection, context):
+            return True
+        return False
+
+    def _reconcile_durable_effects(
+        self,
+        projection: GraphProjection,
+        context: RuntimeContext,
+    ) -> bool:
+        """Reconcile committed-but-unacked inline effects; no handler reinvoke."""
+        pending = scan_unacknowledged_intents(context.change_dir, projection.invocation_id)
+        if not pending:
+            return False
+        fence_store = RootEffectFenceStore(context.project_root)
+        retry_store = EffectRetryStore(context.project_root)
+        effect_runtime = DurableEffectRuntime(
+            change_dir=context.change_dir,
+            project_root=context.project_root,
+            fence_store=fence_store,
+            retry_store=retry_store,
+        )
+        scheduler = self._scheduler_for(projection)
+        registry = getattr(scheduler, "_effect_registry", None) or production_effect_registry()
+        root_id = projection.parent_invocation_id or projection.invocation_id
+        now = self._clock.now()
+        progress = False
+        for success, intent in pending:
+            sidecar = retry_store.load(intent.effect_id)
+            if sidecar is not None and not retry_store.is_due(sidecar, now=now):
+                continue
+            task = projection.tasks.get(success.task_id)
+            outputs = dict(sorted((success.outputs_sha256 or {}).items()))
+            target = (
+                task.target
+                if task is not None and task.target is not None and task.target.strip()
+                else (task.node_id if task is not None else success.task_id)
+            )
+            effect_context = DurableEffectContext(
+                root_invocation_id=root_id,
+                invocation_id=success.invocation_id,
+                task_id=success.task_id,
+                attempt_id=success.attempt_id,
+                target=target,
+                output_digests=outputs,
+                write_set_id=success.write_set_id,
+            )
+            try:
+                reconcile_effect(intent, effect_context, effect_runtime, registry=registry)
+                progress = True
+            except RootTerminalFenceError:
+                # Prepared/committed fence suppresses or permanently rejects retry.
+                continue
+            except DurableEffectRetryableError as exc:
+                try:
+                    retry_store.schedule_next(
+                        fence_store=fence_store,
+                        root_invocation_id=root_id,
+                        invocation_id=success.invocation_id,
+                        task_id=success.task_id,
+                        attempt_id=success.attempt_id,
+                        effect_id=intent.effect_id,
+                        kind=intent.kind,
+                        lock_key=f"effect:{intent.effect_id}",
+                        error_code=exc.error_code,
+                        now=now,
+                        expected=sidecar,
+                    )
+                except RootTerminalFenceError:
+                    # Fence prepared/committed during the retryable window: suppress.
+                    continue
+            except DurableEffectIntegrityError as exc:
+                record_integrity_failure(
+                    context.change_dir,
+                    invocation_id=success.invocation_id,
+                    checkpoint_ns=success.checkpoint_ns,
+                    task_id=success.task_id,
+                    attempt_id=success.attempt_id,
+                    effect_id=intent.effect_id,
+                    reason=str(exc),
+                )
+                progress = True
+        return progress
+
+    def _due_unacknowledged_effects_remain(
+        self,
+        projection: GraphProjection,
+        context: RuntimeContext,
+    ) -> bool:
+        pending = scan_unacknowledged_intents(context.change_dir, projection.invocation_id)
+        if not pending:
+            return False
+        retry_store = EffectRetryStore(context.project_root)
+        now = self._clock.now()
+        for _success, intent in pending:
+            sidecar = retry_store.load(intent.effect_id)
+            if sidecar is None or retry_store.is_due(sidecar, now=now):
+                return True
+        return False
+
+    def _commit_pending_write_sets(self, projection: GraphProjection, context: RuntimeContext) -> bool:
+        events = read_events_strict(context.change_dir)
+        if fence_blocks_invocation(events, projection.invocation_id) is not None:
+            return False
+        fence_store = RootEffectFenceStore(context.project_root)
+        root_id = projection.parent_invocation_id or projection.invocation_id
+        try:
+            fence_store.reject_if_terminal(root_id)
+        except RootTerminalFenceError as exc:
+            raise GraphRuntimeError(f"supersede fence rejects write-set commit: {exc}") from exc
+        planned = self._last_uncommitted_plan(projection.invocation_id)
+        if planned is None:
+            return False
+        succeeded = [
+            task_id
+            for task_id, task in projection.tasks.items()
+            if task.status == "succeeded" and not task.outputs_committed
+        ]
+        if not succeeded:
+            return False
+        plan = PlanResult(
+            superstep_id=planned["superstep_id"],
+            checkpoint_id=planned["checkpoint_id"],
+            tasks=(),
+        )
+        try:
+            return self._scheduler_for(projection).commit_pending_write_sets(
+                plan=plan,
+                projection=projection,
+                context=context,
+                succeeded_ids=succeeded,
+            )
+        except (WorkspaceError, ProgressionError, SchedulerError, ValueError) as exc:
+            raise GraphRuntimeError(f"failed to commit pending write sets: {exc}") from exc
+
+    def _replay_committed_publications(
+        self,
+        projection: GraphProjection,
+        context: RuntimeContext,
+    ) -> bool:
+        events = read_events_strict(self._checkpoints._change_dir)  # noqa: SLF001
+        if fence_blocks_invocation(events, projection.invocation_id) is not None:
+            return False
+        fence_store = RootEffectFenceStore(context.project_root)
+        root_id = projection.parent_invocation_id or projection.invocation_id
+        try:
+            fence_store.reject_if_terminal(root_id)
+        except RootTerminalFenceError as exc:
+            raise GraphRuntimeError(f"supersede fence rejects publication replay: {exc}") from exc
+        progress = False
+        for raw in events:
+            if raw.get("source") != "graph" or raw.get("invocation_id") != projection.invocation_id:
+                continue
+            if raw.get("type") != "superstep_committed":
+                continue
+            raw_checkpoint_id = raw.get("checkpoint_id")
+            publication_id = raw_checkpoint_id if isinstance(raw_checkpoint_id, str) else None
+            raw_ids = raw.get("write_set_ids")
+            write_set_ids = tuple(
+                value for value in (raw_ids if isinstance(raw_ids, list) else []) if isinstance(value, str)
+            )
+            if publication_id is None or not write_set_ids:
+                continue
+            try:
+                if self._scheduler_for(projection).repair_committed_write_sets(
+                    context=context,
+                    invocation_id=projection.invocation_id,
+                    publication_id=publication_id,
+                    write_set_ids=write_set_ids,
+                ):
+                    progress = True
+            except (SchedulerError, WorkspaceError) as exc:
+                raise GraphRuntimeError(f"failed to replay committed publication: {exc}") from exc
+        return progress
+
+    def _repair_ordinary_materialization(
         self,
         projection: GraphProjection,
         context: RuntimeContext,
     ) -> None:
-        prev, target, publication_id, write_set_ids = self._last_committed_tree_edge(projection)
-        if target is None:
+        if not self._ordinary_materialization_drift(projection, context):
             return
-        if publication_id is None:
-            raise GraphRuntimeError("committed tree edge lacks checkpoint identity")
+        prev, target, _, _write_set_ids = self._last_committed_tree_edge(projection)
+        assert target is not None
+        base = prev if prev is not None else projection.root_tree_id
         try:
-            if self._scheduler.repair_committed_write_sets(
-                context=context,
-                invocation_id=projection.invocation_id,
-                publication_id=publication_id,
-                write_set_ids=write_set_ids,
-            ):
-                return
-        except (SchedulerError, WorkspaceError) as exc:
+            self._objects.apply_tree(
+                context.project_root,
+                target,
+                base_tree_id=base,
+                restore_change_drift=True,
+            )
+        except WorkspaceError as exc:
             raise GraphRuntimeError(f"failed to repair materialization: {exc}") from exc
+
+    def _ordinary_materialization_drift(
+        self,
+        projection: GraphProjection,
+        context: RuntimeContext,
+    ) -> bool:
+        prev, target, publication_id, write_set_ids = self._last_committed_tree_edge(projection)
+        if target is None or publication_id is None:
+            return False
+        if write_set_ids:
+            write_sets = [self._objects.load_write_set(write_set_id) for write_set_id in write_set_ids]
+            if any(write_set.synchronized_paths for write_set in write_sets):
+                return False
         try:
             current = self._objects.capture(context.project_root, repo_root=context.repo_root)
         except WorkspaceError:
-            return
-        if current == target:
-            return
-        base = prev if prev is not None else projection.root_tree_id
-        try:
-            self._objects.apply_tree(context.project_root, target, base_tree_id=base)
-        except WorkspaceError as exc:
-            raise GraphRuntimeError(f"failed to repair materialization: {exc}") from exc
+            return False
+        return current != target
 
     def _last_committed_tree_edge(
         self,
@@ -1036,28 +2105,6 @@ class GraphRuntime:
                 cursor = target_tree
         return last_prev, last_target, last_publication_id, last_write_set_ids
 
-    def _retry_pending_update(self, projection: GraphProjection, context: RuntimeContext) -> None:
-        planned = self._last_uncommitted_plan(projection.invocation_id)
-        if planned is None:
-            return
-        succeeded = [task_id for task_id, task in projection.tasks.items() if task.status in ("succeeded",)]
-        if not succeeded:
-            return
-        plan = PlanResult(
-            superstep_id=planned["superstep_id"],
-            checkpoint_id=planned["checkpoint_id"],
-            tasks=(),
-        )
-        try:
-            self._scheduler._commit_wave(  # noqa: SLF001
-                plan=plan,
-                projection=projection,
-                context=context,
-                succeeded_ids=succeeded,
-            )
-        except (WorkspaceError, ProgressionError, SchedulerError, ValueError):
-            return
-
     def _last_uncommitted_plan(self, invocation_id: str) -> dict[str, str] | None:
         last_plan: dict[str, str] | None = None
         committed: set[str] = set()
@@ -1080,13 +2127,18 @@ class GraphRuntime:
     def _pending_write_sets(self, invocation_id: str) -> tuple[str, ...]:
         return _pending_write_sets_fn(read_events_strict(self._checkpoints.change_dir), invocation_id)
 
-    @staticmethod
-    def _earliest_retry_at(projection: GraphProjection) -> datetime | None:
+    def _earliest_retry_at(self, projection: GraphProjection) -> datetime | None:
         times = [
             _parse_ts(task.next_retry_at)
             for task in projection.tasks.values()
-            if task.next_retry_at is not None and task.status == "failed"
+            if task.next_retry_at is not None and task.status in ("failed", "pending")
         ]
+        context = self._context_for(projection)
+        retry_store = EffectRetryStore(context.project_root)
+        for _success, intent in scan_unacknowledged_intents(context.change_dir, projection.invocation_id):
+            sidecar = retry_store.load(intent.effect_id)
+            if sidecar is not None:
+                times.append(parse_rfc3339_z(sidecar.next_retry_at))
         return min(times) if times else None
 
 
@@ -1163,6 +2215,41 @@ def _invocation_ids_along_ns(checkpoint_ns: str) -> list[str]:
     return [parts[index] for index in range(0, len(parts), 2)]
 
 
+def _resume_anchors_for(pending: InterruptProjection) -> tuple[ResumeAnchor, ...]:
+    invocation_ids = _invocation_ids_along_ns(pending.checkpoint_ns)
+    anchors: list[ResumeAnchor] = []
+    for invocation_id in invocation_ids:
+        anchors.append(
+            ResumeAnchor(
+                invocation_id=invocation_id,
+                checkpoint_ns=_checkpoint_ns_for_invocation(pending.checkpoint_ns, invocation_id),
+                node_id=_node_id_for_invocation(pending.checkpoint_ns, invocation_id, pending.node_id),
+                interrupt_id=pending.interrupt_id,
+            )
+        )
+    return tuple(anchors)
+
+
+def _committed_leaf_interrupt(
+    events: list[dict[str, object]],
+    *,
+    interrupt_id: str,
+    owner_invocation_id: str,
+) -> GraphInterruptedEvent:
+    for event in reversed(events):
+        if event.get("type") != "graph_interrupted":
+            continue
+        if event.get("interrupt_id") != interrupt_id:
+            continue
+        if event.get("invocation_id") != owner_invocation_id:
+            continue
+        payload = {key: value for key, value in event.items() if key not in {"seq", "ts"}}
+        return GraphInterruptedEvent.model_validate(payload)
+    raise GraphRuntimeError(
+        f"committed leaf interrupt {interrupt_id} missing for owner {owner_invocation_id}"
+    )
+
+
 def _checkpoint_ns_for_invocation(full_ns: str, invocation_id: str) -> str:
     parts = [part for part in full_ns.split("/") if part]
     for index in range(0, len(parts), 2):
@@ -1207,6 +2294,7 @@ __all__ = [
     "GraphIntegrityError",
     "GraphRuntime",
     "GraphRuntimeError",
+    "ResumeCompatibilityBarrier",
     "ensure_retro_params",
     "graph_status_from_projection",
 ]

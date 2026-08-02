@@ -21,6 +21,6 @@ def check_capability_keys(ctx: CheckContext) -> CheckEvidence:
         for key in missing
     ]
     refs: list[str] = [".aa/data-knowledge.yaml"]
-    if ctx.required_capabilities:
-        refs.append(f"review/{ctx.layer}-plan-review.json")
+    if ctx.required_capabilities and ctx.review_artifact:
+        refs.append(ctx.review_artifact)
     return evidence(CHECK_ID, findings, refs)

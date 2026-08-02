@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from assurance_agent.workflow.execution.case_id import extract_case_id
+from assurance_agent.evidence.case_id import extract_case_id
 from assurance_agent.workflow.execution.results import (
     CaseResult,
     ExecutionStatus,

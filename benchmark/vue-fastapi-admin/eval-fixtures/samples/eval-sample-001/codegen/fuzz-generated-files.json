@@ -1,0 +1,16 @@
+{
+  "schema_version": "1",
+  "change_id": "eval-sample-001",
+  "layer": "fuzz",
+  "files": [
+    {
+      "repo_path": "tests/fuzz/test_api_fuzz.py",
+      "disposition": "generated",
+      "role": "test_entry",
+      "case_ids": [
+        "FUZZ-001"
+      ],
+      "content_sha256": "sha256:96bac5f3624aab80a5c0ee1b181218b92b04f6c818c5ad2d9dd92fdfdf3833ca"
+    }
+  ]
+}
