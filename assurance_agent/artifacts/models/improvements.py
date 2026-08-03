@@ -54,6 +54,15 @@ ALLOWED_DELIVERIES: dict[ImprovementKind, frozenset[DeliveryKind]] = {
 }
 
 
+def is_valid_memory_patch_target(target: str) -> bool:
+    if target.startswith("/") or "\\" in target:
+        return False
+    parts = target.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        return False
+    return len(parts) > 2 and parts[:2] == [".aa", "memory"]
+
+
 class ImprovementVerification(BaseModel):
     model_config = _FROZEN
 
@@ -95,6 +104,8 @@ class ImprovementCandidate(BaseModel):
     def validate_delivery(self) -> Self:
         if self.delivery not in ALLOWED_DELIVERIES[self.kind]:
             raise ValueError(f"{self.kind} cannot use {self.delivery}")
+        if self.delivery is DeliveryKind.MEMORY_PATCH and not is_valid_memory_patch_target(self.target):
+            raise ValueError("memory_patch target must be a child path under .aa/memory/")
         if not self.source_refs.all_ids():
             raise ValueError("candidate requires at least one source ref")
         if (self.knowledge_delta is not None) != (self.delivery is DeliveryKind.KNOWLEDGE_DELTA):

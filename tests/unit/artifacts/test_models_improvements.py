@@ -61,20 +61,22 @@ def test_candidate_rejects_wrong_delivery_and_problem_fields() -> None:
 
 
 @pytest.mark.parametrize(
-    ("kind", "delivery"),
+    ("kind", "delivery", "index"),
     [
-        (ImprovementKind.PROMPT, DeliveryKind.MEMORY_PATCH),
-        (ImprovementKind.FIXTURE, DeliveryKind.MEMORY_PATCH),
-        (ImprovementKind.FIXTURE, DeliveryKind.CHANGE_DRAFT),
-        (ImprovementKind.TEST, DeliveryKind.MEMORY_PATCH),
-        (ImprovementKind.TEST, DeliveryKind.CHANGE_DRAFT),
-        (ImprovementKind.WORKFLOW, DeliveryKind.CHANGE_DRAFT),
-        (ImprovementKind.DOMAIN_KNOWLEDGE, DeliveryKind.KNOWLEDGE_DELTA),
+        (ImprovementKind.PROMPT, DeliveryKind.MEMORY_PATCH, 0),
+        (ImprovementKind.FIXTURE, DeliveryKind.MEMORY_PATCH, 1),
+        (ImprovementKind.FIXTURE, DeliveryKind.CHANGE_DRAFT, 2),
+        (ImprovementKind.TEST, DeliveryKind.MEMORY_PATCH, 3),
+        (ImprovementKind.TEST, DeliveryKind.CHANGE_DRAFT, 4),
+        (ImprovementKind.WORKFLOW, DeliveryKind.CHANGE_DRAFT, 5),
+        (ImprovementKind.DOMAIN_KNOWLEDGE, DeliveryKind.KNOWLEDGE_DELTA, 6),
     ],
 )
-def test_allowed_kind_delivery_matrix(kind: ImprovementKind, delivery: DeliveryKind) -> None:
+def test_allowed_kind_delivery_matrix(kind: ImprovementKind, delivery: DeliveryKind, index: int) -> None:
     assert delivery in ALLOWED_DELIVERIES[kind]
     overrides: dict = {"kind": kind.value, "delivery": delivery.value}
+    if delivery is DeliveryKind.MEMORY_PATCH:
+        overrides["target"] = f".aa/memory/candidate-{index}.md"
     if delivery is DeliveryKind.KNOWLEDGE_DELTA:
         overrides["knowledge_delta"] = {
             "schema_version": "1",
@@ -84,6 +86,43 @@ def test_allowed_kind_delivery_matrix(kind: ImprovementKind, delivery: DeliveryK
     candidate = ImprovementCandidate.model_validate(_valid_candidate(**overrides))
     assert candidate.kind is kind
     assert candidate.delivery is delivery
+
+
+def test_candidate_allows_memory_patch_child_target() -> None:
+    candidate = ImprovementCandidate.model_validate(
+        _valid_candidate(
+            kind="prompt_improvement",
+            delivery="memory_patch",
+            target=".aa/memory/aa-api-plan.md",
+        )
+    )
+    assert candidate.target == ".aa/memory/aa-api-plan.md"
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "skills/awe-api-plan:required-field-summary-probe",
+        ".aa/memory",
+        "/.aa/memory/aa-api-plan.md",
+        ".aa/memory/../escape.md",
+        ".aa/memory/./aa-api-plan.md",
+        ".aa/memory//aa-api-plan.md",
+        r".aa\memory\aa-api-plan.md",
+    ],
+)
+def test_candidate_rejects_unsafe_memory_patch_target(target: str) -> None:
+    with pytest.raises(
+        ValidationError,
+        match="memory_patch target must be a child path under .aa/memory/",
+    ):
+        ImprovementCandidate.model_validate(
+            _valid_candidate(
+                kind="prompt_improvement",
+                delivery="memory_patch",
+                target=target,
+            )
+        )
 
 
 def test_candidate_requires_at_least_one_source_ref() -> None:
