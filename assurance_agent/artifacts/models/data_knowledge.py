@@ -6,7 +6,7 @@ L2: `plans/data-knowledge.proposal.<layer>.yaml` — partial L1 + proposal metad
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 CapabilityKind = Literal["async_factory", "helper", "isolated_worker", "http"]
 AuthMethod = Literal["token", "header", "login"]
@@ -60,6 +60,25 @@ class EntityLeaf(BaseModel):
     constraints: dict[str, Any] | None = None
     required_fields: list[str] | None = None
     notes: str | None = None
+
+    @staticmethod
+    def _validate_constraint_values(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key == "max_length" and (
+                    isinstance(child, bool) or not isinstance(child, int) or child <= 0
+                ):
+                    raise ValueError("max_length must be a positive integer")
+                EntityLeaf._validate_constraint_values(child)
+        elif isinstance(value, list | tuple):
+            for child in value:
+                EntityLeaf._validate_constraint_values(child)
+
+    @field_validator("constraints")
+    @classmethod
+    def _known_constraint_values_are_typed(cls, constraints: dict[str, Any] | None) -> dict[str, Any] | None:
+        cls._validate_constraint_values(constraints)
+        return constraints
 
     @model_validator(mode="after")
     def _at_least_one_constraint(self) -> "EntityLeaf":

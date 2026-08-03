@@ -161,6 +161,38 @@ def test_knowledge_delta_required_only_for_knowledge_delta_delivery() -> None:
     assert candidate.knowledge_delta is not None
 
 
+def test_knowledge_delta_rejects_boolean_max_length() -> None:
+    domain_knowledge = {
+        "schema_version": "1",
+        "mode": "delta",
+        "entities": {"dept": {"constraints": {"name": {"max_length": True}}}},
+    }
+    with pytest.raises(ValidationError, match="max_length must be a positive integer"):
+        ImprovementCandidate.model_validate(
+            _valid_candidate(
+                kind="domain_knowledge",
+                delivery="knowledge_delta",
+                knowledge_delta=domain_knowledge,
+            )
+        )
+
+
+def test_knowledge_delta_accepts_positive_max_length() -> None:
+    domain_knowledge = {
+        "schema_version": "1",
+        "mode": "delta",
+        "entities": {"dept": {"constraints": {"name": {"max_length": 20}}}},
+    }
+    candidate = ImprovementCandidate.model_validate(
+        _valid_candidate(
+            kind="domain_knowledge",
+            delivery="knowledge_delta",
+            knowledge_delta=domain_knowledge,
+        )
+    )
+    assert candidate.knowledge_delta is not None
+
+
 def test_source_refs_all_ids_deduplicates_and_sorts() -> None:
     refs = ImprovementSourceRefs(
         problem_ids=("PROB-2", "PROB-1"),

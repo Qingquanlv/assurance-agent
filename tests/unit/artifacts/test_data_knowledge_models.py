@@ -9,6 +9,7 @@ from assurance_agent.artifacts.models.data_knowledge import (
     CapabilityLeaf,
     DataKnowledge,
     DataKnowledgeProposal,
+    EntityLeaf,
 )
 from assurance_agent.artifacts.registry import match_artifact
 from assurance_agent.artifacts.repo_registry import resolve_repo_model
@@ -51,6 +52,28 @@ def test_l1_invalid_fixture_rejected() -> None:
 
 def test_l2_valid_fixture() -> None:
     DataKnowledgeProposal.model_validate(_load("l2_valid.api.yaml"))
+
+
+def test_entity_leaf_preserves_historical_flattened_constraint_flags() -> None:
+    EntityLeaf.model_validate(
+        {
+            "constraints": {
+                "name_non_empty": True,
+                "name_has_max_length": True,
+                "name_unique": True,
+            }
+        }
+    )
+
+
+def test_entity_leaf_accepts_positive_nested_max_length() -> None:
+    EntityLeaf.model_validate({"constraints": {"name": {"max_length": 20, "unique": True}}})
+
+
+@pytest.mark.parametrize("max_length", [True, False, 0, -1, "20"])
+def test_entity_leaf_rejects_invalid_nested_max_length(max_length: object) -> None:
+    with pytest.raises(ValidationError, match="max_length must be a positive integer"):
+        EntityLeaf.model_validate({"constraints": {"name": {"max_length": max_length}}})
 
 
 def test_resolve_repo_model_for_l1() -> None:
