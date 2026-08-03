@@ -6,6 +6,8 @@ from typing import Literal
 
 import pytest
 
+from assurance_agent.artifacts.canonical import canonical_json_bytes, sha256_bytes
+from assurance_agent.artifacts.models.improvement_review import ImprovementAutoReviewAssessment
 from assurance_agent.artifacts.models.improvements import (
     DeliveryKind,
     ImprovementKind,
@@ -18,9 +20,13 @@ from assurance_agent.artifacts.models.improvements import (
 )
 from assurance_agent.workflow.improvements.auto_review import (
     AutoReviewGateInput,
+    _delivery_allowed,
+    build_auto_review_gate_input,
     select_auto_review_items,
 )
 from assurance_agent.workflow.improvements.reconciler import ImprovementAcceptStatus
+from assurance_agent.workflow.improvements.review_subject import build_review_subject
+from tests.unit.workflow.improvements.test_reconcile_v3 import _candidate, _context
 
 
 SUBJECT = "sha256:" + "a" * 64
@@ -77,6 +83,73 @@ def test_each_mechanical_policy_condition_fails_closed(field: str, value: object
 
 def test_all_mechanical_policy_conditions_allow_approval() -> None:
     assert _gate().auto_approve
+
+
+def test_auto_review_rejects_legacy_invalid_memory_target() -> None:
+    assert not _delivery_allowed(
+        DeliveryKind.MEMORY_PATCH,
+        "skills/awe-api-plan:required-field-summary-probe",
+    )
+
+
+def test_auto_review_allows_valid_memory_target_and_existing_change_draft() -> None:
+    assert _delivery_allowed(DeliveryKind.MEMORY_PATCH, ".aa/memory/aa-api-plan.md")
+    assert _delivery_allowed(DeliveryKind.CHANGE_DRAFT, "qa/planning:api-rule")
+    assert not _delivery_allowed(DeliveryKind.KNOWLEDGE_DELTA, "qa/knowledge:entities.dept")
+
+
+def test_auto_review_gate_rejects_legacy_invalid_memory_target(monkeypatch, tmp_path) -> None:
+    subject, _digest, _data = build_review_subject(_candidate(), _context(), improvement_id="IMP-1")
+    legacy_subject = subject.model_copy(
+        update={
+            "kind": ImprovementKind.PROMPT,
+            "delivery": DeliveryKind.MEMORY_PATCH,
+            "target": "skills/awe-api-plan:required-field-summary-probe",
+        }
+    )
+    subject_bytes = canonical_json_bytes(legacy_subject)
+    subject_sha256 = sha256_bytes(subject_bytes)
+    subject_path = tmp_path / "qa" / "improvements" / "review-subjects" / f"{subject_sha256}.json"
+    subject_path.parent.mkdir(parents=True)
+    subject_path.write_bytes(subject_bytes)
+    assessment = ImprovementAutoReviewAssessment(
+        review_id="AUTO-1",
+        improvement_id="IMP-1",
+        expected_improvement_version=1,
+        subject_sha256=subject_sha256,
+        decision="pass",
+        evidence_traceability="complete",
+        scope_readiness="ready",
+        verification_readiness="ready",
+        delivery_safety="ready",
+        human_review_required=False,
+    )
+    assessment_path = tmp_path / "qa" / "improvements" / "reviews" / "AUTO-1" / "assessment.json"
+    assessment_path.parent.mkdir(parents=True)
+    assessment_path.write_bytes(canonical_json_bytes(assessment))
+    projection = _projection()
+    current = projection.improvements["IMP-1"].model_copy(update={"review_subject_sha256": subject_sha256})
+    projection = projection.model_copy(update={"improvements": {"IMP-1": current}})
+    monkeypatch.setattr(
+        "assurance_agent.workflow.improvements.auto_review.read_improvement_events", lambda _path: ()
+    )
+    monkeypatch.setattr(
+        "assurance_agent.workflow.improvements.auto_review.project_improvements",
+        lambda _events: projection,
+    )
+
+    gate = build_auto_review_gate_input(
+        tmp_path,
+        review_id="AUTO-1",
+        improvement_id="IMP-1",
+        subject_sha256=subject_sha256,
+        expected_version=1,
+        policy_version="1",
+        attempt=1,
+    )
+
+    assert not gate.delivery_allowed
+    assert not gate.auto_approve
 
 
 def _projection(*, last_review: LastAutoReview | None = None) -> ImprovementLedgerProjection:
