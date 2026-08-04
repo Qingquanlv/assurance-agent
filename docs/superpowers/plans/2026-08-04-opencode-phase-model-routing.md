@@ -550,14 +550,37 @@ def _dispatch_prompt(
     )
     if response.status_code != 204 and not 200 <= response.status_code < 300:
         raise _OpenCodeCallError(
-            _classify_http_status(response.status_code),
+            _classify_prompt_status(
+                response.status_code,
+                model_was_explicit=model is not None,
+            ),
             f"opencode prompt failed ({response.status_code}): {response.text[:300]}",
         )
 ```
 
 `invoke()` 只解析 `request.model`；`run_phase()` 继续传 `self._model`。删除任何显式 model 被拒后重发默认模型的分支。
 
-- [ ] **Step 5: 运行 adapter 与 graph invoke 测试**
+- [ ] **Step 5: 只对携带显式 model 的 prompt 400/404 做错误归一化**
+
+保留通用 `_classify_http_status` 不变，新增 prompt-local classifier：
+
+```python
+def _classify_prompt_status(
+    status_code: int,
+    *,
+    model_was_explicit: bool,
+) -> ErrorKind:
+    if model_was_explicit and status_code in (400, 404):
+        return "invalid_input"
+    return _classify_http_status(status_code)
+```
+
+`_dispatch_prompt` 必须把 `model is not None` 传给该 helper。补一组反向测试：
+没有显式 model 的 prompt 返回 400/404 时仍按既有语义归类为 `internal`，避免把普通
+请求格式、session 或 endpoint 问题误报成模型不可用。401/403 和 429 无论是否携带
+model，仍分别归为 `auth` 和 `rate_limit`。
+
+- [ ] **Step 6: 运行 adapter 与 graph invoke 测试**
 
 Run:
 
@@ -569,7 +592,7 @@ uv run pytest \
 
 Expected: PASS。
 
-- [ ] **Step 6: 提交本任务**
+- [ ] **Step 7: 提交本任务**
 
 ```bash
 git add \
@@ -588,6 +611,7 @@ git commit -m "feat: send request-local model to opencode"
 - Create: `assurance_agent/workflow/core/agent_execution.py`
 - Modify: `assurance_agent/workflow/core/graph_events.py`
 - Modify: `assurance_agent/workflow/graph/agent_api.py`
+- Modify: `assurance_agent/workflow/graph/model_routing.py`
 - Modify: `assurance_agent/workflow/graph/models.py`
 - Modify: `assurance_agent/workflow/graph/handlers/agent.py`
 - Modify: `assurance_agent/workflow/graph/task_runner.py`
