@@ -13,9 +13,12 @@
 #   3. Verify completion with deterministic `aa workflow status`.
 #   4. Archive via GraphRuntime: `aa workflow run --entrypoint archive`
 #      (skill:aa-archive + archive-gate; not a free-form agent prompt).
-#   5. After every item settles, run one explicit Batch Retro through
-#      `aa retro --batch-manifest ...`. Failed/stopped/timed-out items remain
-#      members and become typed evidence gaps instead of blocking analysis.
+#   5. Before archive, run the repeatable `metrics-nightly` entrypoint and
+#      snapshot adversarial/quarantine/C-layer projections for this Change.
+#   6. After every invocation reaches a persisted terminal, run one explicit
+#      Batch Retro through `aa retro --batch-manifest ...`. Failed/stopped items
+#      remain members and become typed evidence gaps. A driver hard timeout is
+#      not a persisted workflow terminal, so Retro waits for a later resume.
 #      Artifacts: context.json, proposal-candidates.json, accept-status.json,
 #      retro-summary.md, review-queue.md, plus qa/improvements/*.
 #      Legacy `aa retro nightly` / free-form proposals.json prompts are gone.
@@ -78,6 +81,8 @@ BENCHMARK_EVAL_SUITES="$(benchmark_eval_setting \
   "${EVAL_REGRESSION_SUITES-}" \
   "workflow-run,classification-unit,safety-lite,eval-smoke,case-generation,workflow-case,workflow-api-codegen,workflow-e2e-codegen,workflow-fuzz-codegen,workflow-performance-codegen,workflow-full")"
 EVAL_ENGINE_ROOT="${EVAL_ENGINE_ROOT:-$AA_REPO_ROOT}"   # holds eval/suites + eval/baselines
+DO_VERIFICATION_METRICS="${DO_VERIFICATION_METRICS:-true}"
+VERIFICATION_METRICS_ENTRYPOINT="${VERIFICATION_METRICS_ENTRYPOINT:-metrics-nightly}"
 STEP_TIMEOUT="${STEP_TIMEOUT:-5400}"
 STATUS_POLL_INTERVAL="${STATUS_POLL_INTERVAL:-120}"
 
@@ -143,6 +148,23 @@ SUMMARY="$RUN_DIR/loop-summary.md"
 TRACK_LOG="$RESUME_LOG_DIR/cursor-loop-${SESSION_STAMP}.log"
 TRACK_PID_FILE="$RESUME_LOG_DIR/cursor-loop-latest.pid"
 TRACK_LATEST_LOG="$RESUME_LOG_DIR/cursor-loop-latest.log"
+MANAGE_BENCHMARK_SUT="${MANAGE_BENCHMARK_SUT:-true}"
+SUT_HOST="${SUT_HOST:-127.0.0.1}"
+SUT_PORT="${SUT_PORT:-9999}"
+SUT_READY_URL="${SUT_READY_URL:-${BASE_URL%/}/openapi.json}"
+SUT_START_MAX_ATTEMPTS="${SUT_START_MAX_ATTEMPTS:-60}"
+SUT_START_DELAY_S="${SUT_START_DELAY_S:-0.5}"
+SUT_PID_FILE="$RUN_DIR/sut.pid"
+SUT_LOG="$RUN_DIR/sut.log"
+MANAGE_BENCHMARK_FRONTEND="${MANAGE_BENCHMARK_FRONTEND:-true}"
+FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
+FRONTEND_PORT="${FRONTEND_PORT:-3100}"
+FRONTEND_READY_URL="${FRONTEND_READY_URL:-${E2E_FRONTEND_URL%/}/}"
+FRONTEND_START_MAX_ATTEMPTS="${FRONTEND_START_MAX_ATTEMPTS:-120}"
+FRONTEND_START_DELAY_S="${FRONTEND_START_DELAY_S:-0.5}"
+FRONTEND_PID_FILE="$RUN_DIR/frontend.pid"
+FRONTEND_LOG="$RUN_DIR/frontend.log"
+PNPM_BIN="${PNPM_BIN:-pnpm}"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -160,41 +182,84 @@ setup_run_tracking() {
   log "tracking: $TRACK_LOG (latest → cursor-loop-latest.log)"
 }
 
+cleanup_loop_resources() {
+  stop_benchmark_sut "$FRONTEND_PID_FILE"
+  stop_benchmark_sut "$SUT_PID_FILE"
+  rm -f "$TRACK_PID_FILE"
+}
+
+ensure_loop_sut() {
+  if benchmark_http_ready "$SUT_READY_URL"; then
+    log "sut: reuse ready service at $SUT_READY_URL"
+    return 0
+  fi
+  if [ "$MANAGE_BENCHMARK_SUT" != "true" ]; then
+    log "ERROR: SUT not ready at $SUT_READY_URL and MANAGE_BENCHMARK_SUT=$MANAGE_BENCHMARK_SUT"
+    return 1
+  fi
+  local python_bin="$PROJECT_ROOT/.venv/bin/python"
+  if [ ! -x "$python_bin" ]; then
+    log "ERROR: SUT Python missing: $python_bin"
+    return 1
+  fi
+  log "sut: starting managed backend at $SUT_HOST:$SUT_PORT (log=$(basename "$SUT_LOG"))"
+  if ! ensure_benchmark_sut \
+    "$SUT_READY_URL" "$SUT_LOG" "$SUT_PID_FILE" \
+    "$SUT_START_MAX_ATTEMPTS" "$SUT_START_DELAY_S" -- \
+    "$python_bin" -m uvicorn app:app --host "$SUT_HOST" --port "$SUT_PORT"; then
+    log "ERROR: managed SUT failed readiness at $SUT_READY_URL (see $SUT_LOG)"
+    return 1
+  fi
+  log "sut: ready at $SUT_READY_URL pid=$(cat "$SUT_PID_FILE")"
+}
+
+ensure_loop_frontend() {
+  if benchmark_http_ready "$FRONTEND_READY_URL"; then
+    log "frontend: reuse ready service at $FRONTEND_READY_URL"
+    return 0
+  fi
+  if [ "$MANAGE_BENCHMARK_FRONTEND" != "true" ]; then
+    log "ERROR: frontend not ready at $FRONTEND_READY_URL and MANAGE_BENCHMARK_FRONTEND=$MANAGE_BENCHMARK_FRONTEND"
+    return 1
+  fi
+  if ! command -v "$PNPM_BIN" >/dev/null 2>&1; then
+    log "ERROR: frontend package manager missing: $PNPM_BIN"
+    return 1
+  fi
+  if [ ! -d "$PROJECT_ROOT/web/node_modules" ]; then
+    log "ERROR: frontend dependencies missing: run pnpm --dir $PROJECT_ROOT/web install --frozen-lockfile"
+    return 1
+  fi
+  log "frontend: starting managed Vite server at $FRONTEND_HOST:$FRONTEND_PORT (log=$(basename "$FRONTEND_LOG"))"
+  if ! ensure_benchmark_sut \
+    "$FRONTEND_READY_URL" "$FRONTEND_LOG" "$FRONTEND_PID_FILE" \
+    "$FRONTEND_START_MAX_ATTEMPTS" "$FRONTEND_START_DELAY_S" -- \
+    env BROWSER=none "$PNPM_BIN" --dir "$PROJECT_ROOT/web" run dev \
+    --host "$FRONTEND_HOST" --port "$FRONTEND_PORT"; then
+    log "ERROR: managed frontend failed readiness at $FRONTEND_READY_URL (see $FRONTEND_LOG)"
+    return 1
+  fi
+  log "frontend: ready at $FRONTEND_READY_URL pid=$(cat "$FRONTEND_PID_FILE")"
+}
+
 # Auto-resume the first pending GraphRuntime interrupt (benchmark headless path).
-# Also best-effort materializes .aa/data-knowledge.yaml from a proposal if missing.
+# Knowledge proposals are deliberately left pending until the whole Batch settles;
+# promoting them here would mutate an input frozen by other active invocations.
 maybe_auto_decide() {
   local change_id="$1"
+  local proposal_state="unchanged"
   [ "$AUTO_DECIDE_BENCHMARK" = "true" ] || return 1
-  if [ ! -f ".aa/data-knowledge.yaml" ]; then
-    mkdir -p .aa
-    cat >".aa/data-knowledge.yaml" <<'EOF'
-version: 1
-accounts: {}
-auth: {}
-entities: {}
-capabilities:
-  domain_factories: {}
-  adapters:
-    api: {}
-    e2e: {}
-    fuzz: {}
-    performance: {}
-  cleanup: {}
-EOF
-    log "[$change_id] scaffolded empty .aa/data-knowledge.yaml"
-  fi
   if compgen -G "qa/changes/$change_id/plans/data-knowledge.proposal.*.yaml" >/dev/null; then
-    if "$AA_BIN" knowledge promote --change "$change_id" --yes; then
-      log "[$change_id] promoted data-knowledge proposals into .aa/data-knowledge.yaml"
-    fi
+    proposal_state="proposal_pending"
+    log "[$change_id] knowledge proposal deferred until Batch boundary; continue without L1 mutation"
   fi
   local status_json interrupt_id action reason
   status_json="$("$AA_BIN" workflow status --change "$change_id" --json 2>/dev/null || true)"
   [ -n "$status_json" ] || return 1
   interrupt_id="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); ints=d.get("pending_interrupts") or []; print((ints[0].get("interrupt_id") or ints[0].get("id") or "") if ints else "")' "$status_json")"
   [ -n "$interrupt_id" ] || return 1
-  action="accept_risk"
-  reason="benchmark auto resume interrupt $interrupt_id so workflow can complete"
+  action="$(benchmark_interrupt_action "$proposal_state")"
+  reason="benchmark auto resume interrupt $interrupt_id; defer synchronized knowledge changes to Batch boundary"
   log "[$change_id] auto resume interrupt=$interrupt_id action=$action"
   "$AA_BIN" workflow resume --change "$change_id" --interrupt "$interrupt_id" --action "$action" --reason "$reason"
 }
@@ -509,13 +574,9 @@ run_workflow_entrypoint() {
   local logf="$1" change_id="$2" entrypoint="$3" params="$4"
   local agent_cmd
   agent_cmd="$(cursor_agent_cmd_prefix)"
-  run_hard_timeout "$logf" "$change_id" \
-    "$AA_BIN" workflow run \
-    --change "$change_id" \
-    --entrypoint "$entrypoint" \
-    --adapter headless \
-    --params "$params" \
-    --agent-cmd "$agent_cmd"
+  dispatch_benchmark_workflow_entrypoint \
+    run_hard_timeout "$logf" "$change_id" "$AA_BIN" \
+    "$entrypoint" "$params" headless "$agent_cmd"
 }
 
 # Archive one completed change. Prefer --entrypoint archive; optional legacy prompt.
@@ -699,7 +760,7 @@ EOF
 run_retro_collect() {
   local collect_log="$RUN_DIR/retro-collect.log"
   local collect_exit=0
-  log "stage 3/3 retro via explicit Batch manifest=$BATCH_MANIFEST ..."
+  log "stage: Batch retro via explicit manifest=$BATCH_MANIFEST ..."
   local agent_cmd
   agent_cmd="$(cursor_agent_cmd_prefix)"
   : >"$collect_log"
@@ -723,7 +784,48 @@ record_item_result() {
     log "ERROR: failed to update Batch member $change_id ($batch_status/$availability)"
     exit 1
   }
+  local metrics_row metrics_recorded="false"
+  for metrics_row in "${VERIFICATION_METRICS_ROWS[@]-}"; do
+    if [ "${metrics_row%%|*}" = "$change_id" ]; then
+      metrics_recorded="true"
+      break
+    fi
+  done
+  if [ "$metrics_recorded" != "true" ]; then
+    VERIFICATION_METRICS_ROWS+=("$change_id|not_run|n/a|n/a|n/a|n/a")
+  fi
   ROW_RESULTS+=("$change_id|$terminal|$detail|$archive_field")
+}
+
+run_verification_metrics_stage() {
+  local change_id="$1"
+  if [ "$DO_VERIFICATION_METRICS" != "true" ]; then
+    VERIFICATION_METRICS_ROWS+=("$change_id|disabled|n/a|n/a|n/a|n/a")
+    return 0
+  fi
+
+  local metrics_log="$RUN_DIR/${change_id}.metrics-nightly.workflow.log"
+  local change_dir="$PROJECT_ROOT/qa/changes/$change_id"
+  local row rc=0 status floor_ratio verdict c_layer quarantine_active
+  log "[$change_id] verification metrics via workflow --entrypoint $VERIFICATION_METRICS_ENTRYPOINT ..."
+  row="$(execute_verification_metrics_stage \
+    run_workflow_entrypoint "$metrics_log" "$change_id" "$change_dir" \
+    "$VERIFICATION_METRICS_ENTRYPOINT" '{}')" || rc=$?
+  IFS='|' read -r _ status floor_ratio verdict c_layer quarantine_active <<<"$row"
+  if [ "$status" = "completed" ]; then
+    if snapshot_verification_metrics "$change_dir" "$RUN_DIR" "$change_id"; then
+      log "[$change_id] verification metrics complete: floor_ratio=$floor_ratio verdict=$verdict c_layer=$c_layer quarantine_active=$quarantine_active"
+    else
+      status="snapshot_failed"
+      row="$change_id|$status|n/a|n/a|n/a|n/a"
+      rc=1
+      log "[$change_id] verification metrics snapshot failed"
+    fi
+  else
+    log "[$change_id] verification metrics $status (see $(basename "$metrics_log"))"
+  fi
+  VERIFICATION_METRICS_ROWS+=("$row")
+  return "$rc"
 }
 
 # Deterministic benchmark metrics over golden fixtures. This is observational:
@@ -786,9 +888,11 @@ log "cursor_agent=$CURSOR_AGENT_BIN model=${CURSOR_MODEL:-default} max_attempts=
 log "do_archive=$DO_ARCHIVE use_workflow_archive=$USE_WORKFLOW_ARCHIVE entrypoint=$ARCHIVE_ENTRYPOINT"
 log "retro: canonical_batch_cli id=$RETRO_ID manifest=$BATCH_MANIFEST dry_run=$RETRO_DRY_RUN"
 log "do_benchmark_eval=$DO_BENCHMARK_EVAL suites=[$BENCHMARK_EVAL_SUITES]"
+log "verification_metrics=$DO_VERIFICATION_METRICS entrypoint=$VERIFICATION_METRICS_ENTRYPOINT"
 log "auto_decide=$AUTO_DECIDE_BENCHMARK recover_healing=$RECOVER_HEALING_DEADLOCK"
 
 setup_run_tracking
+trap cleanup_loop_resources EXIT
 
 declare -a BATCH_CHANGE_IDS=()
 for item in "${BENCHMARK_ITEMS[@]}"; do
@@ -807,8 +911,11 @@ else
   clean_generated_artifacts
 fi
 ensure_test_infra
+ensure_loop_sut || exit 1
+ensure_loop_frontend || exit 1
 
 declare -a ROW_RESULTS=()
+declare -a VERIFICATION_METRICS_ROWS=()
 item_idx=0
 total_items=${#BENCHMARK_ITEMS[@]}
 
@@ -844,10 +951,11 @@ for item in "${BENCHMARK_ITEMS[@]}"; do
     log "[$change_id] already completed — skip driver"
     final_status="$(execution_final_status "$change_id")"
     archived="no"
+    run_verification_metrics_stage "$change_id" || true
     if [ -d "qa/archive/$change_id" ]; then
       archived="yes"
     elif benchmark_should_run_archive "$DO_ARCHIVE" "$workflow_kind" "$final_status"; then
-      log "[$change_id] stage 2/2 archive (resume) ..."
+      log "[$change_id] stage: archive (resume) ..."
       if run_archive_stage "$change_id"; then
         [ -d "qa/archive/${change_id}" ] && archived="yes"
       elif [ "${ARCHIVE_LAST_STATUS:-}" = "gate-stop" ]; then
@@ -879,7 +987,7 @@ for item in "${BENCHMARK_ITEMS[@]}"; do
 
   while [ "$attempt" -le "$CURSOR_MAX_WORKFLOW_ATTEMPTS" ]; do
     wf_log="$RUN_DIR/${change_id}.workflow.attempt-${attempt}.cursor.log"
-    log "[$change_id] stage 1/2 driver workflow attempt $attempt/$CURSOR_MAX_WORKFLOW_ATTEMPTS (adapter=headless/cursor-agent) ..."
+    log "[$change_id] stage: driver workflow attempt $attempt/$CURSOR_MAX_WORKFLOW_ATTEMPTS (adapter=headless/cursor-agent) ..."
     driver_exit=0
     if run_driver "$wf_log" "$change_id"; then
       log "[$change_id] driver attempt $attempt exited 0 (completed)"
@@ -937,8 +1045,10 @@ PYASSERT
     continue
   fi
 
+  run_verification_metrics_stage "$change_id" || true
+
   if benchmark_should_run_archive "$DO_ARCHIVE" "$workflow_kind" "$final_status"; then
-    log "[$change_id] stage 2/2 archive ..."
+    log "[$change_id] stage: archive ..."
     if run_archive_stage "$change_id"; then
       [ -d "qa/archive/${change_id}" ] && archived="yes"
       log "[$change_id] archive done (archived=$archived)"
@@ -965,21 +1075,37 @@ retro_improvement_ids=""
 retro_outbox_id=""
 retro_collect_exit=""
 retro_review_queue=""
-run_retro_collect
-retro_collect_exit=$?
-if capture_retro_artifacts "$RETRO_ID"; then
-  retro_status_file="$RUN_DIR/retro-status.json"
-  retro_result="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("result","technical_failure"))' "$retro_status_file")"
-  retro_batch_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("batch_id") or "")' "$retro_status_file")"
-  retro_improvement_ids="$(python3 -c 'import json,sys; print(",".join(json.load(open(sys.argv[1])).get("improvement_ids") or []))' "$retro_status_file")"
-  retro_outbox_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("outbox_id") or "")' "$retro_status_file")"
-  log "retro complete: result=$retro_result retro_id=$retro_id batch_id=$retro_batch_id signal_count=${signal_count:-?} change_count=${change_count:-?}"
-else
-  log "retro technical failure: exit=$retro_collect_exit status artifact missing/invalid (see retro-collect.log)"
-fi
+knowledge_promotion_status="not_run"
+if batch_members_settled "$BATCH_MANIFEST"; then
+  if promote_batch_knowledge_proposals "$AA_BIN" "$BATCH_MANIFEST" "${BATCH_CHANGE_IDS[@]}"; then
+    knowledge_promotion_status="completed"
+    log "knowledge proposal promotion boundary check complete"
+    run_retro_collect
+    retro_collect_exit=$?
+    if capture_retro_artifacts "$RETRO_ID"; then
+      retro_status_file="$RUN_DIR/retro-status.json"
+      retro_result="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("result","technical_failure"))' "$retro_status_file")"
+      retro_batch_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("batch_id") or "")' "$retro_status_file")"
+      retro_improvement_ids="$(python3 -c 'import json,sys; print(",".join(json.load(open(sys.argv[1])).get("improvement_ids") or []))' "$retro_status_file")"
+      retro_outbox_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("outbox_id") or "")' "$retro_status_file")"
+      log "retro complete: result=$retro_result retro_id=$retro_id batch_id=$retro_batch_id signal_count=${signal_count:-?} change_count=${change_count:-?}"
+    else
+      log "retro technical failure: exit=$retro_collect_exit status artifact missing/invalid (see retro-collect.log)"
+    fi
 
-if [ "$DO_BENCHMARK_EVAL" = "true" ]; then
-  run_benchmark_eval
+    if [ "$DO_BENCHMARK_EVAL" = "true" ]; then
+      run_benchmark_eval
+    fi
+  else
+    knowledge_promotion_status="failed"
+    retro_result="skipped_knowledge_promotion_failed"
+    retro_collect_exit="skipped"
+    log "knowledge proposal promotion failed at Batch boundary"
+  fi
+else
+  retro_result="skipped_nonterminal_batch"
+  retro_collect_exit="skipped"
+  log "retro/eval skipped: Batch contains running, not_started, or hard_timeout members"
 fi
 
 {
@@ -992,6 +1118,8 @@ fi
   echo "- max workflow attempts: \`$CURSOR_MAX_WORKFLOW_ATTEMPTS\`"
   echo "- archive: \`DO_ARCHIVE=$DO_ARCHIVE\` via \`$([ "$USE_WORKFLOW_ARCHIVE" = "true" ] && echo "workflow:$ARCHIVE_ENTRYPOINT" || echo "legacy-cursor-prompt")\`"
   echo "- retro: \`aa retro --batch-manifest\` (exit: \`${retro_collect_exit:-n/a}\`)"
+  echo "- verification metrics: \`DO_VERIFICATION_METRICS=$DO_VERIFICATION_METRICS\` via \`$VERIFICATION_METRICS_ENTRYPOINT\`"
+  echo "- knowledge promotion boundary: \`$knowledge_promotion_status\`"
   echo "- batch manifest: \`benchmark/runs/$RUNSTAMP-cursor/batch-manifest.json\`"
   echo
   echo "## Workflow results"
@@ -1002,6 +1130,17 @@ fi
     IFS='|' read -r cid term detail archive <<<"$row"
     echo "| \`$cid\` | $term | $detail | $archive |"
   done
+  echo
+  echo "## Verification Metrics (M2–M4)"
+  echo
+  echo "| change_id | status | floor_ratio | sufficiency | C-layer evaluated | quarantine active |"
+  echo "|---|---|---:|---|---:|---:|"
+  for row in "${VERIFICATION_METRICS_ROWS[@]}"; do
+    IFS='|' read -r cid status floor_ratio verdict c_layer quarantine_active <<<"$row"
+    echo "| \`$cid\` | $status | $floor_ratio | $verdict | $c_layer | $quarantine_active |"
+  done
+  echo
+  echo "Atomic snapshots: \`benchmark/runs/$RUNSTAMP-cursor/<change_id>.verification-metrics.json\`."
   echo
   echo "## Retro Batch"
   echo
@@ -1063,6 +1202,7 @@ PY
   echo "- archive logs: \`benchmark/runs/$RUNSTAMP-cursor/*.archive.workflow.log\` (or \`*.archive.cursor.jsonl\` if legacy)"
   echo "- retro collect log: \`benchmark/runs/$RUNSTAMP-cursor/retro-collect.log\`"
   echo "- status snapshots: \`benchmark/runs/$RUNSTAMP-cursor/*.status.json\`"
+  echo "- verification metrics logs: \`benchmark/runs/$RUNSTAMP-cursor/*.metrics-nightly.workflow.log\`"
   echo "- loop log: \`benchmark/runs/$RUNSTAMP-cursor/loop.log\`"
 } >"$SUMMARY"
 
@@ -1071,9 +1211,21 @@ rm -f "$TRACK_PID_FILE"
 echo
 cat "$SUMMARY"
 
+benchmark_failed=0
 if ! benchmark_result_exit_code \
   "$DO_ARCHIVE" \
   "${ROW_RESULTS[@]+"${ROW_RESULTS[@]}"}"; then
   log "ERROR: benchmark result gate failed (workflow/archive result is not closed)"
-  exit 1
+  benchmark_failed=1
 fi
+if ! benchmark_verification_metrics_exit_code \
+  "$DO_VERIFICATION_METRICS" \
+  "${VERIFICATION_METRICS_ROWS[@]+"${VERIFICATION_METRICS_ROWS[@]}"}"; then
+  log "ERROR: verification metrics gate failed (entrypoint or artifact validation incomplete)"
+  benchmark_failed=1
+fi
+if ! benchmark_knowledge_promotion_exit_code "$knowledge_promotion_status"; then
+  log "ERROR: knowledge proposal promotion failed at Batch boundary"
+  benchmark_failed=1
+fi
+[ "$benchmark_failed" -eq 0 ] || exit 1

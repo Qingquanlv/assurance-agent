@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
+import socket
 import stat
 import subprocess
+import sys
+import urllib.request
 from pathlib import Path
 
 
@@ -22,6 +26,12 @@ def _run_helper(tmp_path: Path, command: str) -> subprocess.CompletedProcess[str
     )
 
 
+def _unused_local_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 def _install_fake_aa(tmp_path: Path) -> Path:
     fake = tmp_path / "fake-aa"
     fake.write_text(
@@ -30,6 +40,9 @@ set -u
 printf '%s\\n' "$*" >>"$AA_FAKE_CALL_LOG"
 if [ "${1:-}" = "retro" ]; then
   printf '{"retro_id":"retro-batch","status":"completed_with_gaps"}\\n'
+  exit 0
+fi
+if [ "${1:-}" = "knowledge" ] && [ "${2:-}" = "promote" ]; then
   exit 0
 fi
 if [ "${1:-}" != "eval" ] || [ "${2:-}" != "run" ]; then
@@ -154,6 +167,9 @@ def test_batch_member_outcomes_cover_terminal_and_abnormal_states(tmp_path: Path
         "stopped": "stopped|partial",
         "hard_timeout": "hard_timeout|partial",
         "cancelled": "cancelled|partial",
+        "needs_human_review": "running|partial",
+        "interrupted": "running|partial",
+        "missing": "running|partial",
         "not_started": "not_started|absent",
     }
     evidence = tmp_path / "events.jsonl"
@@ -174,7 +190,14 @@ def test_batch_retro_helper_invokes_only_canonical_manifest_cli(tmp_path: Path) 
     call_log = tmp_path / "aa-calls.log"
     retro_log = tmp_path / "retro.log"
     manifest = tmp_path / "batch-manifest.json"
-    manifest.write_text("{}\n", encoding="utf-8")
+    assert _run_helper(tmp_path, _manifest_command(tmp_path, "batch-1", ("CH-A",))).returncode == 0
+    assert (
+        _run_helper(
+            tmp_path,
+            f"update_retro_batch_member {shlex.quote(str(manifest))} CH-A completed complete",
+        ).returncode
+        == 0
+    )
     command = (
         f"AA_FAKE_CALL_LOG={shlex.quote(str(call_log))} "
         f"run_batch_retro {shlex.quote(str(fake))} {shlex.quote(str(manifest))} "
@@ -189,13 +212,73 @@ def test_batch_retro_helper_invokes_only_canonical_manifest_cli(tmp_path: Path) 
     ]
 
 
+def test_batch_retro_refuses_nonterminal_or_timeout_members(tmp_path: Path) -> None:
+    fake = _install_fake_aa(tmp_path)
+    call_log = tmp_path / "aa-calls.log"
+    retro_log = tmp_path / "retro.log"
+    manifest = tmp_path / "batch-manifest.json"
+    assert _run_helper(tmp_path, _manifest_command(tmp_path, "batch-1", ("CH-A",))).returncode == 0
+
+    for status in ("not_started", "running", "hard_timeout"):
+        assert (
+            _run_helper(
+                tmp_path,
+                f"update_retro_batch_member {shlex.quote(str(manifest))} CH-A {status} absent",
+            ).returncode
+            == 0
+        )
+        command = (
+            f"AA_FAKE_CALL_LOG={shlex.quote(str(call_log))} "
+            f"run_batch_retro {shlex.quote(str(fake))} {shlex.quote(str(manifest))} "
+            f"retro-1 'cursor-agent --print' false {shlex.quote(str(retro_log))}"
+        )
+
+        result = _run_helper(tmp_path, command)
+
+        assert result.returncode != 0, status
+        assert not call_log.exists(), status
+
+
+def test_knowledge_promotion_runs_only_after_batch_members_settle(tmp_path: Path) -> None:
+    fake = _install_fake_aa(tmp_path)
+    call_log = tmp_path / "aa-calls.log"
+    manifest = tmp_path / "batch-manifest.json"
+    proposal = tmp_path / "qa" / "changes" / "CH-A" / "plans" / "data-knowledge.proposal.api.yaml"
+    proposal.parent.mkdir(parents=True)
+    proposal.write_text("version: 1\n", encoding="utf-8")
+    assert _run_helper(tmp_path, _manifest_command(tmp_path, "batch-1", ("CH-A",))).returncode == 0
+    command = (
+        f"AA_FAKE_CALL_LOG={shlex.quote(str(call_log))} "
+        f"promote_batch_knowledge_proposals {shlex.quote(str(fake))} "
+        f"{shlex.quote(str(manifest))} CH-A"
+    )
+
+    active = _run_helper(tmp_path, command)
+
+    assert active.returncode != 0
+    assert not call_log.exists()
+
+    assert (
+        _run_helper(
+            tmp_path,
+            f"update_retro_batch_member {shlex.quote(str(manifest))} CH-A stopped partial",
+        ).returncode
+        == 0
+    )
+    settled = _run_helper(tmp_path, command)
+
+    assert settled.returncode == 0, settled.stderr
+    assert call_log.read_text(encoding="utf-8").splitlines() == ["knowledge promote --change CH-A --yes"]
+
+
 def test_cursor_loop_runs_only_explicit_batch_retro_after_all_items_settle() -> None:
     source = _CURSOR_LOOP.read_text(encoding="utf-8")
     loop_start = source.index('for item in "${BENCHMARK_ITEMS[@]}"; do', source.index("# Main loop"))
     loop_end = source.index("\ndone\n\nretro_id=", loop_start)
-    retro_call = source.index("\nrun_retro_collect\n", loop_end)
+    settled_guard = source.index('if batch_members_settled "$BATCH_MANIFEST"; then', loop_end)
+    retro_call = source.index("run_retro_collect", settled_guard)
 
-    assert retro_call > loop_end
+    assert loop_end < settled_guard < retro_call
     assert '"$AA_BIN" "$BATCH_MANIFEST" "$RETRO_ID"' in source
     for obsolete in (
         "retro_last",
@@ -206,6 +289,19 @@ def test_cursor_loop_runs_only_explicit_batch_retro_after_all_items_settle() -> 
         "RETRO_ENTRYPOINT",
     ):
         assert obsolete not in source
+
+
+def test_cursor_loop_manages_backend_and_frontend_lifecycles() -> None:
+    source = _CURSOR_LOOP.read_text(encoding="utf-8")
+
+    assert 'FRONTEND_READY_URL="${FRONTEND_READY_URL:-${E2E_FRONTEND_URL%/}/}"' in source
+    assert 'FRONTEND_PID_FILE="$RUN_DIR/frontend.pid"' in source
+    assert 'FRONTEND_LOG="$RUN_DIR/frontend.log"' in source
+    assert 'stop_benchmark_sut "$FRONTEND_PID_FILE"' in source
+    assert 'ensure_benchmark_sut \\\n    "$FRONTEND_READY_URL" "$FRONTEND_LOG" "$FRONTEND_PID_FILE"' in source
+    assert '"$PNPM_BIN" --dir "$PROJECT_ROOT/web" run dev' in source
+    assert '"$PNPM_BIN" --dir "$PROJECT_ROOT/web" run dev --' not in source
+    assert "ensure_loop_sut || exit 1\nensure_loop_frontend || exit 1" in source
 
 
 def _collect_eval_command(tmp_path: Path, suites: str) -> str:
@@ -235,6 +331,135 @@ def test_remove_generated_tree_handles_read_only_graph_runtime_directories(tmp_p
 
     assert result.returncode == 0, result.stderr
     assert not target.exists()
+
+
+def test_managed_sut_starts_waits_for_readiness_and_stops(tmp_path: Path) -> None:
+    serve_dir = tmp_path / "serve"
+    serve_dir.mkdir()
+    (serve_dir / "openapi.json").write_text('{"openapi":"3.1.0"}\n', encoding="utf-8")
+    port = _unused_local_port()
+    ready_url = f"http://127.0.0.1:{port}/openapi.json"
+    pid_file = tmp_path / "sut.pid"
+    log_file = tmp_path / "sut.log"
+    server_command = shlex.join(
+        [
+            sys.executable,
+            "-m",
+            "http.server",
+            str(port),
+            "--bind",
+            "127.0.0.1",
+            "--directory",
+            str(serve_dir),
+        ]
+    )
+    command = (
+        f"ensure_benchmark_sut {shlex.quote(ready_url)} "
+        f"{shlex.quote(str(log_file))} {shlex.quote(str(pid_file))} 50 0.05 "
+        f"-- {server_command}"
+    )
+
+    started = _run_helper(tmp_path, command)
+
+    try:
+        assert started.returncode == 0, started.stderr
+        pid = int(pid_file.read_text(encoding="utf-8"))
+        os.kill(pid, 0)
+        with urllib.request.urlopen(ready_url, timeout=1.0) as response:
+            assert response.status == 200
+
+        stopped = _run_helper(
+            tmp_path,
+            f"stop_benchmark_sut {shlex.quote(str(pid_file))}",
+        )
+
+        assert stopped.returncode == 0, stopped.stderr
+        assert not pid_file.exists()
+        assert not Path(f"{pid_file}.identity").exists()
+        identity = _run_helper(tmp_path, f"benchmark_process_identity {pid}")
+        assert identity.stdout == ""
+    finally:
+        if pid_file.exists():
+            os.kill(int(pid_file.read_text(encoding="utf-8")), 9)
+
+
+def test_stale_pid_identity_never_kills_an_unrelated_process(tmp_path: Path) -> None:
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    pid_file = tmp_path / "stale.pid"
+    pid_file.write_text(f"{process.pid}\n", encoding="utf-8")
+    Path(f"{pid_file}.identity").write_text("different-process\n", encoding="utf-8")
+
+    try:
+        result = _run_helper(
+            tmp_path,
+            f"stop_benchmark_sut {shlex.quote(str(pid_file))}",
+        )
+
+        assert result.returncode == 1
+        assert process.poll() is None
+        assert not pid_file.exists()
+        assert not Path(f"{pid_file}.identity").exists()
+    finally:
+        if process.poll() is None:
+            process.terminate()
+        process.wait(timeout=5)
+
+
+def test_pid_identity_is_rechecked_before_force_kill(tmp_path: Path) -> None:
+    pid_file = tmp_path / "owned.pid"
+    identity_file = Path(f"{pid_file}.identity")
+    call_count = tmp_path / "identity-calls"
+    kill_log = tmp_path / "kill.log"
+    pid_file.write_text("12345\n", encoding="utf-8")
+    identity_file.write_text("owned-process\n", encoding="utf-8")
+    command = (
+        "benchmark_process_identity() { "
+        f'n=$(cat {shlex.quote(str(call_count))} 2>/dev/null || echo 0); '
+        "n=$((n + 1)); "
+        f'printf "%s\\n" "$n" >{shlex.quote(str(call_count))}; '
+        'if [ "$n" -eq 1 ]; then echo owned-process; else echo reused-process; fi; '
+        "}; "
+        f'kill() {{ printf "%s\\n" "$*" >>{shlex.quote(str(kill_log))}; return 0; }}; '
+        "sleep() { :; }; "
+        f"stop_benchmark_sut {shlex.quote(str(pid_file))}"
+    )
+
+    result = _run_helper(tmp_path, command)
+
+    assert result.returncode == 0, result.stderr
+    assert kill_log.read_text(encoding="utf-8").splitlines() == ["-TERM 12345"]
+    assert not pid_file.exists()
+    assert not identity_file.exists()
+
+
+def test_failed_force_kill_preserves_process_identity_for_retry(tmp_path: Path) -> None:
+    pid_file = tmp_path / "owned.pid"
+    identity_file = Path(f"{pid_file}.identity")
+    pid_file.write_text("12345\n", encoding="utf-8")
+    identity_file.write_text("owned-process\n", encoding="utf-8")
+    command = (
+        "benchmark_process_identity() { echo owned-process; }; "
+        'kill() { [ "$1" = "-KILL" ] && return 1; return 0; }; '
+        "sleep() { :; }; "
+        f"stop_benchmark_sut {shlex.quote(str(pid_file))}"
+    )
+
+    result = _run_helper(tmp_path, command)
+
+    assert result.returncode == 1
+    assert pid_file.read_text(encoding="utf-8") == "12345\n"
+    assert identity_file.read_text(encoding="utf-8") == "owned-process\n"
+
+
+def test_http_readiness_probe_does_not_use_host_proxy_settings() -> None:
+    source = _HELPERS.read_text(encoding="utf-8")
+
+    assert "urllib.request.ProxyHandler({})" in source
+    assert 'headers={"Accept": "*/*"}' in source
 
 
 def test_benchmark_gate_fails_when_any_workflow_row_failed(tmp_path: Path) -> None:
@@ -322,6 +547,26 @@ def test_persisted_workflow_terminals_stop_outer_attempts(tmp_path: Path) -> Non
     assert running.returncode == 1
 
 
+def test_knowledge_proposal_interrupt_continues_without_mid_batch_promotion(tmp_path: Path) -> None:
+    proposal = _run_helper(tmp_path, "benchmark_interrupt_action proposal_pending")
+    ordinary = _run_helper(tmp_path, "benchmark_interrupt_action unchanged")
+
+    assert proposal.returncode == 0
+    assert proposal.stdout == "accept_risk"
+    assert ordinary.returncode == 0
+    assert ordinary.stdout == "accept_risk"
+
+
+def test_knowledge_promotion_failure_is_a_benchmark_failure(tmp_path: Path) -> None:
+    completed = _run_helper(tmp_path, "benchmark_knowledge_promotion_exit_code completed")
+    not_run = _run_helper(tmp_path, "benchmark_knowledge_promotion_exit_code not_run")
+    failed = _run_helper(tmp_path, "benchmark_knowledge_promotion_exit_code failed")
+
+    assert completed.returncode == 0
+    assert not_run.returncode == 0
+    assert failed.returncode == 1
+
+
 def test_benchmark_gate_passes_completed_archived_workflow(tmp_path: Path) -> None:
     result = _run_helper(
         tmp_path,
@@ -372,3 +617,197 @@ def test_retro_artifact_contract_accepts_typed_final_status(tmp_path: Path) -> N
     result = _run_helper(tmp_path, 'retro_artifacts_complete "$PWD/qa/retro/retro-current" false')
 
     assert result.returncode == 0, result.stderr
+
+
+def test_workflow_entrypoint_dispatch_preserves_metrics_nightly_arguments(tmp_path: Path) -> None:
+    result = _run_helper(
+        tmp_path,
+        "capture_runner() { printf '<%s>\\n' \"$@\"; }; "
+        "dispatch_benchmark_workflow_entrypoint capture_runner metrics.log CH-METRICS "
+        "aa metrics-nightly '{}' headless 'cursor-agent --print --trust'",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        "<metrics.log>",
+        "<CH-METRICS>",
+        "<aa>",
+        "<workflow>",
+        "<run>",
+        "<--change>",
+        "<CH-METRICS>",
+        "<--entrypoint>",
+        "<metrics-nightly>",
+        "<--adapter>",
+        "<headless>",
+        "<--params>",
+        "<{}>",
+        "<--agent-cmd>",
+        "<cursor-agent --print --trust>",
+    ]
+
+
+def _write_verification_metric_artifacts(change_dir: Path, change_id: str) -> None:
+    inspect = change_dir / "inspect"
+    inspect.mkdir(parents=True)
+    (inspect / "metrics-nightly.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "2",
+                "change_id": change_id,
+                "cadence": "nightly",
+                "floor_ratio": 0.8,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (inspect / "metrics-nightly-shortboards.json").write_text(
+        json.dumps(
+            {
+                "change_id": change_id,
+                "source_rel": "inspect/metrics-nightly.json",
+                "sufficiency_verdict": "needs_human",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (inspect / "metrics-c-layer.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "change_id": change_id,
+                "cadence": "report",
+                "escape_rate": {"status": "evaluated"},
+                "counterexample_promotion_rate": {"status": "not_evaluated"},
+                "coverage_gap_closure_rate": {"status": "evaluated"},
+                "seed_replay_stability": {"status": "not_evaluated"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (inspect / "quarantine-projection.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "change_id": change_id,
+                "entries": [
+                    {"subject_kind": "property", "subject_key": "p1", "status": "active"},
+                    {"subject_kind": "journey", "subject_key": "j1", "status": "released"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_verification_metrics_summary_validates_identity_and_reports_vectors(tmp_path: Path) -> None:
+    change_dir = tmp_path / "qa" / "changes" / "CH-METRICS"
+    _write_verification_metric_artifacts(change_dir, "CH-METRICS")
+
+    valid = _run_helper(
+        tmp_path,
+        f"summarize_verification_metrics {shlex.quote(str(change_dir))} CH-METRICS",
+    )
+
+    assert valid.returncode == 0, valid.stderr
+    assert valid.stdout == "0.8|needs_human|2/4|1"
+
+    c_layer = change_dir / "inspect" / "metrics-c-layer.json"
+    payload = json.loads(c_layer.read_text(encoding="utf-8"))
+    payload["change_id"] = "CH-FOREIGN"
+    c_layer.write_text(json.dumps(payload), encoding="utf-8")
+
+    foreign = _run_helper(
+        tmp_path,
+        f"summarize_verification_metrics {shlex.quote(str(change_dir))} CH-METRICS",
+    )
+
+    assert foreign.returncode != 0
+    assert "identity_mismatch" in foreign.stderr
+
+
+def test_verification_metrics_gate_requires_complete_rows_when_enabled(tmp_path: Path) -> None:
+    complete = _run_helper(
+        tmp_path,
+        "benchmark_verification_metrics_exit_code true "
+        "'CH-A|completed|0.8|pass|4/4|0' 'CH-B|completed|n/a|not_evaluated|1/4|2'",
+    )
+    failed = _run_helper(
+        tmp_path,
+        "benchmark_verification_metrics_exit_code true 'CH-A|failed|n/a|n/a|n/a|n/a'",
+    )
+    malformed = _run_helper(
+        tmp_path,
+        "benchmark_verification_metrics_exit_code true 'CH-A|completed||||'",
+    )
+    missing = _run_helper(tmp_path, "benchmark_verification_metrics_exit_code true")
+    disabled = _run_helper(tmp_path, "benchmark_verification_metrics_exit_code false")
+
+    assert complete.returncode == 0, complete.stderr
+    assert failed.returncode == 1
+    assert malformed.returncode == 1
+    assert missing.returncode == 1
+    assert disabled.returncode == 0, disabled.stderr
+
+
+def test_verification_metrics_stage_reports_command_and_artifact_failures(tmp_path: Path) -> None:
+    change_dir = tmp_path / "qa" / "changes" / "CH-METRICS"
+    _write_verification_metric_artifacts(change_dir, "CH-METRICS")
+    command = (
+        "ok_runner() { return 0; }; "
+        f"execute_verification_metrics_stage ok_runner metrics.log CH-METRICS "
+        f"{shlex.quote(str(change_dir))} metrics-nightly '{{}}'"
+    )
+
+    complete = _run_helper(tmp_path, command)
+    command_failed = _run_helper(
+        tmp_path,
+        "failed_runner() { return 40; }; "
+        f"execute_verification_metrics_stage failed_runner metrics.log CH-METRICS "
+        f"{shlex.quote(str(change_dir))} metrics-nightly '{{}}'",
+    )
+    (change_dir / "inspect" / "metrics-nightly.json").unlink()
+    artifact_failed = _run_helper(tmp_path, command)
+
+    assert complete.returncode == 0, complete.stderr
+    assert complete.stdout == "CH-METRICS|completed|0.8|needs_human|2/4|1"
+    assert command_failed.returncode == 1
+    assert command_failed.stdout == "CH-METRICS|failed|n/a|n/a|n/a|n/a"
+    assert artifact_failed.returncode == 1
+    assert artifact_failed.stdout == "CH-METRICS|invalid_artifacts|n/a|n/a|n/a|n/a"
+    assert "artifact_invalid:metrics-nightly.json" in artifact_failed.stderr
+
+
+def test_verification_metrics_snapshot_is_complete_or_writes_nothing(tmp_path: Path) -> None:
+    change_dir = tmp_path / "qa" / "changes" / "CH-METRICS"
+    _write_verification_metric_artifacts(change_dir, "CH-METRICS")
+    run_dir = tmp_path / "run"
+
+    complete = _run_helper(
+        tmp_path,
+        f"snapshot_verification_metrics {shlex.quote(str(change_dir))} "
+        f"{shlex.quote(str(run_dir))} CH-METRICS",
+    )
+
+    assert complete.returncode == 0, complete.stderr
+    snapshot = run_dir / "CH-METRICS.verification-metrics.json"
+    payload = json.loads(snapshot.read_text(encoding="utf-8"))
+    assert payload["change_id"] == "CH-METRICS"
+    assert sorted(payload["artifacts"]) == [
+        "inspect/metrics-c-layer.json",
+        "inspect/metrics-nightly-shortboards.json",
+        "inspect/metrics-nightly.json",
+        "inspect/quarantine-projection.json",
+    ]
+    before = snapshot.read_bytes()
+
+    (change_dir / "inspect" / "metrics-c-layer.json").unlink()
+    incomplete = _run_helper(
+        tmp_path,
+        f"snapshot_verification_metrics {shlex.quote(str(change_dir))} "
+        f"{shlex.quote(str(run_dir))} CH-METRICS",
+    )
+
+    assert incomplete.returncode == 1
+    assert snapshot.read_bytes() == before
+    assert not tuple(run_dir.glob(".*.tmp"))
