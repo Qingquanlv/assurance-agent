@@ -1120,6 +1120,13 @@ def test_coverage_repair_snapshot_reports_mechanical_failure_before_review(
     assert result.stdout.endswith("|fail")
 
 
+def test_coverage_repair_summary_rows_allow_empty_input_under_nounset(tmp_path: Path) -> None:
+    result = _run_helper(tmp_path, "set -u; render_coverage_repair_rows")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+
+
 def test_cursor_loop_passes_and_reports_coverage_repair_budget() -> None:
     source = _CURSOR_LOOP.read_text(encoding="utf-8")
 

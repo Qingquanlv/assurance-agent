@@ -665,6 +665,15 @@ benchmark_coverage_repair_exit_code() {
   return 0
 }
 
+render_coverage_repair_rows() {
+  local row change_id status attempts source_batch post_batch safety
+  for row in "$@"; do
+    IFS='|' read -r change_id status attempts source_batch post_batch safety <<<"$row"
+    printf '| `%s` | %s | %s | `%s` | `%s` | %s |\n' \
+      "$change_id" "$status" "$attempts" "$source_batch" "$post_batch" "$safety"
+  done
+}
+
 remove_generated_artifact_tree() {
   local target="$1"
   [ -e "$target" ] || return 0

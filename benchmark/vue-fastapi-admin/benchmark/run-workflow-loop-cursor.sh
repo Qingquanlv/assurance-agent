@@ -1177,10 +1177,7 @@ fi
   echo
   echo "| change_id | status | attempts | source batch | post-repair batch | safety |"
   echo "|---|---|---:|---|---|---|"
-  for row in "${COVERAGE_REPAIR_ROWS[@]}"; do
-    IFS='|' read -r cid status attempts source_batch post_batch safety <<<"$row"
-    echo "| \`$cid\` | $status | $attempts | \`$source_batch\` | \`$post_batch\` | $safety |"
-  done
+  render_coverage_repair_rows "${COVERAGE_REPAIR_ROWS[@]+"${COVERAGE_REPAIR_ROWS[@]}"}"
   echo
   echo "Atomic snapshots: \`benchmark/runs/$RUNSTAMP-cursor/<change_id>.coverage-repair.json\`."
   echo
