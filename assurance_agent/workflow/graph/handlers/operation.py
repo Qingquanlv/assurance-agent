@@ -12,6 +12,23 @@ operation 是进程内函数调用，绝不 spawn ``aa`` 子进程（无 subproc
   project/change 路径 remap 到 task 私有 workspace；
 - ``operation:inspect``：直接调用 ``workflow.report.inspector.inspect_change``，
   写出 ``inspect/failure-analysis.json`` 与 ``inspect/quality-gate-result.json``；
+- ``operation:materialize-trace-projection``：issue reconcile 之后折叠 reconciled
+  trace projection，并发布 ``inspect/trace-projection.json`` 与独立
+  ``trace-sufficiency-gate`` 所读的 ``inspect/trace-sufficiency.json``（只出事实、
+  不出裁决）；缺输入是 gap projection 而非 task 失败；
+- ``operation:build-coverage-gap-signals``：把 trace 投影（+ sufficiency）fold 成
+  ``inspect/coverage-gaps.json`` typed 缺口清单（双源 Lane B；图内接线延后）；
+- ``operation:materialize-minimum-coverage``：确定性 join MRC 矩阵 × trace
+  projection → ``report/minimum-coverage-result.json``（收编自 report-generator
+  skill；图内接线延后 Task 8）；
+- ``operation:collect-diff-coverage`` / ``compute-constraint-coverage`` /
+  ``compute-auth-matrix`` / ``compute-journey-coverage`` /
+  ``compute-threshold-slack``：PR cadence 指标采集，写入
+  ``execution/runs/<batch>/`` 下 batch-scoped evidence；
+- ``operation:materialize-c-layer-metrics``：报告态 C1/C2/C3 聚合，唯一写入
+  ``inspect/metrics-c-layer.json``（不进 metrics-sufficiency-gate / quality_gate）；
+- ``operation:collect-pr-metrics-batch``：在当前 batch 上顺序跑上述五个采集器
+  （初次 execution 与 healing rerun 共用；只写 batch-scoped evidence）；
 - ``operation:probe-coverage-repair-need``：从最新完整 batch 构造 in-memory
   metrics 文档，走与主 gate 同一 ``evaluate_metrics_sufficiency`` / 项目
   policy，写出 ``coverage-repair/brief.json`` + ``brief.md``（绝不写
@@ -24,6 +41,13 @@ operation 是进程内函数调用，绝不 spawn ``aa`` 子进程（无 subproc
   ``coverage-repair/entry-baseline.json``（三棵树 + ``attempt_token``）；
 - ``operation:record-coverage-repair-status``：按 ``with.status`` 写终局
   coverage-repair status（保留已有 ``attempts_used`` / ``deferred_to_intake``）；
+- ``operation:materialize-pr-metrics``：healing 完成后选最新完整 batch，唯一写入
+  ``inspect/metrics.json``（assurance 图内 ``metrics-sufficiency-gate`` 在其后裁决）；
+- ``operation:load-latest-pr-metrics`` / ``run-mutation-sample`` /
+  ``compute-assertion-strength`` / ``compute-baseline-drift`` /
+  ``aggregate-nightly-metrics`` / ``evaluate-retrospective-shortboards``：
+  ``metrics-nightly`` 入口的 nightly 载体（M2 Task 1；采集器 stub，后续任务填实），
+  只写 ``inspect/metrics-nightly.json``，绝不改写 PR ``inspect/metrics.json``；
 - ``operation:allocate-healing-attempt``：把 entry-baseline artifact 写进 task
   workspace 并返回 state updates；``budget_consumed`` strict 事件归 scheduler；
 - ``operation:record-healing-status``：返回 healing 终局判定；
@@ -54,12 +78,39 @@ from assurance_agent.workflow.graph.task_runner import task_failure, task_with
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.orchestration.operations import BASELINE_REL, HEAL_STATUSES
 from assurance_agent.workflow.graph.handlers.plan_checks import verify_plan_mechanical
+from assurance_agent.workflow.graph.handlers.trace_projection import materialize_trace_projection
+from assurance_agent.workflow.metrics.auth_matrix import compute_auth_matrix_operation
+from assurance_agent.workflow.metrics.constraint_coverage import (
+    compute_constraint_coverage_operation,
+)
+from assurance_agent.workflow.metrics.diff_coverage import collect_diff_coverage_operation
+from assurance_agent.workflow.metrics.journey_coverage import (
+    compute_journey_coverage_operation,
+)
+from assurance_agent.workflow.metrics.minimum_coverage import materialize_minimum_coverage_operation
+from assurance_agent.workflow.metrics.adversarial_yield import collect_adversarial_yield_operation
+from assurance_agent.workflow.metrics.quarantine import materialize_quarantine_projection_operation
+from assurance_agent.workflow.metrics.c_layer import materialize_c_layer_metrics_operation
+from assurance_agent.workflow.metrics.coverage_gaps import build_coverage_gap_signals_operation
+from assurance_agent.workflow.metrics.nightly import (
+    aggregate_nightly_metrics_operation,
+    compute_assertion_strength_operation,
+    compute_baseline_drift_operation,
+    evaluate_retrospective_shortboards_operation,
+    load_latest_pr_metrics_operation,
+    run_mutation_sample_operation,
+)
 from assurance_agent.workflow.metrics.coverage_repair import (
     allocate_coverage_repair_attempt_operation,
     compute_coverage_repair_safety_operation,
     probe_coverage_repair_need_operation,
     record_coverage_repair_status_operation,
 )
+from assurance_agent.workflow.metrics.pr_metrics import (
+    collect_pr_metrics_batch_operation,
+    materialize_pr_metrics_operation,
+)
+from assurance_agent.workflow.metrics.threshold_slack import compute_threshold_slack_operation
 from assurance_agent.workflow.graph.handlers.retro_ops import (
     apply_improvement_auto_review,
     assemble_retro_context_v3,
@@ -417,10 +468,6 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:allocate-healing-attempt": operation_allocate_healing_attempt,
         "operation:record-healing-status": operation_record_healing_status,
         "operation:stop": stop_operation,
-        "operation:probe-coverage-repair-need": probe_coverage_repair_need_operation,
-        "operation:compute-coverage-repair-safety": compute_coverage_repair_safety_operation,
-        "operation:allocate-coverage-repair-attempt": allocate_coverage_repair_attempt_operation,
-        "operation:record-coverage-repair-status": record_coverage_repair_status_operation,
         "operation:retro-collect-v3": retro_collect_v3,
         "operation:assemble-retro-context-v3": assemble_retro_context_v3,
         "operation:drain-improvement-outbox": drain_improvement_outbox,
@@ -428,6 +475,31 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:record-retro-pipeline-failure": record_retro_pipeline_failure,
         "operation:retro-evidence-gap-fallback": evidence_gap_fallback,
         "operation:record-analysis-failed": record_analysis_failed,
+        "operation:materialize-trace-projection": materialize_trace_projection,
+        # Dual-source Lane B gap signals (graph wiring deferred; callable + contract).
+        "operation:build-coverage-gap-signals": build_coverage_gap_signals_operation,
+        "operation:materialize-minimum-coverage": materialize_minimum_coverage_operation,
+        "operation:collect-diff-coverage": collect_diff_coverage_operation,
+        "operation:compute-constraint-coverage": compute_constraint_coverage_operation,
+        "operation:compute-auth-matrix": compute_auth_matrix_operation,
+        "operation:compute-journey-coverage": compute_journey_coverage_operation,
+        "operation:compute-threshold-slack": compute_threshold_slack_operation,
+        "operation:materialize-quarantine-projection": materialize_quarantine_projection_operation,
+        # Report-only C1/C2/C3 aggregate (M4); not on metrics-sufficiency path.
+        "operation:materialize-c-layer-metrics": materialize_c_layer_metrics_operation,
+        "operation:collect-pr-metrics-batch": collect_pr_metrics_batch_operation,
+        "operation:probe-coverage-repair-need": probe_coverage_repair_need_operation,
+        "operation:compute-coverage-repair-safety": compute_coverage_repair_safety_operation,
+        "operation:allocate-coverage-repair-attempt": allocate_coverage_repair_attempt_operation,
+        "operation:record-coverage-repair-status": record_coverage_repair_status_operation,
+        "operation:materialize-pr-metrics": materialize_pr_metrics_operation,
+        "operation:load-latest-pr-metrics": load_latest_pr_metrics_operation,
+        "operation:run-mutation-sample": run_mutation_sample_operation,
+        "operation:compute-assertion-strength": compute_assertion_strength_operation,
+        "operation:compute-baseline-drift": compute_baseline_drift_operation,
+        "operation:collect-adversarial-yield": collect_adversarial_yield_operation,
+        "operation:aggregate-nightly-metrics": aggregate_nightly_metrics_operation,
+        "operation:evaluate-retrospective-shortboards": evaluate_retrospective_shortboards_operation,
         "operation:reconcile-improvements": reconcile_improvements,
         "operation:load-review-subject": load_review_subject,
         "operation:validate-improvement-review-assessment": validate_improvement_review_assessment,

@@ -174,24 +174,6 @@ contracts:
       - change:coverage-repair/**
     retryable_errors: []
 
-  # Sole writer of inspect/metrics.json (Verification Metrics). Declared here
-  # so coverage-repair contracts can pin the write-once invariant (§8.1).
-  operation:materialize-pr-metrics:
-    handler: operation
-    reads:
-      - change:execution/runs/**
-      - change:cases/**
-      - repo:.aa/policy.yaml
-    writes:
-      - change:inspect/metrics.json
-      - change:inspect/metrics-source-batch.json
-      - change:execution/runs/*/metrics.json
-    authorization_writes:
-      - change:inspect/metrics.json
-      - change:inspect/metrics-source-batch.json
-      - change:execution/runs/*/metrics.json
-    retryable_errors: []
-
   # ---- intake / case -------------------------------------------------------
   skill:aa-explore:
     handler: agent
@@ -724,6 +706,311 @@ contracts:
     exclusive:
       - project:issue-registry
     retryable_errors: [conflict, transport]
+
+  # Publishes the reconciled trace projection and the facts the independent
+  # trace-sufficiency gate routes on. Every read is declared because reads are
+  # the scheduler's serialization key: `repo:tests/**` in particular, since the
+  # fold scans the current test tree to decide whether a mapped test still
+  # exists, so a fixer rewriting tests concurrently would change this node's
+  # answer mid-flight. The authorization is the two documents and nothing else —
+  # a trace verdict must not be able to touch the quality gate or the execution
+  # manifest, whose `final_status` states what the execution found.
+  operation:materialize-trace-projection:
+    handler: operation
+    reads:
+      - change:cases/**
+      - change:execution/**
+      - change:inspect/failure-analysis.json
+      - change:issues/snapshot.json
+      - project:qa/issues/problems.json
+      - project:.aa/policy.yaml
+      - repo:tests/**
+    writes:
+      - change:inspect/trace-projection.json
+      - change:inspect/trace-sufficiency.json
+    authorization_writes:
+      - change:inspect/trace-projection.json
+      - change:inspect/trace-sufficiency.json
+    retryable_errors: []
+
+  # Dual-source Lane B: fold trace projection (+ sufficiency) → typed gap list.
+  # Graph placement (after materialize-trace-projection) is deferred; callable +
+  # contract land here so wiring can attach without reordering the main graph.
+  operation:build-coverage-gap-signals:
+    handler: operation
+    reads:
+      - change:inspect/trace-projection.json
+      - change:inspect/trace-sufficiency.json
+      # A2/A3 batch evidence feeds the constraint_without_property /
+      # matrix_cell_unasserted extension kinds (best-effort; missing is not a gap).
+      - change:execution/runs/*/constraint-coverage.json
+      - change:execution/runs/*/auth-matrix.json
+    writes:
+      - change:inspect/coverage-gaps.json
+    authorization_writes:
+      - change:inspect/coverage-gaps.json
+    retryable_errors: []
+
+  # Deterministic MRC × execution join (Verification Metrics M1 Task 5).
+  # Graph placement (after materialize-trace-projection / before report) is
+  # deferred to Task 8; the callable + contract land here so wiring can attach
+  # without inventing a parallel write path.
+  operation:materialize-minimum-coverage:
+    handler: operation
+    reads:
+      - change:trace/minimum-coverage-matrix.yaml
+      - change:inspect/trace-projection.json
+      # Advisory supplies category/layer/mrc_id maps for legacy short-key matrices.
+      - change:explore/advisory.json
+      - change:risk-advisory/advisory.json
+      # L1 closed sets for §12.12 mechanical unknown_closed_key findings.
+      - repo:.aa/data-knowledge.yaml
+    writes:
+      - change:report/minimum-coverage-result.json
+    authorization_writes:
+      - change:report/minimum-coverage-result.json
+    retryable_errors: []
+
+  # PR cadence collectors (Verification Metrics M1 Task 6). Batch-scoped
+  # evidence under execution/runs/<batch>/; authoritative inspect/metrics.json
+  # aggregation is Task 7. Graph wiring deferred to Task 8.
+  operation:collect-diff-coverage:
+    handler: operation
+    reads:
+      - change:execution/**
+    writes:
+      - change:execution/runs/*/coverage-diff.json
+    authorization_writes:
+      - change:execution/runs/*/coverage-diff.json
+    retryable_errors: []
+
+  operation:compute-constraint-coverage:
+    handler: operation
+    reads:
+      - repo:tests/**
+      - repo:.aa/data-knowledge.yaml
+      - change:execution/**
+      # Active quarantine keys exclude covered (M3 Task 4); missing = empty set.
+      - change:inspect/quarantine-projection.json
+    writes:
+      - change:execution/runs/*/constraint-coverage.json
+    authorization_writes:
+      - change:execution/runs/*/constraint-coverage.json
+    retryable_errors: []
+
+  operation:compute-auth-matrix:
+    handler: operation
+    reads:
+      - repo:.aa/data-knowledge.yaml
+      - change:execution/**
+      # The touched scope comes from the modules this change's cases declare;
+      # undeclared, the workspace prunes them and every change reads as touching
+      # nothing — which a touched-target floor cannot measure.
+      - change:cases/**
+    writes:
+      - change:execution/runs/*/auth-matrix.json
+    authorization_writes:
+      - change:execution/runs/*/auth-matrix.json
+    retryable_errors: []
+
+  operation:compute-journey-coverage:
+    handler: operation
+    reads:
+      - change:trace/minimum-coverage-matrix.yaml
+      - change:inspect/trace-projection.json
+      # Advisory supplies category/layer/mrc_id maps (same paths as MRC materialize).
+      - change:explore/advisory.json
+      - change:risk-advisory/advisory.json
+      - change:execution/**
+      # B2 e2e oracle classification reads covering_tests sources.
+      - repo:tests/**
+      # Active quarantine keys exclude covered (M3 Task 4); missing = empty set.
+      - change:inspect/quarantine-projection.json
+    writes:
+      - change:execution/runs/*/journey-coverage.json
+    authorization_writes:
+      - change:execution/runs/*/journey-coverage.json
+    retryable_errors: []
+
+  # Quarantine ledger from C3 replay receipts (M3 Task 4). Graph wiring optional:
+  # A2/A4 load the artifact from disk when present to avoid collect-batch churn.
+  operation:materialize-quarantine-projection:
+    handler: operation
+    reads:
+      - change:discovery/**
+      - change:inspect/quarantine-projection.json
+    writes:
+      - change:inspect/quarantine-projection.json
+    authorization_writes:
+      - change:inspect/quarantine-projection.json
+    retryable_errors: []
+
+  # Report-only C1/C2/C3 aggregate (M4 Task 2). Not on metrics-sufficiency or
+  # quality_gate paths — graph wiring optional / nightly later.
+  operation:materialize-c-layer-metrics:
+    handler: operation
+    reads:
+      - project:qa/issues/problems.json
+      - change:discovery/**
+      - change:inspect/coverage-gaps.json
+      - change:inspect/metrics-c-layer.json
+    writes:
+      - change:inspect/metrics-c-layer.json
+    authorization_writes:
+      - change:inspect/metrics-c-layer.json
+    retryable_errors: []
+
+  operation:compute-threshold-slack:
+    handler: operation
+    reads:
+      - change:execution/**
+    writes:
+      - change:execution/runs/*/perf-slack.json
+    authorization_writes:
+      - change:execution/runs/*/perf-slack.json
+    retryable_errors: []
+
+  # PR metrics batch collect + authoritative materialize (Verification Metrics
+  # M1 Task 7/8). Collect runs after each run-tests (initial + healing) and writes
+  # only batch-scoped evidence. Materialize runs once after healing, selects the
+  # latest complete batch, and is the sole writer of inspect/metrics.json.
+  # Graph: execution/rerun → collect → … → materialize → metrics-sufficiency-gate.
+  operation:collect-pr-metrics-batch:
+    handler: operation
+    reads:
+      - repo:tests/**
+      - repo:.aa/data-knowledge.yaml
+      - change:trace/minimum-coverage-matrix.yaml
+      - change:inspect/trace-projection.json
+      - change:explore/advisory.json
+      - change:risk-advisory/advisory.json
+      - change:execution/**
+      - change:inspect/quarantine-projection.json
+      # This node is where the five collectors actually run, so A3's touched
+      # scope is pruned away unless the case documents are declared here too —
+      # the sub-operation's own contract governs nothing in the wired graph.
+      - change:cases/**
+    writes:
+      - change:execution/runs/*/coverage-diff.json
+      - change:execution/runs/*/constraint-coverage.json
+      - change:execution/runs/*/auth-matrix.json
+      - change:execution/runs/*/journey-coverage.json
+      - change:execution/runs/*/perf-slack.json
+    authorization_writes:
+      - change:execution/runs/*/coverage-diff.json
+      - change:execution/runs/*/constraint-coverage.json
+      - change:execution/runs/*/auth-matrix.json
+      - change:execution/runs/*/journey-coverage.json
+      - change:execution/runs/*/perf-slack.json
+    retryable_errors: []
+
+  operation:materialize-pr-metrics:
+    handler: operation
+    reads:
+      - change:execution/runs/**
+      - change:cases/**
+      - repo:.aa/policy.yaml
+    writes:
+      - change:inspect/metrics.json
+      - change:inspect/metrics-source-batch.json
+      - change:execution/runs/*/metrics.json
+    authorization_writes:
+      - change:inspect/metrics.json
+      - change:inspect/metrics-source-batch.json
+      - change:execution/runs/*/metrics.json
+    retryable_errors: []
+
+  # Nightly metrics carrier (Verification Metrics M2 Task 1). Collectors are
+  # stubs until Tasks 3–5; aggregate is the sole writer of
+  # inspect/metrics-nightly.json. No nightly op may write inspect/metrics.json.
+  operation:load-latest-pr-metrics:
+    handler: operation
+    reads:
+      - change:inspect/metrics.json
+    writes:
+      - change:inspect/metrics-nightly-source.json
+    authorization_writes:
+      - change:inspect/metrics-nightly-source.json
+    retryable_errors: []
+
+  operation:run-mutation-sample:
+    handler: operation
+    reads:
+      - repo:**
+      - repo:tests/**
+      # Replay cache for the sampled mutant set. Reachable only once A1 publishes
+      # changed lines — before that the sampler returned early on "no touched
+      # lines" and never wrote it, which is why an undeclared write stayed latent.
+      - project:.aa/cache/mutation/**
+    writes:
+      - change:execution/runs/*/mutation.json
+      - project:.aa/cache/mutation/**
+    authorization_writes:
+      - change:execution/runs/*/mutation.json
+      - project:.aa/cache/mutation/**
+    retryable_errors: []
+
+  operation:compute-assertion-strength:
+    handler: operation
+    reads:
+      - repo:tests/**
+    writes:
+      - change:execution/runs/*/assertion-strength.json
+    authorization_writes:
+      - change:execution/runs/*/assertion-strength.json
+    retryable_errors: []
+
+  operation:compute-baseline-drift:
+    handler: operation
+    reads:
+      - change:execution/**
+      - project:.aa/baseline/performance/**
+    writes:
+      - change:execution/runs/*/baseline-drift.json
+      - project:.aa/baseline/performance/**
+    authorization_writes:
+      - change:execution/runs/*/baseline-drift.json
+      - project:.aa/baseline/performance/**
+    synchronized:
+      - project:.aa/baseline/performance/**
+    exclusive:
+      - project:performance-baseline
+    retryable_errors: []
+
+  operation:collect-adversarial-yield:
+    handler: operation
+    reads:
+      - change:discovery/**
+      - change:issues/snapshot.json
+    writes:
+      - change:execution/runs/*/adversarial-yield.json
+    authorization_writes:
+      - change:execution/runs/*/adversarial-yield.json
+    retryable_errors: []
+
+  operation:aggregate-nightly-metrics:
+    handler: operation
+    reads:
+      - change:inspect/metrics.json
+      - change:inspect/metrics-nightly-source.json
+      - change:execution/runs/**
+      - change:cases/**
+      - repo:.aa/policy.yaml
+    writes:
+      - change:inspect/metrics-nightly.json
+    authorization_writes:
+      - change:inspect/metrics-nightly.json
+    retryable_errors: []
+
+  operation:evaluate-retrospective-shortboards:
+    handler: operation
+    reads:
+      - change:inspect/metrics-nightly.json
+    writes:
+      - change:inspect/metrics-nightly-shortboards.json
+    authorization_writes:
+      - change:inspect/metrics-nightly-shortboards.json
+    retryable_errors: []
 
   operation:load-problem-review-context:
     handler: operation
