@@ -15,6 +15,13 @@ AUDITED_GATE_READS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^healing/fixer-safety-check\.json$"),
     re.compile(r"^healing/(api|e2e)-apply-summary\.json$"),
     re.compile(r"^inspect/inspect-safety-check\.json$"),
+    # The trace-sufficiency gate's only read. Audited because its
+    # `needs_human_review` route offers `accept_risk`: a decision has to be
+    # anchored to the bytes it was taken on, or one taken over a thin projection
+    # would keep excusing whatever the next fold produces.
+    re.compile(r"^inspect/trace-sufficiency\.json$"),
+    # metrics-sufficiency-gate's only read — same accept_risk anchoring.
+    re.compile(r"^inspect/metrics\.json$"),
 )
 
 

@@ -33,6 +33,8 @@ from assurance_agent.exceptions import AaError
 from assurance_agent.retro.stages import (
     BatchScopeContractError,
     CandidateBatchInvalid,
+    FileCoverageGapHistoryReader,
+    FileDiscoveryHistoryReader,
     FileEvalHistoryReader,
     RetroInvocation,
     LedgerWorkflowHistoryReader,
@@ -118,6 +120,8 @@ def retro_collect_v3(task: ExecutableTask, workspace: TaskWorkspace, context: Ru
             issue_history=LedgerIssueHistoryReader(workspace.project_root),
             workflow_history=LedgerWorkflowHistoryReader(workspace.project_root),
             eval_history=FileEvalHistoryReader(workspace.project_root),
+            discovery_history=FileDiscoveryHistoryReader(workspace.project_root),
+            coverage_gap_history=FileCoverageGapHistoryReader(workspace.project_root),
             write_root=workspace.project_root,
         )
     except BatchScopeContractError as err:
@@ -133,13 +137,9 @@ def retro_collect_v3(task: ExecutableTask, workspace: TaskWorkspace, context: Ru
             "issue_count": len(bundle.issue.entries),
             "workflow_count": len(bundle.workflow.entries),
             "eval_count": len(bundle.eval.entries),
-            "gap_count": sum(
-                len(slice_.deterministic_signals) for slice_ in (bundle.issue, bundle.workflow, bundle.eval)
-            ),
-            "all_domain_evidence_absent": not (
-                bundle.issue.entries or bundle.workflow.entries or bundle.eval.entries
-            )
-            and any(slice_.deterministic_signals for slice_ in (bundle.issue, bundle.workflow, bundle.eval)),
+            "gap_count": sum(len(slice_.deterministic_signals) for slice_ in bundle.all_slices),
+            "all_domain_evidence_absent": not (any(slice_.entries for slice_ in bundle.all_slices))
+            and any(slice_.deterministic_signals for slice_ in bundle.all_slices),
         },
     )
 

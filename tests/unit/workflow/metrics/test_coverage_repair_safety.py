@@ -138,6 +138,7 @@ def _write_brief(change_dir: Path, *, case_id: str = CASE_ID) -> None:
         batch_id="20260806-120000",
         probe_verdict="needs_human",
         eligible=True,
+        allowed_test_files=(BRIEFED_TEST,),
         repair_items=(
             RepairItem(
                 kind="uncovered_required_case",

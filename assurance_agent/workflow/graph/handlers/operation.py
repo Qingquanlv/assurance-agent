@@ -161,16 +161,17 @@ OperationResult = TaskResult
 OperationFn = Callable[[ExecutableTask, TaskWorkspace, RuntimeContext], OperationResult]
 
 _REQUIRED_HEALING_SKILLS = ("aa-fix-proposal", "aa-api-codegen-fixer", "aa-e2e-codegen-fixer")
-# Captured trees omit these (size / absolute interpreter links). run-tests must
-# reattach them so ``uv run pytest`` does not rebuild a broken task-local venv.
-_HOST_RUNTIME_DIRS = (".venv", "node_modules")
+# Captured trees omit these (size / absolute interpreter links / agent config).
+# Reattach them in the task root so test operations reuse the host runtime and
+# OpenCode can resolve the bounded agent named by an AgentRequest.
+_HOST_RUNTIME_DIRS = (".venv", "node_modules", ".opencode")
 # Coordinator files excluded from content trees but required by in-workspace CLI
 # (e.g. ``aa heal record-apply`` reads the strict allocation ledger).
 _HOST_CHANGE_COORDINATOR_FILES = ("events.jsonl",)
 
 
 def _link_host_runtime_dirs(workspace: TaskWorkspace, context: RuntimeContext) -> None:
-    """Symlink host ``.venv`` / ``node_modules`` into the task-private project root."""
+    """Symlink omitted host runtime/config dirs into the task-private project root."""
     host_root = context.project_root.resolve()
     task_root = workspace.project_root.resolve()
     if host_root == task_root:
@@ -212,6 +213,16 @@ def _link_host_change_coordinator_files(workspace: TaskWorkspace, context: Runti
             task.symlink_to(host)
         except OSError:
             continue
+
+
+def link_host_runtime_dirs(workspace: TaskWorkspace, context: RuntimeContext) -> None:
+    """Reattach only the omitted host runtime/config dirs.
+
+    Callers whose write-set is captured from the task tree must use this rather
+    than :func:`link_host_task_paths`: a coordinator-file symlink points outside
+    the task root and capture refuses such an escape.
+    """
+    _link_host_runtime_dirs(workspace, context)
 
 
 def link_host_task_paths(workspace: TaskWorkspace, context: RuntimeContext) -> None:
@@ -553,5 +564,6 @@ __all__ = [
     "OperationHandler",
     "OperationResult",
     "default_operations",
+    "link_host_runtime_dirs",
     "link_host_task_paths",
 ]

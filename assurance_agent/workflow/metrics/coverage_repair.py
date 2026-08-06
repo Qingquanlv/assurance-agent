@@ -46,6 +46,7 @@ from assurance_agent.artifacts.policy import load_policy
 from assurance_agent.change_location import resolve_change
 from assurance_agent.evidence.metrics_sufficiency import evaluate_metrics_sufficiency
 from assurance_agent.workflow.execution.evidence import atomic_write_bytes
+from assurance_agent.workflow.execution.scope import resolve_test_paths
 from assurance_agent.workflow.execution.tree_hash import (
     diff_trees,
     hash_product_tree,
@@ -75,8 +76,8 @@ _REPAIRABLE_KINDS: frozenset[str] = frozenset(get_args(RepairableGapKind))
 
 # Which metric shortfall each repairable gap kind serves (design §6.2 / RepairItem).
 _SERVING_METRIC: dict[str, MetricKey] = {
-    "uncovered_required_case": "constraint_coverage",
-    "stale_required_case": "constraint_coverage",
+    "uncovered_required_case": "journey_coverage",
+    "stale_required_case": "journey_coverage",
     "constraint_without_property": "constraint_coverage",
     "matrix_cell_unasserted": "auth_matrix_coverage",
 }
@@ -115,6 +116,7 @@ def _locator_label(locator: CoverageGapLocator) -> str:
 
 def _partition_gaps(
     gaps: tuple[CoverageGap, ...],
+    active_shortboards: frozenset[MetricKey],
 ) -> tuple[tuple[RepairItem, ...], tuple[DeferredItem, ...]]:
     repair: list[RepairItem] = []
     deferred: list[DeferredItem] = []
@@ -132,6 +134,9 @@ def _partition_gaps(
         if metric == "adversarial_clean":
             # Promotion-track boolean; never a coverage-repair delivery (design §6.1).
             continue
+        if metric not in active_shortboards:
+            deferred.append(DeferredItem(kind=gap.kind, locator=gap.locator, reason="not_serving_shortboard"))
+            continue
         repair.append(
             RepairItem(
                 kind=gap.kind,  # type: ignore[arg-type]
@@ -141,6 +146,16 @@ def _partition_gaps(
             )
         )
     return tuple(repair), tuple(deferred)
+
+
+def _allowed_test_files(change_dir: Path) -> tuple[str, ...]:
+    """Return exactly the codegen-plan paths that ``run_change`` will execute."""
+    paths: set[str] = set()
+    for target in ("api", "e2e", "fuzz", "performance"):
+        resolved = resolve_test_paths(change_dir, target)
+        if resolved is not None:
+            paths.update(resolved)
+    return tuple(sorted(paths))
 
 
 def _render_brief_md(brief: CoverageRepairBrief) -> str:
@@ -161,6 +176,10 @@ def _render_brief_md(brief: CoverageRepairBrief) -> str:
             detail = (board.detail or "").replace("|", "\\|")
             lines.append(f"| {board.metric} | {board.code} | {detail} |")
     else:
+        lines.append("_none_")
+    lines.extend(["", "## Allowed test files", ""])
+    lines.extend(f"- `{path}`" for path in brief.allowed_test_files)
+    if not brief.allowed_test_files:
         lines.append("_none_")
     lines.extend(["", "## Repair items", ""])
     if brief.repair_items:
@@ -232,12 +251,21 @@ def build_repair_brief(
         )
 
     gaps = _load_coverage_gaps(change_dir)
-    repair_items, deferred = _partition_gaps(gaps)
+    active_shortboards = frozenset(board.metric for board in decision.shortboards)
+    repair_items, deferred = _partition_gaps(gaps, active_shortboards)
+    allowed_test_files = _allowed_test_files(change_dir)
+    if repair_items and not allowed_test_files:
+        deferred = deferred + tuple(
+            DeferredItem(kind=item.kind, locator=item.locator, reason="no_test_scope")
+            for item in repair_items
+        )
+        repair_items = ()
     return CoverageRepairBrief(
         change_id=change_id,
         batch_id=batch_id,
         probe_verdict=decision.verdict,
-        eligible=bool(repair_items),
+        eligible=bool(repair_items and allowed_test_files),
+        allowed_test_files=allowed_test_files,
         shortboards=decision.shortboards,
         repair_items=repair_items,
         deferred_to_intake=deferred,
@@ -313,35 +341,6 @@ def _normalize_repo_rel(raw: str, project_root: Path) -> str:
     return Path(text).as_posix()
 
 
-def _locator_tokens(locator: CoverageGapLocator) -> tuple[str, ...]:
-    return tuple(
-        value
-        for value in (locator.case_id, locator.constraint_key, locator.cell, locator.cluster_key)
-        if value
-    )
-
-
-def _path_explained_by_locators(
-    project_root: Path,
-    rel: str,
-    locators: tuple[CoverageGapLocator, ...],
-) -> bool:
-    """Whether any briefed locator can explain a mechanically changed test path.
-
-    Matches path/name (and exact ``cluster_key``) only — never file contents.
-    Content-substring briefing would let an agent plant a case_id in a comment
-    on an unrelated edit and launder ``unbriefed_files_modified``.
-    """
-    rel_norm = rel.replace("\\", "/").lower()
-    for locator in locators:
-        if locator.cluster_key and _normalize_repo_rel(locator.cluster_key, project_root) == rel:
-            return True
-        for token in _locator_tokens(locator):
-            if token.lower() in rel_norm:
-                return True
-    return False
-
-
 def _load_baseline(change_dir: Path) -> CoverageRepairBaseline:
     path = Path(change_dir) / COVERAGE_REPAIR_BASELINE_REL
     if not path.is_file():
@@ -366,15 +365,15 @@ def _load_apply_summary(change_dir: Path) -> CoverageRepairApplySummary:
         raise CoverageRepairSafetyError(f"unreadable {COVERAGE_REPAIR_APPLY_SUMMARY_REL}: {err}") from err
 
 
-def _load_brief_locators(change_dir: Path) -> tuple[CoverageGapLocator, ...]:
+def _load_brief(change_dir: Path) -> CoverageRepairBrief | None:
     path = Path(change_dir) / COVERAGE_REPAIR_BRIEF_REL
     if not path.is_file():
-        return ()
+        return None
     try:
         brief = CoverageRepairBrief.model_validate_json(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, ValidationError):
-        return ()
-    return tuple(item.locator for item in brief.repair_items)
+        return None
+    return brief
 
 
 def compute_coverage_repair_safety(
@@ -409,10 +408,9 @@ def compute_coverage_repair_safety(
     declaration_files_modified = bool(declaration_changed)
     skip_or_xfail_added = _scan_skip_xfail_markers(project_root, list(test_changed))
 
-    locators = _load_brief_locators(change_dir)
-    unbriefed = tuple(
-        path for path in test_changed if not _path_explained_by_locators(project_root, path, locators)
-    )
+    brief = _load_brief(change_dir)
+    allowed = set(brief.allowed_test_files) if brief is not None else set()
+    unbriefed = tuple(path for path in test_changed if path not in allowed)
 
     mechanical_set = set(test_changed) | set(product_changed) | set(declaration_changed)
     summary_files = tuple(summary.files_modified)

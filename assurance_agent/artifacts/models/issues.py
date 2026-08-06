@@ -12,7 +12,7 @@ boundary because the deterministic reconciler consumes their exact fields.
 
 import hashlib
 import json
-from typing import Literal
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -294,6 +294,47 @@ class ProblemVerificationRequest(BaseModel):
     evidence_digest: NonEmptyStr
 
 
+class EscapeDraftClassification(BaseModel):
+    """LLM provisional escape draft — never counts toward C1 feedstock."""
+
+    model_config = _FROZEN
+
+    is_escape: bool
+    authority: Literal["llm_provisional"] = "llm_provisional"
+    missed_oracle_ids: tuple[str, ...] = ()
+    missed_obligation_ids: tuple[str, ...] = ()
+    rationale: str | None = None
+
+
+class EscapeAnalysis(BaseModel):
+    """Issue-lifecycle escape classification (design §5-C1 schema prerequisite).
+
+    Only ``authority=human_confirmed`` with a decided ``is_escape`` participates
+    in C1 feedstock. ``llm_provisional`` drafts are advisory and may live in
+    ``draft_classification`` or on the top-level block before human confirm.
+    """
+
+    model_config = _FROZEN
+
+    is_escape: bool | None = None
+    authority: AssessmentAuthority
+    confirmed_at: str | None = None
+    confirmed_by: str | None = None
+    missed_oracle_ids: tuple[str, ...] = ()
+    missed_obligation_ids: tuple[str, ...] = ()
+    rationale: str | None = None
+    draft_classification: EscapeDraftClassification | None = None
+
+    @model_validator(mode="after")
+    def _human_confirmed_requires_decision(self) -> Self:
+        if self.authority == "human_confirmed":
+            if self.is_escape is None:
+                raise ValueError("human_confirmed escape_analysis requires is_escape")
+            if self.confirmed_at is None or not str(self.confirmed_at).strip():
+                raise ValueError("human_confirmed escape_analysis requires confirmed_at")
+        return self
+
+
 class Problem(BaseModel):
     model_config = _FROZEN
 
@@ -307,6 +348,7 @@ class Problem(BaseModel):
     occurrences: list[NonEmptyStr] = Field(min_length=1)
     verification_request: ProblemVerificationRequest | None = None
     resolution: ProblemResolution | None = None
+    escape_analysis: EscapeAnalysis | None = None
     version: int = Field(ge=1)
 
     @model_validator(mode="after")

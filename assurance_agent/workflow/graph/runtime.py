@@ -435,6 +435,24 @@ class GraphRuntime:
                     ).encode("utf-8"),
                 )
         result = self._drive(child_invocation_id, child_context)
+        if result.status.status == "completed":
+            # A resumed parent attempt receives a freshly materialized workspace at
+            # the parent's pre-child base tree.  The child ledger may already be at
+            # a later committed tree from before the interrupt; in that case
+            # ``_drive`` has no new wave whose publication would update this fresh
+            # workspace.  Reconcile the child tree explicitly before freezing the
+            # cumulative subgraph delta, otherwise committed review/plan artifacts
+            # disappear and downstream hard gates fail closed on missing evidence.
+            child_projection = self._checkpoints.project(child_invocation_id)
+            try:
+                self._objects.apply_tree_delta(
+                    workspace.project_root,
+                    child_projection.current_tree_id,
+                    source_base_tree_id=child_projection.root_tree_id,
+                    destination_base_tree_id=workspace.base_tree_id,
+                )
+            except WorkspaceError as exc:
+                return TaskResult(status="failed", error_kind="invalid_output", error=str(exc))
         return self._child_result_to_task_result(result, parent_task=parent_task, workspace=workspace)
 
     def _schema_resolver_for_parent(self, parent_task: ExecutableTask) -> CompiledWorkflow:

@@ -12,6 +12,17 @@ from pydantic import BaseModel, ConfigDict, Field, RootModel
 from assurance_agent.artifacts.models.common import NonEmptyStr
 
 
+class SourceCodeEvidence(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: NonEmptyStr
+    source: Literal["source_code"]
+    type: NonEmptyStr
+    description: NonEmptyStr
+    parse_confidence_cap: Literal["medium", "low"] = "medium"
+    module: str | None = None
+
+
 class Advisory(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -25,6 +36,7 @@ class Advisory(BaseModel):
     evidence_inventory: Any = None
     case_design_guidance: Any = None
     minimum_required_coverage: Any = None
+    source_code_evidence: list[SourceCodeEvidence] = Field(default_factory=list)
 
 
 class FactBaselineUnavailable(BaseModel):

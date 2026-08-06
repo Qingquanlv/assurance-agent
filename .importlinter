@@ -11,6 +11,7 @@ layers =
     assurance_agent.risk
     assurance_agent.workflow
     assurance_agent.verification
+    assurance_agent.evidence
     assurance_agent.artifacts
     assurance_agent.config
     assurance_agent.resources

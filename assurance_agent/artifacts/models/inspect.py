@@ -6,7 +6,7 @@ and the type definitions in src/schema/contracts.ts. Healing gates reference
 source_batch_id, failures[].fix_proposal_eligible and final_status verbatim.
 """
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -115,16 +115,41 @@ class NonFunctionalDimension(BaseModel):
     performance: list[PerformanceScenarioVerdict]
 
 
+class MetricsDimension(BaseModel):
+    """Informational verification-metrics summary for report/retro.
+
+    Never consulted by ``worst_status`` / ``final_status``, healing-loop reject,
+    or archive stop. Routing lives on ``metrics-sufficiency-gate``.
+    """
+
+    status: GateStatus
+    available: bool = True
+    summary: str | None = None
+
+
 class QualityGateDimensions(BaseModel):
     functional: FunctionalDimension
     coverage: CoverageDimension
     non_functional: NonFunctionalDimension | None = None
+    # Pure report channel (Task 8). Optional so older gate documents still load.
+    metrics: MetricsDimension | None = None
 
 
 class QualityGateResult(BaseModel):
+    """The gate verdict, plus observations that deliberately do not decide it.
+
+    ``diagnostics`` is a shadow channel: nothing in it may be read back to
+    change ``final_status``, the execution manifest's ``final_status``, or
+    healing/archive routing. It exists so a judgement can be recorded and
+    compared against the live gate for a release before it is wired in.
+
+    ``dimensions.metrics`` is likewise informational only — see MetricsDimension.
+    """
+
     schema_version: Literal["1.0"]
     change_id: str
     batch_id: str
     dimensions: QualityGateDimensions
     final_status: GateStatus
     warnings: list[str] | None = None
+    diagnostics: dict[str, Any] | None = None

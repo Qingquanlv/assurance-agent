@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from assurance_agent.artifacts.canonical import canonical_json_bytes, sha256_bytes
+from assurance_agent.artifacts.models.data_knowledge import DataKnowledgeProposal
 from assurance_agent.artifacts.models.improvements import (
     DeliveryKind,
     ImprovementKind,
@@ -19,6 +20,7 @@ from assurance_agent.artifacts.models.retro_batch import (
 )
 from assurance_agent.artifacts.models.retro_v3 import (
     BatchMemberEvidenceGapSignal,
+    ConfirmedEscapeSignal,
     ContextSignalSet,
     DomainAnalysisStatus,
     DomainStatuses,
@@ -26,6 +28,7 @@ from assurance_agent.artifacts.models.retro_v3 import (
     ImprovementCandidateDocumentV3,
     ImprovementCandidateV3,
     IssueEvidenceSlice,
+    ReopenedCoverageGapSignal,
     RetroContextV3,
     RetroIntegrity,
     RetroPipelineFailureSignal,
@@ -80,6 +83,149 @@ def candidate_from_evidence_gaps(
         confidence="high",
         signal_ids=signal_ids,
     )
+
+
+def coverage_gap_fingerprint(signal: ReopenedCoverageGapSignal) -> str:
+    """Stable fingerprint = gap kind + locator axes (batch/change independent)."""
+    return signal.locator_fingerprint
+
+
+def candidate_from_coverage_gaps(
+    *,
+    signals: Sequence[ReopenedCoverageGapSignal],
+    retro_id: str,
+) -> ImprovementCandidateV3:
+    """Build one ``test_improvement`` candidate from reopened coverage-gap signal(s).
+
+    Fingerprint / candidate_id are derived from kind+locator only so the same gap
+    across batches does not create duplicate candidates.
+    """
+    del retro_id
+    if not signals:
+        raise ValueError("coverage-gap candidate requires at least one signal")
+    ordered = tuple(
+        sorted(signals, key=lambda item: (item.locator_fingerprint, item.change_id, item.signal_id))
+    )
+    primary = ordered[0]
+    fingerprint = coverage_gap_fingerprint(primary)
+    signal_ids = tuple(sorted({item.signal_id for item in ordered}))
+    evidence_ids = tuple(sorted({eid for item in ordered for eid in item.source_refs.workflow_evidence_ids}))
+    return ImprovementCandidateV3(
+        candidate_id=_stable_id("CAND-GAP-COV", {"fingerprint": fingerprint}),
+        kind=ImprovementKind.TEST,
+        delivery=DeliveryKind.CHANGE_DRAFT,
+        source_refs=ImprovementSourceRefs(workflow_evidence_ids=evidence_ids or signal_ids),
+        target=f"assurance-agent:retro:coverage-gap:{fingerprint}",
+        rationale=f"Reopened coverage gap {fingerprint} requires durable regression coverage.",
+        proposed_change=(
+            f"Add or restore a regression case closing gap kind={primary.gap_kind} locator={fingerprint}."
+        ),
+        verification=ImprovementVerification(
+            suites=("coverage-gap-closure",),
+            required_cases=(primary.case_id,) if primary.case_id else (fingerprint,),
+            success_criteria="The reopened coverage-gap identity is absent from the next projection.",
+        ),
+        risk="medium",
+        confidence="high",
+        signal_ids=signal_ids,
+    )
+
+
+def candidate_from_confirmed_escape(
+    *,
+    signal: ConfirmedEscapeSignal,
+    retro_id: str,
+) -> ImprovementCandidateV3:
+    """Escape with missed obligations → domain_knowledge; otherwise test_improvement."""
+    del retro_id
+    missed = tuple(signal.missed_obligation_ids)
+    fingerprint = "escape|" + signal.problem_id + "|" + ",".join(missed)
+    if missed:
+        entity_key = signal.problem_id.replace("/", "_")
+        knowledge = DataKnowledgeProposal.model_validate(
+            {
+                "schema_version": "1",
+                "mode": "delta",
+                "entities": {
+                    entity_key: {
+                        "notes": (
+                            f"Confirmed escape {signal.problem_id}; missed obligations: " + ", ".join(missed)
+                        ),
+                        "required_fields": list(missed),
+                    }
+                },
+                "needs_review": [f"escape:{signal.problem_id}"],
+            }
+        )
+        return ImprovementCandidateV3(
+            candidate_id=_stable_id("CAND-ESCAPE-DK", {"fingerprint": fingerprint}),
+            kind=ImprovementKind.DOMAIN_KNOWLEDGE,
+            delivery=DeliveryKind.KNOWLEDGE_DELTA,
+            source_refs=ImprovementSourceRefs(problem_ids=(signal.problem_id,)),
+            target=f"assurance-agent:retro:escape:{signal.problem_id}",
+            rationale=f"Confirmed escape {signal.problem_id} missed declared obligations.",
+            proposed_change=(
+                "Record missed obligations in domain knowledge so subsequent discovery "
+                "and case design cannot omit them."
+            ),
+            knowledge_delta=knowledge,
+            verification=ImprovementVerification(
+                suites=("escape-obligation-coverage",),
+                required_cases=(signal.problem_id,),
+                success_criteria="Missed obligations appear in accepted domain knowledge.",
+            ),
+            risk="medium",
+            confidence="high",
+            signal_ids=(signal.signal_id,),
+        )
+    return ImprovementCandidateV3(
+        candidate_id=_stable_id("CAND-ESCAPE-TEST", {"fingerprint": fingerprint}),
+        kind=ImprovementKind.TEST,
+        delivery=DeliveryKind.CHANGE_DRAFT,
+        source_refs=ImprovementSourceRefs(problem_ids=(signal.problem_id,)),
+        target=f"assurance-agent:retro:escape-test:{signal.problem_id}",
+        rationale=f"Confirmed escape {signal.problem_id} needs regression coverage.",
+        proposed_change=f"Add a regression test covering confirmed escape {signal.problem_id}.",
+        verification=ImprovementVerification(
+            suites=("escape-regression",),
+            required_cases=(signal.problem_id,),
+            success_criteria="Confirmed escape is covered by an automated regression case.",
+        ),
+        risk="medium",
+        confidence="high",
+        signal_ids=(signal.signal_id,),
+    )
+
+
+def candidate_fingerprint(candidate: ImprovementCandidateV3) -> str:
+    """Recover the fallback fingerprint embedded in ``target`` (kind+locator / escape id)."""
+    for prefix in (
+        "assurance-agent:retro:coverage-gap:",
+        "assurance-agent:retro:escape:",
+        "assurance-agent:retro:escape-test:",
+    ):
+        if candidate.target.startswith(prefix):
+            return candidate.target.removeprefix(prefix)
+    return candidate.candidate_id
+
+
+def dedupe_candidates_by_fingerprint(
+    candidates: Sequence[ImprovementCandidateV3],
+) -> tuple[ImprovementCandidateV3, ...]:
+    """Keep the first candidate per fingerprint (stable input order).
+
+    Fallback templates encode fingerprint into ``candidate_id`` / ``target`` so the
+    same kind+locator across batches collapses without a new schema field.
+    """
+    seen: set[str] = set()
+    out: list[ImprovementCandidateV3] = []
+    for candidate in candidates:
+        key = candidate_fingerprint(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(candidate)
+    return tuple(out)
 
 
 def candidate_from_pipeline_failure(
@@ -258,8 +404,13 @@ def materialize_evidence_gap_fallback(
 
 
 __all__ = [
+    "candidate_from_confirmed_escape",
+    "candidate_from_coverage_gaps",
     "candidate_from_evidence_gaps",
     "candidate_from_pipeline_failure",
+    "candidate_fingerprint",
+    "coverage_gap_fingerprint",
+    "dedupe_candidates_by_fingerprint",
     "materialize_pipeline_failure_fallback",
     "materialize_evidence_gap_fallback",
 ]

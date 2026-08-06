@@ -7,6 +7,7 @@ SKIPPED result. subprocess.run is monkeypatched in unit tests.
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,11 @@ import yaml
 
 from assurance_agent.artifacts.models import CoverageThreshold, PerformanceScenarioVerdict
 from assurance_agent.workflow.execution.exec_config import PerfConfig
+from assurance_agent.workflow.execution.product_diff import (
+    compute_changed_lines,
+    has_diff_base,
+    snapshot_product_tree,
+)
 from assurance_agent.workflow.execution.pytest_parser import parse_pytest_json
 from assurance_agent.workflow.execution.results import (
     CaseResult,
@@ -26,6 +32,15 @@ from assurance_agent.workflow.execution.results import (
 )
 
 _RAW = "raw"
+
+# raw/ producers for the PR metric layer. Only the api target owns them: A1 diff
+# coverage and A3 both measure the api surface, and a second target writing the
+# same batch files would race the first one's evidence.
+_AUTH_MATRIX_RECORD_ENV = "AA_AUTH_MATRIX_RECORD"
+_AUTH_MATRIX_RECORDS_NAME = "auth-matrix-records.jsonl"
+_AUTH_MATRIX_EXECUTIONS_NAME = "auth-matrix-executions.json"
+_CHANGED_LINES_NAME = "changed-lines.json"
+_PARAM_BRACKET = re.compile(r"\[([^\]]+)\]")
 
 
 def _subprocess_env(project_root: Path) -> dict[str, str]:
@@ -117,16 +132,28 @@ def run_pytest_target(
         args += [f"--cov={cov_package}", "--cov-branch", f"--cov-report=json:{cov_json}"]
     command = " ".join(args)
 
+    env = _subprocess_env(project_root)
+    record_path = raw_dir / _AUTH_MATRIX_RECORDS_NAME
+    if target == "api":
+        env[_AUTH_MATRIX_RECORD_ENV] = str(record_path)
+    else:
+        # An inherited value would point this target's cells at another batch's file.
+        env.pop(_AUTH_MATRIX_RECORD_ENV, None)
+
     proc = subprocess.run(  # noqa: S603
         args,
         cwd=str(project_root),
         capture_output=True,
         text=True,
-        env=_subprocess_env(project_root),
+        env=env,
     )
     log_path.write_text(f"$ {command}\n\n{proc.stdout or ''}\n{proc.stderr or ''}", encoding="utf-8")
 
-    return parse_pytest_json(
+    if target == "api":
+        _write_changed_lines(project_root, raw_dir)
+        _write_auth_matrix_executions(record_path, report_path, raw_dir)
+
+    result = parse_pytest_json(
         change_id=change_id,
         batch_id=batch_id,
         target=target,
@@ -134,6 +161,110 @@ def run_pytest_target(
         raw_log_path=str(log_path),
         command=command,
     )
+    if target == "api" and (result.status == "passed" or not has_diff_base(project_root)):
+        # Advance the diff base only past a green batch, so a red batch's changed
+        # lines stay in scope for the run that fixes them. Bootstrap it regardless
+        # of status though: a SUT whose api suite is never fully green would
+        # otherwise never acquire a base, leaving A1 uncollectable forever. The
+        # first snapshot can only claim "nothing changed since we started
+        # watching", so it establishes a reference point without inventing
+        # coverage.
+        snapshot_product_tree(project_root)
+    return result
+
+
+def _write_changed_lines(project_root: Path, raw_dir: Path) -> None:
+    """Materialize ``raw/changed-lines.json`` for A1 and diff-scoped mutation.
+
+    Absent — never an empty map — while there is no usable diff base, so the
+    collector reports a first run as a gap instead of "nothing changed".
+    """
+    changed = compute_changed_lines(project_root)
+    if changed is None:
+        return
+    (raw_dir / _CHANGED_LINES_NAME).write_text(
+        json.dumps(changed, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def _write_auth_matrix_executions(record_path: Path, report_path: Path, raw_dir: Path) -> None:
+    """Join recorded cells with reported outcomes into ``raw/auth-matrix-executions.json``.
+
+    A recorded cell needs both halves to count: the SUT's status code (only the
+    recorder has it) and the test's outcome (only the report has it). A row whose
+    parameterized id matches no reported test is dropped rather than assumed
+    passed — an unreported row means the assertion never completed.
+    """
+    outcomes = _reported_outcomes_by_param(report_path)
+    rows: list[dict[str, Any]] = []
+    for record in _recorded_cells(record_path):
+        route = str(record.get("route") or "")
+        method = str(record.get("method") or "")
+        token = str(record.get("token") or "")
+        parameterized_id = str(record.get("parameterized_id") or "")
+        if not (route and method and token) or parameterized_id not in outcomes:
+            continue
+        try:
+            status_code = int(record["status_code"])
+        except (KeyError, TypeError, ValueError):
+            status_code = None
+        rows.append(
+            {
+                "route": route,
+                "method": method,
+                "token": token,
+                "outcome": outcomes[parameterized_id],
+                "actual_status_code": status_code,
+                "parameterized_id": parameterized_id,
+            }
+        )
+    if not rows:
+        return
+    rows.sort(key=lambda row: (row["route"], row["method"], row["token"]))
+    (raw_dir / _AUTH_MATRIX_EXECUTIONS_NAME).write_text(
+        json.dumps(rows, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def _recorded_cells(record_path: Path) -> list[dict[str, Any]]:
+    """JSONL rows the SUT recorder appended; unreadable or malformed lines skipped."""
+    try:
+        lines = record_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _reported_outcomes_by_param(report_path: Path) -> dict[str, str]:
+    """``[...]`` param → outcome, first occurrence winning for a repeated param."""
+    try:
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    tests = payload.get("tests") if isinstance(payload, dict) else None
+    if not isinstance(tests, list):
+        return {}
+    outcomes: dict[str, str] = {}
+    for test in tests:
+        if not isinstance(test, dict):
+            continue
+        match = _PARAM_BRACKET.search(str(test.get("nodeid") or ""))
+        if match is None:
+            continue
+        outcome = str(test.get("outcome") or "")
+        if outcome and match.group(1) not in outcomes:
+            outcomes[match.group(1)] = outcome
+    return outcomes
 
 
 def _skipped_target(

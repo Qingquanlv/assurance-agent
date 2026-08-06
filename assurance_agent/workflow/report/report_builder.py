@@ -4,15 +4,17 @@ Consumes the inspect artifacts + execution evidence, scores the run, buckets
 defects, and derives risk/recommendation. CLI is the only trusted scorer.
 """
 
+import json
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
 from assurance_agent.artifacts.models import (
     ChangeIssueSnapshot,
+    CoverageDimension,
     FailureAnalysis,
     IssueReconcileStatus,
     IssueReport,
@@ -88,6 +90,8 @@ def generate_report(project_root: Path, change_id: str) -> GenerateReportResult:
             f"quality-gate-result.json not found for '{change_id}'. Run `aa report inspect` first."
         )
     analysis = _load(inspect_dir / "failure-analysis.json", FailureAnalysis)
+    # Combine — do not rewrite — the quality-gate artifact with metrics.json.
+    metrics_payload = _load_metrics_json(inspect_dir / "metrics.json")
 
     score, breakdown = compute_quality_score(_dimensions(gate))
     defects = _bucket_defects(analysis)
@@ -105,7 +109,7 @@ def generate_report(project_root: Path, change_id: str) -> GenerateReportResult:
         score_breakdown=breakdown,
         scope=_scope(change_base),
         functional=gate.dimensions.functional,
-        coverage=gate.dimensions.coverage,
+        coverage=_report_coverage(gate.dimensions.coverage),
         defects=defects,
         risk_level=risk_level,
         risk_rationale=risk_rationale,
@@ -114,6 +118,7 @@ def generate_report(project_root: Path, change_id: str) -> GenerateReportResult:
         duration=duration,
         non_functional=gate.dimensions.non_functional,
         issues=issue_report,
+        metrics=metrics_payload,
     )
 
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -129,6 +134,39 @@ def generate_report(project_root: Path, change_id: str) -> GenerateReportResult:
         md_path=str(md_path),
         exec_summary_path=str(exec_path),
     )
+
+
+def _load_metrics_json(path: Path) -> dict[str, Any] | None:
+    """Read ``inspect/metrics.json`` for the report without mutating the gate file.
+
+    Corrupt or absent documents yield ``None`` — the metrics gate already
+    adjudicated sufficiency; the report only surfaces what is present.
+    """
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _report_coverage(coverage: CoverageDimension) -> CoverageDimension:
+    """The gate's coverage dimension, minus the evidence attachment.
+
+    ``CoverageDimension`` is shared by the gate artifact and this one, so the
+    field Task 9 added for the gate would otherwise be republished here by the
+    mere act of reusing the model. It must not be: the gate document is where a
+    per-case evidence blob belongs and is versioned, whereas this report is a
+    human-facing verdict that never asked for one, and a second copy in a second
+    artifact is a second thing to keep in step.
+
+    A copy with one field cleared rather than a rebuilt dimension, so a field
+    added to ``CoverageDimension`` later reaches the report by default instead of
+    being silently dropped by a projection that only knows today's names. The
+    numbers and statuses the report shows are therefore the gate's own.
+    """
+    return coverage.model_copy(update={"evidence": None})
 
 
 def _derive_issue_report(change_base: Path, project_root: Path) -> IssueReport | None:

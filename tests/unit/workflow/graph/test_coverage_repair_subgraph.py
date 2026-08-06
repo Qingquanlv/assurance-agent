@@ -286,15 +286,23 @@ def _write_yaml(path: Path, payload: dict[str, object]) -> None:
 
 
 @pytest.mark.parametrize(
-    ("final_status", "eligible", "expected"),
+    ("final_status", "eligible", "probe_verdict", "expected"),
     [
-        ("FAIL", True, "reject"),
-        ("PASS", False, "exit"),
-        ("PASS", True, "continue"),
+        ("FAIL", True, "needs_human", "reject"),
+        ("PASS", False, "pass", "exit"),
+        ("PASS", False, "needs_human", "skip"),
+        ("PASS", False, "reject", "reject"),
+        ("PASS", True, "needs_human", "continue"),
     ],
-    ids=["fail-reject", "ineligible-exit", "eligible-continue"],
+    ids=["fail-reject", "repaired-exit", "unrepairable-skip", "probe-reject", "eligible-continue"],
 )
-def test_loop_gate_three_states(tmp_path: Path, final_status: str, eligible: bool, expected: str) -> None:
+def test_loop_gate_states(
+    tmp_path: Path,
+    final_status: str,
+    eligible: bool,
+    probe_verdict: str,
+    expected: str,
+) -> None:
     project_root = tmp_path
     change_dir = project_root / "qa" / "changes" / CHANGE_ID
     _write_json(
@@ -303,8 +311,9 @@ def test_loop_gate_three_states(tmp_path: Path, final_status: str, eligible: boo
             "schema_version": "1",
             "change_id": CHANGE_ID,
             "batch_id": "b1",
-            "probe_verdict": "needs_human" if eligible else "pass",
+            "probe_verdict": probe_verdict,
             "eligible": eligible,
+            "allowed_test_files": ["tests/api/test_management.py"] if eligible else [],
             "shortboards": [],
             "repair_items": (
                 [
@@ -496,12 +505,16 @@ def _seed_repair_project(tmp_path: Path) -> tuple[Path, Path]:
         BATCH_NEW,
         [
             {
-                "kind": "uncovered_required_case",
-                "locator": {"case_id": CASE_ID},
+                "kind": "constraint_without_property",
+                "locator": {"constraint_key": "entities.dept.constraints.name_unique"},
                 "layer": "execution",
                 "batch_id": BATCH_NEW,
             }
         ],
+    )
+    (change_dir / "plans" / "api-codegen-plan.md").write_text(
+        f"## Test Function Mapping\n\n| Case | Test |\n| --- | --- |\n| {CASE_ID} | `{BRIEFED_TEST}` |\n",
+        encoding="utf-8",
     )
     _write_manifest(change_dir, BATCH_NEW)
     (project_root / "qa" / "cases").mkdir(parents=True, exist_ok=True)

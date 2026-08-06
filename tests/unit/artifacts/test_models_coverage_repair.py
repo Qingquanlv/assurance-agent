@@ -39,6 +39,7 @@ def _eligible_brief(**overrides: object) -> dict[str, object]:
         "batch_id": "20260806-120000",
         "probe_verdict": "needs_human",
         "eligible": True,
+        "allowed_test_files": ("tests/api/test_dept.py",),
         "shortboards": ({"code": "below_floor", "metric": "constraint_coverage", "detail": "0/2"},),
         "repair_items": (_repair_item(),),
         "deferred_to_intake": (),
@@ -118,6 +119,11 @@ def test_eligible_brief_requires_batch_id() -> None:
 def test_eligible_brief_requires_repair_items() -> None:
     with pytest.raises(ValidationError, match="repair item"):
         CoverageRepairBrief.model_validate(_eligible_brief(repair_items=()))
+
+
+def test_eligible_brief_requires_an_explicit_test_scope() -> None:
+    with pytest.raises(ValidationError, match="allowed_test_files"):
+        CoverageRepairBrief.model_validate(_eligible_brief(allowed_test_files=()))
 
 
 def test_ineligible_brief_without_batch_or_items_is_valid() -> None:

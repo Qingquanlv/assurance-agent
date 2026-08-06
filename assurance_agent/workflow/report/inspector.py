@@ -73,15 +73,19 @@ def inspect_change(
     evidence, inspect_mode, compat_reason = _load_for_inspection(execution_dir, batch_id)
     gate = evidence.quality_gate
     if gate is None:
+        from assurance_agent.config import load_config
+        from assurance_agent.workflow.execution.exec_config import load_coverage_config
         from assurance_agent.workflow.report.quality_gate import build_quality_gate
 
+        # §12.10: honor project coverage.gate_mode — never hardcode "warn".
+        coverage_gate_mode = load_coverage_config(load_config(project_root)).gate_mode
         gate = build_quality_gate(
             change_id=change_id,
             batch_id=evidence.batch_id,
             api=evidence.api,
             e2e=evidence.e2e,
             coverage=evidence.coverage,
-            coverage_gate_mode="warn",
+            coverage_gate_mode=coverage_gate_mode,
             fuzz=evidence.fuzz,
             performance=evidence.performance,
         )

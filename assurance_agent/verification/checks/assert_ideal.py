@@ -29,12 +29,17 @@ _PREFIX_NEGATION = (
 _SUFFIX_NEGATION = re.compile(
     r"^\s*(?:(?:is|are|be)\s+)?(?:not|no|never)\b|^\s*(?:非|不|禁止|避免|不得|不能|不可|并非)"
 )
+_AUTH_ABSENCE_CUE = re.compile(
+    r"\bno\s+(?:auth(?:entication|orization)?|token|header|credentials?)\b",
+    re.IGNORECASE,
+)
 _CASE_TEXT_KEYS = ("title", "objective", "summary")
 _METRIC_CUE = re.compile(r"p\d+|latency|duration|elapsed|\bms\b|毫秒|耗时|延迟|[<>]=?", re.IGNORECASE)
 
 
 def _is_negated(text: str, start: int, end: int) -> bool:
-    prefix = text[max(0, start - 12) : start].lower()
+    prefix = text[max(0, start - 32) : start].lower()
+    prefix = _AUTH_ABSENCE_CUE.sub("", prefix)
     suffix = text[end : end + 24].lower()
     return any(marker in prefix for marker in _PREFIX_NEGATION) or bool(_SUFFIX_NEGATION.match(suffix))
 

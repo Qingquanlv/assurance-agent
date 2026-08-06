@@ -65,7 +65,13 @@ class DeferredItem(BaseModel):
 
     kind: CoverageGapKind
     locator: CoverageGapLocator
-    reason: Literal["declaration_layer", "unmapped_cluster", "not_repairable_metric"]
+    reason: Literal[
+        "declaration_layer",
+        "unmapped_cluster",
+        "not_repairable_metric",
+        "not_serving_shortboard",
+        "no_test_scope",
+    ]
 
 
 class CoverageRepairBrief(BaseModel):
@@ -78,6 +84,7 @@ class CoverageRepairBrief(BaseModel):
     batch_id: NonEmptyStr | None = None
     probe_verdict: MetricsSufficiencyVerdict
     eligible: bool
+    allowed_test_files: tuple[NonEmptyStr, ...] = ()
     shortboards: tuple[MetricShortboard, ...] = ()
     repair_items: tuple[RepairItem, ...] = ()
     deferred_to_intake: tuple[DeferredItem, ...] = ()
@@ -85,8 +92,14 @@ class CoverageRepairBrief(BaseModel):
 
     @model_validator(mode="after")
     def _eligible_requires_a_batch_and_items(self) -> Self:
-        if self.eligible and (self.batch_id is None or not self.repair_items):
-            raise ValueError("eligible brief requires a batch_id and at least one repair item")
+        if self.eligible and (self.batch_id is None or not self.repair_items or not self.allowed_test_files):
+            raise ValueError(
+                "eligible brief requires a batch_id, at least one repair item, and allowed_test_files"
+            )
+        if len(self.allowed_test_files) != len(set(self.allowed_test_files)):
+            raise ValueError("allowed_test_files must not contain duplicates")
+        if any(path.startswith(("/", "../")) for path in self.allowed_test_files):
+            raise ValueError("allowed_test_files must be repository-relative")
         return self
 
 

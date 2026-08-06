@@ -3,6 +3,10 @@
 from assurance_agent.retro.accept_stage import run_retro_accept
 from assurance_agent.retro.assemble import assemble_context, write_noop_receipt
 from assurance_agent.retro.candidates import CandidateBatchInvalid
+from assurance_agent.retro.discovery_history import (
+    FileCoverageGapHistoryReader,
+    FileDiscoveryHistoryReader,
+)
 from assurance_agent.retro.eval_history import FileEvalHistoryReader
 from assurance_agent.retro.fallback import (
     materialize_evidence_gap_fallback,
@@ -18,6 +22,8 @@ from assurance_agent.retro.workflow_history import (
 
 __all__ = [
     "FileEvalHistoryReader",
+    "FileCoverageGapHistoryReader",
+    "FileDiscoveryHistoryReader",
     "LedgerWorkflowHistoryReader",
     "BatchScopeContractError",
     "CandidateBatchInvalid",

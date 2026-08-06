@@ -12,7 +12,10 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from assurance_agent.artifacts.models.data_knowledge import DataKnowledgeProposal
+from assurance_agent.artifacts.models.data_knowledge import (
+    DataKnowledgeProposal,
+    PersistedDataKnowledgeProposal,
+)
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
 
@@ -29,6 +32,7 @@ class DeliveryKind(StrEnum):
     MEMORY_PATCH = "memory_patch"
     CHANGE_DRAFT = "change_draft"
     KNOWLEDGE_DELTA = "knowledge_delta"
+    TEST_PROMOTION = "test_promotion"
 
 
 class ImprovementState(StrEnum):
@@ -47,15 +51,19 @@ class ImprovementState(StrEnum):
 
 ALLOWED_DELIVERIES: dict[ImprovementKind, frozenset[DeliveryKind]] = {
     ImprovementKind.PROMPT: frozenset({DeliveryKind.MEMORY_PATCH}),
-    ImprovementKind.FIXTURE: frozenset({DeliveryKind.MEMORY_PATCH, DeliveryKind.CHANGE_DRAFT}),
-    ImprovementKind.TEST: frozenset({DeliveryKind.MEMORY_PATCH, DeliveryKind.CHANGE_DRAFT}),
+    ImprovementKind.FIXTURE: frozenset(
+        {DeliveryKind.MEMORY_PATCH, DeliveryKind.CHANGE_DRAFT, DeliveryKind.TEST_PROMOTION}
+    ),
+    ImprovementKind.TEST: frozenset(
+        {DeliveryKind.MEMORY_PATCH, DeliveryKind.CHANGE_DRAFT, DeliveryKind.TEST_PROMOTION}
+    ),
     ImprovementKind.WORKFLOW: frozenset({DeliveryKind.CHANGE_DRAFT}),
     ImprovementKind.DOMAIN_KNOWLEDGE: frozenset({DeliveryKind.KNOWLEDGE_DELTA}),
 }
 
 
 def is_valid_memory_patch_target(target: str) -> bool:
-    if target.startswith("/") or "\\" in target:
+    if target.startswith("/") or "\\" in target or "\x00" in target:
         return False
     parts = target.split("/")
     if any(part in {"", ".", ".."} for part in parts):
@@ -141,7 +149,7 @@ class ImprovementProjection(BaseModel):
     target: str
     rationale: str
     proposed_change: str
-    knowledge_delta: DataKnowledgeProposal | None = None
+    knowledge_delta: PersistedDataKnowledgeProposal | None = None
     verification: ImprovementVerification
     risk: Literal["low", "medium", "high"]
     confidence: Literal["low", "medium", "high"]

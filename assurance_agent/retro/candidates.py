@@ -219,6 +219,8 @@ def validate_candidate_document(
                 context.signals.issue,
                 context.signals.workflow,
                 context.signals.eval,
+                context.signals.discovery,
+                context.signals.coverage_gap,
             )
             for signal in domain_signals
         }

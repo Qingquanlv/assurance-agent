@@ -11,6 +11,8 @@ from pydantic import ValidationError
 from assurance_agent.artifacts.canonical import canonical_json_bytes, sha256_bytes
 from assurance_agent.artifacts.models.retro_v3 import (
     ContextSignalSet,
+    CoverageGapEvidenceSlice,
+    DiscoveryEvidenceSlice,
     DomainAnalysisStatus,
     DomainStatuses,
     EvalEvidenceSlice,
@@ -42,7 +44,7 @@ def _load_json(path: Path) -> tuple[dict, bytes]:
 
 
 def assemble_context(retro_dir: Path, *, dry_run: bool, now: datetime) -> RetroContextV3:
-    """Verify three signal/slice pairs and aggregate without semantic filtering."""
+    """Verify core and present optional signal/slice pairs without filtering."""
     try:
         window_raw, _ = _load_json(retro_dir / "window.json")
         window = RetroWindow.model_validate(window_raw)
@@ -54,6 +56,17 @@ def assemble_context(retro_dir: Path, *, dry_run: bool, now: datetime) -> RetroC
         "workflow": WorkflowEvidenceSlice,
         "eval": EvalEvidenceSlice,
     }
+    optional_slice_types = {
+        "discovery": DiscoveryEvidenceSlice,
+        "coverage_gap": CoverageGapEvidenceSlice,
+    }
+    for domain, slice_type in optional_slice_types.items():
+        slice_path = retro_dir / "evidence" / f"{domain}-slice.json"
+        signal_path = retro_dir / "signals" / f"{domain}.json"
+        if slice_path.is_file() != signal_path.is_file():
+            raise RetroAssembleError(f"{domain} slice/signal pair is incomplete")
+        if slice_path.is_file():
+            slice_types[domain] = slice_type  # type: ignore[assignment]
     slices = {}
     slice_digests: dict[str, str] = {}
     statuses: dict[str, DomainAnalysisStatus] = {}
@@ -93,7 +106,15 @@ def assemble_context(retro_dir: Path, *, dry_run: bool, now: datetime) -> RetroC
         if reasons
         else RetroIntegrity(status="complete")
     )
-    signal_set = ContextSignalSet(issue=signals["issue"], workflow=signals["workflow"], eval=signals["eval"])
+    signal_set = ContextSignalSet(
+        issue=signals["issue"],
+        workflow=signals["workflow"],
+        eval=signals["eval"],
+        discovery=signals.get("discovery", ()),
+        coverage_gap=signals.get("coverage_gap", ()),
+    )
+    discovery_slice = slices.get("discovery")
+    coverage_gap_slice = slices.get("coverage_gap")
     return RetroContextV3(
         retro_id=next(iter(slices.values())).retro_id,
         generated_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -103,13 +124,21 @@ def assemble_context(retro_dir: Path, *, dry_run: bool, now: datetime) -> RetroC
             issue_slice_sha256=slice_digests["issue"],
             workflow_slice_sha256=slice_digests["workflow"],
             eval_slice_sha256=slice_digests["eval"],
+            discovery_slice_sha256=slice_digests.get("discovery"),
+            coverage_gap_slice_sha256=slice_digests.get("coverage_gap"),
             issue_sources=slices["issue"].sources,
             workflow_sources=slices["workflow"].sources,
             eval_sources=slices["eval"].sources,
+            discovery_sources=discovery_slice.sources if discovery_slice is not None else (),
+            coverage_gap_sources=(coverage_gap_slice.sources if coverage_gap_slice is not None else ()),
         ),
         integrity=integrity,
         domain_status=DomainStatuses(
-            issue=statuses["issue"], workflow=statuses["workflow"], eval=statuses["eval"]
+            issue=statuses["issue"],
+            workflow=statuses["workflow"],
+            eval=statuses["eval"],
+            discovery=statuses.get("discovery"),
+            coverage_gap=statuses.get("coverage_gap"),
         ),
         signals=signal_set,
         signal_count=sum(len(items) for items in signals.values()),
@@ -130,8 +159,12 @@ def write_noop_receipt(retro_dir: Path, context: RetroContextV3) -> None:
         "issue": context.domain_status.issue,
         "workflow": context.domain_status.workflow,
         "eval": context.domain_status.eval,
+        "discovery": context.domain_status.discovery,
+        "coverage_gap": context.domain_status.coverage_gap,
     }
-    failed = [name for name, status in status_by_domain.items() if status.status == "failed"]
+    failed = [
+        name for name, status in status_by_domain.items() if status is not None and status.status == "failed"
+    ]
     reason = "analysis_incomplete" if failed else "no_actionable_signals"
     summary = f"# Retro {context.retro_id}\n\nresult: {reason}\n"
     if failed:

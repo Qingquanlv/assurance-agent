@@ -11,7 +11,8 @@ Do not rely on prior conversation context.
 
 1. Read `qa/changes/<change-id>/coverage-repair/brief.json` — stop if missing.
 2. Read `qa/changes/<change-id>/coverage-repair/entry-baseline.json` — stop if missing (attempt not allocated).
-3. Work **only** on `brief.repair_items`. Do not invent locators outside the brief.
+3. Work **only** on `brief.repair_items` and files named by `brief.allowed_test_files`.
+   Do not create a new test file or invent locators outside the brief.
 4. Read `cases/**` only to understand already-declared obligations; never write them.
 
 **After completing work (mandatory — declared output):**
@@ -36,11 +37,13 @@ Close eligible coverage gaps listed in `coverage-repair/brief.json` by adding or
    - `constraint_without_property` → add a property test asserting the named constraint key on the named entity.
    - `matrix_cell_unasserted` → add the parameterized authorization-matrix case for the named cell.
    - `uncovered_required_case` / `stale_required_case` → add or refresh the test bound to the named case id, honoring the `test_<case_id>__` naming contract.
-3. Put `case_id` in the test file path and/or function name (`test_<case_id>__…`) so path/name explain can bind the test to the case without broad content matching.
+3. Modify only existing paths in `brief.allowed_test_files`; those paths are the exact
+   codegen-plan scope that the following rerun will execute. Put `case_id` in the
+   function name (`test_<case_id>__…`) when adding a case to a shared file.
 4. **Never** create or edit `case.yaml`, `.aa/data-knowledge.yaml`, or product code. If an item appears to need a new declaration, leave it and record that in `apply-summary.json`.
 5. **Never** satisfy a locator with an assertion that cannot fail (e.g. asserting a response is truthy). Coverage bought with a vacuous assertion is a lie the safety check cannot see and assertion-strength will later expose.
 6. **Never** add `skip` / `xfail` markers; doing so routes the run to human review.
-7. Touch only test files explained by a briefed locator; unrelated edits route to human review.
+7. Touch only files in `brief.allowed_test_files`; every other test edit routes to human review.
 8. **Always** write `coverage-repair/apply-summary.json` with `applied`, `files_modified`, and per-item references back to `repair_items` — including when nothing was changed (`applied: false`).
 9. **Rewrite the summary on every attempt**, copying `change_id`, `attempt`, and `attempt_token` verbatim from `coverage-repair/entry-baseline.json`.
 10. Report `files_modified` completely and honestly.
@@ -49,7 +52,7 @@ Close eligible coverage gaps listed in `coverage-repair/brief.json` by adding or
 
 This skill:
 
-- **May** modify `repo:tests/**` files explained by briefed locators
+- **May** modify only `repo:tests/**` paths listed in `brief.allowed_test_files`
 - **May** (must) write `coverage-repair/apply-summary.json`
 - **Must NOT** write `change:cases/**` or `project:.aa/**`
 - **Must NOT** modify product code

@@ -4,6 +4,10 @@ These are written to execution/runs/<batch-id>/*-result.json and the top-level
 latest pointers. They are NOT in the M2 artifact registry: the registry only
 owns cross-consumer contracts (manifest, failure-analysis, quality-gate, report).
 Reuses M2 shared types so coverage/performance shapes stay consistent.
+
+``property_tests`` is the §5.1 third identity bucket: executed tests that carry
+``@pytest.mark.property(...)`` and no case_id. They are mutually exclusive with
+``cases`` and ``unmapped_tests``.
 """
 
 from typing import Literal
@@ -33,6 +37,20 @@ class CaseResult(BaseModel):
     video: str = ""
 
 
+class PropertyTestResult(BaseModel):
+    """One executed property test (design §5.1).
+
+    Carries outcome and batch_id so A2 aliveness can be judged without re-reading
+    the raw pytest report. ``constraint_keys`` is the marker's closed-key args.
+    """
+
+    nodeid: str
+    file: str
+    constraint_keys: tuple[str, ...] = ()
+    outcome: ExecutionStatus
+    batch_id: str
+
+
 class ResultSource(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -55,6 +73,7 @@ class TargetResult(BaseModel):
     skipped: int
     cases: list[CaseResult]
     unmapped_tests: list[CaseResult]
+    property_tests: list[PropertyTestResult] = Field(default_factory=list)
 
 
 class CoverageResult(BaseModel):

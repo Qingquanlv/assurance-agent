@@ -88,6 +88,9 @@ _EXCLUDED_FILES = frozenset(
         # must not participate in tree capture/apply or resume repair treats
         # the live lock as canonical workspace drift.
         "driver.lock",
+        # Finder metadata is created asynchronously by macOS and is unrelated
+        # to product or QA source. Treating it as canonical drift wedges resume.
+        ".DS_Store",
         ".coverage",
         "db.sqlite3",
         "db.sqlite3-shm",
@@ -1134,6 +1137,15 @@ class TreeStore:
                         and not rel.startswith(f"{change_prefix}/")
                     ):
                         continue
+                    # Retro runs and Improvement delivery are independent,
+                    # runtime-managed namespaces. A sibling workflow may
+                    # legitimately advance them after this invocation pinned
+                    # its base tree. Preserve that live value when this tree
+                    # edge leaves the path unchanged; if the edge also changes
+                    # the path, the normal conflict check below still fails
+                    # closed.
+                    if _is_concurrent_runtime_namespace_rel(rel):
+                        continue
                     raise WorkspaceError(f"canonical workspace drift at {rel}")
                 continue
             if actual == wanted:
@@ -1156,11 +1168,80 @@ class TreeStore:
             if change_prefix is not None and (rel == change_prefix or rel.startswith(f"{change_prefix}/")):
                 change_dir_strays.append(rel)
                 continue
+            if _is_concurrent_runtime_namespace_rel(rel):
+                continue
             raise WorkspaceError(f"canonical workspace drift: untracked path {rel}")
 
         for rel, entry in writes:
             _install_file(project_root / rel, self._read_object(entry.sha256), entry.executable)
         for rel in deletes + change_dir_strays:
+            victim = project_root / rel
+            victim.unlink(missing_ok=True)
+            _prune_empty_parents(victim, project_root)
+
+    def apply_tree_delta(
+        self,
+        project_root: Path,
+        target_tree_id: str,
+        *,
+        source_base_tree_id: str,
+        destination_base_tree_id: str,
+    ) -> None:
+        """Replay only ``source_base -> target`` changes onto another base tree.
+
+        A subgraph resumed in a fresh parent-task workspace must recover commits
+        made before the interrupt.  The fresh workspace can also contain newer,
+        unrelated sibling commits, so applying the child target as a whole would
+        incorrectly roll those siblings back.  This method rebases only the
+        child's touched paths and rejects any overlap or live drift.
+        """
+        project_root = project_root.resolve()
+        source_base = self._load_tree(source_base_tree_id)
+        target = self._load_tree(target_tree_id)
+        destination_base = self._load_tree(destination_base_tree_id)
+        if not (source_base.roots == target.roots == destination_base.roots):
+            raise WorkspaceError("cannot replay tree delta across different logical roots")
+
+        writes: list[tuple[str, _Entry]] = []
+        deletes: list[str] = []
+        for rel in sorted(set(source_base.entries) | set(target.entries)):
+            before = source_base.entries.get(rel)
+            wanted = target.entries.get(rel)
+            if before == wanted:
+                continue
+            destination_before = destination_base.entries.get(rel)
+            if destination_before != before:
+                if destination_before == wanted:
+                    continue
+                logical = _canonical_logical(source_base.roots, rel)
+                raise WorkspaceError(f"tree delta conflicts with destination base at {logical}")
+            if (before is not None and before.kind == "symlink") or (
+                wanted is not None and wanted.kind == "symlink"
+            ):
+                logical = _canonical_logical(source_base.roots, rel)
+                raise WorkspaceError(f"changed symlink rejected: {logical}")
+
+            actual = _entry_at(project_root, rel)
+            if actual == wanted:
+                continue
+            if _same_file_content(actual, wanted):
+                assert wanted is not None
+                writes.append((rel, wanted))
+                continue
+            if actual != destination_before:
+                logical = _canonical_logical(source_base.roots, rel)
+                raise WorkspaceError(f"workspace drift at replayed child path {logical}")
+            if wanted is None:
+                deletes.append(rel)
+            else:
+                if wanted.kind != "file":
+                    logical = _canonical_logical(source_base.roots, rel)
+                    raise WorkspaceError(f"cannot materialize non-file entry: {logical}")
+                writes.append((rel, wanted))
+
+        for rel, wanted in writes:
+            _install_file(project_root / rel, self._read_object(wanted.sha256), wanted.executable)
+        for rel in deletes:
             victim = project_root / rel
             victim.unlink(missing_ok=True)
             _prune_empty_parents(victim, project_root)
@@ -1297,6 +1378,18 @@ def _is_omitted_retro_sibling(
         return False
     run_id = segments[2]
     return run_id not in claimed_retro_ids and run_id not in ("*", "**")
+
+
+def _is_concurrent_runtime_namespace_rel(rel: str) -> bool:
+    """Paths owned by independent runtime workflows, not product source.
+
+    These namespaces may advance while a long-running change workflow is
+    active. ``apply_tree`` only uses this predicate for paths that the current
+    tree edge leaves unchanged, or for newly created live paths, so overlapping
+    writes still fail closed.
+    """
+
+    return rel.startswith(("qa/retro/", "qa/improvements/"))
 
 
 def _physical_for(roots: Mapping[str, str], logical: ResourcePath) -> str:

@@ -24,7 +24,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from assurance_agent.artifacts.models.common import NonEmptyStr
-from assurance_agent.artifacts.models.data_knowledge import DataKnowledgeProposal
+from assurance_agent.artifacts.models.data_knowledge import PersistedDataKnowledgeProposal
 from assurance_agent.artifacts.models.improvements import (
     DeliveryKind,
     ImprovementKind,
@@ -74,7 +74,7 @@ class ImprovementProposedEvent(_BaseImprovementEvent):
     target: NonEmptyStr
     rationale: NonEmptyStr
     proposed_change: NonEmptyStr
-    knowledge_delta: DataKnowledgeProposal | None = None
+    knowledge_delta: PersistedDataKnowledgeProposal | None = None
     verification: ImprovementVerification
     risk: Literal["low", "medium", "high"]
     confidence: Literal["low", "medium", "high"]

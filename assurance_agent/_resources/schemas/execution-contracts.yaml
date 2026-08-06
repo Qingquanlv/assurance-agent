@@ -72,11 +72,29 @@ contracts:
       - repo:tests/fuzz/**
       - repo:tests/perf/**
       - change:codegen/**
+      # `aa run` folds a trace projection before it builds the gate: case
+      # documents supply the rows, earlier execution batches supply their
+      # timestamps and results, and the project policy supplies the sufficiency
+      # constants. Declared so the scheduler serializes writers of those paths.
+      - change:cases/**
+      - change:execution/**
+      - project:.aa/policy.yaml
+      # A1/B1 diff base: the api runner diffs the product tree against this
+      # snapshot to emit raw/changed-lines.json, then repoints it past a green
+      # batch. Declared as a write because a task workspace is a materialized
+      # copy — an undeclared snapshot is a forbidden_write, and a snapshot kept
+      # out of the write-set would be discarded with the workspace, leaving the
+      # next batch with no base to diff against.
+      - project:.aa/cache/diff-base/**
     writes:
       - change:execution/**
+      - project:.aa/cache/diff-base/**
     authorization_writes:
       - change:execution/**
-    exclusive: [repo:test-runtime]
+      - project:.aa/cache/diff-base/**
+    synchronized:
+      - project:.aa/cache/diff-base/**
+    exclusive: [repo:test-runtime, project:diff-base-cache]
     retryable_errors: [timeout, transport]
 
   operation:inspect:
@@ -119,7 +137,6 @@ contracts:
       - change:healing/**
     retryable_errors: []
 
-
   # Coverage-repair inner loop (design §8.1). Probe may not write
   # change:inspect/** — metrics/gaps stay write-once (§7). Safety must not
   # read change:healing/** — evidence is not reused across loops (v3-2).
@@ -129,6 +146,7 @@ contracts:
       - change:execution/runs/**
       - change:inspect/coverage-gaps.json
       - change:cases/**            # resolve_risk_tier, read-only
+      - change:plans/**            # exact rerun scope from codegen plans
       - repo:.aa/policy.yaml       # v3-5: same policy source as materialize
     writes:
       - change:coverage-repair/brief.json
@@ -156,6 +174,7 @@ contracts:
     handler: operation
     reads:
       - change:coverage-repair/brief.json
+      - change:coverage-repair/status.json
       - repo:tests/**              # v4-2: freeze baseline across three trees
       - repo:**
       - project:.aa/config.yaml
@@ -168,6 +187,9 @@ contracts:
 
   operation:record-coverage-repair-status:
     handler: operation
+    reads:
+      - change:coverage-repair/status.json
+      - change:coverage-repair/brief.json
     writes:
       - change:coverage-repair/status.json
     authorization_writes:
@@ -192,6 +214,7 @@ contracts:
     reads:
       - change:explore/advisory.json
       - project:qa/**
+      - repo:**
     writes:
       - change:.qa.yaml
       - change:proposal.md
@@ -212,6 +235,7 @@ contracts:
       - change:proposal.md
       - change:cases/**
       - change:trace/minimum-coverage-matrix.yaml
+      - repo:**
     writes:
       - change:review/case-review.json
     authorization_writes:
@@ -307,6 +331,7 @@ contracts:
       - repo:.aa/data-knowledge.yaml
     writes:
       - change:codegen/api-codegen-summary.md
+      - change:codegen/api-generated-files.json
       - repo:tests/api/**
       # Shared domain factories (create-if-missing / reuse). Serialized by the
       # repo:test-infra exclusive lock so concurrent layers cannot clobber.
@@ -314,6 +339,7 @@ contracts:
     exclusive: [repo:test-infra]
     authorization_writes:
       - change:codegen/api-codegen-summary.md
+      - change:codegen/api-generated-files.json
       - repo:tests/api/**
       - repo:tests/testdata/**
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
@@ -371,11 +397,13 @@ contracts:
       - repo:.aa/data-knowledge.yaml
     writes:
       - change:codegen/e2e-codegen-summary.md
+      - change:codegen/e2e-generated-files.json
       - repo:tests/e2e/**
       - repo:tests/testdata/**
     exclusive: [repo:test-infra]
     authorization_writes:
       - change:codegen/e2e-codegen-summary.md
+      - change:codegen/e2e-generated-files.json
       - repo:tests/e2e/**
       - repo:tests/testdata/**
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
@@ -415,11 +443,13 @@ contracts:
       - change:review/fuzz-plan-review.json
     writes:
       - change:codegen/fuzz-codegen-summary.md
+      - change:codegen/fuzz-generated-files.json
       - repo:tests/fuzz/**
       - repo:tests/testdata/**
     exclusive: [repo:test-infra]
     authorization_writes:
       - change:codegen/fuzz-codegen-summary.md
+      - change:codegen/fuzz-generated-files.json
       - repo:tests/fuzz/**
       - repo:tests/testdata/**
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
@@ -459,11 +489,13 @@ contracts:
       - change:review/performance-plan-review.json
     writes:
       - change:codegen/performance-codegen-summary.md
+      - change:codegen/performance-generated-files.json
       - repo:tests/perf/**
       - repo:tests/testdata/**
     exclusive: [repo:test-infra]
     authorization_writes:
       - change:codegen/performance-codegen-summary.md
+      - change:codegen/performance-generated-files.json
       - repo:tests/perf/**
       - repo:tests/testdata/**
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
@@ -538,13 +570,13 @@ contracts:
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
-
   # Coverage-repair skill (design §8.1). No change:cases/** or project:.aa/**
   # write authority — declaration layer is immutable (§4).
   skill:aa-coverage-repair:
     handler: agent
     reads:
       - change:coverage-repair/brief.json
+      - change:coverage-repair/entry-baseline.json
       - change:cases/**            # read-only: understand declared obligations
       - change:inspect/**
       - repo:tests/**
@@ -552,6 +584,7 @@ contracts:
     writes:
       - repo:tests/**
       - change:coverage-repair/apply-summary.json
+    exclusive: [repo:test-infra]
     authorization_writes:
       - repo:tests/**
       - change:coverage-repair/**
@@ -567,10 +600,17 @@ contracts:
       - change:healing/**
       - change:issues/snapshot.json
       - project:qa/issues/problems.json
+      - change:report/minimum-coverage-result.json
     writes:
-      - change:report/**
+      # MRC JSON is owned by operation:materialize-minimum-coverage — skill may
+      # only refine prose around the CLI quality report outputs.
+      - change:report/quality-report.json
+      - change:report/quality-report.md
+      - change:report/executive-summary.md
     authorization_writes:
-      - change:report/**
+      - change:report/quality-report.json
+      - change:report/quality-report.md
+      - change:report/executive-summary.md
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
@@ -1056,6 +1096,8 @@ contracts:
     authorization_writes:
       - project:qa/retro/*/window.json
       - project:qa/retro/*/evidence/**
+      - project:qa/retro/*/signals/discovery.json
+      - project:qa/retro/*/signals/coverage_gap.json
     synchronized:
       - project:qa/archive/**
       - project:qa/changes/**

@@ -14,7 +14,6 @@ from assurance_agent.artifacts.models.coverage_gaps import (
 )
 from assurance_agent.artifacts.models.coverage_repair import (
     COVERAGE_REPAIR_BRIEF_REL,
-    RepairableGapKind,
 )
 from assurance_agent.artifacts.models.metrics import MetricScope
 from assurance_agent.artifacts.models.pr_metric_evidence import (
@@ -99,6 +98,13 @@ def _seed_low_risk(tmp_path: Path) -> tuple[Path, Path]:
                 "removed": [],
             }
         ),
+        encoding="utf-8",
+    )
+    plans = change_dir / "plans"
+    plans.mkdir(parents=True, exist_ok=True)
+    (plans / "api-codegen-plan.md").write_text(
+        "## Test Function Mapping\n\n| Case | Test |\n| --- | --- |\n"
+        "| TC_API_001 | `tests/api/test_management.py` |\n",
         encoding="utf-8",
     )
     return project_root, change_dir
@@ -360,8 +366,8 @@ def test_gap_partitioning_repairable_and_deferred(tmp_path: Path) -> None:
     assert brief.probe_verdict == "needs_human"
     assert brief.eligible is True
     repair_kinds = {item.kind for item in brief.repair_items}
-    assert repair_kinds == set(get_args(RepairableGapKind))
-    assert len(brief.repair_items) == 4
+    assert repair_kinds == {"constraint_without_property"}
+    assert brief.allowed_test_files == ("tests/api/test_management.py",)
 
     deferred_by_reason = {item.reason: item for item in brief.deferred_to_intake}
     assert "unmapped_cluster" in deferred_by_reason
@@ -369,6 +375,45 @@ def test_gap_partitioning_repairable_and_deferred(tmp_path: Path) -> None:
     assert "declaration_layer" in deferred_by_reason
     assert deferred_by_reason["declaration_layer"].kind == "uncovered_required_case"
     assert deferred_by_reason["declaration_layer"].locator.case_id == "TC_DECL_001"
+    assert "not_serving_shortboard" in deferred_by_reason
+
+
+def test_gap_metric_mapping_matches_the_floor_each_kind_can_repair(tmp_path: Path) -> None:
+    project_root, change_dir = _seed_low_risk(tmp_path)
+    _seed_batch(change_dir, constraint_covered=1)
+    _write_gaps(
+        change_dir,
+        BATCH_NEW,
+        [
+            {
+                "kind": "uncovered_required_case",
+                "locator": {"case_id": "TC_API_001"},
+                "layer": "execution",
+                "batch_id": BATCH_NEW,
+            },
+            {
+                "kind": "constraint_without_property",
+                "locator": {"constraint_key": "entities.dept.constraints.name_unique"},
+                "layer": "execution",
+                "batch_id": BATCH_NEW,
+            },
+        ],
+    )
+
+    brief = build_repair_brief(
+        change_dir=change_dir,
+        project_root=project_root,
+        change_id=CHANGE_ID,
+        computed_at=COMPUTED_AT,
+    )
+
+    assert [(item.kind, item.metric) for item in brief.repair_items] == [
+        ("constraint_without_property", "constraint_coverage")
+    ]
+    assert any(
+        item.kind == "uncovered_required_case" and item.reason == "not_serving_shortboard"
+        for item in brief.deferred_to_intake
+    )
 
 
 def test_missing_coverage_gaps_yields_ineligible(tmp_path: Path) -> None:

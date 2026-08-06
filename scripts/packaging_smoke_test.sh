@@ -8,7 +8,13 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-cd "$REPO_ROOT"
+# Build the committed tree, not the caller's dirty worktree.  Hatch includes
+# untracked Python files below assurance_agent/, which can otherwise make a
+# locally green wheel depend on files a clean clone will never receive.
+mkdir "$WORK_DIR/source"
+git -C "$REPO_ROOT" archive HEAD | tar -x -C "$WORK_DIR/source"
+
+cd "$WORK_DIR/source"
 uv build --wheel --out-dir "$WORK_DIR/dist"
 
 uv venv --python 3.11 "$WORK_DIR/venv"
@@ -33,6 +39,15 @@ PY
 "$WORK_DIR/venv/bin/python" - <<'PY'
 from assurance_agent import resources
 assert "aa-full" in resources.read_text("schemas", "workflow-schema.yaml")
+PY
+
+# Import the runtime registry from the installed wheel.  Schema nodes may be
+# syntactically valid while their registered operation modules are absent from
+# the committed package, so resource-only checks are not sufficient.
+"$WORK_DIR/venv/bin/python" - <<'PY'
+from assurance_agent.workflow.graph.handlers.operation import default_operations
+
+assert default_operations()
 PY
 
 # Packaged skills + opencode assets must resolve from the wheel install.

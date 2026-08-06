@@ -2,6 +2,23 @@
 
 Functional folds api + e2e + fuzz; coverage and performance are separate
 dimensions. final_status is the worst status across active dimensions.
+
+``final_status`` states what the *execution* found, and nothing else. Case
+evidence sufficiency is a different question with a different consequence — a
+change can have every test passing and still be under-evidenced — so it is
+adjudicated by a dedicated trace-sufficiency gate rather than folded in here.
+``evidence_coverage`` is therefore reported and not read: its dump is attached to
+``dimensions.coverage.evidence`` so the verdict travels with the batch, and no
+status, warning or route may be derived from it.
+
+``coverage.status`` is the legacy line/branch judgement via ``_coverage_status``
+and project ``coverage.gate_mode`` only. That pair must never be reused to route
+evidence sufficiency (superseded Traceability Task 9 assumption — retired).
+Inspect rebuilds must load ``gate_mode`` from config (§12.10), not hardcode warn.
+
+Verification metrics (``dimensions.metrics``) are likewise informational only:
+``worst_status`` / ``final_status`` never include that dimension; routing is
+``metrics-sufficiency-gate``'s job.
 """
 
 from typing import Literal
@@ -16,6 +33,7 @@ from assurance_agent.artifacts.models import (
     QualityGateDimensions,
     QualityGateResult,
 )
+from assurance_agent.evidence.sufficiency import EvidenceCoverageEvaluation
 from assurance_agent.workflow.execution.results import (
     CoverageResult,
     PerformanceResult,
@@ -87,7 +105,15 @@ def build_quality_gate(
     coverage_gate_mode: Literal["warn", "block"],
     fuzz: TargetResult | None = None,
     performance: PerformanceResult | None = None,
+    evidence_coverage: EvidenceCoverageEvaluation | None = None,
 ) -> QualityGateResult:
+    """Build the batch verdict, optionally reporting the evidence evaluation.
+
+    ``evidence_coverage`` reaches exactly one field,
+    ``dimensions.coverage.evidence``, and is read by nothing here. Callers with
+    no evaluation to hand — ``inspect`` rebuilds, compat fallbacks — omit it and
+    get the same verdict, which is what makes the parameter safe to be optional.
+    """
     func_status = _functional_status(api, e2e, fuzz)
     cov_status = _coverage_status(coverage, coverage_gate_mode)
     non_functional = _non_functional(performance)
@@ -118,9 +144,11 @@ def build_quality_gate(
         line_coverage=coverage.line_coverage if coverage else 0.0,
         branch_coverage=coverage.branch_coverage if coverage else 0.0,
         threshold=coverage.threshold if coverage else CoverageThreshold(line=0, branch=0),
+        evidence=None if evidence_coverage is None else evidence_coverage.to_json_dict(),
     )
 
     dimensions = QualityGateDimensions(functional=functional, coverage=coverage_dim)
+    # Intentionally omit dimensions.metrics from gate_statuses: informational only.
     gate_statuses: list[GateStatus] = [func_status, cov_status]
     if non_functional is not None:
         dimensions.non_functional = non_functional

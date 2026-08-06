@@ -1863,6 +1863,7 @@ graphs:
         cases:
           reject: complete-failed
           exit: complete-repaired
+          skip: complete-exhausted
           continue: allocate
         default: complete-failed
 
@@ -2479,8 +2480,14 @@ gates:
     missing_file_is: stop
     invalid_json: stop
     missing_field_is: stop
-    reject_when: "execution.final_status == 'FAIL'"
-    exit_when: "brief.eligible == false"
+    reject_when: >
+      execution.final_status == 'FAIL'
+      or brief.probe_verdict == 'reject'
+      or brief.probe_verdict == 'stop'
+    exit_when: >
+      brief.eligible == false
+      and (brief.probe_verdict == 'pass' or brief.probe_verdict == 'skipped')
+    skip_when: "brief.eligible == false and brief.probe_verdict == 'needs_human'"
     continue_when: "brief.eligible == true"
 
   # Coverage-repair safety. Deliberately NOT `fixer-safety-gate`: that gate reads

@@ -692,6 +692,48 @@ def test_narrow_claims_rejects_expanded_read_outside_static_bounds() -> None:
         )
 
 
+def test_run_tests_contract_declares_the_three_reads_the_trace_shadow_added() -> None:
+    """`aa run` folds a trace projection before it builds the gate.
+
+    That fold reads the change's case documents and its historical execution
+    batches, and the shadow sufficiency evaluation reads the project policy —
+    the three claims this asserts were added for. A read the runner performs but
+    does not declare is invisible to the scheduler, so a concurrent writer of
+    those paths would not be serialized against it. The pre-existing test and
+    codegen claims are pinned alongside them only to catch an accidental
+    replacement of the set.
+    """
+    run_tests = load_execution_contracts(Path.cwd()).contracts["operation:run-tests"]
+
+    assert {"change:cases/**", "change:execution/**", "project:.aa/policy.yaml"} <= set(run_tests.reads)
+    assert set(run_tests.reads) == {
+        "repo:tests/api/**",
+        "repo:tests/e2e/**",
+        "repo:tests/fuzz/**",
+        "repo:tests/perf/**",
+        "change:codegen/**",
+        "change:cases/**",
+        "change:execution/**",
+        "project:.aa/policy.yaml",
+        # A1/B1 diff base, read to diff and rewritten past a green batch.
+        "project:.aa/cache/diff-base/**",
+    }
+    # Evidence still lands under change:execution/**; the diff base is the one
+    # path outside it the runner owns, and it must be authorized or the snapshot
+    # freezes as a forbidden_write.
+    assert run_tests.writes == ("change:execution/**", "project:.aa/cache/diff-base/**")
+    assert run_tests.authorization_writes == (
+        "change:execution/**",
+        "project:.aa/cache/diff-base/**",
+    )
+    # The full assurance graph also publishes other synchronized project
+    # resources.  Its cumulative freeze therefore requires every project write
+    # in the footprint to name its own synchronized prefix; authorization alone
+    # is not sufficient.
+    assert run_tests.synchronized == ("project:.aa/cache/diff-base/**",)
+    assert run_tests.exclusive == ("repo:test-runtime", "project:diff-base-cache")
+
+
 def test_retro_closed_loop_contracts_are_least_privilege() -> None:
     catalog = load_execution_contracts(Path.cwd())
     assert "operation:retro-accept" not in catalog.contracts
@@ -705,6 +747,8 @@ def test_retro_closed_loop_contracts_are_least_privilege() -> None:
     assert set(collect.authorization_writes) == {
         "project:qa/retro/*/window.json",
         "project:qa/retro/*/evidence/**",
+        "project:qa/retro/*/signals/discovery.json",
+        "project:qa/retro/*/signals/coverage_gap.json",
     }
     assert set(collect.synchronized) == {
         "project:qa/archive/**",
@@ -765,9 +809,12 @@ def test_coverage_repair_contracts_are_declared_and_least_privilege() -> None:
 
     allocate = catalog.contracts["operation:allocate-coverage-repair-attempt"]
     assert "change:coverage-repair/entry-baseline.json" in allocate.writes
+    assert "change:coverage-repair/status.json" in allocate.reads
     assert {"repo:tests/**", "repo:**", "project:.aa/config.yaml"} <= set(allocate.reads)
 
     skill = catalog.contracts["skill:aa-coverage-repair"]
+    assert "change:coverage-repair/entry-baseline.json" in skill.reads
+    assert "repo:test-infra" in skill.exclusive
     assert set(skill.writes) == {
         "repo:tests/**",
         "change:coverage-repair/apply-summary.json",
@@ -780,6 +827,12 @@ def test_coverage_repair_contracts_are_declared_and_least_privilege() -> None:
     assert "change:cases/**" not in skill.authorization_writes
     assert "project:.aa/**" not in skill.writes
     assert "project:.aa/**" not in skill.authorization_writes
+
+    record = catalog.contracts["operation:record-coverage-repair-status"]
+    assert {
+        "change:coverage-repair/status.json",
+        "change:coverage-repair/brief.json",
+    } <= set(record.reads)
 
     metrics_writers = {
         target

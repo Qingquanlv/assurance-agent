@@ -13,9 +13,9 @@ invalid；runtime 校验后回填 digest 得到 canonical 文档再冻结 write-
 from __future__ import annotations
 
 from itertools import chain
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from assurance_agent.artifacts.models.common import NonEmptyStr
 from assurance_agent.artifacts.models.improvements import (
@@ -61,6 +61,8 @@ class RetroSourceDescriptor(BaseModel):
         "eval_run",
         "batch_manifest",
         "retro_pipeline_failure",
+        "discovery_projection",
+        "coverage_gap_projection",
     ]
     change_id: str | None = None
     head_event_id: str | None = None
@@ -171,7 +173,7 @@ class BatchMemberEvidenceGapSignal(_SignalBase):
     signal_type: Literal["batch_member_evidence_gap"] = "batch_member_evidence_gap"
     change_id: NonEmptyStr
     execution_status: NonEmptyStr
-    domain: Literal["issue", "workflow", "eval"]
+    domain: Literal["issue", "workflow", "eval", "discovery", "coverage_gap"]
     reason_code: Literal[
         "workspace_missing",
         "non_terminal",
@@ -181,6 +183,52 @@ class BatchMemberEvidenceGapSignal(_SignalBase):
         "projection_missing",
         "projection_corrupt",
     ]
+
+
+class DomainEvidenceGapSignal(_SignalBase):
+    """Typed gap for an optional Retro domain (discovery / coverage_gap)."""
+
+    signal_type: Literal["domain_evidence_gap"] = "domain_evidence_gap"
+    domain: Literal["discovery", "coverage_gap"]
+    reason_code: Literal[
+        "projection_missing",
+        "projection_corrupt",
+        "ledger_missing",
+        "ledger_corrupt",
+    ]
+    change_id: NonEmptyStr | None = None
+
+
+class ConfirmedEscapeSignal(_SignalBase):
+    signal_type: Literal["confirmed_escape"] = "confirmed_escape"
+    problem_id: NonEmptyStr
+    change_id: NonEmptyStr | None = None
+    missed_obligation_ids: tuple[NonEmptyStr, ...] = ()
+
+
+class LowPromotionRateSignal(_SignalBase):
+    signal_type: Literal["low_promotion_rate"] = "low_promotion_rate"
+    rate: float
+    numerator: int = Field(ge=0)
+    denominator: int = Field(ge=1)
+
+
+class LowReplayStabilitySignal(_SignalBase):
+    signal_type: Literal["low_replay_stability"] = "low_replay_stability"
+    rate: float
+    success: int = Field(ge=0)
+    attempts: int = Field(ge=1)
+
+
+class ReopenedCoverageGapSignal(_SignalBase):
+    signal_type: Literal["reopened_coverage_gap"] = "reopened_coverage_gap"
+    gap_kind: NonEmptyStr
+    locator_fingerprint: NonEmptyStr
+    change_id: NonEmptyStr
+    case_id: NonEmptyStr | None = None
+    constraint_key: NonEmptyStr | None = None
+    cell: NonEmptyStr | None = None
+    cluster_key: NonEmptyStr | None = None
 
 
 class RetroPipelineFailureSignal(_SignalBase):
@@ -210,6 +258,18 @@ class TaskFailureSignal(_SignalBase):
     message_fingerprint: NonEmptyStr
 
 
+DeterministicSliceSignal = (
+    BatchMemberEvidenceGapSignal
+    | RetroPipelineFailureSignal
+    | TaskFailureSignal
+    | DomainEvidenceGapSignal
+    | ConfirmedEscapeSignal
+    | LowPromotionRateSignal
+    | LowReplayStabilitySignal
+    | ReopenedCoverageGapSignal
+)
+
+
 class _SliceBase(BaseModel):
     model_config = _FROZEN
 
@@ -218,9 +278,7 @@ class _SliceBase(BaseModel):
     window: RetroWindow
     sources: tuple[RetroSourceDescriptor, ...] = ()
     integrity: RetroIntegrity = Field(default_factory=lambda: RetroIntegrity(status="complete"))
-    deterministic_signals: tuple[
-        BatchMemberEvidenceGapSignal | RetroPipelineFailureSignal | TaskFailureSignal, ...
-    ] = ()
+    deterministic_signals: tuple[DeterministicSliceSignal, ...] = ()
 
     def resolvable_ids(self) -> frozenset[str]:
         """signal source_refs 的可解析命名空间（来自 slice manifest）。"""
@@ -240,6 +298,53 @@ class WorkflowEvidenceSlice(_SliceBase):
 class EvalEvidenceSlice(_SliceBase):
     domain: Literal["eval"] = "eval"
     entries: tuple[EvalEvidenceEntry, ...] = ()
+
+
+class DiscoveryEvidenceEntry(BaseModel):
+    """Compact discovery projection row — IDs/digests/rates only (no CE bodies)."""
+
+    model_config = _FROZEN
+
+    evidence_id: NonEmptyStr
+    change_id: NonEmptyStr
+    campaign_id: NonEmptyStr
+    counterexample_ids: tuple[NonEmptyStr, ...] = ()
+    promotion_receipt_digests: tuple[NonEmptyStr, ...] = ()
+    replay_success: int | None = Field(default=None, ge=0)
+    replay_attempts: int | None = Field(default=None, ge=0)
+    replay_rate: float | None = None
+    problem_escape_refs: tuple[NonEmptyStr, ...] = ()
+    promoted_count: int | None = Field(default=None, ge=0)
+    total_counterexamples: int | None = Field(default=None, ge=0)
+
+
+class DiscoveryEvidenceSlice(_SliceBase):
+    domain: Literal["discovery"] = "discovery"
+    entries: tuple[DiscoveryEvidenceEntry, ...] = ()
+
+
+class CoverageGapEvidenceEntry(BaseModel):
+    """Compact coverage-gap projection row or closed/opened/reopened event."""
+
+    model_config = _FROZEN
+
+    evidence_id: NonEmptyStr
+    change_id: NonEmptyStr
+    batch_id: NonEmptyStr
+    projection_digest: NonEmptyStr
+    document_digest: NonEmptyStr
+    event_kind: Literal["current", "closed", "opened", "reopened"] = "current"
+    gap_kind: NonEmptyStr | None = None
+    locator_fingerprint: NonEmptyStr | None = None
+    case_id: NonEmptyStr | None = None
+    constraint_key: NonEmptyStr | None = None
+    cell: NonEmptyStr | None = None
+    cluster_key: NonEmptyStr | None = None
+
+
+class CoverageGapEvidenceSlice(_SliceBase):
+    domain: Literal["coverage_gap"] = "coverage_gap"
+    entries: tuple[CoverageGapEvidenceEntry, ...] = ()
 
 
 # ---- Signal：signal_type 判别联合（spec C1 review#1）----
@@ -283,6 +388,11 @@ class EvalTrendSignal(_SignalBase):
 Signal = Annotated[
     BatchMemberEvidenceGapSignal
     | RetroPipelineFailureSignal
+    | DomainEvidenceGapSignal
+    | ConfirmedEscapeSignal
+    | LowPromotionRateSignal
+    | LowReplayStabilitySignal
+    | ReopenedCoverageGapSignal
     | IssuePatternSignal
     | GatePushbackSignal
     | TaskFailureSignal
@@ -303,7 +413,7 @@ class SignalDraftDocument(BaseModel):
 
     schema_version: Literal["3"] = "3"
     retro_id: NonEmptyStr
-    domain: Literal["issue", "workflow", "eval"]
+    domain: Literal["issue", "workflow", "eval", "discovery", "coverage_gap"]
     analysis_status: Literal["ok", "failed"]
     failure_reason: NonEmptyStr | None = None
     analyzer: NonEmptyStr
@@ -336,28 +446,67 @@ class RetroSourceManifestV3(BaseModel):
     issue_slice_sha256: NonEmptyStr
     workflow_slice_sha256: NonEmptyStr
     eval_slice_sha256: NonEmptyStr
+    # Optional for compatibility with historical Retro artifacts. New runs pin
+    # discovery/coverage_gap when their production readers materialize them.
+    discovery_slice_sha256: NonEmptyStr | None = None
+    coverage_gap_slice_sha256: NonEmptyStr | None = None
     issue_sources: tuple[RetroSourceDescriptor, ...] = ()
     workflow_sources: tuple[RetroSourceDescriptor, ...] = ()
     eval_sources: tuple[RetroSourceDescriptor, ...] = ()
+    discovery_sources: tuple[RetroSourceDescriptor, ...] = ()
+    coverage_gap_sources: tuple[RetroSourceDescriptor, ...] = ()
 
     def resolvable_ids(self) -> frozenset[str]:
-        sources = (*self.issue_sources, *self.workflow_sources, *self.eval_sources)
+        sources = (
+            *self.issue_sources,
+            *self.workflow_sources,
+            *self.eval_sources,
+            *self.discovery_sources,
+            *self.coverage_gap_sources,
+        )
         return frozenset(chain.from_iterable(source.evidence_ids for source in sources))
 
 
 class DomainAnalysisStatus(BaseModel):
     model_config = _FROZEN
 
-    status: Literal["ok", "failed"]
+    status: Literal["ok", "failed", "skipped"]
     failure_reason: NonEmptyStr | None = None
+
+    @model_validator(mode="after")
+    def _status_reason_consistency(self) -> Self:
+        if self.status == "failed":
+            if self.failure_reason is None:
+                raise ValueError("failure_reason is required when status=failed")
+        elif self.failure_reason is not None and self.status != "skipped":
+            raise ValueError("failure_reason must be null when status=ok")
+        return self
 
 
 class DomainStatuses(BaseModel):
+    """Core three domains required; discovery/coverage_gap optional for old ledgers.
+
+    Missing optional domains default to ``None`` (absent) so historical Retro
+    fixtures continue to validate without inventing skipped statuses.
+    """
+
     model_config = _FROZEN
 
     issue: DomainAnalysisStatus
     workflow: DomainAnalysisStatus
     eval: DomainAnalysisStatus
+    discovery: DomainAnalysisStatus | None = None
+    coverage_gap: DomainAnalysisStatus | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_domains(self, handler: Any) -> dict[str, Any]:
+        """An absent domain is absent, not a null status.
+
+        Consumers read this mapping's values as statuses, so emitting ``null``
+        for a domain the run never had would make them read a missing key as a
+        malformed status.
+        """
+        return {key: value for key, value in handler(self).items() if value is not None}
 
 
 class ContextSignalSet(BaseModel):
@@ -366,6 +515,8 @@ class ContextSignalSet(BaseModel):
     issue: tuple[Signal, ...] = ()
     workflow: tuple[Signal, ...] = ()
     eval: tuple[Signal, ...] = ()
+    discovery: tuple[Signal, ...] = ()
+    coverage_gap: tuple[Signal, ...] = ()
 
 
 class RetroContextV3(BaseModel):

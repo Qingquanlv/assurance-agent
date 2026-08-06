@@ -9,7 +9,7 @@ the TS validator, which accepted any non-empty string).
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from assurance_agent.artifacts.models.common import NonEmptyStr
 
@@ -128,3 +128,79 @@ class PlanReviewAuthoring(BaseModel):
     codegen_readiness: Literal["ready", "ready_with_warnings", "not_ready"]
     risk_level: Literal["low", "medium", "high", "critical"]
     required_capabilities: list[NonEmptyStr]
+
+
+class CaseSourceClaim(BaseModel):
+    """One independently checked product claim and its source-code evidence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    claim: NonEmptyStr
+    evidence_files: list[NonEmptyStr] = Field(min_length=1)
+
+
+class CaseSourceVerification(BaseModel):
+    """Proof that case review inspected product source independently of the author."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    independent: Literal[True]
+    reviewed_source_files: list[NonEmptyStr] = Field(min_length=1)
+    verified_claims: list[CaseSourceClaim] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _require_product_source_evidence(self) -> "CaseSourceVerification":
+        source_files = set(self.reviewed_source_files)
+        disallowed_prefixes = (
+            "qa/",
+            ".aa/",
+            ".opencode/",
+            "docs/",
+            "requirements/",
+            "tests/",
+        )
+        for path in source_files:
+            if path.startswith("/") or ".." in path.split("/"):
+                raise ValueError("reviewed_source_files must be project-relative paths")
+            if path.startswith(disallowed_prefixes):
+                raise ValueError(
+                    "reviewed_source_files must name product source, not QA artifacts, "
+                    "requirements, docs, or tests"
+                )
+        for index, claim in enumerate(self.verified_claims):
+            unknown = set(claim.evidence_files) - source_files
+            if unknown:
+                raise ValueError(
+                    f"verified_claims[{index}].evidence_files must be listed in "
+                    f"reviewed_source_files: {sorted(unknown)}"
+                )
+        return self
+
+
+class CaseReviewAuthoring(BaseModel):
+    """Agent-authored case review, including independent SUT-source evidence."""
+
+    model_config = ConfigDict(
+        extra="allow",
+        json_schema_extra={
+            "prompt_notes": [
+                "source_verification is mandatory and must come from an independent read of product source",
+                "source_verification.independent must be true; source_verification.reviewed_source_files "
+                "must list product source; source_verification.verified_claims must be non-empty; each "
+                "verified_claims[].claim and verified_claims[].evidence_files must be non-empty",
+                "QA artifacts, requirements, docs, and tests do not count as product source evidence",
+            ]
+        },
+    )
+
+    schema_version: NonEmptyStr
+    review_type: Literal["case"]
+    change_id: NonEmptyStr
+    decision: ReviewDecision
+    findings: list[Any]
+    auto_fix_plan: list[Any]
+    next_action: NonEmptyStr
+    auto_fix_allowed: bool
+    human_review_required: bool
+    risk_level: Literal["low", "medium", "high", "critical"]
+    source_verification: CaseSourceVerification

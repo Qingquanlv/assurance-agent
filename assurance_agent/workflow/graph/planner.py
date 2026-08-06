@@ -37,6 +37,10 @@ graph/node 路径、activation ordinal 与 fan-out key 经 canonical SHA-256 派
   invocation/namespace/budget/task 派生——技术 retry 重计划同一 task，同一
   成功只消耗一个单位；失败/abandon 消耗零个单位。success 与
   ``budget_consumed`` 的原子 staging 由 scheduler 按此标记执行（Task 10）。
+- abandoned 通常消耗一次 attempt；但 ``graph:*`` task 只是可重入的子图编排壳，
+  子图自身已有独立 checkpoint/ledger，因此在声明预算耗尽时额外允许一次 crash
+  recovery replay。该例外不放宽 agent/operation task，且第二次壳节点 abandon
+  仍会终止，避免持久崩溃无限重放。
 - 同一决策点上有多条非互斥 token 同时选中同一普通 node 时 fail closed
   （PlanError，提示改用 builtin:join），绝不重复激活。设计 §6.5 把这一拒绝
   划归 compiler；在 compiler 获得该静态检查之前，planner 以运行时守卫兜底。
@@ -589,6 +593,7 @@ def _seed_outcomes(
             outcomes[nid] = _Outcome(status="unresolved", task=latest)
             continue
         policy = _retry_policy(compiled, definition)
+        abandoned_subgraph_replay = False
         if latest.status == "failed":
             exhausted = latest.attempts_used >= policy.max_attempts
             terminal_for_policy = exhausted or latest.error_kind not in policy.retry_on
@@ -672,28 +677,42 @@ def _seed_outcomes(
                     ),
                 )
         elif latest.attempts_used >= policy.max_attempts:  # abandoned
-            return (
-                outcomes,
-                retry,
-                (
-                    f"task {latest.task_id} (node '{nid}') abandoned; retry budget "
-                    f"exhausted ({latest.attempts_used}/{policy.max_attempts})"
-                ),
+            # A graph target is only an orchestration shell. Its child invocation owns
+            # durable checkpoints and bounded retry semantics, so a host/process crash
+            # between child progress and parent success publication may safely replay
+            # the shell once. Ordinary agent/operation tasks retain the strict rule that
+            # abandoned consumes the declared attempt budget.
+            abandoned_subgraph_replay = (
+                definition.uses.startswith("graph:")
+                and latest.attempts_used == policy.max_attempts
+                and policy.max_attempts < 10
             )
+            if not abandoned_subgraph_replay:
+                return (
+                    outcomes,
+                    retry,
+                    (
+                        f"task {latest.task_id} (node '{nid}') abandoned; retry budget "
+                        f"exhausted ({latest.attempts_used}/{policy.max_attempts})"
+                    ),
+                )
         # failed-retryable 或 abandoned 且预算未耗尽：同一 task_id 进入下一 wave。
         outcomes[nid] = _Outcome(status="unresolved", task=latest)
-        retry.append(
-            _build_task(
-                compiled,
-                graph,
-                projection,
-                context,
-                nid,
-                len(node_tasks) - 1,
-                prior_failure=latest.error if latest.status == "failed" else None,
-                prior_error_kind=latest.error_kind if latest.status == "failed" else None,
-            )
+        retry_task = _build_task(
+            compiled,
+            graph,
+            projection,
+            context,
+            nid,
+            len(node_tasks) - 1,
+            prior_failure=latest.error if latest.status == "failed" else None,
+            prior_error_kind=latest.error_kind if latest.status == "failed" else None,
         )
+        if abandoned_subgraph_replay:
+            retry_task = retry_task.model_copy(
+                update={"retry_policy": policy.model_copy(update={"max_attempts": policy.max_attempts + 1})}
+            )
+        retry.append(retry_task)
     retry = _overlay_imported_outcomes(graph, projection, context, outcomes, retry)
     return outcomes, retry, None
 

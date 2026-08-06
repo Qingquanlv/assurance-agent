@@ -712,6 +712,74 @@ def _details_with_stop_cause(
     return merged
 
 
+_METRICS_SUFFICIENCY_GATE_ID = "metrics-sufficiency-gate"
+_METRICS_VERDICT_MAP = {
+    "pass": Verdict.PASS,
+    "needs_human": Verdict.NEEDS_HUMAN_REVIEW,
+    "reject": Verdict.REJECT,
+    "stop": Verdict.STOP,
+    "skipped": Verdict.SKIP,
+}
+
+
+def _evaluate_metrics_sufficiency_gate(
+    gate: GateDef,
+    context: GateEvaluationContext,
+) -> tuple[Verdict, str | None, str, dict[str, str], dict[str, Any] | None]:
+    """Adjudicate ``inspect/metrics.json`` via ``evaluate_metrics_sufficiency``.
+
+    Floors / cadence / ``on_insufficient`` are not re-expressed as DSL — the
+    Task-2 Python consumer is the single truth table (anti-tautology).
+    """
+    from pydantic import ValidationError
+
+    from assurance_agent.artifacts.models.metrics import MetricsDocument
+    from assurance_agent.evidence.metrics_sufficiency import evaluate_metrics_sufficiency
+
+    hashes = _audited_reads_sha256(gate, context)
+    if not gate.reads:
+        return gate.default, None, "metrics gate has no reads", hashes, None
+
+    path = gate.reads[0].path
+    present, parse_error, raw = _load_view_doc(context, path)
+    if not present:
+        verdict = gate.missing_file_is or gate.default
+        return verdict, "missing_file", "gate read file is missing", hashes, None
+    if parse_error or not isinstance(raw, dict):
+        verdict = gate.invalid_json or gate.default
+        return verdict, "invalid_json", "gate read contains invalid JSON", hashes, None
+    try:
+        document = MetricsDocument.model_validate(raw)
+    except ValidationError:
+        verdict = gate.missing_field_is or gate.default
+        return (
+            verdict,
+            "missing_field",
+            "metrics document failed schema validation",
+            hashes,
+            None,
+        )
+
+    decision = evaluate_metrics_sufficiency(
+        document,
+        load_policy(context.project_root).evidence_sufficiency,
+    )
+    mapped = _METRICS_VERDICT_MAP.get(decision.verdict, gate.default)
+    details: dict[str, Any] = {
+        "evaluator": "assurance_agent.evidence.metrics_sufficiency::evaluate_metrics_sufficiency",
+        "decision": decision.verdict,
+        "mutation_budget_seconds": decision.mutation_budget_seconds,
+        "shortboards": [board.model_dump(mode="json") for board in decision.shortboards],
+    }
+    return (
+        mapped,
+        "evaluate_metrics_sufficiency",
+        f"metrics sufficiency verdict {decision.verdict}",
+        hashes,
+        details,
+    )
+
+
 def _evaluate_gate_def_base(
     gate: GateDef,
     context: GateEvaluationContext,
@@ -737,6 +805,10 @@ def _evaluate_gate_def_base(
                     _audited_reads_sha256(gate, context),
                     None,
                 )
+
+    # metrics-sufficiency-gate: Python evaluator, not DSL rules.
+    if gate.id == _METRICS_SUFFICIENCY_GATE_ID:
+        return _evaluate_metrics_sufficiency_gate(gate, context)
 
     # Step 2 — scope（gate: primary hoist + aliases + params/state + 冻结结局）
     scope = _view_scope(gate, context, gates=gates, stack=stack, memo=memo)
