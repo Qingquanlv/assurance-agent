@@ -978,27 +978,7 @@ for item in "${BENCHMARK_ITEMS[@]}"; do
     log "[$change_id] aa status terminal=$workflow_kind${workflow_reason:+ reason=$workflow_reason}"
 
     if workflow_attempts_should_stop "$workflow_kind" || [ "$workflow_kind" = "hard_timeout" ]; then
-      python3 - "$change_id" <<'PYASSERT' || true
-import json, sys
-from pathlib import Path
-cid = sys.argv[1]
-events = Path(f"qa/changes/{cid}/events.jsonl")
-if not events.is_file():
-    raise SystemExit(0)
-success = {}
-for line in events.read_text().splitlines():
-    if not line.strip():
-        continue
-    ev = json.loads(line)
-    if ev.get("type") == "task_attempt_succeeded":
-        tid = ev.get("task_id")
-        if tid:
-            success[tid] = success.get(tid, 0) + 1
-dupes = [t for t, n in success.items() if n > 1]
-if dupes:
-    print(f"WARNING: duplicate successful task ids across restarts: {dupes[:5]}", file=sys.stderr)
-    raise SystemExit(1)
-PYASSERT
+      assert_no_duplicate_committed_task_ids "qa/changes/$change_id/events.jsonl" || true
       break
     fi
 

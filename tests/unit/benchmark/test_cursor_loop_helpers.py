@@ -131,6 +131,52 @@ def test_batch_manifest_preserves_exact_member_counts(tmp_path: Path) -> None:
         assert [member["change_id"] for member in manifest["members"]] == list(change_ids)
 
 
+def test_uncommitted_success_replay_is_not_a_duplicate_commit(tmp_path: Path) -> None:
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in (
+                {"type": "task_attempt_succeeded", "task_id": "task-1"},
+                {"type": "task_attempt_succeeded", "task_id": "task-1"},
+                {"type": "superstep_committed", "committed_task_ids": ["task-1"]},
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = _run_helper(
+        tmp_path,
+        f"assert_no_duplicate_committed_task_ids {shlex.quote(str(events))}",
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_duplicate_committed_task_id_is_rejected(tmp_path: Path) -> None:
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in (
+                {"type": "superstep_committed", "committed_task_ids": ["task-1"]},
+                {"type": "superstep_committed", "committed_task_ids": ["task-1"]},
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = _run_helper(
+        tmp_path,
+        f"assert_no_duplicate_committed_task_ids {shlex.quote(str(events))}",
+    )
+
+    assert result.returncode != 0
+    assert "duplicate committed task ids across restarts" in result.stderr
+
+
 def test_batch_manifest_updates_each_member_atomically_and_recomputes_status(tmp_path: Path) -> None:
     manifest = tmp_path / "batch-manifest.json"
     assert _run_helper(tmp_path, _manifest_command(tmp_path, "batch-1", ("CH-A", "CH-B"))).returncode == 0

@@ -700,6 +700,34 @@ if not isinstance(payload.get("improvement_ids"), list):
 PY
 }
 
+assert_no_duplicate_committed_task_ids() {
+  local events_file="$1"
+  [ -f "$events_file" ] || return 0
+  python3 - "$events_file" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+committed = {}
+for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    if not line.strip():
+        continue
+    event = json.loads(line)
+    if event.get("type") != "superstep_committed":
+        continue
+    for task_id in event.get("committed_task_ids", []):
+        committed[task_id] = committed.get(task_id, 0) + 1
+
+duplicates = [task_id for task_id, count in committed.items() if count > 1]
+if duplicates:
+    print(
+        f"WARNING: duplicate committed task ids across restarts: {duplicates[:5]}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+PY
+}
+
 workflow_attempts_should_stop() {
   case "$1" in
     completed|stopped|failed) return 0 ;;
