@@ -1,42 +1,39 @@
 #!/usr/bin/env bash
 #
-# run-workflow-loop.sh - scheduled benchmark loop using the Python workflow driver.
+# run-workflow-loop.sh - scheduled benchmark loop using OpenCode.
 #
-# OpenCode sibling of run-workflow-loop-cursor.sh. Reuses benchmark/benchmark.env
-# and benchmark/requirements/*.md, but drives Assurance Workflow through
-# GraphRuntime (`aa workflow run` / `resume`). OpenCode executes one bounded
-# agent per task (opencode adapter) or `opencode run` per task (headless).
+# OpenCode sibling of run-workflow-loop-cursor.sh. It shares the same
+# GraphRuntime lifecycle, while phases are dispatched to bounded aa-* agents
+# through a running OpenCode server.
 #
 # One tick:
 #   1. Seed intake inputs for each item (.qa.yaml + proposal.md).
-#   2. `aa workflow run --entrypoint full` drives the change to a terminal state.
-#   3. Verify completion with `aa workflow status` (or `aa status --next`).
-#   4. Archive completed changes through OpenCode + aa-archive.
-#   5. (Optional) retro-nightly collect.
+#   2. `aa workflow run --entrypoint full|… --adapter opencode --server …`
+#      drives the change to a terminal state through bounded OpenCode agents.
+#   3. Verify completion with deterministic `aa workflow status`.
+#   4. Archive via GraphRuntime: `aa workflow run --entrypoint archive`
+#      (skill:aa-archive + archive-gate; not a free-form agent prompt).
+#   5. After every invocation reaches a persisted terminal, run one explicit
+#      Batch Retro through `aa retro --batch-manifest ...`. Failed/stopped items
+#      remain members and become typed evidence gaps. A driver hard timeout is
+#      not a persisted workflow terminal, so Retro waits for a later resume.
+#      Artifacts: context.json, proposal-candidates.json, accept-status.json,
+#      retro-summary.md, review-queue.md, plus qa/improvements/*.
+#      Legacy nightly collection and free-form proposal paths are gone.
 #
-# Retro is NOT inlined here by default. Set DO_RETRO=true to restore the legacy
-# end-of-loop `aa retro` + agent proposals path (do not enable both DO_RETRO
-# and DO_NIGHTLY_COLLECT).
-#
-# Important: driver/agent exit code is not treated as workflow success. A change
-# is archived only when `aa status --change <id> --next --json` reports
-# terminal.kind == "completed".
-#
-# Adapter selection (DRIVER_ADAPTER):
-#   opencode  (default) — driver talks to a running OpenCode server over HTTP and
-#              dispatches phases to the bounded aa-* agents. Requires a live
-#              server at OPENCODE_SERVER (this is the path validated end-to-end).
-#   headless           — driver spawns `opencode run` per phase (no server, no
-#              bounded agents; uses --dangerously-skip-permissions). Matches the
-#              eval wrapper.
+# Process-group hard timeout (run_with_hard_timeout.py) wraps driver / archive /
+# retro runs so leftover local driver processes do not strand
+# the loop. Status-poll early kill is retained as a safety net if the driver
+# process lingers after a terminal state is already recorded.
 #
 # Usage:
 #   ./benchmark/run-workflow-loop.sh
-#   OPENCODE_MODEL=anthropic/claude-sonnet-4 ./benchmark/run-workflow-loop.sh
-#   DRIVER_ADAPTER=headless ./benchmark/run-workflow-loop.sh
+#   OPENCODE_MODEL=openai/gpt-5.1-codex ./benchmark/run-workflow-loop.sh
 #   OPENCODE_SERVER=http://127.0.0.1:4096 ./benchmark/run-workflow-loop.sh
 #   OPENCODE_MAX_WORKFLOW_ATTEMPTS=4 ./benchmark/run-workflow-loop.sh
-#   DO_NIGHTLY_COLLECT=false ./benchmark/run-workflow-loop.sh
+#   USE_WORKFLOW_ARCHIVE=false              # legacy free-form archive prompt
+#   RESUME_RUNSTAMP=20260713-113457 ./benchmark/run-workflow-loop.sh
+#   DAEMON=1 ./benchmark/run-workflow-loop.sh   # detach + write PID/log symlinks
 #
 set -uo pipefail
 
@@ -44,14 +41,22 @@ set -uo pipefail
 # Paths & config
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOOP_HELPERS="$SCRIPT_DIR/cursor-loop-helpers.sh"
+if [ ! -f "$LOOP_HELPERS" ]; then
+  printf 'ERROR: missing %s\n' "$LOOP_HELPERS" >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+source "$LOOP_HELPERS"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-# Python migration: skills are synced INTO the SUT project by `aa skill refresh`
-# (M7), so archive/retro prompts point at $PROJECT_ROOT/skills, not a TS repo.
+# Python migration: skills are synced INTO the SUT project by `aa skill refresh`.
 AA_SKILLS_ROOT="${AA_SKILLS_ROOT:-$PROJECT_ROOT/skills}"
 # SCRIPT_DIR = <aa-repo>/benchmark/vue-fastapi-admin/benchmark → repo root is ../../..
 AA_REPO_ROOT="${AA_REPO_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
-NIGHTLY_CLI="${NIGHTLY_CLI:-aa retro nightly}"
+RESUME_LOG_DIR="${RESUME_LOG_DIR:-$SCRIPT_DIR/resume-logs}"
 AUTO_DECIDE_BENCHMARK="${AUTO_DECIDE_BENCHMARK:-true}"
+# When set, log non-terminal / needs-human stalls (does not mutate state).
+RECOVER_HEALING_DEADLOCK="${RECOVER_HEALING_DEADLOCK:-true}"
 cd "$PROJECT_ROOT"
 
 CONFIG_FILE="${BENCHMARK_ENV:-$SCRIPT_DIR/benchmark.env}"
@@ -62,37 +67,63 @@ RUN_MODE="${RUN_MODE:-full}"
 RUN_TESTS="${RUN_TESTS:-true}"
 FORCE_CONTINUE="${FORCE_CONTINUE:-false}"
 DO_ARCHIVE="${DO_ARCHIVE:-true}"
-DO_RETRO="${DO_RETRO:-false}"
-DO_RETRO_PROPOSALS="${DO_RETRO_PROPOSALS:-true}"
-DO_NIGHTLY_COLLECT="${DO_NIGHTLY_COLLECT:-true}"
-RETRO_SINCE_DAYS="${RETRO_SINCE_DAYS:-7}"
+# Prefer the GraphRuntime archive entrypoint. Retro has one canonical CLI path.
+USE_WORKFLOW_ARCHIVE="${USE_WORKFLOW_ARCHIVE:-true}"
+ARCHIVE_ENTRYPOINT="${ARCHIVE_ENTRYPOINT:-archive}"
+RETRO_ID="${RETRO_ID:-}"
+RETRO_DRY_RUN="${RETRO_DRY_RUN:-false}"
+# Benchmark-local deterministic Eval metrics. New names take precedence while
+# the legacy regression names remain accepted during configuration migration.
+DO_BENCHMARK_EVAL="$(benchmark_eval_setting "${DO_BENCHMARK_EVAL-}" "${DO_EVAL_REGRESSION-}" true)"
+BENCHMARK_EVAL_SUITES="$(benchmark_eval_setting \
+  "${BENCHMARK_EVAL_SUITES-}" \
+  "${EVAL_REGRESSION_SUITES-}" \
+  "workflow-run,classification-unit,safety-lite,eval-smoke,case-generation,workflow-case,workflow-api-codegen,workflow-e2e-codegen,workflow-fuzz-codegen,workflow-performance-codegen,workflow-full")"
+EVAL_ENGINE_ROOT="${EVAL_ENGINE_ROOT:-$AA_REPO_ROOT}"   # holds eval/suites + eval/baselines
 STEP_TIMEOUT="${STEP_TIMEOUT:-5400}"
+STATUS_POLL_INTERVAL="${STATUS_POLL_INTERVAL:-120}"
 
-# Clean case/change artifacts before the loop starts so each benchmark run is a
-# fresh slate. Only qa/cases + qa/changes by default (preserve qa/archive,
-# qa/retro, tests/). Cleaned ONCE at loop start (never between items) so this
-# run's archives and unarchived terminal changes survive for retro-nightly.
 CLEAN_ARTIFACTS="${CLEAN_ARTIFACTS:-true}"
 CLEAN_TARGETS="${CLEAN_TARGETS:-qa/cases qa/changes}"
 
 # Python workflow driver -----------------------------------------------------
-AA_BIN="${AA_BIN:-aa}"                          # deterministic CLI (owns the driver)
-DRIVER_ADAPTER="${DRIVER_ADAPTER:-opencode}"    # opencode | headless
-DRIVER_ENTRYPOINT="${DRIVER_ENTRYPOINT:-full}"            # full | execute
-TEST_TYPES="${TEST_TYPES:-api,e2e}"             # comma-separated layers to cover
+AA_BIN="${AA_BIN:-aa}"
+# macOS ships /usr/bin/aa (Apple Archive). Prefer the assurance-agent CLI on PATH.
+if [ -x "$AA_BIN" ]; then
+  AA_BIN_DIR="$(cd "$(dirname "$AA_BIN")" && pwd)"
+  export PATH="$AA_BIN_DIR:$PATH"
+elif [ -x "$AA_REPO_ROOT/.venv/bin/aa" ]; then
+  AA_BIN="$AA_REPO_ROOT/.venv/bin/aa"
+  export PATH="$AA_REPO_ROOT/.venv/bin:$PATH"
+fi
+export AA_BIN
+DRIVER_ENTRYPOINT="${DRIVER_ENTRYPOINT:-full}"
+TEST_TYPES="${TEST_TYPES:-api,e2e}"
 MAX_HEALING_ATTEMPTS="${MAX_HEALING_ATTEMPTS:-3}"
-OPENCODE_SERVER="${OPENCODE_SERVER:-http://127.0.0.1:4096}"  # opencode adapter only
+DRIVER_ADAPTER="${DRIVER_ADAPTER:-opencode}"
+OPENCODE_SERVER="${OPENCODE_SERVER:-http://127.0.0.1:4096}"
 
 OPENCODE_BIN="${OPENCODE_BIN:-opencode}"
 OPENCODE_MODEL="${OPENCODE_MODEL:-}"
 OPENCODE_MAX_WORKFLOW_ATTEMPTS="${OPENCODE_MAX_WORKFLOW_ATTEMPTS:-3}"
-# Agent command for retro-nightly: driver appends the prompt as the final argv.
-# Override with OPENCODE_NIGHTLY_AGENT if needed.
-if [ -z "${OPENCODE_NIGHTLY_AGENT:-}" ]; then
-  OPENCODE_NIGHTLY_AGENT="$OPENCODE_BIN run --format json --dangerously-skip-permissions --dir $PROJECT_ROOT"
-  [ -n "$OPENCODE_MODEL" ] && OPENCODE_NIGHTLY_AGENT="$OPENCODE_NIGHTLY_AGENT --model $OPENCODE_MODEL"
-fi
+OPENCODE_OUTPUT_FORMAT="${OPENCODE_OUTPUT_FORMAT:-json}"
 
+# QA test-runtime endpoints (inherited by the driver → operation:run-tests → pytest).
+# The isolated task sandbox excludes db.sqlite3 from tree capture, so the fuzz/api
+# isolated_worker would otherwise fall back to an empty DB ("no such table"). Pin
+# QA_SQLITE_FILE to the live SUT DB by absolute path so workers read the migrated DB.
+export QA_SQLITE_FILE="${QA_SQLITE_FILE:-$PROJECT_ROOT/db.sqlite3}"
+export BASE_URL="${BASE_URL:-http://127.0.0.1:9999}"
+export E2E_FRONTEND_URL="${E2E_FRONTEND_URL:-http://127.0.0.1:3100}"
+# Fuzz schema acquisition: hit the LIVE SUT (from_url) instead of importing the
+# app in-process (from_asgi). from_asgi boots the app lifespan → aerich migrate →
+# writes migrations/** inside the task sandbox (forbidden_write) AND fuzzes an
+# in-process app bound to the sandbox DB, inconsistent with the real-DB seeds.
+# Both env names are set because generated fuzz files vary in which they read.
+export QA_FUZZ_SCHEMA_MODE="${QA_FUZZ_SCHEMA_MODE:-uri}"
+export FUZZ_SCHEMA_MODE="${FUZZ_SCHEMA_MODE:-uri}"
+
+# Default to the canonical five-item benchmark batch.
 if [ -z "${BENCHMARK_ITEMS+x}" ] || [ "${#BENCHMARK_ITEMS[@]}" -eq 0 ]; then
   BENCHMARK_ITEMS=(
     "RET-dept-management:requirements/dept-management.md"
@@ -103,38 +134,152 @@ if [ -z "${BENCHMARK_ITEMS+x}" ] || [ "${#BENCHMARK_ITEMS[@]}" -eq 0 ]; then
   )
 fi
 
-RUNSTAMP="$(date +%Y%m%d-%H%M%S)"
-RUN_DIR="$SCRIPT_DIR/runs/$RUNSTAMP"
-mkdir -p "$RUN_DIR"
+SESSION_STAMP="$(date +%Y%m%d-%H%M%S)"
+RUNSTAMP="${RESUME_RUNSTAMP:-$SESSION_STAMP}"
+RUN_DIR="$SCRIPT_DIR/runs/$RUNSTAMP-opencode"
+mkdir -p "$RUN_DIR" "$RESUME_LOG_DIR"
+RETRO_ID="${RETRO_ID:-retro-${RUNSTAMP}-opencode}"
+BATCH_MANIFEST="$RUN_DIR/batch-manifest.json"
 LOOP_LOG="$RUN_DIR/loop.log"
 SUMMARY="$RUN_DIR/loop-summary.md"
+TRACK_LOG="$RESUME_LOG_DIR/opencode-loop-${SESSION_STAMP}.log"
+TRACK_PID_FILE="$RESUME_LOG_DIR/opencode-loop-latest.pid"
+TRACK_LATEST_LOG="$RESUME_LOG_DIR/opencode-loop-latest.log"
+MANAGE_BENCHMARK_SUT="${MANAGE_BENCHMARK_SUT:-true}"
+SUT_HOST="${SUT_HOST:-127.0.0.1}"
+SUT_PORT="${SUT_PORT:-9999}"
+SUT_READY_URL="${SUT_READY_URL:-${BASE_URL%/}/openapi.json}"
+SUT_START_MAX_ATTEMPTS="${SUT_START_MAX_ATTEMPTS:-60}"
+SUT_START_DELAY_S="${SUT_START_DELAY_S:-0.5}"
+SUT_PID_FILE="$RUN_DIR/sut.pid"
+SUT_LOG="$RUN_DIR/sut.log"
+MANAGE_BENCHMARK_FRONTEND="${MANAGE_BENCHMARK_FRONTEND:-true}"
+FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
+FRONTEND_PORT="${FRONTEND_PORT:-3100}"
+FRONTEND_READY_URL="${FRONTEND_READY_URL:-${E2E_FRONTEND_URL%/}/}"
+FRONTEND_START_MAX_ATTEMPTS="${FRONTEND_START_MAX_ATTEMPTS:-120}"
+FRONTEND_START_DELAY_S="${FRONTEND_START_DELAY_S:-0.5}"
+FRONTEND_PID_FILE="$RUN_DIR/frontend.pid"
+FRONTEND_LOG="$RUN_DIR/frontend.log"
+PNPM_BIN="${PNPM_BIN:-pnpm}"
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$LOOP_LOG"; }
+log() {
+  local line
+  line="$(printf '[%s] %s' "$(date +%H:%M:%S)" "$*")"
+  printf '%s\n' "$line" | tee -a "$LOOP_LOG" >>"$TRACK_LOG"
+}
 
+setup_run_tracking() {
+  : >"$TRACK_LOG"
+  ln -sfn "$(basename "$TRACK_LOG")" "$TRACK_LATEST_LOG"
+  echo "$$" >"$TRACK_PID_FILE"
+  log "tracking: $TRACK_LOG (latest → opencode-loop-latest.log)"
+}
+
+cleanup_loop_resources() {
+  stop_benchmark_sut "$FRONTEND_PID_FILE"
+  stop_benchmark_sut "$SUT_PID_FILE"
+  rm -f "$TRACK_PID_FILE"
+}
+
+ensure_loop_sut() {
+  if benchmark_http_ready "$SUT_READY_URL"; then
+    log "sut: reuse ready service at $SUT_READY_URL"
+    return 0
+  fi
+  if [ "$MANAGE_BENCHMARK_SUT" != "true" ]; then
+    log "ERROR: SUT not ready at $SUT_READY_URL and MANAGE_BENCHMARK_SUT=$MANAGE_BENCHMARK_SUT"
+    return 1
+  fi
+  local python_bin="$PROJECT_ROOT/.venv/bin/python"
+  if [ ! -x "$python_bin" ]; then
+    log "ERROR: SUT Python missing: $python_bin"
+    return 1
+  fi
+  log "sut: starting managed backend at $SUT_HOST:$SUT_PORT (log=$(basename "$SUT_LOG"))"
+  if ! ensure_benchmark_sut \
+    "$SUT_READY_URL" "$SUT_LOG" "$SUT_PID_FILE" \
+    "$SUT_START_MAX_ATTEMPTS" "$SUT_START_DELAY_S" -- \
+    "$python_bin" -m uvicorn app:app --host "$SUT_HOST" --port "$SUT_PORT"; then
+    log "ERROR: managed SUT failed readiness at $SUT_READY_URL (see $SUT_LOG)"
+    return 1
+  fi
+  log "sut: ready at $SUT_READY_URL pid=$(cat "$SUT_PID_FILE")"
+}
+
+ensure_loop_frontend() {
+  if benchmark_http_ready "$FRONTEND_READY_URL"; then
+    log "frontend: reuse ready service at $FRONTEND_READY_URL"
+    return 0
+  fi
+  if [ "$MANAGE_BENCHMARK_FRONTEND" != "true" ]; then
+    log "ERROR: frontend not ready at $FRONTEND_READY_URL and MANAGE_BENCHMARK_FRONTEND=$MANAGE_BENCHMARK_FRONTEND"
+    return 1
+  fi
+  if ! command -v "$PNPM_BIN" >/dev/null 2>&1; then
+    log "ERROR: frontend package manager missing: $PNPM_BIN"
+    return 1
+  fi
+  if [ ! -d "$PROJECT_ROOT/web/node_modules" ]; then
+    log "ERROR: frontend dependencies missing: run pnpm --dir $PROJECT_ROOT/web install --frozen-lockfile"
+    return 1
+  fi
+  log "frontend: starting managed Vite server at $FRONTEND_HOST:$FRONTEND_PORT (log=$(basename "$FRONTEND_LOG"))"
+  if ! ensure_benchmark_sut \
+    "$FRONTEND_READY_URL" "$FRONTEND_LOG" "$FRONTEND_PID_FILE" \
+    "$FRONTEND_START_MAX_ATTEMPTS" "$FRONTEND_START_DELAY_S" -- \
+    env BROWSER=none "$PNPM_BIN" --dir "$PROJECT_ROOT/web" run dev \
+    --host "$FRONTEND_HOST" --port "$FRONTEND_PORT"; then
+    log "ERROR: managed frontend failed readiness at $FRONTEND_READY_URL (see $FRONTEND_LOG)"
+    return 1
+  fi
+  log "frontend: ready at $FRONTEND_READY_URL pid=$(cat "$FRONTEND_PID_FILE")"
+}
+
+# Auto-resume the first pending GraphRuntime interrupt (autonomous benchmark path).
+# Knowledge proposals are deliberately left pending until the whole Batch settles;
+# promoting them here would mutate an input frozen by other active invocations.
 maybe_auto_decide() {
   local change_id="$1"
+  local proposal_state="unchanged"
   [ "$AUTO_DECIDE_BENCHMARK" = "true" ] || return 1
+  if compgen -G "qa/changes/$change_id/plans/data-knowledge.proposal.*.yaml" >/dev/null; then
+    proposal_state="proposal_pending"
+    log "[$change_id] knowledge proposal deferred until Batch boundary; stop current invocation"
+  fi
   local status_json interrupt_id action reason
   status_json="$("$AA_BIN" workflow status --change "$change_id" --json 2>/dev/null || true)"
   [ -n "$status_json" ] || return 1
   interrupt_id="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); ints=d.get("pending_interrupts") or []; print((ints[0].get("interrupt_id") or ints[0].get("id") or "") if ints else "")' "$status_json")"
   [ -n "$interrupt_id" ] || return 1
-  action="accept_risk"
-  reason="benchmark auto resume interrupt $interrupt_id so workflow can complete"
+  action="$(benchmark_interrupt_action "$proposal_state")"
+  reason="benchmark auto resume interrupt $interrupt_id; defer synchronized knowledge changes to Batch boundary"
   log "[$change_id] auto resume interrupt=$interrupt_id action=$action"
   "$AA_BIN" workflow resume --change "$change_id" --interrupt "$interrupt_id" --action "$action" --reason "$reason"
 }
 
-if command -v gtimeout >/dev/null 2>&1; then
-  TIMEOUT_CMD=(gtimeout "$STEP_TIMEOUT")
-elif command -v timeout >/dev/null 2>&1; then
-  TIMEOUT_CMD=(timeout "$STEP_TIMEOUT")
-else
-  TIMEOUT_CMD=()
-  log "WARN: no timeout/gtimeout found - steps run without a wall-clock cap"
+# Diagnostic only: log stalls that need operator attention. Does not mutate ledger.
+recover_dead_end() {
+  local change_id="$1"
+  [ "$RECOVER_HEALING_DEADLOCK" = "true" ] || return 1
+  local kind reason
+  kind="$(terminal_kind "$change_id")"
+  reason="$(terminal_reason "$change_id")"
+  if [ "$kind" = "needs_human_review" ]; then
+    log "[$change_id] workflow needs human review${reason:+: $reason}; use aa workflow resume --interrupt …"
+  elif [ -z "$kind" ]; then
+    log "[$change_id] no terminal yet; preserve evidence and inspect driver error / pending interrupts"
+  fi
+  return 1
+}
+
+HARD_TIMEOUT_PY="$SCRIPT_DIR/run_with_hard_timeout.py"
+if [ ! -f "$HARD_TIMEOUT_PY" ]; then
+  log "ERROR: missing $HARD_TIMEOUT_PY"
+  exit 1
 fi
 
 clean_generated_artifacts() {
@@ -153,35 +298,74 @@ clean_generated_artifacts() {
     abspath="$PROJECT_ROOT/$target"
     if [ -e "$abspath" ]; then
       log "clean: removing $target/ (generated benchmark artifacts)"
-      rm -rf "$abspath"
+      if ! remove_generated_artifact_tree "$abspath"; then
+        log "ERROR: clean failed for $target/ after restoring owner write permissions"
+        exit 1
+      fi
     else
       log "clean: $target/ absent - nothing to remove"
     fi
   done
 }
 
-iso_days_ago() {
-  local days="$1"
-  if date -u -v-1d +%Y >/dev/null 2>&1; then
-    date -u -v-"${days}"d +%Y-%m-%dT%H:%M:%S.000Z
-  else
-    date -u -d "${days} days ago" +%Y-%m-%dT%H:%M:%S.000Z
+# The codegen/execution phases assume the shared pytest scaffold already exists in
+# the SUT repo (tests/config.py, tests/conftest.py, tests/schema_validation.py).
+# Verify they are present up front so codegen does not STOP and tests can run.
+ensure_test_infra() {
+  local missing=()
+  local f
+  for f in tests/config.py tests/conftest.py tests/schema_validation.py; do
+    [ -f "$PROJECT_ROOT/$f" ] || missing+=("$f")
+  done
+  if [ ${#missing[@]} -ne 0 ]; then
+    log "ERROR: missing test infra: ${missing[*]}"
+    log "       restore tests/config.py, tests/conftest.py, tests/schema_validation.py"
+    log "       (codegen phases STOP and tests cannot run without them)"
+    exit 1
+  fi
+  if [ ! -f "$PROJECT_ROOT/.aa/config.yaml" ]; then
+    log "ERROR: missing .aa/config.yaml — run: (cd $PROJECT_ROOT && aa init --yes)"
+    log "       (aa run / execution phases fail without it; macOS /usr/bin/aa is unrelated)"
+    exit 1
+  fi
+  log "test-infra: scaffold present"
+}
+
+kill_pgid_file() {
+  local pgid_file="$1"
+  local supervisor_pid="${2:-}"
+  [ -f "$pgid_file" ] || return 0
+  local pgid
+  pgid="$(cat "$pgid_file" 2>/dev/null)"
+  [ -n "$pgid" ] || return 0
+  kill -TERM "-$pgid" 2>/dev/null
+  local waited=0
+  while [ "$waited" -lt 10 ] && kill -0 "-$pgid" 2>/dev/null; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  kill -KILL "-$pgid" 2>/dev/null || true
+  if [ -n "$supervisor_pid" ] && kill -0 "$supervisor_pid" 2>/dev/null; then
+    kill -TERM "$supervisor_pid" 2>/dev/null
+    waited=0
+    while [ "$waited" -lt 5 ] && kill -0 "$supervisor_pid" 2>/dev/null; do
+      sleep 1
+      waited=$((waited + 1))
+    done
+    kill -KILL "$supervisor_pid" 2>/dev/null || true
   fi
 }
 
-run_with_timeout() {
-  if [ ${#TIMEOUT_CMD[@]} -gt 0 ]; then
-    "${TIMEOUT_CMD[@]}" "$@"
-  else
-    "$@"
-  fi
+force_kill_agent_run() {
+  local pgid_file="$1" supervisor_pid="$2" reason="$3"
+  log "$reason"
+  kill_pgid_file "$pgid_file" "$supervisor_pid"
 }
 
-# Seed intake inputs for one change. GraphRuntime full entrypoint has no
-# interactive intake, so the requirement must exist on disk as proposal.md
-# (+ an autonomous-mode .qa.yaml) before `aa workflow run`. Params are passed
-# via --params; do not pre-seed a v1 workflow-state.yaml.
-# $1=change_id $2=base_id (requirement id) $3=requirement text
+# Seed intake inputs for one change (GraphRuntime full entrypoint has no
+# interactive intake). Params are passed on `aa workflow run --params`; do not
+# pre-write a v1 workflow-state.yaml — the runtime owns the ledger/projection.
+# $1=change_id $2=base_id $3=requirement text
 seed_change() {
   local change_id="$1" base_id="$2" requirement="$3"
   local cdir="$PROJECT_ROOT/qa/changes/$change_id"
@@ -251,7 +435,6 @@ YAML
   log "[$change_id] seeded intake inputs (.qa.yaml + proposal.md, feature=$feature)"
 }
 
-# Build the runtime params JSON for the driver (robust quoting via python3).
 driver_params_json() {
   TEST_TYPES="$TEST_TYPES" RUN_MODE="$RUN_MODE" RUN_TESTS="$RUN_TESTS" \
   FORCE_CONTINUE="$FORCE_CONTINUE" MAX_HEALING="$MAX_HEALING_ATTEMPTS" \
@@ -267,63 +450,201 @@ print(json.dumps({
 }))'
 }
 
-# Run one driver attempt for a change. GraphRuntime resumes from the ledger
-# checkpoint, so a retry after a timeout continues rather than restarting.
+opencode_agent_cmd_prefix() {
+  # `aa retro` appends its prompt to this command. `--auto` approves asks but
+  # preserves the explicit deny rules declared by aa-doc-author.
+  local cmd="$OPENCODE_BIN run --format $OPENCODE_OUTPUT_FORMAT --agent aa-doc-author --auto --attach $OPENCODE_SERVER --dir $PROJECT_ROOT"
+  [ -n "$OPENCODE_MODEL" ] && cmd="$cmd --model $OPENCODE_MODEL"
+  printf '%s' "$cmd"
+}
+
+# Run one command under hard process-group timeout, optionally polling
+# aa status for early kill when poll_change_id is set.
+# Args after -- are the command.
+run_hard_timeout() {
+  local logf="$1"
+  local poll_change_id="${2:-}"
+  shift 2
+  # remaining: command argv
+
+  if [ -z "$poll_change_id" ]; then
+    python3 "$HARD_TIMEOUT_PY" "$STEP_TIMEOUT" "$logf" -- "$@"
+    return $?
+  fi
+
+  local pgid_file="${logf}.pgid"
+  rm -f "$pgid_file"
+
+  python3 "$HARD_TIMEOUT_PY" "$STEP_TIMEOUT" "$logf" --pgid-file "$pgid_file" -- "$@" &
+  local bg_pid=$!
+  local started_at
+  started_at=$(date +%s)
+  local poll_elapsed=0 check_every=15 kill_reason="" wall_timed_out=false
+
+  while kill -0 "$bg_pid" 2>/dev/null; do
+    sleep "$check_every"
+    poll_elapsed=$((poll_elapsed + check_every))
+    local wall_elapsed=$(( $(date +%s) - started_at ))
+
+    if [ "$wall_elapsed" -ge "$STEP_TIMEOUT" ]; then
+      wall_timed_out=true
+      kill_reason="[$poll_change_id] bash wall-clock cap STEP_TIMEOUT=${STEP_TIMEOUT}s reached - force killing driver/agent group"
+      force_kill_agent_run "$pgid_file" "$bg_pid" "$kill_reason"
+      break
+    fi
+
+    if [ "$poll_elapsed" -ge "$STATUS_POLL_INTERVAL" ]; then
+      poll_elapsed=0
+      local kind
+      kind="$(terminal_kind "$poll_change_id" 2>/dev/null || echo running)"
+      if [ "$kind" = "completed" ] || [ "$kind" = "stopped" ]; then
+        kill_reason="[$poll_change_id] status poll: terminal=$kind - stopping driver early (safety net)"
+        force_kill_agent_run "$pgid_file" "$bg_pid" "$kill_reason"
+        break
+      fi
+    fi
+  done
+
+  wait "$bg_pid"
+  local exit_code=$?
+  if [ "$wall_timed_out" = true ] && [ "$exit_code" -eq 0 ]; then
+    return 124
+  fi
+  return "$exit_code"
+}
+
 # $1=logfile $2=change_id
 run_driver() {
   local logf="$1" change_id="$2"
   local params
+  local -a adapter_args=(
+    --adapter "$DRIVER_ADAPTER"
+    --server "$OPENCODE_SERVER"
+    --directory "$PROJECT_ROOT"
+  )
+  [ -n "$OPENCODE_MODEL" ] && adapter_args+=(--model "$OPENCODE_MODEL")
   params="$(driver_params_json)"
   local has_invocation="false"
   if "$AA_BIN" workflow status --change "$change_id" --json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("status") else 1)'; then
     has_invocation="true"
   fi
-
-  local -a cmd
   if [ "$has_invocation" = "true" ]; then
-    # resume has no --params (params are pinned on the invocation).
-    cmd=(
-      "$AA_BIN" workflow resume
-      --change "$change_id"
-      --adapter "$DRIVER_ADAPTER"
-    )
+    # resume has no --params because invocation parameters are already pinned.
+    run_hard_timeout "$logf" "$change_id" \
+      "$AA_BIN" workflow resume \
+      --change "$change_id" \
+      "${adapter_args[@]}"
   else
-    cmd=(
-      "$AA_BIN" workflow run
-      --change "$change_id"
-      --entrypoint "$DRIVER_ENTRYPOINT"
-      --adapter "$DRIVER_ADAPTER"
-      --params "$params"
-    )
+    run_hard_timeout "$logf" "$change_id" \
+      "$AA_BIN" workflow run \
+      --change "$change_id" \
+      --entrypoint "$DRIVER_ENTRYPOINT" \
+      --params "$params" \
+      "${adapter_args[@]}"
   fi
-
-  if [ "$DRIVER_ADAPTER" = "opencode" ]; then
-    cmd+=(--server "$OPENCODE_SERVER" --directory "$PROJECT_ROOT")
-    [ -n "$OPENCODE_MODEL" ] && cmd+=(--model "$OPENCODE_MODEL")
-  else
-    local agent_cmd="$OPENCODE_BIN run --dir $PROJECT_ROOT --format json --dangerously-skip-permissions"
-    [ -n "$OPENCODE_MODEL" ] && agent_cmd="$agent_cmd --model $OPENCODE_MODEL"
-    cmd+=(--agent-cmd "$agent_cmd")
-  fi
-
-  run_with_timeout "${cmd[@]}" >"$logf" 2>&1
 }
 
-# Run one headless OpenCode prompt (archive / retro-proposals stages only).
-# $1=logfile, $2=prompt.
-run_opencode() {
+# One-shot opencode prompt (legacy archive path only).
+# $1=logfile $2=prompt
+run_opencode_agent() {
   local logf="$1" prompt="$2"
   local -a cmd=(
     "$OPENCODE_BIN"
     run
-    "$prompt"
-    --format json
-    --dangerously-skip-permissions
+    --format "$OPENCODE_OUTPUT_FORMAT"
+    --agent aa-archiver
+    --auto
+    --attach "$OPENCODE_SERVER"
     --dir "$PROJECT_ROOT"
   )
   [ -n "$OPENCODE_MODEL" ] && cmd+=(--model "$OPENCODE_MODEL")
+  cmd+=("$prompt")
 
-  run_with_timeout "${cmd[@]}" >"$logf" 2>&1
+  run_hard_timeout "$logf" "" "${cmd[@]}"
+}
+
+archive_params_json() {
+  # Entrypoint archive also injects with.auto_archive=true; keep params explicit.
+  python3 -c 'import json; print(json.dumps({"auto_archive": True}))'
+}
+
+# GraphRuntime entrypoint run for per-Change operations such as archive.
+run_workflow_entrypoint() {
+  local logf="$1" change_id="$2" entrypoint="$3" params="$4"
+  local -a adapter_args=(
+    --adapter "$DRIVER_ADAPTER"
+    --server "$OPENCODE_SERVER"
+    --directory "$PROJECT_ROOT"
+  )
+  [ -n "$OPENCODE_MODEL" ] && adapter_args+=(--model "$OPENCODE_MODEL")
+  run_hard_timeout "$logf" "$change_id" \
+    "$AA_BIN" workflow run \
+    --change "$change_id" \
+    --entrypoint "$entrypoint" \
+    --params "$params" \
+    "${adapter_args[@]}"
+}
+
+# Archive one completed change. Prefer --entrypoint archive; optional legacy prompt.
+# $1=change_id  → sets archived=yes|no via caller check of qa/archive/
+run_archive_stage() {
+  local change_id="$1"
+  local ar_log rc=0
+  ARCHIVE_LAST_STATUS="ok"
+  if [ -d "qa/archive/${change_id}" ]; then
+    return 0
+  fi
+  if [ "$USE_WORKFLOW_ARCHIVE" = "true" ]; then
+    ar_log="$RUN_DIR/${change_id}.archive.workflow.log"
+    log "[$change_id] archive via workflow --entrypoint $ARCHIVE_ENTRYPOINT ..."
+    run_workflow_entrypoint "$ar_log" "$change_id" "$ARCHIVE_ENTRYPOINT" "$(archive_params_json)"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+      return 0
+    fi
+    # 20 = graph stopped, i.e. archive-gate refused this change (FAIL execution,
+    # unresolved healing, stale failure analysis). A refusal is a verdict, not an
+    # infrastructure error, and must not read like a crash in the log.
+    if [ "$rc" -eq 20 ]; then
+      ARCHIVE_LAST_STATUS="gate-stop"
+      log "[$change_id] archive refused by archive-gate (exit 20, see $(basename "$ar_log"))"
+      return "$rc"
+    fi
+    ARCHIVE_LAST_STATUS="error"
+    log "[$change_id] archive entrypoint exited $rc (see $(basename "$ar_log"))"
+    return "$rc"
+  fi
+  ar_log="$RUN_DIR/${change_id}.archive.opencode.jsonl"
+  log "[$change_id] archive via legacy OpenCode prompt ..."
+  run_opencode_agent "$ar_log" "$(archive_prompt "$change_id")"
+}
+
+# Capture artifacts from the exact Retro ID bound to this benchmark Batch.
+# Sets: retro_id signal_count change_count retro_review_queue improvement_count.
+capture_retro_artifacts() {
+  local want_id="$1"
+  local latest_retro="qa/retro/$want_id"
+  retro_artifacts_complete "$latest_retro" "$RETRO_DRY_RUN" || return 1
+  retro_id="$(basename "$latest_retro")"
+  if [ -f "$latest_retro/context.json" ]; then
+    signal_count="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("signal_count",""))' "$latest_retro/context.json" 2>/dev/null || true)"
+    change_count="$(python3 -c 'import json,sys; w=json.load(open(sys.argv[1])).get("window") or {}; ids=w.get("change_ids") or []; print(len(ids) if isinstance(ids,list) else "")' "$latest_retro/context.json" 2>/dev/null || true)"
+  fi
+  [ -f "$latest_retro/proposal-candidates.json" ] && cp "$latest_retro/proposal-candidates.json" "$RUN_DIR/proposal-candidates.json"
+  [ -f "$latest_retro/accept-status.json" ] && cp "$latest_retro/accept-status.json" "$RUN_DIR/accept-status.json"
+  [ -f "$latest_retro/retro-status.json" ] && cp "$latest_retro/retro-status.json" "$RUN_DIR/retro-status.json"
+  [ -f "$latest_retro/auto-review-summary.json" ] && cp "$latest_retro/auto-review-summary.json" "$RUN_DIR/auto-review-summary.json"
+  [ -f "$latest_retro/retro-summary.md" ] && cp "$latest_retro/retro-summary.md" "$RUN_DIR/retro-summary.md"
+  if [ -f "$latest_retro/review-queue.md" ]; then
+    retro_review_queue="$latest_retro/review-queue.md"
+    cp "$latest_retro/review-queue.md" "$RUN_DIR/review-queue.md"
+  fi
+  if [ -f "qa/improvements/improvements.json" ]; then
+    cp "qa/improvements/improvements.json" "$RUN_DIR/improvements.json"
+    improvement_count="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(len(d.get("improvements") or {}))' "$RUN_DIR/improvements.json" 2>/dev/null || true)"
+  fi
+  [ -f "qa/improvements/review-queue.json" ] && cp "qa/improvements/review-queue.json" "$RUN_DIR/improvement-review-queue.json"
+  return 0
 }
 
 status_json_path() {
@@ -331,7 +652,7 @@ status_json_path() {
   echo "$RUN_DIR/${change_id}.status.json"
 }
 
-# `aa status`: 0 running/completed, 20 stopped, 30 needs_human_review,
+# aa status: 0 running/completed, 20 stopped, 30 needs_human_review,
 # 40 failed (or command/data error). Prefer JSON body when present.
 write_status_snapshot() {
   local change_id="$1"
@@ -341,6 +662,7 @@ write_status_snapshot() {
   "$AA_BIN" status --change "$change_id" --next --json >"$out" 2>>"$LOOP_LOG" || rc=$?
   case "$rc" in
     0|20|30|40)
+      # Keep the snapshot when JSON parsed a known status (incl. failed→40).
       if python3 - "$out" <<'PY'
 import json, sys
 try:
@@ -415,22 +737,6 @@ else:
 PY
 }
 
-snapshot_unarchived_evidence() {
-  local retro_id="$1" change_id="$2"
-  local src="qa/changes/${change_id}"
-  local dst="qa/retro/${retro_id}/evidence/${change_id}"
-  [ -d "$src" ] || return 0
-  [ -d "qa/archive/${change_id}" ] && return 0
-
-  mkdir -p "$dst"
-  for rel in "events.jsonl" "workflow-state.yaml" "inspect/failure-analysis.json" "healing"; do
-    if [ -e "$src/$rel" ]; then
-      mkdir -p "$dst/$(dirname "$rel")"
-      cp -R "$src/$rel" "$dst/$rel"
-    fi
-  done
-}
-
 execution_final_status() {
   local change_id="$1"
   local manifest="qa/changes/${change_id}/execution/execution-manifest.yaml"
@@ -449,59 +755,84 @@ Archive benchmark change ${change_id}.
 Instructions:
 1. Load and follow:
    ${AA_SKILLS_ROOT}/aa-archive/SKILL.md
-2. Only archive if the change satisfies the archive contract. If not eligible,
+2. You are the bounded aa-archiver OpenCode agent. Do not invoke another agent.
+3. Only archive if the change satisfies the archive contract. If not eligible,
    report the missing phases and do not fabricate archive artifacts.
-3. Before ending, confirm whether qa/archive/${change_id}/ exists.
+4. Before ending, confirm whether qa/archive/${change_id}/ exists.
 EOF
 }
 
-retro_proposals_prompt() {
-  local retro_id="$1"
-  cat <<EOF
-Generate retro proposals for benchmark retro id ${retro_id}.
-
-Instructions:
-1. Load and follow:
-   ${AA_SKILLS_ROOT}/aa-retro/SKILL.md
-2. Read qa/retro/${retro_id}/context.json.
-3. Write qa/retro/${retro_id}/proposals.json and
-   qa/retro/${retro_id}/retro-summary.md.
-4. Do not modify skill files or .aa/memory files.
-EOF
-}
-
-run_nightly_collect() {
-  local collect_log="$RUN_DIR/nightly-collect.log"
+# Cross-change Retro closed loop through the canonical explicit Batch CLI.
+run_retro_collect() {
+  local collect_log="$RUN_DIR/retro-collect.log"
   local collect_exit=0
-  log "stage 3/3 retro-nightly collect --sut $PROJECT_ROOT ..."
-  set +e
-  if command -v "$AA_BIN" >/dev/null 2>&1 && "$AA_BIN" retro nightly --help >/dev/null 2>&1; then
-    # shellcheck disable=SC2086
-    "$AA_BIN" retro nightly collect \
-      --sut "$PROJECT_ROOT" \
-      --agent "$OPENCODE_NIGHTLY_AGENT" \
-      >"$collect_log" 2>&1
-    collect_exit=$?
-  else
-    log "nightly collect: aa retro nightly not available"
-    collect_exit=40
-  fi
-  set -e
-  cat "$collect_log" >>"$LOOP_LOG"
+  log "stage 3/3 retro via explicit Batch manifest=$BATCH_MANIFEST ..."
+  local agent_cmd
+  agent_cmd="$(opencode_agent_cmd_prefix)"
+  : >"$collect_log"
+  run_batch_retro \
+    "$AA_BIN" "$BATCH_MANIFEST" "$RETRO_ID" "$agent_cmd" "$RETRO_DRY_RUN" "$collect_log"
+  collect_exit=$?
+  cat "$collect_log" >>"$LOOP_LOG" || true
   return "$collect_exit"
+}
+
+record_item_result() {
+  local change_id="$1" terminal="$2" detail="$3" archive_field="$4"
+  local evidence_path="qa/changes/$change_id/events.jsonl"
+  local batch_status availability outcome
+  if [ -s "qa/archive/$change_id/events.jsonl" ]; then
+    evidence_path="qa/archive/$change_id/events.jsonl"
+  fi
+  outcome="$(retro_batch_member_outcome "$terminal" "$evidence_path")"
+  IFS='|' read -r batch_status availability <<<"$outcome"
+  update_retro_batch_member "$BATCH_MANIFEST" "$change_id" "$batch_status" "$availability" || {
+    log "ERROR: failed to update Batch member $change_id ($batch_status/$availability)"
+    exit 1
+  }
+  ROW_RESULTS+=("$change_id|$terminal|$detail|$archive_field")
+}
+
+# Deterministic benchmark metrics over golden fixtures. This is observational:
+# suite verdicts are reported but do not alter the workflow/archive gate.
+declare -a BENCHMARK_EVAL_ROWS=()
+run_benchmark_eval() {
+  local eval_log="$RUN_DIR/benchmark-eval.log"
+  local row suite verdict run_id
+  : >"$eval_log"
+  if [ ! -d "$EVAL_ENGINE_ROOT/eval/suites" ]; then
+    log "benchmark eval: no eval/suites under $EVAL_ENGINE_ROOT — skipped"
+    return 0
+  fi
+  log "stage: benchmark eval metrics suites=[$BENCHMARK_EVAL_SUITES] engine=$EVAL_ENGINE_ROOT sut=$PROJECT_ROOT"
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    BENCHMARK_EVAL_ROWS+=("$row")
+    IFS='|' read -r suite verdict run_id <<<"$row"
+    log "benchmark-eval[$suite]: verdict=$verdict run_id=$run_id"
+  done < <(collect_benchmark_eval_rows \
+    "$AA_BIN" "$EVAL_ENGINE_ROOT" "$PROJECT_ROOT" "$BENCHMARK_EVAL_SUITES" "$eval_log")
+  return 0
 }
 
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
+if [ "${DAEMON:-}" = "1" ]; then
+  exec python3 "$SCRIPT_DIR/resume-logs/daemonize-loop.py" "$@"
+fi
+
 if ! command -v "$OPENCODE_BIN" >/dev/null 2>&1; then
-  log "ERROR: opencode binary not found: $OPENCODE_BIN"
+  log "ERROR: OpenCode binary not found: $OPENCODE_BIN"
   exit 1
 fi
 
-# uv-based bootstrap (replaces the TS npm build/link path): install the aa CLI
-# from the assurance-agent repo if missing, then materialize skills into the SUT
-# so aa-archive/aa-retro prompts can Read $AA_SKILLS_ROOT/<skill>/SKILL.md.
+if [ "$DRIVER_ADAPTER" != "opencode" ]; then
+  log "ERROR: run-workflow-loop.sh requires DRIVER_ADAPTER=opencode so bounded aa-* permissions apply"
+  exit 1
+fi
+
+# uv-based bootstrap (replaces the TS npm build/link path).
 if ! command -v "$AA_BIN" >/dev/null 2>&1; then
   if command -v uv >/dev/null 2>&1 && [ -d "$AA_REPO_ROOT" ]; then
     log "aa CLI not found - installing via uv from $AA_REPO_ROOT"
@@ -514,76 +845,139 @@ if ! command -v "$AA_BIN" >/dev/null 2>&1; then
   exit 1
 fi
 
-# Ensure the aa-* skills are present in the SUT for archive/retro prompt Reads.
-if [ ! -d "$AA_SKILLS_ROOT" ]; then
-  log "materializing aa skills into $AA_SKILLS_ROOT via aa skill refresh"
-  ( cd "$PROJECT_ROOT" && "$AA_BIN" skill refresh >/dev/null 2>&1 ) || \
-    log "WARN: aa skill refresh failed - archive/retro prompts may miss SKILL.md"
+log "syncing current aa skills and bounded OpenCode agents"
+( cd "$PROJECT_ROOT" && "$AA_BIN" skill refresh --sync-agents >/dev/null 2>&1 ) || {
+  log "ERROR: aa skill refresh --sync-agents failed"
+  exit 1
+}
+
+if ! curl -sf -o /dev/null "$OPENCODE_SERVER" 2>/dev/null; then
+  log "ERROR: no OpenCode server reachable at $OPENCODE_SERVER"
+  log "       start it after agent sync (for example: opencode serve --port 4096)"
+  exit 1
 fi
 
-# opencode adapter needs a live server; fail fast with a clear message rather
-# than letting every driver phase error out mid-run.
-if [ "$DRIVER_ADAPTER" = "opencode" ]; then
-  if ! curl -sf -o /dev/null "$OPENCODE_SERVER" 2>/dev/null; then
-    log "ERROR: opencode adapter selected but no server reachable at $OPENCODE_SERVER"
-    log "       start one (e.g. 'opencode serve --port 4096'), set OPENCODE_SERVER,"
-    log "       or run with DRIVER_ADAPTER=headless."
-    exit 1
-  fi
-fi
-
-if [ "$DO_RETRO" = "true" ] && [ "$DO_NIGHTLY_COLLECT" = "true" ]; then
-  log "WARN: DO_RETRO and DO_NIGHTLY_COLLECT both true — using legacy DO_RETRO only"
-  DO_NIGHTLY_COLLECT="false"
-fi
-
-log "opencode benchmark loop start - runstamp=$RUNSTAMP items=${#BENCHMARK_ITEMS[@]}"
+log "opencode benchmark loop start - runstamp=$RUNSTAMP items=${#BENCHMARK_ITEMS[@]}${RESUME_RUNSTAMP:+ (resume)}"
 log "project_root=$PROJECT_ROOT run_mode=$RUN_MODE run_tests=$RUN_TESTS test_types=$TEST_TYPES"
-log "driver: adapter=$DRIVER_ADAPTER entrypoint=$DRIVER_ENTRYPOINT max_healing=$MAX_HEALING_ATTEMPTS server=${OPENCODE_SERVER}"
+log "driver: adapter=$DRIVER_ADAPTER server=$OPENCODE_SERVER entrypoint=$DRIVER_ENTRYPOINT max_healing=$MAX_HEALING_ATTEMPTS"
 log "opencode=$OPENCODE_BIN model=${OPENCODE_MODEL:-default} max_attempts=$OPENCODE_MAX_WORKFLOW_ATTEMPTS"
-log "do_archive=$DO_ARCHIVE do_nightly_collect=$DO_NIGHTLY_COLLECT do_retro=$DO_RETRO"
-log "auto_decide=$AUTO_DECIDE_BENCHMARK"
+log "do_archive=$DO_ARCHIVE use_workflow_archive=$USE_WORKFLOW_ARCHIVE entrypoint=$ARCHIVE_ENTRYPOINT"
+log "retro: canonical_batch_cli id=$RETRO_ID manifest=$BATCH_MANIFEST dry_run=$RETRO_DRY_RUN"
+log "do_benchmark_eval=$DO_BENCHMARK_EVAL suites=[$BENCHMARK_EVAL_SUITES]"
+log "auto_decide=$AUTO_DECIDE_BENCHMARK recover_healing=$RECOVER_HEALING_DEADLOCK"
 
-clean_generated_artifacts
+setup_run_tracking
+trap cleanup_loop_resources EXIT
+
+declare -a BATCH_CHANGE_IDS=()
+for item in "${BENCHMARK_ITEMS[@]}"; do
+  base_id="${item%%:*}"
+  BATCH_CHANGE_IDS+=("${base_id}-${RUNSTAMP}-opencode")
+done
+if ! initialize_retro_batch_manifest "$BATCH_MANIFEST" "$RUNSTAMP" "${BATCH_CHANGE_IDS[@]}"; then
+  log "ERROR: Batch manifest identity/membership mismatch: $BATCH_MANIFEST"
+  exit 1
+fi
+log "retro_batch: id=$RUNSTAMP manifest=$BATCH_MANIFEST members=${#BATCH_CHANGE_IDS[@]}"
+
+if [ -n "${RESUME_RUNSTAMP:-}" ] && [ "$CLEAN_ARTIFACTS" = "true" ]; then
+  log "resume mode: skip clean (preserve in-flight changes)"
+else
+  clean_generated_artifacts
+fi
+ensure_test_infra
+ensure_loop_sut || exit 1
+ensure_loop_frontend || exit 1
 
 declare -a ROW_RESULTS=()
-declare -a RETRO_CHANGE_IDS=()
+item_idx=0
+total_items=${#BENCHMARK_ITEMS[@]}
 
 for item in "${BENCHMARK_ITEMS[@]}"; do
+  item_idx=$((item_idx + 1))
   base_id="${item%%:*}"
   req_rel="${item#*:}"
   req_file="$req_rel"
   [ -f "$req_file" ] || req_file="$SCRIPT_DIR/$req_rel"
 
-  change_id="${base_id}-${RUNSTAMP}"
+  change_id="${base_id}-${RUNSTAMP}-opencode"
+  log "[$item_idx/$total_items] item=$base_id change_id=$change_id"
   if [ ! -f "$req_file" ]; then
     log "SKIP $change_id - requirement file not found: $req_rel"
-    ROW_RESULTS+=("$change_id|SKIP|requirement file missing|archived=no")
+    record_item_result "$change_id" "not_started" "requirement file missing" "archived=no"
     continue
   fi
 
   requirement="$(cat "$req_file")"
   workflow_kind="running"
   workflow_reason=""
+  driver_exit=0
   attempt=1
 
-  # Materialize intake inputs once; driver attempts below resume from breakpoint.
-  seed_change "$change_id" "$base_id" "$requirement"
+  if [ -d "qa/changes/$change_id" ]; then
+    workflow_kind="$(terminal_kind "$change_id")"
+    log "[$change_id] resume existing change terminal=$workflow_kind"
+  else
+    seed_change "$change_id" "$base_id" "$requirement"
+  fi
+
+  if [ "$workflow_kind" = "completed" ]; then
+    log "[$change_id] already completed — skip driver"
+    final_status="$(execution_final_status "$change_id")"
+    archived="no"
+    if [ -d "qa/archive/$change_id" ]; then
+      archived="yes"
+    elif benchmark_should_run_archive "$DO_ARCHIVE" "$workflow_kind" "$final_status"; then
+      log "[$change_id] stage 2/2 archive (resume) ..."
+      if run_archive_stage "$change_id"; then
+        [ -d "qa/archive/${change_id}" ] && archived="yes"
+      elif [ "${ARCHIVE_LAST_STATUS:-}" = "gate-stop" ]; then
+        archived="no (archive-gate stop)"
+      fi
+      log "[$change_id] archive done (archived=$archived)"
+    elif [ "$DO_ARCHIVE" = "true" ]; then
+      archived="skipped (final_status=$final_status)"
+      log "[$change_id] archive skipped because execution final_status=$final_status"
+    fi
+    record_item_result "$change_id" "completed" "final_status=$final_status" "archived=$archived"
+    continue
+  fi
+
+  if [ "$workflow_kind" = "stopped" ]; then
+    log "[$change_id] already stopped — skip driver"
+    record_item_result "$change_id" "stopped" "$(terminal_reason "$change_id")" "archived=no"
+    continue
+  fi
+
+  if [ "$workflow_kind" = "failed" ]; then
+    log "[$change_id] already failed — persisted terminal cannot be restarted"
+    record_item_result "$change_id" "failed" "$(terminal_reason "$change_id")" "archived=no"
+    continue
+  fi
+
+  recover_dead_end "$change_id" || true
+  workflow_kind="$(terminal_kind "$change_id")"
 
   while [ "$attempt" -le "$OPENCODE_MAX_WORKFLOW_ATTEMPTS" ]; do
-    wf_log="$RUN_DIR/${change_id}.workflow.attempt-${attempt}.log"
+    wf_log="$RUN_DIR/${change_id}.workflow.attempt-${attempt}.opencode.log"
     log "[$change_id] stage 1/2 driver workflow attempt $attempt/$OPENCODE_MAX_WORKFLOW_ATTEMPTS (adapter=$DRIVER_ADAPTER) ..."
+    driver_exit=0
     if run_driver "$wf_log" "$change_id"; then
       log "[$change_id] driver attempt $attempt exited 0 (completed)"
     else
-      log "[$change_id] driver attempt $attempt exited non-zero (see $(basename "$wf_log"))"
+      driver_exit=$?
+      log "[$change_id] driver attempt $attempt exited $driver_exit (see $(basename "$wf_log"))"
     fi
 
     workflow_kind="$(terminal_kind "$change_id")"
     workflow_reason="$(terminal_reason "$change_id")"
+    if [ "$driver_exit" -eq 124 ] && ! workflow_attempts_should_stop "$workflow_kind"; then
+      workflow_kind="hard_timeout"
+      workflow_reason="STEP_TIMEOUT=${STEP_TIMEOUT}s"
+    fi
     log "[$change_id] aa status terminal=$workflow_kind${workflow_reason:+ reason=$workflow_reason}"
 
-    if [ "$workflow_kind" = "completed" ] || [ "$workflow_kind" = "stopped" ]; then
+    if workflow_attempts_should_stop "$workflow_kind" || [ "$workflow_kind" = "hard_timeout" ]; then
       python3 - "$change_id" <<'PYASSERT' || true
 import json, sys
 from pathlib import Path
@@ -609,6 +1003,7 @@ PYASSERT
     fi
 
     maybe_auto_decide "$change_id" || true
+    recover_dead_end "$change_id" || true
 
     attempt=$((attempt + 1))
   done
@@ -618,107 +1013,78 @@ PYASSERT
 
   if [ "$workflow_kind" != "completed" ]; then
     log "[$change_id] workflow not complete - skip archive"
-    ROW_RESULTS+=("$change_id|$workflow_kind|${workflow_reason:-final_status=$final_status}|archived=no")
-    if [ "$workflow_kind" = "stopped" ] && [ "$DO_RETRO" = "true" ]; then
-      RETRO_CHANGE_IDS+=("$change_id")
-    fi
+    record_item_result \
+      "$change_id" "$workflow_kind" "${workflow_reason:-final_status=$final_status}" "archived=no"
     continue
   fi
 
-  if [ "$DO_ARCHIVE" = "true" ]; then
-    ar_log="$RUN_DIR/${change_id}.archive.jsonl"
-    log "[$change_id] stage 2/2 opencode archive ..."
-    if run_opencode "$ar_log" "$(archive_prompt "$change_id")"; then
+  if benchmark_should_run_archive "$DO_ARCHIVE" "$workflow_kind" "$final_status"; then
+    log "[$change_id] stage 2/2 archive ..."
+    if run_archive_stage "$change_id"; then
       [ -d "qa/archive/${change_id}" ] && archived="yes"
       log "[$change_id] archive done (archived=$archived)"
+    elif [ "${ARCHIVE_LAST_STATUS:-}" = "gate-stop" ]; then
+      archived="no (archive-gate stop)"
     else
-      log "[$change_id] archive exited non-zero (see $(basename "$ar_log"))"
+      log "[$change_id] archive exited non-zero"
     fi
+  elif [ "$DO_ARCHIVE" = "true" ]; then
+    archived="skipped (final_status=$final_status)"
+    log "[$change_id] archive skipped because execution final_status=$final_status"
   fi
 
-  ROW_RESULTS+=("$change_id|completed|final_status=$final_status|archived=$archived")
-  if [ "$DO_RETRO" = "true" ]; then
-    RETRO_CHANGE_IDS+=("$change_id")
-  fi
+  record_item_result "$change_id" "completed" "final_status=$final_status" "archived=$archived"
 done
 
-retro_id=""
+retro_id="$RETRO_ID"
 signal_count=""
 change_count=""
-nightly_collect_exit=""
-nightly_review_queue=""
-if [ "$DO_NIGHTLY_COLLECT" = "true" ]; then
-  run_nightly_collect
-  nightly_collect_exit=$?
-  if [ "$nightly_collect_exit" = "0" ] || [ "$nightly_collect_exit" = "10" ]; then
-    latest_retro="$(ls -1d qa/retro/retro-* 2>/dev/null | sort | tail -1 || true)"
-    if [ -n "$latest_retro" ]; then
-      retro_id="$(basename "$latest_retro")"
-      if [ -f "$latest_retro/context.json" ]; then
-        signal_count="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("signal_count",""))' "$latest_retro/context.json" 2>/dev/null || true)"
-        change_count="$(python3 -c 'import json,sys; w=json.load(open(sys.argv[1])).get("window",{}); print(w.get("change_count",""))' "$latest_retro/context.json" 2>/dev/null || true)"
-      fi
-      [ -f "$latest_retro/proposals.json" ] && cp "$latest_retro/proposals.json" "$RUN_DIR/proposals.json"
-      [ -f "$latest_retro/retro-summary.md" ] && cp "$latest_retro/retro-summary.md" "$RUN_DIR/retro-summary.md"
-      if [ -f "$latest_retro/review-queue.md" ]; then
-        nightly_review_queue="$latest_retro/review-queue.md"
-        cp "$latest_retro/review-queue.md" "$RUN_DIR/review-queue.md"
-      fi
-    fi
-    if [ "$nightly_collect_exit" = "10" ]; then
-      log "nightly collect: no-op (exit 10)"
-    else
-      log "nightly collect complete: retro_id=${retro_id:-unknown}"
-    fi
+improvement_count=""
+retro_result="technical_failure"
+retro_batch_id="$RUNSTAMP"
+retro_improvement_ids=""
+retro_outbox_id=""
+retro_collect_exit=""
+retro_review_queue=""
+if batch_members_settled "$BATCH_MANIFEST"; then
+  if promote_batch_knowledge_proposals "$AA_BIN" "$BATCH_MANIFEST" "${BATCH_CHANGE_IDS[@]}"; then
+    log "knowledge proposal promotion boundary check complete"
   else
-    log "nightly collect failed (exit $nightly_collect_exit, see nightly-collect.log)"
+    log "knowledge proposal promotion failed at Batch boundary"
   fi
-elif [ "$DO_RETRO" = "true" ]; then
-  retro_id="retro-${RUNSTAMP}"
-  retro_json="$RUN_DIR/retro.json"
-  if [ "${#RETRO_CHANGE_IDS[@]}" -eq 0 ]; then
-    log "legacy retro skipped - no terminal changes"
-    retro_id=""
+  run_retro_collect
+  retro_collect_exit=$?
+  if capture_retro_artifacts "$RETRO_ID"; then
+    retro_status_file="$RUN_DIR/retro-status.json"
+    retro_result="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("result","technical_failure"))' "$retro_status_file")"
+    retro_batch_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("batch_id") or "")' "$retro_status_file")"
+    retro_improvement_ids="$(python3 -c 'import json,sys; print(",".join(json.load(open(sys.argv[1])).get("improvement_ids") or []))' "$retro_status_file")"
+    retro_outbox_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("outbox_id") or "")' "$retro_status_file")"
+    log "retro complete: result=$retro_result retro_id=$retro_id batch_id=$retro_batch_id signal_count=${signal_count:-?} change_count=${change_count:-?}"
   else
-    retro_cmd=("$AA_BIN" retro --retro-id "$retro_id" --json)
-    for cid in "${RETRO_CHANGE_IDS[@]}"; do
-      snapshot_unarchived_evidence "$retro_id" "$cid"
-      retro_cmd+=(--change "$cid")
-    done
-    log "stage 3/4 aa retro --retro-id $retro_id --change ${RETRO_CHANGE_IDS[*]} ..."
-    if "${retro_cmd[@]}" >"$retro_json" 2>>"$LOOP_LOG"; then
-      retro_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("retro_id",""))' "$retro_json" 2>/dev/null)"
-      signal_count="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("signal_count",""))' "$retro_json" 2>/dev/null)"
-      change_count="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("change_count",""))' "$retro_json" 2>/dev/null)"
-      log "retro aggregated: retro_id=$retro_id change_count=$change_count signal_count=$signal_count"
-    else
-      log "aa retro failed (see loop.log)"
-    fi
+    log "retro technical failure: exit=$retro_collect_exit status artifact missing/invalid (see retro-collect.log)"
   fi
 
-  if [ "$DO_RETRO_PROPOSALS" = "true" ] && [ -n "$retro_id" ]; then
-    rp_log="$RUN_DIR/retro-proposals.jsonl"
-    log "stage 4/4 opencode aa-retro proposals for $retro_id ..."
-    if run_opencode "$rp_log" "$(retro_proposals_prompt "$retro_id")"; then
-      [ -f "qa/retro/${retro_id}/proposals.json" ] && cp "qa/retro/${retro_id}/proposals.json" "$RUN_DIR/proposals.json"
-      [ -f "qa/retro/${retro_id}/retro-summary.md" ] && cp "qa/retro/${retro_id}/retro-summary.md" "$RUN_DIR/retro-summary.md"
-      log "retro proposals generated (see qa/retro/${retro_id}/)"
-    else
-      log "opencode retro proposals exited non-zero (see $(basename "$rp_log"))"
-    fi
+  if [ "$DO_BENCHMARK_EVAL" = "true" ]; then
+    run_benchmark_eval
   fi
+else
+  retro_result="skipped_nonterminal_batch"
+  retro_collect_exit="skipped"
+  log "retro/eval skipped: Batch contains running, not_started, or hard_timeout members"
 fi
 
 {
   echo "# OpenCode benchmark loop - $RUNSTAMP"
   echo
   echo "- project: \`$PROJECT_ROOT\`"
-  echo "- engine: \`aa workflow run\` (Python driver, adapter=\`$DRIVER_ADAPTER\`)"
+  echo "- engine: \`aa workflow run --adapter $DRIVER_ADAPTER --server $OPENCODE_SERVER\`"
   echo "- run_mode: \`$RUN_MODE\` run_tests: \`$RUN_TESTS\` test_types: \`$TEST_TYPES\` force_continue: \`$FORCE_CONTINUE\`"
   echo "- driver entrypoint: \`$DRIVER_ENTRYPOINT\` max healing attempts: \`$MAX_HEALING_ATTEMPTS\`"
   echo "- max workflow attempts: \`$OPENCODE_MAX_WORKFLOW_ATTEMPTS\`"
-  echo "- nightly collect: \`$DO_NIGHTLY_COLLECT\` (exit: \`${nightly_collect_exit:-n/a}\`)"
-  echo "- legacy retro: \`$DO_RETRO\`"
+  echo "- archive: \`DO_ARCHIVE=$DO_ARCHIVE\` via \`$([ "$USE_WORKFLOW_ARCHIVE" = "true" ] && echo "workflow:$ARCHIVE_ENTRYPOINT" || echo "legacy-opencode-prompt")\`"
+  echo "- retro: \`aa retro --batch-manifest\` (exit: \`${retro_collect_exit:-n/a}\`)"
+  echo "- batch manifest: \`benchmark/runs/$RUNSTAMP-opencode/batch-manifest.json\`"
   echo
   echo "## Workflow results"
   echo
@@ -729,30 +1095,77 @@ fi
     echo "| \`$cid\` | $term | $detail | $archive |"
   done
   echo
-  echo "## Retro"
+  echo "## Retro Batch"
   echo
-  if [ -n "$retro_id" ]; then
-    echo "- retro_id: \`$retro_id\`"
-    echo "- change_count (window): \`$change_count\`"
-    echo "- signal_count: \`$signal_count\`"
-    [ -f "$RUN_DIR/proposals.json" ] && echo "- proposals: \`benchmark/runs/$RUNSTAMP/proposals.json\`"
-    [ -f "$RUN_DIR/retro-summary.md" ] && echo "- summary: \`benchmark/runs/$RUNSTAMP/retro-summary.md\`"
-    [ -n "$nightly_review_queue" ] && echo "- review queue: \`benchmark/runs/$RUNSTAMP/review-queue.md\`"
-  else
-    echo "- (retro disabled, no-op, or failed)"
+  echo "| change_id | execution_status | evidence_availability |"
+  echo "|---|---|---|"
+  python3 - "$BATCH_MANIFEST" <<'PY'
+import json
+import sys
+
+payload = json.load(open(sys.argv[1], encoding="utf-8"))
+for member in payload["members"]:
+    print(
+        f"| `{member['change_id']}` | {member['execution_status']} | "
+        f"{member['evidence_availability']} |"
+    )
+PY
+  echo
+  echo "## Retro → Improvements"
+  echo
+  echo "- retro_id: \`$retro_id\`"
+  echo "- batch_id: \`${retro_batch_id:-$RUNSTAMP}\`"
+  echo "- result: \`$retro_result\`"
+  echo "- change_count (window): \`${change_count:-0}\`"
+  echo "- signal_count: \`${signal_count:-0}\`"
+  echo "- improvement_ids: \`${retro_improvement_ids:-none}\`"
+  echo "- outbox_id: \`${retro_outbox_id:-none}\`"
+  echo "- improvements (ledger): \`${improvement_count:-0}\`"
+  [ -f "$RUN_DIR/retro-status.json" ] && echo "- status: \`benchmark/runs/$RUNSTAMP-opencode/retro-status.json\`"
+  [ -f "$RUN_DIR/proposal-candidates.json" ] && echo "- candidates: \`benchmark/runs/$RUNSTAMP-opencode/proposal-candidates.json\`"
+  [ -f "$RUN_DIR/accept-status.json" ] && echo "- accept status: \`benchmark/runs/$RUNSTAMP-opencode/accept-status.json\`"
+  [ -f "$RUN_DIR/auto-review-summary.json" ] && echo "- auto review: \`benchmark/runs/$RUNSTAMP-opencode/auto-review-summary.json\`"
+  [ -f "$RUN_DIR/retro-summary.md" ] && echo "- summary: \`benchmark/runs/$RUNSTAMP-opencode/retro-summary.md\`"
+  [ -n "${retro_review_queue:-}" ] && echo "- retro review queue: \`benchmark/runs/$RUNSTAMP-opencode/review-queue.md\`"
+  [ -f "$RUN_DIR/improvements.json" ] && echo "- improvements projection: \`benchmark/runs/$RUNSTAMP-opencode/improvements.json\`"
+  [ -f "$RUN_DIR/improvement-review-queue.json" ] && echo "- improvement review queue: \`benchmark/runs/$RUNSTAMP-opencode/improvement-review-queue.json\`"
+  if [ "$retro_collect_exit" != "0" ]; then
+    echo "- retro collect log: \`benchmark/runs/$RUNSTAMP-opencode/retro-collect.log\`"
   fi
-  if [ "$DO_NIGHTLY_COLLECT" = "true" ] && [ -n "$nightly_collect_exit" ] && [ "$nightly_collect_exit" != "0" ] && [ "$nightly_collect_exit" != "10" ]; then
-    echo "- nightly collect log: \`benchmark/runs/$RUNSTAMP/nightly-collect.log\`"
+  if [ "$DO_BENCHMARK_EVAL" = "true" ]; then
+    echo
+    echo "## Benchmark Eval Metrics (deterministic golden fixtures)"
+    echo
+    if [ "${#BENCHMARK_EVAL_ROWS[@]}" -gt 0 ]; then
+      echo
+      echo "| suite | verdict | run_id |"
+      echo "|---|---|---|"
+      for row in "${BENCHMARK_EVAL_ROWS[@]}"; do
+        IFS='|' read -r es ev er <<<"$row"
+        echo "| \`$es\` | $ev | \`$er\` |"
+      done
+    fi
+    echo "- metrics: \`eval/out/runs/<run_id>/metrics.json\`"
+    echo "- log: \`benchmark/runs/$RUNSTAMP-opencode/benchmark-eval.log\`"
   fi
   echo
   echo "## Artifacts"
   echo
-  echo "- driver logs: \`benchmark/runs/$RUNSTAMP/*.workflow.attempt-*.log\`"
-  echo "- opencode logs: \`benchmark/runs/$RUNSTAMP/*.jsonl\`"
-  echo "- status snapshots: \`benchmark/runs/$RUNSTAMP/*.status.json\`"
-  echo "- loop log: \`benchmark/runs/$RUNSTAMP/loop.log\`"
+  echo "- driver logs: \`benchmark/runs/$RUNSTAMP-opencode/*.workflow.attempt-*.opencode.log\`"
+  echo "- archive logs: \`benchmark/runs/$RUNSTAMP-opencode/*.archive.workflow.log\` (or \`*.archive.opencode.jsonl\` if legacy)"
+  echo "- retro collect log: \`benchmark/runs/$RUNSTAMP-opencode/retro-collect.log\`"
+  echo "- status snapshots: \`benchmark/runs/$RUNSTAMP-opencode/*.status.json\`"
+  echo "- loop log: \`benchmark/runs/$RUNSTAMP-opencode/loop.log\`"
 } >"$SUMMARY"
 
 log "opencode benchmark loop done - summary: $SUMMARY"
+rm -f "$TRACK_PID_FILE"
 echo
 cat "$SUMMARY"
+
+if ! benchmark_result_exit_code \
+  "$DO_ARCHIVE" \
+  "${ROW_RESULTS[@]+"${ROW_RESULTS[@]}"}"; then
+  log "ERROR: benchmark result gate failed (workflow/archive result is not closed)"
+  exit 1
+fi

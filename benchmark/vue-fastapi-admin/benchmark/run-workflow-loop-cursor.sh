@@ -107,7 +107,6 @@ MAX_HEALING_ATTEMPTS="${MAX_HEALING_ATTEMPTS:-3}"
 CURSOR_AGENT_BIN="${CURSOR_AGENT_BIN:-cursor-agent}"
 CURSOR_MODEL="${CURSOR_MODEL:-}"
 CURSOR_MAX_WORKFLOW_ATTEMPTS="${CURSOR_MAX_WORKFLOW_ATTEMPTS:-3}"
-CURSOR_AGENT_FORCE="${CURSOR_AGENT_FORCE:-true}"
 CURSOR_OUTPUT_FORMAT="${CURSOR_OUTPUT_FORMAT:-stream-json}"
 
 # QA test-runtime endpoints (inherited by the driver → operation:run-tests → pytest).
@@ -253,15 +252,17 @@ maybe_auto_decide() {
     proposal_state="proposal_pending"
     log "[$change_id] knowledge proposal deferred until Batch boundary; continue without L1 mutation"
   fi
-  local status_json interrupt_id action reason
+  local status_json interrupt_id action reason agent_cmd
   status_json="$("$AA_BIN" workflow status --change "$change_id" --json 2>/dev/null || true)"
   [ -n "$status_json" ] || return 1
   interrupt_id="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); ints=d.get("pending_interrupts") or []; print((ints[0].get("interrupt_id") or ints[0].get("id") or "") if ints else "")' "$status_json")"
   [ -n "$interrupt_id" ] || return 1
   action="$(benchmark_interrupt_action "$proposal_state")"
   reason="benchmark auto resume interrupt $interrupt_id; defer synchronized knowledge changes to Batch boundary"
+  agent_cmd="$(cursor_agent_cmd_prefix)"
   log "[$change_id] auto resume interrupt=$interrupt_id action=$action"
-  "$AA_BIN" workflow resume --change "$change_id" --interrupt "$interrupt_id" --action "$action" --reason "$reason"
+  resume_benchmark_interrupt \
+    "$AA_BIN" "$change_id" "$interrupt_id" "$action" "$reason" headless "$agent_cmd"
 }
 
 # Diagnostic only: log stalls that need operator attention. Does not mutate ledger.
@@ -457,8 +458,7 @@ cursor_agent_cmd_prefix() {
   # Do NOT pin --workspace to PROJECT_ROOT here. HeadlessAdapter.invoke rewrites
   # or injects --workspace to the task-private materialized root so freeze/repair
   # see agent writes. Legacy archive prompt / `aa retro` show still use PROJECT_ROOT.
-  local cmd="$CURSOR_AGENT_BIN --print --output-format $CURSOR_OUTPUT_FORMAT --trust"
-  [ "$CURSOR_AGENT_FORCE" = "true" ] && cmd="$cmd --force"
+  local cmd="$CURSOR_AGENT_BIN --print --output-format $CURSOR_OUTPUT_FORMAT --sandbox enabled --trust"
   [ -n "$CURSOR_MODEL" ] && cmd="$cmd --model $CURSOR_MODEL"
   printf '%s' "$cmd"
 }
@@ -554,10 +554,11 @@ run_cursor_agent() {
     "$CURSOR_AGENT_BIN"
     --print
     --output-format "$CURSOR_OUTPUT_FORMAT"
+    --sandbox
+    enabled
     --workspace "$PROJECT_ROOT"
     --trust
   )
-  [ "$CURSOR_AGENT_FORCE" = "true" ] && cmd+=(--force)
   [ -n "$CURSOR_MODEL" ] && cmd+=(--model "$CURSOR_MODEL")
   cmd+=("$prompt")
 

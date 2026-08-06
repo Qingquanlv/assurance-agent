@@ -14,6 +14,18 @@ benchmark_eval_setting() {
   fi
 }
 
+resume_benchmark_interrupt() {
+  local aa_bin="$1" change_id="$2" interrupt_id="$3" action="$4"
+  local reason="$5" adapter="$6" agent_cmd="$7"
+  "$aa_bin" workflow resume \
+    --change "$change_id" \
+    --interrupt "$interrupt_id" \
+    --action "$action" \
+    --reason "$reason" \
+    --adapter "$adapter" \
+    --agent-cmd "$agent_cmd"
+}
+
 benchmark_http_ready() {
   local ready_url="$1"
   python3 - "$ready_url" <<'PY' >/dev/null 2>&1
@@ -358,7 +370,9 @@ shortboards = documents["metrics-nightly-shortboards.json"]
 if shortboards.get("source_rel") != "inspect/metrics-nightly.json":
     raise SystemExit("artifact_invalid:metrics-nightly-shortboards.json:source_rel")
 verdict = shortboards.get("sufficiency_verdict")
-if verdict is not None and verdict not in {"pass", "needs_human", "stop", "skipped"}:
+# Mirror of MetricsSufficiencyVerdict; "reject" is the collection-gap /
+# no-number-to-judge verdict and is a valid (honest) nightly outcome.
+if verdict is not None and verdict not in {"pass", "needs_human", "reject", "stop", "skipped"}:
     raise SystemExit("artifact_invalid:metrics-nightly-shortboards.json:sufficiency_verdict")
 
 c_layer = documents["metrics-c-layer.json"]
@@ -464,7 +478,7 @@ benchmark_verification_metrics_exit_code() {
       return 1
     fi
     case "$verdict" in
-      pass|needs_human|stop|skipped|not_evaluated) ;;
+      pass|needs_human|reject|stop|skipped|not_evaluated) ;;
       *) return 1 ;;
     esac
     case "$c_layer" in
