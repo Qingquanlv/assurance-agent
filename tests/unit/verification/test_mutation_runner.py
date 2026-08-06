@@ -204,14 +204,20 @@ def test_test_survived_emoji_not_confused_with_cli_exit_zero(
     assert runner.test(selected, timeout_seconds=5.0).outcome == "survived"
 
 
-def test_installed_mutmut_help_has_no_results_json_flag() -> None:
+def test_installed_mutmut_help_has_no_results_json_flag(tmp_path: Path) -> None:
     """Cheap smoke: installed mutmut 3.7.x must not advertise a fake --json flag."""
+    (tmp_path / "code_dir").mkdir()
+    (tmp_path / "setup.cfg").write_text(
+        "[mutmut]\nsource_paths=code_dir\n",
+        encoding="utf-8",
+    )
     proc = subprocess.run(
         ["mutmut", "results", "--help"],
         capture_output=True,
         text=True,
         check=False,
         shell=False,
+        cwd=tmp_path,
     )
     assert proc.returncode == 0
     blob = f"{proc.stdout}\n{proc.stderr}"
