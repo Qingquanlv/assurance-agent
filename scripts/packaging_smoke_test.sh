@@ -39,7 +39,7 @@ PY
 "$WORK_DIR/venv/bin/python" - <<'PY'
 from assurance_agent import resources
 skills = resources.iter_children("skills")
-assert len(skills) == 38, f"expected 38 skills, got {len(skills)}"
+assert len(skills) == 39, f"expected 39 skills, got {len(skills)}"
 required = {
     "aa-workflow",
     "writing-skills",
@@ -47,6 +47,7 @@ required = {
     "aa-retro-issue-analysis",
     "aa-retro-workflow-analysis",
     "aa-retro-eval-analysis",
+    "aa-coverage-repair",
 }
 assert required <= set(skills), sorted(required - set(skills))
 assert "aa-doc-author.md" in resources.iter_children("opencode", "agents")

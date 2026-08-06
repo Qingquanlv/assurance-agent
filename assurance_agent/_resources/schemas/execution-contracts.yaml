@@ -119,6 +119,79 @@ contracts:
       - change:healing/**
     retryable_errors: []
 
+
+  # Coverage-repair inner loop (design §8.1). Probe may not write
+  # change:inspect/** — metrics/gaps stay write-once (§7). Safety must not
+  # read change:healing/** — evidence is not reused across loops (v3-2).
+  operation:probe-coverage-repair-need:
+    handler: operation
+    reads:
+      - change:execution/runs/**
+      - change:inspect/coverage-gaps.json
+      - change:cases/**            # resolve_risk_tier, read-only
+      - repo:.aa/policy.yaml       # v3-5: same policy source as materialize
+    writes:
+      - change:coverage-repair/brief.json
+      - change:coverage-repair/brief.md
+    authorization_writes:
+      - change:coverage-repair/**
+    retryable_errors: []
+
+  operation:compute-coverage-repair-safety:
+    handler: operation
+    reads:
+      - change:coverage-repair/brief.json
+      - change:coverage-repair/entry-baseline.json   # v4-2: mechanical change-set baseline
+      - change:coverage-repair/apply-summary.json    # contrast only, not the change-set source
+      - repo:tests/**                               # hash_test_tree
+      - repo:**                                     # hash_product_tree (roots from config)
+      - project:.aa/config.yaml                     # load_product_code_roots
+    writes:
+      - change:coverage-repair/safety-check.json
+    authorization_writes:
+      - change:coverage-repair/**
+    retryable_errors: []
+
+  operation:allocate-coverage-repair-attempt:
+    handler: operation
+    reads:
+      - change:coverage-repair/brief.json
+      - repo:tests/**              # v4-2: freeze baseline across three trees
+      - repo:**
+      - project:.aa/config.yaml
+    writes:
+      - change:coverage-repair/status.json
+      - change:coverage-repair/entry-baseline.json
+    authorization_writes:
+      - change:coverage-repair/**
+    retryable_errors: []
+
+  operation:record-coverage-repair-status:
+    handler: operation
+    writes:
+      - change:coverage-repair/status.json
+    authorization_writes:
+      - change:coverage-repair/**
+    retryable_errors: []
+
+  # Sole writer of inspect/metrics.json (Verification Metrics). Declared here
+  # so coverage-repair contracts can pin the write-once invariant (§8.1).
+  operation:materialize-pr-metrics:
+    handler: operation
+    reads:
+      - change:execution/runs/**
+      - change:cases/**
+      - repo:.aa/policy.yaml
+    writes:
+      - change:inspect/metrics.json
+      - change:inspect/metrics-source-batch.json
+      - change:execution/runs/*/metrics.json
+    authorization_writes:
+      - change:inspect/metrics.json
+      - change:inspect/metrics-source-batch.json
+      - change:execution/runs/*/metrics.json
+    retryable_errors: []
+
   # ---- intake / case -------------------------------------------------------
   skill:aa-explore:
     handler: agent
@@ -480,6 +553,26 @@ contracts:
       - change:healing/**
       - repo:tests/e2e/**
       - repo:tests/testdata/**
+    retryable_errors: [timeout, transport, rate_limit, invalid_output]
+    reconnect: true
+
+
+  # Coverage-repair skill (design §8.1). No change:cases/** or project:.aa/**
+  # write authority — declaration layer is immutable (§4).
+  skill:aa-coverage-repair:
+    handler: agent
+    reads:
+      - change:coverage-repair/brief.json
+      - change:cases/**            # read-only: understand declared obligations
+      - change:inspect/**
+      - repo:tests/**
+      - project:qa/**
+    writes:
+      - repo:tests/**
+      - change:coverage-repair/apply-summary.json
+    authorization_writes:
+      - repo:tests/**
+      - change:coverage-repair/**
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 

@@ -8,13 +8,14 @@ permission:
     "**tests/**": allow
     "**qa/changes/**/codegen/**": allow
     "**qa/changes/**/healing/**": allow
+    "**qa/changes/**/coverage-repair/**": allow
     "**qa/changes/**/workflow-state.yaml": deny
   bash: { "*": deny }
   external_directory: deny
 ---
 You are a bounded AA worker agent executing a single test-authoring phase in Scheme E orchestration.
 
-Serves phases: api-codegen, e2e-codegen, fuzz-codegen, performance-codegen, api-codegen-fix, e2e-codegen-fix.
+Serves phases: api-codegen, e2e-codegen, fuzz-codegen, performance-codegen, api-codegen-fix, e2e-codegen-fix, coverage-repair.
 
 Your task is given in the `task` call that launched you. Load the named phase skill, produce only the test code and codegen summary files specified, and return.
 

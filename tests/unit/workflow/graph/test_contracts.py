@@ -739,3 +739,53 @@ def test_retro_closed_loop_contracts_are_least_privilege() -> None:
     assert "project:improvement-registry" in reconcile.exclusive
     assert "project:qa/issues/**" not in reconcile.writes
     assert "project:qa/issues/**" not in reconcile.authorization_writes
+
+def test_coverage_repair_contracts_are_declared_and_least_privilege() -> None:
+    """Coverage-repair inner loop contracts (design §8.1)."""
+    catalog = load_execution_contracts(Path.cwd())
+    targets = {
+        "operation:probe-coverage-repair-need",
+        "operation:compute-coverage-repair-safety",
+        "operation:allocate-coverage-repair-attempt",
+        "operation:record-coverage-repair-status",
+        "skill:aa-coverage-repair",
+    }
+    assert targets <= set(catalog.contracts)
+
+    probe = catalog.contracts["operation:probe-coverage-repair-need"]
+    assert "repo:.aa/policy.yaml" in probe.reads
+    assert all(write.startswith("change:coverage-repair/") for write in probe.writes)
+    assert not any(write.startswith("change:inspect/") for write in probe.writes)
+
+    safety = catalog.contracts["operation:compute-coverage-repair-safety"]
+    assert not any(
+        read == "change:healing/**" or read.startswith("change:healing/") for read in safety.reads
+    )
+    assert "change:coverage-repair/entry-baseline.json" in safety.reads
+    assert {"repo:tests/**", "repo:**", "project:.aa/config.yaml"} <= set(safety.reads)
+
+    allocate = catalog.contracts["operation:allocate-coverage-repair-attempt"]
+    assert "change:coverage-repair/entry-baseline.json" in allocate.writes
+    assert {"repo:tests/**", "repo:**", "project:.aa/config.yaml"} <= set(allocate.reads)
+
+    skill = catalog.contracts["skill:aa-coverage-repair"]
+    assert set(skill.writes) == {
+        "repo:tests/**",
+        "change:coverage-repair/apply-summary.json",
+    }
+    assert set(skill.authorization_writes) == {
+        "repo:tests/**",
+        "change:coverage-repair/**",
+    }
+    assert "change:cases/**" not in skill.writes
+    assert "change:cases/**" not in skill.authorization_writes
+    assert "project:.aa/**" not in skill.writes
+    assert "project:.aa/**" not in skill.authorization_writes
+
+    metrics_writers = {
+        target
+        for target, contract in catalog.contracts.items()
+        if "change:inspect/metrics.json" in contract.writes
+    }
+    assert metrics_writers == {"operation:materialize-pr-metrics"}
+

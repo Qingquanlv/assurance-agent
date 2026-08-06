@@ -97,8 +97,8 @@ def _load_field_allowlist() -> set[str]:
 
 def test_thirty_eight_skills_present() -> None:
     names = _skill_names()
-    # Retro v3 analyzers plus the bounded Improvement reviewer.
-    assert len(names) == 38
+    # Retro v3 analyzers, Improvement reviewer, and coverage-repair.
+    assert len(names) == 39
     assert "writing-skills" in names
     assert "aa-workflow" in names
     assert "aa-dashboard" in names
@@ -107,6 +107,7 @@ def test_thirty_eight_skills_present() -> None:
     assert "aa-retro-issue-analysis" in names
     assert "aa-retro-workflow-analysis" in names
     assert "aa-retro-eval-analysis" in names
+    assert "aa-coverage-repair" in names
     assert not any(n.startswith("aws-") for n in names)
 
 
