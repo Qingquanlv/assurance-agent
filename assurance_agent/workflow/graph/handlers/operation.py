@@ -19,6 +19,11 @@ operation 是进程内函数调用，绝不 spawn ``aa`` 子进程（无 subproc
 - ``operation:compute-coverage-repair-safety``：用 baseline × 当前树的
   ``diff_trees`` 机械求变更集，写出 ``coverage-repair/safety-check.json``；
   apply-summary 只作对照，不作判定输入；
+- ``operation:allocate-coverage-repair-attempt``：消费一次 coverage-repair 预算、
+  写 ``coverage-repair/status.json``（``in_progress``），并在 skill 前冻结
+  ``coverage-repair/entry-baseline.json``（三棵树 + ``attempt_token``）；
+- ``operation:record-coverage-repair-status``：按 ``with.status`` 写终局
+  coverage-repair status（保留已有 ``attempts_used`` / ``deferred_to_intake``）；
 - ``operation:allocate-healing-attempt``：把 entry-baseline artifact 写进 task
   workspace 并返回 state updates；``budget_consumed`` strict 事件归 scheduler；
 - ``operation:record-healing-status``：返回 healing 终局判定；
@@ -50,8 +55,10 @@ from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.orchestration.operations import BASELINE_REL, HEAL_STATUSES
 from assurance_agent.workflow.graph.handlers.plan_checks import verify_plan_mechanical
 from assurance_agent.workflow.metrics.coverage_repair import (
+    allocate_coverage_repair_attempt_operation,
     compute_coverage_repair_safety_operation,
     probe_coverage_repair_need_operation,
+    record_coverage_repair_status_operation,
 )
 from assurance_agent.workflow.graph.handlers.retro_ops import (
     apply_improvement_auto_review,
@@ -412,6 +419,8 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:stop": stop_operation,
         "operation:probe-coverage-repair-need": probe_coverage_repair_need_operation,
         "operation:compute-coverage-repair-safety": compute_coverage_repair_safety_operation,
+        "operation:allocate-coverage-repair-attempt": allocate_coverage_repair_attempt_operation,
+        "operation:record-coverage-repair-status": record_coverage_repair_status_operation,
         "operation:retro-collect-v3": retro_collect_v3,
         "operation:assemble-retro-context-v3": assemble_retro_context_v3,
         "operation:drain-improvement-outbox": drain_improvement_outbox,

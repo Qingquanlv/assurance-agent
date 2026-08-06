@@ -30,10 +30,13 @@ from assurance_agent.artifacts.models.coverage_repair import (
     COVERAGE_REPAIR_BASELINE_REL,
     COVERAGE_REPAIR_BRIEF_REL,
     COVERAGE_REPAIR_SAFETY_REL,
+    COVERAGE_REPAIR_STATUS_REL,
     CoverageRepairApplySummary,
     CoverageRepairBaseline,
     CoverageRepairBrief,
     CoverageRepairSafetyCheck,
+    CoverageRepairStatus,
+    CoverageRepairStatusValue,
     DeferredItem,
     RepairableGapKind,
     RepairItem,
@@ -49,7 +52,7 @@ from assurance_agent.workflow.execution.tree_hash import (
     hash_test_tree,
 )
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
-from assurance_agent.workflow.graph.task_runner import task_failure
+from assurance_agent.workflow.graph.task_runner import task_failure, task_with
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.healing.safety import (
     load_product_code_roots,
@@ -480,13 +483,135 @@ def compute_coverage_repair_safety_operation(
     )
 
 
+_ALLOWED_COVERAGE_REPAIR_STATUSES: frozenset[str] = frozenset(get_args(CoverageRepairStatusValue))
+
+
+def _load_prior_status(change_dir: Path) -> CoverageRepairStatus | None:
+    path = Path(change_dir) / COVERAGE_REPAIR_STATUS_REL
+    if not path.is_file():
+        return None
+    try:
+        return CoverageRepairStatus.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, ValidationError):
+        return None
+
+
+def allocate_coverage_repair_attempt_operation(
+    task: ExecutableTask,
+    workspace: TaskWorkspace,
+    context: RuntimeContext,
+) -> TaskResult:
+    """Consume one coverage-repair budget unit and freeze ``entry-baseline.json``.
+
+    Fails with ``invalid_input`` (writing neither status nor baseline) when the
+    brief is missing or ``eligible`` is false. Re-freezes the three-tree baseline
+    on every attempt so attempt N's safety measures only N's edits (design v4-2).
+    """
+    del task
+    change_id = context.change_id or workspace.change_dir.name
+    brief_path = workspace.change_dir / COVERAGE_REPAIR_BRIEF_REL
+    if not brief_path.is_file():
+        return task_failure(
+            "invalid_input",
+            f"missing {COVERAGE_REPAIR_BRIEF_REL}: cannot allocate without a brief",
+        )
+    try:
+        brief = CoverageRepairBrief.model_validate_json(brief_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, ValidationError) as err:
+        return task_failure("invalid_input", f"unreadable {COVERAGE_REPAIR_BRIEF_REL}: {err}")
+    if not brief.eligible:
+        return task_failure(
+            "invalid_input",
+            "cannot allocate coverage-repair attempt for an ineligible brief",
+        )
+
+    prior = _load_prior_status(workspace.change_dir)
+    attempts_used = (prior.attempts_used if prior is not None else 0) + 1
+    deferred = brief.deferred_to_intake if prior is None else prior.deferred_to_intake
+
+    project_root = workspace.project_root
+    test_tree = hash_test_tree(project_root)
+    product_tree = hash_product_tree(project_root, load_product_code_roots(project_root))
+    declaration_tree = hash_product_tree(project_root, list(declaration_roots(project_root, change_id)))
+    attempt_token = mint_attempt_token(
+        change_id=change_id,
+        attempt=attempts_used,
+        test_tree_sha256=test_tree.aggregate,
+        product_tree_sha256=product_tree.aggregate,
+        declaration_tree_sha256=declaration_tree.aggregate,
+    )
+    baseline = CoverageRepairBaseline(
+        change_id=change_id,
+        attempt=attempts_used,
+        attempt_token=attempt_token,
+        test_tree_sha256=test_tree.aggregate,
+        test_files_sha256=dict(test_tree.files),
+        product_tree_sha256=product_tree.aggregate,
+        product_files_sha256=dict(product_tree.files),
+        declaration_tree_sha256=declaration_tree.aggregate,
+        declaration_files_sha256=dict(declaration_tree.files),
+    )
+    status = CoverageRepairStatus(
+        change_id=change_id,
+        status="in_progress",
+        attempts_used=attempts_used,
+        last_batch_id=brief.batch_id,
+        deferred_to_intake=deferred,
+    )
+
+    status_path = workspace.change_dir / COVERAGE_REPAIR_STATUS_REL
+    baseline_path = workspace.change_dir / COVERAGE_REPAIR_BASELINE_REL
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_bytes(status_path, canonical_json_bytes(status))
+    atomic_write_bytes(baseline_path, canonical_json_bytes(baseline))
+    return TaskResult(
+        status="succeeded",
+        value={
+            "attempts_used": attempts_used,
+            "last_batch_id": brief.batch_id,
+            "attempt_token": attempt_token,
+        },
+    )
+
+
+def record_coverage_repair_status_operation(
+    task: ExecutableTask,
+    workspace: TaskWorkspace,
+    context: RuntimeContext,
+) -> TaskResult:
+    """Write a terminal (or otherwise declared) coverage-repair status from ``with.status``."""
+    raw_status = task_with(task).get("status")
+    if not isinstance(raw_status, str) or raw_status not in _ALLOWED_COVERAGE_REPAIR_STATUSES:
+        allowed = ", ".join(sorted(_ALLOWED_COVERAGE_REPAIR_STATUSES))
+        return task_failure(
+            "invalid_input",
+            f"operation:record-coverage-repair-status requires with.status in: {allowed}",
+        )
+
+    change_id = context.change_id or workspace.change_dir.name
+    prior = _load_prior_status(workspace.change_dir)
+    status = CoverageRepairStatus(
+        change_id=change_id,
+        status=raw_status,  # type: ignore[arg-type]
+        attempts_used=prior.attempts_used if prior is not None else 0,
+        last_batch_id=prior.last_batch_id if prior is not None else None,
+        deferred_to_intake=prior.deferred_to_intake if prior is not None else (),
+    )
+    out = workspace.change_dir / COVERAGE_REPAIR_STATUS_REL
+    out.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_bytes(out, canonical_json_bytes(status))
+    return TaskResult(status="succeeded", value={"coverage_repair_status": raw_status})
+
+
 __all__ = [
     "COVERAGE_REPAIR_BRIEF_MD_REL",
     "CoverageRepairSafetyError",
+    "allocate_coverage_repair_attempt_operation",
     "build_repair_brief",
     "compute_coverage_repair_safety",
     "compute_coverage_repair_safety_operation",
     "declaration_roots",
     "mint_attempt_token",
     "probe_coverage_repair_need_operation",
+    "record_coverage_repair_status_operation",
 ]
