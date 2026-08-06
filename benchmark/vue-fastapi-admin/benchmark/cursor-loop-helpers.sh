@@ -464,6 +464,143 @@ finally:
 PY
 }
 
+snapshot_coverage_repair() {
+  local change_dir="$1" run_dir="$2" change_id="$3" python_bin="$4"
+  "$python_bin" - "$change_dir" "$run_dir" "$change_id" <<'PY'
+import json
+import os
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
+
+from pydantic import ValidationError
+
+from assurance_agent.artifacts.models.coverage_repair import (
+    CoverageRepairBrief,
+    CoverageRepairSafetyCheck,
+    CoverageRepairStatus,
+)
+from assurance_agent.artifacts.models.metrics import MetricsDocument
+
+change_dir = Path(sys.argv[1])
+run_dir = Path(sys.argv[2])
+change_id = sys.argv[3]
+
+
+def load(rel, *, required=True):
+    path = change_dir / rel
+    if not path.is_file():
+        if required:
+            raise SystemExit(f"artifact_missing:{rel}")
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"artifact_invalid:{rel}:{exc}") from exc
+    if not isinstance(payload, dict):
+        raise SystemExit(f"artifact_invalid:{rel}:expected_mapping")
+    if payload.get("change_id") != change_id:
+        raise SystemExit(
+            f"identity_mismatch:{rel}:{payload.get('change_id')!r}!={change_id!r}"
+        )
+    return payload
+
+
+status = load("coverage-repair/status.json")
+brief = load("coverage-repair/brief.json")
+metrics = load("inspect/metrics.json")
+metrics_source = load("inspect/metrics-source-batch.json")
+try:
+    CoverageRepairStatus.model_validate(status)
+    CoverageRepairBrief.model_validate(brief)
+    MetricsDocument.model_validate(metrics)
+except ValidationError as exc:
+    raise SystemExit(f"artifact_invalid:coverage-repair:contract:{exc}") from exc
+repair_status = status.get("status")
+if repair_status not in {"repaired", "exhausted", "not_eligible", "failed"}:
+    raise SystemExit(f"artifact_invalid:coverage-repair/status.json:status={repair_status!r}")
+attempts = status.get("attempts_used")
+if isinstance(attempts, bool) or not isinstance(attempts, int) or attempts < 0:
+    raise SystemExit("artifact_invalid:coverage-repair/status.json:attempts_used")
+post_batch = metrics_source.get("batch_id")
+if not isinstance(post_batch, str) or not post_batch:
+    raise SystemExit("artifact_invalid:inspect/metrics-source-batch.json:batch_id")
+
+artifacts = {
+    "coverage-repair/status.json": status,
+    "coverage-repair/brief.json": brief,
+    "inspect/metrics.json": metrics,
+    "inspect/metrics-source-batch.json": metrics_source,
+}
+safety_text = "not_run"
+if attempts:
+    safety = load("coverage-repair/safety-check.json")
+    try:
+        CoverageRepairSafetyCheck.model_validate(safety)
+    except ValidationError as exc:
+        raise SystemExit(f"artifact_invalid:coverage-repair/safety-check.json:{exc}") from exc
+    if safety.get("attempt") != attempts:
+        raise SystemExit("artifact_invalid:coverage-repair/safety-check.json:attempt")
+    passed = safety.get("passed")
+    needs_review = safety.get("needs_review")
+    if not isinstance(passed, bool) or not isinstance(needs_review, bool):
+        raise SystemExit("artifact_invalid:coverage-repair/safety-check.json:verdict")
+    safety_text = "fail" if not passed else ("review" if needs_review else "pass")
+    artifacts["coverage-repair/safety-check.json"] = safety
+
+for rel in (
+    "coverage-repair/apply-summary.json",
+    "coverage-repair/entry-baseline.json",
+):
+    optional = load(rel, required=False)
+    if optional is not None:
+        artifacts[rel] = optional
+
+source_batch = status.get("last_batch_id") or brief.get("batch_id") or "n/a"
+
+
+def batch_key(value):
+    match = re.fullmatch(r"([0-9]{8})-([0-9]{6})(?:-([0-9]{9}))?", value)
+    if match is None:
+        return None
+    try:
+        timestamp = datetime.strptime(f"{match.group(1)}-{match.group(2)}", "%Y%m%d-%H%M%S")
+    except ValueError:
+        return None
+    return timestamp, int(match.group(3) or "0")
+
+
+source_key = batch_key(source_batch)
+post_key = batch_key(post_batch)
+if source_key is None or post_key is None:
+    raise SystemExit("artifact_invalid:coverage-repair:batch_id")
+if attempts and post_key <= source_key:
+    raise SystemExit("artifact_invalid:coverage-repair:post_batch_not_newer")
+if not attempts and post_key != source_key:
+    raise SystemExit("artifact_invalid:coverage-repair:unexpected_batch_change")
+payload = {
+    "schema_version": "1",
+    "change_id": change_id,
+    "artifacts": artifacts,
+}
+raw = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+run_dir.mkdir(parents=True, exist_ok=True)
+target = run_dir / f"{change_id}.coverage-repair.json"
+temp = run_dir / f".{change_id}.coverage-repair.{os.getpid()}.tmp"
+try:
+    temp.write_bytes(raw)
+    os.replace(temp, target)
+finally:
+    temp.unlink(missing_ok=True)
+
+print(
+    f"{change_id}|{repair_status}|{attempts}|{source_batch}|{post_batch}|{safety_text}",
+    end="",
+)
+PY
+}
+
 benchmark_verification_metrics_exit_code() {
   local enabled="$1"
   shift
@@ -488,6 +625,42 @@ benchmark_verification_metrics_exit_code() {
     case "$quarantine_active" in
       ''|*[!0-9]*) return 1 ;;
     esac
+  done
+  return 0
+}
+
+benchmark_coverage_repair_exit_code() {
+  [ "$#" -gt 0 ] || return 1
+  local row change_id status attempts source_batch post_batch safety
+  for row in "$@"; do
+    IFS='|' read -r change_id status attempts source_batch post_batch safety <<<"$row"
+    [ -n "$change_id" ] && [ -n "$post_batch" ] || return 1
+    case "$status" in
+      repaired|exhausted|not_eligible|failed) ;;
+      *) return 1 ;;
+    esac
+    case "$attempts" in
+      ''|*[!0-9]*) return 1 ;;
+    esac
+    case "$safety" in
+      pass|review|fail|not_run) ;;
+      *) return 1 ;;
+    esac
+    if [ "$status" = "repaired" ] && [ "$attempts" -eq 0 ]; then
+      return 1
+    fi
+    if [ "$status" = "not_eligible" ] && [ "$attempts" -ne 0 ]; then
+      return 1
+    fi
+    if [ "$attempts" -eq 0 ] && [ "$safety" != "not_run" ]; then
+      return 1
+    fi
+    if [ "$attempts" -gt 0 ] && [ "$safety" = "not_run" ]; then
+      return 1
+    fi
+    if [ "$attempts" -gt 0 ] && [ "$source_batch" = "n/a" ]; then
+      return 1
+    fi
   done
   return 0
 }

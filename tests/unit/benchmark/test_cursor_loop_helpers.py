@@ -880,3 +880,250 @@ def test_verification_metrics_snapshot_is_complete_or_writes_nothing(tmp_path: P
     assert incomplete.returncode == 1
     assert snapshot.read_bytes() == before
     assert not tuple(run_dir.glob(".*.tmp"))
+
+
+def _write_coverage_repair_artifacts(
+    change_dir: Path,
+    change_id: str,
+    *,
+    status: str = "repaired",
+    attempts_used: int = 1,
+) -> None:
+    repair = change_dir / "coverage-repair"
+    inspect = change_dir / "inspect"
+    repair.mkdir(parents=True)
+    inspect.mkdir(parents=True)
+    (repair / "brief.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "change_id": change_id,
+                "batch_id": "20260806-120000-000000001",
+                "probe_verdict": "pass" if status == "repaired" else "needs_human",
+                "eligible": False,
+                "allowed_test_files": [],
+                "shortboards": [],
+                "repair_items": [],
+                "deferred_to_intake": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (repair / "status.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "change_id": change_id,
+                "status": status,
+                "attempts_used": attempts_used,
+                "last_batch_id": "20260806-115959-999999999" if attempts_used else None,
+                "deferred_to_intake": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    if attempts_used:
+        (repair / "safety-check.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "change_id": change_id,
+                    "attempt": attempts_used,
+                    "passed": True,
+                    "needs_review": False,
+                }
+            ),
+            encoding="utf-8",
+        )
+    (inspect / "metrics.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "2",
+                "change_id": change_id,
+                "cadence": "pr",
+                "computed_at": "2026-08-06T12:00:01Z",
+                "risk_tier": "low",
+                "risk_tier_lower_bound": "low",
+                "risk_tier_declared": None,
+                "risk_declaration_lowered": False,
+                "risk_lowered_declarations": [],
+                "metrics": {},
+                "collection_gaps": [],
+                "shortboards": [],
+                "floor_ratio": None,
+                "policy_digest": "a" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (inspect / "metrics-source-batch.json").write_text(
+        json.dumps(
+            {
+                "change_id": change_id,
+                "batch_id": "20260806-120000-000000001",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_coverage_repair_snapshot_reports_attempt_and_post_repair_batch(tmp_path: Path) -> None:
+    change_dir = tmp_path / "qa" / "changes" / "CH-REPAIR"
+    _write_coverage_repair_artifacts(change_dir, "CH-REPAIR")
+    run_dir = tmp_path / "run"
+
+    result = _run_helper(
+        tmp_path,
+        f"snapshot_coverage_repair {shlex.quote(str(change_dir))} "
+        f"{shlex.quote(str(run_dir))} CH-REPAIR {shlex.quote(sys.executable)}",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ("CH-REPAIR|repaired|1|20260806-115959-999999999|20260806-120000-000000001|pass")
+    snapshot = json.loads((run_dir / "CH-REPAIR.coverage-repair.json").read_text(encoding="utf-8"))
+    assert snapshot["change_id"] == "CH-REPAIR"
+    assert sorted(snapshot["artifacts"]) == [
+        "coverage-repair/brief.json",
+        "coverage-repair/safety-check.json",
+        "coverage-repair/status.json",
+        "inspect/metrics-source-batch.json",
+        "inspect/metrics.json",
+    ]
+
+
+def test_coverage_repair_snapshot_rejects_identity_drift_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    change_dir = tmp_path / "qa" / "changes" / "CH-REPAIR"
+    _write_coverage_repair_artifacts(change_dir, "CH-FOREIGN")
+    run_dir = tmp_path / "run"
+
+    result = _run_helper(
+        tmp_path,
+        f"snapshot_coverage_repair {shlex.quote(str(change_dir))} "
+        f"{shlex.quote(str(run_dir))} CH-REPAIR {shlex.quote(sys.executable)}",
+    )
+
+    assert result.returncode != 0
+    assert "identity_mismatch" in result.stderr
+    assert not (run_dir / "CH-REPAIR.coverage-repair.json").exists()
+
+
+def test_coverage_repair_snapshot_rejects_foreign_source_receipt(tmp_path: Path) -> None:
+    change_dir = tmp_path / "qa" / "changes" / "CH-REPAIR"
+    _write_coverage_repair_artifacts(change_dir, "CH-REPAIR")
+    receipt = change_dir / "inspect" / "metrics-source-batch.json"
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload["change_id"] = "CH-FOREIGN"
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = _run_helper(
+        tmp_path,
+        f"snapshot_coverage_repair {shlex.quote(str(change_dir))} "
+        f"{shlex.quote(str(tmp_path / 'run'))} CH-REPAIR {shlex.quote(sys.executable)}",
+    )
+
+    assert result.returncode == 1
+    assert "identity_mismatch:inspect/metrics-source-batch.json" in result.stderr
+
+
+def test_coverage_repair_snapshot_validates_canonical_artifact_contracts(tmp_path: Path) -> None:
+    change_dir = tmp_path / "qa" / "changes" / "CH-REPAIR"
+    _write_coverage_repair_artifacts(change_dir, "CH-REPAIR")
+    metrics = change_dir / "inspect" / "metrics.json"
+    payload = json.loads(metrics.read_text(encoding="utf-8"))
+    del payload["computed_at"]
+    metrics.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = _run_helper(
+        tmp_path,
+        f"snapshot_coverage_repair {shlex.quote(str(change_dir))} "
+        f"{shlex.quote(str(tmp_path / 'run'))} CH-REPAIR {shlex.quote(sys.executable)}",
+    )
+
+    assert result.returncode == 1
+    assert "artifact_invalid:coverage-repair:contract" in result.stderr
+
+
+def test_coverage_repair_gate_requires_terminal_well_formed_rows(tmp_path: Path) -> None:
+    valid_rows = (
+        "CH-A|repaired|1|old|new|pass",
+        "CH-A|exhausted|1|old|new|review",
+        "CH-A|exhausted|0|new|new|not_run",
+        "CH-A|not_eligible|0|new|new|not_run",
+        "CH-A|failed|0|new|new|not_run",
+        "CH-A|failed|1|old|new|fail",
+    )
+    for row in valid_rows:
+        result = _run_helper(
+            tmp_path,
+            f"benchmark_coverage_repair_exit_code {shlex.quote(row)}",
+        )
+        assert result.returncode == 0, row
+
+    for row in (
+        "CH-A|in_progress|1|old|new|pass",
+        "CH-A|repaired|x|old|new|pass",
+        "CH-A|repaired|0|new|new|not_run",
+        "CH-A|not_eligible|1|old|new|pass",
+        "CH-A|not_eligible|0|new|new|pass",
+        "CH-A|repaired|1|old||pass",
+        "CH-A|repaired|1|old|new|unknown",
+    ):
+        result = _run_helper(
+            tmp_path,
+            f"benchmark_coverage_repair_exit_code {shlex.quote(row)}",
+        )
+        assert result.returncode == 1, row
+
+
+def test_coverage_repair_snapshot_rejects_non_increasing_or_malformed_batch(
+    tmp_path: Path,
+) -> None:
+    change_dir = tmp_path / "qa" / "changes" / "CH-REPAIR"
+    _write_coverage_repair_artifacts(change_dir, "CH-REPAIR")
+    run_dir = tmp_path / "run"
+    receipt = change_dir / "inspect" / "metrics-source-batch.json"
+
+    for bad_batch in ("20260806-115959-999999999", "not-a-batch"):
+        receipt.write_text(
+            json.dumps({"change_id": "CH-REPAIR", "batch_id": bad_batch}),
+            encoding="utf-8",
+        )
+        result = _run_helper(
+            tmp_path,
+            f"snapshot_coverage_repair {shlex.quote(str(change_dir))} "
+            f"{shlex.quote(str(run_dir))} CH-REPAIR {shlex.quote(sys.executable)}",
+        )
+
+        assert result.returncode == 1, bad_batch
+        assert not (run_dir / "CH-REPAIR.coverage-repair.json").exists()
+
+
+def test_coverage_repair_snapshot_reports_mechanical_failure_before_review(
+    tmp_path: Path,
+) -> None:
+    change_dir = tmp_path / "qa" / "changes" / "CH-REPAIR"
+    _write_coverage_repair_artifacts(change_dir, "CH-REPAIR")
+    safety = change_dir / "coverage-repair" / "safety-check.json"
+    payload = json.loads(safety.read_text(encoding="utf-8"))
+    payload.update({"passed": False, "needs_review": True})
+    safety.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = _run_helper(
+        tmp_path,
+        f"snapshot_coverage_repair {shlex.quote(str(change_dir))} "
+        f"{shlex.quote(str(tmp_path / 'run'))} CH-REPAIR {shlex.quote(sys.executable)}",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.endswith("|fail")
+
+
+def test_cursor_loop_passes_and_reports_coverage_repair_budget() -> None:
+    source = _CURSOR_LOOP.read_text(encoding="utf-8")
+
+    assert 'MAX_COVERAGE_REPAIR_ATTEMPTS="${MAX_COVERAGE_REPAIR_ATTEMPTS:-1}"' in source
+    assert '"max_coverage_repair_attempts": int(os.environ["MAX_COVERAGE_REPAIR"])' in source
+    assert "## Coverage Repair Fast Loop" in source
+    assert "<change_id>.coverage-repair.json" in source

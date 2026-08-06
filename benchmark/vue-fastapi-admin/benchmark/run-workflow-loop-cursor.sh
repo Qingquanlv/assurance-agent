@@ -11,11 +11,14 @@
 #   2. `aa workflow run --entrypoint full|… --adapter headless --agent-cmd …`
 #      drives the change to a terminal state (one cursor-agent spawn per task).
 #   3. Verify completion with deterministic `aa workflow status`.
-#   4. Archive via GraphRuntime: `aa workflow run --entrypoint archive`
-#      (skill:aa-archive + archive-gate; not a free-form agent prompt).
-#   5. Before archive, run the repeatable `metrics-nightly` entrypoint and
+#   4. Snapshot the in-workflow coverage-repair fast loop (status, attempt
+#      budget, pre/post batch IDs, and mechanical safety) before archive moves
+#      the Change directory.
+#   5. Run the repeatable `metrics-nightly` entrypoint and
 #      snapshot adversarial/quarantine/C-layer projections for this Change.
-#   6. After every invocation reaches a persisted terminal, run one explicit
+#   6. Archive via GraphRuntime: `aa workflow run --entrypoint archive`
+#      (skill:aa-archive + archive-gate; not a free-form agent prompt).
+#   7. After every invocation reaches a persisted terminal, run one explicit
 #      Batch Retro through `aa retro --batch-manifest ...`. Failed/stopped items
 #      remain members and become typed evidence gaps. A driver hard timeout is
 #      not a persisted workflow terminal, so Retro waits for a later resume.
@@ -91,6 +94,7 @@ CLEAN_TARGETS="${CLEAN_TARGETS:-qa/cases qa/changes}"
 
 # Python workflow driver -----------------------------------------------------
 AA_BIN="${AA_BIN:-aa}"
+AA_PYTHON="${AA_PYTHON:-$AA_REPO_ROOT/.venv/bin/python}"
 # macOS ships /usr/bin/aa (Apple Archive). Prefer the assurance-agent CLI on PATH.
 if [ -x "$AA_BIN" ]; then
   AA_BIN_DIR="$(cd "$(dirname "$AA_BIN")" && pwd)"
@@ -103,6 +107,7 @@ export AA_BIN
 DRIVER_ENTRYPOINT="${DRIVER_ENTRYPOINT:-full}"
 TEST_TYPES="${TEST_TYPES:-api,e2e}"
 MAX_HEALING_ATTEMPTS="${MAX_HEALING_ATTEMPTS:-3}"
+MAX_COVERAGE_REPAIR_ATTEMPTS="${MAX_COVERAGE_REPAIR_ATTEMPTS:-1}"
 
 CURSOR_AGENT_BIN="${CURSOR_AGENT_BIN:-cursor-agent}"
 CURSOR_MODEL="${CURSOR_MODEL:-}"
@@ -442,6 +447,7 @@ YAML
 driver_params_json() {
   TEST_TYPES="$TEST_TYPES" RUN_MODE="$RUN_MODE" RUN_TESTS="$RUN_TESTS" \
   FORCE_CONTINUE="$FORCE_CONTINUE" MAX_HEALING="$MAX_HEALING_ATTEMPTS" \
+  MAX_COVERAGE_REPAIR="$MAX_COVERAGE_REPAIR_ATTEMPTS" \
   python3 -c '
 import os, json
 print(json.dumps({
@@ -450,6 +456,7 @@ print(json.dumps({
     "run_tests": os.environ["RUN_TESTS"] == "true",
     "force_continue": os.environ["FORCE_CONTINUE"] == "true",
     "max_healing_attempts": int(os.environ["MAX_HEALING"]),
+    "max_coverage_repair_attempts": int(os.environ["MAX_COVERAGE_REPAIR"]),
     "auto_archive": False,
 }))'
 }
@@ -829,6 +836,22 @@ run_verification_metrics_stage() {
   return "$rc"
 }
 
+record_coverage_repair_result() {
+  local change_id="$1"
+  local change_dir="$PROJECT_ROOT/qa/changes/$change_id"
+  local row
+  if row="$(snapshot_coverage_repair "$change_dir" "$RUN_DIR" "$change_id" "$AA_PYTHON")"; then
+    COVERAGE_REPAIR_ROWS+=("$row")
+    local cid status attempts source_batch post_batch safety
+    IFS='|' read -r cid status attempts source_batch post_batch safety <<<"$row"
+    log "[$change_id] coverage repair: status=$status attempts=$attempts batches=$source_batch->$post_batch safety=$safety"
+    return 0
+  fi
+  COVERAGE_REPAIR_ROWS+=("$change_id|invalid_artifacts|n/a|n/a|n/a|n/a")
+  log "[$change_id] coverage repair snapshot failed"
+  return 1
+}
+
 # Deterministic benchmark metrics over golden fixtures. This is observational:
 # suite verdicts are reported but do not alter the workflow/archive gate.
 declare -a BENCHMARK_EVAL_ROWS=()
@@ -871,6 +894,10 @@ if ! command -v "$AA_BIN" >/dev/null 2>&1; then
       log "ERROR: uv tool install failed for assurance-agent"; exit 1; }
   fi
 fi
+if [ ! -x "$AA_PYTHON" ]; then
+  log "ERROR: pinned assurance-agent Python missing: $AA_PYTHON"
+  exit 1
+fi
 if ! command -v "$AA_BIN" >/dev/null 2>&1; then
   log "ERROR: aa CLI not found: $AA_BIN (install with 'uv tool install .' in $AA_REPO_ROOT)"
   exit 1
@@ -884,7 +911,7 @@ fi
 
 log "cursor benchmark loop start - runstamp=$RUNSTAMP items=${#BENCHMARK_ITEMS[@]}${RESUME_RUNSTAMP:+ (resume)}"
 log "project_root=$PROJECT_ROOT run_mode=$RUN_MODE run_tests=$RUN_TESTS test_types=$TEST_TYPES"
-log "driver: adapter=headless entrypoint=$DRIVER_ENTRYPOINT max_healing=$MAX_HEALING_ATTEMPTS"
+log "driver: adapter=headless entrypoint=$DRIVER_ENTRYPOINT max_healing=$MAX_HEALING_ATTEMPTS max_coverage_repair=$MAX_COVERAGE_REPAIR_ATTEMPTS"
 log "cursor_agent=$CURSOR_AGENT_BIN model=${CURSOR_MODEL:-default} max_attempts=$CURSOR_MAX_WORKFLOW_ATTEMPTS"
 log "do_archive=$DO_ARCHIVE use_workflow_archive=$USE_WORKFLOW_ARCHIVE entrypoint=$ARCHIVE_ENTRYPOINT"
 log "retro: canonical_batch_cli id=$RETRO_ID manifest=$BATCH_MANIFEST dry_run=$RETRO_DRY_RUN"
@@ -917,6 +944,7 @@ ensure_loop_frontend || exit 1
 
 declare -a ROW_RESULTS=()
 declare -a VERIFICATION_METRICS_ROWS=()
+declare -a COVERAGE_REPAIR_ROWS=()
 item_idx=0
 total_items=${#BENCHMARK_ITEMS[@]}
 
@@ -952,6 +980,7 @@ for item in "${BENCHMARK_ITEMS[@]}"; do
     log "[$change_id] already completed — skip driver"
     final_status="$(execution_final_status "$change_id")"
     archived="no"
+    record_coverage_repair_result "$change_id" || true
     run_verification_metrics_stage "$change_id" || true
     if [ -d "qa/archive/$change_id" ]; then
       archived="yes"
@@ -1046,6 +1075,7 @@ PYASSERT
     continue
   fi
 
+  record_coverage_repair_result "$change_id" || true
   run_verification_metrics_stage "$change_id" || true
 
   if benchmark_should_run_archive "$DO_ARCHIVE" "$workflow_kind" "$final_status"; then
@@ -1115,7 +1145,7 @@ fi
   echo "- project: \`$PROJECT_ROOT\`"
   echo "- engine: \`aa workflow run --adapter headless\` + \`cursor-agent\`"
   echo "- run_mode: \`$RUN_MODE\` run_tests: \`$RUN_TESTS\` test_types: \`$TEST_TYPES\` force_continue: \`$FORCE_CONTINUE\`"
-  echo "- driver entrypoint: \`$DRIVER_ENTRYPOINT\` max healing attempts: \`$MAX_HEALING_ATTEMPTS\`"
+  echo "- driver entrypoint: \`$DRIVER_ENTRYPOINT\` max healing attempts: \`$MAX_HEALING_ATTEMPTS\` max coverage-repair attempts: \`$MAX_COVERAGE_REPAIR_ATTEMPTS\`"
   echo "- max workflow attempts: \`$CURSOR_MAX_WORKFLOW_ATTEMPTS\`"
   echo "- archive: \`DO_ARCHIVE=$DO_ARCHIVE\` via \`$([ "$USE_WORKFLOW_ARCHIVE" = "true" ] && echo "workflow:$ARCHIVE_ENTRYPOINT" || echo "legacy-cursor-prompt")\`"
   echo "- retro: \`aa retro --batch-manifest\` (exit: \`${retro_collect_exit:-n/a}\`)"
@@ -1142,6 +1172,17 @@ fi
   done
   echo
   echo "Atomic snapshots: \`benchmark/runs/$RUNSTAMP-cursor/<change_id>.verification-metrics.json\`."
+  echo
+  echo "## Coverage Repair Fast Loop"
+  echo
+  echo "| change_id | status | attempts | source batch | post-repair batch | safety |"
+  echo "|---|---|---:|---|---|---|"
+  for row in "${COVERAGE_REPAIR_ROWS[@]}"; do
+    IFS='|' read -r cid status attempts source_batch post_batch safety <<<"$row"
+    echo "| \`$cid\` | $status | $attempts | \`$source_batch\` | \`$post_batch\` | $safety |"
+  done
+  echo
+  echo "Atomic snapshots: \`benchmark/runs/$RUNSTAMP-cursor/<change_id>.coverage-repair.json\`."
   echo
   echo "## Retro Batch"
   echo
@@ -1223,6 +1264,11 @@ if ! benchmark_verification_metrics_exit_code \
   "$DO_VERIFICATION_METRICS" \
   "${VERIFICATION_METRICS_ROWS[@]+"${VERIFICATION_METRICS_ROWS[@]}"}"; then
   log "ERROR: verification metrics gate failed (entrypoint or artifact validation incomplete)"
+  benchmark_failed=1
+fi
+if ! benchmark_coverage_repair_exit_code \
+  "${COVERAGE_REPAIR_ROWS[@]+"${COVERAGE_REPAIR_ROWS[@]}"}"; then
+  log "ERROR: coverage repair evidence gate failed (status/snapshot incomplete)"
   benchmark_failed=1
 fi
 if ! benchmark_knowledge_promotion_exit_code "$knowledge_promotion_status"; then
