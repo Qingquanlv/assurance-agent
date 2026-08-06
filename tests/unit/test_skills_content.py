@@ -174,11 +174,49 @@ def test_agents_preserve_permission_floor() -> None:
     allow_gate = re.compile(r'"[^"]*aa (gate|status)[^"]*"\s*:\s*allow')
     allow_state = re.compile(r'"[^"]*workflow-state\.yaml"\s*:\s*allow')
     agents = [n for n in resources.iter_children("opencode", "agents") if n.endswith(".md")]
-    assert len(agents) == 6
+    assert len(agents) == 7
     for name in agents:
         text = resources.read_text("opencode", "agents", name)
         assert allow_gate.search(text) is None, name
         assert allow_state.search(text) is None, name
+
+
+def test_explore_permissions_are_removed_from_doc_author_and_owned_by_explorer() -> None:
+    allow_risk = re.compile(r'"aa risk \*"\s*:\s*allow')
+    allow_explore = re.compile(r'"\*\*qa/changes/\*\*/explore/\*\*"\s*:\s*allow')
+    deny_context_edit = re.compile(r'"\*\*qa/changes/\*\*/explore/context\.json"\s*:\s*deny')
+    explorer = resources.read_text("opencode", "agents", "aa-explorer.md")
+    doc_author = resources.read_text("opencode", "agents", "aa-doc-author.md")
+
+    assert allow_risk.search(explorer) is not None
+    assert allow_explore.search(explorer) is not None
+    assert deny_context_edit.search(explorer) is not None
+    assert allow_risk.search(doc_author) is None
+    assert allow_explore.search(doc_author) is None
+
+
+def test_case_reviewer_requires_independent_product_source_verification() -> None:
+    skill = resources.read_text("skills", "aa-case-reviewer", "SKILL.md")
+    agent = resources.read_text("opencode", "agents", "aa-reviewer.md")
+
+    assert "source_verification" in skill
+    assert "independent" in skill
+    assert "product source" in skill
+    assert "source_verification" in agent
+    assert "independently read" in agent
+
+
+def test_case_design_forbids_inventing_mrc_keys_without_knowledge_proposal() -> None:
+    """Verification Metrics M1 Task 9: MRC keys are a closed set."""
+    design = resources.read_text("skills", "aa-case-design", "SKILL.md")
+    reviewer = resources.read_text("skills", "aa-case-reviewer", "SKILL.md")
+
+    assert "MRC closed-key discipline" in design
+    assert "discovered_candidates" in design
+    assert "Do **not** freely invent MRC keys" in design or "do not freely invent" in design.lower()
+    assert "knowledge proposal" in design.lower()
+    assert "discovered_candidates" in reviewer
+    assert "invent MRC keys" in reviewer or "freely invented" in reviewer
 
 
 def test_aa_retro_skill_is_current_run_candidate_boundary() -> None:

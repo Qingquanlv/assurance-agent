@@ -6,6 +6,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import yaml
+
 from assurance_agent.artifacts.models.retro_batch import RetroPipelineFailure
 from assurance_agent.workflow.graph.handlers.retro_ops import (
     _selection_from_params,
@@ -118,9 +120,54 @@ def _write_terminal_archived_change(
     return root
 
 
-def test_retro_collect_v3_writes_window_and_three_typed_slices(tmp_path: Path) -> None:
+def test_retro_collect_v3_writes_window_and_all_five_typed_slices(tmp_path: Path) -> None:
     workspace = _make_workspace(tmp_path)
-    _write_terminal_archived_change(workspace.project_root, "CH-ARCHIVED")
+    archived = _write_terminal_archived_change(workspace.project_root, "CH-ARCHIVED")
+    discovery = archived / "discovery"
+    discovery.mkdir(parents=True)
+    (discovery / "campaign-result.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1",
+                "campaign_id": "CAM-ARCHIVED",
+                "change_id": "CH-ARCHIVED",
+                "status": "completed",
+                "surfaces": ["api"],
+                "rounds_completed": 1,
+                "sample_count": 1,
+                "seed": 7,
+                "counterexample_count": 0,
+                "confirmed_count": 0,
+                "stop_reason": None,
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    inspect_dir = archived / "inspect"
+    inspect_dir.mkdir()
+    (inspect_dir / "coverage-gaps.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "change_id": "CH-ARCHIVED",
+                "batch_id": "batch-1",
+                "projection_digest": "sha256:projection-1",
+                "gaps": [
+                    {
+                        "kind": "uncovered_required_case",
+                        "locator": {"case_id": "CASE-1"},
+                        "layer": "execution",
+                        "batch_id": "batch-1",
+                        "evidence_refs": ["sha256:projection-1"],
+                    }
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     host = tmp_path / "host-v3"
     host.mkdir()
     write_aa_config(host)
@@ -137,10 +184,12 @@ def test_retro_collect_v3_writes_window_and_three_typed_slices(tmp_path: Path) -
     assert result.status == "succeeded", result.error
     retro_dir = workspace.project_root / "qa/retro/retro-v3"
     assert json.loads((retro_dir / "window.json").read_text())["change_ids"] == ["CH-ARCHIVED"]
-    for domain in ("issue", "workflow", "eval"):
+    for domain in ("issue", "workflow", "eval", "discovery", "coverage_gap"):
         payload = json.loads((retro_dir / "evidence" / f"{domain}-slice.json").read_text())
         assert payload["schema_version"] == "3"
         assert payload["domain"] == domain
+    for domain in ("discovery", "coverage_gap"):
+        assert (retro_dir / "signals" / f"{domain}.json").is_file()
 
 
 def test_retro_params_preserve_explicit_batch_scope() -> None:

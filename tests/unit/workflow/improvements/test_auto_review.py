@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
 import pytest
@@ -24,6 +25,7 @@ from assurance_agent.workflow.improvements.auto_review import (
     build_auto_review_gate_input,
     select_auto_review_items,
 )
+from assurance_agent.workflow.improvements.events import ImprovementProposedEvent
 from assurance_agent.workflow.improvements.reconciler import ImprovementAcceptStatus
 from assurance_agent.workflow.improvements.review_subject import build_review_subject
 from tests.unit.workflow.improvements.test_reconcile_v3 import _candidate, _context
@@ -92,13 +94,19 @@ def test_auto_review_rejects_legacy_invalid_memory_target() -> None:
     )
 
 
+def test_auto_review_rejects_nul_memory_target() -> None:
+    assert not _delivery_allowed(DeliveryKind.MEMORY_PATCH, ".aa/memory/bad\x00name.md")
+
+
 def test_auto_review_allows_valid_memory_target_and_existing_change_draft() -> None:
     assert _delivery_allowed(DeliveryKind.MEMORY_PATCH, ".aa/memory/aa-api-plan.md")
     assert _delivery_allowed(DeliveryKind.CHANGE_DRAFT, "qa/planning:api-rule")
     assert not _delivery_allowed(DeliveryKind.KNOWLEDGE_DELTA, "qa/knowledge:entities.dept")
 
 
-def test_auto_review_gate_rejects_legacy_invalid_memory_target(monkeypatch, tmp_path) -> None:
+def test_auto_review_gate_projects_real_history_before_rejecting_legacy_target(
+    tmp_path: Path,
+) -> None:
     subject, _digest, _data = build_review_subject(_candidate(), _context(), improvement_id="IMP-1")
     legacy_subject = subject.model_copy(
         update={
@@ -109,7 +117,8 @@ def test_auto_review_gate_rejects_legacy_invalid_memory_target(monkeypatch, tmp_
     )
     subject_bytes = canonical_json_bytes(legacy_subject)
     subject_sha256 = sha256_bytes(subject_bytes)
-    subject_path = tmp_path / "qa" / "improvements" / "review-subjects" / f"{subject_sha256}.json"
+    root = tmp_path / "qa" / "improvements"
+    subject_path = root / "review-subjects" / f"{subject_sha256}.json"
     subject_path.parent.mkdir(parents=True)
     subject_path.write_bytes(subject_bytes)
     assessment = ImprovementAutoReviewAssessment(
@@ -124,19 +133,45 @@ def test_auto_review_gate_rejects_legacy_invalid_memory_target(monkeypatch, tmp_
         delivery_safety="ready",
         human_review_required=False,
     )
-    assessment_path = tmp_path / "qa" / "improvements" / "reviews" / "AUTO-1" / "assessment.json"
+    assessment_path = root / "reviews" / "AUTO-1" / "assessment.json"
     assessment_path.parent.mkdir(parents=True)
     assessment_path.write_bytes(canonical_json_bytes(assessment))
-    projection = _projection()
-    current = projection.improvements["IMP-1"].model_copy(update={"review_subject_sha256": subject_sha256})
-    projection = projection.model_copy(update={"improvements": {"IMP-1": current}})
-    monkeypatch.setattr(
-        "assurance_agent.workflow.improvements.auto_review.read_improvement_events", lambda _path: ()
+    legacy_event = ImprovementProposedEvent(
+        schema_version="1.0",
+        seq=2,
+        event_id="IMPEVT-LEGACY-MEMORY-TARGET",
+        idempotency_key="legacy:memory-target",
+        ts="2026-08-03T00:00:00Z",
+        improvement_id="IMP-1",
+        expected_improvement_version=0,
+        type="improvement_proposed",
+        fingerprint="legacy-memory-target",
+        fingerprint_version="1",
+        kind=legacy_subject.kind,
+        delivery=legacy_subject.delivery,
+        source_refs=legacy_subject.source_refs,
+        target=legacy_subject.target,
+        rationale=legacy_subject.rationale,
+        proposed_change=legacy_subject.proposed_change,
+        verification=legacy_subject.verification,
+        risk=legacy_subject.risk,
+        confidence=legacy_subject.confidence,
+        retro_id="RETRO-LEGACY",
+        candidate_id="IMP-CAND-LEGACY",
+        context_sha256="sha256:legacy-context",
+        candidate_batch_digest="sha256:legacy-batch",
+        review_subject_sha256=subject_sha256,
     )
-    monkeypatch.setattr(
-        "assurance_agent.workflow.improvements.auto_review.project_improvements",
-        lambda _events: projection,
+    historical_event_fixture = (
+        Path(__file__).resolve().parents[3]
+        / "fixtures"
+        / "improvements"
+        / "historical-max-length"
+        / "events.jsonl"
     )
+    events_path = root / "events.jsonl"
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    events_path.write_bytes(historical_event_fixture.read_bytes() + canonical_json_bytes(legacy_event))
 
     gate = build_auto_review_gate_input(
         tmp_path,
@@ -148,6 +183,8 @@ def test_auto_review_gate_rejects_legacy_invalid_memory_target(monkeypatch, tmp_
         attempt=1,
     )
 
+    assert gate.projection_state == "proposed"
+    assert gate.projection_subject_matches
     assert not gate.delivery_allowed
     assert not gate.auto_approve
 

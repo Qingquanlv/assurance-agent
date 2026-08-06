@@ -15,6 +15,7 @@ from assurance_agent.workflow.graph.models import (
     RuntimeContext,
     TaskResult,
 )
+from assurance_agent.workflow.graph.handlers.operation import link_host_runtime_dirs
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 
 RunChild = Callable[
@@ -41,6 +42,10 @@ class SubgraphHandler:
                 "contract",
                 f"subgraph handler requires target graph:<id>, got {task.target!r}",
             )
+        # Child invocation metadata points at this private workspace. Reattach
+        # excluded runtime/config roots before handing it off so deeper agent
+        # nodes can inherit .opencode (including newly added bounded agents).
+        link_host_runtime_dirs(workspace, context)
         return self._run_child(task, graph_id, workspace, context)
 
 

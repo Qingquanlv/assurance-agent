@@ -36,6 +36,16 @@ def test_plan_review_prompt_notes_are_rendered() -> None:
     assert "capabilities.adapters" in clause
 
 
+def test_case_review_prompt_names_nested_source_verification_fields() -> None:
+    clause = render_output_contract(["change:review/case-review.json"])
+
+    assert "source_verification.independent" in clause
+    assert "source_verification.reviewed_source_files" in clause
+    assert "source_verification.verified_claims" in clause
+    assert "verified_claims[].claim" in clause
+    assert "verified_claims[].evidence_files" in clause
+
+
 def test_authoring_model_wins_over_validation_model() -> None:
     clause = render_output_contract(["project:qa/retro/retro-1/proposal-candidates.json"])
     assert "ImprovementCandidateDocumentDraftV3" in clause

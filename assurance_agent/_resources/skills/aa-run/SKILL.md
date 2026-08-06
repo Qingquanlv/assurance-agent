@@ -344,6 +344,7 @@ qa/changes/<change-id>/execution/
         ├── fuzz-result.json       ← if selected_targets.fuzz
         ├── performance-result.json ← if selected_targets.performance
         ├── quality-gate-result.json ← always (primary mode)
+        ├── trace-projection.json  ← batch-scoped traceability fact projection (CLI-written)
         ├── summary.md            ← primary mode only
         ├── execution-manifest.yaml
         └── raw/
@@ -355,6 +356,27 @@ qa/changes/<change-id>/execution/
         ├── screenshots/
         └── videos/
 ```
+
+## Batch Trace Projection and Informational Coverage Evidence
+
+In primary mode the CLI also folds this batch's traceability facts into
+`execution/runs/<batch-id>/trace-projection.json` (cases → mapped tests → executions,
+plus the gaps it could not read) and attaches the resulting sufficiency evaluation to
+`quality-gate-result.json` under `dimensions.coverage.evidence`.
+
+Rules for this skill:
+
+- **Both are informational.** `final_status` states what the *tests* found; case-evidence
+  sufficiency never moves it, and neither does a missing or refused projection. Do not
+  infer a verdict from `dimensions.coverage.evidence` or from an
+  `EVIDENCE-SUFFICIENCY-NOT-EVALUATED` warning in `warnings[]`.
+- **The batch projection is not the change's projection.** The change-level, reconciled
+  projection and the facts a gate routes on are written later, at the end of the inspect
+  workflow, and adjudicated later still — after healing — by the `trace-sufficiency-gate`
+  (and, separately, PR metrics by `metrics-sufficiency-gate`); see the `aa-inspect` skill.
+  Do not read the batch file as if it covered the change.
+- **Never write either file.** Both are CLI-owned; a skill-authored projection would be
+  indistinguishable from a folded one.
 
 ## Execution Manifest
 

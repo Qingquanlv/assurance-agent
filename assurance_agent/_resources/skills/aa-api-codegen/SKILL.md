@@ -167,6 +167,7 @@ May generate (paths relative to project root; per `api-codegen-plan.md` Target F
 - `tests/api/adapters/<module>.py` — API-owned fixture and execution adapter
 - `tests/api/conftest.py` — **only if** plan explicitly requires conftest changes (see below)
 - `qa/changes/<change-id>/codegen/api-codegen-summary.md` — always
+- `qa/changes/<change-id>/codegen/api-generated-files.json` — always; machine-readable generated-file evidence
 
 **Workaround annotations:** Codegen may emit explicit workaround comments, `xfail` markers, or alternate-endpoint calls in generated tests when review JSON acknowledges the gap. The Observation collector records these during `inspect-with-issues`. Codegen **MUST NOT** create legacy known-product issue files.
 
@@ -219,7 +220,7 @@ Update `tests/api/conftest.py` **only if** `api-codegen-plan.md` explicitly requ
 12. If helper mapping is non-empty, generate `tests/api/helpers/<module>_api.py`.
 12b. Update `tests/api/conftest.py` per **conftest.py Policy** only when plan explicitly requires it.
 13. **Do NOT run pytest** — execution is `aa-run` (Phase 8).
-14. Create `qa/changes/<change-id>/codegen/` (if missing), write `codegen/api-codegen-summary.md`.
+14. Create `qa/changes/<change-id>/codegen/` (if missing), write `codegen/api-codegen-summary.md` and `codegen/api-generated-files.json`.
 15. Output Codegen Summary (file list + next-step hint).
 
 ## Checklist
@@ -249,10 +250,34 @@ Complete in order:
 - [ ] Update `tests/api/conftest.py` (only when plan explicitly requires)
 - [ ] Report the `phases.api_codegen` state delta (review_gate_file, codegen_readiness, warnings_carried, known_product_issues) — applied to `workflow-state.yaml` by the state owner per the Context Contract
 - [ ] Create `codegen/` directory (if missing), write `api-codegen-summary.md`
+- [ ] Write `api-generated-files.json` after all test files reach their final bytes
 - [ ] If any endpoint is not registered in `_LOCAL_SCHEMAS`, write **Schema Registration Required** section in `api-codegen-summary.md`
 - [ ] Output Codegen Summary (file list + next step)
 
 ## Output Contract
+
+### `codegen/api-generated-files.json`
+
+This machine-readable evidence is mandatory. Write it after the test files so every digest describes final bytes. Sort `files` by `repo_path`; do not list the manifest or summary itself.
+
+```json
+{
+  "schema_version": "1",
+  "change_id": "<change-id>",
+  "layer": "api",
+  "files": [
+    {
+      "repo_path": "tests/api/test_<module>_api.py",
+      "disposition": "generated | modified | reused",
+      "role": "test_entry | support",
+      "case_ids": ["<case-id>"],
+      "content_sha256": "sha256:<64 lowercase hex>"
+    }
+  ]
+}
+```
+
+Include every generated, modified, or explicitly reused API/support file named by the codegen plan. `change_id` and `layer` must match the current task; `repo_path` is project-relative; each digest is SHA-256 of that file's exact bytes.
 
 ### tests/api/test_<module>_api.py
 

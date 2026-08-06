@@ -4,6 +4,7 @@ from pathlib import Path
 
 import click
 
+from assurance_agent.artifacts.models import QualityGateResult
 from assurance_agent.change_location import resolve_change
 from assurance_agent.config import AaConfig, load_config
 from assurance_agent.exceptions import AaError
@@ -203,6 +204,17 @@ def _print_manifest(manifest, change_dir: Path) -> None:  # noqa: ANN001
             click.echo(f"  {key:<12}: unselected")
     click.echo(f"  manifest     : {execution_dir / 'execution-manifest.yaml'}")
 
+    warnings = _gate_warnings(execution_dir)
+    if warnings:
+        # Informational, and printed after the verdict for that reason: these do
+        # not imply PASS_WITH_WARNINGS. That status is a dimension that degraded;
+        # a warning here is usually the opposite — something that could not be
+        # judged at all — and the verdict above already accounts for everything
+        # that was.
+        click.secho("  Warnings", fg="yellow")
+        for warning in warnings:
+            click.secho(f"    - {warning}", fg="yellow")
+
     if manifest.final_status == "FAIL":
         click.secho("→ Quality gate failed. Run: aa report inspect --change <id>", fg="red")
     elif manifest.final_status == "PASS":
@@ -211,6 +223,24 @@ def _print_manifest(manifest, change_dir: Path) -> None:  # noqa: ANN001
         click.secho("→ Passed with warnings. Run: aa report inspect --change <id>", fg="yellow")
     else:
         click.secho("→ No results produced. See summary.md / run report inspect.", fg="cyan")
+
+
+def _gate_warnings(execution_dir: Path) -> list[str]:
+    """The warnings on the gate this run just published, or none if unreadable.
+
+    A read-only convenience view, not a second source of truth: the verdict and
+    the exit code come from the manifest the runner returned, so a gate file that
+    is missing or unparseable costs the operator these lines and nothing else.
+    Worth reading at all because the manifest carries only `final_status`, and
+    the runner records things there that no status can express — a sufficiency
+    evaluation that could not run, for one.
+    """
+    try:
+        text = (execution_dir / "quality-gate-result.json").read_text(encoding="utf-8")
+        gate = QualityGateResult.model_validate_json(text)
+    except (OSError, ValueError):
+        return []
+    return list(gate.warnings or [])
 
 
 def _exit_code(manifest) -> int:  # noqa: ANN001

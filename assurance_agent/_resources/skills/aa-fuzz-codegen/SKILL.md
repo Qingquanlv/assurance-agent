@@ -40,6 +40,7 @@ Do not rely on prior conversation context.
    - `tests/fuzz/adapters/<module>.py` (only for mapped stateful setup/cleanup)
    - `tests/testdata/domain/<entity>.py` (only when absent and marked `create-if-missing`)
    - `qa/changes/<change-id>/codegen/fuzz-codegen-summary.md`
+   - `qa/changes/<change-id>/codegen/fuzz-generated-files.json` (mandatory generated-file evidence)
 2. Report the `workflow-state.yaml` state delta (inline mode: apply it directly; dispatched subagent: never write `workflow-state.yaml` — report the values in your final message and the orchestrator applies them):
    - `phases.fuzz_codegen.status = done`
    - `phases.fuzz_codegen.review_gate_file = review/fuzz-plan-review.json`
@@ -77,6 +78,7 @@ def test_tc_menu_fuzz_001__menu_create(case):
 - Output exactly to `tests/fuzz/test_<module>_fuzz.py` and keep it listed under `fuzz-codegen-plan.md` `Target Files`, so the CLI runner scopes execution to this change. Legacy plans without a parseable `Target Files` section retain full `tests/fuzz/` discovery as a compatibility fallback.
 - Put reusable pure value generation in `tests/fuzz/strategies/`. Put persistent setup/cleanup in `tests/fuzz/adapters/`; never create state inside a Hypothesis strategy.
 - Never import `tests/api/adapters/` or `tests/e2e/adapters/`. Reuse shared domain code only through the mapped fuzz adapter.
+- After all test/support files reach their final bytes, write `codegen/fuzz-generated-files.json` with this exact top-level shape: `{"schema_version":"1","change_id":"<change-id>","layer":"fuzz","files":[...]}`. Sort `files` by `repo_path`; each entry contains project-relative `repo_path`, `disposition` (`generated`, `modified`, or `reused`), `role` (`test_entry` or `support`), `case_ids`, and `content_sha256` (`sha256:` plus 64 lowercase hex). Include every generated, modified, or explicitly reused file named by the codegen plan; do not list the manifest or summary itself.
 - When a schemathesis-parametrized test consumes **function-scoped** pytest fixtures for fixed setup context (seeded role/dept/user, cleanup trackers), Hypothesis raises `FailedHealthCheck: function_scoped_fixture` because the fixture is not reset per generated input. That is expected here — the seed is stable context while the body is fuzzed — so suppress **only** that one health check:
 
 ```python

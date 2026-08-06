@@ -75,3 +75,19 @@ def test_merge_force_overrides_conflicts() -> None:
     assert result.changed is True
     assert result.conflicts == []
     assert result.merged["auth"]["api_admin_token"]["symbol"] == "tests.other.token"
+
+
+def test_merge_adds_auth_matrix_cells() -> None:
+    proposal = yaml.safe_load(yaml.safe_dump(PROPOSAL))
+    proposal["auth_matrix"] = {
+        "api_list_admin": {
+            "route": "/api/v1/api/list",
+            "method": "GET",
+            "token": "api_admin_token",
+            "expected": "allow",
+            "allowed_status_codes": [200],
+        }
+    }
+    result = merge_l2_into_l1(L1, proposal)
+    assert "auth_matrix.api_list_admin" in result.merged_keys
+    assert result.merged["auth_matrix"]["api_list_admin"]["expected"] == "allow"

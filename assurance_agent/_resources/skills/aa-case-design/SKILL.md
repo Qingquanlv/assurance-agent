@@ -371,7 +371,7 @@ qa/changes/                       → in-progress or recently archived changes (
 | Source | Purpose | aa-case-design may |
 |---|---|---|
 | `qa/knowledge/` | Project documentation: business terms, page flows, natural step conventions, historical QA notes | Read only |
-| `.aa/data-knowledge.yaml` | Formal data capability registry used by planning/codegen gates | Read only; must NOT create or modify |
+| `.aa/data-knowledge.yaml` | Formal data capability registry used by planning/codegen gates **and** the closed MRC key set | Read only; must NOT create or modify |
 
 If missing data capabilities are discovered during brainstorming, record them in:
 
@@ -379,6 +379,24 @@ If missing data capabilities are discovered during brainstorming, record them in
 - case YAML `test_data` as natural language needs
 
 Formal promotion into `.aa/data-knowledge.yaml` is handled outside `aa-case-design` (by the user or a dedicated data knowledge update process).
+
+### MRC closed-key discipline (mandatory)
+
+Minimum Required Coverage keys are a **closed set**. Do **not** freely invent MRC keys that are absent from data-knowledge / declared journey sets.
+
+| MRC category | Allowed key sources |
+|---|---|
+| `data_integrity` / `negative` | `entities.<entity>.constraints.<key>` from `.aa/data-knowledge.yaml`, or `auth.*` / `auth_matrix.*` |
+| `e2e` / `e2e_if_enabled` | Declared journey keys already present in advisory MRC / project journey set (A4 denominator) — do not invent new journey names |
+| `api` | Free-form operation names (not a DataKnowledge leaf) |
+
+**When a needed `data_integrity` / `negative` / auth / journey key is missing from the closed set:**
+
+1. Do **not** write the invented key into `trace/minimum-coverage-matrix.yaml` or `trace.minimum_required_coverage` as if it were already known.
+2. Emit a knowledge proposal under `qa/changes/<change-id>/plans/data-knowledge.proposal.<layer>.yaml` with the missing key listed in `discovered_candidates` (and describe it under `proposal.md` Data Needs).
+3. Leave the MRC matrix row unmapped / out of scope until a human promotes the proposal into L1 — never bypass the proposal path to score “full coverage”.
+
+Self-review must fail if any `data_integrity` / `negative` / journey MRC key was invented without a corresponding knowledge proposal.
 
 ---
 
@@ -835,6 +853,8 @@ Every case under `added` or `modified` must satisfy the field contract in `src/s
 
 `trace` is required on every case. When `risk-advisory/advisory.json` or `explore/advisory.json` contains `minimum_required_coverage`, every required MRC item must be mapped to at least one case via `trace.minimum_required_coverage`; do not rely on title/name inference. Downstream archive / execution may enrich other trace fields.
 
+MRC keys must obey **MRC closed-key discipline** above: never invent closed-category keys; unknown keys require a knowledge proposal (`discovered_candidates`), not a silent matrix entry.
+
 Also write `qa/changes/<change-id>/trace/minimum-coverage-matrix.yaml`:
 
 ```yaml
@@ -1263,6 +1283,11 @@ Before invoking aa-case-reviewer, verify that ALL of these are true. Fix any iss
 48. At least one happy path case (P0 or P1) exists in `added` or `modified`.
 49. `proposal.md` exists at `qa/changes/<change-id>/proposal.md`.
 50. `.qa.yaml` exists at `qa/changes/<change-id>/.qa.yaml`.
+51. MRC closed keys: every `data_integrity` / `negative` / journey key in
+    `trace/minimum-coverage-matrix.yaml` cites `.aa/data-knowledge.yaml` or the
+    declared journey set; any unknown key has a matching
+    `plans/data-knowledge.proposal.*.yaml` `discovered_candidates` entry (never
+    invent MRC keys into the matrix alone).
 
 ---
 

@@ -1,3 +1,5 @@
+from collections import Counter
+
 from assurance_agent.artifacts.models.coverage_repair import (
     COVERAGE_REPAIR_APPLY_SUMMARY_REL,
     COVERAGE_REPAIR_BASELINE_REL,
@@ -10,6 +12,7 @@ from assurance_agent.artifacts.models.coverage_repair import (
     CoverageRepairSafetyCheck,
     CoverageRepairStatus,
 )
+from assurance_agent.artifacts.models.metrics import MetricsDocument
 from assurance_agent.artifacts.registry import REGISTRY, match_artifact
 
 
@@ -25,6 +28,22 @@ def test_registry_covers_every_expected_artifact_type() -> None:
         "coverage_repair_safety_check",
         "coverage_repair_status",
         "data_knowledge_proposal",
+        "discovery_campaign_result",
+        "discovery_campaign_spec",
+        "discovery_counterexample",
+        "discovery_generated_manifest",
+        "discovery_oracle_set",
+        "discovery_promotion_manifest",
+        "discovery_promotion_receipt",
+        "discovery_regression_candidate",
+        "discovery_replay_attempt_receipt",
+        "discovery_round_decision",
+        "trace_projection",
+        "quarantine_projection",
+        "trace_sufficiency_facts",
+        "coverage_gaps",
+        "c_layer_metrics",
+        "declaration_proposal",
         "execution_manifest",
         "eval_run_projection_v1",
         "fact_baseline",
@@ -34,6 +53,10 @@ def test_registry_covers_every_expected_artifact_type() -> None:
         "issue_candidate_document",
         "issue_evidence_manifest",
         "issue_reconcile_status",
+        "metrics_document",
+        "metrics_nightly_document",
+        "minimum_coverage_matrix",
+        "minimum_coverage_result",
         "improvement_candidate_document",
         "improvement_auto_review_assessment_v1",
         "improvement_auto_review_batch_summary_v1",
@@ -59,8 +82,16 @@ def test_registry_covers_every_expected_artifact_type() -> None:
         "safety_check",
         "workflow_state",
     }
-    assert {spec.artifact_type for spec in REGISTRY} == expected
-    assert len(REGISTRY) == 45
+    counts = Counter(spec.artifact_type for spec in REGISTRY)
+    assert set(counts) == expected
+    # "review" is intentionally registered under four distinct path patterns
+    # (spec 4a: api-plan-review, plan-review, case-review, and a catch-all
+    # review/*.json); every other artifact type owns exactly one pattern.
+    assert counts["review"] == 4
+    for artifact_type, count in counts.items():
+        if artifact_type == "review":
+            continue
+        assert count == 1, f"{artifact_type} registered {count} times, expected exactly 1"
 
 
 def test_retro_closure_artifacts_match_only_their_run_paths() -> None:
@@ -128,6 +159,10 @@ def test_compat_grades_match_spec_4a() -> None:
     assert grades["issue_analysis_status"] == "must_compat"
     assert grades["issue_reconcile_status"] == "versioned"
     assert grades["change_issue_snapshot"] == "versioned"
+    # must_compat, not versioned: metrics-sufficiency-gate routes on these
+    # fields, so a document this release cannot fully validate must be refused
+    # rather than read partially and routed as a pass.
+    assert grades["metrics_document"] == "must_compat"
     # must_compat: brief / status / safety-check steer gate routing, and
     # apply-summary / baseline steer the safety verdict that feeds a gate, so a
     # document this release cannot fully validate must be refused rather than
@@ -163,6 +198,69 @@ def test_coverage_repair_artifacts_resolve_to_their_models_with_must_compat() ->
         assert spec.artifact_type == artifact_type
         assert spec.model is model
         assert spec.compat == "must_compat"
+
+
+def test_the_authoritative_metrics_document_is_registered_at_the_inspect_path() -> None:
+    spec = match_artifact("inspect/metrics.json")
+    assert spec is not None
+    assert spec.artifact_type == "metrics_document"
+    assert spec.model is MetricsDocument
+    assert spec.authoring_model is None
+
+
+def test_minimum_coverage_artifacts_are_registered() -> None:
+    from assurance_agent.artifacts.models.minimum_coverage import (
+        MinimumCoverageMatrix,
+        MinimumCoverageResult,
+    )
+
+    result = match_artifact("report/minimum-coverage-result.json")
+    assert result is not None
+    assert result.artifact_type == "minimum_coverage_result"
+    assert result.model is MinimumCoverageResult
+    assert result.compat == "must_compat"
+
+    matrix = match_artifact("trace/minimum-coverage-matrix.yaml")
+    assert matrix is not None
+    assert matrix.artifact_type == "minimum_coverage_matrix"
+    assert matrix.model is MinimumCoverageMatrix
+    assert matrix.compat == "must_compat"
+
+
+def test_the_batch_scoped_metrics_evidence_stays_unregistered() -> None:
+    """Spec §9: `execution/runs/<batch>/metrics.json` is a derived pre-copy.
+
+    Registering it too would put two authoritative writers on one artifact type
+    and make the PR-phase immutability conflict unresolvable. Task 6 PR cadence
+    collectors write the five evidence files below; they stay unregistered so
+    Task 7's ``materialize-pr-metrics`` remains the sole authoritative writer of
+    ``inspect/metrics.json``.
+    """
+    batch = "execution/runs/20260804-093000"
+    for name in (
+        "metrics.json",
+        "coverage-diff.json",
+        "constraint-coverage.json",
+        "auth-matrix.json",
+        "journey-coverage.json",
+        "perf-slack.json",
+    ):
+        assert match_artifact(f"{batch}/{name}") is None
+
+
+def test_the_nightly_metrics_document_is_registered_independently() -> None:
+    """Spec §9: nightly lands on its own path so the PR document stays write-once."""
+    from assurance_agent.artifacts.models.metrics import MetricsDocument
+
+    nightly = match_artifact("inspect/metrics-nightly.json")
+    pr = match_artifact("inspect/metrics.json")
+    assert nightly is not None
+    assert nightly.artifact_type == "metrics_nightly_document"
+    assert nightly.model is MetricsDocument
+    assert nightly.compat == "must_compat"
+    assert pr is not None
+    assert pr.artifact_type == "metrics_document"
+    assert pr.artifact_type != nightly.artifact_type
 
 
 def test_issue_artifact_patterns_match_exact_paths() -> None:

@@ -1,11 +1,18 @@
 import json
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from tests.helpers_aa import write_aa_config
 
 from assurance_agent.artifacts.models import CoverageThreshold, SelectedTargets
+from assurance_agent.evidence.sufficiency import (
+    EvidenceCoverageEvaluation,
+    RowVerdict,
+    SufficiencyReport,
+)
 from assurance_agent.workflow.execution.evidence import publish_execution_evidence
 from assurance_agent.workflow.execution.results import CaseResult, CoverageResult, ResultSource, TargetResult
 from assurance_agent.workflow.report.inspector import inspect_change
@@ -65,7 +72,13 @@ def _cov() -> CoverageResult:
     )
 
 
-def _seed_change(tmp_path: Path, api: TargetResult, cov: CoverageResult) -> str:
+def _seed_change(
+    tmp_path: Path,
+    api: TargetResult,
+    cov: CoverageResult,
+    *,
+    evidence_coverage: EvidenceCoverageEvaluation | None = None,
+) -> str:
     write_aa_config(tmp_path)
     change_dir = tmp_path / "qa" / "changes" / "CH-1"
     change_dir.mkdir(parents=True)
@@ -76,6 +89,7 @@ def _seed_change(tmp_path: Path, api: TargetResult, cov: CoverageResult) -> str:
         e2e=None,
         coverage=cov,
         coverage_gate_mode="warn",
+        evidence_coverage=evidence_coverage,
     )
     publish_execution_evidence(
         execution_dir=change_dir / "execution",
@@ -157,6 +171,124 @@ def test_generate_report_includes_execution_start_and_duration(tmp_path: Path) -
     md = (tmp_path / "qa" / "changes" / "CH-1" / "report" / "quality-report.md").read_text()
     assert "**Start**: 2026-07-18T01:00:00+00:00" in md
     assert "**Duration**: 2m 5s" in md
+
+
+# --------------------------------------------------------------------------- #
+# The evidence attachment stops at the gate artifact
+#
+# `CoverageDimension` is shared by three artifacts: the gate
+# (`inspect/quality-gate-result.json`), the report (`report/quality-report.json`)
+# and the inspect rebuild. Task 9 added `evidence` for the *gate*, and passing
+# `gate.dimensions.coverage` straight through would have published a second,
+# unversioned copy into the report artifact — a document whose whole purpose is a
+# human-facing verdict, and which no one asked to carry a per-case evidence blob.
+#
+# So the report projects the dimension with `evidence=None`. That is a narrowing,
+# not a transformation: every number and status the report shows must be the ones
+# the gate decided.
+# --------------------------------------------------------------------------- #
+
+
+def _evaluation(*, sufficient: bool = False, action: str = "require_human") -> EvidenceCoverageEvaluation:
+    verdict = RowVerdict(
+        case_id="TC_API_001",
+        sufficient=sufficient,
+        missing_kinds=() if sufficient else ("covered",),
+        reason_codes=() if sufficient else ("not_covered",),
+        execution_state="fresh" if sufficient else "never_run",
+    )
+    return EvidenceCoverageEvaluation.evaluated(
+        report=SufficiencyReport(
+            change_id="CH-1",
+            as_of=datetime(2026, 7, 15, 0, 0, 0, tzinfo=UTC),
+            recency_hours=72,
+            integrity="complete",
+            rows=(verdict,),
+        ),
+        action=action,  # type: ignore[arg-type]
+    )
+
+
+def _report_json(tmp_path: Path) -> dict[str, Any]:
+    path = tmp_path / "qa" / "changes" / "CH-1" / "report" / "quality-report.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _gate_json(tmp_path: Path) -> dict[str, Any]:
+    path = tmp_path / "qa" / "changes" / "CH-1" / "inspect" / "quality-gate-result.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_the_gate_artifact_keeps_the_evidence_attachment(tmp_path: Path) -> None:
+    """The premise of the next test: the evaluation really was attached upstream,
+    so a report without it is a narrowing rather than an absent input."""
+    change_id = _seed_change(tmp_path, _api(None), _cov(), evidence_coverage=_evaluation())
+    inspect_change(tmp_path, change_id)
+    generate_report(tmp_path, change_id)
+
+    evidence = _gate_json(tmp_path)["dimensions"]["coverage"]["evidence"]
+    assert evidence is not None
+    assert evidence["action"] == "require_human"
+    assert evidence["report"]["rows"][0]["case_id"] == "TC_API_001"
+
+
+def test_the_report_artifact_never_publishes_the_evidence_attachment(tmp_path: Path) -> None:
+    change_id = _seed_change(tmp_path, _api(None), _cov(), evidence_coverage=_evaluation())
+    inspect_change(tmp_path, change_id)
+    result = generate_report(tmp_path, change_id)
+
+    assert result.report.coverage.evidence is None
+    assert _report_json(tmp_path)["coverage"]["evidence"] is None
+    assert "not_covered" not in json.dumps(_report_json(tmp_path))
+
+
+def test_the_report_is_byte_identical_with_and_without_the_evidence(tmp_path: Path) -> None:
+    """The narrowing must change nothing else: same status, same score, same
+    coverage numbers, same rendered Markdown."""
+    with_evidence = tmp_path / "with"
+    without = tmp_path / "without"
+    for root, evaluation in ((with_evidence, _evaluation()), (without, None)):
+        root.mkdir()
+        change_id = _seed_change(root, _api(None), _cov(), evidence_coverage=evaluation)
+        inspect_change(root, change_id)
+        generate_report(root, change_id)
+
+    assert _gate_json(with_evidence) != _gate_json(without), "the premise: the gates differ"
+    assert _report_json(with_evidence) == _report_json(without)
+    for name in ("quality-report.md", "executive-summary.md"):
+        rendered = [
+            (root / "qa" / "changes" / "CH-1" / "report" / name).read_text(encoding="utf-8")
+            for root in (with_evidence, without)
+        ]
+        assert rendered[0] == rendered[1]
+
+
+@pytest.mark.parametrize("action", ["warn", "block", "require_human"])
+def test_no_action_leaks_into_the_report_or_its_verdict(tmp_path: Path, action: str) -> None:
+    """`on_insufficient` decides nothing here, so it must not even be visible:
+    a reader of the report cannot be given a policy value to route on."""
+    change_id = _seed_change(tmp_path, _api(None), _cov(), evidence_coverage=_evaluation(action=action))
+    inspect_change(tmp_path, change_id)
+    result = generate_report(tmp_path, change_id)
+
+    assert result.report.final_status == "PASS"
+    assert result.report.coverage.status == "PASS"
+    assert result.report.quality_score == 100
+    assert result.report.risk_level == "LOW"
+    assert action not in json.dumps(_report_json(tmp_path))
+
+
+def test_the_projected_dimension_preserves_every_other_coverage_field(tmp_path: Path) -> None:
+    """Field-by-field, so a future `CoverageDimension` field cannot be dropped by
+    a hand-written projection that only remembers today's names."""
+    change_id = _seed_change(tmp_path, _api(None), _cov(), evidence_coverage=_evaluation())
+    inspect_change(tmp_path, change_id)
+    result = generate_report(tmp_path, change_id)
+
+    gate_coverage = _gate_json(tmp_path)["dimensions"]["coverage"]
+    report_coverage = result.report.coverage.model_dump(mode="json")
+    assert set(report_coverage) == set(gate_coverage)
+    assert report_coverage == {**gate_coverage, "evidence": None}
 
 
 def test_generate_report_business_defect_is_high_risk(tmp_path: Path) -> None:
@@ -534,3 +666,59 @@ def test_generate_report_issue_risk_in_exec_summary(tmp_path: Path) -> None:
     generate_report(tmp_path, change_id)
     exec_summary = (tmp_path / "qa" / "changes" / "CH-1" / "report" / "executive-summary.md").read_text()
     assert "**Issue Risk**: unknown" in exec_summary
+
+
+def test_report_combines_quality_gate_with_inspect_metrics_without_rewriting_gate(
+    tmp_path: Path,
+) -> None:
+    """Task 8: report reads ``inspect/metrics.json`` alongside the quality gate;
+    the quality-gate artifact bytes must stay unchanged."""
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    inspect_change(tmp_path, change_id)
+    change_dir = tmp_path / "qa" / "changes" / change_id
+    gate_path = change_dir / "inspect" / "quality-gate-result.json"
+    before = gate_path.read_bytes()
+    metrics_doc = {
+        "schema_version": "2",
+        "change_id": change_id,
+        "cadence": "pr",
+        "computed_at": "2026-08-05T02:00:00+00:00",
+        "risk_tier": "low",
+        "risk_tier_lower_bound": "low",
+        "risk_tier_declared": None,
+        "risk_declaration_lowered": False,
+        "risk_lowered_declarations": [],
+        "metrics": {
+            "constraint_coverage": {
+                "layer": "api",
+                "status": "evaluated",
+                "value": 0.9,
+                "declared": {"total": 10, "covered": 9, "value": 0.9, "uncovered": []},
+                "touched": None,
+                "holds": None,
+                "surfaces": [],
+                "evidence": "constraint-coverage.json",
+            }
+        },
+        "collection_gaps": [],
+        "shortboards": [{"code": "below_floor", "metric": "constraint_coverage", "detail": "0.5 < 0.7"}],
+        "floor_ratio": None,
+        "policy_digest": "0" * 64,
+    }
+    (change_dir / "inspect" / "metrics.json").write_text(json.dumps(metrics_doc), encoding="utf-8")
+
+    result = generate_report(tmp_path, change_id)
+
+    assert gate_path.read_bytes() == before
+    assert result.report.final_status == "PASS"
+    assert result.report.metrics is not None
+    assert result.report.metrics["cadence"] == "pr"
+    assert result.report.metrics["shortboards"]
+
+
+def test_report_without_metrics_document_keeps_metrics_none(tmp_path: Path) -> None:
+    change_id = _seed_change(tmp_path, _api(None), _cov())
+    inspect_change(tmp_path, change_id)
+    result = generate_report(tmp_path, change_id)
+    assert result.report.final_status == "PASS"
+    assert result.report.metrics is None

@@ -13,6 +13,7 @@ from assurance_agent.commands.report_cmd import report_group
 from assurance_agent.commands.run_cmd import run_command
 from assurance_agent.commands.state_cmd import state_group
 from assurance_agent.commands.status_cmd import status_command
+from assurance_agent.commands.trace_cmd import trace_command
 from assurance_agent.commands.validate_cmd import validate_command
 from assurance_agent.commands.skill_cmd import skill_group
 from assurance_agent.commands.workflow_cmd import workflow_group
@@ -33,6 +34,7 @@ main.add_command(doctor_command)
 main.add_command(config_group)
 main.add_command(validate_command)
 main.add_command(status_command)
+main.add_command(trace_command)
 main.add_command(gate_group)
 main.add_command(state_group)
 main.add_command(decide_command)

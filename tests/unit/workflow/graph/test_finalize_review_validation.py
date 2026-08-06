@@ -157,15 +157,112 @@ def test_api_plan_review_finding_without_id_is_invalid_output(tmp_path: Path) ->
     assert "findings[0].id" in (result.error or "")
 
 
-def test_non_plan_review_without_capabilities_passes(tmp_path: Path) -> None:
-    """case-review is not a capability-gated review_type — omission is fine."""
+def test_case_review_with_independent_source_verification_passes(tmp_path: Path) -> None:
     ws = _workspace(tmp_path)
     _write(
         ws,
         "review/case-review.json",
-        {"schema_version": "1.0", "review_type": "case", "decision": "pass", "findings": []},
+        {
+            "schema_version": "1.0",
+            "review_type": "case",
+            "change_id": "CH-1",
+            "decision": "pass",
+            "findings": [],
+            "auto_fix_plan": [],
+            "next_action": "continue",
+            "auto_fix_allowed": False,
+            "human_review_required": False,
+            "risk_level": "low",
+            "source_verification": {
+                "independent": True,
+                "reviewed_source_files": ["app/api.py"],
+                "verified_claims": [{"claim": "route exists", "evidence_files": ["app/api.py"]}],
+            },
+        },
     )
     assert _validate_registry_outputs(workspace=ws, outputs=("change:review/case-review.json",)) is None
+
+
+def test_case_review_without_source_verification_is_invalid_output(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    _write(
+        ws,
+        "review/case-review.json",
+        {
+            "schema_version": "1.0",
+            "review_type": "case",
+            "change_id": "CH-1",
+            "decision": "pass",
+            "findings": [],
+            "auto_fix_plan": [],
+            "next_action": "continue",
+            "auto_fix_allowed": False,
+            "human_review_required": False,
+            "risk_level": "low",
+        },
+    )
+
+    result = _validate_registry_outputs(workspace=ws, outputs=("change:review/case-review.json",))
+
+    assert result is not None
+    assert result.error_kind == "invalid_output"
+    assert "source_verification" in (result.error or "")
+
+
+def _write_project(ws: TaskWorkspace, rel: str, payload: object) -> Path:
+    path = ws.project_root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+_RUNTIME_SIGNAL_DOC = {
+    "schema_version": "3",
+    "retro_id": "retro-1",
+    "domain": "eval",
+    "analysis_status": "failed",
+    "failure_reason": "retro_pipeline_failure:collect:internal",
+    "analyzer": "operation:retro-pipeline-fallback",
+    "signals": [],
+    "slice_sha256": "sha256:" + "a" * 64,
+}
+
+
+def test_completed_signal_document_keeps_engine_owned_digest(tmp_path: Path) -> None:
+    """The draft ban on ``slice_sha256`` must not outlive runtime completion.
+
+    Signals reach finalize after the runtime backfilled the digest, whether the
+    author was an analyzer skill or a fallback operation.
+    """
+    ws = _workspace(tmp_path)
+    _write_project(ws, "qa/retro/retro-1/signals/eval.json", _RUNTIME_SIGNAL_DOC)
+
+    assert (
+        _validate_registry_outputs(
+            workspace=ws,
+            outputs=("project:qa/retro/retro-1/signals/eval.json",),
+        )
+        is None
+    )
+
+
+def test_completed_signal_document_still_validates_canonical_shape(tmp_path: Path) -> None:
+    """Skipping the draft model must not skip the canonical model."""
+    ws = _workspace(tmp_path)
+    _write_project(
+        ws,
+        "qa/retro/retro-1/signals/eval.json",
+        {**_RUNTIME_SIGNAL_DOC, "analysis_status": "failed", "failure_reason": None},
+    )
+
+    result = _validate_registry_outputs(
+        workspace=ws,
+        outputs=("project:qa/retro/retro-1/signals/eval.json",),
+    )
+
+    assert result is not None
+    assert result.error_kind == "invalid_output"
+    assert "failure_reason" in (result.error or "")
 
 
 def test_invalid_json_review_is_invalid_output(tmp_path: Path) -> None:

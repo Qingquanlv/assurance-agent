@@ -134,6 +134,7 @@ def _write_brief(
         batch_id=batch_id,
         probe_verdict="needs_human" if eligible else "pass",
         eligible=eligible,
+        allowed_test_files=(BRIEFED_TEST,) if eligible else (),
         repair_items=repair_items,
         deferred_to_intake=deferred_items,
         computed_at=datetime.now(tz=UTC),

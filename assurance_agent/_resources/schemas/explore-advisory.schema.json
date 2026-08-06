@@ -18,6 +18,23 @@
     "change_id": { "type": "string" },
     "context_ref": { "type": "string" },
     "watchlist": { "type": "array" },
+    "source_code_evidence": {
+      "description": "Source-structure facts collected by Explore. These facts are advisory-owned and must never be appended to the CLI-owned context.json.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "source", "type", "description", "parse_confidence_cap"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^SC-[A-Z0-9-]+$" },
+          "source": { "const": "source_code" },
+          "type": { "type": "string", "minLength": 1 },
+          "description": { "type": "string", "minLength": 1 },
+          "parse_confidence_cap": { "type": "string", "enum": ["medium", "low"] },
+          "module": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
     "case_design_guidance": {
       "description": "Evidence-anchored guidance for aa-case-design. priority_hints is the sole channel for risk-area signals (formerly split into a separate hotspots array) — every priority_hint now carries its own confidence, same as watchlist items.",
       "type": "object",

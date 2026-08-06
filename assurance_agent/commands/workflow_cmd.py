@@ -132,6 +132,7 @@ _ENTRYPOINT_CHOICE = click.Choice(
         "improvement-export",
         "improvement-apply",
         "improvement-rollback",
+        "metrics-nightly",
     ]
 )
 

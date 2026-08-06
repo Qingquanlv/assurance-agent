@@ -66,10 +66,12 @@ def test_candidate_rejects_wrong_delivery_and_problem_fields() -> None:
         (ImprovementKind.PROMPT, DeliveryKind.MEMORY_PATCH, 0),
         (ImprovementKind.FIXTURE, DeliveryKind.MEMORY_PATCH, 1),
         (ImprovementKind.FIXTURE, DeliveryKind.CHANGE_DRAFT, 2),
-        (ImprovementKind.TEST, DeliveryKind.MEMORY_PATCH, 3),
-        (ImprovementKind.TEST, DeliveryKind.CHANGE_DRAFT, 4),
-        (ImprovementKind.WORKFLOW, DeliveryKind.CHANGE_DRAFT, 5),
-        (ImprovementKind.DOMAIN_KNOWLEDGE, DeliveryKind.KNOWLEDGE_DELTA, 6),
+        (ImprovementKind.FIXTURE, DeliveryKind.TEST_PROMOTION, 3),
+        (ImprovementKind.TEST, DeliveryKind.MEMORY_PATCH, 4),
+        (ImprovementKind.TEST, DeliveryKind.CHANGE_DRAFT, 5),
+        (ImprovementKind.TEST, DeliveryKind.TEST_PROMOTION, 6),
+        (ImprovementKind.WORKFLOW, DeliveryKind.CHANGE_DRAFT, 7),
+        (ImprovementKind.DOMAIN_KNOWLEDGE, DeliveryKind.KNOWLEDGE_DELTA, 8),
     ],
 )
 def test_allowed_kind_delivery_matrix(kind: ImprovementKind, delivery: DeliveryKind, index: int) -> None:
@@ -108,6 +110,7 @@ def test_candidate_allows_memory_patch_child_target() -> None:
         ".aa/memory/../escape.md",
         ".aa/memory/./aa-api-plan.md",
         ".aa/memory//aa-api-plan.md",
+        ".aa/memory/bad\x00name.md",
         r".aa\memory\aa-api-plan.md",
     ],
 )

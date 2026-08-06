@@ -185,6 +185,14 @@ def _seed_shortfall_project(
     (project_root / "app").mkdir(parents=True, exist_ok=True)
     (project_root / "app" / "service.py").write_text("def ok():\n    return 1\n", encoding="utf-8")
     (project_root / "tests" / "api").mkdir(parents=True, exist_ok=True)
+    (project_root / PROPERTY_TEST).write_text(
+        f"def test_{CONSTRAINT_KEY}_holds():\n    assert False, 'coverage repair pending'\n",
+        encoding="utf-8",
+    )
+    (change_dir / "plans" / "api-codegen-plan.md").write_text(
+        f"## Test Function Mapping\n\n| Case | Test |\n| --- | --- |\n| TC_API_001 | `{PROPERTY_TEST}` |\n",
+        encoding="utf-8",
+    )
     return project_root, change_dir
 
 

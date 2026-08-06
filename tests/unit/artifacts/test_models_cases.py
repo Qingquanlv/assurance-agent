@@ -80,6 +80,39 @@ def test_case_yaml_missing_required_field_rejected() -> None:
         CaseYaml.model_validate(make_case_yaml(added=[entry]))
 
 
+def test_case_entry_risk_block_parses_and_exposes_its_level() -> None:
+    """`risk` is what the tier lower bound is compared against (metrics spec §7).
+
+    It reached the model unvalidated until now: real case.yaml documents carry
+    the block, `CaseEntry` never declared it, and a P0 case labelled `medium`
+    was accepted with no complaint.
+    """
+    entry = make_case_entry(
+        risk={"likelihood": 4, "impact": 5, "level": "critical", "rationale": "auth surface"}
+    )
+    model = CaseYaml.model_validate(make_case_yaml(added=[entry]))
+    assert model.added[0].risk is not None
+    assert model.added[0].risk.level == "critical"
+
+
+def test_case_entry_without_a_risk_block_still_parses() -> None:
+    model = CaseYaml.model_validate(make_case_yaml())
+    assert model.added[0].risk is None
+
+
+def test_case_entry_risk_level_outside_the_enum_is_rejected() -> None:
+    doc = make_case_yaml(added=[make_case_entry(risk={"level": "catastrophic"})])
+    with pytest.raises(ValidationError):
+        CaseYaml.model_validate(doc)
+
+
+def test_case_entry_risk_block_without_a_level_is_rejected() -> None:
+    """A block whose only load-bearing field is absent is the zero-validation hole."""
+    doc = make_case_yaml(added=[make_case_entry(risk={"likelihood": 4, "impact": 5})])
+    with pytest.raises(ValidationError):
+        CaseYaml.model_validate(doc)
+
+
 def test_qa_yaml_valid_fixture_parses() -> None:
     model = QaYaml.model_validate(make_qa_yaml())
     assert model.change.change_id == "CH-1"

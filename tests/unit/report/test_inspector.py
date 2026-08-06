@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import yaml
 from tests.helpers_aa import write_aa_config
 
 from assurance_agent.artifacts.models import CoverageThreshold, SelectedTargets
@@ -9,7 +10,13 @@ from assurance_agent.workflow.report.inspector import inspect_change
 from assurance_agent.workflow.report.quality_gate import build_quality_gate
 
 
-def _seed_change(tmp_path: Path, api: TargetResult, cov: CoverageResult) -> str:
+def _seed_change(
+    tmp_path: Path,
+    api: TargetResult,
+    cov: CoverageResult,
+    *,
+    coverage_gate_mode: str = "warn",
+) -> str:
     write_aa_config(tmp_path)
     change_dir = tmp_path / "qa" / "changes" / "CH-1"
     change_dir.mkdir(parents=True)
@@ -19,7 +26,7 @@ def _seed_change(tmp_path: Path, api: TargetResult, cov: CoverageResult) -> str:
         api=api,
         e2e=None,
         coverage=cov,
-        coverage_gate_mode="warn",
+        coverage_gate_mode=coverage_gate_mode,  # type: ignore[arg-type]
     )
     publish_execution_evidence(
         execution_dir=change_dir / "execution",
@@ -35,6 +42,15 @@ def _seed_change(tmp_path: Path, api: TargetResult, cov: CoverageResult) -> str:
         summary="# summary\n",
     )
     return "CH-1"
+
+
+def _set_coverage_gate_mode(project_root: Path, gate_mode: str) -> None:
+    """Patch `.aa/config.yaml` coverage.gate_mode after write_aa_config defaults."""
+    path = project_root / ".aa" / "config.yaml"
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    coverage = raw.setdefault("coverage", {})
+    coverage["gate_mode"] = gate_mode
+    path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 
 
 def _api(failed_message: str | None) -> TargetResult:
@@ -160,3 +176,43 @@ def test_inspect_missing_manifest_raises(tmp_path: Path) -> None:
 
     with pytest.raises(EvidenceError):
         inspect_change(tmp_path, "CH-9")
+
+
+def test_inspect_rebuild_honors_coverage_gate_mode_block(tmp_path: Path) -> None:
+    """§12.10: missing batch quality-gate must rebuild from config, not hardcode warn.
+
+    Below-threshold coverage with ``gate_mode: block`` must produce coverage FAIL
+    (and final FAIL). A hardcoded ``coverage_gate_mode=\"warn\"`` path would
+    silently downgrade that to PASS_WITH_WARNINGS.
+    """
+    below = CoverageResult(
+        change_id="CH-1",
+        batch_id="20260715-000000",
+        available=True,
+        line_coverage=50.0,
+        branch_coverage=40.0,
+        threshold=CoverageThreshold(line=70, branch=60),
+        status="FAIL",
+    )
+    change_id = _seed_change(tmp_path, _api(None), below, coverage_gate_mode="warn")
+    _set_coverage_gate_mode(tmp_path, "block")
+    batch_gate = (
+        tmp_path
+        / "qa"
+        / "changes"
+        / "CH-1"
+        / "execution"
+        / "runs"
+        / "20260715-000000"
+        / "quality-gate-result.json"
+    )
+    batch_gate.unlink()
+    (tmp_path / "qa" / "changes" / "CH-1" / "execution" / "quality-gate-result.json").unlink(missing_ok=True)
+
+    # Explicit batch_id selects the incomplete batch (gate missing) so inspect
+    # rebuilds rather than searching for a compat fallback with a published gate.
+    result = inspect_change(tmp_path, change_id, batch_id="20260715-000000")
+
+    assert result.quality_gate.dimensions.coverage.status == "FAIL"
+    assert result.quality_gate.final_status == "FAIL"
+    assert result.analysis.final_status == "FAIL"

@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
-from assurance_agent.artifacts.registry import match_artifact
+from assurance_agent.artifacts.registry import ArtifactSpec, match_artifact
 from assurance_agent.artifacts.models.issues import IssueAnalysisStatus, IssueCandidateDocument
 from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
 from assurance_agent.workflow.graph.checkpoint import fold_invocation_events
@@ -213,6 +213,22 @@ def _apply_subgraph_exports(
     return result.model_copy(update={"frozen_outputs": wire, "candidate_outputs": candidate})
 
 
+def _authoring_obligations_model(spec: ArtifactSpec) -> type[BaseModel] | None:
+    """The authoring model that still constrains this file once frozen, if any.
+
+    Two unrelated shapes share the ``authoring_model`` slot. A draft stage that
+    the runtime later completes (canonical = draft + engine-owned fields, so the
+    canonical model subclasses the draft) is already past authoring by the time
+    finalize reads the file. An authoring contract that only adds obligations to
+    what a skill must hand in (review ``source_verification``) never gets
+    completed, so the frozen file is the authored one and must satisfy it.
+    """
+    authoring = spec.authoring_model
+    if authoring is None or issubclass(spec.model, authoring):
+        return None
+    return authoring
+
+
 def _validate_registry_outputs(
     *,
     workspace: TaskWorkspace,
@@ -241,6 +257,9 @@ def _validate_registry_outputs(
             return task_failure("invalid_output", f"output '{output}' is not valid {kind}: {exc}")
         try:
             authored[output] = data
+            authoring = _authoring_obligations_model(spec)
+            if authoring is not None:
+                authoring.model_validate(data)
             validated[output] = spec.model.model_validate(data)
         except ValidationError as exc:
             return task_failure(

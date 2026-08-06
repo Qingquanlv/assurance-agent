@@ -45,6 +45,9 @@ fi
 if [ "${1:-}" = "knowledge" ] && [ "${2:-}" = "promote" ]; then
   exit 0
 fi
+if [ "${1:-}" = "workflow" ] && [ "${2:-}" = "resume" ]; then
+  exit 0
+fi
 if [ "${1:-}" != "eval" ] || [ "${2:-}" != "run" ]; then
   exit 99
 fi
@@ -304,6 +307,22 @@ def test_cursor_loop_manages_backend_and_frontend_lifecycles() -> None:
     assert "ensure_loop_sut || exit 1\nensure_loop_frontend || exit 1" in source
 
 
+def test_cursor_loop_enforces_task_workspace_sandbox_for_every_cursor_invocation() -> None:
+    source = _CURSOR_LOOP.read_text(encoding="utf-8")
+
+    assert (
+        'local cmd="$CURSOR_AGENT_BIN --print --output-format '
+        '$CURSOR_OUTPUT_FORMAT --sandbox enabled --trust"' in source
+    )
+    assert '    --sandbox\n    enabled\n    --workspace "$PROJECT_ROOT"' in source
+    assert "--force" not in source
+    assert "CURSOR_AGENT_FORCE" not in source
+
+    benchmark_dir = _CURSOR_LOOP.parent
+    for env_path in benchmark_dir.glob("benchmark*.env"):
+        assert "CURSOR_AGENT_FORCE" not in env_path.read_text(encoding="utf-8"), env_path
+
+
 def _collect_eval_command(tmp_path: Path, suites: str) -> str:
     fake = _install_fake_aa(tmp_path)
     engine = tmp_path / "engine"
@@ -418,7 +437,7 @@ def test_pid_identity_is_rechecked_before_force_kill(tmp_path: Path) -> None:
     identity_file.write_text("owned-process\n", encoding="utf-8")
     command = (
         "benchmark_process_identity() { "
-        f'n=$(cat {shlex.quote(str(call_count))} 2>/dev/null || echo 0); '
+        f"n=$(cat {shlex.quote(str(call_count))} 2>/dev/null || echo 0); "
         "n=$((n + 1)); "
         f'printf "%s\\n" "$n" >{shlex.quote(str(call_count))}; '
         'if [ "$n" -eq 1 ]; then echo owned-process; else echo reused-process; fi; '
@@ -555,6 +574,28 @@ def test_knowledge_proposal_interrupt_continues_without_mid_batch_promotion(tmp_
     assert proposal.stdout == "accept_risk"
     assert ordinary.returncode == 0
     assert ordinary.stdout == "accept_risk"
+
+
+def test_interrupt_resume_preserves_headless_agent_arguments(tmp_path: Path) -> None:
+    fake = _install_fake_aa(tmp_path)
+    call_log = tmp_path / "aa-calls.log"
+    command = (
+        f"AA_FAKE_CALL_LOG={shlex.quote(str(call_log))} "
+        f"resume_benchmark_interrupt {shlex.quote(str(fake))} CH-1 INT-1 accept_risk "
+        "'benchmark decision' headless "
+        "'cursor-agent --print --output-format stream-json --sandbox enabled --trust "
+        "--model cursor-grok-4.5-high-fast'"
+    )
+
+    result = _run_helper(tmp_path, command)
+
+    assert result.returncode == 0, result.stderr
+    assert call_log.read_text(encoding="utf-8").splitlines() == [
+        "workflow resume --change CH-1 --interrupt INT-1 --action accept_risk "
+        "--reason benchmark decision --adapter headless --agent-cmd "
+        "cursor-agent --print --output-format stream-json --sandbox enabled --trust "
+        "--model cursor-grok-4.5-high-fast"
+    ]
 
 
 def test_knowledge_promotion_failure_is_a_benchmark_failure(tmp_path: Path) -> None:
@@ -724,6 +765,34 @@ def test_verification_metrics_summary_validates_identity_and_reports_vectors(tmp
 
     assert foreign.returncode != 0
     assert "identity_mismatch" in foreign.stderr
+
+
+def test_verification_metrics_accept_the_reject_verdict(tmp_path: Path) -> None:
+    """``reject`` (collection gap / no number to judge) is an honest nightly outcome.
+
+    The summarizer and the loop exit-code gate validate the artifact contract,
+    not the verdict's desirability — a reject row must not read as
+    ``invalid_artifacts``.
+    """
+    change_dir = tmp_path / "qa" / "changes" / "CH-METRICS"
+    _write_verification_metric_artifacts(change_dir, "CH-METRICS")
+    shortboards = change_dir / "inspect" / "metrics-nightly-shortboards.json"
+    payload = json.loads(shortboards.read_text(encoding="utf-8"))
+    payload["sufficiency_verdict"] = "reject"
+    shortboards.write_text(json.dumps(payload), encoding="utf-8")
+
+    summary = _run_helper(
+        tmp_path,
+        f"summarize_verification_metrics {shlex.quote(str(change_dir))} CH-METRICS",
+    )
+    gate = _run_helper(
+        tmp_path,
+        "benchmark_verification_metrics_exit_code true 'CH-A|completed|0.8|reject|2/4|1'",
+    )
+
+    assert summary.returncode == 0, summary.stderr
+    assert summary.stdout == "0.8|reject|2/4|1"
+    assert gate.returncode == 0, gate.stderr
 
 
 def test_verification_metrics_gate_requires_complete_rows_when_enabled(tmp_path: Path) -> None:

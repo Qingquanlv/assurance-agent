@@ -101,6 +101,7 @@ aa workflow run --change <id> --entrypoint full --adapter opencode --server http
 | `aa risk context --change <id> [--project-dir <root>]` | 聚合 diff / cases / archive → `explore/context.json` |
 | `aa risk validate-advisory --change <id>` | 校验 `explore/advisory.json` 与 context |
 | `aa run --change <id>` | 按 `selected_targets` 执行测试，写 batch 结果 + 顶层指针 |
+| `aa trace --change <id> [--type API\|E2E\|Fuzz\|Performance] [--only-gaps] [--json]` | 只读折叠 case 声明 × `execution/runs/**` × `tests/` → TraceProjection（不写盘）；`--type` 仅切行、`--only-gaps` 只打印缺口；退出码 0 正常 / 40 change 缺失或无有效 case 行 |
 | `aa report inspect --change <id>` | 失败分类 → `inspect/failure-analysis.json` + `quality-gate-result.json` |
 | `aa report generate --change <id>` | Quality Score → `report/` 三件套 |
 | `aa heal ...` | Healing 支持命令（fix-proposal 校验等） |

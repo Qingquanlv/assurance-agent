@@ -3,6 +3,7 @@ from pathlib import Path
 import yaml
 
 from assurance_agent.verification.checks.base import CheckContext
+from assurance_agent.verification.checks.capability_keys import check_capability_keys
 from assurance_agent.verification.checks.registry import run_plan_checks
 
 
@@ -35,3 +36,24 @@ def test_canonical_api_plan_satisfies_its_mechanical_contract() -> None:
 
     assert document.status == "pass", document.model_dump(mode="json")
     assert all(not check.findings for check in document.checks)
+
+
+def test_benchmark_fuzz_api_adapter_capabilities_resolve_from_l1() -> None:
+    data_knowledge = yaml.safe_load(
+        (BENCHMARK_ROOT / ".aa" / "data-knowledge.yaml").read_text(encoding="utf-8")
+    )
+
+    evidence = check_capability_keys(
+        CheckContext(
+            plan_texts={},
+            cases=(),
+            data_knowledge=data_knowledge,
+            layer="fuzz",
+            required_capabilities=(
+                "capabilities.adapters.fuzz.api.make_api",
+                "capabilities.adapters.fuzz.api.cleanup_api",
+            ),
+        )
+    )
+
+    assert evidence.status == "pass", evidence.model_dump(mode="json")

@@ -898,6 +898,11 @@ bad_child:
     # Successful sibling child work and completed seed must not re-run.
     assert calls["write-child-a"] == 1
     assert calls["write-review"] == 1
+    # The resumed child must publish the tree it committed before interrupting.
+    # Losing this file makes the next parent gate fail closed even though the
+    # child review and the audited accept_risk decision both succeeded.
+    review_file = _context(project).change_dir / "review" / "case-review.json"
+    assert json.loads(review_file.read_text(encoding="utf-8")) == {"decision": "needs_human_review"}
 
 
 # ---------------------------------------------------------------------------

@@ -25,11 +25,11 @@ Do not rely on prior conversation context.
    - `qa/changes/<change-id>/report/quality-report.json`
    - `qa/changes/<change-id>/report/quality-report.md`
    - `qa/changes/<change-id>/report/executive-summary.md`
-   - `qa/changes/<change-id>/report/minimum-coverage-result.json` when advisory MRC exists
-2. Report the `workflow-state.yaml` state delta (inline mode: apply it directly; dispatched subagent: never write `workflow-state.yaml` — report the values in your final message and the orchestrator applies them):
+2. When advisory MRC exists, **read** `qa/changes/<change-id>/report/minimum-coverage-result.json` if present for prose explanation only. That JSON is owned by the deterministic `operation:materialize-minimum-coverage` — **do not write, rewrite, or invent it**.
+3. Report the `workflow-state.yaml` state delta (inline mode: apply it directly; dispatched subagent: never write `workflow-state.yaml` — report the values in your final message and the orchestrator applies them):
    - `phases.report.status = done`
    - `phases.report.quality_score = <int from quality-report.json>`
-3. Reference `report/executive-summary.md` in the workflow's final summary.
+4. Reference `report/executive-summary.md` in the workflow's final summary.
 
 ---
 
@@ -76,7 +76,7 @@ aa --version
 aa report generate --change <change-id>
 ```
 
-**Write sandbox (fail closed):** this node may only write under `qa/changes/<change-id>/report/**`. Creating helper files anywhere else — including project-root scratch scripts such as `.tmp_aa_report.sh`, `tmp_*.sh`, or any other `.sh` / scratch path — is a **forbidden write** and will fail the task even when the CLI already wrote a valid report. Prefer quoting/escaping in a single shell invocation over inventing a wrapper script.
+**Write sandbox (fail closed):** this node may only write the three CLI report files — `qa/changes/<change-id>/report/quality-report.json`, `quality-report.md`, and `executive-summary.md`. It must **not** write `report/minimum-coverage-result.json` (owned by `operation:materialize-minimum-coverage`). Creating helper files anywhere else — including project-root scratch scripts such as `.tmp_aa_report.sh`, `tmp_*.sh`, or any other `.sh` / scratch path — is a **forbidden write** and will fail the task even when the CLI already wrote a valid report. Prefer quoting/escaping in a single shell invocation over inventing a wrapper script.
 
 ## Inputs (read by the CLI)
 
@@ -90,6 +90,7 @@ execution/runs/<batch-id>/fuzz-result.json         (if selected_targets.fuzz)
 execution/runs/<batch-id>/performance-result.json  (if selected_targets.performance)
 inspect/failure-analysis.json
 inspect/quality-gate-result.json     ← required (gate conclusion + final_status, incl. fuzz/non_functional when run)
+inspect/metrics.json                 ← optional; PR metric vector combined into the report (never rewrites the gate)
 issues/snapshot.json                 ← optional; Issue risk section when present (schema 1.1)
 qa/issues/problems.json              ← optional; Project Problem projection for Issue risk derivation
 qa/changes/<change-id>/cases/**/case*.yaml   ← best-effort scope (cases + requirements)
@@ -148,8 +149,13 @@ qa/changes/<change-id>/report/
 ├── quality-report.json     ← structured (CLI-written, deterministic; includes started_at / duration)
 ├── quality-report.md       ← full report (CLI-written; header shows Start / Duration, or "No data")
 ├── executive-summary.md    ← one-page conclusion (CLI-written; Start / Duration line)
-└── minimum-coverage-result.json ← MRC mapped/executed/verified status when advisory MRC exists
+└── minimum-coverage-result.json ← MRC mapped/executed/verified join (written only by
+                                   operation:materialize-minimum-coverage; skill reads for prose)
 ```
+
+### Minimum Required Coverage (MRC) — prose only
+
+When `explore/advisory.json` / `risk-advisory/advisory.json` declares `minimum_required_coverage`, the workflow's deterministic `materialize-minimum-coverage` operation joins the case matrix (`trace/minimum-coverage-matrix.yaml`) with the published `inspect/trace-projection.json` and writes `report/minimum-coverage-result.json` (`covered` / `covered_but_failing` / `not_executed` / `executed_case_ids`, …). This skill may **summarize** that artifact in markdown wording; it must **never** author or overwrite the JSON.
 
 ## Risk Level & Recommendation Boundary
 
@@ -168,4 +174,4 @@ The CLI emits a deterministic baseline `risk_level`, `risk_rationale`, and `reco
 - Do **not** fabricate report files; if the CLI fails to write them, set `phases.report.status = failed` and report the failure.
 - Do **not** invoke MCP as a substitute for the CLI.
 - Do **not** read or generate legacy known-product issue Markdown/JSON files; use structured Issue projections instead.
-- Do **not** create temporary shell scripts or other scratch files (e.g. `.tmp_aa_report.sh`) to invoke the CLI — run `aa --version` and `aa report generate` as direct shell commands only. Authorized writes are limited to `change:report/**`.
+- Do **not** create temporary shell scripts or other scratch files (e.g. `.tmp_aa_report.sh`) to invoke the CLI — run `aa --version` and `aa report generate` as direct shell commands only. Authorized writes are limited to `change:report/quality-report.json`, `change:report/quality-report.md`, and `change:report/executive-summary.md` (not `minimum-coverage-result.json`).

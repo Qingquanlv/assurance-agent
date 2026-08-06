@@ -141,8 +141,10 @@ def test_allowed_kind_delivery_matrix_passes_batch_validation(context: RetroCont
         (ImprovementKind.PROMPT, DeliveryKind.MEMORY_PATCH, None),
         (ImprovementKind.FIXTURE, DeliveryKind.MEMORY_PATCH, None),
         (ImprovementKind.FIXTURE, DeliveryKind.CHANGE_DRAFT, None),
+        (ImprovementKind.FIXTURE, DeliveryKind.TEST_PROMOTION, None),
         (ImprovementKind.TEST, DeliveryKind.MEMORY_PATCH, None),
         (ImprovementKind.TEST, DeliveryKind.CHANGE_DRAFT, None),
+        (ImprovementKind.TEST, DeliveryKind.TEST_PROMOTION, None),
         (ImprovementKind.WORKFLOW, DeliveryKind.CHANGE_DRAFT, None),
         (ImprovementKind.DOMAIN_KNOWLEDGE, DeliveryKind.KNOWLEDGE_DELTA, _knowledge_delta()),
     ]
@@ -190,6 +192,40 @@ def test_read_rejects_unsafe_memory_patch_target_in_schema_v3(tmp_path: Path) ->
     with pytest.raises(CandidateBatchInvalid) as error:
         read_candidate_document(retro_dir, expected_schema="3")
     assert {item.code for item in error.value.errors} == {"invalid_candidate"}
+
+
+def test_read_schema_v3_knowledge_candidate_requires_concrete_max_length(tmp_path: Path) -> None:
+    retro_dir = tmp_path / "qa" / "retro" / "retro-1"
+    retro_dir.mkdir(parents=True)
+    candidate = _valid_candidate(
+        kind=ImprovementKind.DOMAIN_KNOWLEDGE,
+        delivery=DeliveryKind.KNOWLEDGE_DELTA,
+        target="qa/knowledge:entities.dept.name-constraints",
+        knowledge_delta={
+            "schema_version": "1",
+            "mode": "delta",
+            "entities": {"dept": {"constraints": {"name": {"max_length": 20}}}},
+        },
+    ).model_dump(mode="json")
+    candidate["signal_ids"] = ["issue-pattern:dept-name-constraints"]
+    raw = {
+        "schema_version": "3",
+        "retro_id": "retro-1",
+        "context_sha256": "sha256:context",
+        "candidates": [candidate],
+    }
+    path = retro_dir / "proposal-candidates.json"
+    raw["candidates"][0]["knowledge_delta"]["entities"]["dept"]["constraints"]["name"]["max_length"] = True
+    path.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
+
+    with pytest.raises(CandidateBatchInvalid) as error:
+        read_candidate_document(retro_dir, expected_schema="3")
+    assert {item.code for item in error.value.errors} == {"invalid_candidate"}
+
+    raw["candidates"][0]["knowledge_delta"]["entities"]["dept"]["constraints"]["name"]["max_length"] = 20
+    path.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
+    loaded = read_candidate_document(retro_dir, expected_schema="3")
+    assert loaded.candidates[0].knowledge_delta is not None
 
 
 def test_duplicate_candidate_ids_reject_whole_batch(

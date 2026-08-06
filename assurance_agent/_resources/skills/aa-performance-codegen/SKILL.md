@@ -39,6 +39,7 @@ Do not rely on prior conversation context.
    - `tests/perf/adapters/<module>_seed.py` (when the plan requires bulk setup/cleanup)
    - `tests/testdata/domain/<entity>.py` (only when absent and marked `create-if-missing`)
    - `qa/changes/<change-id>/codegen/performance-codegen-summary.md`
+   - `qa/changes/<change-id>/codegen/performance-generated-files.json` (mandatory generated-file evidence)
 2. Report the `workflow-state.yaml` state delta (inline mode: apply it directly; dispatched subagent: never write `workflow-state.yaml` — report the values in your final message and the orchestrator applies them):
    - `phases.performance_codegen.status = done`
    - `phases.performance_codegen.review_gate_file = review/performance-plan-review.json`
@@ -106,6 +107,7 @@ class MenuListUser(HttpUser):
 - Run bulk setup as a separate pre-load phase through `tests/perf/adapters/`; never initialize an ORM/session from a Locust user or task.
 - The adapter must write a generated-data manifest and provide idempotent cleanup. It must not import API/E2E/Fuzz adapters.
 - `performance-codegen-plan.md` is also the runner's change-scope contract. Its `Target Files` section MUST list every Locust file generated for this change. Phase 8 `aa-run` executes only those mapped `tests/perf/locustfile*.py` files and reads thresholds/load from selected `type: Performance` cases.
+- After all test/support files reach their final bytes, write `codegen/performance-generated-files.json` with this exact top-level shape: `{"schema_version":"1","change_id":"<change-id>","layer":"performance","files":[...]}`. Sort `files` by `repo_path`; each entry contains project-relative `repo_path`, `disposition` (`generated`, `modified`, or `reused`), `role` (`test_entry` or `support`), `case_ids`, and `content_sha256` (`sha256:` plus 64 lowercase hex). Include every generated, modified, or explicitly reused file named by the codegen plan; do not list the manifest or summary itself. This change-scoped evidence is distinct from the performance adapter's runtime generated-data cleanup manifest.
 
 ## Runner discovery contract (aa-run)
 

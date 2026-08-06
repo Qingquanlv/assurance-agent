@@ -29,10 +29,10 @@ Do not rely on prior conversation context.
    - If any required file is missing, **STOP** and report.
 4. Read **Optional** input files from disk (missing = warning, do not STOP):
    - `.aa/config.yaml`
-   - `.aa/data-knowledge.yaml` (if missing, proceed and generate proposal — see Data Knowledge Layer Rules)
+   - `.aa/data-knowledge.yaml` (if missing or incomplete for selected cases, proceed and generate a proposal — see Data Knowledge Layer Rules)
    - Frontend source files (for route / selector confirmation)
    > **data-knowledge 分层规则：**
-   > - `aa-e2e-plan` 阶段：`.aa/data-knowledge.yaml` 缺失不阻断 planning；生成 `data-knowledge.proposal.e2e.yaml`；**Codegen Readiness 默认为 `not_ready`**，除非 selected E2E cases 完全不需要 auth / data setup / route resolution / cleanup capability（见 Codegen Readiness 判定）。
+   > - `aa-e2e-plan` 阶段：`.aa/data-knowledge.yaml` 缺失或缺少 selected cases 所需 capability 时不阻断 planning；生成 `data-knowledge.proposal.e2e.yaml`；**Codegen Readiness 默认为 `not_ready`**，除非 selected E2E cases 完全不需要 auth / data setup / route resolution / cleanup capability（见 Codegen Readiness 判定）。
    > - `aa-e2e-codegen` 阶段：`.aa/data-knowledge.yaml` **必须存在**。`data-knowledge.proposal.e2e.yaml` 仅供参考，不可替代。
 5. Use files as the sole source of truth.
 
@@ -43,7 +43,7 @@ Do not rely on prior conversation context.
    - `qa/changes/<change-id>/plans/e2e-test-data-plan.md`
    - `qa/changes/<change-id>/plans/e2e-codegen-plan.md`
    - `qa/changes/<change-id>/plans/m4-review-summary.md`
-   - `qa/changes/<change-id>/plans/data-knowledge.proposal.e2e.yaml`（仅当 `.aa/data-knowledge.yaml` 缺失时）
+   - `qa/changes/<change-id>/plans/data-knowledge.proposal.e2e.yaml`（当 `.aa/data-knowledge.yaml` 缺失或缺少 selected cases 所需 capability 时）
 2. Report the `workflow-state.yaml` state delta (inline mode: apply it directly; dispatched subagent: never write `workflow-state.yaml` — report the values in your final message and the orchestrator applies them):
    - `phases.e2e_plan.status = done`
    - `phases.e2e_plan.outputs` = **all actually generated** output files（含 `data-knowledge.proposal.e2e.yaml`，若已生成）
@@ -100,14 +100,14 @@ Do not rely on prior conversation context.
 
 如果 `.aa/config.yaml` 不存在，记录 warning，但不要阻断。
 
-如果 `.aa/data-knowledge.yaml` 不存在，**不阻断 plan 阶段**。不得直接写入项目级知识库。必须生成 proposal：
+如果 `.aa/data-knowledge.yaml` 不存在，或存在但缺少 selected cases 所需 capability，**不阻断 plan 阶段**。不得直接写入项目级知识库。必须生成 proposal：
 
 `qa/changes/<change-id>/plans/data-knowledge.proposal.e2e.yaml`
 
 并在 `m4-review-summary.md` 中记录 warning，将 **Codegen Readiness** 设为 `not_ready` 或 `ready_with_warnings`（见 Codegen Readiness 判定）。
 
 > **Plan vs Codegen gate（data-knowledge）：**
-> - **aa-e2e-plan**：`.aa/data-knowledge.yaml` 缺失不阻断 planning；生成 `plans/data-knowledge.proposal.e2e.yaml`；**Codegen Readiness 默认为 `not_ready`**，除非 selected E2E cases 完全不需要 auth / data setup / route resolution / cleanup capability。
+> - **aa-e2e-plan**：`.aa/data-knowledge.yaml` 缺失或缺少 required capability 不阻断 planning；生成 `plans/data-knowledge.proposal.e2e.yaml`；**Codegen Readiness 默认为 `not_ready`**，除非 selected E2E cases 完全不需要 auth / data setup / route resolution / cleanup capability。
 > - **aa-e2e-codegen**：`.aa/data-knowledge.yaml` 缺失是 **BLOCKER**；`data-knowledge.proposal.e2e.yaml` 仅供参考，不可替代正式知识库。
 > - **Reason**：`aa-e2e-codegen` 启动前均要求正式 `.aa/data-knowledge.yaml` 存在；orchestrator 须在文件补齐并 re-review 后才可进入 codegen。
 
@@ -119,7 +119,7 @@ Do not rely on prior conversation context.
 - `qa/changes/<change-id>/plans/e2e-test-data-plan.md`
 - `qa/changes/<change-id>/plans/e2e-codegen-plan.md`
 - `qa/changes/<change-id>/plans/m4-review-summary.md`
-- `qa/changes/<change-id>/plans/data-knowledge.proposal.e2e.yaml`（仅当 data knowledge 缺失时）
+- `qa/changes/<change-id>/plans/data-knowledge.proposal.e2e.yaml`（当 data knowledge 缺失或缺少 selected cases 所需 capability 时）
 
 不得生成：
 
@@ -146,7 +146,7 @@ Do not rely on prior conversation context.
 7. 如果是 `type = Mixed`，只提取 E2E 目标并标记来源为 Mixed。
 8. 检查 priority：默认只计划 P0 / P1 E2E，P2 / P3 必须进入 Needs Review。
 9. 读取 `.aa/data-knowledge.yaml`。
-10. 如果 `.aa/data-knowledge.yaml` 不存在，生成 `plans/data-knowledge.proposal.e2e.yaml`，不得写入 `.aa/data-knowledge.yaml`，并在 `m4-review-summary.md` 中记录 warning。
+10. 如果 `.aa/data-knowledge.yaml` 不存在或缺少 selected cases 所需 capability，生成 `plans/data-knowledge.proposal.e2e.yaml`，不得写入 `.aa/data-knowledge.yaml`，并在 `m4-review-summary.md` 中记录 warning。
 11. 如果没有任何 E2E case（`added` + `modified`），停止并报告。
 12. 生成 `plans/e2e-plan.md`（如果 `plans/` 目录不存在则创建）。
 13. 生成 `plans/e2e-test-data-plan.md`。
@@ -170,7 +170,7 @@ Do not rely on prior conversation context.
 - [ ] 确认 `schema_version: "1.0"`
 - [ ] 只从 `added` / `modified` 筛选 E2E 自动化 Case（`type: E2E` + `automation.required: true`）；跳过 `removed`
 - [ ] 确认只默认处理 P0 / P1 E2E（P2 / P3 进入 Needs Review）
-- [ ] 读取 `.aa/data-knowledge.yaml`（不存在则写 `plans/data-knowledge.proposal.e2e.yaml`，不得直接写 `.aa/data-knowledge.yaml`）
+- [ ] 读取 `.aa/data-knowledge.yaml`（不存在或缺少 selected cases 所需 capability 时写 `plans/data-knowledge.proposal.e2e.yaml`，不得直接写 `.aa/data-knowledge.yaml`）
 - [ ] 生成 `e2e-plan.md`
 - [ ] 生成 `e2e-test-data-plan.md`
 - [ ] 生成 `e2e-codegen-plan.md`
@@ -322,41 +322,53 @@ E2E 前置数据优先通过脚本或 API 构造，不得默认通过 UI 造数�
 | **aa-e2e-plan** | 不阻断 planning；生成 `plans/data-knowledge.proposal.e2e.yaml`；**Codegen Readiness 默认为 `not_ready`**（见 Codegen Readiness 判定中的例外） |
 | **aa-e2e-codegen** | **BLOCKER**；`data-knowledge.proposal.e2e.yaml` 仅供参考，不可替代正式知识库 |
 
-最小建议结构：
+生成 proposal 的模式：
+
+- L1 不存在：`mode: bootstrap`，`based_on_l1_version: null`。
+- L1 存在但缺少 required capability：`mode: delta`，`based_on_l1_version` 必须等于当前 L1 的 `version`。
+
+`capabilities` 是 proposal 的顶层字段；不要把它嵌入 `discovered_candidates`。`discovered_candidates` 必须是 object list，`needs_review` 和 `promotion_checklist` 必须是 string list。顶层 `version`、`change_id`、`layer`、`status`、`reason` 都是 schema 禁止的额外字段。
+
+### Canonical delta proposal
 
 ```yaml
+schema_version: "1"
+based_on_l1_version: 1
+mode: delta
+accounts: {}
+auth: {}
+entities: {}
 capabilities:
-  setup_scripts:
-    receivable_order_setup:
-      kind: script
-      symbol: tests/e2e/scripts/<module>_data_setup.py
-      entity: order
-      state: pending_receive
-      returns:
-        id_attr: order_id
-        url_attr: order_url
-      verify:
-        operation: getOrderById
-        asserts:
-          - expr: "$.status"
-            equals: pending_receive
-      cleanup_ref: cleanup.order_delete
-
-  auth:
-    e2e_storage_state:
-      kind: playwright_storage_state
-      acquire:
-        operation: login
-      output: .auth/e2e-user.json
-
+  domain_factories: {}
+  adapters:
+    api: {}
+    e2e:
+      role:
+        make_role:
+          kind: isolated_worker
+          symbol: tests.e2e.adapters.role.make_role
+          entity: role
+          create-if-missing: false
+          cleanup_ref: cleanup.role_delete
+    fuzz: {}
+    performance: {}
   cleanup:
-    order_delete:
-      operation: deleteOrderTestFactory
+    role_delete:
+      symbol: tests.testdata.domain.role.cleanup_role
       retry_safe: true
+discovered_candidates:
+  - id: DK-E2E-ROLE-001
+    capability: capabilities.adapters.e2e.role.make_role
+    evidence: tests/e2e/adapters/role.py
+needs_review:
+  - Confirm the on-disk role adapter is safe to promote into L1.
+promotion_checklist:
+  - Run `aa knowledge validate --change <change-id>` before promotion.
 ```
 
 规则：
 
+- 写完 proposal 后必须按 `DataKnowledgeProposal` contract 检查完整 envelope、字段类型和 extra-forbid；不能只校验内层 capability。
 - 不得自由发明 setup script、fixture、auth、cleanup。
 - 如果 capability 缺失，必须记录为 blocker 或 needs_review。
 - 如果 capability 存在但 verify 不完整，必须记录为 needs_review。

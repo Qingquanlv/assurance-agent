@@ -112,6 +112,35 @@ def test_seed_change_rejects_fixture_drift(tmp_path: Path) -> None:
         )
 
 
+def test_seed_change_ignores_transient_runtime_artifacts(tmp_path: Path) -> None:
+    fixtures = _write_synth_fixtures(tmp_path)
+    sample = fixtures / "samples" / "eval-sample-001"
+    transient_files = {
+        "tests/__pycache__/test_synth.cpython-311.pyc": b"bytecode",
+        "tests/orphan.pyc": b"bytecode",
+        "tests/orphan.pyo": b"optimized bytecode",
+        ".pytest_cache/v/cache/nodeids": b"[]",
+        ".ruff_cache/cache": b"ruff",
+        ".mypy_cache/3.11/meta.json": b"{}",
+        ".coverage": b"coverage database",
+        ".DS_Store": b"macOS metadata",
+    }
+    for relative, content in transient_files.items():
+        path = sample / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    result = seed_change(
+        sut_sandbox=tmp_path / "sut",
+        change_id="eval-sample-001",
+        tier_name="L3-run-seed",
+        fixtures_root=fixtures,
+        fixture_id="fixture-001",
+    )
+
+    assert (result.change_dir / "proposal.md").is_file()
+
+
 def test_load_tier_merges_imports_by_entrypoint(tmp_path: Path) -> None:
     fixtures = tmp_path / "eval-fixtures"
     tiers = fixtures / "tiers"

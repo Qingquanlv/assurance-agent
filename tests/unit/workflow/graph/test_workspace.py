@@ -22,7 +22,7 @@ from assurance_agent.workflow.graph.contracts import (
     ResourcePath,
     load_execution_contracts,
 )
-from assurance_agent.workflow.graph.schema_v2 import NodeDef
+from assurance_agent.workflow.graph.schema_v2 import NodeDef, load_workflow_v2
 from assurance_agent.workflow.graph.workspace import (
     TaskWorkspace,
     TreeStore,
@@ -205,8 +205,7 @@ def test_capture_rejects_symlink_escaping_root(tmp_path: Path) -> None:
 
 
 def test_symlinked_host_runtime_dirs_are_excluded_not_rejected(tmp_path: Path) -> None:
-    """``link_host_task_paths`` reattaches ``.venv``/``node_modules`` as symlinks to the
-    host copy; being excluded roots they must be skipped, not treated as escapes."""
+    """Reattached runtime/config roots are skipped, not treated as escapes."""
     project = _make_project(tmp_path)
     host_venv = tmp_path / "host" / ".venv"
     host_venv.mkdir(parents=True)
@@ -216,6 +215,7 @@ def test_symlinked_host_runtime_dirs_are_excluded_not_rejected(tmp_path: Path) -
     workspace = _backend(project).create(task_id="task-a", base_tree_id=base_tree, store=store)
     os.symlink(host_venv, workspace.project_root / ".venv")
     os.symlink(host_venv, workspace.project_root / "node_modules")
+    os.symlink(host_venv, workspace.project_root / ".opencode")
     (workspace.project_root / "tests" / "api" / "test_a.py").write_text("edited\n", encoding="utf-8")
 
     write_set = store.freeze_write_set(workspace, claims=_claims("repo:tests/api/**"))
@@ -324,6 +324,38 @@ def test_api_plan_reviewer_freeze_allows_only_its_declared_outputs(tmp_path: Pat
 
     assert {entry.logical_path for entry in write_set.entries} == set(outputs)
     assert set(write_set.outputs_sha256) == set(outputs)
+
+
+@pytest.mark.parametrize("layer", ["api", "e2e", "fuzz", "performance"])
+def test_codegen_generated_files_manifest_is_a_declared_authorized_output(tmp_path: Path, layer: str) -> None:
+    """A codegen task can publish the generated-files evidence required by checkpoints."""
+    project = _make_project(tmp_path)
+    store = _store(project)
+    base_tree = store.capture(project)
+    workspace = _backend(project).create(
+        task_id=f"{layer}-codegen",
+        base_tree_id=base_tree,
+        store=store,
+    )
+    schema = load_workflow_v2(Path.cwd(), Path("assurance_agent/_resources/schemas/workflow-schema.yaml"))
+    node = schema.graphs[f"{layer}-branch"].nodes["codegen"]
+    claims = load_execution_contracts(Path.cwd()).claims_for(node)
+    summary = f"change:codegen/{layer}-codegen-summary.md"
+    manifest = f"change:codegen/{layer}-generated-files.json"
+    codegen_dir = workspace.change_dir / "codegen"
+    codegen_dir.mkdir(parents=True)
+    (codegen_dir / f"{layer}-codegen-summary.md").write_text("# summary\n", encoding="utf-8")
+    (codegen_dir / f"{layer}-generated-files.json").write_text(
+        '{"schema_version":"1","files":[]}\n', encoding="utf-8"
+    )
+
+    write_set = store.freeze_write_set(
+        workspace,
+        claims=claims,
+        outputs=tuple(node.outputs),
+    )
+
+    assert set(write_set.outputs_sha256) == {summary, manifest}
 
 
 def test_freeze_rejects_missing_declared_output(tmp_path: Path) -> None:
@@ -640,6 +672,81 @@ def test_apply_tree_rejects_untracked_outside_change_dir(tmp_path: Path) -> None
     with pytest.raises(WorkspaceError, match="untracked path"):
         store.apply_tree(project, target, base_tree_id=base_tree)
     assert rogue.read_text() == "out-of-band source\n"  # fail closed，不删源码
+
+
+@pytest.mark.parametrize("namespace", ["qa/retro/retro-other", "qa/improvements/reviews/R-1"])
+def test_apply_tree_preserves_concurrent_runtime_namespace_drift(tmp_path: Path, namespace: str) -> None:
+    project = _make_project(tmp_path)
+    live = project / namespace / "status.json"
+    live.parent.mkdir(parents=True)
+    live.write_text('{"status":"pending"}\n', encoding="utf-8")
+    store = _store(project)
+    backend = _backend(project)
+    base_tree = store.capture(project)
+    write_set = _freeze_change(
+        backend,
+        store,
+        base_tree,
+        "task-a",
+        (("tests/api/test_a.py", "a\n"),),
+        "repo:tests/api/**",
+    )
+    target = store.merge_write_sets((write_set,))
+    live.write_text('{"status":"done"}\n', encoding="utf-8")
+    added = project / namespace / "new.json"
+    added.write_text("{}\n", encoding="utf-8")
+
+    store.apply_tree(project, target, base_tree_id=base_tree)
+
+    assert live.read_text(encoding="utf-8") == '{"status":"done"}\n'
+    assert added.read_text(encoding="utf-8") == "{}\n"
+    assert (project / "tests/api/test_a.py").read_text(encoding="utf-8") == "a\n"
+
+
+def test_apply_tree_rejects_conflict_on_targeted_runtime_namespace_path(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    live = project / "qa/retro/retro-current/status.json"
+    live.parent.mkdir(parents=True)
+    live.write_text('{"status":"pending"}\n', encoding="utf-8")
+    store = _store(project)
+    backend = _backend(project)
+    base_tree = store.capture(project)
+    write_set = _freeze_change(
+        backend,
+        store,
+        base_tree,
+        "task-a",
+        (("qa/retro/retro-current/status.json", '{"status":"committed"}\n'),),
+        "project:qa/retro/retro-current/**",
+    )
+    target = store.merge_write_sets((write_set,))
+    live.write_text('{"status":"concurrent"}\n', encoding="utf-8")
+
+    with pytest.raises(WorkspaceError, match="drift"):
+        store.apply_tree(project, target, base_tree_id=base_tree)
+
+    assert live.read_text(encoding="utf-8") == '{"status":"concurrent"}\n'
+
+
+def test_apply_tree_ignores_macos_ds_store_drift(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    store = _store(project)
+    backend = _backend(project)
+    base_tree = store.capture(project)
+    write_set = _freeze_change(
+        backend,
+        store,
+        base_tree,
+        "task-a",
+        (("tests/api/test_a.py", "a\n"),),
+        "repo:tests/api/**",
+    )
+    target = store.merge_write_sets((write_set,))
+    (project / ".DS_Store").write_bytes(b"macOS metadata")
+
+    store.apply_tree(project, target, base_tree_id=base_tree)
+
+    assert (project / "tests" / "api" / "test_a.py").read_text() == "a\n"
 
 
 def test_apply_tree_converges_after_partial_failure(tmp_path: Path, monkeypatch) -> None:

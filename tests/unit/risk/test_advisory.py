@@ -58,6 +58,49 @@ def test_unknown_evidence_id_fails() -> None:
     assert any("unknown id" in e for e in errors)
 
 
+def test_source_code_evidence_supports_medium_confidence() -> None:
+    advisory = {
+        "schema_version": "1.0",
+        "source_code_evidence": [
+            {
+                "id": "SC-ROUTE-001",
+                "source": "source_code",
+                "type": "api_route",
+                "description": "POST /api/v1/api/create",
+                "parse_confidence_cap": "medium",
+            }
+        ],
+        "watchlist": [{"id": "WL-1", "confidence": "medium", "evidence_ids": ["SC-ROUTE-001"]}],
+        "open_questions_for_case_design": [],
+    }
+
+    ok, errors = validate_advisory(make_context(), advisory, known_case_ids=[])
+
+    assert ok is True, errors
+
+
+def test_source_code_evidence_cannot_support_high_confidence() -> None:
+    advisory = {
+        "schema_version": "1.0",
+        "source_code_evidence": [
+            {
+                "id": "SC-RBAC-001",
+                "source": "source_code",
+                "type": "rbac_role",
+                "description": "permission dependency",
+                "parse_confidence_cap": "medium",
+            }
+        ],
+        "watchlist": [{"id": "WL-1", "confidence": "high", "evidence_ids": ["SC-RBAC-001"]}],
+        "open_questions_for_case_design": [],
+    }
+
+    ok, errors = validate_advisory(make_context(), advisory, known_case_ids=[])
+
+    assert ok is False
+    assert any("confidence high" in error for error in errors)
+
+
 def test_high_confidence_requires_non_empty_evidence_ids() -> None:
     advisory = {
         "schema_version": "1.0",

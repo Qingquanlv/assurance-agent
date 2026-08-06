@@ -83,9 +83,49 @@ def _seed_change(tmp_path: Path, *, final_status: str, healing_status: str) -> P
     (change / "inspect" / "failure-analysis.json").write_text(
         json.dumps({"source_batch_id": "b1", "failures": []}), encoding="utf-8"
     )
+    (change / "inspect" / "trace-sufficiency.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "change_id": CHANGE_ID,
+                "authoritative_batch_id": "b1",
+                "policy_digest": "0" * 64,
+                "as_of": "2026-07-25T00:00:00+00:00",
+                "integrity": "complete",
+                "integrity_blocks_routing": False,
+                "sufficient": True,
+                "has_open_problems": False,
+                "error_code": None,
+                "insufficient_cases": [],
+                "gap_codes": [],
+            }
+        ),
+        encoding="utf-8",
+    )
     (change / "healing" / "status.json").write_text(json.dumps({"status": healing_status}), encoding="utf-8")
     for name in ("case-review", "api-plan-review", "plan-review"):
         (change / "review" / f"{name}.json").write_text(json.dumps({"decision": "pass"}), encoding="utf-8")
+    (change / "inspect" / "metrics.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "2",
+                "change_id": CHANGE_ID,
+                "cadence": "pr",
+                "computed_at": "2026-07-25T00:00:00+00:00",
+                "risk_tier": "low",
+                "risk_tier_lower_bound": "low",
+                "risk_tier_declared": None,
+                "risk_declaration_lowered": False,
+                "risk_lowered_declarations": [],
+                "metrics": {},
+                "collection_gaps": [],
+                "shortboards": [],
+                "floor_ratio": None,
+                "policy_digest": "0" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
     return project
 
 
@@ -180,6 +220,23 @@ def test_archive_runs_the_archiver_when_the_gate_passes(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.reason
     assert (project / "qa" / "archive" / CHANGE_ID / "archive-summary.md").is_file()
+
+
+def test_archive_stops_on_an_open_product_problem_even_when_execution_passed(
+    tmp_path: Path,
+) -> None:
+    project = _seed_change(tmp_path, final_status="PASS", healing_status="not_needed")
+    facts_path = project / "qa" / "changes" / CHANGE_ID / "inspect" / "trace-sufficiency.json"
+    facts = json.loads(facts_path.read_text(encoding="utf-8"))
+    facts["has_open_problems"] = True
+    facts_path.write_text(json.dumps(facts), encoding="utf-8")
+    compiled, contracts = _compile_canonical()
+    runtime = _build_runtime(project, compiled, contracts, NeverCalledInvoker())
+
+    result = runtime.run(compiled, "archive", _context(project))
+
+    assert result.status.status == "stopped", result.reason
+    assert not (project / "qa" / "archive").exists()
 
 
 def _seed_change_with_issues(

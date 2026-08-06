@@ -357,11 +357,22 @@ CORPUS["gate:coverage-repair-entry-gate:skip_when"] = (
 )
 CORPUS["gate:coverage-repair-loop-gate:reject_when"] = (
     ({"execution": {"final_status": "FAIL"}}, {}),
-    ({"execution": {"final_status": "PASS"}}, {}, False),
+    (
+        {
+            "execution": {"final_status": "PASS"},
+            "brief": {"probe_verdict": "needs_human"},
+        },
+        {},
+        False,
+    ),
 )
 CORPUS["gate:coverage-repair-loop-gate:exit_when"] = (
-    ({"brief": {"eligible": False}}, {}),
-    ({"brief": {"eligible": True}}, {}, False),
+    ({"brief": {"eligible": False, "probe_verdict": "pass"}}, {}),
+    ({"brief": {"eligible": True, "probe_verdict": "needs_human"}}, {}, False),
+)
+CORPUS["gate:coverage-repair-loop-gate:skip_when"] = (
+    ({"brief": {"eligible": False, "probe_verdict": "needs_human"}}, {}),
+    ({"brief": {"eligible": False, "probe_verdict": "pass"}}, {}, False),
 )
 CORPUS["gate:coverage-repair-loop-gate:continue_when"] = (
     ({"brief": {"eligible": True}}, {}),

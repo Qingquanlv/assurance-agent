@@ -192,6 +192,7 @@ If `codegen_readiness == "ready_with_warnings"` due to E2E workaround / coverage
 - `tests/e2e/adapters/**/*.py` — **only when** plan + data-knowledge authorize E2E setup/cleanup adapters
 - `tests/e2e/conftest.py` — **only if** plan explicitly requires conftest changes (see below)
 - `qa/changes/<change-id>/codegen/e2e-codegen-summary.md` — always
+- `qa/changes/<change-id>/codegen/e2e-generated-files.json` — always; machine-readable generated-file evidence
 
 ### Test Data Strategy
 
@@ -310,10 +311,34 @@ Update `tests/e2e/conftest.py` **only if** `e2e-codegen-plan.md` explicitly requ
 - [ ] 更新 `tests/e2e/conftest.py`（仅 plan 明确要求时）
 - [ ] 更新 `workflow-state.yaml`（`phases.e2e_codegen` 含 review_gate_file、codegen_readiness、data_setup、fixtures、warnings_carried、known_product_issues）
 - [ ] 创建 `codegen/` 目录（若不存在），写入 `e2e-codegen-summary.md`
+- [ ] 所有测试文件定稿后写入 `e2e-generated-files.json`
 - [ ] **机械命名校验（强制，需留证据）：** 运行 `uv run pytest --collect-only -q <生成的测试文件>`，确认收集到的每个测试名都匹配 `test_<case_id 小写>__<description>` 且覆盖 `Case → Test Function Mapping` 全部 case_id（无视大小写）。将 collect-only 输出粘贴到 `e2e-codegen-summary.md` 的 **Traceability Verification** 段落。若 plan 的 Test Function Mapping 本身缺 case_id 前缀，**不得照抄** —— 本 skill 的命名规则优先于 plan；改名并在 summary 中注明修正。
 - [ ] 输出 E2E Codegen Summary（文件列表 + 下一步）
 
 ## Output Contract
+
+### `codegen/e2e-generated-files.json`
+
+此机器可读证据为必需输出。必须在测试文件定稿后写入，确保 digest 对应最终 bytes；`files` 按 `repo_path` 排序，且不要列出 manifest 或 summary 自身。
+
+```json
+{
+  "schema_version": "1",
+  "change_id": "<change-id>",
+  "layer": "e2e",
+  "files": [
+    {
+      "repo_path": "tests/e2e/test_<module>_e2e.py",
+      "disposition": "generated | modified | reused",
+      "role": "test_entry | support",
+      "case_ids": ["<case-id>"],
+      "content_sha256": "sha256:<64 lowercase hex>"
+    }
+  ]
+}
+```
+
+列出 codegen plan 中每个实际生成、修改或明确复用的 E2E/support 文件。`change_id`、`layer` 必须匹配当前任务；`repo_path` 使用项目相对路径；digest 是文件精确 bytes 的 SHA-256。
 
 ### tests/e2e/test_<module>_e2e.py
 

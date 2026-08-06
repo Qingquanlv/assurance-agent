@@ -21,6 +21,7 @@ runs through the unmodified product code path.
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -360,6 +361,35 @@ def _fake_retro_collect_with_signal(
             "entries": [],
         }
         (retro_dir / "evidence" / f"{domain}-slice.json").write_text(json.dumps(payload), encoding="utf-8")
+    (retro_dir / "signals").mkdir(parents=True, exist_ok=True)
+    for domain in ("discovery", "coverage_gap"):
+        payload = {
+            "schema_version": "3",
+            "retro_id": retro_id,
+            "domain": domain,
+            "window": window,
+            "sources": [],
+            "integrity": {"status": "complete", "reasons": []},
+            "deterministic_signals": [],
+            "entries": [],
+        }
+        slice_bytes = json.dumps(payload).encode("utf-8")
+        (retro_dir / "evidence" / f"{domain}-slice.json").write_bytes(slice_bytes)
+        (retro_dir / "signals" / f"{domain}.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "3",
+                    "retro_id": retro_id,
+                    "domain": domain,
+                    "analysis_status": "ok",
+                    "failure_reason": None,
+                    "analyzer": f"operation:retro-{domain}-deterministic",
+                    "signals": [],
+                    "slice_sha256": "sha256:" + hashlib.sha256(slice_bytes).hexdigest(),
+                }
+            ),
+            encoding="utf-8",
+        )
     return TaskResult(
         status="succeeded",
         value={

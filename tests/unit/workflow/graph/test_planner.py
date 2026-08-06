@@ -377,6 +377,28 @@ graphs:
       - {from: a, to: END}
 """
 
+SUBGRAPH_ABANDONED_REPLAY_GRAPH = """
+schema_version: "2"
+name: planner-subgraph-abandoned-replay
+entrypoints:
+  full: {graph: main}
+graphs:
+  main:
+    max_supersteps: 8
+    nodes:
+      child-shell: {uses: graph:child}
+    edges:
+      - {from: START, to: child-shell}
+      - {from: child-shell, to: END}
+  child:
+    max_supersteps: 4
+    nodes:
+      work: {uses: operation:work}
+    edges:
+      - {from: START, to: work}
+      - {from: work, to: END}
+"""
+
 RECOVERY_GRAPH = """
 schema_version: "2"
 name: planner-recovery
@@ -1407,6 +1429,38 @@ def test_abandoned_with_remaining_budget_is_replanned(tmp_path: Path) -> None:
     plan = _plan(compiled, projection, tmp_path)
     assert [task.task_id for task in plan.tasks] == [original.task_id]
     assert plan.terminal is None
+
+
+def test_exhausted_abandoned_subgraph_shell_gets_one_crash_recovery_replay(
+    tmp_path: Path,
+) -> None:
+    compiled = _compile(SUBGRAPH_ABANDONED_REPLAY_GRAPH)
+    original = _initial_tasks(compiled, tmp_path)["child-shell"]
+    projection = _projection(
+        compiled,
+        tasks=[_task(original, "abandoned", attempts_used=1)],
+    )
+
+    replay = _plan(compiled, projection, tmp_path)
+
+    assert replay.terminal is None
+    assert [task.task_id for task in replay.tasks] == [original.task_id]
+    assert replay.tasks[0].target == "graph:child"
+    assert replay.tasks[0].retry_policy.max_attempts == 2
+
+
+def test_abandoned_subgraph_shell_second_crash_is_terminal(tmp_path: Path) -> None:
+    compiled = _compile(SUBGRAPH_ABANDONED_REPLAY_GRAPH)
+    original = _initial_tasks(compiled, tmp_path)["child-shell"]
+    projection = _projection(
+        compiled,
+        tasks=[_task(original, "abandoned", attempts_used=2)],
+    )
+
+    plan = _plan(compiled, projection, tmp_path)
+
+    assert plan.terminal == "fail"
+    assert plan.tasks == ()
 
 
 def test_stop_outranks_retry_pending(tmp_path: Path) -> None:

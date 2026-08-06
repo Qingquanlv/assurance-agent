@@ -13,8 +13,11 @@ handler 不写 strict events；write-set 的 ledger 持久化归 scheduler（Tas
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from assurance_agent.workflow.core.graph_types import ErrorKind
 from assurance_agent.workflow.graph.agent_api import AgentInvoker, AgentRequest, build_node_prompt
@@ -47,6 +50,62 @@ from assurance_agent.workflow.retro_outputs import (
     complete_candidate_outputs,
     complete_signal_outputs,
 )
+
+_PROTECTED_CANONICAL_AGENT_INPUTS = (Path(".aa/data-knowledge.yaml"),)
+
+
+@dataclass(frozen=True)
+class _CanonicalInputSnapshot:
+    path: Path
+    existed: bool
+    payload: bytes | None
+    mode: int | None
+
+
+def _snapshot_canonical_agent_inputs(context: RuntimeContext) -> tuple[_CanonicalInputSnapshot, ...]:
+    snapshots: list[_CanonicalInputSnapshot] = []
+    for rel in _PROTECTED_CANONICAL_AGENT_INPUTS:
+        path = context.project_root / rel
+        if path.is_file() and not path.is_symlink():
+            snapshots.append(
+                _CanonicalInputSnapshot(
+                    path=path,
+                    existed=True,
+                    payload=path.read_bytes(),
+                    mode=path.stat().st_mode & 0o777,
+                )
+            )
+        else:
+            snapshots.append(_CanonicalInputSnapshot(path=path, existed=False, payload=None, mode=None))
+    return tuple(snapshots)
+
+
+def _restore_escaped_canonical_agent_writes(
+    snapshots: tuple[_CanonicalInputSnapshot, ...],
+) -> tuple[str, ...]:
+    escaped: list[str] = []
+    for snapshot in snapshots:
+        path = snapshot.path
+        current = path.read_bytes() if path.is_file() and not path.is_symlink() else None
+        if snapshot.existed and current == snapshot.payload:
+            continue
+        if not snapshot.existed and current is None and not path.is_symlink():
+            continue
+        escaped.append(path.as_posix())
+        if not snapshot.existed:
+            path.unlink(missing_ok=True)
+            continue
+        assert snapshot.payload is not None
+        assert snapshot.mode is not None
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_name(f".{path.name}.{uuid4().hex}.agent-guard.tmp")
+        try:
+            temp.write_bytes(snapshot.payload)
+            temp.chmod(snapshot.mode)
+            os.replace(temp, path)
+        finally:
+            temp.unlink(missing_ok=True)
+    return tuple(escaped)
 
 
 class AgentHandler:
@@ -107,10 +166,25 @@ class AgentHandler:
             # choice. Name-based routing exists only for legacy/omitted bindings.
             agent=node_def.agent or agent_for_skill(skill),
         )
+        protected_inputs = _snapshot_canonical_agent_inputs(context)
         try:
             result = self._invoker.invoke(request)
         except Exception as exc:  # adapter/plugin boundary must become a typed Graph failure
+            escaped = _restore_escaped_canonical_agent_writes(protected_inputs)
+            if escaped:
+                return task_failure(
+                    "forbidden_write",
+                    "agent escaped task workspace and modified protected canonical input(s): "
+                    + ", ".join(escaped),
+                )
             return task_failure("internal", f"{type(exc).__name__}: {exc}")
+        escaped = _restore_escaped_canonical_agent_writes(protected_inputs)
+        if escaped:
+            return task_failure(
+                "forbidden_write",
+                "agent escaped task workspace and modified protected canonical input(s): "
+                + ", ".join(escaped),
+            )
         if not result.ok:
             return task_failure(
                 result.error_kind or "internal",
@@ -212,18 +286,20 @@ def agent_for_skill(skill: str) -> str | None:
     and never writes) and blocks writes/reads outside the task sandbox.
 
     Mapping is keyword-based so new sibling skills route correctly:
+    - ``aa-explore``                    -> aa-explorer    (explore/ + aa risk)
     - ``*codegen*``                     -> aa-test-author (tests/ + codegen/)
     - ``*reviewer*`` / ``*inspect*``    -> aa-reviewer   (review/ + inspect/)
     - ``*report*``                      -> aa-reporter   (report/)
     - ``*archive*``                     -> aa-archiver   (qa/cases + qa/archive)
-    - explore / case-design / *-plan /
-      *-fixer / fact-baseline /
+    - case-design / *-plan / *-fixer / fact-baseline /
       fix-proposal (the rest)           -> aa-doc-author (authoring/design/plan)
 
     Returns ``None`` for an unknown/empty skill so the adapter keeps its default.
     """
     if not skill:
         return None
+    if skill == "aa-explore":
+        return "aa-explorer"
     if "codegen" in skill:
         return "aa-test-author"
     if "reviewer" in skill or "inspect" in skill:

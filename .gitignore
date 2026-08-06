@@ -20,6 +20,14 @@ benchmark/vue-fastapi-admin/*
 !benchmark/vue-fastapi-admin/eval-fixtures/
 benchmark/vue-fastapi-admin/benchmark/runs/
 benchmark/vue-fastapi-admin/benchmark/resume-logs/
+# The auth-matrix recorder is repo-owned harness code that has to sit in the SUT's
+# test tree to be importable from generated tests, and tests/unit/benchmark asserts
+# its behaviour — so it is tracked while the rest of that generated tree is not.
+!benchmark/vue-fastapi-admin/tests/
+benchmark/vue-fastapi-admin/tests/*
+!benchmark/vue-fastapi-admin/tests/helpers/
+benchmark/vue-fastapi-admin/tests/helpers/*
+!benchmark/vue-fastapi-admin/tests/helpers/auth_matrix_recorder.py
 
 docs/
 

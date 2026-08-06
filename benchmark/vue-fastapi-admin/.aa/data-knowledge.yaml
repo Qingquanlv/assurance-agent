@@ -1,0 +1,401 @@
+# =============================================================================
+# .aa/data-knowledge.yaml - L1 static domain knowledge (canonical)
+# =============================================================================
+# Promoted from planning proposals via `aa knowledge promote`.
+# Proposal metadata (discovered_candidates, needs_review) lives in L2 only.
+# =============================================================================
+
+version: 1
+accounts: {}
+auth:
+  api_admin_token:
+    method: token
+    symbol: tests.api.conftest.admin_token
+    acquire:
+      operation: login_token
+      path: /api/v1/base/access_token
+    notes: 'header: token'
+  api_limited_role_user_token:
+    method: token
+    symbol: tests.api.conftest.limited_role_user_token
+  api_no_role_superuser_token:
+    method: token
+    symbol: tests.api.conftest.no_role_superuser_token
+    notes: Superuser token whose user has no role bindings; used to pin 
+      superuser bypass behavior
+  api_no_role_user_token:
+    method: token
+    symbol: tests.api.conftest.no_role_user_token
+    notes: Non-superuser token whose user has no role bindings
+  e2e_admin_login:
+    method: login
+    symbol: tests.e2e.conftest.e2e_login_admin
+    acquire:
+      path: /login
+      credentials: settings.admin_username/password
+    notes: 'create-if-missing: true'
+  e2e_limited_user_login:
+    method: login
+    symbol: tests.e2e.conftest.e2e_login_limited_user
+    notes: 'depends_on: adapters.e2e.auth.seed_limited_user; create-if-missing: true'
+entities:
+  dept:
+    required_fields:
+      - name
+    constraints:
+      name_non_empty: true
+      name_has_max_length: true
+      name_unique: true
+  role:
+    required_fields:
+      - name
+    constraints:
+      name_non_empty: true
+      name_has_max_length: true
+      name_unique: true
+capabilities:
+  domain_factories:
+    dept:
+      make_dept:
+        kind: async_factory
+        symbol: tests.testdata.domain.dept.make_dept
+        entity: dept
+        returns:
+          id_attr: id
+          name_attr: name
+        cleanup_ref: cleanup.dept_delete
+      cleanup_dept:
+        kind: async_factory
+        symbol: tests.testdata.domain.dept.cleanup_dept
+        retry_safe: true
+      unique_dept_name:
+        kind: helper
+        symbol: tests.testdata.domain.dept.unique_dept_name
+        notes: ORM max_length=20 safe names using settings.dept_prefix
+      get_dept_closure_rows:
+        kind: helper
+        symbol: tests.testdata.domain.dept.get_dept_closure_rows
+        entity: dept
+        notes: Reads ancestor/descendant closure rows for a department
+    user:
+      make_user:
+        kind: async_factory
+        symbol: tests.testdata.domain.user.make_user
+        entity: user
+        cleanup_ref: cleanup.user_delete
+      cleanup_user:
+        kind: async_factory
+        symbol: tests.testdata.domain.user.cleanup_user
+        retry_safe: true
+    role:
+      make_role:
+        kind: async_factory
+        symbol: tests.testdata.domain.role.make_role
+        entity: role
+        cleanup_ref: cleanup.role_delete
+      bind_role_apis:
+        kind: async_factory
+        symbol: tests.testdata.domain.role.bind_role_apis
+        entity: role
+      cleanup_role:
+        kind: async_factory
+        symbol: tests.testdata.domain.role.cleanup_role
+        retry_safe: true
+    api:
+      make_api:
+        kind: async_factory
+        symbol: tests.testdata.domain.api.make_api
+        entity: api
+        returns:
+          id_attr: id
+          path_attr: path
+          method_attr: method
+        cleanup_ref: cleanup.api_delete
+      cleanup_api:
+        kind: async_factory
+        symbol: tests.testdata.domain.api.cleanup_api
+        retry_safe: true
+      list_auth_routes:
+        kind: async_factory
+        symbol: tests.testdata.domain.api.list_auth_routes
+        notes: Reads app.routes with DependPermission for refresh assertions
+    menu:
+      make_menu:
+        kind: async_factory
+        symbol: tests.testdata.domain.menu.make_menu
+        entity: menu
+        returns:
+          id_attr: id
+          name_attr: name
+        cleanup_ref: cleanup.menu_delete
+      cleanup_menu:
+        kind: async_factory
+        symbol: tests.testdata.domain.menu.cleanup_menu
+        retry_safe: true
+        notes: Clears role_menus M2M before hard delete
+      unique_menu_name:
+        kind: helper
+        symbol: tests.testdata.domain.menu.unique_menu_name
+        notes: ORM max_length=20 safe names using settings.menu_prefix
+  adapters:
+    api:
+      api:
+        make_api:
+          kind: isolated_worker
+          symbol: tests.api.adapters.api.factory_make_api
+        cleanup_api:
+          kind: isolated_worker
+          symbol: tests.api.adapters.api.factory_cleanup_api
+        list_auth_routes:
+          kind: isolated_worker
+          symbol: tests.api.adapters.api.factory_list_auth_routes
+      dept:
+        make_dept:
+          kind: isolated_worker
+          symbol: tests.api.adapters.dept.factory_make_dept
+        cleanup_dept:
+          kind: isolated_worker
+          symbol: tests.api.adapters.dept.factory_cleanup_dept
+        get_dept_closure_rows:
+          kind: isolated_worker
+          symbol: tests.api.adapters.dept.factory_get_dept_closure_rows
+      menu:
+        make_menu:
+          kind: isolated_worker
+          symbol: tests.api.adapters.menu.factory_make_menu
+        cleanup_menu:
+          kind: isolated_worker
+          symbol: tests.api.adapters.menu.factory_cleanup_menu
+      role:
+        make_role:
+          kind: isolated_worker
+          symbol: tests.api.adapters.role.factory_make_role
+        bind_role_apis:
+          kind: isolated_worker
+          symbol: tests.api.adapters.role.factory_bind_role_apis
+        cleanup_role:
+          kind: isolated_worker
+          symbol: tests.api.adapters.role.factory_cleanup_role
+      user:
+        make_user:
+          kind: isolated_worker
+          symbol: tests.api.adapters.user.factory_make_user
+        cleanup_user:
+          kind: isolated_worker
+          symbol: tests.api.adapters.user.factory_cleanup_user
+    e2e:
+      api:
+        make_api:
+          kind: isolated_worker
+          symbol: tests.e2e.adapters.api.make_api
+          create-if-missing: true
+          notes: E2E bridge to domain make_api via isolated_worker
+        cleanup_api:
+          kind: isolated_worker
+          symbol: tests.e2e.adapters.api.cleanup_api
+          create-if-missing: true
+          notes: E2E bridge to domain cleanup_api via isolated_worker
+      menu:
+        make_menu:
+          kind: isolated_worker
+          symbol: tests.e2e.adapters.menu.make_menu
+          entity: menu
+        cleanup_menu:
+          kind: isolated_worker
+          symbol: tests.e2e.adapters.menu.cleanup_menu
+          entity: menu
+          retry_safe: true
+      user:
+        make_user:
+          kind: isolated_worker
+          symbol: tests.e2e.adapters.user.make_user
+          entity: user
+        cleanup_user:
+          kind: isolated_worker
+          symbol: tests.e2e.adapters.user.cleanup_user
+          entity: user
+          retry_safe: true
+      dept:
+        make_dept:
+          kind: isolated_worker
+          symbol: tests.e2e.adapters.dept.make_dept
+          create-if-missing: true
+        cleanup_dept:
+          kind: isolated_worker
+          symbol: tests.e2e.adapters.dept.cleanup_dept
+          create-if-missing: true
+        cleanup_by_name:
+          kind: http
+          symbol: tests.e2e.adapters.dept.e2e_cleanup_dept_by_name
+          create-if-missing: true
+          acquire:
+            operation: login_token
+          transport: httpx
+          cleanup_ref: cleanup.dept_delete
+        cleanup_by_id:
+          kind: http
+          symbol: tests.e2e.adapters.dept.e2e_cleanup_dept
+          create-if-missing: true
+      auth:
+        seed_limited_user:
+          kind: isolated_worker
+          symbol: tests.e2e.adapters.auth.e2e_seed_limited_user
+          create-if-missing: true
+          notes: Wraps factory_make_role + factory_bind_role_apis([]) + 
+            factory_make_user
+        cleanup_limited_user:
+          kind: isolated_worker
+          symbol: tests.e2e.adapters.auth.e2e_cleanup_limited_user
+          create-if-missing: true
+      role:
+        bind_role_apis:
+          kind: isolated_worker
+          symbol: tests.e2e.adapters.role.bind_role_apis
+          entity: role
+          create-if-missing: false
+          notes: Used by compose_* helpers for limited / user-mgmt role binding
+        cleanup_role:
+          kind: isolated_worker
+          symbol: tests.e2e.adapters.role.cleanup_role
+          entity: role
+          create-if-missing: false
+          retry_safe: true
+          cleanup_ref: cleanup.role_delete
+        make_role:
+          kind: isolated_worker
+          symbol: tests.e2e.adapters.role.make_role
+          entity: role
+          create-if-missing: false
+          cleanup_ref: cleanup.role_delete
+          notes: On-disk E2E bridge already present; missing from L1 
+            adapters.e2e.role
+    fuzz:
+      api:
+        make_api:
+          kind: isolated_worker
+          symbol: tests.fuzz.adapters.api.fuzz_factory_make_api
+          create-if-missing: false
+          notes: Existing Fuzz bridge to the shared API domain factory
+        cleanup_api:
+          kind: isolated_worker
+          symbol: tests.fuzz.adapters.api.fuzz_factory_cleanup_api
+          create-if-missing: false
+          retry_safe: true
+          notes: Existing Fuzz bridge to idempotent API cleanup
+      dept:
+        make_dept:
+          kind: isolated_worker
+          symbol: tests.fuzz.adapters.dept.fuzz_factory_make_dept
+          create-if-missing: true
+          notes: Fuzz adapter bridge to domain make_dept via isolated_worker
+        cleanup_dept:
+          kind: isolated_worker
+          symbol: tests.fuzz.adapters.dept.fuzz_factory_cleanup_dept
+          create-if-missing: true
+          notes: Fuzz adapter bridge to domain cleanup_dept for seeded update 
+            fuzz
+        cleanup_by_prefix:
+          kind: http
+          symbol: tests.fuzz.adapters.dept.fuzz_cleanup_depts_by_prefix
+          create-if-missing: true
+          notes: Prefix-scoped tree cleanup after dept create fuzz; uses list + 
+            soft delete
+      role:
+        make_role:
+          kind: isolated_worker
+          symbol: tests.fuzz.adapters.role.fuzz_factory_make_role
+          create-if-missing: false
+          notes: Existing Fuzz bridge to the shared role domain factory
+        cleanup_role:
+          kind: isolated_worker
+          symbol: tests.fuzz.adapters.role.fuzz_factory_cleanup_role
+          create-if-missing: false
+          notes: Existing Fuzz bridge to idempotent role cleanup
+      menu:
+        make_menu:
+          kind: isolated_worker
+          symbol: tests.fuzz.adapters.menu.fuzz_factory_make_menu
+          create-if-missing: true
+          notes: Fuzz adapter bridge to domain make_menu via isolated_worker
+        cleanup_menu:
+          kind: isolated_worker
+          symbol: tests.fuzz.adapters.menu.fuzz_factory_cleanup_menu
+          create-if-missing: true
+          notes: Fuzz adapter bridge to domain cleanup_menu for seeded update 
+            fuzz
+        cleanup_by_prefix:
+          kind: http
+          symbol: tests.fuzz.adapters.menu.fuzz_cleanup_menus_by_prefix
+          create-if-missing: true
+          notes: Prefix-scoped tree cleanup after menu create fuzz; clears 
+            role_menus M2M via domain cleanup
+      user:
+        make_user:
+          kind: isolated_worker
+          symbol: tests.fuzz.adapters.user.fuzz_factory_make_user
+          create-if-missing: true
+          notes: Fuzz adapter bridge to domain make_user via isolated_worker
+        cleanup_user:
+          kind: isolated_worker
+          symbol: tests.fuzz.adapters.user.fuzz_factory_cleanup_user
+          create-if-missing: true
+          notes: Fuzz adapter bridge to domain cleanup_user; tracks manifest for
+            create fuzz
+    performance:
+      dept:
+        setup:
+          kind: helper
+          symbol: tests.perf.adapters.dept_seed.setup
+          create-if-missing: true
+          notes: Pre-run 3-level dept tree seed for TC_DEPT_PERF_001; manifest 
+            at tests/perf/adapters/.manifests/dept_seed.json
+        cleanup:
+          kind: helper
+          symbol: tests.perf.adapters.dept_seed.cleanup
+          create-if-missing: true
+          notes: Manifest-driven idempotent cleanup via domain cleanup_dept
+      menu:
+        setup:
+          kind: helper
+          symbol: tests.perf.adapters.menu_seed.setup
+          create-if-missing: true
+          notes: Pre-run 3-level menu tree seed for TC_MENU_PERF_001; manifest 
+            at tests/perf/adapters/.manifests/menu_seed.json
+        cleanup:
+          kind: helper
+          symbol: tests.perf.adapters.menu_seed.cleanup
+          create-if-missing: true
+          notes: Manifest-driven idempotent cleanup via domain cleanup_menu; 
+            clears role_menus M2M
+      system_user:
+        setup:
+          kind: helper
+          symbol: tests.perf.adapters.system_user_seed.setup
+          create-if-missing: true
+          notes: Pre-run bulk user seed for TC_USER_PERF_001; manifest at 
+            tests/perf/adapters/.manifests/system_user_seed.json
+        cleanup:
+          kind: helper
+          symbol: tests.perf.adapters.system_user_seed.cleanup
+          create-if-missing: true
+          notes: Manifest-driven idempotent cleanup via domain cleanup_user
+  cleanup:
+    dept_delete:
+      symbol: tests.testdata.domain.dept.cleanup_dept
+      retry_safe: true
+      notes: 'operation: DELETE /api/v1/dept/delete; param: dept_id'
+    menu_delete:
+      symbol: tests.testdata.domain.menu.cleanup_menu
+      retry_safe: true
+      notes: 'operation: DELETE /api/v1/menu/delete; param: id; Domain cleanup_menu
+        clears role_menus M2M before hard delete'
+    api_delete:
+      symbol: tests.testdata.domain.api.cleanup_api
+      retry_safe: true
+      notes: 'operation: invariant-preserving delete via cleanup_api; param: api_id'
+    user_delete:
+      symbol: tests.testdata.domain.user.cleanup_user
+      retry_safe: true
+    role_delete:
+      symbol: tests.testdata.domain.role.cleanup_role
+      retry_safe: true

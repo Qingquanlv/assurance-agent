@@ -373,6 +373,9 @@ qa/changes/<change-id>/inspect/           ← primary analysis outputs (source o
 ├── failure-analysis.json                ← primary mode only (CLI-written)
 ├── failure-summary.md
 ├── quality-gate-result.json             ← unified gate conclusion (M1; CLI-written)
+├── metrics.json                         ← PR metric vector (workflow materialize; NOT this CLI)
+├── trace-projection.json                ← reconciled traceability facts (workflow-written; NOT this CLI)
+├── trace-sufficiency.json               ← facts the independent trace gate routes on (workflow-written)
 ├── inspection-partial.json              ← fallback partial mode only
 └── inspection-error.json              ← primary CLI failed / outputs missing
 
@@ -380,6 +383,41 @@ qa/changes/<change-id>/execution/         ← optional pointers/copies for downs
 ├── failure-analysis.json                ← pointer/copy (primary mode only)
 └── failure-summary.md                   ← pointer/copy
 ```
+
+## Reconciled Trace Projection and the Independent Trace Gate
+
+After Issue reconciliation the workflow runs `operation:materialize-trace-projection`,
+which publishes two change-level documents beside this skill's outputs:
+
+```text
+qa/changes/<change-id>/inspect/trace-projection.json    ← reconciled facts (cases → tests → executions → open Problems)
+qa/changes/<change-id>/inspect/trace-sufficiency.json   ← integrity / sufficiency / open-problem facts, plus gap codes
+```
+
+Materialization is the last thing the inspect subgraph does; it adjudicates nothing. The
+`trace-sufficiency-gate` reads the second document one level up, in the `assurance` graph
+after `healing` returns (and after the metrics materialize + `metrics-sufficiency-gate`)
+and before `report`, and routes the change to `pass` / `needs_human_review` / `stop`.
+PR metrics are a separate judgement: `operation:materialize-pr-metrics` writes
+`inspect/metrics.json` once after healing, and `metrics-sufficiency-gate` routes on it
+via `evaluate_metrics_sufficiency` — that verdict never rewrites
+`quality-gate-result.json` or `execution-manifest.yaml`. That placement matters for this
+skill: inspection runs again after every healing rerun, so the trace documents are
+rewritten per batch and only the last one is adjudicated. Rules for this skill:
+
+- **Never write, copy, or edit either file.** They are written by the workflow node, not by
+  `aa report inspect`; a skill-authored copy would be indistinguishable from a folded one.
+- **The trace verdict is not the execution verdict.** `quality-gate-result.json.final_status`
+  and `execution/execution-manifest.yaml` state what the *tests* found. The trace gate is a
+  second, independent judgement about whether the evidence behind them is good enough to
+  believe, and it must never cause either document to be rewritten.
+- **Do not pre-empt the gate.** Do not derive a pass/stop conclusion from
+  `trace-sufficiency.json`, and do not report `phases.inspect` as failed because the facts
+  are thin: healing may still fix what they describe, and if it does not, the escalation is a
+  decision for a person, taken at the top-level interrupt with actions `accept_risk` / `stop`.
+- **Read-only if you read them at all.** `integrity` must be read before `sufficient`: an
+  `incomplete` projection means an input could not be read, so its row verdicts (including a
+  vacuous "everything is sufficient" over zero rows) say nothing about this change.
 
 ## CLI Output Missing
 
@@ -613,10 +651,18 @@ qa/changes/<change-id>/inspect/diagnostic-probes.json
 **Allowed output paths:**
 
 ```text
-qa/changes/<change-id>/inspect/**
+qa/changes/<change-id>/inspect/**   (except the two workflow-owned files below)
 qa/changes/<change-id>/execution/failure-analysis.json   (optional pointer/copy, primary mode only)
 qa/changes/<change-id>/execution/failure-summary.md      (optional pointer/copy, primary mode only)
 qa/changes/<change-id>/inspect/diagnostic-probes.json    (probe record)
+```
+
+**Workflow-owned, never written by this skill** (see **Reconciled Trace Projection and the
+Independent Trace Gate**):
+
+```text
+qa/changes/<change-id>/inspect/trace-projection.json
+qa/changes/<change-id>/inspect/trace-sufficiency.json
 ```
 
 **Forbidden during inspect:**

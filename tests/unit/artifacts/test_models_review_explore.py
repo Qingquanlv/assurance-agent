@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from assurance_agent.artifacts.models import Advisory, FactBaseline, Review
+from assurance_agent.artifacts.models import Advisory, CaseReviewAuthoring, FactBaseline, Review
 
 
 def make_review(**overrides: object) -> dict:
@@ -104,6 +104,45 @@ def test_review_missing_findings_fails() -> None:
     del doc["findings"]
     with pytest.raises(ValidationError):
         Review.model_validate(doc)
+
+
+def test_case_review_authoring_requires_independent_product_source() -> None:
+    payload = {
+        **make_review(review_type="case"),
+        "auto_fix_plan": [],
+        "source_verification": {
+            "independent": True,
+            "reviewed_source_files": ["app/api/v1/apis/apis.py"],
+            "verified_claims": [
+                {
+                    "claim": "API management routes require permission checks",
+                    "evidence_files": ["app/api/v1/apis/apis.py"],
+                }
+            ],
+        },
+    }
+    payload.pop("required_capabilities")
+
+    model = CaseReviewAuthoring.model_validate(payload)
+
+    assert model.source_verification.independent is True
+
+
+@pytest.mark.parametrize("path", ["qa/changes/CH-1/proposal.md", "tests/api/test_api.py", "../app.py"])
+def test_case_review_authoring_rejects_non_product_source(path: str) -> None:
+    payload = {
+        **make_review(review_type="case"),
+        "auto_fix_plan": [],
+        "source_verification": {
+            "independent": True,
+            "reviewed_source_files": [path],
+            "verified_claims": [{"claim": "claim", "evidence_files": [path]}],
+        },
+    }
+    payload.pop("required_capabilities")
+
+    with pytest.raises(ValidationError, match="product source|project-relative"):
+        CaseReviewAuthoring.model_validate(payload)
 
 
 def test_review_codegen_readiness_enum_violation_fails() -> None:
