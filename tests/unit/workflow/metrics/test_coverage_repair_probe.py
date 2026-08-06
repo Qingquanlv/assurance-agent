@@ -363,7 +363,7 @@ def test_gap_partitioning_repairable_and_deferred(tmp_path: Path) -> None:
     assert repair_kinds == set(get_args(RepairableGapKind))
     assert len(brief.repair_items) == 4
 
-    deferred_by_reason = {item.reason: item for item in brief.deferred_to_meetup}
+    deferred_by_reason = {item.reason: item for item in brief.deferred_to_intake}
     assert "unmapped_cluster" in deferred_by_reason
     assert deferred_by_reason["unmapped_cluster"].kind == "unmapped_test_cluster"
     assert "declaration_layer" in deferred_by_reason

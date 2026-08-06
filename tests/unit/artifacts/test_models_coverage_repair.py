@@ -41,7 +41,7 @@ def _eligible_brief(**overrides: object) -> dict[str, object]:
         "eligible": True,
         "shortboards": ({"code": "below_floor", "metric": "constraint_coverage", "detail": "0/2"},),
         "repair_items": (_repair_item(),),
-        "deferred_to_meetup": (),
+        "deferred_to_intake": (),
     }
     payload.update(overrides)
     return payload

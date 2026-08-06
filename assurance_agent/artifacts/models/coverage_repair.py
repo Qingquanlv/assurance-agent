@@ -80,7 +80,7 @@ class CoverageRepairBrief(BaseModel):
     eligible: bool
     shortboards: tuple[MetricShortboard, ...] = ()
     repair_items: tuple[RepairItem, ...] = ()
-    deferred_to_meetup: tuple[DeferredItem, ...] = ()
+    deferred_to_intake: tuple[DeferredItem, ...] = ()
     computed_at: datetime | None = None
 
     @model_validator(mode="after")
@@ -100,7 +100,7 @@ class CoverageRepairStatus(BaseModel):
     status: CoverageRepairStatusValue
     attempts_used: int = Field(ge=0)
     last_batch_id: NonEmptyStr | None = None
-    deferred_to_meetup: tuple[DeferredItem, ...] = ()
+    deferred_to_intake: tuple[DeferredItem, ...] = ()
 
 
 class CoverageRepairApplySummary(BaseModel):

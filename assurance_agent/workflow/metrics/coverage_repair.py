@@ -147,10 +147,10 @@ def _render_brief_md(brief: CoverageRepairBrief) -> str:
     else:
         lines.append("_none_")
     lines.extend(["", "## Deferred to intake", ""])
-    if brief.deferred_to_meetup:
+    if brief.deferred_to_intake:
         lines.append("| kind | reason | locator |")
         lines.append("| --- | --- | --- |")
-        for item in brief.deferred_to_meetup:
+        for item in brief.deferred_to_intake:
             locator = _locator_label(item.locator).replace("|", "\\|")
             lines.append(f"| {item.kind} | {item.reason} | {locator} |")
     else:
@@ -212,7 +212,7 @@ def build_repair_brief(
         eligible=bool(repair_items),
         shortboards=decision.shortboards,
         repair_items=repair_items,
-        deferred_to_meetup=deferred,
+        deferred_to_intake=deferred,
         computed_at=computed_at,
     )
 
