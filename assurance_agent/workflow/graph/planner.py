@@ -1763,13 +1763,26 @@ def _activate(
     nid: str,
     tokens: list[str],
 ) -> ExecutableTask:
-    ordinal = sum(1 for task in projection.tasks.values() if task.node_id == nid)
-    # A prior structural skip can occupy generation 0 without creating a task.
-    # Re-activating the same ordinal then conflicts in node_history; bump past it.
+    task_ordinal = sum(1 for task in projection.tasks.values() if task.node_id == nid)
+    task = _build_task(compiled, graph, projection, context, nid, task_ordinal)
+    activation_id = canonical_digest(
+        {
+            "invocation_id": projection.invocation_id,
+            "checkpoint_ns": projection.checkpoint_ns,
+            "graph_id": graph.graph_id,
+            "node_id": nid,
+            "ordinal": task_ordinal,
+        }
+    )
+    generation_ordinal = task_ordinal
     history = projection.node_histories.get(node_history_key(projection.checkpoint_ns, graph.graph_id, nid))
-    if history is not None and history.latest_generation_ordinal >= ordinal:
-        ordinal = history.latest_generation_ordinal + 1
-    task = _build_task(compiled, graph, projection, context, nid, ordinal)
+    if history is not None and history.latest_generation_ordinal >= 0:
+        generation_ordinal = _next_generation_ordinal(projection, graph.graph_id, nid)
+        latest = history.generations_by_ordinal.get(history.latest_generation_ordinal)
+        if latest is not None and latest.status == "activated" and latest.activation_id == activation_id:
+            # The task was planned but has not acquired a scheduler slot yet.
+            # Re-emit the same decision instead of inventing a new generation/task.
+            generation_ordinal = latest.generation_ordinal
     events.append(
         NodeActivatedEvent(
             type="node_activated",
@@ -1777,16 +1790,8 @@ def _activate(
             checkpoint_ns=projection.checkpoint_ns,
             graph_id=graph.graph_id,
             node_id=nid,
-            generation_ordinal=ordinal,
-            activation_id=canonical_digest(
-                {
-                    "invocation_id": projection.invocation_id,
-                    "checkpoint_ns": projection.checkpoint_ns,
-                    "graph_id": graph.graph_id,
-                    "node_id": nid,
-                    "ordinal": ordinal,
-                }
-            ),
+            generation_ordinal=generation_ordinal,
+            activation_id=activation_id,
             input_sha256=canonical_digest({"tokens": sorted(tokens), "task_input_sha256": task.input_sha256}),
             source_reads_sha256=dict(sorted(source_reads.items())),
         )

@@ -39,6 +39,7 @@ from assurance_agent.workflow.graph.models import (
     RuntimeContext,
     TaskProjection,
 )
+from assurance_agent.workflow.graph.node_history import node_history_key
 from assurance_agent.workflow.graph.planner import (
     PlanError,
     apply_state_updates,
@@ -573,6 +574,48 @@ def test_initial_plan_returns_siblings_in_declaration_order(tmp_path: Path) -> N
     assert len(planned) == 1
     assert planned[0].task_ids == [task.task_id for task in plan.tasks]
     assert isinstance(plan.strict_events[-1], SuperstepPlannedEvent)
+
+
+def test_pending_activated_sibling_reuses_its_task_and_generation(tmp_path: Path) -> None:
+    """A sibling waiting for a scheduler slot must not become a new generation."""
+    compiled = _compile(DIAMOND)
+    initial_plan = _plan(compiled, _projection(compiled), tmp_path)
+    initial_tasks = {task.node_id: task for task in initial_plan.tasks}
+    right_activation = next(
+        event
+        for event in initial_plan.strict_events
+        if isinstance(event, NodeActivatedEvent) and event.node_id == "right"
+    )
+    right_history = NodeHistory(
+        latest_generation_ordinal=0,
+        generations_by_ordinal={
+            0: NodeGeneration(
+                generation_ordinal=0,
+                status="activated",
+                activation_id=right_activation.activation_id,
+            )
+        },
+    )
+
+    next_plan = _plan(
+        compiled,
+        _projection(
+            compiled,
+            tasks=[_task(initial_tasks["left"], "succeeded", generation_ordinal=0)],
+            supersteps=1,
+            node_histories={node_history_key("inv-1", "main", "right"): right_history},
+        ),
+        tmp_path,
+    )
+
+    assert [task.node_id for task in next_plan.tasks] == ["right"]
+    assert next_plan.tasks[0].task_id == initial_tasks["right"].task_id
+    repeated_activation = next(
+        event
+        for event in next_plan.strict_events
+        if isinstance(event, NodeActivatedEvent) and event.node_id == "right"
+    )
+    assert repeated_activation.generation_ordinal == 0
 
 
 def test_single_success_unblocks_nothing(tmp_path: Path) -> None:
