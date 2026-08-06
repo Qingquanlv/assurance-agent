@@ -783,6 +783,15 @@ def _deliver_tokens(
             selected.setdefault(target, []).append(descriptor)
             return
         rerouted.setdefault(target, redirect)
+        # When the consumer never succeeds (budget limit 0), successorship on the
+        # consumer stays open forever and would reopen ``exhausted_to`` every
+        # superstep. Absorb only after the divert target has *succeeded* — a
+        # prior structural skip of the same node (common while budget remains)
+        # must not block the real exhausted_to activation.
+        if redirect not in ("END", "STOP", "FAIL") and _node_has_succeeded_generation(
+            projection, graph.graph_id, redirect
+        ):
+            return
         deliver(redirect, f"budget:{target}:exhausted")
 
     # Phase 1: START + ordinary edges（cycle 回边按成功代数门控，避免 pass 后仍被 fix 拉回）。
@@ -1736,6 +1745,11 @@ def _activate(
     tokens: list[str],
 ) -> ExecutableTask:
     ordinal = sum(1 for task in projection.tasks.values() if task.node_id == nid)
+    # A prior structural skip can occupy generation 0 without creating a task.
+    # Re-activating the same ordinal then conflicts in node_history; bump past it.
+    history = projection.node_histories.get(node_history_key(projection.checkpoint_ns, graph.graph_id, nid))
+    if history is not None and history.latest_generation_ordinal >= ordinal:
+        ordinal = history.latest_generation_ordinal + 1
     task = _build_task(compiled, graph, projection, context, nid, ordinal)
     events.append(
         NodeActivatedEvent(
@@ -2089,6 +2103,21 @@ def _node_has_task_or_settled_generation(
     )
 
 
+def _node_has_succeeded_generation(
+    projection: GraphProjection,
+    graph_id: str,
+    nid: str,
+) -> bool:
+    """True when ``nid`` has a succeeded task or a succeeded latest generation."""
+    if any(task.node_id == nid and task.status == "succeeded" for task in projection.tasks.values()):
+        return True
+    history = projection.node_histories.get(node_history_key(projection.checkpoint_ns, graph_id, nid))
+    if history is None or history.latest_generation_ordinal < 0:
+        return False
+    generation = history.generations_by_ordinal.get(history.latest_generation_ordinal)
+    return generation is not None and generation.status == "succeeded"
+
+
 def _succeeded_count(projection: GraphProjection, nid: str) -> int:
     """Count non-child successes for successorship gating.
 
@@ -2189,19 +2218,33 @@ def _incoming_resolved(graph: CompiledGraph, outcomes: dict[str, _Outcome], nid:
     """前驱结果是否全部稳定：edge/route 源 succeeded 或 skipped；START 恒已解决。
 
     budget 消耗点是其 ``exhausted_to`` 目标的潜在 token 源，与 route 源同等处理。
+    A *succeeded* consumer still counts: the next selection of that consumer may
+    divert here when the budget is spent, so structurally skipping the divert
+    target early would collide with the later ``node_activated`` (generation 0).
     """
     for edge in graph.nodes[nid].incoming:
         if edge.from_ != "START" and outcomes[edge.from_].status == "unresolved":
             return False
     for other in graph.nodes.values():
+        budget = other.definition.budget
+        if budget is not None and budget.exhausted_to == nid:
+            # Still open while the consumer is unresolved *or* has run (and may run again).
+            if outcomes[other.node_id].status == "unresolved" or _succeeded_count_simple(
+                outcomes, other.node_id
+            ):
+                return False
+            continue
         if outcomes[other.node_id].status != "unresolved":
             continue
         if any(nid in route.cases.values() or nid == route.default for route in other.routes):
             return False
-        budget = other.definition.budget
-        if budget is not None and budget.exhausted_to == nid:
-            return False
     return True
+
+
+def _succeeded_count_simple(outcomes: Mapping[str, _Outcome], nid: str) -> bool:
+    """Whether ``nid`` has a succeeded outcome in the current plan projection."""
+    outcome = outcomes.get(nid)
+    return outcome is not None and outcome.status == "succeeded"
 
 
 def _satisfied(expression: str, scope: Scope, nid: str) -> bool:

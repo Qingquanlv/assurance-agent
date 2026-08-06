@@ -477,6 +477,9 @@ def _synchronized_ledger_entries(
 
 
 def _entry_at(project_root: Path, rel: str) -> _Entry | None:
+    # Resolve the root so macOS ``/var`` → ``/private/var`` does not false-positive
+    # as an escape when compared against ``target.parent.resolve()``.
+    project_root = project_root.resolve()
     target = project_root / rel
     if not _is_within(target.parent.resolve(), project_root):
         raise WorkspaceError(f"targeted path escapes project root: {rel}")
