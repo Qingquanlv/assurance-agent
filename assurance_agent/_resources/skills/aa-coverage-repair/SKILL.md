@@ -59,14 +59,14 @@ This skill:
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "1",
   "change_id": "<from entry-baseline>",
   "attempt": 1,
   "attempt_token": "<verbatim from entry-baseline>",
   "applied": true,
   "files_modified": ["tests/api/test_<case_id>__constraint_foo.py"],
   "addressed_items": ["<repair_item_id>"],
-  "notes": null
+  "notes": ""
 }
 ```
 
