@@ -496,6 +496,18 @@ def _load_prior_status(change_dir: Path) -> CoverageRepairStatus | None:
         return None
 
 
+def _load_brief_deferred(change_dir: Path) -> tuple[DeferredItem, ...]:
+    """Best-effort deferred list from brief.json (missing/invalid → empty)."""
+    path = Path(change_dir) / COVERAGE_REPAIR_BRIEF_REL
+    if not path.is_file():
+        return ()
+    try:
+        brief = CoverageRepairBrief.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, ValidationError):
+        return ()
+    return brief.deferred_to_intake
+
+
 def allocate_coverage_repair_attempt_operation(
     task: ExecutableTask,
     workspace: TaskWorkspace,
@@ -590,12 +602,19 @@ def record_coverage_repair_status_operation(
 
     change_id = context.change_id or workspace.change_dir.name
     prior = _load_prior_status(workspace.change_dir)
+    # Prefer prior (allocate already froze deferred); else copy from brief so
+    # not_eligible paths that never allocate still surface deferred for retro.
+    deferred = (
+        prior.deferred_to_intake
+        if prior is not None
+        else _load_brief_deferred(workspace.change_dir)
+    )
     status = CoverageRepairStatus(
         change_id=change_id,
         status=raw_status,  # type: ignore[arg-type]
         attempts_used=prior.attempts_used if prior is not None else 0,
         last_batch_id=prior.last_batch_id if prior is not None else None,
-        deferred_to_intake=prior.deferred_to_intake if prior is not None else (),
+        deferred_to_intake=deferred,
     )
     out = workspace.change_dir / COVERAGE_REPAIR_STATUS_REL
     out.parent.mkdir(parents=True, exist_ok=True)

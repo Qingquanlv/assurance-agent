@@ -721,21 +721,16 @@ def test_collection_gap_bypasses_repair_and_blocks_archive(tmp_path: Path) -> No
 
 
 def test_declaration_layer_gap_is_deferred_never_repaired(tmp_path: Path) -> None:
-    """Declaration gaps go to deferred_to_intake; status carries them for retro.
-
-    Allocate must run for status to freeze deferred (record-status without a
-    prior status drops the list), so the seed also includes one execution-layer
-    repairable item that the stub declines.
-    """
+    """Declaration-only gaps: deferred in brief, allocate skipped, status freezes them."""
     project, change_dir = _seed_shortfall_project(
         tmp_path,
-        gaps=[_constraint_gap(layer="execution"), _declaration_gap()],
+        gaps=[_declaration_gap()],
     )
 
     result, activated, briefs = _run_closure(
         project,
         change_dir,
-        script=_declared_noop_script,
+        script=_closure_script,
         post_repair_covered=1,
         post_repair_uncovered=(CONSTRAINT_KEY, "k2", "k3"),
     )
@@ -743,22 +738,24 @@ def test_declaration_layer_gap_is_deferred_never_repaired(tmp_path: Path) -> Non
     assert result.status.status == "completed", result.reason
     assert briefs
     entry_brief = briefs[0]
-    repair_kinds = {item.kind for item in entry_brief.repair_items}
-    assert "constraint_without_property" in repair_kinds
-    assert all(item.locator.case_id != "TC_DECL_001" for item in entry_brief.repair_items)
-    deferred = entry_brief.deferred_to_intake
+    assert entry_brief.eligible is False
+    assert entry_brief.repair_items == ()
     assert any(
         item.reason == "declaration_layer" and item.locator.case_id == "TC_DECL_001"
-        for item in deferred
+        for item in entry_brief.deferred_to_intake
     )
-    assert all(item.kind != "constraint_without_property" or item.reason != "declaration_layer" for item in deferred)
+
+    assert "allocate" not in activated
+    assert "repair" not in activated
+    assert "complete-not-eligible" in activated
 
     status = CoverageRepairStatus.model_validate_json(
         (change_dir / COVERAGE_REPAIR_STATUS_REL).read_text(encoding="utf-8")
     )
-    assert status.status == "exhausted"
+    assert status.status == "not_eligible"
+    assert status.attempts_used == 0
     assert any(
         item.reason == "declaration_layer" and item.locator.case_id == "TC_DECL_001"
         for item in status.deferred_to_intake
     )
-    assert "allocate" in activated
+    assert status.status != "repaired"

@@ -243,6 +243,31 @@ def test_record_status_without_prior_status_still_writes(tmp_path: Path) -> None
     assert status.status == "not_eligible"
     assert status.attempts_used == 0
     assert status.change_id == CHANGE_ID
+    assert status.deferred_to_intake == ()
+
+
+def test_record_status_not_eligible_copies_deferred_from_brief(tmp_path: Path) -> None:
+    """No prior status.json: freeze brief.deferred_to_intake for retro."""
+    project_root, change_dir = _seed_project(tmp_path)
+    deferred = (
+        DeferredItem(
+            kind="uncovered_required_case",
+            locator=CoverageGapLocator(case_id="TC_DECL_001"),
+            reason="declaration_layer",
+        ),
+    )
+    _write_brief(change_dir, eligible=False, deferred=deferred)
+
+    result = record_coverage_repair_status_operation(
+        _record_task("not_eligible"), _workspace(project_root), _context(project_root)
+    )
+    assert result.status == "succeeded"
+    status = _read_status(change_dir)
+    assert status.status == "not_eligible"
+    assert status.attempts_used == 0
+    assert status.deferred_to_intake == deferred
+    assert status.deferred_to_intake[0].locator.case_id == "TC_DECL_001"
+    assert status.deferred_to_intake[0].reason == "declaration_layer"
 
 
 def test_record_status_rejects_unknown_status(tmp_path: Path) -> None:
