@@ -965,8 +965,9 @@ def test_nanosecond_batch_id_is_folded_as_execution_evidence(tmp_path: Path) -> 
     projection = fold_trace(tmp_path, CHANGE_ID)
 
     assert "batch_id_unparseable" not in _gap_codes(projection)
-    assert _row(projection, "TC_API_001").latest_execution is not None
-    assert _row(projection, "TC_API_001").latest_execution.batch_id == batch_id
+    latest = _row(projection, "TC_API_001").latest_execution
+    assert latest is not None
+    assert latest.batch_id == batch_id
 
 
 def test_execution_fold_input_rejects_naive_executed_at() -> None:
