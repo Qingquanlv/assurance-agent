@@ -381,8 +381,7 @@ def test_agent_handler_restores_and_rejects_canonical_l1_escape_write(tmp_path: 
     project = _make_project(tmp_path)
     knowledge = project / ".aa" / "data-knowledge.yaml"
     original = (
-        "version: 1\nentities:\n  dept:\n    constraints:\n"
-        "      name_has_max_length: true\n"
+        "version: 1\nentities:\n  dept:\n    constraints:\n      name_has_max_length: true\n"
     ).encode()
     knowledge.write_bytes(original)
     workspace = _workspace(project)

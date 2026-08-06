@@ -604,11 +604,7 @@ def record_coverage_repair_status_operation(
     prior = _load_prior_status(workspace.change_dir)
     # Prefer prior (allocate already froze deferred); else copy from brief so
     # not_eligible paths that never allocate still surface deferred for retro.
-    deferred = (
-        prior.deferred_to_intake
-        if prior is not None
-        else _load_brief_deferred(workspace.change_dir)
-    )
+    deferred = prior.deferred_to_intake if prior is not None else _load_brief_deferred(workspace.change_dir)
     status = CoverageRepairStatus(
         change_id=change_id,
         status=raw_status,  # type: ignore[arg-type]

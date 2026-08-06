@@ -718,7 +718,6 @@ def _concealment_script(request: AgentRequest, attempt_n: int) -> AgentResult:
 
 def _stale_summary_script(request: AgentRequest, attempt_n: int) -> AgentResult:
     root = Path(request.workspace_root)
-    change = _change_root(root, request.change_id)
     if attempt_n == 1:
         return _clean_repair_script(request, attempt_n)
     # Attempt 2: change a file but leave the attempt-1 summary untouched.

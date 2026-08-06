@@ -740,6 +740,7 @@ def test_retro_closed_loop_contracts_are_least_privilege() -> None:
     assert "project:qa/issues/**" not in reconcile.writes
     assert "project:qa/issues/**" not in reconcile.authorization_writes
 
+
 def test_coverage_repair_contracts_are_declared_and_least_privilege() -> None:
     """Coverage-repair inner loop contracts (design §8.1)."""
     catalog = load_execution_contracts(Path.cwd())
@@ -758,9 +759,7 @@ def test_coverage_repair_contracts_are_declared_and_least_privilege() -> None:
     assert not any(write.startswith("change:inspect/") for write in probe.writes)
 
     safety = catalog.contracts["operation:compute-coverage-repair-safety"]
-    assert not any(
-        read == "change:healing/**" or read.startswith("change:healing/") for read in safety.reads
-    )
+    assert not any(read == "change:healing/**" or read.startswith("change:healing/") for read in safety.reads)
     assert "change:coverage-repair/entry-baseline.json" in safety.reads
     assert {"repo:tests/**", "repo:**", "project:.aa/config.yaml"} <= set(safety.reads)
 
@@ -788,4 +787,3 @@ def test_coverage_repair_contracts_are_declared_and_least_privilege() -> None:
         if "change:inspect/metrics.json" in contract.writes
     }
     assert metrics_writers == {"operation:materialize-pr-metrics"}
-

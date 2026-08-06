@@ -177,9 +177,7 @@ def _seed_shortfall_project(
     project_root, change_dir = _seed_low_risk(tmp_path)
     _seed_batch(change_dir, constraint_covered=constraint_covered)
     if constraint_covered < 4:
-        _rewrite_constraint_coverage(
-            change_dir, BATCH_NEW, covered=constraint_covered, uncovered=uncovered
-        )
+        _rewrite_constraint_coverage(change_dir, BATCH_NEW, covered=constraint_covered, uncovered=uncovered)
     if gaps is not None:
         _write_gaps(change_dir, BATCH_NEW, gaps)
     _write_manifest(change_dir, BATCH_NEW)
@@ -231,7 +229,9 @@ def _compile_closure_harness() -> tuple[CompiledWorkflow, Any, str]:
             ),
             # Packaged reject routing keeps flowing toward report/archive;
             # a stub sink proves reject does not STOP the parent run.
-            "report": NodeDef(uses="operation:materialize-pr-metrics", retry="never", timeout="local-operation"),
+            "report": NodeDef(
+                uses="operation:materialize-pr-metrics", retry="never", timeout="local-operation"
+            ),
         },
         edges=[
             EdgeDef.model_validate({"from": "START", "to": "coverage-repair"}),
@@ -343,9 +343,7 @@ def _tracking_probe(briefs: list[CoverageRepairBrief]) -> Callable[..., TaskResu
         result = real(task, workspace, context)
         brief_path = workspace.change_dir / COVERAGE_REPAIR_BRIEF_REL
         if brief_path.is_file():
-            briefs.append(
-                CoverageRepairBrief.model_validate_json(brief_path.read_text(encoding="utf-8"))
-            )
+            briefs.append(CoverageRepairBrief.model_validate_json(brief_path.read_text(encoding="utf-8")))
         return result
 
     return probe
@@ -498,9 +496,7 @@ def _closure_script(request: AgentRequest, attempt_n: int) -> AgentResult:
     target = root / PROPERTY_TEST
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
-        f"def test_{CONSTRAINT_KEY}_holds():\n"
-        f"    # property: {CONSTRAINT_KEY}\n"
-        f"    assert True\n",
+        f"def test_{CONSTRAINT_KEY}_holds():\n    # property: {CONSTRAINT_KEY}\n    assert True\n",
         encoding="utf-8",
     )
     _write_apply_summary(
@@ -548,9 +544,7 @@ def _run_closure(
 
 
 def test_closure_repairs_constraint_gap_and_metrics_pass(tmp_path: Path) -> None:
-    project, change_dir = _seed_shortfall_project(
-        tmp_path, gaps=[_constraint_gap(layer="execution")]
-    )
+    project, change_dir = _seed_shortfall_project(tmp_path, gaps=[_constraint_gap(layer="execution")])
 
     result, activated, briefs = _run_closure(
         project,
@@ -605,9 +599,7 @@ def test_closure_repairs_constraint_gap_and_metrics_pass(tmp_path: Path) -> None
 
 
 def test_fail_closed_noop_exhausts_and_metrics_need_human(tmp_path: Path) -> None:
-    project, change_dir = _seed_shortfall_project(
-        tmp_path, gaps=[_constraint_gap(layer="execution")]
-    )
+    project, change_dir = _seed_shortfall_project(tmp_path, gaps=[_constraint_gap(layer="execution")])
 
     result, activated, _briefs = _run_closure(
         project,
@@ -625,9 +617,7 @@ def test_fail_closed_noop_exhausts_and_metrics_need_human(tmp_path: Path) -> Non
     assert status.status == "exhausted"
     assert status.attempts_used == 1
 
-    doc = MetricsDocument.model_validate_json(
-        (change_dir / INSPECT_METRICS_REL).read_text(encoding="utf-8")
-    )
+    doc = MetricsDocument.model_validate_json((change_dir / INSPECT_METRICS_REL).read_text(encoding="utf-8"))
     declared = doc.metrics["constraint_coverage"].declared
     assert declared is not None
     assert CONSTRAINT_KEY in declared.uncovered
