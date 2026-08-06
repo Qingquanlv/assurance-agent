@@ -244,6 +244,38 @@ def test_unrelated_test_is_unbriefed(tmp_path: Path) -> None:
     assert check.needs_review is True
 
 
+def test_comment_planted_case_id_does_not_brief_unrelated_path(tmp_path: Path) -> None:
+    """Content-substring briefing must not launder an unbriefed mechanical edit."""
+    project_root, change_dir = _seed_project(tmp_path)
+    baseline = _freeze_baseline(project_root, change_dir)
+    _write_brief(change_dir)
+    _mutate(
+        project_root / UNRELATED_TEST,
+        f"# planted brief token: {CASE_ID}\ndef test_other():\n    assert 1 == 1\n",
+    )
+    _write_summary(change_dir, baseline, files_modified=(UNRELATED_TEST,))
+
+    check = compute_coverage_repair_safety(
+        change_dir=change_dir, project_root=project_root, change_id=CHANGE_ID
+    )
+    assert UNRELATED_TEST in check.unbriefed_files_modified
+    assert check.needs_review is True
+
+
+def test_missing_apply_summary_is_invalid_input(tmp_path: Path) -> None:
+    project_root, change_dir = _seed_project(tmp_path)
+    _freeze_baseline(project_root, change_dir)
+    _write_brief(change_dir)
+    # No apply-summary.json on disk.
+
+    result = compute_coverage_repair_safety_operation(
+        _task(), _workspace(project_root), _context(project_root)
+    )
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_input"
+    assert not (change_dir / COVERAGE_REPAIR_SAFETY_REL).is_file()
+
+
 def test_clean_briefed_repair_passes(tmp_path: Path) -> None:
     project_root, change_dir = _seed_project(tmp_path)
     baseline = _freeze_baseline(project_root, change_dir)

@@ -323,21 +323,20 @@ def _path_explained_by_locators(
     rel: str,
     locators: tuple[CoverageGapLocator, ...],
 ) -> bool:
-    """Whether any briefed locator can explain a mechanically changed test path."""
+    """Whether any briefed locator can explain a mechanically changed test path.
+
+    Matches path/name (and exact ``cluster_key``) only — never file contents.
+    Content-substring briefing would let an agent plant a case_id in a comment
+    on an unrelated edit and launder ``unbriefed_files_modified``.
+    """
     rel_norm = rel.replace("\\", "/").lower()
-    tokens: list[str] = []
     for locator in locators:
-        for token in _locator_tokens(locator):
-            tokens.append(token.lower())
         if locator.cluster_key and _normalize_repo_rel(locator.cluster_key, project_root) == rel:
             return True
-    if any(token in rel_norm for token in tokens):
-        return True
-    try:
-        text = (project_root / rel).read_text(encoding="utf-8").lower()
-    except OSError:
-        return False
-    return any(token in text for token in tokens)
+        for token in _locator_tokens(locator):
+            if token.lower() in rel_norm:
+                return True
+    return False
 
 
 def _load_baseline(change_dir: Path) -> CoverageRepairBaseline:
