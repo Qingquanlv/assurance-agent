@@ -759,6 +759,56 @@ def test_review_warning_produces_review_finding(tmp_path: Path) -> None:
     assert "review/api-plan-review.json" in review_obs[0].evidence_refs[0]
 
 
+def test_review_finding_includes_available_post_codegen_evidence(tmp_path: Path) -> None:
+    change_id = "CH-review-codegen"
+    change_dir = tmp_path / change_id
+    batch_id = "20260725-100010"
+    _write_manifest(change_dir, batch_id=batch_id)
+    _write_api_result(change_dir, batch_id)
+
+    review_dir = change_dir / "review"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    (review_dir / "api-plan-review.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "decision": "pass",
+                "findings": [
+                    {
+                        "type": "codegen",
+                        "severity": "medium",
+                        "message": "Existing test mappings must be realigned by codegen",
+                    }
+                ],
+                "risk_level": "medium",
+            }
+        ),
+        encoding="utf-8",
+    )
+    codegen_dir = change_dir / "codegen"
+    codegen_dir.mkdir(parents=True, exist_ok=True)
+    (codegen_dir / "api-codegen-summary.md").write_text(
+        "Applied: realigned the test mappings.\n", encoding="utf-8"
+    )
+    (codegen_dir / "api-generated-files.json").write_text(
+        json.dumps({"schema_version": "1", "files": []}), encoding="utf-8"
+    )
+
+    result = collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
+
+    review_obs = [o for o in result.observations if o.kind == "review_finding"]
+    assert review_obs
+    for observation in review_obs:
+        assert observation.evidence_refs == [
+            "review/api-plan-review.json",
+            "codegen/api-codegen-summary.md",
+            "codegen/api-generated-files.json",
+        ]
+    manifest_paths = {entry.path for entry in result.manifest.entries}
+    assert "codegen/api-codegen-summary.md" in manifest_paths
+    assert "codegen/api-generated-files.json" in manifest_paths
+
+
 # ---------------------------------------------------------------------------
 # Test: workaround observations from healing apply summaries
 # ---------------------------------------------------------------------------

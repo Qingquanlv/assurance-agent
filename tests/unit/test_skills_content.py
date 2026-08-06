@@ -250,3 +250,11 @@ def test_aa_retro_skill_is_current_run_candidate_boundary() -> None:
     assert "problems.json" not in text
     assert "events.jsonl" not in text
     assert "Optional read-only context" not in text
+
+
+def test_issue_analyzer_reconciles_review_findings_with_post_codegen_evidence() -> None:
+    text = resources.read_text("skills", "aa-issue-analyzer", "SKILL.md")
+
+    assert "point-in-time advisory" in text
+    assert "post-Codegen evidence" in text
+    assert "Do not propose a candidate" in text
