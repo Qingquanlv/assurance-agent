@@ -44,6 +44,7 @@ from assurance_agent.workflow.graph.handlers.operation import (
     OperationHandler,
     default_operations,
 )
+from assurance_agent.workflow.graph.handlers.subgraph import SubgraphHandler
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
@@ -167,6 +168,22 @@ class RecordingInvoker:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("agent output\n", encoding="utf-8")
         return self._result
+
+
+class CanonicalKnowledgeEscapingInvoker(RecordingInvoker):
+    """Simulate a headless model escaping its task cwd and rewriting canonical L1."""
+
+    def __init__(self, project: Path) -> None:
+        super().__init__(write="qa/changes/CH-1/explore/summary.md")
+        self._project = project
+
+    def invoke(self, request: AgentRequest) -> AgentResult:
+        result = super().invoke(request)
+        (self._project / ".aa" / "data-knowledge.yaml").write_text(
+            "version: 1\nentities:\n  dept:\n    constraints:\n      name_has_max_length: 20\n",
+            encoding="utf-8",
+        )
+        return result
 
 
 class RecordingHandler:
@@ -352,12 +369,35 @@ def test_agent_handler_builds_workspace_request_and_freezes(tmp_path: Path) -> N
     assert request.allowed_writes == ("change:explore/**", "change:explore/summary.md")
     assert "Authorized write paths: change:explore/**" in request.prompt
     assert "skill(name='aa-explore')" in request.prompt
-    # explore routes to the bounded authoring worker, not an aggressive default.
-    assert request.agent == "aa-doc-author"
+    # Explore owns the only agent permission for ``aa risk *``.
+    assert request.agent == "aa-explorer"
     # The prompt pins the absolute sandbox cwd so a bash-restricted agent cannot
     # "discover" the canonical project root and resolve outputs outside the sandbox.
     assert str(workspace.root) in request.prompt
     assert "IS this task's project root" in request.prompt
+
+
+def test_agent_handler_restores_and_rejects_canonical_l1_escape_write(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    knowledge = project / ".aa" / "data-knowledge.yaml"
+    original = (
+        "version: 1\nentities:\n  dept:\n    constraints:\n"
+        "      name_has_max_length: true\n"
+    ).encode()
+    knowledge.write_bytes(original)
+    workspace = _workspace(project)
+    handler = _agent_handler(project, CanonicalKnowledgeEscapingInvoker(project))
+
+    result = handler.execute(
+        _task("skill:aa-explore", node_id="explore"),
+        workspace,
+        _context(project),
+    )
+
+    assert result.status == "failed"
+    assert result.error_kind == "forbidden_write"
+    assert ".aa/data-knowledge.yaml" in (result.error or "")
+    assert knowledge.read_bytes() == original
 
 
 def test_agent_handler_prefers_explicit_node_agent_over_name_inference(tmp_path: Path) -> None:
@@ -518,7 +558,7 @@ def test_agent_for_skill_routes_every_workflow_skill() -> None:
     # Authoritative skill -> aa-* worker mapping (see .opencode/agents/*.md
     # "Serves phases"). Wrong routing breaks a node on its permission floor.
     expected = {
-        "aa-explore": "aa-doc-author",
+        "aa-explore": "aa-explorer",
         "aa-case-design": "aa-doc-author",
         "aa-case-fixer": "aa-doc-author",
         "aa-fact-baseline": "aa-doc-author",
@@ -691,6 +731,10 @@ def test_default_operations_registry_has_exact_keys() -> None:
         "operation:run-tests",
         "operation:allocate-healing-attempt",
         "operation:record-healing-status",
+        "operation:probe-coverage-repair-need",
+        "operation:compute-coverage-repair-safety",
+        "operation:allocate-coverage-repair-attempt",
+        "operation:record-coverage-repair-status",
         "operation:inspect",
         "operation:generate-report",
         "operation:stop",
@@ -716,6 +760,8 @@ def test_default_operations_registry_has_exact_keys() -> None:
         "operation:record-project-sync-pending",
         # Issue lifecycle (Task 9-11)
         "operation:reconcile-issues",
+        # Reconciled trace projection + the independent trace-sufficiency gate
+        "operation:materialize-trace-projection",
         # Issue review (Task 12)
         "operation:load-problem-review-context",
         "operation:apply-problem-review",
@@ -731,6 +777,28 @@ def test_default_operations_registry_has_exact_keys() -> None:
         "operation:record-change-improvement-applied",
         "operation:export-knowledge-improvement",
         "operation:record-knowledge-improvement-applied",
+        # Verification metrics M1 (Tasks 5–7): MRC join + PR cadence collectors
+        "operation:materialize-minimum-coverage",
+        "operation:collect-diff-coverage",
+        "operation:compute-constraint-coverage",
+        "operation:compute-auth-matrix",
+        "operation:compute-journey-coverage",
+        "operation:compute-threshold-slack",
+        "operation:collect-pr-metrics-batch",
+        "operation:materialize-pr-metrics",
+        # Nightly metrics carrier (metrics M2 Task 1)
+        "operation:load-latest-pr-metrics",
+        "operation:run-mutation-sample",
+        "operation:compute-assertion-strength",
+        "operation:compute-baseline-drift",
+        "operation:aggregate-nightly-metrics",
+        "operation:evaluate-retrospective-shortboards",
+        # Adversarial discovery yield + flaky quarantine (metrics M3 Tasks 2/4)
+        "operation:collect-adversarial-yield",
+        "operation:materialize-quarantine-projection",
+        # Dual-source Lane B gap signals and the report-only C-layer aggregate (M4)
+        "operation:build-coverage-gap-signals",
+        "operation:materialize-c-layer-metrics",
     }
 
 
@@ -932,6 +1000,9 @@ def test_allocate_healing_attempt_writes_baseline_and_status(tmp_path: Path) -> 
 
 def test_link_host_task_paths_symlinks_events_jsonl(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
+    host_agents = project / ".opencode" / "agents"
+    host_agents.mkdir(parents=True)
+    (host_agents / "aa-explorer.md").write_text("---\nname: aa-explorer\n---\n", encoding="utf-8")
     host_change = project / "qa" / "changes" / "CH-1"
     host_change.mkdir(parents=True, exist_ok=True)
     (host_change / "events.jsonl").write_text('{"seq":1}\n', encoding="utf-8")
@@ -940,6 +1011,37 @@ def test_link_host_task_paths_symlinks_events_jsonl(tmp_path: Path) -> None:
     task_events = workspace.change_dir / "events.jsonl"
     assert task_events.is_symlink()
     assert task_events.resolve() == (host_change / "events.jsonl").resolve()
+    task_opencode = workspace.project_root / ".opencode"
+    assert task_opencode.is_symlink()
+    assert task_opencode.resolve() == (project / ".opencode").resolve()
+    assert (task_opencode / "agents" / "aa-explorer.md").is_file()
+
+
+def test_subgraph_projects_opencode_agents_before_starting_child(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    host_agents = project / ".opencode" / "agents"
+    host_agents.mkdir(parents=True)
+    (host_agents / "aa-explorer.md").write_text("---\nname: aa-explorer\n---\n", encoding="utf-8")
+    workspace = _workspace(project)
+    observed: dict[str, Path] = {}
+
+    def run_child(
+        task: ExecutableTask,
+        graph_id: str,
+        child_workspace: TaskWorkspace,
+        context: RuntimeContext,
+    ) -> TaskResult:
+        assert task.target == "graph:intake"
+        assert graph_id == "intake"
+        observed["opencode"] = child_workspace.project_root / ".opencode"
+        return TaskResult(status="succeeded")
+
+    result = SubgraphHandler(run_child).execute(_task("graph:intake"), workspace, _context(project))
+
+    assert result.status == "succeeded"
+    task_opencode = observed["opencode"]
+    assert task_opencode.is_symlink()
+    assert task_opencode.resolve() == (project / ".opencode").resolve()
 
 
 def test_allocate_healing_attempt_requires_execution_batch(tmp_path: Path) -> None:

@@ -939,12 +939,34 @@ def test_packaged_graph_inspect_before_decide_and_report() -> None:
     schema = _load_packaged_schema()
 
     assurance_edges = _edge_pairs(schema, "assurance")
-    assert ("execution", "inspect-with-issues") in assurance_edges
+    # Task 8 spine: execution → collect-pr-metrics-batch → inspect-with-issues
+    assert ("execution", "collect-pr-metrics-batch") in assurance_edges
+    assert ("collect-pr-metrics-batch", "inspect-with-issues") in assurance_edges
+    assert ("execution", "inspect-with-issues") not in assurance_edges
     assert ("inspect-with-issues", "healing") in assurance_edges
-    assert ("healing", "report") in assurance_edges
+    # After healing: coverage-repair, then materialize authoritative metrics,
+    # then metrics gate, then case-evidence adjudication. `report` is reached
+    # only through the trace gate's routes (pass/reject, or a hash-anchored
+    # human acceptance).
+    assert ("healing", "coverage-repair") in assurance_edges
+    assert ("coverage-repair", "materialize-pr-metrics") in assurance_edges
+    assert ("healing", "materialize-pr-metrics") not in assurance_edges
+    assert ("materialize-pr-metrics", "metrics-sufficiency") in assurance_edges
+    assert ("healing", "trace-sufficiency") not in assurance_edges
+    metrics_route = next(
+        route for route in schema.graphs["assurance"].routes if route.from_ == "metrics-sufficiency"
+    )
+    assert metrics_route.cases["pass"] == "trace-sufficiency"
+    trace_route = next(
+        route for route in schema.graphs["assurance"].routes if route.from_ == "trace-sufficiency"
+    )
+    assert trace_route.cases["pass"] == "report"
+    assert trace_route.cases["reject"] == "report"
 
     healing_edges = _edge_pairs(schema, "healing")
-    assert ("rerun", "inspect-with-issues") in healing_edges
+    assert ("rerun", "collect-pr-metrics-batch") in healing_edges
+    assert ("collect-pr-metrics-batch", "inspect-with-issues") in healing_edges
+    assert ("rerun", "inspect-with-issues") not in healing_edges
     assert ("inspect-with-issues", "decide") in healing_edges
 
     full_reachable = _reachable_graphs(schema, "full")

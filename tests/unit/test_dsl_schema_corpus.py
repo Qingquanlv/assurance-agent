@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from assurance_agent.artifacts.models.policy import Policy
 from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
 from assurance_agent.workflow.orchestration.dsl import MISSING as MISS
 from assurance_agent.workflow.orchestration.dsl import Scope, evaluate, parse_expression
@@ -44,9 +45,60 @@ _DEFAULT_POLICY = {
         "assert_ideal": "warn",
         "capability_keys": "warn",
     },
+    # Deprecated compat binding only — no gate expression may read it (§8).
     "coverage_floor": {"risk_high": 0.9, "risk_medium": 0.7},
     "fuzz": {"required_when_endpoint_has_auth": True},
     "healing": {"auth_module": "require_human"},
+    # `trace-sufficiency-gate` reads `on_insufficient` from here; floors/cadence are
+    # carried so the scope stays a complete stand-in for a loaded policy.
+    "evidence_sufficiency": {
+        "recency_hours": 72,
+        "required_kinds": {
+            "API": ["covered", "execution_recent"],
+            "E2E": ["covered", "execution_recent"],
+            "Fuzz": ["covered", "fuzz_run"],
+            "Performance": ["covered", "perf_run"],
+        },
+        "on_insufficient": "require_human",
+        "floors": {
+            "low": {
+                "constraint_coverage": {"target": "value", "min": 0.5},
+                "auth_matrix_coverage": {"target": "touched", "min": 1.0},
+            },
+            "medium": {
+                "constraint_coverage": {"target": "value", "min": 0.7},
+                "auth_matrix_coverage": {"target": "touched", "min": 1.0},
+                "journey_coverage": {"target": "touched", "min": 1.0},
+            },
+            "high": {
+                "constraint_coverage": {"target": "touched", "min": 1.0},
+                "auth_matrix_coverage": {"target": "touched", "min": 1.0},
+                "journey_coverage": {"target": "touched", "min": 1.0},
+            },
+            "critical": {
+                "constraint_coverage": {"target": "touched", "min": 1.0},
+                "auth_matrix_coverage": {"target": "touched", "min": 1.0},
+                "journey_coverage": {"target": "touched", "min": 1.0},
+                "adversarial_clean": {"target": "holds", "must_hold": True},
+            },
+        },
+        "cadence": {
+            "pr": [
+                "diff_coverage",
+                "constraint_coverage",
+                "auth_matrix_coverage",
+                "journey_coverage",
+                "threshold_slack",
+            ],
+            "nightly": [
+                "mutation_score",
+                "assertion_strength",
+                "adversarial_yield",
+                "baseline_drift",
+            ],
+        },
+        "mutation_budget_seconds": 300,
+    },
 }
 
 
@@ -60,13 +112,35 @@ def _scope(values, resolvers: dict[str, Any]):
     )
 
 
+def test_corpus_default_policy_covers_every_policy_field() -> None:
+    """Adding a Policy field must not leave the corpus scope silently short of it.
+
+    ``version`` is loader bookkeeping and is never a gate constant, so it is the one
+    field the scope does not bind.
+    """
+    assert set(_DEFAULT_POLICY) == set(Policy.model_fields) - {"version"}
+
+
 def test_corpus_scope_binds_every_policy_field() -> None:
     scope = _scope({}, {})
 
     assert evaluate(parse_expression("policy.force_continue_allowed == true"), scope) is True
     assert evaluate(parse_expression("'high' in policy.human_review_risk_levels"), scope) is True
     assert evaluate(parse_expression("policy.plan_checks.assert_ideal == 'warn'"), scope) is True
-    assert evaluate(parse_expression("policy.coverage_floor.risk_high > 0"), scope) is True
+    assert (
+        evaluate(
+            parse_expression("policy.evidence_sufficiency.on_insufficient == 'require_human'"),
+            scope,
+        )
+        is True
+    )
+    assert (
+        evaluate(
+            parse_expression("policy.evidence_sufficiency.mutation_budget_seconds == 300"),
+            scope,
+        )
+        is True
+    )
 
 
 @pytest.mark.parametrize(
@@ -273,6 +347,66 @@ CORPUS["gate:fixer-safety-gate:needs_human_review_when"] = (
     ({}, {}, MISS),
 )
 
+CORPUS["gate:coverage-repair-entry-gate:enter_when"] = (
+    ({"brief": {"eligible": True}}, {}),
+    ({}, {}, MISS),
+)
+CORPUS["gate:coverage-repair-entry-gate:skip_when"] = (
+    ({"brief": {"eligible": False}}, {}),
+    ({}, {}, MISS),
+)
+CORPUS["gate:coverage-repair-loop-gate:reject_when"] = (
+    ({"execution": {"final_status": "FAIL"}}, {}),
+    ({"execution": {"final_status": "PASS"}}, {}, False),
+)
+CORPUS["gate:coverage-repair-loop-gate:exit_when"] = (
+    ({"brief": {"eligible": False}}, {}),
+    ({"brief": {"eligible": True}}, {}, False),
+)
+CORPUS["gate:coverage-repair-loop-gate:continue_when"] = (
+    ({"brief": {"eligible": True}}, {}),
+    ({"brief": {"eligible": False}}, {}, False),
+)
+CORPUS["gate:coverage-repair-safety-gate:needs_human_review_when"] = (
+    (
+        {
+            "safety": {
+                "needs_review": False,
+                "skip_or_xfail_added": False,
+                "stale_summary": True,
+                "unbriefed_files_modified": [],
+            }
+        },
+        {},
+    ),
+    (
+        {
+            "safety": {
+                "needs_review": False,
+                "skip_or_xfail_added": False,
+                "stale_summary": False,
+                "unbriefed_files_modified": [],
+            }
+        },
+        {},
+        False,
+    ),
+)
+CORPUS["gate:coverage-repair-safety-gate:pass_when"] = (
+    (
+        {
+            "safety": {
+                "passed": True,
+                "product_code_modified": False,
+                "declaration_files_modified": False,
+                "skip_or_xfail_added": False,
+            }
+        },
+        {},
+    ),
+    ({}, {}, MISS),
+)
+
 CORPUS["gate:healing-entry-gate:enter_when"] = (
     (
         {
@@ -349,11 +483,13 @@ CORPUS["gate:archive-gate:pass_when"] = (
         {
             **P_FULL,
             "execution": {"final_status": "PASS", "batch_id": "b1"},
+            "trace": {"has_open_problems": False},
             "healing": {"status": "resolved"},
             "case_review": {"decision": "pass"},
             "api_plan_review": {"decision": "pass"},
             "plan_review": {"decision": "pass"},
             "failure_analysis": {"source_batch_id": "b1", "failures": []},
+            "metrics": {"collection_gaps": []},
         },
         {},
     ),
@@ -362,6 +498,56 @@ CORPUS["gate:archive-gate:pass_when"] = (
 CORPUS["gate:archive-gate:stop_when"] = (
     ({"execution": {"final_status": "FAIL"}}, {}),
     ({}, {}, MISS),
+)
+
+
+def _trace(**overrides: object) -> dict[str, object]:
+    """A judged, clean `inspect/trace-sufficiency.json` — the shape the gate reads."""
+    document: dict[str, object] = {
+        "schema_version": "1",
+        "change_id": "CH-1",
+        "authoritative_batch_id": "20260702-111111",
+        "policy_digest": "0" * 64,
+        "as_of": "2026-07-02T11:11:11+00:00",
+        "integrity": "complete",
+        "integrity_blocks_routing": False,
+        "sufficient": True,
+        "has_open_problems": False,
+        "error_code": None,
+        "insufficient_cases": [],
+        "gap_codes": [],
+    }
+    document.update(overrides)
+    return document
+
+
+_THIN_EVIDENCE = _trace(
+    sufficient=False,
+    insufficient_cases=[{"case_id": "TC_API_001", "reason_codes": ["never_run"]}],
+)
+
+# The negative path for each rule is a *fully specified* document rather than a
+# missing alias: the gate's `missing_field_is` already covers absence, and what is
+# worth pinning here is that a healthy document does not satisfy the two failure
+# rules — the direction in which a mistake fails open.
+CORPUS["gate:trace-sufficiency-gate:stop_when"] = (
+    ({"trace": _trace(error_code="policy_error")}, {}),
+    ({"trace": _trace()}, {}, False),
+)
+# True via the policy branch on purpose: it is the only corpus expression that
+# resolves `policy.evidence_sufficiency.on_insufficient`, whose default here is
+# `require_human`.
+CORPUS["gate:trace-sufficiency-gate:needs_human_review_when"] = (
+    ({"trace": _THIN_EVIDENCE}, {}),
+    ({"trace": _trace()}, {}, False),
+)
+CORPUS["gate:trace-sufficiency-gate:reject_when"] = (
+    ({"trace": _trace(has_open_problems=True)}, {}),
+    ({"trace": _trace()}, {}, False),
+)
+CORPUS["gate:trace-sufficiency-gate:pass_when"] = (
+    ({"trace": _trace()}, {}),
+    ({"trace": _THIN_EVIDENCE}, {}, False),
 )
 
 

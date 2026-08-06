@@ -32,6 +32,7 @@ params:
   max_case_fix_attempts: {type: int, default: 3}
   max_plan_fix_attempts: {type: int, default: 3}
   max_healing_attempts: {type: int, default: 3}
+  max_coverage_repair_attempts: {type: int, default: 1}
   auto_archive: {type: bool, default: false}
   force_continue: {type: bool, default: false}
   retro_id: {type: str, default: ""}
@@ -57,6 +58,9 @@ params:
   expected_improvement_version: {type: int, default: 0}
   policy_version: {type: str, default: "1"}
   attempt: {type: int, default: 1}
+  # Nightly mutation sampling budget (seconds). Collectors in M2 Task 3 read this
+  # when non-zero; zero means "use policy.evidence_sufficiency.mutation_budget_seconds".
+  mutation_budget_seconds: {type: int, default: 0}
 
 entrypoints:
   full:
@@ -122,6 +126,13 @@ entrypoints:
     allow: "params.improvement_id != ''"
     with:
       delivery_action: rollback
+  # Nightly oracle-strength metrics (Verification Metrics M2). Repeatable;
+  # runs against the explicit `--change` change_id (CLI-required). Never
+  # reopens a passed PR inspect/metrics.json verdict. Entrypoint allow only
+  # sees params (not context), so change_id is not re-gated here.
+  metrics-nightly:
+    graph: metrics-nightly-workflow
+    restart: repeatable
 
 policies:
   retry:
@@ -290,6 +301,8 @@ graphs:
           writes:
             - project:qa/retro/${params.retro_id}/window.json
             - project:qa/retro/${params.retro_id}/evidence/**
+            - project:qa/retro/${params.retro_id}/signals/discovery.json
+            - project:qa/retro/${params.retro_id}/signals/coverage_gap.json
           synchronized:
             - project:qa/archive/**
             - project:qa/changes/**
@@ -641,7 +654,7 @@ graphs:
     nodes:
       explore:
         uses: skill:aa-explore
-        agent: aa-doc-author
+        agent: aa-explorer
         when: "params.run_mode in ['full', 'case-only']"
         outputs: [change:explore/advisory.json]
         retry: agent-transient
@@ -783,11 +796,82 @@ graphs:
         retry: cli-transient
         timeout: cli
 
+      # Batch-scoped PR metric evidence after each authoritative run-tests
+      # (initial execution, healing.rerun, and coverage-repair.rerun share this
+      # op). Does not write inspect/metrics.json — that is materialize-pr-metrics
+      # once, after coverage-repair returns.
+      collect-pr-metrics-batch:
+        uses: operation:collect-pr-metrics-batch
+        retry: never
+        timeout: local-operation
+
       inspect-with-issues:
         uses: graph:inspect-with-issues
 
       healing:
         uses: graph:healing
+
+      # Coverage shortfall repair loop. Between healing (test failures) and
+      # materialize (authoritative metrics write). Own budget / safety / status;
+      # never writes inspect/metrics.json.
+      coverage-repair:
+        uses: graph:coverage-repair
+
+      # Single authoritative write of inspect/metrics.json from the latest
+      # complete batch. Runs once after coverage-repair returns — aggregates the
+      # post-repair batch and remains the sole writer of that path.
+      materialize-pr-metrics:
+        uses: operation:materialize-pr-metrics
+        outputs:
+          - change:inspect/metrics.json
+        retry: never
+        timeout: local-operation
+
+      # PR metric floors / collection gaps, adjudicated by
+      # evaluate_metrics_sufficiency (no tautological DSL). Independent of
+      # execution final_status and of the quality gate: metrics shortboards must
+      # not masquerade as test failures for healing-loop reject or archive stop.
+      #
+      # Placement matches the trace gate: after healing + coverage-repair
+      # complete (post-fixer aborts STOP inside healing and never return here),
+      # before report.
+      metrics-sufficiency:
+        uses: builtin:gate
+        with: {gate: metrics-sufficiency-gate}
+
+      metrics-sufficiency-review:
+        uses: builtin:interrupt
+        interrupt:
+          reason: "verification metrics sufficiency requires human review"
+          checkpoint: metrics-sufficiency-gate
+          bind: audited_gate_read
+          actions: [accept_risk, stop]
+
+      # Case-evidence sufficiency, adjudicated once, here — after healing has had
+      # its attempts and before the report is written. Independent of the quality
+      # gate on purpose: `final_status` says what the execution found, this says
+      # whether the evidence behind it is good enough to believe (spec M1). A
+      # `stop` therefore pre-empts `report`, which is the accepted sequencing: a
+      # quality report over evidence the gate refused would be the most
+      # authoritative-looking document in the change.
+      #
+      # Reaching this node at all means healing *completed*, and healing only
+      # completes on paths where the facts document describes the tests on disk:
+      # its post-fixer aborts route to `STOP` inside the subgraph rather than
+      # returning here (see the healing routes below).
+      trace-sufficiency:
+        uses: builtin:gate
+        with: {gate: trace-sufficiency-gate}
+
+      trace-sufficiency-review:
+        uses: builtin:interrupt
+        interrupt:
+          reason: "case evidence sufficiency requires human review"
+          checkpoint: trace-sufficiency-gate
+          bind: audited_gate_read
+          # No `fix_and_proceed`: healing has already run and returned by now, so
+          # offering it would route to a node that cannot help.
+          actions: [accept_risk, stop]
 
       report:
         uses: operation:generate-report
@@ -821,10 +905,54 @@ graphs:
       - {from: performance, to: generation-join}
       - {from: generation-join, to: execution, when: "params.run_tests == true"}
       - {from: generation-join, to: END, when: "params.run_tests == false"}
-      - {from: execution, to: inspect-with-issues}
+      - {from: execution, to: collect-pr-metrics-batch}
+      - {from: collect-pr-metrics-batch, to: inspect-with-issues}
       - {from: inspect-with-issues, to: healing}
-      - {from: healing, to: report}
+      - {from: healing, to: coverage-repair}
+      - {from: coverage-repair, to: materialize-pr-metrics}
+      - {from: materialize-pr-metrics, to: metrics-sufficiency}
       - {from: report, to: END}
+
+    routes:
+      - from: metrics-sufficiency
+        select: "node('metrics-sufficiency').gate.verdict"
+        cases:
+          pass: trace-sufficiency
+          skip: trace-sufficiency
+          needs_human_review: metrics-sufficiency-review
+          stop: STOP
+          # A collection gap ("no number to judge") blocks release
+          # (`archive-gate` below now reads `inspect/metrics.json` too) but is
+          # not a reason to end the run before report/archive/retro — mirrors
+          # `trace-sufficiency`'s own `reject: report` a few lines down.
+          reject: trace-sufficiency
+        default: STOP
+
+      - from: metrics-sufficiency-review
+        select: "resume.action"
+        cases:
+          accept_risk: trace-sufficiency
+          stop: STOP
+        default: STOP
+
+      # `report` has no plain incoming edge. Trusted evidence reaches it whether
+      # the quality disposition is pass or reject; unreadable evidence still
+      # stops before a report can look authoritative.
+      - from: trace-sufficiency
+        select: "node('trace-sufficiency').gate.verdict"
+        cases:
+          pass: report
+          needs_human_review: trace-sufficiency-review
+          stop: STOP
+          reject: report
+        default: STOP
+
+      - from: trace-sufficiency-review
+        select: "resume.action"
+        cases:
+          accept_risk: report
+          stop: STOP
+        default: STOP
 
   api-branch:
     max_supersteps: 30
@@ -854,7 +982,9 @@ graphs:
         uses: skill:aa-api-codegen
         agent: aa-test-author
         when: "params.run_mode in ['full','api-only','codegen-only']"
-        outputs: [change:codegen/api-codegen-summary.md]
+        outputs:
+          - change:codegen/api-codegen-summary.md
+          - change:codegen/api-generated-files.json
         retry: agent-transient
         timeout: agent
 
@@ -980,7 +1110,9 @@ graphs:
         uses: skill:aa-e2e-codegen
         agent: aa-test-author
         when: "params.run_mode in ['full','e2e-only','codegen-only']"
-        outputs: [change:codegen/e2e-codegen-summary.md]
+        outputs:
+          - change:codegen/e2e-codegen-summary.md
+          - change:codegen/e2e-generated-files.json
         retry: agent-transient
         timeout: agent
 
@@ -1107,7 +1239,9 @@ graphs:
         uses: skill:aa-fuzz-codegen
         agent: aa-test-author
         when: "params.run_mode in ['full','codegen-only']"
-        outputs: [change:codegen/fuzz-codegen-summary.md]
+        outputs:
+          - change:codegen/fuzz-codegen-summary.md
+          - change:codegen/fuzz-generated-files.json
         retry: agent-transient
         timeout: agent
 
@@ -1201,7 +1335,9 @@ graphs:
         uses: skill:aa-performance-codegen
         agent: aa-test-author
         when: "params.run_mode in ['full','codegen-only']"
-        outputs: [change:codegen/performance-codegen-summary.md]
+        outputs:
+          - change:codegen/performance-codegen-summary.md
+          - change:codegen/performance-generated-files.json
         retry: agent-transient
         timeout: agent
 
@@ -1293,7 +1429,7 @@ graphs:
         recover:
           errors: [timeout, transport, rate_limit, invalid_output]
           via: record-analysis-failure
-          continue_to: inspect-complete
+          continue_to: materialize-trace-projection
 
       record-empty-analysis:
         uses: operation:record-empty-issue-analysis
@@ -1307,7 +1443,13 @@ graphs:
         recover:
           errors: [conflict, transport]
           via: record-project-sync-pending
-          continue_to: inspect-complete
+          # Both recovery writers publish a *degraded* issue snapshot (an
+          # analysis that did not finish, a project sync still pending), and the
+          # reconciled fold reports that as an unusable input. Continuing
+          # straight to completion would leave the change's trace projection
+          # built from data nobody analysed, with no gate to say so — so
+          # recovery rejoins at materialization like every other path.
+          continue_to: materialize-trace-projection
 
       record-analysis-failure:
         uses: operation:record-issue-analysis-failure
@@ -1316,6 +1458,31 @@ graphs:
 
       record-project-sync-pending:
         uses: operation:record-project-sync-pending
+        retry: never
+        timeout: local-operation
+
+      # First point a *reconciled* projection can exist for the change as a
+      # whole: the execution-phase fold is per-batch and predates the Problem
+      # join. Publishes the facts the `trace-sufficiency-gate` routes on — but
+      # this graph does not adjudicate them, and deliberately holds no gate or
+      # interrupt at all. It runs once per authoritative batch, including every
+      # healing rerun, so a verdict reached here would be a verdict about
+      # evidence the fixers have not finished producing: a `stop` would end the
+      # run before healing's own `decide` gate saw the rerun it asked for, and a
+      # `needs_human_review` would suspend the loop mid-attempt. The judgement
+      # happens once, in `assurance`, after healing returns.
+      materialize-trace-projection:
+        uses: operation:materialize-trace-projection
+        outputs:
+          - change:inspect/trace-projection.json
+          - change:inspect/trace-sufficiency.json
+        retry: never
+        timeout: local-operation
+
+      build-coverage-gap-signals:
+        uses: operation:build-coverage-gap-signals
+        outputs:
+          - change:inspect/coverage-gaps.json
         retry: never
         timeout: local-operation
 
@@ -1331,7 +1498,9 @@ graphs:
          when: "node('collect-observations').value.abnormal_count == 0"}
       - {from: record-empty-analysis, to: reconcile-issues}
       - {from: analyze-issues, to: reconcile-issues}
-      - {from: reconcile-issues, to: inspect-complete}
+      - {from: reconcile-issues, to: materialize-trace-projection}
+      - {from: materialize-trace-projection, to: build-coverage-gap-signals}
+      - {from: build-coverage-gap-signals, to: inspect-complete}
       - {from: inspect-complete, to: END}
 
   healing:
@@ -1401,13 +1570,38 @@ graphs:
           reason: "fixer safety requires human review"
           checkpoint: healing.safety
           bind: audited_gate_read
-          actions: [fix_and_proceed, accept_risk, stop]
+          # No `fix_and_proceed`, for two reasons that agree.
+          #
+          # The decision layer never supported it here: `SPECIAL_DECISION_SUPPORT`
+          # maps `healing.safety` to `accept_risk` and `stop` only, and
+          # `latest_valid_gate_decision` explicitly refuses to let any other action
+          # recorded at this checkpoint anchor the `fixer-safety-gate`. Offering it
+          # meant offering a resume action nothing downstream could consume.
+          #
+          # It also reopened the stale-facts hole from the other side. Routing it
+          # back to `proposal` re-entered the healing loop with fixer edits already
+          # written and no rerun since, and the loop has two ordinary completions
+          # that do not pass through `rerun` — `proposal-eligible == false` ->
+          # `complete-skipped`, and an exhausted attempt budget ->
+          # `complete-exhausted`. Either one returned to `assurance` as a normal
+          # completed healing, and `trace-sufficiency` then adjudicated pre-fix
+          # facts. `accept_risk` -> `rerun` remains the way to let already-applied
+          # edits proceed into validation, which is what "another attempt" needs to
+          # mean once the edits exist.
+          actions: [accept_risk, stop]
 
       rerun:
         uses: operation:run-tests
         outputs: [change:execution/execution-manifest.yaml]
         retry: cli-transient
         timeout: cli
+
+      # Same batch collect as assurance.execution — healing must not invent a
+      # second write path for inspect/metrics.json (materialize stays outside).
+      collect-pr-metrics-batch:
+        uses: operation:collect-pr-metrics-batch
+        retry: never
+        timeout: local-operation
 
       inspect-with-issues:
         uses: graph:inspect-with-issues
@@ -1451,7 +1645,8 @@ graphs:
       - {from: fix-api, to: fixer-join}
       - {from: fix-e2e, to: fixer-join}
       - {from: fixer-join, to: safety}
-      - {from: rerun, to: inspect-with-issues}
+      - {from: rerun, to: collect-pr-metrics-batch}
+      - {from: collect-pr-metrics-batch, to: inspect-with-issues}
       - {from: inspect-with-issues, to: decide}
       - {from: complete-not-needed, to: END}
       - {from: complete-resolved, to: END}
@@ -1469,22 +1664,40 @@ graphs:
           reject: complete-failed
         default: complete-failed
 
+      # Post-fixer aborts stop the run rather than returning through
+      # `complete-failed`. By the time control reaches `safety`, `fix-api` /
+      # `fix-e2e` have already written test files and `rerun` has not run, so
+      # `inspect/trace-sufficiency.json` still describes the batch from *before*
+      # those edits. Ending healing normally would hand `assurance` an ordinary
+      # completed healing, and `trace-sufficiency` would then vouch for pre-fix
+      # evidence — passing a change whose tests on disk have never been executed.
+      # Re-materializing here would not close it: sufficiency measures staleness
+      # against the batch's own `executed_at`, so a refold over the same manifest
+      # reproduces the same document, edits or not. The only honest answer is that
+      # nothing has adjudicated this state, so nothing may pass it.
+      #
+      # `complete-failed` stays for the two aborts that are *not* post-fixer:
+      # `entry` (no fixer has run yet) and `decide`'s `reject` (a rerun and a full
+      # re-inspection have run since), where the facts on disk do describe the
+      # tests on disk.
       - from: safety
         select: "node('safety').gate.verdict"
         cases:
           pass: rerun
           needs_human_review: safety-interrupt
-          stop: complete-failed
-          reject: complete-failed
-        default: complete-failed
+          stop: STOP
+          reject: STOP
+        default: STOP
 
+      # Only `rerun` and `STOP` leave this interrupt, which is what makes the
+      # invariant hold: once `fix-api`/`fix-e2e` have written, every route to a
+      # healing completion runs through `rerun`.
       - from: safety-interrupt
         select: "resume.action"
         cases:
           accept_risk: rerun
-          fix_and_proceed: proposal
-          stop: complete-failed
-        default: complete-failed
+          stop: STOP
+        default: STOP
 
       - from: decide
         select: "node('decide').gate.verdict"
@@ -1493,6 +1706,164 @@ graphs:
           continue: proposal
           stop: complete-exhausted
           reject: complete-failed
+        default: complete-failed
+
+  # Coverage-repair inner loop. Not inside `healing`: healing owns FAIL→fixer;
+  # this owns PASS-with-coverage-shortfall→add-tests. Entry and loop use separate
+  # gates so entry never references `status.json` (created only by `allocate`) —
+  # `missing_field_is` runs before `missing_file_is`, so a shared gate would STOP
+  # the ordinary "nothing to repair" first pass. Safety is a private gate with
+  # its own evidence path: reusing `fixer-safety-gate` would STOP when healing
+  # never ran, or vouch for stale healing evidence when it did. The loop stays
+  # inside the subgraph so the main assurance graph remains a DAG. It precedes
+  # `materialize-pr-metrics` so the authoritative write aggregates the
+  # post-repair batch; this subgraph never declares `inspect/metrics.json`.
+  coverage-repair:
+    # Required, no default. 50 matches `healing`; the budget (default 1 attempt)
+    # is the real bound, this is the runaway backstop.
+    max_supersteps: 50
+    budgets:
+      coverage_repair_attempts:
+        limit: "params.max_coverage_repair_attempts"
+
+    nodes:
+      probe-entry:
+        uses: operation:probe-coverage-repair-need
+        retry: never
+        timeout: local-operation
+
+      entry:
+        uses: builtin:gate
+        with: {gate: coverage-repair-entry-gate}
+
+      allocate:
+        uses: operation:allocate-coverage-repair-attempt
+        retry: never
+        timeout: local-operation
+        budget:
+          consume: coverage_repair_attempts
+          "on": committed
+          exhausted_to: complete-exhausted
+
+      repair:
+        uses: skill:aa-coverage-repair
+        agent: aa-test-author
+        outputs:
+          - change:coverage-repair/apply-summary.json
+        retry: agent-transient
+        timeout: agent
+
+      compute-safety:
+        uses: operation:compute-coverage-repair-safety
+        retry: never
+        timeout: local-operation
+
+      safety:
+        uses: builtin:gate
+        with: {gate: coverage-repair-safety-gate}
+
+      safety-interrupt:
+        uses: builtin:interrupt
+        interrupt:
+          reason: "coverage-repair safety requires human review"
+          checkpoint: coverage-repair-safety-gate
+          bind: audited_gate_read
+          # Same invariant as healing: once repair has written, every completion
+          # path must pass through rerun. accept_risk → rerun; stop → STOP.
+          # Checkpoint is the gate id (not a special alias) so
+          # resolve_decision_support / audited_gate_read bind without a
+          # healing.safety-style SPECIAL_DECISION_SUPPORT entry.
+          actions: [accept_risk, stop]
+
+      rerun:
+        uses: operation:run-tests
+        outputs: [change:execution/execution-manifest.yaml]
+        retry: cli-transient
+        timeout: cli
+
+      collect-pr-metrics-batch:
+        uses: operation:collect-pr-metrics-batch
+        retry: never
+        timeout: local-operation
+
+      inspect-with-issues:
+        uses: graph:inspect-with-issues
+
+      probe-loop:
+        uses: operation:probe-coverage-repair-need
+        retry: never
+        timeout: local-operation
+
+      decide:
+        uses: builtin:gate
+        with: {gate: coverage-repair-loop-gate}
+
+      complete-not-eligible:
+        uses: operation:record-coverage-repair-status
+        with: {status: not_eligible}
+        retry: never
+
+      complete-repaired:
+        uses: operation:record-coverage-repair-status
+        with: {status: repaired}
+        retry: never
+
+      complete-exhausted:
+        uses: operation:record-coverage-repair-status
+        with: {status: exhausted}
+        retry: never
+
+      complete-failed:
+        uses: operation:record-coverage-repair-status
+        with: {status: failed}
+        retry: never
+
+    edges:
+      - {from: START, to: probe-entry}
+      - {from: probe-entry, to: entry}
+      - {from: allocate, to: repair}
+      - {from: repair, to: compute-safety}
+      - {from: compute-safety, to: safety}
+      - {from: rerun, to: collect-pr-metrics-batch}
+      - {from: collect-pr-metrics-batch, to: inspect-with-issues}
+      - {from: inspect-with-issues, to: probe-loop}
+      - {from: probe-loop, to: decide}
+      - {from: complete-not-eligible, to: END}
+      - {from: complete-repaired, to: END}
+      - {from: complete-exhausted, to: END}
+      - {from: complete-failed, to: END}
+
+    routes:
+      - from: entry
+        select: "node('entry').gate.verdict"
+        cases:
+          enter: allocate
+          skip: complete-not-eligible
+          stop: complete-failed
+        default: complete-failed
+
+      - from: safety
+        select: "node('safety').gate.verdict"
+        cases:
+          pass: rerun
+          needs_human_review: safety-interrupt
+          stop: STOP
+          reject: STOP
+        default: STOP
+
+      - from: safety-interrupt
+        select: "resume.action"
+        cases:
+          accept_risk: rerun
+          stop: STOP
+        default: STOP
+
+      - from: decide
+        select: "node('decide').gate.verdict"
+        cases:
+          reject: complete-failed
+          exit: complete-repaired
+          continue: allocate
         default: complete-failed
 
   # ---- improvement-evaluate-workflow: memory_patch eval only -------------
@@ -1781,6 +2152,76 @@ graphs:
       - {from: START, to: reconcile-issues}
       - {from: reconcile-issues, to: END}
 
+  # ---- metrics-nightly-workflow: nightly oracle-strength carrier (M2/M3) ----
+  # Explicit change_id via `aa workflow run --change … --entrypoint metrics-nightly`.
+  # Order: load PR metrics → mutation/assertion/perf/yield collectors → aggregate
+  # nightly → retrospective shortboards. Never writes inspect/metrics.json.
+  metrics-nightly-workflow:
+    max_supersteps: 14
+    nodes:
+      load-latest-pr-metrics:
+        uses: operation:load-latest-pr-metrics
+        retry: never
+        timeout: local-operation
+
+      run-mutation-sample:
+        uses: operation:run-mutation-sample
+        retry: never
+        timeout: local-operation
+
+      compute-assertion-strength:
+        uses: operation:compute-assertion-strength
+        retry: never
+        timeout: local-operation
+
+      compute-baseline-drift:
+        uses: operation:compute-baseline-drift
+        retry: never
+        timeout: local-operation
+
+      collect-adversarial-yield:
+        uses: operation:collect-adversarial-yield
+        retry: never
+        timeout: local-operation
+
+      materialize-quarantine-projection:
+        uses: operation:materialize-quarantine-projection
+        outputs:
+          - change:inspect/quarantine-projection.json
+        retry: never
+        timeout: local-operation
+
+      materialize-c-layer-metrics:
+        uses: operation:materialize-c-layer-metrics
+        outputs:
+          - change:inspect/metrics-c-layer.json
+        retry: never
+        timeout: local-operation
+
+      aggregate-nightly-metrics:
+        uses: operation:aggregate-nightly-metrics
+        outputs:
+          - change:inspect/metrics-nightly.json
+        retry: never
+        timeout: local-operation
+
+      evaluate-retrospective-shortboards:
+        uses: operation:evaluate-retrospective-shortboards
+        retry: never
+        timeout: local-operation
+
+    edges:
+      - {from: START, to: load-latest-pr-metrics}
+      - {from: load-latest-pr-metrics, to: run-mutation-sample}
+      - {from: run-mutation-sample, to: compute-assertion-strength}
+      - {from: compute-assertion-strength, to: compute-baseline-drift}
+      - {from: compute-baseline-drift, to: collect-adversarial-yield}
+      - {from: collect-adversarial-yield, to: materialize-quarantine-projection}
+      - {from: materialize-quarantine-projection, to: materialize-c-layer-metrics}
+      - {from: materialize-c-layer-metrics, to: aggregate-nightly-metrics}
+      - {from: aggregate-nightly-metrics, to: evaluate-retrospective-shortboards}
+      - {from: evaluate-retrospective-shortboards, to: END}
+
 gates:
   registry-gate:
     reads: [{ path: registry/skill-registry-check.json, as: registry }]
@@ -1886,8 +2327,6 @@ gates:
       api_plan_review.decision == 'pass'
       and api_plan_review.codegen_readiness in ['ready','ready_with_warnings']
       and capabilities_present(api_plan_review, data_knowledge)
-      and policy.coverage_floor.risk_high > 0
-      and policy.coverage_floor.risk_medium > 0
 
   e2e-plan-review-gate:
     reads:
@@ -2013,6 +2452,59 @@ gates:
       and fixer_safety_check.high_risk_proposal_applied == false
       and policy.healing.auth_module != null
 
+  # Entry adjudication for coverage repair. Reads only `brief.json`, which
+  # `probe-entry` always writes before this gate runs. It must NOT read
+  # `status.json`: that file is created by `allocate`, and gate evaluation applies
+  # `missing_field_is` before `missing_file_is`, so referencing a field in a
+  # not-yet-created file makes the ordinary "nothing to repair" first pass STOP
+  # instead of skip. `eligible` is a stored brief field, not a rule re-derivation.
+  coverage-repair-entry-gate:
+    reads:
+      - { path: coverage-repair/brief.json, as: brief }
+    missing_file_is: stop
+    invalid_json: stop
+    missing_field_is: stop
+    enter_when: "brief.eligible == true"
+    skip_when: "brief.eligible == false"
+
+  # Loop control. Only reachable downstream of `allocate`, so `status.json` is
+  # guaranteed present; `execution-manifest.yaml` has existed since `execution`.
+  # Budget exhaustion is NOT adjudicated here — `allocate`'s `exhausted_to`
+  # owns it, exactly as in healing.
+  coverage-repair-loop-gate:
+    reads:
+      - { path: coverage-repair/brief.json, as: brief }
+      - { path: coverage-repair/status.json, as: repair }
+      - { path: execution/execution-manifest.yaml, as: execution }
+    missing_file_is: stop
+    invalid_json: stop
+    missing_field_is: stop
+    reject_when: "execution.final_status == 'FAIL'"
+    exit_when: "brief.eligible == false"
+    continue_when: "brief.eligible == true"
+
+  # Coverage-repair safety. Deliberately NOT `fixer-safety-gate`: that gate reads
+  # healing/fixer-safety-check.json and stops on a missing file, whose only
+  # producer runs inside healing's apply path. Repair's typical scenario (tests
+  # pass, coverage short) never enters healing, so reuse would STOP every repair;
+  # when healing did run, reuse would vouch for stale evidence.
+  coverage-repair-safety-gate:
+    reads:
+      - { path: coverage-repair/safety-check.json, as: safety }
+    missing_file_is: stop
+    invalid_json: stop
+    missing_field_is: stop
+    needs_human_review_when: >
+      safety.needs_review == true
+      or safety.skip_or_xfail_added == true
+      or safety.stale_summary == true
+      or len(safety.unbriefed_files_modified) > 0
+    pass_when: >
+      safety.passed == true
+      and safety.product_code_modified == false
+      and safety.declaration_files_modified == false
+      and safety.skip_or_xfail_added == false
+
   healing-entry-gate:
     reads:
       - { path: execution/execution-manifest.yaml, as: execution }
@@ -2054,31 +2546,107 @@ gates:
       execution.final_status == 'FAIL'
       and not any(failure_analysis.failures, fix_proposal_eligible == true)
 
+  # PR verification metrics sufficiency. No *_when DSL: floors/cadence/
+  # on_insufficient are consumed by evaluate_metrics_sufficiency (Task 2), and
+  # the runtime maps that decision onto pass / needs_human_review / reject /
+  # stop / skip.
+  # A tautological DSL restating floors would drift from the Python truth table.
+  #
+  # Isolation: this gate never writes execution-manifest / quality-gate artifacts;
+  # healing-loop reject does not read inspect/metrics.json. `archive-gate` does
+  # read it (see below), so a `reject` verdict here still blocks archival even
+  # though the graph keeps flowing to report.
+  metrics-sufficiency-gate:
+    reads:
+      - { path: inspect/metrics.json, as: metrics }
+    missing_file_is: stop
+    invalid_json: stop
+    missing_field_is: stop
+
+  # Case-evidence sufficiency, judged independently of what the execution found.
+  # Reads only the facts document `operation:materialize-trace-projection`
+  # publishes for it: the producer states facts and this gate maps them onto a
+  # verdict, so there is one routing table rather than two that drift.
+  #
+  # Rule order is safety order (declaration order is evaluation order):
+  #   1. stop — nothing trustworthy was judged (`error_code` / blocked
+  #      integrity), or thin evidence a `block` policy refuses.
+  #   2. needs_human_review — thin evidence a `require_human` policy escalates.
+  #   3. reject — trustworthy evidence found an open product bug. Reject blocks
+  #      release but routes onward to the failure report and benchmark analysis.
+  #   4. pass — judged, believable, no open bug, and either sufficient or a
+  #      `warn` policy that accepts the shortfall.
+  # Anything unmatched, unreadable or missing is `stop`: a gate with no verdict
+  # must not be indistinguishable from one that passed.
+  trace-sufficiency-gate:
+    reads:
+      - { path: inspect/trace-sufficiency.json, as: trace }
+    missing_file_is: stop
+    invalid_json: stop
+    missing_field_is: stop
+    stop_when: >
+      trace.error_code != null
+      or trace.integrity_blocks_routing == true
+      or (
+        trace.error_code == null
+        and trace.integrity_blocks_routing == false
+        and trace.sufficient == false
+        and policy.evidence_sufficiency.on_insufficient == 'block'
+      )
+    needs_human_review_when: >
+      trace.error_code == null
+      and trace.integrity_blocks_routing == false
+      and trace.sufficient == false
+      and policy.evidence_sufficiency.on_insufficient == 'require_human'
+    reject_when: >
+      trace.error_code == null
+      and trace.integrity_blocks_routing == false
+      and trace.has_open_problems == true
+    pass_when: >
+      trace.error_code == null
+      and trace.integrity_blocks_routing == false
+      and trace.has_open_problems == false
+      and (
+        trace.sufficient == true
+        or policy.evidence_sufficiency.on_insufficient == 'warn'
+      )
+
   archive-gate:
     reads:
       - { path: execution/execution-manifest.yaml, as: execution }
       - { path: inspect/failure-analysis.json, as: failure_analysis }
+      - { path: inspect/trace-sufficiency.json, as: trace }
       - { path: healing/status.json, as: healing }
       - { path: review/case-review.json, as: case_review }
       - { path: review/api-plan-review.json, as: api_plan_review }
       - { path: review/plan-review.json, as: plan_review }
+      - { path: inspect/metrics.json, as: metrics }
     missing_file_is: stop
     invalid_json: stop
     missing_field_is: stop
     causes:
       archive.execution_failed: "execution.final_status == 'FAIL'"
+      archive.open_product_problem: "trace.has_open_problems == true"
       archive.healing_unsettled: "healing.status in ['applied','exhausted','failed']"
       archive.batch_mismatch: "failure_analysis.source_batch_id != execution.batch_id"
+      # Mirrors `metrics-sufficiency-gate`'s `reject`: a collection gap ("no
+      # number to judge") blocks archival the same way an open Problem does,
+      # instead of being waved through because the graph kept flowing.
+      archive.metrics_collection_gap: "len(metrics.collection_gaps) > 0"
     pass_when: >
       params.auto_archive == true
       and case_review.decision == 'pass'
       and (not ('api' in params.test_types) or api_plan_review.decision == 'pass')
       and (not ('e2e' in params.test_types) or plan_review.decision == 'pass')
       and execution.final_status in ['PASS','PASS_WITH_WARNINGS']
+      and trace.has_open_problems == false
       and healing.status in ['not_needed','resolved','skipped']
       and failure_analysis.source_batch_id == execution.batch_id
       and not any(failure_analysis.failures, fix_proposal_eligible == true)
+      and len(metrics.collection_gaps) == 0
     stop_when: >
       execution.final_status == 'FAIL'
+      or trace.has_open_problems == true
       or healing.status in ['applied','exhausted','failed']
       or failure_analysis.source_batch_id != execution.batch_id
+      or len(metrics.collection_gaps) > 0
