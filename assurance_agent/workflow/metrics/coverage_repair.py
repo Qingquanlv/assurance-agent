@@ -251,7 +251,7 @@ def build_repair_brief(
         )
 
     gaps = _load_coverage_gaps(change_dir)
-    active_shortboards = frozenset(board.metric for board in decision.shortboards)
+    active_shortboards: frozenset[MetricKey] = frozenset(board.metric for board in decision.shortboards)
     repair_items, deferred = _partition_gaps(gaps, active_shortboards)
     allowed_test_files = _allowed_test_files(change_dir)
     if repair_items and not allowed_test_files:

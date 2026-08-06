@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from assurance_agent.artifacts.models.data_knowledge import to_persisted_data_knowledge_proposal
 from assurance_agent.artifacts.models.improvements import (
     DeliveryKind,
     ImprovementCandidate,
@@ -136,7 +137,7 @@ def _projection_with(
         target=candidate.target,
         rationale=candidate.rationale,
         proposed_change=candidate.proposed_change,
-        knowledge_delta=candidate.knowledge_delta,
+        knowledge_delta=to_persisted_data_knowledge_proposal(candidate.knowledge_delta),
         verification=candidate.verification,
         risk=candidate.risk,
         confidence=candidate.confidence,
