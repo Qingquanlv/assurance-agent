@@ -1,3 +1,15 @@
+from assurance_agent.artifacts.models.coverage_repair import (
+    COVERAGE_REPAIR_APPLY_SUMMARY_REL,
+    COVERAGE_REPAIR_BASELINE_REL,
+    COVERAGE_REPAIR_BRIEF_REL,
+    COVERAGE_REPAIR_SAFETY_REL,
+    COVERAGE_REPAIR_STATUS_REL,
+    CoverageRepairApplySummary,
+    CoverageRepairBaseline,
+    CoverageRepairBrief,
+    CoverageRepairSafetyCheck,
+    CoverageRepairStatus,
+)
 from assurance_agent.artifacts.registry import REGISTRY, match_artifact
 
 
@@ -7,6 +19,11 @@ def test_registry_covers_every_expected_artifact_type() -> None:
         "apply_summary",
         "case_yaml",
         "change_issue_snapshot",
+        "coverage_repair_apply_summary",
+        "coverage_repair_baseline",
+        "coverage_repair_brief",
+        "coverage_repair_safety_check",
+        "coverage_repair_status",
         "data_knowledge_proposal",
         "execution_manifest",
         "eval_run_projection_v1",
@@ -43,7 +60,7 @@ def test_registry_covers_every_expected_artifact_type() -> None:
         "workflow_state",
     }
     assert {spec.artifact_type for spec in REGISTRY} == expected
-    assert len(REGISTRY) == 40
+    assert len(REGISTRY) == 45
 
 
 def test_retro_closure_artifacts_match_only_their_run_paths() -> None:
@@ -111,6 +128,41 @@ def test_compat_grades_match_spec_4a() -> None:
     assert grades["issue_analysis_status"] == "must_compat"
     assert grades["issue_reconcile_status"] == "versioned"
     assert grades["change_issue_snapshot"] == "versioned"
+    # must_compat: brief / status / safety-check steer gate routing, and
+    # apply-summary / baseline steer the safety verdict that feeds a gate, so a
+    # document this release cannot fully validate must be refused rather than
+    # read partially and routed as a pass — same rationale already recorded for
+    # metrics_document.
+    assert grades["coverage_repair_brief"] == "must_compat"
+    assert grades["coverage_repair_status"] == "must_compat"
+    assert grades["coverage_repair_safety_check"] == "must_compat"
+    assert grades["coverage_repair_apply_summary"] == "must_compat"
+    assert grades["coverage_repair_baseline"] == "must_compat"
+
+
+def test_coverage_repair_artifacts_resolve_to_their_models_with_must_compat() -> None:
+    # must_compat: brief / status / safety-check steer gate routing, and
+    # apply-summary / baseline steer the safety verdict that feeds a gate, so a
+    # document this release cannot fully validate must be refused rather than
+    # read partially and routed as a pass — same rationale already recorded for
+    # metrics_document.
+    specs = (
+        (COVERAGE_REPAIR_BRIEF_REL, "coverage_repair_brief", CoverageRepairBrief),
+        (COVERAGE_REPAIR_STATUS_REL, "coverage_repair_status", CoverageRepairStatus),
+        (COVERAGE_REPAIR_SAFETY_REL, "coverage_repair_safety_check", CoverageRepairSafetyCheck),
+        (
+            COVERAGE_REPAIR_APPLY_SUMMARY_REL,
+            "coverage_repair_apply_summary",
+            CoverageRepairApplySummary,
+        ),
+        (COVERAGE_REPAIR_BASELINE_REL, "coverage_repair_baseline", CoverageRepairBaseline),
+    )
+    for path, artifact_type, model in specs:
+        spec = match_artifact(path)
+        assert spec is not None, path
+        assert spec.artifact_type == artifact_type
+        assert spec.model is model
+        assert spec.compat == "must_compat"
 
 
 def test_issue_artifact_patterns_match_exact_paths() -> None:

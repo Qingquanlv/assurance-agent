@@ -55,6 +55,13 @@ from assurance_agent.artifacts.models import (
     WorkflowEvidenceSlice,
     WorkflowState,
 )
+from assurance_agent.artifacts.models.coverage_repair import (
+    CoverageRepairApplySummary,
+    CoverageRepairBaseline,
+    CoverageRepairBrief,
+    CoverageRepairSafetyCheck,
+    CoverageRepairStatus,
+)
 from assurance_agent.artifacts.models.plan_checks import PlanCheckDocument
 
 Compat = Literal["must_compat", "versioned", "free"]
@@ -199,6 +206,41 @@ REGISTRY: list[ArtifactSpec] = [
         pattern="inspect/quality-gate-result.json",
         model=QualityGateResult,
         compat="versioned",
+    ),
+    # must_compat: brief / status / safety-check steer gate routing, and
+    # apply-summary / baseline steer the safety verdict that feeds a gate, so a
+    # document this release cannot fully validate must be refused rather than
+    # read partially and routed as a pass — same rationale already recorded for
+    # metrics_document.
+    ArtifactSpec(
+        artifact_type="coverage_repair_brief",
+        pattern="coverage-repair/brief.json",
+        model=CoverageRepairBrief,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="coverage_repair_status",
+        pattern="coverage-repair/status.json",
+        model=CoverageRepairStatus,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="coverage_repair_safety_check",
+        pattern="coverage-repair/safety-check.json",
+        model=CoverageRepairSafetyCheck,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="coverage_repair_apply_summary",
+        pattern="coverage-repair/apply-summary.json",
+        model=CoverageRepairApplySummary,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="coverage_repair_baseline",
+        pattern="coverage-repair/entry-baseline.json",
+        model=CoverageRepairBaseline,
+        compat="must_compat",
     ),
     ArtifactSpec(
         artifact_type="observation_document",
