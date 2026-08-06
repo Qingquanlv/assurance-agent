@@ -416,6 +416,41 @@ def test_gap_metric_mapping_matches_the_floor_each_kind_can_repair(tmp_path: Pat
     )
 
 
+def test_allowed_files_only_include_targets_selected_for_the_rerun(tmp_path: Path) -> None:
+    project_root, change_dir = _seed_low_risk(tmp_path)
+    _seed_batch(change_dir, constraint_covered=1)
+    (change_dir / "plans" / "e2e-codegen-plan.md").write_text(
+        "## Test Function Mapping\n\n| Case | Test |\n| --- | --- |\n"
+        "| TC_E2E_001 | `tests/e2e/test_management.py` |\n",
+        encoding="utf-8",
+    )
+    (change_dir / "workflow-state.yaml").write_text(
+        "selected_targets: {api: true, e2e: false, fuzz: false, performance: false}\n",
+        encoding="utf-8",
+    )
+    _write_gaps(
+        change_dir,
+        BATCH_NEW,
+        [
+            {
+                "kind": "constraint_without_property",
+                "locator": {"constraint_key": "entities.dept.constraints.name_unique"},
+                "layer": "execution",
+                "batch_id": BATCH_NEW,
+            }
+        ],
+    )
+
+    brief = build_repair_brief(
+        change_dir=change_dir,
+        project_root=project_root,
+        change_id=CHANGE_ID,
+        computed_at=COMPUTED_AT,
+    )
+
+    assert brief.allowed_test_files == ("tests/api/test_management.py",)
+
+
 def test_missing_coverage_gaps_yields_ineligible(tmp_path: Path) -> None:
     project_root, change_dir = _seed_low_risk(tmp_path)
     _seed_batch(change_dir, constraint_covered=1)

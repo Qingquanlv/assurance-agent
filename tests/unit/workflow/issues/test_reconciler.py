@@ -475,6 +475,40 @@ def test_later_complete_authoritative_batch_resolves_verification_pending_proble
     assert resolved[0].disposition == "PR-42"
 
 
+def test_later_nanosecond_batch_in_same_second_resolves_pending_problem() -> None:
+    requested_batch_id = "20260725-100000-000000001"
+    pending = _make_existing_problem(status="verification_pending", version=2).model_copy(
+        update={
+            "verification_request": ProblemVerificationRequest(
+                requested_at="2026-07-25T10:00:00Z",
+                change_id="CH-fix",
+                batch_id=requested_batch_id,
+                linked_fix_disposition="PR-42",
+                verification_scope=["test-case-1"],
+                evidence_digest="sha256:" + "c" * 64,
+            )
+        }
+    )
+    batch_id = "20260725-100000-000000002"
+
+    plan = _plan(
+        _make_candidate_doc([], batch_id=batch_id),
+        _make_observations(batch_id=batch_id),
+        snapshot=_empty_snapshot(batch_id=requested_batch_id),
+        problems=_problems_with(pending),
+        verification_evidence={
+            "batch_id": batch_id,
+            "selected_targets": ["api"],
+            "passed_targets": ["api"],
+            "executed_cases": ["test-case-1"],
+            "passed_cases": ["test-case-1"],
+            "evidence_digest": "sha256:" + "d" * 64,
+        },
+    )
+
+    assert len([event for event in plan.problem_events if event.type == "problem_resolved"]) == 1
+
+
 def test_earlier_batch_cannot_resolve_verification_pending_problem() -> None:
     pending = _make_existing_problem(status="verification_pending", version=2).model_copy(
         update={

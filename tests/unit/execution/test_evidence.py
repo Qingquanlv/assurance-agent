@@ -19,10 +19,15 @@ from assurance_agent.workflow.execution.results import CoverageResult, ResultSou
 from assurance_agent.workflow.report.quality_gate import build_quality_gate
 
 
-def make_api(passed: int = 2, failed: int = 0) -> TargetResult:
+def make_api(
+    passed: int = 2,
+    failed: int = 0,
+    *,
+    batch_id: str = "20260715-000000",
+) -> TargetResult:
     return TargetResult(
         change_id="CH-1",
-        batch_id="20260715-000000",
+        batch_id=batch_id,
         target="api",
         status="failed" if failed else "passed",
         command="cmd",
@@ -36,10 +41,14 @@ def make_api(passed: int = 2, failed: int = 0) -> TargetResult:
     )
 
 
-def make_cov(available: bool = True) -> CoverageResult:
+def make_cov(
+    available: bool = True,
+    *,
+    batch_id: str = "20260715-000000",
+) -> CoverageResult:
     return CoverageResult(
         change_id="CH-1",
-        batch_id="20260715-000000",
+        batch_id=batch_id,
         available=available,
         line_coverage=90.0,
         branch_coverage=80.0,
@@ -51,9 +60,10 @@ def make_cov(available: bool = True) -> CoverageResult:
 def publish(tmp_path: Path, api: TargetResult, cov: CoverageResult | None):
     execution_dir = tmp_path / "execution"
     api_result = api
+    batch_id = api.batch_id
     gate = build_quality_gate(
         change_id="CH-1",
-        batch_id="20260715-000000",
+        batch_id=batch_id,
         api=api_result,
         e2e=None,
         coverage=cov,
@@ -62,7 +72,7 @@ def publish(tmp_path: Path, api: TargetResult, cov: CoverageResult | None):
     manifest = publish_execution_evidence(
         execution_dir=execution_dir,
         change_id="CH-1",
-        batch_id="20260715-000000",
+        batch_id=batch_id,
         selected_targets=SelectedTargets(api=True, e2e=False, fuzz=False, performance=False),
         api=api_result,
         e2e=None,
@@ -98,6 +108,19 @@ def test_load_evidence_round_trips(tmp_path: Path) -> None:
     assert evidence.quality_gate is not None
     assert evidence.quality_gate.final_status == "FAIL"
     assert evidence.integrity_issues == []
+
+
+def test_load_evidence_accepts_generated_nanosecond_batch_id(tmp_path: Path) -> None:
+    batch_id = "20260806-222614-768233000"
+    execution_dir, _ = publish(
+        tmp_path,
+        make_api(batch_id=batch_id),
+        make_cov(batch_id=batch_id),
+    )
+
+    evidence = load_execution_evidence(execution_dir, batch_id=batch_id)
+
+    assert evidence.batch_id == batch_id
 
 
 def test_load_missing_manifest_raises(tmp_path: Path) -> None:

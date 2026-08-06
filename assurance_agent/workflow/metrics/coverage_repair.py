@@ -47,6 +47,7 @@ from assurance_agent.change_location import resolve_change
 from assurance_agent.evidence.metrics_sufficiency import evaluate_metrics_sufficiency
 from assurance_agent.workflow.execution.evidence import atomic_write_bytes
 from assurance_agent.workflow.execution.scope import resolve_test_paths
+from assurance_agent.workflow.execution.selection import resolve_selected_targets
 from assurance_agent.workflow.execution.tree_hash import (
     diff_trees,
     hash_product_tree,
@@ -151,7 +152,10 @@ def _partition_gaps(
 def _allowed_test_files(change_dir: Path) -> tuple[str, ...]:
     """Return exactly the codegen-plan paths that ``run_change`` will execute."""
     paths: set[str] = set()
+    selected = resolve_selected_targets(change_dir)
     for target in ("api", "e2e", "fuzz", "performance"):
+        if not getattr(selected, target):
+            continue
         resolved = resolve_test_paths(change_dir, target)
         if resolved is not None:
             paths.update(resolved)

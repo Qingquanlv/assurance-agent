@@ -28,7 +28,6 @@ integrity issues.
 """
 
 import os
-import re
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -36,6 +35,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel
 
+from assurance_agent.artifacts.batch_id import is_valid_batch_id
 from assurance_agent.artifacts.models import ExecutionManifest, QualityGateResult, SelectedTargets
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.execution.results import (
@@ -69,9 +69,6 @@ _LATEST_COPIES: tuple[str, ...] = (
 
 class EvidenceError(AaError):
     pass
-
-
-_BATCH_ID_RE = re.compile(r"[0-9]{8}-[0-9]{6}")
 
 
 class IntegrityIssue(BaseModel):
@@ -317,7 +314,7 @@ def load_execution_evidence(
     *,
     batch_id: str | None = None,
 ) -> ExecutionEvidence:
-    if batch_id is not None and not _BATCH_ID_RE.fullmatch(batch_id):
+    if batch_id is not None and not is_valid_batch_id(batch_id):
         raise EvidenceError(f"unsafe execution batch id: {batch_id!r}")
     manifest_path = (
         execution_dir / "execution-manifest.yaml"
@@ -331,7 +328,7 @@ def load_execution_evidence(
     except (OSError, ValueError, yaml.YAMLError) as err:
         raise EvidenceError(f"execution-manifest.yaml invalid: {err}") from err
 
-    if not _BATCH_ID_RE.fullmatch(manifest.batch_id):
+    if not is_valid_batch_id(manifest.batch_id):
         raise EvidenceError(f"unsafe manifest batch id: {manifest.batch_id!r}")
     if batch_id is not None and manifest.batch_id != batch_id:
         raise EvidenceError(

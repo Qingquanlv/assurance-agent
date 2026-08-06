@@ -40,6 +40,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from assurance_agent.artifacts.batch_id import parse_batch_id
 from assurance_agent.artifacts.models.issues import (
     IssueAnalysisStatus,
     IssueCandidateDocument,
@@ -600,10 +601,9 @@ def _verification_scope_passed(scope: Sequence[str], evidence: VerificationEvide
 
 def _is_later_execution_batch(candidate_batch_id: str, request_batch_id: str) -> bool:
     """Compare authoritative timestamp batch IDs; unparseable IDs never auto-close."""
-    try:
-        candidate = datetime.strptime(candidate_batch_id, "%Y%m%d-%H%M%S")
-        requested = datetime.strptime(request_batch_id, "%Y%m%d-%H%M%S")
-    except ValueError:
+    candidate = parse_batch_id(candidate_batch_id)
+    requested = parse_batch_id(request_batch_id)
+    if candidate is None or requested is None:
         return False
     return candidate > requested
 

@@ -60,13 +60,18 @@ import hashlib
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Literal, TypeVar
 
 import yaml
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
 
+from assurance_agent.artifacts.batch_id import (
+    BATCH_ID_FORMAT_DESCRIPTION,
+    BatchIdInstant,
+    parse_batch_id as parse_batch_id_instant,
+)
 from assurance_agent.artifacts.canonical import canonical_json_bytes
 from assurance_agent.artifacts.models.execution import SelectedTargets
 from assurance_agent.artifacts.models.trace import (
@@ -104,7 +109,6 @@ PROJECT_PROBLEMS_SOURCE = "project:qa/issues/problems.json"
 GAP_DETAIL_MISSING = "missing:"
 GAP_DETAIL_INVALID = "invalid:"
 
-_BATCH_ID_FORMAT = "%Y%m%d-%H%M%S"
 _PYTEST_TARGETS: tuple[TraceTarget, ...] = ("api", "e2e", "fuzz")
 _ALL_TARGETS: tuple[TraceTarget, ...] = ("api", "e2e", "fuzz", "performance")
 _CASE_TYPE_TARGET: Mapping[TraceCaseType, TraceTarget] = {
@@ -361,7 +365,7 @@ class IssuesSnapshotDocument(BaseModel):
         all, so any difference between them counts as unanalyzed rather than
         guessed in the direction that passes.
         """
-        analysed = _parse_batch_id(analysed_batch_id)
+        analysed = _batch_order_key(analysed_batch_id)
         unanalyzed = {
             observation.batch_id
             for observation in self.observations
@@ -557,18 +561,24 @@ class _Fold:
 
 
 def _parse_batch_id(batch_id: str) -> datetime | None:
-    """Legacy recency source: a time-encoded batch id, stamped UTC.
+    """Fallback recency source: a time-encoded batch id, stamped UTC.
 
     The value is an approximation (the batch id carries no zone), which is why
     rows built from it report ``ts_source="batch_id_legacy_utc"``.
     """
-    try:
-        return datetime.strptime(batch_id, _BATCH_ID_FORMAT).replace(tzinfo=UTC)
-    except ValueError:
-        return None
+    parsed = parse_batch_id_instant(batch_id)
+    return parsed.as_datetime() if parsed is not None else None
 
 
-def _is_analysed_before(batch_id: str, analysed_batch_id: str, analysed: datetime | None) -> bool:
+def _batch_order_key(batch_id: str) -> BatchIdInstant | None:
+    return parse_batch_id_instant(batch_id)
+
+
+def _is_analysed_before(
+    batch_id: str,
+    analysed_batch_id: str,
+    analysed: BatchIdInstant | None,
+) -> bool:
     """Whether ``batch_id`` is strictly older than the analysed batch.
 
     ``False`` whenever the two cannot be ordered — an unparseable id on either
@@ -579,7 +589,7 @@ def _is_analysed_before(batch_id: str, analysed_batch_id: str, analysed: datetim
     """
     if analysed is None:
         return False
-    parsed = _parse_batch_id(batch_id)
+    parsed = _batch_order_key(batch_id)
     if parsed is None:
         return False
     return parsed < analysed and batch_id != analysed_batch_id
@@ -760,7 +770,7 @@ def _read_batches(
                 "batch_id_unparseable",
                 f"execution/runs/{batch_id}",
                 batch_id=batch_id,
-                detail=f"directory name is not {_BATCH_ID_FORMAT}",
+                detail=f"directory name is not {BATCH_ID_FORMAT_DESCRIPTION}",
             )
             continue
 
@@ -838,7 +848,7 @@ def _report_missing_current_results(
             "batch_id_unparseable",
             MANIFEST_FOLD_VIEW_SOURCE,
             batch_id=view.batch_id,
-            detail=f"authoritative batch id is not {_BATCH_ID_FORMAT}",
+            detail=f"authoritative batch id is not {BATCH_ID_FORMAT_DESCRIPTION}",
         )
         return
 

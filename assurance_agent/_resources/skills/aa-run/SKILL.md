@@ -394,7 +394,7 @@ Structure:
 ```yaml
 schema_version: "1.0"
 change_id: <change-id>
-batch_id: <YYYYMMDD-HHmmss>
+batch_id: <YYYYMMDD-HHmmss-nnnnnnnnn>（历史证据中的秒级 ID 仍可读取）
 selected_targets:
   api: true | false
   e2e: true | false

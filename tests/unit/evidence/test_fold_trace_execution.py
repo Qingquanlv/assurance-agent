@@ -956,6 +956,19 @@ def test_every_execution_timestamp_is_timezone_aware(tmp_path: Path) -> None:
         assert execution.ts.utcoffset() is not None
 
 
+def test_nanosecond_batch_id_is_folded_as_execution_evidence(tmp_path: Path) -> None:
+    batch_id = "20260702-111111-000000123"
+    change_dir = _simple_change(tmp_path)
+    _write_manifest(change_dir, batch_id)
+    _write_result(change_dir, batch_id, "api", [("TC_API_001", "passed")])
+
+    projection = fold_trace(tmp_path, CHANGE_ID)
+
+    assert "batch_id_unparseable" not in _gap_codes(projection)
+    assert _row(projection, "TC_API_001").latest_execution is not None
+    assert _row(projection, "TC_API_001").latest_execution.batch_id == batch_id
+
+
 def test_execution_fold_input_rejects_naive_executed_at() -> None:
     with pytest.raises(ValueError, match="aware"):
         ExecutionFoldInput(
