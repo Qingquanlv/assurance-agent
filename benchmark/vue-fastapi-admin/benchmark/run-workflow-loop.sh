@@ -1079,18 +1079,8 @@ for item in "${BENCHMARK_ITEMS[@]}"; do
   record_item_result "$change_id" "completed" "final_status=$final_status" "archived=$archived"
 done
 
-retro_id="$RETRO_ID"
-signal_count=""
-change_count=""
-improvement_count=""
-retro_result="technical_failure"
-retro_batch_id="$RUNSTAMP"
-retro_improvement_ids=""
-retro_outbox_id=""
-retro_collect_exit=""
-retro_review_queue=""
-knowledge_promotion_status="not_run"
-if batch_members_settled "$BATCH_MANIFEST"; then
+# BEGIN batch knowledge promotion boundary
+run_batch_knowledge_promotion_boundary() {
   if promote_batch_knowledge_proposals "$AA_BIN" "$BATCH_MANIFEST" "${BATCH_CHANGE_IDS[@]}"; then
     knowledge_promotion_status="completed"
     log "knowledge proposal promotion boundary check complete"
@@ -1116,6 +1106,22 @@ if batch_members_settled "$BATCH_MANIFEST"; then
     retro_collect_exit="skipped"
     log "knowledge proposal promotion failed at Batch boundary"
   fi
+}
+# END batch knowledge promotion boundary
+
+retro_id="$RETRO_ID"
+signal_count=""
+change_count=""
+improvement_count=""
+retro_result="technical_failure"
+retro_batch_id="$RUNSTAMP"
+retro_improvement_ids=""
+retro_outbox_id=""
+retro_collect_exit=""
+retro_review_queue=""
+knowledge_promotion_status="not_run"
+if batch_members_settled "$BATCH_MANIFEST"; then
+  run_batch_knowledge_promotion_boundary
 else
   retro_result="skipped_nonterminal_batch"
   retro_collect_exit="skipped"

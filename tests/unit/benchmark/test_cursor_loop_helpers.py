@@ -27,6 +27,42 @@ def _run_helper(tmp_path: Path, command: str) -> subprocess.CompletedProcess[str
     )
 
 
+def _run_opencode_batch_boundary(tmp_path: Path, promotion_exit: int) -> subprocess.CompletedProcess[str]:
+    source = _OPENCODE_LOOP.read_text(encoding="utf-8")
+    function_start = source.find("run_batch_knowledge_promotion_boundary() {")
+    function_end = source.find("# END batch knowledge promotion boundary", function_start)
+    function_source = source[function_start:function_end] if function_start >= 0 else ""
+    call_log = tmp_path / "boundary-calls.log"
+    command = f"""
+set -e
+{function_source}
+CALL_LOG={shlex.quote(str(call_log))}
+PROMOTION_EXIT={promotion_exit}
+promote_batch_knowledge_proposals() {{ printf '%s\\n' promote >>"$CALL_LOG"; return "$PROMOTION_EXIT"; }}
+run_retro_collect() {{ printf '%s\\n' retro >>"$CALL_LOG"; return 0; }}
+capture_retro_artifacts() {{ printf '%s\\n' capture >>"$CALL_LOG"; return 1; }}
+run_benchmark_eval() {{ printf '%s\\n' eval >>"$CALL_LOG"; return 0; }}
+log() {{ :; }}
+AA_BIN=aa
+BATCH_MANIFEST=batch-manifest.json
+BATCH_CHANGE_IDS=(CH-A)
+RETRO_ID=retro-1
+DO_BENCHMARK_EVAL=true
+knowledge_promotion_status=not_run
+retro_result=technical_failure
+retro_collect_exit=""
+run_batch_knowledge_promotion_boundary
+printf '%s|%s|%s\\n' "$knowledge_promotion_status" "$retro_result" "$retro_collect_exit"
+"""
+    return subprocess.run(
+        ["bash", "-c", command],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def _unused_local_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -321,7 +357,32 @@ def test_knowledge_promotion_runs_only_after_batch_members_settle(tmp_path: Path
     assert call_log.read_text(encoding="utf-8").splitlines() == ["knowledge promote --change CH-A --yes"]
 
 
-def test_opencode_loop_gates_retro_on_knowledge_promotion_and_preserves_agents() -> None:
+def test_opencode_batch_boundary_runs_retro_and_eval_after_successful_promotion(
+    tmp_path: Path,
+) -> None:
+    result = _run_opencode_batch_boundary(tmp_path, promotion_exit=0)
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "boundary-calls.log").read_text(encoding="utf-8").splitlines() == [
+        "promote",
+        "retro",
+        "capture",
+        "eval",
+    ]
+    assert result.stdout == "completed|technical_failure|0\n"
+
+
+def test_opencode_batch_boundary_skips_retro_and_eval_after_failed_promotion(
+    tmp_path: Path,
+) -> None:
+    result = _run_opencode_batch_boundary(tmp_path, promotion_exit=1)
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "boundary-calls.log").read_text(encoding="utf-8").splitlines() == ["promote"]
+    assert result.stdout == "failed|skipped_knowledge_promotion_failed|skipped\n"
+
+
+def test_opencode_loop_reports_and_gates_knowledge_promotion() -> None:
     source = _OPENCODE_LOOP.read_text(encoding="utf-8")
 
     assert 'knowledge_promotion_status="not_run"' in source
@@ -329,15 +390,43 @@ def test_opencode_loop_gates_retro_on_knowledge_promotion_and_preserves_agents()
     assert 'knowledge_promotion_status="failed"' in source
     assert 'retro_result="skipped_knowledge_promotion_failed"' in source
     assert 'benchmark_knowledge_promotion_exit_code "$knowledge_promotion_status"' in source
+
+
+def test_opencode_loop_preserves_opencode_agents_and_five_item_defaults() -> None:
+    source = _OPENCODE_LOOP.read_text(encoding="utf-8")
+    driver = source[source.index("run_driver() {") : source.index("\n}", source.index("run_driver() {"))]
+    retro_agent = source[
+        source.index("opencode_agent_cmd_prefix() {") : source.index(
+            "\n}", source.index("opencode_agent_cmd_prefix() {")
+        )
+    ]
+    archive_agent = source[
+        source.index("run_opencode_agent() {") : source.index("\n}", source.index("run_opencode_agent() {"))
+    ]
+    items_block = source[
+        source.index("  BENCHMARK_ITEMS=(") : source.index(")\nfi", source.index("  BENCHMARK_ITEMS=("))
+    ]
+    default_items = [
+        line.strip().strip('"') for line in items_block.splitlines() if line.strip().startswith('"RET-')
+    ]
+
     assert '"$AA_BIN" skill refresh --sync-agents' in source
     assert 'DRIVER_ADAPTER="${DRIVER_ADAPTER:-opencode}"' in source
-    assert '--server "$OPENCODE_SERVER"' in source
-    assert '"RET-menu-management:requirements/menu-management.md"' in source
-
-    promotion = source.index("if promote_batch_knowledge_proposals")
-    retro = source.index("run_retro_collect", promotion)
-    failure = source.index('knowledge_promotion_status="failed"', promotion)
-    assert retro < failure
+    assert '--adapter "$DRIVER_ADAPTER"' in driver
+    assert '--server "$OPENCODE_SERVER"' in driver
+    assert '--directory "$PROJECT_ROOT"' in driver
+    assert 'adapter_args+=(--model "$OPENCODE_MODEL")' in driver
+    assert "--agent aa-doc-author" in retro_agent
+    assert "--model $OPENCODE_MODEL" in retro_agent
+    assert "--agent aa-archiver" in archive_agent
+    assert 'cmd+=(--model "$OPENCODE_MODEL")' in archive_agent
+    assert default_items == [
+        "RET-dept-management:requirements/dept-management.md",
+        "RET-user-management:requirements/user-management.md",
+        "RET-api-management:requirements/api-management.md",
+        "RET-role-management:requirements/role-management.md",
+        "RET-menu-management:requirements/menu-management.md",
+    ]
 
 
 def test_cursor_loop_runs_only_explicit_batch_retro_after_all_items_settle() -> None:
