@@ -80,6 +80,8 @@ BENCHMARK_EVAL_SUITES="$(benchmark_eval_setting \
   "${EVAL_REGRESSION_SUITES-}" \
   "workflow-run,classification-unit,safety-lite,eval-smoke,case-generation,workflow-case,workflow-api-codegen,workflow-e2e-codegen,workflow-fuzz-codegen,workflow-performance-codegen,workflow-full")"
 EVAL_ENGINE_ROOT="${EVAL_ENGINE_ROOT:-$AA_REPO_ROOT}"   # holds eval/suites + eval/baselines
+DO_VERIFICATION_METRICS="${DO_VERIFICATION_METRICS:-true}"
+VERIFICATION_METRICS_ENTRYPOINT="${VERIFICATION_METRICS_ENTRYPOINT:-metrics-nightly}"
 STEP_TIMEOUT="${STEP_TIMEOUT:-5400}"
 STATUS_POLL_INTERVAL="${STATUS_POLL_INTERVAL:-120}"
 
@@ -794,7 +796,52 @@ record_item_result() {
     log "ERROR: failed to update Batch member $change_id ($batch_status/$availability)"
     exit 1
   }
+  local metrics_row metrics_recorded="false"
+  for metrics_row in "${VERIFICATION_METRICS_ROWS[@]-}"; do
+    if [ "${metrics_row%%|*}" = "$change_id" ]; then
+      metrics_recorded="true"
+      break
+    fi
+  done
+  if [ "$metrics_recorded" != "true" ]; then
+    VERIFICATION_METRICS_ROWS+=("$change_id|not_run|n/a|n/a|n/a|n/a")
+  fi
   ROW_RESULTS+=("$change_id|$terminal|$detail|$archive_field")
+}
+
+run_verification_metrics_stage() {
+  local change_id="$1"
+  if [ "$DO_VERIFICATION_METRICS" != "true" ]; then
+    VERIFICATION_METRICS_ROWS+=("$change_id|disabled|n/a|n/a|n/a|n/a")
+    return 0
+  fi
+  local metrics_log="$RUN_DIR/${change_id}.metrics-nightly.workflow.log"
+  local change_dir="$PROJECT_ROOT/qa/changes/$change_id"
+  local row rc=0 status floor_ratio verdict c_layer quarantine_active
+  row="$(execute_verification_metrics_stage \
+    run_workflow_entrypoint "$metrics_log" "$change_id" "$change_dir" \
+    "$VERIFICATION_METRICS_ENTRYPOINT" '{}')" || rc=$?
+  IFS='|' read -r _ status floor_ratio verdict c_layer quarantine_active <<<"$row"
+  if [ "$status" = "completed" ]; then
+    if ! snapshot_verification_metrics "$change_dir" "$RUN_DIR" "$change_id"; then
+      row="$change_id|snapshot_failed|n/a|n/a|n/a|n/a"
+      rc=1
+    fi
+  fi
+  VERIFICATION_METRICS_ROWS+=("$row")
+  return "$rc"
+}
+
+record_coverage_repair_result() {
+  local change_id="$1"
+  local change_dir="$PROJECT_ROOT/qa/changes/$change_id"
+  local row
+  if row="$(snapshot_coverage_repair "$change_dir" "$RUN_DIR" "$change_id" "$AA_PYTHON")"; then
+    COVERAGE_REPAIR_ROWS+=("$row")
+    return 0
+  fi
+  COVERAGE_REPAIR_ROWS+=("$change_id|invalid_artifacts|n/a|n/a|n/a|n/a")
+  return 1
 }
 
 # Deterministic benchmark metrics over golden fixtures. This is observational:
@@ -899,6 +946,8 @@ ensure_loop_sut || exit 1
 ensure_loop_frontend || exit 1
 
 declare -a ROW_RESULTS=()
+declare -a VERIFICATION_METRICS_ROWS=()
+declare -a COVERAGE_REPAIR_ROWS=()
 item_idx=0
 total_items=${#BENCHMARK_ITEMS[@]}
 
@@ -934,6 +983,8 @@ for item in "${BENCHMARK_ITEMS[@]}"; do
     log "[$change_id] already completed — skip driver"
     final_status="$(execution_final_status "$change_id")"
     archived="no"
+    record_coverage_repair_result "$change_id" || true
+    run_verification_metrics_stage "$change_id" || true
     if [ -d "qa/archive/$change_id" ]; then
       archived="yes"
     elif benchmark_should_run_archive "$DO_ARCHIVE" "$workflow_kind" "$final_status"; then
@@ -1007,6 +1058,9 @@ for item in "${BENCHMARK_ITEMS[@]}"; do
     continue
   fi
 
+  record_coverage_repair_result "$change_id" || true
+  run_verification_metrics_stage "$change_id" || true
+
   if benchmark_should_run_archive "$DO_ARCHIVE" "$workflow_kind" "$final_status"; then
     log "[$change_id] stage 2/2 archive ..."
     if run_archive_stage "$change_id"; then
@@ -1073,6 +1127,7 @@ fi
   echo "- max workflow attempts: \`$OPENCODE_MAX_WORKFLOW_ATTEMPTS\`"
   echo "- archive: \`DO_ARCHIVE=$DO_ARCHIVE\` via \`$([ "$USE_WORKFLOW_ARCHIVE" = "true" ] && echo "workflow:$ARCHIVE_ENTRYPOINT" || echo "legacy-opencode-prompt")\`"
   echo "- retro: \`aa retro --batch-manifest\` (exit: \`${retro_collect_exit:-n/a}\`)"
+  echo "- verification metrics: \`DO_VERIFICATION_METRICS=$DO_VERIFICATION_METRICS\` via \`$VERIFICATION_METRICS_ENTRYPOINT\`"
   echo "- batch manifest: \`benchmark/runs/$RUNSTAMP-opencode/batch-manifest.json\`"
   echo
   echo "## Workflow results"
@@ -1083,6 +1138,25 @@ fi
     IFS='|' read -r cid term detail archive <<<"$row"
     echo "| \`$cid\` | $term | $detail | $archive |"
   done
+  echo
+  echo "## Verification Metrics (M2–M4)"
+  echo
+  echo "| change_id | status | floor_ratio | sufficiency | C-layer evaluated | quarantine active |"
+  echo "|---|---|---:|---|---:|---:|"
+  for row in "${VERIFICATION_METRICS_ROWS[@]}"; do
+    IFS='|' read -r cid status floor_ratio verdict c_layer quarantine_active <<<"$row"
+    echo "| \`$cid\` | $status | $floor_ratio | $verdict | $c_layer | $quarantine_active |"
+  done
+  echo
+  echo "Atomic snapshots: \`benchmark/runs/$RUNSTAMP-opencode/<change_id>.verification-metrics.json\`."
+  echo
+  echo "## Coverage Repair Fast Loop"
+  echo
+  echo "| change_id | status | attempts | source batch | post-repair batch | safety |"
+  echo "|---|---|---:|---|---|---|"
+  render_coverage_repair_rows "${COVERAGE_REPAIR_ROWS[@]+"${COVERAGE_REPAIR_ROWS[@]}"}"
+  echo
+  echo "Atomic snapshots: \`benchmark/runs/$RUNSTAMP-opencode/<change_id>.coverage-repair.json\`."
   echo
   echo "## Retro Batch"
   echo
@@ -1144,6 +1218,7 @@ PY
   echo "- archive logs: \`benchmark/runs/$RUNSTAMP-opencode/*.archive.workflow.log\` (or \`*.archive.opencode.jsonl\` if legacy)"
   echo "- retro collect log: \`benchmark/runs/$RUNSTAMP-opencode/retro-collect.log\`"
   echo "- status snapshots: \`benchmark/runs/$RUNSTAMP-opencode/*.status.json\`"
+  echo "- verification metrics logs: \`benchmark/runs/$RUNSTAMP-opencode/*.metrics-nightly.workflow.log\`"
   echo "- loop log: \`benchmark/runs/$RUNSTAMP-opencode/loop.log\`"
 } >"$SUMMARY"
 
@@ -1152,9 +1227,22 @@ rm -f "$TRACK_PID_FILE"
 echo
 cat "$SUMMARY"
 
+benchmark_failed=0
 if ! benchmark_result_exit_code \
   "$DO_ARCHIVE" \
   "${ROW_RESULTS[@]+"${ROW_RESULTS[@]}"}"; then
   log "ERROR: benchmark result gate failed (workflow/archive result is not closed)"
-  exit 1
+  benchmark_failed=1
 fi
+if ! benchmark_verification_metrics_exit_code \
+  "$DO_VERIFICATION_METRICS" \
+  "${VERIFICATION_METRICS_ROWS[@]+"${VERIFICATION_METRICS_ROWS[@]}"}"; then
+  log "ERROR: verification metrics gate failed (entrypoint or artifact validation incomplete)"
+  benchmark_failed=1
+fi
+if ! benchmark_coverage_repair_exit_code \
+  "${COVERAGE_REPAIR_ROWS[@]+"${COVERAGE_REPAIR_ROWS[@]}"}"; then
+  log "ERROR: coverage repair evidence gate failed (status/snapshot incomplete)"
+  benchmark_failed=1
+fi
+[ "$benchmark_failed" -eq 0 ] || exit 1

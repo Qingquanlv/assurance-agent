@@ -1192,3 +1192,28 @@ def test_opencode_loop_passes_coverage_repair_budget() -> None:
     assert 'MAX_COVERAGE_REPAIR_ATTEMPTS="${MAX_COVERAGE_REPAIR_ATTEMPTS:-1}"' in source
     assert 'MAX_COVERAGE_REPAIR="$MAX_COVERAGE_REPAIR_ATTEMPTS"' in source
     assert '"max_coverage_repair_attempts": int(os.environ["MAX_COVERAGE_REPAIR"])' in source
+
+
+def test_opencode_loop_runs_and_gates_verified_metrics_lifecycle() -> None:
+    source = _OPENCODE_LOOP.read_text(encoding="utf-8")
+
+    required = (
+        'DO_VERIFICATION_METRICS="${DO_VERIFICATION_METRICS:-true}"',
+        'VERIFICATION_METRICS_ENTRYPOINT="${VERIFICATION_METRICS_ENTRYPOINT:-metrics-nightly}"',
+        "run_verification_metrics_stage()",
+        "record_coverage_repair_result()",
+        'declare -a VERIFICATION_METRICS_ROWS=()',
+        'declare -a COVERAGE_REPAIR_ROWS=()',
+        'record_coverage_repair_result "$change_id" || true',
+        'run_verification_metrics_stage "$change_id" || true',
+        "## Verification Metrics (M2–M4)",
+        "## Coverage Repair Fast Loop",
+        "benchmark_verification_metrics_exit_code",
+        "benchmark_coverage_repair_exit_code",
+    )
+    for token in required:
+        assert token in source
+
+    assert source.index('record_coverage_repair_result "$change_id" || true') < source.index(
+        'if benchmark_should_run_archive "$DO_ARCHIVE"'
+    )
