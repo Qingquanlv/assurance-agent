@@ -14,9 +14,7 @@ from pathlib import Path
 _ROOT = Path(__file__).parents[3]
 _HELPERS = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "cursor-loop-helpers.sh"
 _CURSOR_LOOP = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "run-workflow-loop-cursor.sh"
-_OPENCODE_LOOP = (
-    _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "run-workflow-loop.sh"
-)
+_OPENCODE_LOOP = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "run-workflow-loop.sh"
 
 
 def _run_helper(tmp_path: Path, command: str) -> subprocess.CompletedProcess[str]:
@@ -321,6 +319,25 @@ def test_knowledge_promotion_runs_only_after_batch_members_settle(tmp_path: Path
 
     assert settled.returncode == 0, settled.stderr
     assert call_log.read_text(encoding="utf-8").splitlines() == ["knowledge promote --change CH-A --yes"]
+
+
+def test_opencode_loop_gates_retro_on_knowledge_promotion_and_preserves_agents() -> None:
+    source = _OPENCODE_LOOP.read_text(encoding="utf-8")
+
+    assert 'knowledge_promotion_status="not_run"' in source
+    assert 'knowledge_promotion_status="completed"' in source
+    assert 'knowledge_promotion_status="failed"' in source
+    assert 'retro_result="skipped_knowledge_promotion_failed"' in source
+    assert 'benchmark_knowledge_promotion_exit_code "$knowledge_promotion_status"' in source
+    assert '"$AA_BIN" skill refresh --sync-agents' in source
+    assert 'DRIVER_ADAPTER="${DRIVER_ADAPTER:-opencode}"' in source
+    assert '--server "$OPENCODE_SERVER"' in source
+    assert '"RET-menu-management:requirements/menu-management.md"' in source
+
+    promotion = source.index("if promote_batch_knowledge_proposals")
+    retro = source.index("run_retro_collect", promotion)
+    failure = source.index('knowledge_promotion_status="failed"', promotion)
+    assert retro < failure
 
 
 def test_cursor_loop_runs_only_explicit_batch_retro_after_all_items_settle() -> None:
@@ -1202,8 +1219,8 @@ def test_opencode_loop_runs_and_gates_verified_metrics_lifecycle() -> None:
         'VERIFICATION_METRICS_ENTRYPOINT="${VERIFICATION_METRICS_ENTRYPOINT:-metrics-nightly}"',
         "run_verification_metrics_stage()",
         "record_coverage_repair_result()",
-        'declare -a VERIFICATION_METRICS_ROWS=()',
-        'declare -a COVERAGE_REPAIR_ROWS=()',
+        "declare -a VERIFICATION_METRICS_ROWS=()",
+        "declare -a COVERAGE_REPAIR_ROWS=()",
         'record_coverage_repair_result "$change_id" || true',
         'run_verification_metrics_stage "$change_id" || true',
         "## Verification Metrics (M2–M4)",

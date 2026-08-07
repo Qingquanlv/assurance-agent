@@ -1089,27 +1089,32 @@ retro_improvement_ids=""
 retro_outbox_id=""
 retro_collect_exit=""
 retro_review_queue=""
+knowledge_promotion_status="not_run"
 if batch_members_settled "$BATCH_MANIFEST"; then
   if promote_batch_knowledge_proposals "$AA_BIN" "$BATCH_MANIFEST" "${BATCH_CHANGE_IDS[@]}"; then
+    knowledge_promotion_status="completed"
     log "knowledge proposal promotion boundary check complete"
-  else
-    log "knowledge proposal promotion failed at Batch boundary"
-  fi
-  run_retro_collect
-  retro_collect_exit=$?
-  if capture_retro_artifacts "$RETRO_ID"; then
-    retro_status_file="$RUN_DIR/retro-status.json"
-    retro_result="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("result","technical_failure"))' "$retro_status_file")"
-    retro_batch_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("batch_id") or "")' "$retro_status_file")"
-    retro_improvement_ids="$(python3 -c 'import json,sys; print(",".join(json.load(open(sys.argv[1])).get("improvement_ids") or []))' "$retro_status_file")"
-    retro_outbox_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("outbox_id") or "")' "$retro_status_file")"
-    log "retro complete: result=$retro_result retro_id=$retro_id batch_id=$retro_batch_id signal_count=${signal_count:-?} change_count=${change_count:-?}"
-  else
-    log "retro technical failure: exit=$retro_collect_exit status artifact missing/invalid (see retro-collect.log)"
-  fi
+    run_retro_collect
+    retro_collect_exit=$?
+    if capture_retro_artifacts "$RETRO_ID"; then
+      retro_status_file="$RUN_DIR/retro-status.json"
+      retro_result="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("result","technical_failure"))' "$retro_status_file")"
+      retro_batch_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("batch_id") or "")' "$retro_status_file")"
+      retro_improvement_ids="$(python3 -c 'import json,sys; print(",".join(json.load(open(sys.argv[1])).get("improvement_ids") or []))' "$retro_status_file")"
+      retro_outbox_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("outbox_id") or "")' "$retro_status_file")"
+      log "retro complete: result=$retro_result retro_id=$retro_id batch_id=$retro_batch_id signal_count=${signal_count:-?} change_count=${change_count:-?}"
+    else
+      log "retro technical failure: exit=$retro_collect_exit status artifact missing/invalid (see retro-collect.log)"
+    fi
 
-  if [ "$DO_BENCHMARK_EVAL" = "true" ]; then
-    run_benchmark_eval
+    if [ "$DO_BENCHMARK_EVAL" = "true" ]; then
+      run_benchmark_eval
+    fi
+  else
+    knowledge_promotion_status="failed"
+    retro_result="skipped_knowledge_promotion_failed"
+    retro_collect_exit="skipped"
+    log "knowledge proposal promotion failed at Batch boundary"
   fi
 else
   retro_result="skipped_nonterminal_batch"
@@ -1127,6 +1132,7 @@ fi
   echo "- max workflow attempts: \`$OPENCODE_MAX_WORKFLOW_ATTEMPTS\`"
   echo "- archive: \`DO_ARCHIVE=$DO_ARCHIVE\` via \`$([ "$USE_WORKFLOW_ARCHIVE" = "true" ] && echo "workflow:$ARCHIVE_ENTRYPOINT" || echo "legacy-opencode-prompt")\`"
   echo "- retro: \`aa retro --batch-manifest\` (exit: \`${retro_collect_exit:-n/a}\`)"
+  echo "- knowledge promotion boundary: \`$knowledge_promotion_status\`"
   echo "- verification metrics: \`DO_VERIFICATION_METRICS=$DO_VERIFICATION_METRICS\` via \`$VERIFICATION_METRICS_ENTRYPOINT\`"
   echo "- batch manifest: \`benchmark/runs/$RUNSTAMP-opencode/batch-manifest.json\`"
   echo
@@ -1243,6 +1249,10 @@ fi
 if ! benchmark_coverage_repair_exit_code \
   "${COVERAGE_REPAIR_ROWS[@]+"${COVERAGE_REPAIR_ROWS[@]}"}"; then
   log "ERROR: coverage repair evidence gate failed (status/snapshot incomplete)"
+  benchmark_failed=1
+fi
+if ! benchmark_knowledge_promotion_exit_code "$knowledge_promotion_status"; then
+  log "ERROR: knowledge proposal promotion failed at Batch boundary"
   benchmark_failed=1
 fi
 [ "$benchmark_failed" -eq 0 ] || exit 1
