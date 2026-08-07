@@ -258,3 +258,12 @@ def test_issue_analyzer_reconciles_review_findings_with_post_codegen_evidence() 
     assert "point-in-time advisory" in text
     assert "post-Codegen evidence" in text
     assert "Do not propose a candidate" in text
+
+
+def test_retro_issue_analysis_keeps_product_defects_out_of_improvements() -> None:
+    text = resources.read_text("skills", "aa-retro-issue-analysis", "SKILL.md")
+
+    assert "surface.kind == workflow" in text
+    assert "product API, schema, validation" in text
+    assert "Never weaken an assert_ideal contract" in text
+    assert "omit the signal" in text

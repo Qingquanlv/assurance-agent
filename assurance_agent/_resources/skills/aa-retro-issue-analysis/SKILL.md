@@ -13,6 +13,16 @@ Treat `classification_hint` only as supporting context, never as an aggregation 
 Emit `issue_pattern` only when the evidence supports a reusable
 process gap: `workflow_gap`, `prompt_gap`, `fixture_gap`, `test_gap`, or
 `knowledge_gap`. A product defect by itself is not an Improvement signal.
+`surface.kind == workflow` is only a label, not proof of process ownership.
+If the recommended fix belongs to the product API, schema, validation, or
+authorization implementation, omit the signal; keep the defect in the Issue
+ledger instead of turning it into an assurance Improvement.
+
+Never weaken an assert_ideal contract merely because the current product fails
+it. Emit a `test_gap` only when the frozen slice independently establishes that
+the intended contract is wrong. A `*_product_divergence` symptom alone does not
+establish that; omit the signal rather than recommending that tests match the
+failing product behavior.
 
 Every signal must:
 
