@@ -88,6 +88,7 @@ CLEAN_TARGETS="${CLEAN_TARGETS:-qa/cases qa/changes}"
 
 # Python workflow driver -----------------------------------------------------
 AA_BIN="${AA_BIN:-aa}"
+AA_PYTHON="${AA_PYTHON:-$AA_REPO_ROOT/.venv/bin/python}"
 # macOS ships /usr/bin/aa (Apple Archive). Prefer the assurance-agent CLI on PATH.
 if [ -x "$AA_BIN" ]; then
   AA_BIN_DIR="$(cd "$(dirname "$AA_BIN")" && pwd)"
@@ -100,6 +101,7 @@ export AA_BIN
 DRIVER_ENTRYPOINT="${DRIVER_ENTRYPOINT:-full}"
 TEST_TYPES="${TEST_TYPES:-api,e2e}"
 MAX_HEALING_ATTEMPTS="${MAX_HEALING_ATTEMPTS:-3}"
+MAX_COVERAGE_REPAIR_ATTEMPTS="${MAX_COVERAGE_REPAIR_ATTEMPTS:-1}"
 DRIVER_ADAPTER="${DRIVER_ADAPTER:-opencode}"
 OPENCODE_SERVER="${OPENCODE_SERVER:-http://127.0.0.1:4096}"
 
@@ -438,6 +440,7 @@ YAML
 driver_params_json() {
   TEST_TYPES="$TEST_TYPES" RUN_MODE="$RUN_MODE" RUN_TESTS="$RUN_TESTS" \
   FORCE_CONTINUE="$FORCE_CONTINUE" MAX_HEALING="$MAX_HEALING_ATTEMPTS" \
+  MAX_COVERAGE_REPAIR="$MAX_COVERAGE_REPAIR_ATTEMPTS" \
   python3 -c '
 import os, json
 print(json.dumps({
@@ -446,6 +449,7 @@ print(json.dumps({
     "run_tests": os.environ["RUN_TESTS"] == "true",
     "force_continue": os.environ["FORCE_CONTINUE"] == "true",
     "max_healing_attempts": int(os.environ["MAX_HEALING"]),
+    "max_coverage_repair_attempts": int(os.environ["MAX_COVERAGE_REPAIR"]),
     "auto_archive": False,
 }))'
 }
@@ -818,6 +822,11 @@ run_benchmark_eval() {
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
+if [ ! -x "$AA_PYTHON" ]; then
+  log "ERROR: pinned assurance-agent Python missing: $AA_PYTHON"
+  exit 1
+fi
+
 if [ "${DAEMON:-}" = "1" ]; then
   exec python3 "$SCRIPT_DIR/resume-logs/daemonize-loop.py" "$@"
 fi

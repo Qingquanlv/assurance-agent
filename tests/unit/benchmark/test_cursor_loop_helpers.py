@@ -14,6 +14,9 @@ from pathlib import Path
 _ROOT = Path(__file__).parents[3]
 _HELPERS = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "cursor-loop-helpers.sh"
 _CURSOR_LOOP = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "run-workflow-loop-cursor.sh"
+_OPENCODE_LOOP = (
+    _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "run-workflow-loop.sh"
+)
 
 
 def _run_helper(tmp_path: Path, command: str) -> subprocess.CompletedProcess[str]:
@@ -1180,3 +1183,12 @@ def test_cursor_loop_passes_and_reports_coverage_repair_budget() -> None:
     assert '"max_coverage_repair_attempts": int(os.environ["MAX_COVERAGE_REPAIR"])' in source
     assert "## Coverage Repair Fast Loop" in source
     assert "<change_id>.coverage-repair.json" in source
+
+
+def test_opencode_loop_passes_coverage_repair_budget() -> None:
+    source = _OPENCODE_LOOP.read_text(encoding="utf-8")
+
+    assert 'AA_PYTHON="${AA_PYTHON:-$AA_REPO_ROOT/.venv/bin/python}"' in source
+    assert 'MAX_COVERAGE_REPAIR_ATTEMPTS="${MAX_COVERAGE_REPAIR_ATTEMPTS:-1}"' in source
+    assert 'MAX_COVERAGE_REPAIR="$MAX_COVERAGE_REPAIR_ATTEMPTS"' in source
+    assert '"max_coverage_repair_attempts": int(os.environ["MAX_COVERAGE_REPAIR"])' in source
