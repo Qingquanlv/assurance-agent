@@ -759,7 +759,7 @@ def test_review_warning_produces_review_finding(tmp_path: Path) -> None:
     assert "review/api-plan-review.json" in review_obs[0].evidence_refs[0]
 
 
-def test_review_finding_includes_available_post_codegen_evidence(tmp_path: Path) -> None:
+def test_passed_review_findings_are_suppressed_after_codegen(tmp_path: Path) -> None:
     change_id = "CH-review-codegen"
     change_dir = tmp_path / change_id
     batch_id = "20260725-100010"
@@ -797,16 +797,72 @@ def test_review_finding_includes_available_post_codegen_evidence(tmp_path: Path)
     result = collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
 
     review_obs = [o for o in result.observations if o.kind == "review_finding"]
-    assert review_obs
-    for observation in review_obs:
-        assert observation.evidence_refs == [
-            "review/api-plan-review.json",
-            "codegen/api-codegen-summary.md",
-            "codegen/api-generated-files.json",
-        ]
+    assert review_obs == []
     manifest_paths = {entry.path for entry in result.manifest.entries}
-    assert "codegen/api-codegen-summary.md" in manifest_paths
-    assert "codegen/api-generated-files.json" in manifest_paths
+    assert "review/api-plan-review.json" not in manifest_paths
+    assert "codegen/api-codegen-summary.md" not in manifest_paths
+
+
+def test_nonpassing_review_remains_visible_after_codegen(tmp_path: Path) -> None:
+    change_id = "CH-review-needs-fix"
+    change_dir = tmp_path / change_id
+    batch_id = "20260725-100010"
+    _write_manifest(change_dir, batch_id=batch_id)
+    _write_api_result(change_dir, batch_id)
+
+    review_dir = change_dir / "review"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    (review_dir / "api-plan-review.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "decision": "needs_fix",
+                "findings": [{"type": "codegen", "severity": "medium", "message": "Still blocked"}],
+                "risk_level": "medium",
+            }
+        ),
+        encoding="utf-8",
+    )
+    codegen_dir = change_dir / "codegen"
+    codegen_dir.mkdir(parents=True, exist_ok=True)
+    (codegen_dir / "api-codegen-summary.md").write_text("Not resolved.\n", encoding="utf-8")
+    (codegen_dir / "api-generated-files.json").write_text("{}\n", encoding="utf-8")
+
+    result = collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
+
+    review_obs = [o for o in result.observations if o.kind == "review_finding"]
+    assert review_obs
+    assert all("codegen/api-codegen-summary.md" in o.evidence_refs for o in review_obs)
+
+
+def test_passed_review_remains_visible_when_codegen_evidence_is_incomplete(tmp_path: Path) -> None:
+    change_id = "CH-review-partial-codegen"
+    change_dir = tmp_path / change_id
+    batch_id = "20260725-100010"
+    _write_manifest(change_dir, batch_id=batch_id)
+    _write_api_result(change_dir, batch_id)
+
+    review_dir = change_dir / "review"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    (review_dir / "api-plan-review.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "decision": "pass",
+                "findings": [{"type": "codegen", "severity": "medium", "message": "Advisory"}],
+                "risk_level": "medium",
+            }
+        ),
+        encoding="utf-8",
+    )
+    codegen_dir = change_dir / "codegen"
+    codegen_dir.mkdir(parents=True, exist_ok=True)
+    (codegen_dir / "api-codegen-summary.md").write_text("Partial output.\n", encoding="utf-8")
+
+    result = collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
+
+    review_obs = [o for o in result.observations if o.kind == "review_finding"]
+    assert review_obs
 
 
 # ---------------------------------------------------------------------------
