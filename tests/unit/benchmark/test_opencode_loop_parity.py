@@ -16,14 +16,21 @@ _OPENCODE_LOOP = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "run-
 def test_opencode_loop_uses_canonical_batch_retro_and_eval_pipeline() -> None:
     source = _OPENCODE_LOOP.read_text(encoding="utf-8")
 
-    loop_start = source.index('for item in "${BENCHMARK_ITEMS[@]}"; do', source.index("# Main loop"))
-    loop_end = source.index("\ndone\n\nretro_id=", loop_start)
-    settled_guard = source.index('if batch_members_settled "$BATCH_MANIFEST"; then', loop_end)
-    promotion = source.index("promote_batch_knowledge_proposals", settled_guard)
-    retro = source.index("run_retro_collect", promotion)
-    evaluation = source.index("run_benchmark_eval", retro)
+    loop_start = source.index(
+        'for item in "${BENCHMARK_ITEMS[@]}"; do',
+        source.index("total_items=${#BENCHMARK_ITEMS[@]}"),
+    )
+    loop_end = source.index("\ndone\n", loop_start)
+    boundary_start = source.index("run_batch_knowledge_promotion_boundary() {", loop_end)
+    boundary_end = source.index("# END batch knowledge promotion boundary", boundary_start)
+    promotion = source.index("promote_batch_knowledge_proposals", boundary_start, boundary_end)
+    retro = source.index("run_retro_collect", promotion, boundary_end)
+    evaluation = source.index("run_benchmark_eval", retro, boundary_end)
+    settled_guard = source.index('if batch_members_settled "$BATCH_MANIFEST"; then', boundary_end)
+    boundary_call = source.index("run_batch_knowledge_promotion_boundary", settled_guard)
 
-    assert loop_end < settled_guard < promotion < retro < evaluation
+    assert boundary_start < promotion < retro < evaluation < boundary_end
+    assert loop_end < settled_guard < boundary_call
     assert "initialize_retro_batch_manifest" in source
     assert "run_batch_retro" in source
     assert "collect_benchmark_eval_rows" in source

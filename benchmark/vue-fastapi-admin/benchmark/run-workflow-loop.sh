@@ -1099,15 +1099,42 @@ run_batch_knowledge_promotion_boundary() {
 
     if [ "$DO_BENCHMARK_EVAL" = "true" ]; then
       run_benchmark_eval
+      benchmark_eval_status="completed"
     fi
   else
     knowledge_promotion_status="failed"
     retro_result="skipped_knowledge_promotion_failed"
     retro_collect_exit="skipped"
+    if [ "$DO_BENCHMARK_EVAL" = "true" ]; then
+      benchmark_eval_status="skipped_knowledge_promotion_failed"
+    fi
     log "knowledge proposal promotion failed at Batch boundary"
   fi
 }
 # END batch knowledge promotion boundary
+
+# BEGIN benchmark eval summary
+render_benchmark_eval_summary() {
+  [ "$DO_BENCHMARK_EVAL" = "true" ] || return 0
+  echo
+  echo "## Benchmark Eval Metrics (deterministic golden fixtures)"
+  echo
+  echo "- status: \`$benchmark_eval_status\`"
+  [ "$benchmark_eval_status" = "completed" ] || return 0
+  if [ "${#BENCHMARK_EVAL_ROWS[@]}" -gt 0 ]; then
+    echo
+    echo "| suite | verdict | run_id |"
+    echo "|---|---|---|"
+    local row es ev er
+    for row in "${BENCHMARK_EVAL_ROWS[@]}"; do
+      IFS='|' read -r es ev er <<<"$row"
+      echo "| \`$es\` | $ev | \`$er\` |"
+    done
+  fi
+  echo "- metrics: \`eval/out/runs/<run_id>/metrics.json\`"
+  echo "- log: \`benchmark/runs/$RUNSTAMP-opencode/benchmark-eval.log\`"
+}
+# END benchmark eval summary
 
 retro_id="$RETRO_ID"
 signal_count=""
@@ -1120,11 +1147,19 @@ retro_outbox_id=""
 retro_collect_exit=""
 retro_review_queue=""
 knowledge_promotion_status="not_run"
+if [ "$DO_BENCHMARK_EVAL" = "true" ]; then
+  benchmark_eval_status="not_run"
+else
+  benchmark_eval_status="disabled"
+fi
 if batch_members_settled "$BATCH_MANIFEST"; then
   run_batch_knowledge_promotion_boundary
 else
   retro_result="skipped_nonterminal_batch"
   retro_collect_exit="skipped"
+  if [ "$DO_BENCHMARK_EVAL" = "true" ]; then
+    benchmark_eval_status="skipped_nonterminal_batch"
+  fi
   log "retro/eval skipped: Batch contains running, not_started, or hard_timeout members"
 fi
 
@@ -1207,22 +1242,7 @@ PY
   if [ "$retro_collect_exit" != "0" ]; then
     echo "- retro collect log: \`benchmark/runs/$RUNSTAMP-opencode/retro-collect.log\`"
   fi
-  if [ "$DO_BENCHMARK_EVAL" = "true" ]; then
-    echo
-    echo "## Benchmark Eval Metrics (deterministic golden fixtures)"
-    echo
-    if [ "${#BENCHMARK_EVAL_ROWS[@]}" -gt 0 ]; then
-      echo
-      echo "| suite | verdict | run_id |"
-      echo "|---|---|---|"
-      for row in "${BENCHMARK_EVAL_ROWS[@]}"; do
-        IFS='|' read -r es ev er <<<"$row"
-        echo "| \`$es\` | $ev | \`$er\` |"
-      done
-    fi
-    echo "- metrics: \`eval/out/runs/<run_id>/metrics.json\`"
-    echo "- log: \`benchmark/runs/$RUNSTAMP-opencode/benchmark-eval.log\`"
-  fi
+  render_benchmark_eval_summary
   echo
   echo "## Artifacts"
   echo

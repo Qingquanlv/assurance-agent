@@ -49,10 +49,35 @@ BATCH_CHANGE_IDS=(CH-A)
 RETRO_ID=retro-1
 DO_BENCHMARK_EVAL=true
 knowledge_promotion_status=not_run
+benchmark_eval_status=not_run
 retro_result=technical_failure
 retro_collect_exit=""
 run_batch_knowledge_promotion_boundary
-printf '%s|%s|%s\\n' "$knowledge_promotion_status" "$retro_result" "$retro_collect_exit"
+printf '%s|%s|%s|%s\\n' \
+  "$knowledge_promotion_status" "$retro_result" "$retro_collect_exit" "$benchmark_eval_status"
+"""
+    return subprocess.run(
+        ["bash", "-c", command],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _run_opencode_eval_summary(tmp_path: Path, eval_status: str) -> subprocess.CompletedProcess[str]:
+    source = _OPENCODE_LOOP.read_text(encoding="utf-8")
+    function_start = source.find("render_benchmark_eval_summary() {")
+    function_end = source.find("# END benchmark eval summary", function_start)
+    function_source = source[function_start:function_end] if function_start >= 0 else ""
+    command = f"""
+set -e
+{function_source}
+DO_BENCHMARK_EVAL=true
+benchmark_eval_status={shlex.quote(eval_status)}
+RUNSTAMP=run-1
+BENCHMARK_EVAL_ROWS=("suite-a|pass|eval-run-1")
+render_benchmark_eval_summary
 """
     return subprocess.run(
         ["bash", "-c", command],
@@ -369,7 +394,7 @@ def test_opencode_batch_boundary_runs_retro_and_eval_after_successful_promotion(
         "capture",
         "eval",
     ]
-    assert result.stdout == "completed|technical_failure|0\n"
+    assert result.stdout == "completed|technical_failure|0|completed\n"
 
 
 def test_opencode_batch_boundary_skips_retro_and_eval_after_failed_promotion(
@@ -379,7 +404,32 @@ def test_opencode_batch_boundary_skips_retro_and_eval_after_failed_promotion(
 
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "boundary-calls.log").read_text(encoding="utf-8").splitlines() == ["promote"]
-    assert result.stdout == "failed|skipped_knowledge_promotion_failed|skipped\n"
+    assert result.stdout == (
+        "failed|skipped_knowledge_promotion_failed|skipped|skipped_knowledge_promotion_failed\n"
+    )
+
+
+def test_opencode_eval_summary_advertises_artifacts_only_after_eval_runs(tmp_path: Path) -> None:
+    result = _run_opencode_eval_summary(tmp_path, eval_status="completed")
+
+    assert result.returncode == 0, result.stderr
+    assert "- status: `completed`" in result.stdout
+    assert "| `suite-a` | pass | `eval-run-1` |" in result.stdout
+    assert "- metrics: `eval/out/runs/<run_id>/metrics.json`" in result.stdout
+    assert "- log: `benchmark/runs/run-1-opencode/benchmark-eval.log`" in result.stdout
+
+
+def test_opencode_eval_summary_reports_skip_without_advertising_artifacts(tmp_path: Path) -> None:
+    result = _run_opencode_eval_summary(
+        tmp_path,
+        eval_status="skipped_knowledge_promotion_failed",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "- status: `skipped_knowledge_promotion_failed`" in result.stdout
+    assert "suite-a" not in result.stdout
+    assert "eval/out/runs" not in result.stdout
+    assert "benchmark-eval.log" not in result.stdout
 
 
 def test_opencode_loop_reports_and_gates_knowledge_promotion() -> None:
@@ -390,6 +440,7 @@ def test_opencode_loop_reports_and_gates_knowledge_promotion() -> None:
     assert 'knowledge_promotion_status="failed"' in source
     assert 'retro_result="skipped_knowledge_promotion_failed"' in source
     assert 'benchmark_knowledge_promotion_exit_code "$knowledge_promotion_status"' in source
+    assert 'benchmark_eval_status="skipped_nonterminal_batch"' in source
 
 
 def test_opencode_loop_preserves_opencode_agents_and_five_item_defaults() -> None:
@@ -402,6 +453,11 @@ def test_opencode_loop_preserves_opencode_agents_and_five_item_defaults() -> Non
     ]
     archive_agent = source[
         source.index("run_opencode_agent() {") : source.index("\n}", source.index("run_opencode_agent() {"))
+    ]
+    workflow_entrypoint = source[
+        source.index("run_workflow_entrypoint() {") : source.index(
+            "\n}", source.index("run_workflow_entrypoint() {")
+        )
     ]
     items_block = source[
         source.index("  BENCHMARK_ITEMS=(") : source.index(")\nfi", source.index("  BENCHMARK_ITEMS=("))
@@ -420,6 +476,13 @@ def test_opencode_loop_preserves_opencode_agents_and_five_item_defaults() -> Non
     assert "--model $OPENCODE_MODEL" in retro_agent
     assert "--agent aa-archiver" in archive_agent
     assert 'cmd+=(--model "$OPENCODE_MODEL")' in archive_agent
+    assert '--adapter "$DRIVER_ADAPTER"' in workflow_entrypoint
+    assert '--server "$OPENCODE_SERVER"' in workflow_entrypoint
+    assert '--directory "$PROJECT_ROOT"' in workflow_entrypoint
+    assert 'adapter_args+=(--model "$OPENCODE_MODEL")' in workflow_entrypoint
+    assert source.index('"$AA_BIN" skill refresh --sync-agents') < source.index(
+        'if ! curl -sf -o /dev/null "$OPENCODE_SERVER"'
+    )
     assert default_items == [
         "RET-dept-management:requirements/dept-management.md",
         "RET-user-management:requirements/user-management.md",
@@ -1320,6 +1383,20 @@ def test_opencode_loop_runs_and_gates_verified_metrics_lifecycle() -> None:
     for token in required:
         assert token in source
 
-    assert source.index('record_coverage_repair_result "$change_id" || true') < source.index(
-        'if benchmark_should_run_archive "$DO_ARCHIVE"'
+    resume_start = source.index('if [ "$workflow_kind" = "completed" ]; then')
+    resume_coverage = source.index('record_coverage_repair_result "$change_id" || true', resume_start)
+    resume_metrics = source.index('run_verification_metrics_stage "$change_id" || true', resume_coverage)
+    resume_archive = source.index(
+        'if benchmark_should_run_archive "$DO_ARCHIVE"',
+        resume_metrics,
     )
+    fresh_start = source.index('if [ "$workflow_kind" != "completed" ]; then', resume_archive)
+    fresh_coverage = source.index('record_coverage_repair_result "$change_id" || true', fresh_start)
+    fresh_metrics = source.index('run_verification_metrics_stage "$change_id" || true', fresh_coverage)
+    fresh_archive = source.index(
+        'if benchmark_should_run_archive "$DO_ARCHIVE"',
+        fresh_metrics,
+    )
+
+    assert resume_coverage < resume_metrics < resume_archive
+    assert fresh_coverage < fresh_metrics < fresh_archive
