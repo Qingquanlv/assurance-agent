@@ -6,11 +6,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from assurance_agent.change_location import resolve_change
+from assurance_agent.config import load_config
 from assurance_agent.workflow.graph.agent_api import AgentInvoker
 from assurance_agent.workflow.graph.checkpoint import CheckpointStore
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import load_execution_contracts
 from assurance_agent.workflow.graph.leases import Clock, SystemClock
+from assurance_agent.workflow.graph.model_routing import ModelRouter
 from assurance_agent.workflow.graph.models import CompiledWorkflow, RuntimeContext
 from assurance_agent.workflow.graph.project_locks import ProjectResourceLockManager
 from assurance_agent.workflow.graph.runtime import GraphDefinitionChanged, GraphRuntime
@@ -50,12 +52,24 @@ def build_graph_runtime(
     adapter: AgentInvoker,
     explicit_schema: Path | None = None,
     clock: Clock | None = None,
+    adapter_name: str | None = None,
+    cli_model_override: str | None = None,
 ) -> RuntimeBundle:
     loc = resolve_change(project_root, change_id)
     schema = load_workflow_v2(project_root, explicit_schema)
     contracts = load_execution_contracts(project_root)
     compiled = compile_workflow(schema, contracts)
     runtime_clock = clock or SystemClock()
+
+    model_router: ModelRouter | None = None
+    if adapter_name == "opencode":
+        config = load_config(project_root)
+        model_router = ModelRouter(config.execution.model_routing)
+        model_router.validate_compiled(
+            compiled,
+            adapter=adapter_name,
+            cli_override=cli_model_override,
+        )
 
     def resolve_pinned(digest: str) -> CompiledWorkflow:
         if digest != compiled.digest:
@@ -77,6 +91,9 @@ def build_graph_runtime(
         contracts,
         compiled=compiled,
         run_child=run_child,
+        model_router=model_router,
+        adapter_name=adapter_name,
+        cli_model_override=cli_model_override,
     )
     state_defs: dict = {}
     for graph in compiled.schema.graphs.values():

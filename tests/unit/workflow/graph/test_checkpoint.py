@@ -103,7 +103,14 @@ def _succeeded(task_id: str, write_set_id: str, attempt: int = 1, inv: str = "in
     }
 
 
-def _failed(task_id: str, inv: str = "inv-1", next_retry_at: str | None = None) -> dict:
+def _failed(
+    task_id: str,
+    inv: str = "inv-1",
+    next_retry_at: str | None = None,
+    *,
+    attempt: int = 1,
+    error_kind: str = "internal",
+) -> dict:
     return {
         "source": "graph",
         "type": "task_attempt_failed",
@@ -111,8 +118,8 @@ def _failed(task_id: str, inv: str = "inv-1", next_retry_at: str | None = None) 
         "checkpoint_ns": inv,
         "superstep_id": "ss-1",
         "task_id": task_id,
-        "attempt_id": f"{task_id}-a1",
-        "error_kind": "internal",
+        "attempt_id": f"{task_id}-a{attempt}",
+        "error_kind": error_kind,
         "message": "boom",
         "next_retry_at": next_retry_at,
     }
@@ -424,6 +431,28 @@ def test_retry_attempts_accumulate_separately(tmp_path: Path) -> None:
     # 新 attempt 清除上一次失败的 retry 游标。
     assert task.error_kind is None
     assert task.next_retry_at is None
+
+
+def test_contract_failure_kind_survives_later_transient_retry(tmp_path: Path) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    _append_all(
+        change,
+        [
+            _started(),
+            _planned(["task-a"]),
+            _begin("task-a", "node-a", attempt=1),
+            _failed("task-a", attempt=1, error_kind="invalid_output"),
+            _begin("task-a", "node-a", attempt=2),
+            _failed("task-a", attempt=2, error_kind="timeout"),
+            _begin("task-a", "node-a", attempt=3),
+        ],
+    )
+
+    task = project_invocation(change, "inv-1").tasks["task-a"]
+
+    assert task.contract_failure_kinds_seen == ("invalid_output",)
+    assert task.attempts_used == 3
 
 
 def test_latest_root_invocation_scoped_by_entrypoint(tmp_path: Path) -> None:

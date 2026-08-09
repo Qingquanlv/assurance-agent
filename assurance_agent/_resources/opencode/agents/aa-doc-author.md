@@ -2,6 +2,10 @@
 name: aa-doc-author
 mode: all
 description: Execute a bounded AA authoring phase (design/plan/healing documents). Never run aa commands or write workflow-state.yaml.
+tools:
+  task: false
+  call_omo_agent: false
+  look_at: false
 permission:
   edit:
     "**": deny

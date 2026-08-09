@@ -27,6 +27,7 @@ from assurance_agent.workflow.driver.adapter import (
 from assurance_agent.workflow.driver.headless_adapter import HeadlessAdapter
 from assurance_agent.workflow.driver.opencode_adapter import OpenCodeAdapter
 from assurance_agent.workflow.driver.phase_prompt import build_phase_prompt
+from assurance_agent.workflow.core.graph_types import ErrorKind
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import (
@@ -45,6 +46,7 @@ from assurance_agent.workflow.graph.handlers.operation import (
     default_operations,
 )
 from assurance_agent.workflow.graph.handlers.subgraph import SubgraphHandler
+from assurance_agent.workflow.graph.model_routing import ModelRouter
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
@@ -73,6 +75,7 @@ from assurance_agent.workflow.orchestration.gates import (
 import yaml
 from assurance_agent.workflow.orchestration.schema import normalize_gates
 from tests.helpers_aa import write_aa_config
+from assurance_agent.config import ModelRoutingCfg
 
 # ---------------------------------------------------------------------------
 # fixtures
@@ -124,6 +127,8 @@ def _task(
     input_payload: object | None = None,
     resources: ResourceClaims | None = None,
     run_seconds: float = 60.0,
+    prior_error_kind: ErrorKind | None = None,
+    contract_failure_kinds_seen: tuple[ErrorKind, ...] = (),
 ) -> ExecutableTask:
     payload = input_payload if input_payload is not None else {"with": {}, "context": {"change_id": "CH-1"}}
     return ExecutableTask(
@@ -141,6 +146,8 @@ def _task(
         timeout_policy=TimeoutPolicyDef(run_seconds=run_seconds, heartbeat_seconds=10.0),
         target=target,
         resources=resources or ResourceClaims(),
+        prior_error_kind=prior_error_kind,
+        contract_failure_kinds_seen=contract_failure_kinds_seen,
     )
 
 
@@ -588,6 +595,154 @@ def test_agent_for_skill_routes_every_workflow_skill() -> None:
     for skill, agent in expected.items():
         assert agent_for_skill(skill) == agent, skill
     assert agent_for_skill("") is None
+
+
+@pytest.mark.parametrize(
+    ("skill", "expected"),
+    [
+        ("aa-case-design", "anthropic/glm-5.2"),
+        ("aa-case-reviewer", "anthropic/deepseek-v4-flash"),
+        ("aa-improvement-reviewer", "anthropic/glm-5.2"),
+    ],
+)
+def test_agent_handler_injects_skill_routed_model(tmp_path: Path, skill: str, expected: str) -> None:
+    project = _make_project(tmp_path)
+    output = f"change:routing/{skill}.txt"
+    catalog = parse_execution_contracts(
+        'schema_version: "1"\n'
+        "contracts:\n"
+        f"  skill:{skill}:\n"
+        "    handler: agent\n"
+        "    writes: [change:routing/**]\n"
+        "    authorization_writes: [change:routing/**]\n"
+    )
+    compiled = _compiled(
+        f"""
+        main:
+          max_supersteps: 5
+          nodes:
+            routed:
+              uses: skill:{skill}
+              outputs: [{output}]
+          edges:
+            - {{from: START, to: routed}}
+            - {{from: routed, to: END}}
+        """
+    )
+    invoker = RecordingInvoker(write=f"qa/changes/CH-1/routing/{skill}.txt")
+    router = ModelRouter(
+        ModelRoutingCfg.model_validate(
+            {
+                "strict_routes": True,
+                "routes": {
+                    "aa-case-design": "anthropic/glm-5.2",
+                    "aa-case-reviewer": "anthropic/deepseek-v4-flash",
+                    "aa-improvement-reviewer": "anthropic/glm-5.2",
+                },
+            }
+        )
+    )
+    handler = AgentHandler(
+        invoker,
+        _store(project),
+        contracts=catalog,
+        compiled=compiled,
+        model_router=router,
+        adapter_name="opencode",
+    )
+
+    result = handler.execute(
+        _task(f"skill:{skill}", node_id="routed"),
+        _workspace(project),
+        _context(project),
+    )
+
+    if skill != "aa-improvement-reviewer":
+        assert result.status == "succeeded"
+    request = invoker.requests[0]
+    assert request.model == expected
+    assert request.model_route_source == "skill_route"
+
+
+def test_agent_handler_escalates_contract_retry_model(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    invoker = RecordingInvoker(write="qa/changes/CH-1/explore/summary.md")
+    router = ModelRouter(
+        ModelRoutingCfg.model_validate(
+            {
+                "strict_routes": True,
+                "routes": {"aa-explore": "anthropic/deepseek-v4-flash"},
+                "escalation": {
+                    "model": "anthropic/glm-5.2",
+                    "on_error_kinds": ["invalid_output", "forbidden_write"],
+                },
+            }
+        )
+    )
+    handler = AgentHandler(
+        invoker,
+        _store(project),
+        contracts=_agent_catalog(),
+        compiled=_compiled(_AGENT_GRAPH),
+        model_router=router,
+        adapter_name="opencode",
+    )
+
+    result = handler.execute(
+        _task(
+            "skill:aa-explore",
+            node_id="explore",
+            prior_error_kind="invalid_output",
+        ),
+        _workspace(project),
+        _context(project),
+    )
+
+    assert result.status == "succeeded"
+    assert invoker.requests[0].model == "anthropic/glm-5.2"
+    assert invoker.requests[0].model_route_source == "escalation"
+
+
+def test_agent_handler_keeps_escalated_model_after_transient_failure(
+    tmp_path: Path,
+) -> None:
+    project = _make_project(tmp_path)
+    invoker = RecordingInvoker(write="qa/changes/CH-1/explore/summary.md")
+    router = ModelRouter(
+        ModelRoutingCfg.model_validate(
+            {
+                "strict_routes": True,
+                "routes": {"aa-explore": "anthropic/deepseek-v4-flash"},
+                "escalation": {
+                    "model": "anthropic/glm-5.2",
+                    "on_error_kinds": ["invalid_output", "forbidden_write"],
+                },
+            }
+        )
+    )
+    handler = AgentHandler(
+        invoker,
+        _store(project),
+        contracts=_agent_catalog(),
+        compiled=_compiled(_AGENT_GRAPH),
+        model_router=router,
+        adapter_name="opencode",
+    )
+
+    result = handler.execute(
+        _task(
+            "skill:aa-explore",
+            node_id="explore",
+            prior_error_kind="timeout",
+            contract_failure_kinds_seen=("invalid_output",),
+        ),
+        _workspace(project),
+        _context(project),
+    )
+
+    assert result.status == "succeeded"
+    assert invoker.requests[0].model == "anthropic/glm-5.2"
+    assert invoker.requests[0].model_route_source == "escalation"
 
 
 def test_agent_handler_adapter_failure_preserves_error_kind(tmp_path: Path) -> None:
@@ -1477,6 +1632,8 @@ class _StatusScript:
             self.status_calls += 1
             st = self._statuses[i]
             return httpx.Response(200, json=({self._sid: {"type": st}} if st != "idle" else {}))
+        if path == f"/session/{self._sid}/message":
+            return httpx.Response(200, json=[])
         return httpx.Response(404)
 
 

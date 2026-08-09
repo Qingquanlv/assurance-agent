@@ -4,6 +4,7 @@ Endpoints/payloads transcribed from the CURRENT TS opencode_adapter.ts:
 - POST /session                    {title, parentID?}                 -> {id}
 - POST /session/{id}/prompt_async  {parts:[{type:'text',text}], model?, agent?} -> 204
 - GET  /session/status             -> { "<sid>": {"type": "busy|retry"} | "idle" }
+- GET  /session/{id}/message       -> [{info:{role,error?}, parts:[...]}]
 
 The prompt is dispatched ASYNCHRONOUSLY and completion is detected by polling
 /session/status for a SUSTAINED idle streak. A synchronous POST /message would
@@ -42,6 +43,17 @@ DEFAULT_POLL_INTERVAL_S = 2.0
 DEFAULT_POLL_MAX_S = 3600.0
 DEFAULT_IDLE_DONE_STREAK = 8
 
+BOUNDED_OPENCODE_AGENTS = (
+    "aa-archiver",
+    "aa-doc-author",
+    "aa-explorer",
+    "aa-intake-host",
+    "aa-reporter",
+    "aa-reviewer",
+    "aa-test-author",
+)
+DELEGATION_ESCAPE_TOOLS = ("task", "call_omo_agent", "look_at")
+
 
 class _OpenCodeCallError(DriverError):
     """带 typed ``ErrorKind`` 的 opencode 调用失败；v1 run_phase 仍按 DriverError 捕获。"""
@@ -59,6 +71,26 @@ def _classify_http_status(status_code: int) -> ErrorKind:
     return "internal"
 
 
+def _classify_prompt_status(status_code: int, *, model_was_explicit: bool) -> ErrorKind:
+    if model_was_explicit and status_code in (400, 404):
+        return "invalid_input"
+    return _classify_http_status(status_code)
+
+
+def _shield_bounded_prompt(prompt: str, agent: str | None) -> str:
+    """Keep third-party keyword hooks from rewriting bounded AA instructions.
+
+    OpenCode plugins conventionally exclude ``system-reminder`` blocks from
+    keyword-derived mode injection.  AA graph prompts contain unavoidable words
+    such as the ``aa-explore`` skill name and source-search prohibitions; without
+    this boundary a plugin can prepend contradictory delegation/search commands
+    after the runtime has already validated the worker policy.
+    """
+    if agent not in BOUNDED_OPENCODE_AGENTS:
+        return prompt
+    return f"<system-reminder>\n{prompt}\n</system-reminder>"
+
+
 def auth_headers_from_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
     env = env if env is not None else os.environ
     user = env.get("OPENCODE_SERVER_USERNAME") or env.get("AA_OPENCODE_USERNAME")
@@ -67,6 +99,80 @@ def auth_headers_from_env(env: Mapping[str, str] | None = None) -> dict[str, str
         return {}
     token = base64.b64encode(f"{user}:{password}".encode()).decode()
     return {"Authorization": f"Basic {token}"}
+
+
+def validate_bounded_agent_catalog(payload: Any, agent_names: tuple[str, ...]) -> None:
+    """Fail closed unless live OpenCode workers disable delegation escape tools.
+
+    Project agent files can be refreshed while a long-running OpenCode server
+    still serves cached or globally shadowed definitions.  The live ``/agent``
+    catalog is therefore the authority for this preflight, not the files on
+    disk.  ``task`` is OpenCode-native; ``call_omo_agent`` and ``look_at`` are
+    plugin tools that can spawn child sessions outside the worker's permission
+    floor.
+    """
+    if not isinstance(payload, list):
+        raise _OpenCodeCallError("internal", "opencode /agent returned a non-list payload")
+    by_name = {
+        item.get("name"): item
+        for item in payload
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    }
+    for agent_name in agent_names:
+        agent = by_name.get(agent_name)
+        if not isinstance(agent, dict):
+            raise _OpenCodeCallError(
+                "internal",
+                f"bounded OpenCode agent {agent_name!r} is missing; refresh agents and restart OpenCode",
+            )
+        tools = agent.get("tools")
+        permissions = agent.get("permission")
+
+        def explicitly_disabled(tool: str) -> bool:
+            if isinstance(tools, dict) and tools.get(tool) is False:
+                return True
+            action: str | None = None
+            if isinstance(permissions, list):
+                for rule in permissions:
+                    if not isinstance(rule, dict) or rule.get("permission") != tool:
+                        continue
+                    if rule.get("pattern") not in (None, "*"):
+                        continue
+                    candidate = rule.get("action")
+                    action = candidate if isinstance(candidate, str) else None
+            return action == "deny"
+
+        unsafe = [tool for tool in DELEGATION_ESCAPE_TOOLS if not explicitly_disabled(tool)]
+        if unsafe:
+            joined = ", ".join(unsafe)
+            raise _OpenCodeCallError(
+                "internal",
+                f"bounded OpenCode agent {agent_name!r} has stale/unsafe tools ({joined}); "
+                "refresh agents and restart OpenCode before running the workflow",
+            )
+
+
+def validate_bounded_agent_server(server: str, directory: str) -> None:
+    """Validate all packaged worker policies against a live OpenCode server."""
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(
+                f"{server.rstrip('/')}/agent",
+                params={"directory": directory},
+                headers=auth_headers_from_env(),
+            )
+    except httpx.TransportError as exc:
+        raise _OpenCodeCallError("transport", f"opencode agent preflight failed: {exc}") from exc
+    if not 200 <= response.status_code < 300:
+        raise _OpenCodeCallError(
+            _classify_http_status(response.status_code),
+            f"opencode agent preflight failed ({response.status_code}): {response.text[:300]}",
+        )
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise _OpenCodeCallError("internal", "opencode /agent returned invalid JSON") from exc
+    validate_bounded_agent_catalog(payload, BOUNDED_OPENCODE_AGENTS)
 
 
 def parse_model(raw: str | dict[str, str] | None) -> dict[str, str] | None:
@@ -125,6 +231,7 @@ class OpenCodeAdapter:
         self._idle_streak_target = idle_done_streak
         self._sleep = sleep
         self._monotonic = monotonic
+        self._validated_agent_policies: set[tuple[str, str]] = set()
 
     def _request(
         self,
@@ -163,23 +270,46 @@ class OpenCodeAdapter:
             raise _OpenCodeCallError("internal", "opencode create session: missing id")
         return session_id
 
+    def _validate_live_agent_policy(self, agent: str | None, *, directory: str) -> None:
+        if agent not in BOUNDED_OPENCODE_AGENTS:
+            return
+        key = (directory, agent)
+        if key in self._validated_agent_policies:
+            return
+        resp = self._request("GET", "/agent", directory=directory)
+        if not 200 <= resp.status_code < 300:
+            raise _OpenCodeCallError(
+                _classify_http_status(resp.status_code),
+                f"opencode agent preflight failed ({resp.status_code}): {resp.text[:300]}",
+            )
+        try:
+            payload = resp.json()
+        except ValueError as exc:
+            raise _OpenCodeCallError("internal", "opencode /agent returned invalid JSON") from exc
+        validate_bounded_agent_catalog(payload, (agent,))
+        self._validated_agent_policies.add(key)
+
     def _dispatch_prompt(
         self,
         session_id: str,
         prompt: str,
         *,
         agent: str | None = None,
+        model: dict[str, str] | None = None,
         directory: str | None = None,
     ) -> None:
-        body: dict[str, Any] = {"parts": [{"type": "text", "text": prompt}]}
-        if self._model:
-            body["model"] = self._model
+        body: dict[str, Any] = {"parts": [{"type": "text", "text": _shield_bounded_prompt(prompt, agent)}]}
+        if model is not None:
+            body["model"] = model
         if agent:
             body["agent"] = agent
         resp = self._request("POST", f"/session/{session_id}/prompt_async", json=body, directory=directory)
         if resp.status_code != 204 and not 200 <= resp.status_code < 300:
             raise _OpenCodeCallError(
-                _classify_http_status(resp.status_code),
+                _classify_prompt_status(
+                    resp.status_code,
+                    model_was_explicit=model is not None,
+                ),
                 f"opencode prompt failed ({resp.status_code}): {resp.text[:300]}",
             )
 
@@ -220,11 +350,67 @@ class OpenCodeAdapter:
             self._sleep(self._poll_interval)
         raise _OpenCodeCallError("timeout", f"opencode phase timed out after {limit}s (session {session_id})")
 
+    def _raise_on_session_error(
+        self,
+        session_id: str,
+        *,
+        model_was_explicit: bool,
+        directory: str | None = None,
+    ) -> None:
+        """Surface the terminal assistant API error hidden behind an idle session.
+
+        ``prompt_async`` returns before the provider call.  Provider failures are
+        therefore recorded on the assistant message while ``/session/status``
+        simply becomes idle; treating idle as success turns auth/rate-limit errors
+        into misleading artifact-missing failures downstream.
+        """
+        resp = self._request("GET", f"/session/{session_id}/message", directory=directory)
+        if not 200 <= resp.status_code < 300:
+            raise _OpenCodeCallError(
+                _classify_http_status(resp.status_code),
+                f"opencode messages failed ({resp.status_code}): {resp.text[:300]}",
+            )
+        payload = resp.json() if resp.content else []
+        if not isinstance(payload, list):
+            raise _OpenCodeCallError("internal", "opencode messages returned a non-list payload")
+        for message in reversed(payload):
+            if not isinstance(message, dict):
+                continue
+            info = message.get("info")
+            if not isinstance(info, dict) or info.get("role") != "assistant":
+                continue
+            error = info.get("error")
+            if error is None:
+                return
+            error_data = error.get("data") if isinstance(error, dict) else None
+            status_code = error_data.get("statusCode") if isinstance(error_data, dict) else None
+            kind = (
+                _classify_prompt_status(
+                    status_code,
+                    model_was_explicit=model_was_explicit,
+                )
+                if isinstance(status_code, int)
+                else "internal"
+            )
+            detail = error_data.get("message") if isinstance(error_data, dict) else None
+            if not isinstance(detail, str) or not detail.strip():
+                detail = str(error)[:500]
+            raise _OpenCodeCallError(kind, f"opencode assistant error: {detail[:500]}")
+
     def run_phase(self, request: PhaseRequest) -> PhaseResult:
         try:
             session_id = self._create_session(f"Phase {request.phase_id}", self._parent)
-            self._dispatch_prompt(session_id, request.prompt, agent=request.agent)
+            self._dispatch_prompt(
+                session_id,
+                request.prompt,
+                agent=request.agent,
+                model=self._model,
+            )
             self._await_idle(session_id)
+            self._raise_on_session_error(
+                session_id,
+                model_was_explicit=self._model is not None,
+            )
         except DriverError as err:
             return PhaseResult(ok=False, output="", error=str(err))
         # Output is written to artifacts by the agent; GraphRuntime commits the
@@ -236,13 +422,25 @@ class OpenCodeAdapter:
         directory = str(request.workspace_root)
         session_id: str | None = None
         try:
+            self._validate_live_agent_policy(request.agent, directory=directory)
             session_id = self._create_session(
                 f"Phase {request.node_id}",
                 request.reconnect_session_id or self._parent,
                 directory=directory,
             )
-            self._dispatch_prompt(session_id, request.prompt, agent=request.agent, directory=directory)
+            self._dispatch_prompt(
+                session_id,
+                request.prompt,
+                agent=request.agent,
+                model=parse_model(request.model),
+                directory=directory,
+            )
             self._await_idle(session_id, directory=directory, poll_max=request.timeout_seconds)
+            self._raise_on_session_error(
+                session_id,
+                model_was_explicit=request.model is not None,
+                directory=directory,
+            )
         except _OpenCodeCallError as exc:
             return AgentResult(ok=False, error_kind=exc.kind, error=str(exc), session_id=session_id)
         except httpx.TransportError as exc:

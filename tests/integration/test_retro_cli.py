@@ -177,3 +177,64 @@ def test_schema_invalid_batch_manifest_enters_preflight_fallback(
         payload = json.loads(result.output.strip().splitlines()[-1])
         assert payload["status"] == "completed_with_gaps"
         assert payload["failure_ids"]
+
+
+def test_retro_help_exposes_adapter_options() -> None:
+    help_text = CliRunner().invoke(main, ["retro", "--help"]).output
+    for flag in ("--adapter", "--server", "--directory", "--model", "--agent-cmd"):
+        assert flag in help_text, flag
+
+
+def test_retro_opencode_adapter_requires_server() -> None:
+    from assurance_agent.workflow.driver.loop import EXIT_ERROR
+
+    with CliRunner().isolated_filesystem():
+        result = CliRunner().invoke(
+            main,
+            ["retro", "--last", "1", "--adapter", "opencode"],
+        )
+
+    assert result.exit_code == EXIT_ERROR
+    assert "--server is required" in result.output
+
+
+def test_retro_opencode_passes_adapter_and_model_to_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import assurance_agent.commands.retro_cmd as retro_cmd
+    from assurance_agent.workflow.driver.loop import EXIT_COMPLETED, LoopResult
+
+    captured: dict[str, object] = {}
+
+    def fake_loop(**kwargs):  # noqa: ANN202
+        captured.update(kwargs)
+        return LoopResult(EXIT_COMPLETED, "ok")
+
+    monkeypatch.setattr(retro_cmd, "run_workflow_loop", fake_loop)
+
+    with CliRunner().isolated_filesystem() as fs:
+        root = Path(fs)
+        write_aa_config(root)
+        (root / "qa" / "changes").mkdir(parents=True)
+        (root / "qa" / "archive").mkdir(parents=True)
+        (root / "qa" / "issues").mkdir(parents=True)
+        result = CliRunner().invoke(
+            main,
+            [
+                "retro",
+                "--retro-id",
+                "retro-opencode",
+                "--last",
+                "1",
+                "--adapter",
+                "opencode",
+                "--server",
+                "http://localhost:4096",
+                "--model",
+                "anthropic/glm-5.2",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert captured["adapter_name"] == "opencode"
+    assert captured["cli_model_override"] == "anthropic/glm-5.2"

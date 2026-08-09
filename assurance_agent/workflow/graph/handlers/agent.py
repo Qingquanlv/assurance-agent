@@ -26,6 +26,7 @@ from assurance_agent.workflow.graph.contracts import (
     ResourceClaims,
     ResourcePath,
 )
+from assurance_agent.workflow.graph.model_routing import ModelRouteContext, ModelRouter
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
@@ -116,11 +117,17 @@ class AgentHandler:
         *,
         contracts: ExecutionContractCatalog,
         compiled: CompiledWorkflow,
+        model_router: ModelRouter | None = None,
+        adapter_name: str | None = None,
+        cli_model_override: str | None = None,
     ) -> None:
         self._invoker = invoker
         self._store = store
         self._contracts = contracts
         self._compiled = compiled
+        self._model_router = model_router
+        self._adapter_name = adapter_name
+        self._cli_model_override = cli_model_override
 
     def execute(
         self,
@@ -139,6 +146,17 @@ class AgentHandler:
         outputs = self._outputs(task, node_def)
         allowed = tuple(_display_path(path) for path in claims.authorization_writes)
         skill = task.target.partition(":")[2]
+        resolution = None
+        if self._model_router is not None and self._adapter_name == "opencode":
+            resolution = self._model_router.resolve(
+                ModelRouteContext(
+                    adapter="opencode",
+                    skill=skill,
+                    prior_error_kind=task.prior_error_kind,
+                    contract_failure_kinds_seen=task.contract_failure_kinds_seen,
+                    cli_override=self._cli_model_override,
+                )
+            )
         link_host_task_paths(workspace, context)
         prompt = build_node_prompt(
             skill,
@@ -165,6 +183,9 @@ class AgentHandler:
             # The schema binding is the workflow author's explicit capability
             # choice. Name-based routing exists only for legacy/omitted bindings.
             agent=node_def.agent or agent_for_skill(skill),
+            model=resolution.model if resolution is not None else None,
+            model_route_source=resolution.source if resolution is not None else None,
+            model_policy_sha256=resolution.policy_sha256 if resolution is not None else None,
         )
         protected_inputs = _snapshot_canonical_agent_inputs(context)
         try:

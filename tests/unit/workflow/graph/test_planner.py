@@ -1139,6 +1139,7 @@ def test_failed_retryable_task_carries_prior_failure_feedback(tmp_path: Path) ->
                 error_kind="invalid_output",
                 error="output 'change:review/api-plan-review.json' failed review schema validation",
                 attempts_used=1,
+                contract_failure_kinds_seen=("invalid_output",),
             )
         ],
     )
@@ -1148,6 +1149,7 @@ def test_failed_retryable_task_carries_prior_failure_feedback(tmp_path: Path) ->
     assert retry_task.task_id == original.task_id
     assert retry_task.input_sha256 == original.input_sha256
     assert retry_task.prior_error_kind == "invalid_output"
+    assert retry_task.contract_failure_kinds_seen == ("invalid_output",)
     assert retry_task.prior_failure is not None
     assert "schema validation" in retry_task.prior_failure
 

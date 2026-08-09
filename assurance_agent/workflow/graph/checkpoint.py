@@ -45,6 +45,7 @@ from assurance_agent.workflow.core.graph_events import (
     TaskImportedEvent,
     TaskRecoveryRoutedEvent,
 )
+from assurance_agent.workflow.core.graph_types import ErrorKind
 from assurance_agent.workflow.core.progression import transaction
 from assurance_agent.workflow.execution.tree_hash import sha256_file
 from assurance_agent.workflow.graph.migrate_events import migrate_events_for_fold
@@ -71,6 +72,7 @@ from assurance_agent.workflow.orchestration.gates import (
 
 CHECKPOINT_DIR_RELPATH = ".graph-runtime/checkpoints"
 _LEDGER_ENVELOPE_KEYS = frozenset({"seq", "ts"})
+_CONTRACT_FAILURE_KINDS = frozenset({"invalid_output", "forbidden_write"})
 _TERMINAL_BY_TYPE: dict[str, Literal["completed", "stopped", "failed"]] = {
     "graph_completed": "completed",
     "graph_stopped": "stopped",
@@ -80,6 +82,15 @@ _TERMINAL_BY_TYPE: dict[str, Literal["completed", "stopped", "failed"]] = {
 _AttemptOutcomeEvent = (
     TaskAttemptSucceededEvent | TaskAttemptStoppedEvent | TaskAttemptFailedEvent | TaskAttemptAbandonedEvent
 )
+
+
+def _record_contract_failure(
+    seen: tuple[ErrorKind, ...],
+    error_kind: ErrorKind,
+) -> tuple[ErrorKind, ...]:
+    if error_kind not in _CONTRACT_FAILURE_KINDS or error_kind in seen:
+        return seen
+    return (*seen, error_kind)
 
 
 class CheckpointImportError(AaError):
@@ -694,6 +705,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                 outputs_committed=prev.outputs_committed if prev else False,
                 gate_report=prev.gate_report if prev else None,
                 state_updates=prev.state_updates if prev else {},
+                contract_failure_kinds_seen=(prev.contract_failure_kinds_seen if prev else ()),
                 lease_expires_at=event.lease_expires_at,
             )
             generation.apply_task_started(event, tasks=tasks, fan_outs=fan_outs)
@@ -739,6 +751,10 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                     "status": "failed",
                     "latest_attempt_id": event.attempt_id,
                     "error_kind": event.error_kind,
+                    "contract_failure_kinds_seen": _record_contract_failure(
+                        prev.contract_failure_kinds_seen,
+                        event.error_kind,
+                    ),
                     "error": event.message,
                     "next_retry_at": event.next_retry_at,
                 }

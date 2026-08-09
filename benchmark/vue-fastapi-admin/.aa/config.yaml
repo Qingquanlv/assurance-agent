@@ -1,0 +1,121 @@
+version: 1
+
+project:
+  name: vue-fastapi-admin
+  root: .
+  layout: default
+
+sources:
+  frontend: ./web
+  backend: ./app
+
+qa:
+  cases: ./qa/cases
+  changes: ./qa/changes
+
+tests:
+  root: ./tests
+  api: ./tests/api
+  e2e: ./tests/e2e
+  fuzz: ./tests/fuzz
+  fixtures: ./tests/fixtures
+  helpers: ./tests/helpers
+  reports: ./tests/reports
+
+frameworks:
+  api:
+    enabled: true
+    name: pytest
+  e2e:
+    enabled: true
+    name: playwright
+
+workflow:
+  primary_runner: skill
+  agent: opencode
+  agents:
+    claude_code: false
+    codex: false
+
+mcp:
+  enabled: false
+
+generation:
+  prd_input_mode: prompt
+  e2e:
+    default_pom: false
+    locator_priority:
+      - role
+      - label
+      - testid
+      - css
+  api:
+    prefer_existing_fixtures: true
+
+execution:
+  entry: cli
+  self_healing:
+    mode: proposal-only
+
+  model_routing:
+    # Hybrid OpenCode benchmark policy. A non-empty CLI --model/
+    # OPENCODE_MODEL intentionally overrides this map for single-model A/B runs.
+    default: anthropic/deepseek-v4-flash
+    strict_routes: true
+    routes:
+      aa-explore: anthropic/glm-5.2
+      aa-fact-baseline: anthropic/glm-5.2
+
+      # Design, design repair, and coverage repair need stronger contract fidelity.
+      aa-case-design: anthropic/glm-5.2
+      aa-case-fixer: anthropic/glm-5.2
+      aa-api-plan: anthropic/glm-5.2
+      aa-api-plan-fixer: anthropic/glm-5.2
+      aa-e2e-plan: anthropic/glm-5.2
+      aa-e2e-plan-fixer: anthropic/glm-5.2
+      aa-fuzz-plan: anthropic/glm-5.2
+      aa-performance-plan: anthropic/glm-5.2
+      aa-coverage-repair: anthropic/glm-5.2
+
+      # Case/plan reviewers remain independent and cost-efficient on DeepSeek.
+      aa-case-reviewer: anthropic/deepseek-v4-flash
+      aa-api-plan-reviewer: anthropic/deepseek-v4-flash
+      aa-e2e-plan-reviewer: anthropic/deepseek-v4-flash
+      aa-fuzz-plan-reviewer: anthropic/deepseek-v4-flash
+      aa-performance-plan-reviewer: anthropic/deepseek-v4-flash
+
+      aa-api-codegen: anthropic/glm-5.2
+      aa-api-codegen-fixer: anthropic/glm-5.2
+      aa-e2e-codegen: anthropic/glm-5.2
+      aa-e2e-codegen-fixer: anthropic/glm-5.2
+      aa-fuzz-codegen: anthropic/glm-5.2
+      aa-performance-codegen: anthropic/glm-5.2
+      aa-fix-proposal: anthropic/glm-5.2
+      aa-issue-analyzer: anthropic/glm-5.2
+      aa-issue-triage-advisor: anthropic/glm-5.2
+      aa-archive: anthropic/deepseek-v4-flash
+
+      aa-retro-issue-analysis: anthropic/deepseek-v4-flash
+      aa-retro-workflow-analysis: anthropic/deepseek-v4-flash
+      aa-retro-eval-analysis: anthropic/deepseek-v4-flash
+      aa-retro: anthropic/glm-5.2
+      # Explicit user decision: Improvement Reviewer stays on GLM 5.2.
+      aa-improvement-reviewer: anthropic/glm-5.2
+
+    escalation:
+      model: anthropic/glm-5.2
+      on_error_kinds:
+        - invalid_output
+        - forbidden_write
+
+coverage:
+  enabled: true
+  gate_mode: warn
+  target_package: app
+  threshold:
+    line: 70
+    branch: 60
+
+performance:
+  enabled: true
+  base_url: http://127.0.0.1:9999

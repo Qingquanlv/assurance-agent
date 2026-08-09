@@ -262,7 +262,20 @@ maybe_auto_decide() {
   action="$(benchmark_interrupt_action "$proposal_state")"
   reason="benchmark auto resume interrupt $interrupt_id; defer synchronized knowledge changes to Batch boundary"
   log "[$change_id] auto resume interrupt=$interrupt_id action=$action"
-  "$AA_BIN" workflow resume --change "$change_id" --interrupt "$interrupt_id" --action "$action" --reason "$reason"
+  # Interrupt resume continues the driver with --adapter; default headless would
+  # silently switch an OpenCode loop onto cursor-agent mid-run.
+  local -a adapter_args=(
+    --adapter "$DRIVER_ADAPTER"
+    --server "$OPENCODE_SERVER"
+    --directory "$PROJECT_ROOT"
+  )
+  [ -n "$OPENCODE_MODEL" ] && adapter_args+=(--model "$OPENCODE_MODEL")
+  "$AA_BIN" workflow resume \
+    --change "$change_id" \
+    --interrupt "$interrupt_id" \
+    --action "$action" \
+    --reason "$reason" \
+    "${adapter_args[@]}"
 }
 
 # Diagnostic only: log stalls that need operator attention. Does not mutate ledger.
@@ -454,14 +467,6 @@ print(json.dumps({
     "max_coverage_repair_attempts": int(os.environ["MAX_COVERAGE_REPAIR"]),
     "auto_archive": False,
 }))'
-}
-
-opencode_agent_cmd_prefix() {
-  # `aa retro` appends its prompt to this command. `--auto` approves asks but
-  # preserves the explicit deny rules declared by aa-doc-author.
-  local cmd="$OPENCODE_BIN run --format $OPENCODE_OUTPUT_FORMAT --agent aa-doc-author --auto --attach $OPENCODE_SERVER --dir $PROJECT_ROOT"
-  [ -n "$OPENCODE_MODEL" ] && cmd="$cmd --model $OPENCODE_MODEL"
-  printf '%s' "$cmd"
 }
 
 # Run one command under hard process-group timeout, optionally polling
@@ -773,11 +778,20 @@ run_retro_collect() {
   local collect_log="$RUN_DIR/retro-collect.log"
   local collect_exit=0
   log "stage 3/3 retro via explicit Batch manifest=$BATCH_MANIFEST ..."
-  local agent_cmd
-  agent_cmd="$(opencode_agent_cmd_prefix)"
   : >"$collect_log"
-  run_batch_retro \
-    "$AA_BIN" "$BATCH_MANIFEST" "$RETRO_ID" "$agent_cmd" "$RETRO_DRY_RUN" "$collect_log"
+  batch_members_settled "$BATCH_MANIFEST" || return 2
+  local -a retro_command=(
+    "$AA_BIN" retro
+    --batch-manifest "$BATCH_MANIFEST"
+    --retro-id "$RETRO_ID"
+    --json
+  )
+  [ "$RETRO_DRY_RUN" = "true" ] && retro_command+=(--dry-run)
+  retro_command+=(--adapter "$DRIVER_ADAPTER")
+  retro_command+=(--server "$OPENCODE_SERVER")
+  retro_command+=(--directory "$PROJECT_ROOT")
+  [ -n "$OPENCODE_MODEL" ] && retro_command+=(--model "$OPENCODE_MODEL")
+  "${retro_command[@]}" >"$collect_log" 2>&1
   collect_exit=$?
   cat "$collect_log" >>"$LOOP_LOG" || true
   return "$collect_exit"
@@ -910,6 +924,13 @@ log "syncing current aa skills and bounded OpenCode agents"
 if ! curl -sf -o /dev/null "$OPENCODE_SERVER" 2>/dev/null; then
   log "ERROR: no OpenCode server reachable at $OPENCODE_SERVER"
   log "       start it after agent sync (for example: opencode serve --port 4096)"
+  exit 1
+fi
+
+log "validating live bounded OpenCode agent policies"
+if ! "$AA_PYTHON" -c 'import sys; from assurance_agent.workflow.driver.opencode_adapter import validate_bounded_agent_server; validate_bounded_agent_server(sys.argv[1], sys.argv[2])' "$OPENCODE_SERVER" "$PROJECT_ROOT"; then
+  log "ERROR: live OpenCode agents are stale or unsafe after sync"
+  log "       restart OpenCode so it reloads the project .opencode/agents policies"
   exit 1
 fi
 

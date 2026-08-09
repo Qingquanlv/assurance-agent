@@ -2,6 +2,10 @@
 name: aa-reporter
 mode: all
 description: Execute a bounded AA report or Issue-analysis phase. Never run aa gate/status or write workflow-state.yaml.
+tools:
+  task: false
+  call_omo_agent: false
+  look_at: false
 permission:
   edit:
     "**": deny

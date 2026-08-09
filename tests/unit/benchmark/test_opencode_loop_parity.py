@@ -11,6 +11,7 @@ from assurance_agent import resources
 
 _ROOT = Path(__file__).parents[3]
 _OPENCODE_LOOP = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "run-workflow-loop.sh"
+_BENCHMARK_ROOT = _ROOT / "benchmark" / "vue-fastapi-admin"
 
 
 def test_opencode_loop_uses_canonical_batch_retro_and_eval_pipeline() -> None:
@@ -32,7 +33,9 @@ def test_opencode_loop_uses_canonical_batch_retro_and_eval_pipeline() -> None:
     assert boundary_start < promotion < retro < evaluation < boundary_end
     assert loop_end < settled_guard < boundary_call
     assert "initialize_retro_batch_manifest" in source
-    assert "run_batch_retro" in source
+    assert 'retro_command+=(--adapter "$DRIVER_ADAPTER")' in source
+    assert 'retro_command+=(--server "$OPENCODE_SERVER")' in source
+    assert 'retro_command+=(--directory "$PROJECT_ROOT")' in source
     assert "collect_benchmark_eval_rows" in source
     assert "proposal-candidates.json" in source
     assert "auto-review-summary.json" in source
@@ -60,15 +63,68 @@ def test_opencode_loop_uses_hard_timeout_managed_services_and_graph_archive() ->
     assert "benchmark_result_exit_code" in source
 
 
-def test_opencode_loop_keeps_explicit_denies_under_auto_mode() -> None:
+def test_opencode_loop_keeps_explicit_denies_with_native_adapter() -> None:
     source = _OPENCODE_LOOP.read_text(encoding="utf-8")
 
     assert "--dangerously-skip-permissions" not in source
-    assert "--agent aa-doc-author --auto" in source
-    assert "--attach $OPENCODE_SERVER" in source
     assert '--adapter "$DRIVER_ADAPTER"' in source
     assert '--server "$OPENCODE_SERVER"' in source
     assert 'DRIVER_ADAPTER="${DRIVER_ADAPTER:-opencode}"' in source
+
+
+def test_opencode_loop_validates_live_agent_policy_before_creating_changes() -> None:
+    source = _OPENCODE_LOOP.read_text(encoding="utf-8")
+
+    sync = source.index('"$AA_BIN" skill refresh --sync-agents')
+    preflight = source.index("validate_bounded_agent_server", sync)
+    tracking = source.index("setup_run_tracking", preflight)
+
+    assert sync < preflight < tracking
+
+
+def test_hybrid_model_routes_design_to_glm_and_review_to_deepseek() -> None:
+    config = yaml.safe_load((_BENCHMARK_ROOT / ".aa/config.yaml").read_text(encoding="utf-8"))
+    routing = config["execution"]["model_routing"]
+    routes = routing["routes"]
+
+    assert routing["strict_routes"] is True
+    for skill in (
+        "aa-case-design",
+        "aa-case-fixer",
+        "aa-api-plan",
+        "aa-api-plan-fixer",
+        "aa-e2e-plan",
+        "aa-e2e-plan-fixer",
+        "aa-fuzz-plan",
+        "aa-performance-plan",
+        "aa-coverage-repair",
+    ):
+        assert routes[skill] == "anthropic/glm-5.2", skill
+    for skill in (
+        "aa-case-reviewer",
+        "aa-api-plan-reviewer",
+        "aa-e2e-plan-reviewer",
+        "aa-fuzz-plan-reviewer",
+        "aa-performance-plan-reviewer",
+    ):
+        assert routes[skill] == "anthropic/deepseek-v4-flash", skill
+    assert routes["aa-improvement-reviewer"] == "anthropic/glm-5.2"
+
+    schema = yaml.safe_load(resources.read_text("schemas", "workflow-schema.yaml"))
+    compiled_skills = {
+        node["uses"].removeprefix("skill:")
+        for graph in schema["graphs"].values()
+        for node in (graph.get("nodes") or {}).values()
+        if isinstance(node, dict) and str(node.get("uses", "")).startswith("skill:")
+    }
+    assert set(routes) == compiled_skills
+
+
+def test_hybrid_benchmark_envs_do_not_pin_a_global_model() -> None:
+    for name in ("benchmark.opencode-dept.env", "benchmark.opencode-user.env"):
+        source = (_BENCHMARK_ROOT / "benchmark" / name).read_text(encoding="utf-8")
+        assert 'OPENCODE_MODEL=""' in source, name
+        assert 'OPENCODE_MODEL="anthropic/' not in source, name
 
 
 def _agent_frontmatter(name: str) -> dict[str, object]:

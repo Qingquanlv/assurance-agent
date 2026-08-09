@@ -2,6 +2,10 @@
 name: aa-explorer
 mode: all
 description: Execute only the bounded AA explore phase. May run aa risk commands and write Explore artifacts, but never workflow state.
+tools:
+  task: false
+  call_omo_agent: false
+  look_at: false
 permission:
   edit:
     "**": deny

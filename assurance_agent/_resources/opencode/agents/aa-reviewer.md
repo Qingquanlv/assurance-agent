@@ -2,6 +2,10 @@
 name: aa-reviewer
 mode: all
 description: Execute a bounded AA review/inspect phase. Never run aa gate/status or write workflow-state.yaml.
+tools:
+  task: false
+  call_omo_agent: false
+  look_at: false
 permission:
   edit:
     "**": deny

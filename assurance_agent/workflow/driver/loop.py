@@ -76,6 +76,8 @@ def run_workflow_loop(
     parent_session_id: str | None = None,
     skip_lock: bool = False,
     adopt_lock_token: str | None = None,
+    adapter_name: str | None = None,
+    cli_model_override: str | None = None,
 ) -> LoopResult:
     params = params or {}
     try:
@@ -158,6 +160,8 @@ def run_workflow_loop(
             change_id=change_id,
             adapter=adapter,
             explicit_schema=explicit_schema,
+            adapter_name=adapter_name,
+            cli_model_override=cli_model_override,
         )
         context = runtime_context_for(project_root, change_id, params, parent_session_id)
         latest = bundle.runtime.latest_root_invocation(entrypoint)

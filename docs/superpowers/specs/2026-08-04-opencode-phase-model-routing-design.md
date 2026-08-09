@@ -1,11 +1,18 @@
 # OpenCode Phase Model Routing Design
 
 日期：2026-08-04
-状态：待用户评审
+状态：已批准；2026-08-09 更新 benchmark 角色映射
 
 ## 1. 目标
 
-在一次 AA OpenCode workflow 内，根据 workflow skill、前一次失败类型和显式 CLI 覆盖，为每次 agent attempt 选择不同模型。首个成本优化配置以 DeepSeek V4 Flash 承担有强下游校验的低风险工作，以 GLM 5.2 承担源码事实核验、独立评审、语义敏感生成和根因判断。
+在一次 AA OpenCode workflow 内，根据 workflow skill、前一次失败类型和显式 CLI 覆盖，为每次 agent attempt 选择不同模型。当前 benchmark 以 GLM 5.2 承担 Design/Fixer/Coverage Repair，以 DeepSeek V4 Flash 承担五类 Case/Plan Reviewer；Improvement Reviewer 明确保留 GLM 5.2。
+
+2026-08-09 用户确认的映射修订优先于本文早期示例：
+
+- `aa-case-design`、四类 plan、对应 fixer 与 `aa-coverage-repair` → GLM 5.2；
+- 五类 Case/Plan Reviewer → DeepSeek V4 Flash；
+- `aa-improvement-reviewer` → GLM 5.2；
+- 其余 phase 保持原混合策略。
 
 本设计必须同时满足：
 
@@ -72,18 +79,19 @@ execution:
       aa-fact-baseline: anthropic/glm-5.2
       aa-case-design: anthropic/glm-5.2
       aa-case-fixer: anthropic/glm-5.2
-      aa-case-reviewer: anthropic/glm-5.2
+      aa-case-reviewer: anthropic/deepseek-v4-flash
 
-      aa-api-plan: anthropic/deepseek-v4-flash
+      aa-api-plan: anthropic/glm-5.2
       aa-api-plan-fixer: anthropic/glm-5.2
-      aa-api-plan-reviewer: anthropic/glm-5.2
-      aa-e2e-plan: anthropic/deepseek-v4-flash
+      aa-api-plan-reviewer: anthropic/deepseek-v4-flash
+      aa-e2e-plan: anthropic/glm-5.2
       aa-e2e-plan-fixer: anthropic/glm-5.2
-      aa-e2e-plan-reviewer: anthropic/glm-5.2
-      aa-fuzz-plan: anthropic/deepseek-v4-flash
-      aa-fuzz-plan-reviewer: anthropic/glm-5.2
-      aa-performance-plan: anthropic/deepseek-v4-flash
-      aa-performance-plan-reviewer: anthropic/glm-5.2
+      aa-e2e-plan-reviewer: anthropic/deepseek-v4-flash
+      aa-fuzz-plan: anthropic/glm-5.2
+      aa-fuzz-plan-reviewer: anthropic/deepseek-v4-flash
+      aa-performance-plan: anthropic/glm-5.2
+      aa-performance-plan-reviewer: anthropic/deepseek-v4-flash
+      aa-coverage-repair: anthropic/glm-5.2
 
       aa-api-codegen: anthropic/glm-5.2
       aa-api-codegen-fixer: anthropic/glm-5.2

@@ -446,10 +446,8 @@ def test_opencode_loop_reports_and_gates_knowledge_promotion() -> None:
 def test_opencode_loop_preserves_opencode_agents_and_five_item_defaults() -> None:
     source = _OPENCODE_LOOP.read_text(encoding="utf-8")
     driver = source[source.index("run_driver() {") : source.index("\n}", source.index("run_driver() {"))]
-    retro_agent = source[
-        source.index("opencode_agent_cmd_prefix() {") : source.index(
-            "\n}", source.index("opencode_agent_cmd_prefix() {")
-        )
+    retro = source[
+        source.index("run_retro_collect() {") : source.index("\n}", source.index("run_retro_collect() {"))
     ]
     archive_agent = source[
         source.index("run_opencode_agent() {") : source.index("\n}", source.index("run_opencode_agent() {"))
@@ -472,8 +470,10 @@ def test_opencode_loop_preserves_opencode_agents_and_five_item_defaults() -> Non
     assert '--server "$OPENCODE_SERVER"' in driver
     assert '--directory "$PROJECT_ROOT"' in driver
     assert 'adapter_args+=(--model "$OPENCODE_MODEL")' in driver
-    assert "--agent aa-doc-author" in retro_agent
-    assert "--model $OPENCODE_MODEL" in retro_agent
+    assert 'retro_command+=(--adapter "$DRIVER_ADAPTER")' in retro
+    assert 'retro_command+=(--server "$OPENCODE_SERVER")' in retro
+    assert 'retro_command+=(--directory "$PROJECT_ROOT")' in retro
+    assert 'retro_command+=(--model "$OPENCODE_MODEL")' in retro
     assert "--agent aa-archiver" in archive_agent
     assert 'cmd+=(--model "$OPENCODE_MODEL")' in archive_agent
     assert '--adapter "$DRIVER_ADAPTER"' in workflow_entrypoint

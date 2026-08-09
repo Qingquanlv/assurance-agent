@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict
 
 from assurance_agent.verification.contract_render import render_output_contract
 from assurance_agent.workflow.core.graph_types import ErrorKind
+from assurance_agent.workflow.graph.model_routing import RouteSource
 from assurance_agent.workflow.skill_memory import load_skill_memory
 
 
@@ -35,6 +36,11 @@ class AgentRequest(BaseModel):
     # ``AgentHandler`` so each phase runs under a bounded QA worker rather than an
     # aggressive general coding preset.
     agent: str | None = None
+    # Request-local OpenCode model routing. None keeps the provider default and
+    # is intentionally distinct from the adapter constructor's legacy fallback.
+    model: str | None = None
+    model_route_source: RouteSource | None = None
+    model_policy_sha256: str | None = None
 
 
 class AgentResult(BaseModel):

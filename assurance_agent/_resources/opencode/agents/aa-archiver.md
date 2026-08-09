@@ -2,6 +2,10 @@
 name: aa-archiver
 mode: all
 description: Execute the bounded AA archive phase. Never run aa gate/status or write workflow-state.yaml.
+tools:
+  task: false
+  call_omo_agent: false
+  look_at: false
 permission:
   edit:
     "**": deny

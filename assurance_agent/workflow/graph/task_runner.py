@@ -18,6 +18,7 @@ from typing import Protocol
 from assurance_agent.workflow.core.graph_types import ErrorKind
 from assurance_agent.workflow.graph.agent_api import AgentInvoker
 from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog
+from assurance_agent.workflow.graph.model_routing import ModelRouter
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
@@ -118,6 +119,9 @@ def build_default_node_runner(
     *,
     compiled: CompiledWorkflow,
     run_child: Callable[[ExecutableTask, str, TaskWorkspace, RuntimeContext], TaskResult] | None = None,
+    model_router: ModelRouter | None = None,
+    adapter_name: str | None = None,
+    cli_model_override: str | None = None,
 ) -> NodeRunner:
     """注册 canonical target handler：agent 桥、domain operation、builtin 与 subgraph。
 
@@ -136,7 +140,15 @@ def build_default_node_runner(
     )
     from assurance_agent.workflow.graph.handlers.subgraph import SubgraphHandler
 
-    agent = AgentHandler(adapter, object_store, contracts=contracts, compiled=compiled)
+    agent = AgentHandler(
+        adapter,
+        object_store,
+        contracts=contracts,
+        compiled=compiled,
+        model_router=model_router,
+        adapter_name=adapter_name,
+        cli_model_override=cli_model_override,
+    )
     operation = OperationHandler(default_operations())
     handlers: dict[str, TaskHandler] = {
         "builtin:join": JoinHandler(),

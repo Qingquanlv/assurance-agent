@@ -6,6 +6,10 @@ description: >
   runs aa-intake dialogue, calls workflow_start after user confirmation, and
   handles human decisions and workflow continuation. Must not edit test code
   or freely rewrite workflow-state.yaml.
+tools:
+  task: false
+  call_omo_agent: false
+  look_at: false
 permission:
   edit:
     "**": deny

@@ -3,6 +3,8 @@
 import re
 from pathlib import Path
 
+import yaml
+
 from assurance_agent import resources
 from assurance_agent.artifacts.models import (
     Advisory,
@@ -193,6 +195,21 @@ def test_explore_permissions_are_removed_from_doc_author_and_owned_by_explorer()
     assert deny_context_edit.search(explorer) is not None
     assert allow_risk.search(doc_author) is None
     assert allow_explore.search(doc_author) is None
+
+
+def test_bounded_agents_disable_delegating_plugin_tools() -> None:
+    for name in resources.iter_children("opencode", "agents"):
+        if not name.endswith(".md"):
+            continue
+        text = resources.read_text("opencode", "agents", name)
+        match = re.match(r"^---\n(.*?)\n---\n", text, flags=re.DOTALL)
+        assert match is not None, name
+        frontmatter = yaml.safe_load(match.group(1))
+        assert frontmatter.get("tools") == {
+            "task": False,
+            "call_omo_agent": False,
+            "look_at": False,
+        }, name
 
 
 def test_case_reviewer_requires_independent_product_source_verification() -> None:

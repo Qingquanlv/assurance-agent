@@ -585,6 +585,7 @@ def _seed_outcomes(
                         context,
                         nid,
                         max(len(node_tasks) - 1, 0),
+                        contract_failure_kinds_seen=latest.contract_failure_kinds_seen,
                     )
                 )
             continue
@@ -707,6 +708,7 @@ def _seed_outcomes(
             len(node_tasks) - 1,
             prior_failure=latest.error if latest.status == "failed" else None,
             prior_error_kind=latest.error_kind if latest.status == "failed" else None,
+            contract_failure_kinds_seen=latest.contract_failure_kinds_seen,
         )
         if abandoned_subgraph_replay:
             retry_task = retry_task.model_copy(
@@ -1160,6 +1162,7 @@ def _seed_fan_out(
                 index,
                 prior_failure=child.error if child.status == "failed" else None,
                 prior_error_kind=child.error_kind if child.status == "failed" else None,
+                contract_failure_kinds_seen=child.contract_failure_kinds_seen,
             )
         )
 
@@ -1867,6 +1870,7 @@ def _build_task(
     *,
     prior_failure: str | None = None,
     prior_error_kind: ErrorKind | None = None,
+    contract_failure_kinds_seen: tuple[ErrorKind, ...] = (),
 ) -> ExecutableTask:
     definition = graph.nodes[nid].definition
     expanded_outputs = [_expand_static_output(o, context, nid) for o in definition.outputs]
@@ -1906,6 +1910,7 @@ def _build_task(
         budget=_budget_mark(definition, projection, task_id),
         prior_failure=prior_failure,
         prior_error_kind=prior_error_kind,
+        contract_failure_kinds_seen=contract_failure_kinds_seen,
     )
 
 
@@ -1970,6 +1975,7 @@ def _build_fan_out_task(
     *,
     prior_failure: str | None = None,
     prior_error_kind: ErrorKind | None = None,
+    contract_failure_kinds_seen: tuple[ErrorKind, ...] = (),
 ) -> ExecutableTask:
     """按冻结展开重建第 ``index`` 个 child：同一 ID、同一展开输入，可安全重放。"""
     definition = graph.nodes[nid].definition
@@ -2025,6 +2031,7 @@ def _build_fan_out_task(
         budget=_budget_mark(definition, projection, task_id),
         prior_failure=prior_failure,
         prior_error_kind=prior_error_kind,
+        contract_failure_kinds_seen=contract_failure_kinds_seen,
     )
 
 

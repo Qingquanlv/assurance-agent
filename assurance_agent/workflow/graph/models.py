@@ -201,6 +201,9 @@ class ExecutableTask(BaseModel):
     # injects contract-violation kinds into the prompt so the agent can fix them.
     prior_failure: str | None = None
     prior_error_kind: ErrorKind | None = None
+    # Sticky across retries, preserving the exact contract-class failures that
+    # occurred so model escalation remains both stable and policy-selective.
+    contract_failure_kinds_seen: tuple[ErrorKind, ...] = ()
     recovery: RecoveryContext | None = None
     # Execution-time resolved evidence values keyed by declared alias. Injected
     # by the scheduler from committed producer frozen_outputs; kept off the input
@@ -290,6 +293,7 @@ class TaskProjection(BaseModel):
     state_updates: dict[str, object] = Field(default_factory=dict)
     value: object = None
     error_kind: ErrorKind | None = None
+    contract_failure_kinds_seen: tuple[ErrorKind, ...] = ()
     # 失败 attempt 的原始 message（如 subgraph 失败时子图自身的终止原因、或
     # handler 抛出的异常详情）。之前只投影 error_kind，terminal-reason 拼字符串
     # 时无从得知具体原因（尤其 subgraph 节点：任何子图失败都折叠成笼统的

@@ -8,6 +8,10 @@
 
 **Tech Stack:** Python 3.11、Pydantic v2、Click、YAML、OpenCode legacy HTTP API、pytest、ruff、pyright、import-linter、Bash。
 
+## 2026-08-09 执行修订
+
+用户已确认以下映射覆盖本计划 Task 7 的早期 benchmark 表：Design、Plan、对应 Fixer 和 Coverage Repair 使用 GLM 5.2；五类 Case/Plan Reviewer 使用 DeepSeek V4 Flash；Improvement Reviewer 继续使用 GLM 5.2。当前分支仅移植选模所需的 request-local runtime seam，不回移旧分支的 ledger/metrics 审计扩展，以避免覆盖当前已演进的 finalize、scheduler 与 benchmark 汇总逻辑。
+
 ## Global Constraints
 
 - 设计权威文件是 `docs/superpowers/specs/2026-08-04-opencode-phase-model-routing-design.md`。

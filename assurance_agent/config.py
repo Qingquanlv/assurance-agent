@@ -1,13 +1,24 @@
 """Load and validate the target project's .aa/config.yaml."""
 
+import re
 from pathlib import Path
+from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictStr,
+    ValidationError,
+    field_validator,
+)
 
 from assurance_agent.exceptions import AaError
 
 CONFIG_RELPATH = ".aa/config.yaml"
+EscalationErrorKind = Literal["invalid_output", "forbidden_write"]
 
 
 class ConfigNotFoundError(AaError):
@@ -20,6 +31,71 @@ class ConfigInvalidError(AaError):
 
 class _Model(BaseModel):
     model_config = ConfigDict(extra="allow")
+
+
+class _StrictModel(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+def _validated_model_id(value: str) -> str:
+    normalized = value.strip()
+    provider, separator, model = normalized.partition("/")
+    if separator != "/" or not provider or not model:
+        raise ValueError("model must be a non-empty provider/model identifier")
+    return normalized
+
+
+class ModelEscalationCfg(_StrictModel):
+    model: StrictStr
+    on_error_kinds: tuple[EscalationErrorKind, ...]
+
+    _validate_model = field_validator("model")(_validated_model_id)
+
+
+class ModelRoutingCfg(_StrictModel):
+    default: StrictStr | None = None
+    strict_routes: StrictBool = False
+    routes: dict[StrictStr, StrictStr] = Field(default_factory=dict)
+    escalation: ModelEscalationCfg | None = None
+
+    @field_validator("default")
+    @classmethod
+    def validate_default(cls, value: str | None) -> str | None:
+        return None if value is None else _validated_model_id(value)
+
+    @field_validator("routes")
+    @classmethod
+    def validate_routes(cls, value: dict[str, str]) -> dict[str, str]:
+        normalized: dict[str, str] = {}
+        for skill, model in value.items():
+            if re.fullmatch(r"aa-[a-z0-9]+(?:-[a-z0-9]+)*", skill) is None:
+                raise ValueError("routes keys must be exact skill names matching aa-*")
+            normalized[skill] = _validated_model_id(model)
+        return normalized
+
+
+class _NoDuplicateKeySafeLoader(yaml.SafeLoader):
+    pass
+
+
+def _mapping_constructor(loader: yaml.SafeLoader, node: yaml.MappingNode) -> dict:
+    mapping: dict = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node)
+        if key in mapping:
+            raise yaml.YAMLError(f"duplicate key {key!r}")
+        mapping[key] = loader.construct_object(value_node)
+    return mapping
+
+
+_NoDuplicateKeySafeLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _mapping_constructor,
+)
+
+
+def _safe_load_no_duplicates(text: str) -> object:
+    return yaml.load(text, Loader=_NoDuplicateKeySafeLoader)
 
 
 class SourcesCfg(_Model):
@@ -68,6 +144,7 @@ class SelfHealingCfg(_Model):
 class ExecutionCfg(_Model):
     entry: str
     self_healing: SelfHealingCfg
+    model_routing: ModelRoutingCfg | None = None
 
 
 class AaConfig(_Model):
@@ -85,7 +162,7 @@ def load_config(root: Path) -> AaConfig:
     if not path.is_file():
         raise ConfigNotFoundError(f"{CONFIG_RELPATH} not found. Run `aa init` first.")
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw = _safe_load_no_duplicates(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as err:
         raise ConfigInvalidError(f"{CONFIG_RELPATH} parse error: {err}") from err
     try:

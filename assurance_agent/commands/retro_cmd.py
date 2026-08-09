@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,7 +14,8 @@ from assurance_agent.artifacts.models.retro_batch import RetroBatchScope, RetroP
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import UnsafeIdentifierError, assert_path_segment_safe
 from assurance_agent.retro.supervisor import RetroInvocation, run_retro_supervised
-from assurance_agent.workflow.driver.headless_adapter import HeadlessAdapter
+from assurance_agent.workflow.driver.adapter import DriverError
+from assurance_agent.workflow.driver.adapter_factory import build_adapter
 from assurance_agent.workflow.driver.loop import (
     EXIT_ERROR,
     run_workflow_loop,
@@ -119,6 +119,11 @@ def _run_retro_graph(
     dry_run: bool,
     as_json: bool,
     batch_manifest: Path | None = None,
+    adapter_name: str = "headless",
+    server: str | None = None,
+    directory: str | None = None,
+    model: str | None = None,
+    agent_cmd: str = "cursor-agent --print",
 ) -> None:
     if since and changes:
         click.echo("Error: --since and --change are mutually exclusive", err=True)
@@ -188,8 +193,19 @@ def _run_retro_graph(
         click.echo(f"Error: {err}", err=True)
         raise SystemExit(2) from err
 
-    agent_cmd = os.environ.get("AA_RETRO_AGENT_CMD", "cursor-agent --print")
-    adapter = HeadlessAdapter(agent_cmd=agent_cmd, cwd=project_root)
+    try:
+        adapter = build_adapter(
+            adapter_name,
+            project_root,
+            server,
+            directory,
+            model,
+            None,
+            agent_cmd,
+        )
+    except DriverError as err:
+        click.echo(str(err), err=True)
+        raise SystemExit(EXIT_ERROR) from err
     loop_result = None
 
     def graph_runner(invocation: RetroInvocation):  # noqa: ANN202
@@ -200,6 +216,8 @@ def _run_retro_graph(
             entrypoint="retro",
             adapter=adapter,
             params=dict(invocation.params),
+            adapter_name=adapter_name,
+            cli_model_override=model,
         )
         return loop_result
 
@@ -252,6 +270,9 @@ def _run_retro_graph(
     click.echo(summary["reason"])
 
 
+_RETRO_ADAPTER_CHOICE = click.Choice(["opencode", "headless"])
+
+
 def register_retro(main_group: click.Group) -> None:
     @click.group("retro", invoke_without_command=True)
     @click.option("--since", default=None, help="Include Changes with terminal ts at/after this ISO time")
@@ -271,8 +292,45 @@ def register_retro(main_group: click.Group) -> None:
         help="Collect and analyze evidence; skip propose/reconcile",
     )
     @click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON")
+    @click.option(
+        "--adapter",
+        "adapter_name",
+        type=_RETRO_ADAPTER_CHOICE,
+        default="headless",
+        show_default=True,
+    )
+    @click.option("--server", default=None, help="OpenCode server URL (opencode adapter).")
+    @click.option("--directory", default=None, help="SUT directory for OpenCode ?directory=.")
+    @click.option(
+        "--model",
+        default=None,
+        help='Model id. OpenCode: "provider/model". Headless uses the Cursor default.',
+    )
+    @click.option(
+        "--agent-cmd",
+        "agent_cmd",
+        default="cursor-agent --print",
+        show_default=True,
+        envvar="AA_RETRO_AGENT_CMD",
+        help="Agent command for the headless adapter.",
+    )
     @click.pass_context
-    def retro(ctx, since, until, changes, last, batch_manifest, retro_id, dry_run, as_json) -> None:
+    def retro(
+        ctx,
+        since,
+        until,
+        changes,
+        last,
+        batch_manifest,
+        retro_id,
+        dry_run,
+        as_json,
+        adapter_name,
+        server,
+        directory,
+        model,
+        agent_cmd,
+    ) -> None:  # noqa: ANN001
         """Trigger the canonical Retro graph or show one current run."""
         if ctx.invoked_subcommand is not None:
             return
@@ -286,6 +344,11 @@ def register_retro(main_group: click.Group) -> None:
             dry_run=dry_run,
             as_json=as_json,
             batch_manifest=batch_manifest,
+            adapter_name=adapter_name,
+            server=server,
+            directory=directory,
+            model=model,
+            agent_cmd=agent_cmd,
         )
 
     @retro.command("show")
