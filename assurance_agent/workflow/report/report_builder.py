@@ -38,8 +38,10 @@ from assurance_agent.workflow.issues.events import (
     read_problem_events,
 )
 from assurance_agent.workflow.report.quality_gate import (
+    coverage_metrics_status,
     load_quality_gate_result_file,
     quality_gate_legacy_view,
+    worst_status,
 )
 from assurance_agent.workflow.report.quality_score import ScoreDimension, compute_quality_score
 
@@ -100,24 +102,38 @@ def generate_report(project_root: Path, change_id: str) -> GenerateReportResult:
     # Combine — do not rewrite — the quality-gate artifact with metrics.json.
     metrics_payload = _load_metrics_json(inspect_dir / "metrics.json")
 
+    functional, coverage, non_functional = quality_gate_legacy_view(gate)
+    report_coverage = _report_coverage(coverage)
+    report_final_status = worst_status(
+        [
+            functional.status,
+            report_coverage.status,
+            non_functional.status if non_functional is not None else "SKIPPED",
+        ]
+    )
+
     score, breakdown = compute_quality_score(_dimensions(gate))
     defects = _bucket_defects(analysis)
-    risk_level, risk_rationale = _risk(gate, defects)
-    recommendation = _recommendation(gate.final_status, defects)
+    risk_level, risk_rationale = _risk(
+        gate,
+        defects,
+        final_status=report_final_status,
+        coverage_status=report_coverage.status,
+    )
+    recommendation = _recommendation(report_final_status, defects)
     started_at, duration = _execution_timing(change_base)
     issue_report = _derive_issue_report(change_base, project_root)
-    functional, coverage, non_functional = quality_gate_legacy_view(gate)
 
     report = QualityReport(
         schema_version="1.1",
         change_id=change_id,
         batch_id=gate.batch_id or evidence.batch_id,
-        final_status=gate.final_status,
+        final_status=report_final_status,
         quality_score=score,
         score_breakdown=breakdown,
         scope=_scope(change_base),
         functional=functional,
-        coverage=coverage,
+        coverage=report_coverage,
         defects=defects,
         risk_level=risk_level,
         risk_rationale=risk_rationale,
@@ -174,7 +190,7 @@ def _report_coverage(coverage: CoverageDimension) -> CoverageDimension:
     being silently dropped by a projection that only knows today's names. The
     numbers and statuses the report shows are therefore the gate's own.
     """
-    return coverage.model_copy(update={"evidence": None})
+    return coverage.model_copy(update={"evidence": None, "status": coverage_metrics_status(coverage)})
 
 
 def _derive_issue_report(change_base: Path, project_root: Path) -> IssueReport | None:
@@ -422,19 +438,26 @@ def _bucket_defects(analysis: FailureAnalysis | None) -> ReportDefects:
     return ReportDefects(product=product, test=test, environment=environment)
 
 
-def _risk(gate: QualityGateResultLike, defects: ReportDefects) -> tuple[ReportRiskLevel, str]:
+def _risk(
+    gate: QualityGateResultLike,
+    defects: ReportDefects,
+    *,
+    final_status: str | None = None,
+    coverage_status: str | None = None,
+) -> tuple[ReportRiskLevel, str]:
     if defects.product:
         return (
             "HIGH",
             f"Detected {len(defects.product)} product-level defect(s); product behaviour is incorrect.",
         )
-    status = gate.final_status
+    status = final_status if final_status is not None else gate.final_status
+    cov_status = coverage_status if coverage_status is not None else gate.dimensions.coverage.status
     if status == "FAIL":
         return "HIGH", "Functional gate failed — one or more selected test targets did not pass."
     if status == "PASS_WITH_WARNINGS":
         unmapped = gate.dimensions.functional.unmapped_tests or 0
         reasons = []
-        if gate.dimensions.coverage.status == "PASS_WITH_WARNINGS":
+        if cov_status == "PASS_WITH_WARNINGS":
             reasons.append("coverage below threshold")
         if unmapped > 0:
             reasons.append(f"{unmapped} executed test(s) not traceable to case IDs")

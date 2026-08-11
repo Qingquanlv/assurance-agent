@@ -8,9 +8,9 @@ import pytest
 
 from assurance_agent.artifacts.models.plan_checks import PlanCheckDocument
 from assurance_agent.eval.fixtures import (
-    FixtureError,
     load_tier,
     seed_change,
+    validate_tier_for_selection,
     write_fixture_lock,
 )
 from assurance_agent.exceptions import AaError
@@ -291,8 +291,8 @@ def test_benchmark_codegen_imports_attach_gate_to_precheck_not_codegen() -> None
                 continue
             precheck = completed[index - 1]
             layer = task.graph.removesuffix("-branch")
-            precheck_node = "codegen-precheck" if layer in {"api", "e2e"} else "codegen-gate"
-            gate_suffix = "codegen-precondition-gate" if layer in {"api", "e2e"} else "plan-review-gate"
+            precheck_node = "codegen-precheck"
+            gate_suffix = "codegen-precondition-gate"
             assert precheck.path == task.path, tier_name
             assert precheck.node == precheck_node, tier_name
             assert precheck.gate == f"{layer}-{gate_suffix}", tier_name
@@ -315,8 +315,10 @@ def test_benchmark_fixture_import_nodes_exist_in_packaged_schema() -> None:
                     task.node,
                 )
 
+
 def _benchmark_fixtures() -> Path:
     return Path(__file__).resolve().parents[3] / "benchmark" / "vue-fastapi-admin" / "eval-fixtures"
+
 
 @pytest.mark.parametrize(
     ("role_node", "graph", "path"),
@@ -404,6 +406,7 @@ def test_pending_tier_rejects_selected_roles_direct_and_inherited(
     with pytest.raises(AaError, match="selected api"):
         validate_tier_for_selection(child, selected_layers=("api",), sample_root=sample)
 
+
 @pytest.mark.parametrize(
     "artifact",
     [
@@ -426,6 +429,7 @@ def test_pending_tier_rejects_forbidden_artifacts(artifact: str) -> None:
     with pytest.raises(AaError, match="forbidden selected artifact"):
         validate_tier_for_selection(tier, selected_layers=("api",), sample_root=sample)
 
+
 def test_pending_tier_rejects_codegen_done_reset() -> None:
     tier = TierManifest(
         name="bad-reset",
@@ -435,6 +439,7 @@ def test_pending_tier_rejects_codegen_done_reset() -> None:
     )
     with pytest.raises(AaError, match="codegen done"):
         validate_tier_for_selection(tier, selected_layers=("api",))
+
 
 def test_repo_paths_reject_unsafe_and_digest_mismatch(tmp_path: Path) -> None:
     fixtures = _write_synth_fixtures(tmp_path)
@@ -458,6 +463,7 @@ def test_repo_paths_reject_unsafe_and_digest_mismatch(tmp_path: Path) -> None:
             fixture_id="fixture-001",
         )
 
+
 def test_domain_api_module_import_smoke_without_app_installed() -> None:
     sample = _benchmark_fixtures() / "samples" / "eval-sample-001"
     module_path = sample / "tests" / "testdata" / "domain" / "api.py"
@@ -475,6 +481,7 @@ def test_domain_api_module_import_smoke_without_app_installed() -> None:
     spec.loader.exec_module(mod)
     assert callable(mod.make_api)
     assert mod.MAKE_API.endswith("make_api")
+
 
 @pytest.mark.parametrize(
     "tier_name",
@@ -510,6 +517,7 @@ def test_pending_tiers_seed_without_selected_completion(tmp_path: Path, tier_nam
         "performance": "tests/perf/locustfile_api.py",
     }[layer]
     assert not (sut / private).exists()
+
 
 @pytest.mark.parametrize(
     "tier_name",
@@ -547,6 +555,7 @@ def test_complete_tiers_seed_without_dynamic_assurance_helper(tmp_path: Path, ti
         assert (result.change_dir / "review" / "performance-plan-review.json").is_file()
         assert (result.change_dir / "review" / "performance-plan-checks.json").is_file()
 
+
 def test_live_codegen_datasets_reference_pending_tiers_only() -> None:
     from assurance_agent.eval.dataset_loader import load_dataset
     from assurance_agent.eval.paths import datasets_dir
@@ -557,6 +566,7 @@ def test_live_codegen_datasets_reference_pending_tiers_only() -> None:
         samples = load_dataset(datasets_dir(repo, suite_name))
         assert samples
         assert {sample.input.get("fixture_tier") for sample in samples} == {tier}
+
 
 def test_pending_chain_has_no_complete_ancestry() -> None:
     fixtures = _benchmark_fixtures()

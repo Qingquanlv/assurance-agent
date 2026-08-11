@@ -118,9 +118,7 @@ def _load_model_routing_override(root: Path) -> ModelRoutingCfg | None:
     except ValidationError as err:
         first = err.errors()[0]
         loc = ".".join(str(part) for part in first["loc"])
-        raise ConfigInvalidError(
-            f"{MODEL_ROUTING_FILE_ENV} schema invalid: {loc}: {first['msg']}"
-        ) from err
+        raise ConfigInvalidError(f"{MODEL_ROUTING_FILE_ENV} schema invalid: {loc}: {first['msg']}") from err
 
 
 class SourcesCfg(_Model):

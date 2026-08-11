@@ -31,7 +31,7 @@ from assurance_agent.artifacts.models.coverage_gaps import (
     CoverageGapLocator,
     CoverageGapsDocument,
 )
-from assurance_agent.artifacts.models.trace import TraceProjection, TraceRow
+from assurance_agent.artifacts.models.trace import TraceProjectionLike, TraceRow
 from assurance_agent.artifacts.models.trace_sufficiency import TraceSufficiencyFacts
 
 # Documented Phase-1 split (pinned by tests).
@@ -66,7 +66,7 @@ class CoverageGapDiff:
     reopened: tuple[GapIdentity, ...]
 
 
-def projection_digest(projection: TraceProjection) -> str:
+def projection_digest(projection: TraceProjectionLike) -> str:
     """Stable digest of the projection bytes this fold consumed."""
     return sha256_bytes(canonical_json_bytes(projection))
 
@@ -83,7 +83,7 @@ def gap_identity(gap: CoverageGap) -> GapIdentity:
     )
 
 
-def _rows_by_case(projection: TraceProjection) -> dict[str, TraceRow]:
+def _rows_by_case(projection: TraceProjectionLike) -> dict[str, TraceRow]:
     return {row.case_id: row for row in projection.rows}
 
 
@@ -141,7 +141,7 @@ def _gap(
 
 
 def build_coverage_gaps(
-    projection: TraceProjection,
+    projection: TraceProjectionLike,
     sufficiency: TraceSufficiencyFacts | Any | None,
     *,
     change_id: str,

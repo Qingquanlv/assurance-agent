@@ -19,17 +19,6 @@ from assurance_agent.artifacts.policy import (
 )
 
 
-_DEFAULT_EVIDENCE_SUFFICIENCY = {
-    "recency_hours": 72,
-    "required_kinds": {
-        "API": ["covered", "execution_recent"],
-        "E2E": ["covered", "execution_recent"],
-        "Fuzz": ["covered", "fuzz_run"],
-        "Performance": ["covered", "perf_run"],
-    },
-    "on_insufficient": "require_human",
-}
-
 def _write(root: Path, body: str) -> None:
     (root / ".aa").mkdir(parents=True, exist_ok=True)
     (root / POLICY_REL_PATH).write_text(body, encoding="utf-8")
@@ -398,6 +387,7 @@ def test_non_positive_mutation_budget_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(PolicyError, match="greater than 0"):
         load_policy(tmp_path)
 
+
 def test_differently_formatted_yaml_yields_identical_normalized_bytes_and_digest(
     tmp_path: Path,
 ) -> None:
@@ -424,6 +414,7 @@ def test_differently_formatted_yaml_yields_identical_normalized_bytes_and_digest
     assert snap_a.canonical_bytes == normalized_policy_bytes(snap_a.policy)
     assert snap_a.canonical_bytes.endswith(b"\n")
 
+
 def test_digest_changes_when_evidence_sufficiency_changes(tmp_path: Path) -> None:
     baseline = load_policy(tmp_path)
     _write(
@@ -438,6 +429,7 @@ def test_digest_changes_when_evidence_sufficiency_changes(tmp_path: Path) -> Non
         "  on_insufficient: warn\n",
     )
     assert policy_digest(load_policy(tmp_path)) != policy_digest(baseline)
+
 
 def test_duplicate_required_kinds_within_case_type_are_rejected(tmp_path: Path) -> None:
     _write(
@@ -454,6 +446,7 @@ def test_duplicate_required_kinds_within_case_type_are_rejected(tmp_path: Path) 
     with pytest.raises(PolicyError, match="duplicate"):
         load_policy(tmp_path)
 
+
 def test_equal_project_and_default_content_share_bytes_but_distinct_origins(
     tmp_path: Path,
 ) -> None:
@@ -466,6 +459,7 @@ def test_equal_project_and_default_content_share_bytes_but_distinct_origins(
     assert project_snap.origin == "project"
     assert project_snap.canonical_bytes == default_snap.canonical_bytes
     assert project_snap.digest == default_snap.digest
+
 
 def test_explicit_evidence_sufficiency_is_validated(tmp_path: Path) -> None:
     _write(
@@ -484,10 +478,12 @@ def test_explicit_evidence_sufficiency_is_validated(tmp_path: Path) -> None:
     assert policy.evidence_sufficiency.required_kinds["API"] == ["covered"]
     assert policy.evidence_sufficiency.on_insufficient == "warn"
 
+
 def test_load_policy_snapshot_bytes_accepts_explicit_origin() -> None:
     snap = load_policy_snapshot_bytes(None, origin="packaged_default")
     assert snap.origin == "packaged_default"
     assert isinstance(snap, PolicySnapshot)
+
 
 def test_missing_required_kinds_key_is_rejected(tmp_path: Path) -> None:
     _write(
@@ -503,17 +499,22 @@ def test_missing_required_kinds_key_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(PolicyError, match="required_kinds missing keys"):
         load_policy(tmp_path)
 
+
 def test_policy_reexports_the_shared_catalog_object() -> None:
     assert policy_model.KNOWN_PLAN_CHECK_IDS is assurance_model.KNOWN_PLAN_CHECK_IDS
+
 
 def test_policy_requires_exact_shared_check_catalog(tmp_path: Path) -> None:
     policy = load_policy(tmp_path)
     assert set(policy.plan_checks) == KNOWN_PLAN_CHECK_IDS
 
+
 def test_policy_without_evidence_sufficiency_gets_defaulted(tmp_path: Path) -> None:
     _write(tmp_path, VALID)
     policy = load_policy(tmp_path)
-    assert policy.evidence_sufficiency.model_dump(mode="json") == _DEFAULT_EVIDENCE_SUFFICIENCY
+    packaged = load_policy(tmp_path / "without-project-policy")
+    assert policy.evidence_sufficiency == packaged.evidence_sufficiency
+
 
 def test_snapshot_is_immutable_against_future_packaged_default_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -17,7 +17,7 @@ import pytest
 from pydantic import ValidationError
 
 from assurance_agent.artifacts.models import TraceSufficiencyFacts
-from assurance_agent.artifacts.models.trace import TraceGapCode, TraceIntegrity
+from assurance_agent.artifacts.models.trace import TraceGapCodeV1, TraceIntegrity
 from assurance_agent.artifacts.models.trace_sufficiency import (
     TraceInsufficientCase,
     TraceSufficiencyErrorCode,
@@ -28,7 +28,6 @@ from assurance_agent.evidence.sufficiency import (
     EvidenceCoverageErrorCode,
     SufficiencyReasonCode,
 )
-from assurance_agent.evidence.sufficiency import TraceIntegrity as EvidenceTraceIntegrity
 
 AS_OF = datetime(2026, 7, 2, 11, 11, 11, tzinfo=UTC)
 
@@ -187,11 +186,11 @@ def test_insufficient_cases_carry_case_ids_and_reason_codes() -> None:
     facts = _facts(
         sufficient=False,
         insufficient_cases=(
-            TraceInsufficientCase(case_id="TC_API_001", reason_codes=("not_covered", "never_run")),
+            TraceInsufficientCase(case_id="TC_API_001", reason_codes=("uncovered", "never_run")),
         ),
     )
     assert facts.insufficient_cases[0].case_id == "TC_API_001"
-    assert facts.insufficient_cases[0].reason_codes == ("not_covered", "never_run")
+    assert facts.insufficient_cases[0].reason_codes == ("uncovered", "never_run")
 
 
 def test_a_sufficient_document_may_not_list_insufficient_cases() -> None:
@@ -236,13 +235,12 @@ def test_the_error_vocabulary_tracks_the_evaluation() -> None:
 
 
 def test_the_integrity_vocabulary_is_the_projections_own() -> None:
-    assert set(get_args(TraceIntegrity)) == set(get_args(EvidenceTraceIntegrity))
     assert TraceSufficiencyFacts.model_fields["integrity"].annotation is TraceIntegrity
 
 
 def test_the_gap_vocabulary_is_the_projections_own() -> None:
-    assert get_args(TraceGapCode)
-    assert _facts(gap_codes=tuple(get_args(TraceGapCode))[:1]).gap_codes
+    assert get_args(TraceGapCodeV1)
+    assert _facts(gap_codes=tuple(get_args(TraceGapCodeV1))[:1]).gap_codes
 
 
 # --------------------------------------------------------------------------- #

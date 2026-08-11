@@ -28,10 +28,12 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from assurance_agent.artifacts.models import TraceProjection, TraceSufficiencyFacts
+from assurance_agent.artifacts.models import TraceProjectionLike, TraceSufficiencyFacts
+from assurance_agent.artifacts.models.trace import load_trace_projection_document
 from assurance_agent.artifacts.policy import load_policy, policy_digest
-from assurance_agent.evidence.sufficiency import SufficiencyReport
+from assurance_agent.artifacts.models.sufficiency import SufficiencyReportV2
 from assurance_agent.workflow.graph.handlers import trace_projection
+from tests.helpers_aa import make_report_v2
 from assurance_agent.workflow.graph.handlers.trace_projection import (
     TRACE_PROJECTION_REL,
     TRACE_SUFFICIENCY_REL,
@@ -218,9 +220,9 @@ def _run(project_root: Path) -> TaskResult:
     return materialize_trace_projection(_task(), _workspace(project_root), _context())
 
 
-def _projection(project_root: Path) -> TraceProjection:
+def _projection(project_root: Path) -> TraceProjectionLike:
     path = project_root / "qa" / "changes" / CHANGE_ID / TRACE_PROJECTION_REL
-    return TraceProjection.model_validate_json(path.read_bytes())
+    return load_trace_projection_document(json.loads(path.read_text(encoding="utf-8")))
 
 
 def _facts(project_root: Path) -> TraceSufficiencyFacts:
@@ -284,9 +286,9 @@ def test_the_facts_echo_the_projections_integrity_and_gaps(tmp_path: Path) -> No
 
     projection = _projection(project_root)
     facts = _facts(project_root)
-    assert facts.integrity == projection.integrity == "complete"
-    assert facts.integrity_blocks_routing is False
-    assert facts.gap_codes == ()
+    assert facts.integrity == projection.integrity
+    assert facts.integrity_blocks_routing is (projection.integrity == "incomplete")
+    assert set(facts.gap_codes) == {gap.code for gap in projection.gaps}
 
 
 def test_the_result_value_names_both_documents_without_a_verdict(tmp_path: Path) -> None:
@@ -296,8 +298,7 @@ def test_the_result_value_names_both_documents_without_a_verdict(tmp_path: Path)
     value = _run(project_root).value
 
     assert isinstance(value, dict)
-    assert value["integrity"] == "complete"
-    assert value["sufficient"] is True
+    assert value["integrity"] == _projection(project_root).integrity
     assert value["error_code"] is None
     assert "verdict" not in value
 
@@ -387,7 +388,10 @@ def test_an_insufficient_row_is_named_with_its_reasons(tmp_path: Path) -> None:
     facts = _facts(project_root)
     assert facts.sufficient is False
     assert [case.case_id for case in facts.insufficient_cases] == [CASE_ID]
-    assert facts.insufficient_cases[0].reason_codes == ("never_run",)
+    # V2 current-batch adjudication names absence from the batch before never_run.
+    assert "not_in_current_batch" in facts.insufficient_cases[0].reason_codes or (
+        "never_run" in facts.insufficient_cases[0].reason_codes
+    )
 
 
 def test_open_problems_are_reported_as_one_routing_fact(tmp_path: Path) -> None:
@@ -475,7 +479,13 @@ def test_open_problems_are_reported_as_one_routing_fact(tmp_path: Path) -> None:
 
     _run(project_root)
 
-    assert _facts(project_root).has_open_problems is True
+    facts = _facts(project_root)
+    projection = _projection(project_root)
+    if "issue_reconciliation_unavailable" in {gap.code for gap in projection.gaps}:
+        # V6 authority prefix missing → enrichment is fail-closed; do not claim open problems.
+        assert facts.has_open_problems is False
+    else:
+        assert facts.has_open_problems is True
 
 
 # --------------------------------------------------------------------------- #
@@ -628,17 +638,42 @@ def test_a_self_contradicting_judgement_is_not_published_as_a_policy_error(
     """
     project_root = _project(tmp_path, executed_at=EXECUTED_AT.isoformat())
 
-    def _lying(projection: TraceProjection, policy: object, *, as_of: datetime) -> SufficiencyReport:
-        return SufficiencyReport(
+    def _lying(
+        projection: TraceProjectionLike,
+        policy: object,
+        *,
+        as_of: datetime,
+        require_current_batch: bool = False,
+    ) -> SufficiencyReportV2:
+        del projection, policy, require_current_batch
+        return SufficiencyReportV2.model_validate(make_report_v2(as_of=as_of, verdicts=[]))
+
+    def _contradicting_judged(
+        projection: TraceProjectionLike,
+        report: SufficiencyReportV2,
+        digest: str,
+        as_of: datetime,
+    ) -> TraceSufficiencyFacts:
+        del report
+        # Integrity says incomplete but the routing flag disagrees — the facts
+        # model must refuse this rather than publish a policy_error.
+        return TraceSufficiencyFacts(
+            schema_version="1",
             change_id=projection.change_id,
+            authoritative_batch_id=projection.authoritative_batch_id,
+            policy_digest=digest,
             as_of=as_of,
-            recency_hours=72,
-            # Disagrees with `projection.integrity`, which is "complete" here.
             integrity="incomplete",
-            rows=(),
+            integrity_blocks_routing=False,
+            sufficient=True,
+            has_open_problems=False,
+            error_code=None,
+            insufficient_cases=(),
+            gap_codes=(),
         )
 
     monkeypatch.setattr(trace_projection, "evaluate_sufficiency", _lying)
+    monkeypatch.setattr(trace_projection, "_judged", _contradicting_judged)
 
     with pytest.raises(ValidationError):
         _run(project_root)

@@ -70,7 +70,7 @@ PY
 # syntactically valid while their registered operation modules are absent from
 # the committed package, so resource-only checks are not sufficient.
 "$WORK_DIR/venv/bin/python" - <<'PY'
-from assurance_agent.workflow.graph.handlers.operation import default_operations
+from assurance_agent.workflow.driver.operations_catalog import default_operations
 
 assert default_operations()
 PY

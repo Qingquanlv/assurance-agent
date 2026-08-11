@@ -876,7 +876,7 @@ def test_a_graph_resume_stops_applying_once_the_facts_change(tmp_path: Path) -> 
         json.dumps(
             _facts(
                 sufficient=False,
-                insufficient_cases=[{"case_id": "TC_API_002", "reason_codes": ["not_covered"]}],
+                insufficient_cases=[{"case_id": "TC_API_002", "reason_codes": ["uncovered"]}],
             )
         ),
         encoding="utf-8",
@@ -906,7 +906,7 @@ def test_an_acceptance_stops_applying_once_the_projection_changes(tmp_path: Path
                 sufficient=False,
                 insufficient_cases=[
                     {"case_id": "TC_API_001", "reason_codes": ["never_run"]},
-                    {"case_id": "TC_API_002", "reason_codes": ["not_covered"]},
+                    {"case_id": "TC_API_002", "reason_codes": ["uncovered"]},
                 ],
             )
         ),

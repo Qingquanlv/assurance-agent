@@ -24,6 +24,8 @@ import yaml
 from click.testing import CliRunner
 
 from assurance_agent.cli import main
+from assurance_agent.commands import status_cmd
+from assurance_agent.evidence.trace import fold_trace
 from assurance_agent.workflow.core.exit_codes import EXIT_ERROR
 from tests.helpers_aa import write_aa_config
 

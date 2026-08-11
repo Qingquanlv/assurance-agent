@@ -152,7 +152,7 @@ def test_not_covered_sufficiency_does_not_duplicate_when_projection_already_unco
     """Projection coverage_state owns uncovered; sufficiency not_covered is not a second gap."""
     projection = _projection(_row("TC_UNCOVERED", coverage_state="uncovered"))
     facts = _sufficiency(
-        TraceInsufficientCase(case_id="TC_UNCOVERED", reason_codes=("not_covered",)),
+        TraceInsufficientCase(case_id="TC_UNCOVERED", reason_codes=("uncovered",)),
     )
     doc = build_coverage_gaps(projection, facts, change_id=CHANGE_ID, batch_id=BATCH_ID)
     assert [g.kind for g in doc.gaps] == ["uncovered_required_case"]

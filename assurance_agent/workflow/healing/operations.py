@@ -407,7 +407,9 @@ def enhance_allocate_result_with_authority(
     active_raw = params.get("active_targets")
     if isinstance(active_raw, list) and active_raw:
         active: list[Literal["api", "e2e"]] = [
-            item for item in active_raw if item in {"api", "e2e"}  # type: ignore[misc]
+            item
+            for item in active_raw
+            if item in {"api", "e2e"}  # type: ignore[misc]
         ]
     else:
         active = _active_targets_from_proposal(workspace)
@@ -807,11 +809,7 @@ def _unverified_authority_stop_reason(
         else set()
     )
     live_write_sets = discovered.get("codegen_write_set_ids")
-    live_layers = (
-        {str(key) for key in live_write_sets}
-        if isinstance(live_write_sets, Mapping)
-        else set()
-    )
+    live_layers = {str(key) for key in live_write_sets} if isinstance(live_write_sets, Mapping) else set()
     classes: list[str] = []
     for target in non_ready:
         layer = target.target

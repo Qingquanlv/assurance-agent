@@ -1137,7 +1137,6 @@ def _current_gate_attempt_id(
     return latest
 
 
-
 def _evaluate_gate_def(
     gate: GateDef,
     context: GateEvaluationContext,

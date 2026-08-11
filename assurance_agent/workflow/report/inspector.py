@@ -25,6 +25,7 @@ from assurance_agent.workflow.execution.evidence import (
 from assurance_agent.evidence.sufficiency import EvidenceCoverageEvaluation
 from assurance_agent.workflow.execution.results import TargetResult
 from assurance_agent.workflow.report.failure_classifier import classify_failure
+from assurance_agent.workflow.report.quality_gate import coverage_metrics_status
 
 
 class InspectResult(BaseModel):
@@ -74,20 +75,19 @@ def inspect_change(
     evidence, inspect_mode, compat_reason = _load_for_inspection(execution_dir, batch_id)
     gate = evidence.quality_gate
     if gate is None:
-        from assurance_agent.config import load_config
-        from assurance_agent.workflow.execution.exec_config import load_coverage_config
         from assurance_agent.workflow.report.quality_gate import build_quality_gate
 
-        # §12.10: honor project coverage.gate_mode — never hardcode "warn".
-        coverage_gate_mode = load_coverage_config(load_config(project_root)).gate_mode
         gate = build_quality_gate(
             change_id=change_id,
             batch_id=evidence.batch_id,
             api=evidence.api,
             e2e=evidence.e2e,
             coverage=evidence.coverage,
-            coverage_gate_mode=coverage_gate_mode,
-            evidence_coverage=EvidenceCoverageEvaluation.failed("evidence_projection_missing"),
+            evidence_coverage=EvidenceCoverageEvaluation(
+                report=None,
+                action=None,
+                error_code="evidence_projection_missing",
+            ),
             fuzz=evidence.fuzz,
             performance=evidence.performance,
         )
@@ -121,7 +121,7 @@ def inspect_change(
         failures.extend(_classify_target(result, target, evidence, change_id))  # type: ignore[arg-type]
 
     coverage_gaps = _coverage_gaps(evidence)
-    if gate.dimensions.coverage.status == "FAIL":
+    if coverage_metrics_status(gate.dimensions.coverage) == "FAIL":
         failures.extend(_coverage_failures(evidence, coverage_gaps))
 
     _complete(failures)

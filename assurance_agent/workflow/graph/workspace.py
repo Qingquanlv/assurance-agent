@@ -1392,7 +1392,6 @@ class TreeStore:
             victim.unlink(missing_ok=True)
             _prune_empty_parents(victim, project_root)
 
-
     def apply_tree(
         self,
         project_root: Path,
@@ -1646,7 +1645,6 @@ def _is_omitted_retro_sibling(
         return False
     run_id = segments[2]
     return run_id not in claimed_retro_ids and run_id not in ("*", "**")
-
 
 
 def _is_concurrent_runtime_namespace_rel(rel: str) -> bool:

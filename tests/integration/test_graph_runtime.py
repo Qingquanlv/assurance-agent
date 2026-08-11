@@ -6,13 +6,14 @@ import json
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from assurance_agent.workflow.core.events import read_events_strict
 from assurance_agent.workflow.driver.operations_catalog import default_operations
 from assurance_agent.workflow.driver.runtime_factory import assemble_graph_runtime
-from assurance_agent.workflow.graph.leases import SystemClock
+from assurance_agent.workflow.graph.leases import LeaseRegistry, SystemClock, new_lease
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import (
@@ -254,7 +255,7 @@ def _build_runtime(
     node_runner=None,
     change_id: str = "CH-1",
     object_store=None,
-) -> tuple[GraphRuntime, object]:
+) -> tuple[GraphRuntime, Any]:
     from assurance_agent.workflow.graph.definition_pinning import request_for_compiled
 
     change_dir = project / "qa" / "changes" / change_id

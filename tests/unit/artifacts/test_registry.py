@@ -29,7 +29,10 @@ def test_registry_covers_every_expected_artifact_type() -> None:
         "apply_summary",
         "case_yaml",
         "change_issue_snapshot",
-        "codegen_generated_files",
+        "api_generated_files_v1",
+        "e2e_generated_files_v1",
+        "fuzz_generated_files_v1",
+        "performance_generated_files_v1",
         "coverage_repair_apply_summary",
         "coverage_repair_baseline",
         "coverage_repair_brief",
@@ -57,6 +60,14 @@ def test_registry_covers_every_expected_artifact_type() -> None:
         "fact_baseline",
         "failure_analysis",
         "fix_proposal",
+        "fixer_authority_v1",
+        "fixer_proposal_approval_receipt_v1",
+        "api_codegen_fix_apply_intent_v1",
+        "e2e_codegen_fix_apply_intent_v1",
+        "api_codegen_fix_apply_summary_v1",
+        "e2e_codegen_fix_apply_summary_v1",
+        "api_codegen_fixer_safety_check_v1",
+        "e2e_codegen_fixer_safety_check_v1",
         "issue_analysis_status",
         "issue_candidate_document",
         "issue_evidence_manifest",
@@ -92,13 +103,15 @@ def test_registry_covers_every_expected_artifact_type() -> None:
     }
     counts = Counter(spec.artifact_type for spec in REGISTRY)
     assert set(counts) == expected
-    # Review and the four exact codegen-layer paths intentionally share models.
-    assert counts["review"] == 4
-    assert counts["codegen_generated_files"] == 4
+    # Reviews include four plan paths, case-review, and the generic fallback.
+    assert counts["review"] == 6
+    assert counts["plan_check"] == 4
     for artifact_type, count in counts.items():
-        if artifact_type in {"review", "codegen_generated_files"}:
+        if artifact_type in {"review", "plan_check"}:
             continue
         assert count == 1, f"{artifact_type} registered {count} times, expected exactly 1"
+    patterns = [spec.pattern for spec in REGISTRY]
+    assert len(patterns) == len(set(patterns)), "registry paths must not shadow duplicate entries"
 
 
 def test_retro_closure_artifacts_match_only_their_run_paths() -> None:
@@ -130,11 +143,25 @@ def test_qa_yaml_exact_match_only() -> None:
 
 
 def test_codegen_generated_files_use_runtime_completed_contract() -> None:
-    for layer in ("api", "e2e", "fuzz", "performance"):
+    from assurance_agent.artifacts.models import (
+        ApiGeneratedFilesV1,
+        E2eGeneratedFilesV1,
+        FuzzGeneratedFilesV1,
+        PerformanceGeneratedFilesV1,
+    )
+
+    expected = {
+        "api": ("api_generated_files_v1", ApiGeneratedFilesV1),
+        "e2e": ("e2e_generated_files_v1", E2eGeneratedFilesV1),
+        "fuzz": ("fuzz_generated_files_v1", FuzzGeneratedFilesV1),
+        "performance": ("performance_generated_files_v1", PerformanceGeneratedFilesV1),
+    }
+    for layer, (artifact_type, model) in expected.items():
         spec = match_artifact(f"codegen/{layer}-generated-files.json")
         assert spec is not None
-        assert spec.artifact_type == "codegen_generated_files"
-        assert spec.compat == "must_compat"
+        assert spec.artifact_type == artifact_type
+        assert spec.model is model
+        assert spec.compat == "versioned"
         assert spec.authoring_model is not None
         assert spec.runtime_completes_authoring is True
 
@@ -160,6 +187,18 @@ def test_improvement_review_assessment_uses_runtime_completed_identity_contract(
     }.isdisjoint(spec.authoring_model.model_fields)
 
 
+def test_plan_check_registry_matches_only_supported_assurance_layers() -> None:
+    for layer in ("api", "e2e", "fuzz", "performance"):
+        spec = match_artifact(f"review/{layer}-plan-checks.json")
+        assert spec is not None
+        assert spec.artifact_type == "plan_check"
+
+    for path in ("review/synth-plan-checks.json", "review/unknown-plan-checks.json"):
+        fallback = match_artifact(path)
+        assert fallback is not None
+        assert fallback.artifact_type == "review"
+
+
 def test_review_glob_matches_any_review_json_in_review_dir() -> None:
     spec = match_artifact("review/api-plan-review.json")
     assert spec is not None and spec.artifact_type == "review"
@@ -172,7 +211,9 @@ def test_star_does_not_cross_directory_boundaries() -> None:
 
 def test_apply_summary_wildcard_and_fixed_healing_paths() -> None:
     api = match_artifact("healing/api-apply-summary.json")
-    assert api is not None and api.artifact_type == "apply_summary"
+    assert api is not None and api.artifact_type == "api_codegen_fix_apply_summary_v1"
+    e2e = match_artifact("healing/e2e-apply-summary.json")
+    assert e2e is not None and e2e.artifact_type == "e2e_codegen_fix_apply_summary_v1"
     fp = match_artifact("healing/fix-proposal.json")
     assert fp is not None and fp.artifact_type == "fix_proposal"
     sc = match_artifact("healing/fixer-safety-check.json")
@@ -204,7 +245,7 @@ def test_compat_grades_match_spec_4a() -> None:
     assert grades["issue_analysis_status"] == "must_compat"
     assert grades["issue_reconcile_status"] == "versioned"
     assert grades["change_issue_snapshot"] == "versioned"
-    assert grades["trace_projection"] == "versioned"
+    assert grades["trace_projection"] == "must_compat"
     # must_compat, not versioned: metrics-sufficiency-gate routes on these
     # fields, so a document this release cannot fully validate must be refused
     # rather than read partially and routed as a pass.
@@ -324,6 +365,7 @@ def test_issue_artifact_patterns_match_exact_paths() -> None:
     assert match_artifact("issues/events.jsonl") is None
     assert match_artifact("qa/issues/problems.json") is None
 
+
 def test_activated_generated_file_and_healing_paths_match_exact_models() -> None:
     from assurance_agent.artifacts.models import (
         ApiCodegenFixApplyIntentV1,
@@ -345,13 +387,15 @@ def test_activated_generated_file_and_healing_paths_match_exact_models() -> None
     assert api_intent is not None and api_intent.model is ApiCodegenFixApplyIntentV1
     assert approval is not None and approval.model is FixerProposalApprovalReceiptV1
 
+
 def test_trace_projection_registry_uses_document_wrapper() -> None:
     from assurance_agent.artifacts.models.trace import TraceProjectionDocument
 
     spec = match_artifact("inspect/trace-projection.json")
     assert spec is not None
     assert spec.model is TraceProjectionDocument
-    assert spec.compat == "versioned"
+    assert spec.compat == "must_compat"
+
 
 def test_quality_gate_result_registry_uses_document_wrapper() -> None:
     from assurance_agent.artifacts.models.inspect import QualityGateResultDocument
@@ -360,6 +404,7 @@ def test_quality_gate_result_registry_uses_document_wrapper() -> None:
     assert spec is not None
     assert spec.model is QualityGateResultDocument
     assert spec.compat == "versioned"
+
 
 def test_issue_reconcile_status_registry_uses_document_wrapper() -> None:
     from assurance_agent.artifacts.models.issues import IssueReconcileStatusDocument

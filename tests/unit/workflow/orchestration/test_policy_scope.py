@@ -81,6 +81,7 @@ def test_schema_has_no_inline_policy_literals() -> None:
     assert text.count("params.force_continue == true") == 5
     assert text.count("policy.force_continue_allowed == true") == 5
 
+
 def test_default_policy_scope_includes_evidence_sufficiency(tmp_path: Path) -> None:
     policy = load_policy(tmp_path).model_dump(mode="json")
     assert policy["evidence_sufficiency"]["recency_hours"] == 72
@@ -89,4 +90,3 @@ def test_default_policy_scope_includes_evidence_sufficiency(tmp_path: Path) -> N
         "execution_recent",
     ]
     assert policy["evidence_sufficiency"]["on_insufficient"] == "require_human"
-

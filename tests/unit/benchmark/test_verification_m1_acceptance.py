@@ -48,7 +48,7 @@ from assurance_agent.workflow.orchestration.gates import GateEvaluationContext, 
 from assurance_agent.workflow.report.inspector import inspect_change
 from assurance_agent.workflow.report.quality_gate import build_quality_gate
 from assurance_agent.workflow.report.report_builder import generate_report
-from tests.helpers_aa import write_aa_config
+from tests.helpers_aa import sufficient_evidence_coverage, write_aa_config
 
 REPO = Path(__file__).resolve().parents[3]
 BENCHMARK = REPO / "benchmark" / "vue-fastapi-admin"
@@ -391,7 +391,7 @@ def test_report_combines_metrics_without_rewriting_gate(tmp_path: Path) -> None:
         api=api,
         e2e=None,
         coverage=cov,
-        coverage_gate_mode="warn",
+        evidence_coverage=sufficient_evidence_coverage(),
     )
     publish_execution_evidence(
         execution_dir=change_dir / "execution",

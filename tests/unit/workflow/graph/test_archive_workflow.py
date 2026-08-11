@@ -9,7 +9,6 @@ the archiver ever running.
 
 from __future__ import annotations
 
-from typing import cast
 
 import json
 from datetime import datetime, timedelta, timezone

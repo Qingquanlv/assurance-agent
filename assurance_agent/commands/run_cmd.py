@@ -4,7 +4,6 @@ from pathlib import Path
 
 import click
 
-from assurance_agent.artifacts.models import QualityGateResult
 from assurance_agent.change_location import resolve_change
 from assurance_agent.config import AaConfig, load_config
 from assurance_agent.exceptions import AaError
@@ -27,6 +26,7 @@ from assurance_agent.workflow.healing.safety import (
     assert_product_tree_unchanged_in_healing,
     assert_test_tree_unchanged_or_healing,
 )
+from assurance_agent.workflow.report.quality_gate import load_quality_gate_result_file
 
 
 @click.command("run")
@@ -235,10 +235,8 @@ def _gate_warnings(execution_dir: Path) -> list[str]:
     the runner records things there that no status can express — a sufficiency
     evaluation that could not run, for one.
     """
-    try:
-        text = (execution_dir / "quality-gate-result.json").read_text(encoding="utf-8")
-        gate = QualityGateResult.model_validate_json(text)
-    except (OSError, ValueError):
+    gate = load_quality_gate_result_file(execution_dir / "quality-gate-result.json")
+    if gate is None:
         return []
     return list(gate.warnings or [])
 

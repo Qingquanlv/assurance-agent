@@ -172,6 +172,7 @@ def test_e2e_contract_missing_capability_fails_capability_keys() -> None:
 
     assert _check(document, "capability_keys").status == "fail"
 
+
 def test_benchmark_fuzz_api_adapter_capabilities_resolve_from_l1() -> None:
     from assurance_agent.verification.checks.capability_keys import check_capability_keys
 
@@ -193,4 +194,3 @@ def test_benchmark_fuzz_api_adapter_capabilities_resolve_from_l1() -> None:
     )
 
     assert evidence.status == "pass", evidence.model_dump(mode="json")
-

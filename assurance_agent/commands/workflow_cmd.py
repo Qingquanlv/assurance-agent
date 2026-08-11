@@ -37,7 +37,7 @@ from assurance_agent.workflow.driver.runtime_factory import build_graph_runtime,
 from assurance_agent.workflow.driver.workflow_start import start_workflow_detached
 from assurance_agent.workflow.graph.checkpoint import CheckpointImportError, parse_import_manifest
 from assurance_agent.workflow.graph.models import ResumeCommand
-from assurance_agent.workflow.graph.runtime import ensure_retro_params
+from assurance_agent.workflow.graph.runtime import GraphRuntimeError, ensure_retro_params
 from assurance_agent.workflow.graph.supersede import SupersedeError
 
 

@@ -22,6 +22,7 @@ from assurance_agent.workflow.execution.results import (
     TargetResult,
 )
 from assurance_agent.workflow.report.quality_gate import build_quality_gate
+from tests.helpers_aa import sufficient_evidence_coverage
 
 
 def _metrics_doc() -> MetricsDocument:
@@ -141,7 +142,7 @@ def test_quality_gate_final_status_unchanged_when_c_layer_present(tmp_path: Path
         api=_api(),
         e2e=None,
         coverage=_coverage(),
-        coverage_gate_mode="warn",
+        evidence_coverage=sufficient_evidence_coverage(),
     )
     with_doc_present = build_quality_gate(
         change_id="CH-1",
@@ -149,7 +150,7 @@ def test_quality_gate_final_status_unchanged_when_c_layer_present(tmp_path: Path
         api=_api(),
         e2e=None,
         coverage=_coverage(),
-        coverage_gate_mode="warn",
+        evidence_coverage=sufficient_evidence_coverage(),
     )
     assert without.final_status == with_doc_present.final_status == "PASS"
     assert not hasattr(without.dimensions, "c_layer")

@@ -257,9 +257,7 @@ def assemble_graph_runtime(
         )
         return runner, scheduler
 
-    current_runner, current_scheduler = _services_for(
-        compiled, contracts, resolved_catalog, resolved_models
-    )
+    current_runner, current_scheduler = _services_for(compiled, contracts, resolved_catalog, resolved_models)
     current_request = request_for_compiled(compiled, event_schema_version=6)
     current_bundle = ResolvedExecutionBundle(
         request=current_request,
@@ -380,4 +378,10 @@ def build_graph_runtime(
         ingest_catalog=ingest_catalog,
         model_map=model_map,
     )
-    return RuntimeBundle(runtime=runtime, compiled=compiled)
+    # Expose the live definition bundle so test/runtime seams can reach the
+    # scheduler/node_runner without rebuilding the graph (four-layer crash
+    # injection, barrier runners, etc.).
+    resolved = runtime._definition_resolver(  # noqa: SLF001 — composition-root seam
+        request_for_compiled(compiled, event_schema_version=6)
+    )
+    return RuntimeBundle(runtime=runtime, compiled=compiled, resolved=resolved)

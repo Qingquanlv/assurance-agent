@@ -13,7 +13,7 @@ _FROZEN = ConfigDict(frozen=True, extra="forbid")
 CodegenLayer = Literal["api", "e2e", "fuzz", "performance"]
 # Align with ``artifacts.models.generated_files`` (MERGE_HEAD / four-layer).
 CodegenDisposition = Literal["generated", "updated", "reused"]
-CodegenFileRole = Literal["test_entry", "support"]
+CodegenFileRole = Literal["test_entry", "support", "shared_builder"]
 
 
 def _safe_project_relative_path(value: str) -> str:

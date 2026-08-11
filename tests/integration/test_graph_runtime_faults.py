@@ -437,6 +437,7 @@ graphs:
         clock=clock,
     )
     from assurance_agent.workflow.graph.definition_pinning import request_for_compiled
+
     scheduler = runtime._definition_resolver(  # noqa: SLF001
         request_for_compiled(compiled, event_schema_version=6)
     ).scheduler

@@ -962,6 +962,7 @@ def test_coverage_repair_contracts_are_declared_and_least_privilege() -> None:
     }
     assert metrics_writers == {"operation:materialize-pr-metrics"}
 
+
 def _make_project(tmp_path: Path) -> Path:
     project = tmp_path / "project"
     change = project / "qa" / "changes" / "CH-1"

@@ -70,7 +70,6 @@ from assurance_agent.artifacts.models.common import (
     ReportRiskLevel,
     RiskTier,
     StrictWireModel,
-
 )
 from assurance_agent.artifacts.models.c_layer import (
     C_LAYER_METRICS_REL,
@@ -222,7 +221,6 @@ from assurance_agent.artifacts.models.inspect import (
     QualityGateResultV1,
     QualityGateResultV2,
     load_quality_gate_result_document,
-
 )
 from assurance_agent.artifacts.models.issues import (
     AffectedSurface,
@@ -267,7 +265,6 @@ from assurance_agent.artifacts.models.issues import (
     IssueReconcileStatusV1,
     IssueReconcileStatusV2,
     load_issue_reconcile_status_document,
-
 )
 from assurance_agent.artifacts.models.report import (
     IssueReport,
@@ -362,7 +359,6 @@ from assurance_agent.artifacts.models.trace import (
     TraceProjectionV2,
     TraceSummaryGapCode,
     load_trace_projection_document,
-
 )
 from assurance_agent.artifacts.models.trace_sufficiency import (
     TraceInsufficientCase,

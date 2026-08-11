@@ -832,7 +832,7 @@ def _build_v5_revision(project: Path):
     from assurance_agent.workflow.graph.handlers.operation import OperationHandler
     from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
     from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
-    from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner, build_default_node_runner
+    from assurance_agent.workflow.graph.task_runner import build_default_node_runner
 
     change = project / "qa" / "changes" / "CH-1"
     contracts = parse_execution_contracts(_V5_REVISION_CONTRACTS)
@@ -854,7 +854,7 @@ def _build_v5_revision(project: Path):
         review = workspace.change_dir / "review"
         review.mkdir(parents=True, exist_ok=True)
         (review / "synth-plan-review.json").write_text(
-            json.dumps({"decision": decision}),
+            json.dumps({"schema_version": "1", "decision": decision, "findings": []}),
             encoding="utf-8",
         )
         return TaskResult(status="succeeded")
@@ -863,7 +863,15 @@ def _build_v5_revision(project: Path):
         review = workspace.change_dir / "review"
         review.mkdir(parents=True, exist_ok=True)
         (review / "synth-plan-checks.json").write_text(
-            json.dumps({"status": "ready", "layer": "synth"}),
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "decision": "pass",
+                    "findings": [],
+                    "status": "ready",
+                    "layer": "synth",
+                }
+            ),
             encoding="utf-8",
         )
         return TaskResult(status="succeeded")
@@ -878,6 +886,7 @@ def _build_v5_revision(project: Path):
             store,
             contracts,
             compiled=compiled,
+            operations=ops,
             run_child=run_child,
         )
         op_handler = OperationHandler(ops)

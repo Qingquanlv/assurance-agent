@@ -421,7 +421,13 @@ def _report(*, sufficient: bool = True) -> SufficiencyReportLike:
 
 
 @pytest.fixture
-def project():
+def project(monkeypatch: pytest.MonkeyPatch):
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ANN001, ANN206
+            return AS_OF if tz is not None else AS_OF.replace(tzinfo=None)
+
+    monkeypatch.setattr(verify_cmd, "datetime", FrozenDateTime)
     runner = CliRunner()
     ctx = runner.isolated_filesystem()
     root = Path(ctx.__enter__())

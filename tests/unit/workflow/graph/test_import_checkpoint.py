@@ -911,9 +911,7 @@ def test_import_precheck_pass_requires_review_cycle_status(tmp_path: Path) -> No
             ImportedTask(path="main", graph="main", node="codegen"),
         ),
     )
-    validated = validate_import(
-        compiled, manifest, context, checkpoint_ns="import-precheck"
-    )
+    validated = validate_import(compiled, manifest, context, checkpoint_ns="import-precheck")
     assert [item.task.node for item in validated.resolved] == [
         "review-cycle",
         "codegen-precheck",

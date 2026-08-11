@@ -18,20 +18,18 @@ import yaml
 
 from assurance_agent.artifacts.canonical import canonical_json_bytes
 from assurance_agent.artifacts.models.execution import SelectedTargets
-from assurance_agent.artifacts.models.trace import TraceProjection, TraceRow, TraceSource
+from assurance_agent.artifacts.models.trace import TraceProjectionLike as TraceProjection
+from assurance_agent.artifacts.models.trace import TraceRow, TraceSource
 from assurance_agent.change_location import ChangeNotFoundError
-from assurance_agent.evidence.trace import (
-    MANIFEST_FOLD_VIEW_SOURCE,
-    TESTS_TREE_SCAN_SOURCE,
-    ExecutionFoldInput,
-    fold_trace,
-)
+from assurance_agent.evidence.trace import ExecutionFoldInput, fold_trace
 from tests.helpers_aa import write_aa_config
 
 CHANGE_ID = "CH-TRACE-001"
 BATCH_OLD = "20260701-101010"
 BATCH_NEW = "20260702-111111"
 EXECUTED_AT = datetime(2026, 7, 2, 19, 30, 0, tzinfo=timezone(timedelta(hours=8)))
+MANIFEST_FOLD_VIEW_SOURCE = "execution/execution-manifest.yaml#fold-view"
+TESTS_TREE_SCAN_SOURCE = "tests/#tree-digest"
 
 
 # --------------------------------------------------------------------------- #
@@ -577,7 +575,7 @@ def test_missing_current_batch_facts_leave_presence_conservative(tmp_path: Path)
 
 
 # --------------------------------------------------------------------------- #
-# same-batch cross-target tie-break
+# V2 target isolation
 # --------------------------------------------------------------------------- #
 
 
@@ -605,7 +603,7 @@ def test_same_batch_cross_target_freshest_pass_prefers_the_cases_own_target(tmp_
     assert row.freshest_pass.target == "api"
 
 
-def test_freshest_pass_falls_back_within_the_batch_when_the_own_target_did_not_pass(
+def test_freshest_pass_does_not_borrow_another_targets_pass(
     tmp_path: Path,
 ) -> None:
     change_dir = _simple_change(tmp_path)
@@ -615,8 +613,7 @@ def test_freshest_pass_falls_back_within_the_batch_when_the_own_target_did_not_p
 
     row = _row(fold_trace(tmp_path, CHANGE_ID), "TC_API_001")
 
-    assert row.freshest_pass is not None
-    assert (row.freshest_pass.target, row.freshest_pass.status) == ("fuzz", "passed")
+    assert row.freshest_pass is None
 
 
 def test_own_target_preference_beats_fixed_target_order(tmp_path: Path) -> None:
@@ -640,8 +637,7 @@ def test_own_target_preference_beats_fixed_target_order(tmp_path: Path) -> None:
 
     assert row.latest_execution is not None
     assert (row.latest_execution.target, row.latest_execution.status) == ("fuzz", "failed")
-    assert row.freshest_pass is not None
-    assert row.freshest_pass.target == "api"
+    assert row.freshest_pass is None
 
 
 def test_own_target_preference_also_applies_to_freshest_pass(tmp_path: Path) -> None:
@@ -661,7 +657,7 @@ def test_own_target_preference_also_applies_to_freshest_pass(tmp_path: Path) -> 
     assert row.freshest_pass.target == "fuzz"
 
 
-def test_cross_target_fallback_uses_fixed_target_order_when_the_own_target_is_absent(
+def test_cross_target_results_are_ignored_when_the_own_target_is_absent(
     tmp_path: Path,
 ) -> None:
     change_dir = _change_dir(tmp_path)
@@ -676,8 +672,8 @@ def test_cross_target_fallback_uses_fixed_target_order_when_the_own_target_is_ab
 
     row = _row(fold_trace(tmp_path, CHANGE_ID), "TC_E2E_001")
 
-    assert row.latest_execution is not None
-    assert row.latest_execution.target == "api"
+    assert row.latest_execution is None
+    assert row.freshest_pass is None
 
 
 # --------------------------------------------------------------------------- #
@@ -854,7 +850,7 @@ def test_duplicate_case_id_keeps_the_first_path_sorted_declaration(tmp_path: Pat
     assert projection.rows[0].module == "system.aaa"
 
 
-def test_presence_executed_wins_over_an_unselected_own_target(tmp_path: Path) -> None:
+def test_presence_ignores_execution_from_a_different_target(tmp_path: Path) -> None:
     change_dir = _change_dir(tmp_path)
     _write_cases(
         change_dir,
@@ -866,7 +862,7 @@ def test_presence_executed_wins_over_an_unselected_own_target(tmp_path: Path) ->
 
     row = _row(fold_trace(tmp_path, CHANGE_ID), "TC_E2E_001")
 
-    assert row.presence_in_current_batch == "executed"
+    assert row.presence_in_current_batch == "target_not_selected"
 
 
 def test_multi_batch_performance_latest_and_freshest_use_the_capability_join(tmp_path: Path) -> None:

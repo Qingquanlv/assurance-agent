@@ -1,1931 +1,740 @@
-"""Task 10: reconciled-phase `fold_trace` enrichment.
-
-Covers the failure merge (D5: every ``FailureEntry`` for a case, in document
-order), the two-hop Observation → Occurrence → Problem join with iterative
-``merged_into`` alias following (A7), the open allowlist (D4), fingerprint
-dedupe, the three reconciled sources, and the dual-temporal invariant — the
-reconciled phase may only *add* facts, never change an execution-phase one.
-
-Documents are written through the authoritative artifact models
-(``FailureAnalysis``, ``ChangeIssueSnapshot``, ``ProblemProjection``) wherever
-the case under test is a well-formed input, so a field rename upstream breaks
-these tests instead of silently teaching the fold a stale schema. Raw JSON is
-written only where the point of the test is a document the models would reject.
-"""
+"""fold_trace reconciled-phase enrichment (Task 10)."""
 
 from __future__ import annotations
 
-import hashlib
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 import yaml
 
-from assurance_agent.artifacts.models.inspect import (
-    FailureAnalysis,
-    FailureCategory,
-    FailureEntry,
-    FailureEvidence,
-    FailureSeverity,
+from assurance_agent.artifacts.models import SelectedTargets
+from assurance_agent.artifacts.models.trace import TraceFailure
+from assurance_agent.evidence.layer_summary import (
+    summarize_projection_by_layer,
+    validate_trace_phase_pair,
 )
-from assurance_agent.artifacts.models.issues import (
-    ChangeIssueSnapshot,
-    IssueAnalysisStatus,
-    IssueClassification,
-    IssueOccurrence,
-    Observation,
-    ObservationSource,
-    OccurrenceAnalysis,
-    Problem,
-    ProblemAssessment,
-    ProblemFingerprint,
-    ProblemProjection,
-    ProblemResolution,
-    ProblemSeenRef,
-    ProblemStatus,
-    ProvisionalAssessment,
-)
-from assurance_agent.artifacts.models.trace import (
-    TraceProblemFact,
-    TraceProjection,
-    TraceRow,
-    TraceSource,
-)
-from assurance_agent.evidence.trace import (
-    FAILURE_ANALYSIS_SOURCE,
-    GAP_DETAIL_INVALID,
-    GAP_DETAIL_MISSING,
-    ISSUES_SNAPSHOT_SOURCE,
-    PROJECT_PROBLEMS_SOURCE,
-    fold_trace,
-)
-
-# The writer's own serializer, so the clean-batch fixture is byte-identical to
-# what `collect_observations_operation` publishes.
-from assurance_agent.workflow.issues.projection import dump_projection
+from assurance_agent.evidence.trace import fold_trace
 from tests.helpers_aa import write_aa_config
 
-CHANGE_ID = "CH-TRACE-010"
-BATCH_ID = "20260702-111111"
-CASE_ID = "TC_API_001"
-OTHER_CASE_ID = "TC_API_002"
-DIGEST = "sha256:" + "a" * 64
+CHANGE_ID = "CH-1"
+BATCH_ID = "20260729-120000"
+EXECUTED_AT = datetime(2026, 7, 29, 12, 0, 0, tzinfo=UTC)
+CASE_ID = "TC_DEPT_API_001"
+
+_SHARED_ROW_FIELDS = (
+    "case_id",
+    "module",
+    "case_type",
+    "automation_required",
+    "assertions",
+    "covering_tests",
+    "coverage_state",
+    "latest_execution",
+    "freshest_pass",
+    "presence_in_current_batch",
+    "atemporal_kinds_present",
+)
+
+_CLOSED_STATUSES = ("resolved", "not_an_issue", "accepted_risk")
+_OPEN_STATUSES = ("detected", "triaged", "in_progress", "verification_pending")
+_CLASSIFICATIONS = (
+    "product_bug",
+    "test_bug",
+    "test_data_issue",
+    "environment_issue",
+    "coverage_gap",
+    "performance_issue",
+    "workflow_issue",
+    "unknown",
+)
 
 
-# --------------------------------------------------------------------------- #
-# execution-phase scaffolding (the facts the reconciled phase enriches)
-# --------------------------------------------------------------------------- #
-
-
-def _change_dir(project_root: Path) -> Path:
-    write_aa_config(project_root)
-    change_dir = project_root / "qa" / "changes" / CHANGE_ID
-    change_dir.mkdir(parents=True, exist_ok=True)
+def _setup_project(tmp_path: Path) -> Path:
+    write_aa_config(tmp_path)
+    change_dir = tmp_path / "qa" / "changes" / CHANGE_ID
+    change_dir.mkdir(parents=True)
     return change_dir
 
 
-def _write_cases(change_dir: Path, case_ids: list[str]) -> None:
-    document = {
-        "schema_version": "1.0",
-        "added": [
-            {
-                "case_id": case_id,
-                "module": "system.api",
-                "type": "API",
-                "assertions": ["an assertion"],
-                "automation": {"required": True},
-            }
-            for case_id in case_ids
-        ],
-        "modified": [],
-        "removed": [],
-    }
-    path = change_dir / "cases" / "system" / "api" / "case.yaml"
+def _write_api_case(change_dir: Path, case_id: str = CASE_ID) -> None:
+    path = change_dir / "cases" / "dept" / "case.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
-
-
-def _write_mapped_tests(project_root: Path, case_ids: list[str]) -> dict[str, str]:
-    source = "".join(
-        f"def test_{case_id.lower()}__scenario() -> None:\n    assert True\n\n" for case_id in case_ids
+    path.write_text(
+        f"""
+schema_version: "1.0"
+added:
+  - case_id: {case_id}
+    module: system.dept
+    type: API
+    title: create
+    status: active
+    priority: P0
+    severity: blocker
+    automation:
+      required: true
+modified: []
+removed: []
+""",
+        encoding="utf-8",
     )
-    path = project_root / "tests" / "api" / "test_x.py"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(source, encoding="utf-8")
-    return {"tests/api/test_x.py": hashlib.sha256(source.encode("utf-8")).hexdigest()}
 
 
-def _write_manifest(change_dir: Path, test_files: dict[str, str]) -> None:
-    document = {
+def _write_manifest(change_dir: Path) -> None:
+    payload = {
         "schema_version": "1.0",
         "change_id": CHANGE_ID,
         "batch_id": BATCH_ID,
-        "selected_targets": {"api": True, "e2e": False, "fuzz": False, "performance": False},
-        "result_files": {"api": f"runs/{BATCH_ID}/api-result.json"},
-        "test_files_sha256": test_files,
-        "final_status": "FAIL",
+        "executed_at": EXECUTED_AT.isoformat(),
+        "selected_targets": SelectedTargets(api=True, e2e=False, fuzz=False, performance=False).model_dump(),
+        "result_files": {},
     }
-    path = change_dir / "execution" / "execution-manifest.yaml"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    manifest_path = change_dir / "execution" / "execution-manifest.yaml"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
 
-def _write_api_result(change_dir: Path, case_ids: list[str]) -> None:
-    batch_dir = change_dir / "execution" / "runs" / BATCH_ID
-    batch_dir.mkdir(parents=True, exist_ok=True)
-    document = {
-        "schema_version": "1.0",
-        "change_id": CHANGE_ID,
-        "batch_id": BATCH_ID,
-        "target": "api",
-        "cases": [
-            {
-                "case_id": case_id,
-                "status": "failed",
-                "file": "tests/api/test_x.py",
-                "test_name": f"test_{case_id.lower()}__scenario",
-            }
-            for case_id in case_ids
-        ],
-        "unmapped_tests": [],
+def _failure_evidence() -> dict[str, str]:
+    return {
+        "result_file": "execution/runs/x/api-result.json",
+        "test_file": "tests/api/test_dept.py",
+        "trace": "",
+        "screenshot": "",
+        "video": "",
+        "raw_log": "",
+        "log_excerpt": "",
     }
-    (batch_dir / "api-result.json").write_text(json.dumps(document, indent=2), encoding="utf-8")
-
-
-def _change(project_root: Path, case_ids: list[str] | None = None) -> Path:
-    """A gap-free execution-phase change: cases, mapped tests, manifest, result."""
-    cases = case_ids or [CASE_ID]
-    change_dir = _change_dir(project_root)
-    _write_cases(change_dir, cases)
-    _write_manifest(change_dir, _write_mapped_tests(project_root, cases))
-    _write_api_result(change_dir, cases)
-    return change_dir
-
-
-# --------------------------------------------------------------------------- #
-# reconciled-phase input builders
-# --------------------------------------------------------------------------- #
 
 
 def _failure_entry(
-    case_id: str,
     *,
-    category: FailureCategory = "assertion_failure",
-    severity: FailureSeverity = "high",
-    target: str = "api",
-) -> FailureEntry:
-    return FailureEntry(
-        case_id=case_id,
-        target=target,  # type: ignore[arg-type]
-        category=category,
-        fix_proposal_eligible=True,
-        severity=severity,
-        evidence=FailureEvidence(
-            result_file=f"execution/runs/{BATCH_ID}/api-result.json",
-            test_file="tests/api/test_x.py",
-            trace="",
-            screenshot="",
-            video="",
-            raw_log="",
-            log_excerpt="expected 200, got 500",
-        ),
-        diagnosis="assertion failed",
-        recommended_action="fix the product",
-    )
+    case_id: str = CASE_ID,
+    category: str = "assertion_failure",
+    severity: str = "high",
+) -> dict[str, object]:
+    return {
+        "case_id": case_id,
+        "target": "api",
+        "category": category,
+        "fix_proposal_eligible": False,
+        "severity": severity,
+        "evidence": _failure_evidence(),
+        "diagnosis": "diag",
+        "recommended_action": "fix",
+    }
 
 
-def _write_failure_analysis(
+def _write_failure_analysis(change_dir: Path, failures: list[dict[str, object]]) -> None:
+    inspect_dir = change_dir / "inspect"
+    inspect_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": "1.0",
+        "change_id": CHANGE_ID,
+        "source_manifest": "execution/execution-manifest.yaml",
+        "inspection_status": "completed",
+        "batch_id": BATCH_ID,
+        "source_batch_id": BATCH_ID,
+        "final_status": "FAIL",
+        "inspect_mode": "primary",
+        "classification_performed": True,
+        "status": "analyzed",
+        "failures": failures,
+        "hard_fails": [],
+        "needs_review": [],
+        "known_product_issues": [],
+    }
+    (inspect_dir / "failure-analysis.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _observation(*, case_id: str, observation_id: str) -> dict[str, object]:
+    return {
+        "observation_id": observation_id,
+        "change_id": CHANGE_ID,
+        "batch_id": BATCH_ID,
+        "kind": "test_failure",
+        "target": "api",
+        "case_id": case_id,
+        "source": {
+            "artifact": "inspect/failure-analysis.json",
+            "json_pointer": "/failures/0",
+        },
+        "evidence_refs": ["evidence:1"],
+        "signature": f"sig-{observation_id}",
+        "observed_at": "2026-07-29T12:00:00Z",
+    }
+
+
+def _occurrence(*, occurrence_id: str, observation_id: str, problem_id: str) -> dict[str, object]:
+    return {
+        "occurrence_id": occurrence_id,
+        "change_id": CHANGE_ID,
+        "batch_id": BATCH_ID,
+        "observation_ids": [observation_id],
+        "problem_id": problem_id,
+        "provisional_assessment": {
+            "classification": "product_bug",
+            "severity": "high",
+            "authority": "llm_provisional",
+            "root_cause_hypothesis": "hypothesis",
+        },
+        "analysis": {
+            "evidence_bundle_digest": "sha256:evidence",
+            "analyzer": "test-analyzer",
+            "prompt_version": "1.0",
+            "candidate_digest": "sha256:candidate",
+        },
+    }
+
+
+def _write_issues_snapshot(
     change_dir: Path,
-    entries: list[FailureEntry],
     *,
-    change_id: str = CHANGE_ID,
-    batch_id: str = BATCH_ID,
-    source_batch_id: str | None = None,
-) -> Path:
-    analysis = FailureAnalysis(
-        schema_version="1.0",
-        change_id=change_id,
-        source_manifest="execution/execution-manifest.yaml",
-        inspection_status="completed",
-        batch_id=batch_id,
-        source_batch_id=source_batch_id if source_batch_id is not None else batch_id,
-        final_status="FAIL",
-        inspect_mode="primary",
-        classification_performed=True,
-        status="analyzed" if entries else "no_failures",
-        failures=entries,
-        hard_fails=[entry for entry in entries if not entry.fix_proposal_eligible],
-        needs_review=[],
-        known_product_issues=[entry for entry in entries if entry.category == "known_product_issue"],
-    )
-    return _write_json(change_dir / "inspect" / "failure-analysis.json", analysis.model_dump(mode="json"))
-
-
-def _observation(observation_id: str, case_id: str | None, *, batch_id: str = BATCH_ID) -> Observation:
-    return Observation(
-        observation_id=observation_id,
-        change_id=CHANGE_ID,
-        batch_id=batch_id,
-        kind="test_failure",
-        target="api",
-        case_id=case_id,
-        source=ObservationSource(
-            artifact=f"execution/runs/{BATCH_ID}/api-result.json",
-            json_pointer="/cases/0",
-        ),
-        evidence_refs=[f"execution/runs/{BATCH_ID}/api-result.json"],
-        signature="HTTP 500 from endpoint",
-        observed_at="2026-07-02T11:11:11Z",
-    )
-
-
-def _occurrence(occurrence_id: str, observation_ids: list[str], problem_id: str) -> IssueOccurrence:
-    return IssueOccurrence(
-        occurrence_id=occurrence_id,
-        change_id=CHANGE_ID,
-        batch_id=BATCH_ID,
-        observation_ids=observation_ids,
-        problem_id=problem_id,
-        provisional_assessment=ProvisionalAssessment(
-            classification="product_bug",
-            severity="high",
-            authority="llm_provisional",
-            root_cause_hypothesis="the endpoint returns 500",
-        ),
-        analysis=OccurrenceAnalysis(
-            evidence_bundle_digest=DIGEST,
-            analyzer="aa-inspector",
-            prompt_version="1",
-            candidate_digest=DIGEST,
-        ),
-    )
-
-
-def _analysis_status(status: str = "completed", *, batch_id: str = BATCH_ID) -> IssueAnalysisStatus:
-    return IssueAnalysisStatus(
-        schema_version="1.0",
-        change_id=CHANGE_ID,
-        batch_id=batch_id,
-        status=status,  # type: ignore[arg-type]
-        evidence_bundle_digest=DIGEST,
-        candidate_count=1,
-        candidate_digest=DIGEST,
-    )
-
-
-def _write_snapshot(
-    change_dir: Path,
-    observations: list[Observation],
-    occurrences: list[IssueOccurrence],
-    *,
-    change_id: str = CHANGE_ID,
-    analysis_status: IssueAnalysisStatus | None = None,
-    project_sync_status: str = "completed",
-    batches: list[str] | None = None,
-) -> Path:
-    """A usable snapshot: analysis completed and the project ledger synced.
-
-    Both are what makes the two-hop join answerable — an analysis that never
-    completed has not produced the occurrences, and a pending project sync means
-    the ledger this fold reads does not yet know about them.
-    """
-    snapshot = ChangeIssueSnapshot(
-        schema_version="1.0",
-        change_id=change_id,
-        authoritative_batch_id=BATCH_ID,
-        observations=observations,
-        occurrences=occurrences,
-        analysis_status=analysis_status if analysis_status is not None else _analysis_status(),
-        project_sync_status=project_sync_status,  # type: ignore[arg-type]
-        batches=batches if batches is not None else [BATCH_ID],
-    )
-    return _write_json(change_dir / "issues" / "snapshot.json", snapshot.model_dump(mode="json"))
+    observations: list[dict[str, object]],
+    occurrences: list[dict[str, object]],
+) -> None:
+    issues_dir = change_dir / "issues"
+    issues_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": "1.0",
+        "change_id": CHANGE_ID,
+        "authoritative_batch_id": BATCH_ID,
+        "observations": observations,
+        "occurrences": occurrences,
+        "project_sync_status": "completed",
+        "batches": [BATCH_ID],
+    }
+    (issues_dir / "snapshot.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
 def _problem(
     problem_id: str,
     *,
-    status: ProblemStatus = "detected",
-    classification: IssueClassification = "product_bug",
+    status: str = "detected",
+    classification: str = "product_bug",
     fingerprint_digest: str | None = None,
-    disposition: str | None = None,
-) -> Problem:
-    resolution = (
-        ProblemResolution(
-            resolved_at="2026-07-02T12:00:00Z",
-            change_id=CHANGE_ID,
-            batch_id=BATCH_ID,
-            disposition=disposition,
-            verification_scope=[CASE_ID],
-            evidence_digest=DIGEST,
+    resolution: dict[str, object] | None = None,
+) -> dict[str, object]:
+    digest = fingerprint_digest or f"sha256:{problem_id}"
+    return {
+        "problem_id": problem_id,
+        "fingerprint": {"version": "1", "digest": digest},
+        "title": f"Problem {problem_id}",
+        "assessment": {
+            "classification": classification,
+            "severity": "high",
+            "authority": "llm_provisional",
+            "root_cause_hypothesis": "hypothesis",
+        },
+        "status": status,
+        "first_seen": {"change_id": CHANGE_ID, "occurrence_id": "OCC-1"},
+        "last_seen": {"change_id": CHANGE_ID, "occurrence_id": "OCC-1"},
+        "occurrences": ["OCC-1"],
+        "verification_request": None,
+        "resolution": resolution,
+        "version": 1,
+    }
+
+
+def _write_problems(project_root: Path, problems: list[dict[str, object]]) -> None:
+    problems_dir = project_root / "qa" / "issues"
+    problems_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": "1.0",
+        "generated_at": "2026-07-29T12:00:00Z",
+        "problems": problems,
+    }
+    (problems_dir / "problems.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _seed_reconciled_inputs(
+    tmp_path: Path,
+    *,
+    failures: list[dict[str, object]] | None = None,
+    observations: list[dict[str, object]] | None = None,
+    occurrences: list[dict[str, object]] | None = None,
+    problems: list[dict[str, object]] | None = None,
+    write_failure_analysis: bool = True,
+    write_issues: bool = True,
+    write_problems: bool = True,
+) -> Path:
+    change_dir = _setup_project(tmp_path)
+    _write_api_case(change_dir)
+    _write_manifest(change_dir)
+    if write_failure_analysis:
+        _write_failure_analysis(change_dir, failures or [])
+    if write_issues:
+        _write_issues_snapshot(
+            change_dir,
+            observations=observations or [],
+            occurrences=occurrences or [],
         )
-        if disposition is not None
-        else None
+    if write_problems:
+        _write_problems(tmp_path, problems or [])
+    return change_dir
+
+
+def _shared_row_view(row: object) -> dict[str, object]:
+    return {field: getattr(row, field) for field in _SHARED_ROW_FIELDS}
+
+
+def test_failure_analysis_missing_emits_gap(tmp_path: Path) -> None:
+    change_dir = _seed_reconciled_inputs(tmp_path, write_failure_analysis=False)
+    _write_issues_snapshot(change_dir, observations=[], occurrences=[])
+    _write_problems(tmp_path, [])
+
+    projection = fold_trace(tmp_path, CHANGE_ID, phase="reconciled")
+    assert any(gap.code == "failure_analysis_missing" for gap in projection.gaps)
+    assert projection.phase == "reconciled"
+
+
+def test_failures_preserved_in_document_order(tmp_path: Path) -> None:
+    _seed_reconciled_inputs(
+        tmp_path,
+        failures=[
+            _failure_entry(category="assertion_failure", severity="high"),
+            _failure_entry(category="environment_failure", severity="low"),
+        ],
     )
-    return Problem(
-        problem_id=problem_id,
-        fingerprint=ProblemFingerprint(
-            version="1",
-            digest=fingerprint_digest or ("sha256:" + hashlib.sha256(problem_id.encode()).hexdigest()),
-        ),
-        title=f"{problem_id} title",
-        assessment=ProblemAssessment(
-            classification=classification,
-            severity="high",
-            authority="llm_provisional",
-        ),
-        status=status,
-        first_seen=ProblemSeenRef(change_id=CHANGE_ID, occurrence_id="OCC-1"),
-        last_seen=ProblemSeenRef(change_id=CHANGE_ID, occurrence_id="OCC-1"),
-        occurrences=["OCC-1"],
-        resolution=resolution,
-        version=1,
+    projection = fold_trace(tmp_path, CHANGE_ID, phase="reconciled")
+    row = projection.rows[0]
+    assert row.failures == (
+        TraceFailure(category="assertion_failure", severity="high"),
+        TraceFailure(category="environment_failure", severity="low"),
     )
 
 
-def _write_problems(project_root: Path, problems: list[Problem]) -> Path:
-    projection = ProblemProjection(
-        schema_version="1.0",
-        generated_at="2026-07-02T12:00:00Z",
-        problems=problems,
+@pytest.mark.parametrize("status", _CLOSED_STATUSES)
+@pytest.mark.parametrize("classification", _CLASSIFICATIONS)
+def test_closed_or_non_product_bug_never_open_without_authority(
+    tmp_path: Path,
+    status: str,
+    classification: str,
+) -> None:
+    """Legacy snapshot-only seeds cannot mint problem links after authority activation."""
+    _seed_reconciled_inputs(
+        tmp_path,
+        observations=[_observation(case_id=CASE_ID, observation_id="OBS-1")],
+        occurrences=[_occurrence(occurrence_id="OCC-1", observation_id="OBS-1", problem_id="PROB-1")],
+        problems=[_problem("PROB-1", status=status, classification=classification)],
     )
-    return _write_json(project_root / "qa" / "issues" / "problems.json", projection.model_dump(mode="json"))
+    projection = fold_trace(tmp_path, CHANGE_ID, phase="reconciled")
+    assert projection.schema_version == "2"
+    assert projection.rows[0].open_problem_ids == ()
 
 
-def _write_json(path: Path, document: object) -> Path:
+@pytest.mark.parametrize("status", _OPEN_STATUSES)
+@pytest.mark.parametrize("classification", [c for c in _CLASSIFICATIONS if c != "product_bug"])
+def test_open_non_product_bug_is_not_reported(
+    tmp_path: Path,
+    status: str,
+    classification: str,
+) -> None:
+    _seed_reconciled_inputs(
+        tmp_path,
+        observations=[_observation(case_id=CASE_ID, observation_id="OBS-1")],
+        occurrences=[_occurrence(occurrence_id="OCC-1", observation_id="OBS-1", problem_id="PROB-1")],
+        problems=[_problem("PROB-1", status=status, classification=classification)],
+    )
+    projection = fold_trace(tmp_path, CHANGE_ID, phase="reconciled")
+    assert projection.rows[0].open_problem_ids == ()
+
+
+def test_dual_phase_shared_fields_are_equal(tmp_path: Path) -> None:
+    _seed_reconciled_inputs(
+        tmp_path,
+        failures=[_failure_entry()],
+        observations=[_observation(case_id=CASE_ID, observation_id="OBS-1")],
+        occurrences=[_occurrence(occurrence_id="OCC-1", observation_id="OBS-1", problem_id="PROB-1")],
+        problems=[_problem("PROB-1", status="detected", classification="product_bug")],
+    )
+    execution = fold_trace(tmp_path, CHANGE_ID, phase="execution")
+    reconciled = fold_trace(tmp_path, CHANGE_ID, phase="reconciled")
+    assert execution.schema_version == "2"
+    assert reconciled.schema_version == "2"
+    assert len(execution.rows) == len(reconciled.rows)
+    for exec_row, rec_row in zip(execution.rows, reconciled.rows, strict=True):
+        assert _shared_row_view(exec_row) == _shared_row_view(rec_row)
+        assert exec_row.failures == ()
+        assert exec_row.open_problem_ids == ()
+    summarize_projection_by_layer(execution)
+    summarize_projection_by_layer(reconciled)
+    validate_trace_phase_pair(execution, reconciled)
+
+
+def test_reconciled_sources_include_authority_inputs(tmp_path: Path) -> None:
+    _seed_reconciled_inputs(tmp_path)
+    projection = fold_trace(tmp_path, CHANGE_ID, phase="reconciled")
+    paths = {src.path for src in projection.sources}
+    assert "inspect/failure-analysis.json" in paths
+    assert "inspect/issue-evidence-manifest.json" in paths
+    assert "qa/issues/problems.json" in paths
+
+
+# ---------------------------------------------------------------------------
+# Task 12 — V2 fold activation, current freshness, authority enrichment
+# ---------------------------------------------------------------------------
+
+
+def _ensure_case_for_authority(project_root: Path) -> Path:
+    write_aa_config(project_root)
+    change_dir = project_root / "qa" / "changes" / CHANGE_ID
+    change_dir.mkdir(parents=True, exist_ok=True)
+    _write_api_case(change_dir)
+    return change_dir
+
+
+def _write_selected_api_result(change_dir: Path, batch_id: str) -> None:
+    """Satisfy selected api target so authority tests are not masked by result_missing."""
+    path = change_dir / "execution" / "runs" / batch_id / "api-result.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(document, indent=2, sort_keys=True), encoding="utf-8")
+    path.write_text(
+        json.dumps(
+            {
+                "change_id": CHANGE_ID,
+                "batch_id": batch_id,
+                "target": "api",
+                "cases": [],
+                "unmapped_tests": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _authority_project_root(change_dir: Path) -> Path:
+    return change_dir.parents[2]
+
+
+@pytest.fixture
+def authority_tree(tmp_path: Path) -> Path:
+    from tests.unit.evidence import test_issue_replay_authority as auth
+
+    change_dir = tmp_path / "qa" / "changes" / CHANGE_ID
+    change_dir.mkdir(parents=True)
+    auth._write_json(change_dir / auth.FAILURE_SOURCE, auth._failure_payload())
+    digest, candidates, observation = auth._seed_manifest_tree(change_dir)
+    c_digest = auth.candidate_document_digest(candidates)
+    events = [
+        auth._obs_recorded(observation, seq=1),
+        auth._analysis_failed_event(
+            evidence_digest=digest,
+            candidate_digest=c_digest,
+            candidate_count=0,
+            seq=2,
+        ),
+    ]
+    auth._write_ledger(change_dir, events)
+    auth._write_snapshot_from_events(change_dir, events)
+    _write_selected_api_result(change_dir, auth.BATCH_ID)
+    return change_dir
+
+
+@pytest.fixture
+def completed_tree(tmp_path: Path) -> Path:
+    from tests.unit.evidence import test_issue_replay_authority as auth
+
+    root = auth._write_completed_with_occurrence(tmp_path)
+    _write_selected_api_result(auth.change_dir(root), auth.BATCH_ID)
+    return root
+
+
+def preseed_b0_projection_and_write_b1_pending(authority_tree: Path) -> Path:
+    """Replace analysis-failed B0 seed with B1 pending recovery and a stale B0 projection."""
+    from tests.unit.evidence import test_issue_replay_authority as auth
+
+    project_root = _authority_project_root(authority_tree)
+    _ensure_case_for_authority(project_root)
+    # Persist a B0-shaped reconciled projection before advancing to B1 pending.
+    b0 = fold_trace(project_root, CHANGE_ID, phase="reconciled")
+    out = authority_tree / "inspect" / "trace-projection.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(b0.model_dump_json(indent=2), encoding="utf-8")
+
+    # Advance the execution anchor + issue authority inputs to literal batch B1 pending.
+    for path in (
+        authority_tree / auth.MANIFEST_SOURCE,
+        authority_tree / auth.CANDIDATES_SOURCE,
+        authority_tree / auth.OBSERVATIONS_SOURCE,
+        authority_tree / auth.LEDGER_SOURCE,
+        authority_tree / auth.SNAPSHOT_SOURCE,
+        authority_tree / auth.RECONCILE_SOURCE,
+        authority_tree / auth.FAILURE_SOURCE,
+        authority_tree / auth.EXECUTION_ANCHOR,
+        authority_tree / "execution/runs/secret.json",
+        authority_tree / "execution/runs/visible.txt",
+        authority_tree / auth.EXTRA_ENTRY,
+    ):
+        path.unlink(missing_ok=True)
+
+    failure = auth._failure_payload()
+    failure["batch_id"] = "B1"
+    failure["source_batch_id"] = "B1"
+    auth._write_json(authority_tree / auth.FAILURE_SOURCE, failure)
+
+    original_batch = auth.BATCH_ID
+    auth.BATCH_ID = "B1"
+    try:
+        auth.write_recovery_state(authority_tree, "project_sync_pending")
+        anchor = yaml.safe_load((authority_tree / auth.EXECUTION_ANCHOR).read_text(encoding="utf-8"))
+        assert anchor["batch_id"] == "B1"
+    finally:
+        auth.BATCH_ID = original_batch
+    _write_selected_api_result(authority_tree, "B1")
+    return project_root
+
+
+def materialize_reconciled_v2(project_root: Path) -> Path:
+    from assurance_agent.workflow.improvements.ledger import atomic_write_json
+
+    _ensure_case_for_authority(project_root)
+    projection = fold_trace(project_root, CHANGE_ID, phase="reconciled")
+    assert projection.schema_version == "2"
+    path = project_root / "qa" / "changes" / CHANGE_ID / "inspect" / "trace-projection.json"
+    atomic_write_json(path, projection.model_dump(mode="json"))
     return path
 
 
-def _mutate_json(path: Path, **overrides: object) -> Path:
-    """Rewrite a model-built document with top-level keys replaced.
-
-    Used for the documents the authoritative models refuse to build — an unknown
-    ``project_sync_status``, a future ``schema_version`` — so the fixture stays
-    a real document that differs only in the field under test.
-    """
-    document = json.loads(path.read_text(encoding="utf-8"))
-    document.update(overrides)
-    return _write_json(path, document)
-
-
-def _joined(
-    project_root: Path,
-    change_dir: Path,
-    *,
-    observations: list[Observation] | None = None,
-    occurrences: list[IssueOccurrence] | None = None,
-    problems: list[Problem] | None = None,
-) -> None:
-    """Write a snapshot + ledger pair, defaulting to one case → one problem."""
-    _write_snapshot(
-        change_dir,
-        observations if observations is not None else [_observation("OBS-1", CASE_ID)],
-        occurrences if occurrences is not None else [_occurrence("OCC-1", ["OBS-1"], "PB-001")],
+def mutate_project_problem_through_valid_review(project_root: Path) -> None:
+    """Append a valid review event that changes live problem authority digests."""
+    from assurance_agent.artifacts.models.issue_events import (
+        ProblemAssessmentConfirmedEvent,
+        ProblemDetectedEvent,
     )
-    _write_problems(project_root, problems if problems is not None else [_problem("PB-001")])
-
-
-# --------------------------------------------------------------------------- #
-# assertions helpers
-# --------------------------------------------------------------------------- #
-
-
-def _reconciled(project_root: Path) -> TraceProjection:
-    return fold_trace(project_root, CHANGE_ID, phase="reconciled")
-
-
-def _row(projection: TraceProjection, case_id: str = CASE_ID) -> TraceRow:
-    rows = [row for row in projection.rows if row.case_id == case_id]
-    assert rows, f"no row for {case_id}"
-    return rows[0]
-
-
-def _gap_codes(projection: TraceProjection) -> list[str]:
-    return [gap.code for gap in projection.gaps]
-
-
-def _gaps(projection: TraceProjection, code: str) -> list[str]:
-    return [gap.detail for gap in projection.gaps if gap.code == code]
-
-
-def _source_paths(projection: TraceProjection) -> list[str]:
-    return [source.path for source in projection.sources]
-
-
-def _source(projection: TraceProjection, path: str) -> TraceSource:
-    return next(source for source in projection.sources if source.path == path)
-
-
-def _fact(projection: TraceProjection, problem_id: str, case_id: str = CASE_ID) -> TraceProblemFact:
-    facts = [fact for fact in _row(projection, case_id).problem_facts if fact.problem_id == problem_id]
-    assert facts, f"no problem fact for {problem_id} on {case_id}"
-    return facts[0]
-
-
-# --------------------------------------------------------------------------- #
-# failure merge (D5)
-# --------------------------------------------------------------------------- #
-
-
-def test_every_failure_entry_for_a_case_is_kept_in_document_order(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _joined(tmp_path, change_dir)
-    _write_failure_analysis(
-        change_dir,
-        [
-            _failure_entry(CASE_ID, category="assertion_failure", severity="low"),
-            _failure_entry(CASE_ID, category="locator_failure", severity="critical"),
-            _failure_entry(CASE_ID, category="environment_failure", severity="medium"),
-        ],
+    from assurance_agent.evidence.issue_identity import event_id
+    from assurance_agent.evidence.issue_replay import (
+        dump_projection,
+        project_problems,
+        read_problem_events_from_bytes,
     )
+    from tests.unit.evidence import test_issue_replay_authority as auth
 
-    row = _row(_reconciled(tmp_path))
-
-    assert [(failure.category, failure.severity) for failure in row.failures] == [
-        ("assertion_failure", "low"),
-        ("locator_failure", "critical"),
-        ("environment_failure", "medium"),
-    ]
-
-
-def test_failures_are_scoped_to_their_own_case(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path, [CASE_ID, OTHER_CASE_ID])
-    _joined(tmp_path, change_dir)
-    _write_failure_analysis(
-        change_dir,
-        [
-            _failure_entry(OTHER_CASE_ID, category="business_logic_failure"),
-            _failure_entry(CASE_ID, category="assertion_failure"),
-            _failure_entry("test_orphan_function", category="test_code_error"),
-        ],
-    )
-
-    projection = _reconciled(tmp_path)
-
-    assert [failure.category for failure in _row(projection).failures] == ["assertion_failure"]
-    assert [failure.category for failure in _row(projection, OTHER_CASE_ID).failures] == [
-        "business_logic_failure"
-    ]
-
-
-def test_a_case_without_failures_keeps_an_empty_tuple(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path, [CASE_ID, OTHER_CASE_ID])
-    _joined(tmp_path, change_dir)
-    _write_failure_analysis(change_dir, [_failure_entry(CASE_ID)])
-
-    assert _row(_reconciled(tmp_path), OTHER_CASE_ID).failures == ()
-
-
-def test_failure_entries_from_any_target_are_preserved(tmp_path: Path) -> None:
-    """The row carries the failure facts, not a target-filtered view of them."""
-    change_dir = _change(tmp_path)
-    _joined(tmp_path, change_dir)
-    _write_failure_analysis(
-        change_dir,
-        [
-            _failure_entry(CASE_ID, target="coverage", category="coverage_gap"),
-            _failure_entry(CASE_ID, target="api", category="assertion_failure"),
-        ],
-    )
-
-    assert [failure.category for failure in _row(_reconciled(tmp_path)).failures] == [
-        "coverage_gap",
-        "assertion_failure",
-    ]
-
-
-def test_an_unknown_failure_category_is_carried_verbatim(tmp_path: Path) -> None:
-    """``TraceFailure.category`` is a free string, so a new upstream category is
-    a fact to record, not a corrupt document."""
-    change_dir = _change(tmp_path)
-    _joined(tmp_path, change_dir)
-    _write_json(
-        change_dir / "inspect" / "failure-analysis.json",
-        {
-            "schema_version": "1.0",
-            "change_id": CHANGE_ID,
-            "batch_id": BATCH_ID,
-            "source_batch_id": BATCH_ID,
-            "failures": [
-                {"case_id": CASE_ID, "target": "api", "category": "brand_new_category", "severity": "spicy"}
-            ],
-        },
-    )
-
-    projection = _reconciled(tmp_path)
-
-    assert "failure_analysis_missing" not in _gap_codes(projection)
-    assert [(f.category, f.severity) for f in _row(projection).failures] == [("brand_new_category", "spicy")]
-
-
-def test_missing_failure_analysis_produces_a_typed_gap_and_an_absent_source(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _joined(tmp_path, change_dir)
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["failure_analysis_missing"]
-    source = next(s for s in projection.sources if s.path == FAILURE_ANALYSIS_SOURCE)
-    assert (source.exists, source.sha256) == (False, None)
-    assert _row(projection).failures == ()
-
-
-def test_corrupt_failure_analysis_is_a_typed_gap_not_an_exception(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _joined(tmp_path, change_dir)
-    path = change_dir / "inspect" / "failure-analysis.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("{not json", encoding="utf-8")
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["failure_analysis_missing"]
-    source = next(s for s in projection.sources if s.path == FAILURE_ANALYSIS_SOURCE)
-    assert source.exists is True
-    assert source.sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
-    assert _row(projection).failures == ()
-
-
-def test_failure_analysis_row_missing_a_case_id_is_a_typed_gap(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _joined(tmp_path, change_dir)
-    _write_json(
-        change_dir / "inspect" / "failure-analysis.json",
-        {
-            "schema_version": "1.0",
-            "change_id": CHANGE_ID,
-            "batch_id": BATCH_ID,
-            "source_batch_id": BATCH_ID,
-            "failures": [{"target": "api", "category": "assertion_failure", "severity": "high"}],
-        },
-    )
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["failure_analysis_missing"]
-    assert "case_id" in _gaps(projection, "failure_analysis_missing")[0]
-
-
-def test_failure_analysis_for_another_change_is_rejected_fail_closed(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _joined(tmp_path, change_dir)
-    _write_failure_analysis(change_dir, [_failure_entry(CASE_ID)], change_id="CH-OTHER-999")
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["failure_analysis_missing"]
-    assert "CH-OTHER-999" in _gaps(projection, "failure_analysis_missing")[0]
-    assert _row(projection).failures == ()
-
-
-def test_failure_analysis_from_another_batch_is_rejected_fail_closed(tmp_path: Path) -> None:
-    """The archive gate already refuses a stale analysis
-    (``failure_analysis.source_batch_id == execution.batch_id``); folding one as
-    the current batch's failures would contradict it."""
-    change_dir = _change(tmp_path)
-    _joined(tmp_path, change_dir)
-    _write_failure_analysis(change_dir, [_failure_entry(CASE_ID)], batch_id="20260601-090000")
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["failure_analysis_missing"]
-    detail = _gaps(projection, "failure_analysis_missing")[0]
-    assert detail.startswith(GAP_DETAIL_INVALID)
-    assert "20260601-090000" in detail and BATCH_ID in detail
-    assert _row(projection).failures == ()
-
-
-def test_failure_analysis_inspecting_another_batch_is_rejected_fail_closed(tmp_path: Path) -> None:
-    """``source_batch_id`` names the batch whose results were classified, so a
-    document that inspected an older batch is stale even when its own
-    ``batch_id`` is current."""
-    change_dir = _change(tmp_path)
-    _joined(tmp_path, change_dir)
-    _write_failure_analysis(
-        change_dir, [_failure_entry(CASE_ID)], batch_id=BATCH_ID, source_batch_id="20260601-090000"
-    )
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["failure_analysis_missing"]
-    detail = _gaps(projection, "failure_analysis_missing")[0]
-    assert detail.startswith(GAP_DETAIL_INVALID)
-    assert "source_batch_id" in detail
-    assert _row(projection).failures == ()
-
-
-def test_failure_analysis_cannot_be_attributed_without_an_authoritative_batch(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    (change_dir / "execution" / "execution-manifest.yaml").unlink()
-    _joined(tmp_path, change_dir)
-    _write_failure_analysis(change_dir, [_failure_entry(CASE_ID)])
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["manifest_missing", "failure_analysis_missing"]
-    detail = _gaps(projection, "failure_analysis_missing")[0]
-    assert detail.startswith(GAP_DETAIL_INVALID)
-    assert "authoritative batch" in detail
-    assert _row(projection).failures == ()
-
-
-# --------------------------------------------------------------------------- #
-# degraded issue snapshots fail closed
-# --------------------------------------------------------------------------- #
-
-
-def test_the_clean_batch_snapshot_is_valid_empty_evidence(tmp_path: Path) -> None:
-    """The shape ``collect_observations_operation`` writes when nothing went wrong.
-
-    A clean batch has no abnormal observations, so no Issue analysis runs and
-    ``analysis_status`` stays null (``workflow/issues/operations.py``). That is
-    not a degraded snapshot — it is the answer "this change has no problems" —
-    and folding it as unusable would deny every green change a complete
-    reconciled projection.
-    """
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    clean = ChangeIssueSnapshot(
+    ledger = project_root / auth.PROJECT_LEDGER_SOURCE
+    events = list(read_problem_events_from_bytes(ledger.read_bytes()))
+    detected = next(event for event in events if isinstance(event, ProblemDetectedEvent))
+    evidence_refs = [detected.occurrence_id]
+    evidence_digest = auth._evidence_refs_digest(evidence_refs)
+    key = f"review:confirm_assessment:{detected.problem_id}:1:{evidence_digest}"
+    confirmed = ProblemAssessmentConfirmedEvent(
         schema_version="1.0",
-        change_id=CHANGE_ID,
-        authoritative_batch_id=BATCH_ID,
-        observations=[],
-        occurrences=[],
-        analysis_status=None,
-        project_sync_status="completed",
-        batches=[BATCH_ID],
+        seq=max(event.seq for event in events) + 1,
+        event_id=event_id(key),
+        idempotency_key=key,
+        ts="2026-07-30T12:00:00Z",
+        evidence_digest=evidence_digest,
+        problem_id=detected.problem_id,
+        expected_problem_version=1,
+        type="problem_assessment_confirmed",
+        classification="product_bug",
+        severity="high",
+        root_cause_hypothesis="reviewed",
+        reason="confirmed",
+        evidence_refs=evidence_refs,
     )
-    snapshot_path = change_dir / "issues" / "snapshot.json"
-    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-    snapshot_path.write_bytes(dump_projection(clean))
-    _write_problems(tmp_path, [])
-
-    projection = _reconciled(tmp_path)
-
-    assert projection.gaps == ()
-    assert projection.integrity == "complete"
-    row = _row(projection)
-    assert row.problem_facts == ()
-    assert row.open_problem_ids == ()
-    assert _source(projection, ISSUES_SNAPSHOT_SOURCE).exists is True
+    auth._append_problem_event(ledger, confirmed)
+    (project_root / auth.PROJECT_PROBLEMS_SOURCE).write_bytes(
+        dump_projection(project_problems(tuple([*events, confirmed])))
+    )
 
 
-def test_absent_analysis_status_with_collected_observations_fails_closed(tmp_path: Path) -> None:
-    """The other half of the rule: observations exist, so an analysis was owed.
-
-    A null ``analysis_status`` here means the analysis never ran or never
-    finished, so the fold cannot tell whether the problems those observations
-    point at are open.
-    """
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(tmp_path, change_dir)
-    _mutate_json(change_dir / "issues" / "snapshot.json", analysis_status=None)
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["issues_snapshot_missing"]
-    detail = _gaps(projection, "issues_snapshot_missing")[0]
-    assert detail.startswith(GAP_DETAIL_INVALID)
-    assert "analysis_status" in detail
-    row = _row(projection)
-    assert row.open_problem_ids == ()
-    assert row.problem_facts == ()
-
-
-@pytest.mark.parametrize(
-    ("overrides", "expected_field"),
-    [
-        ({"project_sync_status": "pending"}, "project_sync_status"),
-        ({"project_sync_status": "in_flight"}, "project_sync_status"),
-    ],
-    ids=["sync_pending", "sync_unknown"],
-)
-def test_a_degraded_snapshot_is_unusable_and_suppresses_the_join(
-    tmp_path: Path, overrides: dict[str, object], expected_field: str
+def test_recovery_fold_is_current_incomplete_without_old_problem_links(
+    authority_tree: Path,
 ) -> None:
-    """A snapshot that says its own analysis or project sync is incomplete cannot
-    answer "is this case's problem still open" (the semantics
-    ``report_builder`` already reads as ``unknown`` risk)."""
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [_failure_entry(CASE_ID)])
-    _joined(tmp_path, change_dir)
-    snapshot_path = _mutate_json(change_dir / "issues" / "snapshot.json", **overrides)
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["issues_snapshot_missing"]
-    detail = _gaps(projection, "issues_snapshot_missing")[0]
-    assert detail.startswith(GAP_DETAIL_INVALID)
-    assert expected_field in detail
-    row = _row(projection)
-    assert row.open_problem_ids == ()
-    assert row.problem_facts == ()
-    assert len(row.failures) == 1, "an unusable snapshot must not cost the failure facts"
-    source = _source(projection, ISSUES_SNAPSHOT_SOURCE)
-    assert source.exists is True
-    assert source.sha256 == hashlib.sha256(snapshot_path.read_bytes()).hexdigest()
-
-
-@pytest.mark.parametrize("status", ["pending", "failed"])
-def test_an_uncompleted_analysis_status_makes_the_snapshot_unusable(tmp_path: Path, status: str) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _write_snapshot(
-        change_dir,
-        [_observation("OBS-1", CASE_ID)],
-        [_occurrence("OCC-1", ["OBS-1"], "PB-001")],
-        analysis_status=_analysis_status(status),
-    )
-    _write_problems(tmp_path, [_problem("PB-001")])
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["issues_snapshot_missing"]
-    detail = _gaps(projection, "issues_snapshot_missing")[0]
-    assert detail.startswith(GAP_DETAIL_INVALID)
-    assert status in detail
-    assert _row(projection).open_problem_ids == ()
-
-
-def test_one_degraded_snapshot_produces_exactly_one_gap(tmp_path: Path) -> None:
-    """Two cases, several occurrences: still one gap about the input."""
-    change_dir = _change(tmp_path, [CASE_ID, OTHER_CASE_ID])
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        observations=[_observation("OBS-1", CASE_ID), _observation("OBS-2", OTHER_CASE_ID)],
-        occurrences=[
-            _occurrence("OCC-1", ["OBS-1"], "PB-001"),
-            _occurrence("OCC-2", ["OBS-2"], "PB-002"),
-        ],
-        problems=[_problem("PB-001"), _problem("PB-002")],
-    )
-    _mutate_json(change_dir / "issues" / "snapshot.json", project_sync_status="pending")
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["issues_snapshot_missing"]
+    project_root = preseed_b0_projection_and_write_b1_pending(authority_tree)
+    projection = fold_trace(project_root, CHANGE_ID, phase="reconciled")
+    assert projection.schema_version == "2"
+    assert projection.authoritative_batch_id == "B1"
+    assert projection.integrity == "incomplete"
+    assert {gap.code for gap in projection.gaps} == {"project_sync_pending"}
     assert all(row.open_problem_ids == () for row in projection.rows)
 
 
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        {"analysis_status": {"schema_version": "1.0", "status": "failed"}},
-        {"project_sync_status": "pending"},
-    ],
-    ids=["explicit_failed_analysis", "sync_pending"],
-)
-def test_an_empty_snapshot_that_declares_itself_degraded_is_still_unusable(
-    tmp_path: Path, overrides: dict[str, object]
-) -> None:
-    """Emptiness excuses only a *null* analysis_status.
-
-    A snapshot that explicitly reports a failed analysis, or a project sync that
-    has not landed, is describing a broken pipeline — the empty observation list
-    is then a symptom, not a clean batch.
-    """
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _write_snapshot(change_dir, [], [])
-    _write_problems(tmp_path, [])
-    _mutate_json(change_dir / "issues" / "snapshot.json", **overrides)
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["issues_snapshot_missing"]
-    assert _gaps(projection, "issues_snapshot_missing")[0].startswith(GAP_DETAIL_INVALID)
-
-
-# --------------------------------------------------------------------------- #
-# an analysis that predates the observations it is supposed to cover
-#
-# `ChangeIssueSnapshot` is folded from the change's issue event log, so
-# observations accumulate across batches while `analysis_status` describes only
-# the most recent analysis (`workflow/issues/projection.py`). An observation
-# collected *after* that analysis therefore has no occurrence and no Problem —
-# the analysis ran before it existed — and a snapshot reporting `completed` says
-# nothing about it. Folding that as "this case has no open problem" is a
-# fail-open the reconciled join must refuse.
-# --------------------------------------------------------------------------- #
-
-NEWER_BATCH_ID = "20260702-222222"
-OLDER_BATCH_ID = "20260701-090909"
-
-
-def test_an_observation_newer_than_the_completed_analysis_is_unanalyzed(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [_failure_entry(CASE_ID)])
-    _write_snapshot(
-        change_dir,
-        [_observation("OBS-1", CASE_ID, batch_id=NEWER_BATCH_ID)],
-        [],
-        analysis_status=_analysis_status(batch_id=BATCH_ID),
-        batches=[BATCH_ID, NEWER_BATCH_ID],
-    )
-    _write_problems(tmp_path, [])
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["issues_snapshot_missing"]
-    detail = _gaps(projection, "issues_snapshot_missing")[0]
-    assert detail.startswith(GAP_DETAIL_INVALID)
-    assert NEWER_BATCH_ID in detail
-    assert BATCH_ID in detail
-    row = _row(projection)
-    assert row.open_problem_ids == ()
-    assert row.problem_facts == ()
-    assert len(row.failures) == 1, "a stale analysis must not cost the failure facts"
-
-
-def test_a_stale_analysis_suppresses_the_join_even_when_occurrences_exist(tmp_path: Path) -> None:
-    """The occurrences on record belong to the analysed batch, not the newer one.
-
-    Believing them would report the *old* batch's open problems as this batch's
-    verdict, which is precisely the mismatch the batch facts expose.
-    """
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _write_snapshot(
-        change_dir,
-        [
-            _observation("OBS-1", CASE_ID, batch_id=BATCH_ID),
-            _observation("OBS-2", CASE_ID, batch_id=NEWER_BATCH_ID),
-        ],
-        [_occurrence("OCC-1", ["OBS-1"], "PB-001")],
-        analysis_status=_analysis_status(batch_id=BATCH_ID),
-        batches=[BATCH_ID, NEWER_BATCH_ID],
-    )
-    _write_problems(tmp_path, [_problem("PB-001")])
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["issues_snapshot_missing"]
-    assert _row(projection).open_problem_ids == ()
-
-
-def test_an_observation_from_an_earlier_analysed_batch_stays_usable(tmp_path: Path) -> None:
-    """Older observations were analysed in their own batch, and their occurrences
-    are in the snapshot — only observations the analysis could not have seen are
-    unanalyzed."""
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _write_snapshot(
-        change_dir,
-        [_observation("OBS-1", CASE_ID, batch_id=OLDER_BATCH_ID)],
-        [_occurrence("OCC-1", ["OBS-1"], "PB-001")],
-        analysis_status=_analysis_status(batch_id=BATCH_ID),
-        batches=[OLDER_BATCH_ID, BATCH_ID],
-    )
-    _write_problems(tmp_path, [_problem("PB-001")])
-
-    projection = _reconciled(tmp_path)
-
-    assert projection.gaps == ()
-    assert _row(projection).open_problem_ids == ("PB-001",)
-
-
-def test_an_observation_from_the_analysed_batch_stays_usable(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(tmp_path, change_dir)
-
-    projection = _reconciled(tmp_path)
-
-    assert projection.gaps == ()
-    assert _row(projection).open_problem_ids == ("PB-001",)
-
-
-@pytest.mark.parametrize(
-    ("observation_batch", "analysis_batch"),
-    [
-        ("not-a-batch-id", BATCH_ID),
-        (BATCH_ID, "not-a-batch-id"),
-    ],
-    ids=["unorderable_observation", "unorderable_analysis"],
-)
-def test_batch_ids_that_cannot_be_ordered_fail_closed(
-    tmp_path: Path, observation_batch: str, analysis_batch: str
-) -> None:
-    """Fail closed when "newer" cannot be decided.
-
-    Ordering is the batch-id timestamp format; two ids that do not both parse
-    cannot be compared, so any difference between them is treated as unanalyzed
-    rather than guessed in the direction that passes.
-    """
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _write_snapshot(
-        change_dir,
-        [_observation("OBS-1", CASE_ID, batch_id=observation_batch)],
-        [_occurrence("OCC-1", ["OBS-1"], "PB-001")],
-        analysis_status=_analysis_status(batch_id=analysis_batch),
-        batches=[observation_batch, analysis_batch],
-    )
-    _write_problems(tmp_path, [_problem("PB-001")])
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["issues_snapshot_missing"]
-    assert _row(projection).open_problem_ids == ()
-
-
-def test_a_clean_empty_snapshot_is_unaffected_by_the_staleness_rule(tmp_path: Path) -> None:
-    """No observations means nothing can be newer than an analysis that never ran."""
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _write_snapshot(change_dir, [], [], analysis_status=None)
-    _write_problems(tmp_path, [])
-
-    projection = _reconciled(tmp_path)
-
-    assert projection.gaps == ()
+def test_valid_completed_fold_emits_v2_with_problem_links(completed_tree: Path) -> None:
+    _ensure_case_for_authority(completed_tree)
+    projection = fold_trace(completed_tree, CHANGE_ID, phase="reconciled")
+    assert projection.schema_version == "2"
     assert projection.integrity == "complete"
+    assert projection.rows[0].open_problem_ids
+    assert projection.rows[0].failures
 
 
-def test_a_completed_and_synced_snapshot_still_joins(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(tmp_path, change_dir)
+def test_failure_identity_mismatch_keeps_independent_problem_links(completed_tree: Path) -> None:
+    from tests.unit.evidence import test_issue_replay_authority as auth
 
-    projection = _reconciled(tmp_path)
-
-    assert projection.gaps == ()
-    assert _row(projection).open_problem_ids == ("PB-001",)
-
-
-# --------------------------------------------------------------------------- #
-# missing vs present-but-invalid, and pinned schema versions
-# --------------------------------------------------------------------------- #
-
-
-def _all_reconciled_inputs(project_root: Path, change_dir: Path) -> dict[str, Path]:
-    _write_failure_analysis(change_dir, [_failure_entry(CASE_ID)])
-    _joined(project_root, change_dir)
-    return {
-        FAILURE_ANALYSIS_SOURCE: change_dir / "inspect" / "failure-analysis.json",
-        ISSUES_SNAPSHOT_SOURCE: change_dir / "issues" / "snapshot.json",
-        PROJECT_PROBLEMS_SOURCE: project_root / "qa" / "issues" / "problems.json",
-    }
-
-
-_INPUT_CODES = {
-    FAILURE_ANALYSIS_SOURCE: "failure_analysis_missing",
-    ISSUES_SNAPSHOT_SOURCE: "issues_snapshot_missing",
-    PROJECT_PROBLEMS_SOURCE: "problems_snapshot_missing",
-}
-
-
-@pytest.mark.parametrize("logical", list(_INPUT_CODES))
-def test_an_absent_input_is_detailed_as_missing(tmp_path: Path, logical: str) -> None:
-    change_dir = _change(tmp_path)
-    paths = _all_reconciled_inputs(tmp_path, change_dir)
-    paths[logical].unlink()
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == [_INPUT_CODES[logical]]
-    detail = _gaps(projection, _INPUT_CODES[logical])[0]
-    assert detail.startswith(GAP_DETAIL_MISSING)
-    assert not detail.startswith(GAP_DETAIL_INVALID)
-    source = _source(projection, logical)
-    assert (source.exists, source.sha256) == (False, None)
-
-
-@pytest.mark.parametrize("logical", list(_INPUT_CODES))
-def test_a_present_but_unreadable_input_is_detailed_as_invalid(tmp_path: Path, logical: str) -> None:
-    change_dir = _change(tmp_path)
-    paths = _all_reconciled_inputs(tmp_path, change_dir)
-    paths[logical].write_text("{not json", encoding="utf-8")
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == [_INPUT_CODES[logical]]
-    assert _gaps(projection, _INPUT_CODES[logical])[0].startswith(GAP_DETAIL_INVALID)
-    source = _source(projection, logical)
-    assert source.exists is True
-    assert source.sha256 == hashlib.sha256(paths[logical].read_bytes()).hexdigest()
-
-
-@pytest.mark.parametrize("logical", list(_INPUT_CODES))
-@pytest.mark.parametrize("schema_version", ["2.0", "1", None])
-def test_an_unpinned_schema_version_is_an_invalid_input(
-    tmp_path: Path, logical: str, schema_version: str | None
-) -> None:
-    """All three documents pin ``schema_version: "1.0"`` in their own models, so
-    a future or absent version is a document this fold must not guess at."""
-    change_dir = _change(tmp_path)
-    paths = _all_reconciled_inputs(tmp_path, change_dir)
-    _mutate_json(paths[logical], schema_version=schema_version)
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == [_INPUT_CODES[logical]]
-    assert _gaps(projection, _INPUT_CODES[logical])[0].startswith(GAP_DETAIL_INVALID)
-    assert _source(projection, logical).exists is True
-    row = _row(projection)
-    if logical == FAILURE_ANALYSIS_SOURCE:
-        assert row.failures == ()
-    else:
-        assert row.open_problem_ids == ()
+    _ensure_case_for_authority(completed_tree)
+    change_dir = auth.change_dir(completed_tree)
+    auth.mutate_failure(change_dir, "wrong_change")
+    projection = fold_trace(completed_tree, CHANGE_ID, phase="reconciled")
+    assert any(gap.code == "failure_analysis_identity_mismatch" for gap in projection.gaps)
+    assert projection.rows[0].failures == ()
+    assert projection.rows[0].open_problem_ids
 
 
 @pytest.mark.parametrize(
-    "disposition",
-    ["merged_into:PB-404", "merged_into:PB-002"],
-    ids=["absent_target", "cycle"],
-)
-def test_alias_gap_details_do_not_claim_the_ledger_itself_is_unusable(
-    tmp_path: Path, disposition: str
-) -> None:
-    """The source prefixes describe the *document*; alias gaps describe a
-    reference inside a document this fold read successfully, so they carry
-    neither prefix and must not be mistaken for an absent or refused ledger."""
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        problems=[
-            _problem("PB-001", status="resolved", disposition=disposition),
-            _problem("PB-002", status="resolved", disposition="merged_into:PB-001"),
-        ],
-    )
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["problem_alias_invalid"]
-    detail = _gaps(projection, "problem_alias_invalid")[0]
-    assert not detail.startswith(GAP_DETAIL_MISSING)
-    assert not detail.startswith(GAP_DETAIL_INVALID)
-    assert _source(projection, PROJECT_PROBLEMS_SOURCE).exists is True
-
-
-def test_the_expected_schema_version_of_every_input_is_accepted(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _all_reconciled_inputs(tmp_path, change_dir)
-
-    projection = _reconciled(tmp_path)
-
-    assert projection.gaps == ()
-    assert projection.integrity == "complete"
-
-
-# --------------------------------------------------------------------------- #
-# two-hop problem join (§9) and the open allowlist (D4)
-# --------------------------------------------------------------------------- #
-
-
-def test_two_hop_join_reaches_the_problem_through_the_occurrence(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(tmp_path, change_dir)
-
-    projection = _reconciled(tmp_path)
-
-    assert _row(projection).open_problem_ids == ("PB-001",)
-    assert projection.gaps == ()
-
-
-@pytest.mark.parametrize(
-    "status",
+    ("state", "code"),
     [
-        "detected",
-        "triaged",
-        "in_progress",
-        "verification_pending",
-        "resolved",
-        "not_an_issue",
-        "accepted_risk",
+        ("analysis_failed", "issue_analysis_failed"),
+        ("reconcile_failed", "issue_reconcile_failed"),
+        ("project_sync_pending", "project_sync_pending"),
     ],
 )
-@pytest.mark.parametrize("classification", ["product_bug", "test_bug", "environment_issue", "unknown"])
-def test_open_requires_a_live_status_and_the_product_bug_classification(
-    tmp_path: Path, status: str, classification: str
-) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        problems=[
-            _problem(
-                "PB-001",
-                status=status,  # type: ignore[arg-type]
-                classification=classification,  # type: ignore[arg-type]
-                disposition="fixed" if status == "resolved" else None,
-            )
-        ],
-    )
-
-    open_expected = status not in {"resolved", "not_an_issue", "accepted_risk"} and (
-        classification == "product_bug"
-    )
-    assert (_row(_reconciled(tmp_path)).open_problem_ids == ("PB-001",)) is open_expected
-
-
-def test_an_observation_without_a_case_id_is_never_joined(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        observations=[_observation("OBS-1", None)],
-        occurrences=[_occurrence("OCC-1", ["OBS-1"], "PB-001")],
-    )
-
-    assert _row(_reconciled(tmp_path)).open_problem_ids == ()
-
-
-def test_an_occurrence_observation_that_the_snapshot_does_not_list_is_not_joined(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        observations=[_observation("OBS-1", CASE_ID)],
-        occurrences=[_occurrence("OCC-1", ["OBS-DANGLING"], "PB-001")],
-    )
-
-    assert _row(_reconciled(tmp_path)).open_problem_ids == ()
-
-
-def test_several_occurrences_for_one_case_collect_every_open_problem_sorted(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        observations=[_observation("OBS-1", CASE_ID), _observation("OBS-2", CASE_ID)],
-        occurrences=[
-            _occurrence("OCC-2", ["OBS-2"], "PB-009"),
-            _occurrence("OCC-1", ["OBS-1"], "PB-002"),
-        ],
-        problems=[_problem("PB-009"), _problem("PB-002")],
-    )
-
-    assert _row(_reconciled(tmp_path)).open_problem_ids == ("PB-002", "PB-009")
-
-
-def test_the_same_problem_reached_twice_is_reported_once(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        observations=[_observation("OBS-1", CASE_ID), _observation("OBS-2", CASE_ID)],
-        occurrences=[
-            _occurrence("OCC-1", ["OBS-1"], "PB-001"),
-            _occurrence("OCC-2", ["OBS-2"], "PB-001"),
-        ],
-    )
-
-    assert _row(_reconciled(tmp_path)).open_problem_ids == ("PB-001",)
-
-
-def test_one_occurrence_spanning_two_cases_joins_both(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path, [CASE_ID, OTHER_CASE_ID])
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        observations=[_observation("OBS-1", CASE_ID), _observation("OBS-2", OTHER_CASE_ID)],
-        occurrences=[_occurrence("OCC-1", ["OBS-1", "OBS-2"], "PB-001")],
-    )
-
-    projection = _reconciled(tmp_path)
-
-    assert _row(projection).open_problem_ids == ("PB-001",)
-    assert _row(projection, OTHER_CASE_ID).open_problem_ids == ("PB-001",)
-
-
-@pytest.mark.parametrize(
-    ("first_case", "second_case", "winner"),
-    [(CASE_ID, OTHER_CASE_ID, CASE_ID), (OTHER_CASE_ID, CASE_ID, OTHER_CASE_ID)],
-    ids=["first_declaration_wins", "reversed_declaration_wins"],
-)
-def test_a_duplicate_observation_id_resolves_to_its_first_declaration(
-    tmp_path: Path, first_case: str, second_case: str, winner: str
-) -> None:
-    """Two rows claiming one observation_id is a contradictory snapshot; the fold
-    must not let list order decide silently, so the first declaration wins the
-    same way duplicate case declarations do."""
-    change_dir = _change(tmp_path, [CASE_ID, OTHER_CASE_ID])
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        observations=[_observation("OBS-1", first_case), _observation("OBS-1", second_case)],
-        occurrences=[_occurrence("OCC-1", ["OBS-1"], "PB-001")],
-    )
-
-    projection = _reconciled(tmp_path)
-
-    loser = OTHER_CASE_ID if winner == CASE_ID else CASE_ID
-    assert _row(projection, winner).open_problem_ids == ("PB-001",)
-    assert _row(projection, loser).open_problem_ids == ()
-
-
-def test_a_duplicate_observation_id_whose_first_declaration_has_no_case_does_not_join(
+def test_recovery_states_fold_incomplete_without_problem_links(
     tmp_path: Path,
+    state: str,
+    code: str,
 ) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        observations=[_observation("OBS-1", None), _observation("OBS-1", CASE_ID)],
-        occurrences=[_occurrence("OCC-1", ["OBS-1"], "PB-001")],
-    )
-
-    assert _row(_reconciled(tmp_path)).open_problem_ids == ()
-
-
-def test_two_open_problems_sharing_a_fingerprint_are_deduplicated(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    shared = "sha256:" + "b" * 64
-    _joined(
-        tmp_path,
-        change_dir,
-        observations=[_observation("OBS-1", CASE_ID), _observation("OBS-2", CASE_ID)],
-        occurrences=[
-            _occurrence("OCC-1", ["OBS-1"], "PB-002"),
-            _occurrence("OCC-2", ["OBS-2"], "PB-001"),
-        ],
-        problems=[
-            _problem("PB-001", fingerprint_digest=shared),
-            _problem("PB-002", fingerprint_digest=shared),
-        ],
-    )
-
-    assert _row(_reconciled(tmp_path)).open_problem_ids == ("PB-001",)
-
-
-# --------------------------------------------------------------------------- #
-# merge alias following (A7)
-# --------------------------------------------------------------------------- #
-
-
-def test_a_merged_source_is_replaced_by_its_canonical_target(tmp_path: Path) -> None:
-    """The source Problem is ``resolved`` by construction; that must not be read
-    as "closed" when the canonical Problem it merged into is still open."""
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        problems=[
-            _problem("PB-001", status="resolved", disposition="merged_into:PB-100"),
-            _problem("PB-100", status="triaged"),
-        ],
-    )
-
-    projection = _reconciled(tmp_path)
-
-    assert _row(projection).open_problem_ids == ("PB-100",)
-    assert projection.gaps == ()
-
-
-def test_an_alias_chain_is_followed_to_the_end(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        problems=[
-            _problem("PB-001", status="resolved", disposition="merged_into:PB-002"),
-            _problem("PB-002", status="resolved", disposition="merged_into:PB-003"),
-            _problem("PB-003", status="in_progress"),
-        ],
-    )
-
-    assert _row(_reconciled(tmp_path)).open_problem_ids == ("PB-003",)
-
-
-def test_a_canonical_target_that_is_closed_reports_no_open_problem(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        problems=[
-            _problem("PB-001", status="resolved", disposition="merged_into:PB-100"),
-            _problem("PB-100", status="resolved", disposition="fixed in this change"),
-        ],
-    )
-
-    projection = _reconciled(tmp_path)
-
-    assert _row(projection).open_problem_ids == ()
-    assert projection.gaps == ()
-
-
-def test_a_canonical_target_classified_as_a_test_bug_reports_no_open_problem(tmp_path: Path) -> None:
-    """The allowlist is evaluated on the canonical Problem, not on the source."""
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        problems=[
-            _problem("PB-001", status="resolved", disposition="merged_into:PB-100"),
-            _problem("PB-100", status="triaged", classification="test_bug"),
-        ],
-    )
-
-    assert _row(_reconciled(tmp_path)).open_problem_ids == ()
-
-
-@pytest.mark.parametrize(
-    "disposition",
-    ["fixed by the change", "merged into PB-100", "merged_into PB-100", "MERGED_INTO:PB-100"],
-)
-def test_only_the_exact_merged_into_disposition_is_an_alias(tmp_path: Path, disposition: str) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        problems=[
-            _problem("PB-001", status="resolved", disposition=disposition),
-            _problem("PB-100", status="triaged"),
-        ],
-    )
-
-    projection = _reconciled(tmp_path)
-
-    assert _row(projection).open_problem_ids == ()
-    assert projection.gaps == ()
-
-
-def test_an_alias_cycle_produces_one_gap_and_no_open_problem(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        problems=[
-            _problem("PB-001", status="resolved", disposition="merged_into:PB-002"),
-            _problem("PB-002", status="resolved", disposition="merged_into:PB-001"),
-        ],
-    )
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["problem_alias_invalid"]
-    assert projection.gaps[0].source == PROJECT_PROBLEMS_SOURCE
-    assert _row(projection).open_problem_ids == ()
-
-
-def test_an_alias_cycle_reached_from_two_references_still_gaps_once(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path, [CASE_ID, OTHER_CASE_ID])
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        observations=[_observation("OBS-1", CASE_ID), _observation("OBS-2", OTHER_CASE_ID)],
-        occurrences=[
-            _occurrence("OCC-1", ["OBS-1"], "PB-001"),
-            _occurrence("OCC-2", ["OBS-2"], "PB-002"),
-        ],
-        problems=[
-            _problem("PB-001", status="resolved", disposition="merged_into:PB-002"),
-            _problem("PB-002", status="resolved", disposition="merged_into:PB-001"),
-        ],
-    )
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["problem_alias_invalid"]
-    assert _row(projection).open_problem_ids == ()
-    assert _row(projection, OTHER_CASE_ID).open_problem_ids == ()
-
-
-def test_a_self_merge_is_a_cycle(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        problems=[_problem("PB-001", status="resolved", disposition="merged_into:PB-001")],
-    )
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["problem_alias_invalid"]
-    assert _row(projection).open_problem_ids == ()
-
-
-@pytest.mark.parametrize("disposition", ["merged_into:PB-404", "merged_into:"])
-def test_an_alias_target_that_does_not_exist_produces_one_gap(tmp_path: Path, disposition: str) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        problems=[_problem("PB-001", status="resolved", disposition=disposition)],
-    )
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["problem_alias_invalid"]
-    assert _row(projection).open_problem_ids == ()
-
-
-def test_an_occurrence_referencing_an_unknown_problem_gaps_and_reports_nothing_open(
-    tmp_path: Path,
-) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(tmp_path, change_dir, problems=[_problem("PB-999")])
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["problem_alias_invalid"]
-    assert "PB-001" in projection.gaps[0].detail
-    assert _row(projection).open_problem_ids == ()
-
-
-def test_a_broken_reference_does_not_hide_the_other_open_problems(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        observations=[_observation("OBS-1", CASE_ID), _observation("OBS-2", CASE_ID)],
-        occurrences=[
-            _occurrence("OCC-1", ["OBS-1"], "PB-404"),
-            _occurrence("OCC-2", ["OBS-2"], "PB-001"),
-        ],
-    )
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["problem_alias_invalid"]
-    assert _row(projection).open_problem_ids == ("PB-001",)
-
-
-# --------------------------------------------------------------------------- #
-# problem facts (§9.4 / §9.5 recorded, not filtered)
-# --------------------------------------------------------------------------- #
-
-
-def test_a_problem_fact_records_the_canonical_identity_status_and_verdict(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    fingerprint = "sha256:" + "c" * 64
-    _joined(
-        tmp_path,
-        change_dir,
-        problems=[_problem("PB-001", status="triaged", fingerprint_digest=fingerprint)],
-    )
-
-    fact = _fact(_reconciled(tmp_path), "PB-001")
-
-    assert fact.source_problem_ids == ("PB-001",)
-    assert fact.fingerprint == fingerprint
-    assert (fact.status, fact.classification) == ("triaged", "product_bug")
-    assert fact.open_product_bug is True
-
-
-@pytest.mark.parametrize("status", ["resolved", "not_an_issue", "accepted_risk"])
-def test_a_closed_problem_is_recorded_as_a_fact_but_never_routed(tmp_path: Path, status: str) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        problems=[
-            _problem(
-                "PB-001",
-                status=status,  # type: ignore[arg-type]
-                disposition="fixed" if status == "resolved" else None,
-            )
-        ],
-    )
-
-    projection = _reconciled(tmp_path)
-
-    fact = _fact(projection, "PB-001")
-    assert (fact.status, fact.open_product_bug) == (status, False)
-    assert _row(projection).open_problem_ids == ()
-
-
-@pytest.mark.parametrize("classification", ["test_bug", "environment_issue", "unknown"])
-def test_a_non_product_problem_is_recorded_as_a_fact_but_never_routed(
-    tmp_path: Path, classification: str
-) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        problems=[_problem("PB-001", classification=classification)],  # type: ignore[arg-type]
-    )
-
-    projection = _reconciled(tmp_path)
-
-    fact = _fact(projection, "PB-001")
-    assert (fact.classification, fact.open_product_bug) == (classification, False)
-    assert _row(projection).open_problem_ids == ()
-
-
-def test_a_fact_keeps_every_source_alias_that_resolved_to_it(tmp_path: Path) -> None:
-    """The canonical row is one fact, but the ids that reached it are the trail
-    back to the occurrences, so none of them may be dropped."""
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        observations=[
-            _observation("OBS-1", CASE_ID),
-            _observation("OBS-2", CASE_ID),
-            _observation("OBS-3", CASE_ID),
-        ],
-        occurrences=[
-            _occurrence("OCC-1", ["OBS-1"], "PB-002"),
-            _occurrence("OCC-2", ["OBS-2"], "PB-001"),
-            _occurrence("OCC-3", ["OBS-3"], "PB-100"),
-        ],
-        problems=[
-            _problem("PB-001", status="resolved", disposition="merged_into:PB-100"),
-            _problem("PB-002", status="resolved", disposition="merged_into:PB-001"),
-            _problem("PB-100", status="triaged"),
-        ],
-    )
-
-    projection = _reconciled(tmp_path)
-    row = _row(projection)
-
-    assert [fact.problem_id for fact in row.problem_facts] == ["PB-100"]
-    assert _fact(projection, "PB-100").source_problem_ids == ("PB-001", "PB-002", "PB-100")
-    assert row.open_problem_ids == ("PB-100",)
-
-
-def test_a_fingerprint_deduped_problem_is_still_recorded_as_a_fact(tmp_path: Path) -> None:
-    """Dedupe is a per-row *routing* rule; the second problem and its aliases
-    stay visible as facts so nothing is silently lost."""
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    shared = "sha256:" + "b" * 64
-    _joined(
-        tmp_path,
-        change_dir,
-        observations=[_observation("OBS-1", CASE_ID), _observation("OBS-2", CASE_ID)],
-        occurrences=[
-            _occurrence("OCC-1", ["OBS-1"], "PB-002"),
-            _occurrence("OCC-2", ["OBS-2"], "PB-001"),
-        ],
-        problems=[
-            _problem("PB-001", fingerprint_digest=shared),
-            _problem("PB-002", fingerprint_digest=shared),
-        ],
-    )
-
-    projection = _reconciled(tmp_path)
-    row = _row(projection)
-
-    assert [fact.problem_id for fact in row.problem_facts] == ["PB-001", "PB-002"]
-    assert all(fact.open_product_bug for fact in row.problem_facts)
-    assert all(fact.fingerprint == shared for fact in row.problem_facts)
-    assert row.open_problem_ids == ("PB-001",)
-
-
-def test_problem_facts_are_ordered_by_canonical_problem_id(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        observations=[
-            _observation("OBS-1", CASE_ID),
-            _observation("OBS-2", CASE_ID),
-            _observation("OBS-3", CASE_ID),
-        ],
-        occurrences=[
-            _occurrence("OCC-1", ["OBS-1"], "PB-300"),
-            _occurrence("OCC-2", ["OBS-2"], "PB-100"),
-            _occurrence("OCC-3", ["OBS-3"], "PB-200"),
-        ],
-        problems=[
-            _problem("PB-300"),
-            _problem("PB-100", status="resolved", disposition="fixed"),
-            _problem("PB-200", classification="test_bug"),
-        ],
-    )
-
-    row = _row(_reconciled(tmp_path))
-
-    assert [fact.problem_id for fact in row.problem_facts] == ["PB-100", "PB-200", "PB-300"]
-    assert row.open_problem_ids == ("PB-300",)
-
-
-def test_an_unresolvable_chain_records_no_fact(tmp_path: Path) -> None:
-    """There is no canonical problem to describe, so the gap is the only record."""
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(
-        tmp_path,
-        change_dir,
-        problems=[_problem("PB-001", status="resolved", disposition="merged_into:PB-404")],
-    )
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["problem_alias_invalid"]
-    assert _row(projection).problem_facts == ()
-
-
-def test_the_execution_phase_records_no_problem_facts(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(tmp_path, change_dir)
-
-    assert _row(fold_trace(tmp_path, CHANGE_ID)).problem_facts == ()
-
-
-# --------------------------------------------------------------------------- #
-# missing / corrupt join inputs
-# --------------------------------------------------------------------------- #
-
-
-def test_missing_issues_snapshot_gaps_and_suppresses_the_join(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [_failure_entry(CASE_ID)])
-    _write_problems(tmp_path, [_problem("PB-001")])
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["issues_snapshot_missing"]
-    source = next(s for s in projection.sources if s.path == ISSUES_SNAPSHOT_SOURCE)
-    assert (source.exists, source.sha256) == (False, None)
-    row = _row(projection)
-    assert row.open_problem_ids == ()
-    assert len(row.failures) == 1
-
-
-def test_missing_problem_ledger_gaps_and_suppresses_the_join(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _write_snapshot(change_dir, [_observation("OBS-1", CASE_ID)], [_occurrence("OCC-1", ["OBS-1"], "PB-001")])
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["problems_snapshot_missing"]
-    source = next(s for s in projection.sources if s.path == PROJECT_PROBLEMS_SOURCE)
-    assert (source.exists, source.sha256) == (False, None)
-    assert _row(projection).open_problem_ids == ()
-
-
-def test_a_missing_ledger_never_reports_every_reference_as_an_invalid_alias(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _write_snapshot(change_dir, [_observation("OBS-1", CASE_ID)], [_occurrence("OCC-1", ["OBS-1"], "PB-001")])
-
-    assert "problem_alias_invalid" not in _gap_codes(_reconciled(tmp_path))
-
-
-@pytest.mark.parametrize(
-    ("relative", "code", "logical"),
-    [
-        ("issues/snapshot.json", "issues_snapshot_missing", ISSUES_SNAPSHOT_SOURCE),
-        ("qa/issues/problems.json", "problems_snapshot_missing", PROJECT_PROBLEMS_SOURCE),
-    ],
-)
-def test_corrupt_join_inputs_are_typed_gaps_not_exceptions(
-    tmp_path: Path, relative: str, code: str, logical: str
-) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(tmp_path, change_dir)
-    root = change_dir if relative.startswith("issues/") else tmp_path
-    (root / relative).write_text('{"schema_version": ', encoding="utf-8")
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == [code]
-    assert next(s for s in projection.sources if s.path == logical).exists is True
-    assert _row(projection).open_problem_ids == ()
-
-
-def test_a_problem_entry_missing_its_fingerprint_is_a_typed_gap(tmp_path: Path) -> None:
-    """A fold that defaulted the digest would collapse unrelated Problems in the
-    fingerprint dedupe, so the ledger is refused instead."""
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _write_snapshot(change_dir, [_observation("OBS-1", CASE_ID)], [_occurrence("OCC-1", ["OBS-1"], "PB-001")])
-    _write_json(
-        tmp_path / "qa" / "issues" / "problems.json",
-        {
-            "schema_version": "1.0",
-            "generated_at": "2026-07-02T12:00:00Z",
-            "problems": [
-                {
-                    "problem_id": "PB-001",
-                    "status": "detected",
-                    "assessment": {"classification": "product_bug"},
-                }
-            ],
-        },
-    )
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["problems_snapshot_missing"]
-    assert _row(projection).open_problem_ids == ()
-
-
-def test_an_issues_snapshot_for_another_change_is_rejected_fail_closed(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _write_snapshot(
-        change_dir,
-        [_observation("OBS-1", CASE_ID)],
-        [_occurrence("OCC-1", ["OBS-1"], "PB-001")],
-        change_id="CH-OTHER-999",
-    )
-    _write_problems(tmp_path, [_problem("PB-001")])
-
-    projection = _reconciled(tmp_path)
-
-    assert _gap_codes(projection) == ["issues_snapshot_missing"]
-    assert "CH-OTHER-999" in _gaps(projection, "issues_snapshot_missing")[0]
-    assert _row(projection).open_problem_ids == ()
-
-
-def test_an_empty_snapshot_and_ledger_are_valid_empty_evidence(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _write_snapshot(change_dir, [], [])
-    _write_problems(tmp_path, [])
-
-    projection = _reconciled(tmp_path)
-
-    assert projection.gaps == ()
-    assert projection.integrity == "complete"
-    assert _row(projection).open_problem_ids == ()
-
-
-# --------------------------------------------------------------------------- #
-# sources, determinism, integrity, dual-temporal invariant
-# --------------------------------------------------------------------------- #
-
-
-def test_sources_add_the_three_reconciled_inputs_with_digests(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    analysis_path = _write_failure_analysis(change_dir, [_failure_entry(CASE_ID)])
-    _joined(tmp_path, change_dir)
-    snapshot_path = change_dir / "issues" / "snapshot.json"
-    problems_path = tmp_path / "qa" / "issues" / "problems.json"
-
-    projection = _reconciled(tmp_path)
-
-    execution_paths = _source_paths(fold_trace(tmp_path, CHANGE_ID))
-    assert set(_source_paths(projection)) - set(execution_paths) == {
-        FAILURE_ANALYSIS_SOURCE,
-        ISSUES_SNAPSHOT_SOURCE,
-        PROJECT_PROBLEMS_SOURCE,
-    }
-    for logical, path in (
-        (FAILURE_ANALYSIS_SOURCE, analysis_path),
-        (ISSUES_SNAPSHOT_SOURCE, snapshot_path),
-        (PROJECT_PROBLEMS_SOURCE, problems_path),
-    ):
-        source = next(item for item in projection.sources if item.path == logical)
-        assert source.exists is True
-        assert source.sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def test_sources_are_ordered_deterministically(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [_failure_entry(CASE_ID)])
-    _joined(tmp_path, change_dir)
-
-    paths = _source_paths(_reconciled(tmp_path))
-
-    assert paths == sorted(paths)
-
-
-def test_repeated_reconciled_folds_are_byte_identical(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path, [CASE_ID, OTHER_CASE_ID])
-    _write_failure_analysis(
-        change_dir,
-        [_failure_entry(OTHER_CASE_ID), _failure_entry(CASE_ID), _failure_entry(CASE_ID, severity="low")],
-    )
-    _joined(
-        tmp_path,
-        change_dir,
-        observations=[_observation("OBS-2", OTHER_CASE_ID), _observation("OBS-1", CASE_ID)],
-        occurrences=[
-            _occurrence("OCC-2", ["OBS-2"], "PB-009"),
-            _occurrence("OCC-1", ["OBS-1"], "PB-002"),
-        ],
-        problems=[_problem("PB-009"), _problem("PB-002")],
-    )
-
-    first = _reconciled(tmp_path)
-    second = _reconciled(tmp_path)
-
-    assert first.model_dump_json() == second.model_dump_json()
-
-
-def test_reconciled_phase_is_recorded_on_the_projection(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [])
-    _joined(tmp_path, change_dir)
-
-    assert _reconciled(tmp_path).phase == "reconciled"
-    assert fold_trace(tmp_path, CHANGE_ID).phase == "execution"
-
-
-def test_integrity_is_complete_when_all_reconciled_inputs_are_readable(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [_failure_entry(CASE_ID)])
-    _joined(tmp_path, change_dir)
-
-    projection = _reconciled(tmp_path)
-
-    assert projection.gaps == ()
-    assert projection.integrity == "complete"
-
-
-def test_a_missing_reconciled_input_makes_the_projection_incomplete(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _joined(tmp_path, change_dir)
-
-    projection = _reconciled(tmp_path)
-
+    from tests.unit.evidence import test_issue_replay_authority as auth
+
+    change_dir = _ensure_case_for_authority(tmp_path)
+    auth._write_json(change_dir / auth.FAILURE_SOURCE, auth._failure_payload())
+    auth.write_recovery_state(change_dir, state)
+    _write_selected_api_result(change_dir, auth.BATCH_ID)
+    projection = fold_trace(tmp_path, CHANGE_ID, phase="reconciled")
+    assert projection.schema_version == "2"
     assert projection.integrity == "incomplete"
-    assert fold_trace(tmp_path, CHANGE_ID).integrity == "complete"
+    assert {gap.code for gap in projection.gaps if gap.code == code} == {code}
+    assert all(row.open_problem_ids == () for row in projection.rows)
 
 
-def test_the_execution_phase_never_populates_the_reconciled_fields(tmp_path: Path) -> None:
-    change_dir = _change(tmp_path)
-    _write_failure_analysis(change_dir, [_failure_entry(CASE_ID)])
-    _joined(tmp_path, change_dir)
+def test_unavailable_prefix_clears_problem_links(authority_tree: Path) -> None:
+    from tests.unit.evidence import test_issue_replay_authority as auth
 
-    projection = fold_trace(tmp_path, CHANGE_ID)
+    project_root = _authority_project_root(authority_tree)
+    _ensure_case_for_authority(project_root)
+    auth.mutate_prefix(authority_tree, "manifest_missing")
+    projection = fold_trace(project_root, CHANGE_ID, phase="reconciled")
+    assert any(gap.code == "issue_reconciliation_unavailable" for gap in projection.gaps)
+    assert all(row.open_problem_ids == () for row in projection.rows)
 
-    assert _row(projection).failures == ()
-    assert _row(projection).open_problem_ids == ()
-    assert _row(projection).problem_facts == ()
-    assert set(_source_paths(projection)).isdisjoint(
-        {FAILURE_ANALYSIS_SOURCE, ISSUES_SNAPSHOT_SOURCE, PROJECT_PROBLEMS_SOURCE}
+
+def test_recovery_plus_independent_project_gap(tmp_path: Path) -> None:
+    from tests.unit.evidence import test_issue_replay_authority as auth
+
+    change_dir = _ensure_case_for_authority(tmp_path)
+    auth._write_json(change_dir / auth.FAILURE_SOURCE, auth._failure_payload())
+    auth.write_recovery_state(change_dir, "analysis_failed")
+    _write_selected_api_result(change_dir, auth.BATCH_ID)
+    # Independent project projection gap: present malformed problems.json.
+    problems = tmp_path / auth.PROJECT_PROBLEMS_SOURCE
+    problems.parent.mkdir(parents=True, exist_ok=True)
+    problems.write_text("{not-json", encoding="utf-8")
+    projection = fold_trace(tmp_path, CHANGE_ID, phase="reconciled")
+    codes = {gap.code for gap in projection.gaps}
+    assert "issue_analysis_failed" in codes
+    assert "problems_snapshot_missing" in codes
+    assert all(row.open_problem_ids == () for row in projection.rows)
+
+
+def test_authority_sources_deduplicate_with_execution_sources(completed_tree: Path) -> None:
+    _ensure_case_for_authority(completed_tree)
+    projection = fold_trace(completed_tree, CHANGE_ID, phase="reconciled")
+    paths = [source.path for source in projection.sources]
+    assert len(paths) == len(set(paths))
+
+
+def test_malformed_summary_prevents_publication(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from assurance_agent.evidence import trace as trace_mod
+    from assurance_agent.evidence.layer_summary import TraceLayerSummaryError
+
+    _seed_reconciled_inputs(tmp_path)
+
+    def boom(projection):  # noqa: ANN001
+        raise TraceLayerSummaryError("forced summary failure")
+
+    monkeypatch.setattr(trace_mod, "summarize_projection_by_layer", boom)
+    with pytest.raises(TraceLayerSummaryError):
+        fold_trace(tmp_path, CHANGE_ID, phase="execution")
+
+
+def test_current_loader_rejects_projection_after_problem_review(completed_tree: Path) -> None:
+    from assurance_agent.evidence.current_projection import (
+        CurrentProjectionStaleError,
+        load_current_reconciled_projection,
     )
 
+    materialize_reconciled_v2(completed_tree)
+    mutate_project_problem_through_valid_review(completed_tree)
+    with pytest.raises(CurrentProjectionStaleError) as raised:
+        load_current_reconciled_projection(completed_tree, CHANGE_ID)
+    assert raised.value.reason == "digest_mismatch"
 
-def test_reconciled_enrichment_changes_no_execution_phase_row_fact(tmp_path: Path) -> None:
-    """The spec's dual-temporal invariant: enrichment only adds.
 
-    Every field a row carries in the execution phase must survive the reconciled
-    fold byte-for-byte; only ``failures``, ``open_problem_ids`` and
-    ``problem_facts`` may differ, and this fixture makes all three non-empty so
-    the comparison is not vacuous.
-    """
-    change_dir = _change(tmp_path, [CASE_ID, OTHER_CASE_ID])
-    _write_failure_analysis(change_dir, [_failure_entry(CASE_ID), _failure_entry(OTHER_CASE_ID)])
-    _joined(
-        tmp_path,
-        change_dir,
-        observations=[_observation("OBS-1", CASE_ID), _observation("OBS-2", OTHER_CASE_ID)],
-        occurrences=[
-            _occurrence("OCC-1", ["OBS-1"], "PB-001"),
-            _occurrence("OCC-2", ["OBS-2"], "PB-002"),
-        ],
-        problems=[_problem("PB-001"), _problem("PB-002")],
+def test_current_loader_success_and_closed_stale_reasons(completed_tree: Path) -> None:
+    from assurance_agent.evidence.current_projection import (
+        CurrentProjectionInvalidError,
+        CurrentProjectionMissingError,
+        CurrentProjectionStaleError,
+        load_current_reconciled_projection,
+    )
+    from assurance_agent.evidence.digests import projection_digest
+
+    path = materialize_reconciled_v2(completed_tree)
+    loaded = load_current_reconciled_projection(completed_tree, CHANGE_ID)
+    assert loaded.schema_version == "2"
+    assert projection_digest(loaded) == projection_digest(
+        fold_trace(completed_tree, CHANGE_ID, phase="reconciled")
     )
 
-    execution = fold_trace(tmp_path, CHANGE_ID)
-    reconciled = _reconciled(tmp_path)
+    path.unlink()
+    with pytest.raises(CurrentProjectionMissingError):
+        load_current_reconciled_projection(completed_tree, CHANGE_ID)
 
-    enriched = {"failures", "open_problem_ids", "problem_facts"}
-    assert [row.case_id for row in reconciled.rows] == [row.case_id for row in execution.rows]
-    for before, after in zip(execution.rows, reconciled.rows, strict=True):
-        assert after.model_dump(exclude=enriched) == before.model_dump(exclude=enriched)
-        assert after.failures != ()
-        assert after.open_problem_ids != ()
-        assert after.problem_facts != ()
-    assert reconciled.authoritative_batch_id == execution.authoritative_batch_id
-    assert reconciled.unmapped_tests == execution.unmapped_tests
+    materialize_reconciled_v2(completed_tree)
+    path.write_bytes(b"\xff\xfe not utf-8")
+    with pytest.raises(CurrentProjectionInvalidError):
+        load_current_reconciled_projection(completed_tree, CHANGE_ID)
+
+    path.write_text("null", encoding="utf-8")
+    with pytest.raises(CurrentProjectionInvalidError):
+        load_current_reconciled_projection(completed_tree, CHANGE_ID)
+
+    path.write_text("{not-json", encoding="utf-8")
+    with pytest.raises(CurrentProjectionInvalidError):
+        load_current_reconciled_projection(completed_tree, CHANGE_ID)
+
+    live = fold_trace(completed_tree, CHANGE_ID, phase="reconciled")
+    v1 = live.model_dump(mode="json")
+    v1["schema_version"] = "1"
+    # Drop V2-only fields that V1 rejects if any; V1 accepts same core shape.
+    path.write_text(json.dumps(v1), encoding="utf-8")
+    with pytest.raises(CurrentProjectionStaleError) as legacy:
+        load_current_reconciled_projection(completed_tree, CHANGE_ID)
+    assert legacy.value.reason == "legacy_version"
+
+    for field, reason in (
+        ("phase", "phase_mismatch"),
+        ("change_id", "change_id_mismatch"),
+        ("authoritative_batch_id", "batch_id_mismatch"),
+    ):
+        payload = live.model_dump(mode="json")
+        payload[field] = "execution" if field == "phase" else "WRONG"
+        # Also inject an unrelated model defect that must lose to identity preflight.
+        payload["integrity"] = "not-a-valid-integrity"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(CurrentProjectionStaleError) as raised:
+            load_current_reconciled_projection(completed_tree, CHANGE_ID)
+        assert raised.value.reason == reason
 
 
-def test_reconciled_gaps_extend_the_execution_phase_gaps(tmp_path: Path) -> None:
-    """A gap the execution phase found is still reported, in the same order."""
-    change_dir = _change(tmp_path)
-    (change_dir / "execution" / "execution-manifest.yaml").unlink()
-    _write_failure_analysis(change_dir, [_failure_entry(CASE_ID)])
-    _joined(tmp_path, change_dir)
+def test_current_loader_secret_only_edit_is_digest_stale(completed_tree: Path) -> None:
+    from assurance_agent.evidence.current_projection import (
+        CurrentProjectionStaleError,
+        load_current_reconciled_projection,
+    )
+    from assurance_agent.evidence.digests import evidence_entry_digest_v1, projection_digest, raw_sha256
+    from tests.unit.evidence import test_issue_replay_authority as auth
 
-    execution = fold_trace(tmp_path, CHANGE_ID)
-    reconciled = _reconciled(tmp_path)
-
-    assert _gap_codes(execution) == ["manifest_missing"]
-    assert _gap_codes(reconciled)[: len(execution.gaps)] == _gap_codes(execution)
-    assert list(reconciled.gaps[: len(execution.gaps)]) == list(execution.gaps)
+    path = materialize_reconciled_v2(completed_tree)
+    before = fold_trace(completed_tree, CHANGE_ID, phase="reconciled")
+    secret_path = auth.change_dir(completed_tree) / "execution/runs/secret.json"
+    original = secret_path.read_bytes()
+    altered = b'{"access_token":"ALTEREDTOKEN12"}'
+    assert evidence_entry_digest_v1(original) == evidence_entry_digest_v1(altered)
+    assert raw_sha256(original) != raw_sha256(altered)
+    secret_path.write_bytes(altered)
+    after = fold_trace(completed_tree, CHANGE_ID, phase="reconciled")
+    assert projection_digest(before) != projection_digest(after)
+    with pytest.raises(CurrentProjectionStaleError) as raised:
+        load_current_reconciled_projection(completed_tree, CHANGE_ID)
+    assert raised.value.reason == "digest_mismatch"
+    assert path.is_file()

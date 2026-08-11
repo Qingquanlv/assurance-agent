@@ -84,6 +84,7 @@ from assurance_agent.workflow.metrics.c_layer import (
     materialize_c_layer_metrics,
 )
 from assurance_agent.workflow.report.quality_gate import build_quality_gate
+from tests.helpers_aa import sufficient_evidence_coverage
 from tests.unit.artifacts.test_models_issues import make_problem
 
 CHANGE_ID = "CH-M4-ACCEPT"
@@ -596,7 +597,7 @@ def test_scenario_b_c_layer_never_changes_execution_verdict(tmp_path: Path) -> N
         api=_api_result(),
         e2e=None,
         coverage=_coverage_result(),
-        coverage_gate_mode="warn",
+        evidence_coverage=sufficient_evidence_coverage(),
     )
     before_gate_dump = before_gate.model_dump(mode="json")
 
@@ -616,7 +617,7 @@ def test_scenario_b_c_layer_never_changes_execution_verdict(tmp_path: Path) -> N
         api=_api_result(),
         e2e=None,
         coverage=_coverage_result(),
-        coverage_gate_mode="warn",
+        evidence_coverage=sufficient_evidence_coverage(),
     )
 
     assert before_sufficiency.verdict == after_sufficiency.verdict

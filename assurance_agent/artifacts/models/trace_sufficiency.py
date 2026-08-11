@@ -37,19 +37,20 @@ from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, model_validator
 
-from assurance_agent.artifacts.models.trace import TraceGapCode, TraceIntegrity
+from assurance_agent.artifacts.models.trace import TraceGapCodeV2, TraceIntegrity
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
 
-# Mirrors `evidence.sufficiency.SufficiencyReasonCode`; pinned by
-# `test_the_reason_vocabulary_tracks_the_sufficiency_report`.
+# Mirrors `artifacts.models.sufficiency.SufficiencyReasonCode` / the evaluator;
+# pinned by `test_the_reason_vocabulary_tracks_the_sufficiency_report`.
 TraceSufficiencyReasonCode = Literal[
-    "not_covered",
+    "not_in_current_batch",
+    "uncovered",
     "never_run",
     "execution_stale",
     "fuzz_run_missing",
     "perf_run_missing",
-    "never_passed",
+    "no_pass",
     "pass_stale",
 ]
 
@@ -95,7 +96,7 @@ class TraceSufficiencyFacts(BaseModel):
     has_open_problems: bool
     error_code: TraceSufficiencyErrorCode | None
     insufficient_cases: tuple[TraceInsufficientCase, ...]
-    gap_codes: tuple[TraceGapCode, ...]
+    gap_codes: tuple[TraceGapCodeV2, ...]
 
     _BLOCKING_INTEGRITY = "incomplete"
 

@@ -24,19 +24,17 @@ import yaml
 
 from assurance_agent.artifacts.canonical import canonical_json_bytes
 from assurance_agent.artifacts.models.execution import SelectedTargets
-from assurance_agent.artifacts.models.trace import TraceProjection, TraceRow, TraceSource
-from assurance_agent.evidence.trace import (
-    MANIFEST_FOLD_VIEW_SOURCE,
-    TESTS_TREE_SCAN_SOURCE,
-    ExecutionFoldInput,
-    fold_trace,
-)
+from assurance_agent.artifacts.models.trace import TraceProjectionLike as TraceProjection
+from assurance_agent.artifacts.models.trace import TraceRow, TraceSource
+from assurance_agent.evidence.trace import ExecutionFoldInput, fold_trace
 from assurance_agent.evidence.tree_scan import TreeScanResult, scan_test_tree
 from tests.helpers_aa import write_aa_config
 
 CHANGE_ID = "CH-TRACE-004"
 BATCH_ID = "20260702-111111"
 EXECUTED_AT = datetime(2026, 7, 2, 19, 30, 0, tzinfo=timezone(timedelta(hours=8)))
+MANIFEST_FOLD_VIEW_SOURCE = "execution/execution-manifest.yaml#fold-view"
+TESTS_TREE_SCAN_SOURCE = "tests/#tree-digest"
 
 MAPPED_TEST_FILE = "tests/api/test_x.py"
 MAPPED_TEST_NAME = "test_tc_api_001__scenario"
@@ -715,7 +713,7 @@ def test_only_a_missing_mapped_test_leaves_integrity_degraded(tmp_path: Path) ->
     projection = fold_trace(tmp_path, CHANGE_ID)
 
     assert _gap_codes(projection) == ["mapped_test_missing_from_tree"]
-    assert projection.integrity == "complete_with_gaps"
+    assert projection.integrity == "degraded"
 
 
 @pytest.mark.parametrize("blocking", ["tests_tree_digest_mismatch", "manifest_missing"])

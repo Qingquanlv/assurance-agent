@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timezone
 from typing import Any
 
 import pytest
@@ -134,7 +134,7 @@ def test_projection_round_trip() -> None:
         rows=(
             _row(
                 covering_tests=(
-                    TraceTestRef(file="tests/api/test_dept.py", function="test_tc_dept_api_001__x"),
+                    TraceTestRef(file="tests/api/test_dept.py", test_name="test_tc_dept_api_001__x"),
                 ),
                 latest_execution=TraceExecution(
                     batch_id="20260729-120000",
@@ -203,7 +203,7 @@ def test_registry_binds_inspect_trace_projection_only() -> None:
     assert spec is not None
     assert spec.artifact_type == "trace_projection"
     assert spec.model is TraceProjectionDocument
-    assert spec.compat == "versioned"
+    assert spec.compat == "must_compat"
     assert match_artifact("execution/runs/b1/trace-projection.json") is None
 
 
@@ -312,6 +312,7 @@ def test_trace_v2_accepts_four_layer_gap_targets() -> None:
         payload["integrity"] = "incomplete"
         TraceProjectionV2.model_validate(payload)
 
+
 def _projection(**overrides: Any) -> TraceProjection:
     base: dict[str, Any] = dict(
         schema_version="1",
@@ -327,6 +328,7 @@ def _projection(**overrides: Any) -> TraceProjection:
     base.update(overrides)
     return TraceProjection(**base)
 
+
 def _problem_fact(**overrides: Any) -> TraceProblemFact:
     base: dict[str, Any] = dict(
         problem_id="PB-100",
@@ -339,15 +341,18 @@ def _problem_fact(**overrides: Any) -> TraceProblemFact:
     base.update(overrides)
     return TraceProblemFact(**base)
 
+
 def test_valid_trace_projection_round_trips_through_json() -> None:
     projection = _projection()
     dumped = projection.model_dump(mode="json")
     restored = TraceProjection.model_validate(dumped)
     assert restored == projection
 
+
 def test_trace_gap_rejects_unknown_code() -> None:
     with pytest.raises(ValidationError):
         TraceGap(code="not_a_real_code", source="execution/api-result.json")  # type: ignore[arg-type]
+
 
 def test_trace_gap_accepts_all_twelve_documented_codes() -> None:
     codes = (
@@ -368,13 +373,16 @@ def test_trace_gap_accepts_all_twelve_documented_codes() -> None:
         gap = TraceGap(code=code, source="some/source")
         assert gap.code == code
 
+
 def test_trace_row_rejects_unknown_extra_field() -> None:
     with pytest.raises(ValidationError):
         _row(unexpected_field="oops")
 
+
 def test_trace_projection_rejects_unknown_extra_field() -> None:
     with pytest.raises(ValidationError):
         _projection(unexpected_field="oops")
+
 
 def test_trace_row_failures_is_a_tuple_and_preserves_document_order() -> None:
     failures = (
@@ -385,12 +393,14 @@ def test_trace_row_failures_is_a_tuple_and_preserves_document_order() -> None:
     assert row.failures == failures
     assert isinstance(row.failures, tuple)
 
+
 def test_trace_problem_fact_records_the_canonical_problem_and_its_aliases() -> None:
     fact = _problem_fact()
     assert fact.problem_id == "PB-100"
     assert fact.source_problem_ids == ("PB-001", "PB-100")
     assert isinstance(fact.source_problem_ids, tuple)
     assert fact.open_product_bug is True
+
 
 def test_trace_problem_fact_records_closed_and_non_product_problems() -> None:
     """§9.4/§9.5 facts are recorded, not filtered: only routing filters."""
@@ -399,12 +409,14 @@ def test_trace_problem_fact_records_closed_and_non_product_problems() -> None:
     assert (closed.status, closed.open_product_bug) == ("resolved", False)
     assert (non_product.classification, non_product.open_product_bug) == ("test_bug", False)
 
+
 def test_trace_problem_fact_is_frozen_and_rejects_unknown_fields() -> None:
     with pytest.raises(ValidationError):
         _problem_fact(unexpected_field="oops")
     fact = _problem_fact()
     with pytest.raises(ValidationError):
         fact.problem_id = "PB-999"  # type: ignore[misc]
+
 
 def test_trace_row_problem_facts_defaults_to_empty_for_compatibility() -> None:
     """A projection written before this field validates unchanged."""
@@ -413,6 +425,7 @@ def test_trace_row_problem_facts_defaults_to_empty_for_compatibility() -> None:
     legacy = row.model_dump(mode="json")
     del legacy["problem_facts"]
     assert TraceRow.model_validate(legacy).problem_facts == ()
+
 
 def test_trace_row_carries_problem_facts_through_a_json_round_trip() -> None:
     facts = (_problem_fact(), _problem_fact(problem_id="PB-200", source_problem_ids=("PB-200",)))
@@ -423,6 +436,7 @@ def test_trace_row_carries_problem_facts_through_a_json_round_trip() -> None:
     assert restored == projection
     assert restored.rows[0].problem_facts == facts
 
+
 def test_trace_execution_ts_source_enum_rejects_unknown_value() -> None:
     with pytest.raises(ValidationError):
         TraceExecution(
@@ -432,6 +446,7 @@ def test_trace_execution_ts_source_enum_rejects_unknown_value() -> None:
             ts=datetime(2026, 8, 4, 10, 0, 0, tzinfo=timezone.utc),
             ts_source="wall_clock_now",  # type: ignore[arg-type]
         )
+
 
 def test_trace_execution_ts_source_accepts_both_documented_values() -> None:
     for source in ("executed_at", "batch_id_legacy_utc"):
@@ -444,10 +459,12 @@ def test_trace_execution_ts_source_accepts_both_documented_values() -> None:
         )
         assert execution.ts_source == source
 
+
 def test_all_models_are_frozen() -> None:
     projection = _projection()
     with pytest.raises(ValidationError):
         projection.change_id = "OTHER"  # type: ignore[misc]
+
 
 def test_unmapped_test_and_trace_source_shapes() -> None:
     unmapped = UnmappedTest(file="tests/api/test_x.py", test_name="test_unrelated")
@@ -456,12 +473,14 @@ def test_unmapped_test_and_trace_source_shapes() -> None:
     assert source.exists is False
     assert source.sha256 is None
 
+
 def test_trace_projection_matches_registered_inspect_path() -> None:
     spec = match_artifact("inspect/trace-projection.json")
     assert spec is not None
     assert spec.artifact_type == "trace_projection"
-    assert spec.model is TraceProjection
+    assert spec.model is TraceProjectionDocument
     assert spec.compat == "must_compat"
+
 
 def test_trace_projection_pattern_does_not_match_other_inspect_paths() -> None:
     assert match_artifact("inspect/failure-analysis.json") is not None

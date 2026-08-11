@@ -33,7 +33,7 @@ from assurance_agent.artifacts.models.pr_metric_evidence import (
     ConstraintCoverageEvidence,
     JourneyCoverageEvidence,
 )
-from assurance_agent.artifacts.models.trace import TraceProjection
+from assurance_agent.artifacts.models.trace import TraceProjectionLike, load_trace_projection_document
 from assurance_agent.artifacts.models.trace_sufficiency import TraceSufficiencyFacts
 from assurance_agent.evidence.coverage_gaps import build_coverage_gaps
 from assurance_agent.workflow.execution.evidence import atomic_write_bytes
@@ -49,12 +49,12 @@ TRACE_PROJECTION_REL = "inspect/trace-projection.json"
 TRACE_SUFFICIENCY_REL = "inspect/trace-sufficiency.json"
 
 
-def load_trace_projection(change_dir: Path) -> TraceProjection | None:
+def load_trace_projection(change_dir: Path) -> TraceProjectionLike | None:
     path = Path(change_dir) / TRACE_PROJECTION_REL
     if not path.is_file():
         return None
     try:
-        return TraceProjection.model_validate_json(path.read_text(encoding="utf-8"))
+        return load_trace_projection_document(json.loads(path.read_text(encoding="utf-8")))
     except (OSError, ValueError, ValidationError, json.JSONDecodeError):
         return None
 

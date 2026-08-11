@@ -671,7 +671,8 @@ def _manual_revision_runtime(
     from assurance_agent.workflow.graph.checkpoint import CheckpointStore
     from assurance_agent.workflow.graph.compiler import compile_workflow
     from assurance_agent.workflow.graph.contracts import parse_execution_contracts
-    from assurance_agent.workflow.graph.handlers.operation import OperationHandler, default_operations
+    from assurance_agent.workflow.driver.operations_catalog import default_operations
+    from assurance_agent.workflow.graph.handlers.operation import OperationHandler
     from assurance_agent.workflow.graph.leases import SystemClock
     from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
     from assurance_agent.workflow.graph.runtime import GraphRuntime

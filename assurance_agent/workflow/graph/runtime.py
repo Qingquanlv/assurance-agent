@@ -1761,8 +1761,6 @@ class GraphRuntime:
             if self._commit_pending_write_sets(projection, context):
                 progress = True
                 projection = self._checkpoints.project(invocation_id)
-            self._retry_pending_update(projection, context)
-            projection = self._checkpoints.project(invocation_id)
             if self._replay_committed_publications(projection, context):
                 progress = True
                 projection = self._checkpoints.project(invocation_id)
@@ -1972,26 +1970,6 @@ class GraphRuntime:
             if sidecar is None or retry_store.is_due(sidecar, now=now):
                 return True
         return False
-
-
-    def _retry_pending_update(self, projection: GraphProjection, context: RuntimeContext) -> None:
-        """OURS assemble recovery: commit a planned superstep via scheduler API."""
-        planned = self._last_uncommitted_plan(projection.invocation_id)
-        if planned is None:
-            return
-        succeeded = [task_id for task_id, task in projection.tasks.items() if task.status in ("succeeded",)]
-        if not succeeded:
-            return
-        try:
-            self._scheduler_for(projection).commit_pending_updates(
-                superstep_id=planned["superstep_id"],
-                checkpoint_id=planned["checkpoint_id"],
-                projection=projection,
-                context=context,
-                succeeded_ids=succeeded,
-            )
-        except (WorkspaceError, ProgressionError, SchedulerError, ValueError):
-            return
 
     def _commit_pending_write_sets(self, projection: GraphProjection, context: RuntimeContext) -> bool:
         events = read_events_strict(context.change_dir)

@@ -62,3 +62,49 @@ Authoring tables (keep column names exact):
 - Assertion Mapping uses `Case ID | Assertions`.
 - Cleanup Mapping uses `Case ID | Cleanup | Capability`.
 - Run Guidance uses `Target | Pytest Args | Markers | Environment`.
+
+When a proposal is required, write the complete `DataKnowledgeProposal` envelope. For a
+delta, `based_on_l1_version` is the current L1 `version`; for a bootstrap proposal it is
+`null` and `mode` is `bootstrap`. Top-level `version`, `change_id`, `proposal_kind`,
+`target`, `proposed_leaves`, and layer-specific wrapper objects are forbidden.
+
+### Canonical delta proposal
+
+```yaml
+schema_version: "1"
+based_on_l1_version: 1
+mode: delta
+accounts: {}
+auth: {}
+entities: {}
+capabilities:
+  domain_factories: {}
+  adapters:
+    api: {}
+    e2e:
+      role:
+        make_role:
+          kind: isolated_worker
+          symbol: tests.e2e.adapters.role.make_role
+          entity: role
+          create-if-missing: false
+          cleanup_ref: cleanup.role_delete
+    fuzz: {}
+    performance: {}
+  cleanup:
+    role_delete:
+      symbol: tests.testdata.domain.role.cleanup_role
+      retry_safe: true
+discovered_candidates:
+  - id: DK-E2E-ROLE-001
+    capability: capabilities.adapters.e2e.role.make_role
+    evidence: tests/e2e/adapters/role.py
+needs_review:
+  - Confirm the on-disk role adapter is safe to promote into L1.
+promotion_checklist:
+  - Run `aa knowledge validate --change <change-id>` before promotion.
+```
+
+After writing the proposal, validate the whole envelope against the runtime
+`DataKnowledgeProposal` contract, including field types and extra-forbid behavior. Do
+not validate only an inner entity or capability leaf.

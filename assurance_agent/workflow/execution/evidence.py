@@ -38,7 +38,6 @@ from pydantic import BaseModel
 from assurance_agent.artifacts.batch_id import is_valid_batch_id
 from assurance_agent.artifacts.models import (
     ExecutionManifest,
-    QualityGateResult,
     QualityGateResultLike,
     SelectedTargets,
 )

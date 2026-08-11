@@ -24,7 +24,7 @@ _CAPABILITY_GATED_REVIEW_TYPES = frozenset({"api-plan", "e2e-plan"})
 _PLAN_REVIEW_TYPES = frozenset({"api-plan", "e2e-plan", "fuzz-plan", "performance-plan"})
 _HUMAN_ONLY_PLAN_REVIEW_TYPES = frozenset({"fuzz-plan", "performance-plan"})
 
-_CANONICAL_CAPABILITY_PREFIXES = (
+_L1_CAPABILITY_ROOTS = (
     "auth.",
     "accounts.",
     "entities.",
@@ -35,16 +35,25 @@ _CANONICAL_CAPABILITY_PREFIXES = (
 )
 
 
-def _validate_canonical_capability_keys(caps: list[str]) -> None:
+def _is_fully_qualified_capability_key(key: str) -> bool:
+    if not key or key != key.strip() or "." not in key:
+        return False
+    for root in _L1_CAPABILITY_ROOTS:
+        if not key.startswith(root):
+            continue
+        remainder = key[len(root) :]
+        return bool(remainder) and not remainder.endswith(".")
+    return False
+
+
+def _validate_fully_qualified_capabilities(caps: list[str] | None) -> None:
+    if not isinstance(caps, list) or len(caps) == 0:
+        raise ValueError("required_capabilities must be a non-empty list of fully qualified L1 leaf keys")
     for index, item in enumerate(caps):
-        key = item.strip()
-        if not key or any(not part for part in key.split(".")):
+        if not isinstance(item, str) or not item.strip():
             raise ValueError(f"required_capabilities[{index}] must be a non-empty leaf key string")
-        if not key.startswith(_CANONICAL_CAPABILITY_PREFIXES):
-            raise ValueError(
-                f"required_capabilities[{index}] must be a canonical C4 leaf key; "
-                "use auth.*, accounts.*, entities.*, auth_matrix.*, or capabilities.*"
-            )
+        if not _is_fully_qualified_capability_key(item):
+            raise ValueError(f"required_capabilities[{index}] must be a canonical C4 leaf key")
 
 
 def _validate_nonblank_finding_ids(findings: list[Any]) -> None:
@@ -89,7 +98,7 @@ class Review(BaseModel):
         for index, item in enumerate(caps):
             if not isinstance(item, str):
                 raise ValueError(f"required_capabilities[{index}] must be a non-empty leaf key string")
-        _validate_canonical_capability_keys(caps)
+        _validate_fully_qualified_capabilities(caps)
         return self
 
 
@@ -126,10 +135,7 @@ class PlanReview(Review):
         if self.review_type not in _PLAN_REVIEW_TYPES:
             raise ValueError(f"unsupported plan review_type {self.review_type!r}")
         _validate_nonblank_finding_ids(self.findings)
-        if self.review_type in _CAPABILITY_GATED_REVIEW_TYPES:
-            # Capability-gated reviews already validated by Review; re-check shape.
-            assert self.required_capabilities is not None
-            _validate_canonical_capability_keys(self.required_capabilities)
+        _validate_fully_qualified_capabilities(self.required_capabilities)
         if self.review_type in _HUMAN_ONLY_PLAN_REVIEW_TYPES:
             if self.auto_fix_allowed or self.auto_fix_plan:
                 raise ValueError("human-only plan review cannot authorize automatic fixes")
@@ -168,8 +174,7 @@ class PlanReviewAuthoring(BaseModel):
     @model_validator(mode="after")
     def _validate_authoring_contract(self) -> "PlanReviewAuthoring":
         _validate_nonblank_finding_ids(self.findings)
-        if self.review_type in _CAPABILITY_GATED_REVIEW_TYPES:
-            _validate_canonical_capability_keys(list(self.required_capabilities))
+        _validate_fully_qualified_capabilities(list(self.required_capabilities))
         if self.review_type in _HUMAN_ONLY_PLAN_REVIEW_TYPES:
             if self.auto_fix_allowed:
                 raise ValueError("human-only plan review cannot authorize automatic fixes")

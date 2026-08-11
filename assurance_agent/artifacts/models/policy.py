@@ -26,6 +26,7 @@ from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from assurance_agent.artifacts.models.assurance import KNOWN_PLAN_CHECK_IDS
 from assurance_agent.artifacts.models.common import RiskTier
 from assurance_agent.artifacts.models.metrics import (
     METRIC_SHAPES,
@@ -37,9 +38,6 @@ from assurance_agent.artifacts.models.metrics import (
 from assurance_agent.artifacts.models.trace import TraceCaseType
 
 PlanCheckAction = Literal["warn", "block", "require_human"]
-
-# 与 verification/checks 的 CHECK_ID 对齐；policy 不 import checks 以免环依赖。
-KNOWN_PLAN_CHECK_IDS = frozenset({"l1_path", "shared_factory", "assert_ideal", "capability_keys"})
 
 # 证据 kind：`covered`/`fuzz_run`/`perf_run` 直接读投影事实，`execution_recent`/
 # `pass_status` 由评估期按 as_of 与 recency_hours 派生。
@@ -193,7 +191,10 @@ class EvidenceSufficiency(BaseModel):
         """
         missing = sorted(set(get_args(TraceCaseType)) - set(value))
         if missing:
-            raise ValueError(f"required_kinds missing case types: {', '.join(missing)}")
+            raise ValueError(f"required_kinds missing keys: {', '.join(missing)}")
+        for case_type, kinds in value.items():
+            if len(kinds) != len(set(kinds)):
+                raise ValueError(f"required_kinds[{case_type}] contains duplicate kinds")
         return value
 
     @field_validator("floors")

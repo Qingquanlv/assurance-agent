@@ -116,7 +116,7 @@ def _write_sufficiency(change_dir: Path) -> None:
         sufficient=False,
         has_open_problems=False,
         error_code=None,
-        insufficient_cases=(TraceInsufficientCase(case_id="TC_UNCOVERED", reason_codes=("not_covered",)),),
+        insufficient_cases=(TraceInsufficientCase(case_id="TC_UNCOVERED", reason_codes=("uncovered",)),),
         gap_codes=(),
     )
     path = change_dir / TRACE_SUFFICIENCY_REL

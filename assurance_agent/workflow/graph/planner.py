@@ -2194,6 +2194,7 @@ def _node_has_succeeded_generation(
     generation = history.generations_by_ordinal.get(history.latest_generation_ordinal)
     return generation is not None and generation.status == "succeeded"
 
+
 def _task_ready_as_predecessor(task: TaskProjection) -> bool:
     """D14: successors require committed superstep and acknowledged effects."""
     if task.status != "succeeded" or not task.outputs_committed:

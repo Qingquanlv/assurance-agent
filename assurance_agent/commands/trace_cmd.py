@@ -44,7 +44,13 @@ from pathlib import Path
 
 import click
 
-from assurance_agent.artifacts.models.trace import TraceCaseType, TraceGap, TraceProjection, TraceRow
+from assurance_agent.artifacts.models.trace import (
+    TraceCaseType,
+    TraceGapV1,
+    TraceGapV2,
+    TraceProjectionLike,
+    TraceRow,
+)
 from assurance_agent.change_location import ChangeNotFoundError
 from assurance_agent.config import ConfigInvalidError, ConfigNotFoundError
 from assurance_agent.evidence.trace import fold_trace
@@ -60,7 +66,7 @@ def _filter_rows(rows: tuple[TraceRow, ...], case_type: str | None) -> tuple[Tra
     return tuple(row for row in rows if row.case_type == case_type)
 
 
-def _no_rows_error(projection: TraceProjection, change_id: str) -> str | None:
+def _no_rows_error(projection: TraceProjectionLike, change_id: str) -> str | None:
     """The two "no valid case rows" fail-closed shapes (module docstring); ``None`` when fine.
 
     Row *coverage* (uncovered/not_required) never lands here — only the
@@ -78,7 +84,7 @@ def _no_rows_error(projection: TraceProjection, change_id: str) -> str | None:
     return f"trace failed: change '{change_id}' has no valid case rows (integrity={projection.integrity})"
 
 
-def _gap_line(gap: TraceGap) -> str:
+def _gap_line(gap: TraceGapV1 | TraceGapV2) -> str:
     parts = [gap.code, gap.source]
     if gap.batch_id:
         parts.append(f"batch={gap.batch_id}")
@@ -89,7 +95,7 @@ def _gap_line(gap: TraceGap) -> str:
     return "  " + " | ".join(parts)
 
 
-def _print_gaps_human(gaps: tuple[TraceGap, ...]) -> None:
+def _print_gaps_human(gaps: tuple[TraceGapV1, ...] | tuple[TraceGapV2, ...]) -> None:
     if not gaps:
         click.echo("  (no gaps)")
         return
@@ -109,7 +115,7 @@ def _print_rows_human(rows: tuple[TraceRow, ...]) -> None:
         )
 
 
-def _render_only_gaps(projection: TraceProjection, change_id: str, *, as_json: bool) -> None:
+def _render_only_gaps(projection: TraceProjectionLike, change_id: str, *, as_json: bool) -> None:
     if as_json:
         click.echo(
             json.dumps(
@@ -125,13 +131,13 @@ def _render_only_gaps(projection: TraceProjection, change_id: str, *, as_json: b
     click.echo()
 
 
-def _render_json(projection: TraceProjection, rows: tuple[TraceRow, ...]) -> None:
+def _render_json(projection: TraceProjectionLike, rows: tuple[TraceRow, ...]) -> None:
     payload = projection.model_dump(mode="json")
     payload["rows"] = [row.model_dump(mode="json") for row in rows]
     click.echo(json.dumps(payload, indent=2, ensure_ascii=False))
 
 
-def _render_human(projection: TraceProjection, rows: tuple[TraceRow, ...], change_id: str) -> None:
+def _render_human(projection: TraceProjectionLike, rows: tuple[TraceRow, ...], change_id: str) -> None:
     click.secho(f"aa trace — change: {change_id}", bold=True)
     click.echo()
     click.echo(f"  integrity          : {projection.integrity}")

@@ -2,43 +2,30 @@
 
 Functional folds api + e2e + fuzz; coverage and performance are separate
 dimensions. final_status is the worst status across active dimensions.
-
-``final_status`` states what the *execution* found, and nothing else. Case
-evidence sufficiency is a different question with a different consequence — a
-change can have every test passing and still be under-evidenced — so it is
-adjudicated by a dedicated trace-sufficiency gate rather than folded in here.
-``evidence_coverage`` is therefore reported and not read: its dump is attached to
-``dimensions.coverage.evidence`` so the verdict travels with the batch, and no
-status, warning or route may be derived from it.
-
-``coverage.status`` is the legacy line/branch judgement via ``_coverage_status``
-and project ``coverage.gate_mode`` only. That pair must never be reused to route
-evidence sufficiency (superseded Traceability Task 9 assumption — retired).
-Inspect rebuilds must load ``gate_mode`` from config (§12.10), not hardcode warn.
-
-Verification metrics (``dimensions.metrics``) are likewise informational only:
-``worst_status`` / ``final_status`` never include that dimension; routing is
-``metrics-sufficiency-gate``'s job.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Literal
 
 from pydantic import ValidationError
 
 from assurance_agent.artifacts.models import (
     CoverageDimension,
+    CoverageDimensionV2,
     CoverageThreshold,
+    EvidenceCoverageErrorV2,
+    EvidenceCoveragePayloadV2,
+    EvidenceCoverageSuccessV2,
     FunctionalCounts,
     FunctionalDimension,
     GateStatus,
     NonFunctionalDimension,
-    QualityGateDimensions,
-    QualityGateResult,
+    QualityGateDimensionsV2,
     QualityGateResultLike,
+    QualityGateResultV2,
+    SufficiencyReportV2,
     load_quality_gate_result_document,
 )
 from assurance_agent.evidence.sufficiency import EvidenceCoverageEvaluation
@@ -81,12 +68,36 @@ def _unmapped_count(*results: TargetResult | None) -> int:
     return sum(len(r.unmapped_tests) for r in results if r and r.total > 0)
 
 
-def _coverage_status(coverage: CoverageResult | None, gate_mode: Literal["warn", "block"]) -> GateStatus:
-    if not coverage or not coverage.available:
-        return "SKIPPED"
-    if coverage.status == "PASS":
-        return "PASS"
-    return "FAIL" if gate_mode == "block" else "PASS_WITH_WARNINGS"
+def _coverage_from_evidence(
+    coverage: CoverageResult | None,
+    evidence_coverage: EvidenceCoverageEvaluation,
+) -> CoverageDimensionV2:
+    if evidence_coverage.error_code is not None:
+        status: GateStatus = "FAIL"
+        payload: EvidenceCoveragePayloadV2 = EvidenceCoverageErrorV2(
+            kind="error",
+            error_code=evidence_coverage.error_code,
+        )
+    else:
+        report = evidence_coverage.report
+        if not isinstance(report, SufficiencyReportV2):
+            raise TypeError("new quality writer requires SufficiencyReportV2")
+        if report.all_sufficient:
+            status = "PASS"
+        elif evidence_coverage.action == "warn":
+            status = "PASS_WITH_WARNINGS"
+        else:
+            status = "FAIL"
+        payload = EvidenceCoverageSuccessV2(kind="sufficiency", report=report)
+
+    return CoverageDimensionV2(
+        status=status,
+        available=bool(coverage and coverage.available),
+        line_coverage=coverage.line_coverage if coverage else 0.0,
+        branch_coverage=coverage.branch_coverage if coverage else 0.0,
+        threshold=coverage.threshold if coverage else CoverageThreshold(line=0, branch=0),
+        evidence=payload,
+    )
 
 
 def _non_functional(perf: PerformanceResult | None) -> NonFunctionalDimension | None:
@@ -110,20 +121,13 @@ def build_quality_gate(
     api: TargetResult | None,
     e2e: TargetResult | None,
     coverage: CoverageResult | None,
-    coverage_gate_mode: Literal["warn", "block"],
+    evidence_coverage: EvidenceCoverageEvaluation,
     fuzz: TargetResult | None = None,
     performance: PerformanceResult | None = None,
-    evidence_coverage: EvidenceCoverageEvaluation | None = None,
-) -> QualityGateResult:
-    """Build the batch verdict, optionally reporting the evidence evaluation.
-
-    ``evidence_coverage`` reaches exactly one field,
-    ``dimensions.coverage.evidence``, and is read by nothing here. Callers with
-    no evaluation to hand — ``inspect`` rebuilds, compat fallbacks — omit it and
-    get the same verdict, which is what makes the parameter safe to be optional.
-    """
+) -> QualityGateResultV2:
     func_status = _functional_status(api, e2e, fuzz)
-    cov_status = _coverage_status(coverage, coverage_gate_mode)
+    coverage_dim = _coverage_from_evidence(coverage, evidence_coverage)
+    cov_status = coverage_dim.status
     non_functional = _non_functional(performance)
     warnings: list[str] = []
 
@@ -146,30 +150,35 @@ def build_quality_gate(
     if fuzz and fuzz.status != "skipped":
         functional.fuzz = _counts(fuzz)
 
-    coverage_dim = CoverageDimension(
-        status=cov_status,
-        available=bool(coverage and coverage.available),
-        line_coverage=coverage.line_coverage if coverage else 0.0,
-        branch_coverage=coverage.branch_coverage if coverage else 0.0,
-        threshold=coverage.threshold if coverage else CoverageThreshold(line=0, branch=0),
-        evidence=None if evidence_coverage is None else evidence_coverage.to_json_dict(),
+    dimensions = QualityGateDimensionsV2(
+        functional=functional,
+        coverage=coverage_dim,
+        non_functional=non_functional,
     )
-
-    dimensions = QualityGateDimensions(functional=functional, coverage=coverage_dim)
-    # Intentionally omit dimensions.metrics from gate_statuses: informational only.
     gate_statuses: list[GateStatus] = [func_status, cov_status]
     if non_functional is not None:
-        dimensions.non_functional = non_functional
         gate_statuses.append(non_functional.status)
 
-    return QualityGateResult(
-        schema_version="1.0",
+    return QualityGateResultV2(
+        schema_version="2.0",
         change_id=change_id,
         batch_id=batch_id,
         dimensions=dimensions,
         final_status=worst_status(gate_statuses),
         warnings=warnings or None,
     )
+
+
+def coverage_metrics_status(coverage: CoverageDimension | CoverageDimensionV2) -> GateStatus:
+    """Line/branch coverage judgement only — excludes evidence sufficiency."""
+    if not coverage.available:
+        return "PASS_WITH_WARNINGS"
+    if (
+        coverage.line_coverage >= coverage.threshold.line
+        and coverage.branch_coverage >= coverage.threshold.branch
+    ):
+        return "PASS"
+    return "PASS_WITH_WARNINGS"
 
 
 def quality_gate_legacy_view(

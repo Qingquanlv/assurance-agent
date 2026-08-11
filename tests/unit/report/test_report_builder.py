@@ -8,11 +8,10 @@ import pytest
 from tests.helpers_aa import write_aa_config
 
 from assurance_agent.artifacts.models import CoverageThreshold, SelectedTargets
-from assurance_agent.evidence.sufficiency import (
-    EvidenceCoverageEvaluation,
-    RowVerdict,
-    SufficiencyReport,
-)
+from assurance_agent.artifacts.models.sufficiency import SufficiencyReportV2
+from assurance_agent.evidence.issue_identity import event_id
+from assurance_agent.evidence.sufficiency import EvidenceCoverageEvaluation
+from tests.helpers_aa import make_report_v2, make_verdict, sufficient_evidence_coverage
 from assurance_agent.workflow.execution.evidence import publish_execution_evidence
 from assurance_agent.workflow.execution.results import CaseResult, CoverageResult, ResultSource, TargetResult
 from assurance_agent.workflow.report.inspector import inspect_change
@@ -88,8 +87,7 @@ def _seed_change(
         api=api,
         e2e=None,
         coverage=cov,
-        coverage_gate_mode="warn",
-        evidence_coverage=evidence_coverage,
+        evidence_coverage=evidence_coverage or sufficient_evidence_coverage(),
     )
     publish_execution_evidence(
         execution_dir=change_dir / "execution",
@@ -190,20 +188,22 @@ def test_generate_report_includes_execution_start_and_duration(tmp_path: Path) -
 
 
 def _evaluation(*, sufficient: bool = False, action: str = "require_human") -> EvidenceCoverageEvaluation:
-    verdict = RowVerdict(
-        case_id="TC_API_001",
-        sufficient=sufficient,
-        missing_kinds=() if sufficient else ("covered",),
-        reason_codes=() if sufficient else ("not_covered",),
-        execution_state="fresh" if sufficient else "never_run",
-    )
+    verdicts = [
+        make_verdict(case_id="TC_API_001")
+        if sufficient
+        else make_verdict(
+            case_id="TC_API_001",
+            sufficient=False,
+            missing_kinds=["covered"],
+            reason_codes=["uncovered"],
+        )
+    ]
     return EvidenceCoverageEvaluation.evaluated(
-        report=SufficiencyReport(
-            change_id="CH-1",
-            as_of=datetime(2026, 7, 15, 0, 0, 0, tzinfo=UTC),
-            recency_hours=72,
-            integrity="complete",
-            rows=(verdict,),
+        report=SufficiencyReportV2.model_validate(
+            make_report_v2(
+                as_of=datetime(2026, 7, 15, 0, 0, 0, tzinfo=UTC),
+                verdicts=verdicts,
+            )
         ),
         action=action,  # type: ignore[arg-type]
     )
@@ -228,8 +228,8 @@ def test_the_gate_artifact_keeps_the_evidence_attachment(tmp_path: Path) -> None
 
     evidence = _gate_json(tmp_path)["dimensions"]["coverage"]["evidence"]
     assert evidence is not None
-    assert evidence["action"] == "require_human"
-    assert evidence["report"]["rows"][0]["case_id"] == "TC_API_001"
+    assert evidence["kind"] == "sufficiency"
+    assert evidence["report"]["verdicts"][0]["case_id"] == "TC_API_001"
 
 
 def test_the_report_artifact_never_publishes_the_evidence_attachment(tmp_path: Path) -> None:
@@ -239,7 +239,7 @@ def test_the_report_artifact_never_publishes_the_evidence_attachment(tmp_path: P
 
     assert result.report.coverage.evidence is None
     assert _report_json(tmp_path)["coverage"]["evidence"] is None
-    assert "not_covered" not in json.dumps(_report_json(tmp_path))
+    assert "uncovered" not in json.dumps(_report_json(tmp_path))
 
 
 def test_the_report_is_byte_identical_with_and_without_the_evidence(tmp_path: Path) -> None:
@@ -288,7 +288,11 @@ def test_the_projected_dimension_preserves_every_other_coverage_field(tmp_path: 
     gate_coverage = _gate_json(tmp_path)["dimensions"]["coverage"]
     report_coverage = result.report.coverage.model_dump(mode="json")
     assert set(report_coverage) == set(gate_coverage)
-    assert report_coverage == {**gate_coverage, "evidence": None}
+    assert report_coverage == {
+        **gate_coverage,
+        "evidence": None,
+        "status": "PASS",
+    }
 
 
 def test_generate_report_business_defect_is_high_risk(tmp_path: Path) -> None:
@@ -490,13 +494,16 @@ def test_generate_report_counts_regression_separately_from_recurrence(tmp_path: 
         ),
         encoding="utf-8",
     )
+    # Ledger V2 derives event_id from idempotency_key; forged ids fail closed
+    # and report_builder then cannot attribute the occurrence as regressed.
+    regressed_idem = "problem_regressed:PROB-regressed:OCC-regressed"
     (problems_dir / "events.jsonl").write_text(
         json.dumps(
             {
                 "schema_version": "1.0",
                 "seq": 1,
-                "event_id": "EVT-regressed",
-                "idempotency_key": "problem_regressed:PROB-regressed:OCC-regressed",
+                "event_id": event_id(regressed_idem),
+                "idempotency_key": regressed_idem,
                 "ts": "2026-07-25T10:00:00Z",
                 "evidence_digest": "sha256:evidence",
                 "problem_id": "PROB-regressed",

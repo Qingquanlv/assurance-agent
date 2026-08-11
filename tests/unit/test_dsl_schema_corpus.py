@@ -17,7 +17,6 @@ from assurance_agent.workflow.orchestration.dsl import Scope, evaluate, parse_ex
 from assurance_agent.workflow.orchestration.schema import GateDef
 
 
-
 def _trace(**overrides: object) -> dict[str, object]:
     """A judged, clean `inspect/trace-sufficiency.json` — the shape the gate reads."""
     document: dict[str, object] = {
@@ -36,6 +35,13 @@ def _trace(**overrides: object) -> dict[str, object]:
     }
     document.update(overrides)
     return document
+
+
+_THIN_EVIDENCE = _trace(
+    sufficient=False,
+    insufficient_cases=[{"case_id": "TC_API_001", "reason_codes": ["never_run"]}],
+)
+
 
 def _collect(gates: dict[str, GateDef]) -> dict[str, str]:
     out: dict[str, str] = {}
@@ -855,24 +861,6 @@ CORPUS["gate:archive-gate:stop_when"] = (
     ({}, {}, MISS),
 )
 
-CORPUS["gate:api-plan-review-gate:stop_when"] = (
-    (
-        {
-            "api_plan_review": {"required_capabilities": ["auth.api_admin_token"]},
-            "api_plan_checks": None,
-        },
-        node_result_resolver({"mechanical-plan-checks": {"status": "succeeded"}}),
-    ),
-    (
-        {
-            "api_plan_review": {"required_capabilities": ["auth.api_admin_token"]},
-            "api_plan_checks": None,
-        },
-        {},
-        MISS,
-    ),
-)
-
 CORPUS["gate:coverage-repair-entry-gate:enter_when"] = (
     ({"brief": {"eligible": True}}, {}),
     ({}, {}, MISS),
@@ -1114,6 +1102,7 @@ def test_fixture_codegen_expressions_contain_hard_predicates(layer: str) -> None
         cycle_call_node_id="review-cycle",
     )
     assert not errors, errors
+
 
 def test_corpus_default_policy_covers_every_policy_field() -> None:
     """Adding a Policy field must not leave the corpus scope silently short of it.

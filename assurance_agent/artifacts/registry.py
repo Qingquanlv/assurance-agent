@@ -19,11 +19,11 @@ from assurance_agent.artifacts.models import (
     ApiCodegenFixApplyIntentV1,
     ApiCodegenFixApplySummaryV1,
     ApiCodegenFixerSafetyCheckV1,
+    ApiGeneratedFilesV1,
     ApplySummary,
     CaseReviewAuthoring,
     CaseYaml,
     CaseYamlAuthoring,
-    CodegenGeneratedFiles,
     CodegenGeneratedFilesAuthoring,
     ChangeIssueSnapshot,
     CampaignResult,
@@ -34,6 +34,7 @@ from assurance_agent.artifacts.models import (
     E2eCodegenFixApplyIntentV1,
     E2eCodegenFixApplySummaryV1,
     E2eCodegenFixerSafetyCheckV1,
+    E2eGeneratedFilesV1,
     EvalEvidenceSlice,
     EvalRunProjection,
     ExecutionManifest,
@@ -43,6 +44,7 @@ from assurance_agent.artifacts.models import (
     FixerAuthorityV1,
     FixerProposalApprovalReceiptV1,
     FixProposal,
+    FuzzGeneratedFilesV1,
     GeneratedManifest,
     IssueAnalysisStatus,
     IssueCandidateDocument,
@@ -68,6 +70,7 @@ from assurance_agent.artifacts.models import (
     QualityReport,
     PlanReview,
     PlanReviewAuthoring,
+    PerformanceGeneratedFilesV1,
     RegressionCandidate,
     RetroContextV3,
     RetroPipelineFailureDocument,
@@ -114,17 +117,38 @@ class ArtifactSpec(BaseModel):
 
 
 REGISTRY: list[ArtifactSpec] = [
-    *[
-        ArtifactSpec(
-            artifact_type="codegen_generated_files",
-            pattern=f"codegen/{layer}-generated-files.json",
-            model=CodegenGeneratedFiles,
-            compat="must_compat",
-            authoring_model=CodegenGeneratedFilesAuthoring,
-            runtime_completes_authoring=True,
-        )
-        for layer in ("api", "e2e", "fuzz", "performance")
-    ],
+    ArtifactSpec(
+        artifact_type="api_generated_files_v1",
+        pattern="codegen/api-generated-files.json",
+        model=ApiGeneratedFilesV1,
+        compat="versioned",
+        authoring_model=CodegenGeneratedFilesAuthoring,
+        runtime_completes_authoring=True,
+    ),
+    ArtifactSpec(
+        artifact_type="e2e_generated_files_v1",
+        pattern="codegen/e2e-generated-files.json",
+        model=E2eGeneratedFilesV1,
+        compat="versioned",
+        authoring_model=CodegenGeneratedFilesAuthoring,
+        runtime_completes_authoring=True,
+    ),
+    ArtifactSpec(
+        artifact_type="fuzz_generated_files_v1",
+        pattern="codegen/fuzz-generated-files.json",
+        model=FuzzGeneratedFilesV1,
+        compat="versioned",
+        authoring_model=CodegenGeneratedFilesAuthoring,
+        runtime_completes_authoring=True,
+    ),
+    ArtifactSpec(
+        artifact_type="performance_generated_files_v1",
+        pattern="codegen/performance-generated-files.json",
+        model=PerformanceGeneratedFilesV1,
+        compat="versioned",
+        authoring_model=CodegenGeneratedFilesAuthoring,
+        runtime_completes_authoring=True,
+    ),
     ArtifactSpec(
         artifact_type="improvement_review_subject_v1",
         pattern="qa/improvements/review-subjects/*.json",
@@ -486,12 +510,15 @@ REGISTRY: list[ArtifactSpec] = [
         model=SafetyCheck,
         compat="must_compat",
     ),
-    ArtifactSpec(
-        artifact_type="plan_check",
-        pattern="review/*-plan-checks.json",
-        model=PlanCheckDocument,
-        compat="must_compat",
-    ),
+    *[
+        ArtifactSpec(
+            artifact_type="plan_check",
+            pattern=f"review/{layer}-plan-checks.json",
+            model=PlanCheckDocument,
+            compat="must_compat",
+        )
+        for layer in ("api", "e2e", "fuzz", "performance")
+    ],
     ArtifactSpec(
         artifact_type="review",
         pattern="review/api-plan-review.json",

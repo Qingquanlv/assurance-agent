@@ -99,26 +99,21 @@ def test_run_unknown_change_exit_one(project) -> None:
 _BROKEN_POLICY = "version: 1\nevidence_sufficiency:\n  recency_hours: -5\n"
 
 
-def test_a_gate_warning_is_printed_without_changing_the_verdict(project, monkeypatch) -> None:
-    """A shadow sufficiency failure reaches the operator.
-
-    The gate records it in `warnings`, but `aa run` printed only the manifest,
-    and the manifest has no warnings field — so before this the only way to
-    learn that nothing was judged was to open the gate JSON.
-    """
-    root, _ = project
+def test_policy_error_fails_closed_in_the_v2_coverage_dimension(project, monkeypatch) -> None:
+    root, change = project
     (root / ".aa" / "policy.yaml").write_text(_BROKEN_POLICY, encoding="utf-8")
     monkeypatch.setattr(runners_mod.subprocess, "run", _stub_pytest("passed"))
 
     result = CliRunner().invoke(main, ["run", "--change", "CH-1"])
 
-    assert "EVIDENCE-SUFFICIENCY-NOT-EVALUATED" in result.output
-    assert "error_code=policy_error" in result.output
-    # The verdict, its messaging and the exit code are all untouched by it.
-    assert result.exit_code == 0
-    assert "Final Status : PASS" in result.output
-    assert "Quality gate passed" in result.output
-    assert "PASS_WITH_WARNINGS" not in result.output
+    assert result.exit_code == 1
+    assert "Final Status : FAIL" in result.output
+    assert "Quality gate failed" in result.output
+    gate = json.loads((change / "execution" / "quality-gate-result.json").read_text(encoding="utf-8"))
+    assert gate["dimensions"]["coverage"]["evidence"] == {
+        "kind": "error",
+        "error_code": "policy_error",
+    }
 
 
 def test_nothing_is_printed_when_the_gate_has_no_warnings(project, monkeypatch) -> None:

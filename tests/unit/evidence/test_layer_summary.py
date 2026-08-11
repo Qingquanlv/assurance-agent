@@ -78,7 +78,7 @@ def _row(
     else:
         latest_execution = latest
     covering = (
-        (TraceTestRef(file="tests/api/test_x.py", function="test_x"),) if coverage_state == "covered" else ()
+        (TraceTestRef(file="tests/api/test_x.py", test_name="test_x"),) if coverage_state == "covered" else ()
     )
     return TraceRow(
         case_id=case_id,

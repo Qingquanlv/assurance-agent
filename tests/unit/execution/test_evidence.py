@@ -12,12 +12,6 @@ from assurance_agent.artifacts.models import (
     QualityGateResultV2,
     SelectedTargets,
 )
-from tests.helpers_aa import make_report_v2, sufficient_evidence_coverage
-from tests.unit.artifacts.test_models_inspect_report import (
-    make_coverage,
-    make_functional,
-    make_quality_gate_result,
-)
 from assurance_agent.workflow.execution import evidence as evidence_mod
 from assurance_agent.workflow.execution.evidence import (
     EvidenceError,
@@ -29,7 +23,11 @@ from assurance_agent.workflow.execution.evidence import (
 from assurance_agent.workflow.execution.results import CoverageResult, ResultSource, TargetResult
 from assurance_agent.workflow.report.quality_gate import build_quality_gate
 from tests.helpers_aa import make_report_v2, sufficient_evidence_coverage
-from tests.unit.artifacts.test_models_inspect_report import make_coverage, make_functional, make_quality_gate_result
+from tests.unit.artifacts.test_models_inspect_report import (
+    make_coverage,
+    make_functional,
+    make_quality_gate_result,
+)
 
 
 def make_api(
@@ -80,7 +78,7 @@ def publish(tmp_path: Path, api: TargetResult, cov: CoverageResult | None):
         api=api_result,
         e2e=None,
         coverage=cov,
-        coverage_gate_mode="warn",
+        evidence_coverage=sufficient_evidence_coverage(),
     )
     manifest = publish_execution_evidence(
         execution_dir=execution_dir,
@@ -426,6 +424,7 @@ def test_no_batch_document_is_written_twice(tmp_path: Path, monkeypatch: pytest.
     batch_writes = [rel for rel, _ in log if rel.startswith("runs/")]
     assert sorted(batch_writes) == sorted(set(batch_writes))
 
+
 def _quality_doc(version: str) -> dict:
     if version == "1.0":
         return make_quality_gate_result(
@@ -446,11 +445,13 @@ def _quality_doc(version: str) -> dict:
         "final_status": "PASS",
     }
 
+
 def write_execution_fixture(tmp_path: Path, *, quality_version: str) -> Path:
     execution_dir, _ = publish(tmp_path, make_api(), make_cov())
     gate_path = execution_dir / "runs" / "20260715-000000" / "quality-gate-result.json"
     gate_path.write_text(json.dumps(_quality_doc(quality_version)), encoding="utf-8")
     return execution_dir
+
 
 @pytest.mark.parametrize("version", ["1.0", "2.0"])
 def test_execution_evidence_loads_concrete_quality_variant(
@@ -462,6 +463,7 @@ def test_execution_evidence_loads_concrete_quality_variant(
     expected = QualityGateResultV1 if version == "1.0" else QualityGateResultV2
     assert isinstance(loaded.quality_gate, expected)
 
+
 def test_execution_evidence_rejects_unknown_quality_version(tmp_path: Path) -> None:
     execution_dir = write_execution_fixture(tmp_path, quality_version="1.0")
     gate_path = execution_dir / "runs" / "20260715-000000" / "quality-gate-result.json"
@@ -470,6 +472,7 @@ def test_execution_evidence_rejects_unknown_quality_version(tmp_path: Path) -> N
     gate_path.write_text(json.dumps(doc), encoding="utf-8")
     loaded = load_execution_evidence(execution_dir)
     assert loaded.quality_gate is None
+
 
 def test_execution_evidence_rejects_invalid_utf8_quality(tmp_path: Path) -> None:
     execution_dir = write_execution_fixture(tmp_path, quality_version="1.0")
