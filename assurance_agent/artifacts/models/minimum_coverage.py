@@ -81,6 +81,23 @@ class MinimumCoverageMatrixRow(BaseModel):
 class MinimumCoverageMatrix(RootModel[list[MinimumCoverageMatrixRow]]):
     """Bare YAML list root used by historical case-design matrices."""
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "prompt_notes": [
+                "mrc_id and key must each be unique across the entire matrix",
+            ]
+        }
+    )
+
+    @model_validator(mode="after")
+    def _require_unique_row_identity(self) -> Self:
+        for field in ("mrc_id", "key"):
+            values = [getattr(row, field) for row in self.root]
+            duplicates = sorted(value for value in set(values) if values.count(value) > 1)
+            if duplicates:
+                raise ValueError(f"duplicate {field} values are not allowed: {duplicates!r}")
+        return self
+
 
 class MrcObligation(BaseModel):
     """Normalized MRC obligation fed to the deterministic join."""

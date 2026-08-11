@@ -7,7 +7,7 @@ z.array(...) fields are required, hence no default.
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel
+from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 
 from assurance_agent.artifacts.models.common import NonEmptyStr
 
@@ -59,8 +59,59 @@ class FactBaselineFull(BaseModel):
     facts: Any = None
 
 
+def _reject_endpoint_inventories(facts: object) -> None:
+    if not isinstance(facts, dict):
+        return
+    inventories = sorted(
+        key
+        for key in facts
+        if isinstance(key, str) and (key.casefold() == "endpoints" or key.casefold().endswith("_endpoints"))
+    )
+    if inventories:
+        raise ValueError(
+            "FactBaseline endpoint inventories are out of scope; "
+            f"remove {inventories!r} and let Explore/Plan verify the complete route surface"
+        )
+
+
+class FactBaselineFullAuthoring(FactBaselineFull):
+    """Newly authored facts stay within FactBaseline's stable-fact remit."""
+
+    @model_validator(mode="after")
+    def _forbid_endpoint_inventories(self) -> "FactBaselineFullAuthoring":
+        _reject_endpoint_inventories(self.facts)
+        return self
+
+
 FactBaselineVariant = Annotated[FactBaselineUnavailable | FactBaselineFull, Field(discriminator="source")]
 
 
 class FactBaseline(RootModel[FactBaselineVariant]):
     """Discriminated union on `source`, mirroring the TS z.discriminatedUnion."""
+
+
+FactBaselineAuthoringVariant = Annotated[
+    FactBaselineUnavailable | FactBaselineFullAuthoring,
+    Field(discriminator="source"),
+]
+
+
+class FactBaselineAuthoring(RootModel[FactBaselineAuthoringVariant]):
+    """Authoring-only overlay; historical FactBaseline documents stay compatible."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "prompt_notes": [
+                "facts may contain stable auth, role, seed, route-prefix, token, or single "
+                "login-endpoint facts",
+                "do not emit facts.endpoints or facts.*_endpoints inventories; Explore and Plan "
+                "own complete route verification",
+            ]
+        }
+    )
+
+    @model_validator(mode="after")
+    def _forbid_unavailable_endpoint_inventories(self) -> "FactBaselineAuthoring":
+        if not isinstance(self.root, FactBaselineFullAuthoring):
+            _reject_endpoint_inventories(self.root.facts)
+        return self

@@ -331,6 +331,7 @@ graphs:
         resources:
           reads:
             - project:qa/retro/${params.retro_id}/evidence/issue-slice.json
+            - project:qa/retro/${params.retro_id}/evidence/agent/issue-slice.json
           writes:
             - project:qa/retro/${params.retro_id}/signals/issue.json
         recover:
@@ -339,6 +340,16 @@ graphs:
           continue_to: issue-settled
         retry: agent-transient
         timeout: agent
+      materialize-empty-issue-analysis:
+        uses: operation:materialize-empty-retro-analysis
+        with: {domain: issue}
+        outputs:
+          - project:qa/retro/${params.retro_id}/signals/issue.json
+        resources:
+          reads:
+            - project:qa/retro/${params.retro_id}/evidence/issue-slice.json
+          writes:
+            - project:qa/retro/${params.retro_id}/signals/issue.json
       evidence-gap-fallback:
         uses: operation:retro-evidence-gap-fallback
         outputs:
@@ -346,6 +357,7 @@ graphs:
           - project:qa/retro/${params.retro_id}/signals/workflow.json
           - project:qa/retro/${params.retro_id}/signals/eval.json
           - project:qa/retro/${params.retro_id}/context.json
+          - project:qa/retro/${params.retro_id}/context-agent.json
           - project:qa/retro/${params.retro_id}/proposal-candidates.json
           - project:qa/retro/${params.retro_id}/retro-summary.md
         resources:
@@ -355,6 +367,7 @@ graphs:
           writes:
             - project:qa/retro/${params.retro_id}/signals/**
             - project:qa/retro/${params.retro_id}/context.json
+            - project:qa/retro/${params.retro_id}/context-agent.json
             - project:qa/retro/${params.retro_id}/proposal-candidates.json
             - project:qa/retro/${params.retro_id}/retro-summary.md
         retry: never
@@ -378,6 +391,7 @@ graphs:
         resources:
           reads:
             - project:qa/retro/${params.retro_id}/evidence/workflow-slice.json
+            - project:qa/retro/${params.retro_id}/evidence/agent/workflow-slice.json
           writes:
             - project:qa/retro/${params.retro_id}/signals/workflow.json
         recover:
@@ -386,6 +400,16 @@ graphs:
           continue_to: workflow-settled
         retry: agent-transient
         timeout: agent
+      materialize-empty-workflow-analysis:
+        uses: operation:materialize-empty-retro-analysis
+        with: {domain: workflow}
+        outputs:
+          - project:qa/retro/${params.retro_id}/signals/workflow.json
+        resources:
+          reads:
+            - project:qa/retro/${params.retro_id}/evidence/workflow-slice.json
+          writes:
+            - project:qa/retro/${params.retro_id}/signals/workflow.json
       record-workflow-analysis-failed:
         uses: operation:record-analysis-failed
         with: {domain: workflow}
@@ -405,6 +429,7 @@ graphs:
         resources:
           reads:
             - project:qa/retro/${params.retro_id}/evidence/eval-slice.json
+            - project:qa/retro/${params.retro_id}/evidence/agent/eval-slice.json
           writes:
             - project:qa/retro/${params.retro_id}/signals/eval.json
         recover:
@@ -413,6 +438,16 @@ graphs:
           continue_to: eval-settled
         retry: agent-transient
         timeout: agent
+      materialize-empty-eval-analysis:
+        uses: operation:materialize-empty-retro-analysis
+        with: {domain: eval}
+        outputs:
+          - project:qa/retro/${params.retro_id}/signals/eval.json
+        resources:
+          reads:
+            - project:qa/retro/${params.retro_id}/evidence/eval-slice.json
+          writes:
+            - project:qa/retro/${params.retro_id}/signals/eval.json
       record-eval-analysis-failed:
         uses: operation:record-analysis-failed
         with: {domain: eval}
@@ -433,6 +468,7 @@ graphs:
         uses: operation:assemble-retro-context-v3
         outputs:
           - project:qa/retro/${params.retro_id}/context.json
+          - project:qa/retro/${params.retro_id}/context-agent.json
         resources:
           reads:
             - project:qa/retro/${params.retro_id}/window.json
@@ -440,6 +476,7 @@ graphs:
             - project:qa/retro/${params.retro_id}/signals/**
           writes:
             - project:qa/retro/${params.retro_id}/context.json
+            - project:qa/retro/${params.retro_id}/context-agent.json
             - project:qa/retro/${params.retro_id}/proposal-candidates.json
             - project:qa/retro/${params.retro_id}/retro-summary.md
         retry: never
@@ -465,6 +502,7 @@ graphs:
         resources:
           reads:
             - project:qa/retro/${params.retro_id}/context.json
+            - project:qa/retro/${params.retro_id}/context-agent.json
           writes:
             - project:qa/retro/${params.retro_id}/proposal-candidates.json
             - project:qa/retro/${params.retro_id}/retro-summary.md
@@ -522,12 +560,18 @@ graphs:
       - {from: START, to: drain-reconcile-outbox}
       - {from: drain-reconcile-outbox, to: collect-retro-evidence}
       - {from: collect-retro-evidence, to: evidence-gap-fallback, when: "node('collect-retro-evidence').value.all_domain_evidence_absent == true"}
-      - {from: collect-retro-evidence, to: analyze-issue, when: "node('collect-retro-evidence').value.all_domain_evidence_absent == false"}
-      - {from: collect-retro-evidence, to: analyze-workflow, when: "node('collect-retro-evidence').value.all_domain_evidence_absent == false"}
-      - {from: collect-retro-evidence, to: analyze-eval, when: "node('collect-retro-evidence').value.all_domain_evidence_absent == false"}
+      - {from: collect-retro-evidence, to: analyze-issue, when: "node('collect-retro-evidence').value.all_domain_evidence_absent == false and node('collect-retro-evidence').value.issue_count > 0"}
+      - {from: collect-retro-evidence, to: materialize-empty-issue-analysis, when: "node('collect-retro-evidence').value.all_domain_evidence_absent == false and node('collect-retro-evidence').value.issue_count == 0"}
+      - {from: collect-retro-evidence, to: analyze-workflow, when: "node('collect-retro-evidence').value.all_domain_evidence_absent == false and node('collect-retro-evidence').value.workflow_count > 0"}
+      - {from: collect-retro-evidence, to: materialize-empty-workflow-analysis, when: "node('collect-retro-evidence').value.all_domain_evidence_absent == false and node('collect-retro-evidence').value.workflow_count == 0"}
+      - {from: collect-retro-evidence, to: analyze-eval, when: "node('collect-retro-evidence').value.all_domain_evidence_absent == false and node('collect-retro-evidence').value.eval_count > 0"}
+      - {from: collect-retro-evidence, to: materialize-empty-eval-analysis, when: "node('collect-retro-evidence').value.all_domain_evidence_absent == false and node('collect-retro-evidence').value.eval_count == 0"}
       - {from: analyze-issue, to: issue-settled}
+      - {from: materialize-empty-issue-analysis, to: issue-settled}
       - {from: analyze-workflow, to: workflow-settled}
+      - {from: materialize-empty-workflow-analysis, to: workflow-settled}
       - {from: analyze-eval, to: eval-settled}
+      - {from: materialize-empty-eval-analysis, to: eval-settled}
       - {from: issue-settled, to: analysis-join}
       - {from: workflow-settled, to: analysis-join}
       - {from: eval-settled, to: analysis-join}
@@ -554,6 +598,7 @@ graphs:
         resources:
           reads:
             - project:qa/improvements/review-subjects/${params.subject_sha256}.json
+            - project:qa/improvements/review-subjects/agent/${params.subject_sha256}.json
         outputs:
           - project:qa/improvements/reviews/${params.review_id}/assessment.json
           - project:qa/improvements/reviews/${params.review_id}/summary.md
@@ -664,7 +709,11 @@ graphs:
         uses: skill:aa-case-design
         agent: aa-doc-author
         when: "params.run_mode in ['full', 'case-only']"
-        outputs: [change:.qa.yaml, change:proposal.md, change:cases/]
+        outputs:
+          - change:.qa.yaml
+          - change:proposal.md
+          - change:cases/
+          - change:trace/minimum-coverage-matrix.yaml
         gate: case-design-gate
         retry: agent-transient
         timeout: agent

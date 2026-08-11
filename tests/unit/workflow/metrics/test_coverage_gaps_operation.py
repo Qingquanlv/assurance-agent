@@ -12,6 +12,8 @@ from assurance_agent.artifacts.models.pr_metric_evidence import (
     AuthMatrixCellResult,
     AuthMatrixEvidence,
     ConstraintCoverageEvidence,
+    JourneyCoverageEvidence,
+    JourneyCoverageItem,
 )
 from assurance_agent.artifacts.models.trace import TraceProjection, TraceRow, UnmappedTest
 from assurance_agent.artifacts.models.trace_sufficiency import (
@@ -19,7 +21,7 @@ from assurance_agent.artifacts.models.trace_sufficiency import (
     TraceSufficiencyFacts,
 )
 from assurance_agent.workflow.execution.evidence import atomic_write_bytes
-from assurance_agent.workflow.graph.handlers.operation import default_operations
+from assurance_agent.workflow.driver.operations_catalog import default_operations
 from assurance_agent.workflow.graph.handlers.trace_projection import TRACE_SUFFICIENCY_REL
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
@@ -30,6 +32,7 @@ from assurance_agent.workflow.metrics.coverage_gaps import (
     TRACE_PROJECTION_REL,
     build_coverage_gap_signals_operation,
 )
+from assurance_agent.workflow.metrics.journey_coverage import JOURNEY_COVERAGE_REL
 from tests.helpers_aa import write_aa_config
 
 CHANGE_ID = "CH-GAP-OP-001"
@@ -197,6 +200,71 @@ def test_operation_folds_batch_a2_a3_evidence_into_extension_gaps(tmp_path: Path
     kinds_by_locator = {(g.kind, g.locator.constraint_key, g.locator.cell) for g in doc.gaps}
     assert ("constraint_without_property", "entities.dept.constraints.name_unique", None) in kinds_by_locator
     assert ("matrix_cell_unasserted", None, "dept_list_guest") in kinds_by_locator
+
+
+def test_operation_projects_weak_journey_oracle_into_repairable_case_gap(tmp_path: Path) -> None:
+    """A4 shortfall from a weak oracle must not leave coverage repair with zero work."""
+    project_root = tmp_path / "proj"
+    write_aa_config(project_root)
+    change_dir = project_root / "qa" / "changes" / CHANGE_ID
+    change_dir.mkdir(parents=True, exist_ok=True)
+    projection = TraceProjection(
+        schema_version="1",
+        change_id=CHANGE_ID,
+        phase="reconciled",
+        authoritative_batch_id=BATCH_ID,
+        sources=(),
+        rows=(
+            TraceRow(
+                case_id="TC_WEAK_ORACLE",
+                module="system.role",
+                case_type="E2E",
+                automation_required=True,
+                assertions=("role is created",),
+                covering_tests=(),
+                coverage_state="covered",
+                latest_execution=None,
+                freshest_pass=None,
+                presence_in_current_batch="executed",
+                atemporal_kinds_present=(),
+                open_problem_ids=(),
+            ),
+        ),
+        unmapped_tests=(),
+        gaps=(),
+        integrity="complete",
+    )
+    atomic_write_bytes(change_dir / TRACE_PROJECTION_REL, canonical_json_bytes(projection))
+
+    batch = batch_runs_dir(change_dir, BATCH_ID)
+    batch.mkdir(parents=True, exist_ok=True)
+    journey = JourneyCoverageEvidence(
+        schema_version="1",
+        change_id=CHANGE_ID,
+        batch_id=BATCH_ID,
+        declared=MetricScope.of(total=1, covered=0, uncovered=("admin_creates_role",)),
+        touched=MetricScope.of(total=1, covered=0, uncovered=("admin_creates_role",)),
+        value=0.0,
+        items=(
+            JourneyCoverageItem(
+                journey_key="admin_creates_role",
+                case_ids=("TC_WEAK_ORACLE",),
+                executed_case_ids=("TC_WEAK_ORACLE",),
+                covered=False,
+                status="weak_oracle",
+            ),
+        ),
+    )
+    atomic_write_bytes(batch / JOURNEY_COVERAGE_REL, canonical_json_bytes(journey))
+
+    result = build_coverage_gap_signals_operation(_task(), _workspace(project_root), _context(project_root))
+    assert result.status == "succeeded"
+    doc = CoverageGapsDocument.model_validate_json(
+        (change_dir / COVERAGE_GAPS_REL).read_text(encoding="utf-8")
+    )
+    assert {(gap.kind, gap.locator.case_id) for gap in doc.gaps} == {
+        ("uncovered_required_case", "TC_WEAK_ORACLE")
+    }
 
 
 def test_operation_drops_extension_feedstock_when_batch_evidence_has_collection_gaps(

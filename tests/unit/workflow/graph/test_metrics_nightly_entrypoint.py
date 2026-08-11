@@ -14,7 +14,7 @@ from assurance_agent.artifacts.registry import match_artifact
 from assurance_agent.commands.workflow_cmd import _ENTRYPOINT_CHOICE
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import load_execution_contracts
-from assurance_agent.workflow.graph.handlers.operation import default_operations
+from assurance_agent.workflow.driver.operations_catalog import default_operations
 from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
 from assurance_agent.workflow.metrics.adversarial_yield import collect_adversarial_yield_operation
 from assurance_agent.workflow.metrics.c_layer import materialize_c_layer_metrics_operation

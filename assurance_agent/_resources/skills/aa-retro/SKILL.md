@@ -5,7 +5,10 @@ description: Use when a Retro v3 context contains validated actionable signals t
 
 # Retro v3 Improvement Proposer
 
-Read only `qa/retro/<retro-id>/context.json`. Write only:
+Read only `qa/retro/<retro-id>/context-agent.json`. This is the multiline,
+content-equivalent projection of the runtime-owned canonical `context.json`; use it
+so every signal remains visible to bounded file readers. Do not read, modify, or hash
+`context.json` yourself. Write only:
 
 - `qa/retro/<retro-id>/proposal-candidates.json`
 - `qa/retro/<retro-id>/retro-summary.md`
@@ -65,7 +68,7 @@ new or changed L1 leaves in a delta.
 
 Write `ImprovementCandidateDocumentDraftV3`: include `schema_version`, `retro_id`,
 and `candidates`; never write `context_sha256` or calculate a digest. The runtime
-inserts the exact context digest before freeze. Every Candidate must include target,
+inserts the exact digest of canonical `context.json` before freeze. Every Candidate must include target,
 rationale, proposed change, verification, risk, and confidence. Zero Candidates is
 valid only when there are no actionable signals; explain that in the summary.
 

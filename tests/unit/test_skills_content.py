@@ -113,6 +113,22 @@ def test_thirty_eight_skills_present() -> None:
     assert not any(n.startswith("aws-") for n in names)
 
 
+def test_improvement_reviewer_reads_multiline_agent_subject_projection() -> None:
+    text = resources.read_text("skills", "aa-improvement-reviewer", "SKILL.md")
+
+    assert "review-subjects/agent/${params.subject_sha256}.json" in text
+    assert "Do not read the compact canonical subject" in text
+    assert "Omit" in text
+    for field in (
+        "review_id",
+        "improvement_id",
+        "expected_improvement_version",
+        "subject_sha256",
+    ):
+        assert field in text
+    assert "runtime inserts" in text
+
+
 def test_no_aws_residue_in_skills_and_opencode() -> None:
     offenders: list[str] = []
     files = {**_all_text_files("skills"), **_all_text_files("opencode")}
@@ -197,7 +213,7 @@ def test_explore_permissions_are_removed_from_doc_author_and_owned_by_explorer()
     assert allow_explore.search(doc_author) is None
 
 
-def test_bounded_agents_disable_delegating_plugin_tools() -> None:
+def test_bounded_agents_disable_sandbox_escape_plugin_tools() -> None:
     for name in resources.iter_children("opencode", "agents"):
         if not name.endswith(".md"):
             continue
@@ -205,11 +221,28 @@ def test_bounded_agents_disable_delegating_plugin_tools() -> None:
         match = re.match(r"^---\n(.*?)\n---\n", text, flags=re.DOTALL)
         assert match is not None, name
         frontmatter = yaml.safe_load(match.group(1))
-        assert frontmatter.get("tools") == {
+        expected = {
             "task": False,
+            "task_create": False,
+            "task_get": False,
+            "task_list": False,
+            "task_update": False,
             "call_omo_agent": False,
             "look_at": False,
-        }, name
+            "skill_mcp": False,
+            "interactive_bash": False,
+            "monitor_start": False,
+            "session_list": False,
+            "session_read": False,
+            "session_search": False,
+            "session_info": False,
+            "background_output": False,
+            "background_cancel": False,
+            "apply_patch": False,
+        }
+        if name != "aa-intake-host.md":
+            expected["workflow_start"] = False
+        assert frontmatter.get("tools") == expected, name
 
 
 def test_case_reviewer_requires_independent_product_source_verification() -> None:
@@ -219,8 +252,26 @@ def test_case_reviewer_requires_independent_product_source_verification() -> Non
     assert "source_verification" in skill
     assert "independent" in skill
     assert "product source" in skill
+    assert "exact projection of the frozen matrix" in skill
+    assert "runtime recomputes this projection" in skill
     assert "source_verification" in agent
     assert "independently read" in agent
+
+
+def test_case_design_requires_its_own_product_source_verification() -> None:
+    skill = resources.read_text("skills", "aa-case-design", "SKILL.md")
+
+    assert "## Product Source Verification" in skill
+    assert "independently_read: true" in skill
+    assert "reviewed_source_files" in skill
+    assert "Explore source evidence is not a substitute" in skill
+
+
+def test_case_design_requires_performance_execution_identity() -> None:
+    skill = resources.read_text("skills", "aa-case-design", "SKILL.md")
+
+    assert "automation.performance.scenario.capability" in skill
+    assert "automation.performance.scenario.endpoint" in skill
 
 
 def test_case_design_forbids_inventing_mrc_keys_without_knowledge_proposal() -> None:
@@ -284,3 +335,12 @@ def test_retro_issue_analysis_keeps_product_defects_out_of_improvements() -> Non
     assert "product API, schema, validation" in text
     assert "Never weaken an assert_ideal contract" in text
     assert "omit the signal" in text
+
+
+def test_retro_analyzers_read_multiline_agent_slice_companions() -> None:
+    for domain in ("issue", "workflow", "eval"):
+        text = resources.read_text("skills", f"aa-retro-{domain}-analysis", "SKILL.md")
+
+        assert f"evidence/agent/{domain}-slice.json" in text
+        assert f"Read only `qa/retro/<retro-id>/evidence/{domain}-slice.json`" not in text
+        assert "canonical slice" in text

@@ -734,11 +734,25 @@ def test_run_tests_contract_declares_the_three_reads_the_trace_shadow_added() ->
     assert run_tests.exclusive == ("repo:test-runtime", "project:diff-base-cache")
 
 
+def test_constraint_coverage_contract_reads_change_cases_for_touched_scope() -> None:
+    contract = load_execution_contracts(Path.cwd()).contracts["operation:compute-constraint-coverage"]
+
+    assert "change:cases/**" in contract.reads
+
+
+def test_coverage_gap_contract_materializes_journey_oracle_evidence() -> None:
+    """The A4 weak-oracle feedstock must exist inside the operation sandbox."""
+    contract = load_execution_contracts(Path.cwd()).contracts["operation:build-coverage-gap-signals"]
+
+    assert "change:execution/runs/*/journey-coverage.json" in contract.reads
+
+
 def test_retro_closed_loop_contracts_are_least_privilege() -> None:
     catalog = load_execution_contracts(Path.cwd())
     assert "operation:retro-accept" not in catalog.contracts
     collect = catalog.contracts["operation:retro-collect-v3"]
     agent = catalog.contracts["skill:aa-retro"]
+    assemble = catalog.contracts["operation:assemble-retro-context-v3"]
     reconcile = catalog.contracts["operation:reconcile-improvements"]
 
     assert "project:qa/issues/**" in collect.reads
@@ -759,7 +773,14 @@ def test_retro_closed_loop_contracts_are_least_privilege() -> None:
     }
     assert collect.exclusive == ("project:retro-evidence-snapshot",)
 
-    assert agent.reads == ("project:qa/retro/*/context.json",)
+    assert set(assemble.authorization_writes) >= {
+        "project:qa/retro/*/context.json",
+        "project:qa/retro/*/context-agent.json",
+    }
+    assert set(agent.reads) == {
+        "project:qa/retro/*/context.json",
+        "project:qa/retro/*/context-agent.json",
+    }
     assert "project:qa/issues/**" not in agent.reads
     assert "project:qa/retro/**" not in agent.reads
     assert "project:qa/archive/**" not in agent.reads
@@ -771,7 +792,10 @@ def test_retro_closed_loop_contracts_are_least_privilege() -> None:
     for domain in ("issue", "workflow", "eval"):
         analyzer = catalog.contracts[f"skill:aa-retro-{domain}-analysis"]
         assert analyzer.read_isolation == "declared_only"
-        assert len(analyzer.reads) == 1
+        assert set(analyzer.reads) == {
+            f"project:qa/retro/*/evidence/{domain}-slice.json",
+            f"project:qa/retro/*/evidence/agent/{domain}-slice.json",
+        }
 
     assert "project:qa/improvements/**" in reconcile.reads
     assert "project:qa/improvements/**" in reconcile.writes
@@ -783,6 +807,18 @@ def test_retro_closed_loop_contracts_are_least_privilege() -> None:
     assert "project:improvement-registry" in reconcile.exclusive
     assert "project:qa/issues/**" not in reconcile.writes
     assert "project:qa/issues/**" not in reconcile.authorization_writes
+
+    load_subject = catalog.contracts["operation:load-review-subject"]
+    reviewer = catalog.contracts["skill:aa-improvement-reviewer"]
+    assert set(load_subject.reads) == {
+        "project:qa/improvements/review-subjects/*",
+        "project:qa/improvements/review-subjects/agent/*",
+    }
+    assert set(reviewer.reads) == {
+        "project:qa/improvements/review-subjects/*",
+        "project:qa/improvements/review-subjects/agent/*",
+    }
+    assert reviewer.read_isolation == "declared_only"
 
 
 def test_coverage_repair_contracts_are_declared_and_least_privilege() -> None:

@@ -10,16 +10,15 @@ from pathlib import Path
 import pytest
 
 from assurance_agent.workflow.core.events import read_events_strict
+from assurance_agent.workflow.driver.operations_catalog import default_operations
+from assurance_agent.workflow.driver.runtime_factory import assemble_graph_runtime
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
-from assurance_agent.workflow.graph.checkpoint import CheckpointStore
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import load_execution_contracts, parse_execution_contracts
 from assurance_agent.workflow.graph.handlers.operation import (
     OperationFn,
     OperationHandler,
-    default_operations,
 )
-from assurance_agent.workflow.graph.leases import SystemClock
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
@@ -33,11 +32,9 @@ from assurance_agent.workflow.graph.runtime import (
     GraphRuntime,
     GraphRuntimeError,
 )
-from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
-from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner, build_default_node_runner
+from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
 from assurance_agent.workflow.graph import workspace as workspace_mod
-from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
 from tests.helpers_aa import write_aa_config
 
 T0 = datetime(2026, 7, 19, 12, 0, 0, tzinfo=timezone.utc)
@@ -251,45 +248,24 @@ def _build_runtime(
     node_runner=None,
     change_id: str = "CH-1",
 ) -> GraphRuntime:
-    change = project / "qa" / "changes" / change_id
-    store = TreeStore(change)
-    checkpoints = CheckpointStore(change)
-    workspaces = WorkspaceBackend(change)
-    clock = clock or SystemClock()
-    holder: dict[str, GraphRuntime] = {}
-
-    def run_child(task, graph_id, workspace, context):  # type: ignore[no-untyped-def]
-        return holder["rt"].run_child(task, graph_id, workspace, context)
-
-    if node_runner is None:
-        node_runner = build_default_node_runner(
-            NeverCalledInvoker(), store, contracts, compiled=compiled, run_child=run_child
+    change_dir = project / "qa" / "changes" / change_id
+    if node_runner is not None:
+        return assemble_graph_runtime(
+            project_root=project,
+            change_dir=change_dir,
+            compiled=compiled,
+            contracts=contracts,
+            clock=clock,
+            build_node_runner=lambda _store, _run_child: node_runner,
         )
-    graph_id = compiled.entrypoints["full"].graph_id
-    state_defs = dict(compiled.schema.graphs[graph_id].state)
-    scheduler = Scheduler(
-        checkpoints=checkpoints,
-        object_store=store,
-        clock=clock,
-        workspace_backend=workspaces,
-        node_runner=node_runner,
-        max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
+    return assemble_graph_runtime(
+        project_root=project,
+        change_dir=change_dir,
+        compiled=compiled,
         contracts=contracts,
-        state_defs=state_defs,
-    )
-    schemas = {compiled.digest: compiled}
-    runtime = GraphRuntime(
-        checkpoint_store=checkpoints,
-        object_store=store,
-        workspace_backend=workspaces,
-        contracts=contracts,
-        node_runner=node_runner,
-        scheduler=scheduler,
-        schema_resolver=lambda digest: schemas[digest],
+        adapter=NeverCalledInvoker(),
         clock=clock,
     )
-    holder["rt"] = runtime
-    return runtime
 
 
 def test_minimal_graph_run_and_fresh_status(tmp_path: Path) -> None:

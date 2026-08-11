@@ -14,10 +14,9 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
-import pytest
 import yaml
 
-from assurance_agent.workflow.core.events import LedgerIntegrityError, append_event_strict
+from assurance_agent.workflow.core.events import append_event_strict
 from assurance_agent.workflow.orchestration.gates import GateEvaluationContext, check_gate_in_view
 from assurance_agent.workflow.orchestration.schema import normalize_gates
 
@@ -125,7 +124,9 @@ def test_reference_readjudication_applies_anchored_accept_risk(tmp_path: Path) -
     assert drifted.verdict.value == "stop"
 
 
-def test_reference_readjudication_rejects_corrupt_authoritative_ledger(tmp_path: Path) -> None:
+def test_reference_readjudication_treats_corrupt_authoritative_ledger_as_no_acceptance(
+    tmp_path: Path,
+) -> None:
     context = _context(tmp_path)
     _write_leaf(context, "needs_human_review")
     review_path = context.change_dir / "review" / "leaf.json"
@@ -165,8 +166,9 @@ def test_reference_readjudication_rejects_corrupt_authoritative_ledger(tmp_path:
         stream.write("{corrupt-json\n")
     context = replace(context, audit_events_dir=coordinator_dir)
 
-    with pytest.raises(LedgerIntegrityError):
-        check_gate_in_view(GATES, "referring-gate", context)
+    report = check_gate_in_view(GATES, "referring-gate", context)
+
+    assert report.verdict.value == "stop"
 
 
 def test_frozen_node_outcome_wins_over_readjudication(tmp_path: Path) -> None:

@@ -37,25 +37,24 @@ from assurance_agent.artifacts.models.issues import (
     Problem,
     ProblemProjection,
 )
+from assurance_agent.workflow.driver.operations_catalog import default_operations
+from assurance_agent.workflow.driver.runtime_factory import assemble_graph_runtime
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
-from assurance_agent.workflow.graph.checkpoint import CheckpointStore
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import (
     ExecutionContractCatalog,
     load_execution_contracts,
     parse_execution_contracts,
 )
+from assurance_agent.workflow.graph.handlers.agent import AgentHandler
 from assurance_agent.workflow.graph.handlers.gate import GateHandler
 from assurance_agent.workflow.graph.handlers.interrupt import InterruptHandler
 from assurance_agent.workflow.graph.handlers.join import JoinHandler
 from assurance_agent.workflow.graph.handlers.operation import (
     OperationFn,
     OperationHandler,
-    default_operations,
 )
 from assurance_agent.workflow.graph.handlers.subgraph import SubgraphHandler
-from assurance_agent.workflow.graph.handlers.agent import AgentHandler
-from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
@@ -63,9 +62,8 @@ from assurance_agent.workflow.graph.models import (
     TaskResult,
 )
 from assurance_agent.workflow.graph.runtime import GraphRuntime
-from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
-from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
+from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
 from assurance_agent.workflow.issues.events import read_change_issue_events, read_problem_events
 from assurance_agent.workflow.issues.projection import (
     dump_projection,
@@ -593,17 +591,49 @@ def _custom_operations(state: AcceptanceState) -> dict[str, OperationFn]:
         (inspect_dir / "failure-analysis.json").write_text(
             json.dumps(
                 {
-                    "final_status": state.execution_final_status,
-                    "failures": [],
-                    "inspect_mode": "primary",
+                    "schema_version": "1.0",
+                    "change_id": context.change_id,
+                    "source_manifest": "execution/execution-manifest.yaml",
+                    "inspection_status": "completed",
+                    "batch_id": batch_id,
                     "source_batch_id": batch_id,
+                    "final_status": state.execution_final_status,
+                    "inspect_mode": "primary",
+                    "classification_performed": True,
+                    "status": "analyzed",
+                    "failures": [],
+                    "hard_fails": [],
+                    "needs_review": [],
+                    "known_product_issues": [],
                 }
             )
             + "\n",
             encoding="utf-8",
         )
         (inspect_dir / "quality-gate-result.json").write_text(
-            json.dumps({"final_status": state.execution_final_status}) + "\n",
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "change_id": context.change_id,
+                    "batch_id": batch_id,
+                    "dimensions": {
+                        "functional": {
+                            "status": state.execution_final_status,
+                            "api": {"total": 1, "passed": 0, "failed": 1},
+                            "e2e": {"total": 0, "passed": 0, "failed": 0},
+                        },
+                        "coverage": {
+                            "status": "SKIPPED",
+                            "available": False,
+                            "line_coverage": 0.0,
+                            "branch_coverage": 0.0,
+                            "threshold": {"line": 0.0, "branch": 0.0},
+                        },
+                    },
+                    "final_status": state.execution_final_status,
+                }
+            )
+            + "\n",
             encoding="utf-8",
         )
         return TaskResult(status="succeeded", value={"final_status": state.execution_final_status})
@@ -674,61 +704,37 @@ def _build_runtime(
     state: AcceptanceState,
     clock: FixedClock | None = None,
 ) -> GraphRuntime:
-    change = project / "qa" / "changes" / CHANGE_ID
-    store = TreeStore(change)
-    checkpoints = CheckpointStore(change)
-    workspaces = WorkspaceBackend(change)
     clock = clock or FixedClock()
     invoker = CombinedScriptedInvoker(state)
-    holder: dict[str, GraphRuntime] = {}
 
-    def run_child(task: Any, graph_id: str, workspace: Any, context: Any) -> TaskResult:
-        return holder["rt"].run_child(task, graph_id, workspace, context)
+    def build(store, run_child):  # type: ignore[no-untyped-def]
+        custom_ops = _custom_operations(state)
+        op_handler = OperationHandler(custom_ops)
+        agent = AgentHandler(invoker, store, contracts=contracts, compiled=compiled)
+        handlers: dict[str, Any] = {
+            "builtin:join": JoinHandler(),
+            "builtin:gate": GateHandler(compiled),
+            "builtin:interrupt": InterruptHandler(compiled),
+            **{target: op_handler for target in custom_ops},
+        }
+        return HandlerNodeRunner(
+            handlers,
+            namespace_handlers={
+                "skill": agent,
+                "graph": SubgraphHandler(run_child),
+            },
+            compiled=compiled,
+            object_store=store,
+        )
 
-    custom_ops = _custom_operations(state)
-    op_handler = OperationHandler(custom_ops)
-    agent = AgentHandler(invoker, store, contracts=contracts, compiled=compiled)
-    handlers: dict[str, Any] = {
-        "builtin:join": JoinHandler(),
-        "builtin:gate": GateHandler(compiled),
-        "builtin:interrupt": InterruptHandler(compiled),
-        **{target: op_handler for target in custom_ops},
-    }
-    node_runner = HandlerNodeRunner(
-        handlers,
-        namespace_handlers={
-            "skill": agent,
-            "graph": SubgraphHandler(run_child),
-        },
+    return assemble_graph_runtime(
+        project_root=project,
+        change_dir=project / "qa" / "changes" / CHANGE_ID,
         compiled=compiled,
-        object_store=store,
-    )
-    state_defs: dict = {}
-    for graph in compiled.schema.graphs.values():
-        state_defs.update(dict(graph.state))
-    scheduler = Scheduler(
-        checkpoints=checkpoints,
-        object_store=store,
-        clock=clock,
-        workspace_backend=workspaces,
-        node_runner=node_runner,
-        max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
         contracts=contracts,
-        state_defs=state_defs,
-    )
-    schemas = {compiled.digest: compiled}
-    runtime = GraphRuntime(
-        checkpoint_store=checkpoints,
-        object_store=store,
-        workspace_backend=workspaces,
-        contracts=contracts,
-        node_runner=node_runner,
-        scheduler=scheduler,
-        schema_resolver=lambda digest: schemas[digest],
+        build_node_runner=build,
         clock=clock,
     )
-    holder["rt"] = runtime
-    return runtime
 
 
 def _load_snapshot(change_dir: Path) -> dict[str, Any]:

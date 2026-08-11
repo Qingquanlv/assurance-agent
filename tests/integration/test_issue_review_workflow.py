@@ -241,7 +241,7 @@ class TestPostArchiveReviewBehavior:
 
 class TestOperationRegistration:
     def test_review_operations_registered(self) -> None:
-        from assurance_agent.workflow.graph.handlers.operation import default_operations
+        from assurance_agent.workflow.driver.operations_catalog import default_operations
 
         ops = default_operations()
         assert "operation:load-problem-review-context" in ops

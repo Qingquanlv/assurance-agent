@@ -19,8 +19,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
+from assurance_agent.change_location import ChangeLocation
 from assurance_agent.workflow.core.graph_types import ErrorKind
 from assurance_agent.workflow.graph.agent_api import AgentInvoker, AgentRequest, build_node_prompt
+from assurance_agent.workflow.graph.codegen_manifest import (
+    CodegenManifestError,
+    complete_codegen_manifest,
+    verify_frozen_codegen_completion,
+)
 from assurance_agent.workflow.graph.contracts import (
     ExecutionContractCatalog,
     ResourceClaims,
@@ -35,7 +41,6 @@ from assurance_agent.workflow.graph.models import (
 )
 from assurance_agent.workflow.graph.schema_v2 import NodeDef
 from assurance_agent.workflow.graph.task_runner import task_failure
-from assurance_agent.workflow.graph.handlers.operation import link_host_task_paths
 from assurance_agent.workflow.graph.workspace import TaskWorkspace, TreeStore, WorkspaceError
 from assurance_agent.workflow.issues.analyzer_output import (
     IssueAnalyzerOutputError,
@@ -51,6 +56,7 @@ from assurance_agent.workflow.retro_outputs import (
     complete_candidate_outputs,
     complete_signal_outputs,
 )
+from assurance_agent.workflow.orchestration.gates import valid_ancestor_accept_risk_decisions
 
 _PROTECTED_CANONICAL_AGENT_INPUTS = (Path(".aa/data-knowledge.yaml"),)
 
@@ -157,7 +163,17 @@ class AgentHandler:
                     cli_override=self._cli_model_override,
                 )
             )
-        link_host_task_paths(workspace, context)
+        accepted_risks = valid_ancestor_accept_risk_decisions(
+            self._compiled.schema,
+            ChangeLocation(
+                project_root=workspace.project_root,
+                change_id=context.change_id,
+                path=workspace.change_dir,
+                source="changes",
+            ),
+            checkpoint_ns=task.checkpoint_ns,
+            events_dir=context.change_dir,
+        )
         prompt = build_node_prompt(
             skill,
             task.node_id,
@@ -170,6 +186,16 @@ class AgentHandler:
             prior_error_kind=task.prior_error_kind,
             evidence=task.resolved_evidence or None,
             outputs=outputs,
+            accepted_risks=tuple(
+                {
+                    "gate_id": decision.gate_id,
+                    "interrupt_id": decision.interrupt_id,
+                    "checkpoint_ns": decision.checkpoint_ns,
+                    "reason": decision.reason,
+                    "who": decision.who,
+                }
+                for decision in accepted_risks
+            ),
         )
         request = AgentRequest(
             target=task.target,
@@ -212,6 +238,12 @@ class AgentHandler:
                 result.error or f"agent invocation failed for {task.target}",
             )
         try:
+            codegen_receipt = complete_codegen_manifest(
+                task=task,
+                workspace=workspace,
+                context=context,
+                claims=claims,
+            )
             complete_issue_analyzer_outputs(workspace.change_dir, outputs)
             complete_signal_outputs(workspace.project_root, outputs)
             complete_candidate_outputs(workspace.project_root, outputs)
@@ -244,6 +276,7 @@ class AgentHandler:
             SignalInvalidError,
             CandidateOutputError,
             ImprovementReviewerOutputError,
+            CodegenManifestError,
             TypeError,
             ValueError,
         ) as exc:
@@ -252,6 +285,15 @@ class AgentHandler:
             write_set = self._store.freeze_write_set(workspace, claims=claims, outputs=outputs)
         except WorkspaceError as exc:
             return task_failure(_freeze_error_kind(exc), str(exc))
+        if codegen_receipt is not None:
+            try:
+                verify_frozen_codegen_completion(
+                    store=self._store,
+                    write_set_id=write_set.write_set_id,
+                    receipt=codegen_receipt,
+                )
+            except CodegenManifestError as exc:
+                return task_failure("invalid_output", str(exc))
         return TaskResult(
             status="succeeded",
             write_set_id=write_set.write_set_id,

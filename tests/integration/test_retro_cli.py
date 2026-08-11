@@ -75,7 +75,7 @@ def test_retro_dry_run_writes_current_run_context(monkeypatch: pytest.MonkeyPatc
         context = json.loads(context_path.read_text())
         assert context["schema_version"] == "3"
         assert context["dry_run"] is True
-        assert all(item["status"] == "failed" for item in context["domain_status"].values())
+        assert all(item["status"] == "ok" for item in context["domain_status"].values())
 
 
 def test_retro_show_reads_only_explicit_current_run() -> None:

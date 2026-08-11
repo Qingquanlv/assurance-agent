@@ -4,19 +4,17 @@ from __future__ import annotations
 
 import json
 import textwrap
+from hashlib import sha256
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from assurance_agent.workflow.core.events import read_events_strict
+from assurance_agent.workflow.core.events import append_event_strict, read_events_strict
+from assurance_agent.workflow.driver.operations_catalog import default_operations
+from assurance_agent.workflow.driver.runtime_factory import assemble_graph_runtime
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
-from assurance_agent.workflow.graph.checkpoint import CheckpointStore
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import parse_execution_contracts
-from assurance_agent.workflow.graph.handlers.operation import (
-    OperationFn,
-    OperationHandler,
-    default_operations,
-)
+from assurance_agent.workflow.graph.handlers.operation import OperationFn
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
@@ -24,10 +22,7 @@ from assurance_agent.workflow.graph.models import (
     TaskResult,
 )
 from assurance_agent.workflow.graph.runtime import GraphRuntime
-from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
-from assurance_agent.workflow.graph.task_runner import build_default_node_runner
-from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
 from tests.helpers_aa import write_aa_config
 
 T0 = datetime(2026, 7, 20, 3, 0, 0, tzinfo=timezone.utc)
@@ -69,6 +64,12 @@ gates:
     missing_field_is: stop
     pass_when: "registry.status == 'pass' and registry.healing_available == true"
     stop_when: "registry.status == 'fail' or registry.healing_available == false"
+  leaf-review-gate:
+    reads: [review/leaf.json]
+    invalid_json: stop
+    missing_field_is: stop
+    needs_human_review_when: "leaf.decision == 'needs_human_review'"
+    pass_when: "leaf.decision == 'pass'"
 """
 
 
@@ -136,56 +137,15 @@ def _ops() -> dict[str, OperationFn]:
 
 
 def _runtime(project: Path, compiled: CompiledWorkflow, contracts) -> GraphRuntime:
-    change = project / "qa" / "changes" / "CH-1"
-    store = TreeStore(change)
-    checkpoints = CheckpointStore(change)
-    workspaces = WorkspaceBackend(change)
-    clock = FakeClock()
-    holder: dict[str, GraphRuntime] = {}
-
-    def run_child(task, graph_id, workspace, context):  # type: ignore[no-untyped-def]
-        return holder["rt"].run_child(task, graph_id, workspace, context)
-
-    base = build_default_node_runner(
-        NeverCalledInvoker(),
-        store,
-        contracts,
+    return assemble_graph_runtime(
+        project_root=project,
+        change_dir=project / "qa" / "changes" / "CH-1",
         compiled=compiled,
-        run_child=run_child,
-    )
-    op_handler = OperationHandler(_ops())
-    # Register custom ops on the default runner so finalize_task_result still runs.
-    from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
-
-    assert isinstance(base, HandlerNodeRunner)
-    base._handlers.update({target: op_handler for target in _ops()})  # noqa: SLF001
-    node_runner = base
-    state_defs: dict = {}
-    for graph in compiled.schema.graphs.values():
-        state_defs.update(dict(graph.state))
-    scheduler = Scheduler(
-        checkpoints=checkpoints,
-        object_store=store,
-        clock=clock,
-        workspace_backend=workspaces,
-        node_runner=node_runner,
-        max_parallel_tasks=4,
         contracts=contracts,
-        state_defs=state_defs,
+        adapter=NeverCalledInvoker(),
+        operations={**default_operations(), **_ops()},
+        clock=FakeClock(),
     )
-    schemas = {compiled.digest: compiled}
-    runtime = GraphRuntime(
-        checkpoint_store=checkpoints,
-        object_store=store,
-        workspace_backend=workspaces,
-        contracts=contracts,
-        node_runner=node_runner,
-        scheduler=scheduler,
-        schema_resolver=lambda digest: schemas[digest],
-        clock=clock,
-    )
-    holder["rt"] = runtime
-    return runtime
 
 
 def _ctx(project: Path) -> RuntimeContext:
@@ -232,6 +192,72 @@ def test_registry_node_freezes_attached_gate_report_and_routes_to_end(tmp_path: 
     assert isinstance(gate_report, dict)
     assert gate_report.get("verdict") == "pass"
     assert (project / "qa" / "changes" / "CH-1" / "registry" / "skill-registry-check.json").is_file()
+
+
+def test_attached_gate_does_not_reuse_acceptance_from_an_old_root(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    change_dir = project / "qa" / "changes" / "CH-1"
+    review = change_dir / "review" / "leaf.json"
+    review.parent.mkdir(parents=True)
+    review.write_text(json.dumps({"decision": "needs_human_review"}), encoding="utf-8")
+    digest = sha256(review.read_bytes()).hexdigest()
+    append_event_strict(
+        change_dir,
+        {
+            "source": "graph",
+            "type": "graph_interrupted",
+            "invocation_id": "old-root",
+            "checkpoint_ns": "old-root",
+            "interrupt_id": "old-interrupt",
+            "node_id": "human-review",
+            "checkpoint": "leaf-review-gate",
+            "actions": ["accept_risk", "stop"],
+            "audited_reads_sha256": {"review/leaf.json": digest},
+        },
+    )
+    append_event_strict(
+        change_dir,
+        {
+            "source": "graph",
+            "type": "graph_resumed",
+            "invocation_id": "old-root",
+            "checkpoint_ns": "old-root",
+            "interrupt_id": "old-interrupt",
+            "action": "accept_risk",
+            "reason": "accepted only in the old run",
+            "who": "reviewer",
+            "audited_reads_sha256": {"review/leaf.json": digest},
+        },
+    )
+    compiled, contracts = _compile(
+        """
+        main:
+          max_supersteps: 5
+          nodes:
+            review:
+              uses: operation:no-op
+              gate: leaf-review-gate
+              retry: never
+              timeout: local
+          edges:
+            - {from: START, to: review}
+          routes:
+            - from: review
+              select: "node('review').gate.verdict"
+              cases: {pass: END}
+              default: STOP
+        """
+    )
+
+    result = _runtime(project, compiled, contracts).run(compiled, "full", _ctx(project))
+
+    assert result.status.status == "stopped"
+    review_success = next(
+        event for event in read_events_strict(change_dir) if event.get("type") == "task_attempt_succeeded"
+    )
+    gate_report = review_success.get("gate_report")
+    assert isinstance(gate_report, dict)
+    assert gate_report.get("verdict") == "needs_human_review"
 
 
 def test_child_graph_stop_propagates_as_parent_business_stop(tmp_path: Path) -> None:

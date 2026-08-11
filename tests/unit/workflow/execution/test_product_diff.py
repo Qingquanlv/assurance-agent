@@ -25,6 +25,12 @@ def _write(root: Path, rel: str, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _write_bytes(root: Path, rel: str, data: bytes) -> None:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+
 def _index(project_root: Path) -> dict[str, str]:
     return json.loads((project_root / DIFF_BASE_REL / "index.json").read_text(encoding="utf-8"))
 
@@ -74,6 +80,41 @@ def test_compute_is_deterministic_across_calls(tmp_path: Path) -> None:
 def test_unchanged_tree_yields_empty_mapping_not_none(tmp_path: Path) -> None:
     _write(tmp_path, "app/api/dept.py", "one\n")
     snapshot_product_tree(tmp_path)
+    assert compute_changed_lines(tmp_path) == {}
+
+
+def test_unchanged_binary_file_does_not_poison_text_diff(tmp_path: Path) -> None:
+    _write(tmp_path, "app/api/dept.py", "one\n")
+    _write_bytes(tmp_path, "app/assets/login.webp", b"RIFF\xff\x00WEBPVP8 ")
+    snapshot_product_tree(tmp_path)
+    _write(tmp_path, "app/api/dept.py", "one\ntwo\n")
+
+    assert compute_changed_lines(tmp_path) == {"app/api/dept.py": [2]}
+
+
+def test_changed_binary_file_is_ignored_while_text_diff_is_measured(tmp_path: Path) -> None:
+    _write(tmp_path, "app/api/dept.py", "one\n")
+    _write_bytes(tmp_path, "app/assets/login.webp", b"RIFF\xff\x00WEBPVP8 old")
+    snapshot_product_tree(tmp_path)
+    _write(tmp_path, "app/api/dept.py", "ONE\n")
+    _write_bytes(tmp_path, "app/assets/login.webp", b"RIFF\xfe\x00WEBPVP8 new")
+
+    assert compute_changed_lines(tmp_path) == {"app/api/dept.py": [1]}
+
+
+def test_new_binary_file_is_ignored(tmp_path: Path) -> None:
+    _write(tmp_path, "app/api/dept.py", "one\n")
+    snapshot_product_tree(tmp_path)
+    _write_bytes(tmp_path, "app/assets/new.webp", b"RIFF\xff\x00WEBPVP8 new")
+
+    assert compute_changed_lines(tmp_path) == {}
+
+
+def test_utf8_decodable_nul_binary_file_is_ignored(tmp_path: Path) -> None:
+    _write(tmp_path, "app/api/dept.py", "one\n")
+    snapshot_product_tree(tmp_path)
+    _write_bytes(tmp_path, "app/assets/new.bin", b"binary\x00payload")
+
     assert compute_changed_lines(tmp_path) == {}
 
 

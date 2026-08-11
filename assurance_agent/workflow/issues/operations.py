@@ -1,4 +1,4 @@
-"""Issue-domain operation handlers registered in default_operations().
+"""Issue-domain operation handlers registered in driver.operations_catalog.
 
 Currently contains:
     collect_observations_operation     — operation:collect-observations
@@ -726,7 +726,9 @@ def reconcile_issues_operation(
             candidate_digest=authored_candidate_digest,
         )
     except ReconciliationValidationError as exc:
-        # Semantic failure: write failed reconcile-status; return success
+        # Semantic failure: write failed reconcile-status; stamp analysis_failed
+        # onto the change ledger so the snapshot is not left with observations
+        # but a null analysis_status (which integrity treats as "analysis owed").
         reconcile_status = IssueReconcileStatus(
             schema_version="1.0",
             change_id=change_id,
@@ -739,6 +741,43 @@ def reconcile_issues_operation(
             inspect_dir / "issue-reconcile-status.json",
             _canonical_json(reconcile_status.model_dump(mode="json")),
         )
+        analysis_status = IssueAnalysisStatus(
+            schema_version="1.0",
+            change_id=change_id,
+            batch_id=batch_id,
+            status="failed",
+            evidence_bundle_digest=evidence_bundle_digest,
+            candidate_count=len(candidates_doc.candidates),
+            reason="invalid_output",
+            retryable=True,
+            candidate_digest=authored_candidate_digest,
+        )
+        _write_json(
+            inspect_dir / "issue-analysis-status.json",
+            _canonical_json(analysis_status.model_dump(mode="json")),
+        )
+        ts = _utc_now()
+        idem_key = f"issue_analysis_failed:{change_id}:{batch_id}:{evidence_bundle_digest}"
+        failed_event = IssueAnalysisFailedEvent(
+            schema_version="1.0",
+            seq=1,
+            event_id=_event_id(idem_key),
+            idempotency_key=idem_key,
+            ts=ts,
+            evidence_digest=evidence_bundle_digest,
+            change_id=change_id,
+            batch_id=batch_id,
+            type="issue_analysis_failed",
+            analysis_status=analysis_status,
+        )
+        try:
+            ChangeIssueStore(change_dir).append_and_rebuild([failed_event])
+        except Exception as stamp_exc:
+            return task_failure(
+                "invalid_output",
+                "reconcile-issues: failed to stamp analysis_failed after semantic "
+                f"validation error: {stamp_exc}",
+            )
         return TaskResult(
             status="succeeded",
             value={

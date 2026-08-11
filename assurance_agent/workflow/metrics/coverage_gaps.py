@@ -31,6 +31,7 @@ from assurance_agent.artifacts.models.coverage_gaps import (
 from assurance_agent.artifacts.models.pr_metric_evidence import (
     AuthMatrixEvidence,
     ConstraintCoverageEvidence,
+    JourneyCoverageEvidence,
 )
 from assurance_agent.artifacts.models.trace import TraceProjection
 from assurance_agent.artifacts.models.trace_sufficiency import TraceSufficiencyFacts
@@ -42,6 +43,7 @@ from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.metrics.auth_matrix import AUTH_MATRIX_REL
 from assurance_agent.workflow.metrics.batch_io import batch_runs_dir
 from assurance_agent.workflow.metrics.constraint_coverage import CONSTRAINT_COVERAGE_REL
+from assurance_agent.workflow.metrics.journey_coverage import JOURNEY_COVERAGE_REL
 
 TRACE_PROJECTION_REL = "inspect/trace-projection.json"
 TRACE_SUFFICIENCY_REL = "inspect/trace-sufficiency.json"
@@ -103,6 +105,35 @@ def _load_matrix_gap_feedstock(change_dir: Path, batch_id: str) -> tuple[str, ..
     return tuple(sorted(cell.cell_id for cell in evidence.cells if not cell.asserted))
 
 
+def _load_weak_oracle_gap_feedstock(change_dir: Path, batch_id: str) -> tuple[str, ...]:
+    """Case IDs whose A4 journey evidence lacks a classifiable strong oracle.
+
+    Trace projection calls these cases covered because a test is mapped and ran;
+    A4 correctly does not.  Without this join the numeric A4 shortfall produces
+    no repair item, so the inner loop cannot strengthen the assertion.
+    """
+    path = batch_runs_dir(change_dir, batch_id) / JOURNEY_COVERAGE_REL
+    if not path.is_file():
+        return ()
+    try:
+        evidence = JourneyCoverageEvidence.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, ValidationError, json.JSONDecodeError):
+        return ()
+    if evidence.collection_gaps:
+        return ()
+    repairable_statuses = frozenset({"weak_oracle", "oracle_unavailable"})
+    return tuple(
+        sorted(
+            {
+                case_id
+                for item in evidence.items
+                if item.status in repairable_statuses
+                for case_id in item.case_ids
+            }
+        )
+    )
+
+
 def build_coverage_gap_signals(
     *,
     change_dir: Path,
@@ -119,6 +150,7 @@ def build_coverage_gap_signals(
     feedstock = CoverageGapFeedstock(
         constraints_without_property=_load_constraint_gap_feedstock(change_dir, batch_id),
         matrix_cells_unasserted=_load_matrix_gap_feedstock(change_dir, batch_id),
+        cases_without_strong_oracle=_load_weak_oracle_gap_feedstock(change_dir, batch_id),
     )
     document = build_coverage_gaps(
         projection,

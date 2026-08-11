@@ -98,6 +98,36 @@ def test_matrix_accepts_legacy_bare_list() -> None:
     assert matrix.root[0].key == "create_dept"
 
 
+@pytest.mark.parametrize(
+    ("duplicate_field", "duplicate_value"),
+    (("key", "create_dept"), ("mrc_id", "MRC-API-001")),
+)
+def test_matrix_rejects_duplicate_row_identity(
+    duplicate_field: str,
+    duplicate_value: str,
+) -> None:
+    first = {
+        "mrc_id": "MRC-API-001",
+        "key": "create_dept",
+        "required": True,
+        "covered_by_cases": [],
+        "status": "skipped_by_scope",
+        "skip_reason": "out of scope",
+    }
+    second = {
+        "mrc_id": "MRC-API-002",
+        "key": "list_depts",
+        "required": True,
+        "covered_by_cases": [],
+        "status": "skipped_by_scope",
+        "skip_reason": "out of scope",
+        duplicate_field: duplicate_value,
+    }
+
+    with pytest.raises(ValidationError, match=rf"duplicate {duplicate_field}"):
+        MinimumCoverageMatrix.model_validate([first, second])
+
+
 def test_auth_known_keys_from_data_knowledge_shape() -> None:
     keys = auth_known_keys(
         {

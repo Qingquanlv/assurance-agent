@@ -1,12 +1,23 @@
 name: L2-performance-codegen-seed
 extends: L1-plan-seed
-description: Performance codegen stub (golden-sample wiring; real perf artifacts TBD)
+description: Performance codegen seed with full assurance predecessor chain
+repo_paths:
+- .aa/config.yaml
+- .aa/data-knowledge.yaml
+- tests/testdata/domain/api.py
+- tests/testdata/domain/__init__.py
 paths:
 - codegen
 - tests/config.py
 - tests/conftest.py
 - tests/schema_validation.py
 - tests/perf
+- cases/system/performance
+- plans/performance-plan.md
+- plans/performance-codegen-plan.md
+- plans/performance-review-summary.md
+- review/performance-plan-review.json
+- review/performance-plan-review-summary.md
 resets:
   workflow_state:
     phases.execution.status: pending
@@ -31,6 +42,7 @@ imports:
       node: review
       outputs:
       - change:review/performance-plan-review.json
+      - change:review/performance-plan-review-summary.md
       gate: performance-plan-review-gate
     - path: execute-workflow/assurance/assurance/performance/performance-branch
       graph: performance-branch
@@ -44,6 +56,7 @@ imports:
       node: codegen
       outputs:
       - change:codegen/performance-codegen-summary.md
+      - change:codegen/performance-generated-files.json
     - path: execute-workflow/assurance/assurance
       graph: assurance
       node: performance

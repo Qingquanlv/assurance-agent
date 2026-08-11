@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from assurance_agent.artifacts.models.retro_v3 import (
     RetroIntegrity,
     RetroSourceManifestV3,
     RetroWindow,
+    Signal,
     SignalDocumentV3,
     WorkflowEvidenceSlice,
 )
@@ -30,6 +32,12 @@ from assurance_agent.exceptions import AaError
 
 class RetroAssembleError(AaError):
     """Required v3 assembly input is absent or schema-invalid."""
+
+
+def agent_context_json_bytes(context: RetroContextV3) -> bytes:
+    """Render the canonical context payload as multiline agent-readable JSON."""
+    payload = context.model_dump(mode="json")
+    return (json.dumps(payload, sort_keys=True, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
 
 
 def _load_json(path: Path) -> tuple[dict, bytes]:
@@ -41,6 +49,18 @@ def _load_json(path: Path) -> tuple[dict, bytes]:
     if not isinstance(payload, dict):
         raise RetroAssembleError(f"{path} must contain a JSON object")
     return payload, data
+
+
+def _merge_domain_signals(domain: str, sources: Iterable[Iterable[Signal]]) -> tuple[Signal, ...]:
+    ordered: dict[str, Signal] = {}
+    for source in sources:
+        for signal in source:
+            existing = ordered.get(signal.signal_id)
+            if existing is None:
+                ordered[signal.signal_id] = signal
+            elif canonical_json_bytes(existing) != canonical_json_bytes(signal):
+                raise RetroAssembleError(f"conflicting signal_id {signal.signal_id!r} in {domain} signals")
+    return tuple(ordered.values())
 
 
 def assemble_context(retro_dir: Path, *, dry_run: bool, now: datetime) -> RetroContextV3:
@@ -99,7 +119,10 @@ def assemble_context(retro_dir: Path, *, dry_run: bool, now: datetime) -> RetroC
             reasons.append(f"{domain}_signal_analysis_failed")
         else:
             statuses[domain] = DomainAnalysisStatus(status="ok")
-            signals[domain] = (*slice_.deterministic_signals, *signal_doc.signals)
+            signals[domain] = _merge_domain_signals(
+                domain,
+                (slice_.deterministic_signals, signal_doc.signals),
+            )
 
     integrity = (
         RetroIntegrity(status="incomplete", reasons=tuple(dict.fromkeys(reasons)))
@@ -175,6 +198,7 @@ def write_noop_receipt(retro_dir: Path, context: RetroContextV3) -> None:
 
 __all__ = [
     "RetroAssembleError",
+    "agent_context_json_bytes",
     "assemble_context",
     "sha256_bytes",
     "write_noop_receipt",

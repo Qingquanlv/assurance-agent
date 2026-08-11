@@ -38,8 +38,23 @@ def _files(tmp_path):
     return subject_path, assessment_path, summary_path, digest
 
 
+def _authoring_payload() -> dict[str, object]:
+    return {
+        "schema_version": "1",
+        "review_type": "improvement",
+        "decision": "pass",
+        "findings": [],
+        "evidence_traceability": "complete",
+        "scope_readiness": "ready",
+        "verification_readiness": "ready",
+        "delivery_safety": "ready",
+        "human_review_required": False,
+    }
+
+
 def _complete(tmp_path):
     subject, assessment, summary, digest = _files(tmp_path)
+    assessment.write_text(json.dumps(_authoring_payload()), encoding="utf-8")
     return complete_improvement_reviewer_outputs(
         subject_path=subject,
         assessment_path=assessment,
@@ -51,8 +66,30 @@ def _complete(tmp_path):
     )
 
 
-def test_completion_accepts_exact_identity_and_subject_binding(tmp_path) -> None:
+def test_completion_accepts_semantic_assessment_and_binds_identity(tmp_path) -> None:
     assert _complete(tmp_path).decision == "pass"
+
+
+def test_completion_injects_runtime_owned_identity_and_rewrites_canonical_json(tmp_path) -> None:
+    subject, assessment, summary, digest = _files(tmp_path)
+    assessment.write_text(json.dumps(_authoring_payload()), encoding="utf-8")
+
+    completed = complete_improvement_reviewer_outputs(
+        subject_path=subject,
+        assessment_path=assessment,
+        summary_path=summary,
+        expected_review_id="REV-1",
+        expected_improvement_id="IMP-1",
+        expected_version=1,
+        expected_subject_sha256=digest,
+    )
+
+    persisted = ImprovementAutoReviewAssessment.model_validate_json(assessment.read_bytes())
+    assert persisted == completed
+    assert persisted.review_id == "REV-1"
+    assert persisted.improvement_id == "IMP-1"
+    assert persisted.expected_improvement_version == 1
+    assert persisted.subject_sha256 == digest
 
 
 @pytest.mark.parametrize(
@@ -60,32 +97,17 @@ def test_completion_accepts_exact_identity_and_subject_binding(tmp_path) -> None
     [
         ("review_id", "REV-OTHER"),
         ("improvement_id", "IMP-OTHER"),
-        ("expected_improvement_version", 2),
+        ("expected_improvement_version", 999),
         ("subject_sha256", "sha256:" + "0" * 64),
+        ("auto_eligible", True),
     ],
 )
-def test_completion_rejects_identity_or_binding_drift(tmp_path, field: str, value: object) -> None:
+def test_completion_rejects_agent_authored_runtime_or_authority_field(
+    tmp_path, field: str, value: object
+) -> None:
     subject, assessment, summary, digest = _files(tmp_path)
-    payload = json.loads(assessment.read_text(encoding="utf-8"))
+    payload = _authoring_payload()
     payload[field] = value
-    assessment.write_text(json.dumps(payload), encoding="utf-8")
-
-    with pytest.raises(ImprovementReviewerOutputError, match="binding mismatch"):
-        complete_improvement_reviewer_outputs(
-            subject_path=subject,
-            assessment_path=assessment,
-            summary_path=summary,
-            expected_review_id="REV-1",
-            expected_improvement_id="IMP-1",
-            expected_version=1,
-            expected_subject_sha256=digest,
-        )
-
-
-def test_completion_rejects_agent_authored_authority_field(tmp_path) -> None:
-    subject, assessment, summary, digest = _files(tmp_path)
-    payload = json.loads(assessment.read_text(encoding="utf-8"))
-    payload["auto_eligible"] = True
     assessment.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(ImprovementReviewerOutputError, match="invalid improvement reviewer output"):

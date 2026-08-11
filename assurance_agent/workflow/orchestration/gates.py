@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -18,7 +19,7 @@ from assurance_agent.exceptions import AaError
 from assurance_agent.knowledge.capabilities import capabilities_present as check_capabilities_present
 from assurance_agent.knowledge.capabilities import compute_missing_capabilities
 from assurance_agent.workflow.core.audit_scope import is_audited_gate_read
-from assurance_agent.workflow.core.events import read_events_strict
+from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
 from assurance_agent.workflow.execution.tree_hash import sha256_file
 from assurance_agent.workflow.orchestration.dsl import (
     MISSING,
@@ -48,6 +49,17 @@ class GateVerdict(BaseModel):
     verdict: Verdict
     matched_rule: str | None = None
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class AcceptedRiskDecision:
+    """A graph-resume decision that is valid in one descendant checkpoint view."""
+
+    gate_id: str
+    interrupt_id: str
+    checkpoint_ns: str
+    reason: str
+    who: str
 
 
 class GateCycleError(AaError):
@@ -242,6 +254,7 @@ def latest_valid_gate_decision(
     loc: ChangeLocation,
     *,
     events_dir: Path | None = None,
+    checkpoint_ns: str | None = None,
 ) -> dict[str, object] | None:
     """Return the latest audited human or graph-resume decision for ``gate_id``.
 
@@ -250,28 +263,67 @@ def latest_valid_gate_decision(
     counts), be an ``accept_risk``/``fix_and_proceed`` action with reason+who, and
     carry a ``review_file``/``review_sha256`` pointing at an audited gate read whose
     *current* hash still matches (the frozen evidence was not altered afterwards).
+    When ``checkpoint_ns`` is supplied, only a complete v3 graph interrupt/resume
+    chain on that namespace's ancestry is eligible; change-global legacy decisions
+    are intentionally excluded.
     """
+    events = _read_decision_events(events_dir or loc.path)
+    if events is None:
+        return None
+    return _latest_valid_gate_decision_from_events(
+        schema,
+        gate_id,
+        loc,
+        events,
+        checkpoint_ns=checkpoint_ns,
+    )
+
+
+def _read_decision_events(events_dir: Path) -> list[dict[str, object]] | None:
+    try:
+        return read_events_strict(events_dir)
+    except (LedgerIntegrityError, OSError, UnicodeError):
+        # A corrupt or unreadable authority cannot grant permission. Reading
+        # this control plane must not mutate or repair append-only history.
+        return None
+
+
+def _latest_valid_gate_decision_from_events(
+    schema: _SchemaWithGates,
+    gate_id: str,
+    loc: ChangeLocation,
+    events: list[dict[str, object]],
+    *,
+    checkpoint_ns: str | None,
+) -> dict[str, object] | None:
     gate = schema.gates.get(gate_id)
     if gate is None:
         return None
     audited = {r.path for r in gate.reads if is_audited_gate_read(r.path)}
     if not audited:
         return None
-    events = read_events_strict(events_dir or loc.path)
     latest_human: dict[str, object] | None = None
-    for event in reversed(events):
-        if event.get("source") != "decide" or event.get("type") != "human_decision":
-            continue
-        checkpoint = event.get("checkpoint")
-        if checkpoint == gate_id:
-            latest_human = event
-            break
-        if isinstance(checkpoint, str):
-            # Special ``healing.safety`` checkpoint also anchors the fixer-safety-gate.
-            if gate_id == "fixer-safety-gate" and checkpoint == "healing.safety":
+    # Legacy v1 adjudication has no graph namespace.  Graph task execution does,
+    # and therefore accepts authority only from an exact interrupt/resume pair;
+    # a change-global ``human_decision`` must never bleed into a fresh root run.
+    if checkpoint_ns is None:
+        for event in reversed(events):
+            if event.get("source") != "decide" or event.get("type") != "human_decision":
+                continue
+            checkpoint = event.get("checkpoint")
+            if checkpoint == gate_id:
                 latest_human = event
                 break
-    latest_graph = _latest_graph_gate_decision(events, gate_id)
+            if isinstance(checkpoint, str):
+                # Special ``healing.safety`` checkpoint also anchors the fixer-safety-gate.
+                if gate_id == "fixer-safety-gate" and checkpoint == "healing.safety":
+                    latest_human = event
+                    break
+    latest_graph = _latest_graph_gate_decision(
+        events,
+        gate_id,
+        current_checkpoint_ns=checkpoint_ns,
+    )
     latest = max(
         (item for item in (latest_human, latest_graph) if item is not None),
         key=_event_sequence,
@@ -323,6 +375,8 @@ def _event_sequence(event: Mapping[str, object]) -> int:
 def _latest_graph_gate_decision(
     events: list[dict[str, object]],
     gate_id: str,
+    *,
+    current_checkpoint_ns: str | None = None,
 ) -> dict[str, object] | None:
     """Resolve the latest resume group whose interrupt targeted ``gate_id``.
 
@@ -330,48 +384,347 @@ def _latest_graph_gate_decision(
     the audited hashes, so the copies are treated as one decision keyed by
     ``interrupt_id`` rather than independently.
     """
-    interruptions: dict[str, dict[str, object]] = {}
+    interruptions: dict[str, list[dict[str, object]]] = {}
+    all_interruptions: dict[str, list[dict[str, object]]] = {}
     for event in events:
         if event.get("source") != "graph" or event.get("type") != "graph_interrupted":
             continue
+        interrupt_id = event.get("interrupt_id")
+        if not isinstance(interrupt_id, str):
+            continue
+        all_interruptions.setdefault(interrupt_id, []).append(event)
         checkpoint = event.get("checkpoint")
         matches = checkpoint == gate_id or (gate_id == "fixer-safety-gate" and checkpoint == "healing.safety")
-        interrupt_id = event.get("interrupt_id")
-        if matches and isinstance(interrupt_id, str):
-            interruptions[interrupt_id] = event
-    latest_resume: dict[str, object] | None = None
-    for event in reversed(events):
-        if event.get("source") != "graph" or event.get("type") != "graph_resumed":
+        if matches:
+            interruptions.setdefault(interrupt_id, []).append(event)
+
+    candidates: list[dict[str, object]] = []
+    for interrupt_id, matching_interruptions in interruptions.items():
+        resumes = [
+            event
+            for event in events
+            if event.get("source") == "graph"
+            and event.get("type") == "graph_resumed"
+            and event.get("interrupt_id") == interrupt_id
+        ]
+        if not resumes:
             continue
-        interrupt_id = event.get("interrupt_id")
-        if isinstance(interrupt_id, str) and interrupt_id in interruptions:
-            latest_resume = event
-            break
-    if latest_resume is None:
-        return None
-    interrupt_id = latest_resume.get("interrupt_id")
-    interrupted = interruptions[str(interrupt_id)]
+        if current_checkpoint_ns is None:
+            candidate = _legacy_graph_resume_group(matching_interruptions[-1], resumes)
+        else:
+            candidate = _scoped_graph_resume_group(
+                all_interruptions[interrupt_id],
+                matching_interruptions,
+                resumes,
+                current_checkpoint_ns=current_checkpoint_ns,
+            )
+        if candidate is not None:
+            candidates.append(candidate)
+    return max(candidates, key=_event_sequence, default=None)
+
+
+def _legacy_graph_resume_group(
+    interrupted: dict[str, object],
+    resumes: list[dict[str, object]],
+) -> dict[str, object]:
+    """Preserve unscoped v1 decision behavior for non-graph callers."""
+    latest_resume = max(resumes, key=_event_sequence)
     actions = interrupted.get("actions")
     if not isinstance(actions, list) or latest_resume.get("action") not in actions:
         return {**latest_resume, "action": "__invalid__"}
-    group = [
-        event
-        for event in events
-        if event.get("source") == "graph"
-        and event.get("type") == "graph_resumed"
-        and event.get("interrupt_id") == interrupt_id
-    ]
-    if any(event.get("action") != latest_resume.get("action") for event in group):
+    if any(event.get("action") != latest_resume.get("action") for event in resumes):
         return {**latest_resume, "action": "__invalid__"}
     audited = next(
         (
             event.get("audited_reads_sha256")
-            for event in group
+            for event in resumes
             if isinstance(event.get("audited_reads_sha256"), dict) and event.get("audited_reads_sha256")
         ),
         {},
     )
     return {**latest_resume, "audited_reads_sha256": audited}
+
+
+def _scoped_graph_resume_group(
+    all_interruptions: list[dict[str, object]],
+    matching_interruptions: list[dict[str, object]],
+    resumes: list[dict[str, object]],
+    *,
+    current_checkpoint_ns: str,
+) -> dict[str, object] | None:
+    """Pair one v3 interrupt/resume group and scope it to a descendant task.
+
+    A nested resume emits one copy per invocation layer.  Requiring that exact
+    chain prevents a root copy from being fabricated for another run while
+    still allowing a decision made in a review child to authorize its later
+    codegen sibling through their shared ancestor.
+    """
+    full_namespaces = {event.get("checkpoint_ns") for event in matching_interruptions}
+    if len(full_namespaces) != 1:
+        return _invalid_graph_candidate(resumes)
+    full_ns = next(iter(full_namespaces))
+    if not isinstance(full_ns, str) or not full_ns.strip():
+        return _invalid_graph_candidate(resumes)
+    expected_layers = _resume_layers(full_ns)
+    if expected_layers is None:
+        return _invalid_graph_candidate(resumes)
+    expected_nodes = _resume_nodes(full_ns)
+
+    relevant_layers = [
+        layer_ns
+        for layer_ns in expected_layers.values()
+        if _checkpoint_ns_is_ancestor(layer_ns, current_checkpoint_ns)
+    ]
+    if not relevant_layers:
+        return None
+
+    latest_resume = max(resumes, key=_event_sequence)
+    resume_by_invocation: dict[str, dict[str, object]] = {}
+    structurally_valid = len(resumes) == len(expected_layers)
+    for event in resumes:
+        invocation_id = event.get("invocation_id")
+        checkpoint_ns = event.get("checkpoint_ns")
+        if not isinstance(invocation_id, str) or invocation_id in resume_by_invocation:
+            structurally_valid = False
+            continue
+        resume_by_invocation[invocation_id] = event
+        if expected_layers.get(invocation_id) != checkpoint_ns:
+            structurally_valid = False
+        anchor = event.get("anchor")
+        if not isinstance(anchor, dict):
+            structurally_valid = False
+        elif (
+            anchor.get("invocation_id") != invocation_id
+            or anchor.get("checkpoint_ns") != checkpoint_ns
+            or anchor.get("interrupt_id") != event.get("interrupt_id")
+            or not isinstance(anchor.get("node_id"), str)
+            or (
+                expected_nodes.get(invocation_id) is not None
+                and anchor.get("node_id") != expected_nodes[invocation_id]
+            )
+        ):
+            structurally_valid = False
+    if set(resume_by_invocation) != set(expected_layers):
+        structurally_valid = False
+    parent_anchor_ref: str | None = None
+    previous_resume_seq: int | None = None
+    for invocation_id in expected_layers:
+        resume = resume_by_invocation.get(invocation_id)
+        if resume is None:
+            structurally_valid = False
+            continue
+        resume_seq = _event_sequence(resume)
+        if previous_resume_seq is not None and resume_seq <= previous_resume_seq:
+            structurally_valid = False
+        previous_resume_seq = resume_seq
+        if resume.get("parent_anchor_ref") != parent_anchor_ref:
+            structurally_valid = False
+        anchor = resume.get("anchor")
+        if isinstance(anchor, dict):
+            encoded = json.dumps(
+                anchor,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+            parent_anchor_ref = hashlib.sha256(encoded).hexdigest()
+
+    interruption_by_invocation: dict[str, dict[str, object]] = {}
+    for event in all_interruptions:
+        invocation_id = event.get("invocation_id")
+        if not isinstance(invocation_id, str) or invocation_id not in expected_layers:
+            structurally_valid = False
+            continue
+        previous = interruption_by_invocation.get(invocation_id)
+        if previous is not None:
+            # A crash/re-drive may re-bubble an identical immutable interrupt.
+            # It adds no authority; conflicting duplicates make the pair invalid.
+            if any(
+                previous.get(field) != event.get(field)
+                for field in (
+                    "checkpoint_ns",
+                    "interrupt_id",
+                    "node_id",
+                    "checkpoint",
+                    "actions",
+                    "audited_reads_sha256",
+                    "anchor",
+                )
+            ):
+                structurally_valid = False
+            continue
+        interruption_by_invocation[invocation_id] = event
+        anchor = event.get("anchor")
+        if not isinstance(anchor, dict):
+            structurally_valid = False
+        elif (
+            anchor.get("invocation_id") != invocation_id
+            or anchor.get("checkpoint_ns") != full_ns
+            or anchor.get("interrupt_id") != event.get("interrupt_id")
+            or anchor.get("node_id") != event.get("node_id")
+        ):
+            structurally_valid = False
+    if set(interruption_by_invocation) != set(expected_layers):
+        structurally_valid = False
+    for invocation_id, resume in resume_by_invocation.items():
+        interrupted = interruption_by_invocation.get(invocation_id)
+        resume_anchor = resume.get("anchor")
+        interrupted_anchor = interrupted.get("anchor") if interrupted is not None else None
+        interrupted_node = interrupted.get("node_id") if interrupted is not None else None
+        if (
+            not isinstance(resume_anchor, dict)
+            or not isinstance(interrupted_anchor, dict)
+            or not isinstance(interrupted_node, str)
+            or resume_anchor.get("node_id") != interrupted_node
+            or interrupted_anchor.get("node_id") != interrupted_node
+        ):
+            structurally_valid = False
+
+    interruption_checkpoints = {event.get("checkpoint") for event in all_interruptions}
+    interruption_namespaces = {event.get("checkpoint_ns") for event in all_interruptions}
+    interruption_actions = {_string_tuple(event.get("actions")) for event in all_interruptions}
+    interruption_hashes = {
+        _string_mapping_tuple(event.get("audited_reads_sha256")) for event in all_interruptions
+    }
+    if (
+        len(interruption_checkpoints) != 1
+        or len(interruption_namespaces) != 1
+        or len(interruption_actions) != 1
+        or len(interruption_hashes) != 1
+        or None in interruption_actions
+        or None in interruption_hashes
+    ):
+        structurally_valid = False
+
+    if max(_event_sequence(event) for event in all_interruptions) >= min(
+        _event_sequence(event) for event in resumes
+    ):
+        structurally_valid = False
+
+    action = latest_resume.get("action")
+    reason = latest_resume.get("reason")
+    who = latest_resume.get("who")
+    if any(
+        event.get("action") != action or event.get("reason") != reason or event.get("who") != who
+        for event in resumes
+    ):
+        structurally_valid = False
+    declared_actions = next(iter(interruption_actions), None)
+    if declared_actions is None or action not in declared_actions:
+        structurally_valid = False
+
+    interrupted_hashes = next(iter(interruption_hashes), None)
+    root_invocation_id = next(iter(expected_layers))
+    root_resume = resume_by_invocation.get(root_invocation_id)
+    root_hashes = (
+        _string_mapping_tuple(root_resume.get("audited_reads_sha256")) if root_resume is not None else None
+    )
+    if root_hashes is None or root_hashes != interrupted_hashes:
+        structurally_valid = False
+    for invocation_id, resume in resume_by_invocation.items():
+        if invocation_id == root_invocation_id:
+            continue
+        if _string_mapping_tuple(resume.get("audited_reads_sha256")) != ():
+            structurally_valid = False
+    audited = dict(root_hashes or ())
+    candidate = {
+        **latest_resume,
+        "seq": max(_event_sequence(event) for event in resumes),
+        "audited_reads_sha256": audited,
+        "accepted_checkpoint_ns": max(relevant_layers, key=lambda value: value.count("/")),
+        "interrupt_checkpoint_ns": full_ns,
+    }
+    return candidate if structurally_valid else {**candidate, "action": "__invalid__"}
+
+
+def _invalid_graph_candidate(resumes: list[dict[str, object]]) -> dict[str, object]:
+    latest = max(resumes, key=_event_sequence)
+    return {**latest, "action": "__invalid__"}
+
+
+def _resume_layers(checkpoint_ns: str) -> dict[str, str] | None:
+    parts = [part for part in checkpoint_ns.split("/") if part]
+    if not parts or len(parts) % 2 == 0:
+        return None
+    invocation_ids = parts[::2]
+    if len(invocation_ids) != len(set(invocation_ids)):
+        return None
+    return {parts[index]: "/".join(parts[: index + 1]) for index in range(0, len(parts), 2)}
+
+
+def _resume_nodes(checkpoint_ns: str) -> dict[str, str | None]:
+    parts = [part for part in checkpoint_ns.split("/") if part]
+    return {
+        parts[index]: parts[index + 1] if index + 1 < len(parts) else None
+        for index in range(0, len(parts), 2)
+    }
+
+
+def _checkpoint_ns_is_ancestor(ancestor: str, descendant: str) -> bool:
+    normalized_ancestor = ancestor.strip("/")
+    normalized_descendant = descendant.strip("/")
+    return normalized_descendant == normalized_ancestor or normalized_descendant.startswith(
+        normalized_ancestor + "/"
+    )
+
+
+def _string_tuple(value: object) -> tuple[str, ...] | None:
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        return None
+    return tuple(value)
+
+
+def _string_mapping_tuple(value: object) -> tuple[tuple[str, str], ...] | None:
+    if not isinstance(value, dict) or any(
+        not isinstance(key, str) or not isinstance(item, str) for key, item in value.items()
+    ):
+        return None
+    return tuple(sorted(value.items()))
+
+
+def valid_ancestor_accept_risk_decisions(
+    schema: _SchemaWithGates,
+    loc: ChangeLocation,
+    *,
+    checkpoint_ns: str,
+    events_dir: Path | None = None,
+) -> tuple[AcceptedRiskDecision, ...]:
+    """Project current, hash-anchored graph acceptances for an agent prompt."""
+    events = _read_decision_events(events_dir or loc.path)
+    if events is None:
+        return ()
+    decisions: list[AcceptedRiskDecision] = []
+    for gate_id in sorted(schema.gates):
+        event = _latest_valid_gate_decision_from_events(
+            schema,
+            gate_id,
+            loc,
+            events,
+            checkpoint_ns=checkpoint_ns,
+        )
+        if event is None or event.get("source") != "graph" or event.get("action") != "accept_risk":
+            continue
+        interrupt_id = event.get("interrupt_id")
+        accepted_ns = event.get("accepted_checkpoint_ns")
+        reason = event.get("reason")
+        who = event.get("who")
+        if (
+            not isinstance(interrupt_id, str)
+            or not isinstance(accepted_ns, str)
+            or not isinstance(reason, str)
+            or not isinstance(who, str)
+        ):
+            continue
+        decisions.append(
+            AcceptedRiskDecision(
+                gate_id=gate_id,
+                interrupt_id=interrupt_id,
+                checkpoint_ns=accepted_ns,
+                reason=reason,
+                who=who,
+            )
+        )
+    return tuple(decisions)
 
 
 def _apply_gate_decision(
@@ -381,11 +734,18 @@ def _apply_gate_decision(
     base_verdict: Verdict,
     *,
     events_dir: Path | None = None,
+    checkpoint_ns: str | None = None,
 ) -> tuple[Verdict, str | None]:
     """Apply a valid human decision to a ``needs_human_review`` gate verdict."""
     if base_verdict != Verdict.NEEDS_HUMAN_REVIEW or is_codegen_hard_gate(gate_id):
         return base_verdict, None
-    decision = latest_valid_gate_decision(schema, gate_id, loc, events_dir=events_dir)
+    decision = latest_valid_gate_decision(
+        schema,
+        gate_id,
+        loc,
+        events_dir=events_dir,
+        checkpoint_ns=checkpoint_ns,
+    )
     if decision is None:
         return base_verdict, None
     action = decision.get("action")
@@ -444,6 +804,10 @@ class GateEvaluationContext:
     # Coordinator events are intentionally excluded from frozen task trees.
     # Gate evidence still comes from change_dir; only decisions come from here.
     audit_events_dir: Path | None = None
+    # Namespace of the task consuming the gate.  Graph resume authority is
+    # scoped to this namespace's ancestors; ``None`` preserves v1 callers that
+    # have no graph checkpoint identity.
+    checkpoint_ns: str | None = None
 
 
 class FrozenGateReport(BaseModel):
@@ -555,7 +919,25 @@ def _view_gate_verdict(
         if isinstance(report, dict) and report.get("gate_id") == gate_id:
             verdict = report.get("verdict")
             if isinstance(verdict, str):
-                return verdict
+                try:
+                    frozen_verdict = Verdict(verdict)
+                except ValueError:
+                    return Verdict.STOP.value
+                location = ChangeLocation(
+                    project_root=context.project_root,
+                    change_id=context.change_id,
+                    path=context.change_dir,
+                    source="changes",
+                )
+                upgraded, action = _apply_gate_decision(
+                    _ViewGateSchema(gates=gates),
+                    gate_id,
+                    location,
+                    frozen_verdict,
+                    events_dir=context.audit_events_dir,
+                    checkpoint_ns=context.checkpoint_ns,
+                )
+                return (frozen_verdict if action is None else upgraded).value
     if gate_id in memo:
         return memo[gate_id]
     referenced = gates.get(gate_id)
@@ -664,6 +1046,7 @@ def _evaluate_gate_def(
         location,
         verdict,
         events_dir=context.audit_events_dir,
+        checkpoint_ns=context.checkpoint_ns,
     )
     final_verdict = verdict if action is None else upgraded
     final_details = _details_with_stop_cause(

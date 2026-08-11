@@ -64,16 +64,18 @@ class CoverageGap(BaseModel):
 
 
 class CoverageGapFeedstock(BaseModel):
-    """Optional projection extensions not yet on the TraceProjection wire.
+    """Optional metric extensions not yet on the TraceProjection wire.
 
     Phase-1 active fold only reads projection rows / unmapped_tests / sufficiency.
-    Extension kinds emit **only** when these lists are non-empty — never invented.
+    These fields emit **only** when their authoritative batch evidence names a
+    concrete locator — never from a numeric shortfall alone.
     """
 
     model_config = _FROZEN
 
     constraints_without_property: tuple[NonEmptyStr, ...] = ()
     matrix_cells_unasserted: tuple[NonEmptyStr, ...] = ()
+    cases_without_strong_oracle: tuple[NonEmptyStr, ...] = ()
 
 
 class CoverageGapsDocument(BaseModel):

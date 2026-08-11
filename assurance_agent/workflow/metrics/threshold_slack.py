@@ -55,6 +55,32 @@ def compute_threshold_slack(
             ),
         )
 
+    malformed = [
+        field
+        for index, scenario in enumerate(scenarios)
+        for field, value in (
+            (f"scenarios[{index}].capability", scenario.capability),
+            (f"scenarios[{index}].endpoint", scenario.endpoint),
+        )
+        if not value.strip()
+    ]
+    if malformed:
+        return PerfSlackEvidence(
+            schema_version="1",
+            change_id=change_id,
+            batch_id=batch_id,
+            value=None,
+            slack_band=slack_band,
+            scenarios=(),
+            collection_gaps=(
+                MetricCollectionGap(
+                    code="artifact_corrupt",
+                    metric="threshold_slack",
+                    detail="performance scenarios have empty identity fields: " + ", ".join(malformed),
+                ),
+            ),
+        )
+
     rows: list[PerfSlackScenario] = []
     slacks: list[float] = []
     for scenario in scenarios:

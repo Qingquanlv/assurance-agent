@@ -96,7 +96,7 @@ targets:
             encoding="utf-8",
         )
         (change_dir / "review/case-review.json").write_text(VALID_REVIEW, encoding="utf-8")
-        # packaged v2: case-design outputs [.qa.yaml, proposal.md, cases/]
+        # packaged v2: case-design outputs .qa.yaml, proposal.md, cases/, and the MRC matrix.
         result = runner.invoke(main, ["validate", "--change", "CH-1", "--phase", "case-design", "--json"])
         assert result.exit_code == 0, result.output
         doc = json.loads(result.output)

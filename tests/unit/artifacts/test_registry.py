@@ -1,4 +1,5 @@
 from collections import Counter
+from typing import get_args
 
 from assurance_agent.artifacts.models.coverage_repair import (
     COVERAGE_REPAIR_APPLY_SUMMARY_REL,
@@ -13,6 +14,12 @@ from assurance_agent.artifacts.models.coverage_repair import (
     CoverageRepairStatus,
 )
 from assurance_agent.artifacts.models.metrics import MetricsDocument
+from assurance_agent.artifacts.models import (
+    CaseYaml,
+    CaseYamlAuthoring,
+    ImprovementAutoReviewAssessment,
+    ImprovementAutoReviewAssessmentAuthoring,
+)
 from assurance_agent.artifacts.registry import REGISTRY, match_artifact
 
 
@@ -22,6 +29,7 @@ def test_registry_covers_every_expected_artifact_type() -> None:
         "apply_summary",
         "case_yaml",
         "change_issue_snapshot",
+        "codegen_generated_files",
         "coverage_repair_apply_summary",
         "coverage_repair_baseline",
         "coverage_repair_brief",
@@ -84,12 +92,11 @@ def test_registry_covers_every_expected_artifact_type() -> None:
     }
     counts = Counter(spec.artifact_type for spec in REGISTRY)
     assert set(counts) == expected
-    # "review" is intentionally registered under four distinct path patterns
-    # (spec 4a: api-plan-review, plan-review, case-review, and a catch-all
-    # review/*.json); every other artifact type owns exactly one pattern.
+    # Review and the four exact codegen-layer paths intentionally share models.
     assert counts["review"] == 4
+    assert counts["codegen_generated_files"] == 4
     for artifact_type, count in counts.items():
-        if artifact_type == "review":
+        if artifact_type in {"review", "codegen_generated_files"}:
             continue
         assert count == 1, f"{artifact_type} registered {count} times, expected exactly 1"
 
@@ -109,10 +116,48 @@ def test_case_yaml_matches_nested_and_direct_paths() -> None:
     assert match_artifact("cases/menus/notes.yaml") is None
 
 
+def test_case_yaml_uses_strict_authoring_contract_without_breaking_read_compatibility() -> None:
+    spec = match_artifact("cases/menus/case.yaml")
+    assert spec is not None
+    assert spec.model is CaseYaml
+    assert spec.authoring_model is CaseYamlAuthoring
+
+
 def test_qa_yaml_exact_match_only() -> None:
     spec = match_artifact(".qa.yaml")
     assert spec is not None and spec.artifact_type == "qa_yaml"
     assert match_artifact("sub/.qa.yaml") is None
+
+
+def test_codegen_generated_files_use_runtime_completed_contract() -> None:
+    for layer in ("api", "e2e", "fuzz", "performance"):
+        spec = match_artifact(f"codegen/{layer}-generated-files.json")
+        assert spec is not None
+        assert spec.artifact_type == "codegen_generated_files"
+        assert spec.compat == "must_compat"
+        assert spec.authoring_model is not None
+        assert spec.runtime_completes_authoring is True
+
+        authoring_entry = get_args(spec.authoring_model.model_fields["files"].annotation)[0]
+        runtime_entry = get_args(spec.model.model_fields["files"].annotation)[0]
+        assert "content_sha256" not in authoring_entry.model_fields
+        assert runtime_entry.model_fields["content_sha256"].is_required()
+
+    assert match_artifact("codegen/unknown-generated-files.json") is None
+
+
+def test_improvement_review_assessment_uses_runtime_completed_identity_contract() -> None:
+    spec = match_artifact("qa/improvements/reviews/REV-1/assessment.json")
+    assert spec is not None
+    assert spec.model is ImprovementAutoReviewAssessment
+    assert spec.authoring_model is ImprovementAutoReviewAssessmentAuthoring
+    assert spec.runtime_completes_authoring is True
+    assert {
+        "review_id",
+        "improvement_id",
+        "expected_improvement_version",
+        "subject_sha256",
+    }.isdisjoint(spec.authoring_model.model_fields)
 
 
 def test_review_glob_matches_any_review_json_in_review_dir() -> None:

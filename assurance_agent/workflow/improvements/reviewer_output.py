@@ -9,9 +9,11 @@ from pydantic import ValidationError
 from assurance_agent.artifacts.canonical import sha256_bytes
 from assurance_agent.artifacts.models.improvement_review import (
     ImprovementAutoReviewAssessment,
+    ImprovementAutoReviewAssessmentAuthoring,
     ImprovementReviewSubject,
 )
 from assurance_agent.exceptions import AaError
+from assurance_agent.workflow.improvements.ledger import atomic_write_json
 
 
 class ImprovementReviewerOutputError(AaError):
@@ -28,11 +30,11 @@ def complete_improvement_reviewer_outputs(
     expected_version: int,
     expected_subject_sha256: str,
 ) -> ImprovementAutoReviewAssessment:
-    """Validate identity, schema and subject binding before workspace freeze."""
+    """Validate authored judgment and bind runtime-owned identity before freeze."""
     try:
         subject_bytes = subject_path.read_bytes()
         subject = ImprovementReviewSubject.model_validate_json(subject_bytes)
-        assessment = ImprovementAutoReviewAssessment.model_validate_json(
+        authored = ImprovementAutoReviewAssessmentAuthoring.model_validate_json(
             assessment_path.read_text(encoding="utf-8")
         )
         summary_path.read_text(encoding="utf-8")
@@ -42,20 +44,18 @@ def complete_improvement_reviewer_outputs(
         raise ImprovementReviewerOutputError("review subject bytes do not match expected digest")
     if subject.improvement_id != expected_improvement_id:
         raise ImprovementReviewerOutputError("review subject improvement_id mismatch")
-    expected = (
-        expected_review_id,
-        expected_improvement_id,
-        expected_version,
-        expected_subject_sha256,
-    )
-    actual = (
-        assessment.review_id,
-        assessment.improvement_id,
-        assessment.expected_improvement_version,
-        assessment.subject_sha256,
-    )
-    if actual != expected:
-        raise ImprovementReviewerOutputError("assessment identity or subject binding mismatch")
+    try:
+        payload = authored.model_dump(mode="json")
+        payload.update(
+            review_id=expected_review_id,
+            improvement_id=expected_improvement_id,
+            expected_improvement_version=expected_version,
+            subject_sha256=expected_subject_sha256,
+        )
+        assessment = ImprovementAutoReviewAssessment.model_validate(payload)
+        atomic_write_json(assessment_path, assessment.model_dump(mode="json"))
+    except (OSError, ValidationError, ValueError) as exc:
+        raise ImprovementReviewerOutputError(f"invalid improvement reviewer output: {exc}") from exc
     return assessment
 
 

@@ -111,6 +111,7 @@ EXPECTED_CONTRACTS = {
     "operation:record-retro-pipeline-failure",
     "operation:finalize-retro-status",
     "operation:record-analysis-failed",
+    "operation:materialize-empty-retro-analysis",
     "operation:reconcile-improvements",
     "operation:load-review-subject",
     "operation:validate-improvement-review-assessment",
@@ -826,13 +827,16 @@ def test_retro_graph_is_independent_and_closed() -> None:
         "collect-retro-evidence",
         "recover-collect-failure",
         "analyze-issue",
+        "materialize-empty-issue-analysis",
         "evidence-gap-fallback",
         "record-issue-analysis-failed",
         "issue-settled",
         "analyze-workflow",
+        "materialize-empty-workflow-analysis",
         "record-workflow-analysis-failed",
         "workflow-settled",
         "analyze-eval",
+        "materialize-empty-eval-analysis",
         "record-eval-analysis-failed",
         "eval-settled",
         "analysis-join",
@@ -865,6 +869,17 @@ def test_retro_entrypoint_topology() -> None:
     join = g.nodes["analysis-join"].definition.join
     assert join is not None
     assert join.sources == ["issue-settled", "workflow-settled", "eval-settled"]
+
+
+def test_improvement_reviewer_receives_only_bound_canonical_and_agent_subject() -> None:
+    compiled, _ = _load_compiled()
+    node = compiled.graphs["improvement-auto-review-cycle"].nodes["review-improvement"].definition
+
+    assert node.resources is not None
+    assert set(node.resources.reads) == {
+        "project:qa/improvements/review-subjects/${params.subject_sha256}.json",
+        "project:qa/improvements/review-subjects/agent/${params.subject_sha256}.json",
+    }
 
 
 # ---------------------------------------------------------------------------

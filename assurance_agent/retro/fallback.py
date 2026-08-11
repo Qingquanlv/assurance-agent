@@ -39,7 +39,7 @@ from assurance_agent.artifacts.models.retro_v3 import (
     SignalDocumentV3,
     WorkflowEvidenceSlice,
 )
-from assurance_agent.retro.assemble import assemble_context
+from assurance_agent.retro.assemble import agent_context_json_bytes, assemble_context
 
 
 def _stable_id(prefix: str, payload: object) -> str:
@@ -255,6 +255,25 @@ def candidate_from_pipeline_failure(
     )
 
 
+def _pipeline_failure_summary(
+    context: RetroContextV3,
+    signal: RetroPipelineFailureSignal,
+    candidate: ImprovementCandidateV3,
+) -> str:
+    return (
+        f"# Retro {context.retro_id}\n\n"
+        "result: pipeline_failure_improvement\n"
+        "signal_count: 1\n"
+        "candidate_count: 1\n\n"
+        "## Signal\n\n"
+        f"- {signal.signal_id} (`{signal.signal_type}`; stage=`{signal.stage}`; "
+        f"error_kind=`{signal.error_kind}`)\n\n"
+        "## Candidate\n\n"
+        f"- {candidate.candidate_id} (`{candidate.kind}` -> `{candidate.delivery}`; "
+        f"target=`{candidate.target}`)\n"
+    )
+
+
 def materialize_pipeline_failure_fallback(
     project_root: Path,
     *,
@@ -343,7 +362,12 @@ def materialize_pipeline_failure_fallback(
     (retro_dir / "pipeline-failure.json").write_bytes(canonical_json_bytes(failure_doc))
     (retro_dir / "window.json").write_bytes(canonical_json_bytes(window))
     (retro_dir / "context.json").write_bytes(context_bytes)
+    (retro_dir / "context-agent.json").write_bytes(agent_context_json_bytes(context))
     (retro_dir / "proposal-candidates.json").write_bytes(canonical_json_bytes(candidate_doc))
+    (retro_dir / "retro-summary.md").write_text(
+        _pipeline_failure_summary(context, failure_signal, candidate),
+        encoding="utf-8",
+    )
     return context, candidate
 
 
@@ -395,6 +419,7 @@ def materialize_evidence_gap_fallback(
         candidates=(candidate,),
     )
     (retro_dir / "context.json").write_bytes(context_bytes)
+    (retro_dir / "context-agent.json").write_bytes(agent_context_json_bytes(context))
     (retro_dir / "proposal-candidates.json").write_bytes(canonical_json_bytes(document))
     (retro_dir / "retro-summary.md").write_text(
         f"# Retro {context.retro_id}\n\nresult: evidence_gap_improvement\n",

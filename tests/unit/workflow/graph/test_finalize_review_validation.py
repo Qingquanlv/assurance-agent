@@ -11,13 +11,26 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 import yaml
 
-from assurance_agent.workflow.graph.finalize import _validate_registry_outputs
-from assurance_agent.workflow.graph.workspace import TaskWorkspace
+import assurance_agent.workflow.graph.finalize as finalize
+from assurance_agent.workflow.graph.finalize import (
+    _validate_case_design_source_verification,
+    _validate_registry_outputs,
+)
+from assurance_agent.workflow.graph.models import (
+    CompiledWorkflow,
+    ExecutableTask,
+    RuntimeContext,
+    TaskResult,
+)
+from assurance_agent.workflow.graph.workspace import TaskWorkspace, TreeStore
 from assurance_agent.workflow.issues.identity import candidate_document_digest
+from assurance_agent.workflow.core.templates import InitAnswers, build_config_yaml
 
 
 def _workspace(tmp_path: Path) -> TaskWorkspace:
@@ -40,6 +53,12 @@ def _write(ws: TaskWorkspace, rel: str, payload: object) -> None:
         path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
     else:
         path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _write_init_config(ws: TaskWorkspace, answers: InitAnswers) -> None:
+    config_path = ws.project_root / ".aa" / "config.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(build_config_yaml(answers), encoding="utf-8")
 
 
 def test_project_candidate_document_is_validated_at_agent_boundary(tmp_path: Path) -> None:
@@ -161,6 +180,27 @@ def test_case_review_with_independent_source_verification_passes(tmp_path: Path)
     ws = _workspace(tmp_path)
     _write(
         ws,
+        "trace/minimum-coverage-matrix.yaml",
+        [
+            {
+                "mrc_id": "MRC-API-001",
+                "key": "list_users",
+                "required": True,
+                "covered_by_cases": ["TC-1"],
+                "status": "covered",
+            },
+            {
+                "mrc_id": "MRC-NEGATIVE-001",
+                "key": "missing_required_fields",
+                "required": True,
+                "covered_by_cases": [],
+                "status": "skipped_by_scope",
+                "skip_reason": "not applicable to this change",
+            },
+        ],
+    )
+    _write(
+        ws,
         "review/case-review.json",
         {
             "schema_version": "1.0",
@@ -173,6 +213,12 @@ def test_case_review_with_independent_source_verification_passes(tmp_path: Path)
             "auto_fix_allowed": False,
             "human_review_required": False,
             "risk_level": "low",
+            "minimum_coverage": {
+                "total_required": 2,
+                "covered": 1,
+                "skipped_by_scope": 1,
+                "missing": ["missing_required_fields"],
+            },
             "source_verification": {
                 "independent": True,
                 "reviewed_source_files": ["app/api.py"],
@@ -181,6 +227,67 @@ def test_case_review_with_independent_source_verification_passes(tmp_path: Path)
         },
     )
     assert _validate_registry_outputs(workspace=ws, outputs=("change:review/case-review.json",)) is None
+
+
+def test_case_review_minimum_coverage_must_match_frozen_matrix(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    _write(
+        ws,
+        "trace/minimum-coverage-matrix.yaml",
+        [
+            {
+                "mrc_id": "MRC-API-001",
+                "key": "list_users",
+                "required": True,
+                "covered_by_cases": ["TC-1"],
+                "status": "covered",
+            },
+            {
+                "mrc_id": "MRC-E2E-001",
+                "key": "admin_resets_password",
+                "required": True,
+                "covered_by_cases": [],
+                "status": "skipped_by_scope",
+                "skip_reason": "out of scope",
+            },
+        ],
+    )
+    _write(
+        ws,
+        "review/case-review.json",
+        {
+            "schema_version": "1.0",
+            "review_type": "case",
+            "change_id": "CH-1",
+            "decision": "needs_human_review",
+            "findings": [],
+            "auto_fix_plan": [],
+            "next_action": "human_review",
+            "auto_fix_allowed": False,
+            "human_review_required": True,
+            "risk_level": "medium",
+            "minimum_coverage": {
+                "total_required": 1,
+                "covered": 1,
+                "skipped_by_scope": 0,
+                "missing": [],
+            },
+            "source_verification": {
+                "independent": True,
+                "reviewed_source_files": ["app/api.py"],
+                "verified_claims": [{"claim": "route exists", "evidence_files": ["app/api.py"]}],
+            },
+        },
+    )
+
+    result = _validate_registry_outputs(workspace=ws, outputs=("change:review/case-review.json",))
+
+    assert result is not None
+    assert result.error_kind == "invalid_output"
+    assert "minimum_coverage" in (result.error or "")
+    assert "total_required=2" in (result.error or "")
+    assert "skipped_by_scope=1" in (result.error or "")
+    assert "admin_resets_password" in (result.error or "")
 
 
 def test_case_review_without_source_verification_is_invalid_output(tmp_path: Path) -> None:
@@ -214,6 +321,214 @@ def _write_project(ws: TaskWorkspace, rel: str, payload: object) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
+
+
+def test_case_design_proposal_without_own_source_verification_is_invalid_output(
+    tmp_path: Path,
+) -> None:
+    ws = _workspace(tmp_path)
+    (ws.change_dir / "proposal.md").write_text(
+        "# Proposal: CH-1\n\n## Why\n\nExercise the API.\n",
+        encoding="utf-8",
+    )
+
+    result = _validate_case_design_source_verification(ws)
+
+    assert result is not None
+    assert result.error_kind == "invalid_output"
+    assert "Product Source Verification" in (result.error or "")
+
+
+def test_case_design_source_verification_error_includes_exact_repair_shape(
+    tmp_path: Path,
+) -> None:
+    ws = _workspace(tmp_path)
+    source = ws.project_root / "app" / "api.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("def route(): ...\n", encoding="utf-8")
+    (ws.change_dir / "proposal.md").write_text(
+        """# Proposal: CH-1
+
+## Product Source Verification
+
+- reviewed_source_files:
+  - `app/api.py`
+""",
+        encoding="utf-8",
+    )
+
+    result = _validate_case_design_source_verification(ws)
+
+    assert result is not None
+    assert "- independently_read: true" in (result.error or "")
+    assert "- reviewed_source_files:\n  - `<project-relative product source path>`" in (result.error or "")
+
+
+def test_case_design_proposal_with_existing_product_source_passes(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    source = ws.project_root / "app" / "api.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("def route(): ...\n", encoding="utf-8")
+    (ws.change_dir / "proposal.md").write_text(
+        """# Proposal: CH-1
+
+## Product Source Verification
+
+- independently_read: true
+- reviewed_source_files:
+  - `app/api.py`
+
+| Claim | Source file | Evidence checked |
+|---|---|---|
+| route exists | `app/api.py` | `route` handler |
+""",
+        encoding="utf-8",
+    )
+
+    assert _validate_case_design_source_verification(ws) is None
+
+
+@pytest.mark.parametrize(
+    ("answers", "source_path"),
+    (
+        (InitAnswers(), "backend/api.py"),
+        (
+            InitAnswers(frontend_path="./client/ui", backend_path="./services/api"),
+            "services/api/routes.py",
+        ),
+    ),
+)
+def test_case_design_accepts_sources_declared_by_project_config(
+    tmp_path: Path,
+    answers: InitAnswers,
+    source_path: str,
+) -> None:
+    ws = _workspace(tmp_path)
+    _write_init_config(ws, answers)
+    source = ws.project_root / source_path
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("def route(): ...\n", encoding="utf-8")
+    (ws.change_dir / "proposal.md").write_text(
+        f"""# Proposal: CH-1
+
+## Product Source Verification
+
+- independently_read: true
+- reviewed_source_files:
+  - `{source_path}`
+""",
+        encoding="utf-8",
+    )
+
+    assert _validate_case_design_source_verification(ws) is None
+
+
+def test_case_design_rejects_existing_file_outside_declared_source_roots(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    _write_init_config(
+        ws,
+        InitAnswers(frontend_path="./client/ui", backend_path="./services/api"),
+    )
+    source = ws.project_root / "docs" / "api.py"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("def route(): ...\n", encoding="utf-8")
+    (ws.change_dir / "proposal.md").write_text(
+        """# Proposal: CH-1
+
+## Product Source Verification
+
+- independently_read: true
+- reviewed_source_files:
+  - `docs/api.py`
+""",
+        encoding="utf-8",
+    )
+
+    result = _validate_case_design_source_verification(ws)
+
+    assert result is not None
+    assert result.error_kind == "invalid_output"
+    assert "reviewed_source_files" in (result.error or "")
+
+
+def test_case_design_finalize_reports_registry_and_source_verification_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ws = _workspace(tmp_path)
+    _write(ws, "cases/system/api/case.yaml", {"broken": True})
+    (ws.change_dir / "proposal.md").write_text(
+        "# Proposal: CH-1\n\n## Why\n\nExercise the API.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(finalize, "_ensure_outputs_frozen", lambda **kwargs: kwargs["result"])
+    monkeypatch.setattr(finalize, "_ingest_frozen_outputs", lambda **kwargs: kwargs["result"])
+    monkeypatch.setattr(finalize, "_apply_subgraph_exports", lambda **kwargs: kwargs["result"])
+    task = cast(
+        ExecutableTask,
+        SimpleNamespace(
+            graph_id="main",
+            node_id="case-design",
+            target="skill:aa-case-design",
+            input={"outputs": ["change:cases/"]},
+        ),
+    )
+    context = RuntimeContext(
+        project_root=ws.project_root,
+        repo_root=ws.repo_root,
+        change_dir=ws.change_dir,
+        change_id="CH-1",
+    )
+
+    result = finalize.finalize_task_result(
+        compiled=cast(CompiledWorkflow, SimpleNamespace(graphs={})),
+        store=cast(TreeStore, SimpleNamespace()),
+        task=task,
+        result=TaskResult(status="succeeded"),
+        workspace=ws,
+        context=context,
+    )
+
+    assert result.status == "failed"
+    assert result.error_kind == "invalid_output"
+    assert "case_yaml" in (result.error or "")
+    assert "Product Source Verification" in (result.error or "")
+
+
+@pytest.mark.parametrize(
+    "source_path",
+    (
+        "/tmp/api.py",
+        "../api.py",
+        "qa/changes/CH-1/explore/advisory.json",
+        "app/missing.py",
+    ),
+)
+def test_case_design_proposal_rejects_non_product_source(
+    tmp_path: Path,
+    source_path: str,
+) -> None:
+    ws = _workspace(tmp_path)
+    advisory = ws.change_dir / "explore" / "advisory.json"
+    advisory.parent.mkdir(parents=True)
+    advisory.write_text("{}\n", encoding="utf-8")
+    (ws.change_dir / "proposal.md").write_text(
+        f"""# Proposal: CH-1
+
+## Product Source Verification
+
+- independently_read: true
+- reviewed_source_files:
+  - `{source_path}`
+""",
+        encoding="utf-8",
+    )
+
+    result = _validate_case_design_source_verification(ws)
+
+    assert result is not None
+    assert result.error_kind == "invalid_output"
+    assert "reviewed_source_files" in (result.error or "")
 
 
 _RUNTIME_SIGNAL_DOC = {
@@ -468,19 +783,54 @@ def test_issue_analysis_status_accepts_authored_json_digest_without_model_defaul
     )
 
 
-def test_versioned_and_directory_outputs_are_skipped(tmp_path: Path) -> None:
+def test_versioned_outputs_are_skipped(tmp_path: Path) -> None:
     ws = _workspace(tmp_path)
     # versioned: execution-manifest — not must_compat
     _write(ws, "execution/execution-manifest.yaml", {"broken": True})
-    # directory output — not expanded
-    (ws.change_dir / "cases").mkdir(parents=True, exist_ok=True)
     assert (
         _validate_registry_outputs(
             workspace=ws,
-            outputs=("change:execution/execution-manifest.yaml", "change:cases/"),
+            outputs=("change:execution/execution-manifest.yaml",),
         )
         is None
     )
+
+
+def test_directory_output_expands_and_validates_registered_artifacts(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    _write(ws, "cases/system/api/case.yaml", {"broken": True})
+
+    result = _validate_registry_outputs(workspace=ws, outputs=("change:cases/",))
+
+    assert result is not None
+    assert result.error_kind == "invalid_output"
+    assert "case_yaml" in (result.error or "")
+
+
+def test_undeclared_authored_proposal_is_validated_from_frozen_write_set(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    _write(
+        ws,
+        "plans/data-knowledge.proposal.api.yaml",
+        {
+            "version": 1,
+            "change_id": "CH-1",
+            "proposal_kind": "delta",
+            "formal_knowledge": ".aa/data-knowledge.yaml",
+            "capabilities": {"fixtures": {}, "auth": {}, "cleanup": {}},
+            "promotion_required": True,
+        },
+    )
+
+    result = _validate_registry_outputs(
+        workspace=ws,
+        outputs=("change:plans/api-plan.md",),
+        written_outputs=("change:plans/data-knowledge.proposal.api.yaml",),
+    )
+
+    assert result is not None
+    assert result.error_kind == "invalid_output"
+    assert "data_knowledge_proposal" in (result.error or "")
 
 
 def test_non_change_outputs_are_ignored(tmp_path: Path) -> None:

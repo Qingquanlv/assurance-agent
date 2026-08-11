@@ -19,6 +19,9 @@ from assurance_agent.artifacts.models import (
     ApplySummary,
     CaseReviewAuthoring,
     CaseYaml,
+    CaseYamlAuthoring,
+    CodegenGeneratedFiles,
+    CodegenGeneratedFilesAuthoring,
     ChangeIssueSnapshot,
     CampaignResult,
     CampaignSpec,
@@ -29,6 +32,7 @@ from assurance_agent.artifacts.models import (
     EvalRunProjection,
     ExecutionManifest,
     FactBaseline,
+    FactBaselineAuthoring,
     FailureAnalysis,
     FixProposal,
     GeneratedManifest,
@@ -40,6 +44,7 @@ from assurance_agent.artifacts.models import (
     ImprovementCandidateDocumentDraftV3,
     ImprovementCandidateDocumentV3,
     ImprovementAutoReviewAssessment,
+    ImprovementAutoReviewAssessmentAuthoring,
     ImprovementAutoReviewBatchSummary,
     ImprovementAutoReviewStatus,
     ImprovementReviewSubject,
@@ -95,9 +100,23 @@ class ArtifactSpec(BaseModel):
     # 落盘校验模型与 agent 撰写契约不一致时（如 runtime 回填字段），
     # prompt 渲染必须用撰写契约，否则会要求模型输出 runtime 自己插入的字段。
     authoring_model: type[BaseModel] | None = None
+    # True when runtime completion deliberately adds fields that the authored
+    # artifact contract forbids agents from supplying.
+    runtime_completes_authoring: bool = False
 
 
 REGISTRY: list[ArtifactSpec] = [
+    *[
+        ArtifactSpec(
+            artifact_type="codegen_generated_files",
+            pattern=f"codegen/{layer}-generated-files.json",
+            model=CodegenGeneratedFiles,
+            compat="must_compat",
+            authoring_model=CodegenGeneratedFilesAuthoring,
+            runtime_completes_authoring=True,
+        )
+        for layer in ("api", "e2e", "fuzz", "performance")
+    ],
     ArtifactSpec(
         artifact_type="improvement_review_subject_v1",
         pattern="qa/improvements/review-subjects/*.json",
@@ -109,6 +128,8 @@ REGISTRY: list[ArtifactSpec] = [
         pattern="qa/improvements/reviews/*/assessment.json",
         model=ImprovementAutoReviewAssessment,
         compat="must_compat",
+        authoring_model=ImprovementAutoReviewAssessmentAuthoring,
+        runtime_completes_authoring=True,
     ),
     ArtifactSpec(
         artifact_type="improvement_auto_review_status_v1",
@@ -213,7 +234,11 @@ REGISTRY: list[ArtifactSpec] = [
         authoring_model=SignalDraftDocument,
     ),
     ArtifactSpec(
-        artifact_type="case_yaml", pattern="cases/**/case.yaml", model=CaseYaml, compat="must_compat"
+        artifact_type="case_yaml",
+        pattern="cases/**/case.yaml",
+        model=CaseYaml,
+        compat="must_compat",
+        authoring_model=CaseYamlAuthoring,
     ),
     ArtifactSpec(artifact_type="qa_yaml", pattern=".qa.yaml", model=QaYaml, compat="must_compat"),
     ArtifactSpec(
@@ -437,6 +462,7 @@ REGISTRY: list[ArtifactSpec] = [
         pattern="facts/fact-baseline.json",
         model=FactBaseline,
         compat="must_compat",
+        authoring_model=FactBaselineAuthoring,
     ),
     ArtifactSpec(
         artifact_type="advisory", pattern="explore/advisory.json", model=Advisory, compat="must_compat"
@@ -448,7 +474,10 @@ REGISTRY: list[ArtifactSpec] = [
         artifact_type="data_knowledge_proposal",
         pattern="plans/data-knowledge.proposal.*.yaml",
         model=DataKnowledgeProposal,
-        compat="versioned",
+        # Proposals are authored by the current workflow and consumed by the
+        # strict promotion boundary in the same run. Accepting an older or
+        # invented shape here only defers the failure until post-batch Retro.
+        compat="must_compat",
     ),
     # Phase 1 adversarial discovery (change-local discovery/**).
     ArtifactSpec(
@@ -544,3 +573,16 @@ def match_artifact(relpath: str) -> ArtifactSpec | None:
         if _pattern_regex(spec.pattern).match(norm):
             return spec
     return None
+
+
+def artifacts_under(directory: str) -> tuple[ArtifactSpec, ...]:
+    """Return specs whose registered patterns are statically below ``directory``.
+
+    Directory declarations do not name a concrete artifact, so this deliberately
+    accepts only literal prefix containment.  It never invents a sample path to
+    make a glob match and therefore cannot pull in contracts from another subtree.
+    """
+    norm = directory.replace("\\", "/")
+    if not norm or not norm.endswith("/"):
+        return ()
+    return tuple(spec for spec in REGISTRY if spec.pattern.startswith(norm))

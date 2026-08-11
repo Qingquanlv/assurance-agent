@@ -33,7 +33,7 @@
 #   OPENCODE_MAX_WORKFLOW_ATTEMPTS=4 ./benchmark/run-workflow-loop.sh
 #   USE_WORKFLOW_ARCHIVE=false              # legacy free-form archive prompt
 #   RESUME_RUNSTAMP=20260713-113457 ./benchmark/run-workflow-loop.sh
-#   DAEMON=1 ./benchmark/run-workflow-loop.sh   # detach + write PID/log symlinks
+#   DAEMON=1 is intentionally rejected; this script has no OpenCode daemon helper.
 #
 set -uo pipefail
 
@@ -49,7 +49,10 @@ fi
 # shellcheck disable=SC1090
 source "$LOOP_HELPERS"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-# Python migration: skills are synced INTO the SUT project by `aa skill refresh`.
+# Skills are mirrored into both project discovery roots and the OMO user
+# runtime. The user mirror is defense-in-depth only: benchmark preflight still
+# requires the server itself to have been started from this SUT so OMO's actual
+# project catalog cannot diverge from OpenCode's directory-scoped catalog.
 AA_SKILLS_ROOT="${AA_SKILLS_ROOT:-$PROJECT_ROOT/skills}"
 # SCRIPT_DIR = <aa-repo>/benchmark/vue-fastapi-admin/benchmark → repo root is ../../..
 AA_REPO_ROOT="${AA_REPO_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
@@ -141,7 +144,6 @@ fi
 SESSION_STAMP="$(date +%Y%m%d-%H%M%S)"
 RUNSTAMP="${RESUME_RUNSTAMP:-$SESSION_STAMP}"
 RUN_DIR="$SCRIPT_DIR/runs/$RUNSTAMP-opencode"
-mkdir -p "$RUN_DIR" "$RESUME_LOG_DIR"
 RETRO_ID="${RETRO_ID:-retro-${RUNSTAMP}-opencode}"
 BATCH_MANIFEST="$RUN_DIR/batch-manifest.json"
 LOOP_LOG="$RUN_DIR/loop.log"
@@ -174,6 +176,10 @@ log() {
   local line
   line="$(printf '[%s] %s' "$(date +%H:%M:%S)" "$*")"
   printf '%s\n' "$line" | tee -a "$LOOP_LOG" >>"$TRACK_LOG"
+}
+
+preflight_log() {
+  printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2
 }
 
 setup_run_tracking() {
@@ -295,7 +301,7 @@ recover_dead_end() {
 
 HARD_TIMEOUT_PY="$SCRIPT_DIR/run_with_hard_timeout.py"
 if [ ! -f "$HARD_TIMEOUT_PY" ]; then
-  log "ERROR: missing $HARD_TIMEOUT_PY"
+  preflight_log "ERROR: missing $HARD_TIMEOUT_PY"
   exit 1
 fi
 
@@ -884,55 +890,86 @@ run_benchmark_eval() {
 # Main loop
 # ---------------------------------------------------------------------------
 if [ ! -x "$AA_PYTHON" ]; then
-  log "ERROR: pinned assurance-agent Python missing: $AA_PYTHON"
+  preflight_log "ERROR: pinned assurance-agent Python missing: $AA_PYTHON"
   exit 1
 fi
 
-if [ "${DAEMON:-}" = "1" ]; then
-  exec python3 "$SCRIPT_DIR/resume-logs/daemonize-loop.py" "$@"
-fi
-
 if ! command -v "$OPENCODE_BIN" >/dev/null 2>&1; then
-  log "ERROR: OpenCode binary not found: $OPENCODE_BIN"
+  preflight_log "ERROR: OpenCode binary not found: $OPENCODE_BIN"
   exit 1
 fi
 
 if [ "$DRIVER_ADAPTER" != "opencode" ]; then
-  log "ERROR: run-workflow-loop.sh requires DRIVER_ADAPTER=opencode so bounded aa-* permissions apply"
+  preflight_log "ERROR: run-workflow-loop.sh requires DRIVER_ADAPTER=opencode so bounded aa-* permissions apply"
   exit 1
 fi
 
 # uv-based bootstrap (replaces the TS npm build/link path).
 if ! command -v "$AA_BIN" >/dev/null 2>&1; then
   if command -v uv >/dev/null 2>&1 && [ -d "$AA_REPO_ROOT" ]; then
-    log "aa CLI not found - installing via uv from $AA_REPO_ROOT"
+    preflight_log "aa CLI not found - installing via uv from $AA_REPO_ROOT"
     uv tool install --from "$AA_REPO_ROOT" assurance-agent || {
-      log "ERROR: uv tool install failed for assurance-agent"; exit 1; }
+      preflight_log "ERROR: uv tool install failed for assurance-agent"; exit 1; }
   fi
 fi
 if ! command -v "$AA_BIN" >/dev/null 2>&1; then
-  log "ERROR: aa CLI not found: $AA_BIN (install with 'uv tool install .' in $AA_REPO_ROOT)"
+  preflight_log "ERROR: aa CLI not found: $AA_BIN (install with 'uv tool install .' in $AA_REPO_ROOT)"
   exit 1
 fi
 
-log "syncing current aa skills and bounded OpenCode agents"
-( cd "$PROJECT_ROOT" && "$AA_BIN" skill refresh --sync-agents >/dev/null 2>&1 ) || {
-  log "ERROR: aa skill refresh --sync-agents failed"
+preflight_log "syncing and verifying current aa runtime skills and bounded OpenCode agents"
+( cd "$PROJECT_ROOT" && "$AA_BIN" skill refresh --sync-agents --sync-opencode-user-skills --sync-opencode-user-agents >/dev/null 2>&1 ) || {
+  preflight_log "ERROR: aa skill refresh --sync-agents --sync-opencode-user-skills --sync-opencode-user-agents failed"
   exit 1
 }
+if ! "$AA_PYTHON" -c 'import sys; from pathlib import Path; from assurance_agent.workflow.core.assets import opencode_user_agents_root, opencode_user_skills_root, verify_packaged_agents, verify_packaged_skills; root = Path(sys.argv[1]); verify_packaged_skills(root / "skills"); verify_packaged_skills(root / ".opencode" / "skills"); verify_packaged_skills(opencode_user_skills_root(), namespaced_only=True); verify_packaged_agents(opencode_user_agents_root())' "$PROJECT_ROOT"; then
+  preflight_log "ERROR: synced OpenCode/OMO skill or agent hashes/runtime namespace are invalid"
+  exit 1
+fi
 
 if ! curl -sf -o /dev/null "$OPENCODE_SERVER" 2>/dev/null; then
-  log "ERROR: no OpenCode server reachable at $OPENCODE_SERVER"
-  log "       start it after agent sync (for example: opencode serve --port 4096)"
+  preflight_log "ERROR: no OpenCode server reachable at $OPENCODE_SERVER"
+  preflight_log "       start it after agent sync (for example: opencode serve --port 4096)"
   exit 1
 fi
 
-log "validating live bounded OpenCode agent policies"
+preflight_log "validating live bounded OpenCode agent policies"
 if ! "$AA_PYTHON" -c 'import sys; from assurance_agent.workflow.driver.opencode_adapter import validate_bounded_agent_server; validate_bounded_agent_server(sys.argv[1], sys.argv[2])' "$OPENCODE_SERVER" "$PROJECT_ROOT"; then
-  log "ERROR: live OpenCode agents are stale or unsafe after sync"
-  log "       restart OpenCode so it reloads the project .opencode/agents policies"
+  preflight_log "ERROR: live OpenCode agents are stale or unsafe after sync"
+  preflight_log "       restart OpenCode so it reloads the project .opencode/agents policies"
   exit 1
 fi
+
+preflight_log "validating live bounded OpenCode agents from an isolated Graph task project"
+if ! "$AA_PYTHON" -c '
+import subprocess
+import sys
+import tempfile
+from assurance_agent.workflow.driver.opencode_adapter import validate_bounded_agent_server
+with tempfile.TemporaryDirectory(prefix="aa-opencode-agent-preflight-") as directory:
+    subprocess.run(["git", "init", "-q"], cwd=directory, check=True, capture_output=True)
+    validate_bounded_agent_server(sys.argv[1], directory)
+' "$OPENCODE_SERVER"; then
+  preflight_log "ERROR: live OpenCode user-level AA agents are stale or unsafe for isolated task projects"
+  preflight_log "       restart OpenCode so it reloads the synchronized user agents"
+  exit 1
+fi
+
+preflight_log "validating OpenCode server working directory, live boundary plugin, and exact skill catalog"
+if ! "$AA_PYTHON" -c 'import sys; from assurance_agent.workflow.driver.opencode_adapter import validate_packaged_skill_server; validate_packaged_skill_server(sys.argv[1], sys.argv[2])' "$OPENCODE_SERVER" "$PROJECT_ROOT"; then
+  preflight_log "ERROR: OpenCode server working directory, live boundary plugin, or skill catalog failed validation"
+  preflight_log "       restart OpenCode from $PROJECT_ROOT so it loads the synchronized plugin and skill catalog"
+  exit 1
+fi
+
+if [ "${DAEMON:-}" = "1" ]; then
+  preflight_log "ERROR: DAEMON=1 is not supported by the OpenCode benchmark; run it in the foreground"
+  exit 1
+fi
+
+mkdir -p "$RUN_DIR" "$RESUME_LOG_DIR"
+setup_run_tracking
+trap cleanup_loop_resources EXIT
 
 log "opencode benchmark loop start - runstamp=$RUNSTAMP items=${#BENCHMARK_ITEMS[@]}${RESUME_RUNSTAMP:+ (resume)}"
 log "project_root=$PROJECT_ROOT run_mode=$RUN_MODE run_tests=$RUN_TESTS test_types=$TEST_TYPES"
@@ -942,9 +979,6 @@ log "do_archive=$DO_ARCHIVE use_workflow_archive=$USE_WORKFLOW_ARCHIVE entrypoin
 log "retro: canonical_batch_cli id=$RETRO_ID manifest=$BATCH_MANIFEST dry_run=$RETRO_DRY_RUN"
 log "do_benchmark_eval=$DO_BENCHMARK_EVAL suites=[$BENCHMARK_EVAL_SUITES]"
 log "auto_decide=$AUTO_DECIDE_BENCHMARK recover_healing=$RECOVER_HEALING_DEADLOCK"
-
-setup_run_tracking
-trap cleanup_loop_resources EXIT
 
 declare -a BATCH_CHANGE_IDS=()
 for item in "${BENCHMARK_ITEMS[@]}"; do
@@ -1105,31 +1139,32 @@ run_batch_knowledge_promotion_boundary() {
   if promote_batch_knowledge_proposals "$AA_BIN" "$BATCH_MANIFEST" "${BATCH_CHANGE_IDS[@]}"; then
     knowledge_promotion_status="completed"
     log "knowledge proposal promotion boundary check complete"
-    run_retro_collect
-    retro_collect_exit=$?
-    if capture_retro_artifacts "$RETRO_ID"; then
-      retro_status_file="$RUN_DIR/retro-status.json"
-      retro_result="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("result","technical_failure"))' "$retro_status_file")"
-      retro_batch_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("batch_id") or "")' "$retro_status_file")"
-      retro_improvement_ids="$(python3 -c 'import json,sys; print(",".join(json.load(open(sys.argv[1])).get("improvement_ids") or []))' "$retro_status_file")"
-      retro_outbox_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("outbox_id") or "")' "$retro_status_file")"
-      log "retro complete: result=$retro_result retro_id=$retro_id batch_id=$retro_batch_id signal_count=${signal_count:-?} change_count=${change_count:-?}"
-    else
-      log "retro technical failure: exit=$retro_collect_exit status artifact missing/invalid (see retro-collect.log)"
-    fi
-
-    if [ "$DO_BENCHMARK_EVAL" = "true" ]; then
-      run_benchmark_eval
-      benchmark_eval_status="completed"
-    fi
   else
     knowledge_promotion_status="failed"
-    retro_result="skipped_knowledge_promotion_failed"
-    retro_collect_exit="skipped"
     if [ "$DO_BENCHMARK_EVAL" = "true" ]; then
       benchmark_eval_status="skipped_knowledge_promotion_failed"
     fi
-    log "knowledge proposal promotion failed at Batch boundary"
+    log "knowledge proposal promotion failed at Batch boundary; preserving Retro evidence"
+  fi
+
+  # Promotion controls L1 mutation, not failure analysis.  A conflict is
+  # itself evidence and must not erase the Batch Retro/Improvement path.
+  run_retro_collect
+  retro_collect_exit=$?
+  if capture_retro_artifacts "$RETRO_ID"; then
+    retro_status_file="$RUN_DIR/retro-status.json"
+    retro_result="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("result","technical_failure"))' "$retro_status_file")"
+    retro_batch_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("batch_id") or "")' "$retro_status_file")"
+    retro_improvement_ids="$(python3 -c 'import json,sys; print(",".join(json.load(open(sys.argv[1])).get("improvement_ids") or []))' "$retro_status_file")"
+    retro_outbox_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("outbox_id") or "")' "$retro_status_file")"
+    log "retro complete: result=$retro_result retro_id=$retro_id batch_id=$retro_batch_id signal_count=${signal_count:-?} change_count=${change_count:-?}"
+  else
+    log "retro technical failure: exit=$retro_collect_exit status artifact missing/invalid (see retro-collect.log)"
+  fi
+
+  if [ "$knowledge_promotion_status" = "completed" ] && [ "$DO_BENCHMARK_EVAL" = "true" ]; then
+    run_benchmark_eval
+    benchmark_eval_status="completed"
   fi
 }
 # END batch knowledge promotion boundary

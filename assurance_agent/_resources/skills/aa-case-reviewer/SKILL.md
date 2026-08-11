@@ -202,6 +202,16 @@ Violations:
 }
 ```
 
+These four fields are an exact projection of the frozen matrix, not an estimate:
+
+- count only rows whose `required` value is true;
+- `covered` is the number of required rows with `status: covered`;
+- `skipped_by_scope` is the number of required rows with that status;
+- `missing` lists every required `skipped_by_scope` row's `key`, in matrix order.
+
+The runtime recomputes this projection from `trace/minimum-coverage-matrix.yaml`
+and rejects the review when any count or key differs.
+
 ---
 
 ## Review Criteria

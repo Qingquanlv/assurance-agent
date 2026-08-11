@@ -16,17 +16,14 @@ from pathlib import Path
 from assurance_agent import resources
 from assurance_agent.artifacts.models.improvements import ImprovementState
 from assurance_agent.artifacts.models.issues import Problem, ProblemProjection
+from assurance_agent.workflow.driver.operations_catalog import default_operations
+from assurance_agent.workflow.driver.runtime_factory import assemble_graph_runtime
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
-from assurance_agent.workflow.graph.checkpoint import CheckpointStore
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import load_execution_contracts, parse_execution_contracts
-from assurance_agent.workflow.graph.handlers.operation import default_operations
 from assurance_agent.workflow.graph.models import CompiledWorkflow, ResumeCommand, RuntimeContext
 from assurance_agent.workflow.graph.runtime import GraphRuntime
-from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2, parse_workflow_v2
-from assurance_agent.workflow.graph.task_runner import build_default_node_runner
-from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
 from assurance_agent.workflow.improvements.events import IMPROVEMENT_EVENT_ADAPTER
 from assurance_agent.workflow.improvements.ledger import ProjectImprovementStore
 from assurance_agent.workflow.improvements.review import REVIEW_ACTIONS
@@ -158,49 +155,14 @@ def _runtime(
     compiled: CompiledWorkflow,
     contracts: object,
 ) -> GraphRuntime:
-    change_dir = project / "qa" / "changes" / "CH-REVIEW"
-    store = TreeStore(change_dir)
-    checkpoints = CheckpointStore(change_dir)
-    workspaces = WorkspaceBackend(change_dir)
-    clock = FakeClock()
-    holder: dict[str, GraphRuntime] = {}
-
-    def run_child(task, graph_id, workspace, context):  # type: ignore[no-untyped-def]
-        return holder["rt"].run_child(task, graph_id, workspace, context)
-
-    node_runner = build_default_node_runner(
-        NeverCalledInvoker(),
-        store,
-        contracts,  # type: ignore[arg-type]
+    return assemble_graph_runtime(
+        project_root=project,
+        change_dir=project / "qa" / "changes" / "CH-REVIEW",
         compiled=compiled,
-        run_child=run_child,
-    )
-    state_defs: dict = {}
-    for graph in compiled.schema.graphs.values():
-        state_defs.update(dict(graph.state))
-    scheduler = Scheduler(
-        checkpoints=checkpoints,
-        object_store=store,
-        clock=clock,
-        workspace_backend=workspaces,
-        node_runner=node_runner,
-        max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
         contracts=contracts,  # type: ignore[arg-type]
-        state_defs=state_defs,
+        adapter=NeverCalledInvoker(),
+        clock=FakeClock(),
     )
-    schemas = {compiled.digest: compiled}
-    runtime = GraphRuntime(
-        checkpoint_store=checkpoints,
-        object_store=store,
-        workspace_backend=workspaces,
-        contracts=contracts,  # type: ignore[arg-type]
-        node_runner=node_runner,
-        scheduler=scheduler,
-        schema_resolver=lambda digest: schemas[digest],
-        clock=clock,
-    )
-    holder["rt"] = runtime
-    return runtime
 
 
 def _ctx(project: Path, *, review_id: str = "IREV-1") -> RuntimeContext:

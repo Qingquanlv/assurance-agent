@@ -8,9 +8,16 @@ from pathlib import Path
 import pytest
 import yaml
 
-from assurance_agent.workflow.driver.runtime_factory import build_graph_runtime
+from assurance_agent.workflow.driver.runtime_factory import (
+    assemble_graph_runtime,
+    build_graph_runtime,
+)
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
+from assurance_agent.workflow.graph.compiler import compile_workflow
+from assurance_agent.workflow.graph.contracts import parse_execution_contracts
 from assurance_agent.workflow.graph.model_routing import ModelRoutingError
+from assurance_agent.workflow.graph.models import RuntimeContext
+from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
 from tests.helpers_aa import write_aa_config
 
 
@@ -113,3 +120,67 @@ def test_headless_ignores_opencode_strict_routes(tmp_path: Path) -> None:
     )
 
     assert bundle.compiled.schema.name == "strict-test"
+
+
+_MINIMAL_CONTRACTS = textwrap.dedent(
+    """\
+    schema_version: "1"
+    contracts:
+      operation:no-op:
+        handler: operation
+        side_effect_free: true
+    """
+)
+
+_MINIMAL_WORKFLOW = textwrap.dedent(
+    """\
+    schema_version: "2"
+    name: assemble-min
+    entrypoints:
+      full: {graph: main}
+    policies:
+      retry:
+        never: {max_attempts: 1, retry_on: []}
+      timeout:
+        local: {run_seconds: 60, heartbeat_seconds: 10}
+      scheduler: {max_parallel_tasks: 2}
+    graphs:
+      main:
+        max_supersteps: 5
+        nodes:
+          only: {uses: operation:no-op, retry: never, timeout: local}
+        edges:
+          - {from: START, to: only}
+          - {from: only, to: END}
+    gates: {}
+    """
+)
+
+
+def test_assemble_graph_runtime_runs_minimal_workflow(tmp_path: Path) -> None:
+    project = _prepare(tmp_path)
+    contracts = parse_execution_contracts(_MINIMAL_CONTRACTS)
+    compiled = compile_workflow(parse_workflow_v2(_MINIMAL_WORKFLOW), contracts)
+    change_dir = project / "qa" / "changes" / "CH-1"
+
+    runtime = assemble_graph_runtime(
+        project_root=project,
+        change_dir=change_dir,
+        compiled=compiled,
+        contracts=contracts,
+        adapter=NeverCalledInvoker(),
+    )
+    result = runtime.run(
+        compiled,
+        "full",
+        RuntimeContext(
+            project_root=project,
+            repo_root=project,
+            change_dir=change_dir,
+            change_id="CH-1",
+            params={},
+        ),
+    )
+
+    assert result.exit_code == 0
+    assert result.status.status == "completed"

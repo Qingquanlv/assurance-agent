@@ -33,4 +33,13 @@ def load_case_entries_strict(change_dir: Path) -> list[CaseEntry]:
     return entries
 
 
-__all__ = ["CaseArtifactError", "load_case_entries_strict"]
+def touched_entities_from_cases(change_dir: Path) -> frozenset[str]:
+    """Return the trailing module segment declared by this change's cases."""
+    return frozenset(
+        str(entry.module).strip().rsplit(".", 1)[-1]
+        for entry in load_case_entries_strict(change_dir)
+        if str(entry.module).strip()
+    )
+
+
+__all__ = ["CaseArtifactError", "load_case_entries_strict", "touched_entities_from_cases"]

@@ -1772,7 +1772,7 @@ def _planned_retro_tasks(
     expected_waves = (
         {"drain-reconcile-outbox"},
         {"collect-retro-evidence"},
-        {"analyze-issue", "analyze-workflow", "analyze-eval"},
+        {"analyze-issue", "analyze-workflow", "materialize-empty-eval-analysis"},
         {"issue-settled", "workflow-settled", "eval-settled"},
         {"analysis-join"},
         {"assemble-retro-context"},
@@ -1784,9 +1784,29 @@ def _planned_retro_tasks(
             synchronized = {path.pattern for path in plan.tasks[0].resources.synchronized}
             assert f"qa/retro/{retro_id}/**" in synchronized
             assert "qa/retro/**" not in synchronized
+        if expected == {"analyze-issue", "analyze-workflow", "materialize-empty-eval-analysis"}:
+            for task in plan.tasks:
+                if task.node_id == "materialize-empty-eval-analysis":
+                    assert task.target == "operation:materialize-empty-retro-analysis"
+                    assert {path.pattern for path in task.resources.reads} == {
+                        f"qa/retro/{retro_id}/evidence/eval-slice.json"
+                    }
+                else:
+                    domain = task.node_id.removeprefix("analyze-")
+                    assert {path.pattern for path in task.resources.reads} == {
+                        f"qa/retro/{retro_id}/evidence/{domain}-slice.json",
+                        f"qa/retro/{retro_id}/evidence/agent/{domain}-slice.json",
+                    }
         values: dict[str, object] | None = None
         if "collect-retro-evidence" in expected:
-            values = {"collect-retro-evidence": {"all_domain_evidence_absent": False}}
+            values = {
+                "collect-retro-evidence": {
+                    "all_domain_evidence_absent": False,
+                    "issue_count": 1,
+                    "workflow_count": 1,
+                    "eval_count": 0,
+                }
+            }
         elif "assemble-retro-context" in expected:
             values = {"assemble-retro-context": {"retro_id": retro_id, "signal_count": 1}}
         projection = advance(projection, plan.tasks, values=values)
@@ -1801,9 +1821,10 @@ def _planned_retro_tasks(
 
 def test_retro_agent_can_only_read_current_context(tmp_path: Path) -> None:
     task, _ = _planned_retro_tasks(tmp_path, retro_id="retro-current")
-    assert tuple((path.root, path.pattern) for path in task.resources.reads) == (
+    assert {(path.root, path.pattern) for path in task.resources.reads} == {
         ("project", "qa/retro/retro-current/context.json"),
-    )
+        ("project", "qa/retro/retro-current/context-agent.json"),
+    }
     assert all("retro-other" not in path.pattern for path in task.resources.reads)
     assert all("qa/issues" not in path.pattern for path in task.resources.reads)
     assert all(path.pattern != "qa/retro/**" for path in task.resources.reads)

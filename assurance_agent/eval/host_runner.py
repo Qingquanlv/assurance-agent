@@ -11,14 +11,11 @@ import os
 from pathlib import Path
 from typing import Any
 
-from assurance_agent.workflow.graph.agent_api import AgentInvoker, AgentRequest, AgentResult
+from assurance_agent.eval.fake_adapter import FixtureBackedFakeAdapter
+from assurance_agent.workflow.graph.agent_api import AgentInvoker
 
 
-class _FakeAdapter:
-    """AA_EVAL_FAKE_ADAPTER: skip real agent; seed/fixture supplies artifacts."""
-
-    def invoke(self, request: AgentRequest) -> AgentResult:
-        return AgentResult(ok=True)
+_FakeAdapter = FixtureBackedFakeAdapter
 
 
 def _resolve_adapter_factory(*, use_fake: bool, sut: Path):

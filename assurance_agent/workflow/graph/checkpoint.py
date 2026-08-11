@@ -166,6 +166,7 @@ def validate_import(
     manifest: ImportManifest,
     context: RuntimeContext,
     *,
+    checkpoint_ns: str,
     projection: GraphProjection | None = None,
 ) -> ValidatedImport:
     """校验 fixture digest、路径安全、structural path、前驱闭包、输出 hash 与 gate。"""
@@ -221,7 +222,12 @@ def validate_import(
                 raise CheckpointImportError(f"output hash mismatch for {logical}")
 
         gate_report = _reevaluate_gate(
-            compiled, context, task, state_values=state_values, node_results=node_results
+            compiled,
+            context,
+            task,
+            checkpoint_ns=checkpoint_ns,
+            state_values=state_values,
+            node_results=node_results,
         )
         if gate_report is not None:
             node_results[task.node] = {"gate": gate_report}
@@ -477,6 +483,7 @@ def _reevaluate_gate(
     context: RuntimeContext,
     task: ImportedTask,
     *,
+    checkpoint_ns: str,
     state_values: Mapping[str, object] | None = None,
     node_results: Mapping[str, object] | None = None,
 ) -> dict[str, object] | None:
@@ -501,6 +508,7 @@ def _reevaluate_gate(
         state_values=dict(state_values) if state_values is not None else _state_values_from_change(context),
         node_results=dict(node_results) if node_results is not None else {},
         audit_events_dir=context.change_dir,
+        checkpoint_ns=checkpoint_ns,
     )
     report = check_gate_in_view(compiled.schema.gates, gate_id, eval_context)
     if report.verdict.value != task.gate.verdict:

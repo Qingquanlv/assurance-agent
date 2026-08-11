@@ -21,7 +21,7 @@ auth:
   api_no_role_superuser_token:
     method: token
     symbol: tests.api.conftest.no_role_superuser_token
-    notes: Superuser token whose user has no role bindings; used to pin
+    notes: Superuser token whose user has no role bindings; used to pin 
       superuser bypass behavior
   api_no_role_user_token:
     method: token
@@ -53,6 +53,49 @@ entities:
       name_non_empty: true
       name_has_max_length: true
       name_unique: true
+  menu:
+    required_fields:
+      - name
+      - path
+      - component
+    constraints:
+      missing_required_fields: true
+      empty_menu_name: true
+      name_exceeds_max_length: true
+      invalid_parent_id: true
+      invalid_keepalive_type: true
+      delete_parent_menu_with_children: true
+      unauthorized_menu_management_api_access: true
+      superuser_without_roles_denied: true
+      parent_child_tree_consistency: true
+      sort_order_consistency: true
+      role_menu_relation_consistency_on_delete: true
+    notes: "Constraint key names mirror explore/advisory.json minimum_required_coverage
+      negative + data_integrity closed categories already written into case traces.
+      Promote only after human/knowledge review; do not invent alternate key spellings.\n"
+  user:
+    required_fields:
+      - email
+      - username
+      - password
+    constraints:
+      missing_required_fields: true
+      duplicate_username: true
+      duplicate_email_on_create: true
+      duplicate_email_on_update: true
+      invalid_dept_id: true
+      invalid_role_ids: true
+      invalid_dept_id_type: true
+      unauthorized_user_management_api_access: true
+      superuser_without_roles_denied: true
+      email_username_uniqueness: true
+      role_user_relation_consistency: true
+      dept_user_relation_consistency: true
+      list_dept_enrichment_resilience: true
+      password_excluded_from_user_payload: true
+    notes: "Constraint key names mirror explore/advisory + case traces for negative
+      and data_integrity MRC closed categories. Promote only after human / knowledge
+      review; do not invent alternate spellings.\n"
 capabilities:
   domain_factories:
     dept:
@@ -241,7 +284,7 @@ capabilities:
           kind: isolated_worker
           symbol: tests.e2e.adapters.auth.e2e_seed_limited_user
           create-if-missing: true
-          notes: Wraps factory_make_role + factory_bind_role_apis([]) +
+          notes: Wraps factory_make_role + factory_bind_role_apis([]) + 
             factory_make_user
         cleanup_limited_user:
           kind: isolated_worker
@@ -267,7 +310,7 @@ capabilities:
           entity: role
           create-if-missing: false
           cleanup_ref: cleanup.role_delete
-          notes: On-disk E2E bridge already present; missing from L1
+          notes: On-disk E2E bridge already present; missing from L1 
             adapters.e2e.role
     fuzz:
       api:
@@ -292,13 +335,13 @@ capabilities:
           kind: isolated_worker
           symbol: tests.fuzz.adapters.dept.fuzz_factory_cleanup_dept
           create-if-missing: true
-          notes: Fuzz adapter bridge to domain cleanup_dept for seeded update
+          notes: Fuzz adapter bridge to domain cleanup_dept for seeded update 
             fuzz
         cleanup_by_prefix:
           kind: http
           symbol: tests.fuzz.adapters.dept.fuzz_cleanup_depts_by_prefix
           create-if-missing: true
-          notes: Prefix-scoped tree cleanup after dept create fuzz; uses list +
+          notes: Prefix-scoped tree cleanup after dept create fuzz; uses list + 
             soft delete
       role:
         make_role:
@@ -321,13 +364,13 @@ capabilities:
           kind: isolated_worker
           symbol: tests.fuzz.adapters.menu.fuzz_factory_cleanup_menu
           create-if-missing: true
-          notes: Fuzz adapter bridge to domain cleanup_menu for seeded update
+          notes: Fuzz adapter bridge to domain cleanup_menu for seeded update 
             fuzz
         cleanup_by_prefix:
           kind: http
           symbol: tests.fuzz.adapters.menu.fuzz_cleanup_menus_by_prefix
           create-if-missing: true
-          notes: Prefix-scoped tree cleanup after menu create fuzz; clears
+          notes: Prefix-scoped tree cleanup after menu create fuzz; clears 
             role_menus M2M via domain cleanup
       user:
         make_user:
@@ -347,7 +390,7 @@ capabilities:
           kind: helper
           symbol: tests.perf.adapters.dept_seed.setup
           create-if-missing: true
-          notes: Pre-run 3-level dept tree seed for TC_DEPT_PERF_001; manifest
+          notes: Pre-run 3-level dept tree seed for TC_DEPT_PERF_001; manifest 
             at tests/perf/adapters/.manifests/dept_seed.json
         cleanup:
           kind: helper
@@ -359,20 +402,20 @@ capabilities:
           kind: helper
           symbol: tests.perf.adapters.menu_seed.setup
           create-if-missing: true
-          notes: Pre-run 3-level menu tree seed for TC_MENU_PERF_001; manifest
+          notes: Pre-run 3-level menu tree seed for TC_MENU_PERF_001; manifest 
             at tests/perf/adapters/.manifests/menu_seed.json
         cleanup:
           kind: helper
           symbol: tests.perf.adapters.menu_seed.cleanup
           create-if-missing: true
-          notes: Manifest-driven idempotent cleanup via domain cleanup_menu;
+          notes: Manifest-driven idempotent cleanup via domain cleanup_menu; 
             clears role_menus M2M
       system_user:
         setup:
           kind: helper
           symbol: tests.perf.adapters.system_user_seed.setup
           create-if-missing: true
-          notes: Pre-run bulk user seed for TC_USER_PERF_001; manifest at
+          notes: Pre-run bulk user seed for TC_USER_PERF_001; manifest at 
             tests/perf/adapters/.manifests/system_user_seed.json
         cleanup:
           kind: helper

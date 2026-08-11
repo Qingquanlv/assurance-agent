@@ -1,12 +1,23 @@
 name: L2-fuzz-codegen-seed
 extends: L1-plan-seed
-description: Fuzz codegen stub (golden-sample wiring; real fuzz artifacts TBD)
+description: Fuzz codegen seed with full assurance predecessor chain
+repo_paths:
+- .aa/config.yaml
+- .aa/data-knowledge.yaml
+- tests/testdata/domain/api.py
+- tests/testdata/domain/__init__.py
 paths:
 - codegen
 - tests/config.py
 - tests/conftest.py
 - tests/schema_validation.py
 - tests/fuzz
+- cases/system/fuzz
+- plans/fuzz-plan.md
+- plans/fuzz-codegen-plan.md
+- plans/fuzz-review-summary.md
+- review/fuzz-plan-review.json
+- review/fuzz-plan-review-summary.md
 resets:
   workflow_state:
     phases.execution.status: pending
@@ -31,6 +42,7 @@ imports:
       node: review
       outputs:
       - change:review/fuzz-plan-review.json
+      - change:review/fuzz-plan-review-summary.md
       gate: fuzz-plan-review-gate
     - path: execute-workflow/assurance/assurance/fuzz/fuzz-branch
       graph: fuzz-branch
@@ -44,6 +56,7 @@ imports:
       node: codegen
       outputs:
       - change:codegen/fuzz-codegen-summary.md
+      - change:codegen/fuzz-generated-files.json
     - path: execute-workflow/assurance/assurance
       graph: assurance
       node: fuzz

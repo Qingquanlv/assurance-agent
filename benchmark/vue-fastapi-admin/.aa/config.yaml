@@ -63,8 +63,10 @@ execution:
     default: anthropic/deepseek-v4-flash
     strict_routes: true
     routes:
-      aa-explore: anthropic/glm-5.2
-      aa-fact-baseline: anthropic/glm-5.2
+      # Bulk source discovery and deterministic fact extraction stay on the
+      # low-AFP default. Contract failures still escalate to GLM below.
+      aa-explore: anthropic/deepseek-v4-flash
+      aa-fact-baseline: anthropic/deepseek-v4-flash
 
       # Design, design repair, and coverage repair need stronger contract fidelity.
       aa-case-design: anthropic/glm-5.2
@@ -84,21 +86,23 @@ execution:
       aa-fuzz-plan-reviewer: anthropic/deepseek-v4-flash
       aa-performance-plan-reviewer: anthropic/deepseek-v4-flash
 
-      aa-api-codegen: anthropic/glm-5.2
-      aa-api-codegen-fixer: anthropic/glm-5.2
-      aa-e2e-codegen: anthropic/glm-5.2
-      aa-e2e-codegen-fixer: anthropic/glm-5.2
-      aa-fuzz-codegen: anthropic/glm-5.2
-      aa-performance-codegen: anthropic/glm-5.2
-      aa-fix-proposal: anthropic/glm-5.2
-      aa-issue-analyzer: anthropic/glm-5.2
-      aa-issue-triage-advisor: anthropic/glm-5.2
+      # Codegen and operational analysis are high-volume, contract-bounded
+      # work. Start on DeepSeek and escalate only on contract failures.
+      aa-api-codegen: anthropic/deepseek-v4-flash
+      aa-api-codegen-fixer: anthropic/deepseek-v4-flash
+      aa-e2e-codegen: anthropic/deepseek-v4-flash
+      aa-e2e-codegen-fixer: anthropic/deepseek-v4-flash
+      aa-fuzz-codegen: anthropic/deepseek-v4-flash
+      aa-performance-codegen: anthropic/deepseek-v4-flash
+      aa-fix-proposal: anthropic/deepseek-v4-flash
+      aa-issue-analyzer: anthropic/deepseek-v4-flash
+      aa-issue-triage-advisor: anthropic/deepseek-v4-flash
       aa-archive: anthropic/deepseek-v4-flash
 
       aa-retro-issue-analysis: anthropic/deepseek-v4-flash
       aa-retro-workflow-analysis: anthropic/deepseek-v4-flash
       aa-retro-eval-analysis: anthropic/deepseek-v4-flash
-      aa-retro: anthropic/glm-5.2
+      aa-retro: anthropic/deepseek-v4-flash
       # Explicit user decision: Improvement Reviewer stays on GLM 5.2.
       aa-improvement-reviewer: anthropic/glm-5.2
 

@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from assurance_agent.artifacts.models import CaseYaml, QaYaml
+from assurance_agent.artifacts.models import CaseYaml, CaseYamlAuthoring, QaYaml
 
 
 def make_case_entry(**overrides: object) -> dict:
@@ -59,6 +59,48 @@ def test_case_yaml_valid_fixture_parses() -> None:
     assert model.added[0].case_id == "TC_MENU_001"
     assert model.modified[0].priority == "P1"
     assert model.removed[0].case_id == "TC_MENU_003"
+
+
+def _performance_entry(*, scenario: dict[str, object]) -> dict:
+    return make_case_entry(
+        case_id="TC_MENU_PERF_001",
+        type="Performance",
+        automation={"performance": {"scenario": scenario}},
+    )
+
+
+def test_case_yaml_keeps_historical_performance_documents_compatible() -> None:
+    doc = make_case_yaml(added=[_performance_entry(scenario={"thresholds": {"p95_ms": 500}})])
+    assert CaseYaml.model_validate(doc).added[0].case_id == "TC_MENU_PERF_001"
+
+
+@pytest.mark.parametrize("missing", ["capability", "endpoint"])
+def test_case_yaml_authoring_requires_performance_execution_identity(missing: str) -> None:
+    scenario = {
+        "capability": "menu_list_query",
+        "endpoint": "GET /api/v1/menu/list",
+        "thresholds": {"p95_ms": 500},
+    }
+    del scenario[missing]
+    doc = make_case_yaml(added=[_performance_entry(scenario=scenario)])
+
+    with pytest.raises(ValidationError, match=missing):
+        CaseYamlAuthoring.model_validate(doc)
+
+
+def test_case_yaml_authoring_accepts_complete_performance_execution_identity() -> None:
+    doc = make_case_yaml(
+        added=[
+            _performance_entry(
+                scenario={
+                    "capability": "menu_list_query",
+                    "endpoint": "GET /api/v1/menu/list",
+                    "thresholds": {"p95_ms": 500},
+                }
+            )
+        ]
+    )
+    assert CaseYamlAuthoring.model_validate(doc).added[0].case_id == "TC_MENU_PERF_001"
 
 
 def test_case_yaml_hyphen_case_id_rejected() -> None:

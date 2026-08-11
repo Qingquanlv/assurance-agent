@@ -171,6 +171,22 @@ def test_unmapped_tests_fold_to_one_cluster_gap_per_file() -> None:
     assert [g.locator.cluster_key for g in doc.gaps] == ["tests/api/a.py", "tests/api/b.py"]
 
 
+def test_execution_diagnostic_without_file_is_not_an_unmapped_test_cluster() -> None:
+    """Runner diagnostics are not executed tests and have no file to repair."""
+    projection = _projection(
+        unmapped=(
+            UnmappedTest(
+                file="",
+                test_name="pytest json report not found — pytest may not have run.",
+            ),
+        )
+    )
+
+    doc = build_coverage_gaps(projection, None, change_id=CHANGE_ID, batch_id=BATCH_ID)
+
+    assert doc.gaps == ()
+
+
 def test_extension_kinds_emit_only_when_feedstock_present() -> None:
     projection = _projection()
     empty = build_coverage_gaps(projection, None, change_id=CHANGE_ID, batch_id=BATCH_ID)

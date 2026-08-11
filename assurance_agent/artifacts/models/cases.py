@@ -4,9 +4,10 @@ Field names, optionality and enum values transcribed one-for-one from the TS
 validators src/schema/case_yaml.ts and src/schema/qa_yaml.ts.
 """
 
+from collections.abc import Mapping
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from assurance_agent.artifacts.models.common import CaseId, NonEmptyStr, RiskTier
 
@@ -68,6 +69,49 @@ class CaseYaml(BaseModel):
     added: list[CaseEntry]
     modified: list[CaseEntry]
     removed: list[CaseRemoval]
+
+
+class CaseYamlAuthoring(CaseYaml):
+    """New case output obligations that are stricter than historical reads.
+
+    Execution and metrics identify a performance scenario by both capability
+    and endpoint.  Older case documents may predate those fields, so the
+    canonical ``CaseYaml`` remains compatible while freshly authored output is
+    rejected before it can reach those consumers.
+    """
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "prompt_notes": [
+                "Performance entries require automation.performance.scenario.capability "
+                "and automation.performance.scenario.endpoint as non-empty strings"
+            ]
+        }
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _require_performance_execution_identity(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        for section in ("added", "modified"):
+            entries = value.get(section)
+            if not isinstance(entries, list):
+                continue
+            for index, entry in enumerate(entries):
+                if not isinstance(entry, Mapping) or entry.get("type") != "Performance":
+                    continue
+                automation = entry.get("automation")
+                performance = automation.get("performance") if isinstance(automation, Mapping) else None
+                scenario = performance.get("scenario") if isinstance(performance, Mapping) else None
+                for field in ("capability", "endpoint"):
+                    field_value = scenario.get(field) if isinstance(scenario, Mapping) else None
+                    if not isinstance(field_value, str) or not field_value.strip():
+                        raise ValueError(
+                            f"{section}[{index}] Performance automation.performance.scenario."
+                            f"{field} must be a non-empty string"
+                        )
+        return value
 
 
 class QaChange(BaseModel):

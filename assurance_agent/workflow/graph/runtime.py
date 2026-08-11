@@ -69,6 +69,7 @@ from assurance_agent.workflow.graph.scheduler import Scheduler, SchedulerError
 from assurance_agent.workflow.graph.task_runner import NodeRunner
 from assurance_agent.workflow.graph.workspace import (
     TaskWorkspace,
+    TargetedWorkspaceDrift,
     TreeStore,
     WorkspaceBackend,
     WorkspaceError,
@@ -205,7 +206,13 @@ class GraphRuntime:
         context: RuntimeContext,
     ) -> ImportResult:
         """校验并原子导入显式 manifest；不伪造物理 attempt，随后 resume 继续。"""
-        validated = validate_import(schema, manifest, context)
+        invocation_id = str(uuid4())
+        validated = validate_import(
+            schema,
+            manifest,
+            context,
+            checkpoint_ns=invocation_id,
+        )
         latest = self.latest_root_invocation()
         if latest is not None:
             try:
@@ -233,7 +240,6 @@ class GraphRuntime:
             raise GraphRuntimeError(f"entrypoint '{manifest.entrypoint}' allow expression rejected params")
 
         root_tree_id = self._objects.capture(context.project_root, repo_root=context.repo_root)
-        invocation_id = str(uuid4())
         checkpoint_ns = invocation_id
         bound = context.model_copy(update={"params": params})
         digest = _policy_digest_from_tree(self._objects, root_tree_id)
@@ -445,11 +451,13 @@ class GraphRuntime:
             # disappear and downstream hard gates fail closed on missing evidence.
             child_projection = self._checkpoints.project(child_invocation_id)
             try:
+                _, _, _, _, committed_tree_ids = self._last_committed_tree_edge(child_projection)
                 self._objects.apply_tree_delta(
                     workspace.project_root,
                     child_projection.current_tree_id,
                     source_base_tree_id=child_projection.root_tree_id,
                     destination_base_tree_id=workspace.base_tree_id,
+                    acceptable_live_tree_ids=committed_tree_ids[:-1],
                 )
             except WorkspaceError as exc:
                 return TaskResult(status="failed", error_kind="invalid_output", error=str(exc))
@@ -788,7 +796,7 @@ class GraphRuntime:
         return audited
 
     def _context_for(self, projection: GraphProjection) -> RuntimeContext:
-        change_dir = self._checkpoints._change_dir  # noqa: SLF001
+        change_dir = self._checkpoints.change_dir
         meta_path = change_dir / ".graph-runtime" / "invocations" / f"{projection.invocation_id}.json"
         project_root = change_dir.parent.parent.parent
         repo_root = project_root
@@ -998,7 +1006,9 @@ class GraphRuntime:
         projection: GraphProjection,
         context: RuntimeContext,
     ) -> None:
-        prev, target, publication_id, write_set_ids = self._last_committed_tree_edge(projection)
+        prev, target, publication_id, write_set_ids, committed_tree_ids = self._last_committed_tree_edge(
+            projection
+        )
         if target is None:
             return
         if publication_id is None:
@@ -1011,6 +1021,38 @@ class GraphRuntime:
                 write_set_ids=write_set_ids,
             ):
                 return
+        except TargetedWorkspaceDrift as exc:
+            # A nested graph is resumed in a newly materialized parent-task
+            # workspace.  That workspace can be exactly the child's root tree
+            # even though the child ledger contains several committed edges.
+            # Replaying only the final synchronized edge then compares an
+            # intermediate ``before`` with the fresh root and false-positives as
+            # canonical drift. Rehydrate the cumulative child delta while
+            # accepting only exact prefixes pinned by this invocation's commit
+            # chain (plus root/final), so real overlap still fails closed without
+            # walking unrelated live paths.
+            try:
+                if projection.parent_task_id is None:
+                    raise exc
+                self._objects.apply_tree_delta(
+                    context.project_root,
+                    target,
+                    source_base_tree_id=projection.root_tree_id,
+                    destination_base_tree_id=projection.root_tree_id,
+                    acceptable_live_tree_ids=committed_tree_ids[:-1],
+                )
+                # Finish the durable publication protocol as well as restoring
+                # bytes.  The replay is now idempotent and acknowledges the
+                # publication prepared by the first attempt.
+                if self._scheduler.repair_committed_write_sets(
+                    context=context,
+                    invocation_id=projection.invocation_id,
+                    publication_id=publication_id,
+                    write_set_ids=write_set_ids,
+                ):
+                    return
+            except (SchedulerError, WorkspaceError) as recovery_exc:
+                raise GraphRuntimeError(f"failed to repair materialization: {recovery_exc}") from recovery_exc
         except (SchedulerError, WorkspaceError) as exc:
             raise GraphRuntimeError(f"failed to repair materialization: {exc}") from exc
         try:
@@ -1028,13 +1070,20 @@ class GraphRuntime:
     def _last_committed_tree_edge(
         self,
         projection: GraphProjection,
-    ) -> tuple[str | None, str | None, str | None, tuple[str, ...]]:
+    ) -> tuple[
+        str | None,
+        str | None,
+        str | None,
+        tuple[str, ...],
+        tuple[str, ...],
+    ]:
         cursor = projection.root_tree_id
         last_prev: str | None = None
         last_target: str | None = None
         last_publication_id: str | None = None
         last_write_set_ids: tuple[str, ...] = ()
-        for raw in read_events_strict(self._checkpoints._change_dir):  # noqa: SLF001
+        committed_tree_ids: list[str] = []
+        for raw in read_events_strict(self._checkpoints.change_dir):
             if raw.get("source") != "graph" or raw.get("invocation_id") != projection.invocation_id:
                 continue
             if raw.get("type") != "superstep_committed":
@@ -1052,7 +1101,14 @@ class GraphRuntime:
                     if isinstance(value, str)
                 )
                 cursor = target_tree
-        return last_prev, last_target, last_publication_id, last_write_set_ids
+                committed_tree_ids.append(target_tree)
+        return (
+            last_prev,
+            last_target,
+            last_publication_id,
+            last_write_set_ids,
+            tuple(committed_tree_ids),
+        )
 
     def _retry_pending_update(self, projection: GraphProjection, context: RuntimeContext) -> None:
         planned = self._last_uncommitted_plan(projection.invocation_id)
@@ -1061,14 +1117,10 @@ class GraphRuntime:
         succeeded = [task_id for task_id, task in projection.tasks.items() if task.status in ("succeeded",)]
         if not succeeded:
             return
-        plan = PlanResult(
-            superstep_id=planned["superstep_id"],
-            checkpoint_id=planned["checkpoint_id"],
-            tasks=(),
-        )
         try:
-            self._scheduler._commit_wave(  # noqa: SLF001
-                plan=plan,
+            self._scheduler.commit_pending_updates(
+                superstep_id=planned["superstep_id"],
+                checkpoint_id=planned["checkpoint_id"],
                 projection=projection,
                 context=context,
                 succeeded_ids=succeeded,
@@ -1079,7 +1131,7 @@ class GraphRuntime:
     def _last_uncommitted_plan(self, invocation_id: str) -> dict[str, str] | None:
         last_plan: dict[str, str] | None = None
         committed: set[str] = set()
-        for raw in read_events_strict(self._checkpoints._change_dir):  # noqa: SLF001
+        for raw in read_events_strict(self._checkpoints.change_dir):
             if raw.get("source") != "graph" or raw.get("invocation_id") != invocation_id:
                 continue
             if raw.get("type") == "superstep_planned":

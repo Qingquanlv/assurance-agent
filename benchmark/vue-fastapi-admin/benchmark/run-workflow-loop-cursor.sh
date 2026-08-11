@@ -1091,27 +1091,28 @@ if batch_members_settled "$BATCH_MANIFEST"; then
   if promote_batch_knowledge_proposals "$AA_BIN" "$BATCH_MANIFEST" "${BATCH_CHANGE_IDS[@]}"; then
     knowledge_promotion_status="completed"
     log "knowledge proposal promotion boundary check complete"
-    run_retro_collect
-    retro_collect_exit=$?
-    if capture_retro_artifacts "$RETRO_ID"; then
-      retro_status_file="$RUN_DIR/retro-status.json"
-      retro_result="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("result","technical_failure"))' "$retro_status_file")"
-      retro_batch_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("batch_id") or "")' "$retro_status_file")"
-      retro_improvement_ids="$(python3 -c 'import json,sys; print(",".join(json.load(open(sys.argv[1])).get("improvement_ids") or []))' "$retro_status_file")"
-      retro_outbox_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("outbox_id") or "")' "$retro_status_file")"
-      log "retro complete: result=$retro_result retro_id=$retro_id batch_id=$retro_batch_id signal_count=${signal_count:-?} change_count=${change_count:-?}"
-    else
-      log "retro technical failure: exit=$retro_collect_exit status artifact missing/invalid (see retro-collect.log)"
-    fi
-
-    if [ "$DO_BENCHMARK_EVAL" = "true" ]; then
-      run_benchmark_eval
-    fi
   else
     knowledge_promotion_status="failed"
-    retro_result="skipped_knowledge_promotion_failed"
-    retro_collect_exit="skipped"
-    log "knowledge proposal promotion failed at Batch boundary"
+    log "knowledge proposal promotion failed at Batch boundary; preserving Retro evidence"
+  fi
+
+  # Promotion controls L1 mutation, not failure analysis.  Preserve the
+  # Batch Retro/Improvement path when promotion detects a conflict.
+  run_retro_collect
+  retro_collect_exit=$?
+  if capture_retro_artifacts "$RETRO_ID"; then
+    retro_status_file="$RUN_DIR/retro-status.json"
+    retro_result="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("result","technical_failure"))' "$retro_status_file")"
+    retro_batch_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("batch_id") or "")' "$retro_status_file")"
+    retro_improvement_ids="$(python3 -c 'import json,sys; print(",".join(json.load(open(sys.argv[1])).get("improvement_ids") or []))' "$retro_status_file")"
+    retro_outbox_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("outbox_id") or "")' "$retro_status_file")"
+    log "retro complete: result=$retro_result retro_id=$retro_id batch_id=$retro_batch_id signal_count=${signal_count:-?} change_count=${change_count:-?}"
+  else
+    log "retro technical failure: exit=$retro_collect_exit status artifact missing/invalid (see retro-collect.log)"
+  fi
+
+  if [ "$knowledge_promotion_status" = "completed" ] && [ "$DO_BENCHMARK_EVAL" = "true" ]; then
+    run_benchmark_eval
   fi
 else
   retro_result="skipped_nonterminal_batch"

@@ -220,11 +220,15 @@ contracts:
       - change:proposal.md
       - change:cases/**
       - change:trace/minimum-coverage-matrix.yaml
+      - change:plans/data-knowledge.proposal.api.yaml
+      - change:plans/data-knowledge.proposal.e2e.yaml
     authorization_writes:
       - change:.qa.yaml
       - change:proposal.md
       - change:cases/**
       - change:trace/minimum-coverage-matrix.yaml
+      - change:plans/data-knowledge.proposal.api.yaml
+      - change:plans/data-knowledge.proposal.e2e.yaml
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
     reconnect: true
 
@@ -733,11 +737,15 @@ contracts:
       - project:qa/issues/**
     writes:
       - change:inspect/issue-reconcile-status.json
+      # Semantic-failure path stamps analysis_failed onto the change ledger and
+      # mirrors status beside the analyzer-authored pair (same as record-failure).
+      - change:inspect/issue-analysis-status.json
       - change:issues/events.jsonl
       - change:issues/snapshot.json
       - project:qa/issues/**
     authorization_writes:
       - change:inspect/issue-reconcile-status.json
+      - change:inspect/issue-analysis-status.json
       - change:issues/events.jsonl
       - change:issues/snapshot.json
       - project:qa/issues/**
@@ -781,10 +789,11 @@ contracts:
     reads:
       - change:inspect/trace-projection.json
       - change:inspect/trace-sufficiency.json
-      # A2/A3 batch evidence feeds the constraint_without_property /
-      # matrix_cell_unasserted extension kinds (best-effort; missing is not a gap).
+      # A2/A3/A4 batch evidence feeds constraint, matrix, and weak-oracle
+      # repair locators (best-effort; missing evidence is not itself a gap).
       - change:execution/runs/*/constraint-coverage.json
       - change:execution/runs/*/auth-matrix.json
+      - change:execution/runs/*/journey-coverage.json
     writes:
       - change:inspect/coverage-gaps.json
     authorization_writes:
@@ -829,6 +838,8 @@ contracts:
     reads:
       - repo:tests/**
       - repo:.aa/data-knowledge.yaml
+      # Touched A2 scope comes from this change's typed case modules.
+      - change:cases/**
       - change:execution/**
       # Active quarantine keys exclude covered (M3 Task 4); missing = empty set.
       - change:inspect/quarantine-projection.json
@@ -1130,10 +1141,12 @@ contracts:
       - project:qa/retro/*/signals/**
     writes:
       - project:qa/retro/*/context.json
+      - project:qa/retro/*/context-agent.json
       - project:qa/retro/*/proposal-candidates.json
       - project:qa/retro/*/retro-summary.md
     authorization_writes:
       - project:qa/retro/*/context.json
+      - project:qa/retro/*/context-agent.json
       - project:qa/retro/*/proposal-candidates.json
       - project:qa/retro/*/retro-summary.md
     retryable_errors: []
@@ -1147,6 +1160,7 @@ contracts:
     authorization_writes:
       - project:qa/retro/*/signals/**
       - project:qa/retro/*/context.json
+      - project:qa/retro/*/context-agent.json
       - project:qa/retro/*/proposal-candidates.json
       - project:qa/retro/*/retro-summary.md
     synchronized:
@@ -1193,9 +1207,27 @@ contracts:
       - project:qa/retro/*/signals/**
     retryable_errors: []
 
+  operation:materialize-empty-retro-analysis:
+    handler: operation
+    reads:
+      - project:qa/retro/*/evidence/issue-slice.json
+      - project:qa/retro/*/evidence/workflow-slice.json
+      - project:qa/retro/*/evidence/eval-slice.json
+    writes:
+      - project:qa/retro/*/signals/issue.json
+      - project:qa/retro/*/signals/workflow.json
+      - project:qa/retro/*/signals/eval.json
+    authorization_writes:
+      - project:qa/retro/*/signals/issue.json
+      - project:qa/retro/*/signals/workflow.json
+      - project:qa/retro/*/signals/eval.json
+    retryable_errors: []
+
   skill:aa-retro-issue-analysis:
     handler: agent
-    reads: [project:qa/retro/*/evidence/issue-slice.json]
+    reads:
+      - project:qa/retro/*/evidence/issue-slice.json
+      - project:qa/retro/*/evidence/agent/issue-slice.json
     writes: [project:qa/retro/*/signals/issue.json]
     authorization_writes: [project:qa/retro/*/signals/issue.json]
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
@@ -1204,7 +1236,9 @@ contracts:
 
   skill:aa-retro-workflow-analysis:
     handler: agent
-    reads: [project:qa/retro/*/evidence/workflow-slice.json]
+    reads:
+      - project:qa/retro/*/evidence/workflow-slice.json
+      - project:qa/retro/*/evidence/agent/workflow-slice.json
     writes: [project:qa/retro/*/signals/workflow.json]
     authorization_writes: [project:qa/retro/*/signals/workflow.json]
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
@@ -1213,7 +1247,9 @@ contracts:
 
   skill:aa-retro-eval-analysis:
     handler: agent
-    reads: [project:qa/retro/*/evidence/eval-slice.json]
+    reads:
+      - project:qa/retro/*/evidence/eval-slice.json
+      - project:qa/retro/*/evidence/agent/eval-slice.json
     writes: [project:qa/retro/*/signals/eval.json]
     authorization_writes: [project:qa/retro/*/signals/eval.json]
     retryable_errors: [timeout, transport, rate_limit, invalid_output]
@@ -1224,6 +1260,7 @@ contracts:
     handler: agent
     reads:
       - project:qa/retro/*/context.json
+      - project:qa/retro/*/context-agent.json
     writes:
       - project:qa/retro/*/proposal-candidates.json
       - project:qa/retro/*/retro-summary.md
@@ -1269,12 +1306,16 @@ contracts:
   operation:load-review-subject:
     handler: operation
     side_effect_free: true
-    reads: [project:qa/improvements/review-subjects/*.json]
+    reads:
+      - project:qa/improvements/review-subjects/*
+      - project:qa/improvements/review-subjects/agent/*
     retryable_errors: [invalid_input, conflict]
 
   skill:aa-improvement-reviewer:
     handler: agent
-    reads: [project:qa/improvements/review-subjects/*]
+    reads:
+      - project:qa/improvements/review-subjects/*
+      - project:qa/improvements/review-subjects/agent/*
     writes:
       - project:qa/improvements/reviews/*/assessment.json
       - project:qa/improvements/reviews/*/summary.md

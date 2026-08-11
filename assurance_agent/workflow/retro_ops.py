@@ -20,14 +20,18 @@ from assurance_agent.artifacts.models.improvement_review import (
     ImprovementAutoReviewAssessment,
     ImprovementAutoReviewBatchSummary,
     ImprovementAutoReviewStatus,
+    ImprovementReviewSubject,
 )
 from assurance_agent.artifacts.models.retro_batch import RetroPipelineFailureDocument
 from assurance_agent.artifacts.models.retro_batch import RetroPipelineFailure
 from assurance_agent.artifacts.models.retro_batch import RetroBatchScope
 from assurance_agent.artifacts.models.retro_v3 import (
+    EvalEvidenceSlice,
     ImprovementCandidateDocumentV3,
+    IssueEvidenceSlice,
     RetroContextV3,
     SignalDraftDocument,
+    WorkflowEvidenceSlice,
 )
 from assurance_agent.exceptions import AaError
 from assurance_agent.retro.stages import (
@@ -40,6 +44,7 @@ from assurance_agent.retro.stages import (
     LedgerWorkflowHistoryReader,
     RetroWindowSelection,
     WorkflowHistoryIntegrityError,
+    agent_context_json_bytes,
     assemble_context,
     finalize_retro_status,
     materialize_slices,
@@ -187,6 +192,7 @@ def assemble_retro_context_v3(
         if context_path.is_file() and context_path.read_bytes() != payload:
             return task_failure("conflict", "context.json already exists with different bytes")
         context_path.write_bytes(payload)
+        (retro_dir / "context-agent.json").write_bytes(agent_context_json_bytes(assembled))
         if assembled.signal_count == 0 and not assembled.dry_run:
             write_noop_receipt(retro_dir, assembled)
     except (AaError, OSError, ValueError) as err:
@@ -233,6 +239,47 @@ def record_analysis_failed(
     except (OSError, ValueError) as err:
         return task_failure("invalid_output", str(err))
     return TaskResult(status="succeeded", value={"domain": domain_name, "analysis_status": "failed"})
+
+
+def materialize_empty_retro_analysis(
+    task: ExecutableTask, workspace: TaskWorkspace, context: RuntimeContext
+) -> TaskResult:
+    """Deterministically settle a domain whose validated evidence slice has no entries."""
+    retro_id = context.params.get("retro_id")
+    domain = task_with(task).get("domain")
+    if not isinstance(retro_id, str) or not retro_id.strip():
+        return task_failure("invalid_input", "params.retro_id must be a non-empty string")
+    slice_models = {
+        "issue": IssueEvidenceSlice,
+        "workflow": WorkflowEvidenceSlice,
+        "eval": EvalEvidenceSlice,
+    }
+    if domain not in slice_models:
+        return task_failure("invalid_input", "materialize-empty-retro-analysis requires with.domain")
+    domain_name = cast(Literal["issue", "workflow", "eval"], domain)
+    retro_dir = workspace.project_root / "qa" / "retro" / retro_id
+    slice_path = retro_dir / "evidence" / f"{domain_name}-slice.json"
+    signal_path = retro_dir / "signals" / f"{domain_name}.json"
+    try:
+        slice_bytes = slice_path.read_bytes()
+        slice_ = slice_models[domain_name].model_validate_json(slice_bytes)
+        if slice_.entries:
+            return task_failure(
+                "invalid_input",
+                f"{domain_name} evidence slice is non-empty; agent analysis is required",
+            )
+        draft = SignalDraftDocument(
+            retro_id=retro_id,
+            domain=domain_name,
+            analysis_status="ok",
+            analyzer="operation:materialize-empty-retro-analysis",
+            signals=(),
+        )
+        completed = backfill_slice_digest(draft, slice_bytes)
+        atomic_write_json(signal_path, completed.model_dump(mode="json"))
+    except (OSError, ValidationError, ValueError) as err:
+        return task_failure("invalid_output", str(err))
+    return TaskResult(status="succeeded", value={"domain": domain_name, "analysis_status": "ok"})
 
 
 def reconcile_improvements(
@@ -437,9 +484,16 @@ def load_review_subject(
     if not isinstance(digest, str):
         return task_failure("invalid_input", "subject_sha256 is required")
     path = workspace.project_root / "qa" / "improvements" / "review-subjects" / f"{digest}.json"
+    agent_path = path.parent / "agent" / path.name
     try:
-        if sha256_bytes(path.read_bytes()) != digest:
+        canonical_bytes = path.read_bytes()
+        if sha256_bytes(canonical_bytes) != digest:
             return task_failure("conflict", "review subject digest drift")
+        agent_subject = ImprovementReviewSubject.model_validate_json(agent_path.read_bytes())
+        if canonical_json_bytes(agent_subject) != canonical_bytes:
+            return task_failure("conflict", "agent review subject drift")
+    except ValidationError:
+        return task_failure("conflict", "agent review subject drift")
     except OSError as err:
         return task_failure("invalid_input", str(err))
     return TaskResult(status="succeeded", value={"subject_sha256": digest})
@@ -682,8 +736,10 @@ __all__ = [
     "assemble_retro_context_v3",
     "apply_improvement_auto_review",
     "drain_improvement_outbox",
+    "evidence_gap_fallback",
     "finalize_retro_run_status",
     "load_review_subject",
+    "materialize_empty_retro_analysis",
     "record_analysis_failed",
     "record_auto_review_orchestration_error",
     "record_improvement_auto_review_error",

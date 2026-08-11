@@ -14,7 +14,7 @@ Coverage:
     - Duplicate candidate_id → ReconciliationValidationError (no events)
     - Duplicate occurrence_id (identical candidate content) → ReconciliationValidationError
     - Incomplete fingerprint inputs (empty symptom) → ReconciliationValidationError
-    - Unknown possible_problem_id → ReconciliationValidationError
+    - Unknown possible_problem_id → dropped (batch still reconciles)
     - Valid candidate before invalid one: still all-or-nothing rejection
   * Empty candidate list → only issue_analysis_completed change event, no problem events
   * Idempotency: same candidate batch → same event IDs and idempotency keys
@@ -727,16 +727,17 @@ def test_validation_rejects_duplicate_candidate_id() -> None:
     assert any("SAME-ID" in e for e in exc_info.value.errors)
 
 
-def test_validation_rejects_unknown_possible_problem_id() -> None:
-    """A possible_problem_id that doesn't exist in the projection → ReconciliationValidationError."""
+def test_validation_drops_unknown_possible_problem_id() -> None:
+    """Unknown possible_problem_ids are dropped; reconcile still completes."""
     obs = _make_observations("OBS-001")
-    cand = _make_candidate("CAND-001", ["OBS-001"], possible_problem_ids=["PROB-nonexistent"])
+    cand = _make_candidate("CAND-001", ["OBS-001"], possible_problem_ids=["PROB-nonexistent", "FAIL-001"])
     candidates_doc = _make_candidate_doc([cand])
 
-    with pytest.raises(ReconciliationValidationError) as exc_info:
-        _plan(candidates_doc, obs, _empty_snapshot(), _empty_problems())
+    plan = _plan(candidates_doc, obs, _empty_snapshot(), _empty_problems())
 
-    assert any("PROB-nonexistent" in e for e in exc_info.value.errors)
+    assert plan.change_events
+    assert plan.change_events[0].type == "issue_analysis_completed"
+    assert plan.occurrence_count >= 1
 
 
 def test_validation_rejects_incomplete_fingerprint_inputs_empty_symptom() -> None:

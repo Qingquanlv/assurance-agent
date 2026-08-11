@@ -7,6 +7,7 @@ from typing import cast
 
 import pytest
 
+from assurance_agent.artifacts.canonical import canonical_json_bytes
 from assurance_agent.artifacts.models.retro_batch import RetroBatchScope
 from assurance_agent.artifacts.models.retro_v3 import (
     BatchMemberEvidenceGapSignal,
@@ -231,6 +232,26 @@ def test_materialize_slices_maps_deduplicates_and_rebuilds_source_ids(tmp_path: 
     assert tuple(entry.run_id for entry in bundle.eval.entries) == ("run-1",)
     assert bundle.eval.sources[0].evidence_ids == ("run-1",)
     assert json.loads((tmp_path / "qa/retro/retro-1/window.json").read_text())["change_ids"] == ["CH-1"]
+
+
+def test_materialize_slices_writes_multiline_agent_companions_without_changing_canonical_bytes(
+    tmp_path: Path,
+) -> None:
+    bundle = _materialize(tmp_path)
+
+    for domain, slice_ in (
+        ("issue", bundle.issue),
+        ("workflow", bundle.workflow),
+        ("eval", bundle.eval),
+    ):
+        canonical_path = tmp_path / f"qa/retro/retro-1/evidence/{domain}-slice.json"
+        agent_path = tmp_path / f"qa/retro/retro-1/evidence/agent/{domain}-slice.json"
+
+        assert canonical_path.read_bytes() == canonical_json_bytes(slice_)
+        agent_text = agent_path.read_text(encoding="utf-8")
+        assert agent_text.endswith("\n")
+        assert len(agent_text.splitlines()) > 10
+        assert json.loads(agent_text) == json.loads(canonical_path.read_text(encoding="utf-8"))
 
 
 def test_materialize_slices_is_idempotent_but_rejects_conflicting_rewrite(tmp_path: Path) -> None:

@@ -12,10 +12,12 @@ CHANGE_ID = "CH-B5-001"
 BATCH = "20260805-100000"
 
 
-def _scenario(*, threshold: float, measured: float | None) -> PerformanceScenarioVerdict:
+def _scenario(
+    *, threshold: float, measured: float | None, endpoint: str = "/api/v1/dept/list"
+) -> PerformanceScenarioVerdict:
     return PerformanceScenarioVerdict(
         capability="api_list",
-        endpoint="/api/v1/dept/list",
+        endpoint=endpoint,
         measured_p95_ms=measured,
         threshold_p95_ms=threshold,
         measured_error_rate=0.0,
@@ -58,3 +60,16 @@ def test_missing_scenarios_is_typed_collection_gap() -> None:
     assert evidence.value is None
     assert evidence.collection_gaps[0].code == "collection_failed"
     assert evidence.collection_gaps[0].metric == "threshold_slack"
+
+
+def test_malformed_historical_scenario_is_typed_gap_instead_of_internal_error() -> None:
+    evidence = compute_threshold_slack(
+        change_id=CHANGE_ID,
+        batch_id=BATCH,
+        scenarios=(_scenario(threshold=500.0, measured=250.0, endpoint=""),),
+    )
+    assert evidence.value is None
+    assert evidence.scenarios == ()
+    assert evidence.collection_gaps[0].code == "artifact_corrupt"
+    assert evidence.collection_gaps[0].metric == "threshold_slack"
+    assert "endpoint" in evidence.collection_gaps[0].detail

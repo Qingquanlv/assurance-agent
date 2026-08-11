@@ -16,16 +16,13 @@ from pathlib import Path
 import yaml
 
 from assurance_agent import resources
+from assurance_agent.workflow.driver.runtime_factory import assemble_graph_runtime
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
-from assurance_agent.workflow.graph.checkpoint import CheckpointStore
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import load_execution_contracts
 from assurance_agent.workflow.graph.models import CompiledWorkflow, RuntimeContext
 from assurance_agent.workflow.graph.runtime import GraphRuntime
-from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
-from assurance_agent.workflow.graph.task_runner import build_default_node_runner
-from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
 from tests.helpers_aa import write_aa_config
 
 CHANGE_ID = "CH-ARCHIVE-1"
@@ -140,47 +137,14 @@ def _compile_canonical() -> tuple[CompiledWorkflow, object]:
 def _build_runtime(
     project: Path, compiled: CompiledWorkflow, contracts: object, invoker: object
 ) -> GraphRuntime:
-    change_dir = project / "qa" / "changes" / CHANGE_ID
-    store = TreeStore(change_dir)
-    checkpoints = CheckpointStore(change_dir)
-    workspaces = WorkspaceBackend(change_dir)
-    holder: dict[str, GraphRuntime] = {}
-
-    def run_child(task, graph_id, workspace, context):  # type: ignore[no-untyped-def]
-        return holder["rt"].run_child(task, graph_id, workspace, context)
-
-    node_runner = build_default_node_runner(
-        invoker,  # type: ignore[arg-type]
-        store,
-        contracts,  # type: ignore[arg-type]
+    return assemble_graph_runtime(
+        project_root=project,
+        change_dir=project / "qa" / "changes" / CHANGE_ID,
         compiled=compiled,
-        run_child=run_child,
-    )
-    state_defs: dict = {}
-    for graph in compiled.schema.graphs.values():
-        state_defs.update(dict(graph.state))
-    scheduler = Scheduler(
-        checkpoints=checkpoints,
-        object_store=store,
-        clock=FakeClock(),
-        workspace_backend=workspaces,
-        node_runner=node_runner,
-        max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
         contracts=contracts,  # type: ignore[arg-type]
-        state_defs=state_defs,
-    )
-    runtime = GraphRuntime(
-        checkpoint_store=checkpoints,
-        object_store=store,
-        workspace_backend=workspaces,
-        contracts=contracts,  # type: ignore[arg-type]
-        node_runner=node_runner,
-        scheduler=scheduler,
-        schema_resolver=lambda digest: {compiled.digest: compiled}[digest],
+        adapter=invoker,  # type: ignore[arg-type]
         clock=FakeClock(),
     )
-    holder["rt"] = runtime
-    return runtime
 
 
 def _context(project: Path) -> RuntimeContext:

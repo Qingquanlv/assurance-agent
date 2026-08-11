@@ -153,6 +153,126 @@ def test_invoke_injects_workspace_for_cursor_agent(tmp_path: Path) -> None:
     assert injected[:3] == ["cursor-agent", "--workspace", str(private)]
 
 
+def test_invoke_routes_explicit_agent_to_opencode(tmp_path: Path) -> None:
+    from assurance_agent.workflow.driver.process_runner import ProcessResult
+    from assurance_agent.workflow.graph.agent_api import AgentRequest
+
+    class _Capture:
+        def __init__(self) -> None:
+            self.argv: list[str] | None = None
+
+        def run(self, argv, cwd, timeout=None, stdin_text=None):  # noqa: ANN001
+            self.argv = list(argv)
+            return ProcessResult(exit_code=0, stdout="", stderr="", timed_out=False)
+
+    private = tmp_path / "task-root"
+    private.mkdir()
+    capture = _Capture()
+    adapter = HeadlessAdapter(
+        agent_cmd="opencode run --format json --agent aa-doc-author --auto",
+        cwd=tmp_path,
+        runner=capture,  # type: ignore[arg-type]
+    )
+
+    result = adapter.invoke(
+        AgentRequest(
+            target="skill:aa-review-improvement",
+            node_id="improvement-review",
+            change_id="CH-1",
+            workspace_root=private,
+            allowed_writes=("change:improvement-review/**",),
+            prompt="review",
+            timeout_seconds=30.0,
+            agent="aa-reviewer",
+        )
+    )
+
+    assert result.ok is True
+    assert capture.argv is not None
+    assert capture.argv[capture.argv.index("--agent") + 1] == "aa-reviewer"
+
+
+@pytest.mark.parametrize(
+    ("prefix", "agent", "expected"),
+    [
+        (
+            ["opencode", "run", "--agent=aa-doc-author", "--auto"],
+            "aa-reviewer",
+            ["opencode", "run", "--agent=aa-reviewer", "--auto"],
+        ),
+        (
+            ["opencode", "run", "--format", "json"],
+            "aa-reviewer",
+            ["opencode", "--agent", "aa-reviewer", "run", "--format", "json"],
+        ),
+        (
+            ["opencode", "run", "--agent", "--auto"],
+            "aa-reviewer",
+            ["opencode", "run", "--agent", "aa-reviewer", "--auto"],
+        ),
+        (
+            ["opencode", "run", "--agent"],
+            "aa-reviewer",
+            ["opencode", "run", "--agent", "aa-reviewer"],
+        ),
+        (
+            ["opencode", "run", "--agent", "--agent", "aa-doc-author", "--agent=aa-planner"],
+            "aa-reviewer",
+            [
+                "opencode",
+                "run",
+                "--agent",
+                "aa-reviewer",
+                "--agent",
+                "aa-reviewer",
+                "--agent=aa-reviewer",
+            ],
+        ),
+        (
+            ["opencode", "run", "--agent", "aa-doc-author"],
+            None,
+            ["opencode", "run", "--agent", "aa-doc-author"],
+        ),
+        (
+            ["opencode", "run", "--agent", "aa-doc-author"],
+            "",
+            ["opencode", "run", "--agent", "aa-doc-author"],
+        ),
+        (
+            ["custom-agent", "run"],
+            "aa-reviewer",
+            ["custom-agent", "run"],
+        ),
+        (
+            ["custom-agent", "run", "--agent", "legacy", "--verbose"],
+            "aa-reviewer",
+            ["custom-agent", "run", "--agent", "legacy", "--verbose"],
+        ),
+        (
+            ["custom-agent", "run", "--agent=legacy", "--verbose"],
+            "aa-reviewer",
+            ["custom-agent", "run", "--agent=legacy", "--verbose"],
+        ),
+        (
+            ["cursor-agent", "--print"],
+            "aa-reviewer",
+            ["cursor-agent", "--print"],
+        ),
+        (
+            ["cursor-agent", "--print", "--agent", "legacy"],
+            "aa-reviewer",
+            ["cursor-agent", "--print", "--agent", "legacy"],
+        ),
+    ],
+)
+def test_with_agent_routes_only_supported_opencode_personas(
+    prefix: list[str], agent: str | None, expected: list[str]
+) -> None:
+    from assurance_agent.workflow.driver.headless_adapter import _with_agent
+
+    assert _with_agent(prefix, agent) == expected
+
+
 @pytest.mark.parametrize(
     ("stderr", "kind"),
     [

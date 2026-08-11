@@ -397,16 +397,18 @@ def test_opencode_batch_boundary_runs_retro_and_eval_after_successful_promotion(
     assert result.stdout == "completed|technical_failure|0|completed\n"
 
 
-def test_opencode_batch_boundary_skips_retro_and_eval_after_failed_promotion(
+def test_opencode_batch_boundary_preserves_retro_after_failed_promotion(
     tmp_path: Path,
 ) -> None:
     result = _run_opencode_batch_boundary(tmp_path, promotion_exit=1)
 
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "boundary-calls.log").read_text(encoding="utf-8").splitlines() == ["promote"]
-    assert result.stdout == (
-        "failed|skipped_knowledge_promotion_failed|skipped|skipped_knowledge_promotion_failed\n"
-    )
+    assert (tmp_path / "boundary-calls.log").read_text(encoding="utf-8").splitlines() == [
+        "promote",
+        "retro",
+        "capture",
+    ]
+    assert result.stdout == "failed|technical_failure|0|skipped_knowledge_promotion_failed\n"
 
 
 def test_opencode_eval_summary_advertises_artifacts_only_after_eval_runs(tmp_path: Path) -> None:
@@ -438,7 +440,7 @@ def test_opencode_loop_reports_and_gates_knowledge_promotion() -> None:
     assert 'knowledge_promotion_status="not_run"' in source
     assert 'knowledge_promotion_status="completed"' in source
     assert 'knowledge_promotion_status="failed"' in source
-    assert 'retro_result="skipped_knowledge_promotion_failed"' in source
+    assert 'benchmark_eval_status="skipped_knowledge_promotion_failed"' in source
     assert 'benchmark_knowledge_promotion_exit_code "$knowledge_promotion_status"' in source
     assert 'benchmark_eval_status="skipped_nonterminal_batch"' in source
 
@@ -464,7 +466,7 @@ def test_opencode_loop_preserves_opencode_agents_and_five_item_defaults() -> Non
         line.strip().strip('"') for line in items_block.splitlines() if line.strip().startswith('"RET-')
     ]
 
-    assert '"$AA_BIN" skill refresh --sync-agents' in source
+    assert '"$AA_BIN" skill refresh --sync-agents --sync-opencode-user-skills' in source
     assert 'DRIVER_ADAPTER="${DRIVER_ADAPTER:-opencode}"' in source
     assert '--adapter "$DRIVER_ADAPTER"' in driver
     assert '--server "$OPENCODE_SERVER"' in driver
@@ -480,7 +482,7 @@ def test_opencode_loop_preserves_opencode_agents_and_five_item_defaults() -> Non
     assert '--server "$OPENCODE_SERVER"' in workflow_entrypoint
     assert '--directory "$PROJECT_ROOT"' in workflow_entrypoint
     assert 'adapter_args+=(--model "$OPENCODE_MODEL")' in workflow_entrypoint
-    assert source.index('"$AA_BIN" skill refresh --sync-agents') < source.index(
+    assert source.index('"$AA_BIN" skill refresh --sync-agents --sync-opencode-user-skills') < source.index(
         'if ! curl -sf -o /dev/null "$OPENCODE_SERVER"'
     )
     assert default_items == [

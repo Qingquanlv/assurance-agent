@@ -21,26 +21,23 @@ from typing import Any
 
 
 from assurance_agent.workflow.core.events import read_events_strict
-from assurance_agent.workflow.graph.checkpoint import CheckpointStore
+from assurance_agent.workflow.driver.runtime_factory import assemble_graph_runtime
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import parse_execution_contracts
 from assurance_agent.workflow.graph.handlers.operation import (
     OperationFn,
     OperationHandler,
 )
-from assurance_agent.workflow.graph.leases import SystemClock
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
     RuntimeContext,
     TaskResult,
 )
-from assurance_agent.workflow.graph.project_locks import ProjectResourceLockManager
 from assurance_agent.workflow.graph.runtime import GraphRuntime
-from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
 from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
-from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
+from assurance_agent.workflow.issues.identity import candidate_document_digest
 from tests.helpers_aa import write_aa_config
 
 # ---------------------------------------------------------------------------
@@ -302,16 +299,48 @@ def _fake_inspect(task: ExecutableTask, workspace: Any, context: RuntimeContext)
     (inspect_dir / "failure-analysis.json").write_text(
         json.dumps(
             {
-                "final_status": "FAIL",
-                "failures": [],
-                "inspect_mode": "primary",
+                "schema_version": "1.0",
+                "change_id": context.change_id,
+                "source_manifest": "execution/execution-manifest.yaml",
+                "inspection_status": "completed",
+                "batch_id": "batch-1",
                 "source_batch_id": "batch-1",
+                "final_status": "FAIL",
+                "inspect_mode": "primary",
+                "classification_performed": True,
+                "status": "analyzed",
+                "failures": [],
+                "hard_fails": [],
+                "needs_review": [],
+                "known_product_issues": [],
             }
         ),
         encoding="utf-8",
     )
     (inspect_dir / "quality-gate-result.json").write_text(
-        json.dumps({"final_status": "FAIL"}), encoding="utf-8"
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "change_id": context.change_id,
+                "batch_id": "batch-1",
+                "dimensions": {
+                    "functional": {
+                        "status": "FAIL",
+                        "api": {"total": 1, "passed": 0, "failed": 1},
+                        "e2e": {"total": 0, "passed": 0, "failed": 0},
+                    },
+                    "coverage": {
+                        "status": "SKIPPED",
+                        "available": False,
+                        "line_coverage": 0.0,
+                        "branch_coverage": 0.0,
+                        "threshold": {"line": 0.0, "branch": 0.0},
+                    },
+                },
+                "final_status": "FAIL",
+            }
+        ),
+        encoding="utf-8",
     )
     return TaskResult(status="succeeded", value={"final_status": "FAIL"})
 
@@ -346,15 +375,48 @@ def _fake_collect_observations(abnormal_count: int) -> OperationFn:
     return _fn
 
 
+def _write_fake_analysis(
+    inspect_dir: Path,
+    context: RuntimeContext,
+    *,
+    status: str,
+    candidates: list[dict[str, object]] | None = None,
+    reason: str | None = None,
+) -> None:
+    candidate_items = candidates or []
+    evidence_digest = "sha256:abc123"
+    candidate_document = {
+        "schema_version": "1.0",
+        "change_id": context.change_id,
+        "batch_id": "batch-1",
+        "evidence_bundle_digest": evidence_digest,
+        "candidates": candidate_items,
+    }
+    (inspect_dir / "issue-candidates.json").write_text(
+        json.dumps(candidate_document),
+        encoding="utf-8",
+    )
+    status_document: dict[str, object] = {
+        "schema_version": "1.0",
+        "change_id": context.change_id,
+        "batch_id": "batch-1",
+        "status": status,
+        "evidence_bundle_digest": evidence_digest,
+        "candidate_count": len(candidate_items),
+        "candidate_digest": candidate_document_digest(candidate_document),
+    }
+    if reason is not None:
+        status_document.update({"reason": reason, "retryable": True})
+    (inspect_dir / "issue-analysis-status.json").write_text(
+        json.dumps(status_document),
+        encoding="utf-8",
+    )
+
+
 def _fake_record_empty_analysis(task: ExecutableTask, workspace: Any, context: RuntimeContext) -> TaskResult:
     inspect_dir = workspace.change_dir / "inspect"
     inspect_dir.mkdir(parents=True, exist_ok=True)
-    (inspect_dir / "issue-candidates.json").write_text(
-        json.dumps({"candidates": [], "status": "completed"}), encoding="utf-8"
-    )
-    (inspect_dir / "issue-analysis-status.json").write_text(
-        json.dumps({"status": "completed", "candidate_count": 0}), encoding="utf-8"
-    )
+    _write_fake_analysis(inspect_dir, context, status="completed")
     return TaskResult(status="succeeded", value={"candidate_count": 0})
 
 
@@ -383,12 +445,7 @@ def _fake_record_analysis_failure(
     inspect_dir.mkdir(parents=True, exist_ok=True)
     issues_dir = workspace.change_dir / "issues"
     issues_dir.mkdir(parents=True, exist_ok=True)
-    (inspect_dir / "issue-candidates.json").write_text(
-        json.dumps({"candidates": [], "status": "failed"}), encoding="utf-8"
-    )
-    (inspect_dir / "issue-analysis-status.json").write_text(
-        json.dumps({"status": "failed", "reason": "timeout"}), encoding="utf-8"
-    )
+    _write_fake_analysis(inspect_dir, context, status="failed", reason="timeout")
     (issues_dir / "events.jsonl").write_text("", encoding="utf-8")
     (issues_dir / "snapshot.json").write_text(
         json.dumps({"occurrences": [], "analysis_failed": True}), encoding="utf-8"
@@ -412,12 +469,7 @@ def _fake_analyzer_succeed(task: ExecutableTask, workspace: Any, context: Runtim
     """Analyzer that always succeeds."""
     inspect_dir = workspace.change_dir / "inspect"
     inspect_dir.mkdir(parents=True, exist_ok=True)
-    (inspect_dir / "issue-candidates.json").write_text(
-        json.dumps({"candidates": [], "status": "completed"}), encoding="utf-8"
-    )
-    (inspect_dir / "issue-analysis-status.json").write_text(
-        json.dumps({"status": "completed", "candidate_count": 0}), encoding="utf-8"
-    )
+    _write_fake_analysis(inspect_dir, context, status="completed")
     return TaskResult(status="succeeded", value={"candidate_count": 0})
 
 
@@ -463,70 +515,35 @@ def _build(
     contracts: Any,
     *,
     ops: dict[str, OperationFn] | None = None,
-    shared_project_locks: bool = False,
 ) -> GraphRuntime:
     from assurance_agent.workflow.graph.handlers.gate import GateHandler
     from assurance_agent.workflow.graph.handlers.interrupt import InterruptHandler
     from assurance_agent.workflow.graph.handlers.join import JoinHandler
     from assurance_agent.workflow.graph.handlers.subgraph import SubgraphHandler
 
-    change = project / "qa" / "changes" / "CH-1"
-    store = TreeStore(change)
-    checkpoints = CheckpointStore(change)
-    workspaces = WorkspaceBackend(change)
-    clock = SystemClock()
-    holder: dict[str, GraphRuntime] = {}
+    def build_node_runner(store, run_child):  # type: ignore[no-untyped-def]
+        op_handler = OperationHandler(ops or {})
+        handlers: dict[str, Any] = {
+            "builtin:join": JoinHandler(),
+            "builtin:gate": GateHandler(compiled),
+            "builtin:interrupt": InterruptHandler(compiled),
+        }
+        for target in ops or {}:
+            handlers[target] = op_handler
+        return HandlerNodeRunner(
+            handlers,
+            namespace_handlers={"graph": SubgraphHandler(run_child)},
+            compiled=compiled,
+            object_store=store,
+        )
 
-    def run_child(task: Any, graph_id: str, workspace: Any, context: Any) -> TaskResult:
-        return holder["rt"].run_child(task, graph_id, workspace, context)
-
-    op_handler = OperationHandler(ops or {})
-
-    # Build a runner covering all handler namespaces needed for this test.
-    handlers: dict[str, Any] = {
-        "builtin:join": JoinHandler(),
-        "builtin:gate": GateHandler(compiled),
-        "builtin:interrupt": InterruptHandler(compiled),
-    }
-    for target in ops or {}:
-        handlers[target] = op_handler
-    namespace_handlers: dict[str, Any] = {
-        "graph": SubgraphHandler(run_child),
-    }
-    node_runner = HandlerNodeRunner(
-        handlers,
-        namespace_handlers=namespace_handlers,
+    return assemble_graph_runtime(
+        project_root=project,
+        change_dir=project / "qa" / "changes" / "CH-1",
         compiled=compiled,
-        object_store=store,
-    )
-
-    graph_id = compiled.entrypoints["full"].graph_id
-    state_defs = dict(compiled.schema.graphs[graph_id].state)
-    scheduler = Scheduler(
-        checkpoints=checkpoints,
-        object_store=store,
-        clock=clock,
-        workspace_backend=workspaces,
-        node_runner=node_runner,
-        max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
         contracts=contracts,
-        state_defs=state_defs,
-        project_lock_manager=(ProjectResourceLockManager(project) if shared_project_locks else None),
-        project_lock_timeout_seconds=0.05,
+        build_node_runner=build_node_runner,
     )
-    schemas = {compiled.digest: compiled}
-    runtime = GraphRuntime(
-        checkpoint_store=checkpoints,
-        object_store=store,
-        workspace_backend=workspaces,
-        contracts=contracts,
-        node_runner=node_runner,
-        scheduler=scheduler,
-        schema_resolver=lambda digest: schemas[digest],
-        clock=clock,
-    )
-    holder["rt"] = runtime
-    return runtime
 
 
 # ---------------------------------------------------------------------------
@@ -544,7 +561,6 @@ def test_nested_issue_subgraph_inherits_shared_project_lock(tmp_path: Path) -> N
         compiled,
         contracts,
         ops=_default_ops(abnormal_count=0),
-        shared_project_locks=True,
     )
 
     result = runtime.run(
@@ -575,12 +591,7 @@ def test_observations_commit_before_analyzer_starts(tmp_path: Path) -> None:
         # Write analyzer outputs.
         inspect_dir = workspace.change_dir / "inspect"
         inspect_dir.mkdir(parents=True, exist_ok=True)
-        (inspect_dir / "issue-candidates.json").write_text(
-            json.dumps({"candidates": [], "status": "completed"}), encoding="utf-8"
-        )
-        (inspect_dir / "issue-analysis-status.json").write_text(
-            json.dumps({"status": "completed", "candidate_count": 0}), encoding="utf-8"
-        )
+        _write_fake_analysis(inspect_dir, context, status="completed")
         return TaskResult(status="succeeded", value={"candidate_count": 0})
 
     ops = _default_ops(abnormal_count=1, analyzer=_checking_analyzer)
@@ -697,13 +708,30 @@ def test_issue_outcomes_do_not_alter_quality_gate_final_status(tmp_path: Path) -
     def _succeeding_analyzer(task: ExecutableTask, workspace: Any, context: RuntimeContext) -> TaskResult:
         inspect_dir = workspace.change_dir / "inspect"
         inspect_dir.mkdir(parents=True, exist_ok=True)
-        (inspect_dir / "issue-candidates.json").write_text(
-            json.dumps({"candidates": [{"id": "C-1"}], "status": "completed"}),
-            encoding="utf-8",
-        )
-        (inspect_dir / "issue-analysis-status.json").write_text(
-            json.dumps({"status": "completed", "candidate_count": 1}),
-            encoding="utf-8",
+        _write_fake_analysis(
+            inspect_dir,
+            context,
+            status="completed",
+            candidates=[
+                {
+                    "candidate_id": "C-1",
+                    "observation_ids": ["OBS-1"],
+                    "proposed": {
+                        "title": "Observed product behavior",
+                        "classification": "product_bug",
+                        "severity": "high",
+                        "root_cause_hypothesis": "The observed request failed in the product path.",
+                    },
+                    "affected_surface": {"kind": "endpoint", "value": "GET /api/v1/test"},
+                    "fingerprint_inputs": {
+                        "surface": "GET /api/v1/test",
+                        "symptom": "request_failed",
+                    },
+                    "possible_problem_ids": [],
+                    "confidence": 0.9,
+                    "recommended_action": "Investigate the product handler.",
+                }
+            ],
         )
         return TaskResult(status="succeeded", value={"candidate_count": 1})
 

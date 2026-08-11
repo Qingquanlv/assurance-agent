@@ -15,7 +15,7 @@ from assurance_agent.artifacts.models.trace import (
     TraceRow,
 )
 from assurance_agent.workflow.execution.evidence import atomic_write_bytes
-from assurance_agent.workflow.graph.handlers.operation import default_operations
+from assurance_agent.workflow.driver.operations_catalog import default_operations
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.metrics.minimum_coverage import (

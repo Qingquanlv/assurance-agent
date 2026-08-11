@@ -787,6 +787,81 @@ def test_apply_tree_converges_after_partial_failure(tmp_path: Path, monkeypatch)
     assert store.capture(project) == target
 
 
+def test_apply_tree_delta_accepts_a_pinned_intermediate_tree(tmp_path: Path) -> None:
+    """Nested resume may find any durably committed child prefix on disk."""
+    project = _make_project(tmp_path)
+    store = _store(project)
+    backend = _backend(project)
+    root = store.capture(project)
+    first = _freeze_change(
+        backend,
+        store,
+        root,
+        "task-first",
+        (("tests/api/test_a.py", "first child commit\n"),),
+        "repo:tests/api/**",
+    )
+    intermediate = store.merge_write_sets((first,))
+    store.apply_tree(project, intermediate, base_tree_id=root)
+    second = _freeze_change(
+        backend,
+        store,
+        intermediate,
+        "task-second",
+        (("tests/api/test_a.py", "second child commit\n"),),
+        "repo:tests/api/**",
+    )
+    target = store.merge_write_sets((second,))
+
+    store.apply_tree_delta(
+        project,
+        target,
+        source_base_tree_id=root,
+        destination_base_tree_id=root,
+        acceptable_live_tree_ids=(intermediate,),
+    )
+
+    assert (project / "tests/api/test_a.py").read_text(encoding="utf-8") == ("second child commit\n")
+
+
+def test_apply_tree_delta_rejects_unpinned_intermediate_content(tmp_path: Path) -> None:
+    """The prefix allowance is a ledger-pinned whitelist, not a drift bypass."""
+    project = _make_project(tmp_path)
+    store = _store(project)
+    backend = _backend(project)
+    root = store.capture(project)
+    first = _freeze_change(
+        backend,
+        store,
+        root,
+        "task-first",
+        (("tests/api/test_a.py", "first child commit\n"),),
+        "repo:tests/api/**",
+    )
+    intermediate = store.merge_write_sets((first,))
+    second = _freeze_change(
+        backend,
+        store,
+        intermediate,
+        "task-second",
+        (("tests/api/test_a.py", "second child commit\n"),),
+        "repo:tests/api/**",
+    )
+    target = store.merge_write_sets((second,))
+    (project / "tests/api/test_a.py").write_text("external drift\n", encoding="utf-8")
+
+    with pytest.raises(WorkspaceError, match="workspace drift at replayed child path"):
+        store.apply_tree_delta(
+            project,
+            target,
+            source_base_tree_id=root,
+            destination_base_tree_id=root,
+            acceptable_live_tree_ids=(intermediate,),
+        )
+
+    assert (project / "tests/api/test_a.py").read_text(encoding="utf-8") == "external drift\n"
+
+
 # ---------------------------------------------------------------------------
 # synchronized live overlays / targeted apply
 

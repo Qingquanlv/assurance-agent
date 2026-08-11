@@ -7,9 +7,10 @@ unconditionally to bootstrap the very first base; the next batch diffs the curre
 tree against that base with :mod:`difflib` (unified-diff semantics: added/updated
 line numbers only, deletions mark none).
 
-Fail-closed by construction: a missing, partial, or tampered base — and any
-IO/decode error while diffing — yields ``None``, and the runner writes no file
-rather than fabricating a changed set.
+Fail-closed by construction: a missing, partial, or tampered base — and any IO
+error while diffing — yields ``None``, and the runner writes no file rather than
+fabricating a changed set. Binary files stay integrity-checked but do not enter
+the line-oriented diff because they have no coverable source lines.
 """
 
 from __future__ import annotations
@@ -103,16 +104,13 @@ def compute_changed_lines(project_root: Path) -> dict[str, list[int]] | None:
         logger.warning("changed-lines: unreadable diff-base index: %s", err)
         return None
 
-    snapshot_lines: dict[str, list[str]] = {}
+    snapshot_bytes: dict[str, bytes] = {}
     for rel, sha in sorted(snapshot_hashes.items()):
         data = _read_bytes(base / _FILES_DIR / rel, rel)
         if data is None or hashlib.sha256(data).hexdigest() != sha:
             logger.warning("changed-lines: diff-base copy %r missing or failed integrity", rel)
             return None
-        lines = _decode_lines(data, rel)
-        if lines is None:
-            return None
-        snapshot_lines[rel] = lines
+        snapshot_bytes[rel] = data
 
     current = _product_files(project_root)
     changed: dict[str, list[int]] = {}
@@ -126,12 +124,16 @@ def compute_changed_lines(project_root: Path) -> dict[str, list[int]] | None:
             continue
         lines = _decode_lines(data, rel)
         if lines is None:
-            return None
-        if rel not in snapshot_lines:
+            continue
+        base_data = snapshot_bytes.get(rel)
+        if base_data is None:
             if lines:
                 changed[rel] = list(range(1, len(lines) + 1))
             continue
-        added = _added_lines(snapshot_lines[rel], lines)
+        base_lines = _decode_lines(base_data, rel)
+        if base_lines is None:
+            continue
+        added = _added_lines(base_lines, lines)
         if added:
             changed[rel] = added
     return changed
@@ -165,10 +167,13 @@ def _read_bytes(path: Path, rel: str) -> bytes | None:
 
 
 def _decode_lines(data: bytes, rel: str) -> list[str] | None:
+    if b"\x00" in data:
+        logger.debug("changed-lines: excluding binary file %r (NUL byte)", rel)
+        return None
     try:
         return data.decode("utf-8").splitlines()
     except UnicodeDecodeError:
-        logger.warning("changed-lines: %r is not utf-8 text; refusing to guess lines", rel)
+        logger.debug("changed-lines: excluding binary file %r (not UTF-8 text)", rel)
         return None
 
 

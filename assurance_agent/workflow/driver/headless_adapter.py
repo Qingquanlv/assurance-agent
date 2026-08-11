@@ -76,6 +76,39 @@ def _with_workspace(prefix: list[str], workspace_root: Path) -> list[str]:
     return out
 
 
+def _with_agent(prefix: list[str], agent: str | None) -> list[str]:
+    """Rewrite an explicit OpenCode persona without changing other CLIs."""
+    if not agent:
+        return list(prefix)
+    if not prefix or Path(prefix[0]).name != "opencode":
+        return list(prefix)
+    out: list[str] = []
+    i = 0
+    replaced = False
+    while i < len(prefix):
+        arg = prefix[i]
+        if arg == "--agent":
+            out.extend([arg, agent])
+            replaced = True
+            if i + 1 < len(prefix) and not prefix[i + 1].startswith("-"):
+                i += 2
+            else:
+                i += 1
+            continue
+        if arg.startswith("--agent="):
+            out.append(f"--agent={agent}")
+            i += 1
+            replaced = True
+            continue
+        out.append(arg)
+        i += 1
+    if replaced:
+        return out
+    if prefix and Path(prefix[0]).name == "opencode":
+        return [prefix[0], "--agent", agent, *prefix[1:]]
+    return out
+
+
 def _with_model(prefix: list[str], model: str) -> list[str]:
     """Rewrite or inject ``--model`` for cursor-agent style CLIs."""
     if not model:
@@ -165,7 +198,7 @@ class HeadlessAdapter:
                 request.prompt,
                 workspace_root,
                 request.timeout_seconds,
-                argv_prefix=_with_workspace(self._prefix, workspace_root),
+                argv_prefix=_with_agent(_with_workspace(self._prefix, workspace_root), request.agent),
             )
         except OSError as exc:
             return AgentResult(

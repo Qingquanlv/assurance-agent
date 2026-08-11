@@ -17,7 +17,7 @@ from assurance_agent.artifacts.models.pr_metric_evidence import (
     JourneyCoverageEvidence,
     PerfSlackEvidence,
 )
-from assurance_agent.workflow.graph.handlers.operation import default_operations
+from assurance_agent.workflow.driver.operations_catalog import default_operations
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.metrics.batch_io import write_batch_evidence

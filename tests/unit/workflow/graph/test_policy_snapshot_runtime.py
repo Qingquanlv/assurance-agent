@@ -11,7 +11,7 @@ import pytest
 from assurance_agent.artifacts.policy import PolicyError, load_policy, policy_digest
 from assurance_agent.eval.fixtures import write_fixture_lock
 from assurance_agent.workflow.core.events import read_events_strict
-from assurance_agent.workflow.graph.checkpoint import CheckpointStore
+from assurance_agent.workflow.driver.runtime_factory import assemble_graph_runtime
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import parse_execution_contracts
 from assurance_agent.workflow.graph.handlers.interrupt import InterruptHandler
@@ -27,10 +27,9 @@ from assurance_agent.workflow.graph.models import (
     TaskResult,
 )
 from assurance_agent.workflow.graph.runtime import GraphRuntime
-from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
 from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
-from assurance_agent.workflow.graph.workspace import TaskWorkspace, TreeStore, WorkspaceBackend
+from assurance_agent.workflow.graph.workspace import TaskWorkspace, TreeStore
 from tests.helpers_aa import write_aa_config
 
 _POLICY_A = """\
@@ -162,51 +161,27 @@ def _runtime(
     store: TreeStore,
     observe: OperationFn,
 ) -> GraphRuntime:
-    change = project / "qa" / "changes" / "CH-1"
-    checkpoints = CheckpointStore(change)
-    workspaces = WorkspaceBackend(change)
-    holder: dict[str, GraphRuntime] = {}
+    def build(object_store, run_child):  # type: ignore[no-untyped-def]
+        operation = OperationHandler({"operation:observe-policy": observe})
+        return HandlerNodeRunner(
+            {
+                "operation:observe-policy": operation,
+                "builtin:interrupt": InterruptHandler(compiled),
+            },
+            namespace_handlers={"graph": SubgraphHandler(run_child)},
+            compiled=compiled,
+            object_store=object_store,
+        )
 
-    def run_child(
-        task: ExecutableTask,
-        graph_id: str,
-        workspace: TaskWorkspace,
-        context: RuntimeContext,
-    ) -> TaskResult:
-        return holder["runtime"].run_child(task, graph_id, workspace, context)
-
-    operation = OperationHandler({"operation:observe-policy": observe})
-    runner = HandlerNodeRunner(
-        {
-            "operation:observe-policy": operation,
-            "builtin:interrupt": InterruptHandler(compiled),
-        },
-        namespace_handlers={"graph": SubgraphHandler(run_child)},
+    return assemble_graph_runtime(
+        project_root=project,
+        change_dir=project / "qa" / "changes" / "CH-1",
         compiled=compiled,
-        object_store=store,
-    )
-    scheduler = Scheduler(
-        checkpoints=checkpoints,
-        object_store=store,
-        clock=SystemClock(),
-        workspace_backend=workspaces,
-        node_runner=runner,
-        max_parallel_tasks=1,
         contracts=contracts,  # type: ignore[arg-type]
-        state_defs={},
-    )
-    runtime = GraphRuntime(
-        checkpoint_store=checkpoints,
         object_store=store,
-        workspace_backend=workspaces,
-        contracts=contracts,  # type: ignore[arg-type]
-        node_runner=runner,
-        scheduler=scheduler,
-        schema_resolver=lambda _digest: compiled,
+        build_node_runner=build,
         clock=SystemClock(),
     )
-    holder["runtime"] = runtime
-    return runtime
 
 
 def _started_events(project: Path) -> list[dict[str, object]]:

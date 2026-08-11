@@ -73,8 +73,9 @@ Every candidate you propose **MUST**:
   a stable context fact is required to distinguish two Problems with the same
   surface and symptom; never use evidence source (`fuzz`, review name, case ID),
   guessed root cause, implementation helper, or wording variants as qualifiers.
-- Include `possible_problem_ids` — a list of existing Problem IDs from `problems.json` that may match semantically (or empty list if no semantic match).
-- Include a `confidence` score between 0.0 and 1.0.
+- Include `possible_problem_ids` — a list of existing Problem IDs from `qa/issues/problems.json` that may match semantically (or `[]` if no semantic match).
+  Never invent IDs. Do **not** put observation IDs, case IDs, or labels like `FAIL-001` / `ISS-001` here — only real `PROB-*` (or whatever IDs appear in `problems.json`). When unsure, use `[]`.
+- Include a `confidence` score as a **number** between 0.0 and 1.0 (e.g. `0.85`). Do not use strings like `"high"` / `"medium"` / `"low"`.
 - Include a `recommended_action` string.
 
 **Proposals only — never set canonical state.** The following fields are NOT allowed in candidate output:

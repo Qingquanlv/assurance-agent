@@ -22,6 +22,28 @@ ReviewDecision = Literal["pass", "approved", "needs_fix", "needs_human_review", 
 # `aa validate` self-check surfaces it before the gate ever runs.
 _CAPABILITY_GATED_REVIEW_TYPES = frozenset({"api-plan", "e2e-plan"})
 
+_CANONICAL_CAPABILITY_PREFIXES = (
+    "auth.",
+    "accounts.",
+    "entities.",
+    "auth_matrix.",
+    "capabilities.cleanup.",
+    "capabilities.domain_factories.",
+    "capabilities.adapters.",
+)
+
+
+def _validate_canonical_capability_keys(caps: list[str]) -> None:
+    for index, item in enumerate(caps):
+        key = item.strip()
+        if not key or any(not part for part in key.split(".")):
+            raise ValueError(f"required_capabilities[{index}] must be a non-empty leaf key string")
+        if not key.startswith(_CANONICAL_CAPABILITY_PREFIXES):
+            raise ValueError(
+                f"required_capabilities[{index}] must be a canonical C4 leaf key; "
+                "use auth.*, accounts.*, entities.*, auth_matrix.*, or capabilities.*"
+            )
+
 
 class Review(BaseModel):
     model_config = ConfigDict(extra="allow")
@@ -55,8 +77,9 @@ class Review(BaseModel):
                 f"'{self.review_type}' (drives the pre-codegen capability gate)"
             )
         for index, item in enumerate(caps):
-            if not isinstance(item, str) or not item.strip():
+            if not isinstance(item, str):
                 raise ValueError(f"required_capabilities[{index}] must be a non-empty leaf key string")
+        _validate_canonical_capability_keys(caps)
         return self
 
 
@@ -129,6 +152,11 @@ class PlanReviewAuthoring(BaseModel):
     risk_level: Literal["low", "medium", "high", "critical"]
     required_capabilities: list[NonEmptyStr]
 
+    @model_validator(mode="after")
+    def _require_canonical_capability_keys(self) -> "PlanReviewAuthoring":
+        _validate_canonical_capability_keys(self.required_capabilities)
+        return self
+
 
 class CaseSourceClaim(BaseModel):
     """One independently checked product claim and its source-code evidence."""
@@ -177,6 +205,27 @@ class CaseSourceVerification(BaseModel):
         return self
 
 
+class CaseMinimumCoverageReview(BaseModel):
+    """Reviewer projection of the frozen MRC matrix; runtime verifies every field."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    total_required: int = Field(ge=0)
+    covered: int = Field(ge=0)
+    skipped_by_scope: int = Field(ge=0)
+    missing: list[NonEmptyStr]
+
+    @model_validator(mode="after")
+    def _internally_consistent(self) -> "CaseMinimumCoverageReview":
+        if self.total_required != self.covered + self.skipped_by_scope:
+            raise ValueError("total_required must equal covered + skipped_by_scope")
+        if len(self.missing) != len(set(self.missing)):
+            raise ValueError("minimum_coverage.missing must not contain duplicates")
+        if len(self.missing) != self.skipped_by_scope:
+            raise ValueError("minimum_coverage.missing must list every skipped_by_scope key")
+        return self
+
+
 class CaseReviewAuthoring(BaseModel):
     """Agent-authored case review, including independent SUT-source evidence."""
 
@@ -189,6 +238,9 @@ class CaseReviewAuthoring(BaseModel):
                 "must list product source; source_verification.verified_claims must be non-empty; each "
                 "verified_claims[].claim and verified_claims[].evidence_files must be non-empty",
                 "QA artifacts, requirements, docs, and tests do not count as product source evidence",
+                "minimum_coverage is a projection of trace/minimum-coverage-matrix.yaml: count only "
+                "required rows; covered counts status=covered; skipped_by_scope and missing must list "
+                "every required skipped row in matrix order",
             ]
         },
     )
@@ -203,4 +255,5 @@ class CaseReviewAuthoring(BaseModel):
     auto_fix_allowed: bool
     human_review_required: bool
     risk_level: Literal["low", "medium", "high", "critical"]
+    minimum_coverage: CaseMinimumCoverageReview
     source_verification: CaseSourceVerification

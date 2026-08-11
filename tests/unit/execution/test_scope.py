@@ -111,6 +111,85 @@ def test_fuzz_paths_come_from_target_files_and_exclude_support_modules(tmp_path:
     assert resolve_test_paths(tmp_path, "fuzz") == ["tests/fuzz/test_dept_fuzz.py"]
 
 
+def test_fuzz_paths_include_deeper_target_file_subheadings_until_same_level_heading(
+    tmp_path: Path,
+) -> None:
+    _write_plan(
+        tmp_path,
+        "fuzz",
+        """# Fuzz Codegen Plan
+
+## Target Files
+
+### 1. tests/fuzz/test_dept_fuzz.py
+
+| Path | Policy |
+|------|--------|
+| `tests/fuzz/test_dept_fuzz.py` | generate |
+
+## Support Modules
+
+| Path | Policy |
+|------|--------|
+| `tests/fuzz/test_unrelated_fuzz.py` | do not run |
+""",
+    )
+
+    assert resolve_test_paths(tmp_path, "fuzz") == ["tests/fuzz/test_dept_fuzz.py"]
+
+
+def test_fuzz_paths_stop_at_higher_level_heading(tmp_path: Path) -> None:
+    _write_plan(
+        tmp_path,
+        "fuzz",
+        """## Target Files
+
+### 1. tests/fuzz/test_dept_fuzz.py
+
+- `tests/fuzz/test_dept_fuzz.py`
+
+# Another Plan
+
+- `tests/fuzz/test_unrelated_fuzz.py`
+""",
+    )
+
+    assert resolve_test_paths(tmp_path, "fuzz") == ["tests/fuzz/test_dept_fuzz.py"]
+
+
+def test_fuzz_paths_ignore_non_atx_heading_like_lines(tmp_path: Path) -> None:
+    _write_plan(
+        tmp_path,
+        "fuzz",
+        """## Target Files
+
+##not-a-heading
+####### not-a-heading
+
+- `tests/fuzz/test_dept_fuzz.py`
+""",
+    )
+
+    assert resolve_test_paths(tmp_path, "fuzz") == ["tests/fuzz/test_dept_fuzz.py"]
+
+
+def test_fuzz_paths_stop_at_empty_same_level_heading(tmp_path: Path) -> None:
+    _write_plan(
+        tmp_path,
+        "fuzz",
+        """## Target Files
+
+- `tests/fuzz/test_dept_fuzz.py`
+
+##
+
+- `tests/fuzz/test_unrelated_fuzz.py`
+""",
+    )
+
+    assert resolve_test_paths(tmp_path, "fuzz") == ["tests/fuzz/test_dept_fuzz.py"]
+
+
 def test_fuzz_parseable_target_files_without_a_test_is_scoped_empty(tmp_path: Path) -> None:
     _write_plan(
         tmp_path,

@@ -39,7 +39,7 @@ from assurance_agent.artifacts.policy import load_policy_bytes
 from assurance_agent.evidence.metrics_sufficiency import evaluate_metrics_sufficiency
 from assurance_agent.workflow.core.audit_scope import is_audited_gate_read
 from assurance_agent.workflow.graph.contracts import load_execution_contracts
-from assurance_agent.workflow.graph.handlers.operation import default_operations
+from assurance_agent.workflow.driver.operations_catalog import default_operations
 from assurance_agent.workflow.graph.schema_v2 import GraphDef, WorkflowSchemaV2, load_workflow_v2
 from assurance_agent.workflow.orchestration.gates import GateEvaluationContext, check_gate_in_view
 from assurance_agent.workflow.orchestration.schema import Verdict

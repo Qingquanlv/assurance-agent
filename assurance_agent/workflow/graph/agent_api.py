@@ -60,6 +60,20 @@ _PRIOR_FAILURE_KINDS = frozenset({"invalid_output", "forbidden_write"})
 _PRIOR_FAILURE_MAX_CHARS = 800
 
 
+def _elide_middle(text: str, *, max_chars: int) -> str:
+    """Bound text while retaining context from both ends."""
+    if len(text) <= max_chars:
+        return text
+    omission = "\n…\n"
+    if max_chars <= len(omission):
+        return omission[:max_chars]
+    content_chars = max_chars - len(omission)
+    head_chars = (content_chars + 1) // 2
+    tail_chars = content_chars - head_chars
+    tail = text[-tail_chars:] if tail_chars else ""
+    return text[:head_chars] + omission + tail
+
+
 def build_node_prompt(
     skill: str,
     node_id: str,
@@ -73,6 +87,7 @@ def build_node_prompt(
     prior_error_kind: ErrorKind | None = None,
     evidence: Mapping[str, object] | None = None,
     outputs: Sequence[str] = (),
+    accepted_risks: Sequence[Mapping[str, str]] = (),
 ) -> str:
     """v2 node prompt：列出 contract 授权写范围，不再宣称只能写 change 目录。
 
@@ -109,21 +124,30 @@ def build_node_prompt(
             )
     failure_clause = ""
     if prior_failure and prior_error_kind is not None and prior_error_kind in _PRIOR_FAILURE_KINDS:
-        detail = prior_failure.strip()
-        if len(detail) > _PRIOR_FAILURE_MAX_CHARS:
-            detail = detail[:_PRIOR_FAILURE_MAX_CHARS] + "…"
+        detail = _elide_middle(prior_failure.strip(), max_chars=_PRIOR_FAILURE_MAX_CHARS)
         failure_clause = (
             f" PRIOR ATTEMPT FAILED ({prior_error_kind}) — do not repeat it:\n"
             f"{detail}\n"
-            "Your previous attempt violated the artifact contract. Open the declared "
-            "output you wrote, fix exactly the reported fields, rewrite it, and keep "
-            "all other content unchanged."
+            "Your previous attempt violated the artifact contract. That failed attempt's "
+            "workspace and artifacts were discarded; there is no previous output to open "
+            "or preserve. You must rebuild every declared output from committed inputs and "
+            "correct every reported contract violation."
         )
     evidence_clause = ""
     if evidence:
         rendered = json.dumps(evidence, sort_keys=True, ensure_ascii=False, indent=2)
         evidence_clause = (
             f" FROZEN UPSTREAM EVIDENCE (authoritative; do not re-derive from disk):\n{rendered}\n"
+        )
+    accepted_risk_clause = ""
+    if accepted_risks:
+        rendered = json.dumps(list(accepted_risks), sort_keys=True, ensure_ascii=False, indent=2)
+        accepted_risk_clause = (
+            " VALID ANCESTOR ACCEPT_RISK DECISIONS:\n"
+            f"{rendered}\n"
+            "Each listed accept_risk allows continuation only within its checkpoint namespace. "
+            "It does not change any finding or review verdict to pass; preserve those facts in "
+            "all generated evidence."
         )
     output_contract_clause = render_output_contract(outputs)
     return (
@@ -145,6 +169,7 @@ def build_node_prompt(
         + cwd_clause
         + memory_clause
         + evidence_clause
+        + accepted_risk_clause
         + output_contract_clause
         + failure_clause
         + (f" Fan-out item: {item}." if item is not None else "")

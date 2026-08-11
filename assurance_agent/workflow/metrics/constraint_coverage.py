@@ -38,6 +38,10 @@ from assurance_agent.workflow.metrics.batch_io import (
     resolve_batch_id,
     write_batch_evidence,
 )
+from assurance_agent.workflow.metrics.case_inputs import (
+    CaseArtifactError,
+    touched_entities_from_cases,
+)
 from assurance_agent.workflow.metrics.quarantine import (
     QuarantineIntegrityError,
     load_active_quarantine_keys,
@@ -250,7 +254,24 @@ def compute_constraint_coverage_operation(
     if isinstance(touched_raw, (list, tuple)):
         touched_entities = frozenset(str(item) for item in touched_raw)
     else:
-        touched_entities = frozenset(knowledge.entities)
+        try:
+            touched_entities = touched_entities_from_cases(change_dir)
+        except CaseArtifactError as err:
+            evidence = ConstraintCoverageEvidence(
+                schema_version="1",
+                change_id=context.change_id,
+                batch_id=batch_id,
+                declared=None,
+                collection_gaps=(
+                    MetricCollectionGap(
+                        code="artifact_corrupt",
+                        metric="constraint_coverage",
+                        detail=f"cannot derive touched entities from cases: {err}",
+                    ),
+                ),
+            )
+            write_batch_evidence(change_dir, batch_id, CONSTRAINT_COVERAGE_REL, evidence)
+            return _ok(context.change_id, batch_id, evidence)
 
     quarantine_raw = task_with(task).get("quarantine")
     quarantine_from_task: tuple[str, ...]

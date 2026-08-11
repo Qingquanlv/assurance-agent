@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import json
 import yaml
 import pytest
 
@@ -12,7 +13,7 @@ from assurance_agent.workflow.core.state import verify_state_integrity, write_st
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import load_execution_contracts
 from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
-from assurance_agent.artifacts.models import WorkflowState
+from assurance_agent.artifacts.models import CaseYaml, WorkflowState
 
 
 def _write_synth_fixtures(root: Path) -> Path:
@@ -219,6 +220,48 @@ def test_benchmark_api_review_imports_include_mechanical_predecessor() -> None:
     evidence_path = fixtures / "samples" / "eval-sample-001" / "review" / "api-plan-checks.json"
     evidence = PlanCheckDocument.model_validate_json(evidence_path.read_text(encoding="utf-8"))
     assert evidence.status == "pass"
+
+
+def test_benchmark_fixture_top_level_change_id_matches_fixture_identity() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    sample_id = "eval-sample-001"
+    sample = repo_root / "benchmark" / "vue-fastapi-admin" / "eval-fixtures" / "samples" / sample_id
+    mismatches: list[str] = []
+
+    for path in sorted(sample.rglob("*")):
+        if not path.is_file() or path.suffix not in {".json", ".yaml", ".yml"}:
+            continue
+        if path.suffix == ".json":
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        else:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            continue
+        change_id = payload.get("change_id")
+        if change_id is not None and change_id != sample_id:
+            mismatches.append(f"{path.relative_to(sample)}={change_id}")
+
+    qa = yaml.safe_load((sample / ".qa.yaml").read_text(encoding="utf-8"))
+    if qa["change"]["change_id"] != sample_id:
+        mismatches.append(f".qa.yaml={qa['change']['change_id']}")
+
+    assert mismatches == []
+
+
+def test_benchmark_fixture_case_documents_match_current_runtime_schema() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    cases = (
+        repo_root
+        / "benchmark"
+        / "vue-fastapi-admin"
+        / "eval-fixtures"
+        / "samples"
+        / "eval-sample-001"
+        / "cases"
+    )
+
+    for path in sorted(cases.rglob("case.yaml")):
+        CaseYaml.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
 
 
 def test_benchmark_codegen_imports_attach_gate_to_precheck_not_codegen() -> None:

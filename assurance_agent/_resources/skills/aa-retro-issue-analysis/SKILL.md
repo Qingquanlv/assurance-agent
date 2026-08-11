@@ -5,8 +5,17 @@ description: Use when a Retro v3 run requires issue-domain pattern analysis from
 
 # Retro Issue Signal Analysis
 
-Read only `qa/retro/<retro-id>/evidence/issue-slice.json`. Write only
+Read only the multiline agent projection
+`qa/retro/<retro-id>/evidence/agent/issue-slice.json`. Write only
 `qa/retro/<retro-id>/signals/issue.json`.
+
+The runtime retains the canonical slice separately for digest completion and validation;
+do not read or reproduce that canonical slice.
+
+Treat the slice's `deterministic_signals` as runtime-owned signals that are already
+included in the assembled context. Analyze `entries` for additional patterns; do not
+copy or re-emit a deterministic signal. Each `signal_id` may occur only once in the
+output document.
 
 Aggregate repeated Occurrences by stable fingerprint, affected surface, and symptom.
 Treat `classification_hint` only as supporting context, never as an aggregation key.

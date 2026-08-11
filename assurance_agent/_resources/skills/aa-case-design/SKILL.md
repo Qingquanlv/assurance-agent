@@ -23,14 +23,17 @@ Do not rely on prior conversation context.
    - `mode == advisory` and `status in [skipped, unavailable, failed]` → record warning, continue without advisory
 3. Read **Required** inputs:
    - user requirement text
-   - project source root or enough requirement context to derive QA scope
+   - relevant backend and/or frontend product source files under the project source root
+   The case designer MUST read those files directly before choosing cases and assertions.
+   Explore source evidence is not a substitute for this direct read. If the relevant
+   product source cannot be located or read, **STOP** with `source_unavailable` rather
+   than deriving executable cases from requirements, advisory, docs, or tests alone.
 4. Read **Optional** inputs (missing = warning, do **not** STOP):
    - existing `qa/cases/**`
    - existing `tests/api/**`
    - existing `tests/e2e/**`
    - existing `qa/knowledge/**`
    - existing `qa/changes/**`
-   - backend / frontend source files (when available)
    If optional QA directories are missing, record a warning and continue as a **new QA asset initialization** path. Do **not** stop solely because `qa/cases/`, `tests/`, or `qa/knowledge/` does not exist.
 5. If `workflow-state.yaml` exists and `phases.skill_registry_check.status == fail` → **STOP**.
 6. Use files as the sole source of truth.
@@ -116,15 +119,24 @@ Maintain a visible checklist for each item, or use the available task/todo tool 
    - `autonomous`: skip planned user questions. Adopt `test_strategy` where supported by evidence, choose conservative defaults for missing macro categories, and keep `deferred` / `undecided` pitfalls neutral.
 5. **Reconcile internally** — map advisory to `adopted[]`, `override[]` (with reason), `gap[]`; **do NOT dump risk report to user**; in `interactive` mode, gap-only follow-up max 1–2 questions; in `autonomous` mode, record unresolved gaps in `proposal.md` instead of asking.
 6. **Propose 2–3 QA coverage approaches** — `interactive` only; each must cite adopted / override / gap from Reconcile; the option list MUST include an explicit Fuzz/Performance opt-in entry (Category 3 hard rule).
-7. **Get user approval** — `interactive` only; wait for explicit confirmation. `autonomous` skips this step and relies on `aa-case-reviewer` as the gate artifact.
-8. **Write `.qa.yaml` approval metadata** — in `interactive` mode, persist the approved coverage approach before writing cases:
-   ```yaml
-   approval:
-     mode: interactive
-     approved_by: user
-     approved_approach: <stable-option-id>
-     approved_at: <ISO timestamp>
-   ```
+7. **Get user approval** — `interactive` only; wait for explicit confirmation. `autonomous` skips the user wait and relies on `aa-case-reviewer` as the quality gate — but still MUST persist approval metadata (step 8).
+8. **Write `.qa.yaml` approval metadata** — **required in both modes** before / when writing cases. `case-design-gate` reads `.qa.yaml.approval` and **STOP**s when the block is missing (`missing_field`). Never strip a pre-seeded `approval` block when rewriting `.qa.yaml`.
+   - `interactive`:
+     ```yaml
+     approval:
+       mode: interactive
+       approved_by: user
+       approved_approach: <stable-option-id>
+       approved_at: <ISO timestamp>
+     ```
+   - `autonomous` (mandatory — user wait is skipped, gate is not):
+     ```yaml
+     approval:
+       mode: autonomous
+       approved_by: aa-workflow
+       approved_approach: <chosen coverage approach summary>
+       approved_at: <ISO timestamp>
+     ```
    `aa status` enforces this through `case-design-gate`; `cases/` existing on disk is not enough for case-design to be `done`.
 9. **Write `proposal.md`** — must include `## Explore Input` when advisory `done`; `_skipped` placeholder otherwise; plus `## Test Types Considered` (all four layers, selected/declined + reason) and `## Layer Rationale`; include `generation_mode: autonomous` when no user approval was requested.
 10. **Write case delta YAML** — to `qa/changes/<change-id>/cases/<module>/case.yaml`
@@ -235,7 +247,7 @@ Hard rules:
 - E2E keeps 1 happy-path case + at most 2–3 critical exception flows.
 - The same assertion point MUST NOT appear across cases of different `type`.
 - **Fuzz does not replace functional assertions**: every Fuzz case MUST set `related_cases` pointing at the corresponding functional (API) case.
-- **Performance MUST carry thresholds**: a Performance case without `automation.performance.scenario.thresholds` is invalid (reviewer blocker).
+- **Performance MUST carry execution identity and thresholds**: a Performance case must set non-empty `automation.performance.scenario.capability` and `automation.performance.scenario.endpoint`, plus `automation.performance.scenario.thresholds`; omission is invalid (reviewer blocker).
 - **Fuzz / Performance are additive cases** — they do not cancel the API/E2E functional coverage of the same endpoint.
 
 **Good question example:**
@@ -396,6 +408,42 @@ Minimum Required Coverage keys are a **closed set**. Do **not** freely invent MR
 2. Emit a knowledge proposal under `qa/changes/<change-id>/plans/data-knowledge.proposal.<layer>.yaml` with the missing key listed in `discovered_candidates` (and describe it under `proposal.md` Data Needs).
 3. Leave the MRC matrix row unmapped / out of scope until a human promotes the proposal into L1 — never bypass the proposal path to score “full coverage”.
 
+Use the complete runtime envelope below for either authorized layer, changing only
+source-backed values and the output suffix (`api` or `e2e`):
+
+### Canonical missing-key proposal
+
+```yaml
+schema_version: "1"
+based_on_l1_version: 1
+mode: delta
+accounts: {}
+auth: {}
+entities: {}
+auth_matrix: {}
+capabilities:
+  domain_factories: {}
+  adapters:
+    api: {}
+    e2e: {}
+    fuzz: {}
+    performance: {}
+  cleanup: {}
+discovered_candidates:
+  - id: DK-CASE-USER-001
+    knowledge_key: entities.user.constraints.password_reset_requires_current_password
+    evidence: "app/api/v1/user/user.py:reset_password"
+needs_review:
+  - Confirm the source-backed constraint before promotion into L1.
+promotion_checklist:
+  - "Run aa knowledge validate --change <change-id> before promotion."
+```
+
+For a delta, set `based_on_l1_version` to the current L1 `version`. For a bootstrap
+proposal, set it to `null` and set `mode: bootstrap`. Validate the entire document
+against `DataKnowledgeProposal`; do not emit only `discovered_candidates` or an inner
+entity fragment.
+
 Self-review must fail if any `data_integrity` / `negative` / journey MRC key was invented without a corresponding knowledge proposal.
 
 ---
@@ -536,6 +584,19 @@ Why this QA change is needed.
 ## What to Test
 
 What behavior, module, business flow, or interface capability this change covers.
+
+## Product Source Verification
+
+- independently_read: true
+- reviewed_source_files:
+  - `<project-relative product source path>`
+
+| Claim | Source file | Evidence checked |
+|---|---|---|
+| `<behavior used to design a case>` | `<project-relative path>` | `<route/handler/schema/component symbol or line-level observation>` |
+
+This section records aa-case-design's own source read. Do not copy Explore's
+`source_code_read` flag or advisory evidence into this section as proof.
 
 ## Out of Scope
 
@@ -865,6 +926,10 @@ Also write `qa/changes/<change-id>/trace/minimum-coverage-matrix.yaml`:
   status: covered | skipped_by_scope
   skip_reason: null
 ```
+
+`mrc_id and key must each be unique across the entire matrix`. When two
+categories describe the same obligation, keep one row and map all relevant
+cases to it; do not duplicate the key under a second `mrc_id`.
 
 **`type` → `framework` → output directory (must match):**
 
@@ -1255,7 +1320,7 @@ Before invoking aa-case-reviewer, verify that ALL of these are true. Fix any iss
     - `automation.framework` — one of `pytest`, `pytest-playwright`, `schemathesis`, `locust`, `null`, and MUST match `type`: API→pytest, E2E→pytest-playwright, Fuzz→schemathesis, Performance→locust.
     - `automation.status` — one of `not_automated`, `planned`, `automated`, `flaky`, `deprecated`.
     - When `type == Fuzz`: `automation.fuzz.endpoints` is present and non-empty, and `related_cases` points at ≥1 non-Fuzz case.
-    - When `type == Performance`: `automation.performance.scenario.thresholds` has non-empty `p95_ms` and `error_rate_max` (no placeholders).
+    - When `type == Performance`: `automation.performance.scenario.capability` and `automation.performance.scenario.endpoint` are non-empty strings, and `automation.performance.scenario.thresholds` has non-empty `p95_ms` and `error_rate_max` (no placeholders).
 33. `regression` — has `candidate`, `tier`, `rationale`.
 34. `regression.selection_reason` — present (may be empty list).
 35. `regression.maintenance_rule` — present and non-empty.
@@ -1288,6 +1353,8 @@ Before invoking aa-case-reviewer, verify that ALL of these are true. Fix any iss
     declared journey set; any unknown key has a matching
     `plans/data-knowledge.proposal.*.yaml` `discovered_candidates` entry (never
     invent MRC keys into the matrix alone).
+52. MRC row identity: reject any duplicate mrc_id or key across the entire
+    `trace/minimum-coverage-matrix.yaml` document.
 
 ---
 
@@ -1421,7 +1488,8 @@ Stop and address these before continuing:
 - **Explore before proposing** — Always check existing `qa/cases/` and `tests/` before recommending coverage
 - **Propose alternatives** — Always offer 2–3 coverage approaches before settling
 - **Approve before writing (`interactive`)** — Get coverage approach approval before generating any file
-- **Transparent defaults (`autonomous`)** — When approval is skipped, mark `proposal.md` with `generation_mode: autonomous` and list defaults / unresolved gaps
+- **Transparent defaults (`autonomous`)** — Skip the user wait, but still write `.qa.yaml` `approval.mode: autonomous` (gate-required) and mark `proposal.md` with `generation_mode: autonomous` plus defaults / unresolved gaps
+- **Never strip `.qa.yaml` approval** — Rewriting `.qa.yaml` must keep or rewrite a complete `approval` block; omitting it makes `case-design-gate` STOP
 - **proposal.md first** — Write the proposal before writing cases
 - **Natural language cases** — Describe what to test in plain language; leave method/path/auth/code to aa-api-plan; include objective, postconditions, edge_cases, related_cases, automation.status, regression
 - **Delta operations are explicit** — Decide added/modified/removed at write time, not at archive time

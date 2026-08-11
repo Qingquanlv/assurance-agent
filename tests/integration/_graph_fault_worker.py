@@ -176,11 +176,6 @@ _SCHEMAS = {
 }
 
 
-class NeverCalledInvoker:
-    def invoke(self, request):  # noqa: ANN001, ANN201
-        raise AssertionError(f"unexpected agent invoke: {request}")
-
-
 class FakeClock:
     def __init__(self, start: datetime = T0) -> None:
         self._now = start
@@ -313,32 +308,21 @@ def _install_hooks(runtime, point: str) -> None:  # noqa: ANN001
 
 
 def _build(project: Path, schema_key: str):
-    from assurance_agent.workflow.graph.checkpoint import CheckpointStore
+    from assurance_agent.workflow.driver.operations_catalog import default_operations
+    from assurance_agent.workflow.driver.runtime_factory import assemble_graph_runtime
     from assurance_agent.workflow.graph.compiler import compile_workflow
     from assurance_agent.workflow.graph.contracts import parse_execution_contracts
-    from assurance_agent.workflow.graph.handlers.operation import (
-        OperationHandler,
-        default_operations,
-    )
     from assurance_agent.workflow.graph.models import (
         ExecutableTask,
         InterruptProjection,
         RuntimeContext,
         TaskResult,
     )
-    from assurance_agent.workflow.graph.runtime import GraphRuntime
-    from assurance_agent.workflow.graph.scheduler import Scheduler
     from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
-    from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
-    from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
 
     change = project / "qa" / "changes" / "CH-1"
     contracts = parse_execution_contracts(_CONTRACTS)
     compiled = compile_workflow(parse_workflow_v2(_SCHEMAS[schema_key]), contracts)
-    store = TreeStore(change)
-    checkpoints = CheckpointStore(change)
-    workspaces = WorkspaceBackend(change)
-    clock = FakeClock()
     ops = default_operations()
 
     def write_marker(task: ExecutableTask, workspace, context: RuntimeContext) -> TaskResult:
@@ -374,29 +358,21 @@ def _build(project: Path, schema_key: str):
     ops["operation:write-e2e"] = write_e2e
     ops["operation:consume-budget"] = consume_budget
     ops["operation:interrupt-once"] = interrupt_once
-    handler = OperationHandler(ops)
-    node_runner = HandlerNodeRunner({target: handler for target in ops})
-    graph_id = compiled.entrypoints["full"].graph_id
-    scheduler = Scheduler(
-        checkpoints=checkpoints,
-        object_store=store,
-        clock=clock,
-        workspace_backend=workspaces,
-        node_runner=node_runner,
-        max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
+
+    def build_node_runner(_store, _run_child):  # noqa: ANN001, ANN202
+        from assurance_agent.workflow.graph.handlers.operation import OperationHandler
+        from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
+
+        handler = OperationHandler(ops)
+        return HandlerNodeRunner({target: handler for target in ops})
+
+    runtime = assemble_graph_runtime(
+        project_root=project,
+        change_dir=change,
+        compiled=compiled,
         contracts=contracts,
-        state_defs=dict(compiled.schema.graphs[graph_id].state),
-    )
-    schemas = {compiled.digest: compiled}
-    runtime = GraphRuntime(
-        checkpoint_store=checkpoints,
-        object_store=store,
-        workspace_backend=workspaces,
-        contracts=contracts,
-        node_runner=node_runner,
-        scheduler=scheduler,
-        schema_resolver=lambda digest: schemas[digest],
-        clock=clock,
+        build_node_runner=build_node_runner,
+        clock=FakeClock(),
     )
     return runtime, compiled, change
 

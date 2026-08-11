@@ -14,7 +14,7 @@ from assurance_agent.artifacts.models.coverage_gaps import COVERAGE_GAPS_REL, Co
 from assurance_agent.artifacts.models.discovery import ReplayAttemptReceipt
 from assurance_agent.artifacts.models.issues import ProblemProjection
 from assurance_agent.workflow.discovery.replay_receipts import write_replay_attempt_receipts
-from assurance_agent.workflow.graph.handlers.operation import default_operations
+from assurance_agent.workflow.driver.operations_catalog import default_operations
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.metrics.c_layer import materialize_c_layer_metrics_operation

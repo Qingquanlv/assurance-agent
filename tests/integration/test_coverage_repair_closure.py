@@ -29,11 +29,12 @@ from assurance_agent.artifacts.models.coverage_repair import (
 )
 from assurance_agent.artifacts.models.metrics import MetricScope, MetricsDocument
 from assurance_agent.artifacts.models.pr_metric_evidence import ConstraintCoverageEvidence
+from assurance_agent.workflow.driver.operations_catalog import default_operations
+from assurance_agent.workflow.driver.runtime_factory import assemble_graph_runtime
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
-from assurance_agent.workflow.graph.checkpoint import CheckpointStore
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import load_execution_contracts
-from assurance_agent.workflow.graph.handlers.operation import OperationHandler, default_operations
+from assurance_agent.workflow.graph.handlers.operation import OperationHandler
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
@@ -41,7 +42,6 @@ from assurance_agent.workflow.graph.models import (
     TaskResult,
 )
 from assurance_agent.workflow.graph.runtime import GraphRuntime
-from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import (
     EdgeDef,
     EntrypointDef,
@@ -51,7 +51,7 @@ from assurance_agent.workflow.graph.schema_v2 import (
     load_workflow_v2,
 )
 from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner, build_default_node_runner
-from assurance_agent.workflow.graph.workspace import TaskWorkspace, TreeStore, WorkspaceBackend
+from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.metrics.batch_io import write_batch_evidence
 from assurance_agent.workflow.metrics.pr_metrics import INSPECT_METRICS_REL, METRICS_SOURCE_BATCH_REL
 from assurance_agent.workflow.orchestration.gates import GateEvaluationContext, check_gate_in_view
@@ -365,61 +365,36 @@ def _build_runtime(
     *,
     extra_ops: dict[str, Any] | None = None,
 ) -> GraphRuntime:
-    change_dir = project / "qa" / "changes" / CHANGE_ID
-    store = TreeStore(change_dir)
-    checkpoints = CheckpointStore(change_dir)
-    workspaces = WorkspaceBackend(change_dir)
-    clock = FakeClock()
-    holder: dict[str, GraphRuntime] = {}
+    def build(store, run_child):  # type: ignore[no-untyped-def]
+        node_runner = build_default_node_runner(
+            invoker,
+            store,
+            contracts,
+            compiled=compiled,
+            operations=default_operations(),
+            run_child=run_child,
+        )
+        assert isinstance(node_runner, HandlerNodeRunner)
+        if extra_ops:
+            op_handler = OperationHandler({**default_operations(), **extra_ops})
+            node_runner._handlers.update({target: op_handler for target in extra_ops})  # noqa: SLF001
 
-    def run_child(task, graph_id, workspace, context):  # type: ignore[no-untyped-def]
-        return holder["rt"].run_child(task, graph_id, workspace, context)
+        class _InspectStub:
+            def execute(self, task, workspace, context):  # type: ignore[no-untyped-def]
+                del task, workspace, context
+                return TaskResult(status="succeeded")
 
-    node_runner = build_default_node_runner(
-        invoker,
-        store,
-        contracts,
+        node_runner._handlers["graph:inspect-with-issues"] = _InspectStub()  # noqa: SLF001
+        return node_runner
+
+    return assemble_graph_runtime(
+        project_root=project,
+        change_dir=project / "qa" / "changes" / CHANGE_ID,
         compiled=compiled,
-        run_child=run_child,
-    )
-    assert isinstance(node_runner, HandlerNodeRunner)
-    if extra_ops:
-        op_handler = OperationHandler({**default_operations(), **extra_ops})
-        node_runner._handlers.update({target: op_handler for target in extra_ops})  # noqa: SLF001
-
-    class _InspectStub:
-        def execute(self, task, workspace, context):  # type: ignore[no-untyped-def]
-            del task, workspace, context
-            return TaskResult(status="succeeded")
-
-    node_runner._handlers["graph:inspect-with-issues"] = _InspectStub()  # noqa: SLF001
-
-    state_defs: dict = {}
-    for graph in compiled.schema.graphs.values():
-        state_defs.update(dict(graph.state))
-    scheduler = Scheduler(
-        checkpoints=checkpoints,
-        object_store=store,
-        clock=clock,
-        workspace_backend=workspaces,
-        node_runner=node_runner,
-        max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
         contracts=contracts,
-        state_defs=state_defs,
+        build_node_runner=build,
+        clock=FakeClock(),
     )
-    schemas = {compiled.digest: compiled}
-    runtime = GraphRuntime(
-        checkpoint_store=checkpoints,
-        object_store=store,
-        workspace_backend=workspaces,
-        contracts=contracts,
-        node_runner=node_runner,
-        scheduler=scheduler,
-        schema_resolver=lambda digest: schemas[digest],
-        clock=clock,
-    )
-    holder["rt"] = runtime
-    return runtime
 
 
 def _context(project: Path, *, max_attempts: int = 1) -> RuntimeContext:

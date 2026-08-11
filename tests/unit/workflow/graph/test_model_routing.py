@@ -90,8 +90,12 @@ def test_escalation_stays_sticky_after_later_infrastructure_failure() -> None:
 
 
 def test_sticky_failure_must_match_configured_escalation_kind() -> None:
-    policy = _policy().model_copy(
-        update={"escalation": _policy().escalation.model_copy(update={"on_error_kinds": ("invalid_output",)})}
+    base_policy = _policy()
+    assert base_policy.escalation is not None
+    policy = base_policy.model_copy(
+        update={
+            "escalation": base_policy.escalation.model_copy(update={"on_error_kinds": ("invalid_output",)})
+        }
     )
 
     resolution = ModelRouter(policy).resolve(

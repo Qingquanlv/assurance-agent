@@ -44,7 +44,7 @@ from assurance_agent.artifacts.models.policy import PlanCheckAction
 from assurance_agent.workflow.core.audit_scope import is_audited_gate_read
 from assurance_agent.workflow.core.events import append_event_strict
 from assurance_agent.workflow.graph.contracts import load_execution_contracts
-from assurance_agent.workflow.graph.handlers.operation import default_operations
+from assurance_agent.workflow.driver.operations_catalog import default_operations
 from assurance_agent.workflow.graph.schema_v2 import (
     GraphDef,
     RouteDef,

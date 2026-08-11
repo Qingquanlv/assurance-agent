@@ -47,6 +47,7 @@ imports:
       node: codegen
       outputs:
       - change:codegen/e2e-codegen-summary.md
+      - change:codegen/e2e-generated-files.json
     - path: execute-workflow/assurance/assurance
       graph: assurance
       node: e2e

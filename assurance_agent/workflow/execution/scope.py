@@ -15,7 +15,7 @@ must fail closed rather than widening to the shared test tree.
 import re
 from pathlib import Path
 
-_HEADING_RE = re.compile(r"^#{1,6}\s*(.+?)\s*$")
+_HEADING_RE = re.compile(r"^(#{1,6})(?:[ \t]+(.*?))?[ \t]*$")
 _BACKTICK_PATH_RE = re.compile(r"`(tests/[^`]+\.py)`")
 
 
@@ -55,16 +55,19 @@ def _extract_section(text: str, heading: str) -> str | None:
     lines = text.splitlines()
     heading_lower = heading.strip().lower()
     start = None
+    heading_level = 0
     for i, line in enumerate(lines):
         match = _HEADING_RE.match(line.strip())
-        if match and match.group(1).strip().lower() == heading_lower:
+        if match and (match.group(2) or "").strip().lower() == heading_lower:
             start = i + 1
+            heading_level = len(match.group(1))
             break
     if start is None:
         return None
     end = len(lines)
     for j in range(start, len(lines)):
-        if lines[j].strip().startswith("#"):
+        match = _HEADING_RE.match(lines[j].strip())
+        if match and len(match.group(1)) <= heading_level:
             end = j
             break
     return "\n".join(lines[start:end])

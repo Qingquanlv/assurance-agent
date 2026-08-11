@@ -42,9 +42,13 @@ from assurance_agent.artifacts.models.coverage_repair import (
     RepairItem,
 )
 from assurance_agent.artifacts.models.metrics import MetricKey
+from assurance_agent.artifacts.models.policy import MetricFloor
 from assurance_agent.artifacts.policy import load_policy
 from assurance_agent.change_location import resolve_change
-from assurance_agent.evidence.metrics_sufficiency import evaluate_metrics_sufficiency
+from assurance_agent.evidence.metrics_sufficiency import (
+    evaluate_metrics_sufficiency,
+    numeric_below_floor_shortboards,
+)
 from assurance_agent.workflow.execution.evidence import atomic_write_bytes
 from assurance_agent.workflow.execution.scope import resolve_test_paths
 from assurance_agent.workflow.execution.selection import resolve_selected_targets
@@ -239,12 +243,20 @@ def build_repair_brief(
         computed_at=computed_at,
         batch_id=batch_id,
     )
-    decision = evaluate_metrics_sufficiency(
-        document,
-        load_policy(project_root).evidence_sufficiency,
-    )
+    sufficiency = load_policy(project_root).evidence_sufficiency
+    decision = evaluate_metrics_sufficiency(document, sufficiency)
 
-    if decision.verdict != "needs_human":
+    repair_shortboards = decision.shortboards
+    if decision.verdict == "reject":
+        # A failed collector must continue to block release, but it must not
+        # erase independently measured numeric misses that this loop can fix.
+        schedule = set(sufficiency.cadence.pr if document.cadence == "pr" else sufficiency.cadence.nightly)
+        scheduled_floors: dict[MetricKey, MetricFloor] = {
+            key: floor for key, floor in sufficiency.floors[document.risk_tier].items() if key in schedule
+        }
+        repair_shortboards = numeric_below_floor_shortboards(document, scheduled_floors)
+
+    if decision.verdict != "needs_human" and not repair_shortboards:
         return CoverageRepairBrief(
             change_id=change_id,
             batch_id=batch_id,
@@ -255,7 +267,7 @@ def build_repair_brief(
         )
 
     gaps = _load_coverage_gaps(change_dir)
-    active_shortboards: frozenset[MetricKey] = frozenset(board.metric for board in decision.shortboards)
+    active_shortboards: frozenset[MetricKey] = frozenset(board.metric for board in repair_shortboards)
     repair_items, deferred = _partition_gaps(gaps, active_shortboards)
     allowed_test_files = _allowed_test_files(change_dir)
     if repair_items and not allowed_test_files:
@@ -270,7 +282,7 @@ def build_repair_brief(
         probe_verdict=decision.verdict,
         eligible=bool(repair_items and allowed_test_files),
         allowed_test_files=allowed_test_files,
-        shortboards=decision.shortboards,
+        shortboards=repair_shortboards,
         repair_items=repair_items,
         deferred_to_intake=deferred,
         computed_at=computed_at,

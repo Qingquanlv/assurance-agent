@@ -24,7 +24,7 @@ from assurance_agent.workflow.execution.tree_hash import (
     hash_product_tree,
     hash_test_tree,
 )
-from assurance_agent.workflow.graph.handlers.operation import default_operations
+from assurance_agent.workflow.driver.operations_catalog import default_operations
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.healing.safety import load_product_code_roots

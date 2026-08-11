@@ -15,7 +15,7 @@ from assurance_agent.workflow.graph.contracts import (
     load_execution_contracts,
     parse_execution_contracts,
 )
-from assurance_agent.workflow.graph.handlers.operation import default_operations
+from assurance_agent.workflow.driver.operations_catalog import default_operations
 from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2, parse_workflow_v2
 from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
 

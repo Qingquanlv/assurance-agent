@@ -4,8 +4,23 @@ mode: all
 description: Execute a bounded AA authoring phase (design/plan/healing documents). Never run aa commands or write workflow-state.yaml.
 tools:
   task: false
+  task_create: false
+  task_get: false
+  task_list: false
+  task_update: false
   call_omo_agent: false
   look_at: false
+  skill_mcp: false
+  interactive_bash: false
+  monitor_start: false
+  session_list: false
+  session_read: false
+  session_search: false
+  session_info: false
+  background_output: false
+  background_cancel: false
+  apply_patch: false
+  workflow_start: false
 permission:
   edit:
     "**": deny
@@ -35,6 +50,7 @@ Your task is given in the `task` call / session prompt that launched you. Load t
 
 Rules:
 - Do NOT run any `aa` command. This agent has no Bash permission; Explore work is owned by `aa-explorer`.
+- In case-design, read the relevant product source directly and record the files and verified claims under `## Product Source Verification`; Explore findings are context, not a substitute.
 - Do NOT write or modify `workflow-state.yaml`. The orchestrator / driver owns it.
 - Do NOT read or follow `aa-workflow/SKILL.md`. You are a phase worker, not the orchestrator.
 - Retro phases write only their three signal files or proposal outputs; change-scoped phases write only their declared `qa/changes/**` outputs.

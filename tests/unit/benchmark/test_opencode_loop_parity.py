@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import fnmatch
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -75,14 +78,130 @@ def test_opencode_loop_keeps_explicit_denies_with_native_adapter() -> None:
 def test_opencode_loop_validates_live_agent_policy_before_creating_changes() -> None:
     source = _OPENCODE_LOOP.read_text(encoding="utf-8")
 
-    sync = source.index('"$AA_BIN" skill refresh --sync-agents')
-    preflight = source.index("validate_bounded_agent_server", sync)
-    tracking = source.index("setup_run_tracking", preflight)
+    sync = source.index(
+        '"$AA_BIN" skill refresh --sync-agents --sync-opencode-user-skills --sync-opencode-user-agents'
+    )
+    skill_hash_postcondition = source.index("verify_packaged_skills", sync)
+    agent_hash_postcondition = source.index("verify_packaged_agents", skill_hash_postcondition)
+    agent_preflight = source.index("validate_bounded_agent_server", sync)
+    isolated_preflight = source.index("TemporaryDirectory", agent_preflight)
+    isolated_agent_validation = source.index("validate_bounded_agent_server", isolated_preflight)
+    skill_preflight = source.index("validate_packaged_skill_server", isolated_agent_validation)
+    run_dir_creation = source.index('mkdir -p "$RUN_DIR" "$RESUME_LOG_DIR"', skill_preflight)
+    tracking = source.index("setup_run_tracking", run_dir_creation)
+    seed_change = source.index('    seed_change "$change_id"', tracking)
 
-    assert sync < preflight < tracking
+    assert "opencode_user_skills_root" in source[sync:agent_preflight]
+    assert "opencode_user_agents_root" in source[sync:agent_preflight]
+    assert "git" in source[isolated_preflight:isolated_agent_validation]
+    assert "init" in source[isolated_preflight:isolated_agent_validation]
+    assert (
+        sync
+        < skill_hash_postcondition
+        < agent_hash_postcondition
+        < agent_preflight
+        < isolated_preflight
+        < isolated_agent_validation
+        < skill_preflight
+        < run_dir_creation
+        < tracking
+        < seed_change
+    )
+    assert "restart OpenCode" in source[skill_preflight:run_dir_creation]
+    assert "server working directory" in source[skill_preflight:run_dir_creation]
+    assert "live boundary plugin" in source[skill_preflight:run_dir_creation]
 
 
-def test_hybrid_model_routes_design_to_glm_and_review_to_deepseek() -> None:
+def _isolated_opencode_loop(tmp_path: Path) -> tuple[Path, dict[str, str], Path]:
+    project = tmp_path / "sut"
+    benchmark = project / "benchmark"
+    benchmark.mkdir(parents=True)
+    script = benchmark / "run-workflow-loop.sh"
+    shutil.copy2(_OPENCODE_LOOP, script)
+    shutil.copy2(_OPENCODE_LOOP.with_name("cursor-loop-helpers.sh"), benchmark)
+    shutil.copy2(_OPENCODE_LOOP.with_name("run_with_hard_timeout.py"), benchmark)
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    for name in ("aa", "curl", "opencode"):
+        executable = fake_bin / name
+        executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        executable.chmod(0o755)
+    fake_python = fake_bin / "python"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        "  *validate_packaged_skill_server*)\n"
+        '    [ -z "${FAKE_PREFLIGHT_MARKER:-}" ] || : >"$FAKE_PREFLIGHT_MARKER"\n'
+        '    exit "${FAKE_SKILL_PREFLIGHT_EXIT:-0}"\n'
+        "    ;;\n"
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    marker = tmp_path / "skill-preflight-ran"
+    env = {
+        **os.environ,
+        "AA_BIN": str(fake_bin / "aa"),
+        "AA_PYTHON": str(fake_python),
+        "AA_REPO_ROOT": str(_ROOT),
+        "BENCHMARK_ENV": str(tmp_path / "missing.env"),
+        "DAEMON": "0",
+        "DRIVER_ADAPTER": "opencode",
+        "FAKE_PREFLIGHT_MARKER": str(marker),
+        "OPENCODE_BIN": str(fake_bin / "opencode"),
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "RESUME_RUNSTAMP": "preflight-order-test",
+    }
+    return script, env, marker
+
+
+def test_live_preflight_failure_creates_no_run_tracking_or_change(tmp_path: Path) -> None:
+    script, env, marker = _isolated_opencode_loop(tmp_path)
+    env["FAKE_SKILL_PREFLIGHT_EXIT"] = "23"
+
+    result = subprocess.run(
+        ["bash", str(script)],
+        cwd=script.parent.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert marker.is_file(), result.stdout + result.stderr
+    assert not (script.parent / "runs/preflight-order-test-opencode").exists()
+    assert not (script.parent.parent / "qa/changes").exists()
+
+
+def test_opencode_daemon_mode_is_rejected_after_live_preflight_without_cursor_spawn(
+    tmp_path: Path,
+) -> None:
+    script, env, marker = _isolated_opencode_loop(tmp_path)
+    env["DAEMON"] = "1"
+
+    result = subprocess.run(
+        ["bash", str(script)],
+        cwd=script.parent.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert marker.is_file(), result.stdout + result.stderr
+    assert "DAEMON=1 is not supported by the OpenCode benchmark" in result.stderr
+    assert "daemonize-loop.py" not in _OPENCODE_LOOP.read_text(encoding="utf-8")
+    assert not (script.parent / "runs/preflight-order-test-opencode").exists()
+
+
+def test_hybrid_model_routes_reasoning_to_glm_and_bulk_work_to_deepseek() -> None:
     config = yaml.safe_load((_BENCHMARK_ROOT / ".aa/config.yaml").read_text(encoding="utf-8"))
     routing = config["execution"]["model_routing"]
     routes = routing["routes"]
@@ -101,14 +220,35 @@ def test_hybrid_model_routes_design_to_glm_and_review_to_deepseek() -> None:
     ):
         assert routes[skill] == "anthropic/glm-5.2", skill
     for skill in (
+        "aa-explore",
+        "aa-fact-baseline",
         "aa-case-reviewer",
         "aa-api-plan-reviewer",
         "aa-e2e-plan-reviewer",
         "aa-fuzz-plan-reviewer",
         "aa-performance-plan-reviewer",
+        "aa-api-codegen",
+        "aa-api-codegen-fixer",
+        "aa-e2e-codegen",
+        "aa-e2e-codegen-fixer",
+        "aa-fuzz-codegen",
+        "aa-performance-codegen",
+        "aa-fix-proposal",
+        "aa-issue-analyzer",
+        "aa-issue-triage-advisor",
+        "aa-archive",
+        "aa-retro-issue-analysis",
+        "aa-retro-workflow-analysis",
+        "aa-retro-eval-analysis",
+        "aa-retro",
     ):
         assert routes[skill] == "anthropic/deepseek-v4-flash", skill
     assert routes["aa-improvement-reviewer"] == "anthropic/glm-5.2"
+    assert routing["default"] == "anthropic/deepseek-v4-flash"
+    assert routing["escalation"] == {
+        "model": "anthropic/glm-5.2",
+        "on_error_kinds": ["invalid_output", "forbidden_write"],
+    }
 
     schema = yaml.safe_load(resources.read_text("schemas", "workflow-schema.yaml"))
     compiled_skills = {

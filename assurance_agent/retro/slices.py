@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from itertools import chain
 from pathlib import Path
 from typing import Literal, cast
+
+from pydantic import BaseModel
 
 from assurance_agent.artifacts.canonical import canonical_json_bytes, sha256_bytes
 from assurance_agent.artifacts.models.improvements import ImprovementSourceRefs
@@ -439,8 +442,18 @@ def _eval_slice(retro_id: str, window: RetroWindow, source_slice: EvalHistorySli
     )
 
 
-def _write_immutable_bundle(files: dict[Path, object]) -> None:
+def _agent_json_bytes(value: BaseModel) -> bytes:
+    payload = value.model_dump(mode="json")
+    return (json.dumps(payload, sort_keys=True, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def _write_immutable_bundle(
+    files: dict[Path, object],
+    *,
+    agent_files: dict[Path, BaseModel] | None = None,
+) -> None:
     encoded = {path: canonical_json_bytes(value) for path, value in files.items()}
+    encoded.update({path: _agent_json_bytes(value) for path, value in (agent_files or {}).items()})
     for path, canonical in encoded.items():
         if path.is_file() and path.read_bytes() != canonical:
             raise RetroSliceImmutableError(f"retro evidence artifact already differs: {path}")
@@ -837,7 +850,14 @@ def materialize_slices(
         files[retro_dir / "evidence" / "discovery-slice.json"] = bundle.discovery
     if bundle.coverage_gap is not None:
         files[retro_dir / "evidence" / "coverage_gap-slice.json"] = bundle.coverage_gap
-    _write_immutable_bundle(files)
+    _write_immutable_bundle(
+        files,
+        agent_files={
+            retro_dir / "evidence" / "agent" / "issue-slice.json": bundle.issue,
+            retro_dir / "evidence" / "agent" / "workflow-slice.json": bundle.workflow,
+            retro_dir / "evidence" / "agent" / "eval-slice.json": bundle.eval,
+        },
+    )
     if bundle.discovery is not None:
         _write_domain_signal_doc(retro_dir / "signals" / "discovery.json", bundle.discovery)
     if bundle.coverage_gap is not None:

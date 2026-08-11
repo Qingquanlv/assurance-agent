@@ -60,6 +60,7 @@ class GateHandler:
             state_values={},
             node_results=node_results,
             audit_events_dir=context.change_dir,
+            checkpoint_ns=task.checkpoint_ns,
         )
         gate_id = params.get("gate")
         if isinstance(gate_id, str):

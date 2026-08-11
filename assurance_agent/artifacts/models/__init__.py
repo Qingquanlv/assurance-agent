@@ -10,7 +10,17 @@ from assurance_agent.artifacts.models.cases import (
     CaseRisk,
     CaseSeverity,
     CaseYaml,
+    CaseYamlAuthoring,
     QaYaml,
+)
+from assurance_agent.artifacts.models.codegen import (
+    CodegenGeneratedFile,
+    CodegenGeneratedFileAuthoring,
+    CodegenGeneratedFileSubmission,
+    CodegenGeneratedFiles,
+    CodegenGeneratedFilesAuthoring,
+    CodegenGeneratedFilesSubmission,
+    CodegenLayer,
 )
 from assurance_agent.artifacts.models.data_knowledge import (
     AccountLeaf,
@@ -104,6 +114,7 @@ from assurance_agent.artifacts.models.eval_projection import EvalProjectionVerdi
 from assurance_agent.artifacts.models.explore import (
     Advisory,
     FactBaseline,
+    FactBaselineAuthoring,
     FactBaselineFull,
     FactBaselineUnavailable,
 )
@@ -133,6 +144,7 @@ from assurance_agent.artifacts.models.improvement_review import (
     AutoReviewBatchError as AutoReviewBatchError,
     AutoReviewFinding as AutoReviewFinding,
     ImprovementAutoReviewAssessment as ImprovementAutoReviewAssessment,
+    ImprovementAutoReviewAssessmentAuthoring as ImprovementAutoReviewAssessmentAuthoring,
     ImprovementAutoReviewBatchSummary as ImprovementAutoReviewBatchSummary,
     ImprovementAutoReviewStatus as ImprovementAutoReviewStatus,
     ImprovementReviewProvenance as ImprovementReviewProvenance,
@@ -365,6 +377,14 @@ __all__ = [
     "CaseRisk",
     "CaseSeverity",
     "CaseYaml",
+    "CaseYamlAuthoring",
+    "CodegenGeneratedFile",
+    "CodegenGeneratedFileAuthoring",
+    "CodegenGeneratedFileSubmission",
+    "CodegenGeneratedFiles",
+    "CodegenGeneratedFilesAuthoring",
+    "CodegenGeneratedFilesSubmission",
+    "CodegenLayer",
     "ARTIFACT_REL_BY_CADENCE",
     "C_LAYER_METRICS_REL",
     "C_LAYER_VECTOR_KEYS",
@@ -489,6 +509,7 @@ __all__ = [
     "CoverageThreshold",
     "ExecutionManifest",
     "FactBaseline",
+    "FactBaselineAuthoring",
     "FactBaselineFull",
     "FactBaselineUnavailable",
     "FailureAnalysis",

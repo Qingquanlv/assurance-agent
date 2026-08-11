@@ -1,0 +1,37 @@
+schema_version: "1.0"
+added:
+  - case_id: PERF_001
+    title: API list endpoint load threshold
+    status: active
+    priority: P1
+    severity: major
+    type: Performance
+    module: system.api
+    objective: Verify GET /api/v1/api/list sustains declared absolute latency and error thresholds under fixed load.
+    summary: Locust hammers the API list endpoint with authenticated users; thresholds are user-confirmed absolutes, not baseline regression.
+    preconditions:
+      - Target environment base URL is configured in `.aa/config.yaml`
+      - Admin auth can be acquired from `.aa/data-knowledge.yaml`
+    steps:
+      - Seed API metadata via declared domain factory through performance adapter
+      - Launch Locust with configured users, spawn rate, and run time
+      - Collect p95 latency and error rate against absolute thresholds
+    assertions:
+      - p95 latency must stay at or below confirmed threshold
+      - error rate must stay at or below confirmed maximum
+    automation:
+      required: true
+      framework: locust
+      performance:
+        scenario:
+          capability: GET /api/v1/api/list
+          endpoint: /api/v1/api/list
+          thresholds:
+            p95_ms: 500
+            error_rate_max: 0.01
+          load:
+            users: 50
+            spawn_rate: 5
+            run_time_s: 120
+modified: []
+removed: []

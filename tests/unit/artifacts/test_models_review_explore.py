@@ -1,7 +1,13 @@
 import pytest
 from pydantic import ValidationError
 
-from assurance_agent.artifacts.models import Advisory, CaseReviewAuthoring, FactBaseline, Review
+from assurance_agent.artifacts.models import (
+    Advisory,
+    CaseReviewAuthoring,
+    FactBaseline,
+    PlanReviewAuthoring,
+    Review,
+)
 
 
 def make_review(**overrides: object) -> dict:
@@ -86,6 +92,48 @@ def test_plan_review_blank_capability_item_fails() -> None:
         Review.model_validate(make_review(required_capabilities=["auth.api_admin_token", "  "]))
 
 
+@pytest.mark.parametrize(
+    "invalid_key",
+    [
+        "adapters.e2e.dept.make_dept",
+        "cleanup.dept_delete",
+        "domain_factories.dept.make_dept",
+    ],
+)
+@pytest.mark.parametrize("model", [Review, PlanReviewAuthoring])
+def test_plan_review_rejects_noncanonical_capability_roots(
+    invalid_key: str, model: type[Review] | type[PlanReviewAuthoring]
+) -> None:
+    payload = {
+        **make_review(required_capabilities=[invalid_key]),
+        "auto_fix_plan": [],
+    }
+
+    with pytest.raises(ValidationError, match="canonical C4 leaf key"):
+        model.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "canonical_key",
+    [
+        "auth.api_admin_token",
+        "accounts.qa_admin",
+        "entities.dept",
+        "auth_matrix.dept.create",
+        "capabilities.domain_factories.dept.make_dept",
+        "capabilities.adapters.e2e.dept.make_dept",
+        "capabilities.cleanup.dept_delete",
+    ],
+)
+def test_plan_review_authoring_accepts_canonical_capability_roots(canonical_key: str) -> None:
+    payload = {
+        **make_review(required_capabilities=[canonical_key]),
+        "auto_fix_plan": [],
+    }
+
+    assert PlanReviewAuthoring.model_validate(payload).required_capabilities == [canonical_key]
+
+
 @pytest.mark.parametrize("review_type", ["case", "fuzz-plan", "performance-plan", None])
 def test_non_plan_reviews_do_not_require_capabilities(review_type: str | None) -> None:
     doc = make_review(review_type=review_type)
@@ -110,6 +158,12 @@ def test_case_review_authoring_requires_independent_product_source() -> None:
     payload = {
         **make_review(review_type="case"),
         "auto_fix_plan": [],
+        "minimum_coverage": {
+            "total_required": 1,
+            "covered": 1,
+            "skipped_by_scope": 0,
+            "missing": [],
+        },
         "source_verification": {
             "independent": True,
             "reviewed_source_files": ["app/api/v1/apis/apis.py"],
@@ -133,6 +187,12 @@ def test_case_review_authoring_rejects_non_product_source(path: str) -> None:
     payload = {
         **make_review(review_type="case"),
         "auto_fix_plan": [],
+        "minimum_coverage": {
+            "total_required": 1,
+            "covered": 1,
+            "skipped_by_scope": 0,
+            "missing": [],
+        },
         "source_verification": {
             "independent": True,
             "reviewed_source_files": [path],
@@ -142,6 +202,28 @@ def test_case_review_authoring_rejects_non_product_source(path: str) -> None:
     payload.pop("required_capabilities")
 
     with pytest.raises(ValidationError, match="product source|project-relative"):
+        CaseReviewAuthoring.model_validate(payload)
+
+
+def test_case_review_authoring_rejects_internally_inconsistent_minimum_coverage() -> None:
+    payload = {
+        **make_review(review_type="case"),
+        "auto_fix_plan": [],
+        "minimum_coverage": {
+            "total_required": 3,
+            "covered": 2,
+            "skipped_by_scope": 1,
+            "missing": [],
+        },
+        "source_verification": {
+            "independent": True,
+            "reviewed_source_files": ["app/api.py"],
+            "verified_claims": [{"claim": "route exists", "evidence_files": ["app/api.py"]}],
+        },
+    }
+    payload.pop("required_capabilities")
+
+    with pytest.raises(ValidationError, match="must list every skipped_by_scope key"):
         CaseReviewAuthoring.model_validate(payload)
 
 

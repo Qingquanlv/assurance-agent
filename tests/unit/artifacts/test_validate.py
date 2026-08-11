@@ -155,7 +155,7 @@ def test_phase_directory_produce_matches_by_prefix(change_dir: Path) -> None:
     write(change_dir, "cases/menus/case.yaml", VALID_CASE_YAML)
     write(change_dir, "review/case-review.json", json.dumps(VALID_REVIEW))
 
-    # packaged v2 schema: case-design outputs [.qa.yaml, proposal.md, cases/]
+    # packaged v2 schema: case-design outputs .qa.yaml, proposal.md, cases/, and the MRC matrix.
     report = validate_change(change_dir, phase="case-design")
 
     assert [r.path for r in report.results] == [".qa.yaml", "cases/menus/case.yaml"]

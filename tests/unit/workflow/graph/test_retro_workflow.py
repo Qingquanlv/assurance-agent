@@ -38,14 +38,11 @@ from assurance_agent.retro.types import (
     RetroWindow,
     WorkflowRetroSignals,
 )
+from assurance_agent.workflow.driver.operations_catalog import default_operations
+from assurance_agent.workflow.driver.runtime_factory import assemble_graph_runtime
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
-from assurance_agent.workflow.graph.checkpoint import CheckpointStore
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import load_execution_contracts
-from assurance_agent.workflow.graph.handlers.operation import (
-    OperationHandler,
-    default_operations,
-)
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
@@ -53,13 +50,9 @@ from assurance_agent.workflow.graph.models import (
     TaskResult,
 )
 from assurance_agent.workflow.graph.runtime import GraphRuntime
-from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
-from assurance_agent.workflow.graph.task_runner import (
-    HandlerNodeRunner,
-    build_default_node_runner,
-)
-from assurance_agent.workflow.graph.workspace import TaskWorkspace, TreeStore, WorkspaceBackend
+from assurance_agent.workflow.graph.workspace import TaskWorkspace
+from assurance_agent.workflow.retro_ops import retro_collect_v3
 from tests.helpers_aa import write_aa_config
 
 T0 = datetime(2026, 7, 25, 0, 0, 0, tzinfo=timezone.utc)
@@ -212,55 +205,18 @@ def _build_runtime(
     *,
     extra_ops: dict | None = None,
 ) -> GraphRuntime:
-    change_dir = project / "qa" / "changes" / "RETRO-RUN"
-    store = TreeStore(change_dir)
-    checkpoints = CheckpointStore(change_dir)
-    workspaces = WorkspaceBackend(change_dir)
-    clock = FakeClock()
-    holder: dict[str, GraphRuntime] = {}
-
-    def run_child(task, graph_id, workspace, context):  # type: ignore[no-untyped-def]
-        return holder["rt"].run_child(task, graph_id, workspace, context)
-
-    node_runner = build_default_node_runner(
-        invoker,  # type: ignore[arg-type]
-        store,
-        contracts,  # type: ignore[arg-type]
-        compiled=compiled,
-        run_child=run_child,
-    )
+    ops = default_operations()
     if extra_ops:
-        op_handler = OperationHandler({**default_operations(), **extra_ops})
-        assert isinstance(node_runner, HandlerNodeRunner)
-        node_runner._handlers.update(  # noqa: SLF001
-            {target: op_handler for target in extra_ops}
-        )
-    state_defs: dict = {}
-    for graph in compiled.schema.graphs.values():
-        state_defs.update(dict(graph.state))
-    scheduler = Scheduler(
-        checkpoints=checkpoints,
-        object_store=store,
-        clock=clock,
-        workspace_backend=workspaces,
-        node_runner=node_runner,
-        max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
+        ops = {**ops, **extra_ops}
+    return assemble_graph_runtime(
+        project_root=project,
+        change_dir=project / "qa" / "changes" / "RETRO-RUN",
+        compiled=compiled,
         contracts=contracts,  # type: ignore[arg-type]
-        state_defs=state_defs,
+        adapter=invoker,  # type: ignore[arg-type]
+        operations=ops,
+        clock=FakeClock(),
     )
-    schemas = {compiled.digest: compiled}
-    runtime = GraphRuntime(
-        checkpoint_store=checkpoints,
-        object_store=store,
-        workspace_backend=workspaces,
-        contracts=contracts,  # type: ignore[arg-type]
-        node_runner=node_runner,
-        scheduler=scheduler,
-        schema_resolver=lambda digest: schemas[digest],
-        clock=clock,
-    )
-    holder["rt"] = runtime
-    return runtime
 
 
 def _retro_context(
@@ -470,7 +426,32 @@ def test_failed_analyzer_recovers_through_domain_settled_join(tmp_path: Path) ->
     project = _make_project(tmp_path)
     retro_id = "retro-recovery-001"
     compiled, contracts = _compile_canonical()
-    runtime = _build_runtime(project, compiled, contracts, OneDomainFailingInvoker())
+
+    def collect_with_workflow_route(
+        task: ExecutableTask,
+        workspace: TaskWorkspace,
+        context: RuntimeContext,
+    ) -> TaskResult:
+        result = retro_collect_v3(task, workspace, context)
+        assert result.status == "succeeded"
+        assert isinstance(result.value, dict)
+        return result.model_copy(
+            update={
+                "value": {
+                    **result.value,
+                    "workflow_count": 1,
+                    "all_domain_evidence_absent": False,
+                }
+            }
+        )
+
+    runtime = _build_runtime(
+        project,
+        compiled,
+        contracts,
+        OneDomainFailingInvoker(),
+        extra_ops={"operation:retro-collect-v3": collect_with_workflow_route},
+    )
 
     result = runtime.run(compiled, "retro", _retro_context(project, retro_id))
 

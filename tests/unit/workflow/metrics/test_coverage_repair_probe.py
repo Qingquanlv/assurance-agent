@@ -22,7 +22,7 @@ from assurance_agent.artifacts.models.pr_metric_evidence import (
 )
 from assurance_agent.artifacts.policy import load_policy
 from assurance_agent.evidence.metrics_sufficiency import evaluate_metrics_sufficiency
-from assurance_agent.workflow.graph.handlers.operation import default_operations
+from assurance_agent.workflow.driver.operations_catalog import default_operations
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.metrics.batch_io import write_batch_evidence
@@ -200,6 +200,41 @@ def test_collection_gap_batch_is_reject_and_ineligible(tmp_path: Path) -> None:
     assert brief.probe_verdict == "reject"
     assert brief.eligible is False
     assert brief.repair_items == ()
+
+
+def test_collection_gap_does_not_hide_independent_repairable_numeric_shortboard(
+    tmp_path: Path,
+) -> None:
+    project_root, change_dir = _seed_low_risk(tmp_path)
+    _seed_batch(change_dir, constraint_covered=1)
+    corrupt = change_dir / "execution" / "runs" / BATCH_NEW / "coverage-diff.json"
+    corrupt.write_text("{not-json", encoding="utf-8")
+    _write_gaps(
+        change_dir,
+        BATCH_NEW,
+        [
+            {
+                "kind": "constraint_without_property",
+                "locator": {"constraint_key": "entities.dept.constraints.name_unique"},
+                "layer": "execution",
+                "batch_id": BATCH_NEW,
+            }
+        ],
+    )
+
+    brief = build_repair_brief(
+        change_dir=change_dir,
+        project_root=project_root,
+        change_id=CHANGE_ID,
+        computed_at=COMPUTED_AT,
+    )
+
+    # Release still fails closed on the collector gap, while the orthogonal
+    # numeric floor miss remains actionable inside the coverage-repair loop.
+    assert brief.probe_verdict == "reject"
+    assert brief.eligible is True
+    assert [item.metric for item in brief.repair_items] == ["constraint_coverage"]
+    assert brief.allowed_test_files == ("tests/api/test_management.py",)
 
 
 def test_fully_passing_batch_is_ineligible(tmp_path: Path) -> None:

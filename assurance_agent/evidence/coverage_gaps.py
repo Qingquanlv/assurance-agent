@@ -158,8 +158,10 @@ def build_coverage_gaps(
     rows = _rows_by_case(projection)
     reasons = _insufficient_reason_map(sufficiency)
 
+    uncovered_required_case_ids: set[str] = set()
     for case_id, row in rows.items():
         if row.automation_required and row.coverage_state == "uncovered":
+            uncovered_required_case_ids.add(case_id)
             gaps.append(
                 _gap(
                     kind="uncovered_required_case",
@@ -189,6 +191,11 @@ def build_coverage_gaps(
 
     by_file: dict[str, list[str]] = defaultdict(list)
     for item in projection.unmapped_tests:
+        # Missing/corrupt pytest reports are represented upstream as diagnostic
+        # placeholders with no file. They remain execution evidence, but are
+        # not executed tests and therefore cannot identify a repairable cluster.
+        if not item.file.strip():
+            continue
         by_file[item.file].append(item.test_name)
     for file_path in by_file:
         gaps.append(
@@ -201,6 +208,17 @@ def build_coverage_gaps(
         )
 
     ext = feedstock or CoverageGapFeedstock()
+    for case_id in ext.cases_without_strong_oracle:
+        if case_id in uncovered_required_case_ids:
+            continue
+        gaps.append(
+            _gap(
+                kind="uncovered_required_case",
+                locator=CoverageGapLocator(case_id=case_id),
+                batch_id=batch_id,
+                digest=digest,
+            )
+        )
     for key in ext.constraints_without_property:
         gaps.append(
             _gap(

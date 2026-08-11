@@ -1,6 +1,7 @@
 ---
 name: aa-api-codegen
-description: Use only after api-plan-review.json has decision == "pass" and codegen_readiness in ["ready", "ready_with_warnings"]. Triggers on: "generate test code from plan", "continue API codegen", "implement api-codegen-plan", "generate /tests/api". User request may trigger this skill but never replaces the JSON gate. Reads Stage 1 plan files and generates pytest code, fixtures, and helpers. Does NOT execute pytest — test execution is Phase 8 aa-run. Never runs before planning is complete.
+description: >-
+  Use only after api-plan-review.json has decision == "pass" and codegen_readiness in ["ready", "ready_with_warnings"]. Triggers on: "generate test code from plan", "continue API codegen", "implement api-codegen-plan", "generate /tests/api". User request may trigger this skill but never replaces the JSON gate. Reads Stage 1 plan files and generates pytest code, fixtures, and helpers. Does NOT execute pytest — test execution is Phase 8 aa-run. Never runs before planning is complete.
 ---
 
 ## Per-Skill Memory
@@ -142,6 +143,30 @@ If any condition fails, **STOP** — do not generate code.
 
 User saying "approved" / "looks good" in chat cannot substitute this JSON gate. If user verbally approves, `aa-api-plan-reviewer` must write `api-plan-review.json` before continuing.
 
+### Blocked gate output
+
+`STOP` blocks product and test generation; it does not cancel the node's mandatory
+evidence contract. On the first failed gate, you must not modify `tests/**`, shared
+factories, adapters, helpers, or application code. Always write both of these evidence
+artifacts before returning:
+
+- `qa/changes/<change-id>/codegen/api-codegen-summary.md`, with a `Blocked` section
+  naming the first failed gate and confirming that no test or support file was changed.
+- `qa/changes/<change-id>/codegen/api-generated-files.json`, with an empty `files`
+  array:
+
+```json
+{
+  "schema_version": "1",
+  "change_id": "<change-id>",
+  "layer": "api",
+  "files": []
+}
+```
+
+These two files record the fail-closed outcome; writing them is not permission to
+continue codegen or to report `phases.api_codegen.status = done`.
+
 ### ready_with_warnings — Coverage Gap Hard Rules
 
 If `codegen_readiness == "ready_with_warnings"` due to endpoint workaround / coverage gap:
@@ -258,7 +283,7 @@ Complete in order:
 
 ### `codegen/api-generated-files.json`
 
-This machine-readable evidence is mandatory. Write it after the test files so every digest describes final bytes. Sort `files` by `repo_path`; do not list the manifest or summary itself.
+This machine-readable evidence is mandatory. Write it after the test files. Declare only file identity and traceability metadata; the runtime sorts the entries and adds each exact-byte digest before freezing the output. Do not use shell, browser, MCP, or another skill to calculate hashes. Do not list the manifest or summary itself.
 
 ```json
 {
@@ -270,14 +295,13 @@ This machine-readable evidence is mandatory. Write it after the test files so ev
       "repo_path": "tests/api/test_<module>_api.py",
       "disposition": "generated | modified | reused",
       "role": "test_entry | support",
-      "case_ids": ["<case-id>"],
-      "content_sha256": "sha256:<64 lowercase hex>"
+      "case_ids": ["<case-id>"]
     }
   ]
 }
 ```
 
-Include every generated, modified, or explicitly reused API/support file named by the codegen plan. `change_id` and `layer` must match the current task; `repo_path` is project-relative; each digest is SHA-256 of that file's exact bytes.
+Include every generated, modified, or explicitly reused API/support file named by the codegen plan. `change_id` and `layer` must match the current task; `repo_path` is project-relative. `content_sha256` is runtime-owned: an older manifest may contain it, but the runtime ignores and replaces that value from the isolated task workspace before freeze.
 
 ### tests/api/test_<module>_api.py
 

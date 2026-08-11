@@ -269,7 +269,7 @@ def _validate_trusted_inputs(
 def _validate_candidate_batch(
     candidates_doc: IssueCandidateDocument,
     observations: ObservationDocument,
-    problems: ProblemProjection,
+    _problems: ProblemProjection,
     *,
     manifest: IssueEvidenceManifest,
     expected_change_id: str,
@@ -287,7 +287,6 @@ def _validate_candidate_batch(
     )
 
     known_obs_ids: set[str] = {obs.observation_id for obs in observations.observations}
-    existing_problem_ids: set[str] = {p.problem_id for p in problems.problems}
 
     seen_candidate_ids: set[str] = set()
     seen_occurrence_ids: set[str] = set()
@@ -332,13 +331,31 @@ def _validate_candidate_batch(
             if fp.digest in seen_fingerprint_digests and per_digest == _per_candidate_digest(candidate_data):
                 pass  # same candidate content produces same occ_id caught above
 
-        # 6. possible_problem_ids must reference existing problems
-        for possible_pid in candidate.possible_problem_ids:
-            if possible_pid not in existing_problem_ids:
-                errors.append(f"candidate {cid!r}: possible_problem_id {possible_pid!r} not in projection")
+        # 6. possible_problem_ids are soft hints only. Unknown IDs (agents often
+        # invent FAIL-* / case ids) are dropped later; do not fail the batch.
 
     if errors:
         raise ReconciliationValidationError(errors)
+
+
+def _drop_unknown_possible_problem_ids(
+    candidates_doc: IssueCandidateDocument,
+    problems: ProblemProjection,
+) -> IssueCandidateDocument:
+    """Return a copy with possible_problem_ids restricted to known Problems."""
+    existing_problem_ids = {p.problem_id for p in problems.problems}
+    sanitized = []
+    changed = False
+    for candidate in candidates_doc.candidates:
+        kept = [pid for pid in candidate.possible_problem_ids if pid in existing_problem_ids]
+        if kept != list(candidate.possible_problem_ids):
+            changed = True
+            sanitized.append(candidate.model_copy(update={"possible_problem_ids": kept}))
+        else:
+            sanitized.append(candidate)
+    if not changed:
+        return candidates_doc
+    return candidates_doc.model_copy(update={"candidates": sanitized})
 
 
 # ---------------------------------------------------------------------------
@@ -684,7 +701,12 @@ def plan_reconciliation(
     On success, returns a ``ReconciliationPlan`` with all events in the correct
     emission order.  The caller is responsible for appending to both stores in
     the same task write-set.
+
+    Unknown ``possible_problem_ids`` are dropped (not rejected): agents commonly
+    invent FAIL-* / observation labels there; empty hints remain valid.
     """
+    candidates = _drop_unknown_possible_problem_ids(candidates, problems)
+
     _validate_candidate_batch(
         candidates,
         observations,

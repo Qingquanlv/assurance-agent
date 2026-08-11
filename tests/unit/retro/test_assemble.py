@@ -5,8 +5,10 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from assurance_agent.artifacts.models.retro_v3 import ImprovementCandidateDocumentV3
-from assurance_agent.retro.assemble import assemble_context, write_noop_receipt
+from assurance_agent.retro.assemble import RetroAssembleError, assemble_context, write_noop_receipt
 
 
 def _canon(value: dict) -> bytes:
@@ -63,6 +65,56 @@ def _seed(retro_dir: Path, *, failed_domain: str | None = None, mismatch: str | 
         (retro_dir / "signals" / f"{domain}.json").write_bytes(_canon(signal_doc))
 
 
+def _seed_overlapping_issue_signals(retro_dir: Path, *, conflict: bool = False) -> None:
+    _seed(retro_dir)
+    gap = {
+        "signal_id": "BATCH-GAP-1",
+        "signal_type": "batch_member_evidence_gap",
+        "summary": "Issue evidence unavailable for CH-1",
+        "occurrence_count": 1,
+        "recommended_change": "Restore complete, immutable issue evidence.",
+        "source_refs": {"workflow_evidence_ids": ["BATCH-GAP-1"]},
+        "confidence": "high",
+        "change_id": "CH-1",
+        "execution_status": "failed",
+        "domain": "issue",
+        "reason_code": "ledger_missing",
+    }
+    issue_slice_path = retro_dir / "evidence/issue-slice.json"
+    issue_slice = json.loads(issue_slice_path.read_text(encoding="utf-8"))
+    issue_slice["sources"].append(
+        {
+            "kind": "batch_manifest",
+            "sha256": "sha256:batch",
+            "evidence_ids": ["BATCH-GAP-1"],
+        }
+    )
+    issue_slice["deterministic_signals"] = [gap]
+    issue_slice_bytes = _canon(issue_slice)
+    issue_slice_path.write_bytes(issue_slice_bytes)
+
+    repeated_gap = json.loads(json.dumps(gap))
+    if conflict:
+        repeated_gap["recommended_change"] = "Trust the analyzer instead."
+    novel = {
+        "signal_id": "SIG-NOVEL",
+        "signal_type": "issue_pattern",
+        "summary": "Repeated workflow gap",
+        "occurrence_count": 2,
+        "recommended_change": "Tighten the workflow contract.",
+        "source_refs": {"problem_ids": ["PROB-1"]},
+        "confidence": "medium",
+        "pattern_kind": "workflow_gap",
+        "affected_surface": {"kind": "endpoint", "value": "GET /users"},
+        "symptom": "repeated_failure",
+    }
+    issue_signal_path = retro_dir / "signals/issue.json"
+    issue_signal = json.loads(issue_signal_path.read_text(encoding="utf-8"))
+    issue_signal["signals"] = [repeated_gap, novel]
+    issue_signal["slice_sha256"] = "sha256:" + hashlib.sha256(issue_slice_bytes).hexdigest()
+    issue_signal_path.write_bytes(_canon(issue_signal))
+
+
 def test_assemble_marks_failed_domain_without_hiding_other_domains(tmp_path: Path) -> None:
     retro_dir = tmp_path / "qa/retro/retro-1"
     _seed(retro_dir, failed_domain="workflow")
@@ -83,6 +135,27 @@ def test_digest_mismatch_is_explicit_failed_domain(tmp_path: Path) -> None:
 
     assert context.domain_status.eval.status == "failed"
     assert context.domain_status.eval.failure_reason == "slice_digest_mismatch"
+
+
+def test_assemble_merges_exact_duplicate_signals_in_stable_order(tmp_path: Path) -> None:
+    retro_dir = tmp_path / "qa/retro/retro-1"
+    _seed_overlapping_issue_signals(retro_dir)
+
+    context = assemble_context(retro_dir, dry_run=False, now=datetime(2026, 7, 27, tzinfo=timezone.utc))
+
+    assert tuple(signal.signal_id for signal in context.signals.issue) == (
+        "BATCH-GAP-1",
+        "SIG-NOVEL",
+    )
+    assert context.signal_count == 2
+
+
+def test_assemble_rejects_conflicting_payloads_for_the_same_signal_id(tmp_path: Path) -> None:
+    retro_dir = tmp_path / "qa/retro/retro-1"
+    _seed_overlapping_issue_signals(retro_dir, conflict=True)
+
+    with pytest.raises(RetroAssembleError, match="conflicting signal_id.*BATCH-GAP-1"):
+        assemble_context(retro_dir, dry_run=False, now=datetime(2026, 7, 27, tzinfo=timezone.utc))
 
 
 def test_healthy_zero_signal_writes_deterministic_noop_receipt(tmp_path: Path) -> None:

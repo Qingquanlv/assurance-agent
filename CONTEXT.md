@@ -44,3 +44,7 @@ _Avoid_: hardcoded loop, special-case loop
 **Checkpoint**:
 A driver main-loop boundary (one committed phase outcome or control action); the checkpoint payload is `workflow-state.yaml` + `events.jsonl`, `driver.json` is only the non-authoritative process pointer (`invocation_id` / `checkpoint_id` / `event_seq`).
 _Avoid_: snapshot, savepoint (recovery is re-projection, not snapshot restore)
+
+**Runtime assembly**:
+The single composition root (`assemble_graph_runtime`) that wires TreeStore, CheckpointStore, WorkspaceBackend, NodeRunner, Scheduler, and GraphRuntime for one Change. Production loads and compiles the schema before calling it; tests pass an inline CompiledWorkflow. The only substitution point is `build_node_runner` (or the default path via `adapter` + `operations`).
+_Avoid_: test fixture, builder helper (implies a per-caller copy is acceptable)

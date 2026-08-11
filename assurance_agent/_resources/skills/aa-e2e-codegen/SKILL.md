@@ -1,6 +1,7 @@
 ---
 name: aa-e2e-codegen
-description: Use only after plan-review.json has decision == "pass" and codegen_readiness in ["ready", "ready_with_warnings"]. Triggers on: "generate E2E test code from plan", "continue E2E codegen", "implement e2e-codegen-plan", "generate /tests/e2e". User request may trigger this skill but never replaces the JSON gate. Reads Stage 1 plan files and generates Python Playwright tests and script-based data setup. Does NOT execute tests — execution is handled by aa-run. Never runs before planning is complete.
+description: >-
+  Use only after plan-review.json has decision == "pass" and codegen_readiness in ["ready", "ready_with_warnings"]. Triggers on: "generate E2E test code from plan", "continue E2E codegen", "implement e2e-codegen-plan", "generate /tests/e2e". User request may trigger this skill but never replaces the JSON gate. Reads Stage 1 plan files and generates Python Playwright tests and script-based data setup. Does NOT execute tests — execution is handled by aa-run. Never runs before planning is complete.
 ---
 
 ## Per-Skill Memory
@@ -319,7 +320,7 @@ Update `tests/e2e/conftest.py` **only if** `e2e-codegen-plan.md` explicitly requ
 
 ### `codegen/e2e-generated-files.json`
 
-此机器可读证据为必需输出。必须在测试文件定稿后写入，确保 digest 对应最终 bytes；`files` 按 `repo_path` 排序，且不要列出 manifest 或 summary 自身。
+此机器可读证据为必需输出。必须在测试文件定稿后写入；只声明文件身份与追溯元数据，runtime 会排序条目并在 freeze 前根据隔离 task workspace 的精确 bytes 补齐 digest。不要调用 shell、browser、MCP 或其他 skill 计算 hash，也不要列出 manifest 或 summary 自身。
 
 ```json
 {
@@ -331,14 +332,13 @@ Update `tests/e2e/conftest.py` **only if** `e2e-codegen-plan.md` explicitly requ
       "repo_path": "tests/e2e/test_<module>_e2e.py",
       "disposition": "generated | modified | reused",
       "role": "test_entry | support",
-      "case_ids": ["<case-id>"],
-      "content_sha256": "sha256:<64 lowercase hex>"
+      "case_ids": ["<case-id>"]
     }
   ]
 }
 ```
 
-列出 codegen plan 中每个实际生成、修改或明确复用的 E2E/support 文件。`change_id`、`layer` 必须匹配当前任务；`repo_path` 使用项目相对路径；digest 是文件精确 bytes 的 SHA-256。
+列出 codegen plan 中每个实际生成、修改或明确复用的 E2E/support 文件。`change_id`、`layer` 必须匹配当前任务；`repo_path` 使用项目相对路径。`content_sha256` 归 runtime 所有：旧格式即使携带该字段，runtime 也会在 freeze 前忽略并按隔离 workspace 中的文件重新计算。
 
 ### tests/e2e/test_<module>_e2e.py
 
