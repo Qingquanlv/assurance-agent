@@ -26,8 +26,8 @@ aa init
 ```
 
 `aa init` writes `opencode.json` with the plugin entry and copies the AA
-skills, agents, tools and plugin into the project. Then restart OpenCode and
-run `skill load aa-workflow` to start the workflow.
+skills, agents, tools and plugin into the project. Then restart OpenCode **from
+that project directory** and run `skill load aa-workflow` to start the workflow.
 
 ### Option 2: manual
 
@@ -69,5 +69,11 @@ restart OpenCode:
 aa skill refresh --sync-agents
 ```
 
-`aa skill refresh` copies the packaged skills into `<project>/skills/` and, with
-`--sync-agents`, the agents/tools/plugin into `<project>/.opencode/`.
+`aa skill refresh` copies the packaged skills into `<project>/skills/`. With
+`--sync-agents`, it also copies a runtime skill mirror plus the agents/tools/plugin
+into `<project>/.opencode/`; the runtime mirror is what OMO discovers directly.
+`--sync-opencode-user-skills` also updates only namespaced `aa-*` user skills as
+defense in depth. It does not make a shared OpenCode/OMO server started outside
+the project valid for benchmark execution: OMO discovers its project catalog
+from the server working directory, so benchmark preflight requires that
+directory to equal the SUT root and asks for a restart otherwise.

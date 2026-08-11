@@ -1,7 +1,40 @@
-"""aa trace — on-demand execution-phase trace projection (read-only fold).
+"""aa trace — fold execution-phase evidence into a `TraceProjection` (pure
+read-only: on-disk fold, zero writes).
 
-Completely separate from ``aa status`` (graph ledger projection): this command
-calls ``fold_trace`` with ``phase=execution`` and ``current=None``.
+`aa status` reads the graph ledger's own projection; `aa trace` reads a
+completely separate authority — the case docs, `execution/runs/**` result
+files and the current `tests/` tree — via `evidence.fold_trace`. The two
+paths never share a read function, matching the design doc's boundary
+(`docs/superpowers/specs/2026-07-29-traceability-evidence-projection-design.md`
+§4: "`evidence/` 是读侧证据投影... 与 workflow/graph 的 ledger 投影正交").
+
+Fail-closed contract (design §10/§17) is narrower than "every row looks bad":
+a missing change and "no valid case rows" both exit non-zero with a stable
+message, and the latter has two distinct shapes —
+
+- no case rows *and* no executed tests at all ("no valid case rows"), and
+- no case rows but `projection.unmapped_tests` is non-empty — every test that
+  ran resolved to nothing declared ("all executed tests are unmapped").
+
+Neither shape is about row *coverage*. A projection with valid rows whose
+`coverage_state` is `uncovered` or `not_required` for every single one is a
+perfectly normal, displayable result and exits 0 — "this case has no live
+coverage right now" is exactly the fact the projection exists to report, and
+turning it into a CLI failure would make `aa trace` lie about a healthy fold
+to avoid an unhealthy-sounding message. Judging whether that coverage is
+*sufficient* is `aa verify`'s job (`evidence/sufficiency.py`), not this
+command's.
+
+Whichever failure applies, the projection is still rendered in full before
+the command reports failure and exits non-zero: the stable error goes to
+stderr, and stdout/gaps/human output are exactly what a successful run would
+print for the same (empty) row set. `--only-gaps` and normal output both
+honor this — there is nothing "too broken to show".
+
+`--type`/`--only-gaps` are display-only slices: they never re-fold, never
+drop a source/gap/integrity fact, and never mutate anything on disk.
+`--type` only narrows the *row* list; `--only-gaps` output has no rows to
+narrow, so `--type` is silently ignored when combined with it.
 """
 
 from __future__ import annotations
@@ -11,139 +44,137 @@ from pathlib import Path
 
 import click
 
-from pydantic import ValidationError
-
-from assurance_agent.artifacts.models.trace import TraceProjectionLike, TraceRow
-from assurance_agent.change_location import ChangeNotFoundError, resolve_change
+from assurance_agent.artifacts.models.trace import (
+    TraceCaseType,
+    TraceGapV1,
+    TraceGapV2,
+    TraceProjectionLike,
+    TraceRow,
+)
+from assurance_agent.change_location import ChangeNotFoundError
 from assurance_agent.config import ConfigInvalidError, ConfigNotFoundError
-from assurance_agent.evidence.digests import TraceSourceConflictError
-from assurance_agent.evidence.layer_summary import TraceLayerSummaryError, TracePhasePairError
 from assurance_agent.evidence.trace import fold_trace
 from assurance_agent.identifiers import UnsafeIdentifierError
-from assurance_agent.workflow.core.exit_codes import EXIT_ERROR
+from assurance_agent.workflow.core.exit_codes import EXIT_COMPLETED, EXIT_ERROR
 
-_FOLD_MODEL_ERRORS = (
-    TraceLayerSummaryError,
-    TracePhasePairError,
-    TraceSourceConflictError,
-    ValidationError,
-)
+_CASE_TYPES: tuple[TraceCaseType, ...] = ("API", "E2E", "Fuzz", "Performance")
 
 
-def trace_error_no_cases(change_id: str) -> str:
-    return f"trace failed: no cases found for change '{change_id}'"
+def _filter_rows(rows: tuple[TraceRow, ...], case_type: str | None) -> tuple[TraceRow, ...]:
+    if case_type is None:
+        return rows
+    return tuple(row for row in rows if row.case_type == case_type)
 
 
-def trace_error_all_unmapped(change_id: str) -> str:
-    return f"trace failed: all tests unmapped for change '{change_id}'"
+def _no_rows_error(projection: TraceProjectionLike, change_id: str) -> str | None:
+    """The two "no valid case rows" fail-closed shapes (module docstring); ``None`` when fine.
 
-
-def validate_trace_projection(projection: TraceProjectionLike) -> str | None:
+    Row *coverage* (uncovered/not_required) never lands here — only the
+    complete absence of rows does, and then only distinguished by whether any
+    executed test exists at all (in ``unmapped_tests``) to explain why.
+    """
     if projection.rows:
-        if projection.unmapped_tests and not any(
-            row.presence_in_current_batch == "executed" for row in projection.rows
-        ):
-            return trace_error_all_unmapped(projection.change_id)
         return None
     if projection.unmapped_tests:
-        return trace_error_all_unmapped(projection.change_id)
-    return trace_error_no_cases(projection.change_id)
+        return (
+            f"trace failed: change '{change_id}' has no valid case rows: "
+            "all executed tests are unmapped (present in unmapped_tests; none resolved to a "
+            "declared case)"
+        )
+    return f"trace failed: change '{change_id}' has no valid case rows (integrity={projection.integrity})"
 
 
-def filter_trace_rows(
-    rows: tuple[TraceRow, ...],
-    case_types: tuple[str, ...],
-) -> tuple[TraceRow, ...]:
-    if not case_types:
-        return rows
-    allowed = set(case_types)
-    return tuple(row for row in rows if row.case_type in allowed)
+def _gap_line(gap: TraceGapV1 | TraceGapV2) -> str:
+    parts = [gap.code, gap.source]
+    if gap.batch_id:
+        parts.append(f"batch={gap.batch_id}")
+    if gap.target:
+        parts.append(f"target={gap.target}")
+    if gap.detail:
+        parts.append(gap.detail)
+    return "  " + " | ".join(parts)
 
 
-def gaps_payload(projection: TraceProjectionLike) -> dict[str, object]:
-    return {
-        "change_id": projection.change_id,
-        "gaps": [gap.model_dump(mode="json") for gap in projection.gaps],
-    }
+def _print_gaps_human(gaps: tuple[TraceGapV1, ...] | tuple[TraceGapV2, ...]) -> None:
+    if not gaps:
+        click.echo("  (no gaps)")
+        return
+    for gap in gaps:
+        click.echo(_gap_line(gap))
 
 
-def _print_human(
-    change_id: str,
-    projection: TraceProjectionLike,
-    *,
-    only_gaps: bool,
-    case_types: tuple[str, ...],
-) -> None:
+def _print_rows_human(rows: tuple[TraceRow, ...]) -> None:
+    if not rows:
+        click.echo("  (no rows)")
+        return
+    for row in rows:
+        latest = row.latest_execution
+        status = latest.status if latest is not None else "(never executed)"
+        click.echo(
+            f"  {row.case_id:<20} type={row.case_type:<11} coverage={row.coverage_state:<12} latest={status}"
+        )
+
+
+def _render_only_gaps(projection: TraceProjectionLike, change_id: str, *, as_json: bool) -> None:
+    if as_json:
+        click.echo(
+            json.dumps(
+                [gap.model_dump(mode="json") for gap in projection.gaps],
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return
+    click.secho(f"aa trace --only-gaps — change: {change_id}", bold=True)
+    click.echo()
+    _print_gaps_human(projection.gaps)
+    click.echo()
+
+
+def _render_json(projection: TraceProjectionLike, rows: tuple[TraceRow, ...]) -> None:
+    payload = projection.model_dump(mode="json")
+    payload["rows"] = [row.model_dump(mode="json") for row in rows]
+    click.echo(json.dumps(payload, indent=2, ensure_ascii=False))
+
+
+def _render_human(projection: TraceProjectionLike, rows: tuple[TraceRow, ...], change_id: str) -> None:
     click.secho(f"aa trace — change: {change_id}", bold=True)
     click.echo()
-    if only_gaps:
-        if not projection.gaps:
-            click.echo("  gaps: (none)")
-        for gap in projection.gaps:
-            click.echo(f"  {gap.code:<28} {gap.source}")
-            if gap.detail:
-                click.echo(f"    detail: {gap.detail}")
-        click.echo()
-        return
-
-    rows = filter_trace_rows(projection.rows, case_types)
-    click.echo(f"  phase      : {projection.phase}")
-    click.echo(f"  batch      : {projection.authoritative_batch_id or '(none)'}")
-    click.echo(f"  integrity  : {projection.integrity}")
-    click.echo(f"  rows       : {len(rows)}")
-    click.echo(f"  gaps       : {len(projection.gaps)}")
-    click.echo(f"  unmapped   : {len(projection.unmapped_tests)}")
-    for row in rows:
-        latest = row.latest_execution.status if row.latest_execution else "-"
-        click.echo(f"    {row.case_id:<24} {row.case_type:<12} {row.coverage_state:<12} latest={latest}")
+    click.echo(f"  integrity          : {projection.integrity}")
+    click.echo(f"  authoritative_batch: {projection.authoritative_batch_id or '(none)'}")
+    click.echo()
+    _print_rows_human(rows)
     if projection.gaps:
         click.echo()
-        click.echo("  gaps:")
-        for gap in projection.gaps:
-            click.echo(f"    {gap.code:<26} {gap.source}")
+        click.echo(f"  gaps ({len(projection.gaps)}):")
+        _print_gaps_human(projection.gaps)
     click.echo()
 
 
-def run_trace(
-    change_id: str,
-    *,
-    as_json: bool,
-    case_types: tuple[str, ...],
-    only_gaps: bool,
-) -> int:
+def _run_trace(change_id: str, as_json: bool, case_type: str | None, only_gaps: bool) -> int:
     project_root = Path.cwd()
     try:
-        resolve_change(project_root, change_id)
+        projection = fold_trace(project_root, change_id)
     except (UnsafeIdentifierError, ChangeNotFoundError, ConfigNotFoundError, ConfigInvalidError) as err:
         click.secho(str(err), fg="red", err=True)
         return EXIT_ERROR
 
-    try:
-        projection = fold_trace(project_root, change_id, phase="execution", current=None)
-    except _FOLD_MODEL_ERRORS as err:
-        click.secho(f"trace failed: fold/model error ({type(err).__name__})", fg="red", err=True)
-        return EXIT_ERROR
+    error = _no_rows_error(projection, change_id)
+    rows = _filter_rows(projection.rows, case_type)
 
-    error = validate_trace_projection(projection)
-    if error:
+    # Render the requested view first — a stable error still describes an
+    # otherwise fully-rendered (if row-empty) projection, not a swallowed one.
+    if only_gaps:
+        _render_only_gaps(projection, change_id, as_json=as_json)
+    elif as_json:
+        _render_json(projection, rows)
+    else:
+        _render_human(projection, rows, change_id)
+
+    if error is not None:
         click.secho(error, fg="red", err=True)
         return EXIT_ERROR
-
-    if only_gaps:
-        payload: TraceProjectionLike | dict[str, object] = gaps_payload(projection)
-    elif case_types:
-        payload = projection.model_copy(update={"rows": filter_trace_rows(projection.rows, case_types)})
-    else:
-        payload = projection
-
-    if as_json:
-        if isinstance(payload, dict):
-            click.echo(json.dumps(payload, indent=2, ensure_ascii=False))
-        else:
-            click.echo(payload.model_dump_json(indent=2))
-    else:
-        _print_human(change_id, projection, only_gaps=only_gaps, case_types=case_types)
-    return 0
+    return EXIT_COMPLETED
 
 
 @click.command("trace")
@@ -151,24 +182,21 @@ def run_trace(
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable JSON output.")
 @click.option(
     "--type",
-    "case_types",
-    multiple=True,
-    type=click.Choice(["API", "E2E", "Fuzz", "Performance"], case_sensitive=True),
-    help="Filter rows by case type (repeatable).",
+    "case_type",
+    type=click.Choice(_CASE_TYPES),
+    default=None,
+    help=(
+        "Show only rows of one case type (API/E2E/Fuzz/Performance); gaps/integrity stay "
+        "unfiltered, and this option is ignored entirely when combined with --only-gaps "
+        "(there are no rows to filter in gap-only output)."
+    ),
 )
-@click.option("--only-gaps", is_flag=True, help="Output only projection gaps.")
-def trace_command(
-    change_id: str,
-    as_json: bool,
-    case_types: tuple[str, ...],
-    only_gaps: bool,
-) -> None:
-    """Fold execution-phase trace projection on demand (read-only)."""
-    raise SystemExit(
-        run_trace(
-            change_id,
-            as_json=as_json,
-            case_types=case_types,
-            only_gaps=only_gaps,
-        )
-    )
+@click.option(
+    "--only-gaps",
+    "only_gaps",
+    is_flag=True,
+    help="Print only the TraceGap list — what evidence is missing, corrupt or contradicted.",
+)
+def trace_command(change_id: str, as_json: bool, case_type: str | None, only_gaps: bool) -> None:
+    """Fold execution-phase evidence into a TraceProjection (pure read-only, no writes)."""
+    raise SystemExit(_run_trace(change_id, as_json, case_type, only_gaps))

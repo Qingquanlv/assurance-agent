@@ -20,25 +20,18 @@ from assurance_agent.eval.executor import execute_attempt
 from assurance_agent.eval.fixtures import write_fixture_lock
 from assurance_agent.eval.types import DatasetSample
 from assurance_agent.workflow.core.events import read_events_strict
-from assurance_agent.workflow.driver.runtime_factory import RuntimeBundle
+from assurance_agent.workflow.driver.runtime_factory import RuntimeBundle, assemble_graph_runtime
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
-from assurance_agent.workflow.graph.checkpoint import CheckpointStore
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import parse_execution_contracts
 from assurance_agent.workflow.graph.handlers.operation import (
     OperationFn,
     OperationHandler,
-    default_operations,
 )
-from assurance_agent.workflow.graph.leases import SystemClock
+from assurance_agent.workflow.driver.operations_catalog import default_operations
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
-from assurance_agent.workflow.graph.runtime import GraphRuntime
-from assurance_agent.workflow.driver.runtime_factory import one_definition_resolver
-from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
-from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
 from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
-from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
 
 _CONTRACTS = """\
 schema_version: "1"
@@ -128,48 +121,24 @@ def _runtime_factory(*, write_forbidden: bool = False):
         change = project_root / "qa" / "changes" / change_id
         contracts = parse_execution_contracts(_CONTRACTS)
         compiled = compile_workflow(parse_workflow_v2(_SCHEMA), contracts)
-        store = TreeStore(change)
-        checkpoints = CheckpointStore(change)
-        workspaces = WorkspaceBackend(change)
-        handler = OperationHandler(_ops())
-        targets: dict[str, object] = {name: handler for name in _ops()}
-        holder: dict[str, GraphRuntime] = {}
 
-        def run_child(task, graph_id, workspace, context):  # noqa: ANN001, ANN202
-            return holder["rt"].run_child(task, graph_id, workspace, context)
+        def build_node_runner(_store, run_child):  # noqa: ANN001, ANN202
+            from assurance_agent.workflow.graph.handlers.subgraph import SubgraphHandler
 
-        from assurance_agent.workflow.graph.handlers.subgraph import SubgraphHandler
+            handler = OperationHandler(_ops())
+            targets: dict[str, object] = {name: handler for name in _ops()}
+            subgraph = SubgraphHandler(run_child)
+            for graph_id in compiled.graphs:
+                targets[f"graph:{graph_id}"] = subgraph
+            return HandlerNodeRunner(targets)  # type: ignore[arg-type]
 
-        subgraph = SubgraphHandler(run_child)
-        for graph_id in compiled.graphs:
-            targets[f"graph:{graph_id}"] = subgraph
-
-        runner = HandlerNodeRunner(targets)  # type: ignore[arg-type]
-        entry_graph = compiled.entrypoints["execute"].graph_id
-        scheduler = Scheduler(
-            checkpoints=checkpoints,
-            object_store=store,
-            clock=SystemClock(),
-            workspace_backend=workspaces,
-            node_runner=runner,
-            max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
+        runtime = assemble_graph_runtime(
+            project_root=project_root,
+            change_dir=change,
+            compiled=compiled,
             contracts=contracts,
-            state_defs=dict(compiled.schema.graphs[entry_graph].state),
+            build_node_runner=build_node_runner,
         )
-        runtime = GraphRuntime(
-            checkpoint_store=checkpoints,
-            object_store=store,
-            workspace_backend=workspaces,
-            definition_resolver=one_definition_resolver(
-                compiled=compiled,
-                contracts=contracts,
-                ingest_catalog=validate_catalog_runtime(),
-                node_runner=runner,
-                scheduler=scheduler,
-            ),
-            clock=SystemClock(),
-        )
-        holder["rt"] = runtime
 
         if write_forbidden:
 

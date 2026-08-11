@@ -1,14 +1,14 @@
 {
   "schema_version": "1.0",
-  "change_id": "RET-api-management-20260716-192358-cursor",
+  "change_id": "eval-sample-001",
   "batch_id": "20260716-194559",
   "target": "e2e",
   "status": "passed",
-  "command": "uv run pytest tests/e2e/test_api_management_e2e.py -p no:cacheprovider --json-report --json-report-file=/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/qa/changes/RET-api-management-20260716-192358-cursor/execution/runs/20260716-194559/raw/e2e-report.json",
+  "command": "uv run pytest tests/e2e/test_api_management_e2e.py -p no:cacheprovider --json-report --json-report-file=/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/qa/changes/eval-sample-001/execution/runs/20260716-194559/raw/e2e-report.json",
   "source": {
     "framework": "pytest",
-    "raw_log": "/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/qa/changes/RET-api-management-20260716-192358-cursor/execution/runs/20260716-194559/raw/e2e.log",
-    "report_json": "/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/qa/changes/RET-api-management-20260716-192358-cursor/execution/runs/20260716-194559/raw/e2e-report.json"
+    "raw_log": "/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/qa/changes/eval-sample-001/execution/runs/20260716-194559/raw/e2e.log",
+    "report_json": "/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/qa/changes/eval-sample-001/execution/runs/20260716-194559/raw/e2e-report.json"
   },
   "total": 6,
   "passed": 6,
@@ -22,7 +22,7 @@
       "test_name": "test_tc_apis_e2e_001__admin_enters_api_management[chromium]",
       "duration_ms": 4894,
       "message": "",
-      "raw_log_ref": "/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/qa/changes/RET-api-management-20260716-192358-cursor/execution/runs/20260716-194559/raw/e2e.log",
+      "raw_log_ref": "/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/qa/changes/eval-sample-001/execution/runs/20260716-194559/raw/e2e.log",
       "trace": "",
       "screenshot": "",
       "video": ""
@@ -34,7 +34,7 @@
       "test_name": "test_tc_apis_e2e_002__admin_creates_api_via_modal[chromium]",
       "duration_ms": 2787,
       "message": "",
-      "raw_log_ref": "/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/qa/changes/RET-api-management-20260716-192358-cursor/execution/runs/20260716-194559/raw/e2e.log",
+      "raw_log_ref": "/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/qa/changes/eval-sample-001/execution/runs/20260716-194559/raw/e2e.log",
       "trace": "",
       "screenshot": "",
       "video": ""
@@ -46,7 +46,7 @@
       "test_name": "test_tc_apis_e2e_003__admin_edits_api_metadata[chromium]",
       "duration_ms": 2806,
       "message": "",
-      "raw_log_ref": "/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/qa/changes/RET-api-management-20260716-192358-cursor/execution/runs/20260716-194559/raw/e2e.log",
+      "raw_log_ref": "/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/qa/changes/eval-sample-001/execution/runs/20260716-194559/raw/e2e.log",
       "trace": "",
       "screenshot": "",
       "video": ""
@@ -58,7 +58,7 @@
       "test_name": "test_tc_apis_e2e_004__admin_deletes_api[chromium]",
       "duration_ms": 2362,
       "message": "",
-      "raw_log_ref": "/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/qa/changes/RET-api-management-20260716-192358-cursor/execution/runs/20260716-194559/raw/e2e.log",
+      "raw_log_ref": "/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/qa/changes/eval-sample-001/execution/runs/20260716-194559/raw/e2e.log",
       "trace": "",
       "screenshot": "",
       "video": ""
@@ -70,7 +70,7 @@
       "test_name": "test_tc_apis_e2e_005__admin_refreshes_openapi_registry[chromium]",
       "duration_ms": 1872,
       "message": "",
-      "raw_log_ref": "/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/qa/changes/RET-api-management-20260716-192358-cursor/execution/runs/20260716-194559/raw/e2e.log",
+      "raw_log_ref": "/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/qa/changes/eval-sample-001/execution/runs/20260716-194559/raw/e2e.log",
       "trace": "",
       "screenshot": "",
       "video": ""
@@ -82,7 +82,7 @@
       "test_name": "test_tc_apis_e2e_006__non_admin_cannot_access_api_management[chromium]",
       "duration_ms": 3658,
       "message": "",
-      "raw_log_ref": "/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/qa/changes/RET-api-management-20260716-192358-cursor/execution/runs/20260716-194559/raw/e2e.log",
+      "raw_log_ref": "/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/qa/changes/eval-sample-001/execution/runs/20260716-194559/raw/e2e.log",
       "trace": "",
       "screenshot": "",
       "video": ""

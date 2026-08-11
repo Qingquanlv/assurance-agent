@@ -17,12 +17,20 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from assurance_agent.artifacts.models.data_knowledge import to_persisted_data_knowledge_proposal
+from assurance_agent.artifacts.models.improvement_outbox import ImprovementOutboxEntry
 from assurance_agent.artifacts.models.improvements import (
     ImprovementCandidate,
     ImprovementCandidateDocument,
     ImprovementLedgerProjection,
     ImprovementSourceRefs,
 )
+from assurance_agent.artifacts.models.retro_v3 import (
+    ImprovementCandidateV3,
+    ImprovementCandidateDocumentV3,
+    RetroContextV3,
+)
+from assurance_agent.artifacts.models.retro_batch import RetroPipelineFailure
 from assurance_agent.exceptions import AaError
 from assurance_agent.retro.candidates import (
     CANDIDATE_DOCUMENT_NAME,
@@ -33,13 +41,6 @@ from assurance_agent.retro.candidates import (
     validate_candidate_document,
 )
 from assurance_agent.retro.types import RetroContext
-from assurance_agent.artifacts.models.retro_v3 import (
-    ImprovementCandidateV3,
-    ImprovementCandidateDocumentV3,
-    RetroContextV3,
-)
-from assurance_agent.artifacts.models.improvement_outbox import ImprovementOutboxEntry
-from assurance_agent.artifacts.models.retro_batch import RetroPipelineFailure
 from assurance_agent.workflow.graph.project_locks import ProjectResourceLockManager
 from assurance_agent.workflow.improvements.events import (
     ImprovementEvent,
@@ -174,7 +175,7 @@ def plan_link_or_propose(
             target=candidate.target,
             rationale=candidate.rationale,
             proposed_change=candidate.proposed_change,
-            knowledge_delta=candidate.knowledge_delta,
+            knowledge_delta=to_persisted_data_knowledge_proposal(candidate.knowledge_delta),
             verification=candidate.verification,
             risk=candidate.risk,
             confidence=candidate.confidence,

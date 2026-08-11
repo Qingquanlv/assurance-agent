@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Literal, Mapping
 
 import yaml
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from assurance_agent.artifacts.canonical import canonical_json_bytes as canonical_artifact_json_bytes
+from assurance_agent.artifacts.batch_id import parse_batch_id
 from assurance_agent.artifacts.models import SelectedTargets
 from assurance_agent.artifacts.models.trace import (
     TraceExecution,
@@ -23,7 +26,10 @@ from assurance_agent.artifacts.models.trace import (
 )
 from assurance_agent.change_location import resolve_change
 from assurance_agent.evidence.case_doc import EvidenceCaseEntry, load_case_entries
-from assurance_agent.evidence.digests import TraceSourceRecorder, canonical_json_bytes
+from assurance_agent.evidence.digests import (
+    TraceSourceRecorder,
+    canonical_json_bytes as canonical_json_bytes,
+)
 from assurance_agent.evidence.layer_summary import (
     derive_trace_integrity,
     summarize_projection_by_layer,
@@ -37,6 +43,8 @@ _TREE_DIGEST_SOURCE = "tests/#tree-digest"
 _FOLD_VIEW_SOURCE = "execution/execution-manifest.yaml#fold-view"
 _MANIFEST_PATH = "execution/execution-manifest.yaml"
 _PYTEST_TARGETS = ("api", "e2e", "fuzz")
+_ALL_TARGETS = ("api", "e2e", "fuzz", "performance")
+_STATUS_RANK = {"skipped": 0, "passed": 1, "failed": 2}
 _CASE_TYPE_TO_TARGET: dict[str, Literal["api", "e2e", "fuzz", "performance"]] = {
     "API": "api",
     "E2E": "e2e",
@@ -63,6 +71,11 @@ class ExecutionFoldInput:
     fuzz: ResultDocument | None = None
     performance: PerformanceResultDocument | None = None
 
+    def __post_init__(self) -> None:
+        if self.executed_at.utcoffset() is None:
+            raise ValueError(f"ExecutionFoldInput.executed_at must be timezone-aware: {self.executed_at!r}")
+        object.__setattr__(self, "test_files_sha256", dict(self.test_files_sha256))
+
 
 class EvidenceUnmappedTest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="ignore")
@@ -86,8 +99,8 @@ class ResultDocument(BaseModel):
     change_id: str
     batch_id: str
     target: Literal["api", "e2e", "fuzz"]
-    cases: list[ResultTestRow]
-    unmapped_tests: list[EvidenceUnmappedTest]
+    cases: list[ResultTestRow] = Field(default_factory=list)
+    unmapped_tests: list[EvidenceUnmappedTest] = Field(default_factory=list)
 
 
 class PerformanceScenarioRow(BaseModel):
@@ -103,7 +116,7 @@ class PerformanceResultDocument(BaseModel):
     change_id: str
     batch_id: str
     kind: Literal["performance"]
-    scenarios: list[PerformanceScenarioRow]
+    scenarios: list[PerformanceScenarioRow] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -122,6 +135,7 @@ class _CaseExecution:
     status: Literal["passed", "failed", "skipped"]
     ts: datetime
     ts_source: Literal["executed_at", "batch_id_legacy_utc"]
+    test_refs: tuple[TraceTestRef, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -129,7 +143,7 @@ class _CurrentBatchView:
     batch_id: str
     executed_at: datetime | None
     selected_targets: SelectedTargets
-    test_files_sha256: dict[str, str]
+    test_files_sha256: dict[str, str] | None
     manifest_exists: bool
 
 
@@ -173,6 +187,7 @@ def fold_trace(
     _compare_test_files_sha256(current_view, tree, gaps)
 
     executions_by_case = _index_executions(entries, batches)
+    unique_entries = _unique_entries(entries)
     rows = tuple(
         _build_row(
             entry,
@@ -181,7 +196,7 @@ def fold_trace(
             tree,
             gaps,
         )
-        for entry in sorted(entries, key=lambda item: item.case_id)
+        for entry in unique_entries
     )
     unmapped = _collect_unmapped_tests(batches, current_view.batch_id)
     integrity = derive_trace_integrity(rows, gaps)
@@ -209,15 +224,23 @@ def _compare_test_files_sha256(
     if not current.manifest_exists:
         # Disk/injection view absent → Task 3 already emitted manifest_missing.
         return
-    if dict(tree.file_sha256) != dict(current.test_files_sha256):
-        gaps.append(
-            TraceGapV2(
-                code="tests_tree_digest_mismatch",
-                source=_TREE_DIGEST_SOURCE,
-                batch_id=current.batch_id or None,
-                detail="per-file test_files_sha256 differs from current tree scan",
-            )
+    baseline = current.test_files_sha256 or {}
+    actual = tree.file_sha256
+    added = sorted(set(actual) - set(baseline))
+    deleted = sorted(set(baseline) - set(actual))
+    changed = sorted(path for path in set(baseline) & set(actual) if baseline[path] != actual[path])
+    if not (added or deleted or changed):
+        return
+    sections = (("added", added), ("deleted", deleted), ("changed", changed))
+    detail = "; ".join(f"{label}: {', '.join(paths)}" for label, paths in sections if paths)
+    gaps.append(
+        TraceGapV2(
+            code="tests_tree_digest_mismatch",
+            source=_TREE_DIGEST_SOURCE,
+            batch_id=current.batch_id or None,
+            detail=detail,
         )
+    )
 
 
 def _gap_sort_key(gap: TraceGapV2) -> tuple[str, str, str, str, str]:
@@ -251,6 +274,13 @@ def merge_sources(*groups: tuple[TraceSource, ...]) -> tuple[TraceSource, ...]:
     return recorder.freeze()
 
 
+def _unique_entries(entries: list[EvidenceCaseEntry]) -> list[EvidenceCaseEntry]:
+    by_case: dict[str, EvidenceCaseEntry] = {}
+    for entry in entries:
+        by_case.setdefault(entry.case_id, entry)
+    return sorted(by_case.values(), key=lambda item: item.case_id)
+
+
 def _resolve_current_batch(
     change_dir: Path,
     change_id: str,
@@ -260,8 +290,6 @@ def _resolve_current_batch(
 ) -> _CurrentBatchView:
     manifest_path = change_dir / _MANIFEST_PATH
     if current is not None:
-        if current.executed_at.tzinfo is None:
-            raise TypeError("executed_at must be timezone-aware")
         return _CurrentBatchView(
             batch_id=current.batch_id,
             executed_at=current.executed_at,
@@ -271,70 +299,67 @@ def _resolve_current_batch(
         )
 
     if not manifest_path.is_file():
-        gaps.append(TraceGapV2(code="manifest_missing", source=_MANIFEST_PATH))
-        return _CurrentBatchView(
-            batch_id="",
-            executed_at=None,
-            selected_targets=SelectedTargets(
-                api=False,
-                e2e=False,
-                fuzz=False,
-                performance=False,
-            ),
-            test_files_sha256={},
-            manifest_exists=False,
-        )
+        return _missing_current_view(gaps, f"{manifest_path.name} not found")
 
     raw = _read_yaml_mapping(manifest_path)
     if raw is None:
-        gaps.append(TraceGapV2(code="manifest_missing", source=_MANIFEST_PATH, detail="invalid YAML mapping"))
-        return _CurrentBatchView(
-            batch_id="",
-            executed_at=None,
-            selected_targets=SelectedTargets(
-                api=False,
-                e2e=False,
-                fuzz=False,
-                performance=False,
-            ),
-            test_files_sha256={},
-            manifest_exists=False,
+        return _missing_current_view(gaps, "invalid YAML mapping")
+
+    found_change_id = raw.get("change_id")
+    if found_change_id != change_id:
+        return _missing_current_view(
+            gaps,
+            f"change_id: expected {change_id!r}, found {found_change_id!r}",
         )
 
     batch_id = raw.get("batch_id")
     if not isinstance(batch_id, str) or not batch_id:
-        gaps.append(TraceGapV2(code="manifest_missing", source=_MANIFEST_PATH, detail="missing batch_id"))
-        return _CurrentBatchView(
-            batch_id="",
-            executed_at=None,
-            selected_targets=SelectedTargets(
-                api=False,
-                e2e=False,
-                fuzz=False,
-                performance=False,
-            ),
-            test_files_sha256={},
-            manifest_exists=False,
-        )
+        return _missing_current_view(gaps, "missing batch_id")
 
-    selected = _parse_selected_targets(raw.get("selected_targets"), _MANIFEST_PATH, gaps)
-    test_files = _parse_test_files_sha256(raw.get("test_files_sha256"))
-    executed_at = _parse_executed_at(raw.get("executed_at"))
-    if raw.get("change_id") != change_id:
-        gaps.append(
-            TraceGapV2(
-                code="result_identity_mismatch",
-                source=_MANIFEST_PATH,
-                batch_id=batch_id,
-                detail="manifest change_id mismatch",
-            )
-        )
+    try:
+        selected = SelectedTargets.model_validate(raw.get("selected_targets"))
+    except ValidationError as exc:
+        return _missing_current_view(gaps, f"selected_targets invalid: {exc}")
+
+    test_files_raw = raw.get("test_files_sha256")
+    if test_files_raw is None:
+        test_files = None
+    elif isinstance(test_files_raw, dict) and all(
+        isinstance(key, str) and isinstance(value, str) for key, value in test_files_raw.items()
+    ):
+        test_files = dict(test_files_raw)
+    else:
+        return _missing_current_view(gaps, "test_files_sha256 invalid")
+
+    executed_raw = raw.get("executed_at")
+    executed_at = _parse_executed_at(executed_raw)
+    if executed_raw is not None and executed_at is None:
+        return _missing_current_view(gaps, "executed_at must be timezone-aware")
     return _CurrentBatchView(
         batch_id=batch_id,
         executed_at=executed_at,
         selected_targets=selected,
         test_files_sha256=test_files,
         manifest_exists=True,
+    )
+
+
+def _missing_current_view(
+    gaps: list[TraceGapV2],
+    detail: str,
+) -> _CurrentBatchView:
+    gaps.append(TraceGapV2(code="manifest_missing", source=_FOLD_VIEW_SOURCE, detail=detail))
+    return _CurrentBatchView(
+        batch_id="",
+        executed_at=None,
+        selected_targets=SelectedTargets(
+            api=False,
+            e2e=False,
+            fuzz=False,
+            performance=False,
+        ),
+        test_files_sha256=None,
+        manifest_exists=False,
     )
 
 
@@ -355,11 +380,13 @@ def _record_fold_view_source(
     payload = {
         "batch_id": current.batch_id,
         "change_id": change_id,
-        "executed_at": ts,
-        "selected_targets": current.selected_targets,
-        "test_files_sha256": dict(sorted(current.test_files_sha256.items())),
+        "executed_at": current.executed_at.isoformat() if current.executed_at is not None else None,
+        "selected_targets": current.selected_targets.model_dump(mode="json"),
+        "test_files_sha256": (
+            dict(sorted(current.test_files_sha256.items())) if current.test_files_sha256 is not None else None
+        ),
     }
-    digest = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+    digest = hashlib.sha256(canonical_artifact_json_bytes(payload)).hexdigest()
     sources.add(TraceSource(path=_FOLD_VIEW_SOURCE, exists=True, sha256=digest))
     return digest
 
@@ -429,6 +456,13 @@ def _load_batch_from_disk(
     manifest_path = batch_dir / "execution-manifest.yaml"
     executed_at = None
     if manifest_path.is_file():
+        if batch_id != current.batch_id:
+            sources.add(
+                _file_source(
+                    f"execution/runs/{batch_id}/execution-manifest.yaml",
+                    manifest_path,
+                )
+            )
         raw = _read_yaml_mapping(manifest_path)
         if raw is not None:
             executed_at = _parse_executed_at(raw.get("executed_at"))
@@ -584,7 +618,7 @@ def _emit_missing_results_for_selected_targets(
     gaps: list[TraceGapV2],
     sources: TraceSourceRecorder,
 ) -> None:
-    if not batch_id:
+    if not batch_id or _parse_legacy_batch_ts(batch_id) is None:
         return
     batch_dir = change_dir / "execution" / "runs" / batch_id
 
@@ -704,9 +738,36 @@ def _load_pytest_result(
     source: str,
     gaps: list[TraceGapV2],
 ) -> ResultDocument | None:
+    raw, error = _read_json_mapping(path)
+    if raw is None:
+        gaps.append(
+            TraceGapV2(
+                code="result_corrupt",
+                source=source,
+                batch_id=batch_id,
+                target=target,
+                detail=error,
+            )
+        )
+        return None
+    mismatch = _identity_error(
+        raw,
+        (("change_id", change_id), ("batch_id", batch_id), ("target", target)),
+    )
+    if mismatch:
+        gaps.append(
+            TraceGapV2(
+                code="result_identity_mismatch",
+                source=source,
+                batch_id=batch_id,
+                target=target,
+                detail=mismatch,
+            )
+        )
+        return None
     try:
-        doc = ResultDocument.model_validate_json(path.read_text(encoding="utf-8"))
-    except (OSError, ValidationError, ValueError) as err:
+        return ResultDocument.model_validate(raw)
+    except ValidationError as err:
         gaps.append(
             TraceGapV2(
                 code="result_corrupt",
@@ -717,41 +778,6 @@ def _load_pytest_result(
             )
         )
         return None
-
-    if doc.change_id != change_id:
-        gaps.append(
-            TraceGapV2(
-                code="result_identity_mismatch",
-                source=source,
-                batch_id=batch_id,
-                target=target,
-                detail="change_id mismatch",
-            )
-        )
-        return None
-    if doc.batch_id != batch_id:
-        gaps.append(
-            TraceGapV2(
-                code="result_identity_mismatch",
-                source=source,
-                batch_id=batch_id,
-                target=target,
-                detail="batch_id mismatch",
-            )
-        )
-        return None
-    if doc.target != target:
-        gaps.append(
-            TraceGapV2(
-                code="result_identity_mismatch",
-                source=source,
-                batch_id=batch_id,
-                target=target,
-                detail="target mismatch",
-            )
-        )
-        return None
-    return doc
 
 
 def _load_performance_result(
@@ -761,9 +787,36 @@ def _load_performance_result(
     source: str,
     gaps: list[TraceGapV2],
 ) -> PerformanceResultDocument | None:
+    raw, error = _read_json_mapping(path)
+    if raw is None:
+        gaps.append(
+            TraceGapV2(
+                code="result_corrupt",
+                source=source,
+                batch_id=batch_id,
+                target="performance",
+                detail=error,
+            )
+        )
+        return None
+    mismatch = _identity_error(
+        raw,
+        (("change_id", change_id), ("batch_id", batch_id), ("kind", "performance")),
+    )
+    if mismatch:
+        gaps.append(
+            TraceGapV2(
+                code="result_identity_mismatch",
+                source=source,
+                batch_id=batch_id,
+                target="performance",
+                detail=mismatch,
+            )
+        )
+        return None
     try:
-        doc = PerformanceResultDocument.model_validate_json(path.read_text(encoding="utf-8"))
-    except (OSError, ValidationError, ValueError) as err:
+        return PerformanceResultDocument.model_validate(raw)
+    except ValidationError as err:
         gaps.append(
             TraceGapV2(
                 code="result_corrupt",
@@ -775,40 +828,26 @@ def _load_performance_result(
         )
         return None
 
-    if doc.change_id != change_id:
-        gaps.append(
-            TraceGapV2(
-                code="result_identity_mismatch",
-                source=source,
-                batch_id=batch_id,
-                target="performance",
-                detail="change_id mismatch",
-            )
-        )
-        return None
-    if doc.batch_id != batch_id:
-        gaps.append(
-            TraceGapV2(
-                code="result_identity_mismatch",
-                source=source,
-                batch_id=batch_id,
-                target="performance",
-                detail="batch_id mismatch",
-            )
-        )
-        return None
-    if doc.kind != "performance":
-        gaps.append(
-            TraceGapV2(
-                code="result_identity_mismatch",
-                source=source,
-                batch_id=batch_id,
-                target="performance",
-                detail="kind mismatch",
-            )
-        )
-        return None
-    return doc
+
+def _read_json_mapping(path: Path) -> tuple[dict[str, object] | None, str]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as err:
+        return None, str(err)
+    if not isinstance(raw, dict):
+        return None, "document is not a JSON object"
+    return raw, ""
+
+
+def _identity_error(
+    raw: Mapping[str, object],
+    expected: tuple[tuple[str, str], ...],
+) -> str:
+    for field_name, wanted in expected:
+        found = raw.get(field_name)
+        if found != wanted:
+            return f"{field_name}: expected {wanted!r}, found {found!r}"
+    return ""
 
 
 def _index_executions(
@@ -816,8 +855,9 @@ def _index_executions(
     batches: list[_BatchExecution],
 ) -> dict[str, tuple[_CaseExecution, ...]]:
     by_case: dict[str, list[_CaseExecution]] = {}
-    perf_entries = [entry for entry in entries if entry.type == "Performance"]
-    other_entries = [entry for entry in entries if entry.type != "Performance"]
+    unique_entries = _unique_entries(entries)
+    perf_entries = [entry for entry in unique_entries if entry.type == "Performance"]
+    other_entries = [entry for entry in unique_entries if entry.type != "Performance"]
 
     for batch in batches:
         for entry in other_entries:
@@ -825,18 +865,27 @@ def _index_executions(
             doc = batch.pytest.get(target)
             if doc is None:
                 continue
-            for row in doc.cases:
-                if row.case_id != entry.case_id:
-                    continue
-                by_case.setdefault(entry.case_id, []).append(
-                    _CaseExecution(
-                        batch_id=batch.batch_id,
-                        target=target,
-                        status=row.status,
-                        ts=batch.ts,
-                        ts_source=batch.ts_source,
-                    )
+            matching = [row for row in doc.cases if row.case_id == entry.case_id]
+            if not matching:
+                continue
+            status = max(matching, key=lambda row: _STATUS_RANK[row.status]).status
+            refs_by_key = {
+                (row.file, row.test_name): TraceTestRef(
+                    file=row.file,
+                    test_name=row.test_name,
                 )
+                for row in matching
+            }
+            by_case.setdefault(entry.case_id, []).append(
+                _CaseExecution(
+                    batch_id=batch.batch_id,
+                    target=target,
+                    status=status,
+                    ts=batch.ts,
+                    ts_source=batch.ts_source,
+                    test_refs=tuple(refs_by_key[key] for key in sorted(refs_by_key)),
+                )
+            )
 
         if batch.performance is None:
             continue
@@ -866,8 +915,8 @@ def _build_row(
     gaps: list[TraceGapV2],
 ) -> TraceRow:
     target = _CASE_TYPE_TO_TARGET[entry.type]
-    latest = _pick_latest(executions)
-    freshest_pass = _pick_freshest_pass(executions)
+    latest = _pick_latest(executions, target)
+    freshest_pass = _pick_freshest_pass(executions, target)
     presence = _presence_in_current_batch(entry, executions, current, target)
     covering, coverage_state = _coverage_for_entry(entry, tree)
     if entry.automation_required and latest is not None:
@@ -911,9 +960,10 @@ def _maybe_mapped_test_missing(
     gaps: list[TraceGapV2],
 ) -> None:
     """Emit gap when latest mapped pytest test disappeared from the current tree."""
-    if entry.type == "Performance":
+    if entry.type == "Performance" or entry.case_id in tree.case_ids:
         return
-    if entry.case_id in tree.case_ids:
+    missing = [ref for ref in latest.test_refs if (ref.file, ref.test_name) not in tree.function_refs]
+    if not missing:
         return
     gaps.append(
         TraceGapV2(
@@ -921,22 +971,44 @@ def _maybe_mapped_test_missing(
             source=_TREE_DIGEST_SOURCE,
             batch_id=latest.batch_id,
             target=latest.target,
-            detail=f"case {entry.case_id} mapped in {latest.batch_id} missing from current tests tree",
+            detail=f"{entry.case_id}: "
+            + ", ".join(f"{ref.file}::{ref.test_name}" for ref in missing)
+            + " no longer in the tests tree",
         )
     )
 
 
-def _pick_latest(executions: tuple[_CaseExecution, ...]) -> _CaseExecution | None:
+def _pick_latest(
+    executions: tuple[_CaseExecution, ...],
+    own_target: Literal["api", "e2e", "fuzz", "performance"],
+) -> _CaseExecution | None:
     if not executions:
         return None
-    return max(executions, key=lambda item: item.batch_id)
+    newest_batch = max(item.batch_id for item in executions)
+    candidates = [item for item in executions if item.batch_id == newest_batch]
+    return _prefer_target(candidates, own_target)
 
 
-def _pick_freshest_pass(executions: tuple[_CaseExecution, ...]) -> _CaseExecution | None:
+def _pick_freshest_pass(
+    executions: tuple[_CaseExecution, ...],
+    own_target: Literal["api", "e2e", "fuzz", "performance"],
+) -> _CaseExecution | None:
     passed = [item for item in executions if item.status == "passed"]
     if not passed:
         return None
-    return max(passed, key=lambda item: item.batch_id)
+    newest_batch = max(item.batch_id for item in passed)
+    candidates = [item for item in passed if item.batch_id == newest_batch]
+    return _prefer_target(candidates, own_target)
+
+
+def _prefer_target(
+    candidates: list[_CaseExecution],
+    own_target: Literal["api", "e2e", "fuzz", "performance"],
+) -> _CaseExecution:
+    own = next((item for item in candidates if item.target == own_target), None)
+    if own is not None:
+        return own
+    return min(candidates, key=lambda item: _ALL_TARGETS.index(item.target))
 
 
 def _to_trace_execution(item: _CaseExecution | None) -> TraceExecution | None:
@@ -957,14 +1029,13 @@ def _presence_in_current_batch(
     current: _CurrentBatchView,
     target: Literal["api", "e2e", "fuzz", "performance"],
 ) -> Literal["executed", "not_in_current_batch", "target_not_selected"]:
-    selected = _target_selected(current.selected_targets, target)
-    if not selected:
-        return "target_not_selected"
     if not current.batch_id:
         return "not_in_current_batch"
     current_execs = [item for item in executions if item.batch_id == current.batch_id]
     if current_execs:
         return "executed"
+    if not _target_selected(current.selected_targets, target):
+        return "target_not_selected"
     return "not_in_current_batch"
 
 
@@ -1035,11 +1106,8 @@ def _resolve_batch_ts(
 
 
 def _parse_legacy_batch_ts(batch_id: str) -> datetime | None:
-    try:
-        naive = datetime.strptime(batch_id, "%Y%m%d-%H%M%S")
-    except ValueError:
-        return None
-    return naive.replace(tzinfo=UTC)
+    parsed = parse_batch_id(batch_id)
+    return parsed.as_datetime() if parsed is not None else None
 
 
 def _parse_executed_at(value: object) -> datetime | None:
@@ -1149,3 +1217,30 @@ def _enrich_reconciled(
     summarize_projection_by_layer(projection)
     validate_trace_phase_pair(execution, projection)
     return projection
+
+
+@dataclass(frozen=True)
+class AuthoritativeInstant:
+    """The instant a change's authoritative batch ran, and where it came from."""
+
+    batch_id: str
+    as_of: datetime
+    ts_source: Literal["executed_at", "batch_id_legacy_utc"]
+
+
+def authoritative_batch_instant(project_root: Path, change_id: str) -> AuthoritativeInstant | None:
+    """Resolve the judging instant from the published manifest, never wall clock."""
+    change_dir = resolve_change(project_root, change_id).path
+    gaps: list[TraceGapV2] = []
+    sources = TraceSourceRecorder()
+    view = _resolve_current_batch(change_dir, change_id, None, gaps, sources)
+    if not view.manifest_exists or not view.batch_id:
+        return None
+    if view.executed_at is not None:
+        if view.executed_at.tzinfo is None:
+            return None
+        return AuthoritativeInstant(view.batch_id, view.executed_at, "executed_at")
+    legacy = _parse_legacy_batch_ts(view.batch_id)
+    if legacy is None:
+        return None
+    return AuthoritativeInstant(view.batch_id, legacy, "batch_id_legacy_utc")

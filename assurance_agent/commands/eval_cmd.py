@@ -13,21 +13,18 @@ from assurance_agent.eval.baseline import (
     update_baseline,
 )
 from assurance_agent.eval.gate import read_gate_result
+from assurance_agent.eval.fake_adapter import FixtureBackedFakeAdapter
 from assurance_agent.eval.paths import run_dir as run_dir_for
 from assurance_agent.eval.plan import generate_plan, load_suite, write_plan
 from assurance_agent.eval.report import generate_trend_report
 from assurance_agent.eval.runner import run_plan, run_suite
 from assurance_agent.exceptions import AaError
-from assurance_agent.workflow.graph.agent_api import AgentInvoker, AgentRequest, AgentResult
+from assurance_agent.workflow.graph.agent_api import AgentInvoker
 
 _FAILING = {"fail", "inconclusive", "needs_human_review"}
 
 
-class _FakeAdapter:
-    """AA_EVAL_FAKE_ADAPTER: skip real agent; seed/fixture supplies artifacts."""
-
-    def invoke(self, request: AgentRequest) -> AgentResult:
-        return AgentResult(ok=True)
+_FakeAdapter = FixtureBackedFakeAdapter
 
 
 def _resolve_adapter_factory(*, use_fake: bool, sut: Path):

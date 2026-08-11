@@ -607,6 +607,32 @@ class Scheduler:
                 cursor = target_tree
         return last_prev, last_target, last_publication_id, last_write_set_ids
 
+    def commit_pending_updates(
+        self,
+        *,
+        superstep_id: str,
+        checkpoint_id: str,
+        projection: GraphProjection,
+        context: RuntimeContext,
+        succeeded_ids: list[str],
+    ) -> list[str]:
+        """Commit a planned superstep whose tasks already succeeded but were not materialised.
+
+        Used by GraphRuntime pending-update recovery. Callers express intent only;
+        the empty-plan commit shape stays inside the scheduler.
+        """
+        plan = PlanResult(
+            superstep_id=superstep_id,
+            checkpoint_id=checkpoint_id,
+            tasks=(),
+        )
+        return self._commit_wave(
+            plan=plan,
+            projection=projection,
+            context=context,
+            succeeded_ids=succeeded_ids,
+        )
+
     @contextmanager
     def _project_lock_scope(
         self,

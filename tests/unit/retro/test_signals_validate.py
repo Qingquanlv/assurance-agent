@@ -94,6 +94,14 @@ def test_failed_analysis_requires_reason_and_no_signals() -> None:
         validate_signal_draft("issue", doc, _slice())
 
 
+def test_signal_draft_rejects_duplicate_signal_id_within_one_analyzer_document() -> None:
+    doc = _draft()
+    doc["signals"].append(dict(doc["signals"][0]))
+
+    with pytest.raises(SignalInvalidError, match="duplicate signal_id.*SIG-1"):
+        validate_signal_draft("issue", doc, _slice())
+
+
 def test_domain_rejects_a_signal_type_owned_by_another_analyzer() -> None:
     doc = _draft()
     doc["domain"] = "eval"
@@ -115,6 +123,93 @@ def test_domain_rejects_a_signal_type_owned_by_another_analyzer() -> None:
 
     with pytest.raises(SignalInvalidError, match="illegal signal_type"):
         validate_signal_draft("eval", doc, eval_slice)
+
+
+def test_batch_member_evidence_gap_is_legal_for_issue_domain() -> None:
+    gap_id = "BATCH-GAP-1"
+    # Deterministic gaps self-cite via workflow_evidence_ids even on issue slices.
+    slice_ = IssueEvidenceSlice.model_validate(
+        {
+            **_slice().model_dump(mode="json"),
+            "sources": [
+                *_slice().model_dump(mode="json")["sources"],
+                {
+                    "kind": "batch_manifest",
+                    "sha256": "sha256:gap",
+                    "evidence_ids": [gap_id],
+                },
+            ],
+        }
+    )
+    doc = {
+        "schema_version": "3",
+        "retro_id": "retro-1",
+        "domain": "issue",
+        "analysis_status": "ok",
+        "analyzer": "aa-retro-issue-analysis",
+        "signals": [
+            {
+                "signal_id": gap_id,
+                "signal_type": "batch_member_evidence_gap",
+                "summary": "Issue ledger missing for stopped member",
+                "occurrence_count": 1,
+                "recommended_change": "Restore complete evidence collection",
+                "source_refs": {"workflow_evidence_ids": [gap_id]},
+                "confidence": "high",
+                "change_id": "CH-1",
+                "execution_status": "stopped",
+                "domain": "issue",
+                "reason_code": "ledger_missing",
+            }
+        ],
+    }
+
+    draft = validate_signal_draft("issue", doc, slice_)
+
+    assert draft.signals[0].signal_type == "batch_member_evidence_gap"
+    assert draft.signals[0].source_refs.workflow_evidence_ids == (gap_id,)
+
+
+def test_batch_member_evidence_gap_backfills_empty_source_refs() -> None:
+    gap_id = "BATCH-GAP-2"
+    slice_ = IssueEvidenceSlice.model_validate(
+        {
+            **_slice().model_dump(mode="json"),
+            "sources": [
+                {
+                    "kind": "batch_manifest",
+                    "sha256": "sha256:gap",
+                    "evidence_ids": [gap_id],
+                },
+            ],
+        }
+    )
+    doc = {
+        "schema_version": "3",
+        "retro_id": "retro-1",
+        "domain": "issue",
+        "analysis_status": "ok",
+        "analyzer": "aa-retro-issue-analysis",
+        "signals": [
+            {
+                "signal_id": gap_id,
+                "signal_type": "batch_member_evidence_gap",
+                "summary": "Issue ledger missing",
+                "occurrence_count": 1,
+                "recommended_change": "Restore evidence",
+                "source_refs": {},
+                "confidence": "high",
+                "change_id": "CH-1",
+                "execution_status": "stopped",
+                "domain": "issue",
+                "reason_code": "ledger_missing",
+            }
+        ],
+    }
+
+    draft = validate_signal_draft("issue", doc, slice_)
+
+    assert draft.signals[0].source_refs.workflow_evidence_ids == (gap_id,)
 
 
 def test_complete_signal_output_rewrites_draft_as_canonical(tmp_path) -> None:

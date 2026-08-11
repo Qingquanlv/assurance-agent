@@ -69,3 +69,82 @@ def test_cli_validate_success(tmp_path: Path) -> None:
     result = runner.invoke(main, ["knowledge", "validate", "--project-dir", str(tmp_path), "--json"])
     assert result.exit_code == 0
     assert '"ok": true' in result.output
+
+
+def test_validate_rejects_unknown_auth_matrix_token(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        ".aa/data-knowledge.yaml",
+        """
+version: 1
+accounts: {}
+auth:
+  api_admin_token:
+    method: token
+entities: {}
+auth_matrix:
+  ghost_cell:
+    route: /api/v1/api/list
+    method: GET
+    token: ghost_token
+    expected: allow
+    allowed_status_codes: [200]
+capabilities:
+  domain_factories: {}
+  adapters:
+    api: {}
+    e2e: {}
+    fuzz: {}
+    performance: {}
+  cleanup: {}
+""".lstrip(),
+    )
+    result = validate_data_knowledge(tmp_path)
+    assert result.ok is False
+    assert any("unknown auth key" in err for err in result.errors)
+
+
+def test_validate_proposal_accepts_parameterized_max_length(tmp_path: Path) -> None:
+    proposal = tmp_path / "plans" / "data-knowledge.proposal.api.yaml"
+    proposal.parent.mkdir(parents=True)
+    proposal.write_text(
+        """
+schema_version: "1"
+based_on_l1_version: 1
+mode: delta
+entities:
+  dept:
+    constraints:
+      name_unique: true
+      name_has_max_length: 20
+    required_fields: [name]
+discovered_candidates: []
+needs_review: []
+promotion_checklist: []
+""".lstrip(),
+        encoding="utf-8",
+    )
+    result = validate_proposal(proposal, rel="plans/data-knowledge.proposal.api.yaml")
+    assert result.ok is True
+
+
+def test_validate_proposal_rejects_boolean_max_length(tmp_path: Path) -> None:
+    proposal = tmp_path / "plans" / "data-knowledge.proposal.api.yaml"
+    proposal.parent.mkdir(parents=True)
+    proposal.write_text(
+        """
+schema_version: "1"
+mode: delta
+entities:
+  dept:
+    constraints:
+      name_has_max_length: true
+discovered_candidates: []
+needs_review: []
+promotion_checklist: []
+""".lstrip(),
+        encoding="utf-8",
+    )
+    result = validate_proposal(proposal, rel="plans/data-knowledge.proposal.api.yaml")
+    assert result.ok is False
+    assert any("max_length" in err for err in result.errors)

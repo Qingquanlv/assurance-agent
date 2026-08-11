@@ -9,6 +9,7 @@ from assurance_agent.artifacts.models.data_knowledge import (
     CapabilityLeaf,
     DataKnowledge,
     DataKnowledgeProposal,
+    EntityLeaf,
 )
 from assurance_agent.artifacts.registry import match_artifact
 from assurance_agent.artifacts.repo_registry import resolve_repo_model
@@ -44,6 +45,26 @@ def test_l1_valid_fixture() -> None:
     DataKnowledge.model_validate(_load("l1_valid.yaml"))
 
 
+def test_l1_historical_boolean_max_length_remains_readable_without_normalization() -> None:
+    raw = {
+        "version": 1,
+        "entities": {
+            "dept": {
+                "required_fields": ["name"],
+                "constraints": {
+                    "name_non_empty": True,
+                    "name_has_max_length": True,
+                    "name_unique": True,
+                },
+            }
+        },
+    }
+
+    parsed = DataKnowledge.model_validate(raw)
+
+    assert parsed.entities["dept"].constraints == raw["entities"]["dept"]["constraints"]
+
+
 def test_l1_invalid_fixture_rejected() -> None:
     with pytest.raises(ValidationError):
         DataKnowledge.model_validate(_load("l1_invalid.yaml"))
@@ -51,6 +72,50 @@ def test_l1_invalid_fixture_rejected() -> None:
 
 def test_l2_valid_fixture() -> None:
     DataKnowledgeProposal.model_validate(_load("l2_valid.api.yaml"))
+
+
+def test_entity_leaf_preserves_historical_flattened_non_max_length_flags() -> None:
+    EntityLeaf.model_validate(
+        {
+            "constraints": {
+                "name_non_empty": True,
+                "name_unique": True,
+            }
+        }
+    )
+
+
+def test_entity_leaf_accepts_parameterized_flattened_max_length() -> None:
+    leaf = EntityLeaf.model_validate({"constraints": {"name_has_max_length": 20, "name_unique": True}})
+    assert leaf.constraints is not None
+    assert leaf.constraints["name_has_max_length"] == 20
+
+
+def test_entity_leaf_accepts_positive_nested_max_length() -> None:
+    EntityLeaf.model_validate({"constraints": {"name": {"max_length": 20, "unique": True}}})
+
+
+@pytest.mark.parametrize("max_length", [True, False, 0, -1, "20"])
+def test_entity_leaf_rejects_invalid_nested_max_length(max_length: object) -> None:
+    with pytest.raises(ValidationError, match="max_length must be a positive integer"):
+        EntityLeaf.model_validate({"constraints": {"name": {"max_length": max_length}}})
+
+
+@pytest.mark.parametrize("max_length", [True, False, 0, -1, "20"])
+def test_entity_leaf_rejects_invalid_flattened_max_length(max_length: object) -> None:
+    with pytest.raises(ValidationError, match="max_length must be a positive integer"):
+        EntityLeaf.model_validate({"constraints": {"name_has_max_length": max_length}})
+
+
+@pytest.mark.parametrize(
+    "nested_sequence",
+    ([{"max_length": True}], ({"max_length": True},)),
+)
+def test_entity_leaf_rejects_boolean_max_length_in_nested_sequences(
+    nested_sequence: object,
+) -> None:
+    with pytest.raises(ValidationError, match="max_length must be a positive integer"):
+        EntityLeaf.model_validate({"constraints": {"nested": nested_sequence}})
 
 
 def test_resolve_repo_model_for_l1() -> None:

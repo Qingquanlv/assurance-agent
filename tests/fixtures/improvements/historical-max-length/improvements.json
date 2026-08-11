@@ -1,0 +1,40 @@
+{
+  "schema_version": "1",
+  "last_seq": 1,
+  "improvements": {
+    "IMP-HISTORICAL-MAX-LENGTH": {
+      "improvement_id": "IMP-HISTORICAL-MAX-LENGTH",
+      "fingerprint": "historical-max-length",
+      "fingerprint_version": "1",
+      "kind": "domain_knowledge",
+      "delivery": "knowledge_delta",
+      "source_refs": {"problem_ids": ["PROB-HISTORICAL"]},
+      "target": ".aa/data-knowledge.yaml",
+      "rationale": "Historical proposal predates concrete max-length validation",
+      "proposed_change": "Record the observed department-name constraints",
+      "knowledge_delta": {
+        "schema_version": "1",
+        "mode": "delta",
+        "entities": {
+          "dept": {
+            "constraints": {"name": {"max_length": true, "unique": true}},
+            "required_fields": ["name"]
+          }
+        }
+      },
+      "verification": {
+        "suites": ["knowledge"],
+        "success_criteria": "Department constraints remain available"
+      },
+      "risk": "medium",
+      "confidence": "high",
+      "state": "proposed",
+      "version": 1,
+      "proposed_by_retro_ids": ["RETRO-HISTORICAL"],
+      "last_event_id": "IMPEVT-HISTORICAL-MAX-LENGTH"
+    }
+  },
+  "by_fingerprint": {
+    "historical-max-length": "IMP-HISTORICAL-MAX-LENGTH"
+  }
+}

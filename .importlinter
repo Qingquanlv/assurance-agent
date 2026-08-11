@@ -29,7 +29,7 @@ layers =
 # Graph entrypoints invoke Retro through one narrow stage facade. Keep that
 # intentional seam explicit so every new workflow→retro edge remains fail-closed.
 ignore_imports =
-    assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.stages
+    assurance_agent.workflow.retro_ops -> assurance_agent.retro.stages
     # Improvement reconciler validates Candidates against RetroContext (Task 8/9 seam).
     assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.types
     assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.candidates
@@ -44,7 +44,7 @@ modules =
     assurance_agent.retro
 # Transitive eval → workflow → retro_ops → the same intentional facade seam.
 ignore_imports =
-    assurance_agent.workflow.graph.handlers.retro_ops -> assurance_agent.retro.stages
+    assurance_agent.workflow.retro_ops -> assurance_agent.retro.stages
     assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.types
     assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.candidates
     assurance_agent.workflow.improvements.knowledge_delivery -> assurance_agent.retro.types
@@ -66,15 +66,42 @@ forbidden_modules =
     assurance_agent.workflow
 
 [importlinter:contract:graph-runtime-layer]
-name = driver depends on graph, graph depends on orchestration and core
+name = driver depends on domains, domains depend on graph, graph depends on orchestration and core
 type = layers
 layers =
     assurance_agent.workflow.driver
+    assurance_agent.workflow.metrics : assurance_agent.workflow.issues : assurance_agent.workflow.improvements : assurance_agent.workflow.execution : assurance_agent.workflow.report : assurance_agent.workflow.healing : assurance_agent.workflow.discovery : assurance_agent.workflow.retro_ops
     assurance_agent.workflow.graph
     assurance_agent.workflow.orchestration
     assurance_agent.workflow.core
 # Graph delivery ops build a host Eval runner (callables cannot be CLI params).
 # That pulls eval → driver transitively; keep the seam explicit and fail-closed
 # for any new graph → driver edges.
+#
+# Remaining graph→domain seams are registered below as intentional, pending
+# digestion. New graph→domain edges must not be added without an explicit ignore.
 ignore_imports =
     assurance_agent.workflow.improvements.memory_delivery -> assurance_agent.eval.host_runner
+    # Pending seams: graph kernel still reaches a few domain/evidence helpers.
+    assurance_agent.workflow.graph.finalize -> assurance_agent.workflow.healing.safety
+    assurance_agent.workflow.graph.finalize -> assurance_agent.workflow.issues.identity
+    assurance_agent.workflow.graph.handlers.trace_projection -> assurance_agent.workflow.execution.evidence
+    assurance_agent.workflow.graph.checkpoint -> assurance_agent.workflow.execution.tree_hash
+    assurance_agent.workflow.graph.handlers.agent -> assurance_agent.workflow.issues.analyzer_output
+    assurance_agent.workflow.graph.handlers.agent -> assurance_agent.workflow.improvements.reviewer_output
+    assurance_agent.workflow.graph.runtime -> assurance_agent.workflow.execution.tree_hash
+    assurance_agent.workflow.graph.handlers.plan_checks -> assurance_agent.workflow.improvements.ledger
+    assurance_agent.workflow.graph.handlers.interrupt -> assurance_agent.workflow.execution.tree_hash
+    assurance_agent.workflow.graph.scheduler -> assurance_agent.workflow.healing.allocation
+    # V6 durable-effect / precommit / healing-projection seams from main.
+    assurance_agent.workflow.graph.durable_effects -> assurance_agent.workflow.healing.effects
+    assurance_agent.workflow.graph.runtime_commit_safety -> assurance_agent.workflow.healing.effects
+    assurance_agent.workflow.graph.precommit -> assurance_agent.workflow.healing.safety
+    assurance_agent.workflow.orchestration.healing_state -> assurance_agent.workflow.healing.projection
+    # Pre-existing reverse seams: orchestration (below domains) still imports
+    # healing/execution helpers. Keep explicit until those helpers move down.
+    assurance_agent.workflow.orchestration.operations -> assurance_agent.workflow.healing.safety
+    assurance_agent.workflow.orchestration.operations -> assurance_agent.workflow.healing.override_policy
+    assurance_agent.workflow.orchestration.audit_evidence -> assurance_agent.workflow.execution.tree_hash
+    assurance_agent.workflow.orchestration.gates -> assurance_agent.workflow.execution.tree_hash
+    assurance_agent.workflow.orchestration.operations -> assurance_agent.workflow.execution.tree_hash

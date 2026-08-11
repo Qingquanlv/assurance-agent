@@ -95,3 +95,7 @@ class QualityReport(BaseModel):
     non_functional: Any = None
     # Issue risk section (schema 1.1). Absent in historical 1.0 reports.
     issues: IssueReport | None = None
+    # Verification metrics vector from ``inspect/metrics.json`` (Task 8). Combined
+    # here for humans; never copied into ``final_status``. Absent when the
+    # materialize step has not run (or the file is unreadable).
+    metrics: dict[str, Any] | None = None

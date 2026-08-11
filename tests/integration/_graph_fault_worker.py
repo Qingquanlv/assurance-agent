@@ -824,29 +824,19 @@ def _healing_point_matches(point: str, target: str) -> bool:
 def _build_v5_revision(project: Path):
     import json
 
-    from assurance_agent.workflow.graph.checkpoint import CheckpointStore
+    from assurance_agent.workflow.driver.operations_catalog import default_operations
+    from assurance_agent.workflow.driver.runtime_factory import assemble_graph_runtime
     from assurance_agent.workflow.graph.compiler import compile_workflow
     from assurance_agent.workflow.graph.contracts import parse_execution_contracts
-    from assurance_agent.workflow.graph.handlers.operation import (
-        OperationHandler,
-        default_operations,
-    )
+    from assurance_agent.workflow.graph.definition_pinning import request_for_compiled
+    from assurance_agent.workflow.graph.handlers.operation import OperationHandler
     from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
-    from assurance_agent.workflow.graph.runtime import GraphRuntime
-    from assurance_agent.workflow.graph.scheduler import Scheduler
     from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
     from assurance_agent.workflow.graph.task_runner import build_default_node_runner
-    from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
-    from assurance_agent.workflow.driver.runtime_factory import one_definition_resolver
-    from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 
     change = project / "qa" / "changes" / "CH-1"
     contracts = parse_execution_contracts(_V5_REVISION_CONTRACTS)
     compiled = compile_workflow(parse_workflow_v2(_V5_REVISION), contracts)
-    store = TreeStore(change)
-    checkpoints = CheckpointStore(change)
-    workspaces = WorkspaceBackend(change)
-    clock = FakeClock()
     ops = default_operations()
 
     def seed_plan(task: ExecutableTask, workspace, context: RuntimeContext) -> TaskResult:
@@ -864,7 +854,7 @@ def _build_v5_revision(project: Path):
         review = workspace.change_dir / "review"
         review.mkdir(parents=True, exist_ok=True)
         (review / "synth-plan-review.json").write_text(
-            json.dumps({"decision": decision}),
+            json.dumps({"schema_version": "1", "decision": decision, "findings": []}),
             encoding="utf-8",
         )
         return TaskResult(status="succeeded")
@@ -873,7 +863,15 @@ def _build_v5_revision(project: Path):
         review = workspace.change_dir / "review"
         review.mkdir(parents=True, exist_ok=True)
         (review / "synth-plan-checks.json").write_text(
-            json.dumps({"status": "ready", "layer": "synth"}),
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "decision": "pass",
+                    "findings": [],
+                    "status": "ready",
+                    "layer": "synth",
+                }
+            ),
             encoding="utf-8",
         )
         return TaskResult(status="succeeded")
@@ -881,52 +879,37 @@ def _build_v5_revision(project: Path):
     ops["operation:seed-plan"] = seed_plan
     ops["operation:write-review"] = write_review
     ops["operation:write-checks"] = write_checks
-    holder: dict[str, GraphRuntime] = {}
 
-    def run_child(task, graph_id, workspace, context):  # type: ignore[no-untyped-def]
-        return holder["rt"].run_child(task, graph_id, workspace, context)
-
-    base = build_default_node_runner(
-        NeverCalledInvoker(),
-        store,
-        contracts,
-        compiled=compiled,
-        run_child=run_child,
-    )
-    op_handler = OperationHandler(ops)
-
-    class Combined:
-        def execute(self, task, workspace, context):  # type: ignore[no-untyped-def]
-            if task.target.startswith("operation:"):
-                return op_handler.execute(task, workspace, context)
-            return base.execute(task, workspace, context)
-
-    node_runner = Combined()
-    graph_id = compiled.entrypoints["root"].graph_id
-    scheduler = Scheduler(
-        checkpoints=checkpoints,
-        object_store=store,
-        clock=clock,
-        workspace_backend=workspaces,
-        node_runner=node_runner,
-        max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
-        contracts=contracts,
-        state_defs=dict(compiled.schema.graphs[graph_id].state),
-    )
-    runtime = GraphRuntime(
-        checkpoint_store=checkpoints,
-        object_store=store,
-        workspace_backend=workspaces,
-        definition_resolver=one_definition_resolver(
+    def build_node_runner(store, run_child):  # noqa: ANN001, ANN202
+        base = build_default_node_runner(
+            NeverCalledInvoker(),
+            store,
+            contracts,
             compiled=compiled,
-            contracts=contracts,
-            ingest_catalog=validate_catalog_runtime(),
-            node_runner=node_runner,
-            scheduler=scheduler,
-        ),
-        clock=clock,
+            operations=ops,
+            run_child=run_child,
+        )
+        op_handler = OperationHandler(ops)
+
+        class Combined:
+            def execute(self, task, workspace, context):  # type: ignore[no-untyped-def]
+                if task.target.startswith("operation:"):
+                    return op_handler.execute(task, workspace, context)
+                return base.execute(task, workspace, context)
+
+        return Combined()
+
+    runtime = assemble_graph_runtime(
+        project_root=project,
+        change_dir=change,
+        compiled=compiled,
+        contracts=contracts,
+        build_node_runner=build_node_runner,
+        clock=FakeClock(),
     )
-    holder["rt"] = runtime
+    scheduler = runtime._definition_resolver(  # noqa: SLF001
+        request_for_compiled(compiled, event_schema_version=6)
+    ).scheduler
     return runtime, compiled, change, scheduler
 
 
@@ -934,34 +917,22 @@ def _build(project: Path, schema_key: str):
     if schema_key == "v5_revision":
         return _build_v5_revision(project)
 
-    from assurance_agent.workflow.graph.checkpoint import CheckpointStore
+    from assurance_agent.workflow.driver.operations_catalog import default_operations
+    from assurance_agent.workflow.driver.runtime_factory import assemble_graph_runtime
     from assurance_agent.workflow.graph.compiler import compile_workflow
     from assurance_agent.workflow.graph.contracts import parse_execution_contracts
-    from assurance_agent.workflow.graph.handlers.operation import (
-        OperationHandler,
-        default_operations,
-    )
+    from assurance_agent.workflow.graph.definition_pinning import request_for_compiled
     from assurance_agent.workflow.graph.models import (
         ExecutableTask,
         InterruptProjection,
         RuntimeContext,
         TaskResult,
     )
-    from assurance_agent.workflow.graph.runtime import GraphRuntime
-    from assurance_agent.workflow.graph.scheduler import Scheduler
     from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
-    from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
-    from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
-    from assurance_agent.workflow.driver.runtime_factory import one_definition_resolver
-    from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 
     change = project / "qa" / "changes" / "CH-1"
     contracts = parse_execution_contracts(_CONTRACTS)
     compiled = compile_workflow(parse_workflow_v2(_SCHEMAS[schema_key]), contracts)
-    store = TreeStore(change)
-    checkpoints = CheckpointStore(change)
-    workspaces = WorkspaceBackend(change)
-    clock = FakeClock()
     ops = default_operations()
 
     def write_marker(task: ExecutableTask, workspace, context: RuntimeContext) -> TaskResult:
@@ -1012,32 +983,25 @@ def _build(project: Path, schema_key: str):
     ops["operation:consume-budget"] = consume_budget
     ops["operation:interrupt-once"] = interrupt_once
     ops["operation:update-issue"] = update_issue
-    handler = OperationHandler(ops)
-    node_runner = HandlerNodeRunner({target: handler for target in ops})
-    graph_id = compiled.entrypoints["full"].graph_id
-    scheduler = Scheduler(
-        checkpoints=checkpoints,
-        object_store=store,
-        clock=clock,
-        workspace_backend=workspaces,
-        node_runner=node_runner,
-        max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
+
+    def build_node_runner(_store, _run_child):  # noqa: ANN001, ANN202
+        from assurance_agent.workflow.graph.handlers.operation import OperationHandler
+        from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
+
+        handler = OperationHandler(ops)
+        return HandlerNodeRunner({target: handler for target in ops})
+
+    runtime = assemble_graph_runtime(
+        project_root=project,
+        change_dir=change,
+        compiled=compiled,
         contracts=contracts,
-        state_defs=dict(compiled.schema.graphs[graph_id].state),
+        build_node_runner=build_node_runner,
+        clock=FakeClock(),
     )
-    runtime = GraphRuntime(
-        checkpoint_store=checkpoints,
-        object_store=store,
-        workspace_backend=workspaces,
-        definition_resolver=one_definition_resolver(
-            compiled=compiled,
-            contracts=contracts,
-            ingest_catalog=validate_catalog_runtime(),
-            node_runner=node_runner,
-            scheduler=scheduler,
-        ),
-        clock=clock,
-    )
+    scheduler = runtime._definition_resolver(  # noqa: SLF001
+        request_for_compiled(compiled, event_schema_version=6)
+    ).scheduler
     return runtime, compiled, change, scheduler
 
 

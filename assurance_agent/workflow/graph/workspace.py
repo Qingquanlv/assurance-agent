@@ -88,6 +88,9 @@ _EXCLUDED_FILES = frozenset(
         # must not participate in tree capture/apply or resume repair treats
         # the live lock as canonical workspace drift.
         "driver.lock",
+        # Finder metadata is created asynchronously by macOS and is unrelated
+        # to product or QA source. Treating it as canonical drift wedges resume.
+        ".DS_Store",
         ".coverage",
         "db.sqlite3",
         "db.sqlite3-shm",
@@ -101,6 +104,10 @@ _MAX_TREE_SYMLINK_HOPS = 40
 
 class WorkspaceError(AaError):
     """workspace/tree/write-set 完整性或授权失败；一律 fail closed。"""
+
+
+class TargetedWorkspaceDrift(WorkspaceError):
+    """A synchronized write-set found neither its immediate base nor target."""
 
 
 # ---------------------------------------------------------------------------
@@ -1263,7 +1270,9 @@ class TreeStore:
                     ):
                         writes.append((rel, wanted))
                         continue
-                    raise WorkspaceError(f"canonical workspace drift at targeted path {entry.logical_path}")
+                    raise TargetedWorkspaceDrift(
+                        f"canonical workspace drift at targeted path {entry.logical_path}"
+                    )
                 if wanted is None:
                     deletes.append(rel)
                 else:
@@ -1272,6 +1281,113 @@ class TreeStore:
         for rel, wanted in sorted(writes):
             _install_file(project_root / rel, self._read_object(wanted.sha256), wanted.executable)
         for rel in sorted(deletes):
+            victim = project_root / rel
+            victim.unlink(missing_ok=True)
+            _prune_empty_parents(victim, project_root)
+
+    def read_frozen_write_set_bytes(self, write_set_id: str, logical_path: str) -> bytes:
+        """Read one logical file exactly as captured by a frozen write-set."""
+        write_set = self.load_write_set(write_set_id)
+        base = self._load_tree(write_set.base_tree_id)
+        requested_rel = _physical_for(base.roots, ResourcePath.parse(logical_path))
+        matching = [
+            entry
+            for entry in write_set.entries
+            if _physical_for(base.roots, ResourcePath.parse(entry.logical_path)) == requested_rel
+        ]
+        if len(matching) > 1:
+            raise WorkspaceError(f"write-set contains duplicate physical path: {logical_path}")
+        if not matching:
+            try:
+                return self._read_tree_bytes(base, requested_rel)
+            except FileNotFoundError as exc:
+                raise FileNotFoundError(logical_path) from exc
+        entry = matching[0]
+        if entry.operation == "delete":
+            raise FileNotFoundError(logical_path)
+        if entry.after_sha256 is None or entry.blob_sha256 is None or entry.after_sha256 != entry.blob_sha256:
+            raise WorkspaceError(f"write-set file object is inconsistent: {logical_path}")
+        return self._read_object(entry.blob_sha256)
+
+    def apply_tree_delta(
+        self,
+        project_root: Path,
+        target_tree_id: str,
+        *,
+        source_base_tree_id: str,
+        destination_base_tree_id: str,
+        acceptable_live_tree_ids: Sequence[str] = (),
+    ) -> None:
+        """Replay only ``source_base -> target`` changes onto another base tree.
+
+        A subgraph resumed in a fresh parent-task workspace must recover commits
+        made before the interrupt.  The fresh workspace can also contain newer,
+        unrelated sibling commits, so applying the child target as a whole would
+        incorrectly roll those siblings back.  This method rebases only the
+        child's touched paths and rejects any overlap or live drift. During
+        crash recovery, callers may whitelist exact committed prefix trees;
+        arbitrary bytes and symlink intermediates remain rejected.
+        """
+        project_root = project_root.resolve()
+        source_base = self._load_tree(source_base_tree_id)
+        target = self._load_tree(target_tree_id)
+        destination_base = self._load_tree(destination_base_tree_id)
+        acceptable_live_trees = tuple(
+            self._load_tree(tree_id) for tree_id in dict.fromkeys(acceptable_live_tree_ids)
+        )
+        if not (
+            source_base.roots == target.roots == destination_base.roots
+            and all(tree.roots == source_base.roots for tree in acceptable_live_trees)
+        ):
+            raise WorkspaceError("cannot replay tree delta across different logical roots")
+
+        writes: list[tuple[str, _Entry]] = []
+        deletes: list[str] = []
+        for rel in sorted(set(source_base.entries) | set(target.entries)):
+            before = source_base.entries.get(rel)
+            wanted = target.entries.get(rel)
+            if before == wanted:
+                continue
+            destination_before = destination_base.entries.get(rel)
+            pinned_intermediates = {
+                entry
+                for tree in acceptable_live_trees
+                if (entry := tree.entries.get(rel)) is None or entry.kind == "file"
+            }
+            if destination_before != before:
+                if destination_before == wanted:
+                    continue
+                if destination_before not in pinned_intermediates:
+                    logical = _canonical_logical(source_base.roots, rel)
+                    raise WorkspaceError(f"tree delta conflicts with destination base at {logical}")
+            if (before is not None and before.kind == "symlink") or (
+                wanted is not None and wanted.kind == "symlink"
+            ):
+                logical = _canonical_logical(source_base.roots, rel)
+                raise WorkspaceError(f"changed symlink rejected: {logical}")
+
+            actual = _entry_at(project_root, rel)
+            if actual == wanted:
+                continue
+            if _same_file_content(actual, wanted):
+                assert wanted is not None
+                writes.append((rel, wanted))
+                continue
+            if actual != destination_before:
+                if actual not in pinned_intermediates:
+                    logical = _canonical_logical(source_base.roots, rel)
+                    raise WorkspaceError(f"workspace drift at replayed child path {logical}")
+            if wanted is None:
+                deletes.append(rel)
+            else:
+                if wanted.kind != "file":
+                    logical = _canonical_logical(source_base.roots, rel)
+                    raise WorkspaceError(f"cannot materialize non-file entry: {logical}")
+                writes.append((rel, wanted))
+
+        for rel, wanted in writes:
+            _install_file(project_root / rel, self._read_object(wanted.sha256), wanted.executable)
+        for rel in deletes:
             victim = project_root / rel
             victim.unlink(missing_ok=True)
             _prune_empty_parents(victim, project_root)
@@ -1337,6 +1453,15 @@ class TreeStore:
                         and not rel.startswith(f"{change_prefix}/")
                     ):
                         continue
+                    # Retro runs and Improvement delivery are independent,
+                    # runtime-managed namespaces. A sibling workflow may
+                    # legitimately advance them after this invocation pinned
+                    # its base tree. Preserve that live value when this tree
+                    # edge leaves the path unchanged; if the edge also changes
+                    # the path, the normal conflict check below still fails
+                    # closed.
+                    if _is_concurrent_runtime_namespace_rel(rel):
+                        continue
                     if before is not None and actual is None:
                         writes.append((rel, before))
                         continue
@@ -1376,6 +1501,8 @@ class TreeStore:
                 continue
             if change_prefix is not None and (rel == change_prefix or rel.startswith(f"{change_prefix}/")):
                 change_dir_strays.append(rel)
+                continue
+            if _is_concurrent_runtime_namespace_rel(rel):
                 continue
             raise WorkspaceError(f"canonical workspace drift: untracked path {rel}")
 
@@ -1518,6 +1645,18 @@ def _is_omitted_retro_sibling(
         return False
     run_id = segments[2]
     return run_id not in claimed_retro_ids and run_id not in ("*", "**")
+
+
+def _is_concurrent_runtime_namespace_rel(rel: str) -> bool:
+    """Paths owned by independent runtime workflows, not product source.
+
+    These namespaces may advance while a long-running change workflow is
+    active. ``apply_tree`` only uses this predicate for paths that the current
+    tree edge leaves unchanged, or for newly created live paths, so overlapping
+    writes still fail closed.
+    """
+
+    return rel.startswith(("qa/retro/", "qa/improvements/"))
 
 
 def _physical_for(roots: Mapping[str, str], logical: ResourcePath) -> str:
@@ -1700,6 +1839,7 @@ class WorkspaceBackend:
 
 __all__ = [
     "TaskWorkspace",
+    "TargetedWorkspaceDrift",
     "TreeFileRevision",
     "TreePathRevision",
     "TreeStore",

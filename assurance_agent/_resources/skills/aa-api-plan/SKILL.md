@@ -42,6 +42,47 @@ Planning establishes case coverage, endpoint and assertion intent, data setup an
 
 - `change:plans/data-knowledge.proposal.api.yaml`
 
+When a proposal is required, write the complete `DataKnowledgeProposal` envelope. For a
+delta, `based_on_l1_version` is the current L1 `version`; for a bootstrap proposal it is
+`null` and `mode` is `bootstrap`. Top-level `version`, `change_id`, `proposal_kind`,
+`target`, `proposed_leaves`, and layer-specific wrapper objects are forbidden.
+
+### Canonical delta proposal
+
+```yaml
+schema_version: "1"
+based_on_l1_version: 1
+mode: delta
+accounts: {}
+auth: {}
+entities:
+  user:
+    required_fields:
+      - username
+    constraints:
+      username_unique: true
+capabilities:
+  domain_factories: {}
+  adapters:
+    api: {}
+    e2e: {}
+    fuzz: {}
+    performance: {}
+  cleanup: {}
+discovered_candidates:
+  - id: DK-API-USER-001
+    knowledge_key: entities.user.constraints.username_unique
+    evidence: app/api/v1/user/user.py
+needs_review:
+  - Confirm the source-backed user constraint before promotion into L1.
+promotion_checklist:
+  - Run `aa knowledge validate --change <change-id>` before promotion.
+```
+
+After writing the proposal, validate the whole envelope against the runtime
+`DataKnowledgeProposal` contract, including field types and extra-forbid behavior. Do
+not validate only an inner entity or capability leaf.
+
 ## State Authority
 
 - `owner: graph_ledger`

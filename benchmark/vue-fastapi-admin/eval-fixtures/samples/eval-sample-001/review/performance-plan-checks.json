@@ -6,7 +6,7 @@
     "applicable": true,
     "reason_code": "automated_cases_present",
     "case_ids": [
-      "PERF-001"
+      "PERF_001"
     ]
   },
   "status": "pass",

@@ -90,6 +90,9 @@ This is not a hard stop. Planners must carry the warning and reviewers must mark
 - Never create or modify product data, seed files, fixtures, or cases.
 - Never write `workflow-state.yaml` when running as a dispatched subagent.
 - Never invent credentials, role ids, route prefixes, token headers, or DB facts.
+- Keep complete route inventories out of this artifact: never emit `facts.endpoints` or
+  `facts.*_endpoints`. A single authentication endpoint such as `login_endpoint` is
+  allowed; Explore and each Plan independently verify the complete route surface.
 - Never treat this as a performance baseline or historical regression target.
 - If a fact is uncertain, omit it or set it to `null` and add a warning.
 

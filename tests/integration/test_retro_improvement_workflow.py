@@ -47,10 +47,6 @@ class _PassingImprovementReviewer(FakeRetroAgent):
                 {
                     "schema_version": "1",
                     "review_type": "improvement",
-                    "review_id": review_id,
-                    "improvement_id": subject["improvement_id"],
-                    "expected_improvement_version": 1,
-                    "subject_sha256": subject_path.stem,
                     "decision": "pass",
                     "findings": [],
                     "evidence_traceability": "complete",
@@ -92,7 +88,7 @@ def test_corrupt_issue_ledger_recovers_to_pipeline_improvement(
         raise IssueHistoryIntegrityError("corrupt Issue Ledger")
 
     monkeypatch.setattr(
-        "assurance_agent.workflow.graph.handlers.retro_ops.materialize_slices",
+        "assurance_agent.workflow.retro_ops.materialize_slices",
         _boom,
     )
     project = _make_project(tmp_path)
@@ -220,7 +216,7 @@ def test_temporary_reconcile_failure_leaves_durable_outbox(
         raise OSError("registry temporarily unavailable")
 
     monkeypatch.setattr(
-        "assurance_agent.workflow.graph.handlers.retro_ops.drain_reconcile_outbox",
+        "assurance_agent.workflow.retro_ops.drain_reconcile_outbox",
         fail_second_drain,
     )
 

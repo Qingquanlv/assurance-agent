@@ -5,11 +5,18 @@ from __future__ import annotations
 from pydantic import ValidationError
 
 from assurance_agent.artifacts.models.data_knowledge import (
+    LIST_AUTH_ROUTES_CAPABILITY,
+    LIST_AUTH_ROUTES_KIND,
     AccountLeaf,
     AuthLeaf,
+    AuthMatrixCell,
+    CapabilitiesBlock,
     CapabilityLeaf,
     CleanupLeaf,
+    DataKnowledge,
+    DataKnowledgeProposal,
     EntityLeaf,
+    assert_list_auth_routes_contract,
 )
 
 
@@ -35,6 +42,8 @@ def is_leaf_present(dk: dict, dotted: str) -> bool:
             AccountLeaf.model_validate(value)
         elif dotted.startswith("entities."):
             EntityLeaf.model_validate(value)
+        elif dotted.startswith("auth_matrix."):
+            AuthMatrixCell.model_validate(value)
         elif dotted.startswith("capabilities.cleanup."):
             CleanupLeaf.model_validate(value)
         elif dotted.startswith("capabilities.domain_factories.") or dotted.startswith(
@@ -87,3 +96,36 @@ def plan_review_route(node_result: object) -> str:
     if verdict == "needs_human_review" and isinstance(missing, list) and len(missing) > 0:
         return "knowledge_remediation"
     return verdict
+
+
+def validate_list_auth_routes_contract(
+    knowledge: DataKnowledge | DataKnowledgeProposal | CapabilitiesBlock | dict,
+) -> None:
+    """Validate ``capabilities.domain_factories.api.list_auth_routes`` when present.
+
+    Absent capability is allowed (A3 cold start may land later). When declared, kind must
+    be ``async_factory`` and ``symbol`` must reference ``list_auth_routes``.
+    """
+    if isinstance(knowledge, (DataKnowledge, DataKnowledgeProposal)):
+        assert_list_auth_routes_contract(knowledge.capabilities)
+        return
+    if isinstance(knowledge, CapabilitiesBlock):
+        assert_list_auth_routes_contract(knowledge)
+        return
+    if not isinstance(knowledge, dict):
+        raise TypeError("knowledge must be DataKnowledge, proposal, CapabilitiesBlock, or dict")
+    caps = knowledge.get("capabilities", knowledge)
+    block = CapabilitiesBlock.model_validate(caps)
+    assert_list_auth_routes_contract(block)
+
+
+# Re-export contract constants for callers/tests.
+__all__ = [
+    "LIST_AUTH_ROUTES_CAPABILITY",
+    "LIST_AUTH_ROUTES_KIND",
+    "capabilities_present",
+    "compute_missing_capabilities",
+    "is_leaf_present",
+    "plan_review_route",
+    "validate_list_auth_routes_contract",
+]

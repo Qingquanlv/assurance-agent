@@ -8,7 +8,7 @@
       "disposition": "generated",
       "role": "test_entry",
       "case_ids": [
-        "PERF-001"
+        "PERF_001"
       ],
       "content_sha256": "sha256:b2a29e7e5692240a777a0a7d3028b43672810f56a00ea5cb6656d87edc2da77e"
     }

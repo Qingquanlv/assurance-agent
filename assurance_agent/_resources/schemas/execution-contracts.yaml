@@ -1,14 +1,3 @@
-# =============================================================================
-# AA Execution Contracts
-# =============================================================================
-#
-# Default resource claims, write authorization and retry semantics for
-# workflow node targets. A project-local `.aa/execution-contracts.yaml`
-# overrides this packaged registry entirely. Targets missing from the
-# registry — or write-capable targets whose write scope cannot be derived —
-# fall back to a conservative `global:exclusive` claim at compile time.
-# =============================================================================
-
 schema_version: '1'
 contracts:
   builtin:join:
@@ -79,12 +68,18 @@ contracts:
     - change:cases/**
     - change:execution/**
     - project:.aa/policy.yaml
+    - project:.aa/cache/diff-base/**
     writes:
     - change:execution/**
+    - project:.aa/cache/diff-base/**
     authorization_writes:
     - change:execution/**
+    - project:.aa/cache/diff-base/**
+    synchronized:
+    - project:.aa/cache/diff-base/**
     exclusive:
     - repo:test-runtime
+    - project:diff-base-cache
     retryable_errors:
     - timeout
     - transport
@@ -152,16 +147,21 @@ contracts:
     reads:
     - change:explore/advisory.json
     - project:qa/**
+    - repo:**
     writes:
     - change:.qa.yaml
     - change:proposal.md
     - change:cases/**
     - change:trace/minimum-coverage-matrix.yaml
+    - change:plans/data-knowledge.proposal.api.yaml
+    - change:plans/data-knowledge.proposal.e2e.yaml
     authorization_writes:
     - change:.qa.yaml
     - change:proposal.md
     - change:cases/**
     - change:trace/minimum-coverage-matrix.yaml
+    - change:plans/data-knowledge.proposal.api.yaml
+    - change:plans/data-knowledge.proposal.e2e.yaml
     retryable_errors:
     - timeout
     - transport
@@ -869,11 +869,13 @@ contracts:
     - project:qa/issues/**
     writes:
     - change:inspect/issue-reconcile-status.json
+    - change:inspect/issue-analysis-status.json
     - change:issues/events.jsonl
     - change:issues/snapshot.json
     - project:qa/issues/**
     authorization_writes:
     - change:inspect/issue-reconcile-status.json
+    - change:inspect/issue-analysis-status.json
     - change:issues/events.jsonl
     - change:issues/snapshot.json
     - project:qa/issues/**
@@ -905,8 +907,10 @@ contracts:
     - repo:tests/**
     writes:
     - change:inspect/trace-projection.json
+    - change:inspect/trace-sufficiency.json
     authorization_writes:
     - change:inspect/trace-projection.json
+    - change:inspect/trace-sufficiency.json
     retryable_errors: []
   operation:load-problem-review-context:
     handler: operation
@@ -949,6 +953,8 @@ contracts:
     authorization_writes:
     - project:qa/retro/*/window.json
     - project:qa/retro/*/evidence/**
+    - project:qa/retro/*/signals/discovery.json
+    - project:qa/retro/*/signals/coverage_gap.json
     synchronized:
     - project:qa/archive/**
     - project:qa/changes/**
@@ -980,10 +986,12 @@ contracts:
     - project:qa/retro/*/signals/**
     writes:
     - project:qa/retro/*/context.json
+    - project:qa/retro/*/context-agent.json
     - project:qa/retro/*/proposal-candidates.json
     - project:qa/retro/*/retro-summary.md
     authorization_writes:
     - project:qa/retro/*/context.json
+    - project:qa/retro/*/context-agent.json
     - project:qa/retro/*/proposal-candidates.json
     - project:qa/retro/*/retro-summary.md
     retryable_errors: []
@@ -996,6 +1004,7 @@ contracts:
     authorization_writes:
     - project:qa/retro/*/signals/**
     - project:qa/retro/*/context.json
+    - project:qa/retro/*/context-agent.json
     - project:qa/retro/*/proposal-candidates.json
     - project:qa/retro/*/retro-summary.md
     synchronized:
@@ -1042,6 +1051,7 @@ contracts:
     handler: agent
     reads:
     - project:qa/retro/*/evidence/issue-slice.json
+    - project:qa/retro/*/evidence/agent/issue-slice.json
     writes:
     - project:qa/retro/*/signals/issue.json
     authorization_writes:
@@ -1057,6 +1067,7 @@ contracts:
     handler: agent
     reads:
     - project:qa/retro/*/evidence/workflow-slice.json
+    - project:qa/retro/*/evidence/agent/workflow-slice.json
     writes:
     - project:qa/retro/*/signals/workflow.json
     authorization_writes:
@@ -1072,6 +1083,7 @@ contracts:
     handler: agent
     reads:
     - project:qa/retro/*/evidence/eval-slice.json
+    - project:qa/retro/*/evidence/agent/eval-slice.json
     writes:
     - project:qa/retro/*/signals/eval.json
     authorization_writes:
@@ -1087,6 +1099,7 @@ contracts:
     handler: agent
     reads:
     - project:qa/retro/*/context.json
+    - project:qa/retro/*/context-agent.json
     writes:
     - project:qa/retro/*/proposal-candidates.json
     - project:qa/retro/*/retro-summary.md
@@ -1131,7 +1144,8 @@ contracts:
     handler: operation
     side_effect_free: true
     reads:
-    - project:qa/improvements/review-subjects/*.json
+    - project:qa/improvements/review-subjects/*
+    - project:qa/improvements/review-subjects/agent/*
     retryable_errors:
     - invalid_input
     - conflict
@@ -1139,6 +1153,7 @@ contracts:
     handler: agent
     reads:
     - project:qa/improvements/review-subjects/*
+    - project:qa/improvements/review-subjects/agent/*
     writes:
     - project:qa/improvements/reviews/*/assessment.json
     - project:qa/improvements/reviews/*/summary.md
@@ -1442,4 +1457,318 @@ contracts:
     - change:healing/fixer-safety-check.json
     authorization_writes:
     - change:healing/fixer-safety-check.json
+    retryable_errors: []
+  operation:probe-coverage-repair-need:
+    handler: operation
+    reads:
+    - change:execution/runs/**
+    - change:inspect/coverage-gaps.json
+    - change:cases/**
+    - change:plans/**
+    - repo:.aa/policy.yaml
+    writes:
+    - change:coverage-repair/brief.json
+    - change:coverage-repair/brief.md
+    authorization_writes:
+    - change:coverage-repair/**
+    retryable_errors: []
+  operation:compute-coverage-repair-safety:
+    handler: operation
+    reads:
+    - change:coverage-repair/brief.json
+    - change:coverage-repair/entry-baseline.json
+    - change:coverage-repair/apply-summary.json
+    - repo:tests/**
+    - repo:**
+    - project:.aa/config.yaml
+    writes:
+    - change:coverage-repair/safety-check.json
+    authorization_writes:
+    - change:coverage-repair/**
+    retryable_errors: []
+  operation:allocate-coverage-repair-attempt:
+    handler: operation
+    reads:
+    - change:coverage-repair/brief.json
+    - change:coverage-repair/status.json
+    - repo:tests/**
+    - repo:**
+    - project:.aa/config.yaml
+    writes:
+    - change:coverage-repair/status.json
+    - change:coverage-repair/entry-baseline.json
+    authorization_writes:
+    - change:coverage-repair/**
+    retryable_errors: []
+  operation:record-coverage-repair-status:
+    handler: operation
+    reads:
+    - change:coverage-repair/status.json
+    - change:coverage-repair/brief.json
+    writes:
+    - change:coverage-repair/status.json
+    authorization_writes:
+    - change:coverage-repair/**
+    retryable_errors: []
+  skill:aa-coverage-repair:
+    handler: agent
+    reads:
+    - change:coverage-repair/brief.json
+    - change:coverage-repair/entry-baseline.json
+    - change:cases/**
+    - change:inspect/**
+    - repo:tests/**
+    - project:qa/**
+    writes:
+    - repo:tests/**
+    - change:coverage-repair/apply-summary.json
+    exclusive:
+    - repo:test-infra
+    authorization_writes:
+    - repo:tests/**
+    - change:coverage-repair/**
+    retryable_errors:
+    - timeout
+    - transport
+    - rate_limit
+    - invalid_output
+    reconnect: true
+  operation:build-coverage-gap-signals:
+    handler: operation
+    reads:
+    - change:inspect/trace-projection.json
+    - change:inspect/trace-sufficiency.json
+    - change:execution/runs/*/constraint-coverage.json
+    - change:execution/runs/*/auth-matrix.json
+    - change:execution/runs/*/journey-coverage.json
+    writes:
+    - change:inspect/coverage-gaps.json
+    authorization_writes:
+    - change:inspect/coverage-gaps.json
+    retryable_errors: []
+  operation:materialize-minimum-coverage:
+    handler: operation
+    reads:
+    - change:trace/minimum-coverage-matrix.yaml
+    - change:inspect/trace-projection.json
+    - change:explore/advisory.json
+    - change:risk-advisory/advisory.json
+    - repo:.aa/data-knowledge.yaml
+    writes:
+    - change:report/minimum-coverage-result.json
+    authorization_writes:
+    - change:report/minimum-coverage-result.json
+    retryable_errors: []
+  operation:collect-diff-coverage:
+    handler: operation
+    reads:
+    - change:execution/**
+    writes:
+    - change:execution/runs/*/coverage-diff.json
+    authorization_writes:
+    - change:execution/runs/*/coverage-diff.json
+    retryable_errors: []
+  operation:compute-constraint-coverage:
+    handler: operation
+    reads:
+    - repo:tests/**
+    - repo:.aa/data-knowledge.yaml
+    - change:cases/**
+    - change:execution/**
+    - change:inspect/quarantine-projection.json
+    writes:
+    - change:execution/runs/*/constraint-coverage.json
+    authorization_writes:
+    - change:execution/runs/*/constraint-coverage.json
+    retryable_errors: []
+  operation:compute-auth-matrix:
+    handler: operation
+    reads:
+    - repo:.aa/data-knowledge.yaml
+    - change:execution/**
+    - change:cases/**
+    writes:
+    - change:execution/runs/*/auth-matrix.json
+    authorization_writes:
+    - change:execution/runs/*/auth-matrix.json
+    retryable_errors: []
+  operation:compute-journey-coverage:
+    handler: operation
+    reads:
+    - change:trace/minimum-coverage-matrix.yaml
+    - change:inspect/trace-projection.json
+    - change:explore/advisory.json
+    - change:risk-advisory/advisory.json
+    - change:execution/**
+    - repo:tests/**
+    - change:inspect/quarantine-projection.json
+    writes:
+    - change:execution/runs/*/journey-coverage.json
+    authorization_writes:
+    - change:execution/runs/*/journey-coverage.json
+    retryable_errors: []
+  operation:materialize-quarantine-projection:
+    handler: operation
+    reads:
+    - change:discovery/**
+    - change:inspect/quarantine-projection.json
+    writes:
+    - change:inspect/quarantine-projection.json
+    authorization_writes:
+    - change:inspect/quarantine-projection.json
+    retryable_errors: []
+  operation:materialize-c-layer-metrics:
+    handler: operation
+    reads:
+    - project:qa/issues/problems.json
+    - change:discovery/**
+    - change:inspect/coverage-gaps.json
+    - change:inspect/metrics-c-layer.json
+    writes:
+    - change:inspect/metrics-c-layer.json
+    authorization_writes:
+    - change:inspect/metrics-c-layer.json
+    retryable_errors: []
+  operation:compute-threshold-slack:
+    handler: operation
+    reads:
+    - change:execution/**
+    writes:
+    - change:execution/runs/*/perf-slack.json
+    authorization_writes:
+    - change:execution/runs/*/perf-slack.json
+    retryable_errors: []
+  operation:collect-pr-metrics-batch:
+    handler: operation
+    reads:
+    - repo:tests/**
+    - repo:.aa/data-knowledge.yaml
+    - change:trace/minimum-coverage-matrix.yaml
+    - change:inspect/trace-projection.json
+    - change:explore/advisory.json
+    - change:risk-advisory/advisory.json
+    - change:execution/**
+    - change:inspect/quarantine-projection.json
+    - change:cases/**
+    writes:
+    - change:execution/runs/*/coverage-diff.json
+    - change:execution/runs/*/constraint-coverage.json
+    - change:execution/runs/*/auth-matrix.json
+    - change:execution/runs/*/journey-coverage.json
+    - change:execution/runs/*/perf-slack.json
+    authorization_writes:
+    - change:execution/runs/*/coverage-diff.json
+    - change:execution/runs/*/constraint-coverage.json
+    - change:execution/runs/*/auth-matrix.json
+    - change:execution/runs/*/journey-coverage.json
+    - change:execution/runs/*/perf-slack.json
+    retryable_errors: []
+  operation:materialize-pr-metrics:
+    handler: operation
+    reads:
+    - change:execution/runs/**
+    - change:cases/**
+    - repo:.aa/policy.yaml
+    writes:
+    - change:inspect/metrics.json
+    - change:inspect/metrics-source-batch.json
+    - change:execution/runs/*/metrics.json
+    authorization_writes:
+    - change:inspect/metrics.json
+    - change:inspect/metrics-source-batch.json
+    - change:execution/runs/*/metrics.json
+    retryable_errors: []
+  operation:load-latest-pr-metrics:
+    handler: operation
+    reads:
+    - change:inspect/metrics.json
+    writes:
+    - change:inspect/metrics-nightly-source.json
+    authorization_writes:
+    - change:inspect/metrics-nightly-source.json
+    retryable_errors: []
+  operation:run-mutation-sample:
+    handler: operation
+    reads:
+    - repo:**
+    - repo:tests/**
+    - project:.aa/cache/mutation/**
+    writes:
+    - change:execution/runs/*/mutation.json
+    - project:.aa/cache/mutation/**
+    authorization_writes:
+    - change:execution/runs/*/mutation.json
+    - project:.aa/cache/mutation/**
+    retryable_errors: []
+  operation:compute-assertion-strength:
+    handler: operation
+    reads:
+    - repo:tests/**
+    writes:
+    - change:execution/runs/*/assertion-strength.json
+    authorization_writes:
+    - change:execution/runs/*/assertion-strength.json
+    retryable_errors: []
+  operation:compute-baseline-drift:
+    handler: operation
+    reads:
+    - change:execution/**
+    - project:.aa/baseline/performance/**
+    writes:
+    - change:execution/runs/*/baseline-drift.json
+    - project:.aa/baseline/performance/**
+    authorization_writes:
+    - change:execution/runs/*/baseline-drift.json
+    - project:.aa/baseline/performance/**
+    synchronized:
+    - project:.aa/baseline/performance/**
+    exclusive:
+    - project:performance-baseline
+    retryable_errors: []
+  operation:collect-adversarial-yield:
+    handler: operation
+    reads:
+    - change:discovery/**
+    - change:issues/snapshot.json
+    writes:
+    - change:execution/runs/*/adversarial-yield.json
+    authorization_writes:
+    - change:execution/runs/*/adversarial-yield.json
+    retryable_errors: []
+  operation:aggregate-nightly-metrics:
+    handler: operation
+    reads:
+    - change:inspect/metrics.json
+    - change:inspect/metrics-nightly-source.json
+    - change:execution/runs/**
+    - change:cases/**
+    - repo:.aa/policy.yaml
+    writes:
+    - change:inspect/metrics-nightly.json
+    authorization_writes:
+    - change:inspect/metrics-nightly.json
+    retryable_errors: []
+  operation:evaluate-retrospective-shortboards:
+    handler: operation
+    reads:
+    - change:inspect/metrics-nightly.json
+    writes:
+    - change:inspect/metrics-nightly-shortboards.json
+    authorization_writes:
+    - change:inspect/metrics-nightly-shortboards.json
+    retryable_errors: []
+  operation:materialize-empty-retro-analysis:
+    handler: operation
+    reads:
+    - project:qa/retro/*/evidence/issue-slice.json
+    - project:qa/retro/*/evidence/workflow-slice.json
+    - project:qa/retro/*/evidence/eval-slice.json
+    writes:
+    - project:qa/retro/*/signals/issue.json
+    - project:qa/retro/*/signals/workflow.json
+    - project:qa/retro/*/signals/eval.json
+    authorization_writes:
+    - project:qa/retro/*/signals/issue.json
+    - project:qa/retro/*/signals/workflow.json
+    - project:qa/retro/*/signals/eval.json
     retryable_errors: []

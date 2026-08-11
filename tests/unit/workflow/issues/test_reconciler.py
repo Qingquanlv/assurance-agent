@@ -14,7 +14,7 @@ Coverage:
     - Duplicate candidate_id → ReconciliationValidationError (no events)
     - Duplicate occurrence_id (identical candidate content) → ReconciliationValidationError
     - Incomplete fingerprint inputs (empty symptom) → ReconciliationValidationError
-    - Unknown possible_problem_id → ReconciliationValidationError
+    - Unknown possible_problem_id → dropped (batch still reconciles)
     - Valid candidate before invalid one: still all-or-nothing rejection
   * Empty candidate list → only issue_analysis_completed change event, no problem events
   * Idempotency: same candidate batch → same event IDs and idempotency keys
@@ -475,6 +475,40 @@ def test_later_complete_authoritative_batch_resolves_verification_pending_proble
     assert resolved[0].disposition == "PR-42"
 
 
+def test_later_nanosecond_batch_in_same_second_resolves_pending_problem() -> None:
+    requested_batch_id = "20260725-100000-000000001"
+    pending = _make_existing_problem(status="verification_pending", version=2).model_copy(
+        update={
+            "verification_request": ProblemVerificationRequest(
+                requested_at="2026-07-25T10:00:00Z",
+                change_id="CH-fix",
+                batch_id=requested_batch_id,
+                linked_fix_disposition="PR-42",
+                verification_scope=["test-case-1"],
+                evidence_digest="sha256:" + "c" * 64,
+            )
+        }
+    )
+    batch_id = "20260725-100000-000000002"
+
+    plan = _plan(
+        _make_candidate_doc([], batch_id=batch_id),
+        _make_observations(batch_id=batch_id),
+        snapshot=_empty_snapshot(batch_id=requested_batch_id),
+        problems=_problems_with(pending),
+        verification_evidence={
+            "batch_id": batch_id,
+            "selected_targets": ["api"],
+            "passed_targets": ["api"],
+            "executed_cases": ["test-case-1"],
+            "passed_cases": ["test-case-1"],
+            "evidence_digest": "sha256:" + "d" * 64,
+        },
+    )
+
+    assert len([event for event in plan.problem_events if event.type == "problem_resolved"]) == 1
+
+
 def test_earlier_batch_cannot_resolve_verification_pending_problem() -> None:
     pending = _make_existing_problem(status="verification_pending", version=2).model_copy(
         update={
@@ -693,16 +727,17 @@ def test_validation_rejects_duplicate_candidate_id() -> None:
     assert any("SAME-ID" in e for e in exc_info.value.errors)
 
 
-def test_validation_rejects_unknown_possible_problem_id() -> None:
-    """A possible_problem_id that doesn't exist in the projection → ReconciliationValidationError."""
+def test_validation_drops_unknown_possible_problem_id() -> None:
+    """Unknown possible_problem_ids are dropped; reconcile still completes."""
     obs = _make_observations("OBS-001")
-    cand = _make_candidate("CAND-001", ["OBS-001"], possible_problem_ids=["PROB-nonexistent"])
+    cand = _make_candidate("CAND-001", ["OBS-001"], possible_problem_ids=["PROB-nonexistent", "FAIL-001"])
     candidates_doc = _make_candidate_doc([cand])
 
-    with pytest.raises(ReconciliationValidationError) as exc_info:
-        _plan(candidates_doc, obs, _empty_snapshot(), _empty_problems())
+    plan = _plan(candidates_doc, obs, _empty_snapshot(), _empty_problems())
 
-    assert any("PROB-nonexistent" in e for e in exc_info.value.errors)
+    assert plan.change_events
+    assert plan.change_events[0].type == "issue_analysis_completed"
+    assert plan.occurrence_count >= 1
 
 
 def test_validation_rejects_incomplete_fingerprint_inputs_empty_symptom() -> None:

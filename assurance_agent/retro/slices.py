@@ -2,32 +2,52 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
+from itertools import chain
 from pathlib import Path
 from typing import Literal, cast
 
+from pydantic import BaseModel
+
 from assurance_agent.artifacts.canonical import canonical_json_bytes, sha256_bytes
+from assurance_agent.artifacts.models.improvements import ImprovementSourceRefs
 from assurance_agent.artifacts.models.retro_v3 import (
     AffectedSurface,
     BatchMemberEvidenceGapSignal,
+    ConfirmedEscapeSignal,
+    CoverageGapEvidenceEntry,
+    CoverageGapEvidenceSlice,
+    DiscoveryEvidenceEntry,
+    DiscoveryEvidenceSlice,
+    DomainEvidenceGapSignal,
     EvalEvidenceEntry,
     EvalEvidenceSlice,
     GateVerdictEvidenceEntry,
     HealingOutcomeEvidenceEntry,
     IssueEvidenceEntry,
     IssueEvidenceSlice,
+    LowPromotionRateSignal,
+    LowReplayStabilitySignal,
+    ReopenedCoverageGapSignal,
     RetroIntegrity,
     RetroSourceDescriptor,
     RetroWindow,
+    SignalDocumentV3,
     SkillDriftEvidenceEntry,
     TaskFailureEvidenceEntry,
     TaskFailureSignal,
     WorkflowEvidenceSlice,
 )
-from assurance_agent.artifacts.models.improvements import ImprovementSourceRefs
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import assert_path_segment_safe
+from assurance_agent.retro.discovery_history import (
+    CoverageGapHistoryReader,
+    CoverageGapHistorySlice,
+    DiscoveryHistoryReader,
+    DiscoveryHistorySlice,
+)
 from assurance_agent.retro.eval_history import (
     EvalEvidenceSlice as EvalHistorySlice,
     EvalHistoryReader,
@@ -43,6 +63,10 @@ from assurance_agent.workflow.issues.history_models import (
     IssueHistoryIntegrity,
 )
 
+# Report-only Retro thresholds (constants OK for M4 Task 3).
+LOW_PROMOTION_RATE_THRESHOLD = 0.5
+LOW_REPLAY_STABILITY_THRESHOLD = 1.0
+
 
 class RetroSliceImmutableError(AaError):
     """A v3 evidence artifact already exists with different canonical bytes."""
@@ -54,6 +78,24 @@ class SliceBundle:
     issue: IssueEvidenceSlice
     workflow: WorkflowEvidenceSlice
     eval: EvalEvidenceSlice
+    # Optional for historical runs; when present, assembly verifies and includes
+    # these deterministic domains alongside the core three.
+    discovery: DiscoveryEvidenceSlice | None = None
+    coverage_gap: CoverageGapEvidenceSlice | None = None
+
+    @property
+    def all_slices(
+        self,
+    ) -> tuple[
+        IssueEvidenceSlice
+        | WorkflowEvidenceSlice
+        | EvalEvidenceSlice
+        | DiscoveryEvidenceSlice
+        | CoverageGapEvidenceSlice,
+        ...,
+    ]:
+        optional = tuple(item for item in (self.discovery, self.coverage_gap) if item is not None)
+        return (self.issue, self.workflow, self.eval, *optional)
 
 
 _BATCH_GAP_RE = re.compile(
@@ -400,8 +442,18 @@ def _eval_slice(retro_id: str, window: RetroWindow, source_slice: EvalHistorySli
     )
 
 
-def _write_immutable_bundle(files: dict[Path, object]) -> None:
+def _agent_json_bytes(value: BaseModel) -> bytes:
+    payload = value.model_dump(mode="json")
+    return (json.dumps(payload, sort_keys=True, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def _write_immutable_bundle(
+    files: dict[Path, object],
+    *,
+    agent_files: dict[Path, BaseModel] | None = None,
+) -> None:
     encoded = {path: canonical_json_bytes(value) for path, value in files.items()}
+    encoded.update({path: _agent_json_bytes(value) for path, value in (agent_files or {}).items()})
     for path, canonical in encoded.items():
         if path.is_file() and path.read_bytes() != canonical:
             raise RetroSliceImmutableError(f"retro evidence artifact already differs: {path}")
@@ -410,6 +462,324 @@ def _write_immutable_bundle(files: dict[Path, object]) -> None:
             continue
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(canonical)
+
+
+def _stable_signal_id(prefix: str, identity: str) -> str:
+    return prefix + "-" + sha256_bytes(identity.encode("utf-8")).removeprefix("sha256:")[:24]
+
+
+def _domain_gap_signals(
+    integrity: RetroIntegrity,
+    *,
+    domain: Literal["discovery", "coverage_gap"],
+) -> tuple[DomainEvidenceGapSignal, ...]:
+    signals: list[DomainEvidenceGapSignal] = []
+    prefix = f"{domain}_projection_"
+    for reason in integrity.reasons:
+        text = str(reason)
+        if not text.startswith(prefix):
+            continue
+        rest = text[len(prefix) :]
+        code, _, change_id = rest.partition(":")
+        if code not in {"missing", "corrupt"}:
+            continue
+        reason_code = "projection_missing" if code == "missing" else "projection_corrupt"
+        signal_id = _stable_signal_id("DOMAIN-GAP", f"{domain}:{reason_code}:{change_id}")
+        signals.append(
+            DomainEvidenceGapSignal(
+                signal_id=signal_id,
+                summary=f"{domain} evidence {code} for {change_id or 'window'}",
+                occurrence_count=1,
+                recommended_change=(f"Restore compact archived {domain} projection for this Retro window."),
+                source_refs=ImprovementSourceRefs(workflow_evidence_ids=(signal_id,)),
+                confidence="high",
+                domain=domain,
+                reason_code=reason_code,  # type: ignore[arg-type]
+                change_id=change_id or None,
+            )
+        )
+    return tuple(sorted(signals, key=lambda item: (item.change_id or "", item.reason_code)))
+
+
+def _discovery_signals(
+    entries: tuple[DiscoveryEvidenceEntry, ...],
+    integrity: RetroIntegrity,
+) -> tuple[
+    DomainEvidenceGapSignal | ConfirmedEscapeSignal | LowPromotionRateSignal | LowReplayStabilitySignal,
+    ...,
+]:
+    signals: list[
+        DomainEvidenceGapSignal | ConfirmedEscapeSignal | LowPromotionRateSignal | LowReplayStabilitySignal
+    ] = list(_domain_gap_signals(integrity, domain="discovery"))
+    # Missing/corrupt domain → gap only; never invent vacuous rates.
+    if integrity.status == "incomplete" and not entries:
+        return tuple(signals)
+
+    for entry in entries:
+        for problem_id in entry.problem_escape_refs:
+            signal_id = _stable_signal_id("ESCAPE", f"{entry.change_id}:{problem_id}")
+            signals.append(
+                ConfirmedEscapeSignal(
+                    signal_id=signal_id,
+                    summary=f"Human-confirmed escape {problem_id}",
+                    occurrence_count=1,
+                    recommended_change=(
+                        "Capture missed obligations as domain knowledge or regression coverage."
+                    ),
+                    source_refs=ImprovementSourceRefs(
+                        problem_ids=(problem_id,),
+                        workflow_evidence_ids=(entry.evidence_id,),
+                    ),
+                    confidence="high",
+                    problem_id=problem_id,
+                    change_id=entry.change_id,
+                )
+            )
+        if (
+            entry.promoted_count is not None
+            and entry.total_counterexamples is not None
+            and entry.total_counterexamples > 0
+        ):
+            rate = entry.promoted_count / entry.total_counterexamples
+            if rate < LOW_PROMOTION_RATE_THRESHOLD:
+                signal_id = _stable_signal_id(
+                    "LOW-PROMO",
+                    f"{entry.change_id}:{entry.promoted_count}:{entry.total_counterexamples}",
+                )
+                signals.append(
+                    LowPromotionRateSignal(
+                        signal_id=signal_id,
+                        summary=(
+                            f"Promotion rate {rate:.2f} below {LOW_PROMOTION_RATE_THRESHOLD} "
+                            f"for {entry.change_id}"
+                        ),
+                        occurrence_count=1,
+                        recommended_change=(
+                            "Raise counterexample→case promotion yield for this campaign window."
+                        ),
+                        source_refs=ImprovementSourceRefs(workflow_evidence_ids=(entry.evidence_id,)),
+                        confidence="high",
+                        rate=rate,
+                        numerator=entry.promoted_count,
+                        denominator=entry.total_counterexamples,
+                    )
+                )
+        if (
+            entry.replay_rate is not None
+            and entry.replay_attempts is not None
+            and entry.replay_attempts > 0
+            and entry.replay_success is not None
+            and entry.replay_rate < LOW_REPLAY_STABILITY_THRESHOLD
+        ):
+            signal_id = _stable_signal_id(
+                "LOW-REPLAY",
+                f"{entry.change_id}:{entry.replay_success}:{entry.replay_attempts}",
+            )
+            signals.append(
+                LowReplayStabilitySignal(
+                    signal_id=signal_id,
+                    summary=(
+                        f"Seed replay stability {entry.replay_rate:.2f} below "
+                        f"{LOW_REPLAY_STABILITY_THRESHOLD} for {entry.change_id}"
+                    ),
+                    occurrence_count=1,
+                    recommended_change="Stabilize seed replay before expanding adversarial surfaces.",
+                    source_refs=ImprovementSourceRefs(workflow_evidence_ids=(entry.evidence_id,)),
+                    confidence="high",
+                    rate=entry.replay_rate,
+                    success=entry.replay_success,
+                    attempts=entry.replay_attempts,
+                )
+            )
+    return tuple(signals)
+
+
+def _augment_sources_for_signal_refs(
+    sources: tuple[RetroSourceDescriptor, ...],
+    signals: tuple[object, ...],
+    *,
+    kind: Literal["discovery_projection", "coverage_gap_projection"],
+) -> tuple[RetroSourceDescriptor, ...]:
+    resolvable = frozenset(chain.from_iterable(source.evidence_ids for source in sources))
+    missing: set[str] = set()
+    for signal in signals:
+        refs = getattr(signal, "source_refs", None)
+        if refs is None:
+            continue
+        for eid in (*refs.workflow_evidence_ids, *refs.problem_ids):
+            if eid not in resolvable:
+                missing.add(eid)
+    if not missing:
+        return sources
+    return (
+        *sources,
+        RetroSourceDescriptor(
+            kind=kind,
+            sha256=sha256_bytes(canonical_json_bytes({"signal_ref_ids": sorted(missing)})),
+            evidence_ids=tuple(sorted(missing)),
+        ),
+    )
+
+
+def _discovery_slice(
+    retro_id: str,
+    window: RetroWindow,
+    source_slice: DiscoveryHistorySlice,
+) -> DiscoveryEvidenceSlice:
+    entries = tuple(
+        DiscoveryEvidenceEntry(
+            evidence_id=f"{record.change_id}:{record.campaign_id}",
+            change_id=record.change_id,
+            campaign_id=record.campaign_id,
+            counterexample_ids=record.counterexample_ids,
+            promotion_receipt_digests=record.promotion_receipt_digests,
+            replay_success=record.replay_success,
+            replay_attempts=record.replay_attempts,
+            replay_rate=record.replay_rate,
+            problem_escape_refs=record.problem_escape_refs,
+            promoted_count=record.promoted_count,
+            total_counterexamples=record.total_counterexamples,
+        )
+        for record in source_slice.records
+    )
+    signals = _discovery_signals(entries, source_slice.integrity)
+    sources = _augment_sources_for_signal_refs(
+        tuple(source_slice.sources),
+        signals,
+        kind="discovery_projection",
+    )
+    return DiscoveryEvidenceSlice(
+        retro_id=retro_id,
+        window=window,
+        sources=sources,
+        integrity=_integrity(source_slice.integrity),
+        deterministic_signals=signals,
+        entries=entries,
+    )
+
+
+def _coverage_gap_signals(
+    source_slice: CoverageGapHistorySlice,
+) -> tuple[DomainEvidenceGapSignal | ReopenedCoverageGapSignal, ...]:
+    signals: list[DomainEvidenceGapSignal | ReopenedCoverageGapSignal] = list(
+        _domain_gap_signals(source_slice.integrity, domain="coverage_gap")
+    )
+    for event in source_slice.events:
+        if event.event_kind != "reopened":
+            continue
+        fingerprint = event.locator_fingerprint
+        signal_id = _stable_signal_id("REOPEN-GAP", f"{event.change_id}:{fingerprint}")
+        evidence_id = f"GAP-{fingerprint}"
+        signals.append(
+            ReopenedCoverageGapSignal(
+                signal_id=signal_id,
+                summary=f"Coverage gap reopened: {fingerprint}",
+                occurrence_count=1,
+                recommended_change="Close the reopened coverage gap with a durable regression case.",
+                source_refs=ImprovementSourceRefs(workflow_evidence_ids=(evidence_id, signal_id)),
+                confidence="high",
+                gap_kind=event.kind,
+                locator_fingerprint=fingerprint,
+                change_id=event.change_id,
+                case_id=event.case_id or None,
+                constraint_key=event.constraint_key or None,
+                cell=event.cell or None,
+                cluster_key=event.cluster_key or None,
+            )
+        )
+    return tuple(signals)
+
+
+def _coverage_gap_slice(
+    retro_id: str,
+    window: RetroWindow,
+    source_slice: CoverageGapHistorySlice,
+) -> CoverageGapEvidenceSlice:
+    entries: list[CoverageGapEvidenceEntry] = []
+    for record in source_slice.records:
+        entries.append(
+            CoverageGapEvidenceEntry(
+                evidence_id=f"{record.change_id}:{record.batch_id}",
+                change_id=record.change_id,
+                batch_id=record.batch_id,
+                projection_digest=record.projection_digest,
+                document_digest=record.document_digest,
+                event_kind="current",
+            )
+        )
+    for event in source_slice.events:
+        fingerprint = event.locator_fingerprint
+        entries.append(
+            CoverageGapEvidenceEntry(
+                evidence_id=f"GAP-{fingerprint}",
+                change_id=event.change_id,
+                batch_id=next(
+                    (r.batch_id for r in source_slice.records if r.change_id == event.change_id),
+                    "unknown",
+                ),
+                projection_digest=next(
+                    (r.projection_digest for r in source_slice.records if r.change_id == event.change_id),
+                    "sha256:unknown",
+                ),
+                document_digest=next(
+                    (r.document_digest for r in source_slice.records if r.change_id == event.change_id),
+                    "sha256:unknown",
+                ),
+                event_kind=event.event_kind,
+                gap_kind=event.kind,
+                locator_fingerprint=fingerprint,
+                case_id=event.case_id or None,
+                constraint_key=event.constraint_key or None,
+                cell=event.cell or None,
+                cluster_key=event.cluster_key or None,
+            )
+        )
+    ordered = tuple(sorted(entries, key=lambda item: (item.change_id, item.event_kind, item.evidence_id)))
+    signals = _coverage_gap_signals(source_slice)
+    sources = list(source_slice.sources)
+    resolvable = frozenset(chain.from_iterable(item.evidence_ids for item in sources))
+    for entry in ordered:
+        if entry.evidence_id in resolvable:
+            continue
+        sources.append(
+            RetroSourceDescriptor(
+                kind="coverage_gap_projection",
+                change_id=entry.change_id,
+                sha256=entry.document_digest,
+                evidence_ids=(entry.evidence_id,),
+            )
+        )
+        resolvable = frozenset(chain.from_iterable(item.evidence_ids for item in sources))
+    sources_tuple = _augment_sources_for_signal_refs(
+        tuple(sources),
+        signals,
+        kind="coverage_gap_projection",
+    )
+    return CoverageGapEvidenceSlice(
+        retro_id=retro_id,
+        window=window,
+        sources=sources_tuple,
+        integrity=_integrity(source_slice.integrity),
+        deterministic_signals=signals,
+        entries=ordered,
+    )
+
+
+def _write_domain_signal_doc(path: Path, slice_: DiscoveryEvidenceSlice | CoverageGapEvidenceSlice) -> None:
+    data = canonical_json_bytes(slice_)
+    doc = SignalDocumentV3(
+        retro_id=slice_.retro_id,
+        domain=slice_.domain,
+        analysis_status="ok",
+        analyzer=f"operation:retro-{slice_.domain}-deterministic",
+        signals=(),
+        slice_sha256=sha256_bytes(data),
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file() and path.read_bytes() != canonical_json_bytes(doc):
+        raise RetroSliceImmutableError(f"retro evidence artifact already differs: {path}")
+    if not path.is_file():
+        path.write_bytes(canonical_json_bytes(doc))
 
 
 def materialize_slices(
@@ -421,8 +791,16 @@ def materialize_slices(
     workflow_history: WorkflowHistoryReader,
     eval_history: EvalHistoryReader,
     write_root: Path,
+    discovery_history: DiscoveryHistoryReader | None = None,
+    coverage_gap_history: CoverageGapHistoryReader | None = None,
 ) -> SliceBundle:
-    """Resolve one window, materialize three typed slices, then write atomically-by-preflight."""
+    """Resolve one window, materialize typed slices, then write atomically-by-preflight.
+
+    Core domains (issue/workflow/eval) always materialize. Optional discovery /
+    coverage_gap readers emit slices + deterministic ``signals/*.json`` that
+    assembly verifies when present.
+    """
+    del sut  # selection is resolved against history readers, not the SUT tree
     assert_path_segment_safe(retro_id, label="retro id")
     resolved: ResolvedRetroWindow = resolve_retro_window(selection, workflow_history=workflow_history)
     issue_source = issue_history.read_window(resolved.to_issue_selection())
@@ -437,22 +815,60 @@ def materialize_slices(
     window = resolved.to_context_window().model_copy(update={"project_event_through": project_head})
     workflow_source = workflow_history.read_window(resolved)
     eval_source = eval_history.read_window(resolved)
+    discovery_slice = None
+    coverage_gap_slice = None
+    if resolved.change_ids:
+        optional_selection = RetroWindowSelection(
+            change_ids=resolved.change_ids,
+            last=None,
+            batch_scope=selection.batch_scope,
+        )
+        if discovery_history is not None:
+            discovery_source = discovery_history.read_discovery_slice(optional_selection)
+            if discovery_source is not None:
+                discovery_slice = _discovery_slice(retro_id, window, discovery_source)
+        if coverage_gap_history is not None:
+            coverage_source = coverage_gap_history.read_coverage_gap_slice(optional_selection)
+            if coverage_source is not None:
+                coverage_gap_slice = _coverage_gap_slice(retro_id, window, coverage_source)
     bundle = SliceBundle(
         window=window,
         issue=_issue_slice(retro_id, window, issue_source),
         workflow=_workflow_slice(retro_id, window, workflow_source, resolved.integrity),
         eval=_eval_slice(retro_id, window, eval_source),
+        discovery=discovery_slice,
+        coverage_gap=coverage_gap_slice,
     )
     retro_dir = write_root / "qa" / "retro" / retro_id
+    files: dict[Path, object] = {
+        retro_dir / "window.json": bundle.window,
+        retro_dir / "evidence" / "issue-slice.json": bundle.issue,
+        retro_dir / "evidence" / "workflow-slice.json": bundle.workflow,
+        retro_dir / "evidence" / "eval-slice.json": bundle.eval,
+    }
+    if bundle.discovery is not None:
+        files[retro_dir / "evidence" / "discovery-slice.json"] = bundle.discovery
+    if bundle.coverage_gap is not None:
+        files[retro_dir / "evidence" / "coverage_gap-slice.json"] = bundle.coverage_gap
     _write_immutable_bundle(
-        {
-            retro_dir / "window.json": bundle.window,
-            retro_dir / "evidence" / "issue-slice.json": bundle.issue,
-            retro_dir / "evidence" / "workflow-slice.json": bundle.workflow,
-            retro_dir / "evidence" / "eval-slice.json": bundle.eval,
-        }
+        files,
+        agent_files={
+            retro_dir / "evidence" / "agent" / "issue-slice.json": bundle.issue,
+            retro_dir / "evidence" / "agent" / "workflow-slice.json": bundle.workflow,
+            retro_dir / "evidence" / "agent" / "eval-slice.json": bundle.eval,
+        },
     )
+    if bundle.discovery is not None:
+        _write_domain_signal_doc(retro_dir / "signals" / "discovery.json", bundle.discovery)
+    if bundle.coverage_gap is not None:
+        _write_domain_signal_doc(retro_dir / "signals" / "coverage_gap.json", bundle.coverage_gap)
     return bundle
 
 
-__all__ = ["RetroSliceImmutableError", "SliceBundle", "materialize_slices"]
+__all__ = [
+    "LOW_PROMOTION_RATE_THRESHOLD",
+    "LOW_REPLAY_STABILITY_THRESHOLD",
+    "RetroSliceImmutableError",
+    "SliceBundle",
+    "materialize_slices",
+]

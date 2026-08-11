@@ -51,6 +51,7 @@ from assurance_agent.workflow.core.graph_events import (
     TaskRecoveryRoutedEvent,
     TaskSchedulingDeferredEvent,
 )
+from assurance_agent.workflow.core.graph_types import ErrorKind
 from assurance_agent.workflow.core.progression import transaction
 from assurance_agent.workflow.execution.tree_hash import sha256_file
 from assurance_agent.workflow.graph.migrate_events import migrate_events_for_fold
@@ -85,6 +86,7 @@ from assurance_agent.workflow.orchestration.gates import (
 
 CHECKPOINT_DIR_RELPATH = ".graph-runtime/checkpoints"
 _LEDGER_ENVELOPE_KEYS = frozenset({"seq", "ts"})
+_CONTRACT_FAILURE_KINDS = frozenset({"invalid_output", "forbidden_write"})
 _TERMINAL_BY_TYPE: dict[str, Literal["completed", "stopped", "failed"]] = {
     "graph_completed": "completed",
     "graph_stopped": "stopped",
@@ -94,6 +96,15 @@ _TERMINAL_BY_TYPE: dict[str, Literal["completed", "stopped", "failed"]] = {
 _AttemptOutcomeEvent = (
     TaskAttemptSucceededEvent | TaskAttemptStoppedEvent | TaskAttemptFailedEvent | TaskAttemptAbandonedEvent
 )
+
+
+def _record_contract_failure(
+    seen: tuple[ErrorKind, ...],
+    error_kind: ErrorKind,
+) -> tuple[ErrorKind, ...]:
+    if error_kind not in _CONTRACT_FAILURE_KINDS or error_kind in seen:
+        return seen
+    return (*seen, error_kind)
 
 
 class CheckpointImportError(AaError):
@@ -169,6 +180,7 @@ def validate_import(
     manifest: ImportManifest,
     context: RuntimeContext,
     *,
+    checkpoint_ns: str,
     projection: GraphProjection | None = None,
 ) -> ValidatedImport:
     """校验 fixture digest、路径安全、structural path、前驱闭包、输出 hash 与 gate。"""
@@ -231,7 +243,13 @@ def validate_import(
         local_payload = local_results.setdefault(task.node, {})
         local_payload["status"] = "succeeded"
         gate_report = _reevaluate_gate(
-            compiled, context, task, state_values=state_values, node_results=local_results
+            compiled,
+            context,
+            task,
+            checkpoint_ns=checkpoint_ns,
+            state_values=state_values,
+            # Per-structural-path locals (MERGE_HEAD); not a missing global.
+            node_results=local_results,
         )
         if gate_report is not None:
             gate_payload = local_payload.setdefault("gate", {})
@@ -629,6 +647,7 @@ def _reevaluate_gate(
     context: RuntimeContext,
     task: ImportedTask,
     *,
+    checkpoint_ns: str,
     state_values: Mapping[str, object] | None = None,
     node_results: Mapping[str, object] | None = None,
 ) -> dict[str, object] | None:
@@ -653,6 +672,7 @@ def _reevaluate_gate(
         state_values=dict(state_values) if state_values is not None else _state_values_from_change(context),
         node_results=dict(node_results) if node_results is not None else {},
         audit_events_dir=context.change_dir,
+        checkpoint_ns=checkpoint_ns,
     )
     report = check_gate_in_view(compiled.schema.gates, gate_id, eval_context)
     if report.verdict.value != task.gate.verdict:
@@ -975,6 +995,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                 outputs_committed=prev.outputs_committed if prev else False,
                 gate_report=prev.gate_report if prev else None,
                 state_updates=prev.state_updates if prev else {},
+                contract_failure_kinds_seen=(prev.contract_failure_kinds_seen if prev else ()),
                 lease_expires_at=event.lease_expires_at,
                 input_snapshot_id=event.input_snapshot_id,
                 runtime_context_sha256=event.runtime_context_sha256,
@@ -1117,6 +1138,10 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
                     "status": "failed",
                     "latest_attempt_id": event.attempt_id,
                     "error_kind": event.error_kind,
+                    "contract_failure_kinds_seen": _record_contract_failure(
+                        prev.contract_failure_kinds_seen,
+                        event.error_kind,
+                    ),
                     "error": event.message,
                     "next_retry_at": event.next_retry_at,
                 }

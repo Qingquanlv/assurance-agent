@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from assurance_agent.artifacts.models import CaseYaml, QaYaml
+from assurance_agent.artifacts.models import CaseYaml, CaseYamlAuthoring, QaYaml
 
 
 def make_case_entry(**overrides: object) -> dict:
@@ -61,6 +61,48 @@ def test_case_yaml_valid_fixture_parses() -> None:
     assert model.removed[0].case_id == "TC_MENU_003"
 
 
+def _performance_entry(*, scenario: dict[str, object]) -> dict:
+    return make_case_entry(
+        case_id="TC_MENU_PERF_001",
+        type="Performance",
+        automation={"performance": {"scenario": scenario}},
+    )
+
+
+def test_case_yaml_keeps_historical_performance_documents_compatible() -> None:
+    doc = make_case_yaml(added=[_performance_entry(scenario={"thresholds": {"p95_ms": 500}})])
+    assert CaseYaml.model_validate(doc).added[0].case_id == "TC_MENU_PERF_001"
+
+
+@pytest.mark.parametrize("missing", ["capability", "endpoint"])
+def test_case_yaml_authoring_requires_performance_execution_identity(missing: str) -> None:
+    scenario = {
+        "capability": "menu_list_query",
+        "endpoint": "GET /api/v1/menu/list",
+        "thresholds": {"p95_ms": 500},
+    }
+    del scenario[missing]
+    doc = make_case_yaml(added=[_performance_entry(scenario=scenario)])
+
+    with pytest.raises(ValidationError, match=missing):
+        CaseYamlAuthoring.model_validate(doc)
+
+
+def test_case_yaml_authoring_accepts_complete_performance_execution_identity() -> None:
+    doc = make_case_yaml(
+        added=[
+            _performance_entry(
+                scenario={
+                    "capability": "menu_list_query",
+                    "endpoint": "GET /api/v1/menu/list",
+                    "thresholds": {"p95_ms": 500},
+                }
+            )
+        ]
+    )
+    assert CaseYamlAuthoring.model_validate(doc).added[0].case_id == "TC_MENU_PERF_001"
+
+
 def test_case_yaml_hyphen_case_id_rejected() -> None:
     doc = make_case_yaml(added=[make_case_entry(case_id="TC-MENU-001")])
     with pytest.raises(ValidationError):
@@ -78,6 +120,39 @@ def test_case_yaml_missing_required_field_rejected() -> None:
     del entry["title"]
     with pytest.raises(ValidationError):
         CaseYaml.model_validate(make_case_yaml(added=[entry]))
+
+
+def test_case_entry_risk_block_parses_and_exposes_its_level() -> None:
+    """`risk` is what the tier lower bound is compared against (metrics spec §7).
+
+    It reached the model unvalidated until now: real case.yaml documents carry
+    the block, `CaseEntry` never declared it, and a P0 case labelled `medium`
+    was accepted with no complaint.
+    """
+    entry = make_case_entry(
+        risk={"likelihood": 4, "impact": 5, "level": "critical", "rationale": "auth surface"}
+    )
+    model = CaseYaml.model_validate(make_case_yaml(added=[entry]))
+    assert model.added[0].risk is not None
+    assert model.added[0].risk.level == "critical"
+
+
+def test_case_entry_without_a_risk_block_still_parses() -> None:
+    model = CaseYaml.model_validate(make_case_yaml())
+    assert model.added[0].risk is None
+
+
+def test_case_entry_risk_level_outside_the_enum_is_rejected() -> None:
+    doc = make_case_yaml(added=[make_case_entry(risk={"level": "catastrophic"})])
+    with pytest.raises(ValidationError):
+        CaseYaml.model_validate(doc)
+
+
+def test_case_entry_risk_block_without_a_level_is_rejected() -> None:
+    """A block whose only load-bearing field is absent is the zero-validation hole."""
+    doc = make_case_yaml(added=[make_case_entry(risk={"likelihood": 4, "impact": 5})])
+    with pytest.raises(ValidationError):
+        CaseYaml.model_validate(doc)
 
 
 def test_qa_yaml_valid_fixture_parses() -> None:

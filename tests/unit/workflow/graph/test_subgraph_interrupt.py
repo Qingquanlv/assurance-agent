@@ -10,16 +10,15 @@ from pathlib import Path
 import pytest
 
 from assurance_agent.workflow.core.events import read_events_strict
+from assurance_agent.workflow.driver.operations_catalog import default_operations
+from assurance_agent.workflow.driver.runtime_factory import assemble_graph_runtime
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
-from assurance_agent.workflow.graph.checkpoint import CheckpointStore
 from assurance_agent.workflow.graph.compiler import compile_workflow, canonical_digest
 from assurance_agent.workflow.graph.contracts import parse_execution_contracts
 from assurance_agent.workflow.graph.handlers.operation import (
     OperationFn,
     OperationHandler,
-    default_operations,
 )
-from assurance_agent.workflow.graph.leases import SystemClock
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
@@ -28,12 +27,9 @@ from assurance_agent.workflow.graph.models import (
     TaskResult,
 )
 from assurance_agent.workflow.graph.runtime import GraphRuntime, GraphRuntimeError
-from assurance_agent.workflow.driver.runtime_factory import one_definition_resolver
-from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
-from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
 from assurance_agent.workflow.graph.task_runner import build_default_node_runner
-from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
+from assurance_agent.workflow.graph.workspace import TreeStore
 from tests.helpers_aa import write_aa_config
 
 T0 = datetime(2026, 7, 20, 1, 0, 0, tzinfo=timezone.utc)
@@ -50,6 +46,14 @@ contracts:
     writes: ["repo:tests/api/**"]
     authorization_writes: ["repo:tests/api/**"]
     retryable_errors: [timeout, transport, internal]
+  operation:write-marker-and-review:
+    handler: operation
+    side_effect_free: false
+    writes: ["project:tests/api/**", "change:review/**"]
+    authorization_writes: ["project:tests/api/**", "change:review/**"]
+    synchronized: ["project:tests/api/**"]
+    exclusive: ["project:test-registry"]
+    retryable_errors: []
   operation:write-review:
     handler: operation
     side_effect_free: false
@@ -134,6 +138,9 @@ def _make_project(tmp_path: Path) -> Path:
     project = tmp_path / "proj"
     change = project / "qa" / "changes" / "CH-1"
     change.mkdir(parents=True)
+    matrix = change / "trace" / "minimum-coverage-matrix.yaml"
+    matrix.parent.mkdir(parents=True)
+    matrix.write_text("[]\n", encoding="utf-8")
     (project / "tests" / "api").mkdir(parents=True)
     write_aa_config(project)
     return project
@@ -168,6 +175,36 @@ def _compile(body: str) -> tuple[CompiledWorkflow, object]:
 def _ops() -> dict[str, OperationFn]:
     ops = default_operations()
 
+    def case_review_payload(context: RuntimeContext) -> dict[str, object]:
+        return {
+            "schema_version": "1",
+            "review_type": "case",
+            "change_id": context.change_id,
+            "decision": "needs_human_review",
+            "findings": [],
+            "auto_fix_plan": [],
+            "next_action": "human_review",
+            "auto_fix_allowed": False,
+            "human_review_required": True,
+            "risk_level": "medium",
+            "minimum_coverage": {
+                "total_required": 0,
+                "covered": 0,
+                "skipped_by_scope": 0,
+                "missing": [],
+            },
+            "source_verification": {
+                "independent": True,
+                "reviewed_source_files": ["app/main.py"],
+                "verified_claims": [
+                    {
+                        "claim": "the product source was independently checked",
+                        "evidence_files": ["app/main.py"],
+                    }
+                ],
+            },
+        }
+
     def write_marker(task: ExecutableTask, workspace, context: RuntimeContext) -> TaskResult:
         path = workspace.project_root / "tests" / "api" / "marker.py"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -178,7 +215,19 @@ def _ops() -> dict[str, OperationFn]:
         path = workspace.change_dir / "review" / "case-review.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            json.dumps({"decision": "needs_human_review"}),
+            json.dumps(case_review_payload(context)),
+            encoding="utf-8",
+        )
+        return TaskResult(status="succeeded")
+
+    def write_marker_and_review(task: ExecutableTask, workspace, context: RuntimeContext) -> TaskResult:
+        marker = workspace.project_root / "tests" / "api" / "marker.py"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("marker after second child commit\n", encoding="utf-8")
+        review = workspace.change_dir / "review" / "case-review.json"
+        review.parent.mkdir(parents=True, exist_ok=True)
+        review.write_text(
+            json.dumps(case_review_payload(context)),
             encoding="utf-8",
         )
         return TaskResult(status="succeeded")
@@ -205,6 +254,7 @@ def _ops() -> dict[str, OperationFn]:
         return TaskResult(status="succeeded")
 
     ops["operation:write-marker"] = write_marker
+    ops["operation:write-marker-and-review"] = write_marker_and_review
     ops["operation:write-review"] = write_review
     ops["operation:write-child-a"] = write_child_a
     ops["operation:write-child-b"] = write_child_b
@@ -222,63 +272,44 @@ def _build_runtime(
     clock=None,
     ops: dict[str, OperationFn] | None = None,
 ) -> GraphRuntime:
-    change = project / "qa" / "changes" / "CH-1"
-    store = TreeStore(change)
-    checkpoints = CheckpointStore(change)
-    workspaces = WorkspaceBackend(change)
-    clock = clock or SystemClock()
-    holder: dict[str, GraphRuntime] = {}
+    change_dir = project / "qa" / "changes" / "CH-1"
+    if ops is None:
+        return assemble_graph_runtime(
+            project_root=project,
+            change_dir=change_dir,
+            compiled=compiled,
+            contracts=contracts,
+            adapter=NeverCalledInvoker(),
+            clock=clock,
+        )
 
-    def run_child(task, graph_id, workspace, context):  # type: ignore[no-untyped-def]
-        return holder["rt"].run_child(task, graph_id, workspace, context)
-
-    base = build_default_node_runner(
-        NeverCalledInvoker(), store, contracts, compiled=compiled, run_child=run_child
-    )
-    if ops is not None:
+    def build(store, run_child):  # type: ignore[no-untyped-def]
+        base = build_default_node_runner(
+            NeverCalledInvoker(),
+            store,
+            contracts,
+            compiled=compiled,
+            operations=default_operations(),
+            run_child=run_child,
+        )
         op_handler = OperationHandler(ops)
 
-        # Wrap: keep builtins/subgraph from base, override operations.
         class Combined:
             def execute(self, task, workspace, context):  # type: ignore[no-untyped-def]
                 if task.target.startswith("operation:"):
                     return op_handler.execute(task, workspace, context)
                 return base.execute(task, workspace, context)
 
-        node_runner = Combined()
-    else:
-        node_runner = base
+        return Combined()
 
-    graph_id = compiled.entrypoints["full"].graph_id
-    state_defs = dict(compiled.schema.graphs[graph_id].state)
-    # Child graphs may also have state; union for scheduler reducers.
-    for gid, graph in compiled.schema.graphs.items():
-        state_defs.update(dict(graph.state))
-    scheduler = Scheduler(
-        checkpoints=checkpoints,
-        object_store=store,
-        clock=clock,
-        workspace_backend=workspaces,
-        node_runner=node_runner,
-        max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
+    return assemble_graph_runtime(
+        project_root=project,
+        change_dir=change_dir,
+        compiled=compiled,
         contracts=contracts,
-        state_defs=state_defs,
-    )
-    runtime = GraphRuntime(
-        checkpoint_store=checkpoints,
-        object_store=store,
-        workspace_backend=workspaces,
-        definition_resolver=one_definition_resolver(
-            compiled=compiled,
-            contracts=contracts,
-            ingest_catalog=validate_catalog_runtime(),
-            node_runner=node_runner,
-            scheduler=scheduler,
-        ),
+        build_node_runner=build,
         clock=clock,
     )
-    holder["rt"] = runtime
-    return runtime
 
 
 # ---------------------------------------------------------------------------
@@ -902,6 +933,187 @@ bad_child:
     # Successful sibling child work and completed seed must not re-run.
     assert calls["write-child-a"] == 1
     assert calls["write-review"] == 1
+    # The resumed child must publish the tree it committed before interrupting.
+    # Losing this file makes the next parent gate fail closed even though the
+    # child review and the audited accept_risk decision both succeeded.
+    review_file = _context(project).change_dir / "review" / "case-review.json"
+    assert json.loads(review_file.read_text(encoding="utf-8"))["decision"] == "needs_human_review"
+
+
+def test_resume_rehydrates_all_child_commits_before_replaying_latest_synchronized_write(
+    tmp_path: Path,
+) -> None:
+    body = """
+main:
+  max_supersteps: 8
+  nodes:
+    child:
+      uses: graph:child
+      retry: never
+      timeout: local
+  edges:
+    - {from: START, to: child}
+    - {from: child, to: END}
+child:
+  max_supersteps: 8
+  nodes:
+    first:
+      uses: operation:write-marker
+      outputs: [repo:tests/api/marker.py]
+      retry: never
+      timeout: local
+    second:
+      uses: operation:write-marker-and-review
+      outputs: [repo:tests/api/marker.py, change:review/case-review.json]
+      retry: never
+      timeout: local
+    human:
+      uses: builtin:interrupt
+      interrupt:
+        reason: needs a human
+        checkpoint: case-review-gate
+        bind: audited_gate_read
+        actions: [accept_risk, stop]
+      retry: never
+      timeout: local
+  edges:
+    - {from: START, to: first}
+    - {from: first, to: second}
+    - {from: second, to: human}
+  routes:
+    - from: human
+      select: "resume.action"
+      cases:
+        accept_risk: END
+        stop: STOP
+      default: STOP
+"""
+    project = _make_project(tmp_path)
+    compiled, contracts = _compile(body)
+    runtime = _build_runtime(project, compiled, contracts, ops=_ops())
+
+    interrupted = runtime.run(compiled, "full", _context(project))
+    assert interrupted.exit_code == 30
+    assert not (project / "tests" / "api" / "marker.py").exists()
+
+    # Model a crash after the first durable child publication reached the
+    # parent-task workspace but before the child's later publication did. The
+    # live path is now a valid committed prefix, neither child root nor target.
+    events = read_events_strict(_context(project).change_dir)
+    child_started = next(
+        event
+        for event in events
+        if event.get("type") == "graph_invocation_started" and event.get("graph_id") == "child"
+    )
+    child_invocation_id = str(child_started["invocation_id"])
+    child_root = str(child_started["root_tree_id"])
+    child_targets = [
+        str(event["target_tree_id"])
+        for event in events
+        if event.get("type") == "superstep_committed" and event.get("invocation_id") == child_invocation_id
+    ]
+    store = TreeStore(_context(project).change_dir)
+
+    def marker_bytes(tree_id: str) -> bytes | None:
+        try:
+            return store.read_bytes(tree_id, "repo:tests/api/marker.py")
+        except FileNotFoundError:
+            return None
+
+    first_commit = next(tree_id for tree_id in child_targets if marker_bytes(tree_id) == b"marker\n")
+    store.apply_tree_delta(
+        project,
+        first_commit,
+        source_base_tree_id=child_root,
+        destination_base_tree_id=child_root,
+    )
+    assert (project / "tests/api/marker.py").read_text(encoding="utf-8") == "marker\n"
+
+    interrupt = interrupted.status.pending_interrupts[0]
+    done = runtime.resume(
+        interrupted.invocation_id,
+        ResumeCommand(
+            interrupt_id=interrupt.interrupt_id,
+            action="accept_risk",
+            reason="continue after reviewing the second commit",
+            who="reviewer",
+        ),
+    )
+
+    assert done.exit_code == 0
+    assert (project / "tests" / "api" / "marker.py").read_text(encoding="utf-8") == (
+        "marker after second child commit\n"
+    )
+
+
+def test_resume_does_not_rehydrate_external_drift_for_root_synchronized_write(
+    tmp_path: Path,
+) -> None:
+    body = """
+main:
+  max_supersteps: 8
+  nodes:
+    first:
+      uses: operation:write-marker
+      outputs: [repo:tests/api/marker.py]
+      retry: never
+      timeout: local
+    second:
+      uses: operation:write-marker-and-review
+      outputs: [repo:tests/api/marker.py, change:review/case-review.json]
+      retry: never
+      timeout: local
+    human:
+      uses: builtin:interrupt
+      interrupt:
+        reason: needs a human
+        checkpoint: case-review-gate
+        bind: audited_gate_read
+        actions: [accept_risk, stop]
+      retry: never
+      timeout: local
+  edges:
+    - {from: START, to: first}
+    - {from: first, to: second}
+    - {from: second, to: human}
+  routes:
+    - from: human
+      select: "resume.action"
+      cases:
+        accept_risk: END
+        stop: STOP
+      default: STOP
+"""
+    project = _make_project(tmp_path)
+    compiled, contracts = _compile(body)
+    runtime = _build_runtime(project, compiled, contracts, ops=_ops())
+
+    interrupted = runtime.run(compiled, "full", _context(project))
+    assert interrupted.exit_code == 30
+    publication_files = list((project / "qa" / ".graph-runtime" / "publications").glob("*.json"))
+    assert len(publication_files) == 1
+    publication_payload = json.loads(publication_files[0].read_text(encoding="utf-8"))
+    publication_payload["status"] = "prepared"
+    publication_files[0].write_text(
+        json.dumps(publication_payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    marker = project / "tests" / "api" / "marker.py"
+    marker.write_text("external drift\n", encoding="utf-8")
+
+    interrupt = interrupted.status.pending_interrupts[0]
+    with pytest.raises(GraphRuntimeError, match="canonical workspace drift at targeted path"):
+        runtime.resume(
+            interrupted.invocation_id,
+            ResumeCommand(
+                interrupt_id=interrupt.interrupt_id,
+                action="accept_risk",
+                reason="must not overwrite external changes",
+                who="reviewer",
+            ),
+        )
+
+    assert marker.read_text(encoding="utf-8") == "external drift\n"
 
 
 # ---------------------------------------------------------------------------

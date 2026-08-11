@@ -8,12 +8,13 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
 from assurance_agent.artifacts.models import (
     ChangeIssueSnapshot,
+    CoverageDimension,
     FailureAnalysis,
     IssueReconcileStatusLike,
     IssueReconcileStatusV1,
@@ -37,8 +38,10 @@ from assurance_agent.workflow.issues.events import (
     read_problem_events,
 )
 from assurance_agent.workflow.report.quality_gate import (
+    coverage_metrics_status,
     load_quality_gate_result_file,
     quality_gate_legacy_view,
+    worst_status,
 )
 from assurance_agent.workflow.report.quality_score import ScoreDimension, compute_quality_score
 
@@ -96,25 +99,41 @@ def generate_report(project_root: Path, change_id: str) -> GenerateReportResult:
             f"quality-gate-result.json not found for '{change_id}'. Run `aa report inspect` first."
         )
     analysis = _load(inspect_dir / "failure-analysis.json", FailureAnalysis)
+    # Combine — do not rewrite — the quality-gate artifact with metrics.json.
+    metrics_payload = _load_metrics_json(inspect_dir / "metrics.json")
+
+    functional, coverage, non_functional = quality_gate_legacy_view(gate)
+    report_coverage = _report_coverage(coverage)
+    report_final_status = worst_status(
+        [
+            functional.status,
+            report_coverage.status,
+            non_functional.status if non_functional is not None else "SKIPPED",
+        ]
+    )
 
     score, breakdown = compute_quality_score(_dimensions(gate))
     defects = _bucket_defects(analysis)
-    risk_level, risk_rationale = _risk(gate, defects)
-    recommendation = _recommendation(gate.final_status, defects)
+    risk_level, risk_rationale = _risk(
+        gate,
+        defects,
+        final_status=report_final_status,
+        coverage_status=report_coverage.status,
+    )
+    recommendation = _recommendation(report_final_status, defects)
     started_at, duration = _execution_timing(change_base)
     issue_report = _derive_issue_report(change_base, project_root)
-    functional, coverage, non_functional = quality_gate_legacy_view(gate)
 
     report = QualityReport(
         schema_version="1.1",
         change_id=change_id,
         batch_id=gate.batch_id or evidence.batch_id,
-        final_status=gate.final_status,
+        final_status=report_final_status,
         quality_score=score,
         score_breakdown=breakdown,
         scope=_scope(change_base),
         functional=functional,
-        coverage=coverage,
+        coverage=report_coverage,
         defects=defects,
         risk_level=risk_level,
         risk_rationale=risk_rationale,
@@ -123,6 +142,7 @@ def generate_report(project_root: Path, change_id: str) -> GenerateReportResult:
         duration=duration,
         non_functional=non_functional,
         issues=issue_report,
+        metrics=metrics_payload,
     )
 
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -138,6 +158,39 @@ def generate_report(project_root: Path, change_id: str) -> GenerateReportResult:
         md_path=str(md_path),
         exec_summary_path=str(exec_path),
     )
+
+
+def _load_metrics_json(path: Path) -> dict[str, Any] | None:
+    """Read ``inspect/metrics.json`` for the report without mutating the gate file.
+
+    Corrupt or absent documents yield ``None`` — the metrics gate already
+    adjudicated sufficiency; the report only surfaces what is present.
+    """
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _report_coverage(coverage: CoverageDimension) -> CoverageDimension:
+    """The gate's coverage dimension, minus the evidence attachment.
+
+    ``CoverageDimension`` is shared by the gate artifact and this one, so the
+    field Task 9 added for the gate would otherwise be republished here by the
+    mere act of reusing the model. It must not be: the gate document is where a
+    per-case evidence blob belongs and is versioned, whereas this report is a
+    human-facing verdict that never asked for one, and a second copy in a second
+    artifact is a second thing to keep in step.
+
+    A copy with one field cleared rather than a rebuilt dimension, so a field
+    added to ``CoverageDimension`` later reaches the report by default instead of
+    being silently dropped by a projection that only knows today's names. The
+    numbers and statuses the report shows are therefore the gate's own.
+    """
+    return coverage.model_copy(update={"evidence": None, "status": coverage_metrics_status(coverage)})
 
 
 def _derive_issue_report(change_base: Path, project_root: Path) -> IssueReport | None:
@@ -385,19 +438,26 @@ def _bucket_defects(analysis: FailureAnalysis | None) -> ReportDefects:
     return ReportDefects(product=product, test=test, environment=environment)
 
 
-def _risk(gate: QualityGateResultLike, defects: ReportDefects) -> tuple[ReportRiskLevel, str]:
+def _risk(
+    gate: QualityGateResultLike,
+    defects: ReportDefects,
+    *,
+    final_status: str | None = None,
+    coverage_status: str | None = None,
+) -> tuple[ReportRiskLevel, str]:
     if defects.product:
         return (
             "HIGH",
             f"Detected {len(defects.product)} product-level defect(s); product behaviour is incorrect.",
         )
-    status = gate.final_status
+    status = final_status if final_status is not None else gate.final_status
+    cov_status = coverage_status if coverage_status is not None else gate.dimensions.coverage.status
     if status == "FAIL":
         return "HIGH", "Functional gate failed — one or more selected test targets did not pass."
     if status == "PASS_WITH_WARNINGS":
         unmapped = gate.dimensions.functional.unmapped_tests or 0
         reasons = []
-        if gate.dimensions.coverage.status == "PASS_WITH_WARNINGS":
+        if cov_status == "PASS_WITH_WARNINGS":
             reasons.append("coverage below threshold")
         if unmapped > 0:
             reasons.append(f"{unmapped} executed test(s) not traceable to case IDs")

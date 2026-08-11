@@ -29,15 +29,13 @@ class AutoReviewFinding(BaseModel):
     source_refs: tuple[str, ...] = ()
 
 
-class ImprovementAutoReviewAssessment(BaseModel):
+class ImprovementAutoReviewAssessmentAuthoring(BaseModel):
+    """Reviewer-authored judgment; runtime-owned identity is deliberately absent."""
+
     model_config = _FROZEN
 
     schema_version: Literal["1"] = "1"
     review_type: Literal["improvement"] = "improvement"
-    review_id: str = Field(min_length=1)
-    improvement_id: str = Field(min_length=1)
-    expected_improvement_version: int = Field(ge=1)
-    subject_sha256: str = Field(pattern=_DIGEST)
     decision: Literal["pass", "changes_requested", "needs_human_review", "reject"]
     findings: tuple[AutoReviewFinding, ...] = ()
     evidence_traceability: Literal["complete", "incomplete", "invalid"]
@@ -45,6 +43,15 @@ class ImprovementAutoReviewAssessment(BaseModel):
     verification_readiness: Literal["ready", "not_ready"]
     delivery_safety: Literal["ready", "not_ready", "needs_human_review"]
     human_review_required: bool
+
+
+class ImprovementAutoReviewAssessment(ImprovementAutoReviewAssessmentAuthoring):
+    """Canonical assessment after runtime binds it to one immutable subject."""
+
+    review_id: str = Field(min_length=1)
+    improvement_id: str = Field(min_length=1)
+    expected_improvement_version: int = Field(ge=1)
+    subject_sha256: str = Field(pattern=_DIGEST)
 
 
 class ImprovementReviewProvenance(BaseModel):
@@ -119,6 +126,7 @@ __all__ = [
     "AutoReviewBatchError",
     "AutoReviewFinding",
     "ImprovementAutoReviewAssessment",
+    "ImprovementAutoReviewAssessmentAuthoring",
     "ImprovementAutoReviewBatchSummary",
     "ImprovementAutoReviewStatus",
     "ImprovementReviewProvenance",

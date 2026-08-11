@@ -9,7 +9,7 @@ the TS validator, which accepted any non-empty string).
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from assurance_agent.artifacts.models.common import NonEmptyStr
 
@@ -28,6 +28,7 @@ _L1_CAPABILITY_ROOTS = (
     "auth.",
     "accounts.",
     "entities.",
+    "auth_matrix.",
     "capabilities.cleanup.",
     "capabilities.domain_factories.",
     "capabilities.adapters.",
@@ -35,17 +36,24 @@ _L1_CAPABILITY_ROOTS = (
 
 
 def _is_fully_qualified_capability_key(key: str) -> bool:
-    # Exact key only: whitespace padding is a contract error, not normalized away.
     if not key or key != key.strip() or "." not in key:
         return False
     for root in _L1_CAPABILITY_ROOTS:
         if not key.startswith(root):
             continue
         remainder = key[len(root) :]
-        # Require a non-empty leaf path; bare roots ("auth.") and trailing-dot
-        # prefixes ("auth.foo.") are non-leaves.
         return bool(remainder) and not remainder.endswith(".")
     return False
+
+
+def _validate_fully_qualified_capabilities(caps: list[str] | None) -> None:
+    if not isinstance(caps, list) or len(caps) == 0:
+        raise ValueError("required_capabilities must be a non-empty list of fully qualified L1 leaf keys")
+    for index, item in enumerate(caps):
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"required_capabilities[{index}] must be a non-empty leaf key string")
+        if not _is_fully_qualified_capability_key(item):
+            raise ValueError(f"required_capabilities[{index}] must be a canonical C4 leaf key")
 
 
 def _validate_nonblank_finding_ids(findings: list[Any]) -> None:
@@ -54,16 +62,6 @@ def _validate_nonblank_finding_ids(findings: list[Any]) -> None:
             raise ValueError(f"findings[{index}].id must be a non-empty string")
         if not finding["id"].strip():
             raise ValueError(f"findings[{index}].id must be a non-empty string")
-
-
-def _validate_fully_qualified_capabilities(caps: list[str] | None) -> None:
-    if not isinstance(caps, list) or len(caps) == 0:
-        raise ValueError("required_capabilities must be a non-empty list of fully qualified L1 leaf keys")
-    for index, item in enumerate(caps):
-        if not isinstance(item, str) or not item.strip():
-            raise ValueError(f"required_capabilities[{index}] must be a fully qualified L1 leaf key")
-        if not _is_fully_qualified_capability_key(item):
-            raise ValueError(f"required_capabilities[{index}] must be a fully qualified L1 leaf key")
 
 
 class Review(BaseModel):
@@ -79,9 +77,10 @@ class Review(BaseModel):
     codegen_readiness: Literal["ready", "ready_with_warnings", "not_ready"] | None = None
     risk_level: Literal["low", "medium", "high", "critical"] | None = None
     required_capabilities: list[str] | None = None
-    # Optional legacy field retained for artifact compatibility. Current
-    # plan-review gates do not read it; layer applicability comes from case
-    # delta / mechanical checks.
+    # Set false by the fuzz-/performance-plan reviewers when the layer was
+    # selected in the proposal but has zero applicable cases (empty scope).
+    # The fuzz/performance plan-review gates read this to route a graceful
+    # `skip` (branch ends, codegen skipped) instead of a dead-end `reject`.
     layer_applicable: bool | None = None
     auto_fix_plan: list[Any] | None = None
     next_action: str | None = None
@@ -97,8 +96,9 @@ class Review(BaseModel):
                 f"'{self.review_type}' (drives the pre-codegen capability gate)"
             )
         for index, item in enumerate(caps):
-            if not isinstance(item, str) or not item.strip():
+            if not isinstance(item, str):
                 raise ValueError(f"required_capabilities[{index}] must be a non-empty leaf key string")
+        _validate_fully_qualified_capabilities(caps)
         return self
 
 
@@ -116,7 +116,8 @@ class PlanReview(Review):
         },
     )
 
-    def _validate_required_cross_skill_fields(self) -> None:
+    @model_validator(mode="after")
+    def _require_cross_skill_fields(self) -> "PlanReview":
         required = (
             "review_type",
             "change_id",
@@ -131,20 +132,10 @@ class PlanReview(Review):
         missing = [name for name in required if getattr(self, name) is None]
         if missing:
             raise ValueError("plan review missing cross-skill fields: " + ", ".join(missing))
-
-    def _validate_nonblank_finding_ids(self) -> None:
-        _validate_nonblank_finding_ids(self.findings)
-
-    def _validate_fully_qualified_capabilities(self) -> None:
-        _validate_fully_qualified_capabilities(self.required_capabilities)
-
-    @model_validator(mode="after")
-    def _require_cross_skill_fields(self) -> "PlanReview":
-        self._validate_required_cross_skill_fields()
         if self.review_type not in _PLAN_REVIEW_TYPES:
             raise ValueError(f"unsupported plan review_type {self.review_type!r}")
-        self._validate_nonblank_finding_ids()
-        self._validate_fully_qualified_capabilities()
+        _validate_nonblank_finding_ids(self.findings)
+        _validate_fully_qualified_capabilities(self.required_capabilities)
         if self.review_type in _HUMAN_ONLY_PLAN_REVIEW_TYPES:
             if self.auto_fix_allowed or self.auto_fix_plan:
                 raise ValueError("human-only plan review cannot authorize automatic fixes")
@@ -152,7 +143,7 @@ class PlanReview(Review):
 
 
 class PlanReviewAuthoring(BaseModel):
-    """Agent-authored fields required by plan gates and codegen."""
+    """Agent-authored fields required by plan gates, codegen, and fixer."""
 
     model_config = ConfigDict(
         extra="allow",
@@ -190,3 +181,104 @@ class PlanReviewAuthoring(BaseModel):
             if self.auto_fix_plan:
                 raise ValueError("auto_fix_plan must be empty for human-only plan review")
         return self
+
+
+class CaseSourceClaim(BaseModel):
+    """One independently checked product claim and its source-code evidence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    claim: NonEmptyStr
+    evidence_files: list[NonEmptyStr] = Field(min_length=1)
+
+
+class CaseSourceVerification(BaseModel):
+    """Proof that case review inspected product source independently of the author."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    independent: Literal[True]
+    reviewed_source_files: list[NonEmptyStr] = Field(min_length=1)
+    verified_claims: list[CaseSourceClaim] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _require_product_source_evidence(self) -> "CaseSourceVerification":
+        source_files = set(self.reviewed_source_files)
+        disallowed_prefixes = (
+            "qa/",
+            ".aa/",
+            ".opencode/",
+            "docs/",
+            "requirements/",
+            "tests/",
+        )
+        for path in source_files:
+            if path.startswith("/") or ".." in path.split("/"):
+                raise ValueError("reviewed_source_files must be project-relative paths")
+            if path.startswith(disallowed_prefixes):
+                raise ValueError(
+                    "reviewed_source_files must name product source, not QA artifacts, "
+                    "requirements, docs, or tests"
+                )
+        for index, claim in enumerate(self.verified_claims):
+            unknown = set(claim.evidence_files) - source_files
+            if unknown:
+                raise ValueError(
+                    f"verified_claims[{index}].evidence_files must be listed in "
+                    f"reviewed_source_files: {sorted(unknown)}"
+                )
+        return self
+
+
+class CaseMinimumCoverageReview(BaseModel):
+    """Reviewer projection of the frozen MRC matrix; runtime verifies every field."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    total_required: int = Field(ge=0)
+    covered: int = Field(ge=0)
+    skipped_by_scope: int = Field(ge=0)
+    missing: list[NonEmptyStr]
+
+    @model_validator(mode="after")
+    def _internally_consistent(self) -> "CaseMinimumCoverageReview":
+        if self.total_required != self.covered + self.skipped_by_scope:
+            raise ValueError("total_required must equal covered + skipped_by_scope")
+        if len(self.missing) != len(set(self.missing)):
+            raise ValueError("minimum_coverage.missing must not contain duplicates")
+        if len(self.missing) != self.skipped_by_scope:
+            raise ValueError("minimum_coverage.missing must list every skipped_by_scope key")
+        return self
+
+
+class CaseReviewAuthoring(BaseModel):
+    """Agent-authored case review, including independent SUT-source evidence."""
+
+    model_config = ConfigDict(
+        extra="allow",
+        json_schema_extra={
+            "prompt_notes": [
+                "source_verification is mandatory and must come from an independent read of product source",
+                "source_verification.independent must be true; source_verification.reviewed_source_files "
+                "must list product source; source_verification.verified_claims must be non-empty; each "
+                "verified_claims[].claim and verified_claims[].evidence_files must be non-empty",
+                "QA artifacts, requirements, docs, and tests do not count as product source evidence",
+                "minimum_coverage is a projection of trace/minimum-coverage-matrix.yaml: count only "
+                "required rows; covered counts status=covered; skipped_by_scope and missing must list "
+                "every required skipped row in matrix order",
+            ]
+        },
+    )
+
+    schema_version: NonEmptyStr
+    review_type: Literal["case"]
+    change_id: NonEmptyStr
+    decision: ReviewDecision
+    findings: list[Any]
+    auto_fix_plan: list[Any]
+    next_action: NonEmptyStr
+    auto_fix_allowed: bool
+    human_review_required: bool
+    risk_level: Literal["low", "medium", "high", "critical"]
+    minimum_coverage: CaseMinimumCoverageReview
+    source_verification: CaseSourceVerification

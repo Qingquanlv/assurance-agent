@@ -137,6 +137,7 @@ from assurance_agent.workflow.graph.resume_compatibility import (
 )
 from assurance_agent.workflow.graph.workspace import (
     TaskWorkspace,
+    TargetedWorkspaceDrift,
     TreeStore,
     WorkspaceBackend,
     WorkspaceError,
@@ -625,7 +626,15 @@ class GraphRuntime:
         context: RuntimeContext,
     ) -> ImportResult:
         """校验并原子导入显式 manifest；不伪造物理 attempt，随后 resume 继续。"""
-        validated = validate_import(schema, manifest, context)
+        # checkpoint_ns must be known before validate_import so imported task
+        # ids / structural paths bind to the invocation that will own them.
+        invocation_id = str(uuid4())
+        validated = validate_import(
+            schema,
+            manifest,
+            context,
+            checkpoint_ns=invocation_id,
+        )
         latest = self.latest_root_invocation()
         if latest is not None:
             try:
@@ -653,7 +662,6 @@ class GraphRuntime:
             raise GraphRuntimeError(f"entrypoint '{manifest.entrypoint}' allow expression rejected params")
 
         root_tree_id = self._objects.capture(context.project_root, repo_root=context.repo_root)
-        invocation_id = str(uuid4())
         checkpoint_ns = invocation_id
         bound = context.model_copy(update={"params": params})
         try:
@@ -2013,11 +2021,17 @@ class GraphRuntime:
         except RootTerminalFenceError as exc:
             raise GraphRuntimeError(f"supersede fence rejects publication replay: {exc}") from exc
         progress = False
+        committed_tree_ids: list[str] = []
+        last_target: str | None = None
         for raw in events:
             if raw.get("source") != "graph" or raw.get("invocation_id") != projection.invocation_id:
                 continue
             if raw.get("type") != "superstep_committed":
                 continue
+            target_tree = raw.get("target_tree_id")
+            if isinstance(target_tree, str):
+                committed_tree_ids.append(target_tree)
+                last_target = target_tree
             raw_checkpoint_id = raw.get("checkpoint_id")
             publication_id = raw_checkpoint_id if isinstance(raw_checkpoint_id, str) else None
             raw_ids = raw.get("write_set_ids")
@@ -2034,6 +2048,30 @@ class GraphRuntime:
                     write_set_ids=write_set_ids,
                 ):
                     progress = True
+            except TargetedWorkspaceDrift as exc:
+                # Nested graph resume in a freshly materialized parent-task workspace
+                # can false-positive synchronized-path drift; rehydrate cumulative delta.
+                try:
+                    if projection.parent_task_id is None or last_target is None:
+                        raise exc
+                    self._objects.apply_tree_delta(
+                        context.project_root,
+                        last_target,
+                        source_base_tree_id=projection.root_tree_id,
+                        destination_base_tree_id=projection.root_tree_id,
+                        acceptable_live_tree_ids=tuple(committed_tree_ids[:-1]),
+                    )
+                    if self._scheduler_for(projection).repair_committed_write_sets(
+                        context=context,
+                        invocation_id=projection.invocation_id,
+                        publication_id=publication_id,
+                        write_set_ids=write_set_ids,
+                    ):
+                        progress = True
+                except (SchedulerError, WorkspaceError) as recovery_exc:
+                    raise GraphRuntimeError(
+                        f"failed to replay committed publication: {recovery_exc}"
+                    ) from recovery_exc
             except (SchedulerError, WorkspaceError) as exc:
                 raise GraphRuntimeError(f"failed to replay committed publication: {exc}") from exc
         return progress

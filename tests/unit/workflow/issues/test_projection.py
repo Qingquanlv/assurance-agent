@@ -1124,6 +1124,7 @@ def test_workflow_and_foundational_projectors_are_byte_identical() -> None:
     assert expected_project == (
         b'{"generated_at":"2026-07-25T10:00:00Z","problems":[{"assessment":{"authority":"llm_provisional",'
         b'"classification":"product_bug","root_cause_hypothesis":"h","severity":"high"},'
+        b'"escape_analysis":null,'
         b'"fingerprint":{"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'
         b'"preimage":null,"version":"1"},"first_seen":{"change_id":"CH-001",'
         b'"occurrence_id":"OCC-e357efc0e8e6aa4e"},"last_seen":{"change_id":"CH-001",'

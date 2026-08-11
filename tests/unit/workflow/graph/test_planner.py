@@ -39,6 +39,7 @@ from assurance_agent.workflow.graph.models import (
     RuntimeContext,
     TaskProjection,
 )
+from assurance_agent.workflow.graph.node_history import node_history_key
 from assurance_agent.workflow.graph.planner import (
     PlanError,
     apply_state_updates,
@@ -377,6 +378,28 @@ graphs:
       - {from: a, to: END}
 """
 
+SUBGRAPH_ABANDONED_REPLAY_GRAPH = """
+schema_version: "2"
+name: planner-subgraph-abandoned-replay
+entrypoints:
+  full: {graph: main}
+graphs:
+  main:
+    max_supersteps: 8
+    nodes:
+      child-shell: {uses: graph:child}
+    edges:
+      - {from: START, to: child-shell}
+      - {from: child-shell, to: END}
+  child:
+    max_supersteps: 4
+    nodes:
+      work: {uses: operation:work}
+    edges:
+      - {from: START, to: work}
+      - {from: work, to: END}
+"""
+
 RECOVERY_GRAPH = """
 schema_version: "2"
 name: planner-recovery
@@ -554,6 +577,48 @@ def test_initial_plan_returns_siblings_in_declaration_order(tmp_path: Path) -> N
     assert len(planned) == 1
     assert planned[0].task_ids == [task.task_id for task in plan.tasks]
     assert isinstance(plan.strict_events[-1], SuperstepPlannedEvent)
+
+
+def test_pending_activated_sibling_reuses_its_task_and_generation(tmp_path: Path) -> None:
+    """A sibling waiting for a scheduler slot must not become a new generation."""
+    compiled = _compile(DIAMOND)
+    initial_plan = _plan(compiled, _projection(compiled), tmp_path)
+    initial_tasks = {task.node_id: task for task in initial_plan.tasks}
+    right_activation = next(
+        event
+        for event in initial_plan.strict_events
+        if isinstance(event, NodeActivatedEvent) and event.node_id == "right"
+    )
+    right_history = NodeHistory(
+        latest_generation_ordinal=0,
+        generations_by_ordinal={
+            0: NodeGeneration(
+                generation_ordinal=0,
+                status="activated",
+                activation_id=right_activation.activation_id,
+            )
+        },
+    )
+
+    next_plan = _plan(
+        compiled,
+        _projection(
+            compiled,
+            tasks=[_task(initial_tasks["left"], "succeeded", generation_ordinal=0)],
+            supersteps=1,
+            node_histories={node_history_key("inv-1", "main", "right"): right_history},
+        ),
+        tmp_path,
+    )
+
+    assert [task.node_id for task in next_plan.tasks] == ["right"]
+    assert next_plan.tasks[0].task_id == initial_tasks["right"].task_id
+    repeated_activation = next(
+        event
+        for event in next_plan.strict_events
+        if isinstance(event, NodeActivatedEvent) and event.node_id == "right"
+    )
+    assert repeated_activation.generation_ordinal == 0
 
 
 def test_single_success_unblocks_nothing(tmp_path: Path) -> None:
@@ -1077,6 +1142,7 @@ def test_failed_retryable_task_carries_prior_failure_feedback(tmp_path: Path) ->
                 error_kind="invalid_output",
                 error="output 'change:review/api-plan-review.json' failed review schema validation",
                 attempts_used=1,
+                contract_failure_kinds_seen=("invalid_output",),
             )
         ],
     )
@@ -1086,6 +1152,7 @@ def test_failed_retryable_task_carries_prior_failure_feedback(tmp_path: Path) ->
     assert retry_task.task_id == original.task_id
     assert retry_task.input_sha256 == original.input_sha256
     assert retry_task.prior_error_kind == "invalid_output"
+    assert retry_task.contract_failure_kinds_seen == ("invalid_output",)
     assert retry_task.prior_failure is not None
     assert "schema validation" in retry_task.prior_failure
 
@@ -1412,6 +1479,72 @@ def test_abandoned_with_remaining_budget_is_replanned(tmp_path: Path) -> None:
     assert plan.terminal is None
 
 
+def test_exhausted_abandoned_subgraph_shell_gets_one_crash_recovery_replay(
+    tmp_path: Path,
+) -> None:
+    compiled = _compile(SUBGRAPH_ABANDONED_REPLAY_GRAPH)
+    original = _initial_tasks(compiled, tmp_path)["child-shell"]
+    # Crash-recovery replay only applies when the wrapper already started a child.
+    change_dir = tmp_path / "change"
+    change_dir.mkdir(parents=True, exist_ok=True)
+    (change_dir / "events.jsonl").write_text(
+        json.dumps(
+            {
+                "seq": 1,
+                "source": "graph",
+                "type": "graph_invocation_started",
+                "invocation_id": "inv-child-1",
+                "parent_invocation_id": "inv-1",
+                "parent_task_id": original.task_id,
+                "entrypoint": "full",
+                "graph_id": "child",
+                "graph_digest": "gd-child",
+                "contract_digests": {},
+                "params": {},
+                "params_sha256": "ps",
+                "root_tree_id": "tree-0",
+                "max_parallel_tasks": 1,
+                "checkpoint_ns": "inv-1/child-shell/inv-child-1",
+                "structural_path": "main/child",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    projection = _projection(
+        compiled,
+        tasks=[
+            _task(
+                original,
+                "abandoned",
+                attempts_used=1,
+                target=original.target,
+            )
+        ],
+    )
+
+    replay = _plan(compiled, projection, tmp_path)
+
+    assert replay.terminal is None
+    assert [task.task_id for task in replay.tasks] == [original.task_id]
+    assert replay.tasks[0].target == "graph:child"
+    assert replay.tasks[0].retry_policy.max_attempts == 2
+
+
+def test_abandoned_subgraph_shell_second_crash_is_terminal(tmp_path: Path) -> None:
+    compiled = _compile(SUBGRAPH_ABANDONED_REPLAY_GRAPH)
+    original = _initial_tasks(compiled, tmp_path)["child-shell"]
+    projection = _projection(
+        compiled,
+        tasks=[_task(original, "abandoned", attempts_used=2)],
+    )
+
+    plan = _plan(compiled, projection, tmp_path)
+
+    assert plan.terminal == "fail"
+    assert plan.tasks == ()
+
+
 def test_stop_outranks_retry_pending(tmp_path: Path) -> None:
     compiled = _compile(PRIORITY_GRAPH)
     initial = _plan(compiled, _projection(compiled), tmp_path)
@@ -1676,7 +1809,7 @@ def _planned_retro_tasks(
     expected_waves = (
         {"drain-reconcile-outbox"},
         {"collect-retro-evidence"},
-        {"analyze-issue", "analyze-workflow", "analyze-eval"},
+        {"analyze-issue", "analyze-workflow", "materialize-empty-eval-analysis"},
         {"issue-settled", "workflow-settled", "eval-settled"},
         {"analysis-join"},
         {"assemble-retro-context"},
@@ -1688,9 +1821,29 @@ def _planned_retro_tasks(
             synchronized = {path.pattern for path in plan.tasks[0].resources.synchronized}
             assert f"qa/retro/{retro_id}/**" in synchronized
             assert "qa/retro/**" not in synchronized
+        if expected == {"analyze-issue", "analyze-workflow", "materialize-empty-eval-analysis"}:
+            for task in plan.tasks:
+                if task.node_id == "materialize-empty-eval-analysis":
+                    assert task.target == "operation:materialize-empty-retro-analysis"
+                    assert {path.pattern for path in task.resources.reads} == {
+                        f"qa/retro/{retro_id}/evidence/eval-slice.json"
+                    }
+                else:
+                    domain = task.node_id.removeprefix("analyze-")
+                    assert {path.pattern for path in task.resources.reads} == {
+                        f"qa/retro/{retro_id}/evidence/{domain}-slice.json",
+                        f"qa/retro/{retro_id}/evidence/agent/{domain}-slice.json",
+                    }
         values: dict[str, object] | None = None
         if "collect-retro-evidence" in expected:
-            values = {"collect-retro-evidence": {"all_domain_evidence_absent": False}}
+            values = {
+                "collect-retro-evidence": {
+                    "all_domain_evidence_absent": False,
+                    "issue_count": 1,
+                    "workflow_count": 1,
+                    "eval_count": 0,
+                }
+            }
         elif "assemble-retro-context" in expected:
             values = {"assemble-retro-context": {"retro_id": retro_id, "signal_count": 1}}
         projection = advance(projection, plan.tasks, values=values)
@@ -1705,9 +1858,10 @@ def _planned_retro_tasks(
 
 def test_retro_agent_can_only_read_current_context(tmp_path: Path) -> None:
     task, _ = _planned_retro_tasks(tmp_path, retro_id="retro-current")
-    assert tuple((path.root, path.pattern) for path in task.resources.reads) == (
+    assert {(path.root, path.pattern) for path in task.resources.reads} == {
         ("project", "qa/retro/retro-current/context.json"),
-    )
+        ("project", "qa/retro/retro-current/context-agent.json"),
+    }
     assert all("retro-other" not in path.pattern for path in task.resources.reads)
     assert all("qa/issues" not in path.pattern for path in task.resources.reads)
     assert all(path.pattern != "qa/retro/**" for path in task.resources.reads)

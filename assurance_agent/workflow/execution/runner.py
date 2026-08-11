@@ -7,6 +7,8 @@ degrades accordingly.
 
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Lock
+import time
 
 from assurance_agent.artifacts.models import ExecutionManifest
 from assurance_agent.artifacts.policy import PolicyError, load_policy
@@ -34,12 +36,27 @@ from assurance_agent.workflow.healing.safety import load_product_code_roots
 from assurance_agent.workflow.report.quality_gate import build_quality_gate
 
 
+_batch_id_lock = Lock()
+_last_batch_tick = 0
+
+
 def generate_batch_id() -> str:
-    return datetime.now().strftime("%Y%m%d-%H%M%S")
+    """Return a process-monotonic, nanosecond-resolution batch identifier."""
+    global _last_batch_tick
+    with _batch_id_lock:
+        tick = max(time.time_ns(), _last_batch_tick + 1)
+        _last_batch_tick = tick
+    seconds, nanoseconds = divmod(tick, 1_000_000_000)
+    prefix = datetime.fromtimestamp(seconds).strftime("%Y%m%d-%H%M%S")
+    return f"{prefix}-{nanoseconds:09d}"
+
+
+def generate_executed_at() -> datetime:
+    return datetime.now(UTC)
 
 
 def _now_aware() -> datetime:
-    return datetime.now(UTC)
+    return generate_executed_at()
 
 
 def _strip(rel: str) -> str:

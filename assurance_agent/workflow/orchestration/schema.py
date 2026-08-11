@@ -13,7 +13,14 @@ from pydantic import BaseModel, Field
 
 from assurance_agent.exceptions import AaError
 
-ALLOWED_AGENTS = {"aa-doc-author", "aa-test-author", "aa-reviewer", "aa-reporter", "aa-archiver"}
+ALLOWED_AGENTS = {
+    "aa-explorer",
+    "aa-doc-author",
+    "aa-test-author",
+    "aa-reviewer",
+    "aa-reporter",
+    "aa-archiver",
+}
 ORCHESTRATOR_INTERNAL = {"skill-registry-check"}
 _WHEN_SUFFIX = "_when"
 

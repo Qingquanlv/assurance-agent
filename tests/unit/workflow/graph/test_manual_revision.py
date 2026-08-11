@@ -671,7 +671,8 @@ def _manual_revision_runtime(
     from assurance_agent.workflow.graph.checkpoint import CheckpointStore
     from assurance_agent.workflow.graph.compiler import compile_workflow
     from assurance_agent.workflow.graph.contracts import parse_execution_contracts
-    from assurance_agent.workflow.graph.handlers.operation import OperationHandler, default_operations
+    from assurance_agent.workflow.driver.operations_catalog import default_operations
+    from assurance_agent.workflow.graph.handlers.operation import OperationHandler
     from assurance_agent.workflow.graph.leases import SystemClock
     from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
     from assurance_agent.workflow.graph.runtime import GraphRuntime
@@ -792,7 +793,14 @@ gates:
     def run_child(task, graph_id, workspace, context):  # type: ignore[no-untyped-def]
         return holder["rt"].run_child(task, graph_id, workspace, context)
 
-    base = build_default_node_runner(NeverInvoker(), store, contracts, compiled=compiled, run_child=run_child)
+    base = build_default_node_runner(
+        NeverInvoker(),
+        store,
+        contracts,
+        compiled=compiled,
+        operations=ops,
+        run_child=run_child,
+    )
     op_handler = OperationHandler(ops)
 
     class Combined:

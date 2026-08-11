@@ -333,17 +333,14 @@ def _build_recovery_runtime(
     analyzer_error: str,
     fallback_calls: list[object],
 ):
-    from assurance_agent.workflow.driver.runtime_factory import one_definition_resolver
+    from assurance_agent.workflow.driver.operations_catalog import default_operations
+    from assurance_agent.workflow.driver.runtime_factory import assemble_graph_runtime
     from assurance_agent.workflow.graph.compiler import compile_workflow
     from assurance_agent.workflow.graph.contracts import parse_execution_contracts
-    from assurance_agent.workflow.graph.handlers.operation import OperationHandler, default_operations
-    from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
+    from assurance_agent.workflow.graph.handlers.operation import OperationHandler
     from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
-    from assurance_agent.workflow.graph.runtime import GraphRuntime
-    from assurance_agent.workflow.graph.scheduler import Scheduler
     from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
     from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
-    from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
     from tests.integration._graph_fault_worker import FakeClock
 
     contracts = parse_execution_contracts(
@@ -396,9 +393,6 @@ graphs:
         contracts,
     )
     change = project / "qa" / "changes" / "CH-1"
-    store = TreeStore(change)
-    checkpoints = CheckpointStore(change)
-    workspaces = WorkspaceBackend(change)
     clock = FakeClock()
     ops = default_operations()
 
@@ -429,30 +423,24 @@ graphs:
             "operation:recovered": recovered,
         }
     )
-    handler = OperationHandler(ops)
-    runner = HandlerNodeRunner({target: handler for target in ops})
-    scheduler = Scheduler(
-        checkpoints=checkpoints,
-        object_store=store,
-        clock=clock,
-        workspace_backend=workspaces,
-        node_runner=runner,
-        max_parallel_tasks=1,
+
+    def build(_store, _run_child):  # type: ignore[no-untyped-def]
+        handler = OperationHandler(ops)
+        return HandlerNodeRunner({target: handler for target in ops})
+
+    runtime = assemble_graph_runtime(
+        project_root=project,
+        change_dir=change,
+        compiled=compiled,
         contracts=contracts,
-    )
-    runtime = GraphRuntime(
-        checkpoint_store=checkpoints,
-        object_store=store,
-        workspace_backend=workspaces,
-        definition_resolver=one_definition_resolver(
-            compiled=compiled,
-            contracts=contracts,
-            ingest_catalog=validate_catalog_runtime(),
-            node_runner=runner,
-            scheduler=scheduler,
-        ),
+        build_node_runner=build,
         clock=clock,
     )
+    from assurance_agent.workflow.graph.definition_pinning import request_for_compiled
+
+    scheduler = runtime._definition_resolver(  # noqa: SLF001
+        request_for_compiled(compiled, event_schema_version=6)
+    ).scheduler
     return runtime, compiled, scheduler, change
 
 

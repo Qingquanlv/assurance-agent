@@ -61,6 +61,7 @@ class GateHandler:
             state_values={},
             node_results=node_results,
             audit_events_dir=context.change_dir,
+            checkpoint_ns=task.checkpoint_ns,
             committed_tree_id=committed_tree_id or workspace.base_tree_id,
             event_schema_version=event_schema_version,
             invocation_id=task.invocation_id,

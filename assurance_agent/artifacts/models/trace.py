@@ -5,6 +5,14 @@ apply ``evaluate_sufficiency(projection, policy, *, as_of)`` at the use site.
 
 Wire boundary: V1 remains the legacy reader; V2 adds recovery gap codes and
 semantic validators. Registry-facing dispatch is ``TraceProjectionDocument``.
+
+Union notes (merge of assemble enrichments + V6 variants):
+- ``TraceRow.problem_facts`` carries the §9.4/§9.5 join facts next to
+  ``open_problem_ids`` (assemble/OURS).
+- ``TraceTestRef`` stores ``test_name`` (assemble/OURS tree scan) and accepts
+  the V6 ``function`` alias on input.
+- ``TraceIntegrity`` accepts both ``complete_with_gaps`` (assemble) and
+  ``degraded`` (V6) spellings.
 """
 
 from __future__ import annotations
@@ -12,7 +20,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    RootModel,
+    model_validator,
+)
 
 from assurance_agent.artifacts.models.assurance import CASE_TYPES, LAYER_NAMES, CaseType, LayerName
 from assurance_agent.artifacts.models.common import NonEmptyStr
@@ -21,6 +36,9 @@ _FROZEN = ConfigDict(frozen=True, extra="forbid")
 
 StrictNonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
 StrictPositiveInt = Annotated[int, Field(strict=True, gt=0)]
+
+TraceTarget = Literal["api", "e2e", "fuzz", "performance"]
+TraceCaseType = Literal["API", "E2E", "Fuzz", "Performance"]
 
 TraceGapCodeV1 = Literal[
     "result_missing",
@@ -53,7 +71,8 @@ TraceSummaryGapCode = TraceGapCodeV1 | TraceGapCodeV2
 # Legacy aliases — V1 only; never repoint to V2.
 TraceGapCode = TraceGapCodeV1
 
-TraceIntegrity = Literal["complete", "degraded", "incomplete"]
+# Accept both assemble (complete_with_gaps) and V6 (degraded) vocabularies.
+TraceIntegrity = Literal["complete", "complete_with_gaps", "degraded", "incomplete"]
 
 _CASE_TYPE_TO_TARGET: dict[str, str] = {
     "API": "api",
@@ -68,7 +87,7 @@ class TraceExecution(BaseModel):
     model_config = _FROZEN
 
     batch_id: str
-    target: Literal["api", "e2e", "fuzz", "performance"]
+    target: TraceTarget
     status: Literal["passed", "failed", "skipped"]
     ts: datetime
     ts_source: Literal["executed_at", "batch_id_legacy_utc"]
@@ -79,6 +98,25 @@ class TraceFailure(BaseModel):
 
     category: str
     severity: str
+
+
+class TraceProblemFact(BaseModel):
+    """One canonical Problem a case reaches through the §9 two-hop join.
+
+    Populated only when phase=reconciled. ``problem_id`` is the *canonical*
+    problem — the end of the ``merged_into`` alias chain — and
+    ``source_problem_ids`` lists every problem_id the change's occurrences
+    actually referenced to get there.
+    """
+
+    model_config = _FROZEN
+
+    problem_id: str
+    source_problem_ids: tuple[str, ...]
+    fingerprint: str
+    status: str
+    classification: str
+    open_product_bug: bool
 
 
 class TraceGapV1(BaseModel):
@@ -105,10 +143,17 @@ TraceGap = TraceGapV1
 
 
 class TraceTestRef(BaseModel):
-    model_config = _FROZEN
+    """One current-tree test function mapped to a case_id (spec §7 scan hit)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
 
     file: str
-    function: str
+    test_name: str = Field(validation_alias=AliasChoices("test_name", "function"))
+
+    @property
+    def function(self) -> str:
+        """V6 alias for ``test_name``."""
+        return self.test_name
 
 
 class UnmappedTest(BaseModel):
@@ -123,7 +168,7 @@ class TraceRow(BaseModel):
 
     case_id: str
     module: str
-    case_type: Literal["API", "E2E", "Fuzz", "Performance"]
+    case_type: TraceCaseType
     automation_required: bool
     assertions: tuple[str, ...] = ()
     covering_tests: tuple[TraceTestRef, ...] = ()
@@ -133,7 +178,9 @@ class TraceRow(BaseModel):
     presence_in_current_batch: Literal["executed", "not_in_current_batch", "target_not_selected"]
     atemporal_kinds_present: tuple[str, ...] = ()
     failures: tuple[TraceFailure, ...] = ()
+    # Routing subset: problem_facts with open_product_bug, fingerprint-deduped.
     open_problem_ids: tuple[str, ...] = ()
+    problem_facts: tuple[TraceProblemFact, ...] = ()
 
 
 class TraceSource(BaseModel):
@@ -187,7 +234,7 @@ def validate_row_semantics(phase: Literal["execution", "reconciled"], rows: tupl
         elif row.coverage_state != "not_required":
             raise ValueError(f"row {row.case_id}: non-automated row must use coverage_state=not_required")
 
-        if phase == "execution" and (row.failures or row.open_problem_ids):
+        if phase == "execution" and (row.failures or row.open_problem_ids or row.problem_facts):
             raise ValueError(f"row {row.case_id}: execution phase must not carry failure/problem enrichment")
 
         expected_target = _CASE_TYPE_TO_TARGET[row.case_type]
@@ -359,3 +406,39 @@ class TraceLayerFactSummary(BaseModel):
                 ):
                     raise ValueError("execution phase failure/problem counts must be zero")
         return self
+
+
+__all__ = [
+    "TraceCaseType",
+    "TraceExecution",
+    "TraceFailure",
+    "TraceGap",
+    "TraceGapAggregate",
+    "TraceGapCode",
+    "TraceGapCodeV1",
+    "TraceGapCodeV2",
+    "TraceGapV1",
+    "TraceGapV2",
+    "TraceIntegrity",
+    "TraceLayerFactSummary",
+    "TraceLayerFacts",
+    "TraceProblemFact",
+    "TraceProjection",
+    "TraceProjectionDocument",
+    "TraceProjectionLike",
+    "TraceProjectionV1",
+    "TraceProjectionV2",
+    "TraceProjectionVariant",
+    "TraceRow",
+    "TraceSource",
+    "TraceSummaryGapCode",
+    "TraceTarget",
+    "TraceTestRef",
+    "UnmappedTest",
+    "load_trace_projection_document",
+    "validate_gap_targets",
+    "validate_row_semantics",
+    "validate_unique_case_ids",
+    "validate_unique_gaps",
+    "validate_unique_source_paths",
+]

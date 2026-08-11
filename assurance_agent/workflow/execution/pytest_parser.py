@@ -2,8 +2,13 @@
 
 Only reads what the real test runner wrote; a missing or corrupt report yields
 a SKIPPED result carrying the reason (never a fabricated pass).
+
+Identity routing (§5.1): case_id first → ``cases``; else
+``@pytest.mark.property(...)`` → ``property_tests``; else ``unmapped_tests``.
+The three buckets are mutually exclusive per executed test.
 """
 
+import ast
 import json
 from pathlib import Path
 from typing import Any
@@ -12,6 +17,7 @@ from assurance_agent.evidence.case_id import extract_case_id
 from assurance_agent.workflow.execution.results import (
     CaseResult,
     ExecutionStatus,
+    PropertyTestResult,
     PytestTarget,
     ResultSource,
     TargetResult,
@@ -55,14 +61,26 @@ def parse_pytest_json(
         )
 
     cases: list[CaseResult] = []
+    property_tests: list[PropertyTestResult] = []
     unmapped: list[CaseResult] = []
     for test in report.get("tests", []):
-        entry = _to_case(test, raw_log_path)
-        (cases if entry.case_id else unmapped).append(entry)
+        case_id = extract_case_id(str(test.get("nodeid", "")))
+        if case_id:
+            cases.append(_to_case(test, raw_log_path, case_id=case_id))
+            continue
+        constraint_keys = _property_constraint_keys(test)
+        if constraint_keys is not None:
+            property_tests.append(_to_property(test, batch_id=batch_id, constraint_keys=constraint_keys))
+            continue
+        unmapped.append(_to_case(test, raw_log_path, case_id=""))
 
-    all_cases = cases + unmapped
+    outcomes: list[ExecutionStatus] = [
+        *(c.status for c in cases),
+        *(p.outcome for p in property_tests),
+        *(u.status for u in unmapped),
+    ]
 
-    if not all_cases:
+    if not outcomes:
         # No per-test results. Distinguish a benign "nothing ran" from a session
         # that was ABORTED before producing results. pytest exit codes: 0 ok,
         # 1 tests failed, 2 interrupted, 3 internal error, 4 usage error,
@@ -83,11 +101,11 @@ def parse_pytest_json(
             )
             return _aborted(change_id, batch_id, target, command, source, reason)
 
-    passed = sum(1 for c in all_cases if c.status == "passed")
-    failed = sum(1 for c in all_cases if c.status == "failed")
-    skipped = sum(1 for c in all_cases if c.status == "skipped")
+    passed = sum(1 for status in outcomes if status == "passed")
+    failed = sum(1 for status in outcomes if status == "failed")
+    skipped = sum(1 for status in outcomes if status == "skipped")
 
-    if not all_cases:
+    if not outcomes:
         status: ExecutionStatus = "skipped"
     elif failed > 0:
         status = "failed"
@@ -101,16 +119,101 @@ def parse_pytest_json(
         status=status,
         command=command,
         source=source,
-        total=len(all_cases),
+        total=len(outcomes),
         passed=passed,
         failed=failed,
         skipped=skipped,
         cases=cases,
         unmapped_tests=unmapped,
+        property_tests=property_tests,
     )
 
 
-def _to_case(test: dict[str, Any], raw_log_path: str) -> CaseResult:
+def _property_constraint_keys(test: dict[str, Any]) -> tuple[str, ...] | None:
+    """Return marker args when this test is a property test; else None.
+
+    ``None`` means "not a property test". An empty tuple means the property
+    marker was present without extractable string args (still routes to
+    ``property_tests``). Keywords-only identity carries no args — keys stay
+    empty by design; prefer dict markers or string ``property("k", ...)`` forms
+    when constraint keys are required.
+    """
+    keys: list[str] = []
+    found = False
+
+    markers = test.get("markers")
+    if isinstance(markers, list):
+        for marker in markers:
+            if isinstance(marker, dict) and marker.get("name") == "property":
+                found = True
+                args = marker.get("args") or ()
+                if isinstance(args, (list, tuple)):
+                    keys.extend(str(arg) for arg in args if isinstance(arg, (str, int, float)))
+            elif isinstance(marker, str):
+                if marker == "property" or marker.startswith("property(") or marker.startswith("property["):
+                    found = True
+                    keys.extend(_parse_property_marker_string_args(marker))
+
+    if not found:
+        keywords = test.get("keywords")
+        if isinstance(keywords, dict) and "property" in keywords:
+            found = True
+        elif isinstance(keywords, list) and "property" in keywords:
+            found = True
+
+    if not found:
+        return None
+    return tuple(keys)
+
+
+def _parse_property_marker_string_args(marker: str) -> tuple[str, ...]:
+    """Best-effort parse of ``property("k1", 'k2')`` / ``property[k]`` string forms."""
+    if marker.startswith("property(") and marker.endswith(")"):
+        inner = marker[len("property(") : -1].strip()
+        if not inner:
+            return ()
+        try:
+            # Reuse Python literal list parsing for quoted string args.
+            parsed = ast.literal_eval(f"[{inner}]")
+        except (SyntaxError, ValueError):
+            return ()
+        if isinstance(parsed, list):
+            return tuple(str(item) for item in parsed if isinstance(item, (str, int, float)))
+        return ()
+    if marker.startswith("property[") and marker.endswith("]"):
+        inner = marker[len("property[") : -1].strip()
+        if not inner:
+            return ()
+        # Single unquoted / quoted key in bracket form.
+        try:
+            parsed = ast.literal_eval(inner)
+        except (SyntaxError, ValueError):
+            return (inner,) if inner else ()
+        if isinstance(parsed, (str, int, float)):
+            return (str(parsed),)
+        return ()
+    return ()
+
+
+def _to_property(
+    test: dict[str, Any],
+    *,
+    batch_id: str,
+    constraint_keys: tuple[str, ...],
+) -> PropertyTestResult:
+    nodeid = str(test.get("nodeid", ""))
+    outcome = _OUTCOME_MAP.get(str(test.get("outcome", "")), "failed")
+    file = nodeid.split("::", 1)[0]
+    return PropertyTestResult(
+        nodeid=nodeid,
+        file=file,
+        constraint_keys=constraint_keys,
+        outcome=outcome,
+        batch_id=batch_id,
+    )
+
+
+def _to_case(test: dict[str, Any], raw_log_path: str, *, case_id: str) -> CaseResult:
     nodeid = str(test.get("nodeid", ""))
     outcome = _OUTCOME_MAP.get(str(test.get("outcome", "")), "failed")
     file = nodeid.split("::", 1)[0]
@@ -127,7 +230,7 @@ def _to_case(test: dict[str, Any], raw_log_path: str) -> CaseResult:
             message = _longrepr_text(phase.get("longrepr"))
 
     return CaseResult(
-        case_id=extract_case_id(nodeid),
+        case_id=case_id,
         status=outcome,
         file=file,
         test_name=test_name,
@@ -179,6 +282,7 @@ def _skipped(
         skipped=0,
         cases=[],
         unmapped_tests=[placeholder],
+        property_tests=[],
     )
 
 
@@ -217,4 +321,5 @@ def _aborted(
         skipped=0,
         cases=[],
         unmapped_tests=[placeholder],
+        property_tests=[],
     )

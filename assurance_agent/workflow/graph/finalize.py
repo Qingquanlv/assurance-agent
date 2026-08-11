@@ -11,17 +11,28 @@ module's freeze/ingest and before ``task_attempt_succeeded`` is appended.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
-from assurance_agent.artifacts.registry import match_artifact
+from assurance_agent.artifacts.registry import ArtifactSpec, match_artifact
 from assurance_agent.artifacts.models.issues import IssueAnalysisStatus, IssueCandidateDocument
+from assurance_agent.artifacts.models.minimum_coverage import MinimumCoverageMatrix
+from assurance_agent.artifacts.models.review import CaseReviewAuthoring
+from assurance_agent.config import load_config
+from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
 from assurance_agent.workflow.graph.checkpoint import fold_invocation_events
+from assurance_agent.workflow.graph.codegen_manifest import (
+    CodegenCompletionReceipt,
+    CodegenManifestError,
+    complete_codegen_manifest,
+    verify_frozen_codegen_completion,
+)
 from assurance_agent.workflow.graph.frozen_output import (
     FrozenOutput,
     candidate_value_map,
@@ -40,6 +51,7 @@ from assurance_agent.workflow.graph.schema_v2 import NodeDef
 from assurance_agent.workflow.graph.selected_wave import derive_child_invocation_id
 from assurance_agent.workflow.graph.task_runner import task_failure
 from assurance_agent.workflow.graph.workspace import TaskWorkspace, TreeStore, WorkspaceError
+from assurance_agent.workflow.healing.safety import load_product_code_roots
 from assurance_agent.workflow.orchestration.gates import (
     FrozenGateReport,
     GateError,
@@ -68,6 +80,16 @@ def finalize_task_result(
     outputs = _resolve_outputs(task, node_def)
 
     if result.status == "succeeded":
+        codegen_receipt: CodegenCompletionReceipt | None = None
+        if result.write_set_id is None:
+            try:
+                codegen_receipt = complete_codegen_manifest(
+                    task=task,
+                    workspace=workspace,
+                    context=context,
+                )
+            except CodegenManifestError as exc:
+                return task_failure("invalid_output", str(exc))
         result = _ensure_outputs_frozen(
             store=store,
             task=task,
@@ -77,6 +99,16 @@ def finalize_task_result(
         )
         if result.status != "succeeded":
             return result
+        if codegen_receipt is not None:
+            assert result.write_set_id is not None
+            try:
+                verify_frozen_codegen_completion(
+                    store=store,
+                    write_set_id=result.write_set_id,
+                    receipt=codegen_receipt,
+                )
+            except CodegenManifestError as exc:
+                return task_failure("invalid_output", str(exc))
         result = _ingest_frozen_outputs(
             store=store,
             task=task,
@@ -95,7 +127,27 @@ def finalize_task_result(
         )
         if result.status != "succeeded":
             return result
-        invalid = _validate_registry_outputs(workspace=workspace, outputs=outputs)
+        written_outputs: tuple[str, ...] = ()
+        if result.write_set_id is not None:
+            try:
+                write_set = store.load_write_set(result.write_set_id)
+            except WorkspaceError as exc:
+                return task_failure("invalid_output", str(exc))
+            written_outputs = tuple(
+                entry.logical_path for entry in write_set.entries if entry.operation != "delete"
+            )
+        registry_invalid = _validate_registry_outputs(
+            workspace=workspace,
+            outputs=outputs,
+            written_outputs=written_outputs,
+        )
+        source_invalid: TaskResult | None = None
+        if task.target == "skill:aa-case-design":
+            source_invalid = _validate_case_design_source_verification(workspace)
+        invalid = _aggregate_output_validation_failures(
+            registry_invalid,
+            source_invalid,
+        )
         if invalid is not None:
             return invalid
 
@@ -224,26 +276,199 @@ def _apply_subgraph_exports(
     return result.model_copy(update={"frozen_outputs": wire, "candidate_outputs": candidate})
 
 
+def _authoring_obligations_model(spec: ArtifactSpec) -> type[BaseModel] | None:
+    """The authoring model that still constrains this file once frozen, if any.
+
+    Two unrelated shapes share the ``authoring_model`` slot. A draft stage that
+    the runtime later completes is already past authoring by the time finalize
+    reads the file. That relationship is expressed either by canonical-model
+    inheritance or by ``runtime_completes_authoring`` when nested field narrowing
+    makes inheritance type-unsafe. An authoring contract that only adds
+    obligations to what a skill must hand in (review ``source_verification``)
+    never gets completed, so the frozen file is the authored one and must satisfy
+    it.
+    """
+    authoring = spec.authoring_model
+    if authoring is None or spec.runtime_completes_authoring or issubclass(spec.model, authoring):
+        return None
+    return authoring
+
+
+def _aggregate_output_validation_failures(
+    *failures: TaskResult | None,
+) -> TaskResult | None:
+    present = [failure for failure in failures if failure is not None]
+    if not present:
+        return None
+    if len(present) == 1:
+        return present[0]
+    messages = [failure.error or "unknown output validation failure" for failure in present]
+    return task_failure(
+        "invalid_output",
+        "multiple output contract violations:\n- " + "\n- ".join(messages),
+    )
+
+
+_CASE_DESIGN_SOURCE_VERIFICATION_REPAIR = (
+    "\nRequired format:\n"
+    "- independently_read: true\n"
+    "- reviewed_source_files:\n"
+    "  - `<project-relative product source path>`"
+)
+
+
+def _case_design_source_failure(message: str) -> TaskResult:
+    return task_failure(
+        "invalid_output",
+        message + _CASE_DESIGN_SOURCE_VERIFICATION_REPAIR,
+    )
+
+
+def _validate_case_design_source_verification(workspace: TaskWorkspace) -> TaskResult | None:
+    """Require case-design's own, project-relative product-source evidence.
+
+    Explore evidence cannot prove that the case designer independently checked
+    the implementation.  This Markdown contract is deliberately enforced at
+    the frozen task boundary rather than trusted as prompt prose: the section,
+    explicit boolean, and every declared source path must be present and must
+    resolve to an existing file under a configured product-code root.
+    """
+    proposal = workspace.change_dir / "proposal.md"
+    try:
+        text = proposal.read_text(encoding="utf-8")
+    except OSError as exc:
+        return _case_design_source_failure(
+            f"case-design Product Source Verification could not read proposal.md: {exc}",
+        )
+
+    headings = list(re.finditer(r"(?m)^##[ \t]+Product Source Verification[ \t]*$", text))
+    if len(headings) != 1:
+        return _case_design_source_failure(
+            "case-design proposal.md must contain exactly one '## Product Source Verification' section",
+        )
+    start = headings[0].end()
+    next_heading = re.search(r"(?m)^##[ \t]+", text[start:])
+    end = start + next_heading.start() if next_heading is not None else len(text)
+    section = text[start:end]
+    if (
+        re.search(
+            r"(?mi)^[ \t]*-[ \t]*independently_read:[ \t]*true[ \t]*$",
+            section,
+        )
+        is None
+    ):
+        return _case_design_source_failure(
+            "case-design Product Source Verification must declare independently_read: true",
+        )
+
+    lines = section.splitlines()
+    source_paths: list[str] = []
+    for index, line in enumerate(lines):
+        if re.fullmatch(r"[ \t]*-[ \t]*reviewed_source_files:[ \t]*", line) is None:
+            continue
+        for item in lines[index + 1 :]:
+            match = re.fullmatch(r"[ \t]{2,}-[ \t]+(.+?)[ \t]*", item)
+            if match is not None:
+                source_paths.append(match.group(1).strip().strip("`\"'"))
+                continue
+            if item.strip():
+                break
+        break
+
+    project_root = workspace.project_root.resolve()
+    product_roots: list[Path] = []
+    raw_product_roots = list(load_product_code_roots(workspace.project_root))
+    try:
+        config = load_config(workspace.project_root)
+    except AaError:
+        # Workflow startup validates config separately. At this output boundary,
+        # retain the existing conservative product-root fallback rather than
+        # widening an invalid project configuration to arbitrary project files.
+        pass
+    else:
+        raw_product_roots.extend((config.sources.frontend, config.sources.backend))
+    for raw_root in dict.fromkeys(raw_product_roots):
+        try:
+            candidate = (workspace.project_root / raw_root).resolve(strict=True)
+            candidate.relative_to(project_root)
+        except (OSError, ValueError):
+            continue
+        if candidate.is_dir():
+            product_roots.append(candidate)
+
+    def valid_source(raw: str) -> bool:
+        rel = Path(raw)
+        if not raw or rel.is_absolute() or ".." in rel.parts:
+            return False
+        try:
+            resolved = (workspace.project_root / rel).resolve(strict=True)
+            resolved.relative_to(project_root)
+        except (OSError, ValueError):
+            return False
+        return resolved.is_file() and any(_path_is_within(resolved, root) for root in product_roots)
+
+    if not source_paths or any(not valid_source(path) for path in source_paths):
+        return _case_design_source_failure(
+            "case-design Product Source Verification reviewed_source_files must contain only "
+            "existing project-relative files under configured product-code roots",
+        )
+    return None
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
 def _validate_registry_outputs(
     *,
     workspace: TaskWorkspace,
     outputs: tuple[str, ...],
+    written_outputs: tuple[str, ...] = (),
 ) -> TaskResult | None:
-    """Validate declared project/change file outputs against their registry model."""
+    """Validate authored project/change artifacts against their registry model.
+
+    Declared directories are expanded, and the frozen write-set paths are added
+    so an agent cannot hide an optional registry artifact behind a broader
+    authorization such as ``change:plans/**``.
+    """
     validated: dict[str, Any] = {}
     authored: dict[str, Any] = {}
-    for output in outputs:
+    candidates: list[str] = []
+    for output in (*outputs, *written_outputs):
         root, _, rest = output.partition(":")
-        if root not in {"change", "project"} or not rest or rest.endswith("/"):
+        if root not in {"change", "project"} or not rest:
             continue
+        if rest.endswith("/"):
+            output_root = workspace.change_dir if root == "change" else workspace.project_root
+            directory = output_root / rest
+            try:
+                descendants = sorted(path for path in directory.rglob("*") if path.is_file())
+            except OSError as exc:
+                return task_failure(
+                    "invalid_output",
+                    f"output '{output}' could not be expanded for schema validation: {exc}",
+                )
+            candidates.extend(f"{root}:{path.relative_to(output_root).as_posix()}" for path in descendants)
+            continue
+        candidates.append(output)
+
+    for output in dict.fromkeys(candidates):
+        root, _, rest = output.partition(":")
         spec = match_artifact(rest)
         if spec is None or spec.compat != "must_compat":
             continue
         try:
             output_root = workspace.change_dir if root == "change" else workspace.project_root
             raw = (output_root / rest).read_text(encoding="utf-8")
-        except OSError:
-            continue
+        except OSError as exc:
+            return task_failure(
+                "invalid_output",
+                f"output '{output}' could not be read for schema validation: {exc}",
+            )
         is_yaml = rest.endswith((".yaml", ".yml"))
         try:
             data = yaml.safe_load(raw) if is_yaml else json.loads(raw)
@@ -252,6 +477,9 @@ def _validate_registry_outputs(
             return task_failure("invalid_output", f"output '{output}' is not valid {kind}: {exc}")
         try:
             authored[output] = data
+            authoring = _authoring_obligations_model(spec)
+            if authoring is not None:
+                authoring.model_validate(data)
             validated[output] = spec.model.model_validate(data)
         except ValidationError as exc:
             return task_failure(
@@ -268,6 +496,58 @@ def _validate_registry_outputs(
                 "output 'change:inspect/issue-analysis-status.json' candidate_digest "
                 f"must equal canonical issue-candidates digest {expected!r}",
             )
+    case_review_raw = authored.get("change:review/case-review.json")
+    if case_review_raw is not None:
+        coverage_invalid = _validate_case_review_minimum_coverage(
+            workspace=workspace,
+            review_raw=case_review_raw,
+        )
+        if coverage_invalid is not None:
+            return coverage_invalid
+    return None
+
+
+def _validate_case_review_minimum_coverage(
+    *,
+    workspace: TaskWorkspace,
+    review_raw: object,
+) -> TaskResult | None:
+    """Cross-check the reviewer's MRC summary against the frozen matrix input."""
+    try:
+        review = CaseReviewAuthoring.model_validate(review_raw)
+    except ValidationError as exc:
+        return task_failure("invalid_output", f"case review authoring contract is invalid: {exc}")
+
+    matrix_path = workspace.change_dir / "trace" / "minimum-coverage-matrix.yaml"
+    try:
+        matrix_raw = yaml.safe_load(matrix_path.read_text(encoding="utf-8"))
+        matrix = MinimumCoverageMatrix.model_validate(matrix_raw)
+    except (OSError, ValueError, yaml.YAMLError, ValidationError) as exc:
+        return task_failure(
+            "invalid_output",
+            f"case review minimum_coverage requires a valid frozen trace/minimum-coverage-matrix.yaml: {exc}",
+        )
+
+    required = [row for row in matrix.root if row.required]
+    expected_total = len(required)
+    expected_covered = sum(row.status == "covered" for row in required)
+    expected_missing = [row.key for row in required if row.status == "skipped_by_scope"]
+    expected_skipped = len(expected_missing)
+    actual = review.minimum_coverage
+    if (
+        actual.total_required != expected_total
+        or actual.covered != expected_covered
+        or actual.skipped_by_scope != expected_skipped
+        or actual.missing != expected_missing
+    ):
+        return task_failure(
+            "invalid_output",
+            "case review minimum_coverage disagrees with frozen matrix: "
+            f"expected total_required={expected_total}, covered={expected_covered}, "
+            f"skipped_by_scope={expected_skipped}, missing={expected_missing!r}; "
+            f"got total_required={actual.total_required}, covered={actual.covered}, "
+            f"skipped_by_scope={actual.skipped_by_scope}, missing={actual.missing!r}",
+        )
     return None
 
 
@@ -302,6 +582,7 @@ def _attach_gate_report(
         node_results=node_results,
         artifact_overrides=overrides,
         audit_events_dir=context.change_dir,
+        checkpoint_ns=task.checkpoint_ns,
     )
     try:
         candidate_report = check_gate_in_view(compiled.schema.gates, gate_id, eval_context)
@@ -317,6 +598,7 @@ def _attach_gate_report(
                 state_values=state_values,
                 node_results=node_results,
                 audit_events_dir=context.change_dir,
+                checkpoint_ns=task.checkpoint_ns,
             ),
         )
     except GateError as exc:

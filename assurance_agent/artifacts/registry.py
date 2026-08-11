@@ -21,23 +21,31 @@ from assurance_agent.artifacts.models import (
     ApiCodegenFixerSafetyCheckV1,
     ApiGeneratedFilesV1,
     ApplySummary,
+    CaseReviewAuthoring,
     CaseYaml,
+    CaseYamlAuthoring,
+    CodegenGeneratedFilesAuthoring,
     ChangeIssueSnapshot,
+    CampaignResult,
+    CampaignSpec,
+    Counterexample,
+    ReplayAttemptReceipt,
     DataKnowledgeProposal,
     E2eCodegenFixApplyIntentV1,
     E2eCodegenFixApplySummaryV1,
     E2eCodegenFixerSafetyCheckV1,
     E2eGeneratedFilesV1,
-    FuzzGeneratedFilesV1,
-    PerformanceGeneratedFilesV1,
     EvalEvidenceSlice,
     EvalRunProjection,
     ExecutionManifest,
     FactBaseline,
+    FactBaselineAuthoring,
     FailureAnalysis,
     FixerAuthorityV1,
     FixerProposalApprovalReceiptV1,
     FixProposal,
+    FuzzGeneratedFilesV1,
+    GeneratedManifest,
     IssueAnalysisStatus,
     IssueCandidateDocument,
     IssueEvidenceManifest,
@@ -46,27 +54,49 @@ from assurance_agent.artifacts.models import (
     ImprovementCandidateDocumentDraftV3,
     ImprovementCandidateDocumentV3,
     ImprovementAutoReviewAssessment,
+    ImprovementAutoReviewAssessmentAuthoring,
     ImprovementAutoReviewBatchSummary,
     ImprovementAutoReviewStatus,
     ImprovementReviewSubject,
     ImprovementOutboxEntry,
+    MetricsDocument,
+    MinimumCoverageMatrix,
+    MinimumCoverageResult,
     ObservationDocument,
+    OracleSetSnapshot,
+    PromotionReceipt,
     QaYaml,
     QualityGateResultDocument,
     QualityReport,
     PlanReview,
     PlanReviewAuthoring,
-    TraceProjectionDocument,
+    PerformanceGeneratedFilesV1,
+    RegressionCandidate,
     RetroContextV3,
     RetroPipelineFailureDocument,
     RetroRunStatus,
     RetroWindow,
     Review,
+    RoundDecision,
     SafetyCheck,
     SignalDocumentV3,
     SignalDraftDocument,
+    TestPromotionManifest,
+    TraceProjectionDocument,
+    TraceSufficiencyFacts,
+    CoverageGapsDocument,
+    CLayerMetricsDocument,
+    DeclarationProposal,
+    QuarantineProjection,
     WorkflowEvidenceSlice,
     WorkflowState,
+)
+from assurance_agent.artifacts.models.coverage_repair import (
+    CoverageRepairApplySummary,
+    CoverageRepairBaseline,
+    CoverageRepairBrief,
+    CoverageRepairSafetyCheck,
+    CoverageRepairStatus,
 )
 from assurance_agent.artifacts.models.plan_checks import PlanCheckDocument
 
@@ -81,9 +111,44 @@ class ArtifactSpec(BaseModel):
     # 落盘校验模型与 agent 撰写契约不一致时（如 runtime 回填字段），
     # prompt 渲染必须用撰写契约，否则会要求模型输出 runtime 自己插入的字段。
     authoring_model: type[BaseModel] | None = None
+    # True when runtime completion deliberately adds fields that the authored
+    # artifact contract forbids agents from supplying.
+    runtime_completes_authoring: bool = False
 
 
 REGISTRY: list[ArtifactSpec] = [
+    ArtifactSpec(
+        artifact_type="api_generated_files_v1",
+        pattern="codegen/api-generated-files.json",
+        model=ApiGeneratedFilesV1,
+        compat="versioned",
+        authoring_model=CodegenGeneratedFilesAuthoring,
+        runtime_completes_authoring=True,
+    ),
+    ArtifactSpec(
+        artifact_type="e2e_generated_files_v1",
+        pattern="codegen/e2e-generated-files.json",
+        model=E2eGeneratedFilesV1,
+        compat="versioned",
+        authoring_model=CodegenGeneratedFilesAuthoring,
+        runtime_completes_authoring=True,
+    ),
+    ArtifactSpec(
+        artifact_type="fuzz_generated_files_v1",
+        pattern="codegen/fuzz-generated-files.json",
+        model=FuzzGeneratedFilesV1,
+        compat="versioned",
+        authoring_model=CodegenGeneratedFilesAuthoring,
+        runtime_completes_authoring=True,
+    ),
+    ArtifactSpec(
+        artifact_type="performance_generated_files_v1",
+        pattern="codegen/performance-generated-files.json",
+        model=PerformanceGeneratedFilesV1,
+        compat="versioned",
+        authoring_model=CodegenGeneratedFilesAuthoring,
+        runtime_completes_authoring=True,
+    ),
     ArtifactSpec(
         artifact_type="improvement_review_subject_v1",
         pattern="qa/improvements/review-subjects/*.json",
@@ -95,6 +160,8 @@ REGISTRY: list[ArtifactSpec] = [
         pattern="qa/improvements/reviews/*/assessment.json",
         model=ImprovementAutoReviewAssessment,
         compat="must_compat",
+        authoring_model=ImprovementAutoReviewAssessmentAuthoring,
+        runtime_completes_authoring=True,
     ),
     ArtifactSpec(
         artifact_type="improvement_auto_review_status_v1",
@@ -112,6 +179,13 @@ REGISTRY: list[ArtifactSpec] = [
         artifact_type="improvement_reconcile_outbox_v1",
         pattern="qa/improvements/outbox/pending/*.json",
         model=ImprovementOutboxEntry,
+        compat="must_compat",
+    ),
+    # Lane C declaration proposals (project-relative, peer to knowledge-delta).
+    ArtifactSpec(
+        artifact_type="declaration_proposal",
+        pattern="qa/improvements/declarations/*.proposal.yaml",
+        model=DeclarationProposal,
         compat="must_compat",
     ),
     ArtifactSpec(
@@ -192,7 +266,11 @@ REGISTRY: list[ArtifactSpec] = [
         authoring_model=SignalDraftDocument,
     ),
     ArtifactSpec(
-        artifact_type="case_yaml", pattern="cases/**/case.yaml", model=CaseYaml, compat="must_compat"
+        artifact_type="case_yaml",
+        pattern="cases/**/case.yaml",
+        model=CaseYaml,
+        compat="must_compat",
+        authoring_model=CaseYamlAuthoring,
     ),
     ArtifactSpec(artifact_type="qa_yaml", pattern=".qa.yaml", model=QaYaml, compat="must_compat"),
     ArtifactSpec(
@@ -217,7 +295,97 @@ REGISTRY: list[ArtifactSpec] = [
         artifact_type="trace_projection",
         pattern="inspect/trace-projection.json",
         model=TraceProjectionDocument,
-        compat="versioned",
+        compat="must_compat",
+    ),
+    # must_compat: A2/A4 covered exclusion reads this ledger; a partial parse
+    # must not silently drop quarantined keys from the denominator.
+    ArtifactSpec(
+        artifact_type="quarantine_projection",
+        pattern="inspect/quarantine-projection.json",
+        model=QuarantineProjection,
+        compat="must_compat",
+    ),
+    # must_compat rather than versioned: the independent trace-sufficiency gate
+    # routes on these fields, so a document this release cannot fully validate
+    # must be refused rather than read partially and routed as a pass.
+    ArtifactSpec(
+        artifact_type="trace_sufficiency_facts",
+        pattern="inspect/trace-sufficiency.json",
+        model=TraceSufficiencyFacts,
+        compat="must_compat",
+    ),
+    # must_compat: Lane B dual-source gap signals; consumers fingerprint gaps
+    # for improvement candidates, so partial parse must not silently drop kinds.
+    ArtifactSpec(
+        artifact_type="coverage_gaps",
+        pattern="inspect/coverage-gaps.json",
+        model=CoverageGapsDocument,
+        compat="must_compat",
+    ),
+    # must_compat: brief / status / safety-check steer gate routing, and
+    # apply-summary / baseline steer the safety verdict that feeds a gate, so a
+    # document this release cannot fully validate must be refused rather than
+    # read partially and routed as a pass — same rationale already recorded for
+    # metrics_document.
+    ArtifactSpec(
+        artifact_type="coverage_repair_brief",
+        pattern="coverage-repair/brief.json",
+        model=CoverageRepairBrief,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="coverage_repair_status",
+        pattern="coverage-repair/status.json",
+        model=CoverageRepairStatus,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="coverage_repair_safety_check",
+        pattern="coverage-repair/safety-check.json",
+        model=CoverageRepairSafetyCheck,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="coverage_repair_apply_summary",
+        pattern="coverage-repair/apply-summary.json",
+        model=CoverageRepairApplySummary,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="coverage_repair_baseline",
+        pattern="coverage-repair/entry-baseline.json",
+        model=CoverageRepairBaseline,
+        compat="must_compat",
+    ),
+    # Report-only C1/C2/C3 aggregate (M4). Outside MetricKey on purpose: must not
+    # couple into metrics-sufficiency-gate floors or single-change verdict.
+    ArtifactSpec(
+        artifact_type="c_layer_metrics",
+        pattern="inspect/metrics-c-layer.json",
+        model=CLayerMetricsDocument,
+        compat="must_compat",
+    ),
+    # must_compat for the same reason as the trace facts above: the independent
+    # metrics-sufficiency-gate routes on these fields, and a document this release
+    # cannot fully validate must be refused rather than read partially and routed
+    # as a pass. The batch-scoped `execution/runs/<batch>/metrics.json` pre-copy
+    # stays unregistered by design (spec §9): it is derived, and a second
+    # authoritative writer on one artifact type cannot resolve the phase's
+    # immutability conflict.
+    ArtifactSpec(
+        artifact_type="metrics_document",
+        pattern="inspect/metrics.json",
+        model=MetricsDocument,
+        compat="must_compat",
+    ),
+    # Independent must_compat carrier for the nightly cadence (§9). Same model,
+    # different artifact_type and path: a second writer on inspect/metrics.json
+    # would reopen a passed PR verdict; nightly aggregation writes only here.
+    ArtifactSpec(
+        artifact_type="metrics_nightly_document",
+        pattern="inspect/metrics-nightly.json",
+        model=MetricsDocument,
+        compat="must_compat",
     ),
     ArtifactSpec(
         artifact_type="observation_document",
@@ -261,29 +429,19 @@ REGISTRY: list[ArtifactSpec] = [
         model=QualityReport,
         compat="versioned",
     ),
+    # must_compat: deterministic materialize-minimum-coverage owns this path;
+    # the report-generator skill must not invent join fields (spec §2.2 / §12.12).
     ArtifactSpec(
-        artifact_type="api_generated_files_v1",
-        pattern="codegen/api-generated-files.json",
-        model=ApiGeneratedFilesV1,
-        compat="versioned",
+        artifact_type="minimum_coverage_result",
+        pattern="report/minimum-coverage-result.json",
+        model=MinimumCoverageResult,
+        compat="must_compat",
     ),
     ArtifactSpec(
-        artifact_type="e2e_generated_files_v1",
-        pattern="codegen/e2e-generated-files.json",
-        model=E2eGeneratedFilesV1,
-        compat="versioned",
-    ),
-    ArtifactSpec(
-        artifact_type="fuzz_generated_files_v1",
-        pattern="codegen/fuzz-generated-files.json",
-        model=FuzzGeneratedFilesV1,
-        compat="versioned",
-    ),
-    ArtifactSpec(
-        artifact_type="performance_generated_files_v1",
-        pattern="codegen/performance-generated-files.json",
-        model=PerformanceGeneratedFilesV1,
-        compat="versioned",
+        artifact_type="minimum_coverage_matrix",
+        pattern="trace/minimum-coverage-matrix.yaml",
+        model=MinimumCoverageMatrix,
+        compat="must_compat",
     ),
     ArtifactSpec(
         artifact_type="fix_proposal",
@@ -352,12 +510,15 @@ REGISTRY: list[ArtifactSpec] = [
         model=SafetyCheck,
         compat="must_compat",
     ),
-    ArtifactSpec(
-        artifact_type="plan_check",
-        pattern="review/*-plan-checks.json",
-        model=PlanCheckDocument,
-        compat="must_compat",
-    ),
+    *[
+        ArtifactSpec(
+            artifact_type="plan_check",
+            pattern=f"review/{layer}-plan-checks.json",
+            model=PlanCheckDocument,
+            compat="must_compat",
+        )
+        for layer in ("api", "e2e", "fuzz", "performance")
+    ],
     ArtifactSpec(
         artifact_type="review",
         pattern="review/api-plan-review.json",
@@ -386,12 +547,20 @@ REGISTRY: list[ArtifactSpec] = [
         compat="must_compat",
         authoring_model=PlanReviewAuthoring,
     ),
+    ArtifactSpec(
+        artifact_type="review",
+        pattern="review/case-review.json",
+        model=Review,
+        compat="must_compat",
+        authoring_model=CaseReviewAuthoring,
+    ),
     ArtifactSpec(artifact_type="review", pattern="review/*.json", model=Review, compat="must_compat"),
     ArtifactSpec(
         artifact_type="fact_baseline",
         pattern="facts/fact-baseline.json",
         model=FactBaseline,
         compat="must_compat",
+        authoring_model=FactBaselineAuthoring,
     ),
     ArtifactSpec(
         artifact_type="advisory", pattern="explore/advisory.json", model=Advisory, compat="must_compat"
@@ -403,7 +572,74 @@ REGISTRY: list[ArtifactSpec] = [
         artifact_type="data_knowledge_proposal",
         pattern="plans/data-knowledge.proposal.*.yaml",
         model=DataKnowledgeProposal,
-        compat="versioned",
+        # Proposals are authored by the current workflow and consumed by the
+        # strict promotion boundary in the same run. Accepting an older or
+        # invented shape here only defers the failure until post-batch Retro.
+        compat="must_compat",
+    ),
+    # Phase 1 adversarial discovery (change-local discovery/**).
+    ArtifactSpec(
+        artifact_type="discovery_campaign_spec",
+        pattern="discovery/campaign-spec.yaml",
+        model=CampaignSpec,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="discovery_oracle_set",
+        pattern="discovery/oracle-set.yaml",
+        model=OracleSetSnapshot,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="discovery_round_decision",
+        pattern="discovery/rounds/*/decision.json",
+        model=RoundDecision,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="discovery_generated_manifest",
+        pattern="discovery/rounds/*/generated-manifest.json",
+        model=GeneratedManifest,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="discovery_counterexample",
+        pattern="discovery/counterexamples/*.yaml",
+        model=Counterexample,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="discovery_replay_attempt_receipt",
+        pattern="discovery/counterexamples/*/replay/attempt-*.json",
+        model=ReplayAttemptReceipt,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="discovery_campaign_result",
+        pattern="discovery/campaign-result.yaml",
+        model=CampaignResult,
+        compat="must_compat",
+    ),
+    # Phase 1 test-promotion (change-local discovery/candidates/<id>/).
+    # Keep receipts with the candidate tree so archive copies one unit;
+    # do not use qa/improvements/** or inspect/ for Phase 1 vertical slice.
+    ArtifactSpec(
+        artifact_type="discovery_regression_candidate",
+        pattern="discovery/candidates/*/candidate.yaml",
+        model=RegressionCandidate,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="discovery_promotion_manifest",
+        pattern="discovery/candidates/*/promotion-manifest.yaml",
+        model=TestPromotionManifest,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
+        artifact_type="discovery_promotion_receipt",
+        pattern="discovery/candidates/*/promotion-receipt.json",
+        model=PromotionReceipt,
+        compat="must_compat",
     ),
 ]
 
@@ -435,3 +671,16 @@ def match_artifact(relpath: str) -> ArtifactSpec | None:
         if _pattern_regex(spec.pattern).match(norm):
             return spec
     return None
+
+
+def artifacts_under(directory: str) -> tuple[ArtifactSpec, ...]:
+    """Return specs whose registered patterns are statically below ``directory``.
+
+    Directory declarations do not name a concrete artifact, so this deliberately
+    accepts only literal prefix containment.  It never invents a sample path to
+    make a glob match and therefore cannot pull in contracts from another subtree.
+    """
+    norm = directory.replace("\\", "/")
+    if not norm or not norm.endswith("/"):
+        return ()
+    return tuple(spec for spec in REGISTRY if spec.pattern.startswith(norm))

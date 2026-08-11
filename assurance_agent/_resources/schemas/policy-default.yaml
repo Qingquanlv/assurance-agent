@@ -1,9 +1,13 @@
 # 组织边界常量表。这里只声明「什么必须停、什么必须人批」，
 # 绝不描述流程步骤或节点顺序——那是 workflow-schema.yaml 的职责。
 #
-# 每个字段都必须有 gate 表达式或实名登记的 Python 消费者
-# （tests/unit/workflow/orchestration/test_plan_check_gate.py 守着）。
+# 每个字段都必须有 gate 表达式消费，或登记在册的 Python 消费者
+# （tests/unit/workflow/orchestration/test_plan_check_gate.py::
+# test_every_policy_field_has_a_parsed_runtime_consumer 守着）。
 # plan_checks 默认全 warn，与 C3b 迁移前全局 plan_check_action: warn 等价。
+#
+# coverage_floor 已 deprecated：由 evidence_sufficiency.floors 取代；包内保留以
+# 兼容旧 policy，禁止新增消费（守卫禁止 DSL / Python 新消费者）。
 version: 1
 human_review_risk_levels: [high, critical]
 force_continue_allowed: true
@@ -19,6 +23,10 @@ fuzz:
   required_when_endpoint_has_auth: true
 healing:
   auth_module: require_human
+# 正交原则：只问「有没有新鲜证据」，不问「过没过」，所以默认不含 pass_status。
+# 省略本块的历史文件走字段级默认值，取值与此处逐字一致。
+# floors 用 canonical MetricKey + 显式 target（无 *_touched 变体）；mutation_score
+# 各档默认不启用（§5-B1）。cadence 键与 MetricsDocument.cadence Literal 对齐。
 evidence_sufficiency:
   recency_hours: 72
   required_kinds:
@@ -27,3 +35,33 @@ evidence_sufficiency:
     Fuzz: [covered, fuzz_run]
     Performance: [covered, perf_run]
   on_insufficient: require_human
+  floors:
+    low:
+      constraint_coverage: {target: value, min: 0.5}
+      auth_matrix_coverage: {target: touched, min: 1.0}
+    medium:
+      constraint_coverage: {target: value, min: 0.7}
+      auth_matrix_coverage: {target: touched, min: 1.0}
+      journey_coverage: {target: touched, min: 1.0}
+    high:
+      constraint_coverage: {target: touched, min: 1.0}
+      auth_matrix_coverage: {target: touched, min: 1.0}
+      journey_coverage: {target: touched, min: 1.0}
+    critical:
+      constraint_coverage: {target: touched, min: 1.0}
+      auth_matrix_coverage: {target: touched, min: 1.0}
+      journey_coverage: {target: touched, min: 1.0}
+      adversarial_clean: {target: holds, must_hold: true}
+  cadence:
+    pr:
+      - diff_coverage
+      - constraint_coverage
+      - auth_matrix_coverage
+      - journey_coverage
+      - threshold_slack
+    nightly:
+      - mutation_score
+      - assertion_strength
+      - adversarial_yield
+      - baseline_drift
+  mutation_budget_seconds: 300

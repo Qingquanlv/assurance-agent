@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict
 
@@ -51,6 +51,8 @@ class SufficiencyReport(BaseModel):
 SufficiencyReportLike = SufficiencyReport | SufficiencyReportV2
 
 EvidenceCoverageErrorCode = Literal["evidence_projection_missing", "policy_error"]
+_ACTIONS: frozenset[str] = frozenset(get_args(PlanCheckAction))
+_ERROR_CODES: frozenset[str] = frozenset(get_args(EvidenceCoverageErrorCode))
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,12 @@ class EvidenceCoverageEvaluation:
     error_code: EvidenceCoverageErrorCode | None
 
     def __post_init__(self) -> None:
+        if self.action is not None and self.action not in _ACTIONS:
+            raise ValueError(f"action {self.action!r} is outside the PlanCheckAction vocabulary")
+        if self.error_code is not None and self.error_code not in _ERROR_CODES:
+            raise ValueError(
+                f"error_code {self.error_code!r} is outside the EvidenceCoverageErrorCode vocabulary"
+            )
         success = self.report is not None and self.action is not None and self.error_code is None
         failure = self.report is None and self.action is None and self.error_code is not None
         if not (success or failure):
@@ -67,6 +75,26 @@ class EvidenceCoverageEvaluation:
                 "EvidenceCoverageEvaluation must be success (report+action, no error) "
                 "or failure (no report/action, has error)"
             )
+
+    @classmethod
+    def failed(cls, error_code: EvidenceCoverageErrorCode) -> EvidenceCoverageEvaluation:
+        return cls(report=None, action=None, error_code=error_code)
+
+    @classmethod
+    def evaluated(
+        cls, *, report: SufficiencyReportLike, action: PlanCheckAction
+    ) -> EvidenceCoverageEvaluation:
+        return cls(report=report, action=action, error_code=None)
+
+    def to_json_dict(self) -> dict[str, object]:
+        if self.error_code is not None:
+            return {"report": None, "action": None, "error_code": self.error_code}
+        assert self.report is not None and self.action is not None
+        return {
+            "report": self.report.model_dump(mode="json"),
+            "action": self.action,
+            "error_code": None,
+        }
 
 
 def build_evidence_coverage_evaluation(

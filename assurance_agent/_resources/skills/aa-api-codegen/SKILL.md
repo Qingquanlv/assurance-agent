@@ -1,6 +1,7 @@
 ---
 name: aa-api-codegen
-description: Generate API tests and a strict generated-files manifest after the API plan gate passes.
+description: >-
+  Use only after api-plan-review.json has decision == "pass" and codegen_readiness in ["ready", "ready_with_warnings"]. Triggers on: "generate test code from plan", "continue API codegen", "implement api-codegen-plan", "generate /tests/api". User request may trigger this skill but never replaces the JSON gate. Reads Stage 1 plan files and generates pytest code, fixtures, and helpers. Does NOT execute pytest — test execution is Phase 8 aa-run. Never runs before planning is complete.
 ---
 
 ## Purpose
@@ -50,3 +51,27 @@ Write only authorized test/testdata paths plus the summary and manifest.
 Do not modify product source.
 
 Do not run pytest or invent collection evidence.
+
+### Blocked gate output
+
+`STOP` blocks product and test generation; it does not cancel the node's mandatory
+evidence contract. On the first failed gate, you must not modify `tests/**`, shared
+factories, adapters, helpers, or application code. Always write both of these evidence
+artifacts before returning:
+
+- `qa/changes/<change-id>/codegen/api-codegen-summary.md`, with a `Blocked` section
+  naming the first failed gate and confirming that no test or support file was changed.
+- `qa/changes/<change-id>/codegen/api-generated-files.json`, with an empty `files`
+  array:
+
+```json
+{
+  "schema_version": "1",
+  "change_id": "<change-id>",
+  "layer": "api",
+  "files": []
+}
+```
+
+These two files record the fail-closed outcome; writing them is not permission to
+continue codegen or to report `phases.api_codegen.status = done`.

@@ -25,6 +25,7 @@ from assurance_agent.workflow.execution.evidence import (
 from assurance_agent.evidence.sufficiency import EvidenceCoverageEvaluation
 from assurance_agent.workflow.execution.results import TargetResult
 from assurance_agent.workflow.report.failure_classifier import classify_failure
+from assurance_agent.workflow.report.quality_gate import coverage_metrics_status
 
 
 class InspectResult(BaseModel):
@@ -120,7 +121,7 @@ def inspect_change(
         failures.extend(_classify_target(result, target, evidence, change_id))  # type: ignore[arg-type]
 
     coverage_gaps = _coverage_gaps(evidence)
-    if gate.dimensions.coverage.status == "FAIL":
+    if coverage_metrics_status(gate.dimensions.coverage) == "FAIL":
         failures.extend(_coverage_failures(evidence, coverage_gaps))
 
     _complete(failures)

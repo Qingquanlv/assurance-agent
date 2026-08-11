@@ -23,6 +23,10 @@ def read_text(*relpath: str) -> str:
     return _node(*relpath).read_text(encoding="utf-8")
 
 
+def read_bytes(*relpath: str) -> bytes:
+    return _node(*relpath).read_bytes()
+
+
 def exists(*relpath: str) -> bool:
     node = _node(*relpath)
     return node.is_file() or node.is_dir()

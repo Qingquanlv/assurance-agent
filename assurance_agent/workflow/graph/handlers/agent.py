@@ -13,20 +13,30 @@ handler 不写 strict events；write-set 的 ledger 持久化归 scheduler（Tas
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
+from assurance_agent.change_location import ChangeLocation
 from assurance_agent.workflow.core.graph_types import ErrorKind
 from assurance_agent.workflow.graph.agent_api import AgentInvoker, AgentRequest, build_node_prompt
 from assurance_agent.workflow.graph.assurance_personas import (
     ASSURANCE_PERSONA_BY_TARGET,
     expected_assurance_persona,
 )
+from assurance_agent.workflow.graph.codegen_manifest import (
+    CodegenManifestError,
+    complete_codegen_manifest,
+    verify_frozen_codegen_completion,
+)
 from assurance_agent.workflow.graph.contracts import (
     ExecutionContractCatalog,
     ResourceClaims,
     ResourcePath,
 )
+from assurance_agent.workflow.graph.model_routing import ModelRouteContext, ModelRouter
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
@@ -55,6 +65,63 @@ from assurance_agent.workflow.retro_outputs import (
     complete_candidate_outputs,
     complete_signal_outputs,
 )
+from assurance_agent.workflow.orchestration.gates import valid_ancestor_accept_risk_decisions
+
+_PROTECTED_CANONICAL_AGENT_INPUTS = (Path(".aa/data-knowledge.yaml"),)
+
+
+@dataclass(frozen=True)
+class _CanonicalInputSnapshot:
+    path: Path
+    existed: bool
+    payload: bytes | None
+    mode: int | None
+
+
+def _snapshot_canonical_agent_inputs(context: RuntimeContext) -> tuple[_CanonicalInputSnapshot, ...]:
+    snapshots: list[_CanonicalInputSnapshot] = []
+    for rel in _PROTECTED_CANONICAL_AGENT_INPUTS:
+        path = context.project_root / rel
+        if path.is_file() and not path.is_symlink():
+            snapshots.append(
+                _CanonicalInputSnapshot(
+                    path=path,
+                    existed=True,
+                    payload=path.read_bytes(),
+                    mode=path.stat().st_mode & 0o777,
+                )
+            )
+        else:
+            snapshots.append(_CanonicalInputSnapshot(path=path, existed=False, payload=None, mode=None))
+    return tuple(snapshots)
+
+
+def _restore_escaped_canonical_agent_writes(
+    snapshots: tuple[_CanonicalInputSnapshot, ...],
+) -> tuple[str, ...]:
+    escaped: list[str] = []
+    for snapshot in snapshots:
+        path = snapshot.path
+        current = path.read_bytes() if path.is_file() and not path.is_symlink() else None
+        if snapshot.existed and current == snapshot.payload:
+            continue
+        if not snapshot.existed and current is None and not path.is_symlink():
+            continue
+        escaped.append(path.as_posix())
+        if not snapshot.existed:
+            path.unlink(missing_ok=True)
+            continue
+        assert snapshot.payload is not None
+        assert snapshot.mode is not None
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_name(f".{path.name}.{uuid4().hex}.agent-guard.tmp")
+        try:
+            temp.write_bytes(snapshot.payload)
+            temp.chmod(snapshot.mode)
+            os.replace(temp, path)
+        finally:
+            temp.unlink(missing_ok=True)
+    return tuple(escaped)
 
 
 class AgentHandler:
@@ -65,11 +132,17 @@ class AgentHandler:
         *,
         contracts: ExecutionContractCatalog,
         compiled: CompiledWorkflow,
+        model_router: ModelRouter | None = None,
+        adapter_name: str | None = None,
+        cli_model_override: str | None = None,
     ) -> None:
         self._invoker = invoker
         self._store = store
         self._contracts = contracts
         self._compiled = compiled
+        self._model_router = model_router
+        self._adapter_name = adapter_name
+        self._cli_model_override = cli_model_override
 
     def execute(
         self,
@@ -93,6 +166,28 @@ class AgentHandler:
         if contract is None or contract.read_isolation != "declared_only":
             link_host_task_paths(workspace, context)
         runtime_context = load_runtime_context_sidecar(workspace)
+        resolution = None
+        if self._model_router is not None and self._adapter_name == "opencode":
+            resolution = self._model_router.resolve(
+                ModelRouteContext(
+                    adapter="opencode",
+                    skill=skill,
+                    prior_error_kind=task.prior_error_kind,
+                    contract_failure_kinds_seen=task.contract_failure_kinds_seen,
+                    cli_override=self._cli_model_override,
+                )
+            )
+        accepted_risks = valid_ancestor_accept_risk_decisions(
+            self._compiled.schema,
+            ChangeLocation(
+                project_root=workspace.project_root,
+                change_id=context.change_id,
+                path=workspace.change_dir,
+                source="changes",
+            ),
+            checkpoint_ns=task.checkpoint_ns,
+            events_dir=context.change_dir,
+        )
         prompt = build_node_prompt(
             skill,
             task.node_id,
@@ -105,6 +200,16 @@ class AgentHandler:
             prior_error_kind=task.prior_error_kind,
             evidence=task.resolved_evidence or None,
             outputs=outputs,
+            accepted_risks=tuple(
+                {
+                    "gate_id": decision.gate_id,
+                    "interrupt_id": decision.interrupt_id,
+                    "checkpoint_ns": decision.checkpoint_ns,
+                    "reason": decision.reason,
+                    "who": decision.who,
+                }
+                for decision in accepted_risks
+            ),
             runtime_context=runtime_context,
         )
         if skill in ASSURANCE_PERSONA_BY_TARGET:
@@ -129,20 +234,44 @@ class AgentHandler:
             # The schema binding is the workflow author's explicit capability
             # choice. Name-based routing exists only for legacy/omitted bindings.
             agent=agent,
+            model=resolution.model if resolution is not None else None,
+            model_route_source=resolution.source if resolution is not None else None,
+            model_policy_sha256=resolution.policy_sha256 if resolution is not None else None,
             runtime_context_sha256=(
                 runtime_context_digest(runtime_context) if runtime_context is not None else None
             ),
         )
+        protected_inputs = _snapshot_canonical_agent_inputs(context)
         try:
             result = self._invoker.invoke(request)
         except Exception as exc:  # adapter/plugin boundary must become a typed Graph failure
+            escaped = _restore_escaped_canonical_agent_writes(protected_inputs)
+            if escaped:
+                return task_failure(
+                    "forbidden_write",
+                    "agent escaped task workspace and modified protected canonical input(s): "
+                    + ", ".join(escaped),
+                )
             return task_failure("internal", f"{type(exc).__name__}: {exc}")
+        escaped = _restore_escaped_canonical_agent_writes(protected_inputs)
+        if escaped:
+            return task_failure(
+                "forbidden_write",
+                "agent escaped task workspace and modified protected canonical input(s): "
+                + ", ".join(escaped),
+            )
         if not result.ok:
             return task_failure(
                 result.error_kind or "internal",
                 result.error or f"agent invocation failed for {task.target}",
             )
         try:
+            codegen_receipt = complete_codegen_manifest(
+                task=task,
+                workspace=workspace,
+                context=context,
+                claims=claims,
+            )
             complete_issue_analyzer_outputs(workspace.change_dir, outputs)
             complete_signal_outputs(workspace.project_root, outputs)
             complete_candidate_outputs(workspace.project_root, outputs)
@@ -175,6 +304,7 @@ class AgentHandler:
             SignalInvalidError,
             CandidateOutputError,
             ImprovementReviewerOutputError,
+            CodegenManifestError,
             TypeError,
             ValueError,
         ) as exc:
@@ -183,6 +313,15 @@ class AgentHandler:
             write_set = self._store.freeze_write_set(workspace, claims=claims, outputs=outputs)
         except WorkspaceError as exc:
             return task_failure(_freeze_error_kind(exc), str(exc))
+        if codegen_receipt is not None:
+            try:
+                verify_frozen_codegen_completion(
+                    store=self._store,
+                    write_set_id=write_set.write_set_id,
+                    receipt=codegen_receipt,
+                )
+            except CodegenManifestError as exc:
+                return task_failure("invalid_output", str(exc))
         return TaskResult(
             status="succeeded",
             write_set_id=write_set.write_set_id,
@@ -238,18 +377,20 @@ def agent_for_skill(skill: str) -> str | None:
     and never writes) and blocks writes/reads outside the task sandbox.
 
     Mapping is keyword-based so new sibling skills route correctly:
+    - ``aa-explore``                    -> aa-explorer    (explore/ + aa risk)
     - ``*codegen*``                     -> aa-test-author (tests/ + codegen/)
     - ``*reviewer*`` / ``*inspect*``    -> aa-reviewer   (review/ + inspect/)
     - ``*report*``                      -> aa-reporter   (report/)
     - ``*archive*``                     -> aa-archiver   (qa/cases + qa/archive)
-    - explore / case-design / *-plan /
-      *-fixer / fact-baseline /
+    - case-design / *-plan / *-fixer / fact-baseline /
       fix-proposal (the rest)           -> aa-doc-author (authoring/design/plan)
 
     Returns ``None`` for an unknown/empty skill so the adapter keeps its default.
     """
     if not skill:
         return None
+    if skill == "aa-explore":
+        return "aa-explorer"
     if "codegen" in skill:
         return "aa-test-author"
     if "reviewer" in skill or "inspect" in skill:

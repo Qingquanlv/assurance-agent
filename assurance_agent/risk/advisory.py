@@ -11,6 +11,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from assurance_agent.artifacts.models import Advisory
+from assurance_agent.artifacts.models.explore import SourceCodeEvidence
 from assurance_agent.risk.context import EvidenceEntry, RiskContext
 
 Confidence = str  # "high" | "medium" | "low"
@@ -147,21 +148,32 @@ def _check_mode_consistency(advisory: dict, interaction_mode: str | None, errors
             errors.append(f"{oq_id}: autonomous run forbids answered_via {via}")
 
 
-def _evidence_confidence_cap(ev: EvidenceEntry) -> Confidence:
+def _evidence_confidence_cap(ev: EvidenceEntry | SourceCodeEvidence) -> Confidence:
+    if isinstance(ev, SourceCodeEvidence):
+        return ev.parse_confidence_cap
     if ev.type == "historical_issue":
         return "high" if ev.projection_digest is not None else "low"
     return "high"
 
 
-def _check_confidence_items(context: RiskContext, items: Any, label: str, errors: list[str]) -> None:
+def _check_confidence_items(
+    context: RiskContext,
+    source_evidence: dict[str, SourceCodeEvidence],
+    items: Any,
+    label: str,
+    errors: list[str],
+) -> None:
     if not isinstance(items, list):
         return
-    evidence_by_id = {e.id: e for e in context.evidence}
+    evidence_by_id: dict[str, EvidenceEntry | SourceCodeEvidence] = {e.id: e for e in context.evidence}
+    evidence_by_id.update(source_evidence)
     module_conf = {m.name: m.confidence for m in context.impact.modules}
 
     def qualifies_high(ev_id: str) -> bool:
         ev = evidence_by_id.get(ev_id)
         if ev is None:
+            return False
+        if isinstance(ev, SourceCodeEvidence):
             return False
         if ev.type == "historical_issue":
             return ev.projection_digest is not None
@@ -208,16 +220,28 @@ def validate_advisory(
 ) -> tuple[bool, list[str]]:
     errors: list[str] = []
 
+    parsed_advisory: Advisory | None = None
     if isinstance(advisory.get("schema_version"), str):
         try:
-            Advisory.model_validate(advisory)
+            parsed_advisory = Advisory.model_validate(advisory)
         except ValidationError as err:
             return (
                 False,
                 [f"{'.'.join(str(p) for p in e['loc']) or '(root)'}: {e['msg']}" for e in err.errors()],
             )
 
-    evidence_by_id = {e.id: e for e in context.evidence}
+    source_evidence: dict[str, SourceCodeEvidence] = {}
+    if parsed_advisory is not None:
+        for evidence in parsed_advisory.source_code_evidence:
+            if evidence.id in source_evidence:
+                errors.append(f"duplicate source_code_evidence id: {evidence.id}")
+            elif any(context_evidence.id == evidence.id for context_evidence in context.evidence):
+                errors.append(f"source_code_evidence id conflicts with context evidence: {evidence.id}")
+            else:
+                source_evidence[evidence.id] = evidence
+
+    evidence_by_id: dict[str, EvidenceEntry | SourceCodeEvidence] = {e.id: e for e in context.evidence}
+    evidence_by_id.update(source_evidence)
     known_issue_ids = {h.problem_id for h in context.historical_issues}
     affected = set(context.impact.affected_case_ids) | set(known_case_ids)
 
@@ -229,10 +253,14 @@ def validate_advisory(
         if case_id not in affected:
             errors.append(f"case_id not in context.affected_case_ids or qa/cases: {case_id}")
 
-    _check_confidence_items(context, advisory.get("watchlist"), "watchlist", errors)
+    _check_confidence_items(context, source_evidence, advisory.get("watchlist"), "watchlist", errors)
     g = _guidance(advisory)
     _check_confidence_items(
-        context, g.get("priority_hints") if g else None, "case_design_guidance.priority_hints", errors
+        context,
+        source_evidence,
+        g.get("priority_hints") if g else None,
+        "case_design_guidance.priority_hints",
+        errors,
     )
 
     _check_open_question_lifecycle(advisory, errors)

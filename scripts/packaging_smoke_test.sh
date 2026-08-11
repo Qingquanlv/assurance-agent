@@ -8,7 +8,13 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-cd "$REPO_ROOT"
+# Build the committed tree, not the caller's dirty worktree.  Hatch includes
+# untracked Python files below assurance_agent/, which can otherwise make a
+# locally green wheel depend on files a clean clone will never receive.
+mkdir "$WORK_DIR/source"
+git -C "$REPO_ROOT" archive HEAD | tar -x -C "$WORK_DIR/source"
+
+cd "$WORK_DIR/source"
 uv build --wheel --out-dir "$WORK_DIR/dist"
 
 uv venv --python 3.11 "$WORK_DIR/venv"
@@ -60,11 +66,20 @@ assert policy_obligations.DEFERRED_POLICY_OBLIGATIONS
 assert hasattr(manual_revision, "ManualRevisionError")
 PY
 
+# Import the runtime registry from the installed wheel.  Schema nodes may be
+# syntactically valid while their registered operation modules are absent from
+# the committed package, so resource-only checks are not sufficient.
+"$WORK_DIR/venv/bin/python" - <<'PY'
+from assurance_agent.workflow.driver.operations_catalog import default_operations
+
+assert default_operations()
+PY
+
 # Packaged skills + opencode assets must resolve from the wheel install.
 "$WORK_DIR/venv/bin/python" - <<'PY'
 from assurance_agent import resources
 skills = resources.iter_children("skills")
-assert len(skills) == 38, f"expected 38 skills, got {len(skills)}"
+assert len(skills) == 39, f"expected 39 skills, got {len(skills)}"
 required = {
     "aa-workflow",
     "writing-skills",
@@ -72,6 +87,7 @@ required = {
     "aa-retro-issue-analysis",
     "aa-retro-workflow-analysis",
     "aa-retro-eval-analysis",
+    "aa-coverage-repair",
     "aa-fuzz-plan",
     "aa-fuzz-plan-reviewer",
     "aa-fuzz-codegen",

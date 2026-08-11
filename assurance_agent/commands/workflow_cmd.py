@@ -10,9 +10,13 @@ import click
 import yaml
 
 from assurance_agent.change_location import ChangeNotFoundError, resolve_change
+from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import UnsafeIdentifierError
 from assurance_agent.retro.supervisor import RetroInvocation, run_retro_supervised
 from assurance_agent.workflow.driver.adapter import DriverError
+from assurance_agent.workflow.driver.adapter_factory import (
+    build_adapter as _factory_build_adapter,
+)
 from assurance_agent.workflow.driver.driver_state import (
     driver_status_for_graph,
     evaluate_start_guard,
@@ -22,7 +26,6 @@ from assurance_agent.workflow.driver.driver_state import (
     supersede_reason_from_error,
     write_driver_state,
 )
-from assurance_agent.workflow.driver.headless_adapter import HeadlessAdapter
 from assurance_agent.workflow.driver.loop import (
     EXIT_COMPLETED,
     EXIT_ERROR,
@@ -30,13 +33,11 @@ from assurance_agent.workflow.driver.loop import (
     EXIT_STOPPED,
     run_workflow_loop,
 )
-from assurance_agent.workflow.driver.opencode_adapter import OpenCodeAdapter, auth_headers_from_env
 from assurance_agent.workflow.driver.runtime_factory import build_graph_runtime, runtime_context_for
 from assurance_agent.workflow.driver.workflow_start import start_workflow_detached
 from assurance_agent.workflow.graph.checkpoint import CheckpointImportError, parse_import_manifest
 from assurance_agent.workflow.graph.models import ResumeCommand
-from assurance_agent.workflow.graph.runtime import GraphRuntimeError
-from assurance_agent.workflow.graph.runtime import ensure_retro_params
+from assurance_agent.workflow.graph.runtime import GraphRuntimeError, ensure_retro_params
 from assurance_agent.workflow.graph.supersede import SupersedeError
 
 
@@ -125,20 +126,6 @@ def _parse_params(raw: str | None) -> dict[str, object]:
     return _parse_json_object(raw, "--params")
 
 
-_DEFAULT_CURSOR_MODEL = "cursor-grok-4.5-high-fast"
-
-
-def _resolve_headless_model(model: str | None) -> str:
-    """Prefer explicit --model, then env, then the cursor-agent default."""
-    if model and model.strip():
-        return model.strip()
-    for key in ("AA_CURSOR_MODEL", "CURSOR_MODEL"):
-        value = (os.environ.get(key) or "").strip()
-        if value:
-            return value
-    return _DEFAULT_CURSOR_MODEL
-
-
 def _build_adapter(
     adapter_name: str,
     project_root: Path,
@@ -148,26 +135,15 @@ def _build_adapter(
     parent_session: str | None,
     agent_cmd: str,
 ):  # noqa: ANN201 — returns an AgentInvoker implementation
-    if adapter_name == "opencode":
-        if not server:
-            click.secho("--server is required for --adapter opencode", fg="red")
-            raise SystemExit(EXIT_ERROR)
-        try:
-            return OpenCodeAdapter(
-                server=server,
-                directory=directory or str(project_root),
-                model=model,
-                parent_session=parent_session,
-                auth_headers=auth_headers_from_env(),
-            )
-        except DriverError as err:
-            click.secho(str(err), fg="red")
-            raise SystemExit(EXIT_ERROR) from err
     try:
-        return HeadlessAdapter(
-            agent_cmd=agent_cmd,
-            cwd=project_root,
-            model=_resolve_headless_model(model),
+        return _factory_build_adapter(
+            adapter_name,
+            project_root,
+            server,
+            directory,
+            model,
+            parent_session,
+            agent_cmd,
         )
     except DriverError as err:
         click.secho(str(err), fg="red")
@@ -197,6 +173,7 @@ _ENTRYPOINT_CHOICE = click.Choice(
         "improvement-export",
         "improvement-apply",
         "improvement-rollback",
+        "metrics-nightly",
     ]
 )
 
@@ -254,6 +231,8 @@ def _run_or_detach(
                 params=dict(invocation.params),
                 parent_session_id=parent_session,
                 adopt_lock_token=adopt_lock,
+                adapter_name=adapter_name,
+                cli_model_override=model,
             )
             return result_holder
 
@@ -291,6 +270,8 @@ def _run_or_detach(
         params=parsed_params,
         parent_session_id=parent_session,
         adopt_lock_token=adopt_lock,
+        adapter_name=adapter_name,
+        cli_model_override=model,
         on_root_bound=bind_root if result_json is not None else None,
     )
     if result_json is not None:
@@ -503,6 +484,8 @@ def workflow_resume(
             project_root=project_root,
             change_id=change_id,
             adapter=adapter,
+            adapter_name=adapter_name,
+            cli_model_override=model,
         )
         if invocation_id is not None:
             assert expected_entrypoint is not None
@@ -756,10 +739,12 @@ def workflow_import_checkpoint(
             project_root=project_root,
             change_id=change_id,
             adapter=adapter,
+            adapter_name=adapter_name,
+            cli_model_override=model,
         )
         context = runtime_context_for(project_root, change_id, parsed_params, parent_session)
         result = bundle.runtime.import_checkpoint(bundle.compiled, manifest, context)
-    except (GraphRuntimeError, CheckpointImportError) as err:
+    except AaError as err:
         click.secho(str(err), fg="red")
         raise SystemExit(EXIT_ERROR) from err
 

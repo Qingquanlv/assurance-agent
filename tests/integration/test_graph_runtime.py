@@ -6,12 +6,15 @@ import json
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from assurance_agent.workflow.core.events import read_events_strict
+from assurance_agent.workflow.driver.operations_catalog import default_operations
+from assurance_agent.workflow.driver.runtime_factory import assemble_graph_runtime
+from assurance_agent.workflow.graph.leases import LeaseRegistry, SystemClock, new_lease
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
-from assurance_agent.workflow.graph.checkpoint import CheckpointStore
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import (
     ExecutionContractCatalog,
@@ -21,9 +24,7 @@ from assurance_agent.workflow.graph.contracts import (
 from assurance_agent.workflow.graph.handlers.operation import (
     OperationFn,
     OperationHandler,
-    default_operations,
 )
-from assurance_agent.workflow.graph.leases import LeaseRegistry, SystemClock, new_lease
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
@@ -32,18 +33,15 @@ from assurance_agent.workflow.graph.models import (
 )
 from assurance_agent.workflow.graph.planner import PlanError
 from assurance_agent.workflow.graph import runtime as runtime_mod
-from assurance_agent.workflow.driver.runtime_factory import one_definition_resolver
-from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 from assurance_agent.workflow.graph.runtime import (
     GraphDefinitionChanged,
     GraphRuntime,
     GraphRuntimeError,
 )
-from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
-from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner, build_default_node_runner
+from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
 from assurance_agent.workflow.graph import workspace as workspace_mod
-from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
+from assurance_agent.workflow.graph.workspace import TreeStore
 from tests.helpers_aa import write_aa_config
 
 T0 = datetime(2026, 7, 19, 12, 0, 0, tzinfo=timezone.utc)
@@ -256,47 +254,34 @@ def _build_runtime(
     clock=None,
     node_runner=None,
     change_id: str = "CH-1",
-) -> tuple[GraphRuntime, Scheduler]:
-    change = project / "qa" / "changes" / change_id
-    store = TreeStore(change)
-    checkpoints = CheckpointStore(change)
-    workspaces = WorkspaceBackend(change)
-    clock = clock or SystemClock()
-    holder: dict[str, GraphRuntime] = {}
+    object_store=None,
+) -> tuple[GraphRuntime, Any]:
+    from assurance_agent.workflow.graph.definition_pinning import request_for_compiled
 
-    def run_child(task, graph_id, workspace, context):  # type: ignore[no-untyped-def]
-        return holder["rt"].run_child(task, graph_id, workspace, context)
-
-    if node_runner is None:
-        node_runner = build_default_node_runner(
-            NeverCalledInvoker(), store, contracts, compiled=compiled, run_child=run_child
-        )
-    graph_id = compiled.entrypoints["full"].graph_id
-    state_defs = dict(compiled.schema.graphs[graph_id].state)
-    scheduler = Scheduler(
-        checkpoints=checkpoints,
-        object_store=store,
-        clock=clock,
-        workspace_backend=workspaces,
-        node_runner=node_runner,
-        max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
-        contracts=contracts,
-        state_defs=state_defs,
-    )
-    runtime = GraphRuntime(
-        checkpoint_store=checkpoints,
-        object_store=store,
-        workspace_backend=workspaces,
-        definition_resolver=one_definition_resolver(
+    change_dir = project / "qa" / "changes" / change_id
+    if node_runner is not None:
+        runtime = assemble_graph_runtime(
+            project_root=project,
+            change_dir=change_dir,
             compiled=compiled,
             contracts=contracts,
-            ingest_catalog=validate_catalog_runtime(),
-            node_runner=node_runner,
-            scheduler=scheduler,
-        ),
-        clock=clock,
-    )
-    holder["rt"] = runtime
+            clock=clock,
+            object_store=object_store,
+            build_node_runner=lambda _store, _run_child: node_runner,
+        )
+    else:
+        runtime = assemble_graph_runtime(
+            project_root=project,
+            change_dir=change_dir,
+            compiled=compiled,
+            contracts=contracts,
+            adapter=NeverCalledInvoker(),
+            clock=clock,
+            object_store=object_store,
+        )
+    scheduler = runtime._definition_resolver(  # noqa: SLF001
+        request_for_compiled(compiled, event_schema_version=6)
+    ).scheduler
     return runtime, scheduler
 
 
@@ -1134,53 +1119,34 @@ def test_nested_drive_run_child_single_synchronized_capture(tmp_path: Path) -> N
 
     ops["operation:sync-knowledge"] = sync_knowledge
     change = project / "qa/changes/CH-1"
-    checkpoints = CheckpointStore(change)
-    workspaces = WorkspaceBackend(change)
-    clock = SystemClock()
-    holder: dict[str, GraphRuntime] = {}
 
-    def run_child(task, graph_id, workspace, context):  # type: ignore[no-untyped-def]
-        nested_capture["active"] = True
-        try:
-            return holder["rt"].run_child(task, graph_id, workspace, context)
-        finally:
-            nested_capture["active"] = False
+    def build_node_runner(object_store, run_child):  # type: ignore[no-untyped-def]
+        from assurance_agent.workflow.graph.handlers.subgraph import SubgraphHandler
 
-    from assurance_agent.workflow.graph.handlers.subgraph import SubgraphHandler
+        def wrapped_run_child(task, graph_id, workspace, context):  # type: ignore[no-untyped-def]
+            nested_capture["active"] = True
+            try:
+                return run_child(task, graph_id, workspace, context)
+            finally:
+                nested_capture["active"] = False
 
-    operation = OperationHandler(ops)
-    node_runner = HandlerNodeRunner(
-        {target: operation for target in ops},
-        namespace_handlers={"graph": SubgraphHandler(run_child)},
-        compiled=compiled,
-        object_store=store,
-    )
-    graph_id = compiled.entrypoints["full"].graph_id
-    state_defs = dict(compiled.schema.graphs[graph_id].state)
-    scheduler = Scheduler(
-        checkpoints=checkpoints,
-        object_store=store,
-        clock=clock,
-        workspace_backend=workspaces,
-        node_runner=node_runner,
-        max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
-        contracts=contracts,
-        state_defs=state_defs,
-    )
-    runtime = GraphRuntime(
-        checkpoint_store=checkpoints,
-        object_store=store,
-        workspace_backend=workspaces,
-        definition_resolver=one_definition_resolver(
+        operation = OperationHandler(ops)
+        return HandlerNodeRunner(
+            {target: operation for target in ops},
+            namespace_handlers={"graph": SubgraphHandler(wrapped_run_child)},
             compiled=compiled,
-            contracts=contracts,
-            ingest_catalog=validate_catalog_runtime(),
-            node_runner=node_runner,
-            scheduler=scheduler,
-        ),
-        clock=clock,
+            object_store=object_store,
+        )
+
+    runtime = assemble_graph_runtime(
+        project_root=project,
+        change_dir=change,
+        compiled=compiled,
+        contracts=contracts,
+        object_store=store,
+        build_node_runner=build_node_runner,
+        clock=SystemClock(),
     )
-    holder["rt"] = runtime
     result = runtime.run(compiled, "full", _context(project))
 
     assert result.exit_code == 0

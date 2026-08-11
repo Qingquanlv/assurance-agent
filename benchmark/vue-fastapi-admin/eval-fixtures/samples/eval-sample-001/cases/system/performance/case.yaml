@@ -1,10 +1,12 @@
 schema_version: "1.0"
 added:
-  - case_id: PERF-001
+  - case_id: PERF_001
     title: API list endpoint load threshold
+    status: active
     priority: P1
-    severity: high
+    severity: major
     type: Performance
+    module: system.api
     objective: Verify GET /api/v1/api/list sustains declared absolute latency and error thresholds under fixed load.
     summary: Locust hammers the API list endpoint with authenticated users; thresholds are user-confirmed absolutes, not baseline regression.
     preconditions:
@@ -23,6 +25,7 @@ added:
       performance:
         scenario:
           capability: GET /api/v1/api/list
+          endpoint: /api/v1/api/list
           thresholds:
             p95_ms: 500
             error_rate_max: 0.01

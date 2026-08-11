@@ -21,6 +21,7 @@ from assurance_agent.workflow.core.graph_types import ErrorKind
 from assurance_agent.workflow.graph.agent_api import AgentInvoker
 from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog
 from assurance_agent.workflow.graph.ingest_catalog import IngestArtifactCatalog
+from assurance_agent.workflow.graph.model_routing import ModelRouter
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
@@ -126,7 +127,11 @@ def build_default_node_runner(
     contracts: ExecutionContractCatalog,
     *,
     compiled: CompiledWorkflow,
+    operations: Mapping[str, Callable[[ExecutableTask, TaskWorkspace, RuntimeContext], TaskResult]],
     run_child: Callable[[ExecutableTask, str, TaskWorkspace, RuntimeContext], TaskResult] | None = None,
+    model_router: ModelRouter | None = None,
+    adapter_name: str | None = None,
+    cli_model_override: str | None = None,
     ingest_catalog: IngestArtifactCatalog | None = None,
     model_map: Mapping[str, type[BaseModel]] | None = None,
 ) -> NodeRunner:
@@ -134,6 +139,7 @@ def build_default_node_runner(
 
     ``compiled`` 提供 node 定义（per-node contract claim 收窄、interrupt 配置）
     与 gate 定义；``contracts`` 提供 execution contract 默认 claim。
+    ``operations`` 由 driver 组装根注入（内核不 import 领域注册表）。
     ``run_child`` 注入后注册 ``graph:`` namespace handler。
     成功路径统一经 ``finalize_task_result``：output 校验 → attached gate → 冻结报告。
     """
@@ -141,19 +147,24 @@ def build_default_node_runner(
     from assurance_agent.workflow.graph.handlers.gate import GateHandler
     from assurance_agent.workflow.graph.handlers.interrupt import InterruptHandler
     from assurance_agent.workflow.graph.handlers.join import JoinHandler
-    from assurance_agent.workflow.graph.handlers.operation import (
-        OperationHandler,
-        default_operations,
-    )
+    from assurance_agent.workflow.graph.handlers.operation import OperationHandler
     from assurance_agent.workflow.graph.handlers.subgraph import SubgraphHandler
 
-    agent = AgentHandler(adapter, object_store, contracts=contracts, compiled=compiled)
-    operation = OperationHandler(default_operations())
+    agent = AgentHandler(
+        adapter,
+        object_store,
+        contracts=contracts,
+        compiled=compiled,
+        model_router=model_router,
+        adapter_name=adapter_name,
+        cli_model_override=cli_model_override,
+    )
+    operation = OperationHandler(operations)
     handlers: dict[str, TaskHandler] = {
         "builtin:join": JoinHandler(),
         "builtin:gate": GateHandler(compiled),
         "builtin:interrupt": InterruptHandler(compiled, object_store),
-        **{target: operation for target in default_operations()},
+        **{target: operation for target in operations},
     }
     namespace_handlers: dict[str, TaskHandler] = {"skill": agent}
     if run_child is not None:

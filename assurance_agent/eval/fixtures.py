@@ -99,6 +99,25 @@ _SUPPORT_PATH_ALLOWLIST_SUFFIXES: frozenset[str] = frozenset(
     }
 )
 
+_TRANSIENT_FIXTURE_DIRS = frozenset(
+    {
+        "__pycache__",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+    }
+)
+_TRANSIENT_FIXTURE_SUFFIXES = frozenset({".pyc", ".pyo"})
+
+
+def _is_transient_fixture_path(path: Path, *, sample_root: Path) -> bool:
+    relative = path.relative_to(sample_root)
+    return (
+        any(part in _TRANSIENT_FIXTURE_DIRS for part in relative.parts[:-1])
+        or relative.name in {".coverage", ".DS_Store"}
+        or relative.suffix in _TRANSIENT_FIXTURE_SUFFIXES
+    )
+
 
 def _fixture_entry(fixtures_root: Path, sample_dir: str) -> FixtureLockEntry:
     relative = Path(sample_dir)
@@ -111,6 +130,8 @@ def _fixture_entry(fixtures_root: Path, sample_dir: str) -> FixtureLockEntry:
     for path in sorted(sample_root.rglob("*")):
         if path.is_symlink():
             raise AaError(f"fixture contains symlink: {path}")
+        if _is_transient_fixture_path(path, sample_root=sample_root):
+            continue
         if path.is_file():
             rel = path.relative_to(sample_root).as_posix()
             if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:

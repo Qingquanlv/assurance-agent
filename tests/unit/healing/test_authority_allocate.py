@@ -559,9 +559,7 @@ def test_allocate_binds_reused_from_ledger_snapshot_entries(tmp_path: Path) -> N
     raw = canonical_json_bytes(snapshot)
     snapshot_id = hashlib.sha256(raw).hexdigest()
     store_task_input_snapshot(store, snapshot_id, raw)
-    _seed_committed_api_codegen_events(
-        change, write_set_id=write_set_id, snapshot_id=snapshot_id
-    )
+    _seed_committed_api_codegen_events(change, write_set_id=write_set_id, snapshot_id=snapshot_id)
 
     result = enhance_allocate_result_with_authority(
         task=_task({"active_targets": ["api"], "execution_batch_id": "batch-1"}),

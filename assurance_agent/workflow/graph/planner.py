@@ -37,6 +37,10 @@ graph/node 路径、activation ordinal 与 fan-out key 经 canonical SHA-256 派
   invocation/namespace/budget/task 派生——技术 retry 重计划同一 task，同一
   成功只消耗一个单位；失败/abandon 消耗零个单位。success 与
   ``budget_consumed`` 的原子 staging 由 scheduler 按此标记执行（Task 10）。
+- abandoned 通常消耗一次 attempt；但 ``graph:*`` task 只是可重入的子图编排壳，
+  子图自身已有独立 checkpoint/ledger，因此在声明预算耗尽时额外允许一次 crash
+  recovery replay。该例外不放宽 agent/operation task，且第二次壳节点 abandon
+  仍会终止，避免持久崩溃无限重放。
 - 同一决策点上有多条非互斥 token 同时选中同一普通 node 时 fail closed
   （PlanError，提示改用 builtin:join），绝不重复激活。设计 §6.5 把这一拒绝
   划归 compiler；在 compiler 获得该静态检查之前，planner 以运行时守卫兜底。
@@ -585,6 +589,7 @@ def _seed_outcomes(
                         context,
                         nid,
                         max(len(node_tasks) - 1, 0),
+                        contract_failure_kinds_seen=latest.contract_failure_kinds_seen,
                     )
                 )
             continue
@@ -613,6 +618,7 @@ def _seed_outcomes(
             )
             continue
         policy = _retry_policy(compiled, definition)
+        abandoned_subgraph_replay = False
         if latest.status == "failed":
             exhausted = latest.attempts_used >= policy.max_attempts
             terminal_for_policy = exhausted or latest.error_kind not in policy.retry_on
@@ -706,7 +712,7 @@ def _seed_outcomes(
             ):
                 # Process-death abandon of a graph wrapper that already started its
                 # child must re-enter run_child rather than hard-stop at max_attempts=1.
-                pass
+                abandoned_subgraph_replay = True
             else:
                 return (
                     outcomes,
@@ -718,18 +724,22 @@ def _seed_outcomes(
                 )
         # failed-retryable 或 abandoned 且预算未耗尽：同一 task_id 进入下一 wave。
         outcomes[nid] = _Outcome(status="unresolved", task=latest)
-        retry.append(
-            _build_task(
-                compiled,
-                graph,
-                projection,
-                context,
-                nid,
-                len(node_tasks) - 1,
-                prior_failure=latest.error if latest.status == "failed" else None,
-                prior_error_kind=latest.error_kind if latest.status == "failed" else None,
-            )
+        retry_task = _build_task(
+            compiled,
+            graph,
+            projection,
+            context,
+            nid,
+            len(node_tasks) - 1,
+            prior_failure=latest.error if latest.status == "failed" else None,
+            prior_error_kind=latest.error_kind if latest.status == "failed" else None,
+            contract_failure_kinds_seen=latest.contract_failure_kinds_seen,
         )
+        if abandoned_subgraph_replay:
+            retry_task = retry_task.model_copy(
+                update={"retry_policy": policy.model_copy(update={"max_attempts": policy.max_attempts + 1})}
+            )
+        retry.append(retry_task)
     retry = _overlay_imported_outcomes(graph, projection, context, outcomes, retry)
     return outcomes, retry, None
 
@@ -819,6 +829,15 @@ def _deliver_tokens(
             selected.setdefault(target, []).append(descriptor)
             return
         rerouted.setdefault(target, redirect)
+        # When the consumer never succeeds (budget limit 0), successorship on the
+        # consumer stays open forever and would reopen ``exhausted_to`` every
+        # superstep. Absorb only after the divert target has *succeeded* — a
+        # prior structural skip of the same node (common while budget remains)
+        # must not block the real exhausted_to activation.
+        if redirect not in ("END", "STOP", "FAIL") and _node_has_succeeded_generation(
+            projection, graph.graph_id, redirect
+        ):
+            return
         deliver(redirect, f"budget:{target}:exhausted")
 
     # Phase 1: START + ordinary edges（cycle 回边按成功代数门控，避免 pass 后仍被 fix 拉回）。
@@ -1187,6 +1206,7 @@ def _seed_fan_out(
                 index,
                 prior_failure=child.error if child.status == "failed" else None,
                 prior_error_kind=child.error_kind if child.status == "failed" else None,
+                contract_failure_kinds_seen=child.contract_failure_kinds_seen,
             )
         )
 
@@ -1792,8 +1812,26 @@ def _activate(
     nid: str,
     tokens: list[str],
 ) -> ExecutableTask:
-    ordinal = sum(1 for task in projection.tasks.values() if task.node_id == nid)
-    task = _build_task(compiled, graph, projection, context, nid, ordinal)
+    task_ordinal = sum(1 for task in projection.tasks.values() if task.node_id == nid)
+    task = _build_task(compiled, graph, projection, context, nid, task_ordinal)
+    activation_id = canonical_digest(
+        {
+            "invocation_id": projection.invocation_id,
+            "checkpoint_ns": projection.checkpoint_ns,
+            "graph_id": graph.graph_id,
+            "node_id": nid,
+            "ordinal": task_ordinal,
+        }
+    )
+    generation_ordinal = task_ordinal
+    history = projection.node_histories.get(node_history_key(projection.checkpoint_ns, graph.graph_id, nid))
+    if history is not None and history.latest_generation_ordinal >= 0:
+        generation_ordinal = _next_generation_ordinal(projection, graph.graph_id, nid)
+        latest = history.generations_by_ordinal.get(history.latest_generation_ordinal)
+        if latest is not None and latest.status == "activated" and latest.activation_id == activation_id:
+            # The task was planned but has not acquired a scheduler slot yet.
+            # Re-emit the same decision instead of inventing a new generation/task.
+            generation_ordinal = latest.generation_ordinal
     events.append(
         NodeActivatedEvent(
             type="node_activated",
@@ -1801,16 +1839,8 @@ def _activate(
             checkpoint_ns=projection.checkpoint_ns,
             graph_id=graph.graph_id,
             node_id=nid,
-            generation_ordinal=ordinal,
-            activation_id=canonical_digest(
-                {
-                    "invocation_id": projection.invocation_id,
-                    "checkpoint_ns": projection.checkpoint_ns,
-                    "graph_id": graph.graph_id,
-                    "node_id": nid,
-                    "ordinal": ordinal,
-                }
-            ),
+            generation_ordinal=generation_ordinal,
+            activation_id=activation_id,
             input_sha256=canonical_digest({"tokens": sorted(tokens), "task_input_sha256": task.input_sha256}),
             source_reads_sha256=dict(sorted(source_reads.items())),
         )
@@ -1886,6 +1916,7 @@ def _build_task(
     *,
     prior_failure: str | None = None,
     prior_error_kind: ErrorKind | None = None,
+    contract_failure_kinds_seen: tuple[ErrorKind, ...] = (),
 ) -> ExecutableTask:
     definition = graph.nodes[nid].definition
     expanded_outputs = [_expand_static_output(o, context, nid) for o in definition.outputs]
@@ -1925,6 +1956,7 @@ def _build_task(
         budget=_budget_mark(definition, projection, task_id),
         prior_failure=prior_failure,
         prior_error_kind=prior_error_kind,
+        contract_failure_kinds_seen=contract_failure_kinds_seen,
     )
 
 
@@ -1989,6 +2021,7 @@ def _build_fan_out_task(
     *,
     prior_failure: str | None = None,
     prior_error_kind: ErrorKind | None = None,
+    contract_failure_kinds_seen: tuple[ErrorKind, ...] = (),
 ) -> ExecutableTask:
     """按冻结展开重建第 ``index`` 个 child：同一 ID、同一展开输入，可安全重放。"""
     definition = graph.nodes[nid].definition
@@ -2044,6 +2077,7 @@ def _build_fan_out_task(
         budget=_budget_mark(definition, projection, task_id),
         prior_failure=prior_failure,
         prior_error_kind=prior_error_kind,
+        contract_failure_kinds_seen=contract_failure_kinds_seen,
     )
 
 
@@ -2144,6 +2178,21 @@ def _node_has_task_or_settled_generation(
         "abandoned",
         "stopped",
     )
+
+
+def _node_has_succeeded_generation(
+    projection: GraphProjection,
+    graph_id: str,
+    nid: str,
+) -> bool:
+    """True when ``nid`` has a succeeded task or a succeeded latest generation."""
+    if any(task.node_id == nid and task.status == "succeeded" for task in projection.tasks.values()):
+        return True
+    history = projection.node_histories.get(node_history_key(projection.checkpoint_ns, graph_id, nid))
+    if history is None or history.latest_generation_ordinal < 0:
+        return False
+    generation = history.generations_by_ordinal.get(history.latest_generation_ordinal)
+    return generation is not None and generation.status == "succeeded"
 
 
 def _task_ready_as_predecessor(task: TaskProjection) -> bool:
@@ -2260,19 +2309,33 @@ def _incoming_resolved(graph: CompiledGraph, outcomes: dict[str, _Outcome], nid:
     """前驱结果是否全部稳定：edge/route 源 succeeded 或 skipped；START 恒已解决。
 
     budget 消耗点是其 ``exhausted_to`` 目标的潜在 token 源，与 route 源同等处理。
+    A *succeeded* consumer still counts: the next selection of that consumer may
+    divert here when the budget is spent, so structurally skipping the divert
+    target early would collide with the later ``node_activated`` (generation 0).
     """
     for edge in graph.nodes[nid].incoming:
         if edge.from_ != "START" and outcomes[edge.from_].status == "unresolved":
             return False
     for other in graph.nodes.values():
+        budget = other.definition.budget
+        if budget is not None and budget.exhausted_to == nid:
+            # Still open while the consumer is unresolved *or* has run (and may run again).
+            if outcomes[other.node_id].status == "unresolved" or _succeeded_count_simple(
+                outcomes, other.node_id
+            ):
+                return False
+            continue
         if outcomes[other.node_id].status != "unresolved":
             continue
         if any(nid in route.cases.values() or nid == route.default for route in other.routes):
             return False
-        budget = other.definition.budget
-        if budget is not None and budget.exhausted_to == nid:
-            return False
     return True
+
+
+def _succeeded_count_simple(outcomes: Mapping[str, _Outcome], nid: str) -> bool:
+    """Whether ``nid`` has a succeeded outcome in the current plan projection."""
+    outcome = outcomes.get(nid)
+    return outcome is not None and outcome.status == "succeeded"
 
 
 def _satisfied(expression: str, scope: Scope, nid: str) -> bool:

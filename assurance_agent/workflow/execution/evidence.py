@@ -1,19 +1,41 @@
 """Publish/read one execution batch.
 
-publish writes the append-only runs/<batch-id>/ archive plus the top-level
-latest pointers; the manifest (written last) is the primary evidence marker.
+Publication is two phases, and the split is load-bearing rather than cosmetic:
+
+1. ``publish_target_results`` writes the per-target result JSONs into the batch
+   archive and returns the ``result_files`` map.
+2. ``publish_execution_manifest`` writes the summary, the quality gate and the
+   manifest, then refreshes the top-level latest copies from the batch bytes.
+
+The runner folds a trace projection *between* the two, and that fold reads the
+current batch's result files. Phase 1 therefore has to complete before the gate
+is built, while the manifest cannot exist until after it; keeping one combined
+publisher would have meant writing the same result JSONs twice, and two writes
+of one artifact within a run is two byte states a reader could observe.
+``publish_execution_evidence`` composes both phases for callers that have
+nothing to do in between.
+
+Everything a batch owns therefore lands under ``runs/<batch_id>/`` before the
+top-level manifest names it, and the convenience copies beside that manifest move
+only afterwards: a crash can leave them stale, never contradicting the marker.
+
+Every file is written temp-then-replace, so a reader either sees the previous
+bytes or the complete new ones.
+
 load reads the top-level manifest or an explicitly selected safe batch manifest,
 loads each selected target result, and flags selected-but-missing results as
 integrity issues.
 """
 
-import re
+import os
+import threading
+from datetime import datetime
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel
-from pydantic.types import AwareDatetime
 
+from assurance_agent.artifacts.batch_id import is_valid_batch_id
 from assurance_agent.artifacts.models import (
     ExecutionManifest,
     QualityGateResultLike,
@@ -27,12 +49,31 @@ from assurance_agent.workflow.execution.results import (
 )
 from assurance_agent.workflow.report.quality_gate import load_quality_gate_result_file
 
+# Result documents, in the order they are published. `coverage` trails the
+# executed targets because it is derived from the api run rather than a run of
+# its own; `summary` is not here because it quotes the gate verdict and so
+# cannot exist until phase 2.
+_RESULT_DOCUMENTS: tuple[tuple[str, str], ...] = (
+    ("api", "api-result.json"),
+    ("e2e", "e2e-result.json"),
+    ("fuzz", "fuzz-result.json"),
+    ("performance", "performance-result.json"),
+    ("coverage", "coverage-result.json"),
+)
+
+# Every top-level copy a batch may own, and therefore every one that has to be
+# either refreshed or removed once the authoritative manifest is published. The
+# manifest is not one of them: it is published directly, and is what makes the
+# rest safe to move.
+_LATEST_COPIES: tuple[str, ...] = (
+    *(name for _, name in _RESULT_DOCUMENTS),
+    "summary.md",
+    "quality-gate-result.json",
+)
+
 
 class EvidenceError(AaError):
     pass
-
-
-_BATCH_ID_RE = re.compile(r"[0-9]{8}-[0-9]{6}")
 
 
 class IntegrityIssue(BaseModel):
@@ -55,8 +96,170 @@ class ExecutionEvidence(BaseModel):
     integrity_issues: list[IntegrityIssue]
 
 
+def atomic_write_bytes(path: Path, payload: bytes) -> None:
+    """Write via temp-then-replace so no reader ever sees a half-written file.
+
+    The single writer for everything one execution batch publishes, and for the
+    change-level trace documents the ``materialize-trace-projection`` node publishes
+    after issue reconciliation.
+
+    Atomic *per file*, which is the only guarantee ``os.replace`` can give: a caller
+    publishing two related documents makes two calls and can be interrupted between
+    them. Ordering is what such callers rely on — the trace node writes the
+    projection before the facts that summarise it, so a reader who finds the facts
+    always finds the projection they came from.
+
+    The temp name carries the writing process and thread because a name derived
+    from the target alone is shared by concurrent writers, and two writers
+    sharing one temp file do not merely lose a temp file: the first ``replace``
+    consumes it and the second fails after the first has already published.
+    Cleanup never raises, so a failed publication is what the caller sees rather
+    than the failure to tidy up after it.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}.{threading.get_ident()}")
+    try:
+        tmp.write_bytes(payload)
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    atomic_write_bytes(path, text.encode("utf-8"))
+
+
 def _write_json(path: Path, model: BaseModel) -> None:
-    path.write_text(model.model_dump_json(indent=2), encoding="utf-8")
+    _atomic_write_text(path, model.model_dump_json(indent=2))
+
+
+def _write_manifest(path: Path, manifest: ExecutionManifest) -> None:
+    _atomic_write_text(path, yaml.safe_dump(manifest.model_dump(mode="json"), sort_keys=False))
+
+
+def publish_target_results(
+    *,
+    execution_dir: Path,
+    batch_id: str,
+    api: TargetResult | None,
+    e2e: TargetResult | None,
+    fuzz: TargetResult | None,
+    coverage: CoverageResult | None,
+    performance: PerformanceResult | None,
+) -> dict[str, str]:
+    """Publish this batch's result documents and return the ``result_files`` map.
+
+    Phase 1 of publication. Call this before anything that reads the batch's
+    results off disk — the trace fold does — and pass the returned map to
+    ``publish_execution_manifest`` rather than writing the documents again.
+
+    Batch-scoped only. Phase 1 runs before the gate verdict exists, so a
+    top-level latest copy written here would advertise a batch that no manifest
+    yet names; ``publish_execution_manifest`` moves those copies once the
+    authoritative marker is down.
+    """
+    batch_dir = execution_dir / "runs" / batch_id
+    batch_dir.mkdir(parents=True, exist_ok=True)
+
+    values: dict[str, BaseModel | None] = {
+        "api": api,
+        "e2e": e2e,
+        "fuzz": fuzz,
+        "performance": performance,
+        "coverage": coverage,
+    }
+    result_files: dict[str, str] = {}
+    for key, name in _RESULT_DOCUMENTS:
+        value = values[key]
+        if value is None:
+            continue
+        _write_json(batch_dir / name, value)
+        result_files[key] = f"runs/{batch_id}/{name}"
+    return result_files
+
+
+def publish_execution_manifest(
+    *,
+    execution_dir: Path,
+    change_id: str,
+    batch_id: str,
+    selected_targets: SelectedTargets,
+    result_files: dict[str, str],
+    quality_gate: QualityGateResultLike,
+    summary: str,
+    executed_at: datetime | None = None,
+    tests_tree_sha256: str | None = None,
+    test_files_sha256: dict[str, str] | None = None,
+    product_tree_sha256: str | None = None,
+) -> ExecutionManifest:
+    """Publish the batch's summary, gate and manifest, then move the latest copies.
+
+    Phase 2 of publication. The top-level manifest goes down before those copies
+    because it is the authoritative marker: nothing beside it may claim this
+    batch until it does. ``executed_at`` must be the same aware instant any
+    pre-manifest trace fold was given: the fold projects the manifest onto a
+    logical view keyed on that value and on ``test_files_sha256``, so publishing
+    a different value — or none — makes the two folds disagree.
+    """
+    batch_dir = execution_dir / "runs" / batch_id
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    execution_dir.mkdir(parents=True, exist_ok=True)
+
+    result_files = {**result_files, "summary": f"runs/{batch_id}/summary.md"}
+    _atomic_write_text(batch_dir / "summary.md", summary)
+    _write_json(batch_dir / "quality-gate-result.json", quality_gate)
+
+    manifest = ExecutionManifest(
+        schema_version="1.0",
+        change_id=change_id,
+        batch_id=batch_id,
+        executed_at=executed_at,
+        selected_targets=selected_targets,
+        result_files=result_files,
+        tests_tree_sha256=tests_tree_sha256,
+        test_files_sha256=test_files_sha256,
+        product_tree_sha256=product_tree_sha256,
+        final_status=quality_gate.final_status,
+    )
+    _write_manifest(batch_dir / "execution-manifest.yaml", manifest)
+
+    _write_manifest(execution_dir / "execution-manifest.yaml", manifest)
+    _refresh_latest_copies(execution_dir, batch_dir, result_files)
+    return manifest
+
+
+def _refresh_latest_copies(execution_dir: Path, batch_dir: Path, result_files: dict[str, str]) -> None:
+    """Point the top-level convenience copies at the batch the manifest names.
+
+    Called only after that manifest is on disk. Doing it earlier opens a window
+    where a crash leaves a copy removed, or advanced, while the authoritative
+    manifest still names the previous batch — an inconsistency a reader cannot
+    detect. In this order the worst a crash leaves is a stale copy beside a
+    correct manifest, and everything that resolves evidence through the manifest
+    is unaffected.
+
+    Which documents are current comes from ``result_files``, the manifest's own
+    account of the batch, rather than from whatever the batch directory happens
+    to contain. Batch ids are second-resolution, so two runs of one change can
+    share one, and a rerun that selects fewer targets finds the previous run's
+    files still in its own directory; promoting those would advertise evidence
+    the manifest does not list. Anything not named is removed, so an unselected
+    target cannot leave a predecessor standing as if it were current.
+
+    Byte copies of the batch files rather than a second serialization of the same
+    models, so the copy and the archive it stands for cannot drift.
+    """
+    current = {Path(rel).name for rel in result_files.values()} | {"quality-gate-result.json"}
+    for name in _LATEST_COPIES:
+        source = batch_dir / name
+        pointer = execution_dir / name
+        if name in current and source.is_file():
+            atomic_write_bytes(pointer, source.read_bytes())
+        else:
+            pointer.unlink(missing_ok=True)
 
 
 def write_batch_result_files(
@@ -93,62 +296,34 @@ def publish_execution_evidence(
     performance: PerformanceResult | None,
     quality_gate: QualityGateResultLike,
     summary: str,
+    executed_at: datetime | None = None,
     tests_tree_sha256: str | None = None,
     test_files_sha256: dict[str, str] | None = None,
     product_tree_sha256: str | None = None,
-    executed_at: AwareDatetime | None = None,
 ) -> ExecutionManifest:
-    batch_dir = execution_dir / "runs" / batch_id
-    batch_dir.mkdir(parents=True, exist_ok=True)
-    execution_dir.mkdir(parents=True, exist_ok=True)
-
-    result_files: dict[str, str] = {}
-    named: list[tuple[str, str, BaseModel | None]] = [
-        ("api", "api-result.json", api),
-        ("e2e", "e2e-result.json", e2e),
-        ("fuzz", "fuzz-result.json", fuzz),
-        ("performance", "performance-result.json", performance),
-        ("coverage", "coverage-result.json", coverage),
-    ]
-    for key, name, value in named:
-        if value is None:
-            continue
-        _write_json(batch_dir / name, value)
-        result_files[key] = f"runs/{batch_id}/{name}"
-
-    (batch_dir / "summary.md").write_text(summary, encoding="utf-8")
-    result_files["summary"] = f"runs/{batch_id}/summary.md"
-    _write_json(batch_dir / "quality-gate-result.json", quality_gate)
-
-    manifest = ExecutionManifest(
-        schema_version="1.0",
+    """Both phases back to back, for callers with nothing to do in between."""
+    result_files = publish_target_results(
+        execution_dir=execution_dir,
+        batch_id=batch_id,
+        api=api,
+        e2e=e2e,
+        fuzz=fuzz,
+        coverage=coverage,
+        performance=performance,
+    )
+    return publish_execution_manifest(
+        execution_dir=execution_dir,
         change_id=change_id,
         batch_id=batch_id,
         selected_targets=selected_targets,
         result_files=result_files,
+        quality_gate=quality_gate,
+        summary=summary,
+        executed_at=executed_at,
         tests_tree_sha256=tests_tree_sha256,
         test_files_sha256=test_files_sha256,
         product_tree_sha256=product_tree_sha256,
-        final_status=quality_gate.final_status,
-        executed_at=executed_at,
     )
-    (batch_dir / "execution-manifest.yaml").write_text(
-        yaml.safe_dump(manifest.model_dump(mode="json"), sort_keys=False), encoding="utf-8"
-    )
-
-    # Latest pointers (overwritten each run).
-    for _key, name, value in named:
-        pointer = execution_dir / name
-        if pointer.exists():
-            pointer.unlink()
-        if value is not None:
-            _write_json(pointer, value)
-    (execution_dir / "summary.md").write_text(summary, encoding="utf-8")
-    _write_json(execution_dir / "quality-gate-result.json", quality_gate)
-    (execution_dir / "execution-manifest.yaml").write_text(
-        yaml.safe_dump(manifest.model_dump(mode="json"), sort_keys=False), encoding="utf-8"
-    )
-    return manifest
 
 
 def _load_target(path: Path) -> TargetResult | None:
@@ -165,7 +340,7 @@ def load_execution_evidence(
     *,
     batch_id: str | None = None,
 ) -> ExecutionEvidence:
-    if batch_id is not None and not _BATCH_ID_RE.fullmatch(batch_id):
+    if batch_id is not None and not is_valid_batch_id(batch_id):
         raise EvidenceError(f"unsafe execution batch id: {batch_id!r}")
     manifest_path = (
         execution_dir / "execution-manifest.yaml"
@@ -179,7 +354,7 @@ def load_execution_evidence(
     except (OSError, ValueError, yaml.YAMLError) as err:
         raise EvidenceError(f"execution-manifest.yaml invalid: {err}") from err
 
-    if not _BATCH_ID_RE.fullmatch(manifest.batch_id):
+    if not is_valid_batch_id(manifest.batch_id):
         raise EvidenceError(f"unsafe manifest batch id: {manifest.batch_id!r}")
     if batch_id is not None and manifest.batch_id != batch_id:
         raise EvidenceError(

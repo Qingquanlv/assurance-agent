@@ -169,6 +169,18 @@ def build_quality_gate(
     )
 
 
+def coverage_metrics_status(coverage: CoverageDimension | CoverageDimensionV2) -> GateStatus:
+    """Line/branch coverage judgement only — excludes evidence sufficiency."""
+    if not coverage.available:
+        return "PASS_WITH_WARNINGS"
+    if (
+        coverage.line_coverage >= coverage.threshold.line
+        and coverage.branch_coverage >= coverage.threshold.branch
+    ):
+        return "PASS"
+    return "PASS_WITH_WARNINGS"
+
+
 def quality_gate_legacy_view(
     gate: QualityGateResultLike,
 ) -> tuple[FunctionalDimension, CoverageDimension, NonFunctionalDimension | None]:

@@ -27,6 +27,7 @@ from assurance_agent.workflow.driver.adapter import (
 from assurance_agent.workflow.driver.headless_adapter import HeadlessAdapter
 from assurance_agent.workflow.driver.opencode_adapter import OpenCodeAdapter
 from assurance_agent.workflow.driver.phase_prompt import build_phase_prompt
+from assurance_agent.workflow.core.graph_types import ErrorKind
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import (
@@ -34,16 +35,22 @@ from assurance_agent.workflow.graph.contracts import (
     ResourceClaims,
     parse_execution_contracts,
 )
+from assurance_agent.workflow.driver.operations_catalog import default_operations
+from assurance_agent.workflow.execution.graph_ops import run_tests
 from assurance_agent.workflow.graph.handlers import operation as operation_mod
-from assurance_agent.workflow.graph.handlers.operation import link_host_task_paths
 from assurance_agent.workflow.graph.handlers.agent import AgentHandler, agent_for_skill
 from assurance_agent.workflow.graph.handlers.gate import GateHandler
 from assurance_agent.workflow.graph.handlers.interrupt import InterruptHandler
 from assurance_agent.workflow.graph.handlers.join import JoinHandler
-from assurance_agent.workflow.graph.handlers.operation import (
-    OperationHandler,
-    default_operations,
+from assurance_agent.workflow.graph.handlers.operation import OperationHandler, link_host_task_paths
+from assurance_agent.workflow.graph.handlers.subgraph import SubgraphHandler
+from assurance_agent.workflow.healing.graph_ops import (
+    operation_allocate_healing_attempt,
+    operation_record_healing_status,
+    skill_registry_check,
 )
+from assurance_agent.workflow.report.graph_ops import inspect_operation
+from assurance_agent.workflow.graph.model_routing import ModelRouter
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
@@ -72,6 +79,7 @@ from assurance_agent.workflow.orchestration.gates import (
 import yaml
 from assurance_agent.workflow.orchestration.schema import normalize_gates
 from tests.helpers_aa import write_aa_config
+from assurance_agent.config import ModelRoutingCfg
 
 # ---------------------------------------------------------------------------
 # fixtures
@@ -123,6 +131,8 @@ def _task(
     input_payload: object | None = None,
     resources: ResourceClaims | None = None,
     run_seconds: float = 60.0,
+    prior_error_kind: ErrorKind | None = None,
+    contract_failure_kinds_seen: tuple[ErrorKind, ...] = (),
 ) -> ExecutableTask:
     payload = input_payload if input_payload is not None else {"with": {}, "context": {"change_id": "CH-1"}}
     return ExecutableTask(
@@ -140,6 +150,8 @@ def _task(
         timeout_policy=TimeoutPolicyDef(run_seconds=run_seconds, heartbeat_seconds=10.0),
         target=target,
         resources=resources or ResourceClaims(),
+        prior_error_kind=prior_error_kind,
+        contract_failure_kinds_seen=contract_failure_kinds_seen,
     )
 
 
@@ -167,6 +179,22 @@ class RecordingInvoker:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("agent output\n", encoding="utf-8")
         return self._result
+
+
+class CanonicalKnowledgeEscapingInvoker(RecordingInvoker):
+    """Simulate a headless model escaping its task cwd and rewriting canonical L1."""
+
+    def __init__(self, project: Path) -> None:
+        super().__init__(write="qa/changes/CH-1/explore/summary.md")
+        self._project = project
+
+    def invoke(self, request: AgentRequest) -> AgentResult:
+        result = super().invoke(request)
+        (self._project / ".aa" / "data-knowledge.yaml").write_text(
+            "version: 1\nentities:\n  dept:\n    constraints:\n      name_has_max_length: 20\n",
+            encoding="utf-8",
+        )
+        return result
 
 
 class RecordingHandler:
@@ -264,7 +292,11 @@ def test_build_default_node_runner_dispatches_canonical_targets(tmp_path: Path) 
         """
     )
     runner = build_default_node_runner(
-        RecordingInvoker(), _store(project), _agent_catalog(), compiled=compiled
+        RecordingInvoker(),
+        _store(project),
+        _agent_catalog(),
+        compiled=compiled,
+        operations=default_operations(),
     )
     context = _context(project)
     assert runner.execute(_task("operation:no-op"), _workspace(project, "t-1"), context).status == "succeeded"
@@ -299,6 +331,9 @@ def _agent_catalog() -> ExecutionContractCatalog:
         "    handler: agent\n"
         "    writes: [change:explore/**]\n"
         "    authorization_writes: [change:explore/**]\n"
+        # Packaged explore is declared_only; without this the handler reattaches
+        # host .venv/node_modules into the task root (D11/D13).
+        "    read_isolation: declared_only\n"
     )
 
 
@@ -333,6 +368,10 @@ def _synchronized_agent_handler(project: Path, invoker: RecordingInvoker) -> Age
 
 def test_agent_handler_builds_workspace_request_and_freezes(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
+    (project / ".venv").mkdir()
+    (project / "node_modules").mkdir()
+    (project / ".opencode").mkdir()
+    (project / "qa/changes/CH-1/events.jsonl").write_text('{"seq":1}\n', encoding="utf-8")
     workspace = _workspace(project)
     invoker = RecordingInvoker(write="qa/changes/CH-1/explore/summary.md")
     handler = _agent_handler(project, invoker)
@@ -352,12 +391,36 @@ def test_agent_handler_builds_workspace_request_and_freezes(tmp_path: Path) -> N
     assert request.allowed_writes == ("change:explore/**", "change:explore/summary.md")
     assert "Authorized write paths: change:explore/**" in request.prompt
     assert "skill(name='aa-explore')" in request.prompt
-    # explore routes to the bounded authoring worker, not an aggressive default.
-    assert request.agent == "aa-doc-author"
+    # Explore owns the only agent permission for ``aa risk *``.
+    assert request.agent == "aa-explorer"
     # The prompt pins the absolute sandbox cwd so a bash-restricted agent cannot
     # "discover" the canonical project root and resolve outputs outside the sandbox.
     assert str(workspace.root) in request.prompt
     assert "IS this task's project root" in request.prompt
+    for rel in (".venv", "node_modules", ".opencode", "qa/changes/CH-1/events.jsonl"):
+        assert not (workspace.project_root / rel).exists()
+
+
+def test_agent_handler_restores_and_rejects_canonical_l1_escape_write(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    knowledge = project / ".aa" / "data-knowledge.yaml"
+    original = (
+        "version: 1\nentities:\n  dept:\n    constraints:\n      name_has_max_length: true\n"
+    ).encode()
+    knowledge.write_bytes(original)
+    workspace = _workspace(project)
+    handler = _agent_handler(project, CanonicalKnowledgeEscapingInvoker(project))
+
+    result = handler.execute(
+        _task("skill:aa-explore", node_id="explore"),
+        workspace,
+        _context(project),
+    )
+
+    assert result.status == "failed"
+    assert result.error_kind == "forbidden_write"
+    assert ".aa/data-knowledge.yaml" in (result.error or "")
+    assert knowledge.read_bytes() == original
 
 
 def test_agent_handler_prefers_explicit_node_agent_over_name_inference(tmp_path: Path) -> None:
@@ -518,7 +581,7 @@ def test_agent_for_skill_routes_every_workflow_skill() -> None:
     # Authoritative skill -> aa-* worker mapping (see .opencode/agents/*.md
     # "Serves phases"). Wrong routing breaks a node on its permission floor.
     expected = {
-        "aa-explore": "aa-doc-author",
+        "aa-explore": "aa-explorer",
         "aa-case-design": "aa-doc-author",
         "aa-case-fixer": "aa-doc-author",
         "aa-fact-baseline": "aa-doc-author",
@@ -549,6 +612,154 @@ def test_agent_for_skill_routes_every_workflow_skill() -> None:
     for skill, agent in expected.items():
         assert agent_for_skill(skill) == agent, skill
     assert agent_for_skill("") is None
+
+
+@pytest.mark.parametrize(
+    ("skill", "expected"),
+    [
+        ("aa-case-design", "anthropic/glm-5.2"),
+        ("aa-case-reviewer", "anthropic/deepseek-v4-flash"),
+        ("aa-improvement-reviewer", "anthropic/glm-5.2"),
+    ],
+)
+def test_agent_handler_injects_skill_routed_model(tmp_path: Path, skill: str, expected: str) -> None:
+    project = _make_project(tmp_path)
+    output = f"change:routing/{skill}.txt"
+    catalog = parse_execution_contracts(
+        'schema_version: "1"\n'
+        "contracts:\n"
+        f"  skill:{skill}:\n"
+        "    handler: agent\n"
+        "    writes: [change:routing/**]\n"
+        "    authorization_writes: [change:routing/**]\n"
+    )
+    compiled = _compiled(
+        f"""
+        main:
+          max_supersteps: 5
+          nodes:
+            routed:
+              uses: skill:{skill}
+              outputs: [{output}]
+          edges:
+            - {{from: START, to: routed}}
+            - {{from: routed, to: END}}
+        """
+    )
+    invoker = RecordingInvoker(write=f"qa/changes/CH-1/routing/{skill}.txt")
+    router = ModelRouter(
+        ModelRoutingCfg.model_validate(
+            {
+                "strict_routes": True,
+                "routes": {
+                    "aa-case-design": "anthropic/glm-5.2",
+                    "aa-case-reviewer": "anthropic/deepseek-v4-flash",
+                    "aa-improvement-reviewer": "anthropic/glm-5.2",
+                },
+            }
+        )
+    )
+    handler = AgentHandler(
+        invoker,
+        _store(project),
+        contracts=catalog,
+        compiled=compiled,
+        model_router=router,
+        adapter_name="opencode",
+    )
+
+    result = handler.execute(
+        _task(f"skill:{skill}", node_id="routed"),
+        _workspace(project),
+        _context(project),
+    )
+
+    if skill != "aa-improvement-reviewer":
+        assert result.status == "succeeded"
+    request = invoker.requests[0]
+    assert request.model == expected
+    assert request.model_route_source == "skill_route"
+
+
+def test_agent_handler_escalates_contract_retry_model(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    invoker = RecordingInvoker(write="qa/changes/CH-1/explore/summary.md")
+    router = ModelRouter(
+        ModelRoutingCfg.model_validate(
+            {
+                "strict_routes": True,
+                "routes": {"aa-explore": "anthropic/deepseek-v4-flash"},
+                "escalation": {
+                    "model": "anthropic/glm-5.2",
+                    "on_error_kinds": ["invalid_output", "forbidden_write"],
+                },
+            }
+        )
+    )
+    handler = AgentHandler(
+        invoker,
+        _store(project),
+        contracts=_agent_catalog(),
+        compiled=_compiled(_AGENT_GRAPH),
+        model_router=router,
+        adapter_name="opencode",
+    )
+
+    result = handler.execute(
+        _task(
+            "skill:aa-explore",
+            node_id="explore",
+            prior_error_kind="invalid_output",
+        ),
+        _workspace(project),
+        _context(project),
+    )
+
+    assert result.status == "succeeded"
+    assert invoker.requests[0].model == "anthropic/glm-5.2"
+    assert invoker.requests[0].model_route_source == "escalation"
+
+
+def test_agent_handler_keeps_escalated_model_after_transient_failure(
+    tmp_path: Path,
+) -> None:
+    project = _make_project(tmp_path)
+    invoker = RecordingInvoker(write="qa/changes/CH-1/explore/summary.md")
+    router = ModelRouter(
+        ModelRoutingCfg.model_validate(
+            {
+                "strict_routes": True,
+                "routes": {"aa-explore": "anthropic/deepseek-v4-flash"},
+                "escalation": {
+                    "model": "anthropic/glm-5.2",
+                    "on_error_kinds": ["invalid_output", "forbidden_write"],
+                },
+            }
+        )
+    )
+    handler = AgentHandler(
+        invoker,
+        _store(project),
+        contracts=_agent_catalog(),
+        compiled=_compiled(_AGENT_GRAPH),
+        model_router=router,
+        adapter_name="opencode",
+    )
+
+    result = handler.execute(
+        _task(
+            "skill:aa-explore",
+            node_id="explore",
+            prior_error_kind="timeout",
+            contract_failure_kinds_seen=("invalid_output",),
+        ),
+        _workspace(project),
+        _context(project),
+    )
+
+    assert result.status == "succeeded"
+    assert invoker.requests[0].model == "anthropic/glm-5.2"
+    assert invoker.requests[0].model_route_source == "escalation"
 
 
 def test_agent_handler_adapter_failure_preserves_error_kind(tmp_path: Path) -> None:
@@ -697,6 +908,10 @@ def test_default_operations_registry_has_exact_keys() -> None:
         "operation:record-codegen-fix-apply",
         "operation:combine-fixer-safety",
         "operation:record-healing-status",
+        "operation:probe-coverage-repair-need",
+        "operation:compute-coverage-repair-safety",
+        "operation:allocate-coverage-repair-attempt",
+        "operation:record-coverage-repair-status",
         "operation:inspect",
         "operation:generate-report",
         "operation:stop",
@@ -707,6 +922,7 @@ def test_default_operations_registry_has_exact_keys() -> None:
         "operation:record-retro-pipeline-failure",
         "operation:retro-evidence-gap-fallback",
         "operation:record-analysis-failed",
+        "operation:materialize-empty-retro-analysis",
         "operation:reconcile-improvements",
         "operation:load-review-subject",
         "operation:validate-improvement-review-assessment",
@@ -722,6 +938,7 @@ def test_default_operations_registry_has_exact_keys() -> None:
         "operation:record-project-sync-pending",
         # Issue lifecycle (Task 9-11)
         "operation:reconcile-issues",
+        # Reconciled trace projection + the independent trace-sufficiency gate
         "operation:materialize-trace-projection",
         # Issue review (Task 12)
         "operation:load-problem-review-context",
@@ -738,6 +955,28 @@ def test_default_operations_registry_has_exact_keys() -> None:
         "operation:record-change-improvement-applied",
         "operation:export-knowledge-improvement",
         "operation:record-knowledge-improvement-applied",
+        # Verification metrics M1 (Tasks 5–7): MRC join + PR cadence collectors
+        "operation:materialize-minimum-coverage",
+        "operation:collect-diff-coverage",
+        "operation:compute-constraint-coverage",
+        "operation:compute-auth-matrix",
+        "operation:compute-journey-coverage",
+        "operation:compute-threshold-slack",
+        "operation:collect-pr-metrics-batch",
+        "operation:materialize-pr-metrics",
+        # Nightly metrics carrier (metrics M2 Task 1)
+        "operation:load-latest-pr-metrics",
+        "operation:run-mutation-sample",
+        "operation:compute-assertion-strength",
+        "operation:compute-baseline-drift",
+        "operation:aggregate-nightly-metrics",
+        "operation:evaluate-retrospective-shortboards",
+        # Adversarial discovery yield + flaky quarantine (metrics M3 Tasks 2/4)
+        "operation:collect-adversarial-yield",
+        "operation:materialize-quarantine-projection",
+        # Dual-source Lane B gap signals and the report-only C-layer aggregate (M4)
+        "operation:build-coverage-gap-signals",
+        "operation:materialize-c-layer-metrics",
     }
 
 
@@ -776,7 +1015,7 @@ def test_stop_requires_reason(tmp_path: Path) -> None:
 def test_skill_registry_check(tmp_path: Path) -> None:
     project = _make_project(tmp_path, skills=True)
     workspace = _workspace(project)
-    result = operation_mod.skill_registry_check(
+    result = skill_registry_check(
         _task("operation:skill-registry-check"),
         workspace,
         _context(project, params={"max_healing_attempts": 3}),
@@ -785,7 +1024,7 @@ def test_skill_registry_check(tmp_path: Path) -> None:
     assert result.value == {"healing_available": True, "status": "pass"}
     assert (workspace.change_dir / "registry" / "skill-registry-check.json").is_file()
 
-    zero_budget = operation_mod.skill_registry_check(
+    zero_budget = skill_registry_check(
         _task("operation:skill-registry-check"),
         _workspace(project),
         _context(project, params={"max_healing_attempts": 0}),
@@ -793,7 +1032,7 @@ def test_skill_registry_check(tmp_path: Path) -> None:
     assert zero_budget.value == {"healing_available": False, "status": "fail"}
 
     bare = _make_project(tmp_path / "bare", skills=False)
-    missing = operation_mod.skill_registry_check(
+    missing = skill_registry_check(
         _task("operation:skill-registry-check"),
         _workspace(bare),
         _context(bare, params={"max_healing_attempts": 3}),
@@ -822,8 +1061,8 @@ def test_run_tests_invokes_run_change_against_workspace_paths(
         (execution / "execution-manifest.yaml").write_text("batch_id: b-1\n", encoding="utf-8")
         return _Manifest()
 
-    monkeypatch.setattr(operation_mod, "run_change", fake_run_change)
-    result = operation_mod.run_tests(_task("operation:run-tests"), workspace, _context(project))
+    monkeypatch.setattr("assurance_agent.workflow.execution.graph_ops.run_change", fake_run_change)
+    result = run_tests(_task("operation:run-tests"), workspace, _context(project))
 
     assert result.status == "succeeded"
     assert result.value == {"batch_id": "b-1", "final_status": "PASS"}
@@ -858,9 +1097,12 @@ def test_inspect_operation_writes_artifacts(tmp_path: Path, monkeypatch: pytest.
 
         analysis = _Analysis()
 
-    monkeypatch.setattr(operation_mod, "inspect_change", lambda *_a, **_k: _InspectResult())
+    monkeypatch.setattr(
+        "assurance_agent.workflow.report.graph_ops.inspect_change",
+        lambda *_a, **_k: _InspectResult(),
+    )
     workspace = _workspace(project)
-    result = operation_mod.inspect_operation(_task("operation:inspect"), workspace, _context(project))
+    result = inspect_operation(_task("operation:inspect"), workspace, _context(project))
 
     assert result.status == "succeeded"
     assert result.value == {"batch_id": "b-1", "final_status": "SKIPPED", "status": "no_failures"}
@@ -880,7 +1122,7 @@ def test_allocate_healing_attempt_writes_baseline_and_status(tmp_path: Path) -> 
     project = _make_project(tmp_path)
     _write_execution_and_proposal(project)
     workspace = _workspace(project)
-    result = operation_mod.operation_allocate_healing_attempt(
+    result = operation_allocate_healing_attempt(
         _task("operation:allocate-healing-attempt"), workspace, _context(project)
     )
 
@@ -939,6 +1181,9 @@ def test_allocate_healing_attempt_writes_baseline_and_status(tmp_path: Path) -> 
 
 def test_link_host_task_paths_symlinks_events_jsonl(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
+    host_agents = project / ".opencode" / "agents"
+    host_agents.mkdir(parents=True)
+    (host_agents / "aa-explorer.md").write_text("---\nname: aa-explorer\n---\n", encoding="utf-8")
     host_change = project / "qa" / "changes" / "CH-1"
     host_change.mkdir(parents=True, exist_ok=True)
     (host_change / "events.jsonl").write_text('{"seq":1}\n', encoding="utf-8")
@@ -947,11 +1192,41 @@ def test_link_host_task_paths_symlinks_events_jsonl(tmp_path: Path) -> None:
     task_events = workspace.change_dir / "events.jsonl"
     assert task_events.is_symlink()
     assert task_events.resolve() == (host_change / "events.jsonl").resolve()
+    task_opencode = workspace.project_root / ".opencode"
+    assert task_opencode.is_symlink()
+    assert task_opencode.resolve() == (project / ".opencode").resolve()
+    assert (task_opencode / "agents" / "aa-explorer.md").is_file()
+
+
+def test_subgraph_does_not_project_host_runtime_paths_into_child(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    host_agents = project / ".opencode" / "agents"
+    host_agents.mkdir(parents=True)
+    (host_agents / "aa-explorer.md").write_text("---\nname: aa-explorer\n---\n", encoding="utf-8")
+    workspace = _workspace(project)
+    observed: dict[str, Path] = {}
+
+    def run_child(
+        task: ExecutableTask,
+        graph_id: str,
+        child_workspace: TaskWorkspace,
+        context: RuntimeContext,
+    ) -> TaskResult:
+        assert task.target == "graph:intake"
+        assert graph_id == "intake"
+        observed["opencode"] = child_workspace.project_root / ".opencode"
+        return TaskResult(status="succeeded")
+
+    result = SubgraphHandler(run_child).execute(_task("graph:intake"), workspace, _context(project))
+
+    assert result.status == "succeeded"
+    task_opencode = observed["opencode"]
+    assert not task_opencode.exists()
 
 
 def test_allocate_healing_attempt_requires_execution_batch(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
-    result = operation_mod.operation_allocate_healing_attempt(
+    result = operation_allocate_healing_attempt(
         _task("operation:allocate-healing-attempt"), _workspace(project), _context(project)
     )
     assert result.status == "failed"
@@ -965,7 +1240,7 @@ def test_record_healing_status(tmp_path: Path) -> None:
         "operation:record-healing-status",
         input_payload={"with": {"status": "resolved"}, "context": {}},
     )
-    result = operation_mod.operation_record_healing_status(task, workspace, _context(project))
+    result = operation_record_healing_status(task, workspace, _context(project))
     assert result.status == "succeeded"
     assert result.value == {"healing_status": "resolved"}
     status = json.loads((workspace.change_dir / "healing" / "status.json").read_text(encoding="utf-8"))
@@ -975,7 +1250,7 @@ def test_record_healing_status(tmp_path: Path) -> None:
         "operation:record-healing-status",
         input_payload={"with": {"status": "bogus"}, "context": {}},
     )
-    rejected = operation_mod.operation_record_healing_status(bogus, workspace, _context(project))
+    rejected = operation_record_healing_status(bogus, workspace, _context(project))
     assert rejected.status == "failed"
     assert rejected.error_kind == "invalid_input"
 
@@ -1434,6 +1709,10 @@ class _StatusScript:
             self.status_calls += 1
             st = self._statuses[i]
             return httpx.Response(200, json=({self._sid: {"type": st}} if st != "idle" else {}))
+        if path == f"/session/{self._sid}/message":
+            return httpx.Response(200, json=[])
+        if path == f"/session/{self._sid}/abort":
+            return httpx.Response(204)
         return httpx.Response(404)
 
 
@@ -1509,3 +1788,4 @@ def test_opencode_invoke_poll_deadline_is_timeout(tmp_path: Path) -> None:
     assert result.ok is False
     assert result.error_kind == "timeout"
     assert result.session_id == "ses_1"
+    assert sum(request.url.path == "/session/ses_1/abort" for request in script.seen) == 1

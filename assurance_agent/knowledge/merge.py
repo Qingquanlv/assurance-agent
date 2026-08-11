@@ -63,6 +63,10 @@ def collect_leaf_entries(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
         if isinstance(leaf, dict):
             leaves[f"entities.{name}"] = leaf
 
+    for name, leaf in (data.get("auth_matrix") or {}).items():
+        if isinstance(leaf, dict):
+            leaves[f"auth_matrix.{name}"] = leaf
+
     capabilities = data.get("capabilities") or {}
     for module, names in (capabilities.get("domain_factories") or {}).items():
         if not isinstance(names, dict):

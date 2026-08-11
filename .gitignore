@@ -18,8 +18,20 @@ dist/
 benchmark/vue-fastapi-admin/*
 !benchmark/vue-fastapi-admin/benchmark/
 !benchmark/vue-fastapi-admin/eval-fixtures/
+# Stable L1 fixture used by contract round-trip tests; other SUT state remains ignored.
+!benchmark/vue-fastapi-admin/.aa/
+benchmark/vue-fastapi-admin/.aa/*
+!benchmark/vue-fastapi-admin/.aa/data-knowledge.yaml
 benchmark/vue-fastapi-admin/benchmark/runs/
 benchmark/vue-fastapi-admin/benchmark/resume-logs/
+# The auth-matrix recorder is repo-owned harness code that has to sit in the SUT's
+# test tree to be importable from generated tests, and tests/unit/benchmark asserts
+# its behaviour — so it is tracked while the rest of that generated tree is not.
+!benchmark/vue-fastapi-admin/tests/
+benchmark/vue-fastapi-admin/tests/*
+!benchmark/vue-fastapi-admin/tests/helpers/
+benchmark/vue-fastapi-admin/tests/helpers/*
+!benchmark/vue-fastapi-admin/tests/helpers/auth_matrix_recorder.py
 
 docs/
 

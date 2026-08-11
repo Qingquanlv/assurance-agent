@@ -10,7 +10,7 @@ from pathlib import Path
 
 from assurance_agent.cli import main
 
-# The 17 top-level command groups the README command reference documents.
+# The top-level command groups the README command reference documents.
 DOCUMENTED_COMMANDS = {
     "init",
     "doctor",
@@ -22,6 +22,7 @@ DOCUMENTED_COMMANDS = {
     "decide",
     "risk",
     "run",
+    "trace",
     "report",
     "heal",
     "workflow",

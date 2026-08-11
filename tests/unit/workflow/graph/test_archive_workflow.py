@@ -9,7 +9,6 @@ the archiver ever running.
 
 from __future__ import annotations
 
-from typing import cast
 
 import json
 from datetime import datetime, timedelta, timezone
@@ -18,19 +17,13 @@ from pathlib import Path
 import yaml
 
 from assurance_agent import resources
+from assurance_agent.workflow.driver.runtime_factory import assemble_graph_runtime
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
-from assurance_agent.workflow.graph.checkpoint import CheckpointStore
-from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import load_execution_contracts
 from assurance_agent.workflow.graph.models import CompiledWorkflow, RuntimeContext
 from assurance_agent.workflow.graph.runtime import GraphRuntime
-from assurance_agent.workflow.driver.runtime_factory import one_definition_resolver
-from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
-from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
-from assurance_agent.workflow.graph.task_runner import build_default_node_runner
-from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
 from tests.helpers_aa import write_aa_config
 
 CHANGE_ID = "CH-ARCHIVE-1"
@@ -88,9 +81,49 @@ def _seed_change(tmp_path: Path, *, final_status: str, healing_status: str) -> P
     (change / "inspect" / "failure-analysis.json").write_text(
         json.dumps({"source_batch_id": "b1", "failures": []}), encoding="utf-8"
     )
+    (change / "inspect" / "trace-sufficiency.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "change_id": CHANGE_ID,
+                "authoritative_batch_id": "b1",
+                "policy_digest": "0" * 64,
+                "as_of": "2026-07-25T00:00:00+00:00",
+                "integrity": "complete",
+                "integrity_blocks_routing": False,
+                "sufficient": True,
+                "has_open_problems": False,
+                "error_code": None,
+                "insufficient_cases": [],
+                "gap_codes": [],
+            }
+        ),
+        encoding="utf-8",
+    )
     (change / "healing" / "status.json").write_text(json.dumps({"status": healing_status}), encoding="utf-8")
     for name in ("case-review", "api-plan-review", "plan-review"):
         (change / "review" / f"{name}.json").write_text(json.dumps({"decision": "pass"}), encoding="utf-8")
+    (change / "inspect" / "metrics.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "2",
+                "change_id": CHANGE_ID,
+                "cadence": "pr",
+                "computed_at": "2026-07-25T00:00:00+00:00",
+                "risk_tier": "low",
+                "risk_tier_lower_bound": "low",
+                "risk_tier_declared": None,
+                "risk_declaration_lowered": False,
+                "risk_lowered_declarations": [],
+                "metrics": {},
+                "collection_gaps": [],
+                "shortboards": [],
+                "floor_ratio": None,
+                "policy_digest": "0" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
     return project
 
 
@@ -105,50 +138,14 @@ def _compile_canonical() -> tuple[CompiledWorkflow, object]:
 def _build_runtime(
     project: Path, compiled: CompiledWorkflow, contracts: object, invoker: object
 ) -> GraphRuntime:
-    change_dir = project / "qa" / "changes" / CHANGE_ID
-    store = TreeStore(change_dir)
-    checkpoints = CheckpointStore(change_dir)
-    workspaces = WorkspaceBackend(change_dir)
-    holder: dict[str, GraphRuntime] = {}
-
-    def run_child(task, graph_id, workspace, context):  # type: ignore[no-untyped-def]
-        return holder["rt"].run_child(task, graph_id, workspace, context)
-
-    node_runner = build_default_node_runner(
-        invoker,  # type: ignore[arg-type]
-        store,
-        contracts,  # type: ignore[arg-type]
+    return assemble_graph_runtime(
+        project_root=project,
+        change_dir=project / "qa" / "changes" / CHANGE_ID,
         compiled=compiled,
-        run_child=run_child,
-    )
-    state_defs: dict = {}
-    for graph in compiled.schema.graphs.values():
-        state_defs.update(dict(graph.state))
-    scheduler = Scheduler(
-        checkpoints=checkpoints,
-        object_store=store,
-        clock=FakeClock(),
-        workspace_backend=workspaces,
-        node_runner=node_runner,
-        max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
         contracts=contracts,  # type: ignore[arg-type]
-        state_defs=state_defs,
-    )
-    runtime = GraphRuntime(
-        checkpoint_store=checkpoints,
-        object_store=store,
-        workspace_backend=workspaces,
-        definition_resolver=one_definition_resolver(
-            compiled=compiled,
-            contracts=cast(ExecutionContractCatalog, contracts),
-            ingest_catalog=validate_catalog_runtime(),
-            node_runner=node_runner,
-            scheduler=scheduler,
-        ),
+        adapter=invoker,  # type: ignore[arg-type]
         clock=FakeClock(),
     )
-    holder["rt"] = runtime
-    return runtime
 
 
 def _context(project: Path) -> RuntimeContext:
@@ -188,6 +185,23 @@ def test_archive_runs_the_archiver_when_the_gate_passes(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.reason
     assert (project / "qa" / "archive" / CHANGE_ID / "archive-summary.md").is_file()
+
+
+def test_archive_stops_on_an_open_product_problem_even_when_execution_passed(
+    tmp_path: Path,
+) -> None:
+    project = _seed_change(tmp_path, final_status="PASS", healing_status="not_needed")
+    facts_path = project / "qa" / "changes" / CHANGE_ID / "inspect" / "trace-sufficiency.json"
+    facts = json.loads(facts_path.read_text(encoding="utf-8"))
+    facts["has_open_problems"] = True
+    facts_path.write_text(json.dumps(facts), encoding="utf-8")
+    compiled, contracts = _compile_canonical()
+    runtime = _build_runtime(project, compiled, contracts, NeverCalledInvoker())
+
+    result = runtime.run(compiled, "archive", _context(project))
+
+    assert result.status.status == "stopped", result.reason
+    assert not (project / "qa" / "archive").exists()
 
 
 def _seed_change_with_issues(

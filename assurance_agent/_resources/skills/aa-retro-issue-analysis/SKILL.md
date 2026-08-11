@@ -5,14 +5,33 @@ description: Use when a Retro v3 run requires issue-domain pattern analysis from
 
 # Retro Issue Signal Analysis
 
-Read only `qa/retro/<retro-id>/evidence/issue-slice.json`. Write only
+Read only the multiline agent projection
+`qa/retro/<retro-id>/evidence/agent/issue-slice.json`. Write only
 `qa/retro/<retro-id>/signals/issue.json`.
+
+The runtime retains the canonical slice separately for digest completion and validation;
+do not read or reproduce that canonical slice.
+
+Treat the slice's `deterministic_signals` as runtime-owned signals that are already
+included in the assembled context. Analyze `entries` for additional patterns; do not
+copy or re-emit a deterministic signal. Each `signal_id` may occur only once in the
+output document.
 
 Aggregate repeated Occurrences by stable fingerprint, affected surface, and symptom.
 Treat `classification_hint` only as supporting context, never as an aggregation key.
 Emit `issue_pattern` only when the evidence supports a reusable
 process gap: `workflow_gap`, `prompt_gap`, `fixture_gap`, `test_gap`, or
 `knowledge_gap`. A product defect by itself is not an Improvement signal.
+`surface.kind == workflow` is only a label, not proof of process ownership.
+If the recommended fix belongs to the product API, schema, validation, or
+authorization implementation, omit the signal; keep the defect in the Issue
+ledger instead of turning it into an assurance Improvement.
+
+Never weaken an assert_ideal contract merely because the current product fails
+it. Emit a `test_gap` only when the frozen slice independently establishes that
+the intended contract is wrong. A `*_product_divergence` symptom alone does not
+establish that; omit the signal rather than recommending that tests match the
+failing product behavior.
 
 Every signal must:
 

@@ -2,9 +2,11 @@ schema_version: "1.0"
 added:
   - case_id: TC_APIS_E2E_001
     title: 管理员进入 API 管理页面
+    status: active
     priority: P0
     severity: blocker
     type: E2E
+    module: system.api
     objective: 验证具备权限的管理员可从导航进入 API 管理页面并看到列表区域。
     summary: 管理员登录后进入 API 管理，页面展示可操作的列表与创建入口。
     related_cases:

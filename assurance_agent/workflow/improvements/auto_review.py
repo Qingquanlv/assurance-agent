@@ -20,6 +20,7 @@ from assurance_agent.artifacts.models.improvements import (
     ImprovementKind,
     ImprovementLedgerProjection,
     ImprovementState,
+    is_valid_memory_patch_target,
 )
 from assurance_agent.workflow.graph.project_locks import ProjectResourceLockManager
 from assurance_agent.workflow.improvements.events import (
@@ -97,6 +98,14 @@ class AutoReviewGateInput(BaseModel):
 def _review_id(improvement_id: str, subject_sha256: str, policy_version: str, attempt: int) -> str:
     identity = f"{improvement_id}:{subject_sha256}:{policy_version}:{attempt}"
     return "AUTO-" + sha256_bytes(identity.encode()).removeprefix("sha256:")[:24]
+
+
+def _delivery_allowed(delivery: DeliveryKind, target: str) -> bool:
+    if delivery is DeliveryKind.KNOWLEDGE_DELTA:
+        return False
+    if delivery is DeliveryKind.MEMORY_PATCH:
+        return is_valid_memory_patch_target(target)
+    return True
 
 
 def select_auto_review_items(
@@ -183,7 +192,7 @@ def build_auto_review_gate_input(
             ImprovementKind.TEST,
             ImprovementKind.WORKFLOW,
         },
-        delivery_allowed=subject.delivery is not DeliveryKind.KNOWLEDGE_DELTA,
+        delivery_allowed=_delivery_allowed(subject.delivery, subject.target),
         risk_low=subject.risk == "low",
         confidence_high=subject.confidence == "high",
         reviewer_pass=assessment.decision == "pass",

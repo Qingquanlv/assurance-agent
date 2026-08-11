@@ -10,6 +10,19 @@ from assurance_agent.workflow.execution import runners as runners_mod
 from assurance_agent.workflow.execution.runner import run_change
 
 
+def test_generated_batch_ids_are_strictly_increasing_at_one_clock_tick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runner_mod.time, "time_ns", lambda: 1_786_000_000_123_456_789)
+    monkeypatch.setattr(runner_mod, "_last_batch_tick", 0)
+
+    first = runner_mod.generate_batch_id()
+    second = runner_mod.generate_batch_id()
+
+    assert second > first
+    assert len(first) == len("20260806-000000-123456789")
+
+
 def make_config(*, performance_enabled: bool = False) -> AaConfig:
     return AaConfig.model_validate(
         {

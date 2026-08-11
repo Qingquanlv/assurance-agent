@@ -408,6 +408,28 @@ _REVIEW_FILE_TARGETS: dict[str, str] = {
     "fuzz-plan-review.json": "api",
     "case-review.json": "api",
 }
+_REVIEW_POST_CODEGEN_EVIDENCE: dict[str, tuple[str, ...]] = {
+    "api-plan-review.json": (
+        "codegen/api-codegen-summary.md",
+        "codegen/api-generated-files.json",
+    ),
+    "plan-review.json": (
+        "codegen/e2e-codegen-summary.md",
+        "codegen/e2e-generated-files.json",
+    ),
+    "fuzz-plan-review.json": (
+        "codegen/fuzz-codegen-summary.md",
+        "codegen/fuzz-generated-files.json",
+    ),
+    "case-review.json": (
+        "codegen/api-codegen-summary.md",
+        "codegen/api-generated-files.json",
+    ),
+    "performance-plan-review.json": (
+        "codegen/performance-codegen-summary.md",
+        "codegen/performance-generated-files.json",
+    ),
+}
 _WARN_DECISIONS: frozenset[str] = frozenset(
     ["needs_fix", "needs_human_review", "changes_requested", "reject"]
 )
@@ -442,6 +464,17 @@ def _collect_review_signals(
         risk_level = str(data.get("risk_level") or "low")
         findings = data.get("findings") or []
         result_rel = str(rpath.relative_to(change_dir))
+        post_codegen_paths = _REVIEW_POST_CODEGEN_EVIDENCE.get(review_file, ())
+        post_codegen_complete = bool(post_codegen_paths) and all(
+            (change_dir / relpath).is_file() for relpath in post_codegen_paths
+        )
+        evidence_refs = [result_rel]
+        evidence_refs.extend(relpath for relpath in post_codegen_paths if (change_dir / relpath).is_file())
+        if post_codegen_complete and decision not in _WARN_DECISIONS:
+            # A passing plan/case review is point-in-time advisory evidence.
+            # Once downstream Codegen completed, execution evidence—not the
+            # pre-Codegen finding—defines the current abnormal state.
+            continue
 
         # Emit a review_finding if decision is problematic or risk is medium+
         if decision in _WARN_DECISIONS or risk_level in _WARN_RISK_LEVELS:
@@ -456,7 +489,7 @@ def _collect_review_signals(
                     source_artifact=result_rel,
                     source_json_pointer="/decision",
                     signature=sig,
-                    evidence_refs=[result_rel],
+                    evidence_refs=evidence_refs,
                     observed_at=observed_at,
                 )
             )
@@ -478,7 +511,7 @@ def _collect_review_signals(
                         source_artifact=result_rel,
                         source_json_pointer=f"/findings/{idx}",
                         signature=sig,
-                        evidence_refs=[result_rel],
+                        evidence_refs=evidence_refs,
                         observed_at=observed_at,
                     )
                 )

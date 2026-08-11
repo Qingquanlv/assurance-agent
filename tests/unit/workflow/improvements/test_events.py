@@ -9,6 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from assurance_agent.artifacts.models.improvements import (
+    ImprovementLedgerProjection,
     ImprovementSourceRefs,
     ImprovementVerification,
 )
@@ -27,6 +28,11 @@ from assurance_agent.workflow.improvements.events import (
     ImprovementRolledBackEvent,
     ImprovementSupersededEvent,
     read_improvement_events,
+)
+from assurance_agent.workflow.improvements.projection import project_improvements
+
+HISTORICAL_IMPROVEMENTS = (
+    Path(__file__).resolve().parents[3] / "fixtures" / "improvements" / "historical-max-length"
 )
 
 SOURCE_REFS = ImprovementSourceRefs(problem_ids=("PROB-1",))
@@ -354,3 +360,35 @@ def test_rejects_undeclared_fields(tmp_path: Path) -> None:
     _write_jsonl(path, [bad])
     with pytest.raises(ImprovementLedgerIntegrityError, match="invalid event"):
         read_improvement_events(path)
+
+
+def test_historical_boolean_max_length_events_and_projections_remain_readable() -> None:
+    events_path = HISTORICAL_IMPROVEMENTS / "events.jsonl"
+    projection_path = HISTORICAL_IMPROVEMENTS / "improvements.json"
+    event_bytes = events_path.read_bytes()
+    projection_bytes = projection_path.read_bytes()
+
+    events = read_improvement_events(events_path)
+    historical_event = next(event for event in events if event.event_id == "IMPEVT-HISTORICAL-MAX-LENGTH")
+    assert isinstance(historical_event, ImprovementProposedEvent)
+    assert historical_event.knowledge_delta is not None
+    event_constraints = historical_event.knowledge_delta.entities["dept"].constraints
+    assert event_constraints is not None
+    assert event_constraints["name"]["max_length"] is True
+
+    rebuilt = project_improvements(events)
+    rebuilt_delta = rebuilt.improvements["IMP-HISTORICAL-MAX-LENGTH"].knowledge_delta
+    assert rebuilt_delta is not None
+    rebuilt_constraints = rebuilt_delta.entities["dept"].constraints
+    assert rebuilt_constraints is not None
+    assert rebuilt_constraints["name"]["max_length"] is True
+
+    persisted = ImprovementLedgerProjection.model_validate_json(projection_bytes)
+    persisted_delta = persisted.improvements["IMP-HISTORICAL-MAX-LENGTH"].knowledge_delta
+    assert persisted_delta is not None
+    persisted_constraints = persisted_delta.entities["dept"].constraints
+    assert persisted_constraints is not None
+    assert persisted_constraints["name"]["max_length"] is True
+
+    assert events_path.read_bytes() == event_bytes
+    assert projection_path.read_bytes() == projection_bytes

@@ -8,7 +8,7 @@ import yaml
 
 from assurance_agent.artifacts.models.assurance import PLAN_CHECK_IDS
 from assurance_agent.verification.profiles import get_layer_assurance_profile
-from assurance_agent.workflow.graph.handlers.operation import default_operations
+from assurance_agent.workflow.driver.operations_catalog import default_operations
 from assurance_agent.workflow.graph.handlers.plan_checks import (
     derive_plan_layer_applicability,
     verify_plan_mechanical,

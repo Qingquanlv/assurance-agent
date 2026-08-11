@@ -8,7 +8,7 @@ from assurance_agent.workflow.driver.adapter import (
     PhaseResult,
 )
 from assurance_agent.workflow.driver.phase_prompt import build_phase_prompt
-from assurance_agent.workflow.graph.agent_api import build_node_prompt
+from assurance_agent.workflow.graph.agent_api import _elide_middle, build_node_prompt
 
 
 def test_phase_request_defaults() -> None:
@@ -110,6 +110,22 @@ def test_build_node_prompt_injects_contract_violation_prior_failure() -> None:
     assert "violated the artifact contract" in prompt
 
 
+def test_build_node_prompt_contract_retry_rebuilds_from_committed_inputs() -> None:
+    prompt = build_node_prompt(
+        "aa-case-design",
+        "case-design",
+        "CH-1",
+        allowed_writes=["change:cases/**", "change:proposal.md"],
+        prior_failure="case-design Product Source Verification is invalid",
+        prior_error_kind="invalid_output",
+    )
+
+    assert "failed attempt's workspace and artifacts were discarded" in prompt
+    assert "rebuild every declared output from committed inputs" in prompt
+    assert "Open the declared output you wrote" not in prompt
+    assert "keep all other content unchanged" not in prompt
+
+
 def test_build_node_prompt_truncates_long_prior_failure() -> None:
     long = "x" * 1200
     prompt = build_node_prompt(
@@ -123,6 +139,69 @@ def test_build_node_prompt_truncates_long_prior_failure() -> None:
     assert "PRIOR ATTEMPT FAILED (forbidden_write)" in prompt
     assert "…" in prompt
     assert ("x" * 1200) not in prompt
+
+
+def test_elide_middle_honors_bound_when_only_one_content_character_fits() -> None:
+    assert _elide_middle("abcdef", max_chars=4) == "a\n…\n"
+
+
+def test_build_node_prompt_preserves_both_ends_of_long_prior_failure() -> None:
+    registry_fields = (
+        "case_id",
+        "title",
+        "level",
+        "domain",
+        "objective",
+        "preconditions",
+        "steps.0.action",
+        "steps.0.expected",
+        "oracle.type",
+        "oracle.expected",
+        "traceability.requirement_ids",
+        "coverage.capability",
+    )
+    registry_detail = "\n".join(
+        f"{field}\n  Field required [type=missing, input_value={{'broken': True}}, input_type=dict]"
+        for field in registry_fields
+    )
+    prior_failure = (
+        "multiple output contract violations:\n"
+        "- output 'change:cases/system/api/case.yaml' failed case_yaml schema validation: "
+        f"{len(registry_fields)} validation errors for CaseArtifact\n"
+        f"{registry_detail}\n"
+        "- case-design proposal.md must contain exactly one "
+        "'## Product Source Verification' section\n"
+        "Required format:\n"
+        "- independently_read: true\n"
+        "- reviewed_source_files:\n"
+        "  - `<project-relative product source path>`"
+    )
+    assert prior_failure.index("Required format:") > 800
+
+    prompt = build_node_prompt(
+        "aa-case-design",
+        "case-design",
+        "CH-1",
+        allowed_writes=["change:cases/", "change:proposal.md"],
+        prior_failure=prior_failure,
+        prior_error_kind="invalid_output",
+    )
+
+    assert "change:cases/system/api/case.yaml" in prompt
+    assert "case_yaml schema validation" in prompt
+    assert "Required format:" in prompt
+    assert "- independently_read: true" in prompt
+    assert "reviewed_source_files:" in prompt
+    detail_header = "PRIOR ATTEMPT FAILED (invalid_output) — do not repeat it:\n"
+    detail_start = prompt.index(detail_header) + len(detail_header)
+    detail_end = prompt.index(
+        "\nYour previous attempt violated the artifact contract.",
+        detail_start,
+    )
+    bounded_detail = prompt[detail_start:detail_end]
+    assert len(bounded_detail) <= 800
+    assert "…" in bounded_detail
+    assert bounded_detail != prior_failure
 
 
 def test_build_node_prompt_skips_transient_prior_failure() -> None:
@@ -156,6 +235,21 @@ def test_plan_reviewer_prompt_frontloads_nonempty_required_capabilities_contract
         assert "capabilities.adapters" in prompt
         assert prompt.index("required_capabilities") > prompt.index("Produce only node")
     assert "timed out waiting for model" not in prompt
+
+
+def test_case_design_prompt_expands_registered_case_contract_from_real_outputs() -> None:
+    prompt = build_node_prompt(
+        "aa-case-design",
+        "case-design",
+        "CH-1",
+        allowed_writes=["change:.qa.yaml", "change:proposal.md", "change:cases/**"],
+        outputs=["change:.qa.yaml", "change:proposal.md", "change:cases/"],
+    )
+
+    assert prompt.count("cases/**/case.yaml must be a CaseYamlAuthoring") == 1
+    assert prompt.count("automation.performance.scenario.capability") == 1
+    assert prompt.count("automation.performance.scenario.endpoint") == 1
+    assert "proposal.md must be" not in prompt
 
 
 def test_retro_analyzer_prompt_bounds_writes_by_contract_not_prose() -> None:

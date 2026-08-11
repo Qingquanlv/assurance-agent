@@ -5,8 +5,17 @@ description: Use when a Retro v3 run requires evaluation-trend analysis from its
 
 # Retro Eval Signal Analysis
 
-Read only `qa/retro/<retro-id>/evidence/eval-slice.json`. Write only
+Read only the multiline agent projection
+`qa/retro/<retro-id>/evidence/agent/eval-slice.json`. Write only
 `qa/retro/<retro-id>/signals/eval.json`.
+
+The runtime retains the canonical slice separately for digest completion and validation;
+do not read or reproduce that canonical slice.
+
+Treat the slice's `deterministic_signals` as runtime-owned signals that are already
+included in the assembled context. Analyze `entries` for additional patterns; do not
+copy or re-emit a deterministic signal. Each `signal_id` may occur only once in the
+output document.
 
 Aggregate runs by `suite + verdict + failure_signature`; never emit one signal per
 run. For a repeated failing group, emit one `eval_trend` containing the group count,

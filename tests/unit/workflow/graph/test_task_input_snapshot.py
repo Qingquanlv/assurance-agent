@@ -838,7 +838,8 @@ def test_lock_deferral_reselects_via_plan_superstep_drive_after_release(tmp_path
     from assurance_agent.workflow.driver.runtime_factory import one_definition_resolver
     from assurance_agent.workflow.graph.compiler import compile_workflow
     from assurance_agent.workflow.graph.contracts import parse_execution_contracts
-    from assurance_agent.workflow.graph.handlers.operation import OperationHandler, default_operations
+    from assurance_agent.workflow.driver.operations_catalog import default_operations
+    from assurance_agent.workflow.graph.handlers.operation import OperationHandler
     from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
     from assurance_agent.workflow.graph.project_locks import ProjectResourceConflict
     from assurance_agent.workflow.graph.runtime import GraphRuntime

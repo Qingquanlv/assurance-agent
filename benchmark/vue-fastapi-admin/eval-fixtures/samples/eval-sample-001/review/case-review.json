@@ -1,16 +1,16 @@
 {
   "schema_version": "1.0",
   "review_type": "case",
-  "change_id": "RET-api-management-20260716-192358-cursor",
+  "change_id": "eval-sample-001",
   "decision": "pass",
   "risk_level": "low",
   "auto_fix_allowed": false,
   "human_review_required": false,
   "summary": "Case delta passes review after prior fixes: 18 added cases align with 18 test conditions, MRC mapping is complete (21 covered, 1 skipped_by_scope), layering is consistent (12 API + 6 E2E), required fields and automation blocks are present, and no forbidden execution details appear in case YAML. Artifacts are ready for API/E2E planning.",
   "reviewed_files": [
-    "qa/changes/RET-api-management-20260716-192358-cursor/proposal.md",
-    "qa/changes/RET-api-management-20260716-192358-cursor/.qa.yaml",
-    "qa/changes/RET-api-management-20260716-192358-cursor/cases/system/api/case.yaml"
+    "qa/changes/eval-sample-001/proposal.md",
+    "qa/changes/eval-sample-001/.qa.yaml",
+    "qa/changes/eval-sample-001/cases/system/api/case.yaml"
   ],
   "blockers": [],
   "findings": [

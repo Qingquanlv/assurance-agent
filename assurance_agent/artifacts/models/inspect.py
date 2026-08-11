@@ -121,20 +121,43 @@ class NonFunctionalDimension(BaseModel):
     performance: list[PerformanceScenarioVerdict]
 
 
+class MetricsDimension(BaseModel):
+    """Informational verification-metrics summary for report/retro.
+
+    Never consulted by ``worst_status`` / ``final_status``, healing-loop reject,
+    or archive stop. Routing lives on ``metrics-sufficiency-gate``.
+    """
+
+    status: GateStatus
+    available: bool = True
+    summary: str | None = None
+
+
 class QualityGateDimensions(BaseModel):
     functional: FunctionalDimension
     coverage: CoverageDimension
     non_functional: NonFunctionalDimension | None = None
+    # Pure report channel. Optional so older gate documents still load.
+    metrics: MetricsDimension | None = None
 
 
 class QualityGateResultV1(BaseModel):
+    """The gate verdict, plus observations that deliberately do not decide it.
+
+    ``diagnostics`` is a shadow channel: nothing in it may be read back to
+    change ``final_status``, the execution manifest's ``final_status``, or
+    healing/archive routing.
+
+    ``dimensions.metrics`` is likewise informational only — see MetricsDimension.
+    """
+
     schema_version: Literal["1.0"]
     change_id: str
     batch_id: str
     dimensions: QualityGateDimensions
     final_status: GateStatus
     warnings: list[str] | None = None
-    diagnostics: dict | None = None
+    diagnostics: dict[str, Any] | None = None
 
 
 QualityGateResult = QualityGateResultV1

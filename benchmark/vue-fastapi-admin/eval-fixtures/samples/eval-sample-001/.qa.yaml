@@ -3,7 +3,7 @@ schema: case-driven
 created_at: "2026-07-16T11:23:58.000Z"
 
 change:
-  change_id: RET-api-management-20260716-192358-cursor
+  change_id: eval-sample-001
   requirement_id: RET-api-management
   feature_name: api-management
   status: draft
@@ -11,7 +11,7 @@ change:
 targets:
   cases:
     - module: system.api
-      change_case_file: qa/changes/RET-api-management-20260716-192358-cursor/cases/system/api/case.yaml
+      change_case_file: qa/changes/eval-sample-001/cases/system/api/case.yaml
       target_case_file: qa/cases/system/api/case.yaml
 
 approval:

@@ -7,8 +7,7 @@ reference them by these exact names.
 
 from typing import Literal
 
-from pydantic import BaseModel
-from pydantic.types import AwareDatetime
+from pydantic import AwareDatetime, BaseModel
 
 from assurance_agent.artifacts.models.common import GateStatus, NonEmptyStr
 
@@ -21,9 +20,20 @@ class SelectedTargets(BaseModel):
 
 
 class ExecutionManifest(BaseModel):
+    """One published execution batch.
+
+    ``executed_at`` is the batch's authoritative instant and is ``AwareDatetime``:
+    a naive value is rejected rather than localized to a guessed zone, because
+    recency judgements downstream compare it against an aware ``as_of``. It stays
+    optional so manifests written before it existed keep loading — those fall
+    back to the batch-id UTC approximation, which is exactly why every new
+    manifest must publish it.
+    """
+
     schema_version: Literal["1.0"]
     change_id: NonEmptyStr
     batch_id: NonEmptyStr
+    executed_at: AwareDatetime | None = None
     selected_targets: SelectedTargets
     result_files: dict[str, str]
     tests_tree_sha256: str | None = None

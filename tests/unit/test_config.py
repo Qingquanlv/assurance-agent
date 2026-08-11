@@ -60,3 +60,52 @@ def test_load_config_schema_violation_raises(tmp_path: Path) -> None:
     )
     with pytest.raises(ConfigInvalidError):
         load_config(tmp_path)
+
+
+def test_load_config_parses_strict_phase_model_routing(tmp_path: Path) -> None:
+    write_default_config(tmp_path)
+    path = tmp_path / ".aa/config.yaml"
+    source = path.read_text(encoding="utf-8")
+    routing = """
+  model_routing:
+    default: anthropic/deepseek-v4-flash
+    strict_routes: true
+    routes:
+      aa-case-design: anthropic/glm-5.2
+      aa-case-reviewer: anthropic/deepseek-v4-flash
+    escalation:
+      model: anthropic/glm-5.2
+      on_error_kinds: [invalid_output, forbidden_write]
+"""
+    path.write_text(
+        source.replace("\nreview:\n", f"\n{routing}\nreview:\n"),
+        encoding="utf-8",
+    )
+
+    routing = load_config(tmp_path).execution.model_routing
+
+    assert routing is not None
+    assert routing.strict_routes is True
+    assert routing.routes["aa-case-design"] == "anthropic/glm-5.2"
+
+
+@pytest.mark.parametrize(
+    "routing",
+    [
+        "routes: {aa-case-design: glm-5.2}",
+        "routes: {'aa-*': anthropic/glm-5.2}",
+        "strict_routes: 'true'",
+        "unknown: value",
+    ],
+)
+def test_load_config_rejects_invalid_phase_model_routing(tmp_path: Path, routing: str) -> None:
+    write_default_config(tmp_path)
+    path = tmp_path / ".aa/config.yaml"
+    source = path.read_text(encoding="utf-8")
+    path.write_text(
+        source.replace("\nreview:\n", f"\n  model_routing:\n    {routing}\n\nreview:\n"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigInvalidError, match="execution.model_routing"):
+        load_config(tmp_path)

@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from assurance_agent.workflow.graph.handlers.operation import default_operations
+from assurance_agent.workflow.driver.operations_catalog import default_operations
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext
 from assurance_agent.workflow.issues.operations import (
     _authoritative_verification_evidence,
@@ -1331,7 +1331,7 @@ def test_reconcile_status_completed_on_success(tmp_path: Path) -> None:
 
 
 def test_reconcile_semantic_failure_writes_failed_status_returns_success(tmp_path: Path) -> None:
-    """Semantic validation failure: only failed reconcile-status written, TaskResult is success."""
+    """Semantic validation failure: failed reconcile + analysis_failed stamp; TaskResult success."""
     from assurance_agent.workflow.issues.operations import reconcile_issues_operation
 
     change_id = "CH-rec-sem-fail"
@@ -1356,9 +1356,12 @@ def test_reconcile_semantic_failure_writes_failed_status_returns_success(tmp_pat
     assert isinstance(value, dict)
     assert value["reconcile_status"] == "failed"
 
-    # Only reconcile-status written; no occurrence/problem files
+    # Failed reconcile-status + analysis_failed ledger stamp; no project problem events
     assert (change_dir / "inspect" / "issue-reconcile-status.json").is_file()
-    assert not (change_dir / "issues" / "events.jsonl").is_file()
+    assert (change_dir / "inspect" / "issue-analysis-status.json").is_file()
+    analysis = json.loads((change_dir / "inspect" / "issue-analysis-status.json").read_text(encoding="utf-8"))
+    assert analysis["status"] == "failed"
+    assert (change_dir / "issues" / "events.jsonl").is_file()
     assert not (project_root / "qa" / "issues" / "events.jsonl").is_file()
 
     authored = json.loads((change_dir / "inspect" / "issue-candidates.json").read_text(encoding="utf-8"))
@@ -1544,3 +1547,84 @@ def test_reconcile_is_idempotent(tmp_path: Path) -> None:
     assert project_events_after_1 == project_events_after_2, (
         "Idempotent replay must produce byte-identical project ledger content"
     )
+
+
+# ===========================================================================
+# Contract-enforced workspace regressions
+# ===========================================================================
+
+
+def test_reconcile_under_contract_allows_declared_writes(tmp_path: Path) -> None:
+    """Successful reconcile freezes under packaged authorization_writes."""
+    from tests.helpers.contract_workspace import run_operation_under_contract
+
+    change_id = "CH-rec-contract"
+    project_root = tmp_path / "project"
+    change_dir = project_root / "qa" / "changes" / change_id
+    batch_id = "BATCH-001"
+    evidence_digest = "sha256:" + "a" * 64
+
+    obs_ids = ["OBS-001"]
+    _make_observations_doc(change_dir, batch_id, obs_ids)
+    _make_candidates_doc(change_dir, batch_id, obs_ids, evidence_digest)
+
+    run = run_operation_under_contract(
+        "operation:reconcile-issues",
+        project_root=project_root,
+        change_id=change_id,
+        task=_make_reconcile_task(),
+    )
+    assert run.result.status == "succeeded"
+    assert isinstance(run.result.value, dict)
+    assert run.result.value["reconcile_status"] == "completed"
+    assert run.write_set.entries
+
+
+def test_reconcile_semantic_failure_under_contract_allows_analysis_status(tmp_path: Path) -> None:
+    """Semantic-failure path may write issue-analysis-status.json (forbidden_write regression)."""
+    from tests.helpers.contract_workspace import run_operation_under_contract
+
+    change_id = "CH-rec-sem-contract"
+    project_root = tmp_path / "project"
+    change_dir = project_root / "qa" / "changes" / change_id
+    batch_id = "BATCH-001"
+    evidence_digest = "sha256:" + "c" * 64
+
+    _make_observations_doc(change_dir, batch_id, ["OBS-001"])
+    _make_candidates_doc(change_dir, batch_id, ["OBS-UNKNOWN"], evidence_digest)
+
+    run = run_operation_under_contract(
+        "operation:reconcile-issues",
+        project_root=project_root,
+        change_id=change_id,
+        task=_make_reconcile_task(),
+    )
+    assert run.result.status == "succeeded"
+    assert isinstance(run.result.value, dict)
+    assert run.result.value["reconcile_status"] == "failed"
+    # Freeze succeeded ⇒ analysis-status write is authorized by the packaged contract.
+    status = json.loads(
+        (run.workspace.change_dir / "inspect" / "issue-analysis-status.json").read_text(encoding="utf-8")
+    )
+    assert status["status"] == "failed"
+
+
+def test_record_empty_under_contract_allows_declared_writes(tmp_path: Path) -> None:
+    from tests.helpers.contract_workspace import run_operation_under_contract
+
+    change_id = "CH-empty-contract"
+    project_root = tmp_path / "project"
+    change_dir = project_root / "qa" / "changes" / change_id
+    batch_id = "20260725-120000"
+    evidence_digest = "sha256:" + "b" * 64
+    _write_evidence_manifest(change_dir, batch_id, evidence_digest)
+
+    run = run_operation_under_contract(
+        "operation:record-empty-issue-analysis",
+        project_root=project_root,
+        change_id=change_id,
+        task=_make_recovery_task("operation:record-empty-issue-analysis"),
+    )
+    assert run.result.status == "succeeded"
+    assert (run.workspace.change_dir / "inspect" / "issue-candidates.json").is_file()
+    assert (run.workspace.change_dir / "inspect" / "issue-analysis-status.json").is_file()

@@ -6,12 +6,21 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import yaml
+
 from assurance_agent.artifacts.models.retro_batch import RetroPipelineFailure
-from assurance_agent.workflow.graph.handlers.retro_ops import (
+from assurance_agent.workflow.retro_ops import (
     _selection_from_params,
+    assemble_retro_context_v3,
+    load_review_subject,
+    materialize_empty_retro_analysis,
     reconcile_improvements,
     retro_accept,
     retro_collect_v3,
+)
+from assurance_agent.workflow.improvements.review_subject import (
+    build_review_subject,
+    publish_review_subject,
 )
 from assurance_agent.retro.candidates import CandidateBatchInvalid, CandidateValidationError
 from assurance_agent.retro.fallback import materialize_pipeline_failure_fallback
@@ -20,6 +29,7 @@ from assurance_agent.workflow.graph.schema_v2 import RetryPolicyDef, TimeoutPoli
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.graph.contracts import ResourceClaims
 from tests.helpers_aa import write_aa_config
+from tests.unit.workflow.improvements.test_reconcile_v3 import _candidate, _context as _retro_context
 
 
 def _make_workspace(tmp_path: Path) -> TaskWorkspace:
@@ -46,7 +56,7 @@ def _make_context(workspace: TaskWorkspace, *, params: dict | None = None) -> Ru
     )
 
 
-def _make_task(target: str) -> ExecutableTask:
+def _make_task(target: str, *, with_: dict | None = None) -> ExecutableTask:
     return ExecutableTask(
         task_id="task-1",
         invocation_id="inv-1",
@@ -54,7 +64,7 @@ def _make_task(target: str) -> ExecutableTask:
         graph_id="main",
         node_id="node-a",
         structural_path="main",
-        input={"with": {}, "context": {"change_id": "CH-1"}},
+        input={"with": with_ or {}, "context": {"change_id": "CH-1"}},
         input_sha256="sha256-in",
         contract_digest="cd-1",
         retryable_errors=(),
@@ -63,6 +73,26 @@ def _make_task(target: str) -> ExecutableTask:
         target=target,
         resources=ResourceClaims(),
     )
+
+
+def test_load_review_subject_validates_agent_projection_semantics(tmp_path: Path) -> None:
+    workspace = _make_workspace(tmp_path)
+    _subject, digest, data = build_review_subject(_candidate(), _retro_context(), improvement_id="IMP-1")
+    canonical_path = publish_review_subject(workspace.project_root, digest, data)
+    agent_path = canonical_path.parent / "agent" / canonical_path.name
+    payload = json.loads(agent_path.read_text(encoding="utf-8"))
+    payload["rationale"] = "conflicting agent projection"
+    agent_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    result = load_review_subject(
+        _make_task("operation:load-review-subject"),
+        workspace,
+        _make_context(workspace, params={"subject_sha256": digest}),
+    )
+
+    assert result.status == "failed"
+    assert result.error_kind == "conflict"
+    assert result.error == "agent review subject drift"
 
 
 def _write_terminal_archived_change(
@@ -118,9 +148,54 @@ def _write_terminal_archived_change(
     return root
 
 
-def test_retro_collect_v3_writes_window_and_three_typed_slices(tmp_path: Path) -> None:
+def test_retro_collect_v3_writes_window_and_all_five_typed_slices(tmp_path: Path) -> None:
     workspace = _make_workspace(tmp_path)
-    _write_terminal_archived_change(workspace.project_root, "CH-ARCHIVED")
+    archived = _write_terminal_archived_change(workspace.project_root, "CH-ARCHIVED")
+    discovery = archived / "discovery"
+    discovery.mkdir(parents=True)
+    (discovery / "campaign-result.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1",
+                "campaign_id": "CAM-ARCHIVED",
+                "change_id": "CH-ARCHIVED",
+                "status": "completed",
+                "surfaces": ["api"],
+                "rounds_completed": 1,
+                "sample_count": 1,
+                "seed": 7,
+                "counterexample_count": 0,
+                "confirmed_count": 0,
+                "stop_reason": None,
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    inspect_dir = archived / "inspect"
+    inspect_dir.mkdir()
+    (inspect_dir / "coverage-gaps.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "change_id": "CH-ARCHIVED",
+                "batch_id": "batch-1",
+                "projection_digest": "sha256:projection-1",
+                "gaps": [
+                    {
+                        "kind": "uncovered_required_case",
+                        "locator": {"case_id": "CASE-1"},
+                        "layer": "execution",
+                        "batch_id": "batch-1",
+                        "evidence_refs": ["sha256:projection-1"],
+                    }
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     host = tmp_path / "host-v3"
     host.mkdir()
     write_aa_config(host)
@@ -137,10 +212,37 @@ def test_retro_collect_v3_writes_window_and_three_typed_slices(tmp_path: Path) -
     assert result.status == "succeeded", result.error
     retro_dir = workspace.project_root / "qa/retro/retro-v3"
     assert json.loads((retro_dir / "window.json").read_text())["change_ids"] == ["CH-ARCHIVED"]
-    for domain in ("issue", "workflow", "eval"):
+    for domain in ("issue", "workflow", "eval", "discovery", "coverage_gap"):
         payload = json.loads((retro_dir / "evidence" / f"{domain}-slice.json").read_text())
         assert payload["schema_version"] == "3"
         assert payload["domain"] == domain
+    for domain in ("discovery", "coverage_gap"):
+        assert (retro_dir / "signals" / f"{domain}.json").is_file()
+
+
+def test_empty_eval_slice_is_materialized_without_an_agent_call(tmp_path: Path) -> None:
+    workspace = _make_workspace(tmp_path)
+    _write_terminal_archived_change(workspace.project_root, "CH-ARCHIVED")
+    context = _make_context(workspace, params={"retro_id": "retro-empty", "retro_last": 10})
+    collected = retro_collect_v3(_make_task("operation:retro-collect-v3"), workspace, context)
+    assert collected.status == "succeeded", collected.error
+    assert isinstance(collected.value, dict)
+    assert collected.value["eval_count"] == 0
+
+    result = materialize_empty_retro_analysis(
+        _make_task("operation:materialize-empty-retro-analysis", with_={"domain": "eval"}),
+        workspace,
+        context,
+    )
+
+    assert result.status == "succeeded", result.error
+    payload = json.loads(
+        (workspace.project_root / "qa/retro/retro-empty/signals/eval.json").read_text(encoding="utf-8")
+    )
+    assert payload["analysis_status"] == "ok"
+    assert payload["analyzer"] == "operation:materialize-empty-retro-analysis"
+    assert payload["signals"] == []
+    assert payload["slice_sha256"].startswith("sha256:")
 
 
 def test_retro_params_preserve_explicit_batch_scope() -> None:
@@ -200,6 +302,46 @@ def test_retro_collect_reports_structured_batch_contract_failure(tmp_path: Path)
 
     assert result.status == "failed"
     assert result.error_kind == "batch_scope_invalid"
+
+
+def test_assemble_retro_context_writes_equivalent_multiline_agent_companion(
+    tmp_path: Path,
+) -> None:
+    workspace = _make_workspace(tmp_path)
+    retro_id = "retro-agent-context"
+    materialize_pipeline_failure_fallback(
+        workspace.project_root,
+        failure=RetroPipelineFailure(
+            failure_id="FAIL-agent-context",
+            retro_id=retro_id,
+            stage="assemble",
+            node_id="assemble-retro-context",
+            error_kind="invalid_output",
+            message_fingerprint="sha256:" + "a" * 64,
+            occurred_at=datetime(2026, 8, 9, tzinfo=timezone.utc),
+        ),
+        batch_scope=None,
+    )
+    retro_dir = workspace.project_root / "qa" / "retro" / retro_id
+    for name in (
+        "context.json",
+        "context-agent.json",
+        "proposal-candidates.json",
+        "retro-summary.md",
+    ):
+        (retro_dir / name).unlink(missing_ok=True)
+
+    result = assemble_retro_context_v3(
+        _make_task("operation:assemble-retro-context-v3"),
+        workspace,
+        _make_context(workspace, params={"retro_id": retro_id}),
+    )
+
+    assert result.status == "succeeded", result.error
+    canonical = (retro_dir / "context.json").read_text(encoding="utf-8")
+    companion = (retro_dir / "context-agent.json").read_text(encoding="utf-8")
+    assert json.loads(companion) == json.loads(canonical)
+    assert '\n  "' in companion
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +513,7 @@ def test_reconcile_contract_error_is_not_hidden_as_pending(tmp_path: Path, monke
         raise CandidateBatchInvalid((CandidateValidationError(code="candidate_contract_failed"),))
 
     monkeypatch.setattr(
-        "assurance_agent.workflow.graph.handlers.retro_ops.drain_reconcile_outbox",
+        "assurance_agent.workflow.retro_ops.drain_reconcile_outbox",
         fail_contract,
     )
 

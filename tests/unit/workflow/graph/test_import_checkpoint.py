@@ -15,37 +15,35 @@ import pytest
 import yaml
 
 from assurance_agent.eval.fixtures import write_fixture_lock
-from assurance_agent.workflow.core.events import read_events_strict
+from assurance_agent.workflow.core.events import append_event_strict, read_events_strict
+from assurance_agent.workflow.driver.operations_catalog import default_operations
+from assurance_agent.workflow.driver.runtime_factory import assemble_graph_runtime
 from assurance_agent.workflow.execution.tree_hash import sha256_file
 from assurance_agent.workflow.graph.checkpoint import (
     CheckpointImportError,
-    CheckpointStore,
     parse_import_manifest,
     validate_import,
 )
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import parse_execution_contracts
+from assurance_agent.workflow.graph.handlers.operation import (
+    OperationFn,
+    OperationHandler,
+)
+from assurance_agent.workflow.graph.handlers.subgraph import SubgraphHandler
 from assurance_agent.workflow.graph.leases import SystemClock
 from assurance_agent.workflow.graph.models import (
+    ExecutableTask,
     ImportManifest,
     ImportedBudget,
     ImportedGate,
     ImportedTask,
     RuntimeContext,
+    TaskResult,
 )
 from assurance_agent.workflow.graph.runtime import GraphRuntime
-from assurance_agent.workflow.driver.runtime_factory import one_definition_resolver
-from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
-from assurance_agent.workflow.graph.scheduler import Scheduler
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
 from assurance_agent.workflow.graph.task_runner import HandlerNodeRunner
-from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
-from assurance_agent.workflow.graph.handlers.operation import (
-    OperationFn,
-    OperationHandler,
-    default_operations,
-)
-from assurance_agent.workflow.graph.models import ExecutableTask, TaskResult
 from tests.helpers_aa import write_aa_config
 
 _CONTRACTS = """\
@@ -146,6 +144,7 @@ gates:
   api-plan-review-gate:
     reads: [{path: review/api-plan-review.json, as: review}]
     missing_file_is: stop
+    needs_human_review_when: "review.decision == 'needs_human_review'"
     pass_when: "review.decision == 'pass'"
     needs_fix_when: "review.decision == 'needs_fix'"
 """
@@ -350,50 +349,22 @@ def _ops() -> dict[str, OperationFn]:
 
 
 def _build_runtime(project: Path, compiled, contracts) -> GraphRuntime:
-    change = project / "qa" / "changes" / "CH-1"
-    store = TreeStore(change)
-    checkpoints = CheckpointStore(change)
-    workspaces = WorkspaceBackend(change)
-    handler = OperationHandler(_ops())
-    targets: dict[str, object] = {name: handler for name in _ops()}
-    holder: dict[str, GraphRuntime] = {}
+    def build(_store, run_child):  # type: ignore[no-untyped-def]
+        handler = OperationHandler(_ops())
+        targets: dict[str, object] = {name: handler for name in _ops()}
+        subgraph = SubgraphHandler(run_child)
+        for graph_id in compiled.graphs:
+            targets[f"graph:{graph_id}"] = subgraph
+        return HandlerNodeRunner(targets)  # type: ignore[arg-type]
 
-    def run_child(task, graph_id, workspace, context):  # type: ignore[no-untyped-def]
-        return holder["rt"].run_child(task, graph_id, workspace, context)
-
-    from assurance_agent.workflow.graph.handlers.subgraph import SubgraphHandler
-
-    subgraph = SubgraphHandler(run_child)
-    for graph_id in compiled.graphs:
-        targets[f"graph:{graph_id}"] = subgraph
-
-    runner = HandlerNodeRunner(targets)  # type: ignore[arg-type]
-    entry_graph = compiled.entrypoints["full"].graph_id
-    scheduler = Scheduler(
-        checkpoints=checkpoints,
-        object_store=store,
-        clock=SystemClock(),
-        workspace_backend=workspaces,
-        node_runner=runner,
-        max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
+    return assemble_graph_runtime(
+        project_root=project,
+        change_dir=project / "qa" / "changes" / "CH-1",
+        compiled=compiled,
         contracts=contracts,
-        state_defs=dict(compiled.schema.graphs[entry_graph].state),
-    )
-    runtime = GraphRuntime(
-        checkpoint_store=checkpoints,
-        object_store=store,
-        workspace_backend=workspaces,
-        definition_resolver=one_definition_resolver(
-            compiled=compiled,
-            contracts=contracts,
-            ingest_catalog=validate_catalog_runtime(),
-            node_runner=runner,
-            scheduler=scheduler,
-        ),
+        build_node_runner=build,
         clock=SystemClock(),
     )
-    holder["rt"] = runtime
-    return runtime
 
 
 def _seed_fixture(project: Path, *, fixture_id: str = "eval-sample-001") -> str:
@@ -639,6 +610,53 @@ def test_valid_completed_review_gate_import(tmp_path: Path) -> None:
     assert gate_report["reads_sha256"] == dict(report.reads_sha256)
     # No physical attempt for the imported review task.
     assert not any(e["type"] == "task_attempt_started" and e.get("node_id") == "review" for e in events)
+
+
+def test_import_does_not_reuse_change_global_accept_risk_decision(tmp_path: Path) -> None:
+    """A fresh imported invocation must not inherit an older unscoped decision."""
+    project = _make_project(tmp_path)
+    digest = _seed_fixture(project)
+    review_dir = project / "qa" / "changes" / "CH-1" / "review"
+    review_dir.mkdir(parents=True)
+    review_file = review_dir / "api-plan-review.json"
+    review_file.write_text(json.dumps({"decision": "needs_human_review"}), encoding="utf-8")
+    out_hash = sha256_file(review_file)
+    assert out_hash is not None
+    append_event_strict(
+        _context(project).change_dir,
+        {
+            "source": "decide",
+            "type": "human_decision",
+            "checkpoint": "api-plan-review-gate",
+            "action": "accept_risk",
+            "reason": "accepted for an earlier invocation",
+            "who": "reviewer",
+            "review_file": "review/api-plan-review.json",
+            "review_sha256": out_hash,
+        },
+    )
+
+    compiled, contracts = _compile(_GATED)
+    runtime = _build_runtime(project, compiled, contracts)
+    manifest = _base_manifest(
+        fixture_digest=digest,
+        completed=(
+            ImportedTask(
+                path="main",
+                graph="main",
+                node="review",
+                outputs={"change:review/api-plan-review.json": out_hash},
+                gate=ImportedGate(
+                    id="api-plan-review-gate",
+                    verdict="pass",
+                    reads_sha256={"review/api-plan-review.json": out_hash},
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(CheckpointImportError, match="gate verdict mismatch"):
+        runtime.import_checkpoint(compiled, manifest, _context(project))
 
 
 def test_wrong_fixture_digest_rejected(tmp_path: Path) -> None:
@@ -893,7 +911,7 @@ def test_import_precheck_pass_requires_review_cycle_status(tmp_path: Path) -> No
             ImportedTask(path="main", graph="main", node="codegen"),
         ),
     )
-    validated = validate_import(compiled, manifest, context)
+    validated = validate_import(compiled, manifest, context, checkpoint_ns="import-precheck")
     assert [item.task.node for item in validated.resolved] == [
         "review-cycle",
         "codegen-precheck",
@@ -930,7 +948,7 @@ def test_import_rejects_codegen_after_stop_precheck(tmp_path: Path) -> None:
         ),
     )
     with pytest.raises(CheckpointImportError, match="predecessor closure|stop/skip"):
-        validate_import(compiled, manifest, context)
+        validate_import(compiled, manifest, context, checkpoint_ns="import-precheck")
 
 
 def test_import_rejects_codegen_when_precheck_skips(tmp_path: Path) -> None:
@@ -959,7 +977,7 @@ def test_import_rejects_codegen_when_precheck_skips(tmp_path: Path) -> None:
         ),
     )
     with pytest.raises(CheckpointImportError, match="predecessor closure|stop/skip"):
-        validate_import(compiled, manifest, context)
+        validate_import(compiled, manifest, context, checkpoint_ns="import-precheck")
 
 
 def test_valid_budget_import_appends_budget_consumed(tmp_path: Path) -> None:

@@ -1,10 +1,12 @@
 schema_version: "1.0"
 added:
-  - case_id: FUZZ-001
+  - case_id: FUZZ_001
     title: API create endpoint input robustness
+    status: active
     priority: P1
-    severity: high
+    severity: major
     type: Fuzz
+    module: system.api
     objective: Harden POST /api/v1/api/create against schema-derived and boundary inputs without server crashes.
     summary: Schemathesis exercises API metadata creation with generated payloads; related API case covers functional happy path.
     related_cases:

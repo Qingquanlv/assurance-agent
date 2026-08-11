@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import ast
-import importlib.util
 from pathlib import Path
 
+import json
 import yaml
 import pytest
 
@@ -14,13 +13,15 @@ from assurance_agent.eval.fixtures import (
     validate_tier_for_selection,
     write_fixture_lock,
 )
-from assurance_agent.eval.types import FixtureImportDef, FixtureResets, TierManifest
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.state import verify_state_integrity, write_state
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import load_execution_contracts
 from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
-from assurance_agent.artifacts.models import WorkflowState
+from assurance_agent.artifacts.models import CaseYaml, WorkflowState
+import ast
+import importlib.util
+from assurance_agent.eval.types import FixtureImportDef, FixtureResets, TierManifest
 
 
 def _write_synth_fixtures(root: Path) -> Path:
@@ -120,6 +121,35 @@ def test_seed_change_rejects_fixture_drift(tmp_path: Path) -> None:
         )
 
 
+def test_seed_change_ignores_transient_runtime_artifacts(tmp_path: Path) -> None:
+    fixtures = _write_synth_fixtures(tmp_path)
+    sample = fixtures / "samples" / "eval-sample-001"
+    transient_files = {
+        "tests/__pycache__/test_synth.cpython-311.pyc": b"bytecode",
+        "tests/orphan.pyc": b"bytecode",
+        "tests/orphan.pyo": b"optimized bytecode",
+        ".pytest_cache/v/cache/nodeids": b"[]",
+        ".ruff_cache/cache": b"ruff",
+        ".mypy_cache/3.11/meta.json": b"{}",
+        ".coverage": b"coverage database",
+        ".DS_Store": b"macOS metadata",
+    }
+    for relative, content in transient_files.items():
+        path = sample / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    result = seed_change(
+        sut_sandbox=tmp_path / "sut",
+        change_id="eval-sample-001",
+        tier_name="L3-run-seed",
+        fixtures_root=fixtures,
+        fixture_id="fixture-001",
+    )
+
+    assert (result.change_dir / "proposal.md").is_file()
+
+
 def test_load_tier_merges_imports_by_entrypoint(tmp_path: Path) -> None:
     fixtures = tmp_path / "eval-fixtures"
     tiers = fixtures / "tiers"
@@ -198,6 +228,48 @@ def test_benchmark_api_review_imports_include_mechanical_predecessor() -> None:
     evidence_path = fixtures / "samples" / "eval-sample-001" / "review" / "api-plan-checks.json"
     evidence = PlanCheckDocument.model_validate_json(evidence_path.read_text(encoding="utf-8"))
     assert evidence.status == "pass"
+
+
+def test_benchmark_fixture_top_level_change_id_matches_fixture_identity() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    sample_id = "eval-sample-001"
+    sample = repo_root / "benchmark" / "vue-fastapi-admin" / "eval-fixtures" / "samples" / sample_id
+    mismatches: list[str] = []
+
+    for path in sorted(sample.rglob("*")):
+        if not path.is_file() or path.suffix not in {".json", ".yaml", ".yml"}:
+            continue
+        if path.suffix == ".json":
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        else:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            continue
+        change_id = payload.get("change_id")
+        if change_id is not None and change_id != sample_id:
+            mismatches.append(f"{path.relative_to(sample)}={change_id}")
+
+    qa = yaml.safe_load((sample / ".qa.yaml").read_text(encoding="utf-8"))
+    if qa["change"]["change_id"] != sample_id:
+        mismatches.append(f".qa.yaml={qa['change']['change_id']}")
+
+    assert mismatches == []
+
+
+def test_benchmark_fixture_case_documents_match_current_runtime_schema() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    cases = (
+        repo_root
+        / "benchmark"
+        / "vue-fastapi-admin"
+        / "eval-fixtures"
+        / "samples"
+        / "eval-sample-001"
+        / "cases"
+    )
+
+    for path in sorted(cases.rglob("case.yaml")):
+        CaseYaml.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
 
 
 def test_benchmark_codegen_imports_attach_gate_to_precheck_not_codegen() -> None:

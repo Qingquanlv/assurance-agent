@@ -12,7 +12,10 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from assurance_agent.artifacts.models.data_knowledge import DataKnowledgeProposal
+from assurance_agent.artifacts.models.data_knowledge import (
+    DataKnowledgeProposal,
+    PersistedDataKnowledgeProposal,
+)
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
 
@@ -29,6 +32,7 @@ class DeliveryKind(StrEnum):
     MEMORY_PATCH = "memory_patch"
     CHANGE_DRAFT = "change_draft"
     KNOWLEDGE_DELTA = "knowledge_delta"
+    TEST_PROMOTION = "test_promotion"
 
 
 class ImprovementState(StrEnum):
@@ -47,11 +51,24 @@ class ImprovementState(StrEnum):
 
 ALLOWED_DELIVERIES: dict[ImprovementKind, frozenset[DeliveryKind]] = {
     ImprovementKind.PROMPT: frozenset({DeliveryKind.MEMORY_PATCH}),
-    ImprovementKind.FIXTURE: frozenset({DeliveryKind.MEMORY_PATCH, DeliveryKind.CHANGE_DRAFT}),
-    ImprovementKind.TEST: frozenset({DeliveryKind.MEMORY_PATCH, DeliveryKind.CHANGE_DRAFT}),
+    ImprovementKind.FIXTURE: frozenset(
+        {DeliveryKind.MEMORY_PATCH, DeliveryKind.CHANGE_DRAFT, DeliveryKind.TEST_PROMOTION}
+    ),
+    ImprovementKind.TEST: frozenset(
+        {DeliveryKind.MEMORY_PATCH, DeliveryKind.CHANGE_DRAFT, DeliveryKind.TEST_PROMOTION}
+    ),
     ImprovementKind.WORKFLOW: frozenset({DeliveryKind.CHANGE_DRAFT}),
     ImprovementKind.DOMAIN_KNOWLEDGE: frozenset({DeliveryKind.KNOWLEDGE_DELTA}),
 }
+
+
+def is_valid_memory_patch_target(target: str) -> bool:
+    if target.startswith("/") or "\\" in target or "\x00" in target:
+        return False
+    parts = target.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        return False
+    return len(parts) > 2 and parts[:2] == [".aa", "memory"]
 
 
 class ImprovementVerification(BaseModel):
@@ -95,6 +112,8 @@ class ImprovementCandidate(BaseModel):
     def validate_delivery(self) -> Self:
         if self.delivery not in ALLOWED_DELIVERIES[self.kind]:
             raise ValueError(f"{self.kind} cannot use {self.delivery}")
+        if self.delivery is DeliveryKind.MEMORY_PATCH and not is_valid_memory_patch_target(self.target):
+            raise ValueError("memory_patch target must be a child path under .aa/memory/")
         if not self.source_refs.all_ids():
             raise ValueError("candidate requires at least one source ref")
         if (self.knowledge_delta is not None) != (self.delivery is DeliveryKind.KNOWLEDGE_DELTA):
@@ -130,7 +149,7 @@ class ImprovementProjection(BaseModel):
     target: str
     rationale: str
     proposed_change: str
-    knowledge_delta: DataKnowledgeProposal | None = None
+    knowledge_delta: PersistedDataKnowledgeProposal | None = None
     verification: ImprovementVerification
     risk: Literal["low", "medium", "high"]
     confidence: Literal["low", "medium", "high"]

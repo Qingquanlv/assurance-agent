@@ -12,8 +12,9 @@ Do not rely on prior conversation context.
 1. Read `qa/changes/<change-id>/workflow-state.yaml`.
 2. Verify `phases.case_design.status == done`.
 3. Read input files from disk: `.qa.yaml`, `proposal.md`, `cases/<module>/case.yaml`.
-4. If any required file is missing, **STOP** before normal review. Do not produce a normal review verdict. If the orchestrator requires a JSON artifact for diagnostics, write a `reject` record (see Decision Rules — Missing Inputs) and stop.
-5. Use files as the sole source of truth.
+4. Independently read the relevant **product source code** for every product fact used in the verdict. At minimum inspect the implementation entry point plus the controller/service/schema/model or frontend component needed to verify the proposed scenarios. Do not treat proposal, case, Explore advisory, requirements, docs, or tests as product-fact evidence.
+5. If any required artifact is missing, or relevant product source cannot be read, **STOP** before a normal pass/needs-fix verdict. Do not invent product behavior. If the orchestrator requires a JSON artifact for diagnostics, write `needs_human_review` with the missing evidence identified.
+6. Use files read in this invocation as the sole source of truth; do not rely on the case author's conclusions or prior conversation.
 
 **After completing work:**
 
@@ -65,6 +66,14 @@ qa/changes/<change-id>/cases/**/*.yaml
 qa/changes/<change-id>/.qa.yaml
 ```
 
+Required independent evidence:
+
+```text
+<product source files relevant to the requirement>
+```
+
+Source verification is mandatory even when Explore or Case Design already read the same files. The reviewer must repeat the read independently and must not copy `source_code_evidence` from `explore/advisory.json` as a substitute.
+
 Optional reference files:
 
 ```text
@@ -95,6 +104,7 @@ This skill is a **gate producer**. The workflow cannot advance past case review 
 - A natural language conclusion in chat is **not** a substitute for the JSON file. Never end with only a textual verdict.
 - User approval in chat does not release the gate; only a valid `case-review.json` does. If the user says "approved", "looks good", or "continue", treat it only as review context — still validate every review criterion independently. Only write `decision == "pass"` when the artifacts satisfy all review criteria.
 - If you cannot write the JSON file for any reason, treat the review as **failed** and report it — the workflow must treat a missing or invalid `case-review.json` as a STOP condition.
+- `case-review.json` must contain a `source_verification` object with exactly these required fields: `independent: true`, a non-empty `reviewed_source_files` list of product source paths, and a non-empty `verified_claims` list. Every `verified_claims[]` item must contain `claim` and a non-empty `evidence_files` list drawn from `reviewed_source_files`. Paths under `qa/`, `.aa/`, `.opencode/`, `docs/`, `requirements/`, and `tests/` do not count as product source.
 
 ---
 
@@ -170,6 +180,8 @@ FOR EACH required MRC item:
   It MUST appear in at least one case trace.minimum_required_coverage
   It MUST appear in trace/minimum-coverage-matrix.yaml covered_by_cases
   The covering case type/layer MUST match the MRC layer (api/e2e/both)
+  Closed-category keys (data_integrity / negative / auth / e2e_if_enabled journey)
+  MUST cite the DataKnowledge / journey closed set — not freely invented names
 ```
 
 Violations:
@@ -177,6 +189,7 @@ Violations:
 - required MRC item has no covering case → `needs_fix`
 - matrix and case.yaml trace disagree → `needs_fix`
 - e2e_if_enabled item is skipped without explicit skipped_by_scope + reason → `needs_human_review`
+- closed-category MRC key absent from `.aa/data-knowledge.yaml` / declared journey set **and** no matching `plans/data-knowledge.proposal.*.yaml` `discovered_candidates` entry → `needs_fix` (case-design must not invent MRC keys; unknown keys require a knowledge proposal)
 
 `case-review.json` should include:
 
@@ -188,6 +201,16 @@ Violations:
   "missing": []
 }
 ```
+
+These four fields are an exact projection of the frozen matrix, not an estimate:
+
+- count only rows whose `required` value is true;
+- `covered` is the number of required rows with `status: covered`;
+- `skipped_by_scope` is the number of required rows with that status;
+- `missing` lists every required `skipped_by_scope` row's `key`, in matrix order.
+
+The runtime recomputes this projection from `trace/minimum-coverage-matrix.yaml`
+and rejects the review when any count or key differs.
 
 ---
 

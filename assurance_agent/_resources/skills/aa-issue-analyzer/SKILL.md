@@ -39,6 +39,20 @@ All other paths are **forbidden**. A write outside these two paths is a `forbidd
 
 ## Candidate Proposal Rules
 
+### Reconcile Review Findings With Final Artifacts
+
+Treat every `review_finding` as a point-in-time advisory, not proof of the
+current state. When its allowlisted evidence includes post-Codegen evidence
+under `codegen/`, read that evidence and determine whether the downstream step
+applied, carried, or left unresolved the finding.
+
+Do not propose a candidate for a review finding that the post-Codegen evidence
+explicitly records as applied or resolved. Propose a candidate only when the
+allowlisted final evidence confirms the problem remains, or when no downstream
+evidence exists and the candidate clearly describes an unverified advisory
+rather than a current defect. Never infer current test or code drift solely
+from a pre-Codegen review.
+
 Every candidate you propose **MUST**:
 
 - Cite at least one `observation_id` from the Observations batch (field `observation_ids`, minimum one entry). Candidates that do not cite a valid Observation ID are invalid.
@@ -59,8 +73,9 @@ Every candidate you propose **MUST**:
   a stable context fact is required to distinguish two Problems with the same
   surface and symptom; never use evidence source (`fuzz`, review name, case ID),
   guessed root cause, implementation helper, or wording variants as qualifiers.
-- Include `possible_problem_ids` — a list of existing Problem IDs from `problems.json` that may match semantically (or empty list if no semantic match).
-- Include a `confidence` score between 0.0 and 1.0.
+- Include `possible_problem_ids` — a list of existing Problem IDs from `qa/issues/problems.json` that may match semantically (or `[]` if no semantic match).
+  Never invent IDs. Do **not** put observation IDs, case IDs, or labels like `FAIL-001` / `ISS-001` here — only real `PROB-*` (or whatever IDs appear in `problems.json`). When unsure, use `[]`.
+- Include a `confidence` score as a **number** between 0.0 and 1.0 (e.g. `0.85`). Do not use strings like `"high"` / `"medium"` / `"low"`.
 - Include a `recommended_action` string.
 
 **Proposals only — never set canonical state.** The following fields are NOT allowed in candidate output:

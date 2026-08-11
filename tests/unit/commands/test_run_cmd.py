@@ -90,3 +90,64 @@ def test_run_unknown_change_exit_one(project) -> None:
     result = CliRunner().invoke(main, ["run", "--change", "NOPE"])
     assert result.exit_code == 1
     assert "not found" in result.output.lower()
+
+
+# --------------------------------------------------------------------------- #
+# gate warnings in the human output
+# --------------------------------------------------------------------------- #
+
+_BROKEN_POLICY = "version: 1\nevidence_sufficiency:\n  recency_hours: -5\n"
+
+
+def test_policy_error_fails_closed_in_the_v2_coverage_dimension(project, monkeypatch) -> None:
+    root, change = project
+    (root / ".aa" / "policy.yaml").write_text(_BROKEN_POLICY, encoding="utf-8")
+    monkeypatch.setattr(runners_mod.subprocess, "run", _stub_pytest("passed"))
+
+    result = CliRunner().invoke(main, ["run", "--change", "CH-1"])
+
+    assert result.exit_code == 1
+    assert "Final Status : FAIL" in result.output
+    assert "Quality gate failed" in result.output
+    gate = json.loads((change / "execution" / "quality-gate-result.json").read_text(encoding="utf-8"))
+    assert gate["dimensions"]["coverage"]["evidence"] == {
+        "kind": "error",
+        "error_code": "policy_error",
+    }
+
+
+def test_nothing_is_printed_when_the_gate_has_no_warnings(project, monkeypatch) -> None:
+    monkeypatch.setattr(runners_mod.subprocess, "run", _stub_pytest("passed"))
+
+    result = CliRunner().invoke(main, ["run", "--change", "CH-1"])
+
+    assert result.exit_code == 0
+    assert "Warnings" not in result.output
+    assert "EVIDENCE-SUFFICIENCY-NOT-EVALUATED" not in result.output
+
+
+@pytest.mark.parametrize("damage", ["malformed", "missing"])
+def test_an_unreadable_gate_file_still_reports_the_run(project, monkeypatch, damage: str) -> None:
+    """Warnings are a convenience read of a file the run just published, not a
+    second source of truth. Losing it must cost the operator the warnings and
+    nothing else — the verdict and the exit code come from the manifest."""
+    _, change = project
+    monkeypatch.setattr(runners_mod.subprocess, "run", _stub_pytest("passed"))
+    real_execute = run_cmd_mod._execute
+
+    def damaging(*args, **kwargs):
+        manifest = real_execute(*args, **kwargs)
+        gate = change / "execution" / "quality-gate-result.json"
+        if damage == "malformed":
+            gate.write_text("{not json", encoding="utf-8")
+        else:
+            gate.unlink()
+        return manifest
+
+    monkeypatch.setattr(run_cmd_mod, "_execute", damaging)
+    result = CliRunner().invoke(main, ["run", "--change", "CH-1"])
+
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert result.exit_code == 0
+    assert "Final Status : PASS" in result.output
+    assert "Quality gate passed" in result.output

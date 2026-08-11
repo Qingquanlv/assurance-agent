@@ -32,10 +32,10 @@ from assurance_agent.workflow.graph.handlers.agent import AgentHandler
 from assurance_agent.workflow.graph.handlers.gate import GateHandler
 from assurance_agent.workflow.graph.handlers.interrupt import InterruptHandler
 from assurance_agent.workflow.graph.handlers.join import JoinHandler
+from assurance_agent.workflow.driver.operations_catalog import default_operations
 from assurance_agent.workflow.graph.handlers.operation import (
     OperationFn,
     OperationHandler,
-    default_operations,
 )
 from assurance_agent.workflow.graph.handlers.subgraph import SubgraphHandler
 from assurance_agent.workflow.graph.ingest_catalog import (
@@ -60,11 +60,55 @@ from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
 from assurance_agent.workflow.improvements.ledger import atomic_write_json
 from tests.helpers_aa import write_aa_config
 from tests.unit.evidence import test_issue_replay_authority as auth
-from tests.unit.evidence.test_fold_trace_reconciled import (
-    _write_api_case,
-    _write_selected_api_result,
-    materialize_reconciled_v2,
-)
+
+
+def _write_api_case(change_dir: Path, case_id: str = "TC_DEPT_API_001") -> None:
+    path = change_dir / "cases" / "dept" / "case.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"""
+schema_version: "1.0"
+added:
+  - case_id: {case_id}
+    module: system.dept
+    type: API
+    title: create
+    status: active
+    priority: P0
+    severity: blocker
+    automation:
+      required: true
+modified: []
+removed: []
+""",
+        encoding="utf-8",
+    )
+
+
+def _write_selected_api_result(change_dir: Path, batch_id: str) -> None:
+    path = change_dir / "execution" / "runs" / batch_id / "api-result.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "change_id": auth.CHANGE_ID,
+                "batch_id": batch_id,
+                "target": "api",
+                "cases": [],
+                "unmapped_tests": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def materialize_reconciled_v2(project_root: Path) -> Path:
+    change_dir = project_root / "qa" / "changes" / auth.CHANGE_ID
+    _write_api_case(change_dir)
+    projection = fold_trace(project_root, auth.CHANGE_ID, phase="reconciled")
+    path = change_dir / "inspect" / "trace-projection.json"
+    atomic_write_json(path, projection.model_dump(mode="json"))
+    return path
 
 
 class _InjectedCrash(BaseException):
@@ -80,7 +124,20 @@ T0 = datetime(2026, 7, 31, 12, 0, 0, tzinfo=timezone.utc)
 CHANGE_ID = auth.CHANGE_ID
 B0_BATCH = auth.BATCH_ID
 B1_BATCH = "B1"
-STUB_SUBGRAPHS = frozenset({"api-branch", "e2e-branch", "fuzz-branch", "performance-branch", "healing"})
+# Post-healing metrics/trace gates are feature-branch additions main recovery
+# fixtures never exercised (main was inspect→healing→report). Stub the whole
+# post-healing chain so these terminals still end at report with exit 0.
+STUB_SUBGRAPHS = frozenset(
+    {
+        "api-branch",
+        "e2e-branch",
+        "fuzz-branch",
+        "performance-branch",
+        "healing",
+        "coverage-repair",
+    }
+)
+_STUB_PASS_GATES = frozenset({"metrics-sufficiency", "trace-sufficiency"})
 
 Outcome = Literal["success", "analyzer_recovery", "sync_recovery", "reconcile_failed"]
 
@@ -342,11 +399,49 @@ def _assurance_stub_ops() -> dict[str, OperationFn]:
             (report / name).write_text("ok\n", encoding="utf-8")
         return TaskResult(status="succeeded")
 
+    def stub_materialize_pr_metrics(
+        task: ExecutableTask, workspace: Any, context: RuntimeContext
+    ) -> TaskResult:
+        del task, context
+        from assurance_agent.artifacts.models.metrics import MetricsDocument
+
+        inspect = workspace.change_dir / "inspect"
+        inspect.mkdir(parents=True, exist_ok=True)
+        doc = MetricsDocument.model_validate(
+            {
+                "schema_version": "2",
+                "change_id": CHANGE_ID,
+                "cadence": "pr",
+                "computed_at": "2026-07-31T12:00:00Z",
+                "risk_tier": "low",
+                "risk_tier_lower_bound": "low",
+                "risk_tier_declared": None,
+                "risk_declaration_lowered": False,
+                "risk_lowered_declarations": [],
+                "metrics": {
+                    "constraint_coverage": {
+                        "layer": "api",
+                        "status": "not_evaluated",
+                        "value": None,
+                        "declared": None,
+                        "evidence": "",
+                    }
+                },
+                "collection_gaps": [],
+                "shortboards": [],
+                "floor_ratio": None,
+                "policy_digest": "a" * 64,
+            }
+        )
+        (inspect / "metrics.json").write_text(doc.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        return TaskResult(status="succeeded", value={"stubbed": "materialize-pr-metrics"})
+
     return {
         "operation:run-tests": stub_run_tests,
         "operation:inspect": stub_inspect,
         "operation:collect-observations": stub_collect,
         "operation:generate-report": stub_report,
+        "operation:materialize-pr-metrics": stub_materialize_pr_metrics,
     }
 
 
@@ -409,6 +504,31 @@ def _semantic_reconcile_failed() -> OperationFn:
     return _fn
 
 
+def _gate_handler(compiled: CompiledWorkflow, *, stub_post_healing: bool) -> Any:
+    inner = GateHandler(compiled)
+    if not stub_post_healing:
+        return inner
+
+    class _PassPostHealingGates:
+        def execute(self, task: ExecutableTask, workspace: Any, context: RuntimeContext) -> TaskResult:
+            if task.node_id in _STUB_PASS_GATES:
+                return TaskResult(
+                    status="succeeded",
+                    value="pass",
+                    gate_report={
+                        "gate_id": task.node_id,
+                        "verdict": "pass",
+                        "matched_rule": "stub",
+                        "reason": "recovery fixture stubs post-healing gates",
+                        "reads_sha256": {},
+                        "value": "pass",
+                    },
+                )
+            return inner.execute(task, workspace, context)
+
+    return _PassPostHealingGates()
+
+
 def _build_runtime(
     project: Path,
     compiled: CompiledWorkflow,
@@ -436,7 +556,7 @@ def _build_runtime(
     agent = AgentHandler(SkillRouter(analyzer), store, contracts=contracts, compiled=compiled)
     handlers: dict[str, Any] = {
         "builtin:join": JoinHandler(),
-        "builtin:gate": GateHandler(compiled),
+        "builtin:gate": _gate_handler(compiled, stub_post_healing=stub_assurance_subgraphs),
         "builtin:interrupt": InterruptHandler(compiled),
         **{target: op_handler for target in merged},
     }
@@ -616,12 +736,52 @@ def _counting_materializer() -> tuple[OperationFn, dict[str, int]]:
     calls = {"n": 0}
 
     def _fn(task: ExecutableTask, workspace: Any, context: RuntimeContext) -> TaskResult:
-        del task, context
+        del task
         calls["n"] += 1
         inspect_dir = workspace.change_dir / "inspect"
         inspect_dir.mkdir(parents=True, exist_ok=True)
+        change_id = context.change_id
         (inspect_dir / "trace-projection.json").write_text(
-            json.dumps({"schema_version": "2", "phase": "reconciled", "integrity": "incomplete"}) + "\n",
+            json.dumps(
+                {
+                    "schema_version": "2",
+                    "change_id": change_id,
+                    "phase": "reconciled",
+                    "authoritative_batch_id": "batch-1",
+                    "sources": [],
+                    "rows": [],
+                    "unmapped_tests": [],
+                    "gaps": [
+                        {
+                            "code": "issue_reconciliation_unavailable",
+                            "source": "inspect/issue-evidence-manifest.json",
+                            "detail": "reason=missing",
+                        }
+                    ],
+                    "integrity": "incomplete",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (inspect_dir / "trace-sufficiency.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "change_id": change_id,
+                    "authoritative_batch_id": "batch-1",
+                    "policy_digest": None,
+                    "as_of": None,
+                    "integrity": "incomplete",
+                    "integrity_blocks_routing": True,
+                    "sufficient": False,
+                    "has_open_problems": False,
+                    "error_code": "evidence_projection_missing",
+                    "insufficient_cases": [],
+                    "gap_codes": ["issue_reconciliation_unavailable"],
+                }
+            )
+            + "\n",
             encoding="utf-8",
         )
         return TaskResult(status="succeeded", value={"phase": "reconciled", "integrity": "incomplete"})
@@ -1141,6 +1301,7 @@ def _runner_and_scheduler(
     analyzer: ScriptedAnalyzer,
     ops: dict[str, OperationFn],
     run_child: Any,
+    stub_post_healing_gates: bool = False,
 ) -> tuple[HandlerNodeRunner, Scheduler]:
     merged = default_operations()
     merged.update(ops)
@@ -1148,7 +1309,7 @@ def _runner_and_scheduler(
     agent = AgentHandler(SkillRouter(analyzer), store, contracts=contracts, compiled=compiled)
     handlers: dict[str, Any] = {
         "builtin:join": JoinHandler(),
-        "builtin:gate": GateHandler(compiled),
+        "builtin:gate": _gate_handler(compiled, stub_post_healing=stub_post_healing_gates),
         "builtin:interrupt": InterruptHandler(compiled),
         **{target: op_handler for target in merged},
     }
@@ -1209,6 +1370,7 @@ def _build_pinning_aware_runtime(
             analyzer=analyzer,
             ops=ops,
             run_child=run_child,
+            stub_post_healing_gates=stub_assurance_subgraphs,
         )
 
     live_models = validate_ingest_model_map(live_catalog)

@@ -171,3 +171,26 @@ def test_e2e_contract_missing_capability_fails_capability_keys() -> None:
     document = run_plan_checks(_e2e_context(required_capabilities=missing_caps))
 
     assert _check(document, "capability_keys").status == "fail"
+
+
+def test_benchmark_fuzz_api_adapter_capabilities_resolve_from_l1() -> None:
+    from assurance_agent.verification.checks.capability_keys import check_capability_keys
+
+    data_knowledge = yaml.safe_load(
+        (BENCHMARK_ROOT / ".aa" / "data-knowledge.yaml").read_text(encoding="utf-8")
+    )
+
+    evidence = check_capability_keys(
+        CheckContext(
+            plan_texts={},
+            cases=(),
+            data_knowledge=data_knowledge,
+            layer="fuzz",
+            required_capabilities=(
+                "capabilities.adapters.fuzz.api.make_api",
+                "capabilities.adapters.fuzz.api.cleanup_api",
+            ),
+        )
+    )
+
+    assert evidence.status == "pass", evidence.model_dump(mode="json")

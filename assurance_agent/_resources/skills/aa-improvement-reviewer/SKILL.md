@@ -10,10 +10,12 @@ Retro history, Issue ledgers, memory, another Improvement, or another review.
 
 ## Inputs
 
-Read only `qa/improvements/review-subjects/${params.subject_sha256}.json`.
-Treat the canonical subject as authoritative. Check evidence traceability, target/scope
-ownership, verification readiness, delivery safety, duplicate or replacement ambiguity,
-and whether risk appears underestimated.
+Read only the multiline agent projection at
+`qa/improvements/review-subjects/agent/${params.subject_sha256}.json`.
+The runtime separately validates it against the compact canonical subject and its digest.
+Do not read the compact canonical subject. Treat the validated projection as authoritative.
+Check evidence traceability, target/scope ownership, verification readiness, delivery safety,
+duplicate or replacement ambiguity, and whether risk appears underestimated.
 
 ## Outputs
 
@@ -22,9 +24,11 @@ Write only:
 - `qa/improvements/reviews/${params.review_id}/assessment.json`
 - `qa/improvements/reviews/${params.review_id}/summary.md`
 
-The assessment must use schema version `1`, review type `improvement`, and repeat the
-provided review ID, Improvement ID, expected version, and subject digest exactly. Its
-decision is one of `pass`, `changes_requested`, `needs_human_review`, or `reject`.
+The assessment must use schema version `1` and review type `improvement`. Omit
+`review_id`, `improvement_id`, `expected_improvement_version`, and `subject_sha256`:
+these are runtime-owned bindings that the runtime inserts after validating your
+judgment. Its decision is one of `pass`, `changes_requested`, `needs_human_review`,
+or `reject`.
 
 ## Authority boundary
 

@@ -5,8 +5,17 @@ description: Use when a Retro v3 run requires workflow-domain analysis from its 
 
 # Retro Workflow Signal Analysis
 
-Read only `qa/retro/<retro-id>/evidence/workflow-slice.json`. Write only
+Read only the multiline agent projection
+`qa/retro/<retro-id>/evidence/agent/workflow-slice.json`. Write only
 `qa/retro/<retro-id>/signals/workflow.json`.
+
+The runtime retains the canonical slice separately for digest completion and validation;
+do not read or reproduce that canonical slice.
+
+Treat the slice's `deterministic_signals` as runtime-owned signals that are already
+included in the assembled context. Analyze `entries` for additional patterns; do not
+copy or re-emit a deterministic signal. Each `signal_id` may occur only once in the
+output document.
 
 Group evidence by its typed identity:
 

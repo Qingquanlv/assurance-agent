@@ -172,6 +172,39 @@ def test_candidate_completion_backfills_digest_from_exact_context_bytes(tmp_path
     assert completed.context_sha256 == context_sha256(context)
 
 
+def test_candidate_completion_coerces_list_success_criteria(tmp_path: Path) -> None:
+    context = _context()
+    retro_dir = tmp_path / "qa" / "retro" / context.retro_id
+    retro_dir.mkdir(parents=True)
+    context_bytes = (
+        json.dumps(context.model_dump(mode="json"), sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    (retro_dir / "context.json").write_bytes(context_bytes)
+    candidate = _candidate().model_dump(mode="json")
+    candidate["verification"]["success_criteria"] = [
+        "Generated adapters resolve through the registry",
+        "and the suite stays green",
+    ]
+    draft = {
+        "schema_version": "3",
+        "retro_id": context.retro_id,
+        "candidates": [candidate],
+    }
+    (retro_dir / "proposal-candidates.json").write_text(json.dumps(draft), encoding="utf-8")
+
+    complete_candidate_outputs(
+        tmp_path,
+        (f"project:qa/retro/{context.retro_id}/proposal-candidates.json",),
+    )
+
+    completed = ImprovementCandidateDocumentV3.model_validate_json(
+        (retro_dir / "proposal-candidates.json").read_text()
+    )
+    assert completed.candidates[0].verification.success_criteria == (
+        "Generated adapters resolve through the registry and the suite stays green"
+    )
+
+
 def test_candidate_completion_rejects_agent_authored_digest(tmp_path: Path) -> None:
     context = _context()
     retro_dir = tmp_path / "qa" / "retro" / context.retro_id

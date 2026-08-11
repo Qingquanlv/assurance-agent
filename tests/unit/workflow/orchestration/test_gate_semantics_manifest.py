@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -89,7 +90,7 @@ def test_ast_branch_mutation_changes_symbol_and_aggregate_digest(qualified_name:
     baseline_manifest = build_gate_semantics_manifest()
     baseline_symbol = next(s for s in baseline_manifest.symbols if s.qualified_name == qualified_name)
     original_source = inspect.getsource(_resolve(qualified_name))
-    mutated_source = original_source.replace("return ", "return  # mutated\n        return ", 1)
+    mutated_source = _mutate_first_return_statement(original_source)
     assert mutated_source != original_source
 
     mutated_manifest = build_gate_semantics_manifest(source_overrides={qualified_name: mutated_source})
@@ -244,6 +245,19 @@ def _assert_source_override_changes_digests(
     assert mutated_symbol.semantic_version == baseline_symbol.semantic_version
     assert mutated_manifest.digest != baseline_manifest.digest
     assert gate_semantics_digest() == baseline_manifest.digest
+
+
+def _mutate_first_return_statement(source: str) -> str:
+    """Insert a no-op return before the first return while preserving indentation."""
+    mutated, count = re.subn(
+        r"^(\s*)return ",
+        r"\1return  # mutated\n\1return ",
+        source,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    assert count == 1
+    return mutated
 
 
 def _resolve(qualified_name: str) -> Any:

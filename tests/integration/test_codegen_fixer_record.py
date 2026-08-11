@@ -24,7 +24,7 @@ from assurance_agent.workflow.graph.durable_effects import (
     HEALING_ALLOCATION_V2,
     production_effect_registry,
 )
-from assurance_agent.workflow.graph.handlers.operation import default_operations
+from assurance_agent.workflow.driver.operations_catalog import default_operations
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext
 from assurance_agent.workflow.graph.precommit import (
     CODEGEN_FIX_CANDIDATE_V1,

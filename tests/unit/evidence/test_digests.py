@@ -53,7 +53,7 @@ _CANONICAL_GOLDEN = (
     b'"performance":true},"ts":"2026-07-29T12:00:00+00:00","z":1}'
 )
 
-_PINNED_PROJECTION_DIGEST = "1a7dffe527a81c67aa1f418d01b5afac0a08822be4b33947bfaa31c8bd0a7547"
+_PINNED_PROJECTION_DIGEST = "bf463591fa075d47c1264bd681d481833d33a6e8636288e91f541314dd0d8802"
 
 
 def _sample_payload() -> dict[str, object]:

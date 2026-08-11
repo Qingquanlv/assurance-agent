@@ -3,6 +3,8 @@
 import re
 from pathlib import Path
 
+import yaml
+
 from assurance_agent import resources
 from assurance_agent.artifacts.models import (
     Advisory,
@@ -97,8 +99,8 @@ def _load_field_allowlist() -> set[str]:
 
 def test_thirty_eight_skills_present() -> None:
     names = _skill_names()
-    # Retro v3 analyzers plus the bounded Improvement reviewer.
-    assert len(names) == 38
+    # Retro v3 analyzers, Improvement reviewer, and coverage-repair.
+    assert len(names) == 39
     assert "writing-skills" in names
     assert "aa-workflow" in names
     assert "aa-dashboard" in names
@@ -107,7 +109,24 @@ def test_thirty_eight_skills_present() -> None:
     assert "aa-retro-issue-analysis" in names
     assert "aa-retro-workflow-analysis" in names
     assert "aa-retro-eval-analysis" in names
+    assert "aa-coverage-repair" in names
     assert not any(n.startswith("aws-") for n in names)
+
+
+def test_improvement_reviewer_reads_multiline_agent_subject_projection() -> None:
+    text = resources.read_text("skills", "aa-improvement-reviewer", "SKILL.md")
+
+    assert "review-subjects/agent/${params.subject_sha256}.json" in text
+    assert "Do not read the compact canonical subject" in text
+    assert "Omit" in text
+    for field in (
+        "review_id",
+        "improvement_id",
+        "expected_improvement_version",
+        "subject_sha256",
+    ):
+        assert field in text
+    assert "runtime inserts" in text
 
 
 def test_no_aws_residue_in_skills_and_opencode() -> None:
@@ -173,11 +192,99 @@ def test_agents_preserve_permission_floor() -> None:
     allow_gate = re.compile(r'"[^"]*aa (gate|status)[^"]*"\s*:\s*allow')
     allow_state = re.compile(r'"[^"]*workflow-state\.yaml"\s*:\s*allow')
     agents = [n for n in resources.iter_children("opencode", "agents") if n.endswith(".md")]
-    assert len(agents) == 6
+    assert len(agents) == 7
     for name in agents:
         text = resources.read_text("opencode", "agents", name)
         assert allow_gate.search(text) is None, name
         assert allow_state.search(text) is None, name
+
+
+def test_explore_permissions_are_removed_from_doc_author_and_owned_by_explorer() -> None:
+    allow_risk = re.compile(r'"aa risk \*"\s*:\s*allow')
+    allow_explore = re.compile(r'"\*\*qa/changes/\*\*/explore/\*\*"\s*:\s*allow')
+    deny_context_edit = re.compile(r'"\*\*qa/changes/\*\*/explore/context\.json"\s*:\s*deny')
+    explorer = resources.read_text("opencode", "agents", "aa-explorer.md")
+    doc_author = resources.read_text("opencode", "agents", "aa-doc-author.md")
+
+    assert allow_risk.search(explorer) is not None
+    assert allow_explore.search(explorer) is not None
+    assert deny_context_edit.search(explorer) is not None
+    assert allow_risk.search(doc_author) is None
+    assert allow_explore.search(doc_author) is None
+
+
+def test_bounded_agents_disable_sandbox_escape_plugin_tools() -> None:
+    for name in resources.iter_children("opencode", "agents"):
+        if not name.endswith(".md"):
+            continue
+        text = resources.read_text("opencode", "agents", name)
+        match = re.match(r"^---\n(.*?)\n---\n", text, flags=re.DOTALL)
+        assert match is not None, name
+        frontmatter = yaml.safe_load(match.group(1))
+        expected = {
+            "task": False,
+            "task_create": False,
+            "task_get": False,
+            "task_list": False,
+            "task_update": False,
+            "call_omo_agent": False,
+            "look_at": False,
+            "skill_mcp": False,
+            "interactive_bash": False,
+            "monitor_start": False,
+            "session_list": False,
+            "session_read": False,
+            "session_search": False,
+            "session_info": False,
+            "background_output": False,
+            "background_cancel": False,
+            "apply_patch": False,
+        }
+        if name != "aa-intake-host.md":
+            expected["workflow_start"] = False
+        assert frontmatter.get("tools") == expected, name
+
+
+def test_case_reviewer_requires_independent_product_source_verification() -> None:
+    skill = resources.read_text("skills", "aa-case-reviewer", "SKILL.md")
+    agent = resources.read_text("opencode", "agents", "aa-reviewer.md")
+
+    assert "source_verification" in skill
+    assert "independent" in skill
+    assert "product source" in skill
+    assert "exact projection of the frozen matrix" in skill
+    assert "runtime recomputes this projection" in skill
+    assert "source_verification" in agent
+    assert "independently read" in agent
+
+
+def test_case_design_requires_its_own_product_source_verification() -> None:
+    skill = resources.read_text("skills", "aa-case-design", "SKILL.md")
+
+    assert "## Product Source Verification" in skill
+    assert "independently_read: true" in skill
+    assert "reviewed_source_files" in skill
+    assert "Explore source evidence is not a substitute" in skill
+
+
+def test_case_design_requires_performance_execution_identity() -> None:
+    skill = resources.read_text("skills", "aa-case-design", "SKILL.md")
+
+    assert "automation.performance.scenario.capability" in skill
+    assert "automation.performance.scenario.endpoint" in skill
+
+
+def test_case_design_forbids_inventing_mrc_keys_without_knowledge_proposal() -> None:
+    """Verification Metrics M1 Task 9: MRC keys are a closed set."""
+    design = resources.read_text("skills", "aa-case-design", "SKILL.md")
+    reviewer = resources.read_text("skills", "aa-case-reviewer", "SKILL.md")
+
+    assert "MRC closed-key discipline" in design
+    assert "discovered_candidates" in design
+    assert "Do **not** freely invent MRC keys" in design or "do not freely invent" in design.lower()
+    assert "knowledge proposal" in design.lower()
+    assert "discovered_candidates" in reviewer
+    assert "invent MRC keys" in reviewer or "freely invented" in reviewer
 
 
 def test_aa_retro_skill_is_current_run_candidate_boundary() -> None:
@@ -211,3 +318,29 @@ def test_aa_retro_skill_is_current_run_candidate_boundary() -> None:
     assert "problems.json" not in text
     assert "events.jsonl" not in text
     assert "Optional read-only context" not in text
+
+
+def test_issue_analyzer_reconciles_review_findings_with_post_codegen_evidence() -> None:
+    text = resources.read_text("skills", "aa-issue-analyzer", "SKILL.md")
+
+    assert "point-in-time advisory" in text
+    assert "post-Codegen evidence" in text
+    assert "Do not propose a candidate" in text
+
+
+def test_retro_issue_analysis_keeps_product_defects_out_of_improvements() -> None:
+    text = resources.read_text("skills", "aa-retro-issue-analysis", "SKILL.md")
+
+    assert "surface.kind == workflow" in text
+    assert "product API, schema, validation" in text
+    assert "Never weaken an assert_ideal contract" in text
+    assert "omit the signal" in text
+
+
+def test_retro_analyzers_read_multiline_agent_slice_companions() -> None:
+    for domain in ("issue", "workflow", "eval"):
+        text = resources.read_text("skills", f"aa-retro-{domain}-analysis", "SKILL.md")
+
+        assert f"evidence/agent/{domain}-slice.json" in text
+        assert f"Read only `qa/retro/<retro-id>/evidence/{domain}-slice.json`" not in text
+        assert "canonical slice" in text

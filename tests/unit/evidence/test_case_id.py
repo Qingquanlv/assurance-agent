@@ -17,10 +17,17 @@ def test_extract_case_id_accepts_legacy_hyphen_form() -> None:
     assert extract_case_id("TC-ROLE-002 role list") == "TC_ROLE_002"
 
 
+def test_extract_case_id_is_case_insensitive() -> None:
+    assert extract_case_id("tc_dept_001 department smoke") == "TC_DEPT_001"
+
+
 def test_extract_case_id_returns_empty_when_absent() -> None:
     assert extract_case_id("test_plain_smoke_check") == ""
 
 
-def test_lookbehind_rejects_prefix_glued_to_tc() -> None:
+def test_extract_case_id_lookbehind_boundary_rejects_embedded_match() -> None:
+    # A preceding alphanumeric char (no separator) must not be treated as a
+    # boundary; the id must start right after a non [A-Z0-9] character.
+    assert extract_case_id("XTC_MENU_001") == ""
     assert extract_case_id("XTC_DEPT_API_001") == ""
     assert extract_case_id("test_xtc_dept_api_001__x") == ""
