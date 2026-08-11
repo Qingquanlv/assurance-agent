@@ -205,6 +205,10 @@ def _succeeded(task: ExecutableTask, **overrides: object) -> TaskProjection:
         "task_id": task.task_id,
         "node_id": task.node_id,
         "status": "succeeded",
+        # D14: planner only treats a predecessor as ready once the superstep
+        # has committed outputs (MERGE_HEAD / main). The thin harness must
+        # stamp this the way the runtime would after a successful commit.
+        "outputs_committed": True,
         "attempts_used": 1,
         "latest_attempt_id": f"{task.task_id}-a1",
     }
@@ -360,10 +364,19 @@ def _gate_report(
 # healing is never pre-empted by a trace verdict
 # --------------------------------------------------------------------------- #
 
-_HEALING_VERDICTS = {"healing-entry-gate": "enter", "fixer-safety-gate": "pass"}
+_HEALING_VERDICTS = {
+    "healing-entry-gate": "enter",
+    "fixer-safety-gate": "pass",
+    # Packaged healing (MERGE_HEAD) inserts fixer-proposal-approval between
+    # authority-ready and fixer-dispatch; the thin harness must pass it.
+    "fixer-proposal-approval-gate": "pass",
+}
 _PROPOSAL: dict[tuple[str, str], object] = {
     ("tree-0", "change:healing/fix-proposal.json"): {"proposals": [{"target": "api", "eligible": True}]}
 }
+# operation:fixer-authority-ready publishes ``{route: pass|stop}``; without a
+# value the route defaults to complete-failed and the fixers never run.
+_HEALING_VALUES: dict[str, object] = {"fixer-authority-ready": {"route": "pass"}}
 
 
 def _drive_healing(
@@ -387,6 +400,7 @@ def _drive_healing(
         },
         resume_action=resume_action,
         artifacts=_FakeArtifacts(_PROPOSAL),
+        values=_HEALING_VALUES,
         eligible=eligible,
         until=until,
     )

@@ -60,6 +60,27 @@ def test_graph_resumed_event_accepts_anchor_fields() -> None:
     assert event.payload["note"] == "resume"
 
 
+def test_graph_resumed_event_accepts_revision_triple_and_source_pair() -> None:
+    event = GraphResumedEvent(
+        type="graph_resumed",
+        invocation_id="inv-1",
+        checkpoint_ns="inv-1",
+        interrupt_id="int-1",
+        action="fix_and_proceed",
+        reason="ok",
+        who="tester",
+        audited_reads_sha256={},
+        revision_transition_id="rt-1",
+        revision_ordinal=0,
+        revision_chain_length=1,
+        source_gate_attempt_id="ga-1",
+        source_gate_tree_id="tree-src",
+    )
+    assert event.revision_transition_id == "rt-1"
+    assert event.revision_ordinal == 0
+    assert event.source_gate_attempt_id == "ga-1"
+
+
 def test_resume_command_accepts_audited_domain_action() -> None:
     command = ResumeCommand(
         interrupt_id="INT-1",

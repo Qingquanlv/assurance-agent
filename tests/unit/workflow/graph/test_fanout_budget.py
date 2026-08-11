@@ -310,6 +310,9 @@ def _task(task: ExecutableTask, status: str, **overrides: object) -> TaskProject
         "attempts_used": 1,
         "latest_attempt_id": f"{task.task_id}-a1",
     }
+    # D14 predecessor readiness requires a committed superstep for successes.
+    if status == "succeeded" and "outputs_committed" not in overrides:
+        payload["outputs_committed"] = True
     payload.update(overrides)
     return TaskProjection(**payload)  # type: ignore[arg-type]
 
@@ -621,6 +624,64 @@ def test_fan_out_reduce_stays_pending_while_child_in_flight(tmp_path: Path) -> N
     assert plan.tasks == ()
     assert plan.terminal is None
     assert fan_out_state_updates(compiled, projection) == []
+
+
+def test_fan_out_waits_for_committed_and_acked_children(tmp_path: Path) -> None:
+    """Bare status=succeeded without commit/ack must not settle the fan-out parent."""
+    compiled = _compile(FANOUT_GRAPH)
+    event, children = _expanded_event(compiled, tmp_path)
+    gen = _initial_tasks(compiled, tmp_path)["gen"]
+    by_key = {task.task_key: task for task in children}
+    intent = {
+        "schema_version": "1",
+        "effect_id": "eff-order",
+        "kind": "test_marker/v1",
+        "reconciler_semantics_digest": "sha256:" + ("b" * 64),
+        "payload_sha256": "sha256:" + ("c" * 64),
+        "payload": {"schema_version": "1", "marker_key": "k", "value": "v"},
+    }
+    projection = _projection(
+        compiled,
+        current_tree_id="tree-1",
+        tasks=[
+            _task(gen, "succeeded"),
+            _task(by_key["menu"], "succeeded", value=["m1"]),
+            # Succeeded but uncommitted/unacked effect: keep fan-out unresolved.
+            _task(
+                by_key["order"],
+                "succeeded",
+                value=["o1"],
+                outputs_committed=False,
+                durable_effects=(intent,),
+            ),
+        ],
+        fan_out_expansions={"per-module": _frozen_expansion(event)},
+    )
+    plan = _plan(compiled, projection, tmp_path)
+    assert plan.tasks == ()
+    assert plan.terminal is None
+    assert fan_out_state_updates(compiled, projection) == []
+
+    # Committed but still unacked: still unresolved / no aggregate.
+    committed_unacked = _projection(
+        compiled,
+        current_tree_id="tree-1",
+        tasks=[
+            _task(gen, "succeeded"),
+            _task(by_key["menu"], "succeeded", value=["m1"]),
+            _task(
+                by_key["order"],
+                "succeeded",
+                value=["o1"],
+                outputs_committed=True,
+                durable_effects=(intent,),
+            ),
+        ],
+        fan_out_expansions={"per-module": _frozen_expansion(event)},
+    )
+    plan2 = _plan(compiled, committed_unacked, tmp_path)
+    assert plan2.tasks == ()
+    assert fan_out_state_updates(compiled, committed_unacked) == []
 
 
 def test_fan_out_failed_child_is_retried_with_same_task_id(tmp_path: Path) -> None:

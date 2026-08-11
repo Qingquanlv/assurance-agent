@@ -50,10 +50,19 @@ class IngestArtifactCatalog(BaseModel):
 
 
 def resolve_model(model_id: str) -> type[BaseModel]:
+    from assurance_agent.verification.generated_files import (
+        generated_files_contract_for_model_id,
+        get_generated_files_model,
+    )
+
     registry: dict[str, type[BaseModel]] = {"review@1": Review}
-    if model_id not in registry:
-        raise ValueError(f"unknown ingest model id '{model_id}'")
-    return registry[model_id]
+    if model_id in registry:
+        return registry[model_id]
+    try:
+        contract = generated_files_contract_for_model_id(model_id)
+    except ValueError as exc:
+        raise ValueError(f"unknown ingest model id '{model_id}'") from exc
+    return get_generated_files_model(contract.layer)
 
 
 def model_schema_digest(model_id: str) -> str:
@@ -100,3 +109,35 @@ def validate_catalog_runtime() -> IngestArtifactCatalog:
         else:
             patched[symbol] = spec
     return catalog.model_copy(update={"artifacts": patched})
+
+
+def _canonical_ingest_catalog_bytes(catalog: IngestArtifactCatalog) -> bytes:
+    text = json.dumps(
+        catalog.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return (text + "\n").encode("utf-8")
+
+
+def parse_ingest_catalog_snapshot(data: bytes) -> IngestArtifactCatalog:
+    """Parse schema version 1 and canonical JSON bytes without resolving models."""
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"ingest catalog snapshot is malformed: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("ingest catalog snapshot must be a JSON object")
+    version = payload.get("schema_version")
+    if version != 1:
+        raise ValueError(f"ingest catalog snapshot schema_version must be 1, got {version!r}")
+    try:
+        catalog = IngestArtifactCatalog.model_validate(payload)
+    except ValidationError as exc:
+        raise ValueError(f"ingest catalog snapshot is invalid: {exc}") from exc
+    if catalog.schema_version != 1:
+        raise ValueError(f"ingest catalog snapshot schema_version must be 1, got {catalog.schema_version!r}")
+    if _canonical_ingest_catalog_bytes(catalog) != data:
+        raise ValueError("ingest catalog snapshot bytes are not canonical")
+    return catalog

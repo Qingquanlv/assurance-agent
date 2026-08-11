@@ -8,7 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from assurance_agent.workflow.graph.compiler import canonical_digest, compile_workflow, resolve_params
+from assurance_agent.workflow.graph.compiler import (
+    CompileError,
+    canonical_digest,
+    compile_workflow,
+    resolve_params,
+)
 from assurance_agent.workflow.core.graph_events import NodeSkippedEvent
 from assurance_agent.workflow.graph.contracts import (
     ExecutionContractCatalog,
@@ -23,7 +28,7 @@ from assurance_agent.workflow.graph.models import (
     RuntimeContext,
     TaskProjection,
 )
-from assurance_agent.workflow.graph.planner import PlanError, plan_superstep
+from assurance_agent.workflow.graph.planner import plan_superstep
 from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
 
 EXPECTED_GRAPHS = {
@@ -43,9 +48,9 @@ EXPECTED_GRAPHS = {
     "e2e-branch",
     "e2e-plan-cycle",
     "fuzz-branch",
-    "fuzz-plan-review-cycle",
+    "fuzz-plan-cycle",
     "performance-branch",
-    "performance-plan-review-cycle",
+    "performance-plan-cycle",
     "inspect-with-issues",
     "healing",
     "coverage-repair",
@@ -94,10 +99,16 @@ EXPECTED_CONTRACTS = {
     "operation:no-op",
     "operation:skill-registry-check",
     "operation:verify-plan-mechanical",
+    "operation:derive-plan-layer-applicability",
     "operation:run-tests",
     "operation:inspect",
     "operation:generate-report",
     "operation:allocate-healing-attempt",
+    "operation:fixer-authority-ready",
+    "operation:fixer-dispatch",
+    "operation:record-fixer-approval",
+    "operation:record-codegen-fix-apply",
+    "operation:combine-fixer-safety",
     "operation:record-healing-status",
     "operation:probe-coverage-repair-need",
     "operation:compute-coverage-repair-safety",
@@ -246,6 +257,8 @@ def _task(task: ExecutableTask, status: str = "succeeded", **overrides: object) 
         "status": status,
         "attempts_used": 1,
         "latest_attempt_id": f"{task.task_id}-a1",
+        # D14: successors require a committed predecessor superstep.
+        "outputs_committed": status == "succeeded",
     }
     payload.update(overrides)
     return TaskProjection(**payload)  # type: ignore[arg-type]
@@ -530,10 +543,8 @@ def test_healing_fixer_activation_after_allocate(
 ) -> None:
     compiled, _ = _load_compiled()
     params = resolve_params(compiled.schema, {"run_mode": "full"})
-    # Seed allocate as succeeded; planner re-evaluates fixer `when` against artifacts.
-    # Without fix_proposal artifact symbols, any(...) is MISSING → skip. Simulate by
-    # injecting succeeded allocate and using node.when against empty scope: both skip
-    # when proposals missing (zero eligible). For non-empty, we assert route targets only.
+    # Packaged healing no longer fans allocate → fixers. Activation is:
+    # allocate → fixer-authority-ready → fixer-proposal-approval → fixer-dispatch → fix-*.
     if not eligible:
         first = _plan_healing(compiled, tmp_path, params)
         assert [task.node_id for task in first.tasks] == ["entry"]
@@ -608,6 +619,45 @@ def test_healing_fixer_activation_after_allocate(
         _task(proposal_eligible, value=True, gate_report={"expression": "...", "value": True}),
         _task(allocate),
     ]
+    authority_plan = _plan_healing(
+        compiled,
+        tmp_path,
+        params,
+        artifacts=artifacts,
+        tasks=seeded,
+    )
+    assert [task.node_id for task in authority_plan.tasks] == ["fixer-authority-ready"]
+    authority = authority_plan.tasks[0]
+    seeded.append(_task(authority, value={"route": "pass"}))
+    approval_plan = _plan_healing(
+        compiled,
+        tmp_path,
+        params,
+        artifacts=artifacts,
+        tasks=seeded,
+    )
+    assert [task.node_id for task in approval_plan.tasks] == ["fixer-proposal-approval"]
+    approval = approval_plan.tasks[0]
+    seeded.append(
+        _task(
+            approval,
+            gate_report={
+                "gate_id": "fixer-proposal-approval-gate",
+                "verdict": "pass",
+                "value": "pass",
+            },
+        )
+    )
+    dispatch_plan = _plan_healing(
+        compiled,
+        tmp_path,
+        params,
+        artifacts=artifacts,
+        tasks=seeded,
+    )
+    assert [task.node_id for task in dispatch_plan.tasks] == ["fixer-dispatch"]
+    dispatch = dispatch_plan.tasks[0]
+    seeded.append(_task(dispatch))
     fixer_plan = _plan_healing(
         compiled,
         tmp_path,
@@ -616,17 +666,14 @@ def test_healing_fixer_activation_after_allocate(
         tasks=seeded,
     )
     activated = {task.node_id for task in fixer_plan.tasks}
-    assert expected_fixers.issubset(activated)
-
-    with pytest.raises(PlanError, match="all_active"):
-        _plan_healing(compiled, tmp_path, params, tasks=seeded)
+    assert activated == expected_fixers
 
     healing = compiled.schema.graphs["healing"]
     assert healing.nodes["fix-api"].when is not None
     assert healing.nodes["fix-e2e"].when is not None
-    if expected_fixers == {"fix-api", "fix-e2e"}:
-        assert healing.nodes["fixer-join"].join is not None
-        assert healing.nodes["fixer-join"].join.mode == "all_active"
+    assert healing.nodes["fixer-join"].join is not None
+    assert healing.nodes["fixer-join"].join.mode == "all_active"
+    assert set(healing.nodes["fixer-join"].join.sources) == {"record-api", "record-e2e"}
 
 
 def test_healing_completion_and_interrupt_terminals() -> None:
@@ -948,6 +995,11 @@ def test_inspect_with_issues_subgraph_structure() -> None:
     assert g.nodes["analyze-issues"].uses == "skill:aa-issue-analyzer"
     assert g.nodes["record-empty-analysis"].uses == "operation:record-empty-issue-analysis"
     assert g.nodes["reconcile-issues"].uses == "operation:reconcile-issues"
+    assert g.nodes["materialize-trace-projection"].uses == "operation:materialize-trace-projection"
+    assert set(g.nodes["materialize-trace-projection"].outputs) == {
+        "change:inspect/trace-projection.json",
+        "change:inspect/trace-sufficiency.json",
+    }
     assert g.nodes["record-analysis-failure"].uses == "operation:record-issue-analysis-failure"
     assert g.nodes["record-project-sync-pending"].uses == "operation:record-project-sync-pending"
     assert g.nodes["inspect-complete"].uses == "operation:no-op"
@@ -1035,6 +1087,7 @@ def test_inspect_with_issues_both_analysis_paths_reach_reconcile() -> None:
     assert ("reconcile-issues", "materialize-trace-projection") in edge_pairs
     assert ("materialize-trace-projection", "build-coverage-gap-signals") in edge_pairs
     assert ("build-coverage-gap-signals", "inspect-complete") in edge_pairs
+    assert ("reconcile-issues", "inspect-complete") not in edge_pairs
     # inspect-complete -> END
     assert ("inspect-complete", "END") in edge_pairs
     assert g.routes == []
@@ -1086,3 +1139,237 @@ def test_schema_and_contract_digests_stable_across_two_loads() -> None:
     assert packaged.digest == first.digest
     assert packaged.contract_digests == first.contract_digests
     assert resources.read_text("schemas", "execution-contracts.yaml")
+
+
+# ---------------------------------------------------------------------------
+# Task 13: every settled issue path routes through the materializer
+# ---------------------------------------------------------------------------
+
+EXPECTED_TRACE_TERMINALS = {
+    "inspect-with-issues": {
+        # HEAD inserts coverage-gap signals between materialize and complete.
+        "ordinary": ("reconcile-issues", "materialize-trace-projection", "build-coverage-gap-signals"),
+        "recoveries": {
+            "analyze-issues": ("record-analysis-failure", "materialize-trace-projection"),
+            "reconcile-issues": ("record-project-sync-pending", "materialize-trace-projection"),
+        },
+        "successor": "build-coverage-gap-signals",
+    },
+    "issue-analyze-workflow": {
+        "ordinary": ("reconcile-issues", "materialize-trace-projection", "END"),
+        "recoveries": {
+            "analyze-issues": ("record-analysis-failure", "materialize-trace-projection"),
+            "reconcile-issues": ("record-project-sync-pending", "materialize-trace-projection"),
+        },
+        "successor": "END",
+    },
+    "issue-reconcile-workflow": {
+        "ordinary": ("reconcile-issues", "materialize-trace-projection", "END"),
+        "recoveries": {
+            "reconcile-issues": ("record-project-sync-pending", "materialize-trace-projection"),
+        },
+        "successor": "END",
+    },
+}
+
+# Worst-path SuperstepPlannedEvent counts + terminal planner pass.
+MIN_SAFE_MAX_SUPERSTEPS = {
+    "inspect-with-issues": 13,
+    "issue-analyze-workflow": 9,
+    "issue-reconcile-workflow": 6,
+}
+CONFIGURED_MAX_SUPERSTEPS = {
+    "inspect-with-issues": 15,
+    "issue-analyze-workflow": 9,
+    "issue-reconcile-workflow": 6,
+}
+
+_RECOVERY_VIA_NODES = ("record-analysis-failure", "record-project-sync-pending")
+_MATERIALIZER = "materialize-trace-projection"
+
+
+def assert_trace_terminal_invariants(compiled: CompiledWorkflow) -> None:
+    """Canonical matrix + all-terminal-path + retry-aware max_supersteps guards."""
+    for graph_id, expected in EXPECTED_TRACE_TERMINALS.items():
+        graph = compiled.schema.graphs[graph_id]
+        materializer = graph.nodes[_MATERIALIZER]
+        assert materializer.uses == "operation:materialize-trace-projection"
+        expected_outputs = {"change:inspect/trace-projection.json"}
+        if graph_id == "inspect-with-issues":
+            # Feature-branch inspect path still publishes sufficiency facts here.
+            expected_outputs.add("change:inspect/trace-sufficiency.json")
+        assert set(materializer.outputs) == expected_outputs
+
+        ordinary = expected["ordinary"]
+        assert isinstance(ordinary, tuple)
+        edge_pairs = {(e.from_, e.to) for e in graph.edges}
+        assert (ordinary[0], ordinary[1]) in edge_pairs
+        assert (ordinary[1], ordinary[2]) in edge_pairs
+        materializer_successors = {e.to for e in graph.edges if e.from_ == _MATERIALIZER}
+        assert materializer_successors == {expected["successor"]}
+
+        recoveries = expected["recoveries"]
+        assert isinstance(recoveries, dict)
+        for node_id, (via, continue_to) in recoveries.items():
+            recover = graph.nodes[node_id].recover
+            assert recover is not None, f"{graph_id}/{node_id} missing recover"
+            assert recover.via == via
+            assert recover.continue_to == continue_to
+
+        for via in _RECOVERY_VIA_NODES:
+            if via not in graph.nodes:
+                continue
+            assert not any(e.to == via for e in graph.edges), f"{graph_id}: ordinary edge into {via}"
+            assert not any(e.from_ == via for e in graph.edges), f"{graph_id}: ordinary edge from {via}"
+
+        assert graph.max_supersteps == CONFIGURED_MAX_SUPERSTEPS[graph_id]
+        assert graph.max_supersteps >= MIN_SAFE_MAX_SUPERSTEPS[graph_id]
+        _assert_all_terminal_paths_materialize_once(graph, successor=str(expected["successor"]))
+
+
+def _assert_all_terminal_paths_materialize_once(graph, *, successor: str) -> None:
+    """Enumerate ordinary + recovery continuations; every completion hits materializer once."""
+    adj: dict[str, list[str]] = {nid: [] for nid in graph.nodes}
+    adj["START"] = []
+    for edge in graph.edges:
+        adj.setdefault(edge.from_, []).append(edge.to)
+
+    recovery_alts: dict[str, list[str]] = {}
+    for nid, node in graph.nodes.items():
+        if node.recover is None:
+            continue
+        # Recovery replaces ordinary success fans for that node.
+        recovery_alts[nid] = [node.recover.via]
+        adj.setdefault(node.recover.via, [])
+        if node.recover.continue_to not in adj[node.recover.via]:
+            adj[node.recover.via].append(node.recover.continue_to)
+
+    bound = len(graph.nodes) + 3
+    completions: list[tuple[str, ...]] = []
+
+    def walk(node: str, path: tuple[str, ...]) -> None:
+        assert len(path) <= bound, f"cycle or runaway path in {graph}: {path}"
+        if node in {"END", "STOP", "FAIL"} or node == successor:
+            completions.append(path + (node,))
+            return
+        choices = list(adj.get(node, []))
+        if node in recovery_alts:
+            # Explore ordinary successors and the recovery alternate independently.
+            for nxt in list(dict.fromkeys(choices + recovery_alts[node])):
+                walk(nxt, path + (node,))
+            return
+        assert choices, f"dead-end before terminal at {node} path={path}"
+        for nxt in choices:
+            walk(nxt, path + (node,))
+
+    for start in adj["START"]:
+        walk(start, ("START",))
+
+    assert completions, "no terminal paths found"
+    for path in completions:
+        # Materializer must occur exactly once before the settled successor / END.
+        if successor == "END":
+            prefix = path
+        else:
+            assert successor in path, path
+            prefix = path[: path.index(successor) + 1]
+        assert prefix.count(_MATERIALIZER) == 1, path
+
+
+def test_trace_terminal_matrix_and_recovery_continuations() -> None:
+    compiled, _ = _load_compiled()
+    assert_trace_terminal_invariants(compiled)
+
+
+def test_all_terminal_paths_include_materializer_exactly_once() -> None:
+    compiled, _ = _load_compiled()
+    for graph_id, expected in EXPECTED_TRACE_TERMINALS.items():
+        _assert_all_terminal_paths_materialize_once(
+            compiled.schema.graphs[graph_id],
+            successor=str(expected["successor"]),
+        )
+
+
+def _raw_packaged_schema() -> dict:
+    import yaml
+
+    return yaml.safe_load(SCHEMA_REL.read_text(encoding="utf-8"))
+
+
+def _compile_raw_schema(raw: dict) -> CompiledWorkflow:
+    import yaml
+
+    from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
+
+    return compile_workflow(
+        parse_workflow_v2(yaml.safe_dump(raw, sort_keys=False)),
+        load_execution_contracts(Path.cwd()),
+    )
+
+
+def _reject_mutated_schema(mutate) -> None:
+    raw = _raw_packaged_schema()
+    mutate(raw)
+    with pytest.raises((AssertionError, CompileError)):
+        compiled = _compile_raw_schema(raw)
+        assert_trace_terminal_invariants(compiled)
+
+
+def test_trace_topology_mutation_guards() -> None:
+    compiled, _ = _load_compiled()
+    assert_trace_terminal_invariants(compiled)
+
+    def redirect_iwi_analyze(raw: dict) -> None:
+        raw["graphs"]["inspect-with-issues"]["nodes"]["analyze-issues"]["recover"]["continue_to"] = (
+            "inspect-complete"
+        )
+
+    def redirect_iwi_reconcile(raw: dict) -> None:
+        raw["graphs"]["inspect-with-issues"]["nodes"]["reconcile-issues"]["recover"]["continue_to"] = (
+            "inspect-complete"
+        )
+
+    def redirect_analyze_to_end(raw: dict) -> None:
+        raw["graphs"]["issue-analyze-workflow"]["nodes"]["analyze-issues"]["recover"]["continue_to"] = "END"
+
+    def redirect_reconcile_wf_to_end(raw: dict) -> None:
+        raw["graphs"]["issue-reconcile-workflow"]["nodes"]["reconcile-issues"]["recover"]["continue_to"] = (
+            "END"
+        )
+
+    def bypass_materializer_iwi(raw: dict) -> None:
+        edges = raw["graphs"]["inspect-with-issues"]["edges"]
+        for edge in edges:
+            if edge.get("from") == "reconcile-issues" and edge.get("to") == _MATERIALIZER:
+                edge["to"] = "inspect-complete"
+
+    def recovery_via_ordinary_edge(raw: dict) -> None:
+        raw["graphs"]["inspect-with-issues"]["edges"].append(
+            {"from": "record-analysis-failure", "to": "inspect-complete"}
+        )
+
+    def second_materializer_successor(raw: dict) -> None:
+        raw["graphs"]["inspect-with-issues"]["edges"].append({"from": _MATERIALIZER, "to": "END"})
+
+    def lower_iwi_budget(raw: dict) -> None:
+        raw["graphs"]["inspect-with-issues"]["max_supersteps"] = 12
+
+    def restore_analyze_budget(raw: dict) -> None:
+        raw["graphs"]["issue-analyze-workflow"]["max_supersteps"] = 8
+
+    def restore_reconcile_budget(raw: dict) -> None:
+        raw["graphs"]["issue-reconcile-workflow"]["max_supersteps"] = 4
+
+    for mutate in (
+        redirect_iwi_analyze,
+        redirect_iwi_reconcile,
+        redirect_analyze_to_end,
+        redirect_reconcile_wf_to_end,
+        bypass_materializer_iwi,
+        recovery_via_ordinary_edge,
+        second_materializer_successor,
+        lower_iwi_budget,
+        restore_analyze_budget,
+        restore_reconcile_budget,
+    ):
+        _reject_mutated_schema(mutate)

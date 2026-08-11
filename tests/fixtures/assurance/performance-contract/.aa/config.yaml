@@ -1,0 +1,37 @@
+version: 1
+
+project:
+  name: assurance-canonical
+  root: .
+  layout: default
+
+sources:
+  frontend: ./web
+  backend: ./app
+
+qa:
+  cases: ./qa/cases
+  changes: ./qa/changes
+
+tests:
+  root: ./tests
+  api: ./tests/api
+  e2e: ./tests/e2e
+  fuzz: ./tests/fuzz
+  fixtures: ./tests/fixtures
+  helpers: ./tests/helpers
+  reports: ./tests/reports
+
+frameworks:
+  api:
+    enabled: true
+    name: pytest
+  e2e:
+    enabled: true
+    name: playwright
+  fuzz:
+    enabled: true
+    name: schemathesis
+  performance:
+    enabled: true
+    name: locust

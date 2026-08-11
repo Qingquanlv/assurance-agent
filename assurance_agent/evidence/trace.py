@@ -172,6 +172,10 @@ class ResultUnmappedRow(BaseModel):
     test_name: str
 
 
+# THEIRS / convert-path alias — same wire shape as ``ResultUnmappedRow``.
+EvidenceUnmappedTest = ResultUnmappedRow
+
+
 class ResultDocument(BaseModel):
     """api/e2e/fuzz result identity header plus the minimal row set.
 
@@ -1543,6 +1547,7 @@ __all__ = [
     "PROJECT_PROBLEMS_SOURCE",
     "TESTS_TREE_SCAN_SOURCE",
     "AuthoritativeInstant",
+    "EvidenceUnmappedTest",
     "ExecutionFoldInput",
     "FailureAnalysisDocument",
     "FailureRow",
@@ -1558,5 +1563,7 @@ __all__ = [
     "SnapshotAnalysisStatusRow",
     "SnapshotObservationRow",
     "SnapshotOccurrenceRow",
+    "authoritative_batch_instant",
+    "canonical_json_bytes",
     "fold_trace",
 ]

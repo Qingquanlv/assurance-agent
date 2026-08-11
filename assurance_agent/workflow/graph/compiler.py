@@ -29,10 +29,13 @@ import hashlib
 import json
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import Literal
 
 from pydantic import BaseModel
 
+from assurance_agent.artifacts.models.assurance import LayerName
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.graph.contracts import (
     ContractError,
@@ -51,7 +54,15 @@ from assurance_agent.workflow.graph.models import (
     CompiledNode,
     CompiledWorkflow,
 )
-from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
+from assurance_agent.workflow.graph.ingest_catalog import (
+    IngestArtifactCatalog,
+    validate_catalog_runtime,
+)
+from assurance_agent.workflow.graph.historical_roles import DiscoveredHistoricalAssuranceRoles
+from assurance_agent.workflow.graph.replay_schema import (
+    validate_current_assurance_activation,
+    validate_historical_replay_surface,
+)
 from assurance_agent.workflow.graph.schema_v2 import (
     GraphDef,
     NodeDef,
@@ -66,7 +77,7 @@ from assurance_agent.workflow.orchestration.dsl import (
     DslError,
     Expr,
     Ident,
-    Literal,
+    Literal as DslLiteral,
     Member,
     Not,
     Subscript,
@@ -74,9 +85,65 @@ from assurance_agent.workflow.orchestration.dsl import (
 )
 from assurance_agent.workflow.orchestration.schema import derive_alias
 
+CompileDiagnosticCategory = Literal[
+    "assurance_conformance",
+    "healing_conformance",
+    "workflow_validation",
+    "historical_ingest_identity",
+    "historical_contract_identity",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class CompileDiagnostic:
+    category: CompileDiagnosticCategory
+    code: str
+    layer: LayerName | None
+    owner: str
+    locator: str
+    detail: str
+
+
+def _sort_diagnostics(
+    diagnostics: Iterable[CompileDiagnostic],
+) -> tuple[CompileDiagnostic, ...]:
+    return tuple(
+        sorted(
+            diagnostics,
+            key=lambda item: (
+                item.category,
+                item.code,
+                item.layer or "",
+                item.owner,
+                item.locator,
+                item.detail,
+            ),
+        )
+    )
+
 
 class CompileError(AaError):
     """workflow v2 编译期结构校验失败（所有错误一次性报告）。"""
+
+    diagnostics: tuple[CompileDiagnostic, ...]
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        diagnostics: Sequence[CompileDiagnostic] | None = None,
+    ) -> None:
+        self.diagnostics = _sort_diagnostics(diagnostics or ())
+        if message:
+            super().__init__(message)
+            return
+        if self.diagnostics:
+            rendered = "\n  - ".join(
+                f"[{item.category}:{item.code}] {item.locator}: {item.detail}" for item in self.diagnostics
+            )
+            super().__init__(f"workflow v2 compile failed:\n  - {rendered}")
+            return
+        super().__init__("workflow v2 compile failed")
 
 
 _TERMINALS = frozenset({"END", "STOP", "FAIL"})
@@ -87,10 +154,165 @@ _TEMPLATE = re.compile(r"\$\{([^}]+)\}")
 _PREDICATE_BUILTINS = ("any", "all", "count")
 
 
+@dataclass(frozen=True, slots=True)
+class HistoricalCompileContext:
+    ingest_catalog: IngestArtifactCatalog
+    ingest_catalog_digest: str
+    contracts: ExecutionContractCatalog
+    contract_digests: Mapping[str, str]
+    historical_roles: DiscoveredHistoricalAssuranceRoles
+
+    def validate_identities(self) -> None:
+        if self.ingest_catalog.digest != self.ingest_catalog_digest:
+            detail = (
+                f"ingest_catalog_digest expected {self.ingest_catalog_digest}, "
+                f"got {self.ingest_catalog.digest}"
+            )
+            raise CompileError(
+                f"historical compile identity mismatch: {detail}",
+                diagnostics=(
+                    CompileDiagnostic(
+                        category="historical_ingest_identity",
+                        code="ingest_catalog_digest_mismatch",
+                        layer=None,
+                        owner="historical_compile",
+                        locator="ingest_catalog_digest",
+                        detail=detail,
+                    ),
+                ),
+            )
+        recorded = dict(self.contract_digests)
+        actual_targets = set(self.contracts.contracts)
+        if actual_targets != set(recorded):
+            detail = f"contract target set recorded={sorted(recorded)} actual={sorted(actual_targets)}"
+            raise CompileError(
+                f"historical compile identity mismatch: {detail}",
+                diagnostics=(
+                    CompileDiagnostic(
+                        category="historical_contract_identity",
+                        code="contract_target_set_mismatch",
+                        layer=None,
+                        owner="historical_compile",
+                        locator="contract_digests",
+                        detail=detail,
+                    ),
+                ),
+            )
+        for target, expected in recorded.items():
+            actual = canonical_digest(self.contracts.contracts[target])
+            if actual != expected:
+                detail = f"contract {target!r} digest expected {expected}, got {actual}"
+                raise CompileError(
+                    f"historical compile identity mismatch: {detail}",
+                    diagnostics=(
+                        CompileDiagnostic(
+                            category="historical_contract_identity",
+                            code="contract_digest_mismatch",
+                            layer=None,
+                            owner="historical_compile",
+                            locator=f"contract:{target}",
+                            detail=detail,
+                        ),
+                    ),
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class PinnedDefinitionRequest:
+    graph_digest: str
+    ingest_catalog_digest: str
+    contract_digests: tuple[tuple[str, str], ...]
+    event_schema_version: int
+    gate_semantics_digest: str
+    assurance_profile_digest: str
+    gate_semantics_object_id: str = ""
+    topology_safety_semantics_object_id: str = ""
+    topology_safety_semantics_digest: str = ""
+    commit_safety_semantics_object_id: str = ""
+    commit_safety_semantics_digest: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedPinnedDefinition:
+    compiled: CompiledWorkflow
+    contracts: ExecutionContractCatalog
+    ingest_catalog: IngestArtifactCatalog
+    historical_roles: DiscoveredHistoricalAssuranceRoles
+
+
 def compile_workflow(
     schema: WorkflowSchemaV2,
     contracts: ExecutionContractCatalog | None = None,
 ) -> CompiledWorkflow:
+    """Compile an explicit synthetic/custom schema without packaged activation gates."""
+    return _compile_with_catalog(
+        schema,
+        contracts=contracts,
+        ingest_catalog=None,
+        activation_errors=(),
+    )
+
+
+def compile_packaged_workflow(
+    schema: WorkflowSchemaV2,
+    contracts: ExecutionContractCatalog | None = None,
+) -> CompiledWorkflow:
+    """Compile the packaged assurance schema; requires complete four-layer activation."""
+    errors = validate_current_assurance_activation(schema)
+    if errors:
+        details = "\n  - ".join(errors)
+        raise CompileError(f"packaged assurance activation failed:\n  - {details}")
+    if contracts is None:
+        raise CompileError("packaged assurance compilation requires a non-null contracts catalog")
+    from assurance_agent.workflow.graph.assurance_conformance import (
+        find_current_assurance_conformance_issues,
+    )
+    from assurance_agent.workflow.graph.healing_conformance import (
+        find_current_healing_conformance_issues,
+    )
+
+    assurance_issues = find_current_assurance_conformance_issues(schema)
+    if assurance_issues:
+        details = "\n  - ".join(f"{issue.code}@{issue.locator}: {issue.detail}" for issue in assurance_issues)
+        raise CompileError(f"packaged assurance conformance failed:\n  - {details}")
+    healing_issues = find_current_healing_conformance_issues(schema, contracts)
+    if healing_issues:
+        details = "\n  - ".join(f"{issue.code}@{issue.locator}: {issue.detail}" for issue in healing_issues)
+        raise CompileError(f"packaged healing conformance failed:\n  - {details}")
+    return compile_workflow(schema, contracts)
+
+
+def compile_historical_workflow(
+    schema: WorkflowSchemaV2,
+    *,
+    context: HistoricalCompileContext,
+) -> CompiledWorkflow:
+    context.validate_identities()
+    return _compile_with_catalog(
+        schema,
+        contracts=context.contracts,
+        ingest_catalog=context.ingest_catalog,
+        activation_errors=validate_historical_replay_surface(
+            schema,
+            historical_roles=context.historical_roles,
+        ),
+    )
+
+
+def _compile_with_catalog(
+    schema: WorkflowSchemaV2,
+    *,
+    contracts: ExecutionContractCatalog | None,
+    ingest_catalog: IngestArtifactCatalog | None,
+    activation_errors: tuple[str, ...],
+) -> CompiledWorkflow:
+    """Compile with an explicit ingest catalog, or the live catalog on the current path.
+
+    When ``ingest_catalog`` is None this is the live/current path and loads
+    ``validate_catalog_runtime()`` only after structural validation succeeds.
+    Historical compilation always passes a verified pinned catalog and never
+    calls ``validate_catalog_runtime()``.
+    """
     errors: list[str] = []
     errors.extend(_validate_params_and_entrypoints(schema))
     errors.extend(_validate_graph_refs(schema))
@@ -102,22 +324,37 @@ def compile_workflow(
     errors.extend(_validate_exports(schema))
     if contracts is not None:
         errors.extend(_validate_contract_usage(schema, contracts))
+    errors.extend(activation_errors)
     if errors:
-        raise CompileError("workflow v2 compile failed:\n  - " + "\n  - ".join(errors))
+        diagnostics = tuple(
+            CompileDiagnostic(
+                category="workflow_validation",
+                code="workflow_validation",
+                layer=None,
+                owner="compiler",
+                locator="workflow",
+                detail=error,
+            )
+            for error in errors
+        )
+        raise CompileError(
+            "workflow v2 compile failed:\n  - " + "\n  - ".join(errors),
+            diagnostics=diagnostics,
+        )
+    resolved_catalog = ingest_catalog if ingest_catalog is not None else validate_catalog_runtime()
     footprints, node_claims = _graph_footprints(schema, contracts)
     graphs = {
         graph_id: _compile_graph(schema, graph_id, graph, footprints[graph_id], node_claims[graph_id])
         for graph_id, graph in schema.graphs.items()
     }
     canonical = schema.model_dump(mode="json", by_alias=True, exclude_none=True)
-    catalog_digest = validate_catalog_runtime().digest
     return CompiledWorkflow(
         schema=schema,
         digest=canonical_digest(canonical),
         entrypoints=_compile_entrypoints(schema),
         graphs=graphs,
         contract_digests=_referenced_contract_digests(schema, contracts) if contracts is not None else {},
-        ingest_catalog_digest=catalog_digest,
+        ingest_catalog_digest=resolved_catalog.digest,
     )
 
 
@@ -577,13 +814,13 @@ def _walk_expression(
             arg = expr.args[0]
             if not allow_node:
                 errors.append(f"{loc}: node() is not allowed here")
-            elif not (isinstance(arg, Literal) and isinstance(arg.value, str)):
+            elif not (isinstance(arg, DslLiteral) and isinstance(arg.value, str)):
                 errors.append(f"{loc}: node() argument must be a string literal")
             elif arg.value not in node_ids:
                 errors.append(f"{loc}: references unknown node('{arg.value}')")
         if expr.callee == "gate":
             arg = expr.args[0]
-            if isinstance(arg, Literal) and isinstance(arg.value, str) and arg.value not in gate_ids:
+            if isinstance(arg, DslLiteral) and isinstance(arg.value, str) and arg.value not in gate_ids:
                 errors.append(f"{loc}: references unknown gate '{arg.value}'")
         for i, arg in enumerate(expr.args):
             # any/all/count 的谓词在 element child scope 求值，裸标识符是元素字段，
@@ -755,7 +992,7 @@ def _gate_verdict_select(expr: Expr) -> str | None:
     if not (isinstance(call, Call) and call.callee == "node"):
         return None
     arg = call.args[0]
-    if isinstance(arg, Literal) and isinstance(arg.value, str):
+    if isinstance(arg, DslLiteral) and isinstance(arg.value, str):
         return arg.value
     return None
 

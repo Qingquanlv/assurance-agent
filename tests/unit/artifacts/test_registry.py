@@ -204,6 +204,7 @@ def test_compat_grades_match_spec_4a() -> None:
     assert grades["issue_analysis_status"] == "must_compat"
     assert grades["issue_reconcile_status"] == "versioned"
     assert grades["change_issue_snapshot"] == "versioned"
+    assert grades["trace_projection"] == "versioned"
     # must_compat, not versioned: metrics-sufficiency-gate routes on these
     # fields, so a document this release cannot fully validate must be refused
     # rather than read partially and routed as a pass.
@@ -322,3 +323,48 @@ def test_issue_artifact_patterns_match_exact_paths() -> None:
         assert spec is not None and spec.artifact_type == artifact_type, path
     assert match_artifact("issues/events.jsonl") is None
     assert match_artifact("qa/issues/problems.json") is None
+
+def test_activated_generated_file_and_healing_paths_match_exact_models() -> None:
+    from assurance_agent.artifacts.models import (
+        ApiCodegenFixApplyIntentV1,
+        ApiGeneratedFilesV1,
+        E2eGeneratedFilesV1,
+        FixerProposalApprovalReceiptV1,
+        StrictWireModel,
+    )
+
+    assert issubclass(ApiGeneratedFilesV1, StrictWireModel)
+    assert issubclass(ApiCodegenFixApplyIntentV1, StrictWireModel)
+    assert issubclass(FixerProposalApprovalReceiptV1, StrictWireModel)
+    api_files = match_artifact("codegen/api-generated-files.json")
+    e2e_files = match_artifact("codegen/e2e-generated-files.json")
+    api_intent = match_artifact("healing/api-apply-intent.json")
+    approval = match_artifact("healing/fixer-proposal-approval.json")
+    assert api_files is not None and api_files.model is ApiGeneratedFilesV1
+    assert e2e_files is not None and e2e_files.model is E2eGeneratedFilesV1
+    assert api_intent is not None and api_intent.model is ApiCodegenFixApplyIntentV1
+    assert approval is not None and approval.model is FixerProposalApprovalReceiptV1
+
+def test_trace_projection_registry_uses_document_wrapper() -> None:
+    from assurance_agent.artifacts.models.trace import TraceProjectionDocument
+
+    spec = match_artifact("inspect/trace-projection.json")
+    assert spec is not None
+    assert spec.model is TraceProjectionDocument
+    assert spec.compat == "versioned"
+
+def test_quality_gate_result_registry_uses_document_wrapper() -> None:
+    from assurance_agent.artifacts.models.inspect import QualityGateResultDocument
+
+    spec = match_artifact("inspect/quality-gate-result.json")
+    assert spec is not None
+    assert spec.model is QualityGateResultDocument
+    assert spec.compat == "versioned"
+
+def test_issue_reconcile_status_registry_uses_document_wrapper() -> None:
+    from assurance_agent.artifacts.models.issues import IssueReconcileStatusDocument
+
+    spec = match_artifact("inspect/issue-reconcile-status.json")
+    assert spec is not None
+    assert spec.model is IssueReconcileStatusDocument
+    assert spec.compat == "versioned"

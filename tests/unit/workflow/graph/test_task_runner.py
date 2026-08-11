@@ -331,6 +331,9 @@ def _agent_catalog() -> ExecutionContractCatalog:
         "    handler: agent\n"
         "    writes: [change:explore/**]\n"
         "    authorization_writes: [change:explore/**]\n"
+        # Packaged explore is declared_only; without this the handler reattaches
+        # host .venv/node_modules into the task root (D11/D13).
+        "    read_isolation: declared_only\n"
     )
 
 
@@ -896,8 +899,14 @@ def test_default_operations_registry_has_exact_keys() -> None:
         "operation:no-op",
         "operation:skill-registry-check",
         "operation:verify-plan-mechanical",
+        "operation:derive-plan-layer-applicability",
         "operation:run-tests",
         "operation:allocate-healing-attempt",
+        "operation:fixer-authority-ready",
+        "operation:record-fixer-approval",
+        "operation:fixer-dispatch",
+        "operation:record-codegen-fix-apply",
+        "operation:combine-fixer-safety",
         "operation:record-healing-status",
         "operation:probe-coverage-repair-need",
         "operation:compute-coverage-repair-safety",
@@ -1520,7 +1529,7 @@ def test_interrupt_handler_builds_structural_projection_without_ledger(tmp_path:
     project = _make_project(tmp_path)
     _write_review(project / "qa" / "changes" / "CH-1", {"decision": "needs_human_review"})
     workspace = _workspace(project)
-    handler = InterruptHandler(_compiled(_INTERRUPT_GRAPH, footer=_GATE_FOOTER))
+    handler = InterruptHandler(_compiled(_INTERRUPT_GRAPH, footer=_GATE_FOOTER), _store(project))
     task = _task("builtin:interrupt", node_id="human-review", task_id="task-int")
     result = handler.execute(task, workspace, _context(project))
 
@@ -1541,6 +1550,57 @@ def test_interrupt_handler_builds_structural_projection_without_ledger(tmp_path:
     replay = handler.execute(task, workspace, _context(project))
     assert replay.interrupt is not None
     assert replay.interrupt.interrupt_id == projection.interrupt_id
+
+
+_MANUAL_REVISION_INTERRUPT_GRAPH = """
+main:
+  max_supersteps: 5
+  nodes:
+    human-review:
+      uses: builtin:interrupt
+      interrupt:
+        reason: needs a human
+        checkpoint: case-review-gate
+        bind: audited_gate_read
+        actions: [fix_and_proceed, accept_risk, stop]
+        manual_revision:
+          action: fix_and_proceed
+          paths: [change:plans/fuzz-plan.md]
+  edges:
+    - {from: START, to: human-review}
+  routes:
+    - from: human-review
+      select: "resume.action"
+      cases:
+        fix_and_proceed: END
+        accept_risk: END
+        stop: STOP
+      default: STOP
+"""
+
+
+def test_interrupt_handler_fails_closed_when_manual_revision_lacks_gate_epoch(
+    tmp_path: Path,
+) -> None:
+    project = _make_project(tmp_path)
+    change = project / "qa" / "changes" / "CH-1"
+    _write_review(change, {"decision": "needs_human_review"})
+    plans = change / "plans"
+    plans.mkdir(parents=True, exist_ok=True)
+    (plans / "fuzz-plan.md").write_text("# plan\n", encoding="utf-8")
+    workspace = _workspace(project)
+    handler = InterruptHandler(
+        _compiled(_MANUAL_REVISION_INTERRUPT_GRAPH, footer=_GATE_FOOTER),
+        _store(project),
+    )
+    task = _task("builtin:interrupt", node_id="human-review", task_id="task-int")
+    result = handler.execute(task, workspace, _context(project))
+
+    assert result.status == "failed"
+    assert result.error_kind == "contract"
+    assert result.error is not None
+    assert "cannot bind a gate evidence epoch" in result.error
+    assert not (change / ".graph-runtime" / "revision-views").exists()
 
 
 # ---------------------------------------------------------------------------

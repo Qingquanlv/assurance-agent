@@ -86,6 +86,9 @@ class RuntimeContext(BaseModel):
     _project_lock_scope_owner: object | None = PrivateAttr(default=None)
     _project_lock_scope_nonce: object | None = PrivateAttr(default=None)
     _held_project_lock_tokens: tuple[str, ...] = PrivateAttr(default=())
+    _prepared_wave_lease_owner: object | None = PrivateAttr(default=None)
+    _prepared_wave_lease_nonce: object | None = PrivateAttr(default=None)
+    _prepared_wave_lease: object | None = PrivateAttr(default=None)
 
     project_root: Path
     repo_root: Path
@@ -115,6 +118,33 @@ class RuntimeContext(BaseModel):
         locked._project_lock_scope_nonce = nonce
         locked._held_project_lock_tokens = tokens
         return locked
+
+    def inherited_prepared_wave_lease(self, owner: object) -> object | None:
+        """Return the opaque prepared-wave lease inherited from an ancestor scheduler."""
+        if self._prepared_wave_lease_owner is not owner or self._prepared_wave_lease_nonce is None:
+            return None
+        return self._prepared_wave_lease
+
+    def with_prepared_wave_lease(
+        self,
+        owner: object,
+        nonce: object,
+        lease: object,
+    ) -> Self:
+        """Copy this context with a process-local, non-serializable prepared-wave lease."""
+        prepared = self.model_copy()
+        prepared._prepared_wave_lease_owner = owner
+        prepared._prepared_wave_lease_nonce = nonce
+        prepared._prepared_wave_lease = lease
+        return prepared
+
+    def without_prepared_wave_lease(self) -> Self:
+        """Copy this context with any prepared-wave lease cleared (single-use per superstep)."""
+        cleared = self.model_copy()
+        cleared._prepared_wave_lease_owner = None
+        cleared._prepared_wave_lease_nonce = None
+        cleared._prepared_wave_lease = None
+        return cleared
 
 
 class ResolvedArtifact(BaseModel):
@@ -304,6 +334,16 @@ class TaskProjection(BaseModel):
     # 最近 attempt 的 lease 到期时刻（来自 task_attempt_started）；lease 文件
     # 丢失时恢复分类退回此字段判断，绝不凭空放宽或收紧。
     lease_expires_at: str | None = None
+    input_snapshot_id: str | None = None
+    runtime_context_sha256: str | None = None
+    candidate_validation_receipt_id: str | None = None
+    precommit_validator: str | None = None
+    # Execution-contract / operation target stamped from task_attempt_started.
+    target: str | None = None
+    durable_effects: tuple[dict[str, object], ...] = ()
+    acknowledged_effect_ids: tuple[str, ...] = ()
+    deferral_ordinal: int = 0
+    latest_deferral_id: str | None = None
 
 
 class FanOutExpansion(BaseModel):
@@ -331,6 +371,13 @@ class InterruptProjection(BaseModel):
     audited_reads_sha256: dict[str, str]
     artifact_view: str | None = None
     resolved_action: str | None = None
+    revision_owner_invocation_id: str | None = None
+    revision_base_tree_id: str | None = None
+    revision_view: str | None = None
+    revision_paths: tuple[str, ...] | None = None
+    revision_before_sha256: dict[str, str] | None = None
+    source_gate_attempt_id: str | None = None
+    source_gate_tree_id: str | None = None
 
 
 class RecoveryProjection(BaseModel):
@@ -368,6 +415,7 @@ class TaskResult(BaseModel):
     error_kind: ErrorKind | None = None
     error: str | None = None
     interrupt: InterruptProjection | None = None
+    durable_effects: tuple[dict[str, object], ...] = ()
 
 
 class GraphProjection(BaseModel):
@@ -383,6 +431,15 @@ class GraphProjection(BaseModel):
     ir_digest: str = ""
     ingest_catalog_digest: str = ""
     contract_digests: dict[str, str]
+    policy_digest: str = ""
+    policy_origin: str = ""
+    gate_semantics_digest: str = ""
+    assurance_profile_digest: str = ""
+    gate_semantics_object_id: str = ""
+    topology_safety_semantics_object_id: str = ""
+    topology_safety_semantics_digest: str = ""
+    commit_safety_semantics_object_id: str = ""
+    commit_safety_semantics_digest: str = ""
     params: dict[str, object]
     root_tree_id: str
     current_tree_id: str
@@ -398,6 +455,10 @@ class GraphProjection(BaseModel):
     recoveries: dict[str, RecoveryProjection] = Field(default_factory=dict)
     terminal: Literal["completed", "stopped", "failed"] | None = None
     terminal_reason: str | None = None
+    # Append-only v4/v5 topology audit receipt id (D10); never rewrites the root.
+    topology_compatibility_receipt_id: str | None = None
+    # D18 supersede audit id when this invocation (or its root) was superseded.
+    supersede_id: str | None = None
 
 
 class WorkflowStateProjection(BaseModel):
@@ -460,6 +521,8 @@ class GraphStatus(BaseModel):
     next_retry_at: str | None
     budgets: dict[str, int]
     terminal_reason: str | None
+    recovery_state: Literal["revision_resume_recovery_pending"] | None = None
+    unacknowledged_durable_effects: tuple[str, ...] = ()
 
 
 class RunResult(BaseModel):

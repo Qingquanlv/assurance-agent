@@ -90,34 +90,147 @@ def _fuzz_gate_schema() -> _GateSchema:
     return _GateSchema(load_workflow_v2(Path("/nonexistent")).gates)
 
 
-def _write_fuzz_review(change_dir: Path, payload: dict) -> None:
-    d = change_dir / "review"
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "fuzz-plan-review.json").write_text(json.dumps(payload))
-
-
-def test_fuzz_empty_scope_layer_applicable_false_skips(tmp_path: Path):
-    # Empty-scope layer: reviewer honestly rejects but flags layer_applicable=false.
-    # skip_when is declared before reject_when → graceful skip wins over reject.
-    schema = _fuzz_gate_schema()
-    _write_fuzz_review(
-        tmp_path,
-        {"decision": "reject", "codegen_readiness": "not_ready", "layer_applicable": False},
+def _write_fuzz_evidence(
+    change_dir: Path,
+    *,
+    checks: dict[str, object],
+    review: dict[str, object] | None,
+) -> None:
+    review_dir = change_dir / "review"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    (review_dir / "fuzz-plan-checks.json").write_text(json.dumps(checks), encoding="utf-8")
+    if review is not None:
+        (review_dir / "fuzz-plan-review.json").write_text(json.dumps(review), encoding="utf-8")
+    aa = change_dir / ".aa"
+    aa.mkdir(parents=True, exist_ok=True)
+    (aa / "data-knowledge.yaml").write_text(
+        "version: 1\ncapabilities:\n  domain_factories: {}\nauth:\n  api_admin_token:\n    method: token\n",
+        encoding="utf-8",
     )
-    assert check_gate(schema, "fuzz-plan-review-gate", loc_for(tmp_path), EMPTY, {}).verdict == "skip"
 
 
-def test_fuzz_reject_without_layer_applicable_still_rejects(tmp_path: Path):
-    # Absent layer_applicable → skip_when is MISSING (not True) → real reject stands.
+def _fuzz_empty_scope_checks() -> dict[str, object]:
+    from assurance_agent.verification.checks.base import CheckContext
+    from assurance_agent.verification.checks.registry import run_plan_checks
+
+    return run_plan_checks(
+        CheckContext(plan_texts={}, cases=(), data_knowledge={"version": 1, "capabilities": {}}, layer="fuzz")
+    ).model_dump(mode="json")
+
+
+def _fuzz_applicable_checks() -> dict[str, object]:
+    from assurance_agent.verification.checks.base import CheckContext
+    from assurance_agent.verification.checks.registry import run_plan_checks
+    from assurance_agent.verification.profiles import get_layer_assurance_profile
+
+    profile = get_layer_assurance_profile("fuzz")
+    case_id = "TC_GATE_FUZZ_001"
+    cases = (
+        {
+            "added": [
+                {
+                    "case_id": case_id,
+                    "title": "gate",
+                    "type": profile.case_type,
+                    "automation": {"required": True},
+                    "assertions": ["HTTP 200"],
+                }
+            ],
+            "modified": [],
+        },
+    )
+    main_plan = profile.plan_artifacts[0]
+    case_table = f"| Case ID | Scenario | Expected |\n|---|---|---|\n| {case_id} | gate | HTTP 200 |\n"
+    plan_texts = {path: (case_table if path == main_plan else "# Plan\n") for path in profile.plan_artifacts}
+    return run_plan_checks(
+        CheckContext(
+            plan_texts=plan_texts,
+            cases=cases,
+            data_knowledge={"version": 1, "capabilities": {}},
+            layer="fuzz",
+        )
+    ).model_dump(mode="json")
+
+
+def _fuzz_review(**overrides: object) -> dict[str, object]:
+    review: dict[str, object] = {
+        "schema_version": "1.0",
+        "decision": "pass",
+        "review_type": "fuzz-plan",
+        "change_id": "CH-1",
+        "codegen_readiness": "ready",
+        "required_capabilities": ["auth.api_admin_token"],
+        "auto_fix_allowed": False,
+        "human_review_required": False,
+        "risk_level": "low",
+        "findings": [],
+        "auto_fix_plan": [],
+        "next_action": "continue",
+    }
+    review.update(overrides)
+    return review
+
+
+def test_fuzz_empty_scope_mechanical_inapplicability_skips(tmp_path: Path):
+    # Empty-scope mechanical checks → not_applicable → skip, even if a reject-shaped review exists.
     schema = _fuzz_gate_schema()
-    _write_fuzz_review(tmp_path, {"decision": "reject", "codegen_readiness": "not_ready"})
-    assert check_gate(schema, "fuzz-plan-review-gate", loc_for(tmp_path), EMPTY, {}).verdict == "reject"
+    change = tmp_path / "qa" / "changes" / "CH-1"
+    change.mkdir(parents=True)
+    _write_fuzz_evidence(
+        change,
+        checks=_fuzz_empty_scope_checks(),
+        review=_fuzz_review(decision="reject", codegen_readiness="not_ready", change_id="CH-1"),
+    )
+    # Gate reads repo:.aa/data-knowledge.yaml relative to project root.
+    (tmp_path / ".aa").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".aa" / "data-knowledge.yaml").write_text(
+        "version: 1\ncapabilities: {}\nauth:\n  api_admin_token:\n    method: token\n",
+        encoding="utf-8",
+    )
+    assert (
+        check_gate(schema, "fuzz-plan-review-gate", loc_for(change, project_root=tmp_path), EMPTY, {}).verdict
+        == "skip"
+    )
 
 
-def test_fuzz_pass_unaffected_by_skip_rule(tmp_path: Path):
+def test_fuzz_reject_on_applicable_mechanical_still_rejects(tmp_path: Path):
     schema = _fuzz_gate_schema()
-    _write_fuzz_review(tmp_path, {"decision": "pass", "codegen_readiness": "ready"})
-    assert check_gate(schema, "fuzz-plan-review-gate", loc_for(tmp_path), EMPTY, {}).verdict == "pass"
+    change = tmp_path / "qa" / "changes" / "CH-1"
+    change.mkdir(parents=True)
+    _write_fuzz_evidence(
+        change,
+        checks=_fuzz_applicable_checks(),
+        review=_fuzz_review(decision="reject", codegen_readiness="not_ready", change_id="CH-1"),
+    )
+    (tmp_path / ".aa").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".aa" / "data-knowledge.yaml").write_text(
+        "version: 1\ncapabilities: {}\nauth:\n  api_admin_token:\n    method: token\n",
+        encoding="utf-8",
+    )
+    assert (
+        check_gate(schema, "fuzz-plan-review-gate", loc_for(change, project_root=tmp_path), EMPTY, {}).verdict
+        == "reject"
+    )
+
+
+def test_fuzz_pass_on_applicable_mechanical_still_passes(tmp_path: Path):
+    schema = _fuzz_gate_schema()
+    change = tmp_path / "qa" / "changes" / "CH-1"
+    change.mkdir(parents=True)
+    _write_fuzz_evidence(
+        change,
+        checks=_fuzz_applicable_checks(),
+        review=_fuzz_review(decision="pass", codegen_readiness="ready", change_id="CH-1"),
+    )
+    (tmp_path / ".aa").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".aa" / "data-knowledge.yaml").write_text(
+        "version: 1\ncapabilities: {}\nauth:\n  api_admin_token:\n    method: token\n",
+        encoding="utf-8",
+    )
+    assert (
+        check_gate(schema, "fuzz-plan-review-gate", loc_for(change, project_root=tmp_path), EMPTY, {}).verdict
+        == "pass"
+    )
 
 
 def test_change_id_placeholder_resolves_for_archive_produce(tmp_path: Path):

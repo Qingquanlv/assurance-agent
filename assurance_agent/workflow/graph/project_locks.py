@@ -204,6 +204,25 @@ class ProjectPublicationStore:
             return
         self._write(path, publication, "applied")
 
+    def list_publications(
+        self,
+        *,
+        invocation_id: str | None = None,
+    ) -> tuple[tuple[ProjectPublication, Literal["prepared", "applied"]], ...]:
+        """Read-only listing of durable publication markers for recovery barriers."""
+        root = self._prepare_root()
+        results: list[tuple[ProjectPublication, Literal["prepared", "applied"]]] = []
+        for path in sorted(root.glob("*.json")):
+            publication, status = self._load(path)
+            if invocation_id is not None and publication.invocation_id != invocation_id:
+                continue
+            results.append((publication, status))
+        return tuple(results)
+
+    def has_unacknowledged(self, invocation_id: str) -> bool:
+        """True when any committed publication marker for the invocation is still prepared."""
+        return any(status == "prepared" for _, status in self.list_publications(invocation_id=invocation_id))
+
     def _prepare_root(self) -> Path:
         return _prepare_confined_directory(self._project_root, _PUBLICATIONS_RELPATH)
 

@@ -16,21 +16,36 @@ from assurance_agent.workflow.core.events import LedgerIntegrityError, append_ev
 from assurance_agent.workflow.core.progression import transaction
 from assurance_agent.workflow.graph.checkpoint import (
     CheckpointStore,
+    fold_invocation_events,
     project_invocation,
     project_workflow_state,
     render_workflow_state_yaml,
 )
+from assurance_agent.workflow.graph.definition_pinning import is_definition_binding_replayable
 from assurance_agent.workflow.graph.models import GraphProjection
 
+_ROOT = "root"
+_BRANCH = "branch"
+_LEAF = "leaf"
+_LEAF_NS = f"{_ROOT}/branch-node/{_BRANCH}/cycle-node/{_LEAF}"
+_BRANCH_NS = f"{_ROOT}/branch-node/{_BRANCH}"
+_PLAN_PATH = "change:plans/fuzz.yaml"
+_ROOT_BASE = "tree-root"
+_BRANCH_BASE = "tree-branch"
+_LEAF_BASE = "tree-leaf"
+_TARGET = "tree-target"
+_TRANSITION = "rt-leaf-1"
 
-def _started(inv: str = "inv-1") -> dict:
-    return {
+
+def _started(inv: str = "inv-1", *, schema_version: int = 1) -> dict:
+    payload = {
         "source": "graph",
         "type": "graph_invocation_started",
         "invocation_id": inv,
         "entrypoint": "full",
         "graph_id": "main",
         "graph_digest": "gd-1",
+        "event_schema_version": schema_version,
         "contract_digests": {"skill:noop": "cd-1"},
         "params": {"run_mode": "full"},
         "params_sha256": "ps-1",
@@ -39,6 +54,18 @@ def _started(inv: str = "inv-1") -> dict:
         "checkpoint_ns": inv,
         "structural_path": "main",
     }
+    if schema_version >= 4:
+        payload.update(
+            {
+                "ir_digest": "gd-1",
+                "ingest_catalog_digest": "cat-1",
+                "policy_digest": "a" * 64,
+                "policy_origin": "project",
+                "gate_semantics_digest": "b" * 64,
+                "assurance_profile_digest": "c" * 64,
+            }
+        )
+    return payload
 
 
 def _planned(task_ids: list[str], inv: str = "inv-1") -> dict:
@@ -616,6 +643,31 @@ def test_workflow_state_yaml_rebuilds_semantically_identical(tmp_path: Path) -> 
     assert yaml.safe_load(state_file.read_text(encoding="utf-8")) == yaml.safe_load(original.decode("utf-8"))
 
 
+def test_projection_folds_v4_definition_binding_fields(tmp_path: Path) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    _append_all(change, [_started(schema_version=4)])
+
+    projection = project_invocation(change, "inv-1")
+    assert projection.event_schema_version == 4
+    assert projection.policy_digest == "a" * 64
+    assert projection.policy_origin == "project"
+    assert projection.gate_semantics_digest == "b" * 64
+    assert projection.assurance_profile_digest == "c" * 64
+    assert is_definition_binding_replayable(projection)
+
+
+def test_legacy_projection_is_not_replayable(tmp_path: Path) -> None:
+    change = tmp_path / "CH-1"
+    change.mkdir()
+    _append_all(change, [_started(schema_version=2)])
+
+    projection = project_invocation(change, "inv-1")
+    assert projection.event_schema_version == 2
+    assert projection.policy_origin == ""
+    assert not is_definition_binding_replayable(projection)
+
+
 def test_corrupt_workflow_state_yaml_does_not_affect_projection(tmp_path: Path) -> None:
     change = tmp_path / "CH-1"
     change.mkdir()
@@ -653,3 +705,446 @@ def test_corrupt_workflow_state_yaml_does_not_affect_projection(tmp_path: Path) 
     assert view.budgets == {"max_fix_attempts": 1}
     assert [i.interrupt_id for i in view.pending_interrupts] == ["ir-1"]
     assert view.nodes == {"node-a": ("task-a",)}
+
+
+def _nested_started(
+    inv: str,
+    *,
+    tree_id: str,
+    checkpoint_ns: str,
+    schema_version: int = 5,
+    parent_invocation_id: str | None = None,
+    parent_task_id: str | None = None,
+    structural_path: str = "main",
+) -> dict:
+    event = _started(inv, schema_version=schema_version)
+    event["root_tree_id"] = tree_id
+    event["checkpoint_ns"] = checkpoint_ns
+    event["parent_invocation_id"] = parent_invocation_id
+    event["parent_task_id"] = parent_task_id
+    event["structural_path"] = structural_path
+    return event
+
+
+def _nested_interrupted(
+    *,
+    inv: str,
+    checkpoint_ns: str,
+    interrupt_id: str = "ir-1",
+    owner: str = _LEAF,
+    with_source_pair: bool = True,
+) -> dict:
+    payload: dict[str, object] = {
+        "source": "graph",
+        "type": "graph_interrupted",
+        "invocation_id": inv,
+        "checkpoint_ns": checkpoint_ns,
+        "interrupt_id": interrupt_id,
+        "node_id": "gate",
+        "checkpoint": "fuzz-plan-gate",
+        "actions": ["fix_and_proceed", "accept_risk", "stop"],
+        "audited_reads_sha256": {_PLAN_PATH: "a" * 64},
+        "artifact_view": None,
+        "revision_owner_invocation_id": owner,
+        "revision_base_tree_id": _LEAF_BASE,
+        "revision_view": f".graph-runtime/revision-views/{interrupt_id}",
+        "revision_paths": [_PLAN_PATH],
+        "revision_before_sha256": {_PLAN_PATH: "b" * 64},
+    }
+    if with_source_pair:
+        payload["source_gate_attempt_id"] = "ga-1"
+        payload["source_gate_tree_id"] = "tree-src"
+    return payload
+
+
+def _resume_anchor(inv: str, checkpoint_ns: str, interrupt_id: str = "ir-1") -> dict:
+    return {
+        "invocation_id": inv,
+        "checkpoint_ns": checkpoint_ns,
+        "node_id": "gate" if inv == _LEAF else "cycle-node" if inv == _BRANCH else "branch-node",
+        "interrupt_id": interrupt_id,
+    }
+
+
+def _manual_revision(**overrides: object) -> dict:
+    payload: dict[str, object] = {
+        "source": "graph",
+        "type": "manual_plan_revision",
+        "invocation_id": _LEAF,
+        "checkpoint_ns": _LEAF_NS,
+        "revision_transition_id": _TRANSITION,
+        "interrupt_id": "ir-1",
+        "action": "fix_and_proceed",
+        "who": "reviewer",
+        "reason": "fix plan",
+        "audited_reads_sha256": {_PLAN_PATH: "a" * 64},
+        "source_gate_attempt_id": "ga-1",
+        "source_gate_tree_id": "tree-src",
+        "base_tree_id": _LEAF_BASE,
+        "target_tree_id": _TARGET,
+        "logical_paths": [_PLAN_PATH],
+        "before_sha256": {_PLAN_PATH: "b" * 64},
+        "after_sha256": {_PLAN_PATH: "c" * 64},
+        "resume_anchors": [
+            _resume_anchor(_ROOT, _ROOT),
+            _resume_anchor(_BRANCH, _BRANCH_NS),
+            _resume_anchor(_LEAF, _LEAF_NS),
+        ],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _nested_resumed(
+    *,
+    inv: str,
+    checkpoint_ns: str,
+    ordinal: int,
+    chain_length: int = 3,
+    interrupt_id: str = "ir-1",
+    with_source_pair: bool = True,
+    with_revision: bool = True,
+) -> dict:
+    payload: dict[str, object] = {
+        "source": "graph",
+        "type": "graph_resumed",
+        "invocation_id": inv,
+        "checkpoint_ns": checkpoint_ns,
+        "interrupt_id": interrupt_id,
+        "action": "fix_and_proceed",
+        "reason": "fix plan",
+        "who": "reviewer",
+        "audited_reads_sha256": {_PLAN_PATH: "a" * 64} if inv == _LEAF else {},
+        "anchor": _resume_anchor(inv, checkpoint_ns, interrupt_id),
+    }
+    if with_revision:
+        payload["revision_transition_id"] = _TRANSITION
+        payload["revision_ordinal"] = ordinal
+        payload["revision_chain_length"] = chain_length
+    if with_source_pair:
+        payload["source_gate_attempt_id"] = "ga-1"
+        payload["source_gate_tree_id"] = "tree-src"
+    return payload
+
+
+def _root_branch_leaf_prefix(*, schema_version: int = 5) -> list[dict]:
+    return [
+        _nested_started(_ROOT, tree_id=_ROOT_BASE, checkpoint_ns=_ROOT, schema_version=schema_version),
+        _nested_started(
+            _BRANCH,
+            tree_id=_BRANCH_BASE,
+            checkpoint_ns=_BRANCH_NS,
+            schema_version=schema_version,
+            parent_invocation_id=_ROOT,
+            parent_task_id="branch-task",
+            structural_path="main/branch-node",
+        ),
+        _nested_started(
+            _LEAF,
+            tree_id=_LEAF_BASE,
+            checkpoint_ns=_LEAF_NS,
+            schema_version=schema_version,
+            parent_invocation_id=_BRANCH,
+            parent_task_id="cycle-task",
+            structural_path="main/branch-node/cycle-node",
+        ),
+        _nested_interrupted(inv=_LEAF, checkpoint_ns=_LEAF_NS),
+        _nested_interrupted(inv=_BRANCH, checkpoint_ns=_BRANCH_NS),
+        _nested_interrupted(inv=_ROOT, checkpoint_ns=_ROOT),
+    ]
+
+
+def test_manual_revision_fold_advances_only_leaf_tree() -> None:
+    events = [
+        *_root_branch_leaf_prefix(),
+        _manual_revision(),
+        _nested_resumed(inv=_ROOT, checkpoint_ns=_ROOT, ordinal=0),
+        _nested_resumed(inv=_BRANCH, checkpoint_ns=_BRANCH_NS, ordinal=1),
+        _nested_resumed(inv=_LEAF, checkpoint_ns=_LEAF_NS, ordinal=2),
+    ]
+    leaf = fold_invocation_events(_LEAF, events)
+    branch = fold_invocation_events(_BRANCH, events)
+    root = fold_invocation_events(_ROOT, events)
+    assert leaf.current_tree_id == _TARGET
+    assert branch.current_tree_id == _BRANCH_BASE
+    assert root.current_tree_id == _ROOT_BASE
+    assert leaf.interrupts["ir-1"].resolved_action == "fix_and_proceed"
+    assert leaf.interrupts["ir-1"].revision_owner_invocation_id == _LEAF
+    assert leaf.interrupts["ir-1"].source_gate_attempt_id == "ga-1"
+
+
+@pytest.mark.parametrize(
+    ("invocation_id", "events", "match"),
+    [
+        (
+            _LEAF,
+            [
+                *_root_branch_leaf_prefix(),
+                _manual_revision(interrupt_id="missing"),
+            ],
+            "unresolved interrupt",
+        ),
+        (
+            _LEAF,
+            [
+                *_root_branch_leaf_prefix(),
+                _manual_revision(),
+                _nested_resumed(inv=_LEAF, checkpoint_ns=_LEAF_NS, ordinal=2),
+                _manual_revision(revision_transition_id="rt-2", target_tree_id="tree-2"),
+            ],
+            "unresolved interrupt",
+        ),
+        (
+            _BRANCH,
+            [
+                *_root_branch_leaf_prefix(),
+                {
+                    **_manual_revision(),
+                    "invocation_id": _BRANCH,
+                    "checkpoint_ns": _BRANCH_NS,
+                    "base_tree_id": _BRANCH_BASE,
+                },
+            ],
+            "owner",
+        ),
+        (
+            _LEAF,
+            [*_root_branch_leaf_prefix(), _manual_revision(base_tree_id="wrong-base")],
+            "base_tree",
+        ),
+        (
+            _LEAF,
+            [*_root_branch_leaf_prefix(), _manual_revision(target_tree_id=_LEAF_BASE)],
+            "target_tree",
+        ),
+        (
+            _LEAF,
+            [
+                *_root_branch_leaf_prefix(),
+                _manual_revision(before_sha256={_PLAN_PATH: "z" * 64}),
+            ],
+            "digest",
+        ),
+        (
+            _LEAF,
+            [
+                *_root_branch_leaf_prefix(),
+                _nested_resumed(inv=_LEAF, checkpoint_ns=_LEAF_NS, ordinal=2),
+            ],
+            "revision transition",
+        ),
+        (
+            _LEAF,
+            [
+                *_root_branch_leaf_prefix(),
+                _manual_revision(),
+                _nested_resumed(inv=_LEAF, checkpoint_ns=_LEAF_NS, ordinal=2),
+                {
+                    **_nested_interrupted(
+                        inv=_LEAF,
+                        checkpoint_ns=_LEAF_NS,
+                        interrupt_id="ir-2",
+                    ),
+                    "revision_base_tree_id": _TARGET,
+                    "revision_before_sha256": {_PLAN_PATH: "c" * 64},
+                },
+                _manual_revision(
+                    interrupt_id="ir-2",
+                    revision_transition_id=_TRANSITION,
+                    base_tree_id=_TARGET,
+                    target_tree_id="tree-2",
+                    before_sha256={_PLAN_PATH: "c" * 64},
+                    after_sha256={_PLAN_PATH: "d" * 64},
+                ),
+            ],
+            "revision transition",
+        ),
+    ],
+)
+def test_manual_revision_fold_rejects_invalid_lineage(
+    invocation_id: str, events: list[dict], match: str
+) -> None:
+    with pytest.raises(LedgerIntegrityError, match=match):
+        fold_invocation_events(invocation_id, events)
+
+
+def test_v5_resume_source_pair_must_match_interrupt_pair() -> None:
+    events = [
+        *_root_branch_leaf_prefix(),
+        _nested_resumed(
+            inv=_LEAF,
+            checkpoint_ns=_LEAF_NS,
+            ordinal=0,
+            chain_length=1,
+            with_revision=False,
+            with_source_pair=False,
+        ),
+    ]
+    # pairless resume against paired interrupt
+    with pytest.raises(LedgerIntegrityError, match="source_gate"):
+        fold_invocation_events(_LEAF, events)
+
+    paired_resume = _nested_resumed(
+        inv=_LEAF,
+        checkpoint_ns=_LEAF_NS,
+        ordinal=0,
+        chain_length=1,
+        with_revision=False,
+        with_source_pair=True,
+    )
+    paired_resume["source_gate_attempt_id"] = "other"
+    with pytest.raises(LedgerIntegrityError, match="source_gate"):
+        fold_invocation_events(
+            _LEAF,
+            [*_root_branch_leaf_prefix(), paired_resume],
+        )
+
+
+def test_v5_pairless_interrupt_requires_pairless_resume() -> None:
+    prefix = _root_branch_leaf_prefix()
+    # replace leaf interrupt with pairless form
+    events = [
+        event
+        if not (event.get("type") == "graph_interrupted" and event.get("invocation_id") == _LEAF)
+        else _nested_interrupted(inv=_LEAF, checkpoint_ns=_LEAF_NS, with_source_pair=False)
+        for event in prefix
+    ]
+    with pytest.raises(LedgerIntegrityError, match="source_gate"):
+        fold_invocation_events(
+            _LEAF,
+            [
+                *events,
+                _nested_resumed(
+                    inv=_LEAF,
+                    checkpoint_ns=_LEAF_NS,
+                    ordinal=0,
+                    chain_length=1,
+                    with_revision=False,
+                    with_source_pair=True,
+                ),
+            ],
+        )
+    projection = fold_invocation_events(
+        _LEAF,
+        [
+            *events,
+            _nested_resumed(
+                inv=_LEAF,
+                checkpoint_ns=_LEAF_NS,
+                ordinal=0,
+                chain_length=1,
+                with_revision=False,
+                with_source_pair=False,
+            ),
+        ],
+    )
+    assert projection.interrupts["ir-1"].source_gate_attempt_id is None
+    assert projection.interrupts["ir-1"].resolved_action == "fix_and_proceed"
+
+
+def test_v4_epoch_rejects_manual_revision_and_revision_tagged_resume() -> None:
+    v4_prefix = _root_branch_leaf_prefix(schema_version=4)
+    with pytest.raises(LedgerIntegrityError, match="event_schema_version"):
+        fold_invocation_events(_LEAF, [*v4_prefix, _manual_revision()])
+    with pytest.raises(LedgerIntegrityError, match="event_schema_version"):
+        fold_invocation_events(
+            _LEAF,
+            [
+                *v4_prefix,
+                _nested_resumed(inv=_LEAF, checkpoint_ns=_LEAF_NS, ordinal=2),
+            ],
+        )
+
+
+def test_candidate_validation_receipt_id_folds_optionally() -> None:
+    historical = fold_invocation_events(
+        "inv-1",
+        [_started(), _planned(["t1"]), _begin("t1", "node-a"), _succeeded("t1", "ws-1")],
+    )
+    assert historical.tasks["t1"].candidate_validation_receipt_id is None
+    assert historical.tasks["t1"].precommit_validator is None
+
+    with_receipt = dict(_succeeded("t1", "ws-1"))
+    with_receipt["candidate_validation_receipt_id"] = "a" * 64
+    projection = fold_invocation_events(
+        "inv-1",
+        [_started(), _planned(["t1"]), _begin("t1", "node-a"), with_receipt],
+    )
+    assert projection.tasks["t1"].candidate_validation_receipt_id == "a" * 64
+
+
+def test_candidate_validation_receipt_required_when_validator_named() -> None:
+    started = dict(_begin("t1", "node-a"))
+    started["precommit_validator"] = "generated_files_candidate/v1"
+    with pytest.raises(LedgerIntegrityError, match="missing candidate_validation_receipt_id"):
+        fold_invocation_events(
+            "inv-1",
+            [_started(), _planned(["t1"]), started, _succeeded("t1", "ws-1")],
+        )
+
+    with_receipt = dict(_succeeded("t1", "ws-1"))
+    with_receipt["candidate_validation_receipt_id"] = "a" * 64
+    projection = fold_invocation_events(
+        "inv-1",
+        [_started(), _planned(["t1"]), started, with_receipt],
+    )
+    assert projection.tasks["t1"].precommit_validator == "generated_files_candidate/v1"
+    assert projection.tasks["t1"].candidate_validation_receipt_id == "a" * 64
+
+
+def test_durable_effect_ack_must_bind_inline_intent_digests() -> None:
+    intent = {
+        "schema_version": "1",
+        "effect_id": "eff-1",
+        "kind": "test_marker/v1",
+        "reconciler_semantics_digest": "sha256:" + ("b" * 64),
+        "payload_sha256": "sha256:" + ("c" * 64),
+        "payload": {"schema_version": "1", "marker_key": "k", "value": "v"},
+    }
+    started = dict(_begin("t1", "node-a"))
+    started["target"] = "operation:test-marker"
+    success = dict(_succeeded("t1", "ws-1"))
+    success["durable_effects"] = [intent]
+    committed = dict(_committed())
+    committed["write_set_ids"] = ["ws-1"]
+    committed["committed_task_ids"] = ["t1"]
+
+    def _ack(**overrides: object) -> dict:
+        payload = {
+            "source": "graph",
+            "type": "durable_effect_acknowledged",
+            "root_invocation_id": "inv-1",
+            "invocation_id": "inv-1",
+            "checkpoint_ns": "inv-1",
+            "task_id": "t1",
+            "attempt_id": "t1-a1",
+            "effect_id": "eff-1",
+            "kind": "test_marker/v1",
+            "reconciler_semantics_digest": intent["reconciler_semantics_digest"],
+            "payload_sha256": intent["payload_sha256"],
+            "domain_source_sequence": 1,
+            "domain_event_digest": "sha256:" + ("d" * 64),
+        }
+        payload.update(overrides)
+        return payload
+
+    prefix = [_started(), _activated("node-a"), _planned(["t1"]), started, success, committed]
+    ok = fold_invocation_events("inv-1", [*prefix, _ack()])
+    assert ok.tasks["t1"].target == "operation:test-marker"
+    assert ok.tasks["t1"].acknowledged_effect_ids == ("eff-1",)
+
+    with pytest.raises(LedgerIntegrityError, match="payload_sha256 mismatch"):
+        fold_invocation_events(
+            "inv-1",
+            [*prefix, _ack(payload_sha256="sha256:" + ("e" * 64))],
+        )
+    with pytest.raises(LedgerIntegrityError, match="kind mismatch"):
+        fold_invocation_events(
+            "inv-1",
+            [*prefix, _ack(kind="other_kind/v1")],
+        )
+    with pytest.raises(LedgerIntegrityError, match="reconciler_semantics_digest mismatch"):
+        fold_invocation_events(
+            "inv-1",
+            [*prefix, _ack(reconciler_semantics_digest="sha256:" + ("f" * 64))],
+        )

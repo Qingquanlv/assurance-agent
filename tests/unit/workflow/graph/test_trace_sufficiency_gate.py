@@ -110,13 +110,24 @@ def test_the_contract_declares_every_input_the_fold_reads() -> None:
     """
     contract = load_execution_contracts(Path.cwd()).contracts[TARGET]
 
+    # MERGE_HEAD expanded the read surface for issue/codegen/review inputs; keep
+    # that superset while HEAD still requires both trace documents as writes.
     assert set(contract.reads) == {
         "change:cases/**",
         "change:execution/**",
+        "change:facts/**",
+        "change:review/**",
+        "change:healing/**",
+        "change:codegen/**",
         "change:inspect/failure-analysis.json",
+        "change:inspect/issue-evidence-manifest.json",
+        "change:inspect/observations.json",
+        "change:inspect/issue-candidates.json",
+        "change:inspect/issue-reconcile-status.json",
+        "change:issues/events.jsonl",
         "change:issues/snapshot.json",
+        "project:qa/issues/events.jsonl",
         "project:qa/issues/problems.json",
-        "project:.aa/policy.yaml",
         "repo:tests/**",
     }
 

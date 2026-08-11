@@ -1,7 +1,26 @@
+from __future__ import annotations
+
+from copy import deepcopy
+from typing import Any
+
 import pytest
 from pydantic import ValidationError
 
-from assurance_agent.artifacts.models import FailureAnalysis, IssueReport, QualityGateResult, QualityReport
+from assurance_agent.artifacts.models import (
+    FailureAnalysis,
+    IssueReport,
+    QualityGateResult,
+    QualityReport,
+)
+from assurance_agent.artifacts.models.inspect import (
+    QualityGateResultDocument,
+    QualityGateResultV1,
+    QualityGateResultV2,
+    load_quality_gate_result_document,
+)
+from tests.helpers_aa import make_report_v2
+
+_UNSET = object()
 
 
 def make_failure_entry(**overrides: object) -> dict:
@@ -283,3 +302,103 @@ def test_issue_report_final_status_unchanged() -> None:
     assert model.final_status == "PASS"
     assert model.issues is not None
     assert model.issues.issue_risk == "critical"
+
+
+# ---- Quality Gate V1/V2 wire boundary --------------------------------------
+
+
+def valid_quality_v1(**overrides: object) -> dict[str, Any]:
+    return make_quality_gate_result(**overrides)
+
+
+def valid_quality_v2_success(
+    *,
+    extra_evidence_field: bool = False,
+    report: Any = _UNSET,
+    require_current_batch: bool = True,
+    **overrides: object,
+) -> dict[str, Any]:
+    report_payload: Any
+    if report is _UNSET:
+        report_payload = make_report_v2(require_current_batch=require_current_batch)
+    else:
+        report_payload = report
+    evidence: dict[str, Any] = {"kind": "sufficiency", "report": report_payload}
+    if extra_evidence_field:
+        evidence["unexpected"] = True
+    coverage = {
+        **make_coverage(),
+        "evidence": evidence,
+    }
+    doc: dict[str, Any] = {
+        "schema_version": "2.0",
+        "change_id": "CH-1",
+        "batch_id": "b1",
+        "dimensions": {"functional": make_functional(), "coverage": coverage},
+        "final_status": "PASS",
+    }
+    doc.update(overrides)
+    return doc
+
+
+def valid_quality_v2_error(
+    *,
+    error_code: str = "evidence_projection_missing",
+    **overrides: object,
+) -> dict[str, Any]:
+    coverage = {
+        **make_coverage(),
+        "evidence": {"kind": "error", "error_code": error_code},
+    }
+    doc: dict[str, Any] = {
+        "schema_version": "2.0",
+        "change_id": "CH-1",
+        "batch_id": "b1",
+        "dimensions": {"functional": make_functional(), "coverage": coverage},
+        "final_status": "FAIL",
+    }
+    doc.update(overrides)
+    return doc
+
+
+def test_quality_document_round_trips_both_versions() -> None:
+    v1 = load_quality_gate_result_document(valid_quality_v1())
+    v2 = load_quality_gate_result_document(valid_quality_v2_success())
+    assert isinstance(v1, QualityGateResultV1)
+    assert isinstance(v2, QualityGateResultV2)
+
+    assert QualityGateResultV1.model_validate_json(v1.model_dump_json()) == v1
+    assert QualityGateResultV2.model_validate_json(v2.model_dump_json()) == v2
+    assert load_quality_gate_result_document(v2.model_dump(mode="json")) == v2
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        valid_quality_v2_success(extra_evidence_field=True),
+        valid_quality_v2_error(error_code="unknown"),
+        valid_quality_v2_success(report=None),
+        valid_quality_v2_success(require_current_batch=False),
+    ],
+)
+def test_quality_v2_rejects_open_or_malformed_evidence(payload: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        QualityGateResultDocument.model_validate(payload)
+
+
+def test_quality_document_rejects_unknown_schema_version() -> None:
+    payload = deepcopy(valid_quality_v1())
+    payload["schema_version"] = "99"
+    with pytest.raises(ValidationError):
+        load_quality_gate_result_document(payload)
+
+
+def test_legacy_quality_gate_result_remains_v1_alias() -> None:
+    assert QualityGateResult is QualityGateResultV1
+
+
+def test_quality_v2_error_arm_round_trips() -> None:
+    loaded = load_quality_gate_result_document(valid_quality_v2_error())
+    assert isinstance(loaded, QualityGateResultV2)
+    assert loaded.dimensions.coverage.evidence.kind == "error"
+    assert loaded.dimensions.coverage.evidence.error_code == "evidence_projection_missing"

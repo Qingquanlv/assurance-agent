@@ -18,6 +18,12 @@ from pydantic import BaseModel, ConfigDict
 from assurance_agent.verification.contract_render import render_output_contract
 from assurance_agent.workflow.core.graph_types import ErrorKind
 from assurance_agent.workflow.graph.model_routing import RouteSource
+from assurance_agent.workflow.graph.task_inputs import (
+    PlanFixerRuntimeContextV1,
+    assert_prompt_runtime_context_match,
+    bind_runtime_context_to_prompt,
+    runtime_context_digest,
+)
 from assurance_agent.workflow.skill_memory import load_skill_memory
 
 
@@ -41,6 +47,8 @@ class AgentRequest(BaseModel):
     model: str | None = None
     model_route_source: RouteSource | None = None
     model_policy_sha256: str | None = None
+    # Bound plan-fixer Runtime Context digest (D13).
+    runtime_context_sha256: str | None = None
 
 
 class AgentResult(BaseModel):
@@ -88,6 +96,7 @@ def build_node_prompt(
     evidence: Mapping[str, object] | None = None,
     outputs: Sequence[str] = (),
     accepted_risks: Sequence[Mapping[str, str]] = (),
+    runtime_context: PlanFixerRuntimeContextV1 | None = None,
 ) -> str:
     """v2 node prompt：列出 contract 授权写范围，不再宣称只能写 change 目录。
 
@@ -150,7 +159,8 @@ def build_node_prompt(
             "all generated evidence."
         )
     output_contract_clause = render_output_contract(outputs)
-    return (
+    runtime_context_sha256 = runtime_context_digest(runtime_context) if runtime_context is not None else None
+    prompt = (
         f"Call skill(name='{skill}'). Operate strictly on change_id='{change_id}'. "
         f"Authorized write paths: {allowed}. Produce only node {node_id}'s declared outputs. "
         "Do not run aa gate/status, edit workflow-state.yaml, or access coordinator runtime files. "
@@ -174,3 +184,8 @@ def build_node_prompt(
         + failure_clause
         + (f" Fan-out item: {item}." if item is not None else "")
     )
+    if runtime_context is not None:
+        prompt = bind_runtime_context_to_prompt(prompt, runtime_context)
+    assert_prompt_runtime_context_match(prompt, runtime_context)
+    _ = runtime_context_sha256
+    return prompt

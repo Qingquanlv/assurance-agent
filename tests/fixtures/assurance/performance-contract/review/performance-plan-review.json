@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0",
+  "review_type": "performance-plan",
+  "change_id": "CH-CANONICAL",
+  "decision": "pass",
+  "risk_level": "low",
+  "codegen_readiness": "ready",
+  "auto_fix_allowed": false,
+  "human_review_required": false,
+  "summary": "Account list performance plan declares absolute thresholds, load shape, scenario coverage, and statistical interpretation with L1-backed seeding.",
+  "reviewed_files": [
+    "plans/performance-plan.md",
+    "plans/performance-codegen-plan.md",
+    ".aa/data-knowledge.yaml"
+  ],
+  "blockers": [],
+  "findings": [],
+  "needs_review": [],
+  "auto_fix_plan": [],
+  "required_capabilities": [
+    "capabilities.domain_factories.account.make_account"
+  ],
+  "next_action": "continue",
+  "created_at": "2026-07-31T00:00:00Z"
+}

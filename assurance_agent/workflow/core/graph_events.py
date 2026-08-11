@@ -11,9 +11,9 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from assurance_agent.workflow.core.graph_types import ErrorKind
 
@@ -34,6 +34,14 @@ class GraphInvocationStartedEvent(_GraphEvent):
     ingest_catalog_digest: str = ""
     contract_digests: dict[str, str]
     policy_digest: str = ""
+    policy_origin: str = ""
+    gate_semantics_digest: str = ""
+    assurance_profile_digest: str = ""
+    gate_semantics_object_id: str = ""
+    topology_safety_semantics_object_id: str = ""
+    topology_safety_semantics_digest: str = ""
+    commit_safety_semantics_object_id: str = ""
+    commit_safety_semantics_digest: str = ""
     params: dict[str, object]
     params_sha256: str
     root_tree_id: str
@@ -42,6 +50,51 @@ class GraphInvocationStartedEvent(_GraphEvent):
     parent_invocation_id: str | None = None
     parent_task_id: str | None = None
     structural_path: str
+    # D18 single-use replacement pair (v6 root only); all-or-none.
+    supersedes_invocation_id: str | None = None
+    replacement_authorization_id: str | None = None
+
+    @model_validator(mode="after")
+    def _require_v4_definition_binding(self) -> Self:
+        if self.event_schema_version >= 4:
+            if not self.policy_digest:
+                raise ValueError("policy_digest is required for event_schema_version >= 4")
+            if not self.policy_origin:
+                raise ValueError("policy_origin is required for event_schema_version >= 4")
+            if not self.gate_semantics_digest:
+                raise ValueError("gate_semantics_digest is required for event_schema_version >= 4")
+            if not self.assurance_profile_digest:
+                raise ValueError("assurance_profile_digest is required for event_schema_version >= 4")
+        v6_fields = (
+            ("gate_semantics_object_id", self.gate_semantics_object_id),
+            ("gate_semantics_digest", self.gate_semantics_digest),
+            ("topology_safety_semantics_object_id", self.topology_safety_semantics_object_id),
+            ("topology_safety_semantics_digest", self.topology_safety_semantics_digest),
+            ("commit_safety_semantics_object_id", self.commit_safety_semantics_object_id),
+            ("commit_safety_semantics_digest", self.commit_safety_semantics_digest),
+        )
+        new_fields = (
+            self.gate_semantics_object_id,
+            self.topology_safety_semantics_object_id,
+            self.topology_safety_semantics_digest,
+            self.commit_safety_semantics_object_id,
+            self.commit_safety_semantics_digest,
+        )
+        if self.event_schema_version >= 6:
+            for name, value in v6_fields:
+                if not value:
+                    raise ValueError(f"{name} is required for event_schema_version >= 6")
+        else:
+            # v1-v5 remain valid without object-ID/topology/commit-safety fields and
+            # must not receive synthetic v6 semantic identities.
+            if any(new_fields):
+                if not all(new_fields):
+                    raise ValueError("v6 semantic binding fields must be all-or-none")
+                raise ValueError("v6 semantic binding fields require event_schema_version >= 6")
+        replacement_fields = (self.supersedes_invocation_id, self.replacement_authorization_id)
+        if any(replacement_fields) and not all(replacement_fields):
+            raise ValueError("supersedes_invocation_id and replacement_authorization_id must be all-or-none")
+        return self
 
 
 class NodeActivatedEvent(_GraphEvent):
@@ -104,6 +157,11 @@ class TaskAttemptStartedEvent(_GraphEvent):
     attempt_number: int
     lease_expires_at: str
     started_at: str
+    input_snapshot_id: str | None = None
+    runtime_context_sha256: str | None = None
+    precommit_validator: str | None = None
+    # Execution-contract / operation target (e.g. operation:allocate-healing-attempt).
+    target: str | None = None
 
 
 class TaskAttemptSucceededEvent(_GraphEvent):
@@ -119,6 +177,28 @@ class TaskAttemptSucceededEvent(_GraphEvent):
     gate_report: dict[str, object] | None = None
     state_updates: dict[str, object] = Field(default_factory=dict)
     value: object = None
+    input_snapshot_id: str | None = None
+    runtime_context_sha256: str | None = None
+    candidate_validation_receipt_id: str | None = None
+    # Full canonical inline intents (optional for historical events; empty default).
+    durable_effects: list[dict[str, object]] = Field(default_factory=list)
+
+
+class TaskSchedulingDeferredEvent(_GraphEvent):
+    """Scheduling-level lock deferral: no attempt id/number/budget consumption."""
+
+    type: Literal["task_scheduling_deferred"]
+    deferral_id: str
+    invocation_id: str
+    checkpoint_ns: str
+    superstep_id: str
+    task_id: str
+    node_id: str
+    token: str
+    reason: str
+    deferral_ordinal: int
+    retry_policy_digest: str
+    next_retry_at: str
 
 
 class TaskAttemptStoppedEvent(_GraphEvent):
@@ -192,6 +272,21 @@ class GraphInterruptedEvent(_GraphEvent):
     artifact_view: str | None = None
     anchor: "ResumeAnchor | None" = None
     parent_anchor_ref: str | None = None
+    revision_owner_invocation_id: str | None = None
+    revision_base_tree_id: str | None = None
+    revision_view: str | None = None
+    revision_paths: list[str] | None = None
+    revision_before_sha256: dict[str, str] | None = None
+    source_gate_attempt_id: str | None = None
+    source_gate_tree_id: str | None = None
+
+    @model_validator(mode="after")
+    def _source_pair_all_or_none(self) -> Self:
+        has_attempt = self.source_gate_attempt_id is not None
+        has_tree = self.source_gate_tree_id is not None
+        if has_attempt != has_tree:
+            raise ValueError("source gate pair fields must be all-or-none")
+        return self
 
 
 class ResumeAnchor(BaseModel):
@@ -200,6 +295,26 @@ class ResumeAnchor(BaseModel):
     checkpoint_ns: str
     node_id: str
     interrupt_id: str
+
+
+class ManualPlanRevisionEvent(_GraphEvent):
+    type: Literal["manual_plan_revision"] = "manual_plan_revision"
+    invocation_id: str
+    checkpoint_ns: str
+    revision_transition_id: str
+    interrupt_id: str
+    action: Literal["fix_and_proceed"]
+    who: str
+    reason: str
+    audited_reads_sha256: dict[str, str]
+    source_gate_attempt_id: str
+    source_gate_tree_id: str
+    base_tree_id: str
+    target_tree_id: str
+    logical_paths: list[str]
+    before_sha256: dict[str, str]
+    after_sha256: dict[str, str]
+    resume_anchors: list[ResumeAnchor]
 
 
 class GraphResumedEvent(_GraphEvent):
@@ -214,6 +329,35 @@ class GraphResumedEvent(_GraphEvent):
     anchor: ResumeAnchor | None = None
     parent_anchor_ref: str | None = None
     payload: dict[str, object] = Field(default_factory=dict)
+    revision_transition_id: str | None = None
+    revision_ordinal: int | None = None
+    revision_chain_length: int | None = None
+    source_gate_attempt_id: str | None = None
+    source_gate_tree_id: str | None = None
+
+    @model_validator(mode="after")
+    def _revision_and_source_invariants(self) -> Self:
+        rev_fields = (
+            self.revision_transition_id,
+            self.revision_ordinal,
+            self.revision_chain_length,
+        )
+        present = [field is not None for field in rev_fields]
+        if any(present) and not all(present):
+            raise ValueError("revision triple fields must be all-or-none")
+        if all(present):
+            ordinal = self.revision_ordinal
+            length = self.revision_chain_length
+            assert ordinal is not None and length is not None
+            if length < 1:
+                raise ValueError("revision_chain_length must be >= 1")
+            if not (0 <= ordinal < length):
+                raise ValueError("revision_ordinal out of bounds")
+        has_attempt = self.source_gate_attempt_id is not None
+        has_tree = self.source_gate_tree_id is not None
+        if has_attempt != has_tree:
+            raise ValueError("source gate pair fields must be all-or-none")
+        return self
 
 
 class SuperstepCommittedEvent(_GraphEvent):
@@ -227,6 +371,97 @@ class SuperstepCommittedEvent(_GraphEvent):
     target_tree_id: str
     state_values: dict[str, object]
     committed_task_ids: list[str] = Field(default_factory=list)
+
+
+class DurableEffectAcknowledgedEvent(_GraphEvent):
+    type: Literal["durable_effect_acknowledged"]
+    root_invocation_id: str
+    invocation_id: str
+    checkpoint_ns: str
+    task_id: str
+    attempt_id: str
+    effect_id: str
+    kind: str
+    reconciler_semantics_digest: str
+    payload_sha256: str
+    domain_source_sequence: int
+    domain_event_digest: str
+
+
+class DurableEffectIntegrityFailedEvent(_GraphEvent):
+    type: Literal["durable_effect_integrity_failed"]
+    invocation_id: str
+    checkpoint_ns: str
+    task_id: str
+    attempt_id: str
+    effect_id: str
+    reason: str
+
+
+class TopologySafetyCompatibilityRecordedEvent(_GraphEvent):
+    """Append-only v4/v5 topology audit receipt (D10). Does not rewrite the root."""
+
+    type: Literal["topology_safety_compatibility_recorded"]
+    invocation_id: str
+    checkpoint_ns: str
+    receipt_id: str
+    event_schema_version: int
+    graph_digest: str
+    ingest_catalog_digest: str
+    contract_digests: dict[str, str]
+    assurance_profile_digest: str
+    discovered_roles_digest: str
+    topology_safety_semantics_object_id: str
+    topology_safety_semantics_digest: str
+    audit_result: str
+    selected_layers: list[str]
+    reachable_layers: list[str]
+    per_layer_results: dict[str, str]
+    reachable_set_digest: str
+    source_sequence: int
+
+
+class GraphInvocationSupersededEvent(_GraphEvent):
+    """Audited legacy-root supersede fence (D18). Terminal for the bound subtree."""
+
+    type: Literal["graph_invocation_superseded"]
+    invocation_id: str
+    checkpoint_ns: str
+    entrypoint: str
+    supersede_id: str
+    reason_code: Literal["legacy_commit_safety_semantics_unbound"]
+    who: str
+    reason: str
+    action: Literal["rerun-v6", "stop"]
+    params_sha256: str | None = None
+    definition_request_digest: str | None = None
+    replacement_authorization_id: str | None = None
+    descendant_invocation_ids: list[str]
+    subtree_digest: str
+    source_sequence: int
+    event_schema_version: int
+
+    @model_validator(mode="after")
+    def _validate_action_fields(self) -> Self:
+        if self.action == "stop":
+            if (
+                self.params_sha256 is not None
+                or self.definition_request_digest is not None
+                or self.replacement_authorization_id is not None
+            ):
+                raise ValueError("stop supersede must leave replacement fields null")
+        else:
+            if (
+                not self.params_sha256
+                or not self.definition_request_digest
+                or not self.replacement_authorization_id
+            ):
+                raise ValueError("rerun-v6 supersede requires params and replacement authority")
+        if list(self.descendant_invocation_ids) != sorted(self.descendant_invocation_ids):
+            raise ValueError("descendant_invocation_ids must be sorted")
+        if len(set(self.descendant_invocation_ids)) != len(self.descendant_invocation_ids):
+            raise ValueError("descendant_invocation_ids must be unique")
+        return self
 
 
 class GraphTerminalEvent(_GraphEvent):
@@ -268,12 +503,18 @@ GraphEvent = Annotated[
     | TaskAttemptSucceededEvent
     | TaskAttemptStoppedEvent
     | TaskAttemptFailedEvent
+    | TaskSchedulingDeferredEvent
     | TaskRecoveryRoutedEvent
     | TaskAttemptAbandonedEvent
     | BudgetConsumedEvent
     | GraphInterruptedEvent
+    | ManualPlanRevisionEvent
     | GraphResumedEvent
     | SuperstepCommittedEvent
+    | DurableEffectAcknowledgedEvent
+    | DurableEffectIntegrityFailedEvent
+    | TopologySafetyCompatibilityRecordedEvent
+    | GraphInvocationSupersededEvent
     | GraphTerminalEvent
     | TaskImportedEvent
     | CheckpointImportedEvent,
@@ -294,13 +535,19 @@ __all__ = [
     "TaskAttemptSucceededEvent",
     "TaskAttemptStoppedEvent",
     "TaskAttemptFailedEvent",
+    "TaskSchedulingDeferredEvent",
     "TaskRecoveryRoutedEvent",
     "TaskAttemptAbandonedEvent",
     "BudgetConsumedEvent",
     "GraphInterruptedEvent",
+    "ManualPlanRevisionEvent",
     "GraphResumedEvent",
     "ResumeAnchor",
     "SuperstepCommittedEvent",
+    "DurableEffectAcknowledgedEvent",
+    "DurableEffectIntegrityFailedEvent",
+    "TopologySafetyCompatibilityRecordedEvent",
+    "GraphInvocationSupersededEvent",
     "GraphTerminalEvent",
     "TaskImportedEvent",
     "CheckpointImportedEvent",

@@ -18,6 +18,7 @@ paths:
 - plans/fuzz-review-summary.md
 - review/fuzz-plan-review.json
 - review/fuzz-plan-review-summary.md
+- review/fuzz-plan-checks.json
 resets:
   workflow_state:
     phases.execution.status: pending
@@ -37,20 +38,31 @@ imports:
       outputs:
       - change:registry/skill-registry-check.json
       gate: registry-gate
-    - path: execute-workflow/assurance/assurance/fuzz/fuzz-branch/review-cycle/fuzz-plan-review-cycle
-      graph: fuzz-plan-review-cycle
+    - path: execute-workflow/assurance/assurance/fuzz/fuzz-branch/review-cycle/fuzz-plan-cycle
+      graph: fuzz-plan-cycle
+      node: applicability
+    - path: execute-workflow/assurance/assurance/fuzz/fuzz-branch/review-cycle/fuzz-plan-cycle
+      graph: fuzz-plan-cycle
       node: review
       outputs:
       - change:review/fuzz-plan-review.json
       - change:review/fuzz-plan-review-summary.md
+    - path: execute-workflow/assurance/assurance/fuzz/fuzz-branch/review-cycle/fuzz-plan-cycle
+      graph: fuzz-plan-cycle
+      node: mechanical-plan-checks
+      outputs:
+      - change:review/fuzz-plan-checks.json
+    - path: execute-workflow/assurance/assurance/fuzz/fuzz-branch/review-cycle/fuzz-plan-cycle
+      graph: fuzz-plan-cycle
+      node: review-gate
       gate: fuzz-plan-review-gate
     - path: execute-workflow/assurance/assurance/fuzz/fuzz-branch
       graph: fuzz-branch
       node: review-cycle
     - path: execute-workflow/assurance/assurance/fuzz/fuzz-branch
       graph: fuzz-branch
-      node: codegen-gate
-      gate: fuzz-plan-review-gate
+      node: codegen-precheck
+      gate: fuzz-codegen-precondition-gate
     - path: execute-workflow/assurance/assurance/fuzz/fuzz-branch
       graph: fuzz-branch
       node: codegen

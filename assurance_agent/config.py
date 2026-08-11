@@ -1,5 +1,6 @@
 """Load and validate the target project's .aa/config.yaml."""
 
+import os
 import re
 from pathlib import Path
 from typing import Literal
@@ -18,6 +19,7 @@ from pydantic import (
 from assurance_agent.exceptions import AaError
 
 CONFIG_RELPATH = ".aa/config.yaml"
+MODEL_ROUTING_FILE_ENV = "AA_MODEL_ROUTING_FILE"
 EscalationErrorKind = Literal["invalid_output", "forbidden_write"]
 
 
@@ -98,6 +100,29 @@ def _safe_load_no_duplicates(text: str) -> object:
     return yaml.load(text, Loader=_NoDuplicateKeySafeLoader)
 
 
+def _load_model_routing_override(root: Path) -> ModelRoutingCfg | None:
+    configured = os.environ.get(MODEL_ROUTING_FILE_ENV, "").strip()
+    if not configured:
+        return None
+    path = Path(configured)
+    if not path.is_absolute():
+        path = root / path
+    if not path.is_file():
+        raise ConfigInvalidError(f"{MODEL_ROUTING_FILE_ENV} file not found: {configured}")
+    try:
+        raw = _safe_load_no_duplicates(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as err:
+        raise ConfigInvalidError(f"{MODEL_ROUTING_FILE_ENV} parse error: {err}") from err
+    try:
+        return ModelRoutingCfg.model_validate(raw)
+    except ValidationError as err:
+        first = err.errors()[0]
+        loc = ".".join(str(part) for part in first["loc"])
+        raise ConfigInvalidError(
+            f"{MODEL_ROUTING_FILE_ENV} schema invalid: {loc}: {first['msg']}"
+        ) from err
+
+
 class SourcesCfg(_Model):
     frontend: str
     backend: str
@@ -166,8 +191,13 @@ def load_config(root: Path) -> AaConfig:
     except yaml.YAMLError as err:
         raise ConfigInvalidError(f"{CONFIG_RELPATH} parse error: {err}") from err
     try:
-        return AaConfig.model_validate(raw)
+        config = AaConfig.model_validate(raw)
     except ValidationError as err:
         first = err.errors()[0]
         loc = ".".join(str(p) for p in first["loc"])
         raise ConfigInvalidError(f"{CONFIG_RELPATH} schema invalid: {loc}: {first['msg']}") from err
+    override = _load_model_routing_override(root)
+    if override is None:
+        return config
+    execution = config.execution.model_copy(update={"model_routing": override})
+    return config.model_copy(update={"execution": execution})

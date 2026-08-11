@@ -7,7 +7,8 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field
 
-from assurance_agent.workflow.core.events import Ledger, event_seq
+from assurance_agent.workflow.core.events import Ledger
+from assurance_agent.workflow.healing.projection import project_healing_episode
 
 _TERMINAL = {"resolved", "not_needed", "skipped", "exhausted", "failed"}
 
@@ -26,8 +27,8 @@ class HealingStateProvider(Protocol):
 
 def derive_healing_state(change_dir: Path) -> HealingStateSnapshot:
     ledger = Ledger(change_dir)
-    baseline = ledger.latest(type="healing_entry_baseline_pinned")
-    if baseline is None:
+    projection = project_healing_episode(change_dir)
+    if projection.baseline is None:
         # No episode pinned → attempts stay 0, but the orchestrator may already
         # have recorded a terminal judgment (e.g. `not_needed` on the happy path)
         # via a heal_transition event. Honor the latest one so report/archive
@@ -37,13 +38,11 @@ def derive_healing_state(change_dir: Path) -> HealingStateSnapshot:
         if latest_transition is None:
             return HealingStateSnapshot()
         return HealingStateSnapshot(status=str(latest_transition["to"]))
-    baseline_seq = event_seq(baseline)
-    episode_id = str(baseline["episode_id"])
-    allocations = ledger.filter(type="healing_attempt_allocated", episode_id=episode_id)
-    unique = {str(e["operation_id"]): e for e in allocations}
-    latest = max(unique.values(), key=event_seq, default=None)
-    after_allocation = event_seq(latest) if latest else baseline_seq
-    apply_events = ledger.filter(type="heal_record_apply", after_seq=after_allocation)
+    baseline_seq = projection.baseline.source_seq
+    episode_id = projection.baseline.episode_id
+    latest = projection.latest_allocation
+    after_allocation = latest.source_seq if latest is not None else baseline_seq
+    apply_records = [record for record in projection.records if record.source_seq > after_allocation]
     transitions = ledger.filter(type="heal_transition", after_seq=baseline_seq)
     stopped = bool(ledger.filter(type="human_decision", action="stop", after_seq=baseline_seq))
     terminal_transitions = [t for t in transitions if t.get("to") in _TERMINAL]
@@ -58,8 +57,8 @@ def derive_healing_state(change_dir: Path) -> HealingStateSnapshot:
         status = str(transitions[-1]["to"]) if transitions else "pending"
     return HealingStateSnapshot(
         status=status,
-        attempts_used=len(unique),
-        all_fixers_no_op=bool(apply_events) and all(not e.get("files_modified") for e in apply_events),
+        attempts_used=projection.attempts_used,
+        all_fixers_no_op=bool(apply_records) and all(not record.files_modified for record in apply_records),
         episode_id=episode_id,
-        attempt_id=str(latest["attempt_id"]) if latest else None,
+        attempt_id=latest.attempt_id if latest is not None else None,
     )

@@ -220,6 +220,8 @@ def _succeeded(task: ExecutableTask, **overrides: object) -> TaskProjection:
         "task_id": task.task_id,
         "node_id": task.node_id,
         "status": "succeeded",
+        # D14: planner only advances past a predecessor once outputs are committed.
+        "outputs_committed": True,
         "attempts_used": 1,
         "latest_attempt_id": f"{task.task_id}-a1",
     }
@@ -343,10 +345,15 @@ def _drive(
     raise AssertionError(f"graph {graph_id} did not settle within {limit} supersteps: {order}")
 
 
-_HEALING_VERDICTS = {"healing-entry-gate": "enter", "fixer-safety-gate": "pass"}
+_HEALING_VERDICTS = {
+    "healing-entry-gate": "enter",
+    "fixer-safety-gate": "pass",
+    "fixer-proposal-approval-gate": "pass",
+}
 _PROPOSAL: dict[tuple[str, str], object] = {
     ("tree-0", "change:healing/fix-proposal.json"): {"proposals": [{"target": "api", "eligible": True}]}
 }
+_HEALING_VALUES: dict[str, object] = {"fixer-authority-ready": {"route": "pass"}}
 
 
 def _drive_healing(
@@ -370,6 +377,7 @@ def _drive_healing(
         },
         resume_action=resume_action,
         artifacts=_FakeArtifacts(_PROPOSAL),
+        values=_HEALING_VALUES,
         eligible=eligible,
         until=until,
     )

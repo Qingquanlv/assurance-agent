@@ -24,7 +24,11 @@ tools:
 permission:
   edit:
     "**": deny
-    "**tests/**": allow
+    "**tests/api/**": allow
+    "**tests/e2e/**": allow
+    "**tests/fuzz/**": allow
+    "**tests/perf/**": allow
+    "**tests/testdata/**": allow
     "**qa/changes/**/codegen/**": allow
     "**qa/changes/**/healing/**": allow
     "**qa/changes/**/coverage-repair/**": allow

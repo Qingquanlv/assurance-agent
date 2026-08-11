@@ -198,3 +198,169 @@ def test_reference_cycle_fails_closed_without_recursing_forever(tmp_path: Path) 
     report = check_gate_in_view(GATES, "cycle-a", context)
 
     assert report.verdict.value == "stop"
+
+
+def test_v5_decision_requires_matching_source_gate_epoch(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    _write_leaf(context, "needs_human_review")
+    review_sha256 = hashlib.sha256((context.change_dir / "review" / "leaf.json").read_bytes()).hexdigest()
+    append_event_strict(
+        context.change_dir,
+        {
+            "source": "graph",
+            "type": "graph_invocation_started",
+            "invocation_id": "leaf",
+            "entrypoint": "full",
+            "graph_id": "g",
+            "graph_digest": "dg",
+            "event_schema_version": 5,
+            "contract_digests": {},
+            "policy_digest": "p",
+            "policy_origin": "packaged_default",
+            "gate_semantics_digest": "s",
+            "assurance_profile_digest": "a",
+            "params": {},
+            "params_sha256": "",
+            "root_tree_id": "tree-src",
+            "max_parallel_tasks": 1,
+            "checkpoint_ns": "leaf",
+            "structural_path": "g",
+        },
+    )
+    append_event_strict(
+        context.change_dir,
+        {
+            "source": "graph",
+            "type": "task_attempt_succeeded",
+            "invocation_id": "leaf",
+            "checkpoint_ns": "leaf",
+            "superstep_id": "ss-1",
+            "task_id": "gate-task",
+            "attempt_id": "ga-1",
+            "gate_report": {"gate_id": "leaf-gate", "verdict": "needs_human_review"},
+        },
+    )
+    append_event_strict(
+        context.change_dir,
+        {
+            "source": "graph",
+            "type": "graph_interrupted",
+            "invocation_id": "leaf",
+            "checkpoint_ns": "leaf",
+            "interrupt_id": "interrupt-1",
+            "node_id": "human-review",
+            "checkpoint": "leaf-gate",
+            "actions": ["accept_risk", "stop"],
+            "audited_reads_sha256": {"review/leaf.json": review_sha256},
+            "source_gate_attempt_id": "ga-1",
+            "source_gate_tree_id": "tree-src",
+        },
+    )
+    append_event_strict(
+        context.change_dir,
+        {
+            "source": "graph",
+            "type": "graph_resumed",
+            "invocation_id": "leaf",
+            "checkpoint_ns": "leaf",
+            "interrupt_id": "interrupt-1",
+            "action": "accept_risk",
+            "reason": "accepted",
+            "who": "reviewer",
+            "audited_reads_sha256": {"review/leaf.json": review_sha256},
+            "payload": {},
+            "source_gate_attempt_id": "ga-1",
+            "source_gate_tree_id": "tree-src",
+        },
+    )
+
+    matched = replace(
+        context,
+        audit_events_dir=context.change_dir,
+        committed_tree_id="tree-src",
+        event_schema_version=5,
+        invocation_id="leaf",
+    )
+    assert check_gate_in_view(GATES, "leaf-gate", matched).verdict.value == "pass"
+
+    mismatched_tree = replace(matched, committed_tree_id="tree-after-revision")
+    assert check_gate_in_view(GATES, "leaf-gate", mismatched_tree).verdict.value == "needs_human_review"
+
+
+def test_pairless_resume_is_ineligible_as_v5_gate_override(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    _write_leaf(context, "needs_human_review")
+    review_sha256 = hashlib.sha256((context.change_dir / "review" / "leaf.json").read_bytes()).hexdigest()
+    append_event_strict(
+        context.change_dir,
+        {
+            "source": "graph",
+            "type": "graph_invocation_started",
+            "invocation_id": "leaf",
+            "entrypoint": "full",
+            "graph_id": "g",
+            "graph_digest": "dg",
+            "event_schema_version": 5,
+            "contract_digests": {},
+            "policy_digest": "p",
+            "policy_origin": "packaged_default",
+            "gate_semantics_digest": "s",
+            "assurance_profile_digest": "a",
+            "params": {},
+            "params_sha256": "",
+            "root_tree_id": "tree-src",
+            "max_parallel_tasks": 1,
+            "checkpoint_ns": "leaf",
+            "structural_path": "g",
+        },
+    )
+    append_event_strict(
+        context.change_dir,
+        {
+            "source": "graph",
+            "type": "task_attempt_succeeded",
+            "invocation_id": "leaf",
+            "checkpoint_ns": "leaf",
+            "superstep_id": "ss-1",
+            "task_id": "gate-task",
+            "attempt_id": "ga-1",
+            "gate_report": {"gate_id": "leaf-gate", "verdict": "needs_human_review"},
+        },
+    )
+    append_event_strict(
+        context.change_dir,
+        {
+            "source": "graph",
+            "type": "graph_interrupted",
+            "invocation_id": "leaf",
+            "checkpoint_ns": "leaf",
+            "interrupt_id": "interrupt-1",
+            "node_id": "human-review",
+            "checkpoint": "leaf-gate",
+            "actions": ["accept_risk", "stop"],
+            "audited_reads_sha256": {"review/leaf.json": review_sha256},
+        },
+    )
+    append_event_strict(
+        context.change_dir,
+        {
+            "source": "graph",
+            "type": "graph_resumed",
+            "invocation_id": "leaf",
+            "checkpoint_ns": "leaf",
+            "interrupt_id": "interrupt-1",
+            "action": "accept_risk",
+            "reason": "accepted",
+            "who": "reviewer",
+            "audited_reads_sha256": {"review/leaf.json": review_sha256},
+            "payload": {},
+        },
+    )
+    context = replace(
+        context,
+        audit_events_dir=context.change_dir,
+        committed_tree_id="tree-src",
+        event_schema_version=5,
+        invocation_id="leaf",
+    )
+    assert check_gate_in_view(GATES, "leaf-gate", context).verdict.value == "needs_human_review"

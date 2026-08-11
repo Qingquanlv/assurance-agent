@@ -28,9 +28,7 @@ Not collected in v1 (noted as INCOMPLETE_SIGNALS in the returned object):
 
 from __future__ import annotations
 
-import hashlib
 import json
-import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,58 +43,21 @@ from assurance_agent.artifacts.models.issues import (
     Observation,
     ObservationSource,
 )
+from assurance_agent.evidence.digests import (
+    EvidenceEntryPathError,
+    evidence_bundle_digest_v1,
+    read_evidence_entry_v1,
+)
 from assurance_agent.workflow.execution.evidence import EvidenceError
 from assurance_agent.workflow.execution.results import CoverageResult, PerformanceResult, TargetResult
-from assurance_agent.workflow.issues.identity import (
+from assurance_agent.evidence.issue_identity import (
     ObservationIdentityInput,
     observation_id,
 )
 
 # ---------------------------------------------------------------------------
-# Secret redaction
-# ---------------------------------------------------------------------------
-
-_REDACT_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"Bearer\s+[A-Za-z0-9._\-]{16,}"),
-    re.compile(r"(?i)access[_-]?token[\"']?\s*[:=]\s*[\"']?[A-Za-z0-9._\-]{12,}"),
-    re.compile(r"(?i)api[_-]?key[\"']?\s*[:=]\s*[\"']?[A-Za-z0-9._\-]{12,}"),
-    re.compile(r"(?i)password[\"']?\s*[:=]\s*[\"']?\S{6,}"),
-    re.compile(r"sk-[A-Za-z0-9]{16,}"),
-)
-_REDACTED = "[REDACTED]"
-
-
-def _redact(text: str) -> str:
-    for pat in _REDACT_PATTERNS:
-        text = pat.sub(_REDACTED, text)
-    return text
-
-
-# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def _sha256_text(text: str) -> str:
-    return _sha256_bytes(_redact(text).encode("utf-8"))
-
-
-def _sha256_path(path: Path) -> str:
-    """SHA-256 of redacted file text; unreadable evidence is a hard failure."""
-    try:
-        raw = path.read_bytes()
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            # Binary file (e.g. video): hash raw bytes, no redaction needed.
-            return _sha256_bytes(raw)
-        return _sha256_text(text)
-    except OSError as exc:
-        raise EvidenceError(f"referenced evidence file unreadable: {path}") from exc
 
 
 def _utc_now() -> str:
@@ -109,11 +70,6 @@ _WORKAROUND_MARKERS = frozenset(["workaround", "xfail", "known_issue", "known-is
 def _is_workaround_skip(message: str) -> bool:
     lower = message.lower()
     return any(marker in lower for marker in _WORKAROUND_MARKERS)
-
-
-# Prefix for "sha256:<hex>" format used in digest fields.
-def _fmt_digest(hex_digest: str) -> str:
-    return f"sha256:{hex_digest}"
 
 
 def _normalize_evidence_ref(ref: str, *, change_dir: Path, change_id: str) -> str:
@@ -665,30 +621,27 @@ def _build_evidence_manifest(
                 all_refs[clean] = ref
 
     entries: list[IssueEvidenceManifestEntry] = []
+    seen_paths: set[str] = set()
     for clean_path in sorted(all_refs):
-        abs_path = change_dir / clean_path
-        hex_digest = _sha256_path(abs_path)
+        try:
+            validated = read_evidence_entry_v1(change_dir, clean_path)
+        except EvidenceEntryPathError as exc:
+            raise EvidenceError(f"referenced evidence file unreadable: {clean_path}") from exc
+        if validated.path in seen_paths:
+            raise EvidenceError(f"duplicate evidence path: {validated.path}")
+        seen_paths.add(validated.path)
         entries.append(
             IssueEvidenceManifestEntry(
-                path=clean_path,
-                digest=_fmt_digest(hex_digest),
+                path=validated.path,
+                digest=validated.entry_digest,
             )
         )
-
-    # Bundle digest: canonical JSON of sorted entries
-    bundle_canonical = json.dumps(
-        [{"digest": e.digest, "path": e.path} for e in entries],
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    )
-    bundle_digest = _fmt_digest(_sha256_bytes(bundle_canonical.encode("utf-8")))
 
     return IssueEvidenceManifest(
         schema_version="1.0",
         change_id=change_id,
         batch_id=batch_id,
-        digest=bundle_digest,
+        digest=evidence_bundle_digest_v1(entries),
         entries=entries,
     )
 

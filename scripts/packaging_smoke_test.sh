@@ -38,7 +38,32 @@ PY
 # Packaged resources must be readable from the wheel install.
 "$WORK_DIR/venv/bin/python" - <<'PY'
 from assurance_agent import resources
-assert "aa-full" in resources.read_text("schemas", "workflow-schema.yaml")
+
+workflow = resources.read_text("schemas", "workflow-schema.yaml")
+assert "aa-full" in workflow
+assert "manual_revision:" in workflow
+assert "skill:aa-fuzz-plan" in workflow
+assert "skill:aa-performance-plan" in workflow
+
+contracts = resources.read_text("schemas", "execution-contracts.yaml")
+for target in (
+    "skill:aa-fuzz-plan:",
+    "skill:aa-fuzz-plan-reviewer:",
+    "skill:aa-fuzz-codegen:",
+    "skill:aa-performance-plan:",
+    "skill:aa-performance-plan-reviewer:",
+    "skill:aa-performance-codegen:",
+):
+    assert target in contracts, target
+PY
+
+# New production modules must import from the wheel (not only the repo tree).
+"$WORK_DIR/venv/bin/python" - <<'PY'
+import assurance_agent.artifacts.policy_obligations as policy_obligations
+import assurance_agent.workflow.graph.manual_revision as manual_revision
+
+assert policy_obligations.DEFERRED_POLICY_OBLIGATIONS
+assert hasattr(manual_revision, "ManualRevisionError")
 PY
 
 # Import the runtime registry from the installed wheel.  Schema nodes may be
@@ -63,6 +88,12 @@ required = {
     "aa-retro-workflow-analysis",
     "aa-retro-eval-analysis",
     "aa-coverage-repair",
+    "aa-fuzz-plan",
+    "aa-fuzz-plan-reviewer",
+    "aa-fuzz-codegen",
+    "aa-performance-plan",
+    "aa-performance-plan-reviewer",
+    "aa-performance-codegen",
 }
 assert required <= set(skills), sorted(required - set(skills))
 assert "aa-doc-author.md" in resources.iter_children("opencode", "agents")

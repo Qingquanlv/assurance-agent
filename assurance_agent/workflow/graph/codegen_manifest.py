@@ -138,8 +138,10 @@ def _open_manifest_no_follow(
     if not no_follow or not directory:
         raise CodegenManifestError("platform cannot enforce no-follow manifest access")
 
-    task_root = Path(os.path.abspath(workspace.root))
-    change_dir = Path(os.path.abspath(workspace.change_dir))
+    # Resolve (not abspath) so macOS /var → /private/var is canonicalized the
+    # same way for both sides before the containment check.
+    task_root = Path(workspace.root).resolve()
+    change_dir = Path(workspace.change_dir).resolve()
     try:
         change_parts = change_dir.relative_to(task_root).parts
     except ValueError as exc:

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 import yaml
 from click.testing import CliRunner
 
@@ -371,3 +372,44 @@ def test_human_output_lists_case_and_is_read_only() -> None:
         assert result.exit_code == 0, result.output
         assert "TC_API_001" in result.stdout
         assert after == before
+
+
+def test_json_output_matches_fold_trace() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem() as cwd:
+        root = Path(cwd)
+        write_aa_config(root)
+        change_dir = root / "qa/changes/CH-TR-1"
+        change_dir.mkdir(parents=True)
+        _write_case_doc(change_dir, [_case("TC_API_001", "API", required=True)])
+        _write_test_fn(root, "tests/api/test_thing.py", "test_tc_api_001__basic")
+
+        expected = fold_trace(root, "CH-TR-1", phase="execution", current=None)
+        result = runner.invoke(main, ["trace", "--change", "CH-TR-1", "--json"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout) == json.loads(expected.model_dump_json())
+
+
+def test_does_not_use_status_read_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem() as cwd:
+        root = Path(cwd)
+        write_aa_config(root)
+        change_dir = root / "qa/changes/CH-TR-1"
+        change_dir.mkdir(parents=True)
+        _write_case_doc(change_dir, [_case("TC_API_001", "API", required=True)])
+        _write_test_fn(root, "tests/api/test_thing.py", "test_tc_api_001__basic")
+
+        def _boom(*_args, **_kwargs):
+            raise AssertionError("aa trace must not call read_latest_graph_status")
+
+        monkeypatch.setattr(status_cmd, "read_latest_graph_status", _boom)
+        result = runner.invoke(main, ["trace", "--change", "CH-TR-1", "--json"])
+        assert result.exit_code == 0, result.output
+
+
+def test_help_lists_trace_command() -> None:
+    result = CliRunner().invoke(main, ["trace", "--help"])
+    assert result.exit_code == 0
+    assert "--change" in result.output
+    assert "--only-gaps" in result.output

@@ -102,6 +102,240 @@ aa knowledge promote [--project-dir] (--change <id> | --from <proposal-path>) [-
 - API/E2E plan-review gate 通过 `required_capabilities[]`（review JSON 中的 leaf dotted keys）与 L1 做 pre-codegen 能力校验；缺 leaf → `needs_human_review` + **knowledge-remediation** checkpoint（人工 promote 后 `fix_and_proceed` 重跑 review）。
 - Fuzz/Performance plan-review gate 读 review JSON 的 `layer_applicable`：被 proposal 选中但无对应 `type:Fuzz`/`type:Performance` case（空 scope）时 reviewer 置 `layer_applicable: false` → gate 走 `skip`（分支结束、codegen 跳过），而非硬 `reject` 拖垮整条并行链。缺失该字段时按原 `pass`/`reject` 语义处理。
 
+## Plan check 证据（`review/*-plan-checks.json`，schema v2）
+
+四层机械 check（`l1_path` / `shared_factory` / `assert_ideal` / `capability_keys`，运行顺序由 `assurance_agent/artifacts/models/assurance.py` 的 `PLAN_CHECK_IDS` 声明顺序决定）产出的 `PlanCheckDocument`（`assurance_agent/artifacts/models/plan_checks.py`）是版本化产物：
+
+- **version 1**——历史只读格式：无 `layer` / `applicability` 字段，文档级与逐 check 的 `status` 只允许 `pass`/`fail`。可被解析，但生产路径不再写出。
+- **version 2**——`api` / `e2e` / `fuzz` / `performance` 四层统一生产格式：新增 `layer`（`LayerName`）与 `applicability`（`LayerApplicability`：`applicable` + `reason_code` + 排序去重的 `case_ids`）。`checks` 必须**恰好**包含 `PLAN_CHECK_IDS` 中每个已知 check 各一次——多、少、重复或未知 `check_id` 均在模型校验期拒绝（fail closed），不会静默丢弃或吞并。
+
+**check 状态语义**：
+
+- `pass` / `fail`——check 在本层适用且已求值；`fail` 必须携带非空 `findings`，`pass`/`not_applicable` 禁止携带 `findings`。
+- `not_applicable`——check 未求值，`applicability_reason` 二选一，含义不同：
+  - `layer_not_applicable`——**整层**因该 change 在该层无自动化 case 而不适用（`applicability.applicable=False`，运行期空 scope）；此时四个 check 全部 `not_applicable`，下次该层出现自动化 case 时会重新变为适用；
+  - `check_not_in_profile`——层本身适用，但该 check 按**静态 profile**（`assurance_agent/verification/profiles.py` 的 `applicable_check_ids`）在此层被永久排除，与本次 case 集合无关（目前仅 Fuzz/Performance 排除 `assert_ideal`，因为二者无 ideal-result 断言语义）。
+
+区分这两者是关键：前者是运行期事实（会随 case 变化），后者是层的固有能力边界（不会随 case 变化）。`validate_plan_check_document`（`assurance_agent/verification/checks/registry.py`）在 Pydantic 结构校验之外，额外用运行期 profile catalog 校验每个 check 的 `not_applicable` 理由与静态排除表一致——例如把 Fuzz 层的 `assert_ideal` 标成 `pass` 能通过 Pydantic（单看文档结构合法），但会被这一步拒绝，因为「该 check 在该层被静态排除」是 profile catalog 知识，文档自身无法单独表达或验证。
+
+`PlanCheckDocument.status` 由 `applicability`/`checks` 机械推导（层不适用 → `not_applicable`；任一 check `fail` → `fail`；否则 `pass`），文档级校验器拒绝与推导值不一致的手写 `status`，以及 `layer` 与 `applicability.layer` 不一致的文档。全套校验对畸形输入 fail closed：缺失必需字段、check 集合不完整/含未知项、layer 不匹配均在模型构造/解析期抛出，不产出部分有效的文档。
+
+**与 `Review.layer_applicable` 的关系**：Fuzz/Performance 的层级适用性目前仍经由 `review/*-plan-review.json` 的 `layer_applicable` 字段供 plan-review gate 读取（见上文）。本次改动只落地机械 check 证据自身的版本化与 profile 化执行，尚未把 gate/graph 的跨层消费迁移到 `PlanCheckDocument.applicability`；因此 `Review.layer_applicable` 字段**本次不删除**，其消费迁移与运行期只读该字段的移除属于后续依赖计划。
+
+**v2 `LayerApplicability` 字段**（`PlanCheckDocument.applicability`）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `layer` | `api` \| `e2e` \| `fuzz` \| `performance` | 必须与文档级 `layer` 一致 |
+| `applicable` | bool | 该 change 在该层是否存在自动化 case |
+| `reason_code` | `automated_cases_present` \| `no_automated_cases` | 适用时为前者且 `case_ids` 非空；不适用时为后者且 `case_ids` 为空 |
+| `case_ids` | string[] | 排序去重后的自动化 case ID 列表 |
+
+## Graph invocation 事件（`graph_invocation_started` v5）
+
+新 root invocation 写入 `event_schema_version: 5`，并**要求**已落盘的 assurance-profile 快照（见下）。v4 事件保持可读，**从不**被升级，也**从不**被补造（fabricated）profile 快照。v1–v3 事件仍可由 `migrate_graph_event_stream` 解析，缺失的绑定字段回填为空字符串，不会被静默升级为可 replay 的 specialty 证据。
+
+| 字段 | v4+ 要求 | 说明 |
+|---|---|---|
+| `policy_digest` | 必填 | 归一化 policy 快照的 SHA-256；快照位于 `.graph-runtime/policies/<digest>.json` |
+| `policy_origin` | 必填，闭枚举 | `project`（来自 root tree 的项目 `.aa/policy.yaml`）或 `packaged_default`（无项目 policy 时使用打包默认）；相同归一化内容共享同一快照文件，origin 单独记录 |
+| `gate_semantics_digest` | 必填 | 代码拥有的 gate/DSL/校验语义 manifest 聚合 digest；实现变更但未 bump 语义版本也会改变 digest |
+| `assurance_profile_digest` | 必填 | 四层 assurance profile 与 check catalog 的归一化 digest |
+
+v5 额外要求：digest 对应的不可变字节必须已写入 `.graph-runtime/assurance-profiles/<digest>.json`，且在 `graph_invocation_started` 引用该 digest 之前通过解析校验。重复写入相同字节幂等；同 digest 不同字节为完整性错误。子 invocation 继承 digest 与「需要 snapshot」的 epoch，不重新从当前 registry 取材。
+
+### Assurance-profile 快照
+
+Profile 快照是元数据与审计证据，不是归档的 Python 实现。Replay 对该文件做 hash/parse，**不会**静默用当前 profile registry 替换它。可执行 gate/check 语义仍须与记录的 `gate_semantics_digest` 兼容，wired 行才能 `complete`。
+
+对无 profile 快照的历史 v4 invocation：
+
+- 在 pinned 定义完整性成立后，legacy-unwired 的 Fuzz/Performance 仍可报告 `not_wired`；
+- API/E2E wired 行仅在记录的 profile digest 与可用 manifest 可证明兼容时才能 `complete`；
+- pre-v4 或定义绑定损坏的 invocation **不能**升格为 `not_wired`，保持 report 级 `incomplete`（或走 legacy renderer）。
+
+### 编译入口三分（无启发式降级）
+
+工作流编译是三条显式入口，**禁止**按 schema 内容启发式选择更弱的校验器：
+
+| 入口 | API | 用途 |
+|---|---|---|
+| core | `compile_workflow` | 合成/自定义 schema；不做 packaged 四层 activation 门禁 |
+| packaged-current | `compile_packaged_workflow` | 打包 assurance schema；要求完整四层 activation，并校验 live ingest catalog |
+| pinned-historical | `compile_historical_workflow` | 仅消费已校验的 pinned schema / ingest-catalog / execution-contract 快照；不调用 `validate_catalog_runtime` |
+
+当前路径继续用 live catalog；历史路径只使用 reconstructed catalog。`WorkflowSchemaOrigin`（`packaged` / `project` / `explicit`）记录加载来源，不替代上述编译入口选择。
+
+### Manual revision、revision view 与 prefix recovery
+
+Fuzz/Performance 的 `fix_and_proceed` interrupt 声明 `manual_revision` allowlist（仅 plan-node 输出）。v5 interrupt 在 ephemeral `TaskWorkspace` 清理前物化可写 revision view：
+
+```text
+.graph-runtime/revision-views/<interrupt-id>/
+```
+
+**Revision view 是可变 transport**，不是证据。证据是 `manual_plan_revision.target_tree_id`（以及事件上的 base/target 树、路径 digest、`revision_transition_id` 与 resume-anchor 链）和 ledger lineage。一旦 `manual_plan_revision` 已提交，恢复只读已提交事件字段与不可变 tree object，**不再**重读可变 view。
+
+该协议是显式的 **crash-recoverable prefix recovery**（目标对象 → `manual_plan_revision` → 有序 `graph_resumed` 后缀），**不得**描述为 power-loss-atomic 的事务回滚。合法前缀可单独落盘；重启后只补缺失后缀。缺口、乱序、重复 ordinal 或 payload 漂移 → `manual_plan_revision_prefix_conflict`。字节相同的 `fix_and_proceed` → `manual_plan_revision_noop`，interrupt 保持未解决。
+
+### v5 resume 的 source-gate 绑定
+
+v5 resume 仅在 interrupt 存在真实已提交的 gate evidence epoch 时绑定 `source_gate_attempt_id` + `source_gate_tree_id` 对；该对必须与当前 gate 求值一致才可作为 gate override。Improvement/issue 等无 gate checkpoint 的 interrupt 保持 **pairless**：仍可正常 resume，但**不能**充当 gate override。v4 保持仅 hash 的兼容路径。
+
+## Counterfactual plan-check policy replay（v2）
+
+Specialty Report **当前 writer** 为 schema `"3"`（见下）。`"2"` 报告仍可读，其 `capability_contract_policy.semantics` 为 `counterfactual_plan_check_actions/v2`（拓扑驱动分类）。`counterfactual_plan_check_actions/v1` 与 legacy specialty `schema_version: "1"` **保持可读**，旧文件从不被改写。v1 的历史解释不变：API/E2E 视为 wired，Fuzz/Performance 不能为 `complete`。
+
+每个 **complete** 层行携带恰好三个 scenario，action 顺序固定为 `warn` → `block` → `require_human`：
+
+| scenario 字段 | 说明 |
+|---|---|
+| `action` | `warn` \| `block` \| `require_human` |
+| `policy_digest` | 该 counterfactual 分支所用 policy 快照 digest |
+| `verdict` / `route` / `matched_rule` / `reason` | 冻结 gate 求值结果 |
+| `missing_capabilities` | reviewer 能力缺口（可为空） |
+| `policy_effect` | 闭枚举，见下表 |
+
+**`policy_effect` 闭枚举**：
+
+| 值 | 含义 |
+|---|---|
+| `applied` | 该 action 的 check 失败规则（或同等 reviewer 裁决）决定了 gate 结果 |
+| `no_failed_checks` | 无失败 check；层不适用时三个 scenario 均为 `skip` 且通常为此值 |
+| `shadowed_by_gate_precondition` | 存在失败 check，但更早的 reviewer needs-fix / human / explicit-reject 规则已决定结果 |
+| `shadowed_by_capability_precondition` | 能力前置条件本身是最先决定结果的规则 |
+
+Counterfactual replay 仅在 baseline gate/route 校准通过后运行：冻结 baseline policy 对绑定 raw bytes 的 gate 报告字段必须一致；route 由 `plan_review_route` 推导并与 ledger 激活/跳过事件交叉校验。
+
+## 四层 replay 矩阵（SpecialtyReport v2，semantics v2）
+
+`SpecialtyReportV2.capability_contract_policy` 始终输出 **恰好四行**，layer 顺序固定为 `api` → `e2e` → `fuzz` → `performance`（与 `LAYER_NAMES` / `CASE_TYPES` 一致）。顶层 `integrity` 闭枚举：
+
+| `integrity` | 条件 |
+|---|---|
+| `complete` | `definition_binding` 存在且无任何 `incomplete` 行 |
+| `incomplete` | 缺失/模糊定义绑定，或任一行 `status == incomplete` |
+
+**行级 `status` 闭枚举**（由 pinned 拓扑分类驱动，不是硬编码 wired 集合）：
+
+| status | 含义 |
+|---|---|
+| `complete` | 选中且 fully wired；含 applicability、mechanical checks、evidence digests、三 scenario |
+| `not_selected` | pinned params 下 assurance 分支未选中；不 fabricated scenario |
+| `not_wired` | 选中且 pinned 拓扑为 legacy-unwired；仅在 pinned 定义完整性成功后可用于 legacy v4 Fuzz/Performance；不 fabricated scenario |
+| `incomplete` | 带 `reason_code`（如 `partial_assurance_wiring`、`root_invocation_unbound`、`gate_evidence_drift`、`profile_snapshot_missing`）；无借用 artifact |
+
+层选择来自 pinned assurance graph 的 params-only `when` 谓词（可含 `run_mode` 与 `test_types` 合取），**不是** `test_types` 单独推断。Fully activated 的 v5 拓扑上，被选中的 Fuzz/Performance 只能是 `complete` 或 `incomplete`，**绝不是** `not_wired`。部分接线（任一 activation marker 出现但不完整）→ `incomplete` / `partial_assurance_wiring`，永不降级为 `not_wired`。当前源文件从不改写历史分类；迁移不补造缺失的 ingest/contract/profile 快照或 gate 证据。
+
+## Specialty report v1（仅展示）
+
+`schema_version: "1"` 的 legacy report 可被 `load_specialty_report` 读取并参与 benchmark evidence-row 导出，但：
+
+- **不能**通过 `SpecialtyReportV2` / `SpecialtyReportV3` 校验（无四层矩阵、无 definition binding、无 typed traceability）；
+- Capability/Policy Markdown 仍用 `legacy_api_only` 行展示历史 policy replay；Traceability 区标记 `legacy_unlayered`，**不**生成四个零值 complete layer row；
+- 不得被静默升级为 v2/v3 证据；当前 writer 只写 Specialty Report `"3"`。
+
+## Trace / reconcile / quality / specialty 线缆兼容
+
+本节记录当前 writer 与兼容 reader 的精确版本边界。Python 名 `TraceProjection` / `IssueReconcileStatus` / `QualityGateResult` 仍是 **V1 别名**（只读历史），不是当前 writer 类型。磁盘上的 `inspect/trace-projection.json` 是 **point-in-time** 产物：通过 registry 形状校验不等于 current authority；声称“当前 reconciled projection”的路径必须经 `load_current_reconciled_projection`，对 legacy V1 / digest 漂移返回 typed stale，不得把陈旧文件当 live authority。
+
+### Trace Projection（`inspect/trace-projection.json`，execution batch 同模型）
+
+| | Reader | Current writer |
+|---|---|---|
+| `"1"` | `TraceProjectionV1`（别名 `TraceProjection`） | 否 |
+| `"2"` | `TraceProjectionV2` | 是（`fold_trace` / materializer） |
+
+- Registry 面：`TraceProjectionDocument`（`schema_version` discriminator）；compat=`versioned`。
+- **Legacy missing-version**：顶层 mapping **完全缺少** `schema_version` key 时，loader 仅注入 `"1"` 再走 discriminator。显式 `null`、空字符串、未知版本一律 fail closed。IssueReconcile / QualityGate **不做**同类缺失注入。
+- **V2-only gap codes**（不得出现在 V1）：`failure_analysis_identity_mismatch`、`issues_snapshot_identity_mismatch`、`issue_analysis_failed`、`project_sync_pending`、`issue_reconcile_failed`、`issue_reconciliation_unavailable`。
+- **Freshness**：authoritative loader 要求 concrete V2 且与当前 live reconciled fold 的 change/batch/canonical digest 完全相等；V1 → `legacy_version` stale；source 变化 → typed stale，不自动重写磁盘。
+
+### Issue Reconcile Status（`inspect/issue-reconcile-status.json`）
+
+| | Reader | Current writer |
+|---|---|---|
+| `"1.0"` | `IssueReconcileStatusV1`（别名 `IssueReconcileStatus`）；仅 `completed` \| `failed` | 否 |
+| `"2.0"` | `IssueReconcileStatusV2` | 是 |
+
+V2 形状（三种状态均要求非空 `candidate_digest`）：
+
+| status | `occurrence_count` | `error` |
+|---|---|---|
+| `completed` | 必填且 `>= 0` | 必须 `null` |
+| `failed` | 必须 `null` | 非空 |
+| `pending` | 必须 `null` | 必须 `null` |
+
+V1 可读但只作 legacy fact，不能建立本设计的 current completed/failed/pending authority。
+
+### Quality Gate Result（execution / inspect quality-gate 路径）
+
+| | Reader | Current writer |
+|---|---|---|
+| `"1.0"` | `QualityGateResultV1`（别名 `QualityGateResult`）；无 typed evidence | 否 |
+| `"2.0"` | `QualityGateResultV2` | 是 |
+
+V2 coverage `evidence` 是 typed 联合：
+
+- `kind: "sufficiency"` → 嵌入 `SufficiencyReportV2`（见下）；
+- `kind: "error"` → `error_code ∈ {evidence_projection_missing, policy_error}`。
+
+`aa report generate` 经 concrete document dispatch 读取 V1-only / V2-only 门禁产物，输出 QualityReport 仍为 `"1.1"`；不把磁盘上的 V1 quality 升级为 V2。
+
+### Sufficiency Report `"2.0"`（reporting-only）
+
+`SufficiencyReportV2`（`artifacts/models/sufficiency.py`）绑定：
+
+- `schema_version: "2.0"`、`semantics: "evidence_sufficiency/v2"`；
+- `source_projection_digest` / `source_policy_digest`；
+- Quality success 路径要求 `require_current_batch: true`；
+- 四层 sufficiency join 是 **reporting-only view**：按 `case_id` 关联 verdict，不回写 `TraceProjection`，不携带 policy/clock 进 projection。
+
+### execution / reconciled phase-pair
+
+仅两相：`execution`（执行期事实）与 `reconciled`（在其上增加当前有效的 failure/problem enrichment）。共享 row 身份字段必须一致；允许差异的只有声明的 enrichment 字段。Phase-pair 违反 → specialty collect `projection_phase_pair_mismatch`（incomplete），integrity 不得因 enrichment 而“变好”。
+
+### 三图 settled-path 与 recovery-as-incomplete
+
+`inspect-with-issues` / `issue-analyze` / `issue-reconcile` 凡将 issue 状态视为 settled 的路径，都必须先经 `operation:materialize-trace-projection` 再完成。Typed recovery（analysis failure、project sync pending 等）发布 **当前 batch** 的合法 incomplete V2 projection（稳定 blocking gap，无陈旧 problem links），不得跳过 materialize，也不得把旧 batch 磁盘文件冒充当前 authority。
+
+### Specialty Report `"1"` / `"2"` / `"3"`
+
+| Version | Role |
+|---|---|
+| `"1"` / `"2"` | Legacy readers；evidence-row / render 标 `legacy_unlayered`；无 typed 四层 complete matrix |
+| `"3"` | Current writer：`status` 判别的 complete / incomplete `TraceabilityEvidenceV3` 联合 |
+
+Incomplete V3 使用闭集 `TraceCollectionFailureReason`（含 `reconciled_projection_missing` / `reconciled_projection_stale` 等）。旧 pinned run 无当前 reconciled V2 → 原子写出 incomplete V3 + `reconciled_projection_missing` 并非零退出。旧 recovery-barrier 修出的 V1 projection 经 current loader 判 `legacy_version` → collect 为 `reconciled_projection_stale` incomplete，**从不**升格为 complete v3 matrix。
+
+### Specialty V3 发布收据（Clarification 11）
+
+独立原子文件，非单事务：
+
+1. fresh attempt：先把 sibling receipt 写成 `state="pending"` + 新 `attempt_id`；
+2. 再原子写出 report 字节；
+3. 再把 receipt 换成 `state="committed"`（绑定 change_id、report_sha256、trace_status、capability_integrity）。
+
+- Fresh validate 还要求调用方 expected attempt ID；reuse 校验已记录的非空 attempt 与全部 binding。
+- 同 digest 的旧 committed receipt 不能在 pending 窗口后 ABA 假提交。
+- V3 **必须**有匹配的 committed receipt 才可 reuse；仅有 report、无 receipt / pending / 错配一律拒绝。
+- V1/V2 仅在 sibling receipt 路径 **不存在** 时允许 receiptless 读取；任何 pending/committed/畸形/错配 receipt 都阻断 legacy bypass。
+
+### Cursor evidence-row 十列（Clarification 9）
+
+```text
+change_id|collection_status|reason_code|trace_exit|integrity|gap_count|verify_exit|verdict|blocking|insufficient
+```
+
+`collection_status` ∈ `{raw, complete, incomplete, legacy_unlayered}`。V3 incomplete 上不可用字段写字面量 `unknown`，**从不**用 `0` / `-1` 顶替。无 `--schema-root` 逃生舱。
+
+### 历史 pinned 续跑边界（Clarification 10，修正设计 D7）
+
+- graph / contract / **ingest-catalog** identity 漂移：解析已校验的 pinned execution bundle，**可继续旧拓扑**；本身不抛 `GraphDefinitionChanged`。
+- gate-semantics / profile 不兼容，或 pinned-model 与 current-class schema 不匹配：在依赖定义的 pending-write recovery / planning **之前** fail closed（`GraphDefinitionChanged`）。
+- Recovery barrier 仍是 invocation-local；已成功 task 只 replay 冻结 write-set，不重调 handler。
+- **不**归档历史 Python handler：后续旧拓扑任务只能经与 pinned catalog 证明兼容的 **当前** 代码执行。修出的 V1 artifact 仍是 legacy/stale，不是 current complete 证据。
+
 ## Retro v3 signal analysis 与 Improvement lifecycle
 
 Retro 是**独立入口**（`aa workflow run --entrypoint retro` / `aa retro`），不挂在 full workflow 上。当前 run 只读写 `qa/retro/<retro-id>/`；生产路径不扫描、不迁移、不消费历史 Retro 目录。
@@ -187,6 +421,50 @@ Quality Score 由 CLI **确定性**计算，LLM 不参与。Quality Gate 四态�
 ## 失败分类
 
 `aa report inspect` 把执行失败归入固定分类（规则表数据从 TS 源提取为打包 YAML 规则数据 `assurance_agent/_resources/rules/failure-classification.yaml`，随包分发并有单测对拍）。分类决定该失败是否 `fix_proposal_eligible`（进入 Healing Loop）。可自愈类（如 `locator_failure`、`wait_strategy_failure`、`test_code_error`、条件性 `test_data_failure`）与不可自愈类（如 `assertion_failure`、`business_logic_failure`、`known_product_issue`、`coverage_gap`、`fuzz_*`、`perf_*`）的完整清单见规则数据文件与 README「失败分类速查」。
+
+## Four-layer assurance / v6 runtime evidence
+
+### Semantic schema IDs
+
+| ID | Meaning |
+|---|---|
+| `plan_gate_semantics/v1` | Plan-gate semantics bytes/object |
+| `historical_topology_safety/v1` | Topology-safety semantics |
+| `runtime_commit_safety/v1` | Commit-safety inventory (validators + durable effects) |
+| `selection_normalizer/v1` | Eval selected-layer normalization |
+| `write_policy/v1` | Eval content-bound write policy |
+
+### Six v6 projection fields
+
+v6 roots and children bind all six of:
+
+`gate_semantics_digest`, `gate_semantics_object_id`,
+`topology_safety_semantics_digest`, `topology_safety_semantics_object_id`,
+`commit_safety_semantics_digest`, `commit_safety_semantics_object_id`.
+
+v1–v5 event streams remain parseable/displayable. A topology receipt is **not**
+commit-safety proof. Unbound legacy commit-safety-bearing work blocks with
+`legacy_commit_safety_semantics_unbound`.
+
+### Validators and durable effects
+
+Candidate validators: `generated_files_candidate/v1`, `codegen_fix_candidate/v1`.
+Durable effect kinds: `healing_allocation/v2`, `fixer_proposal_approved/v1`,
+`heal_record_apply/v2`.
+
+Generated-files manifests are authority for selected-test writes; summaries are not.
+
+### Operator exit (D18)
+
+Report-only legacy work may continue. Pending assurance commit work on unbound
+legacy roots stops. The sole audited exit is `aa workflow supersede` with
+actions `rerun-v6` and `stop`. Imported-codegen healing is intentionally narrowed
+(imported codegen roots are not auto-healed).
+
+### Declared-only inputs
+
+Assurance agents run under declared-only isolation: reads come from the
+attempt-bound input snapshot / runtime context, not ambient host ledgers.
 
 ## 维护规则
 

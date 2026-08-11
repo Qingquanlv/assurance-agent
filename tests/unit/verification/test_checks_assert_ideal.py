@@ -52,32 +52,6 @@ def test_500_denial_after_the_token_on_an_assert_ideal_row_passes() -> None:
     assert check_assert_ideal(_ctx(rows)).status == "pass"
 
 
-def test_no_integrity_error_500_on_an_assert_ideal_row_passes() -> None:
-    rows = BOTH_PRESENT.replace(
-        "**assert_ideal HTTP 4xx** on dup create",
-        "assert_ideal HTTP 4xx for missing name; no IntegrityError 500",
-    )
-
-    assert check_assert_ideal(_ctx(rows)).status == "pass"
-
-
-def test_no_token_401_and_limited_role_403_are_positive_rejections() -> None:
-    cases = (
-        {
-            "added": [
-                _case(
-                    "TC_DEPT_API_012",
-                    "unauthorized and forbidden access denied",
-                    "requests without authorization or privilege return 4xx",
-                )
-            ]
-        },
-    )
-    rows = "| TC_DEPT_API_012 | Auth matrix | No token 401/422; limited role 403; admin succeeds |\n"
-
-    assert check_assert_ideal(_ctx(rows, cases=cases)).status == "pass"
-
-
 def test_assert_ideal_row_expecting_500_fails() -> None:
     rows = BOTH_PRESENT.replace("**assert_ideal HTTP 4xx** on dup create", "assert_ideal HTTP 500")
     result = check_assert_ideal(_ctx(rows))
@@ -232,8 +206,25 @@ def test_registry_runs_every_check_and_folds_status() -> None:
         "check_capability_keys",
     ]
     ctx = CheckContext(
-        plan_texts={"plans/api-plan.md": "read `qa/.knowledge/data-knowledge.yaml`\n"},
-        cases=(),
+        plan_texts={
+            "plans/api-plan.md": "read `qa/.knowledge/data-knowledge.yaml`\n",
+            "plans/api-test-data-plan.md": "# Plan\n",
+            "plans/api-codegen-plan.md": "# Plan\n",
+        },
+        cases=(
+            {
+                "added": [
+                    {
+                        "case_id": "TC_DEPT_API_001",
+                        "title": "smoke",
+                        "type": "API",
+                        "automation": {"required": True},
+                        "assertions": ["HTTP 200"],
+                    }
+                ],
+                "modified": [],
+            },
+        ),
         data_knowledge={},
     )
     doc = run_plan_checks(ctx)

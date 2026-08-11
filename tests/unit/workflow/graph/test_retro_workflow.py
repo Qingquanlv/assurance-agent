@@ -20,6 +20,8 @@ runs through the unmodified product code path.
 
 from __future__ import annotations
 
+from typing import cast
+
 import json
 import hashlib
 from datetime import datetime, timedelta, timezone

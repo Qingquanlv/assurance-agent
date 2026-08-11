@@ -1,3 +1,5 @@
+"""case_id extraction lives in evidence/ (sunk from workflow.execution)."""
+
 from assurance_agent.evidence.case_id import canonicalize_case_id, extract_case_id
 
 
@@ -27,3 +29,5 @@ def test_extract_case_id_lookbehind_boundary_rejects_embedded_match() -> None:
     # A preceding alphanumeric char (no separator) must not be treated as a
     # boundary; the id must start right after a non [A-Z0-9] character.
     assert extract_case_id("XTC_MENU_001") == ""
+    assert extract_case_id("XTC_DEPT_API_001") == ""
+    assert extract_case_id("test_xtc_dept_api_001__x") == ""

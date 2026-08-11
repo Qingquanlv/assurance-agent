@@ -35,17 +35,16 @@ from assurance_agent.artifacts.models.issues import (
     ProblemProjection,
     ProblemReviewQueue,
 )
-from assurance_agent.workflow.issues.events import (
-    ChangeIssueEvent,
-    ProblemEvent,
-    read_change_issue_events,
-    read_problem_events,
-)
-from assurance_agent.workflow.issues.projection import (
+from assurance_agent.artifacts.models.issue_events import ChangeIssueEvent, ProblemEvent
+from assurance_agent.evidence.issue_replay import (
     dump_projection,
     project_change_issues,
     project_problems,
     project_review_queue,
+)
+from assurance_agent.workflow.issues.events import (
+    read_change_issue_events,
+    read_problem_events,
 )
 
 

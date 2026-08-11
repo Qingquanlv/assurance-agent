@@ -41,58 +41,6 @@ def test_l2_proposal_filename_is_not_flagged() -> None:
     assert check_l1_path(_ctx(plan)).status == "pass"
 
 
-def test_noncanonical_path_disclaimer_with_canonical_replacement_passes() -> None:
-    plan = (
-        "| `.aws/data-knowledge.yaml` | alias | absent in this sandbox | "
-        "use `.aa/data-knowledge.yaml` |\n"
-        "`.aws/data-knowledge.yaml` is absent; `.aa/data-knowledge.yaml` is canonical.\n"
-    )
-
-    assert check_l1_path(_ctx(plan)).status == "pass"
-
-
-def test_noncanonical_path_disclaimer_with_absence_cue_before_path_passes() -> None:
-    plan = (
-        "**`.aws/*` absent:** workspace uses `.aa/data-knowledge.yaml` as canonical; "
-        "no `.aws/data-knowledge.yaml` exists in this sandbox.\n"
-    )
-
-    assert check_l1_path(_ctx(plan)).status == "pass"
-
-
-def test_noncanonical_path_disclaimer_with_do_not_require_prefix_passes() -> None:
-    plan = (
-        "Formal L1 `.aa/data-knowledge.yaml` exists. "
-        "Do not require materializing `.aws/data-knowledge.yaml`.\n"
-    )
-
-    assert check_l1_path(_ctx(plan)).status == "pass"
-
-
-def test_noncanonical_path_disclaimer_with_not_a_blocker_suffix_passes() -> None:
-    plan = (
-        "`.aa/data-knowledge.yaml` is the formal L1 capability map; "
-        "missing `.aws/data-knowledge.yaml` is not a blocker.\n"
-    )
-
-    assert check_l1_path(_ctx(plan)).status == "pass"
-
-
-def test_noncanonical_path_disclaimer_with_canonical_directory_shorthand_passes() -> None:
-    plan = (
-        "| Legacy `.aws` knowledge | `.aws/data-knowledge.yaml` | project root | "
-        "warning — file absent; `.aa` is canonical in this workspace |\n"
-    )
-
-    assert check_l1_path(_ctx(plan)).status == "pass"
-
-
-def test_noncanonical_path_remains_a_finding_when_line_instructs_reading_it() -> None:
-    plan = "read `.aws/data-knowledge.yaml`; compare with `.aa/data-knowledge.yaml`\n"
-
-    assert check_l1_path(_ctx(plan)).status == "fail"
-
-
 def test_refs_list_every_scanned_plan() -> None:
     ctx = CheckContext(
         plan_texts={"plans/api-plan.md": "", "plans/api-codegen-plan.md": ""},

@@ -14,6 +14,7 @@ glob 相交测试）：read/read 可并行；write/read、write/write 与相同 
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
@@ -216,6 +217,8 @@ class ExecutionContract(BaseModel):
     side_effect_free: bool = False
     reconnect: bool = False
     read_isolation: Literal["declared_only"] | None = None
+    precommit_validator: str | None = None
+    durable_effects: tuple[str, ...] = ()
 
 
 class ExecutionContractCatalog(BaseModel):
@@ -318,7 +321,11 @@ def _validate_catalog_paths(catalog: ExecutionContractCatalog) -> None:
                 )
 
 
-def parse_execution_contracts(yaml_text: str) -> ExecutionContractCatalog:
+def parse_execution_contracts(
+    yaml_text: str,
+    *,
+    effect_registry: object | None = None,
+) -> ExecutionContractCatalog:
     try:
         doc = yaml.safe_load(yaml_text)
     except yaml.YAMLError as exc:
@@ -350,6 +357,8 @@ def parse_execution_contracts(yaml_text: str) -> ExecutionContractCatalog:
             raise ContractError(f"invalid execution contracts: {exc}") from exc
     catalog = ExecutionContractCatalog(contracts=contracts)
     _validate_catalog_paths(catalog)
+    _validate_catalog_precommit_validators(catalog)
+    _validate_catalog_durable_effects(catalog, effect_registry=effect_registry)
     return catalog
 
 
@@ -364,3 +373,53 @@ def load_execution_contracts(project_root: Path, explicit: Path | None = None) -
     if candidate.exists():
         return parse_execution_contracts(candidate.read_text(encoding="utf-8"))
     return parse_execution_contracts(resources.read_text("schemas", "execution-contracts.yaml"))
+
+
+def catalog_from_pinned_contracts(
+    contracts: Sequence[ExecutionContract],
+    *,
+    effect_registry: object | None = None,
+) -> ExecutionContractCatalog:
+    """Validate target uniqueness and resource path safety."""
+    mapping: dict[str, ExecutionContract] = {}
+    for contract in contracts:
+        if contract.target in mapping:
+            raise ContractError(f"duplicate pinned contract target: {contract.target}")
+        mapping[contract.target] = contract
+    catalog = ExecutionContractCatalog(contracts=mapping)
+    _validate_catalog_paths(catalog)
+    _validate_catalog_precommit_validators(catalog)
+    _validate_catalog_durable_effects(catalog, effect_registry=effect_registry)
+    return catalog
+
+
+def _validate_catalog_precommit_validators(catalog: ExecutionContractCatalog) -> None:
+    from assurance_agent.workflow.graph.precommit import (
+        CandidateValidationError,
+        validate_precommit_validator_id,
+    )
+
+    for key, contract in catalog.contracts.items():
+        try:
+            validate_precommit_validator_id(contract.precommit_validator)
+        except CandidateValidationError as exc:
+            raise ContractError(f"contract '{key}': {exc}") from exc
+
+
+def _validate_catalog_durable_effects(
+    catalog: ExecutionContractCatalog,
+    *,
+    effect_registry: object | None = None,
+) -> None:
+    from assurance_agent.workflow.graph.durable_effects import (
+        DurableEffectValidationError,
+        EffectRegistry,
+        validate_durable_effect_kinds,
+    )
+
+    registry = effect_registry if isinstance(effect_registry, EffectRegistry) else None
+    for key, contract in catalog.contracts.items():
+        try:
+            validate_durable_effect_kinds(contract.durable_effects, registry=registry)
+        except DurableEffectValidationError as exc:
+            raise ContractError(f"contract '{key}': {exc}") from exc

@@ -111,6 +111,23 @@ class TargetedWorkspaceDrift(WorkspaceError):
 
 
 # ---------------------------------------------------------------------------
+# 公开 tree 替换结果
+
+
+@dataclass(frozen=True, slots=True)
+class TreePathRevision:
+    logical_path: str
+    before_sha256: str
+    after_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class TreeFileRevision:
+    target_tree_id: str
+    paths: tuple[TreePathRevision, ...]
+
+
+# ---------------------------------------------------------------------------
 # 内部模型与规范 JSON
 
 
@@ -353,6 +370,13 @@ def _same_file_content(left: _Entry | None, right: _Entry | None) -> bool:
     )
 
 
+def _path_matches_entry(path: Path, entry: _Entry) -> bool:
+    """Whether on-disk bytes match a tree/write-set file entry."""
+    if entry.kind != "file" or not path.is_file():
+        return False
+    return hashlib.sha256(path.read_bytes()).hexdigest() == entry.sha256
+
+
 def _prune_empty_parents(path: Path, stop: Path) -> None:
     parent = path.parent
     while parent != stop and _is_within(parent, stop):
@@ -405,8 +429,8 @@ def _capture_synchronized_entries(
     synchronized: Sequence[ResourcePath],
     *,
     active_change_dir: Path | None = None,
-) -> dict[str, _Entry]:
-    captured: dict[str, _Entry] = {}
+) -> dict[str, tuple[_Entry, bytes]]:
+    captured: dict[str, tuple[_Entry, bytes]] = {}
     for path in synchronized:
         rel_pattern = _physical_for(roots, path)
         if path.segments[-1] == "**":
@@ -421,12 +445,20 @@ def _capture_synchronized_entries(
             if not directory.is_dir():
                 raise WorkspaceError(f"synchronized prefix is not a directory: {path.pattern}")
             for child_rel, entry in _walk(directory).items():
-                captured[f"{directory_rel}/{child_rel}"] = entry
+                full_rel = f"{directory_rel}/{child_rel}"
+                source = project_root / full_rel
+                if entry.kind == "file":
+                    data = source.read_bytes()
+                else:
+                    data = os.readlink(source).encode("utf-8")
+                if hashlib.sha256(data).hexdigest() != entry.sha256:
+                    raise WorkspaceError(f"synchronized path changed during capture: {full_rel}")
+                captured[full_rel] = (entry, data)
             # Ledger JSONL is basename-excluded from _walk; include it for live overlay.
             events_rel = f"{directory_rel}/events.jsonl" if directory_rel else "events.jsonl"
-            events_entry = _entry_at(project_root, events_rel)
-            if events_entry is not None:
-                captured[events_rel] = events_entry
+            events_captured = _entry_and_bytes_at(project_root, events_rel)
+            if events_captured is not None:
+                captured[events_rel] = events_captured
             # The normal tree walk excludes every events.jsonl basename because
             # the active Change coordinator mutates its ledger during execution.
             # A synchronized Retro snapshot still needs immutable sibling Change
@@ -440,13 +472,13 @@ def _capture_synchronized_entries(
                         if active is not None and ledger.resolve() == (active / suffix).resolve():
                             continue
                         ledger_rel = ledger.relative_to(project_root).as_posix()
-                        ledger_entry = _entry_at(project_root, ledger_rel)
-                        if ledger_entry is not None:
-                            captured[ledger_rel] = ledger_entry
+                        ledger_captured = _entry_and_bytes_at(project_root, ledger_rel)
+                        if ledger_captured is not None:
+                            captured[ledger_rel] = ledger_captured
             continue
-        entry = _entry_at(project_root, rel_pattern)
-        if entry is not None:
-            captured[rel_pattern] = entry
+        file_captured = _entry_and_bytes_at(project_root, rel_pattern)
+        if file_captured is not None:
+            captured[rel_pattern] = file_captured
     return captured
 
 
@@ -483,25 +515,32 @@ def _synchronized_ledger_entries(
     return found
 
 
-def _entry_at(project_root: Path, rel: str) -> _Entry | None:
-    # Resolve the root so macOS ``/var`` → ``/private/var`` does not false-positive
-    # as an escape when compared against ``target.parent.resolve()``.
-    project_root = project_root.resolve()
-    target = project_root / rel
-    if not _is_within(target.parent.resolve(), project_root):
+def _entry_and_bytes_at(project_root: Path, rel: str) -> tuple[_Entry, bytes] | None:
+    root = project_root.resolve()
+    target = root / rel
+    if not _is_within(target.parent.resolve(), root):
         raise WorkspaceError(f"targeted path escapes project root: {rel}")
     if target.is_symlink():
         link_target = os.readlink(target)
         if not _is_within((target.parent / link_target).resolve(), project_root):
             raise WorkspaceError(f"targeted symlink escapes project root: {rel}")
-        return _Entry(kind="symlink", sha256=hashlib.sha256(link_target.encode()).hexdigest())
+        data = link_target.encode("utf-8")
+        return _Entry(kind="symlink", sha256=hashlib.sha256(data).hexdigest()), data
     if not target.exists():
         return None
     if not target.is_file():
         raise WorkspaceError(f"targeted write-set path is not a file: {rel}")
     data = target.read_bytes()
     executable = bool(target.stat(follow_symlinks=False).st_mode & 0o100)
-    return _Entry(kind="file", sha256=hashlib.sha256(data).hexdigest(), executable=executable)
+    return (
+        _Entry(kind="file", sha256=hashlib.sha256(data).hexdigest(), executable=executable),
+        data,
+    )
+
+
+def _entry_at(project_root: Path, rel: str) -> _Entry | None:
+    captured = _entry_and_bytes_at(project_root, rel)
+    return captured[0] if captured is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -527,6 +566,9 @@ class WriteSet(BaseModel):
     outputs_sha256: dict[str, str]
     synchronized_paths: tuple[str, ...] = ()
     project_exclusive_tokens: tuple[str, ...] = ()
+    # Present on current freezes and covered by write_set_id. Historical write
+    # sets may omit it; current D15 evidence validation requires the map.
+    base_tree_roots: dict[str, str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -574,6 +616,25 @@ class TreeStore:
 
     # ---- tree capture / materialize ----
 
+    def _change_dir_for_project(self, project_root: Path) -> Path:
+        """Resolve the active change directory under ``project_root``.
+
+        Root invocations capture/apply against the host SUT where
+        ``self._change_dir`` is a real subpath. Nested ``run_child`` contexts
+        bind ``project_root`` to a task workspace that mirrors
+        ``qa/changes/<change-id>/`` while the TreeStore still points at the host
+        ledger — use that mirror so materialization repair can see committed
+        change outputs after a crash mid-wrapper.
+        """
+        project_root = project_root.resolve()
+        host = self._change_dir.resolve()
+        if _is_within(host, project_root):
+            return host
+        mirrored = project_root / "qa" / "changes" / self._change_dir.name
+        if mirrored.is_dir():
+            return mirrored.resolve()
+        return host
+
     def _roots(self, project_root: Path, repo_root: Path | None) -> dict[str, str]:
         def prefix(path: Path) -> str:
             resolved = path.resolve()
@@ -585,7 +646,7 @@ class TreeStore:
                 raise WorkspaceError(f"logical root escapes project root: {path}") from exc
 
         return {
-            "change": prefix(self._change_dir),
+            "change": prefix(self._change_dir_for_project(project_root)),
             "project": ".",
             "repo": prefix(repo_root) if repo_root is not None else ".",
         }
@@ -596,7 +657,7 @@ class TreeStore:
         if not project_root.is_dir():
             raise WorkspaceError(f"project root is not a directory: {project_root}")
         roots = self._roots(project_root, repo_root)
-        entries = _walk(project_root, keep_change_dir=self._change_dir)
+        entries = _walk(project_root, keep_change_dir=self._change_dir_for_project(project_root))
         for rel, entry in entries.items():
             if entry.kind == "file":
                 data = (project_root / rel).read_bytes()
@@ -612,6 +673,10 @@ class TreeStore:
 
     def _load_tree(self, tree_id: str) -> _TreeManifest:
         return _parse_tree(self._read_object(tree_id))
+
+    def tree_roots(self, tree_id: str) -> Mapping[str, str]:
+        """Read-only logical-root → physical-prefix map for a pinned tree."""
+        return dict(sorted(self._load_tree(tree_id).roots.items()))
 
     def _read_tree_bytes(
         self,
@@ -664,6 +729,61 @@ class TreeStore:
             return self._read_tree_bytes(manifest, rel)
         except FileNotFoundError as exc:
             raise FileNotFoundError(logical_path) from exc
+
+    def replace_tree_files(
+        self,
+        base_tree_id: str,
+        replacements: Mapping[str, bytes],
+    ) -> TreeFileRevision:
+        """Return a new tree by replacing existing regular files only."""
+        if not replacements:
+            raise WorkspaceError("manual_plan_revision_noop: empty replacements")
+
+        manifest = self._load_tree(base_tree_id)
+        resolved: dict[str, tuple[str, bytes, _Entry]] = {}
+        for raw_path, data in replacements.items():
+            logical = ResourcePath.parse(raw_path)
+            canonical = f"{logical.root}:{logical.pattern}"
+            if canonical in resolved:
+                raise WorkspaceError(f"duplicate canonical path: {canonical}")
+            physical = _physical_for(manifest.roots, logical)
+            entry = manifest.entries.get(physical)
+            if entry is None:
+                raise WorkspaceError(f"replacement path missing from tree: {canonical}")
+            if entry.kind != "file":
+                raise WorkspaceError(f"replacement path is a symlink, not a regular file: {canonical}")
+            resolved[canonical] = (physical, data, entry)
+
+        path_revisions: list[TreePathRevision] = []
+        new_entries = dict(manifest.entries)
+        any_changed = False
+        for canonical in sorted(resolved):
+            physical, data, entry = resolved[canonical]
+            after = hashlib.sha256(data).hexdigest()
+            path_revisions.append(
+                TreePathRevision(
+                    logical_path=canonical,
+                    before_sha256=entry.sha256,
+                    after_sha256=after,
+                )
+            )
+            if after == entry.sha256:
+                continue
+            any_changed = True
+            self._write_object(after, data)
+            new_entries[physical] = _Entry(
+                kind="file",
+                sha256=after,
+                executable=entry.executable,
+            )
+
+        if not any_changed:
+            raise WorkspaceError("manual_plan_revision_noop")
+
+        raw = _canonical_json(_tree_payload(manifest.roots, new_entries))
+        target_tree_id = hashlib.sha256(raw).hexdigest()
+        self._write_object(target_tree_id, raw)
+        return TreeFileRevision(target_tree_id=target_tree_id, paths=tuple(path_revisions))
 
     def read_json(self, tree_id: str, logical_path: str) -> ResolvedArtifact:
         """Read a JSON artifact from a committed tree by logical path (change:/project:/repo:)."""
@@ -718,8 +838,19 @@ class TreeStore:
         self._write_object(filtered_id, raw)
         return filtered_id
 
-    def materialize(self, tree_id: str, dest: Path) -> None:
-        """把 tree 物化到空目录 ``dest``，并写入 ``.graph-runtime/tree.json`` 元数据。"""
+    def materialize(
+        self,
+        tree_id: str,
+        dest: Path,
+        *,
+        tree_manifest_path: Path | None = None,
+    ) -> Path:
+        """把 tree 物化到空目录 ``dest``，并写入 tree manifest 元数据。
+
+        When ``tree_manifest_path`` is provided the control manifest is written
+        there (TaskWorkspace sidecar). Otherwise the legacy in-root location
+        ``.graph-runtime/tree.json`` is retained for non-sidecar callers.
+        """
         manifest = self._load_tree(tree_id)
         dest = dest.resolve()
         dest.mkdir(parents=True, exist_ok=True)
@@ -738,9 +869,14 @@ class TreeStore:
                 os.symlink(link_target, target)
             else:
                 _install_file(target, data, entry.executable)
-        manifest_path = dest / _TREE_MANIFEST_RELPATH
+        manifest_path = (
+            tree_manifest_path.resolve()
+            if tree_manifest_path is not None
+            else (dest / _TREE_MANIFEST_RELPATH)
+        )
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         manifest_path.write_bytes(manifest.raw)
+        return manifest_path
 
     # ---- write-set freeze / load ----
 
@@ -808,6 +944,12 @@ class TreeStore:
             ):
                 raise WorkspaceError(f"synchronized write outside declared prefixes: {logical}")
             if not _is_authorized(base.roots, rel, claims):
+                # Out-of-claim deletions are not publishable. Nested resume repair
+                # may drop sibling change: files from a parent sandbox that was
+                # prepared from a newer root tree; omitting them from the write-set
+                # keeps the merge-base copy instead of failing the wrapper freeze.
+                if after is None and before is not None:
+                    continue
                 raise WorkspaceError(f"forbidden write outside authorization_writes: {logical}")
             if after is None:
                 entries.append(
@@ -835,8 +977,10 @@ class TreeStore:
                 )
             )
         outputs_sha256 = self._freeze_outputs(base.roots, current, outputs, workspace=workspace)
+        base_tree_roots = {name: _assert_safe_prefix(prefix) for name, prefix in sorted(base.roots.items())}
         payload: dict[str, object] = {
             "base_tree_id": workspace.base_tree_id,
+            "base_tree_roots": base_tree_roots,
             "entries": [entry.model_dump(mode="json") for entry in entries],
             "kind": "write_set",
             "outputs_sha256": outputs_sha256,
@@ -864,6 +1008,7 @@ class TreeStore:
                     if claims.synchronized and token.startswith("project:")
                 )
             ),
+            base_tree_roots=base_tree_roots,
         )
 
     def _freeze_outputs(
@@ -916,33 +1061,18 @@ class TreeStore:
             raise WorkspaceError(f"invalid write-set manifest: {write_set_id}")
         fields = {k: v for k, v in payload.items() if k not in ("kind", "version")}
         try:
-            return WriteSet.model_validate({**fields, "write_set_id": write_set_id})
+            write_set = WriteSet.model_validate({**fields, "write_set_id": write_set_id})
         except ValueError as exc:
             raise WorkspaceError(f"invalid write-set manifest {write_set_id}: {exc}") from exc
-
-    def read_frozen_write_set_bytes(self, write_set_id: str, logical_path: str) -> bytes:
-        """Read one logical file exactly as captured by a frozen write-set."""
-        write_set = self.load_write_set(write_set_id)
-        base = self._load_tree(write_set.base_tree_id)
-        requested_rel = _physical_for(base.roots, ResourcePath.parse(logical_path))
-        matching = [
-            entry
-            for entry in write_set.entries
-            if _physical_for(base.roots, ResourcePath.parse(entry.logical_path)) == requested_rel
-        ]
-        if len(matching) > 1:
-            raise WorkspaceError(f"write-set contains duplicate physical path: {logical_path}")
-        if not matching:
-            try:
-                return self._read_tree_bytes(base, requested_rel)
-            except FileNotFoundError as exc:
-                raise FileNotFoundError(logical_path) from exc
-        entry = matching[0]
-        if entry.operation == "delete":
-            raise FileNotFoundError(logical_path)
-        if entry.after_sha256 is None or entry.blob_sha256 is None or entry.after_sha256 != entry.blob_sha256:
-            raise WorkspaceError(f"write-set file object is inconsistent: {logical_path}")
-        return self._read_object(entry.blob_sha256)
+        if write_set.base_tree_roots is not None:
+            expected = dict(self.tree_roots(write_set.base_tree_id))
+            actual = {
+                name: _assert_safe_prefix(prefix)
+                for name, prefix in sorted(write_set.base_tree_roots.items())
+            }
+            if actual != expected:
+                raise WorkspaceError(f"write-set base_tree_roots disagree with base_tree_id: {write_set_id}")
+        return write_set
 
     # ---- Update：确定性合并 + canonical 幂等物化 ----
 
@@ -989,6 +1119,52 @@ class TreeStore:
         self._write_object(target_tree_id, raw)
         return target_tree_id
 
+    def overlay_synchronized_paths_many(
+        self,
+        tree_ids: Sequence[str],
+        project_root: Path,
+        paths: Sequence[ResourcePath],
+    ) -> tuple[str, ...]:
+        """Replace declared synchronized paths in every tree from one live capture."""
+        synchronized = _validated_synchronized_paths(paths)
+        if not synchronized:
+            return tuple(tree_ids)
+        project_root = project_root.resolve()
+        if not project_root.is_dir():
+            raise WorkspaceError(f"project root is not a directory: {project_root}")
+        if not tree_ids:
+            return tuple(tree_ids)
+        trees = [self._load_tree(tree_id) for tree_id in tree_ids]
+        roots = trees[0].roots
+        for tree in trees[1:]:
+            if tree.roots != roots:
+                raise WorkspaceError("supplied trees must share the same logical-root mapping")
+        live = _capture_synchronized_entries(
+            project_root,
+            roots,
+            synchronized,
+            active_change_dir=self._change_dir,
+        )
+        live_entries = {rel: entry for rel, (entry, _data) in live.items()}
+        for _rel, (entry, data) in live.items():
+            self._write_object(entry.sha256, data)
+        overlay_ids: list[str] = []
+        for base in trees:
+            entries = dict(base.entries)
+            for rel in sorted(set(base.entries) | set(live_entries)):
+                if not _matches_synchronized_path(base.roots, rel, synchronized):
+                    continue
+                current = live_entries.get(rel)
+                if current is None:
+                    entries.pop(rel, None)
+                    continue
+                entries[rel] = current
+            raw = _canonical_json(_tree_payload(base.roots, entries))
+            overlay_tree_id = hashlib.sha256(raw).hexdigest()
+            self._write_object(overlay_tree_id, raw)
+            overlay_ids.append(overlay_tree_id)
+        return tuple(overlay_ids)
+
     def overlay_synchronized_paths(
         self,
         base_tree_id: str,
@@ -996,36 +1172,11 @@ class TreeStore:
         paths: Sequence[ResourcePath],
     ) -> str:
         """Replace only declared synchronized paths in ``base_tree_id`` from the live root."""
-        synchronized = _validated_synchronized_paths(paths)
-        if not synchronized:
-            return base_tree_id
-        project_root = project_root.resolve()
-        if not project_root.is_dir():
-            raise WorkspaceError(f"project root is not a directory: {project_root}")
-        base = self._load_tree(base_tree_id)
-        live = _capture_synchronized_entries(
+        (overlay_tree_id,) = self.overlay_synchronized_paths_many(
+            (base_tree_id,),
             project_root,
-            base.roots,
-            synchronized,
-            active_change_dir=self._change_dir,
+            paths,
         )
-        entries = dict(base.entries)
-        for rel in sorted(set(base.entries) | set(live)):
-            if not _matches_synchronized_path(base.roots, rel, synchronized):
-                continue
-            current = live.get(rel)
-            if current is None:
-                entries.pop(rel, None)
-                continue
-            source = project_root / rel
-            data = source.read_bytes() if current.kind == "file" else os.readlink(source).encode("utf-8")
-            if hashlib.sha256(data).hexdigest() != current.sha256:
-                raise WorkspaceError(f"synchronized path changed during overlay: {rel}")
-            self._write_object(current.sha256, data)
-            entries[rel] = current
-        raw = _canonical_json(_tree_payload(base.roots, entries))
-        overlay_tree_id = hashlib.sha256(raw).hexdigest()
-        self._write_object(overlay_tree_id, raw)
         return overlay_tree_id
 
     def apply_write_sets_to_synchronized_paths(
@@ -1108,6 +1259,17 @@ class TreeStore:
                     writes.append((rel, wanted))
                     continue
                 if actual != before:
+                    # Nested materialization repair can leave unexpected change:
+                    # bytes in a parent task workspace before publication replay.
+                    # Committed write-set adds under change: are authoritative.
+                    if (
+                        before is None
+                        and wanted is not None
+                        and logical.root == "change"
+                        and entry.operation != "delete"
+                    ):
+                        writes.append((rel, wanted))
+                        continue
                     raise TargetedWorkspaceDrift(
                         f"canonical workspace drift at targeted path {entry.logical_path}"
                     )
@@ -1123,91 +1285,29 @@ class TreeStore:
             victim.unlink(missing_ok=True)
             _prune_empty_parents(victim, project_root)
 
-    def apply_tree(self, project_root: Path, target_tree_id: str, *, base_tree_id: str) -> None:
-        """把 canonical root 从 base tree 幂等推进到 target tree。
-
-        先整体验证：任何落在 ``{base, target}`` 之外的状态都是 canonical 漂移，
-        fail closed 且不触碰磁盘。之后写 entry 用 temp-file + ``os.replace``、
-        delete 最后执行；partial apply 后重放同一 target 必收敛。
-        """
-        project_root = project_root.resolve()
-        base = self._load_tree(base_tree_id)
-        target = self._load_tree(target_tree_id)
-        current = _walk(project_root, keep_change_dir=self._change_dir)
-        # 本 change 目录（qa/changes/<id>/）是 runtime 独占产出区：落在其中的
-        # untracked 路径通常是 agent 把声明产物用绝对路径直写进 canonical（而非
-        # 其 task 沙箱）留下的越界残留。此类残留由重跑节点重新生成、只经受控
-        # write-set 提升，故 resume 修复时清理而非以 canonical drift 阻断；change
-        # 目录之外的 untracked 路径仍是真实源码漂移，一律 fail closed。
-        resolved_change = self._change_dir.resolve()
-        change_prefix: str | None = None
-        if _is_within(resolved_change, project_root):
-            change_prefix = resolved_change.relative_to(project_root).as_posix()
-        writes: list[tuple[str, _Entry]] = []
-        deletes: list[str] = []
-        change_dir_strays: list[str] = []
-        for rel in sorted(set(base.entries) | set(target.entries)):
-            if _is_excluded_rel(rel):
-                continue
-            before = base.entries.get(rel)
-            wanted = target.entries.get(rel)
-            actual = current.get(rel)
-            if before == wanted:
-                if actual != before:
-                    # ``_walk(..., keep_change_dir=...)`` intentionally omits
-                    # sibling Change trees. A synchronized read snapshot may
-                    # carry those immutable entries through the committed tree;
-                    # unchanged siblings are not canonical drift merely because
-                    # the ordinary walker does not revisit them.
-                    if (
-                        actual is None
-                        and change_prefix is not None
-                        and rel.startswith("qa/changes/")
-                        and rel != change_prefix
-                        and not rel.startswith(f"{change_prefix}/")
-                    ):
-                        continue
-                    # Retro runs and Improvement delivery are independent,
-                    # runtime-managed namespaces. A sibling workflow may
-                    # legitimately advance them after this invocation pinned
-                    # its base tree. Preserve that live value when this tree
-                    # edge leaves the path unchanged; if the edge also changes
-                    # the path, the normal conflict check below still fails
-                    # closed.
-                    if _is_concurrent_runtime_namespace_rel(rel):
-                        continue
-                    raise WorkspaceError(f"canonical workspace drift at {rel}")
-                continue
-            if actual == wanted:
-                continue  # 已物化（重放/幂等）
-            if _same_file_content(actual, wanted):
-                assert wanted is not None
-                writes.append((rel, wanted))
-                continue
-            if actual != before:
-                raise WorkspaceError(f"canonical workspace drift at {rel}")
-            if wanted is None:
-                deletes.append(rel)
-            else:
-                if wanted.kind != "file":
-                    raise WorkspaceError(f"cannot materialize non-file entry: {rel}")
-                writes.append((rel, wanted))
-        for rel in sorted(set(current) - set(base.entries) - set(target.entries)):
-            if _is_excluded_rel(rel):
-                continue
-            if change_prefix is not None and (rel == change_prefix or rel.startswith(f"{change_prefix}/")):
-                change_dir_strays.append(rel)
-                continue
-            if _is_concurrent_runtime_namespace_rel(rel):
-                continue
-            raise WorkspaceError(f"canonical workspace drift: untracked path {rel}")
-
-        for rel, entry in writes:
-            _install_file(project_root / rel, self._read_object(entry.sha256), entry.executable)
-        for rel in deletes + change_dir_strays:
-            victim = project_root / rel
-            victim.unlink(missing_ok=True)
-            _prune_empty_parents(victim, project_root)
+    def read_frozen_write_set_bytes(self, write_set_id: str, logical_path: str) -> bytes:
+        """Read one logical file exactly as captured by a frozen write-set."""
+        write_set = self.load_write_set(write_set_id)
+        base = self._load_tree(write_set.base_tree_id)
+        requested_rel = _physical_for(base.roots, ResourcePath.parse(logical_path))
+        matching = [
+            entry
+            for entry in write_set.entries
+            if _physical_for(base.roots, ResourcePath.parse(entry.logical_path)) == requested_rel
+        ]
+        if len(matching) > 1:
+            raise WorkspaceError(f"write-set contains duplicate physical path: {logical_path}")
+        if not matching:
+            try:
+                return self._read_tree_bytes(base, requested_rel)
+            except FileNotFoundError as exc:
+                raise FileNotFoundError(logical_path) from exc
+        entry = matching[0]
+        if entry.operation == "delete":
+            raise FileNotFoundError(logical_path)
+        if entry.after_sha256 is None or entry.blob_sha256 is None or entry.after_sha256 != entry.blob_sha256:
+            raise WorkspaceError(f"write-set file object is inconsistent: {logical_path}")
+        return self._read_object(entry.blob_sha256)
 
     def apply_tree_delta(
         self,
@@ -1288,6 +1388,128 @@ class TreeStore:
         for rel, wanted in writes:
             _install_file(project_root / rel, self._read_object(wanted.sha256), wanted.executable)
         for rel in deletes:
+            victim = project_root / rel
+            victim.unlink(missing_ok=True)
+            _prune_empty_parents(victim, project_root)
+
+
+    def apply_tree(
+        self,
+        project_root: Path,
+        target_tree_id: str,
+        *,
+        base_tree_id: str,
+        restore_change_drift: bool = False,
+    ) -> None:
+        """把 canonical root 从 base tree 幂等推进到 target tree。
+
+        先整体验证：任何落在 ``{base, target}`` 之外的状态都是 canonical 漂移，
+        fail closed 且不触碰磁盘。之后写 entry 用 temp-file + ``os.replace``、
+        delete 最后执行；partial apply 后重放同一 target 必收敛。
+
+        ``restore_change_drift`` is for ordinary materialization repair only:
+        nested task-workspace resume may leave stale ``change:`` bytes that
+        differ from the committed tree. Repair restores those paths; normal
+        commit-time apply stays fail-closed.
+        """
+        project_root = project_root.resolve()
+        base = self._load_tree(base_tree_id)
+        target = self._load_tree(target_tree_id)
+        active_change = self._change_dir_for_project(project_root)
+        current = _walk(project_root, keep_change_dir=active_change)
+        # 本 change 目录（qa/changes/<id>/）是 runtime 独占产出区：落在其中的
+        # untracked 路径通常是 agent 把声明产物用绝对路径直写进 canonical（而非
+        # 其 task 沙箱）留下的越界残留。此类残留由重跑节点重新生成、只经受控
+        # write-set 提升，故 resume 修复时清理而非以 canonical drift 阻断；change
+        # 目录之外的 untracked 路径仍是真实源码漂移，一律 fail closed。
+        resolved_change = active_change.resolve()
+        change_prefix: str | None = None
+        if _is_within(resolved_change, project_root):
+            change_prefix = resolved_change.relative_to(project_root).as_posix()
+
+        def _under_change(rel: str) -> bool:
+            return change_prefix is not None and (rel == change_prefix or rel.startswith(f"{change_prefix}/"))
+
+        writes: list[tuple[str, _Entry]] = []
+        deletes: list[str] = []
+        change_dir_strays: list[str] = []
+        for rel in sorted(set(base.entries) | set(target.entries)):
+            if _is_excluded_rel(rel):
+                continue
+            before = base.entries.get(rel)
+            wanted = target.entries.get(rel)
+            actual = current.get(rel)
+            if before == wanted:
+                if actual != before:
+                    # ``_walk(..., keep_change_dir=...)`` intentionally omits
+                    # sibling Change trees. A synchronized read snapshot may
+                    # carry those immutable entries through the committed tree;
+                    # unchanged siblings are not canonical drift merely because
+                    # the ordinary walker does not revisit them.
+                    if (
+                        actual is None
+                        and change_prefix is not None
+                        and rel.startswith("qa/changes/")
+                        and rel != change_prefix
+                        and not rel.startswith(f"{change_prefix}/")
+                    ):
+                        continue
+                    # Retro runs and Improvement delivery are independent,
+                    # runtime-managed namespaces. A sibling workflow may
+                    # legitimately advance them after this invocation pinned
+                    # its base tree. Preserve that live value when this tree
+                    # edge leaves the path unchanged; if the edge also changes
+                    # the path, the normal conflict check below still fails
+                    # closed.
+                    if _is_concurrent_runtime_namespace_rel(rel):
+                        continue
+                    if before is not None and actual is None:
+                        writes.append((rel, before))
+                        continue
+                    if before is not None and _path_matches_entry(project_root / rel, before):
+                        continue
+                    if restore_change_drift and before is not None and _under_change(rel):
+                        writes.append((rel, before))
+                        continue
+                    raise WorkspaceError(f"canonical workspace drift at {rel}")
+                continue
+            if actual == wanted:
+                continue  # 已物化（重放/幂等）
+            if _same_file_content(actual, wanted):
+                assert wanted is not None
+                writes.append((rel, wanted))
+                continue
+            if actual != before:
+                if wanted is not None and _path_matches_entry(project_root / rel, wanted):
+                    continue
+                if restore_change_drift and _under_change(rel):
+                    if wanted is None:
+                        deletes.append(rel)
+                    else:
+                        if wanted.kind != "file":
+                            raise WorkspaceError(f"cannot materialize non-file entry: {rel}")
+                        writes.append((rel, wanted))
+                    continue
+                raise WorkspaceError(f"canonical workspace drift at {rel}")
+            if wanted is None:
+                deletes.append(rel)
+            else:
+                if wanted.kind != "file":
+                    raise WorkspaceError(f"cannot materialize non-file entry: {rel}")
+                writes.append((rel, wanted))
+        for rel in sorted(set(current) - set(base.entries) - set(target.entries)):
+            if _is_excluded_rel(rel):
+                continue
+            if change_prefix is not None and (rel == change_prefix or rel.startswith(f"{change_prefix}/")):
+                change_dir_strays.append(rel)
+                continue
+            if _is_concurrent_runtime_namespace_rel(rel):
+                continue
+            raise WorkspaceError(f"canonical workspace drift: untracked path {rel}")
+
+        for rel, entry in writes:
+            _install_file(project_root / rel, self._read_object(entry.sha256), entry.executable)
+        for rel in deletes + change_dir_strays:
             victim = project_root / rel
             victim.unlink(missing_ok=True)
             _prune_empty_parents(victim, project_root)
@@ -1426,6 +1648,7 @@ def _is_omitted_retro_sibling(
     return run_id not in claimed_retro_ids and run_id not in ("*", "**")
 
 
+
 def _is_concurrent_runtime_namespace_rel(rel: str) -> bool:
     """Paths owned by independent runtime workflows, not product source.
 
@@ -1459,9 +1682,13 @@ class TaskWorkspace:
     change_dir: Path
     base_tree_id: str
     materialized_tree_id: str | None = None
+    tree_manifest_path: Path | None = None
+    sidecar_root: Path | None = None
 
     def cleanup(self) -> None:
         shutil.rmtree(self.root, ignore_errors=True)
+        if self.sidecar_root is not None:
+            shutil.rmtree(self.sidecar_root, ignore_errors=True)
 
     @classmethod
     def from_materialized_root(
@@ -1470,13 +1697,20 @@ class TaskWorkspace:
         root: Path,
         base_tree_id: str,
         materialized_tree_id: str | None = None,
+        *,
+        tree_manifest_path: Path | None = None,
+        sidecar_root: Path | None = None,
     ) -> "TaskWorkspace":
         """从物化 root 的 tree manifest 解析逻辑 project/repo/change root。
 
-        manifest 缺失、root 未声明、root 目录不存在或解析到物化 root 之外，
-        一律拒绝。
+        Prefer an explicit sidecar ``tree_manifest_path``. Legacy callers may omit
+        it and fall back to ``root/.graph-runtime/tree.json``.
         """
-        manifest_path = root / _TREE_MANIFEST_RELPATH
+        manifest_path = (
+            tree_manifest_path.resolve()
+            if tree_manifest_path is not None
+            else (root / _TREE_MANIFEST_RELPATH)
+        )
         try:
             payload = json.loads(manifest_path.read_bytes())
         except (OSError, json.JSONDecodeError) as exc:
@@ -1505,6 +1739,8 @@ class TaskWorkspace:
             change_dir=resolve_logical("change"),
             base_tree_id=base_tree_id,
             materialized_tree_id=materialized_tree_id,
+            tree_manifest_path=manifest_path,
+            sidecar_root=sidecar_root.resolve() if sidecar_root is not None else None,
         )
 
 
@@ -1517,12 +1753,17 @@ class WorkspaceBackend:
     def __init__(self, change_dir: Path) -> None:
         self._tasks_root = change_dir / _TASKS_RELPATH
 
+    def sidecar_root_for(self, task_id: str) -> Path:
+        _assert_safe_task_id(task_id)
+        return self._tasks_root.parent / "task-sidecars" / task_id
+
     def create(
         self,
         *,
         task_id: str,
         base_tree_id: str,
         store: TreeStore,
+        sidecar_root: Path | None = None,
         side_effect_free: bool = False,
         claims: ResourceClaims | None = None,
         declared_reads_only: bool = False,
@@ -1534,6 +1775,10 @@ class WorkspaceBackend:
         if root.exists():
             shutil.rmtree(root)
         root.mkdir(parents=True)
+        resolved_sidecar = (sidecar_root or self.sidecar_root_for(task_id)).resolve()
+        if resolved_sidecar.exists():
+            shutil.rmtree(resolved_sidecar)
+        resolved_sidecar.mkdir(parents=True)
         # Materialize a sibling-omitted view when claims pin a Retro run, but
         # keep freeze/merge base_tree_id on the full overlay/invocation tree.
         materialize_tree = (
@@ -1546,14 +1791,24 @@ class WorkspaceBackend:
             if claims is not None
             else base_tree_id
         )
-        store.materialize(materialize_tree, root)
-        if initialize_git:
+        # Declared-only workspaces always keep tree-control metadata in the
+        # sidecar. Legacy modes may still request convenience Git, but the
+        # manifest itself lives outside the agent-visible project root.
+        manifest_path = store.materialize(
+            materialize_tree,
+            root,
+            tree_manifest_path=resolved_sidecar / "tree.json",
+        )
+        # Declared-only isolation forbids convenience .git inside the agent root.
+        if initialize_git and not declared_reads_only:
             self._init_convenience_git(root, side_effect_free=side_effect_free)
         return TaskWorkspace.from_materialized_root(
             task_id,
             root,
             base_tree_id,
             materialized_tree_id=materialize_tree,
+            tree_manifest_path=manifest_path,
+            sidecar_root=resolved_sidecar,
         )
 
     @staticmethod
@@ -1587,6 +1842,8 @@ class WorkspaceBackend:
 __all__ = [
     "TaskWorkspace",
     "TargetedWorkspaceDrift",
+    "TreeFileRevision",
+    "TreePathRevision",
     "TreeStore",
     "WorkspaceBackend",
     "WorkspaceError",

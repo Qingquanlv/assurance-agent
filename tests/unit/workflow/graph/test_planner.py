@@ -531,6 +531,9 @@ def _task(task: ExecutableTask, status: str, **overrides: object) -> TaskProject
         "attempts_used": 1,
         "latest_attempt_id": f"{task.task_id}-a1",
     }
+    # D14 predecessor readiness requires a committed superstep for successes.
+    if status == "succeeded" and "outputs_committed" not in overrides:
+        payload["outputs_committed"] = True
     payload.update(overrides)
     return TaskProjection(**payload)  # type: ignore[arg-type]
 
@@ -1481,9 +1484,43 @@ def test_exhausted_abandoned_subgraph_shell_gets_one_crash_recovery_replay(
 ) -> None:
     compiled = _compile(SUBGRAPH_ABANDONED_REPLAY_GRAPH)
     original = _initial_tasks(compiled, tmp_path)["child-shell"]
+    # Crash-recovery replay only applies when the wrapper already started a child.
+    change_dir = tmp_path / "change"
+    change_dir.mkdir(parents=True, exist_ok=True)
+    (change_dir / "events.jsonl").write_text(
+        json.dumps(
+            {
+                "seq": 1,
+                "source": "graph",
+                "type": "graph_invocation_started",
+                "invocation_id": "inv-child-1",
+                "parent_invocation_id": "inv-1",
+                "parent_task_id": original.task_id,
+                "entrypoint": "full",
+                "graph_id": "child",
+                "graph_digest": "gd-child",
+                "contract_digests": {},
+                "params": {},
+                "params_sha256": "ps",
+                "root_tree_id": "tree-0",
+                "max_parallel_tasks": 1,
+                "checkpoint_ns": "inv-1/child-shell/inv-child-1",
+                "structural_path": "main/child",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     projection = _projection(
         compiled,
-        tasks=[_task(original, "abandoned", attempts_used=1)],
+        tasks=[
+            _task(
+                original,
+                "abandoned",
+                attempts_used=1,
+                target=original.target,
+            )
+        ],
     )
 
     replay = _plan(compiled, projection, tmp_path)

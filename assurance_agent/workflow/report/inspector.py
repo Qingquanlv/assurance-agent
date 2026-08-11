@@ -14,7 +14,7 @@ from assurance_agent.artifacts.models import (
     FailureAnalysis,
     FailureEntry,
     FailureEvidence,
-    QualityGateResult,
+    QualityGateResultLike,
 )
 from assurance_agent.change_location import resolve_change
 from assurance_agent.workflow.execution.evidence import (
@@ -22,13 +22,14 @@ from assurance_agent.workflow.execution.evidence import (
     ExecutionEvidence,
     load_execution_evidence,
 )
+from assurance_agent.evidence.sufficiency import EvidenceCoverageEvaluation
 from assurance_agent.workflow.execution.results import TargetResult
 from assurance_agent.workflow.report.failure_classifier import classify_failure
 
 
 class InspectResult(BaseModel):
     analysis: FailureAnalysis
-    quality_gate: QualityGateResult
+    quality_gate: QualityGateResultLike
     analysis_path: str
     summary_path: str
     quality_gate_path: str
@@ -86,6 +87,7 @@ def inspect_change(
             e2e=evidence.e2e,
             coverage=evidence.coverage,
             coverage_gate_mode=coverage_gate_mode,
+            evidence_coverage=EvidenceCoverageEvaluation.failed("evidence_projection_missing"),
             fuzz=evidence.fuzz,
             performance=evidence.performance,
         )
@@ -297,14 +299,14 @@ def _analysis(
     )
 
 
-def _write(inspect_dir: Path, change_id: str, analysis: FailureAnalysis, gate: QualityGateResult) -> None:
+def _write(inspect_dir: Path, change_id: str, analysis: FailureAnalysis, gate: QualityGateResultLike) -> None:
     inspect_dir.mkdir(parents=True, exist_ok=True)
     (inspect_dir / "failure-analysis.json").write_text(analysis.model_dump_json(indent=2), encoding="utf-8")
     (inspect_dir / "quality-gate-result.json").write_text(gate.model_dump_json(indent=2), encoding="utf-8")
     (inspect_dir / "failure-summary.md").write_text(_summary_md(change_id, analysis), encoding="utf-8")
 
 
-def _result(analysis: FailureAnalysis, gate: QualityGateResult, inspect_dir: Path) -> InspectResult:
+def _result(analysis: FailureAnalysis, gate: QualityGateResultLike, inspect_dir: Path) -> InspectResult:
     return InspectResult(
         analysis=analysis,
         quality_gate=gate,

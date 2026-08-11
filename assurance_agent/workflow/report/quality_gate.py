@@ -21,7 +21,13 @@ Verification metrics (``dimensions.metrics``) are likewise informational only:
 ``metrics-sufficiency-gate``'s job.
 """
 
+from __future__ import annotations
+
+import json
+from pathlib import Path
 from typing import Literal
+
+from pydantic import ValidationError
 
 from assurance_agent.artifacts.models import (
     CoverageDimension,
@@ -32,6 +38,8 @@ from assurance_agent.artifacts.models import (
     NonFunctionalDimension,
     QualityGateDimensions,
     QualityGateResult,
+    QualityGateResultLike,
+    load_quality_gate_result_document,
 )
 from assurance_agent.evidence.sufficiency import EvidenceCoverageEvaluation
 from assurance_agent.workflow.execution.results import (
@@ -162,3 +170,27 @@ def build_quality_gate(
         final_status=worst_status(gate_statuses),
         warnings=warnings or None,
     )
+
+
+def quality_gate_legacy_view(
+    gate: QualityGateResultLike,
+) -> tuple[FunctionalDimension, CoverageDimension, NonFunctionalDimension | None]:
+    return (
+        FunctionalDimension.model_validate(gate.dimensions.functional.model_dump(mode="json")),
+        CoverageDimension.model_validate(gate.dimensions.coverage.model_dump(mode="json")),
+        (
+            None
+            if gate.dimensions.non_functional is None
+            else NonFunctionalDimension.model_validate(gate.dimensions.non_functional.model_dump(mode="json"))
+        ),
+    )
+
+
+def load_quality_gate_result_file(path: Path) -> QualityGateResultLike | None:
+    if not path.is_file():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return load_quality_gate_result_document(raw)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValidationError):
+        return None

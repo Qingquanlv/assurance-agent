@@ -14,12 +14,22 @@ from assurance_agent.workflow.graph.handlers.operation import (
     no_op,
     stop_operation,
 )
-from assurance_agent.workflow.graph.handlers.plan_checks import verify_plan_mechanical
+from assurance_agent.workflow.graph.handlers.plan_checks import (
+    derive_plan_layer_applicability,
+    verify_plan_mechanical,
+)
 from assurance_agent.workflow.graph.handlers.trace_projection import materialize_trace_projection
 from assurance_agent.workflow.healing.graph_ops import (
     operation_allocate_healing_attempt,
     operation_record_healing_status,
     skill_registry_check,
+)
+from assurance_agent.workflow.healing.operations import (
+    operation_combine_fixer_safety,
+    operation_fixer_authority_ready,
+    operation_fixer_dispatch,
+    operation_record_codegen_fix_apply,
+    operation_record_fixer_approval,
 )
 from assurance_agent.workflow.improvements.change_delivery import (
     export_change_improvement_operation,
@@ -111,10 +121,16 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:no-op": no_op,
         "operation:skill-registry-check": skill_registry_check,
         "operation:verify-plan-mechanical": verify_plan_mechanical,
+        "operation:derive-plan-layer-applicability": derive_plan_layer_applicability,
         "operation:run-tests": run_tests,
         "operation:inspect": inspect_operation,
         "operation:generate-report": generate_report_operation,
         "operation:allocate-healing-attempt": operation_allocate_healing_attempt,
+        "operation:fixer-authority-ready": operation_fixer_authority_ready,
+        "operation:record-fixer-approval": operation_record_fixer_approval,
+        "operation:fixer-dispatch": operation_fixer_dispatch,
+        "operation:record-codegen-fix-apply": operation_record_codegen_fix_apply,
+        "operation:combine-fixer-safety": operation_combine_fixer_safety,
         "operation:record-healing-status": operation_record_healing_status,
         "operation:stop": stop_operation,
         "operation:retro-collect-v3": retro_collect_v3,

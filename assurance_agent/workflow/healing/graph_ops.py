@@ -10,6 +10,14 @@ import yaml
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
 from assurance_agent.workflow.graph.task_runner import task_failure, task_with
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
+from assurance_agent.workflow.healing.operations import (
+    enhance_allocate_result_with_authority,
+    operation_combine_fixer_safety,
+    operation_fixer_authority_ready,
+    operation_fixer_dispatch,
+    operation_record_codegen_fix_apply,
+    operation_record_fixer_approval,
+)
 from assurance_agent.workflow.orchestration.operations import BASELINE_REL, HEAL_STATUSES
 
 _REQUIRED_HEALING_SKILLS = ("aa-fix-proposal", "aa-api-codegen-fixer", "aa-e2e-codegen-fixer")
@@ -55,9 +63,9 @@ def operation_allocate_healing_attempt(
 ) -> TaskResult:
     """写 entry-baseline artifact 并返回 allocation payload（ids 按 v1 规则结构化派生）。
 
-    strict ``healing_attempt_allocated``/``healing_entry_baseline_pinned`` 事件在
-    scheduler ``_persist_success`` 中写入 canonical ledger；本函数只产出 workspace
-    artifact 与 allocation value。
+    Legacy host-ledger allocation events are appended by the scheduler
+    compatibility hook in ``_persist_success``; this function only produces
+    workspace artifacts, optional fixer-authority output, and allocation value.
     """
     manifest_path = workspace.change_dir / "execution" / "execution-manifest.yaml"
     batch_id: str | None = None
@@ -126,9 +134,17 @@ def operation_allocate_healing_attempt(
         "baseline_sha256": baseline_sha256,
         "entry_batch_id": batch_id,
     }
-    return TaskResult(
-        status="succeeded",
-        value=allocation,
+    # Activated path: always write fixer-authority and emit healing_allocation/v2.
+    # Callers may still force-disable via with.emit_durable_effect=false for tests.
+    params = task_with(task)
+    emit_effect = True if "emit_durable_effect" not in params else bool(params.get("emit_durable_effect"))
+    return enhance_allocate_result_with_authority(
+        task=task,
+        workspace=workspace,
+        context=context,
+        allocation=allocation,
+        attempt_id=attempt_id,
+        emit_durable_effect=emit_effect,
     )
 
 
@@ -166,6 +182,11 @@ def operation_record_healing_status(
 
 __all__ = [
     "operation_allocate_healing_attempt",
+    "operation_combine_fixer_safety",
+    "operation_fixer_authority_ready",
+    "operation_fixer_dispatch",
+    "operation_record_codegen_fix_apply",
+    "operation_record_fixer_approval",
     "operation_record_healing_status",
     "skill_registry_check",
 ]

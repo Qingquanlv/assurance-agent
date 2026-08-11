@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from assurance_agent.artifacts.models.generated_files import ApiGeneratedFilesV1
 from assurance_agent.workflow.graph.contracts import ResourceClaims, ResourcePath
 from assurance_agent.workflow.graph.ingest import ingest_from_write_set
+from assurance_agent.workflow.graph.ingest_catalog import resolve_model
 from assurance_agent.workflow.graph.workspace import TreeStore, WorkspaceBackend
 
 _QA_YAML = """\
@@ -80,3 +82,13 @@ def test_ingest_reads_yaml_must_compat_artifact_via_registry_fallback(tmp_path: 
     assert approval["mode"] == "autonomous"
     assert value["schema"] == "case-driven"
     assert "schema_" not in value
+
+
+def test_resolve_model_knows_dormant_generated_files_model_ids() -> None:
+    assert resolve_model("api_generated_files/v1") is ApiGeneratedFilesV1
+    try:
+        resolve_model("not_a_model@1")
+    except ValueError as exc:
+        assert "unknown ingest model id" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")

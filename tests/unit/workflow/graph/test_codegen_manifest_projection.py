@@ -118,6 +118,9 @@ class _SuccessfulInvoker:
 class _StaticClaimsCatalog:
     def __init__(self, claims: ResourceClaims) -> None:
         self._claims = claims
+        # AgentHandler looks up ``contracts[task.target]`` for read_isolation
+        # before calling claims_for; keep a permissive stub entry.
+        self.contracts: dict[str, object] = {}
 
     def claims_for(self, node: object) -> ResourceClaims:
         del node
@@ -468,7 +471,7 @@ def test_codegen_manifest_overwrites_agent_supplied_digest_and_sorts_files(tmp_p
                 },
                 {
                     "repo_path": first,
-                    "disposition": "modified",
+                    "disposition": "updated",
                     "role": "test_entry",
                     "case_ids": ["CASE-1"],
                     "content_sha256": "sha256:" + "f" * 64,

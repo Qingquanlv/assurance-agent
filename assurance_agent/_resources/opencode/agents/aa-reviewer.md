@@ -44,7 +44,7 @@ Your task is given in the `task` call that launched you. Load the named phase sk
 
 Rules:
 - Do NOT run `aa gate check`, `aa status`, or any other `aa` command except `aa --version` (CLI identity check) and `aa report inspect *` (used by the inspect phase).
-- Do NOT write or modify `workflow-state.yaml`. The orchestrator (primary agent) owns it.
+- Do NOT write or modify `workflow-state.yaml`. Graph ledger events are the only state authority (`owner: graph_ledger`; `agent_state_writes: forbidden`).
 - Do NOT read or follow `aa-workflow/SKILL.md`. You are a phase worker, not the orchestrator.
 - Improvement reviews write only `assessment.json` and `summary.md`; change reviews write only their declared `qa/changes/**` outputs.
 - For `aa-case-reviewer`, independently read the relevant product source before deciding. Proposal, case, advisory, requirements, docs, and tests are not substitutes for SUT-source verification. Record the source files and checked claims in `source_verification`.

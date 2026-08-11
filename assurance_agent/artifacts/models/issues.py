@@ -10,11 +10,13 @@ analysis-status documents are additionally ``must_compat`` at the workflow
 boundary because the deterministic reconciler consumes their exact fields.
 """
 
+from __future__ import annotations
+
 import hashlib
 import json
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 
 from assurance_agent.artifacts.models.common import NonEmptyStr
 
@@ -62,9 +64,11 @@ AffectedSurfaceKind = Literal[
 IssueAnalysisStatusValue = Literal["completed", "pending", "failed"]
 IssueAnalysisFailureReason = Literal["timeout", "transport", "invalid_output", "unavailable"]
 IssueReconcileStatusValue = Literal["completed", "failed"]
+IssueReconcileStatusV2Value = Literal["completed", "failed", "pending"]
 ProjectSyncStatus = Literal["completed", "pending"]
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
+StrictNonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
 
 
 class ObservationSource(BaseModel):
@@ -176,7 +180,9 @@ class IssueAnalysisStatus(BaseModel):
     candidate_digest: NonEmptyStr | None = None
 
 
-class IssueReconcileStatus(BaseModel):
+class IssueReconcileStatusV1(BaseModel):
+    """Legacy reconcile-status wire shape (schema 1.0)."""
+
     model_config = _FROZEN
 
     schema_version: Literal["1.0"]
@@ -187,6 +193,52 @@ class IssueReconcileStatus(BaseModel):
     candidate_digest: NonEmptyStr | None = None
     occurrence_count: int | None = Field(default=None, ge=0)
     error: NonEmptyStr | None = None
+
+
+class IssueReconcileStatusV2(BaseModel):
+    """Digest-bound reconcile-status wire shape (schema 2.0)."""
+
+    model_config = _FROZEN
+
+    schema_version: Literal["2.0"] = "2.0"
+    change_id: NonEmptyStr
+    batch_id: NonEmptyStr
+    status: IssueReconcileStatusV2Value
+    evidence_bundle_digest: NonEmptyStr
+    candidate_digest: NonEmptyStr
+    occurrence_count: StrictNonNegativeInt | None = None
+    error: NonEmptyStr | None = None
+
+    @model_validator(mode="after")
+    def _state_shape(self) -> Self:
+        if self.status == "completed":
+            if self.occurrence_count is None or self.error is not None:
+                raise ValueError("completed requires occurrence_count and null error")
+        elif self.status == "failed":
+            if self.occurrence_count is not None or self.error is None:
+                raise ValueError("failed requires null count and non-empty error")
+        elif self.occurrence_count is not None or self.error is not None:
+            raise ValueError("pending requires null count and null error")
+        return self
+
+
+# Legacy alias — V1 only; never repoint to V2.
+IssueReconcileStatus = IssueReconcileStatusV1
+
+IssueReconcileStatusLike = IssueReconcileStatusV1 | IssueReconcileStatusV2
+
+IssueReconcileStatusVariant = Annotated[
+    IssueReconcileStatusV1 | IssueReconcileStatusV2,
+    Field(discriminator="schema_version"),
+]
+
+
+class IssueReconcileStatusDocument(RootModel[IssueReconcileStatusVariant]):
+    pass
+
+
+def load_issue_reconcile_status_document(raw: object) -> IssueReconcileStatusLike:
+    return IssueReconcileStatusDocument.model_validate(raw).root
 
 
 class ProvisionalAssessment(BaseModel):

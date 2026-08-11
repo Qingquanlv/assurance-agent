@@ -244,6 +244,15 @@ def test_capture_preserves_executable_mode(tmp_path: Path) -> None:
 # freeze_write_set
 
 
+def test_tree_roots_accessor_matches_captured_map(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    store = _store(project)
+    tree_id = store.capture(project)
+    roots = store.tree_roots(tree_id)
+    assert roots == {"change": "qa/changes/CH-1", "project": ".", "repo": "."}
+    assert isinstance(roots, dict)
+
+
 def test_freeze_write_set_roundtrip_and_canonical_untouched(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     store = _store(project)
@@ -260,6 +269,7 @@ def test_freeze_write_set_roundtrip_and_canonical_untouched(tmp_path: Path) -> N
         outputs=("repo:tests/api/test_a.py",),
     )
     assert store.load_write_set(write_set.write_set_id) == write_set
+    assert write_set.base_tree_roots == store.tree_roots(base_tree)
     assert (project / "tests/api/test_a.py").read_text() == "base\n"
     assert set(write_set.outputs_sha256) == {"repo:tests/api/test_a.py"}
     assert len(write_set.entries) == 1
@@ -480,6 +490,31 @@ def test_workspace_rematerializes_from_object_store_after_cleanup(tmp_path: Path
     recreated = backend.create(task_id="task-a", base_tree_id=base_tree, store=store)
     assert (recreated.project_root / "tests/api/test_a.py").read_text() == "base\n"
     assert store.load_write_set(write_set.write_set_id) == write_set
+
+
+def test_create_writes_tree_manifest_to_sidecar(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    store = TreeStore(project / "qa" / "changes" / "CH-1")
+    backend = _backend(project)
+    workspace = backend.create(
+        task_id="task-a",
+        base_tree_id=store.capture(project),
+        store=store,
+        sidecar_root=backend.sidecar_root_for("task-a"),
+    )
+    assert workspace.tree_manifest_path is not None
+    assert workspace.tree_manifest_path.is_file()
+    assert workspace.sidecar_root == backend.sidecar_root_for("task-a").resolve()
+    assert not (workspace.root / ".graph-runtime" / "tree.json").exists()
+    reopened = TaskWorkspace.from_materialized_root(
+        "task-a",
+        workspace.root,
+        workspace.base_tree_id,
+        materialized_tree_id=workspace.materialized_tree_id,
+        tree_manifest_path=workspace.tree_manifest_path,
+        sidecar_root=workspace.sidecar_root,
+    )
+    assert reopened.project_root == workspace.project_root
 
 
 def test_from_materialized_root_rejects_missing_manifest(tmp_path: Path) -> None:
@@ -860,6 +895,143 @@ def test_apply_tree_delta_rejects_unpinned_intermediate_content(tmp_path: Path) 
         )
 
     assert (project / "tests/api/test_a.py").read_text(encoding="utf-8") == "external drift\n"
+
+
+# ---------------------------------------------------------------------------
+# single-capture multi-tree synchronized overlay
+
+
+def test_overlay_synchronized_paths_many_captures_live_bytes_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _make_project(tmp_path)
+    aa_dir = project / ".aa"
+    aa_dir.mkdir()
+    knowledge = aa_dir / "data-knowledge.yaml"
+    knowledge.write_text("snapshot v1\n", encoding="utf-8")
+    store = _store(project)
+    base_tree = store.capture(project)
+
+    (project / "app" / "source.py").write_text("base-specific\n", encoding="utf-8")
+    target_tree = store.capture(project)
+
+    promoted_bytes = b"live promoted\n"
+    knowledge.write_bytes(promoted_bytes)
+
+    synchronized = (ResourcePath.parse("project:.aa/data-knowledge.yaml"),)
+    synchronized_file_read_count = 0
+    real_read_bytes = Path.read_bytes
+
+    def counting_read_bytes(self: Path) -> bytes:
+        nonlocal synchronized_file_read_count
+        if self.resolve() == knowledge.resolve():
+            synchronized_file_read_count += 1
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", counting_read_bytes)
+
+    base_overlay, target_overlay = store.overlay_synchronized_paths_many(
+        (base_tree, target_tree),
+        project,
+        synchronized,
+    )
+
+    assert store.read_bytes(base_overlay, "project:.aa/data-knowledge.yaml") == promoted_bytes
+    assert store.read_bytes(target_overlay, "project:.aa/data-knowledge.yaml") == promoted_bytes
+    assert synchronized_file_read_count == 1
+    assert store.read_bytes(base_overlay, "project:app/source.py") == b"app base\n"
+    assert store.read_bytes(target_overlay, "project:app/source.py") == b"base-specific\n"
+
+
+def test_overlay_synchronized_paths_many_removes_missing_synchronized_path(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    aa_dir = project / ".aa"
+    aa_dir.mkdir()
+    knowledge = aa_dir / "data-knowledge.yaml"
+    knowledge.write_text("was here\n", encoding="utf-8")
+    store = _store(project)
+    base_tree = store.capture(project)
+    target_tree = store.capture(project)
+    knowledge.unlink()
+
+    synchronized = (ResourcePath.parse("project:.aa/data-knowledge.yaml"),)
+    base_overlay, target_overlay = store.overlay_synchronized_paths_many(
+        (base_tree, target_tree),
+        project,
+        synchronized,
+    )
+
+    with pytest.raises(FileNotFoundError):
+        store.read_bytes(base_overlay, "project:.aa/data-knowledge.yaml")
+    with pytest.raises(FileNotFoundError):
+        store.read_bytes(target_overlay, "project:.aa/data-knowledge.yaml")
+
+
+def test_overlay_synchronized_paths_many_empty_paths_returns_original_ids(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    store = _store(project)
+    base_tree = store.capture(project)
+    target_tree = store.capture(project)
+
+    result = store.overlay_synchronized_paths_many((base_tree, target_tree), project, ())
+
+    assert result == (base_tree, target_tree)
+
+
+def test_overlay_synchronized_paths_many_rejects_symlink_escape(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    store = _store(project)
+    tree = store.capture(project)
+    aa_dir = project / ".aa"
+    aa_dir.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret\n", encoding="utf-8")
+    os.symlink(outside, aa_dir / "data-knowledge.yaml")
+    synchronized = (ResourcePath.parse("project:.aa/data-knowledge.yaml"),)
+
+    with pytest.raises(WorkspaceError, match="escapes project root"):
+        store.overlay_synchronized_paths_many((tree, tree), project, synchronized)
+
+
+def test_overlay_synchronized_paths_many_directory_prefix_is_deterministic(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    issues = project / "qa" / "issues"
+    issues.mkdir(parents=True)
+    (issues / "A.json").write_text('{"a":1}\n', encoding="utf-8")
+    (issues / "B.json").write_text('{"b":2}\n', encoding="utf-8")
+    store = _store(project)
+    base_tree = store.capture(project)
+    (issues / "A.json").write_text('{"a":99}\n', encoding="utf-8")
+    target_tree = store.capture(project)
+    (issues / "A.json").write_text('{"a":live}\n', encoding="utf-8")
+    (issues / "B.json").write_text('{"b":live}\n', encoding="utf-8")
+
+    synchronized = (ResourcePath.parse("project:qa/issues/**"),)
+    base_overlay, target_overlay = store.overlay_synchronized_paths_many(
+        (base_tree, target_tree),
+        project,
+        synchronized,
+    )
+
+    assert store.read_bytes(base_overlay, "project:qa/issues/A.json") == b'{"a":live}\n'
+    assert store.read_bytes(base_overlay, "project:qa/issues/B.json") == b'{"b":live}\n'
+    assert store.read_bytes(target_overlay, "project:qa/issues/A.json") == b'{"a":live}\n'
+    assert store.read_bytes(target_overlay, "project:qa/issues/B.json") == b'{"b":live}\n'
+    assert store.read_bytes(base_overlay, "project:app/source.py") == b"app base\n"
+    assert store.read_bytes(target_overlay, "project:app/source.py") == b"app base\n"
+
+
+def test_overlay_synchronized_paths_many_requires_matching_roots(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    repo_root = project / "repo-alias"
+    repo_root.mkdir()
+    store = _store(project)
+    base_tree = store.capture(project)
+    aliased_tree = store.capture(project, repo_root=repo_root)
+    synchronized = (ResourcePath.parse("project:.aa/data-knowledge.yaml"),)
+
+    with pytest.raises(WorkspaceError, match="same logical-root mapping"):
+        store.overlay_synchronized_paths_many((base_tree, aliased_tree), project, synchronized)
 
 
 # ---------------------------------------------------------------------------
@@ -1277,3 +1449,91 @@ def test_missing_git_binary_skips_convenience_index(tmp_path: Path, monkeypatch)
     workspace = _backend(project).create(task_id="task-a", base_tree_id=store.capture(project), store=store)
     assert workspace.project_root.is_dir()
     assert not (workspace.root / ".git").exists()
+
+
+# ---------------------------------------------------------------------------
+# exact immutable tree file replacement
+
+
+def _tree_with_plans(tmp_path: Path) -> tuple[Path, TreeStore, str]:
+    project = _make_project(tmp_path)
+    change = project / "qa" / "changes" / "CH-1"
+    plans = change / "plans"
+    plans.mkdir()
+    (plans / "fuzz-plan.md").write_text("# original\n", encoding="utf-8")
+    (plans / "fuzz-codegen-plan.md").write_text("# codegen\n", encoding="utf-8")
+    review = change / "review"
+    review.mkdir()
+    (review / "fuzz-plan-review.json").write_text('{"status":"needs_fix"}\n', encoding="utf-8")
+    store = _store(project)
+    return project, store, store.capture(project)
+
+
+def test_replace_tree_files_publishes_exact_replacement_without_live_drift(tmp_path: Path) -> None:
+    project, store, base_tree_id = _tree_with_plans(tmp_path)
+    # Live drift under the project must not enter the replacement tree.
+    (project / "app" / "source.py").write_text("drifted\n", encoding="utf-8")
+
+    revision = store.replace_tree_files(
+        base_tree_id,
+        {"change:plans/fuzz-plan.md": b"# revised\n"},
+    )
+    assert revision.target_tree_id != base_tree_id
+    assert store.read_bytes(revision.target_tree_id, "change:plans/fuzz-plan.md") == b"# revised\n"
+    assert store.read_bytes(
+        revision.target_tree_id, "change:review/fuzz-plan-review.json"
+    ) == store.read_bytes(base_tree_id, "change:review/fuzz-plan-review.json")
+    assert store.read_bytes(revision.target_tree_id, "project:app/source.py") == b"app base\n"
+    assert len(revision.paths) == 1
+    assert revision.paths[0].logical_path == "change:plans/fuzz-plan.md"
+    assert revision.paths[0].before_sha256 != revision.paths[0].after_sha256
+    assert revision.paths[0].after_sha256 == hashlib.sha256(b"# revised\n").hexdigest()
+
+
+def test_replace_tree_files_keeps_unchanged_allowlisted_path_in_lineage(tmp_path: Path) -> None:
+    _project, store, base_tree_id = _tree_with_plans(tmp_path)
+    original_codegen = store.read_bytes(base_tree_id, "change:plans/fuzz-codegen-plan.md")
+
+    revision = store.replace_tree_files(
+        base_tree_id,
+        {
+            "change:plans/fuzz-codegen-plan.md": original_codegen,
+            "change:plans/fuzz-plan.md": b"# revised\n",
+        },
+    )
+    assert revision.target_tree_id != base_tree_id
+    assert [path.logical_path for path in revision.paths] == [
+        "change:plans/fuzz-codegen-plan.md",
+        "change:plans/fuzz-plan.md",
+    ]
+    unchanged, changed = revision.paths
+    assert unchanged.before_sha256 == unchanged.after_sha256
+    assert changed.before_sha256 != changed.after_sha256
+    assert store.read_bytes(revision.target_tree_id, "change:plans/fuzz-codegen-plan.md") == original_codegen
+    assert store.read_bytes(revision.target_tree_id, "change:plans/fuzz-plan.md") == b"# revised\n"
+
+
+def test_replace_tree_files_rejects_missing_symlink_noop_and_duplicate(tmp_path: Path) -> None:
+    project, store, base_tree_id = _tree_with_plans(tmp_path)
+    change = project / "qa" / "changes" / "CH-1"
+    os.symlink("fuzz-plan.md", change / "plans" / "alias.md")
+    linked_tree = store.capture(project)
+
+    with pytest.raises(WorkspaceError, match="missing"):
+        store.replace_tree_files(base_tree_id, {"change:plans/absent.md": b"x\n"})
+
+    with pytest.raises(WorkspaceError, match="symlink|not a regular file"):
+        store.replace_tree_files(linked_tree, {"change:plans/alias.md": b"x\n"})
+
+    original = store.read_bytes(base_tree_id, "change:plans/fuzz-plan.md")
+    with pytest.raises(WorkspaceError, match="manual_plan_revision_noop"):
+        store.replace_tree_files(base_tree_id, {"change:plans/fuzz-plan.md": original})
+
+    with pytest.raises(WorkspaceError, match="duplicate"):
+        store.replace_tree_files(
+            base_tree_id,
+            {
+                "change:plans/fuzz-plan.md": b"# revised\n",
+                "change:plans/fuzz-plan.md/": b"# other\n",
+            },
+        )

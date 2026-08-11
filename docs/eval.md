@@ -29,15 +29,37 @@
   裸 `workflow-state.yaml` phase 标记不是权威。
 - GraphRuntime 真并行 + 资源序列化；retry 与业务 budget 分计；interrupt/resume。
 
+### Layer selection (`selection_normalizer/v1`)
+
+- Selected layers are exactly `api`, `e2e`, `fuzz`, `performance`.
+- Default (when suite keys are absent) is `api` + `e2e`.
+- Multi-layer `codegen-only` is supported for every non-empty subset; write claims follow `write_policy/v1`.
+
+### Evidence export algorithm
+
+Successful rooted attempts write `evidence/evidence-export/` with:
+
+- `root-event-slice.json` — events ordered by `export_seq` exactly `1..N` (source_seq may gap)
+- `export-manifest.json` — closed object set (bindings, snapshots, receipts, write sets, blobs)
+- Envelope fields in `execution.json` bind D17 change-location + `write_policy/v1` for scorer replay
+
+### Hard current-chain metrics (workflow-codegen)
+
+Datasets for the four codegen suites use only `L2-*-codegen-pending` tiers.
+Suites hard-gate `current_assurance_chain_rate`, `current_codegen_attempt_rate`,
+and `selected_test_write_rate` at `1.0` (`op: gte`, regression `higher_is_better` /
+`max_regression: 0.0`). Credit requires replayable chain + behavioral selected
+private-root writes under `generated_files_candidate/v1` authority.
+
 ### 阶段与 Suite 对照
 
 | 阶段 | Suite | 样本（模块） | 测什么 |
 |------|-------|--------------|--------|
 | **E0** | `workflow-case` | WC-001~004 | Case Design + Review（case-only） |
-| **E2a** | `workflow-api-codegen` | WAC-001~004 | API Codegen（codegen-only） |
-| **E2b** | `workflow-e2e-codegen` | WEEC-001~004 | E2E Codegen |
-| **E2c** | `workflow-fuzz-codegen` | WFUZ-001~004 | Fuzz Codegen |
-| **E2d** | `workflow-performance-codegen` | WPER-001~004 | Performance Codegen |
+| **E2a** | `workflow-api-codegen` | WAC-001 | API Codegen（multi-layer codegen-only, pending tier） |
+| **E2b** | `workflow-e2e-codegen` | WEEC-001 | E2E Codegen（pending tier） |
+| **E2c** | `workflow-fuzz-codegen` | WFUZ-001 | Fuzz Codegen（pending tier） |
+| **E2d** | `workflow-performance-codegen` | WPER-001 | Performance Codegen（pending tier） |
 | **E3** | `workflow-run` | WR-001~016 | `aa run` 测试执行 |
 | **E4** | `workflow-full` | WF-001~004 | 全流程（nightly，observe-only） |
 
@@ -290,3 +312,4 @@ CLI 读模型：`aa improvement list|show`（只读投影）。
 - `assurance_agent/retro/` — schema-v2 Retro collect / Candidates
 - `assurance_agent/workflow/improvements/` — Improvement Ledger / review / delivery
 - `docs/schemas.md` — Retro / Improvement 产物与命令契约
+- `docs/release-notes/2026-08-four-layer-assurance.md` — v6 / D17 / hard-metric semantics

@@ -93,6 +93,11 @@ ignore_imports =
     assurance_agent.workflow.graph.handlers.plan_checks -> assurance_agent.workflow.improvements.ledger
     assurance_agent.workflow.graph.handlers.interrupt -> assurance_agent.workflow.execution.tree_hash
     assurance_agent.workflow.graph.scheduler -> assurance_agent.workflow.healing.allocation
+    # V6 durable-effect / precommit / healing-projection seams from main.
+    assurance_agent.workflow.graph.durable_effects -> assurance_agent.workflow.healing.effects
+    assurance_agent.workflow.graph.runtime_commit_safety -> assurance_agent.workflow.healing.effects
+    assurance_agent.workflow.graph.precommit -> assurance_agent.workflow.healing.safety
+    assurance_agent.workflow.orchestration.healing_state -> assurance_agent.workflow.healing.projection
     # Pre-existing reverse seams: orchestration (below domains) still imports
     # healing/execution helpers. Keep explicit until those helpers move down.
     assurance_agent.workflow.orchestration.operations -> assurance_agent.workflow.healing.safety

@@ -5,8 +5,10 @@ from pathlib import Path
 
 import pytest
 
+from assurance_agent.eval.gate import compute_gate_result
+from assurance_agent.eval.plan import load_suite
 from assurance_agent.eval.scorers import get_scorer
-from assurance_agent.eval.types import DatasetSample
+from assurance_agent.eval.types import CODEGEN_HARD_METRICS, DatasetSample, RunManifest, SuiteMetrics
 from tests.unit.eval.attempt_fixtures import (
     make_attempt,
     write_case,
@@ -118,6 +120,10 @@ def test_codegen_scorer_py_syntax_and_summary(tmp_path: Path) -> None:
     m = get_scorer("workflow-api-codegen")(_sample("workflow-api-codegen", "WAC-001"), attempt).metrics
     assert m["schema_valid_rate"] == pytest.approx(0.5)  # 1 of 2 py compiles
     assert m["codegen_summary_present_rate"] == 1.0
+    # Task 22: live scorer exposes the three hard metrics (zero without export binding).
+    assert m["current_assurance_chain_rate"] == 0.0
+    assert m["current_codegen_attempt_rate"] == 0.0
+    assert m["selected_test_write_rate"] == 0.0
 
 
 def test_workflow_full_observe_only(tmp_path: Path) -> None:
@@ -126,3 +132,42 @@ def test_workflow_full_observe_only(tmp_path: Path) -> None:
     m = get_scorer("workflow-full")(_sample("workflow-full", "WF-001"), attempt).metrics
     assert m["full_run_completed_rate"] == 1.0
     assert m["end_to_end_pass_rate"] == 1.0
+
+
+def test_live_codegen_scorer_zero_hard_metric_fails_suite_gate(tmp_path: Path) -> None:
+    """Atomic activation: any hard metric at 0.0 fails the live suite verdict."""
+    repo = Path(__file__).resolve().parents[3]
+    suite, _ = load_suite(repo, "workflow-api-codegen")
+    attempt = make_attempt(tmp_path)
+    tests_api = attempt / "raw-output" / "tests" / "api"
+    tests_api.mkdir(parents=True)
+    (tests_api / "test_ok.py").write_text("def test_x():\n    assert True\n", encoding="utf-8")
+    codegen = attempt / "raw-output" / "codegen"
+    codegen.mkdir(parents=True)
+    (codegen / "api-codegen-summary.md").write_text("# summary\n", encoding="utf-8")
+    score = get_scorer("workflow-api-codegen")(_sample("workflow-api-codegen", "WAC-001"), attempt)
+    for name in CODEGEN_HARD_METRICS:
+        assert name in score.metrics
+        assert score.metrics[name] == 0.0
+    gate = compute_gate_result(
+        suite,
+        RunManifest(
+            run_id="run-1",
+            suite="workflow-api-codegen",
+            scorer=suite.scorer,
+            selected_sample_ids=["WAC-001"],
+            total_samples=1,
+            executed_samples=1,
+            target_model="deterministic",
+            started_at="2026-08-01T00:00:00Z",
+        ),
+        SuiteMetrics(
+            run_id="run-1",
+            suite="workflow-api-codegen",
+            sample_count=1,
+            metrics=score.metrics,
+        ),
+    )
+    assert gate.verdict == "fail"
+    for name in CODEGEN_HARD_METRICS:
+        assert name in gate.hard_gate_failures

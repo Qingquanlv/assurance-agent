@@ -1,14 +1,15 @@
+import json
 from pathlib import Path
-
-from tests.helpers_aa import write_aa_config
 
 import pytest
 
-from assurance_agent.artifacts.models import CoverageThreshold, SelectedTargets
+from assurance_agent.artifacts.models import CoverageThreshold, QualityGateResultV2, SelectedTargets
 from assurance_agent.workflow.execution.evidence import EvidenceError, publish_execution_evidence
 from assurance_agent.workflow.execution.results import CaseResult, CoverageResult, ResultSource, TargetResult
 from assurance_agent.workflow.report.inspector import inspect_change
 from assurance_agent.workflow.report.quality_gate import build_quality_gate
+from tests.helpers_aa import make_report_v2, sufficient_evidence_coverage, write_aa_config
+from tests.unit.artifacts.test_models_inspect_report import make_coverage, make_functional
 
 
 def _publish(root: Path, batch_id: str, *, failed: bool) -> None:
@@ -61,7 +62,12 @@ def _publish(root: Path, batch_id: str, *, failed: bool) -> None:
         status="PASS",
     )
     gate = build_quality_gate(
-        change_id="CH-1", batch_id=batch_id, api=api, e2e=None, coverage=cov, coverage_gate_mode="warn"
+        change_id="CH-1",
+        batch_id=batch_id,
+        api=api,
+        e2e=None,
+        coverage=cov,
+        evidence_coverage=sufficient_evidence_coverage(),
     )
     publish_execution_evidence(
         execution_dir=root / "qa" / "changes" / "CH-1" / "execution",
@@ -101,3 +107,30 @@ def test_explicit_bad_batch_fails_without_fallback(tmp_path: Path) -> None:
     _publish(tmp_path, "20260715-000001", failed=False)
     with pytest.raises(EvidenceError):
         inspect_change(tmp_path, "CH-1", batch_id="20260715-999999")
+
+
+def test_complete_v2_quality_does_not_false_compat_fallback(tmp_path: Path) -> None:
+    _publish(tmp_path, "20260715-000001", failed=True)
+    _publish(tmp_path, "20260715-000002", failed=False)
+    gate_path = tmp_path / "qa/changes/CH-1/execution/runs/20260715-000002/quality-gate-result.json"
+    coverage = {
+        **make_coverage(),
+        "evidence": {"kind": "sufficiency", "report": make_report_v2(verdicts=[])},
+    }
+    gate_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "2.0",
+                "change_id": "CH-1",
+                "batch_id": "20260715-000002",
+                "dimensions": {"functional": make_functional(), "coverage": coverage},
+                "final_status": "PASS",
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = inspect_change(tmp_path, "CH-1")
+    assert result.analysis.inspect_mode == "primary"
+    assert result.analysis.compat_fallback_reason is None
+    assert result.analysis.source_batch_id == "20260715-000002"
+    assert isinstance(result.quality_gate, QualityGateResultV2)

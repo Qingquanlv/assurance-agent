@@ -601,63 +601,49 @@ def test_packaged_codegen_precondition_accepts_exact_risk_without_dropping_hard_
     review_rel: str,
     include_api_checks: bool,
 ) -> None:
+    # Packaged four-layer precondition gates (MERGE_HEAD) require applicable
+    # plan-assurance evidence + a succeeded review-cycle, in addition to the
+    # nested review-gate verdict that accept_risk elevates to pass.
+    from tests.unit.verification.test_gate_state import _EMPTY_DK, _applicable_checks, _review_for
+
+    layer = "api" if include_api_checks else "e2e"
     project = _project(tmp_path)
     change_dir = _context(project).change_dir
     data_knowledge = project / ".aa" / "data-knowledge.yaml"
-    data_knowledge.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "accounts": {},
-                "auth": {},
-                "entities": {},
-                "capabilities": {
-                    "domain_factories": {},
-                    "adapters": {"api": {}, "e2e": {}, "fuzz": {}, "performance": {}},
-                    "cleanup": {},
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    # Satisfy PlanReview's non-empty required_capabilities + capabilities_present.
+    dk_doc = {
+        **_EMPTY_DK,
+        "capabilities": {
+            "domain_factories": {
+                "dept": {
+                    "make_dept": {
+                        "kind": "helper",
+                        "symbol": "tests.testdata.domain.dept:make_dept",
+                    }
+                }
+            },
+            "adapters": {"api": {}, "e2e": {}, "fuzz": {}, "performance": {}},
+            "cleanup": {},
+        },
+    }
+    data_knowledge.write_text(json.dumps(dk_doc), encoding="utf-8")
+
+    review_doc = {
+        **_review_for(layer),
+        "decision": "needs_human_review",
+        "human_review_required": True,
+        "risk_level": "high",
+        "required_capabilities": ["capabilities.domain_factories.dept.make_dept"],
+    }
     review_path = change_dir / review_rel
     review_path.parent.mkdir(parents=True, exist_ok=True)
-    review_path.write_text(
-        json.dumps(
-            {
-                "decision": "needs_human_review",
-                "codegen_readiness": "ready",
-                "required_capabilities": ["auth.missing_for_review"],
-                "auto_fix_allowed": False,
-                "human_review_required": True,
-                "risk_level": "high",
-            }
-        ),
-        encoding="utf-8",
-    )
-    audited_paths = [review_rel, "repo:.aa/data-knowledge.yaml"]
-    if include_api_checks:
-        checks_rel = "review/api-plan-checks.json"
-        checks_path = change_dir / checks_rel
-        checks_path.write_text(
-            json.dumps(
-                {
-                    "schema_version": "1",
-                    # Overall failure is still compatible with per-check warn.
-                    "status": "fail",
-                    "checks": [
-                        {
-                            "check_id": "assert_ideal",
-                            "status": "fail",
-                            "findings": [{"locator": "x", "actual": "a", "expected": "b"}],
-                            "refs": [],
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-        audited_paths.append(checks_rel)
+    review_path.write_text(json.dumps(review_doc), encoding="utf-8")
+
+    checks_rel = f"review/{layer}-plan-checks.json"
+    checks_path = change_dir / checks_rel
+    checks_path.write_text(json.dumps(_applicable_checks(layer)), encoding="utf-8")
+    audited_paths = [review_rel, checks_rel, "repo:.aa/data-knowledge.yaml"]
+
     audited_hashes: dict[str, str] = {}
     for rel in audited_paths:
         path = data_knowledge if rel.startswith("repo:") else change_dir / rel
@@ -675,7 +661,7 @@ def test_packaged_codegen_precondition_accepts_exact_risk_without_dropping_hard_
         change_id="CH-1",
         params={"force_continue": False},
         state_values={},
-        node_results={},
+        node_results={"review-cycle": {"status": "succeeded"}},
         audit_events_dir=change_dir,
         checkpoint_ns="root/codegen/codegen-inv",
     )

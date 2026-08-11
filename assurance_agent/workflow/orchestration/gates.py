@@ -8,6 +8,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 
 import yaml
 from pydantic import BaseModel, ConfigDict
@@ -18,6 +19,7 @@ from assurance_agent.change_location import ChangeLocation
 from assurance_agent.exceptions import AaError
 from assurance_agent.knowledge.capabilities import capabilities_present as check_capabilities_present
 from assurance_agent.knowledge.capabilities import compute_missing_capabilities
+from assurance_agent.verification.gate_state import plan_assurance_state
 from assurance_agent.workflow.core.audit_scope import is_audited_gate_read
 from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
 from assurance_agent.workflow.execution.tree_hash import sha256_file
@@ -42,6 +44,49 @@ class _SchemaWithGates(Protocol):
 # →needs_fix. Both require the decision to carry ``review_file``/``review_sha256``
 # anchoring an audited gate read whose current hash still matches.
 _GATE_DECISION_ACTIONS = frozenset({"accept_risk", "fix_and_proceed"})
+
+
+# Shared checkpoint→gate alias table (also consumed by InterruptHandler).
+# Do not create a second alias table elsewhere.
+CHECKPOINT_GATE_ALIASES: Mapping[str, str] = MappingProxyType({"healing.safety": "fixer-safety-gate"})
+
+
+def resolve_checkpoint_gate_id(checkpoint: str, gate_ids: frozenset[str]) -> str | None:
+    """Resolve a checkpoint name to a compiled gate id via direct match or alias."""
+    if checkpoint in gate_ids:
+        return checkpoint
+    aliased = CHECKPOINT_GATE_ALIASES.get(checkpoint)
+    if aliased is not None and aliased in gate_ids:
+        return aliased
+    return None
+
+
+def _checkpoint_matches_gate(checkpoint: object, gate_id: str) -> bool:
+    if not isinstance(checkpoint, str):
+        return False
+    if checkpoint == gate_id:
+        return True
+    return CHECKPOINT_GATE_ALIASES.get(checkpoint) == gate_id
+
+
+def _decision_matches_source_epoch(
+    decision: Mapping[str, object],
+    *,
+    source_gate_attempt_id: str | None,
+    source_gate_tree_id: str | None,
+    require_source_epoch: bool,
+) -> bool:
+    """v5 gate overrides must bind the source gate attempt and committed tree."""
+    if not require_source_epoch:
+        return True
+    attempt = decision.get("source_gate_attempt_id")
+    tree = decision.get("source_gate_tree_id")
+    if attempt is None or tree is None:
+        # Pairless resumes are normal actions but never gate overrides.
+        return False
+    if source_gate_attempt_id is None or source_gate_tree_id is None:
+        return False
+    return attempt == source_gate_attempt_id and tree == source_gate_tree_id
 
 
 class GateVerdict(BaseModel):
@@ -149,11 +194,23 @@ def build_evidence_scope(
         except GateCycleError:
             return Verdict.STOP.value
 
+    def resolve_plan_assurance_state(
+        checks: object, review: object, data_knowledge: object, layer: object
+    ) -> str:
+        return plan_assurance_state(
+            checks,
+            review,
+            data_knowledge,
+            layer,
+            change_id=loc.change_id,
+        )
+
     return Scope(
         scope_vars,
         file_exists=file_exists,
         gate_verdict=gate_verdict,
         capabilities_present=check_capabilities_present,
+        plan_assurance_state=resolve_plan_assurance_state,
     )
 
 
@@ -255,6 +312,9 @@ def latest_valid_gate_decision(
     *,
     events_dir: Path | None = None,
     checkpoint_ns: str | None = None,
+    source_gate_attempt_id: str | None = None,
+    source_gate_tree_id: str | None = None,
+    require_source_epoch: bool = False,
 ) -> dict[str, object] | None:
     """Return the latest audited human or graph-resume decision for ``gate_id``.
 
@@ -265,7 +325,8 @@ def latest_valid_gate_decision(
     *current* hash still matches (the frozen evidence was not altered afterwards).
     When ``checkpoint_ns`` is supplied, only a complete v3 graph interrupt/resume
     chain on that namespace's ancestry is eligible; change-global legacy decisions
-    are intentionally excluded.
+    are intentionally excluded. When ``require_source_epoch`` is true, graph
+    overrides must also bind ``source_gate_attempt_id`` / ``source_gate_tree_id``.
     """
     events = _read_decision_events(events_dir or loc.path)
     if events is None:
@@ -276,6 +337,9 @@ def latest_valid_gate_decision(
         loc,
         events,
         checkpoint_ns=checkpoint_ns,
+        source_gate_attempt_id=source_gate_attempt_id,
+        source_gate_tree_id=source_gate_tree_id,
+        require_source_epoch=require_source_epoch,
     )
 
 
@@ -295,6 +359,9 @@ def _latest_valid_gate_decision_from_events(
     events: list[dict[str, object]],
     *,
     checkpoint_ns: str | None,
+    source_gate_attempt_id: str | None = None,
+    source_gate_tree_id: str | None = None,
+    require_source_epoch: bool = False,
 ) -> dict[str, object] | None:
     gate = schema.gates.get(gate_id)
     if gate is None:
@@ -310,19 +377,16 @@ def _latest_valid_gate_decision_from_events(
         for event in reversed(events):
             if event.get("source") != "decide" or event.get("type") != "human_decision":
                 continue
-            checkpoint = event.get("checkpoint")
-            if checkpoint == gate_id:
+            if _checkpoint_matches_gate(event.get("checkpoint"), gate_id):
                 latest_human = event
                 break
-            if isinstance(checkpoint, str):
-                # Special ``healing.safety`` checkpoint also anchors the fixer-safety-gate.
-                if gate_id == "fixer-safety-gate" and checkpoint == "healing.safety":
-                    latest_human = event
-                    break
     latest_graph = _latest_graph_gate_decision(
         events,
         gate_id,
         current_checkpoint_ns=checkpoint_ns,
+        source_gate_attempt_id=source_gate_attempt_id,
+        source_gate_tree_id=source_gate_tree_id,
+        require_source_epoch=require_source_epoch,
     )
     latest = max(
         (item for item in (latest_human, latest_graph) if item is not None),
@@ -340,6 +404,13 @@ def _latest_valid_gate_decision_from_events(
     if not (isinstance(who, str) and who.strip()):
         return None
     if latest.get("source") == "graph":
+        if not _decision_matches_source_epoch(
+            latest,
+            source_gate_attempt_id=source_gate_attempt_id,
+            source_gate_tree_id=source_gate_tree_id,
+            require_source_epoch=require_source_epoch,
+        ):
+            return None
         hashes = latest.get("audited_reads_sha256")
         if not isinstance(hashes, dict) or not audited.issubset(hashes):
             return None
@@ -348,6 +419,9 @@ def _latest_valid_gate_decision_from_events(
             if not isinstance(expected, str) or sha256_file(_resolve_path(loc, rel)) != expected:
                 return None
         return latest
+    if require_source_epoch:
+        # Legacy human_decision events are not v5 gate-epoch overrides.
+        return None
     review_file = latest.get("review_file")
     review_sha = latest.get("review_sha256")
     if not (isinstance(review_file, str) and isinstance(review_sha, str)):
@@ -377,6 +451,9 @@ def _latest_graph_gate_decision(
     gate_id: str,
     *,
     current_checkpoint_ns: str | None = None,
+    source_gate_attempt_id: str | None = None,
+    source_gate_tree_id: str | None = None,
+    require_source_epoch: bool = False,
 ) -> dict[str, object] | None:
     """Resolve the latest resume group whose interrupt targeted ``gate_id``.
 
@@ -393,9 +470,7 @@ def _latest_graph_gate_decision(
         if not isinstance(interrupt_id, str):
             continue
         all_interruptions.setdefault(interrupt_id, []).append(event)
-        checkpoint = event.get("checkpoint")
-        matches = checkpoint == gate_id or (gate_id == "fixer-safety-gate" and checkpoint == "healing.safety")
-        if matches:
+        if _checkpoint_matches_gate(event.get("checkpoint"), gate_id):
             interruptions.setdefault(interrupt_id, []).append(event)
 
     candidates: list[dict[str, object]] = []
@@ -418,7 +493,12 @@ def _latest_graph_gate_decision(
                 resumes,
                 current_checkpoint_ns=current_checkpoint_ns,
             )
-        if candidate is not None:
+        if candidate is not None and _decision_matches_source_epoch(
+            candidate,
+            source_gate_attempt_id=source_gate_attempt_id,
+            source_gate_tree_id=source_gate_tree_id,
+            require_source_epoch=require_source_epoch,
+        ):
             candidates.append(candidate)
     return max(candidates, key=_event_sequence, default=None)
 
@@ -735,6 +815,9 @@ def _apply_gate_decision(
     *,
     events_dir: Path | None = None,
     checkpoint_ns: str | None = None,
+    source_gate_attempt_id: str | None = None,
+    source_gate_tree_id: str | None = None,
+    require_source_epoch: bool = False,
 ) -> tuple[Verdict, str | None]:
     """Apply a valid human decision to a ``needs_human_review`` gate verdict."""
     if base_verdict != Verdict.NEEDS_HUMAN_REVIEW or is_codegen_hard_gate(gate_id):
@@ -745,6 +828,9 @@ def _apply_gate_decision(
         loc,
         events_dir=events_dir,
         checkpoint_ns=checkpoint_ns,
+        source_gate_attempt_id=source_gate_attempt_id,
+        source_gate_tree_id=source_gate_tree_id,
+        require_source_epoch=require_source_epoch,
     )
     if decision is None:
         return base_verdict, None
@@ -808,6 +894,10 @@ class GateEvaluationContext:
     # scoped to this namespace's ancestors; ``None`` preserves v1 callers that
     # have no graph checkpoint identity.
     checkpoint_ns: str | None = None
+    # v5 decision epochs bind the current committed tree (and resolved attempt).
+    committed_tree_id: str | None = None
+    event_schema_version: int | None = None
+    invocation_id: str | None = None
 
 
 class FrozenGateReport(BaseModel):
@@ -981,12 +1071,24 @@ def _view_scope(
         result = context.node_results.get(node_id)
         return result if isinstance(result, dict) else {}
 
+    def resolve_plan_assurance_state(
+        checks: object, review: object, data_knowledge: object, layer: object
+    ) -> str:
+        return plan_assurance_state(
+            checks,
+            review,
+            data_knowledge,
+            layer,
+            change_id=context.change_id,
+        )
+
     return Scope(
         scope_vars,
         file_exists=file_exists,
         gate_verdict=gate_verdict,
         node_result=node_result,
         capabilities_present=check_capabilities_present,
+        plan_assurance_state=resolve_plan_assurance_state,
     )
 
 
@@ -1016,6 +1118,26 @@ def _audited_reads_sha256(gate: GateDef, context: GateEvaluationContext) -> dict
     return hashes
 
 
+def _current_gate_attempt_id(
+    events: list[dict[str, object]],
+    *,
+    gate_id: str,
+    invocation_id: str | None,
+) -> str | None:
+    latest: str | None = None
+    for event in events:
+        if invocation_id is not None and event.get("invocation_id") != invocation_id:
+            continue
+        if event.get("type") != "task_attempt_succeeded":
+            continue
+        report = event.get("gate_report")
+        attempt_id = event.get("attempt_id")
+        if isinstance(report, Mapping) and report.get("gate_id") == gate_id and isinstance(attempt_id, str):
+            latest = attempt_id
+    return latest
+
+
+
 def _evaluate_gate_def(
     gate: GateDef,
     context: GateEvaluationContext,
@@ -1040,6 +1162,14 @@ def _evaluate_gate_def(
         path=context.change_dir,
         source="changes",
     )
+    require_source_epoch = (context.event_schema_version or 0) >= 5
+    source_attempt: str | None = None
+    source_tree = context.committed_tree_id
+    if require_source_epoch:
+        events = read_events_strict(context.audit_events_dir or context.change_dir)
+        source_attempt = _current_gate_attempt_id(
+            events, gate_id=gate_id, invocation_id=context.invocation_id
+        )
     upgraded, action = _apply_gate_decision(
         schema,
         gate_id,
@@ -1047,6 +1177,9 @@ def _evaluate_gate_def(
         verdict,
         events_dir=context.audit_events_dir,
         checkpoint_ns=context.checkpoint_ns,
+        source_gate_attempt_id=source_attempt,
+        source_gate_tree_id=source_tree,
+        require_source_epoch=require_source_epoch,
     )
     final_verdict = verdict if action is None else upgraded
     final_details = _details_with_stop_cause(

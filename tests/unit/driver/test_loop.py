@@ -63,10 +63,16 @@ def _patch_bundle(
     result: RunResult,
     latest_terminal: str | None = None,
     restart: str = "once",
+    drive_error: Exception | None = None,
 ) -> MagicMock:
     runtime = MagicMock()
     runtime.latest_root_invocation.return_value = latest
     runtime.invocation_terminal.return_value = latest_terminal
+    runtime.start_invocation.return_value = result.invocation_id
+    if drive_error is not None:
+        runtime.drive_started.side_effect = drive_error
+    else:
+        runtime.drive_started.return_value = result
     runtime.run.return_value = result
     runtime.resume.return_value = result
     entrypoint = MagicMock()
@@ -100,7 +106,8 @@ def test_completed_path_exit_0(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         adapter=NeverCalledInvoker(),
     )
     assert result.exit_code == EXIT_COMPLETED
-    runtime.run.assert_called_once()
+    runtime.start_invocation.assert_called_once()
+    runtime.drive_started.assert_called_once_with("inv-1")
     runtime.resume.assert_not_called()
     driver = read_driver_state(tmp_path / "qa" / "changes" / "CH-1")
     assert driver is not None
@@ -126,7 +133,7 @@ def test_resume_when_invocation_exists(tmp_path: Path, monkeypatch: pytest.Monke
         adapter=NeverCalledInvoker(),
     )
     assert result.exit_code == EXIT_COMPLETED
-    runtime.run.assert_not_called()
+    runtime.start_invocation.assert_not_called()
     runtime.resume.assert_called_once_with("inv-existing")
 
 
@@ -147,7 +154,7 @@ def test_once_entrypoint_refuses_completed_restart(tmp_path: Path, monkeypatch: 
     )
     assert result.exit_code == EXIT_ERROR
     assert result.reason is not None and "already completed" in result.reason
-    runtime.run.assert_not_called()
+    runtime.start_invocation.assert_not_called()
     runtime.resume.assert_not_called()
 
 
@@ -186,6 +193,7 @@ def test_runtime_error_exit_40(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     runtime = MagicMock()
     runtime.latest_root_invocation.return_value = None
     runtime.run.side_effect = GraphRuntimeError("boom")
+    runtime.start_invocation.side_effect = GraphRuntimeError("boom")
     bundle = MagicMock(runtime=runtime, compiled=MagicMock())
     monkeypatch.setattr(loop_mod, "build_graph_runtime", lambda **_kwargs: bundle)
     monkeypatch.setattr(
@@ -273,6 +281,78 @@ def test_adopt_lock_token_mismatch(tmp_path: Path) -> None:
     )
     assert result.exit_code == EXIT_ERROR
     assert "adopt-lock" in result.reason
+
+
+def test_on_root_bound_fires_after_start_before_drive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _prepare(tmp_path)
+    order: list[str] = []
+    runtime_mock = _patch_bundle(
+        monkeypatch, latest=None, result=_run_result(EXIT_COMPLETED, "completed", "done")
+    )
+    drive_result = _run_result(EXIT_COMPLETED, "completed", "done")
+
+    def drive_and_record(*args, **kwargs):  # noqa: ANN001, ANN202
+        order.append("drive")
+        return drive_result
+
+    runtime_mock.drive_started.side_effect = drive_and_record
+
+    def bind(invocation_id: str, entrypoint: str, started_new_root: bool) -> None:
+        order.append(f"bind:{invocation_id}:{entrypoint}:{started_new_root}")
+
+    result = run_workflow_loop(
+        project_root=tmp_path,
+        change_id="CH-1",
+        entrypoint="full",
+        adapter=NeverCalledInvoker(),
+        on_root_bound=bind,
+    )
+    assert result.exit_code == EXIT_COMPLETED
+    assert order == ["bind:inv-1:full:True", "drive"]
+
+
+def test_drive_fault_preserves_invocation_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from assurance_agent.workflow.graph.runtime import GraphRuntimeError
+
+    _prepare(tmp_path)
+    _patch_bundle(
+        monkeypatch,
+        latest=None,
+        result=_run_result(EXIT_ERROR, "failed", "boom"),
+        drive_error=GraphRuntimeError("drive failed"),
+    )
+    result = run_workflow_loop(
+        project_root=tmp_path,
+        change_id="CH-1",
+        entrypoint="full",
+        adapter=NeverCalledInvoker(),
+    )
+    assert result.exit_code == EXIT_ERROR
+    assert result.invocation_id == "inv-1"
+    assert result.started_new_root is True
+    assert "drive failed" in result.reason
+
+
+def test_resume_existing_root_does_not_mark_started_new_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _prepare(tmp_path)
+    _patch_bundle(
+        monkeypatch,
+        latest="inv-existing",
+        latest_terminal=None,
+        result=_run_result(EXIT_COMPLETED, "completed", "done"),
+    )
+    result = run_workflow_loop(
+        project_root=tmp_path,
+        change_id="CH-1",
+        entrypoint="full",
+        adapter=NeverCalledInvoker(),
+    )
+    assert result.started_new_root is False
+    assert result.invocation_id == "inv-1"
 
 
 def test_default_executors_removed() -> None:

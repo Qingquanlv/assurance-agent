@@ -8,6 +8,7 @@ the graph pointer into ``driver.json``, and delegates run/resume.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -57,6 +58,8 @@ class LoopResult:
     exit_code: int
     reason: str
     driver: DriverState | None = None
+    invocation_id: str | None = None
+    started_new_root: bool = False
 
 
 def build_driver_telemetry(event_type: str, run_id: str, **extra: object) -> dict:
@@ -78,6 +81,7 @@ def run_workflow_loop(
     adopt_lock_token: str | None = None,
     adapter_name: str | None = None,
     cli_model_override: str | None = None,
+    on_root_bound: Callable[[str, str, bool], None] | None = None,
 ) -> LoopResult:
     params = params or {}
     try:
@@ -130,7 +134,14 @@ def run_workflow_loop(
         build_driver_telemetry("driver_started", active.run_id, entrypoint=entrypoint),
     )
 
-    def finish(exit_code: int, reason: str, status: DriverStatus) -> LoopResult:
+    def finish(
+        exit_code: int,
+        reason: str,
+        status: DriverStatus,
+        *,
+        invocation_id: str | None = None,
+        started_new_root: bool = False,
+    ) -> LoopResult:
         nonlocal active
         active.status = status
         active.updated_at = now_iso()
@@ -152,7 +163,16 @@ def run_workflow_loop(
         finally:
             if owns_lock:
                 release_lock(change_dir)
-        return LoopResult(exit_code, reason, active)
+        return LoopResult(
+            exit_code,
+            reason,
+            active,
+            invocation_id=invocation_id,
+            started_new_root=started_new_root,
+        )
+
+    bound_invocation_id: str | None = None
+    started_new_root = False
 
     try:
         bundle = build_graph_runtime(
@@ -186,11 +206,15 @@ def run_workflow_loop(
                     # repeatable: start a fresh invocation instead of resuming.
                     latest = None
 
-        result = (
-            bundle.runtime.run(bundle.compiled, entrypoint, context)
-            if latest is None
-            else bundle.runtime.resume(latest)
-        )
+        if latest is None:
+            started_new_root = True
+            bound_invocation_id = bundle.runtime.start_invocation(bundle.compiled, entrypoint, context)
+            if on_root_bound is not None:
+                on_root_bound(bound_invocation_id, entrypoint, started_new_root)
+            result = bundle.runtime.drive_started(bound_invocation_id)
+        else:
+            result = bundle.runtime.resume(latest)
+            bound_invocation_id = result.invocation_id
         active = project_graph_pointer(
             active,
             invocation_id=result.invocation_id,
@@ -198,8 +222,26 @@ def run_workflow_loop(
             event_seq=result.status.event_seq,
             status=driver_status_for_graph(result.status.status),
         )
-        return finish(result.exit_code, result.reason, active.status)
+        return finish(
+            result.exit_code,
+            result.reason,
+            active.status,
+            invocation_id=bound_invocation_id,
+            started_new_root=started_new_root,
+        )
     except GraphRuntimeError as err:
-        return finish(EXIT_ERROR, str(err), "failed")
+        return finish(
+            EXIT_ERROR,
+            str(err),
+            "failed",
+            invocation_id=bound_invocation_id,
+            started_new_root=started_new_root,
+        )
     except Exception as err:  # noqa: BLE001 — driver must never leak; surface as EXIT_ERROR
-        return finish(EXIT_ERROR, str(err), "failed")
+        return finish(
+            EXIT_ERROR,
+            str(err),
+            "failed",
+            invocation_id=bound_invocation_id,
+            started_new_root=started_new_root,
+        )

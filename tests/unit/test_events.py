@@ -13,6 +13,7 @@ from assurance_agent.workflow.core.events import (
     read_events,
     read_events_strict,
 )
+from assurance_agent.workflow.core.migrate_events import migrate_graph_event_stream
 
 
 def _allocation(operation_id: str = "op-1") -> HealingAttemptAllocatedEvent:
@@ -247,3 +248,195 @@ def test_graph_event_requires_declared_fields(tmp_path: Path) -> None:
             change,
             {"source": "graph", "type": "task_attempt_started", "task_id": "missing-fields"},
         )
+
+
+def test_migration_accepts_v5_and_rejects_future_versions() -> None:
+    v5 = {
+        "type": "graph_invocation_started",
+        "invocation_id": "inv",
+        "entrypoint": "full",
+        "graph_id": "main",
+        "graph_digest": "d",
+        "event_schema_version": 5,
+        "ir_digest": "d",
+        "ingest_catalog_digest": "cat",
+        "contract_digests": {},
+        "policy_digest": "a" * 64,
+        "policy_origin": "project",
+        "gate_semantics_digest": "b" * 64,
+        "assurance_profile_digest": "c" * 64,
+        "params": {},
+        "params_sha256": "p",
+        "root_tree_id": "t",
+        "max_parallel_tasks": 1,
+        "checkpoint_ns": "inv",
+        "structural_path": "main",
+    }
+    migrated = migrate_graph_event_stream([v5])
+    assert migrated[0]["event_schema_version"] == 5
+    assert migrated[0]["policy_origin"] == "project"
+    assert migrated[0]["gate_semantics_object_id"] == ""
+    assert migrated[0]["topology_safety_semantics_digest"] == ""
+    assert "revision_transition_id" not in migrated[0]
+
+    incomplete_v6: dict[str, object] = dict(v5, event_schema_version=6)
+    with pytest.raises(ValueError, match="event_schema_version 6 requires complete"):
+        migrate_graph_event_stream([incomplete_v6])
+
+    future: dict[str, object] = dict(v5, event_schema_version=7)
+    with pytest.raises(ValueError, match="unsupported graph event_schema_version 7"):
+        migrate_graph_event_stream([future])
+
+
+def test_migration_accepts_complete_v6_bindings() -> None:
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "workflow" / "graph-events-v6.jsonl"
+    lines = [json.loads(line) for line in fixture.read_text(encoding="utf-8").splitlines() if line.strip()]
+    migrated = migrate_graph_event_stream(lines)
+    assert migrated[0]["event_schema_version"] == 6
+    assert migrated[0]["gate_semantics_object_id"]
+    assert migrated[0]["topology_safety_semantics_digest"]
+    assert migrated[0]["commit_safety_semantics_digest"]
+
+
+def test_migration_does_not_fabricate_v5_fields_for_legacy_events() -> None:
+    interrupted = {
+        "type": "graph_interrupted",
+        "invocation_id": "inv",
+        "checkpoint_ns": "inv",
+        "interrupt_id": "ir-1",
+        "node_id": "gate",
+        "checkpoint": "cp",
+        "actions": ["stop"],
+        "audited_reads_sha256": {},
+    }
+    resumed = {
+        "type": "graph_resumed",
+        "invocation_id": "inv",
+        "checkpoint_ns": "inv",
+        "interrupt_id": "ir-1",
+        "action": "stop",
+        "reason": "r",
+        "who": "u",
+        "audited_reads_sha256": {},
+    }
+    migrated = migrate_graph_event_stream([interrupted, resumed])
+    assert "revision_owner_invocation_id" not in migrated[0]
+    assert "source_gate_attempt_id" not in migrated[0]
+    assert "revision_transition_id" not in migrated[1]
+    assert migrated[1]["payload"] == {}
+
+
+def test_manual_plan_revision_event_requires_lineage_fields() -> None:
+    from assurance_agent.workflow.core.graph_events import (
+        GRAPH_EVENT_ADAPTER,
+        ManualPlanRevisionEvent,
+        ResumeAnchor,
+    )
+
+    anchor = ResumeAnchor(
+        invocation_id="leaf",
+        checkpoint_ns="root/branch-node/branch/cycle-node/leaf",
+        node_id="gate",
+        interrupt_id="ir-1",
+    )
+    event = ManualPlanRevisionEvent(
+        invocation_id="leaf",
+        checkpoint_ns="root/branch-node/branch/cycle-node/leaf",
+        revision_transition_id="rt-1",
+        interrupt_id="ir-1",
+        action="fix_and_proceed",
+        who="reviewer",
+        reason="fix plan",
+        audited_reads_sha256={"change:plans/x.yaml": "a" * 64},
+        source_gate_attempt_id="ga-1",
+        source_gate_tree_id="tree-src",
+        base_tree_id="tree-base",
+        target_tree_id="tree-target",
+        logical_paths=["change:plans/x.yaml"],
+        before_sha256={"change:plans/x.yaml": "b" * 64},
+        after_sha256={"change:plans/x.yaml": "c" * 64},
+        resume_anchors=[anchor],
+    )
+    assert event.type == "manual_plan_revision"
+    parsed = GRAPH_EVENT_ADAPTER.validate_python(event.model_dump(mode="json"))
+    assert isinstance(parsed, ManualPlanRevisionEvent)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"revision_transition_id": "rt", "revision_ordinal": 0}, "revision"),
+        ({"revision_transition_id": "rt", "revision_chain_length": 1}, "revision"),
+        ({"revision_ordinal": 0, "revision_chain_length": 1}, "revision"),
+        (
+            {"revision_transition_id": "rt", "revision_ordinal": 1, "revision_chain_length": 1},
+            "revision_ordinal",
+        ),
+        ({"source_gate_attempt_id": "ga-1"}, "source"),
+        ({"source_gate_tree_id": "tree-1"}, "source"),
+    ],
+)
+def test_graph_resumed_revision_and_source_invariants(overrides: dict[str, object], match: str) -> None:
+    from pydantic import ValidationError
+
+    from assurance_agent.workflow.core.graph_events import GraphResumedEvent
+
+    base: dict[str, object] = {
+        "type": "graph_resumed",
+        "invocation_id": "inv",
+        "checkpoint_ns": "inv",
+        "interrupt_id": "ir-1",
+        "action": "accept_risk",
+        "reason": "ok",
+        "who": "reviewer",
+        "audited_reads_sha256": {},
+    }
+    base.update(overrides)
+    with pytest.raises(ValidationError, match=match):
+        GraphResumedEvent.model_validate(base)
+
+
+def test_graph_interrupted_accepts_optional_revision_fields() -> None:
+    from assurance_agent.workflow.core.graph_events import GraphInterruptedEvent
+
+    event = GraphInterruptedEvent(
+        type="graph_interrupted",
+        invocation_id="leaf",
+        checkpoint_ns="leaf",
+        interrupt_id="ir-1",
+        node_id="gate",
+        checkpoint="fuzz-plan-gate",
+        actions=["fix_and_proceed", "accept_risk", "stop"],
+        audited_reads_sha256={},
+        revision_owner_invocation_id="leaf",
+        revision_base_tree_id="tree-base",
+        revision_view=".graph-runtime/revision-views/ir-1",
+        revision_paths=["change:plans/fuzz.yaml"],
+        revision_before_sha256={"change:plans/fuzz.yaml": "b" * 64},
+        source_gate_attempt_id="ga-1",
+        source_gate_tree_id="tree-src",
+    )
+    assert event.revision_owner_invocation_id == "leaf"
+    assert event.source_gate_attempt_id == "ga-1"
+
+
+def test_migration_backfills_empty_binding_fields_for_legacy_versions() -> None:
+    legacy = {
+        "type": "graph_invocation_started",
+        "invocation_id": "inv",
+        "entrypoint": "full",
+        "graph_id": "main",
+        "graph_digest": "d",
+        "event_schema_version": 2,
+        "contract_digests": {},
+        "params": {},
+        "params_sha256": "p",
+        "root_tree_id": "t",
+        "max_parallel_tasks": 1,
+        "checkpoint_ns": "inv",
+        "structural_path": "main",
+    }
+    migrated = migrate_graph_event_stream([legacy])[0]
+    assert migrated["policy_origin"] == ""
+    assert migrated["gate_semantics_digest"] == ""
+    assert migrated["assurance_profile_digest"] == ""

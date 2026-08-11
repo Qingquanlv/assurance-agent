@@ -40,3 +40,4 @@ class ExecutionManifest(BaseModel):
     test_files_sha256: dict[str, str] | None = None
     product_tree_sha256: str | None = None
     final_status: GateStatus | None = None
+    executed_at: AwareDatetime | None = None

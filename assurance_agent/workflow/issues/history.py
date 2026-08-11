@@ -9,30 +9,32 @@ mismatch. This module has no ledger writer path.
 from __future__ import annotations
 
 import hashlib
-import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from pydantic import ValidationError
-
 from assurance_agent.artifacts.models.issues import IssueOccurrence, Observation, Problem
 from assurance_agent.change_location import ChangeNotFoundError, resolve_change
 from assurance_agent.exceptions import AaError
-from assurance_agent.workflow.issues.events import (
-    CHANGE_ISSUE_EVENT_ADAPTER,
-    PROBLEM_EVENT_ADAPTER,
+from assurance_agent.artifacts.models.issue_events import (
     ChangeIssueEvent,
     IssueAnalysisFailedEvent,
-    LedgerIntegrityError,
     ObservationRecordedEvent,
     OccurrenceDetectedEvent,
     OccurrenceLinkedEvent,
     ProblemEvent,
     ProblemMergedEvent,
     ProjectSyncPendingEvent,
-    read_change_issue_events,
 )
+from assurance_agent.evidence.issue_replay import (
+    IssueLedgerIntegrityError as LedgerIntegrityError,
+    dump_projection,
+    project_change_issues,
+    project_problems,
+    read_change_issue_events_from_bytes as _read_change_issue_events_from_bytes,
+    read_problem_events_from_bytes as _read_problem_events_from_bytes,
+)
+from assurance_agent.workflow.issues.events import read_change_issue_events
 from assurance_agent.workflow.issues.history_models import (
     IssueEvidenceSlice,
     IssueHistoryIntegrity,
@@ -40,11 +42,6 @@ from assurance_agent.workflow.issues.history_models import (
     IssueSourceDescriptor,
     IssueTypedEvents,
     IssueWindowSelection,
-)
-from assurance_agent.workflow.issues.projection import (
-    dump_projection,
-    project_change_issues,
-    project_problems,
 )
 
 _REVIEWISH_PROBLEM_TYPES = frozenset(
@@ -86,51 +83,12 @@ def _member_gap_reason(change_id: str, execution_status: str, domain: str, reaso
 
 def read_problem_events_from_bytes(data: bytes) -> list[ProblemEvent]:
     """Strictly validate Project Problem events from in-memory ledger bytes."""
-    return _read_events_from_bytes(data, PROBLEM_EVENT_ADAPTER)  # type: ignore[return-value]
+    return list(_read_problem_events_from_bytes(data))
 
 
 def read_change_issue_events_from_bytes(data: bytes) -> list[ChangeIssueEvent]:
     """Strictly validate Change Issue events from in-memory ledger bytes."""
-    return _read_events_from_bytes(data, CHANGE_ISSUE_EVENT_ADAPTER)  # type: ignore[return-value]
-
-
-def _read_events_from_bytes(data: bytes, adapter: object) -> list[object]:
-    if not data:
-        return []
-    text = data.decode("utf-8")
-    events: list[object] = []
-    seen_event_ids: set[str] = set()
-    seen_idempotency_keys: set[str] = set()
-    expected_seq = 1
-    for line_no, raw_line in enumerate(text.splitlines(), start=1):
-        if not raw_line.strip():
-            raise LedgerIntegrityError(f"<bytes> line {line_no}: blank hole in ledger")
-        try:
-            payload = json.loads(raw_line)
-        except json.JSONDecodeError as exc:
-            raise LedgerIntegrityError(f"<bytes> line {line_no}: invalid JSON: {exc}") from exc
-        if not isinstance(payload, dict):
-            raise LedgerIntegrityError(f"<bytes> line {line_no}: event is not a JSON object")
-        seq = payload.get("seq")
-        if not isinstance(seq, int) or isinstance(seq, bool) or seq != expected_seq:
-            raise LedgerIntegrityError(f"<bytes> line {line_no}: expected seq {expected_seq}, got {seq!r}")
-        try:
-            event = adapter.validate_python(payload)  # type: ignore[attr-defined]
-        except ValidationError as exc:
-            raise LedgerIntegrityError(f"<bytes> line {line_no}: invalid event: {exc}") from exc
-        event_id: str = event.event_id
-        idempotency_key: str = event.idempotency_key
-        if event_id in seen_event_ids:
-            raise LedgerIntegrityError(f"<bytes> line {line_no}: duplicate event_id {event_id!r}")
-        if idempotency_key in seen_idempotency_keys:
-            raise LedgerIntegrityError(
-                f"<bytes> line {line_no}: duplicate idempotency_key {idempotency_key!r}"
-            )
-        seen_event_ids.add(event_id)
-        seen_idempotency_keys.add(idempotency_key)
-        events.append(event)
-        expected_seq += 1
-    return events
+    return list(_read_change_issue_events_from_bytes(data))
 
 
 def _sha256_bytes(data: bytes) -> str:

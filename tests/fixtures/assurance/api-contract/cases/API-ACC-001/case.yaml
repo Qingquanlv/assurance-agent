@@ -1,0 +1,25 @@
+schema_version: "1.0"
+added:
+  - case_id: API-ACC-001
+    title: Create account succeeds for admin
+    priority: P0
+    severity: high
+    type: API
+    objective: Verify POST /accounts creates an account for an authenticated admin.
+    summary: Admin token creates an account and receives 201 with the created body.
+    preconditions:
+      - Backend is reachable
+      - Admin auth token is available from `.aa/data-knowledge.yaml`
+    steps:
+      - Acquire admin auth using declared L1 auth capability
+      - POST /accounts with a valid payload from make_account
+      - Observe status and response body
+    assertions:
+      - assert_ideal HTTP 201 with created account body
+      - Must not return unhandled 5xx
+    automation:
+      required: true
+      framework: pytest
+      status: planned
+modified: []
+removed: []

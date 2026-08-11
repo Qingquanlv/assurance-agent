@@ -1,51 +1,46 @@
-"""inspect/trace-projection.json (must_compat): traceability fact projection.
+"""inspect/trace-projection.json — fact-only case↔execution↔issue projection.
 
-Transcribed from spec v3 §6 (`docs/superpowers/specs/2026-07-29-traceability-
-evidence-projection-design.md`) with three plan-level amendments:
+Projection carries no policy judgment and no wall-clock freshness; consumers
+apply ``evaluate_sufficiency(projection, policy, *, as_of)`` at the use site.
 
-- ``TraceRow.failures`` is a tuple (D5), superseding spec's singular
-  ``failure``: the same case can carry several ``FailureEntry`` rows within
-  one reconciled batch, kept in the authoritative order they appear in the
-  input bytes (that input order is itself deterministic, so no further
-  sorting rule is needed).
-- ``TraceExecution`` carries ``ts_source`` recording which raw field supplied
-  ``ts`` (an explicit ``executed_at`` vs. a legacy UTC value parsed out of
-  ``batch_id``); the timezone/recency policy that consumes this is Task 3,
-  not this module.
-- ``TraceRow.problem_facts`` carries the §9.4/§9.5 join *facts* — every
-  canonical Problem a case reaches, whatever its status or classification —
-  next to ``open_problem_ids``, which stays the deduped routing subset. Spec
-  §9 asks for both ("``resolved``/``not_an_issue``/``accepted_risk`` are
-  recorded as facts but do not count as open", "test_bug/environment_issue
-  record the fact without blocking"), and a projection that only published the
-  routing subset would force every consumer that needs a different policy —
-  the report's risk view treats ``accepted_risk`` as active, for instance — to
-  re-read the ledger. The field defaults to ``()`` so a projection written
-  before it still validates.
+Wire boundary: V1 remains the legacy reader; V2 adds recovery gap codes and
+semantic validators. Registry-facing dispatch is ``TraceProjectionDocument``.
 
-``TraceGap.code`` is a closed enum: the ten codes spec v3 §6 documents, plus
-two plan additions — ``result_identity_mismatch`` (a result file's own
-change/batch identity does not match the manifest that selected it) and
-``problem_alias_invalid`` (a problem merge/alias reference is a cycle or
-points at a problem_id that does not exist).
+Union notes (merge of assemble enrichments + V6 variants):
+- ``TraceRow.problem_facts`` carries the §9.4/§9.5 join facts next to
+  ``open_problem_ids`` (assemble/OURS).
+- ``TraceTestRef`` stores ``test_name`` (assemble/OURS tree scan) and accepts
+  the V6 ``function`` alias on input.
+- ``TraceIntegrity`` accepts both ``complete_with_gaps`` (assemble) and
+  ``degraded`` (V6) spellings.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    RootModel,
+    model_validator,
+)
+
+from assurance_agent.artifacts.models.assurance import CASE_TYPES, LAYER_NAMES, CaseType, LayerName
+from assurance_agent.artifacts.models.common import NonEmptyStr
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
 
+StrictNonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
+StrictPositiveInt = Annotated[int, Field(strict=True, gt=0)]
+
 TraceTarget = Literal["api", "e2e", "fuzz", "performance"]
 TraceCaseType = Literal["API", "E2E", "Fuzz", "Performance"]
-# Named because a second artifact carries the same three levels
-# (`trace_sufficiency.TraceSufficiencyFacts.integrity`), and two inline copies of
-# a closed vocabulary is one copy too many to keep in step.
-TraceIntegrity = Literal["complete", "complete_with_gaps", "incomplete"]
-TraceGapCode = Literal[
+
+TraceGapCodeV1 = Literal[
     "result_missing",
     "result_corrupt",
     "batch_id_unparseable",
@@ -60,26 +55,32 @@ TraceGapCode = Literal[
     "problem_alias_invalid",
 ]
 
+TraceGapCodeV2 = (
+    TraceGapCodeV1
+    | Literal[
+        "failure_analysis_identity_mismatch",
+        "issues_snapshot_identity_mismatch",
+        "issue_analysis_failed",
+        "project_sync_pending",
+        "issue_reconcile_failed",
+        "issue_reconciliation_unavailable",
+    ]
+)
+TraceSummaryGapCode = TraceGapCodeV1 | TraceGapCodeV2
 
-class TraceTestRef(BaseModel):
-    """One current-tree test function mapped to a case_id (spec §7 scan hit)."""
+# Legacy aliases — V1 only; never repoint to V2.
+TraceGapCode = TraceGapCodeV1
 
-    model_config = _FROZEN
+# Accept both assemble (complete_with_gaps) and V6 (degraded) vocabularies.
+TraceIntegrity = Literal["complete", "complete_with_gaps", "degraded", "incomplete"]
 
-    file: str
-    test_name: str
-
-
-class UnmappedTest(BaseModel):
-    """A test that executed but did not resolve to any case_id via
-    ``extract_case_id`` (spec §5's minimal evidence-side DTO). Distinct from
-    ``TraceTestRef``, which records a *current-tree* scan hit that did
-    resolve to a case_id (spec §7)."""
-
-    model_config = _FROZEN
-
-    file: str
-    test_name: str
+_CASE_TYPE_TO_TARGET: dict[str, str] = {
+    "API": "api",
+    "E2E": "e2e",
+    "Fuzz": "fuzz",
+    "Performance": "performance",
+}
+_ALLOWED_GAP_TARGETS = frozenset(LAYER_NAMES)
 
 
 class TraceExecution(BaseModel):
@@ -93,9 +94,6 @@ class TraceExecution(BaseModel):
 
 
 class TraceFailure(BaseModel):
-    """Populated only when phase=reconciled; category is a free string (e.g.
-    ``classification_unavailable`` for performance, per spec M3)."""
-
     model_config = _FROZEN
 
     category: str
@@ -108,15 +106,7 @@ class TraceProblemFact(BaseModel):
     Populated only when phase=reconciled. ``problem_id`` is the *canonical*
     problem — the end of the ``merged_into`` alias chain — and
     ``source_problem_ids`` lists every problem_id the change's occurrences
-    actually referenced to get there (including the canonical id itself when an
-    occurrence named it directly), sorted, so the trail back to the occurrence
-    survives the alias collapse.
-
-    ``status`` and ``classification`` are free strings, copied from the ledger
-    verbatim: narrowing them to today's literals would turn a ledger written by
-    a later release into a corrupt document. ``open_product_bug`` is this
-    projection's §9.4 verdict on those two values, recorded so a consumer never
-    has to re-derive the allowlist.
+    actually referenced to get there.
     """
 
     model_config = _FROZEN
@@ -129,14 +119,48 @@ class TraceProblemFact(BaseModel):
     open_product_bug: bool
 
 
-class TraceGap(BaseModel):
+class TraceGapV1(BaseModel):
     model_config = _FROZEN
 
-    code: TraceGapCode
+    code: TraceGapCodeV1
     source: str
     batch_id: str | None = None
     target: str | None = None
     detail: str = ""
+
+
+class TraceGapV2(BaseModel):
+    model_config = _FROZEN
+
+    code: TraceGapCodeV2
+    source: str
+    batch_id: str | None = None
+    target: str | None = None
+    detail: str = ""
+
+
+TraceGap = TraceGapV1
+
+
+class TraceTestRef(BaseModel):
+    """One current-tree test function mapped to a case_id (spec §7 scan hit)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
+
+    file: str
+    test_name: str = Field(validation_alias=AliasChoices("test_name", "function"))
+
+    @property
+    def function(self) -> str:
+        """V6 alias for ``test_name``."""
+        return self.test_name
+
+
+class UnmappedTest(BaseModel):
+    model_config = _FROZEN
+
+    file: str
+    test_name: str
 
 
 class TraceRow(BaseModel):
@@ -146,17 +170,16 @@ class TraceRow(BaseModel):
     module: str
     case_type: TraceCaseType
     automation_required: bool
-    assertions: tuple[str, ...]
-    covering_tests: tuple[TraceTestRef, ...]
+    assertions: tuple[str, ...] = ()
+    covering_tests: tuple[TraceTestRef, ...] = ()
     coverage_state: Literal["covered", "uncovered", "not_required"]
-    latest_execution: TraceExecution | None
-    freshest_pass: TraceExecution | None
+    latest_execution: TraceExecution | None = None
+    freshest_pass: TraceExecution | None = None
     presence_in_current_batch: Literal["executed", "not_in_current_batch", "target_not_selected"]
-    atemporal_kinds_present: tuple[str, ...]
+    atemporal_kinds_present: tuple[str, ...] = ()
     failures: tuple[TraceFailure, ...] = ()
-    # The routing subset: `problem_facts` entries whose `open_product_bug` is
-    # true, deduplicated by fingerprint (spec §9.5) — see `evidence/trace.py`.
-    open_problem_ids: tuple[str, ...]
+    # Routing subset: problem_facts with open_product_bug, fingerprint-deduped.
+    open_problem_ids: tuple[str, ...] = ()
     problem_facts: tuple[TraceProblemFact, ...] = ()
 
 
@@ -168,18 +191,221 @@ class TraceSource(BaseModel):
     sha256: str | None = None
 
 
-class TraceProjection(BaseModel):
+def _gap_identity(gap: TraceGapV1 | TraceGapV2) -> tuple[str, str, str, str, str]:
+    return (
+        gap.code,
+        gap.source,
+        gap.batch_id or "",
+        gap.target or "",
+        gap.detail,
+    )
+
+
+def validate_unique_case_ids(rows: tuple[TraceRow, ...]) -> None:
+    seen: set[str] = set()
+    for row in rows:
+        if row.case_id in seen:
+            raise ValueError(f"duplicate case_id: {row.case_id}")
+        seen.add(row.case_id)
+
+
+def validate_unique_source_paths(sources: tuple[TraceSource, ...]) -> None:
+    seen: set[str] = set()
+    for source in sources:
+        if source.path in seen:
+            raise ValueError(f"duplicate TraceSource path: {source.path}")
+        seen.add(source.path)
+
+
+def validate_unique_gaps(gaps: tuple[TraceGapV1, ...] | tuple[TraceGapV2, ...]) -> None:
+    seen: set[tuple[str, str, str, str, str]] = set()
+    for gap in gaps:
+        key = _gap_identity(gap)
+        if key in seen:
+            raise ValueError(f"duplicate gap: {key}")
+        seen.add(key)
+
+
+def validate_row_semantics(phase: Literal["execution", "reconciled"], rows: tuple[TraceRow, ...]) -> None:
+    for row in rows:
+        if row.automation_required:
+            if row.coverage_state == "not_required":
+                raise ValueError(f"row {row.case_id}: automation_required requires covered/uncovered")
+        elif row.coverage_state != "not_required":
+            raise ValueError(f"row {row.case_id}: non-automated row must use coverage_state=not_required")
+
+        if phase == "execution" and (row.failures or row.open_problem_ids or row.problem_facts):
+            raise ValueError(f"row {row.case_id}: execution phase must not carry failure/problem enrichment")
+
+        expected_target = _CASE_TYPE_TO_TARGET[row.case_type]
+        for execution in (row.latest_execution, row.freshest_pass):
+            if execution is not None and execution.target != expected_target:
+                raise ValueError(
+                    f"row {row.case_id}: execution target {execution.target!r} "
+                    f"does not match case_type {row.case_type!r}"
+                )
+
+
+def validate_gap_targets(gaps: tuple[TraceGapV1, ...] | tuple[TraceGapV2, ...]) -> None:
+    for gap in gaps:
+        if gap.target is not None and gap.target not in _ALLOWED_GAP_TARGETS:
+            raise ValueError(f"gap target must be empty or one of {LAYER_NAMES}: {gap.target!r}")
+
+
+class TraceProjectionV1(BaseModel):
     model_config = _FROZEN
 
-    schema_version: Literal["1"]
+    schema_version: Literal["1"] = "1"
     change_id: str
     phase: Literal["execution", "reconciled"]
     authoritative_batch_id: str
-    sources: tuple[TraceSource, ...]
-    rows: tuple[TraceRow, ...]
-    unmapped_tests: tuple[UnmappedTest, ...]
-    gaps: tuple[TraceGap, ...]
+    sources: tuple[TraceSource, ...] = ()
+    rows: tuple[TraceRow, ...] = ()
+    unmapped_tests: tuple[UnmappedTest, ...] = ()
+    gaps: tuple[TraceGapV1, ...] = ()
     integrity: TraceIntegrity
+
+
+class TraceProjectionV2(BaseModel):
+    model_config = _FROZEN
+
+    schema_version: Literal["2"] = "2"
+    change_id: str
+    phase: Literal["execution", "reconciled"]
+    authoritative_batch_id: str
+    sources: tuple[TraceSource, ...] = ()
+    rows: tuple[TraceRow, ...] = ()
+    unmapped_tests: tuple[UnmappedTest, ...] = ()
+    gaps: tuple[TraceGapV2, ...] = ()
+    integrity: TraceIntegrity
+
+    @model_validator(mode="after")
+    def _validate_semantics(self) -> Self:
+        validate_unique_case_ids(self.rows)
+        validate_unique_source_paths(self.sources)
+        validate_unique_gaps(self.gaps)
+        validate_row_semantics(self.phase, self.rows)
+        validate_gap_targets(self.gaps)
+        return self
+
+
+TraceProjection = TraceProjectionV1
+
+TraceProjectionLike = TraceProjectionV1 | TraceProjectionV2
+
+TraceProjectionVariant = Annotated[
+    TraceProjectionV1 | TraceProjectionV2,
+    Field(discriminator="schema_version"),
+]
+
+
+class TraceProjectionDocument(RootModel[TraceProjectionVariant]):
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_missing_version(cls, raw: object) -> object:
+        if isinstance(raw, dict) and "schema_version" not in raw:
+            return {**raw, "schema_version": "1"}
+        return raw
+
+
+def load_trace_projection_document(raw: object) -> TraceProjectionLike:
+    return TraceProjectionDocument.model_validate(raw).root
+
+
+class TraceGapAggregate(BaseModel):
+    model_config = _FROZEN
+
+    total: StrictNonNegativeInt
+    by_code: dict[TraceSummaryGapCode, StrictPositiveInt]
+
+    @model_validator(mode="after")
+    def _total_matches_breakdown(self) -> Self:
+        if self.total != sum(self.by_code.values()):
+            raise ValueError("gap total must equal by_code sum")
+        return self
+
+
+class TraceLayerFacts(BaseModel):
+    model_config = _FROZEN
+
+    layer: LayerName
+    case_type: CaseType
+    total: StrictNonNegativeInt
+    automated: StrictNonNegativeInt
+    covered: StrictNonNegativeInt
+    uncovered: StrictNonNegativeInt
+    not_required: StrictNonNegativeInt
+    current_executed: StrictNonNegativeInt
+    current_not_present: StrictNonNegativeInt
+    target_not_selected: StrictNonNegativeInt
+    latest_passed: StrictNonNegativeInt
+    latest_failed: StrictNonNegativeInt
+    latest_skipped: StrictNonNegativeInt
+    never_run: StrictNonNegativeInt
+    failure_rows: StrictNonNegativeInt
+    failure_links: StrictNonNegativeInt
+    open_problem_rows: StrictNonNegativeInt
+    open_problem_links: StrictNonNegativeInt
+    unique_open_problems: StrictNonNegativeInt
+    gaps: TraceGapAggregate
+
+    @model_validator(mode="after")
+    def _validate_partitions(self) -> Self:
+        if self.automated != self.covered + self.uncovered:
+            raise ValueError("automated must equal covered + uncovered")
+        if self.total != self.covered + self.uncovered + self.not_required:
+            raise ValueError("total must equal covered + uncovered + not_required")
+        if self.total != (self.current_executed + self.current_not_present + self.target_not_selected):
+            raise ValueError("total must equal current presence partition")
+        if self.total != (self.latest_passed + self.latest_failed + self.latest_skipped + self.never_run):
+            raise ValueError("total must equal latest status partition")
+        if self.failure_rows > self.total:
+            raise ValueError("failure_rows cannot exceed total")
+        if self.failure_links < self.failure_rows:
+            raise ValueError("failure_links cannot be less than failure_rows")
+        if self.open_problem_rows > self.total:
+            raise ValueError("open_problem_rows cannot exceed total")
+        if self.open_problem_links < self.open_problem_rows:
+            raise ValueError("open_problem_links cannot be less than open_problem_rows")
+        if self.unique_open_problems > self.open_problem_links:
+            raise ValueError("unique_open_problems cannot exceed open_problem_links")
+        if self.gaps.total != sum(self.gaps.by_code.values()):
+            raise ValueError("gap total must equal by_code sum")
+        return self
+
+
+class TraceLayerFactSummary(BaseModel):
+    model_config = _FROZEN
+
+    schema_version: Literal["1"] = "1"
+    change_id: NonEmptyStr
+    phase: Literal["execution", "reconciled"]
+    # Matches TraceProjection: fold may emit "" when the manifest is absent.
+    authoritative_batch_id: str
+    source_projection_digest: NonEmptyStr
+    projection_integrity: TraceIntegrity
+    layers: tuple[TraceLayerFacts, ...]
+    global_gaps: TraceGapAggregate
+
+    @model_validator(mode="after")
+    def _validate_layers(self) -> Self:
+        if len(self.layers) != len(LAYER_NAMES):
+            raise ValueError("layers must contain exactly four layer rows")
+        if tuple(layer.layer for layer in self.layers) != LAYER_NAMES:
+            raise ValueError("layers must follow LAYER_NAMES order")
+        if tuple(layer.case_type for layer in self.layers) != CASE_TYPES:
+            raise ValueError("layers must follow CASE_TYPES order")
+        if self.phase == "execution":
+            for layer in self.layers:
+                if (
+                    layer.failure_rows
+                    or layer.failure_links
+                    or layer.open_problem_rows
+                    or layer.open_problem_links
+                    or layer.unique_open_problems
+                ):
+                    raise ValueError("execution phase failure/problem counts must be zero")
+        return self
 
 
 __all__ = [
@@ -187,13 +413,32 @@ __all__ = [
     "TraceExecution",
     "TraceFailure",
     "TraceGap",
+    "TraceGapAggregate",
     "TraceGapCode",
+    "TraceGapCodeV1",
+    "TraceGapCodeV2",
+    "TraceGapV1",
+    "TraceGapV2",
     "TraceIntegrity",
+    "TraceLayerFactSummary",
+    "TraceLayerFacts",
     "TraceProblemFact",
     "TraceProjection",
+    "TraceProjectionDocument",
+    "TraceProjectionLike",
+    "TraceProjectionV1",
+    "TraceProjectionV2",
+    "TraceProjectionVariant",
     "TraceRow",
     "TraceSource",
+    "TraceSummaryGapCode",
     "TraceTarget",
     "TraceTestRef",
     "UnmappedTest",
+    "load_trace_projection_document",
+    "validate_gap_targets",
+    "validate_row_semantics",
+    "validate_unique_case_ids",
+    "validate_unique_gaps",
+    "validate_unique_source_paths",
 ]

@@ -95,6 +95,8 @@ aa workflow run --change <id> --entrypoint full --adapter opencode --server http
 | `aa config print` | 原样打印 `.aa/config.yaml` |
 | `aa validate --change <id> [--phase <p>] [--artifact <rel>] [--json]` | 确定性校验 change 产物；退出码 0 通过 / 1 失败、缺失或零注册产物 / 2 用法错误 |
 | `aa status --change <id> [--next] [--json]` | GraphStatus 投影（pending tasks / interrupts / next retry）；`--next` 只打印待办；退出码 0 running/completed / 20 stopped / 30 interrupted / 40 failed（命令或数据错误为 40） |
+| `aa trace --change <id> [--json] [--type API\|E2E\|Fuzz\|Performance] [--only-gaps]` | 现场 fold execution 相位 trace 投影（只读；与 status 的 ledger 投影分离） |
+| `aa verify --change <id> [--json]` | 现场 fold reconciled 相位投影并裁决证据充分性；退出码 0 pass / 30 needs_human / 40 fail |
 | `aa gate check --change <id> --node-path <p> [--json]` | 返回该节点 ledger 冻结的 gate 报告（拒绝重裁可变文件）；退出码 0 pass/enter/exit/skip / 30 needs_fix/needs_human_review/continue / 40 reject/stop |
 | `aa state ...` | 非图进度辅助（如 configure）；禁止用 apply/heal 伪造进度 |
 | `aa decide --change <id> ...` | 非图策略决定（如 `allow_test_changes`）；图内人工裁决走 `workflow resume --interrupt` |
@@ -108,8 +110,9 @@ aa workflow run --change <id> --entrypoint full --adapter opencode --server http
 | `aa workflow run --change <id> --entrypoint full\|intake\|execute\|case\|archive\|retro --adapter opencode\|headless [...]` | GraphRuntime 主循环；退出码 0 completed / 20 stopped / 30 interrupted / 40 error |
 | `aa workflow run --detach ...` | detached 后台启动（OpenCode `workflow_start`；立刻返回启动成败） |
 | `aa workflow status --change <id>` | deprecated 别名（隐藏，一个版本后移除）；用 `aa status` |
-| `aa workflow resume --change <id> [--interrupt <id> --action <a> --reason <text>]` | 续跑或解决 interrupt |
+| `aa workflow resume --change <id> [--interrupt <id> --action <a> --reason <text>]` | 续跑或解决 interrupt；unbound legacy commit-safety work may return `legacy_commit_safety_semantics_unbound` |
 | `aa workflow import-checkpoint --change <id> --manifest <path>` | 校验后导入 fixture/benchmark checkpoint |
+| `aa workflow supersede --change <id> --action rerun-v6\|stop --who <who> --reason <text>` | Sole audited legacy exit: `rerun-v6` starts one replacement root; `stop` is terminal only |
 | `aa skill refresh [--sync-agents] [--dry-run]` | 同步 skills 到 `skills/`（始终）；`--sync-agents` 追加 `.opencode/{agents,tools,plugins}` |
 | `aa eval run\|plan\|report ...` | AI Eval 框架（权威文档 `docs/eval.md`） |
 | `aa retro [--change <id>... \| --since/--until \| --last N] [--retro-id <id>] [--dry-run] [--json]` | 触发独立 Retro 图；写当前 run 的 `qa/retro/<id>/context.json`（及 propose/reconcile 产物） |
@@ -211,22 +214,24 @@ uv run pre-commit run -a      # 本地一键跑 ruff + pyright
 bash scripts/packaging_smoke_test.sh   # 构建 wheel + 全新环境安装 + 源码目录外运行
 ```
 
-分层契约（import-linter）：`cli → commands → artifacts → workflow → config → resources`，禁止反向依赖。
+分层契约（import-linter）：`cli → commands → eval → risk → workflow → verification → evidence → artifacts → config → resources`，禁止反向依赖。
 
 核心模块：
 
 | 目录 | 说明 |
 |---|---|
 | `assurance_agent/commands/` | 每个子命令一个模块（只做参数解析与输出） |
-| `assurance_agent/artifacts/` | 产物 pydantic 契约 + 路径注册表 + `aa validate` |
+| `assurance_agent/eval/` | AI Eval 框架 |
+| `assurance_agent/risk/` | Explore context 聚合与 advisory 校验 |
 | `assurance_agent/workflow/graph/` | GraphRuntime：schema v2 编译、Plan/Execute/Update superstep 调度、checkpoint/ledger、handlers |
 | `assurance_agent/workflow/orchestration/` | gate 裁决、DSL 解释器、共享 schema 模型（graph 包单向复用其语义） |
 | `assurance_agent/workflow/core/` | workflow-state、events、case ID、技能同步 |
 | `assurance_agent/workflow/driver/` | `aa workflow run` 主循环、headless/opencode adapter、detached、lock、resume |
 | `assurance_agent/workflow/execution/` | pytest / playwright / schemathesis / locust runner |
 | `assurance_agent/workflow/report/` | 失败分类、Quality Score、报告生成 |
-| `assurance_agent/risk/` | Explore context 聚合与 advisory 校验 |
-| `assurance_agent/eval/` | AI Eval 框架 |
+| `assurance_agent/verification/` | 契约校验、assert_ideal、plan-check 渲染 |
+| `assurance_agent/evidence/` | trace fold、证据充分性、verify 裁决 |
+| `assurance_agent/artifacts/` | 产物 pydantic 契约 + 路径注册表 + `aa validate` |
 | `assurance_agent/retro/` `assurance_agent/workflow/improvements/` | 独立 Retro 证据收集 + Project Improvement Ledger |
 | `assurance_agent/_resources/` | 运行时资源唯一源（schemas / skills / opencode） |
 
@@ -248,3 +253,18 @@ bash scripts/packaging_smoke_test.sh   # 构建 wheel + 全新环境安装 + 源
 | `perf_threshold_exceeded` | ✗ | 压测超阈值 |
 
 完整分类规则表见 `docs/schemas.md` 与打包的失败分类规则数据文件。
+
+---
+
+## Four-layer assurance (v6) notes
+
+- Docs: `docs/schemas.md` (v6 fields / validators / effects) and
+  `docs/release-notes/2026-08-four-layer-assurance.md`.
+- Eval hard metrics and evidence-export algorithm: `docs/eval.md`.
+- Layer selection default is `api` + `e2e` via `selection_normalizer/v1`;
+  layers are `api`, `e2e`, `fuzz`, `performance`.
+- Declared-only assurance inputs; generated-files validators
+  `generated_files_candidate/v1` / `codegen_fix_candidate/v1`; durable effects
+  `healing_allocation/v2`, `fixer_proposal_approved/v1`, `heal_record_apply/v2`.
+- OpenCode configuration/request binding is what CI proves; third-party sandbox
+  enforcement beyond that surface is outside CI proof.

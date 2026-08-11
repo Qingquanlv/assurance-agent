@@ -36,7 +36,7 @@ from assurance_agent.artifacts.models.issues import (
     ProblemProjection,
     ProblemStatus,
 )
-from assurance_agent.workflow.issues.events import (
+from assurance_agent.artifacts.models.issue_events import (
     ProblemAssessmentConfirmedEvent,
     ProblemEvent,
     ProblemMarkedNotAnIssueEvent,
@@ -46,6 +46,7 @@ from assurance_agent.workflow.issues.events import (
     ProblemVerificationRequestedEvent,
     ProblemWorkStartedEvent,
 )
+from assurance_agent.evidence.issue_identity import event_id
 from assurance_agent.workflow.issues.transitions import (
     InvalidTransitionError,
     StaleVersionError,
@@ -145,10 +146,6 @@ def build_problem_review_context(
 
 def _utc_now() -> str:
     return datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _event_id(idempotency_key: str) -> str:
-    return "EVT-" + hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:16]
 
 
 def _evidence_digest(evidence_refs: list[str]) -> str:
@@ -331,7 +328,7 @@ def _validate_human_transition_action(
 
     evidence_digest = _evidence_digest(evidence_refs)
     idem_key = f"review:{action}:{context.problem_id}:{expected_version}:{evidence_digest}"
-    event_id = _event_id(idem_key)
+    derived_event_id = event_id(idem_key)
 
     event: ProblemEvent
 
@@ -339,7 +336,7 @@ def _validate_human_transition_action(
         event = ProblemAssessmentConfirmedEvent(
             schema_version="1.0",
             seq=1,
-            event_id=event_id,
+            event_id=derived_event_id,
             idempotency_key=idem_key,
             ts=ts,
             evidence_digest=evidence_digest,
@@ -355,7 +352,7 @@ def _validate_human_transition_action(
         event = ProblemMarkedNotAnIssueEvent(
             schema_version="1.0",
             seq=1,
-            event_id=event_id,
+            event_id=derived_event_id,
             idempotency_key=idem_key,
             ts=ts,
             evidence_digest=evidence_digest,
@@ -369,7 +366,7 @@ def _validate_human_transition_action(
         event = ProblemRiskAcceptedEvent(
             schema_version="1.0",
             seq=1,
-            event_id=event_id,
+            event_id=derived_event_id,
             idempotency_key=idem_key,
             ts=ts,
             evidence_digest=evidence_digest,
@@ -383,7 +380,7 @@ def _validate_human_transition_action(
         event = ProblemWorkStartedEvent(
             schema_version="1.0",
             seq=1,
-            event_id=event_id,
+            event_id=derived_event_id,
             idempotency_key=idem_key,
             ts=ts,
             evidence_digest=evidence_digest,
@@ -397,7 +394,7 @@ def _validate_human_transition_action(
         event = ProblemReopenedEvent(
             schema_version="1.0",
             seq=1,
-            event_id=event_id,
+            event_id=derived_event_id,
             idempotency_key=idem_key,
             ts=ts,
             evidence_digest=evidence_digest,
@@ -450,12 +447,12 @@ def _validate_merge_action(
     evidence_refs = _require_evidence_refs(payload)
     evidence_digest = _evidence_digest(evidence_refs)
     idem_key = f"review:merge:{context.problem_id}:{expected_version}:{target_problem_id}:{evidence_digest}"
-    event_id = _event_id(idem_key)
+    derived_event_id = event_id(idem_key)
 
     event = ProblemMergedEvent(
         schema_version="1.0",
         seq=1,
-        event_id=event_id,
+        event_id=derived_event_id,
         idempotency_key=idem_key,
         ts=ts,
         evidence_digest=evidence_digest,
@@ -519,12 +516,12 @@ def _validate_submit_resolution(
         f"review:submit_resolution:{context.problem_id}:{expected_version}:"
         f"{change_id}:{batch_id}:{evidence_digest}"
     )
-    event_id = _event_id(idem_key)
+    derived_event_id = event_id(idem_key)
 
     event = ProblemVerificationRequestedEvent(
         schema_version="1.0",
         seq=1,
-        event_id=event_id,
+        event_id=derived_event_id,
         idempotency_key=idem_key,
         ts=ts,
         evidence_digest=evidence_digest,

@@ -3,6 +3,14 @@
 # Helpers kept side-effect free until explicitly called so unit tests can source
 # this file without launching the benchmark loop.
 
+resolve_cursor_project_root() {
+  local script_dir="$1" override="$2" candidate resolved
+  candidate="${override:-$script_dir/..}"
+  [ -d "$candidate" ] || return 1
+  resolved="$(cd "$candidate" && pwd)" || return 1
+  printf '%s' "$resolved"
+}
+
 benchmark_eval_setting() {
   local new_value="$1" legacy_value="$2" default_value="$3"
   if [ -n "$new_value" ]; then
@@ -777,3 +785,436 @@ benchmark_result_exit_code() {
   done
   return "$failed"
 }
+
+resolve_aa_python_bin() {
+  local aa_bin="$1" override="$2" aa_path shebang interpreter interpreter_name
+  if [ -n "$override" ]; then
+    [ -x "$override" ] || return 1
+    printf '%s' "$override"
+    return 0
+  fi
+  aa_path="$(command -v "$aa_bin" 2>/dev/null)" || return 1
+  shebang="$(sed -n '1p' "$aa_path" 2>/dev/null)"
+  case "$shebang" in
+    '#!'*) interpreter="${shebang#'#!'}" ;;
+    *) return 1 ;;
+  esac
+  [ -x "$interpreter" ] || return 1
+  interpreter_name="$(basename "$interpreter")"
+  case "$interpreter_name" in
+    python|python3|python3.*) ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "$interpreter"
+}
+
+collect_trace_verify_evidence() {
+  local aa_bin="$1" change_id="$2" trace_file="$3" verify_file="$4" log_file="$5"
+  local python_bin="$6"
+  local trace_exit=0 verify_exit=0 summaries trace_summary verify_summary
+  mkdir -p "$(dirname "$trace_file")" "$(dirname "$verify_file")" "$(dirname "$log_file")"
+  : >"$log_file"
+
+  "$aa_bin" trace --change "$change_id" --json >"$trace_file" 2>>"$log_file" || trace_exit=$?
+  "$aa_bin" verify --change "$change_id" --json >"$verify_file" 2>>"$log_file" || verify_exit=$?
+
+  summaries="$("$python_bin" - \
+    "$trace_file" "$verify_file" "$change_id" "$trace_exit" "$verify_exit" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+trace_path = Path(sys.argv[1])
+verify_path = Path(sys.argv[2])
+change_id = sys.argv[3]
+trace_exit = int(sys.argv[4])
+verify_exit = int(sys.argv[5])
+
+
+def load_json_or_write_error(path: Path, command: str, exit_code: int) -> tuple[dict, bool]:
+    try:
+        raw = path.read_text(encoding="utf-8")
+        payload = json.loads(raw)
+        if isinstance(payload, dict):
+            return payload, True
+    except (OSError, TypeError, ValueError):
+        raw = ""
+
+    payload = {
+        "change_id": change_id,
+        "command": command,
+        "error": "invalid_or_missing_json_output",
+        "exit_code": exit_code,
+        "schema_version": "1",
+    }
+    if raw:
+        payload["raw_stdout"] = raw
+    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
+    return payload, False
+
+
+trace, trace_valid = load_json_or_write_error(trace_path, "trace", trace_exit)
+verify, verify_valid = load_json_or_write_error(verify_path, "verify", verify_exit)
+
+if trace_valid:
+    integrity = trace.get("integrity") or "unknown"
+    gaps = trace.get("gaps")
+    if isinstance(gaps, list):
+        print(f"{integrity}|{len(gaps)}")
+    else:
+        print(f"{integrity}|unknown")
+else:
+    print("unknown|unknown")
+
+if verify_valid:
+    verdict = verify.get("verdict") or "unknown"
+    blocking = verify.get("blocking_gaps")
+    insufficient = verify.get("insufficient")
+    blocking_count = len(blocking) if isinstance(blocking, list) else "unknown"
+    insufficient_count = len(insufficient) if isinstance(insufficient, list) else "unknown"
+    print(f"{verdict}|{blocking_count}|{insufficient_count}")
+else:
+    print("unknown|unknown|unknown")
+PY
+)"
+  trace_summary="${summaries%%$'\n'*}"
+  verify_summary="${summaries#*$'\n'}"
+  printf '%s|raw|none|%s|%s|%s|%s' \
+    "$change_id" "$trace_exit" "$trace_summary" "$verify_exit" "$verify_summary"
+  return 0
+}
+
+parse_evidence_row_fields() {
+  local row="$1"
+  local cid collection_status reason_code trace_exit integrity gap_count
+  local verify_exit verdict blocking insufficient extra
+  IFS='|' read -r \
+    cid collection_status reason_code trace_exit integrity gap_count \
+    verify_exit verdict blocking insufficient extra <<<"$row"
+  if [ -z "$cid" ] || [ -n "$extra" ]; then
+    return 1
+  fi
+  case "$collection_status" in
+    incomplete)
+      case "$reason_code" in
+        execution_projection_missing|execution_projection_invalid|\
+        reconciled_projection_missing|reconciled_projection_invalid|\
+        reconciled_projection_stale|projection_identity_mismatch|\
+        projection_phase_pair_mismatch|quality_gate_missing|\
+        quality_gate_invalid|quality_gate_binding_mismatch|\
+        sufficiency_binding_mismatch|verify_result_missing|\
+        verify_result_invalid|verify_binding_mismatch|layer_summary_invalid)
+          ;;
+        *)
+          return 1
+          ;;
+      esac
+      # Incomplete unavailable fields stay literal unknown — never numeric zeros.
+      if [ "$integrity" != "unknown" ] || [ "$gap_count" != "unknown" ] \
+        || [ "$verdict" != "unknown" ] || [ "$blocking" != "unknown" ] \
+        || [ "$insufficient" != "unknown" ]; then
+        return 1
+      fi
+      ;;
+    raw|complete|legacy_unlayered)
+      if [ "$reason_code" != "none" ]; then
+        return 1
+      fi
+      if [ "$collection_status" = "raw" ]; then
+        if [ "$integrity" = "unknown" ] || [ "$gap_count" = "unknown" ] \
+          || [ "$verdict" = "unknown" ] || [ "$blocking" = "unknown" ] \
+          || [ "$insufficient" = "unknown" ]; then
+          return 2
+        fi
+      fi
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
+    "$cid" "$collection_status" "$reason_code" "$trace_exit" "$integrity" "$gap_count" \
+    "$verify_exit" "$verdict" "$blocking" "$insufficient"
+}
+
+replace_evidence_row_for_change() {
+  local change_id="$1" new_row="$2"
+  shift 2
+  local row cid kept=()
+  for row in "$@"; do
+    IFS='|' read -r cid _ <<<"$row"
+    if [ "$cid" != "$change_id" ]; then
+      kept+=("$row")
+    fi
+  done
+  kept+=("$new_row")
+  printf '%s\n' "${kept[@]}"
+}
+
+benchmark_evidence_exit_code() {
+  local enabled="$1"
+  shift
+  local row parsed cid collection_status reason_code trace_exit integrity gap_count
+  local verify_exit verdict blocking insufficient
+  local failed=0
+
+  [ "$enabled" = "true" ] || return 0
+  [ "$#" -gt 0 ] || return 1
+  for row in "$@"; do
+    parsed="$(parse_evidence_row_fields "$row")" || { failed=1; continue; }
+    IFS='|' read -r \
+      cid collection_status reason_code trace_exit integrity gap_count \
+      verify_exit verdict blocking insufficient <<<"$parsed"
+    case "$collection_status" in
+      incomplete)
+        failed=1
+        continue
+        ;;
+      raw)
+        if [ "$integrity" = "unknown" ] || [ "$gap_count" = "unknown" ] \
+          || [ "$verdict" = "unknown" ] || [ "$blocking" = "unknown" ] \
+          || [ "$insufficient" = "unknown" ]; then
+          failed=1
+          continue
+        fi
+        ;;
+      complete|legacy_unlayered)
+        ;;
+      *)
+        failed=1
+        continue
+        ;;
+    esac
+    if ! [[ "$trace_exit" =~ ^[0-9]+$ ]] \
+      || ! [[ "$gap_count" =~ ^[0-9]+$ ]] \
+      || ! [[ "$verify_exit" =~ ^[0-9]+$ ]] \
+      || ! [[ "$blocking" =~ ^[0-9]+$ ]] \
+      || ! [[ "$insufficient" =~ ^[0-9]+$ ]]; then
+      failed=1
+      continue
+    fi
+    case "$integrity" in
+      complete|degraded|incomplete) ;;
+      *) failed=1; continue ;;
+    esac
+    if [ "$trace_exit" != "0" ] || [ "$verify_exit" != "0" ] || [ "$verdict" != "pass" ]; then
+      failed=1
+    fi
+  done
+  return "$failed"
+}
+
+collect_benchmark_specialty_report() {
+  local python_bin="$1" reporter="$2" project_root="$3"
+  local change_id="$4" trace_file="$5" verify_file="$6" output_file="$7" log_file="$8"
+  local trace_exit="$9" verify_exit="${10}"
+  local root_invocation_id="${11}" workflow_entrypoint="${12}"
+  local attempt_id="${13}"
+  local receipt_file="${output_file}.receipt.json"
+  mkdir -p "$(dirname "$output_file")" "$(dirname "$log_file")"
+  "$python_bin" "$reporter" collect \
+    --project-root "$project_root" \
+    --change-id "$change_id" \
+    --root-invocation-id "$root_invocation_id" \
+    --workflow-entrypoint "$workflow_entrypoint" \
+    --trace "$trace_file" \
+    --verify "$verify_file" \
+    --trace-exit "$trace_exit" \
+    --verify-exit "$verify_exit" \
+    --output "$output_file" \
+    --attempt-id "$attempt_id" \
+    --publication-receipt "$receipt_file" \
+    2>>"$log_file"
+}
+
+validate_workflow_command_result() {
+  local result_file="$1" change_id="$2" entrypoint="$3"
+  python3 - "$result_file" "$change_id" "$entrypoint" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+expected_change = sys.argv[2]
+expected_entrypoint = sys.argv[3]
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except (OSError, TypeError, ValueError) as exc:
+    raise SystemExit(f"workflow_result_invalid:{exc}") from exc
+if payload.get("schema_version") != "1":
+    raise SystemExit("workflow_result_schema_invalid")
+if payload.get("change_id") != expected_change:
+    raise SystemExit("workflow_result_change_mismatch")
+if payload.get("entrypoint") != expected_entrypoint:
+    raise SystemExit("workflow_result_entrypoint_mismatch")
+root_id = payload.get("root_invocation_id")
+if not isinstance(root_id, str) or not root_id.strip():
+    raise SystemExit("workflow_result_invocation_missing")
+started = payload.get("started_new_root")
+if not isinstance(started, bool):
+    raise SystemExit("workflow_result_started_new_root_invalid")
+print(f"{root_id}|{str(started).lower()}")
+PY
+}
+
+pin_workflow_root_from_result() {
+  local run_dir="$1" change_id="$2" result_file="$3" entrypoint="$4"
+  local state_file="$run_dir/${change_id}.workflow-root.json"
+  local validated root_id started_new_root payload temp
+  validated="$(validate_workflow_command_result "$result_file" "$change_id" "$entrypoint")" || return 1
+  IFS='|' read -r root_id started_new_root <<<"$validated"
+  [ "$started_new_root" = "true" ] || return 0
+  if [ -f "$state_file" ]; then
+    python3 - "$state_file" "$change_id" "$entrypoint" "$root_id" <<'PY' || return 1
+import json
+import sys
+from pathlib import Path
+
+current = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+change_id, entrypoint, root_id = sys.argv[2:5]
+if current.get("schema_version") != "1":
+    raise SystemExit("workflow_root_schema_invalid")
+if current.get("change_id") != change_id:
+    raise SystemExit("workflow_root_change_mismatch")
+if current.get("entrypoint") != entrypoint:
+    raise SystemExit("workflow_root_entrypoint_mismatch")
+if current.get("root_invocation_id") != root_id:
+    raise SystemExit("workflow_root_invocation_mismatch")
+PY
+    return 0
+  fi
+  payload="$(python3 - "$change_id" "$entrypoint" "$root_id" <<'PY'
+import json
+import sys
+
+print(
+    json.dumps(
+        {
+            "schema_version": "1",
+            "change_id": sys.argv[1],
+            "entrypoint": sys.argv[2],
+            "root_invocation_id": sys.argv[3],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    + "\n"
+)
+PY
+)"
+  mkdir -p "$run_dir"
+  temp="$run_dir/.${change_id}.workflow-root.json.$$"
+  printf '%s' "$payload" >"$temp"
+  mv "$temp" "$state_file"
+}
+
+read_workflow_root_state() {
+  local run_dir="$1" change_id="$2"
+  local state_file="$run_dir/${change_id}.workflow-root.json"
+  [ -f "$state_file" ] || return 1
+  python3 - "$state_file" "$change_id" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+expected_change = sys.argv[2]
+payload = json.loads(path.read_text(encoding="utf-8"))
+if payload.get("schema_version") != "1":
+    raise SystemExit("workflow_root_schema_invalid")
+if payload.get("change_id") != expected_change:
+    raise SystemExit("workflow_root_change_mismatch")
+entrypoint = payload.get("entrypoint")
+root_id = payload.get("root_invocation_id")
+if not isinstance(entrypoint, str) or not entrypoint.strip():
+    raise SystemExit("workflow_root_entrypoint_missing")
+if not isinstance(root_id, str) or not root_id.strip():
+    raise SystemExit("workflow_root_invocation_missing")
+print(f"{root_id}|{entrypoint}")
+PY
+}
+
+finalize_benchmark_specialty_report() {
+  local python_bin="$1" reporter="$2" change_id="$3" report_file="$4" collect_exit="$5"
+  local attempt_id="${6:-}"
+  local receipt_file="${report_file}.receipt.json"
+  local registered="false" row="" evidence_exit=0
+  if [ -s "$report_file" ]; then
+    if "$python_bin" "$reporter" validate-publication \
+      --report "$report_file" \
+      --publication-receipt "$receipt_file" \
+      --change-id "$change_id" \
+      --mode fresh \
+      --attempt-id "$attempt_id" >/dev/null 2>&1; then
+      row="$("$python_bin" "$reporter" evidence-row --change-id "$change_id" "$report_file" 2>/dev/null)"
+      evidence_exit=$?
+      if [ -n "$row" ] && { [ "$evidence_exit" -eq 0 ] || [ "$evidence_exit" -eq 1 ]; }; then
+        registered="true"
+      else
+        row=""
+        registered="false"
+      fi
+    fi
+  fi
+  if [ "$registered" = "true" ]; then
+    printf '%s\n' "$report_file"
+    printf '%s\n' "$row"
+    printf 'registered=true\n'
+  else
+    printf 'registered=false\n'
+  fi
+  return "$collect_exit"
+}
+
+reuse_benchmark_specialty_report() {
+  local python_bin="$1" reporter="$2" change_id="$3" report_file="$4"
+  local receipt_file="${report_file}.receipt.json"
+  local row=""
+  if ! "$python_bin" "$reporter" validate-publication \
+    --report "$report_file" \
+    --publication-receipt "$receipt_file" \
+    --change-id "$change_id" \
+    --mode reuse >/dev/null 2>&1; then
+    return 1
+  fi
+  if ! row="$("$python_bin" "$reporter" evidence-row --change-id "$change_id" "$report_file")"; then
+    # exit 1 still yields a valid printable row for incomplete overall outcomes
+    if [ -z "$row" ]; then
+      return 1
+    fi
+  fi
+  printf '%s\n' "$row"
+}
+
+render_benchmark_specialty_sections() {
+  local python_bin="$1" reporter="$2"
+  shift 2
+  [ "$#" -gt 0 ] || return 1
+  "$python_bin" "$reporter" render "$@"
+}
+
+benchmark_specialty_resume_action() {
+  local report_file="$1" archive_dir="$2"
+  local receipt_file="${report_file}.receipt.json"
+  if [ -s "$report_file" ]; then
+    printf 'reuse'
+    return 0
+  fi
+  if [ -d "$archive_dir" ]; then
+    printf 'missing_after_archive'
+    return 1
+  fi
+  # A pending receipt without a durable report is not reusable.
+  if [ -s "$receipt_file" ]; then
+    printf 'collect'
+    return 0
+  fi
+  printf 'collect'
+}
+

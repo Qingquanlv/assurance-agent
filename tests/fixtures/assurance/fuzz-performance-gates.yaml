@@ -1,0 +1,153 @@
+fuzz-plan-review-gate:
+  reads:
+    - {path: review/fuzz-plan-review.json, as: fuzz_plan_review}
+    - {path: review/fuzz-plan-checks.json, as: fuzz_plan_checks}
+    - {path: repo:.aa/data-knowledge.yaml, as: data_knowledge}
+  invalid_json: stop
+  missing_field_is: stop
+  stop_when: >
+    plan_assurance_state(fuzz_plan_checks, fuzz_plan_review, data_knowledge, 'fuzz') == 'invalid'
+  skip_when: >
+    plan_assurance_state(fuzz_plan_checks, fuzz_plan_review, data_knowledge, 'fuzz') == 'not_applicable'
+  needs_fix_when: "fuzz_plan_review.decision == 'needs_fix'"
+  needs_human_review_when: >
+    fuzz_plan_review.decision != 'reject'
+    and plan_assurance_state(fuzz_plan_checks, fuzz_plan_review, data_knowledge, 'fuzz') == 'applicable'
+    and (
+      not capabilities_present(fuzz_plan_review, data_knowledge)
+      or fuzz_plan_review.decision == 'needs_human_review'
+      or fuzz_plan_review.decision == 'changes_requested'
+      or (
+        (fuzz_plan_review.human_review_required == true or fuzz_plan_review.risk_level in policy.human_review_risk_levels)
+        and not (
+          params.force_continue == true
+          and policy.force_continue_allowed == true
+          and fuzz_plan_review.decision == 'pass'
+          and fuzz_plan_review.codegen_readiness in ['ready','ready_with_warnings']
+        )
+      )
+      or (
+        check_failed(fuzz_plan_checks, 'l1_path') and policy.plan_checks.l1_path == 'require_human'
+      )
+      or (
+        check_failed(fuzz_plan_checks, 'shared_factory') and policy.plan_checks.shared_factory == 'require_human'
+      )
+      or (
+        check_failed(fuzz_plan_checks, 'assert_ideal') and policy.plan_checks.assert_ideal == 'require_human'
+      )
+      or (
+        check_failed(fuzz_plan_checks, 'capability_keys') and policy.plan_checks.capability_keys == 'require_human'
+      )
+    )
+  reject_when: >
+    fuzz_plan_review.decision == 'reject'
+    or fuzz_plan_review.codegen_readiness == 'not_ready'
+    or (
+      plan_assurance_state(fuzz_plan_checks, fuzz_plan_review, data_knowledge, 'fuzz') == 'applicable'
+      and (
+        (check_failed(fuzz_plan_checks, 'l1_path') and policy.plan_checks.l1_path == 'block')
+        or (check_failed(fuzz_plan_checks, 'shared_factory') and policy.plan_checks.shared_factory == 'block')
+        or (check_failed(fuzz_plan_checks, 'assert_ideal') and policy.plan_checks.assert_ideal == 'block')
+        or (check_failed(fuzz_plan_checks, 'capability_keys') and policy.plan_checks.capability_keys == 'block')
+      )
+    )
+  pass_when: >
+    plan_assurance_state(fuzz_plan_checks, fuzz_plan_review, data_knowledge, 'fuzz') == 'applicable'
+    and fuzz_plan_review.decision == 'pass'
+    and fuzz_plan_review.codegen_readiness in ['ready','ready_with_warnings']
+    and capabilities_present(fuzz_plan_review, data_knowledge)
+
+performance-plan-review-gate:
+  reads:
+    - {path: review/performance-plan-review.json, as: performance_plan_review}
+    - {path: review/performance-plan-checks.json, as: performance_plan_checks}
+    - {path: repo:.aa/data-knowledge.yaml, as: data_knowledge}
+  invalid_json: stop
+  missing_field_is: stop
+  stop_when: >
+    plan_assurance_state(performance_plan_checks, performance_plan_review, data_knowledge, 'performance') == 'invalid'
+  skip_when: >
+    plan_assurance_state(performance_plan_checks, performance_plan_review, data_knowledge, 'performance') == 'not_applicable'
+  needs_fix_when: "performance_plan_review.decision == 'needs_fix'"
+  needs_human_review_when: >
+    performance_plan_review.decision != 'reject'
+    and plan_assurance_state(performance_plan_checks, performance_plan_review, data_knowledge, 'performance') == 'applicable'
+    and (
+      not capabilities_present(performance_plan_review, data_knowledge)
+      or performance_plan_review.decision == 'needs_human_review'
+      or performance_plan_review.decision == 'changes_requested'
+      or (
+        (performance_plan_review.human_review_required == true or performance_plan_review.risk_level in policy.human_review_risk_levels)
+        and not (
+          params.force_continue == true
+          and policy.force_continue_allowed == true
+          and performance_plan_review.decision == 'pass'
+          and performance_plan_review.codegen_readiness in ['ready','ready_with_warnings']
+        )
+      )
+      or (
+        check_failed(performance_plan_checks, 'l1_path') and policy.plan_checks.l1_path == 'require_human'
+      )
+      or (
+        check_failed(performance_plan_checks, 'shared_factory') and policy.plan_checks.shared_factory == 'require_human'
+      )
+      or (
+        check_failed(performance_plan_checks, 'assert_ideal') and policy.plan_checks.assert_ideal == 'require_human'
+      )
+      or (
+        check_failed(performance_plan_checks, 'capability_keys') and policy.plan_checks.capability_keys == 'require_human'
+      )
+    )
+  reject_when: >
+    performance_plan_review.decision == 'reject'
+    or performance_plan_review.codegen_readiness == 'not_ready'
+    or (
+      plan_assurance_state(performance_plan_checks, performance_plan_review, data_knowledge, 'performance') == 'applicable'
+      and (
+        (check_failed(performance_plan_checks, 'l1_path') and policy.plan_checks.l1_path == 'block')
+        or (check_failed(performance_plan_checks, 'shared_factory') and policy.plan_checks.shared_factory == 'block')
+        or (check_failed(performance_plan_checks, 'assert_ideal') and policy.plan_checks.assert_ideal == 'block')
+        or (check_failed(performance_plan_checks, 'capability_keys') and policy.plan_checks.capability_keys == 'block')
+      )
+    )
+  pass_when: >
+    plan_assurance_state(performance_plan_checks, performance_plan_review, data_knowledge, 'performance') == 'applicable'
+    and performance_plan_review.decision == 'pass'
+    and performance_plan_review.codegen_readiness in ['ready','ready_with_warnings']
+    and capabilities_present(performance_plan_review, data_knowledge)
+
+fuzz-codegen-precondition-gate:
+  reads:
+    - {path: review/fuzz-plan-review.json, as: fuzz_plan_review}
+    - {path: review/fuzz-plan-checks.json, as: fuzz_plan_checks}
+    - {path: repo:.aa/data-knowledge.yaml, as: data_knowledge}
+  skip_when: >
+    plan_assurance_state(fuzz_plan_checks, fuzz_plan_review, data_knowledge, 'fuzz') == 'not_applicable'
+  stop_when: >
+    node('review-cycle').status != 'succeeded'
+    or plan_assurance_state(fuzz_plan_checks, fuzz_plan_review, data_knowledge, 'fuzz') == 'invalid'
+    or not file_exists('repo:.aa/data-knowledge.yaml')
+  pass_when: >
+    node('review-cycle').status == 'succeeded'
+    and plan_assurance_state(fuzz_plan_checks, fuzz_plan_review, data_knowledge, 'fuzz') == 'applicable'
+    and gate('fuzz-plan-review-gate').verdict == 'pass'
+    and capabilities_present(fuzz_plan_review, data_knowledge)
+    and file_exists('repo:.aa/data-knowledge.yaml')
+
+performance-codegen-precondition-gate:
+  reads:
+    - {path: review/performance-plan-review.json, as: performance_plan_review}
+    - {path: review/performance-plan-checks.json, as: performance_plan_checks}
+    - {path: repo:.aa/data-knowledge.yaml, as: data_knowledge}
+  skip_when: >
+    plan_assurance_state(performance_plan_checks, performance_plan_review, data_knowledge, 'performance') == 'not_applicable'
+  stop_when: >
+    node('review-cycle').status != 'succeeded'
+    or plan_assurance_state(performance_plan_checks, performance_plan_review, data_knowledge, 'performance') == 'invalid'
+    or not file_exists('repo:.aa/data-knowledge.yaml')
+  pass_when: >
+    node('review-cycle').status == 'succeeded'
+    and plan_assurance_state(performance_plan_checks, performance_plan_review, data_knowledge, 'performance') == 'applicable'
+    and gate('performance-plan-review-gate').verdict == 'pass'
+    and capabilities_present(performance_plan_review, data_knowledge)
+    and file_exists('repo:.aa/data-knowledge.yaml')

@@ -11,7 +11,8 @@ from assurance_agent.artifacts.models.common import NonEmptyStr
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
 
 CodegenLayer = Literal["api", "e2e", "fuzz", "performance"]
-CodegenDisposition = Literal["generated", "modified", "reused"]
+# Align with ``artifacts.models.generated_files`` (MERGE_HEAD / four-layer).
+CodegenDisposition = Literal["generated", "updated", "reused"]
 CodegenFileRole = Literal["test_entry", "support"]
 
 

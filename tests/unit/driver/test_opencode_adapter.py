@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Any, cast
 
@@ -297,8 +298,6 @@ def test_dispatch_uses_prompt_async_with_directory_model_agent_and_auth() -> Non
         **_fast(),
     )
     adapter.run_phase(_request())
-
-    import json
 
     create = script.seen[0]
     dispatch = script.seen[1]

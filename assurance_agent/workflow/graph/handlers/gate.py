@@ -51,6 +51,7 @@ class GateHandler:
     ) -> TaskResult:
         params = task_with(task)
         node_results = _node_results_for_gate(task, context.change_dir)
+        event_schema_version, committed_tree_id = _invocation_epoch(task, context.change_dir)
         eval_context = GateEvaluationContext(
             project_root=workspace.project_root,
             repo_root=workspace.repo_root,
@@ -61,6 +62,9 @@ class GateHandler:
             node_results=node_results,
             audit_events_dir=context.change_dir,
             checkpoint_ns=task.checkpoint_ns,
+            committed_tree_id=committed_tree_id or workspace.base_tree_id,
+            event_schema_version=event_schema_version,
+            invocation_id=task.invocation_id,
         )
         gate_id = params.get("gate")
         if isinstance(gate_id, str):
@@ -154,6 +158,14 @@ def _load_artifact_symbols(
         except (OSError, ValueError):
             continue
     return variables
+
+
+def _invocation_epoch(task: ExecutableTask, audit_events_dir: Path) -> tuple[int | None, str | None]:
+    try:
+        projection = fold_invocation_events(task.invocation_id, read_events_strict(audit_events_dir))
+    except (LedgerIntegrityError, OSError, ValueError):
+        return None, None
+    return projection.event_schema_version, projection.current_tree_id
 
 
 def _node_results_for_gate(task: ExecutableTask, audit_events_dir: Path) -> dict[str, object]:

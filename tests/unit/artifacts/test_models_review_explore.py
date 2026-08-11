@@ -5,9 +5,12 @@ from assurance_agent.artifacts.models import (
     Advisory,
     CaseReviewAuthoring,
     FactBaseline,
+    PlanReview,
     PlanReviewAuthoring,
     Review,
 )
+from assurance_agent.artifacts.registry import match_artifact
+from assurance_agent.verification.profiles import get_layer_assurance_profile
 
 
 def make_review(**overrides: object) -> dict:
@@ -24,6 +27,44 @@ def make_review(**overrides: object) -> dict:
         "findings": [],
         "required_capabilities": ["auth.api_admin_token"],
         "next_action": "continue",
+    }
+    doc.update(overrides)
+    return doc
+
+
+def valid_plan_review(*, review_type: str = "api-plan", **overrides: object) -> dict:
+    doc: dict = {
+        "schema_version": "1.0",
+        "review_type": review_type,
+        "change_id": "CH-1",
+        "decision": "pass",
+        "risk_level": "low",
+        "codegen_readiness": "ready",
+        "auto_fix_allowed": False,
+        "human_review_required": False,
+        "findings": [],
+        "required_capabilities": ["auth.api_admin_token"],
+        "auto_fix_plan": [],
+        "next_action": "continue",
+    }
+    doc.update(overrides)
+    return doc
+
+
+def valid_plan_review_authoring(*, review_type: str = "api-plan", **overrides: object) -> dict:
+    doc: dict = {
+        "schema_version": "1.0",
+        "review_type": review_type,
+        "change_id": "CH-1",
+        "decision": "pass",
+        "findings": [],
+        "auto_fix_plan": [],
+        "next_action": "continue",
+        "auto_fix_allowed": False,
+        "human_review_required": False,
+        "codegen_readiness": "ready",
+        "risk_level": "low",
+        "required_capabilities": ["auth.api_admin_token"],
     }
     doc.update(overrides)
     return doc
@@ -265,3 +306,109 @@ def test_fact_baseline_full_variant_requires_schema_version() -> None:
 def test_fact_baseline_unknown_source_fails() -> None:
     with pytest.raises(ValidationError):
         FactBaseline.model_validate({"source": "guesswork", "warnings": []})
+
+
+@pytest.mark.parametrize("review_type", ["api-plan", "e2e-plan", "fuzz-plan", "performance-plan"])
+def test_plan_review_accepts_all_plan_types(review_type: str) -> None:
+    model = PlanReview.model_validate(valid_plan_review(review_type=review_type))
+    assert model.review_type == review_type
+
+
+@pytest.mark.parametrize("review_type", ["api-plan", "e2e-plan", "fuzz-plan", "performance-plan"])
+def test_plan_review_authoring_accepts_all_plan_types(review_type: str) -> None:
+    model = PlanReviewAuthoring.model_validate(valid_plan_review_authoring(review_type=review_type))
+    assert model.review_type == review_type
+
+
+@pytest.mark.parametrize("review_type", ["fuzz-plan", "performance-plan"])
+def test_human_only_plan_review_rejects_automatic_fix(review_type: str) -> None:
+    payload = valid_plan_review(review_type=review_type)
+    payload["auto_fix_allowed"] = True
+    payload["auto_fix_plan"] = ["run a fixer"]
+
+    with pytest.raises(ValidationError, match="human-only plan review"):
+        PlanReview.model_validate(payload)
+
+
+@pytest.mark.parametrize("review_type", ["fuzz-plan", "performance-plan"])
+def test_human_only_authoring_requires_empty_auto_fix_plan(review_type: str) -> None:
+    payload = valid_plan_review_authoring(review_type=review_type)
+    payload["auto_fix_plan"] = ["rewrite plan"]
+
+    with pytest.raises(ValidationError, match="auto_fix_plan must be empty"):
+        PlanReviewAuthoring.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("caps", "review_type"),
+    [
+        ([], "api-plan"),
+        ([""], "api-plan"),
+        (["capability"], "api-plan"),
+        (["auth."], "api-plan"),
+        (["accounts."], "api-plan"),
+        (["  auth.api_admin_token  "], "api-plan"),
+        (["auth.api_admin_token."], "api-plan"),
+        ([], "fuzz-plan"),
+        ([""], "fuzz-plan"),
+        (["capability"], "fuzz-plan"),
+        (["auth."], "fuzz-plan"),
+        (["  auth.api_admin_token  "], "fuzz-plan"),
+    ],
+)
+def test_plan_review_rejects_invalid_required_capabilities(caps: list[str], review_type: str) -> None:
+    payload = valid_plan_review(review_type=review_type, required_capabilities=caps)
+    with pytest.raises(ValidationError, match="required_capabilities"):
+        PlanReview.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("caps", "review_type"),
+    [
+        ([], "api-plan"),
+        ([""], "api-plan"),
+        (["capability"], "api-plan"),
+        (["auth."], "api-plan"),
+        (["accounts."], "api-plan"),
+        (["  auth.api_admin_token  "], "api-plan"),
+        (["auth.api_admin_token."], "api-plan"),
+        ([], "performance-plan"),
+        ([""], "performance-plan"),
+        (["capability"], "performance-plan"),
+        (["auth."], "performance-plan"),
+        (["  auth.api_admin_token  "], "performance-plan"),
+    ],
+)
+def test_plan_review_authoring_rejects_invalid_required_capabilities(
+    caps: list[str], review_type: str
+) -> None:
+    payload = valid_plan_review_authoring(review_type=review_type, required_capabilities=caps)
+    with pytest.raises(ValidationError, match="required_capabilities"):
+        PlanReviewAuthoring.model_validate(payload)
+
+
+@pytest.mark.parametrize("review_type", ["api-plan", "e2e-plan", "fuzz-plan", "performance-plan"])
+def test_plan_review_rejects_blank_finding_id(review_type: str) -> None:
+    payload = valid_plan_review(review_type=review_type, findings=[{"id": "   "}])
+    with pytest.raises(ValidationError, match=r"findings\[0\]\.id"):
+        PlanReview.model_validate(payload)
+
+
+@pytest.mark.parametrize("review_type", ["api-plan", "e2e-plan", "fuzz-plan", "performance-plan"])
+def test_plan_review_authoring_rejects_blank_finding_id(review_type: str) -> None:
+    payload = valid_plan_review_authoring(review_type=review_type, findings=[{"id": "   "}])
+    with pytest.raises(ValidationError, match=r"findings\[0\]\.id"):
+        PlanReviewAuthoring.model_validate(payload)
+
+
+def test_fuzz_performance_registry_and_profile_use_strong_plan_review_model() -> None:
+    fuzz_spec = match_artifact("review/fuzz-plan-review.json")
+    performance_spec = match_artifact("review/performance-plan-review.json")
+    assert fuzz_spec is not None
+    assert performance_spec is not None
+    assert fuzz_spec.model is PlanReview
+    assert performance_spec.model is PlanReview
+    assert fuzz_spec.authoring_model is PlanReviewAuthoring
+    assert performance_spec.authoring_model is PlanReviewAuthoring
+    assert get_layer_assurance_profile("fuzz").review_model is PlanReview
+    assert get_layer_assurance_profile("performance").review_model is PlanReview

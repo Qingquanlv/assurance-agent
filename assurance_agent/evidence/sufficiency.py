@@ -425,6 +425,33 @@ def evaluate_sufficiency(
     )
 
 
+def build_evidence_coverage_evaluation(
+    projection: TraceProjection | None,
+    policy: Policy | None,
+    *,
+    as_of: datetime,
+) -> EvidenceCoverageEvaluation:
+    """Produce an ``EvidenceCoverageEvaluation`` from optional fold/policy inputs.
+
+    Callers that already hold a live projection and policy (the runner) can build
+    the evaluated state directly; this helper is the shared null-guard used by
+    verify/CLI paths that may lack either input.
+    """
+    if projection is None:
+        return EvidenceCoverageEvaluation.failed("evidence_projection_missing")
+    if policy is None:
+        return EvidenceCoverageEvaluation.failed("policy_error")
+    report = evaluate_sufficiency(projection, policy, as_of=as_of)
+    return EvidenceCoverageEvaluation.evaluated(
+        report=report,
+        action=policy.evidence_sufficiency.on_insufficient,
+    )
+
+
+# Compatibility alias for callers that accept either wire shape.
+SufficiencyReportLike = SufficiencyReport
+
+
 __all__ = [
     "EvidenceCoverageErrorCode",
     "EvidenceCoverageEvaluation",
@@ -432,6 +459,8 @@ __all__ = [
     "RowVerdict",
     "SufficiencyReasonCode",
     "SufficiencyReport",
+    "SufficiencyReportLike",
     "TraceIntegrity",
+    "build_evidence_coverage_evaluation",
     "evaluate_sufficiency",
 ]

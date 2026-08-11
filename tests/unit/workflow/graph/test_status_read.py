@@ -244,6 +244,81 @@ def test_runtime_reexport_compat() -> None:
     assert runtime.graph_status_from_projection is graph_status_from_projection
 
 
+def test_recovery_state_from_open_revision_prefix(tmp_path: Path) -> None:
+    from assurance_agent.workflow.core.graph_events import GraphInterruptedEvent, ResumeAnchor
+    from assurance_agent.workflow.graph.manual_revision import build_manual_revision_transition
+    from assurance_agent.workflow.graph.models import ResumeCommand
+    from assurance_agent.workflow.graph.workspace import TreeFileRevision, TreePathRevision
+
+    change = tmp_path / "CH-1"
+    interrupted = GraphInterruptedEvent(
+        type="graph_interrupted",
+        invocation_id=INV,
+        checkpoint_ns=INV,
+        interrupt_id="ir-1",
+        node_id="human-review",
+        checkpoint="fuzz-plan-review-gate",
+        actions=["fix_and_proceed", "stop"],
+        audited_reads_sha256={"review/x.json": "a" * 64},
+        revision_owner_invocation_id=INV,
+        revision_base_tree_id="tree",
+        revision_view=".graph-runtime/revision-views/ir-1",
+        revision_paths=["change:plans/fuzz-plan.md"],
+        revision_before_sha256={"change:plans/fuzz-plan.md": "b" * 64},
+        source_gate_attempt_id="ga-1",
+        source_gate_tree_id="tree",
+    )
+    anchors = (
+        ResumeAnchor(invocation_id=INV, checkpoint_ns=INV, node_id="human-review", interrupt_id="ir-1"),
+    )
+    transition = build_manual_revision_transition(
+        interrupted=interrupted,
+        command=ResumeCommand(
+            interrupt_id="ir-1",
+            action="fix_and_proceed",
+            reason="fix",
+            who="reviewer",
+        ),
+        revision=TreeFileRevision(
+            target_tree_id="tree-target",
+            paths=(
+                TreePathRevision(
+                    logical_path="change:plans/fuzz-plan.md",
+                    before_sha256="b" * 64,
+                    after_sha256="c" * 64,
+                ),
+            ),
+        ),
+        pinned_definition_digests={"policy_digest": "p"},
+        resume_anchors=anchors,
+    )
+    started = GraphInvocationStartedEvent(
+        type="graph_invocation_started",
+        invocation_id=INV,
+        entrypoint="full",
+        graph_id="workflow",
+        graph_digest="dg",
+        event_schema_version=5,
+        contract_digests={},
+        policy_digest="p",
+        policy_origin="packaged_default",
+        gate_semantics_digest="s",
+        assurance_profile_digest="a",
+        params={},
+        params_sha256="",
+        root_tree_id="tree",
+        max_parallel_tasks=1,
+        checkpoint_ns=INV,
+        structural_path=INV,
+    )
+    seed_ledger(change, [started, interrupted, transition.revision])
+    status = read_latest_graph_status(change)
+    assert status is not None
+    assert status.recovery_state == "revision_resume_recovery_pending"
+    assert status.pending_interrupts
+    assert status.pending_interrupts[0].revision_view == ".graph-runtime/revision-views/ir-1"
+
+
 def test_single_ledger_snapshot(monkeypatch, tmp_path: Path) -> None:
     """单一快照红线：read_latest_graph_status 恰好调一次 read_events_strict。"""
     from assurance_agent.workflow.graph import status as status_mod
@@ -280,10 +355,7 @@ def test_equivalence_with_runtime_status(tmp_path: Path) -> None:
         checkpoint_store=CheckpointStore(change),
         object_store=cast(Any, None),
         workspace_backend=cast(Any, None),
-        contracts=cast(Any, None),
-        node_runner=cast(Any, None),
-        scheduler=cast(Any, None),
-        schema_resolver=cast(Any, None),
+        definition_resolver=cast(Any, None),
         clock=cast(Any, None),
     )
     expected = runtime.status(INV).model_dump(mode="json")

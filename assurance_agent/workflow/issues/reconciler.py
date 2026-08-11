@@ -34,8 +34,6 @@ Public API:
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -52,7 +50,7 @@ from assurance_agent.artifacts.models.issues import (
     ProblemProjection,
     ProvisionalAssessment,
 )
-from assurance_agent.workflow.issues.events import (
+from assurance_agent.artifacts.models.issue_events import (
     ChangeIssueEvent,
     IssueAnalysisCompletedEvent,
     OccurrenceDetectedEvent,
@@ -64,9 +62,11 @@ from assurance_agent.workflow.issues.events import (
     ProblemRegressedEvent,
     ProblemResolvedEvent,
 )
-from assurance_agent.workflow.issues.identity import (
+from assurance_agent.evidence.issue_identity import (
     candidate_document_digest,
+    event_id,
     occurrence_id as compute_occurrence_id,
+    per_candidate_digest,
     problem_fingerprint,
     problem_id as compute_problem_id,
 )
@@ -157,22 +157,6 @@ class VerificationEvidence:
 
 def _utc_now() -> str:
     return datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _event_id(idempotency_key: str) -> str:
-    """Deterministic event ID derived from the idempotency key (16 hex chars)."""
-    return "EVT-" + hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:16]
-
-
-def _per_candidate_digest(candidate_data: dict) -> str:
-    """Return a per-candidate SHA-256 digest from its canonical JSON representation."""
-    canonical = json.dumps(candidate_data, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
-    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-def _batch_candidate_digest(candidates_doc: IssueCandidateDocument) -> str:
-    """Compatibility wrapper around the public candidate document digest contract."""
-    return candidate_document_digest(candidates_doc)
 
 
 def _make_occurrence(
@@ -317,7 +301,7 @@ def _validate_candidate_batch(
 
         # 4. Compute per-candidate digest and check duplicate occurrence_id
         candidate_data = candidate.model_dump(mode="json")
-        per_digest = _per_candidate_digest(candidate_data)
+        per_digest = per_candidate_digest(candidate_data)
         change_id = candidates_doc.change_id
         batch_id = candidates_doc.batch_id
 
@@ -328,7 +312,7 @@ def _validate_candidate_batch(
 
         # 5. Check for within-batch fingerprint collisions producing same occurrence_id
         if fp is not None:
-            if fp.digest in seen_fingerprint_digests and per_digest == _per_candidate_digest(candidate_data):
+            if fp.digest in seen_fingerprint_digests and per_digest == per_candidate_digest(candidate_data):
                 pass  # same candidate content produces same occ_id caught above
 
         # 6. possible_problem_ids are soft hints only. Unknown IDs (agents often
@@ -405,7 +389,7 @@ def _derive_reconciliation_events(
         IssueAnalysisCompletedEvent(
             schema_version="1.0",
             seq=1,
-            event_id=_event_id(completed_idem),
+            event_id=event_id(completed_idem),
             idempotency_key=completed_idem,
             ts=ts,
             evidence_digest=evidence_bundle_digest,
@@ -421,7 +405,7 @@ def _derive_reconciliation_events(
 
     for candidate in candidates_doc.candidates:
         candidate_data = candidate.model_dump(mode="json")
-        per_digest = _per_candidate_digest(candidate_data)
+        per_digest = per_candidate_digest(candidate_data)
         occ_id = compute_occurrence_id(change_id, batch_id, per_digest)
 
         fp = problem_fingerprint(
@@ -453,7 +437,7 @@ def _derive_reconciliation_events(
                     OccurrenceDetectedEvent(
                         schema_version="1.0",
                         seq=1,
-                        event_id=_event_id(occ_idem),
+                        event_id=event_id(occ_idem),
                         idempotency_key=occ_idem,
                         ts=ts,
                         evidence_digest=evidence_bundle_digest,
@@ -468,7 +452,7 @@ def _derive_reconciliation_events(
                     ProblemRegressedEvent(
                         schema_version="1.0",
                         seq=1,
-                        event_id=_event_id(reg_idem),
+                        event_id=event_id(reg_idem),
                         idempotency_key=reg_idem,
                         ts=ts,
                         evidence_digest=evidence_bundle_digest,
@@ -489,7 +473,7 @@ def _derive_reconciliation_events(
                     OccurrenceLinkedEvent(
                         schema_version="1.0",
                         seq=1,
-                        event_id=_event_id(occ_idem),
+                        event_id=event_id(occ_idem),
                         idempotency_key=occ_idem,
                         ts=ts,
                         evidence_digest=evidence_bundle_digest,
@@ -504,7 +488,7 @@ def _derive_reconciliation_events(
                     ProblemOccurrenceLinkedEvent(
                         schema_version="1.0",
                         seq=1,
-                        event_id=_event_id(link_idem),
+                        event_id=event_id(link_idem),
                         idempotency_key=link_idem,
                         ts=ts,
                         evidence_digest=evidence_bundle_digest,
@@ -525,7 +509,7 @@ def _derive_reconciliation_events(
                 OccurrenceDetectedEvent(
                     schema_version="1.0",
                     seq=1,
-                    event_id=_event_id(occ_idem),
+                    event_id=event_id(occ_idem),
                     idempotency_key=occ_idem,
                     ts=ts,
                     evidence_digest=evidence_bundle_digest,
@@ -540,7 +524,7 @@ def _derive_reconciliation_events(
                 ProblemDetectedEvent(
                     schema_version="1.0",
                     seq=1,
-                    event_id=_event_id(det_idem),
+                    event_id=event_id(det_idem),
                     idempotency_key=det_idem,
                     ts=ts,
                     evidence_digest=evidence_bundle_digest,
@@ -575,7 +559,7 @@ def _derive_reconciliation_events(
                         ProblemMergeSuggestedEvent(
                             schema_version="1.0",
                             seq=1,
-                            event_id=_event_id(merge_idem),
+                            event_id=event_id(merge_idem),
                             idempotency_key=merge_idem,
                             ts=ts,
                             evidence_digest=evidence_bundle_digest,
@@ -658,7 +642,7 @@ def _derive_resolution_events(
             ProblemResolvedEvent(
                 schema_version="1.0",
                 seq=1,
-                event_id=_event_id(idem),
+                event_id=event_id(idem),
                 idempotency_key=idem,
                 ts=ts,
                 evidence_digest=evidence.evidence_digest,
@@ -716,7 +700,7 @@ def plan_reconciliation(
     )
 
     ts = _utc_now()
-    batch_digest = candidate_digest or _batch_candidate_digest(candidates)
+    batch_digest = candidate_digest or candidate_document_digest(candidates)
 
     resolved_verification: VerificationEvidence | None
     if verification_evidence is None:
