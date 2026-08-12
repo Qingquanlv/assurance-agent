@@ -32,6 +32,7 @@ from assurance_agent.artifacts.models.retro_v3 import (
     LowReplayStabilitySignal,
     ReopenedCoverageGapSignal,
     RetroIntegrity,
+    RetroPipelineFailureSignal,
     RetroSourceDescriptor,
     RetroWindow,
     SignalDocumentV3,
@@ -216,6 +217,77 @@ def _task_failure_signals(
     return tuple(signals)
 
 
+def _blocked_healing_signals(
+    entries: tuple[
+        GateVerdictEvidenceEntry
+        | TaskFailureEvidenceEntry
+        | HealingOutcomeEvidenceEntry
+        | SkillDriftEvidenceEntry,
+        ...,
+    ],
+) -> tuple[RetroPipelineFailureSignal, ...]:
+    """Promote allocated healing blocked by a fail-closed gate deterministically."""
+    by_change: dict[str, list[object]] = {}
+    for entry in entries:
+        by_change.setdefault(entry.change_id, []).append(entry)
+
+    signals: list[RetroPipelineFailureSignal] = []
+    for change_id, change_entries in sorted(by_change.items()):
+        allocations = [
+            entry
+            for entry in change_entries
+            if isinstance(entry, HealingOutcomeEvidenceEntry) and entry.outcome == "allocated"
+        ]
+        applied = any(
+            isinstance(entry, HealingOutcomeEvidenceEntry) and entry.outcome == "applied"
+            for entry in change_entries
+        )
+        stops_by_gate: dict[str, list[GateVerdictEvidenceEntry]] = {}
+        for entry in change_entries:
+            if (
+                isinstance(entry, GateVerdictEvidenceEntry)
+                and entry.verdict == "stop"
+                and entry.reason == "fail-closed default"
+            ):
+                stops_by_gate.setdefault(entry.gate_id, []).append(entry)
+        if not allocations or applied:
+            continue
+        for gate_id, stops in sorted(stops_by_gate.items()):
+            evidence_ids = tuple(
+                sorted(
+                    {
+                        *(entry.evidence_id for entry in allocations),
+                        *(entry.evidence_id for entry in stops),
+                    }
+                )
+            )
+            operation_ids = tuple(sorted({entry.operation for entry in allocations}))
+            identity = ":".join((change_id, gate_id, *operation_ids))
+            digest = sha256_bytes(identity.encode("utf-8")).removeprefix("sha256:")[:24]
+            failure_id = f"HEALING-GATE-{digest}"
+            signals.append(
+                RetroPipelineFailureSignal(
+                    signal_id=failure_id,
+                    summary=(
+                        f"Healing allocation was blocked by fail-closed gate {gate_id} "
+                        "before any fixer applied"
+                    ),
+                    occurrence_count=len(stops),
+                    recommended_change=(
+                        "Validate every fixer-approval gate input before allocating a healing "
+                        "attempt, and retain this allocation-without-apply scenario as a "
+                        "workflow regression test."
+                    ),
+                    source_refs=ImprovementSourceRefs(workflow_evidence_ids=evidence_ids),
+                    confidence="high",
+                    failure_id=failure_id,
+                    stage=gate_id,
+                    error_kind="healing_allocation_blocked",
+                )
+            )
+    return tuple(signals)
+
+
 def _expected_skill(phase: str, declared: str | None) -> str:
     if declared and declared.strip():
         return declared.strip()
@@ -395,12 +467,13 @@ def _workflow_slice(
     failure_signals = _task_failure_signals(
         tuple(entry for entry in ordered if isinstance(entry, TaskFailureEvidenceEntry))
     )
+    blocked_healing_signals = _blocked_healing_signals(ordered)
     return WorkflowEvidenceSlice(
         retro_id=retro_id,
         window=window,
         sources=(*sources, *gap_sources),
         integrity=_integrity(window_integrity, source_slice.integrity),
-        deterministic_signals=(*gap_signals, *failure_signals),
+        deterministic_signals=(*gap_signals, *failure_signals, *blocked_healing_signals),
         entries=ordered,
     )
 

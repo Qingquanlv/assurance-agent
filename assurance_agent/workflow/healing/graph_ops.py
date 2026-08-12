@@ -160,21 +160,25 @@ def operation_record_healing_status(
             f"operation:record-healing-status requires with.status in: {allowed}",
         )
     status_path = workspace.change_dir / "healing" / "status.json"
-    doc: dict[str, object] = {
-        "schema_version": "1.0",
-        "status": status,
-        "attempts_used": 0,
-        "all_fixers_no_op": status == "exhausted",
-    }
+    previous: dict[str, object] = {}
+    attempts_used = 0
     if status_path.is_file():
         try:
             prev = json.loads(status_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             prev = {}
         if isinstance(prev, dict):
-            doc = {**prev, **doc, "status": status}
-            if status == "exhausted":
-                doc["all_fixers_no_op"] = True
+            previous = prev
+            raw_attempts = prev.get("attempts_used")
+            if isinstance(raw_attempts, int) and not isinstance(raw_attempts, bool) and raw_attempts >= 0:
+                attempts_used = raw_attempts
+    doc: dict[str, object] = {
+        **previous,
+        "schema_version": "1.0",
+        "status": status,
+        "attempts_used": attempts_used,
+        "all_fixers_no_op": status == "exhausted",
+    }
     status_path.parent.mkdir(parents=True, exist_ok=True)
     status_path.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return TaskResult(status="succeeded", value={"healing_status": status})

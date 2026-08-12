@@ -17,6 +17,7 @@ def make_fix_proposal(**overrides: object) -> dict:
                 "target": "api",
                 "eligible": True,
                 "risk_level": "low",
+                "needs_review": False,
                 "files_to_modify": ["tests/api/test_menu.py"],
             }
         ],
@@ -50,6 +51,7 @@ def test_fix_proposal_valid_fixture_parses_and_keeps_extras() -> None:
     assert model.summary.eligible_count == 1
     assert model.proposals[0].target == "api"
     assert model.proposals[0].eligible is True
+    assert model.proposals[0].needs_review is False
     assert model.model_extra is not None
     assert model.model_extra["source_batch_id"] == "b1"
 
@@ -57,6 +59,14 @@ def test_fix_proposal_valid_fixture_parses_and_keeps_extras() -> None:
 def test_fix_proposal_target_enum_violation_fails() -> None:
     doc = make_fix_proposal()
     doc["proposals"][0]["target"] = "database"
+    with pytest.raises(ValidationError):
+        FixProposal.model_validate(doc)
+
+
+@pytest.mark.parametrize("missing_field", ["risk_level", "needs_review"])
+def test_fix_proposal_requires_fields_read_by_approval_gate(missing_field: str) -> None:
+    doc = make_fix_proposal()
+    del doc["proposals"][0][missing_field]
     with pytest.raises(ValidationError):
         FixProposal.model_validate(doc)
 

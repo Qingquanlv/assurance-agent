@@ -1,6 +1,6 @@
 """healing/ artifacts (all must_compat).
 
-- fix-proposal.json: src/schema/fix_proposal.ts + aws-fix-proposal SKILL.md.
+- fix-proposal.json: src/schema/fix_proposal.ts + aa-fix-proposal SKILL.md.
   summary.eligible_count is required here (stricter than the TS validator)
   because the healing loop's allocate_on expression reads
   fix_proposal.summary.eligible_count directly.
@@ -29,6 +29,8 @@ class FixProposalItem(BaseModel):
 
     target: Literal["api", "e2e", "fuzz", "performance"]
     eligible: bool
+    risk_level: Literal["low", "medium", "high", "critical"]
+    needs_review: bool
 
 
 class FixProposal(BaseModel):
