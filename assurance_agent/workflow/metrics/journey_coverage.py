@@ -29,7 +29,11 @@ from assurance_agent.artifacts.models.pr_metric_evidence import (
     JourneyCoverageEvidence,
     JourneyCoverageItem,
 )
-from assurance_agent.artifacts.models.trace import TraceProjection, TraceRow
+from assurance_agent.artifacts.models.trace import (
+    TraceProjectionDocument,
+    TraceProjectionLike,
+    TraceRow,
+)
 from assurance_agent.verification.assertion_class import (
     classify_e2e_assertions,
     counts_as_covered_oracle,
@@ -70,7 +74,7 @@ def compute_journey_coverage(
     change_id: str,
     batch_id: str,
     obligations: Sequence[MrcObligation],
-    projection: TraceProjection,
+    projection: TraceProjectionLike,
     quarantine: Sequence[str] = (),
     test_sources: Mapping[str, str] | None = None,
     case_functions: Mapping[str, tuple[str, str]] | None = None,
@@ -352,7 +356,9 @@ def compute_journey_coverage_operation(
     try:
         raw_matrix = yaml.safe_load(matrix_path.read_text(encoding="utf-8"))
         matrix = MinimumCoverageMatrix.model_validate([] if raw_matrix is None else raw_matrix)
-        projection = TraceProjection.model_validate_json(projection_path.read_text(encoding="utf-8"))
+        projection = TraceProjectionDocument.model_validate_json(
+            projection_path.read_text(encoding="utf-8")
+        ).root
     except (OSError, ValueError, yaml.YAMLError) as err:
         evidence = JourneyCoverageEvidence(
             schema_version="1",
@@ -413,7 +419,7 @@ def compute_journey_coverage_operation(
 
 
 def _case_functions_from_projection(
-    projection: TraceProjection,
+    projection: TraceProjectionLike,
 ) -> dict[str, tuple[str, str]]:
     out: dict[str, tuple[str, str]] = {}
     for row in projection.rows:

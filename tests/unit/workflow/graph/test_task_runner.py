@@ -1255,6 +1255,42 @@ def test_record_healing_status(tmp_path: Path) -> None:
     assert rejected.error_kind == "invalid_input"
 
 
+def test_record_healing_status_preserves_allocated_attempt_identity(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    workspace = _workspace(project)
+    status_path = workspace.change_dir / "healing" / "status.json"
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "status": "pending",
+                "attempts_used": 1,
+                "all_fixers_no_op": False,
+                "latest_attempt_id": "ha-episode-1",
+                "source_batch_id": "batch-1",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = operation_record_healing_status(
+        _task(
+            "operation:record-healing-status",
+            input_payload={"with": {"status": "failed"}, "context": {}},
+        ),
+        workspace,
+        _context(project),
+    )
+
+    assert result.status == "succeeded"
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status["status"] == "failed"
+    assert status["attempts_used"] == 1
+    assert status["latest_attempt_id"] == "ha-episode-1"
+    assert status["source_batch_id"] == "batch-1"
+
+
 # ---------------------------------------------------------------------------
 # Step 5：显式 artifact view 上的冻结 gate 求值
 # ---------------------------------------------------------------------------

@@ -279,6 +279,28 @@ def test_journey_coverage_reads_the_batch_projection_before_inspect_publishes_on
     assert payload["value"] == 1.0
 
 
+def test_journey_coverage_accepts_v2_trace_projection(tmp_path: Path) -> None:
+    project_root = tmp_path / "proj"
+    write_aa_config(project_root)
+    change_dir = project_root / "qa" / "changes" / CHANGE_ID
+    change_dir.mkdir(parents=True)
+    batch = _seed_batch(change_dir)
+    projection = _seed_journey_inputs(project_root, change_dir, batch)
+    projection["schema_version"] = "2"
+    (batch / "trace-projection.json").write_text(json.dumps(projection), encoding="utf-8")
+
+    result = compute_journey_coverage_operation(
+        _task("operation:compute-journey-coverage"),
+        _workspace(project_root),
+        _context(project_root),
+    )
+
+    assert result.status == "succeeded"
+    payload = json.loads((batch / "journey-coverage.json").read_text(encoding="utf-8"))
+    assert payload["collection_gaps"] == []
+    assert payload["value"] == 1.0
+
+
 def test_journey_coverage_falls_back_to_the_reconciled_projection(tmp_path: Path) -> None:
     """A healing rerun holds a reconciled projection and no batch copy yet."""
     project_root = tmp_path / "proj"

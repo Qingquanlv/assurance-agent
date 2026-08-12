@@ -116,6 +116,7 @@ class GateVerdictEvidenceEntry(_WorkflowEvidenceBase):
     cause: NonEmptyStr | None = None
     reason: NonEmptyStr | None = None
     ts: NonEmptyStr
+    seq: int | None = Field(default=None, ge=1)
 
 
 class TaskFailureEvidenceEntry(_WorkflowEvidenceBase):
@@ -134,6 +135,7 @@ class HealingOutcomeEvidenceEntry(_WorkflowEvidenceBase):
     operation: NonEmptyStr
     outcome: NonEmptyStr
     ts: NonEmptyStr | None = None
+    seq: int | None = Field(default=None, ge=1)
 
 
 class SkillDriftEvidenceEntry(_WorkflowEvidenceBase):

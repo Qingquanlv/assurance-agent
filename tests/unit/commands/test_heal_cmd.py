@@ -27,7 +27,14 @@ def test_validate_proposal_ok(tmp_path: Path, monkeypatch) -> None:
         {
             "schema_version": "1.0",
             "summary": {"eligible_count": 1},
-            "proposals": [{"target": "e2e", "eligible": True}],
+            "proposals": [
+                {
+                    "target": "e2e",
+                    "eligible": True,
+                    "risk_level": "low",
+                    "needs_review": False,
+                }
+            ],
         },
     )
     monkeypatch.chdir(tmp_path)

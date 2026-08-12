@@ -32,6 +32,7 @@ from assurance_agent.artifacts.models.retro_v3 import (
     LowReplayStabilitySignal,
     ReopenedCoverageGapSignal,
     RetroIntegrity,
+    RetroPipelineFailureSignal,
     RetroSourceDescriptor,
     RetroWindow,
     SignalDocumentV3,
@@ -216,6 +217,100 @@ def _task_failure_signals(
     return tuple(signals)
 
 
+def _blocked_healing_signals(
+    entries: tuple[
+        GateVerdictEvidenceEntry
+        | TaskFailureEvidenceEntry
+        | HealingOutcomeEvidenceEntry
+        | SkillDriftEvidenceEntry,
+        ...,
+    ],
+) -> tuple[RetroPipelineFailureSignal, ...]:
+    """Promote allocated healing blocked by a fail-closed gate deterministically."""
+    by_change: dict[str, list[object]] = {}
+    for entry in entries:
+        by_change.setdefault(entry.change_id, []).append(entry)
+
+    signals: list[RetroPipelineFailureSignal] = []
+    for change_id, change_entries in sorted(by_change.items()):
+        allocations = sorted(
+            [
+                entry
+                for entry in change_entries
+                if isinstance(entry, HealingOutcomeEvidenceEntry)
+                and entry.outcome == "allocated"
+                and entry.seq is not None
+            ],
+            key=lambda entry: entry.seq or 0,
+        )
+        ordered_applies = tuple(
+            entry
+            for entry in change_entries
+            if isinstance(entry, HealingOutcomeEvidenceEntry)
+            and entry.outcome == "applied"
+            and entry.seq is not None
+        )
+        ordered_stops = tuple(
+            entry
+            for entry in change_entries
+            if isinstance(entry, GateVerdictEvidenceEntry)
+            and entry.verdict == "stop"
+            and entry.reason == "fail-closed default"
+            and entry.seq is not None
+        )
+        for index, allocation in enumerate(allocations):
+            allocation_seq = allocation.seq or 0
+            next_seq = allocations[index + 1].seq if index + 1 < len(allocations) else None
+            stops_by_gate: dict[str, list[GateVerdictEvidenceEntry]] = {}
+            for stop in ordered_stops:
+                stop_seq = stop.seq or 0
+                if stop_seq <= allocation_seq or (next_seq is not None and stop_seq >= next_seq):
+                    continue
+                stops_by_gate.setdefault(stop.gate_id, []).append(stop)
+            for gate_id, stops in sorted(stops_by_gate.items()):
+                first_stop_seq = min(stop.seq or 0 for stop in stops)
+                applied = any(
+                    apply.seq is not None
+                    and allocation_seq < apply.seq < first_stop_seq
+                    and (apply.operation == allocation.operation or apply.operation == "unknown")
+                    for apply in ordered_applies
+                )
+                if applied:
+                    continue
+                evidence_ids = tuple(
+                    sorted(
+                        {
+                            allocation.evidence_id,
+                            *(entry.evidence_id for entry in stops),
+                        }
+                    )
+                )
+                identity = ":".join((change_id, gate_id, allocation.operation))
+                digest = sha256_bytes(identity.encode("utf-8")).removeprefix("sha256:")[:24]
+                failure_id = f"HEALING-GATE-{digest}"
+                signals.append(
+                    RetroPipelineFailureSignal(
+                        signal_id=failure_id,
+                        summary=(
+                            f"Healing allocation was blocked by fail-closed gate {gate_id} "
+                            "before any fixer applied"
+                        ),
+                        occurrence_count=len(stops),
+                        recommended_change=(
+                            "Validate every fixer-approval gate input before allocating a healing "
+                            "attempt, and retain this allocation-without-apply scenario as a "
+                            "workflow regression test."
+                        ),
+                        source_refs=ImprovementSourceRefs(workflow_evidence_ids=evidence_ids),
+                        confidence="high",
+                        failure_id=failure_id,
+                        stage=gate_id,
+                        error_kind="healing_allocation_blocked",
+                    )
+                )
+    return tuple(signals)
+
+
 def _expected_skill(phase: str, declared: str | None) -> str:
     if declared and declared.strip():
         return declared.strip()
@@ -329,6 +424,7 @@ def _workflow_slice(
             cause=item.cause,
             reason=item.reason,
             ts=item.ts,
+            seq=getattr(item, "seq", None),
         )
         for item in source_slice.gate_verdicts
     )
@@ -355,6 +451,7 @@ def _workflow_slice(
             operation=item.operation_id,
             outcome="allocated",
             ts=item.ts,
+            seq=getattr(item, "seq", None),
         )
         for item in source_slice.healing_allocations
     )
@@ -362,8 +459,10 @@ def _workflow_slice(
         HealingOutcomeEvidenceEntry(
             evidence_id=item.evidence_id,
             change_id=item.change_id,
-            operation=item.target,
+            operation=getattr(item, "operation_id", None) or "unknown",
             outcome="applied" if item.applied else "not_applied",
+            ts=getattr(item, "ts", None),
+            seq=getattr(item, "seq", None),
         )
         for item in source_slice.healing_applies
     )
@@ -395,12 +494,13 @@ def _workflow_slice(
     failure_signals = _task_failure_signals(
         tuple(entry for entry in ordered if isinstance(entry, TaskFailureEvidenceEntry))
     )
+    blocked_healing_signals = _blocked_healing_signals(ordered)
     return WorkflowEvidenceSlice(
         retro_id=retro_id,
         window=window,
         sources=(*sources, *gap_sources),
         integrity=_integrity(window_integrity, source_slice.integrity),
-        deterministic_signals=(*gap_signals, *failure_signals),
+        deterministic_signals=(*gap_signals, *failure_signals, *blocked_healing_signals),
         entries=ordered,
     )
 

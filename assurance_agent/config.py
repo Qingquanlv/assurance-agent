@@ -101,16 +101,23 @@ def _safe_load_no_duplicates(text: str) -> object:
 
 
 def _load_model_routing_override(root: Path) -> ModelRoutingCfg | None:
-    configured = os.environ.get(MODEL_ROUTING_FILE_ENV, "").strip()
-    if not configured:
+    raw_configured = os.environ.get(MODEL_ROUTING_FILE_ENV)
+    if raw_configured is None:
         return None
+    configured = raw_configured.strip()
+    if not configured:
+        raise ConfigInvalidError(f"{MODEL_ROUTING_FILE_ENV} must not be empty")
     path = Path(configured)
     if not path.is_absolute():
         path = root / path
     if not path.is_file():
         raise ConfigInvalidError(f"{MODEL_ROUTING_FILE_ENV} file not found: {configured}")
     try:
-        raw = _safe_load_no_duplicates(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as err:
+        raise ConfigInvalidError(f"{MODEL_ROUTING_FILE_ENV} read error: {err}") from err
+    try:
+        raw = _safe_load_no_duplicates(text)
     except yaml.YAMLError as err:
         raise ConfigInvalidError(f"{MODEL_ROUTING_FILE_ENV} parse error: {err}") from err
     try:

@@ -39,7 +39,7 @@ from assurance_agent.artifacts.models.minimum_coverage import (
     maps_from_advisory_mrc,
     mrc_closed_key_findings,
 )
-from assurance_agent.artifacts.models.trace import TraceProjection, TraceRow
+from assurance_agent.artifacts.models.trace import TraceProjection, TraceProjectionLike, TraceRow
 from assurance_agent.knowledge.extract_constraints import constraint_known_keys
 from assurance_agent.workflow.execution.evidence import atomic_write_bytes
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
@@ -81,7 +81,7 @@ class CaseExecutionJoin:
     known_issue: bool = False
 
 
-def projection_rows_by_case_id(projection: TraceProjection) -> dict[str, TraceRow]:
+def projection_rows_by_case_id(projection: TraceProjectionLike) -> dict[str, TraceRow]:
     """Last-wins index of projection rows by ``case_id``."""
     return {row.case_id: row for row in projection.rows}
 

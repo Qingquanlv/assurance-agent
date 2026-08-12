@@ -174,7 +174,7 @@ qa/changes/<change-id>/healing/fix-proposal.json
 }
 ```
 
-Each eligible `proposals[]` entry must include `proposal_id`, `failure_ids`, `target`, `category`, `eligible`, `risk_level`, `files_to_modify`, `forbidden_files`, `allowed_operations`, `forbidden_operations`, `patch_plan`, and `verification` with `rerun_required: true`.
+Each eligible `proposals[]` entry must include `proposal_id`, `failure_ids`, `target`, `category`, `eligible`, `risk_level`, `needs_review`, `files_to_modify`, `forbidden_files`, `allowed_operations`, `forbidden_operations`, `patch_plan`, and `verification` with `rerun_required: true`. Set `needs_review: false` explicitly for low-risk proposals that do not require approval; never omit it because the fixer approval gate reads this field fail-closed.
 
 ---
 
@@ -314,6 +314,7 @@ requires a stop or human intervention.
   "category": "test_code_error",
   "eligible": true,
   "risk_level": "low",
+  "needs_review": false,
   "reason": "Incorrect Playwright API call — Page has no wait_for_response; correct API is expect_response context manager",
   "files_to_modify": ["tests/e2e/conftest.py"],
   "forbidden_files": ["app/**", "web/**", "src/**"],

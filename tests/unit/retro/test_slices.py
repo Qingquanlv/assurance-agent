@@ -11,6 +11,7 @@ from assurance_agent.artifacts.canonical import canonical_json_bytes
 from assurance_agent.artifacts.models.retro_batch import RetroBatchScope
 from assurance_agent.artifacts.models.retro_v3 import (
     BatchMemberEvidenceGapSignal,
+    RetroPipelineFailureSignal,
     TaskFailureSignal,
 )
 from assurance_agent.retro.eval_history import EvalHistoryReader
@@ -152,6 +153,91 @@ class _GapWorkflowReader(_WorkflowReader):
         result.integrity = RetroIntegrity(
             status="incomplete",
             reasons=("batch_member_evidence_gap:CH-2:failed:workflow:ledger_corrupt",),
+        )
+        return result
+
+
+class _BlockedHealingWorkflowReader(_WorkflowReader):
+    def read_window(self, window):
+        result = super().read_window(window)
+        result.gate_verdicts = (
+            NS(
+                evidence_id="CH-1#seq385",
+                change_id="CH-1",
+                gate="fixer-proposal-approval-gate",
+                verdict="stop",
+                cause=None,
+                reason="fail-closed default",
+                ts="2026-07-01T00:00:05Z",
+                seq=385,
+            ),
+        )
+        result.task_failures = ()
+        result.healing_allocations = (
+            NS(
+                evidence_id="CH-1#seq371",
+                change_id="CH-1",
+                operation_id="healing-operation-1",
+                ts="2026-07-01T00:00:04Z",
+                seq=371,
+            ),
+        )
+        result.healing_applies = ()
+        result.skill_loaded_false = ()
+        return result
+
+
+class _OrderedHealingWorkflowReader(_BlockedHealingWorkflowReader):
+    def read_window(self, window):
+        result = super().read_window(window)
+        result.gate_verdicts = (
+            NS(
+                evidence_id="CH-1#seq3",
+                change_id="CH-1",
+                gate="fixer-proposal-approval-gate",
+                verdict="stop",
+                cause=None,
+                reason="fail-closed default",
+                ts="2026-07-01T00:00:03Z",
+                seq=3,
+            ),
+            NS(
+                evidence_id="CH-1#seq20",
+                change_id="CH-1",
+                gate="fixer-proposal-approval-gate",
+                verdict="stop",
+                cause=None,
+                reason="fail-closed default",
+                ts="2026-07-01T00:00:20Z",
+                seq=20,
+            ),
+        )
+        result.healing_allocations = (
+            NS(
+                evidence_id="CH-1#seq5",
+                change_id="CH-1",
+                operation_id="old-operation",
+                ts="2026-07-01T00:00:05Z",
+                seq=5,
+            ),
+            NS(
+                evidence_id="CH-1#seq15",
+                change_id="CH-1",
+                operation_id="new-operation",
+                ts="2026-07-01T00:00:15Z",
+                seq=15,
+            ),
+        )
+        result.healing_applies = (
+            NS(
+                evidence_id="CH-1#seq10",
+                change_id="CH-1",
+                target="api",
+                applied=True,
+                operation_id="old-operation",
+                ts="2026-07-01T00:00:10Z",
+                seq=10,
+            ),
         )
         return result
 
@@ -327,3 +413,45 @@ def test_unrecovered_contract_failure_becomes_one_deterministic_root_signal(
     assert signal.occurrence_count == 1
     assert signal.source_refs.workflow_evidence_ids == ("CH-1#seq230",)
     assert set(signal.source_refs.workflow_evidence_ids) <= bundle.workflow.resolvable_ids()
+
+
+def test_allocated_healing_blocked_by_fail_closed_gate_is_deterministic_signal(
+    tmp_path: Path,
+) -> None:
+    bundle = materialize_slices(
+        tmp_path,
+        retro_id="retro-blocked-healing",
+        selection=RetroWindowSelection(change_ids=("CH-1",), last=None),
+        issue_history=cast(IssueHistoryReader, _IssueReader()),
+        workflow_history=cast(WorkflowHistoryReader, _BlockedHealingWorkflowReader()),
+        eval_history=cast(EvalHistoryReader, _EvalReader()),
+        write_root=tmp_path,
+    )
+
+    assert len(bundle.workflow.deterministic_signals) == 1
+    signal = bundle.workflow.deterministic_signals[0]
+    assert isinstance(signal, RetroPipelineFailureSignal)
+    assert signal.stage == "fixer-proposal-approval-gate"
+    assert signal.error_kind == "healing_allocation_blocked"
+    assert signal.source_refs.workflow_evidence_ids == ("CH-1#seq371", "CH-1#seq385")
+    assert set(signal.source_refs.workflow_evidence_ids) <= bundle.workflow.resolvable_ids()
+
+
+def test_blocked_healing_signal_pairs_events_with_the_current_allocation(tmp_path: Path) -> None:
+    bundle = materialize_slices(
+        tmp_path,
+        retro_id="retro-ordered-healing",
+        selection=RetroWindowSelection(change_ids=("CH-1",), last=None),
+        issue_history=cast(IssueHistoryReader, _IssueReader()),
+        workflow_history=cast(WorkflowHistoryReader, _OrderedHealingWorkflowReader()),
+        eval_history=cast(EvalHistoryReader, _EvalReader()),
+        write_root=tmp_path,
+    )
+
+    signals = [
+        signal
+        for signal in bundle.workflow.deterministic_signals
+        if isinstance(signal, RetroPipelineFailureSignal)
+    ]
+    assert len(signals) == 1
+    assert signals[0].source_refs.workflow_evidence_ids == ("CH-1#seq15", "CH-1#seq20")
