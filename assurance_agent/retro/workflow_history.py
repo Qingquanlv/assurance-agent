@@ -87,6 +87,9 @@ class HealingApplyRecord(BaseModel):
     target: str
     applied: bool
     evidence_id: str
+    seq: int | None = Field(default=None, ge=1)
+    ts: str | None = None
+    operation_id: str | None = None
 
 
 class SkillLoadedFalseRecord(BaseModel):
@@ -356,6 +359,30 @@ def _extract_from_change(
         )
         evidence_ids.append(eid)
 
+    healing_applies: list[HealingApplyRecord] = []
+    ledger_apply_targets: set[str] = set()
+    for record in projection.records:
+        allocation = max(
+            (item for item in projection.allocations if item.source_seq < record.source_seq),
+            key=lambda item: item.source_seq,
+            default=None,
+        )
+        source_event = events_by_seq.get(record.source_seq, {})
+        eid = f"{change_id}#seq{record.source_seq}"
+        healing_applies.append(
+            HealingApplyRecord(
+                change_id=change_id,
+                target=record.target,
+                applied=record.outcome == "applied",
+                evidence_id=eid,
+                seq=record.source_seq,
+                ts=str(source_event.get("ts", "")) or None,
+                operation_id=allocation.operation_id if allocation is not None else None,
+            )
+        )
+        ledger_apply_targets.add(record.target)
+        evidence_ids.append(eid)
+
     recovered_task_ids: set[str] = set()
     for failed_task_id, route in recovery_routes.items():
         route_seq = _event_seq(route) or 0
@@ -411,7 +438,6 @@ def _extract_from_change(
         )
         evidence_ids.append(eid)
 
-    healing_applies: list[HealingApplyRecord] = []
     healing_dir = change_dir / "healing"
     if healing_dir.is_dir():
         for path in sorted(healing_dir.glob("*-apply-summary.json")):
@@ -423,6 +449,8 @@ def _extract_from_change(
                 continue
             applied = bool(payload.get("applied"))
             target = str(payload.get("target", path.name.split("-", 1)[0]))
+            if target in ledger_apply_targets:
+                continue
             eid = f"{change_id}#healing:{path.name}"
             healing_applies.append(
                 HealingApplyRecord(
