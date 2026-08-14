@@ -241,7 +241,7 @@ def test_accept_risk_still_requires_precheck(tmp_path: Path, layer: LayerName) -
         tmp_path,
         selected_layers=(layer,),
         applicable_layers=(layer,),
-        review_scripts={layer: ("needs_fix_human",)},
+        review_scripts={layer: ("needs_fix_human_missing_capability",)},
     )
     run_codegen_only(fixture)
     started = next(
@@ -256,15 +256,9 @@ def test_accept_risk_still_requires_precheck(tmp_path: Path, layer: LayerName) -
     interrupt = status.pending_interrupts[0]
     if "accept_risk" not in interrupt.actions:
         pytest.skip("accept_risk not declared on interrupt")
-    # Strip required capabilities from the committed review so precheck must stop
-    # even after accept_risk. Mutating synchronized L1 on disk would trip ordinary
-    # materialization repair (fail-closed source drift) before precheck runs.
-    review_name = "api-plan-review.json" if layer == "api" else "plan-review.json"
-    review_path = fixture.change_dir / "review" / review_name
-    if review_path.is_file():
-        payload = json.loads(review_path.read_text(encoding="utf-8"))
-        payload["required_capabilities"] = ["capabilities.domain_factories.account.missing_fixture_only"]
-        review_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    # The committed review already names a missing capability. This keeps the
+    # test on the real frozen-output path: accept_risk may override the human
+    # review verdict, but codegen-precheck must still fail closed.
     fresh = rebuild_runtime(fixture)
     resumed = resume_root(
         fresh,

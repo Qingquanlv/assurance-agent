@@ -1,12 +1,19 @@
 ---
 name: aa-api-codegen
 description: >-
-  Use only after api-plan-review.json has decision == "pass" and codegen_readiness in ["ready", "ready_with_warnings"]. Triggers on: "generate test code from plan", "continue API codegen", "implement api-codegen-plan", "generate /tests/api". User request may trigger this skill but never replaces the JSON gate. Reads Stage 1 plan files and generates pytest code, fixtures, and helpers. Does NOT execute pytest — test execution is Phase 8 aa-run. Never runs before planning is complete.
+  Generate API tests and a strict generated-files manifest after the graph's API codegen precondition gate passes. Triggers on: "generate test code from plan", "continue API codegen", "implement api-codegen-plan", "generate /tests/api". Reads Stage 1 plan files and generates pytest code, fixtures, and helpers. Does NOT execute pytest — test execution is Phase 8 aa-run.
 ---
 
 ## Purpose
 
 Generate API tests under `tests/api/**`, shared builders under `tests/testdata/**` when authorized, a human summary, and a strict generated-files manifest. Collection and execution are graph-owned later; do not run pytest collect or claim Traceability Verification evidence.
+
+The graph gate is the progression authority. Reaching this skill means the
+`api-codegen-precondition-gate` passed. Do not independently block codegen because
+`api-plan-review.json` still records `needs_human_review` or `not_ready`: those facts
+remain immutable after an audited `accept_risk`, while the graph ledger carries the
+authorized progression decision. Preserve the review facts in the summary and
+implement the selected cases.
 
 ## Inputs
 
@@ -52,26 +59,18 @@ Do not modify product source.
 
 Do not run pytest or invent collection evidence.
 
-### Blocked gate output
+## Generated-files Manifest Rules
 
-`STOP` blocks product and test generation; it does not cancel the node's mandatory
-evidence contract. On the first failed gate, you must not modify `tests/**`, shared
-factories, adapters, helpers, or application code. Always write both of these evidence
-artifacts before returning:
+- Only `test_entry` entries may claim mapped Case IDs, and their `case_ids` must
+  exactly match the plan's Task Mapping for that path.
+- Every `support` and `shared_builder` entry must use `case_ids: []`.
+- Use `generated` only for a newly added file and `updated` only for a file whose
+  content this invocation changed.
+- `reused` is legal only for an unchanged, selected private-root `test_entry`
+  that is itself a Task Mapping target. Never list an unchanged adapter, helper,
+  fixture, or shared builder as `reused`; omit unchanged support dependencies
+  from the manifest.
 
-- `qa/changes/<change-id>/codegen/api-codegen-summary.md`, with a `Blocked` section
-  naming the first failed gate and confirming that no test or support file was changed.
-- `qa/changes/<change-id>/codegen/api-generated-files.json`, with an empty `files`
-  array:
-
-```json
-{
-  "schema_version": "1",
-  "change_id": "<change-id>",
-  "layer": "api",
-  "files": []
-}
-```
-
-These two files record the fail-closed outcome; writing them is not permission to
-continue codegen or to report `phases.api_codegen.status = done`.
+When selected API cases or private-root targets exist, an empty `files` array is
+invalid. Generate or update every selected Task Mapping target and list it as a
+`test_entry` with the exact mapped Case IDs.

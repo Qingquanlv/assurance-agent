@@ -2,7 +2,7 @@
 
 Endpoints/payloads transcribed from the CURRENT TS opencode_adapter.ts:
 - POST /session                    {title, parentID?}                 -> {id}
-- POST /session/{id}/prompt_async  {parts:[{type:'text',text}], model?, agent?} -> 204
+- POST /session/{id}/prompt_async  {parts:[{type:'text',text}], model?, agent?, variant?} -> 204
 - GET  /session/status             -> { "<sid>": {"type": "busy|retry"} | "idle" }
 - GET  /session/{id}/message       -> [{info:{role,error?}, parts:[...]}]
 
@@ -50,6 +50,7 @@ DEFAULT_POLL_INTERVAL_S = 2.0
 DEFAULT_POLL_MAX_S = 3600.0
 DEFAULT_IDLE_DONE_STREAK = 8
 DEFAULT_ABORT_TIMEOUT_S = 30.0
+OPENCODE_VARIANT_ENV = "AA_OPENCODE_VARIANT"
 
 BOUNDED_OPENCODE_AGENTS = (
     "aa-archiver",
@@ -77,8 +78,21 @@ SANDBOX_ESCAPE_TOOLS = (
     "session_info",
     "background_output",
     "background_cancel",
-    "apply_patch",
+    "webfetch",
+    "websearch",
+    "websearch_web_search_exa",
 )
+BOUNDED_REQUIRED_TOOLS = ("write", "artifact_write")
+BOUNDED_PROMPT_TOOL_OVERRIDES = {
+    "artifact_write": True,
+    "write": True,
+    "edit": True,
+    "apply_patch": False,
+    "ast_grep_replace": False,
+    "webfetch": False,
+    "websearch": False,
+    "websearch_web_search_exa": False,
+}
 _SKILL_FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)", re.DOTALL)
 _BOUNDARY_PROBE_PREFIX = "aa_boundary_probe_v1_"
 
@@ -147,6 +161,7 @@ class _PackagedAgentContract:
     mode: str
     prompt: str
     disabled_tools: tuple[str, ...]
+    enabled_tools: tuple[str, ...]
     permission_rules: tuple[tuple[str, str, str], ...]
 
 
@@ -226,7 +241,10 @@ def _packaged_bounded_agent_contracts() -> dict[str, _PackagedAgentContract]:
         if not prompt:
             raise _OpenCodeCallError("internal", f"packaged agent {name!r} has empty prompt; {repair}")
         if not isinstance(tools, Mapping) or any(
-            not isinstance(tool, str) or enabled is not False for tool, enabled in tools.items()
+            not isinstance(tool, str)
+            or not isinstance(enabled, bool)
+            or (enabled is True and tool not in BOUNDED_REQUIRED_TOOLS)
+            for tool, enabled in tools.items()
         ):
             raise _OpenCodeCallError(
                 "internal",
@@ -266,7 +284,8 @@ def _packaged_bounded_agent_contracts() -> dict[str, _PackagedAgentContract]:
             description=description,
             mode=mode,
             prompt=prompt,
-            disabled_tools=tuple(tools),
+            disabled_tools=tuple(tool for tool, enabled in tools.items() if enabled is False),
+            enabled_tools=tuple(tool for tool, enabled in tools.items() if enabled is True),
             permission_rules=tuple(permission_rules),
         )
     return contracts
@@ -381,12 +400,29 @@ def validate_bounded_agent_catalog(payload: Any, agent_names: tuple[str, ...]) -
                     action = candidate
             return action == "deny"
 
+        def explicitly_enabled(tool: str) -> bool:
+            if isinstance(tools, dict) and tools.get(tool) is True:
+                return True
+            action: str | None = None
+            for permission, pattern, candidate in live_rules:
+                if permission == tool and pattern == "*":
+                    action = candidate
+            return action == "allow"
+
         unsafe = [tool for tool in contract.disabled_tools if not explicitly_disabled(tool)]
         if unsafe:
             joined = ", ".join(unsafe)
             raise _OpenCodeCallError(
                 "internal",
                 f"bounded OpenCode agent {agent_name!r} has stale/unsafe tools ({joined}); "
+                "refresh agents and restart OpenCode before running the workflow",
+            )
+        missing = [tool for tool in contract.enabled_tools if not explicitly_enabled(tool)]
+        if missing:
+            joined = ", ".join(missing)
+            raise _OpenCodeCallError(
+                "internal",
+                f"bounded OpenCode agent {agent_name!r} has stale/missing required tools ({joined}); "
                 "refresh agents and restart OpenCode before running the workflow",
             )
 
@@ -399,6 +435,7 @@ def validate_bounded_agent_catalog(payload: Any, agent_names: tuple[str, ...]) -
             )
         protected_permissions = {
             *contract.disabled_tools,
+            *contract.enabled_tools,
             *(permission for permission, _pattern, _action in contract.permission_rules),
         }
         declared_end = declared_start + len(contract.permission_rules)
@@ -857,6 +894,10 @@ class OpenCodeAdapter:
         self._base = server.rstrip("/")
         self._directory = directory
         self._model = parse_model(model)
+        configured_variant = os.environ.get(OPENCODE_VARIANT_ENV, "").strip()
+        if configured_variant and re.fullmatch(r"[A-Za-z0-9_-]+", configured_variant) is None:
+            raise DriverError(f"{OPENCODE_VARIANT_ENV} contains an invalid variant name")
+        self._variant = configured_variant or None
         self._parent = parent_session
         self._headers = auth_headers if auth_headers is not None else auth_headers_from_env()
         self._client = client or httpx.Client(timeout=timeout)
@@ -949,8 +990,16 @@ class OpenCodeAdapter:
         directory: str | None = None,
     ) -> None:
         body: dict[str, Any] = {"parts": [{"type": "text", "text": _shield_bounded_prompt(prompt, agent)}]}
+        if agent in BOUNDED_OPENCODE_AGENTS:
+            # OpenCode may retain globally registered tools in the model-facing
+            # prompt even when agent/config permissions deny them.  The
+            # message-level override is the final authority used when building
+            # this provider request.
+            body["tools"] = dict(BOUNDED_PROMPT_TOOL_OVERRIDES)
         if model is not None:
             body["model"] = model
+        if self._variant is not None:
+            body["variant"] = self._variant
         if agent:
             body["agent"] = agent
         resp = self._request("POST", f"/session/{session_id}/prompt_async", json=body, directory=directory)

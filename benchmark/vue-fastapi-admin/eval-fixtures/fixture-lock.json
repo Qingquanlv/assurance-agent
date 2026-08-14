@@ -3,7 +3,7 @@
   "fixtures": {
     "eval-sample-001": {
       "sample_dir": "samples/eval-sample-001",
-      "aggregate_sha256": "816bc9771bb408ea68d9a9f0a78b0f38dd0ae12d17502096fc4f2087e49213d8",
+      "aggregate_sha256": "db3ba1da61b6645fc42b47a3a7b6a237ad7306f3c8b334def32619b1c1049edb",
       "files": {
         ".aa/config.yaml": "469fa82e83ce9ad7f37abf527192408f676cb89c50d9955bfe189945e198ab4e",
         ".aa/data-knowledge.yaml": "dc58b6de8af8a55efeda1856ad306ed5a65c94f5801ca44e032bccee55aa08f2",
@@ -40,7 +40,7 @@
         "execution/summary.md": "9cb732c2ec967a7f994c979b8e40d77ada5410cbd39a9cbc4d9cf7a125d89aa0",
         "explore/advisory.json": "4406ae99090a24e6bc42b2e5cb27df61fa1bdb9e169c351975e69051def583f8",
         "explore/context.json": "29b8d93838b9f2367d7011ca4df2221482a0cabd2e1eabb34e4d4c0a15d774c3",
-        "facts/fact-baseline.json": "e321c990e62e89ac1b739559178c18ef54d4a10454e6765727ff34e137224add",
+        "facts/fact-baseline.json": "e33796bbb645569bb173b215f5616d92cc2f238d2446e521b356c51be48e98d2",
         "healing/status.json": "651b64f5a5b9878517bd02714f5064108126c55df67b24d6558530613214ac0f",
         "inspect/failure-analysis.json": "641151648bf99ae4528830df8dc780d339c16d05a6a46297d95c02d84152d6d2",
         "plans/api-codegen-plan.md": "489e199b71a77a69ea950927c0ec037557675f4767c669e04aa520a50c2f75a9",

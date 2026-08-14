@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -86,12 +87,98 @@ def test_sync_opencode_lays_down_agents_tools_plugin(tmp_path: Path) -> None:
     result = sync_opencode(root)
     assert (root / ".opencode/agents/aa-doc-author.md").is_file()
     assert (root / ".opencode/tools/workflow_start.ts").is_file()
+    assert (root / ".opencode/tools/artifact_write.ts").is_file()
     assert (root / ".opencode/plugins/aa.mjs").is_file()
+    assert json.loads((root / ".opencode/oh-my-openagent.json").read_text()) == {
+        "disabled_tools": ["apply_patch", "webfetch", "websearch", "websearch_web_search_exa"]
+    }
     assert (root / ".opencode/skills/aa-case-design/SKILL.md").read_text(
         encoding="utf-8"
     ) == resources.read_text("skills", "aa-case-design", "SKILL.md")
     assert any(p.startswith(".opencode/agents/") for p in result.created)
     assert sync_opencode(root).created == []
+
+
+def test_sync_opencode_preserves_existing_omo_config_when_disabling_apply_patch(
+    tmp_path: Path,
+) -> None:
+    root = _make_project(tmp_path)
+    config_path = root / ".opencode/oh-my-openagent.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps({"disabled_tools": ["look_at"], "model_fallback": False}),
+        encoding="utf-8",
+    )
+
+    result = sync_opencode(root)
+
+    assert ".opencode/oh-my-openagent.json" in result.updated
+    assert json.loads(config_path.read_text()) == {
+        "disabled_tools": ["look_at", "apply_patch", "webfetch", "websearch", "websearch_web_search_exa"],
+        "model_fallback": False,
+    }
+
+
+def test_sync_opencode_disables_builtin_apply_patch_in_existing_project_config(
+    tmp_path: Path,
+) -> None:
+    root = _make_project(tmp_path)
+    config_path = root / "opencode.json"
+    config_path.write_text(
+        json.dumps({"plugin": ["personal-plugin"], "tools": {"write": True}}),
+        encoding="utf-8",
+    )
+
+    result = sync_opencode(root)
+
+    assert "opencode.json" in result.updated
+    assert json.loads(config_path.read_text()) == {
+        "plugin": ["personal-plugin"],
+        "tools": {
+            "write": True,
+            "apply_patch": False,
+            "webfetch": False,
+            "websearch": False,
+            "websearch_web_search_exa": False,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "agent_name",
+    [
+        "aa-archiver",
+        "aa-explorer",
+        "aa-intake-host",
+        "aa-reporter",
+        "aa-reviewer",
+        "aa-test-author",
+    ],
+)
+def test_sync_opencode_exposes_native_write_to_bounded_agents(
+    tmp_path: Path,
+    agent_name: str,
+) -> None:
+    root = _make_project(tmp_path)
+
+    sync_opencode(root)
+
+    agent = (root / ".opencode/agents" / f"{agent_name}.md").read_text(encoding="utf-8")
+    frontmatter = agent.split("---", 2)[1]
+    assert "  write: true\n" in frontmatter
+    assert "  apply_patch: false\n" in frontmatter
+
+
+def test_sync_opencode_exposes_native_authoring_tools_to_doc_author(tmp_path: Path) -> None:
+    root = _make_project(tmp_path)
+
+    sync_opencode(root)
+
+    agent = (root / ".opencode/agents/aa-doc-author.md").read_text(encoding="utf-8")
+    frontmatter = agent.split("---", 2)[1]
+    assert "  write: true\n" in frontmatter
+    assert "  apply_patch: false\n" in frontmatter
+    assert '    "**qa/changes/**/cases/**": allow\n' in frontmatter
 
 
 def test_sync_opencode_ignores_third_party_node_modules_symlinks(tmp_path: Path) -> None:

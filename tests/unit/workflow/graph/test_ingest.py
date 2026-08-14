@@ -73,10 +73,8 @@ def test_ingest_reads_yaml_must_compat_artifact_via_registry_fallback(tmp_path: 
     assert change["change_id"] == "CH-1"
     assert frozen["_qa_yaml"].model_id == "qa_yaml"
     # The frozen value must stay faithful to the raw document so the attached-gate
-    # dual run (candidate override vs disk parse) yields the same verdict:
-    #   - `approval` is NOT a QaYaml model field; a model_dump() would drop it, but
-    #     case-design-gate reads qa.approval.mode → the override must keep it.
-    #   - `schema` is an aliased field (schema_); a non-by_alias dump would rename it.
+    # dual run (candidate override vs disk parse) yields the same verdict.  In
+    # particular, approval is gate-consumed metadata and schema is an aliased field.
     approval = value["approval"]
     assert isinstance(approval, dict)
     assert approval["mode"] == "autonomous"

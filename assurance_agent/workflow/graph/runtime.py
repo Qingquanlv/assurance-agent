@@ -1257,6 +1257,11 @@ class GraphRuntime:
         resume_invocation_ids = _invocation_ids_along_ns(pending.checkpoint_ns)
         if projection.invocation_id not in resume_invocation_ids:
             resume_invocation_ids.insert(0, projection.invocation_id)
+        leaf_interrupt = _committed_leaf_interrupt(
+            read_events_strict(context.change_dir),
+            interrupt_id=pending.interrupt_id,
+            owner_invocation_id=resume_invocation_ids[-1],
+        )
         source_attempt = pending.source_gate_attempt_id if projection.event_schema_version >= 5 else None
         source_tree = pending.source_gate_tree_id if projection.event_schema_version >= 5 else None
         with transaction(context.change_dir) as txn:
@@ -1265,7 +1270,7 @@ class GraphRuntime:
                 for index, invocation_id in enumerate(resume_invocation_ids):
                     layer_ns = _checkpoint_ns_for_invocation(pending.checkpoint_ns, invocation_id)
                     layer_node = _node_id_for_invocation(
-                        pending.checkpoint_ns, invocation_id, pending.node_id
+                        pending.checkpoint_ns, invocation_id, leaf_interrupt.node_id
                     )
                     anchor = ResumeAnchor(
                         invocation_id=invocation_id,
@@ -1381,7 +1386,7 @@ class GraphRuntime:
             "graph_digest": owner.graph_digest,
             "ir_digest": owner.ir_digest,
         }
-        anchors = _resume_anchors_for(pending)
+        anchors = _resume_anchors_for(pending, leaf_node_id=interrupted.node_id)
         try:
             transition = build_manual_revision_transition(
                 interrupted=interrupted,
@@ -1471,19 +1476,29 @@ class GraphRuntime:
         )
 
     def _child_projections(self, invocation_id: str) -> dict[str, GraphProjection]:
+        children_by_parent: dict[str, list[str]] = {}
         projections: dict[str, GraphProjection] = {}
         for raw in read_events_strict(self._checkpoints._change_dir):  # noqa: SLF001
             if raw.get("source") != "graph" or raw.get("type") != "graph_invocation_started":
                 continue
-            if raw.get("parent_invocation_id") != invocation_id:
-                continue
+            parent_id = raw.get("parent_invocation_id")
             child_id = raw.get("invocation_id")
-            if not isinstance(child_id, str):
+            if not isinstance(parent_id, str) or not isinstance(child_id, str):
                 continue
+            children_by_parent.setdefault(parent_id, []).append(child_id)
+
+        pending = list(children_by_parent.get(invocation_id, ()))
+        seen = {invocation_id}
+        while pending:
+            child_id = pending.pop(0)
+            if child_id in seen:
+                continue
+            seen.add(child_id)
             try:
                 projections[child_id] = self._checkpoints.project(child_id)
             except LedgerIntegrityError:
-                continue
+                pass
+            pending.extend(children_by_parent.get(child_id, ()))
         return projections
 
     # ------------------------------------------------------------------ drive
@@ -2083,18 +2098,78 @@ class GraphRuntime:
     ) -> None:
         if not self._ordinary_materialization_drift(projection, context):
             return
+        # A nested interrupt can bubble out before the parent superstep commits.
+        # In that state the leaf gate tree is newer than the parent's
+        # ``current_tree_id``, but it is still ledger-pinned and already
+        # materialized in the canonical workspace.  After the resume command is
+        # committed, validate/rehydrate that exact tree instead of treating the
+        # child's ordinary outputs as external drift against the stale parent
+        # edge.  ``apply_tree`` with an identical base/target remains fail-closed
+        # for arbitrary repo bytes while allowing runtime-owned change artifacts
+        # to be restored.
         prev, target, _, _write_set_ids = self._last_committed_tree_edge(projection)
+        resumed_gate_tree = self._latest_resolved_interrupt_tree(projection)
+        if resumed_gate_tree is not None and target == resumed_gate_tree:
+            try:
+                self._objects.apply_tree(
+                    context.project_root,
+                    resumed_gate_tree,
+                    base_tree_id=resumed_gate_tree,
+                    restore_change_drift=True,
+                )
+            except WorkspaceError as exc:
+                raise GraphRuntimeError(f"failed to repair materialization: {exc}") from exc
+            return
         assert target is not None
-        base = prev if prev is not None else projection.root_tree_id
         try:
-            self._objects.apply_tree(
-                context.project_root,
-                target,
-                base_tree_id=base,
-                restore_change_drift=True,
-            )
+            if projection.parent_task_id is not None:
+                # A resumed nested invocation gets a freshly materialized
+                # parent-task workspace. It may therefore be at the child root,
+                # or at any exact committed prefix, rather than at the base of
+                # only the last edge. Replay the cumulative child delta and
+                # whitelist only ledger-pinned intermediate trees; arbitrary
+                # external bytes still fail closed in apply_tree_delta.
+                committed_targets = self._committed_tree_targets(projection)
+                self._objects.apply_tree_delta(
+                    context.project_root,
+                    target,
+                    source_base_tree_id=projection.root_tree_id,
+                    destination_base_tree_id=projection.root_tree_id,
+                    acceptable_live_tree_ids=committed_targets[:-1],
+                )
+            else:
+                base = prev if prev is not None else projection.root_tree_id
+                self._objects.apply_tree(
+                    context.project_root,
+                    target,
+                    base_tree_id=base,
+                    restore_change_drift=True,
+                )
         except WorkspaceError as exc:
             raise GraphRuntimeError(f"failed to repair materialization: {exc}") from exc
+
+    @staticmethod
+    def _latest_resolved_interrupt_tree(projection: GraphProjection) -> str | None:
+        for interrupt in reversed(tuple(projection.interrupts.values())):
+            if (
+                interrupt.resolved_action is not None
+                and interrupt.source_gate_tree_id is not None
+                and interrupt.checkpoint_ns.rsplit("/", 1)[-1] == projection.invocation_id
+            ):
+                return interrupt.source_gate_tree_id
+        return None
+
+    def _committed_tree_targets(self, projection: GraphProjection) -> tuple[str, ...]:
+        targets: list[str] = []
+        for raw in read_events_strict(self._checkpoints._change_dir):  # noqa: SLF001
+            if raw.get("source") != "graph" or raw.get("invocation_id") != projection.invocation_id:
+                continue
+            if raw.get("type") != "superstep_committed":
+                continue
+            target = raw.get("target_tree_id")
+            if isinstance(target, str):
+                targets.append(target)
+        return tuple(targets)
 
     def _ordinary_materialization_drift(
         self,
@@ -2253,7 +2328,11 @@ def _invocation_ids_along_ns(checkpoint_ns: str) -> list[str]:
     return [parts[index] for index in range(0, len(parts), 2)]
 
 
-def _resume_anchors_for(pending: InterruptProjection) -> tuple[ResumeAnchor, ...]:
+def _resume_anchors_for(
+    pending: InterruptProjection,
+    *,
+    leaf_node_id: str | None = None,
+) -> tuple[ResumeAnchor, ...]:
     invocation_ids = _invocation_ids_along_ns(pending.checkpoint_ns)
     anchors: list[ResumeAnchor] = []
     for invocation_id in invocation_ids:
@@ -2261,7 +2340,11 @@ def _resume_anchors_for(pending: InterruptProjection) -> tuple[ResumeAnchor, ...
             ResumeAnchor(
                 invocation_id=invocation_id,
                 checkpoint_ns=_checkpoint_ns_for_invocation(pending.checkpoint_ns, invocation_id),
-                node_id=_node_id_for_invocation(pending.checkpoint_ns, invocation_id, pending.node_id),
+                node_id=_node_id_for_invocation(
+                    pending.checkpoint_ns,
+                    invocation_id,
+                    leaf_node_id or pending.node_id,
+                ),
                 interrupt_id=pending.interrupt_id,
             )
         )

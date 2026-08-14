@@ -1123,10 +1123,17 @@ def _current_gate_attempt_id(
     *,
     gate_id: str,
     invocation_id: str | None,
+    checkpoint_ns: str | None,
 ) -> str | None:
     latest: str | None = None
     for event in events:
-        if invocation_id is not None and event.get("invocation_id") != invocation_id:
+        if checkpoint_ns is not None:
+            event_checkpoint_ns = event.get("checkpoint_ns")
+            if not isinstance(event_checkpoint_ns, str) or not _checkpoint_ns_is_ancestor(
+                checkpoint_ns, event_checkpoint_ns
+            ):
+                continue
+        elif invocation_id is not None and event.get("invocation_id") != invocation_id:
             continue
         if event.get("type") != "task_attempt_succeeded":
             continue
@@ -1167,7 +1174,10 @@ def _evaluate_gate_def(
     if require_source_epoch:
         events = read_events_strict(context.audit_events_dir or context.change_dir)
         source_attempt = _current_gate_attempt_id(
-            events, gate_id=gate_id, invocation_id=context.invocation_id
+            events,
+            gate_id=gate_id,
+            invocation_id=context.invocation_id,
+            checkpoint_ns=context.checkpoint_ns,
         )
     upgraded, action = _apply_gate_decision(
         schema,

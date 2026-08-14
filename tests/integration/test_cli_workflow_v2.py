@@ -136,9 +136,7 @@ def _run_minimal_workflow(
         ],
     )
     assert result.exit_code == EXIT_COMPLETED, result.output
-    status = json.loads(
-        CliRunner().invoke(main, ["workflow", "status", "--change", change_id, "--json"]).stdout
-    )
+    status = json.loads(CliRunner().invoke(main, ["status", "--change", change_id, "--json"]).stdout)
     invocation_id = status.get("invocation_id")
     assert invocation_id
     return str(invocation_id)
@@ -483,7 +481,7 @@ def test_workflow_resume_requires_invocation_and_entrypoint_together() -> None:
         assert "must be provided together" in only_invocation.output
 
 
-def test_workflow_status_json(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_status_json(monkeypatch: pytest.MonkeyPatch) -> None:
     from assurance_agent.commands import status_cmd
 
     gs = _status("interrupted", pending_tasks=("main:first",))
@@ -491,12 +489,9 @@ def test_workflow_status_json(monkeypatch: pytest.MonkeyPatch) -> None:
     with CliRunner().isolated_filesystem():
         write_aa_config(Path.cwd())
         (Path("qa/changes/CH-1")).mkdir(parents=True)
-        alias = CliRunner().invoke(main, ["workflow", "status", "--change", "CH-1", "--json"])
-        direct = CliRunner().invoke(main, ["status", "--change", "CH-1", "--json"])
-        assert alias.exit_code == direct.exit_code
-        assert alias.stdout == direct.stdout
-        assert "deprecated" in alias.stderr
-        doc = json.loads(alias.stdout)
+        result = CliRunner().invoke(main, ["status", "--change", "CH-1", "--json"])
+        assert result.exit_code == 30  # interrupted
+        doc = json.loads(result.stdout)
         assert doc["status"] == "interrupted"
         assert doc["pending_tasks"] == ["main:first"]
 
@@ -729,12 +724,9 @@ def test_real_minimal_run_completes(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         ],
     )
     assert result.exit_code == EXIT_COMPLETED, result.output
-    alias = CliRunner().invoke(main, ["workflow", "status", "--change", "CH-1", "--json"])
-    direct = CliRunner().invoke(main, ["status", "--change", "CH-1", "--json"])
-    assert alias.exit_code == direct.exit_code == 0
-    assert alias.stdout == direct.stdout
-    assert "deprecated" in alias.stderr
-    doc = json.loads(alias.stdout)
+    status = CliRunner().invoke(main, ["status", "--change", "CH-1", "--json"])
+    assert status.exit_code == 0
+    doc = json.loads(status.stdout)
     assert doc["status"] == "completed"
     assert doc["entrypoint"] == "full"
 
@@ -848,10 +840,11 @@ def test_cli_resume_repairs_v5_manual_revision_prefix(
         e for e in events if e.get("type") == "graph_interrupted" and e.get("interrupt_id") == interrupt_id
     )
     owner = runtime._checkpoints.project(pending.revision_owner_invocation_id or "")  # noqa: SLF001
+    interrupted_event = GraphInterruptedEvent.model_validate(
+        {k: v for k, v in interrupted.items() if k not in {"seq", "ts", "source"}}
+    )
     transition = build_manual_revision_transition(
-        interrupted=GraphInterruptedEvent.model_validate(
-            {k: v for k, v in interrupted.items() if k not in {"seq", "ts", "source"}}
-        ),
+        interrupted=interrupted_event,
         command=ResumeCommand(
             interrupt_id=interrupt_id,
             action="fix_and_proceed",
@@ -866,7 +859,7 @@ def test_cli_resume_repairs_v5_manual_revision_prefix(
             "graph_digest": owner.graph_digest,
             "ir_digest": owner.ir_digest,
         },
-        resume_anchors=_resume_anchors_for(pending),
+        resume_anchors=_resume_anchors_for(pending, leaf_node_id=interrupted_event.node_id),
     )
     with transaction(change) as txn:
         txn.append_strict(transition.revision)

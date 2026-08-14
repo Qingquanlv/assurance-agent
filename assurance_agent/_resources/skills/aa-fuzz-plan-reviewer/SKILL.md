@@ -39,4 +39,16 @@ Write only review outputs. Do not authorize automatic fixers.
 
 ## Domain Notes
 
-Consume the same Test Function Mapping uses `Case ID | Test Function | Target File` plus Schema Acquisition fields. structure emitted by the planner. Emit PlanReview fields consumed by the graph gate.
+Independently inspect both `fuzz-plan.md` and `fuzz-codegen-plan.md`. Each must
+contain the exact `## Test Function Mapping` heading with a four-column
+`Case ID | Test Function | Target File | Schema Acquisition` table. Every row
+must have a non-empty Schema Acquisition cell. Do not infer the codegen-plan
+mapping from `fuzz-plan.md`, a separate prose/code-block procedure, or prose
+such as `Test Function Spec`. Return a non-pass review when either file lacks
+the independently parseable mapping or when the two relations differ.
+
+Every mapped function must use `test_<case_id_lowercase>__<behavior>` with the
+complete Case ID. Return a non-pass review when a symbol is shortened or cannot
+be mapped back to its Case ID. Emit PlanReview fields consumed by the graph gate.
+For an approved, codegen-ready plan, emit the exact JSON value
+`"decision": "pass"`; never emit the legacy compatibility value `"approved"`.

@@ -1122,9 +1122,8 @@ def test_allocate_healing_attempt_writes_baseline_and_status(tmp_path: Path) -> 
     project = _make_project(tmp_path)
     _write_execution_and_proposal(project)
     workspace = _workspace(project)
-    result = operation_allocate_healing_attempt(
-        _task("operation:allocate-healing-attempt"), workspace, _context(project)
-    )
+    task = _task("operation:allocate-healing-attempt")
+    result = operation_allocate_healing_attempt(task, workspace, _context(project))
 
     assert result.status == "succeeded"
     baseline = workspace.change_dir / "healing" / "entry-baseline.json"
@@ -1146,6 +1145,21 @@ def test_allocate_healing_attempt_writes_baseline_and_status(tmp_path: Path) -> 
     assert status["attempts_used"] == 1
     assert status["status"] == "pending"
     assert status["latest_attempt_id"] == result.value["attempt_id"]
+
+    from assurance_agent.workflow.graph.durable_effects import (
+        HEALING_ALLOCATION_V2,
+        validate_result_intents,
+    )
+
+    validated = validate_result_intents(
+        declared_kinds=(HEALING_ALLOCATION_V2,),
+        intents=result.durable_effects,
+        invocation_id=task.invocation_id,
+        task_id=task.task_id,
+        attempt_id=f"{task.task_id}-a1",
+        target=task.target,
+    )
+    assert len(validated) == 1
 
     from assurance_agent.workflow.healing.allocation import commit_healing_allocation_ledger
     from assurance_agent.workflow.core.events import read_events

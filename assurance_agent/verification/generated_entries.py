@@ -50,6 +50,7 @@ GeneratedEntryReason = Literal[
 
 _HEADING_RE = re.compile(r"^#{1,6}\s*(.+?)\s*$")
 _BACKTICK_RE = re.compile(r"^`([^`]+)`$")
+_TRAILING_HEADING_QUALIFIER_RE = re.compile(r"\s+\([^()]*\)\s*$")
 
 _DEFAULT_HTTP_METHODS: Final[frozenset[str]] = frozenset(
     {"get", "post", "put", "patch", "delete", "request", "head", "options"}
@@ -812,7 +813,7 @@ def _extract_named_mapping(
 def _extract_schema_acquisition_case_ids(plan_text: str) -> tuple[str, ...]:
     section_text = _extract_section(plan_text, "Schema Acquisition")
     if section_text is None:
-        raise MappingExtractionError("missing_schema_acquisition", "missing section: Schema Acquisition")
+        return _extract_inline_schema_acquisition_case_ids(plan_text)
     header: list[str] | None = None
     case_ids: list[str] = []
     seen: set[str] = set()
@@ -846,7 +847,9 @@ def _extract_schema_acquisition_case_ids(plan_text: str) -> tuple[str, ...]:
             )
         seen.add(case_id)
         case_ids.append(case_id)
-    if header is None or not case_ids:
+    if header is None:
+        return _extract_inline_schema_acquisition_case_ids(plan_text)
+    if not case_ids:
         raise MappingExtractionError(
             "missing_schema_acquisition",
             "Schema Acquisition has no Case ID rows",
@@ -854,13 +857,64 @@ def _extract_schema_acquisition_case_ids(plan_text: str) -> tuple[str, ...]:
     return tuple(sorted(case_ids))
 
 
+def _extract_inline_schema_acquisition_case_ids(plan_text: str) -> tuple[str, ...]:
+    section_text = _extract_section(plan_text, "Test Function Mapping")
+    if section_text is None:
+        raise MappingExtractionError(
+            "missing_schema_acquisition",
+            "missing section: Schema Acquisition",
+        )
+    header: list[str] | None = None
+    case_ids: list[str] = []
+    seen: set[str] = set()
+    for lineno, cells in table_rows(section_text):
+        lowered = [cell.lower() for cell in cells]
+        if header is None:
+            if "case id" in lowered and "schema acquisition" in lowered:
+                header = lowered
+            continue
+        case_idx = header.index("case id")
+        acquisition_idx = header.index("schema acquisition")
+        if len(cells) <= max(case_idx, acquisition_idx):
+            raise MappingExtractionError(
+                "malformed_mapping",
+                f"inline Schema Acquisition row too short at line {lineno}",
+            )
+        case_id = _unwrap(cells[case_idx])
+        acquisition = _unwrap(cells[acquisition_idx])
+        if not case_id or not acquisition:
+            raise MappingExtractionError(
+                "malformed_mapping",
+                f"empty inline Schema Acquisition cell at line {lineno}",
+            )
+        if case_id in seen:
+            raise MappingExtractionError(
+                "duplicated_mapping",
+                f"duplicate inline Schema Acquisition case id {case_id!r}",
+            )
+        seen.add(case_id)
+        case_ids.append(case_id)
+    if header is None or not case_ids:
+        raise MappingExtractionError(
+            "missing_schema_acquisition",
+            "Schema Acquisition has no Case ID rows or inline mapping column",
+        )
+    return tuple(sorted(case_ids))
+
+
 def _extract_section(text: str, heading: str) -> str | None:
     lines = text.splitlines()
     heading_lower = heading.strip().lower()
+    accepted_headings = {heading_lower}
+    if heading_lower == "schema acquisition":
+        accepted_headings.add("schema acquisition procedure")
     start: int | None = None
     for index, line in enumerate(lines):
         match = _HEADING_RE.match(line.strip())
-        if match and match.group(1).strip().lower() == heading_lower:
+        if not match:
+            continue
+        candidate = _TRAILING_HEADING_QUALIFIER_RE.sub("", match.group(1)).strip().lower()
+        if candidate in accepted_headings:
             start = index + 1
             break
     if start is None:

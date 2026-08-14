@@ -22,6 +22,7 @@ from assurance_agent.config import CONFIG_RELPATH
 from assurance_agent.exceptions import AaError
 
 PLUGIN_ENTRY = "./.opencode/plugins/aa.mjs"
+OMO_CONFIG_RELPATH = Path(".opencode/oh-my-openagent.json")
 _FRONTMATTER_RE = re.compile(r"^---\r?\n(.*?)\r?\n---(?:\r?\n|$)", re.DOTALL)
 
 
@@ -639,7 +640,75 @@ def sync_opencode(project_root: Path, dry_run: bool = False) -> SyncResult:
                 dry_run,
                 containment_root=project_root,
             )
+    _disable_incompatible_opencode_tools(project_root, result, dry_run=dry_run)
+    _disable_incompatible_omo_tools(project_root, result, dry_run=dry_run)
     return result
+
+
+def _disable_incompatible_opencode_tools(
+    project_root: Path,
+    result: SyncResult,
+    *,
+    dry_run: bool,
+) -> None:
+    """Hide incompatible built-in tools without replacing project config."""
+
+    target = project_root / "opencode.json"
+    _assert_safe_managed_path(project_root, target)
+    if not target.is_file():
+        return
+    try:
+        loaded = json.loads(target.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SkillSyncIntegrityError(f"invalid JSON in {target}: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise SkillSyncIntegrityError(f"expected a JSON object in {target}")
+    tools = loaded.get("tools", {})
+    if not isinstance(tools, dict) or any(not isinstance(key, str) for key in tools):
+        raise SkillSyncIntegrityError(f"expected tools to be a JSON object in {target}")
+    incompatible = ("apply_patch", "webfetch", "websearch", "websearch_web_search_exa")
+    if all(tools.get(name) is False for name in incompatible):
+        result.unchanged.append("opencode.json")
+        return
+    loaded["tools"] = {**tools, **dict.fromkeys(incompatible, False)}
+    if not dry_run:
+        target.write_text(json.dumps(loaded, indent=2) + "\n", encoding="utf-8")
+    result.updated.append("opencode.json")
+
+
+def _disable_incompatible_omo_tools(
+    project_root: Path,
+    result: SyncResult,
+    *,
+    dry_run: bool,
+) -> None:
+    """Hide OMO tools whose schemas are incompatible with supported providers."""
+
+    target = project_root / OMO_CONFIG_RELPATH
+    _assert_safe_managed_path(project_root, target)
+    existed = target.is_file()
+    config: dict = {}
+    if existed:
+        try:
+            loaded = json.loads(target.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise SkillSyncIntegrityError(f"invalid JSON in {target}: {exc}") from exc
+        if not isinstance(loaded, dict):
+            raise SkillSyncIntegrityError(f"expected a JSON object in {target}")
+        config = loaded
+    disabled = config.get("disabled_tools", [])
+    if not isinstance(disabled, list) or any(not isinstance(item, str) for item in disabled):
+        raise SkillSyncIntegrityError(f"expected disabled_tools to be a string list in {target}")
+    incompatible = ("apply_patch", "webfetch", "websearch", "websearch_web_search_exa")
+    missing = [name for name in incompatible if name not in disabled]
+    if not missing:
+        result.unchanged.append(OMO_CONFIG_RELPATH.as_posix())
+        return
+    config["disabled_tools"] = [*disabled, *missing]
+    if not dry_run:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    (result.updated if existed else result.created).append(OMO_CONFIG_RELPATH.as_posix())
 
 
 def ensure_opencode_plugin_registration(project_root: Path, *, dry_run: bool = False) -> bool:
@@ -669,6 +738,15 @@ def ensure_opencode_plugin_registration(project_root: Path, *, dry_run: bool = F
         plugins.append(PLUGIN_ENTRY)
         changed = True
     config["plugin"] = plugins
+    tools = config.get("tools")
+    if not isinstance(tools, dict):
+        tools = {}
+        changed = True
+    for name in ("apply_patch", "webfetch", "websearch", "websearch_web_search_exa"):
+        if tools.get(name) is not False:
+            tools[name] = False
+            changed = True
+    config["tools"] = tools
     if changed and not dry_run:
         opencode_json.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     return created

@@ -38,6 +38,8 @@ const AA_BOUNDED_AGENTS = new Set([
 // alone cannot anticipate new OMO experimental tools (for example task_*).
 // Bounded AA personas therefore get only this closed capability surface.
 const BOUNDED_AGENT_ALLOWED_TOOLS = new Set([
+  'apply_patch',
+  'artifact_write',
   'ast_grep_replace',
   'ast_grep_search',
   'bash',
@@ -81,6 +83,7 @@ const FILESYSTEM_TOOL_PATH_FIELDS = new Map([
   ['edit', ['filePath', 'file_path', 'path', 'rename']],
   ['ast_grep_search', ['paths']],
   ['ast_grep_replace', ['paths']],
+  ['artifact_write', ['path']],
   ['look_at', ['file_path', 'file_paths']],
   ['lsp_diagnostics', ['filePath', 'file_path']],
   ['lsp_symbols', ['filePath', 'file_path']],
@@ -261,6 +264,34 @@ const filesystemPaths = (toolName, args) => {
     }
   }
   return values;
+};
+
+const applyPatchPaths = args => {
+  const patchText = args?.patchText;
+  if (typeof patchText !== 'string') {
+    throw new Error('apply_patch requires patchText');
+  }
+
+  const lines = patchText.replace(/\r\n/g, '\n').split('\n');
+  if (lines[0] !== '*** Begin Patch' || lines.at(-1) !== '*** End Patch') {
+    throw new Error('apply_patch has an invalid envelope');
+  }
+
+  const paths = [];
+  let fileOperations = 0;
+  for (const line of lines.slice(1, -1)) {
+    if (!line.startsWith('*** ')) continue;
+    const match = line.match(/^\*\*\* (Add File|Update File|Delete File|Move to): (.+)$/);
+    if (match === null) throw new Error('apply_patch has an invalid file header');
+    const candidate = match[2];
+    if (candidate.trim().length === 0 || candidate !== candidate.trim()) {
+      throw new Error('apply_patch has an invalid file path');
+    }
+    paths.push(candidate);
+    if (match[1] !== 'Move to') fileOperations += 1;
+  }
+  if (fileOperations === 0) throw new Error('apply_patch declares no file operation');
+  return paths;
 };
 
 const canonicalizeFilesystemArgs = (toolName, args, root) => {
@@ -447,11 +478,105 @@ const validateRiskCommand = (tokens, root) => {
     bindPathOption(tokens, parsed, '--project-dir', root, { mustEqualRoot: true });
     return;
   }
+  if (subcommand === 'write-advisory') {
+    const parsed = parseLongOptions(tokens, 3, {
+      values: new Set(['--change', '--project-dir', '--payload-base64']),
+      required: new Set(['--change', '--payload-base64']),
+    });
+    bindPathOption(tokens, parsed, '--project-dir', root, { mustEqualRoot: true });
+    const changeID = parsed.get('--change')?.value;
+    const payload = parsed.get('--payload-base64')?.value;
+    if (typeof changeID !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(changeID)) {
+      throw new Error('unsafe --change value');
+    }
+    if (
+      typeof payload !== 'string'
+      || payload.length === 0
+      || payload.length > 1_400_000
+      || !/^[A-Za-z0-9+/]+={0,2}$/.test(payload)
+    ) {
+      throw new Error('unsafe --payload-base64 value');
+    }
+    return;
+  }
   throw new Error(`unsupported aa risk subcommand: ${subcommand ?? '(missing)'}`);
+};
+
+const isAllowedArtifactPath = (agent, root, candidate) => {
+  const relative = path.relative(root, candidate).split(path.sep);
+  const inChange = relative[0] === 'qa' && relative[1] === 'changes' && relative.length >= 4;
+  const inRetro = relative[0] === 'qa' && relative[1] === 'retro' && relative.length >= 4;
+  if (relative.at(-1) === 'workflow-state.yaml') return false;
+
+  if (agent === 'aa-doc-author') {
+    if (inChange && ['cases', 'plans', 'facts', 'review', 'healing'].includes(relative[3])) return true;
+    if (inChange && relative.length === 5 && relative[3] === 'trace' && relative[4] === 'minimum-coverage-matrix.yaml') return true;
+    if (inChange && relative.length === 4 && ['proposal.md', '.qa.yaml'].includes(relative[3])) return true;
+    if (inRetro && relative.length === 5 && relative[3] === 'signals' && ['issue.json', 'workflow.json', 'eval.json'].includes(relative[4])) return true;
+    return inRetro && relative.length === 4 && ['proposal-candidates.json', 'retro-summary.md'].includes(relative[3]);
+  }
+  if (agent === 'aa-explorer') {
+    return inChange && relative[3] === 'explore' && relative[4] !== 'context.json';
+  }
+  if (agent === 'aa-intake-host') {
+    return inChange && (
+      ['cases', 'explore', 'review', 'facts'].includes(relative[3])
+      || (relative.length === 4 && ['proposal.md', '.qa.yaml'].includes(relative[3]))
+    );
+  }
+  if (agent === 'aa-test-author') {
+    if (relative[0] === 'tests' && ['api', 'e2e', 'fuzz', 'perf', 'testdata'].includes(relative[1])) return true;
+    return inChange && ['codegen', 'healing', 'coverage-repair'].includes(relative[3]);
+  }
+  if (agent === 'aa-reviewer') {
+    if (inChange && ['review', 'inspect', 'notes'].includes(relative[3])) return true;
+    return relative[0] === 'qa' && relative[1] === 'improvements' && relative[2] === 'reviews'
+      && ['assessment.json', 'summary.md'].includes(relative[4]);
+  }
+  if (agent === 'aa-reporter') {
+    if (!inChange) return false;
+    if (relative[3] === 'report') {
+      return relative.length === 5 && ['quality-report.json', 'quality-report.md', 'executive-summary.md'].includes(relative[4]);
+    }
+    if (relative[3] === 'inspect') {
+      return relative.length === 5 && ['issue-candidates.json', 'issue-analysis-status.json'].includes(relative[4]);
+    }
+    return relative[3] === 'issue-review';
+  }
+  if (agent === 'aa-archiver') {
+    return relative[0] === 'qa' && ['cases', 'archive'].includes(relative[1]);
+  }
+  return false;
+};
+
+const validateArtifactWriteCommand = (tokens, agent, root) => {
+  const parsed = parseLongOptions(tokens, 3, {
+    values: new Set(['--path', '--project-dir', '--payload-base64']),
+    required: new Set(['--path', '--project-dir', '--payload-base64']),
+  });
+  bindPathOption(tokens, parsed, '--project-dir', root, { mustEqualRoot: true });
+  const target = bindPathOption(tokens, parsed, '--path', root);
+  const payload = parsed.get('--payload-base64')?.value;
+  if (target === null || !isAllowedArtifactPath(agent, root, target)) {
+    throw new Error(`artifact path is not allowed for ${agent}`);
+  }
+  if (
+    typeof payload !== 'string'
+    || payload.length === 0
+    || payload.length > 1_400_000
+    || !/^[A-Za-z0-9+/]+={0,2}$/.test(payload)
+  ) {
+    throw new Error('unsafe --payload-base64 value');
+  }
 };
 
 const validateAaCommand = (tokens, agent, root) => {
   if (tokens[0] !== 'aa') throw new Error('only the declared aa CLI command is allowed');
+
+  if (tokens[1] === 'artifact' && tokens[2] === 'write') {
+    validateArtifactWriteCommand(tokens, agent, root);
+    return;
+  }
 
   if (agent === 'aa-explorer' || agent === 'aa-intake-host') {
     if (tokens[1] === 'risk') {
@@ -534,9 +659,42 @@ const validateArchiveCommand = (tokens, root) => {
   throw new Error('archiver bash is limited to structured mkdir -p and cp -R/-r argv');
 };
 
+const constrainExplorerAdvisoryHeredoc = (args, root) => {
+  if (typeof args?.command !== 'string') return false;
+  const match = args.command.match(
+    /^tee ([A-Za-z0-9_./-]+) >\/dev\/null <<'JSON'\n([\s\S]*)\nJSON\n?$/,
+  );
+  if (match === null) return false;
+  const supplied = match[1];
+  const content = match[2];
+  if (/^JSON$/m.test(content)) throw new Error('advisory heredoc contains an early terminator');
+  let advisory;
+  try {
+    advisory = JSON.parse(content);
+  } catch {
+    throw new Error('advisory heredoc body must be valid JSON');
+  }
+  const canonical = canonicalizeContainedPath(supplied, root, 'advisory path');
+  const relative = path.relative(root, canonical).split(path.sep);
+  if (
+    relative.length !== 5
+    || relative[0] !== 'qa'
+    || relative[1] !== 'changes'
+    || relative[3] !== 'explore'
+    || relative[4] !== 'advisory.json'
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(relative[2])
+    || advisory?.change_id !== relative[2]
+  ) {
+    throw new Error('tee destination must be the declared change explore/advisory.json');
+  }
+  args.command = `tee ${quoteShellToken(canonical)} >/dev/null <<'JSON'\n${content}\nJSON`;
+  return true;
+};
+
 const constrainBoundedBash = (args, agent, root) => {
+  if (agent === 'aa-explorer' && constrainExplorerAdvisoryHeredoc(args, root)) return;
   const tokens = tokenizeBoundedBash(args?.command);
-  if (agent === 'aa-archiver') validateArchiveCommand(tokens, root);
+  if (agent === 'aa-archiver' && tokens[0] !== 'aa') validateArchiveCommand(tokens, root);
   else validateAaCommand(tokens, agent, root);
   args.command = tokens.map(quoteShellToken).join(' ');
 };
@@ -768,7 +926,15 @@ export default async ({ client, directory }) => {
         return;
       }
 
-      const paths = filesystemPaths(toolName, output.args);
+      let paths;
+      try {
+        paths = toolName === 'apply_patch'
+          ? applyPatchPaths(output.args)
+          : filesystemPaths(toolName, output.args);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`AA sandbox boundary: cannot validate ${input.tool} (${detail})`);
+      }
       const loadsSkill = toolName === 'skill';
       const startsWorkflow = toolName === 'workflow_start';
 
@@ -801,6 +967,23 @@ export default async ({ client, directory }) => {
       }
 
       if (paths === null) return;
+      if (toolName === 'apply_patch') {
+        for (const supplied of paths) {
+          let canonical;
+          try {
+            canonical = canonicalizePath(supplied, boundary.root);
+          } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            throw new Error(`AA sandbox boundary: cannot resolve ${input.tool} path (${detail})`);
+          }
+          if (!isContainedPath(boundary.root, canonical)) {
+            throw new Error(
+              `AA sandbox boundary: ${input.tool} path escapes the session directory: ${supplied}`,
+            );
+          }
+        }
+        return;
+      }
       let normalizedPaths;
       try {
         normalizedPaths = canonicalizeFilesystemArgs(toolName, output.args, boundary.root);
@@ -813,6 +996,13 @@ export default async ({ client, directory }) => {
           throw new Error(
             `AA sandbox boundary: ${input.tool} path escapes the session directory: ${supplied}`,
           );
+        }
+      }
+
+      if (toolName === 'artifact_write') {
+        const target = normalizedPaths[0]?.canonical;
+        if (!target || !isAllowedArtifactPath(boundary.agent, boundary.root, target)) {
+          throw new Error(`AA sandbox boundary: artifact path is not allowed for ${boundary.agent}`);
         }
       }
 

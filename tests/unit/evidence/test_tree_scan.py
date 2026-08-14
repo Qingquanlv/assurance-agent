@@ -292,6 +292,22 @@ def test_performance_capability_is_a_literal_name_hit_in_a_locustfile(tmp_path: 
     assert result.perf_capabilities == frozenset({"dept-list-tree-query"})
 
 
+def test_performance_capability_resolves_a_module_string_constant(tmp_path: Path) -> None:
+    _write_file(
+        tmp_path,
+        "tests/perf/locustfile_user.py",
+        'CAPABILITY = "user-list-query"\n\n'
+        "class User(HttpUser):\n"
+        "    @task\n"
+        "    def list_users(self) -> None:\n"
+        '        self.client.get("/api/v1/user/list", name=CAPABILITY)\n',
+    )
+
+    result = scan_test_tree(tmp_path)
+
+    assert result.perf_capabilities == frozenset({"user-list-query"})
+
+
 def test_a_capability_named_only_in_a_comment_is_not_a_hit(tmp_path: Path) -> None:
     _write_file(
         tmp_path,
@@ -645,6 +661,30 @@ def test_an_identical_tree_produces_no_mismatch_in_either_mode(tmp_path: Path) -
 
     assert on_disk.gaps == ()
     assert injected.gaps == ()
+
+
+def test_platform_metadata_is_not_part_of_the_evidence_owned_test_tree(tmp_path: Path) -> None:
+    _covered_change(tmp_path)
+    baseline = dict(scan_test_tree(tmp_path).file_sha256)
+    _write_file(tmp_path, "tests/.DS_Store", "macOS metadata")
+
+    projection = fold_trace(tmp_path, CHANGE_ID, current=_fold_input(baseline))
+
+    assert "tests/.DS_Store" not in scan_test_tree(tmp_path).file_sha256
+    assert "tests_tree_digest_mismatch" not in _gap_codes(projection)
+
+
+def test_nightly_metrics_directory_is_not_parsed_as_an_execution_batch(tmp_path: Path) -> None:
+    change_dir = _covered_change(tmp_path)
+    nightly = change_dir / "execution" / "runs" / "nightly"
+    nightly.mkdir(parents=True)
+    (nightly / "metrics.json").write_text("{}\n", encoding="utf-8")
+
+    projection = fold_trace(tmp_path, CHANGE_ID)
+
+    assert not any(
+        gap.code == "batch_id_unparseable" and gap.batch_id == "nightly" for gap in projection.gaps
+    )
 
 
 def test_a_manifest_without_per_file_hashes_claims_an_empty_tree(tmp_path: Path) -> None:

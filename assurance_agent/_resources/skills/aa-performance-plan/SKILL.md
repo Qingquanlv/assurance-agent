@@ -43,6 +43,36 @@ Write only the plan artifacts listed in Outputs. Do not write tests or continue 
 
 Task Mapping uses `Case ID | Task Method | Target File`.
 
+Task Mapping is a strict one-to-one execution-entry relation:
+
+- Both `performance-plan.md` and `performance-codegen-plan.md` must each contain
+  an explicit `## Task Mapping` table with the exact headers shown below. The
+  codegen validator reads the frozen codegen plan directly; prose such as
+  "Task Mapping target" or a mapping embedded in another table is not a substitute.
+- Emit exactly one Task Mapping row for each selected Performance Case ID.
+- Map that row to the primary executable Locust task method under `tests/perf/**`.
+- Never add separate Task Mapping rows for setup, cleanup, seed helpers, factories,
+  adapters, or support functions. Describe those dependencies under Factory Mapping
+  or a separate Seed Lifecycle section instead.
+- A Case ID repeated in Task Mapping is invalid even when the method or target file
+  differs.
+
+Valid example:
+
+```markdown
+## Task Mapping
+
+| Case ID | Task Method | Target File |
+|---|---|---|
+| TC_ACCOUNT_PERF_001 | AccountListUser.list_accounts | tests/perf/locustfile_account.py |
+
+## Seed Lifecycle
+
+| Setup | Cleanup | Support Module |
+|---|---|---|
+| setup_account | cleanup_account | tests/perf/adapters/account_seed.py |
+```
+
 Factory Mapping section (required):
 
 ```markdown

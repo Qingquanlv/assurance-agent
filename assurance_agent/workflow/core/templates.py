@@ -1,7 +1,7 @@
 """Project scaffolding templates written by `aa init`.
 
 Ported from the TS templates (config-yaml.ts, execution-policy.ts,
-module-map-yaml.ts, data-knowledge-yaml.ts) with .aws -> .aa renames.
+module-map-yaml.ts, data-knowledge-yaml.ts); project config dir is `.aa`.
 """
 
 from typing import Literal

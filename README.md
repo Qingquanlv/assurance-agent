@@ -4,7 +4,7 @@
 
 核心信条：**CLI 只做确定性调度（graph 状态机、gate 裁决、Quality Score），推理由宿主 Agent（OpenCode）里的 skill 完成。** 编排由 GraphRuntime（schema v2）驱动：CLI 按声明式 graph schema 做 Plan → Execute → Update 调度，`aa status --next --json` 输出 ledger 投影的待办（pending tasks / pending interrupts），gate 裁决与 `events.jsonl` 写入由 CLI 独占。
 
-> 这是 TypeScript 版 `assurance-workflow-skills` 的 Python 净室重写：命令名由 `aws` 改为 `aa`，项目配置目录由 `.aws` 改为 `.aa`，技能前缀由 `aws-*` 改为 `aa-*`，构建链从 npm 换成 uv。
+> CLI 入口为 `aa`，项目配置目录为 `.aa/`，技能前缀为 `aa-*`，用 [uv](https://docs.astral.sh/uv/) 管理 Python 3.11 构建与运行。
 
 ---
 
@@ -94,6 +94,7 @@ aa workflow run --change <id> --entrypoint full --adapter opencode --server http
 | `aa doctor [--json]` | 环境与配置自检；有 error 退出 1 |
 | `aa config print` | 原样打印 `.aa/config.yaml` |
 | `aa validate --change <id> [--phase <p>] [--artifact <rel>] [--json]` | 确定性校验 change 产物；退出码 0 通过 / 1 失败、缺失或零注册产物 / 2 用法错误 |
+| `aa artifact write --path <project-rel> (--payload-base64 <data>\|--content <text>) [--project-dir <root>]` | 在项目边界内写入一个 UTF-8 workflow 产物；拒绝目录穿越、超限内容及 orchestrator 管理的 `workflow-state.yaml` |
 | `aa status --change <id> [--next] [--json]` | GraphStatus 投影（pending tasks / interrupts / next retry）；`--next` 只打印待办；退出码 0 running/completed / 20 stopped / 30 interrupted / 40 failed（命令或数据错误为 40） |
 | `aa trace --change <id> [--json] [--type API\|E2E\|Fuzz\|Performance] [--only-gaps]` | 现场 fold execution 相位 trace 投影（只读；与 status 的 ledger 投影分离） |
 | `aa verify --change <id> [--json]` | 现场 fold reconciled 相位投影并裁决证据充分性；退出码 0 pass / 30 needs_human / 40 fail |
@@ -109,7 +110,6 @@ aa workflow run --change <id> --entrypoint full --adapter opencode --server http
 | `aa heal ...` | Healing 支持命令（fix-proposal 校验等） |
 | `aa workflow run --change <id> --entrypoint full\|intake\|execute\|case\|archive\|retro --adapter opencode\|headless [...]` | GraphRuntime 主循环；退出码 0 completed / 20 stopped / 30 interrupted / 40 error |
 | `aa workflow run --detach ...` | detached 后台启动（OpenCode `workflow_start`；立刻返回启动成败） |
-| `aa workflow status --change <id>` | deprecated 别名（隐藏，一个版本后移除）；用 `aa status` |
 | `aa workflow resume --change <id> [--interrupt <id> --action <a> --reason <text>]` | 续跑或解决 interrupt；unbound legacy commit-safety work may return `legacy_commit_safety_semantics_unbound` |
 | `aa workflow import-checkpoint --change <id> --manifest <path>` | 校验后导入 fixture/benchmark checkpoint |
 | `aa workflow supersede --change <id> --action rerun-v6\|stop --who <who> --reason <text>` | Sole audited legacy exit: `rerun-v6` starts one replacement root; `stop` is terminal only |

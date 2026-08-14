@@ -39,4 +39,24 @@ Write only review outputs. Do not authorize automatic fixers.
 
 ## Domain Notes
 
-Consume the same Task Mapping uses `Case ID | Task Method | Target File`. structure emitted by the planner. Emit PlanReview fields consumed by the graph gate.
+Consume the same Task Mapping structure emitted by the planner:
+
+- Validate the explicit `## Task Mapping` table independently in both
+  `performance-plan.md` and `performance-codegen-plan.md`. A review must not pass
+  when either artifact lacks the table, even if equivalent facts appear in prose
+  or another section.
+`Case ID | Task Method | Target File`.
+
+Treat Task Mapping as a strict one-to-one execution-entry relation. Before passing:
+
+- Require exactly one row for every selected Performance Case ID.
+- Reject a Case ID that appears more than once, even when its task method or target
+  file differs.
+- Require the mapped method to be the primary executable Locust task under `tests/perf/**`.
+- Require setup, cleanup, seed helpers, factories, adapters, and other support
+  functions to be documented outside Task Mapping.
+
+Emit the PlanReview fields consumed by the graph gate.
+For an approved, codegen-ready plan, emit the exact JSON value
+`"decision": "pass"`. Never emit `"approved"`: that legacy value remains
+readable for historical artifacts but intentionally does not release the gate.

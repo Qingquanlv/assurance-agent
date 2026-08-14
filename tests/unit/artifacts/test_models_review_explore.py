@@ -175,6 +175,19 @@ def test_plan_review_authoring_accepts_canonical_capability_roots(canonical_key:
     assert PlanReviewAuthoring.model_validate(payload).required_capabilities == [canonical_key]
 
 
+def test_plan_review_authoring_rejects_legacy_approved_decision() -> None:
+    payload = {
+        **make_review(decision="approved", required_capabilities=["auth.api_admin_token"]),
+        "auto_fix_plan": [],
+    }
+
+    with pytest.raises(ValidationError, match="must use decision 'pass'"):
+        PlanReviewAuthoring.model_validate(payload)
+
+    # Frozen historical reviews remain readable for compatibility.
+    assert PlanReview.model_validate(payload).decision == "approved"
+
+
 @pytest.mark.parametrize("review_type", ["case", "fuzz-plan", "performance-plan", None])
 def test_non_plan_reviews_do_not_require_capabilities(review_type: str | None) -> None:
     doc = make_review(review_type=review_type)

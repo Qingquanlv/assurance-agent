@@ -1367,6 +1367,13 @@ def test_coverage_repair_summary_rows_allow_empty_input_under_nounset(tmp_path: 
     assert result.stdout == ""
 
 
+def test_trace_verify_summary_rows_allow_empty_input_under_nounset(tmp_path: Path) -> None:
+    result = _run_helper(tmp_path, "set -u; render_trace_verify_rows")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+
+
 def test_cursor_loop_passes_and_reports_coverage_repair_budget() -> None:
     source = _CURSOR_LOOP.read_text(encoding="utf-8")
 
@@ -1564,6 +1571,35 @@ def test_benchmark_env_preserves_caller_trace_verify_override(tmp_path: Path) ->
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "false"
+
+def test_benchmark_env_preserves_caller_smoke_scope_and_cleanup_override(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            (
+                f"set -u; source {shlex.quote(str(_BENCHMARK_ENV))}; "
+                "printf '%s|%s|%s|%s' \"${BENCHMARK_ITEMS[*]}\" \"$TEST_TYPES\" "
+                '"$CLEAN_ARTIFACTS" "$STATUS_POLL_INTERVAL"'
+            ),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **os.environ,
+            "BENCHMARK_ITEMS_OVERRIDE": "RET-user-management:requirements/user-management.md",
+            "TEST_TYPES": "fuzz",
+            "CLEAN_ARTIFACTS": "false",
+            "STATUS_POLL_INTERVAL": "60",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "RET-user-management:requirements/user-management.md|fuzz|false|60"
+    )
 
 def test_benchmark_evidence_gate_requires_successful_trace_and_verify(tmp_path: Path) -> None:
     passing = _run_helper(

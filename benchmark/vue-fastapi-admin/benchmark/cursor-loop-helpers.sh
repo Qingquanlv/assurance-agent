@@ -682,6 +682,19 @@ render_coverage_repair_rows() {
   done
 }
 
+render_trace_verify_rows() {
+  local row change_id collection_status reason_code trace_exit integrity gap_count
+  local verify_exit verdict blocking insufficient
+  for row in "$@"; do
+    IFS='|' read -r \
+      change_id collection_status reason_code trace_exit integrity gap_count \
+      verify_exit verdict blocking insufficient <<<"$row"
+    printf '| `%s` | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' \
+      "$change_id" "$collection_status" "$reason_code" "$trace_exit" "$integrity" \
+      "$gap_count" "$verify_exit" "$verdict" "$blocking" "$insufficient"
+  done
+}
+
 remove_generated_artifact_tree() {
   local target="$1"
   [ -e "$target" ] || return 0
@@ -1217,4 +1230,3 @@ benchmark_specialty_resume_action() {
   fi
   printf 'collect'
 }
-

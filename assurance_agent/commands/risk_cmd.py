@@ -1,5 +1,7 @@
 """aa risk — Explore 命令（Phase 0.5）。对齐 TS src/commands/risk.ts 的 flag 面。"""
 
+import base64
+import binascii
 import json
 from pathlib import Path
 
@@ -82,6 +84,40 @@ def risk_context(
         click.secho(f"Wrote {out_path}", fg="green")
         click.echo(f"Evidence entries: {len(ctx.evidence)}")
         click.echo(f"Degraded: {ctx.degraded}")
+    except RiskSafetyError as err:
+        click.secho(str(err), fg="red")
+        raise SystemExit(1) from err
+
+
+@risk_group.command("write-advisory")
+@click.option("--change", "change_id", required=True, help="Change ID.")
+@click.option("--project-dir", "project_dir", default=None, help="Project root (default: cwd).")
+@click.option("--payload-base64", required=True, help="Base64-encoded advisory JSON object.")
+def risk_write_advisory(change_id: str, project_dir: str | None, payload_base64: str) -> None:
+    """Safely materialize model-authored advisory JSON at its fixed change path."""
+    try:
+        assert_change_id_safe(change_id)
+        project_root = Path(project_dir).resolve() if project_dir else Path.cwd()
+        if not project_root.is_dir():
+            raise RiskSafetyError(f"--project-dir is not a directory: {project_root}")
+        if len(payload_base64) > 1_400_000:
+            raise RiskSafetyError("--payload-base64 exceeds the 1 MiB advisory limit")
+        try:
+            decoded = base64.b64decode(payload_base64, validate=True)
+            advisory = json.loads(decoded.decode("utf-8"))
+        except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RiskSafetyError("--payload-base64 must encode valid UTF-8 JSON") from exc
+        if not isinstance(advisory, dict):
+            raise RiskSafetyError("advisory payload must be a JSON object")
+        if advisory.get("change_id") != change_id:
+            raise RiskSafetyError("advisory change_id must match --change")
+        out_path = advisory_json_path(project_root, change_id)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(
+            json.dumps(advisory, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        click.secho(f"Wrote {out_path}", fg="green")
     except RiskSafetyError as err:
         click.secho(str(err), fg="red")
         raise SystemExit(1) from err

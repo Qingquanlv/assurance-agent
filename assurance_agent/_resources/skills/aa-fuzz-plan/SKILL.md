@@ -41,7 +41,30 @@ Write only the plan artifacts listed in Outputs. Do not write tests or continue 
 
 ## Domain Notes
 
-Test Function Mapping uses `Case ID | Test Function | Target File` plus Schema Acquisition fields.
+Both `fuzz-plan.md` and `fuzz-codegen-plan.md` must be independently consumable.
+Each file must contain the exact `## Test Function Mapping` heading and the
+following four-column mapping shape. Copy it
+once into each output and replace the example values; do not split Schema
+Acquisition into prose or a code block:
+
+```markdown
+## Test Function Mapping
+
+| Case ID | Test Function | Target File | Schema Acquisition |
+|---|---|---|---|
+| TC_DEPT_FUZZ_001 | `test_tc_dept_fuzz_001__create_payload` | `tests/fuzz/test_dept_fuzz.py` | `from_url: /openapi.json; fallback: app.openapi()` |
+```
+
+Do not rename the heading to `Test Function Spec`, `Files`, or prose that merely
+describes the mapping. Every row must have a non-empty Schema Acquisition cell.
+The codegen precommit validator reads only `fuzz-codegen-plan.md` and fails closed
+when this exact relation is absent. The workflow validates both plans
+with that same parser and requires their relations to be identical.
+
+Every mapped function name is `test_<case_id_lowercase>__<behavior>` and must
+contain the complete Case ID. For example, `TC_USER_FUZZ_001` maps to a name
+starting with `test_tc_user_fuzz_001__`; shortened names such as
+`test_user_create_fuzz` are invalid because coverage cannot bind them to a case.
 
 Factory Mapping section (required):
 

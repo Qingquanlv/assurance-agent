@@ -974,6 +974,44 @@ def test_bind_replay_definitions_wrong_assurance_parent_task(tmp_path: Path) -> 
         )
 
 
+def test_bind_replay_definitions_uses_started_hash_task_identity(tmp_path: Path) -> None:
+    fixture = _build_fixture(tmp_path)
+    hashed_task_id = "a" * 64
+    payloads = [json.loads(line) for line in fixture.events_path.read_text(encoding="utf-8").splitlines()]
+    rewritten: list[str] = []
+    for payload in payloads:
+        if payload.get("type") == "graph_invocation_started" and payload.get("graph_id") == "assurance":
+            payload = dict(payload)
+            payload["parent_task_id"] = hashed_task_id
+        rewritten.append(json.dumps(payload, sort_keys=True))
+    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+    fixture.append(
+        TaskAttemptStartedEvent(
+            type="task_attempt_started",
+            invocation_id=_ROOT_INV,
+            checkpoint_ns=_ROOT_INV,
+            superstep_id="ss-assurance",
+            task_id=hashed_task_id,
+            attempt_id=f"{hashed_task_id}-a1",
+            node_id="assurance",
+            input_sha256="in-assurance",
+            graph_digest=fixture.compiled.digest,  # type: ignore[attr-defined]
+            contract_digest="",
+            attempt_number=1,
+            lease_expires_at="2026-07-31T00:00:00Z",
+            started_at="2026-07-31T00:00:00Z",
+        ).model_dump(mode="json")
+    )
+
+    binding = bind_replay_definitions(
+        change_dir=fixture.change_dir,
+        change_id=_CHANGE_ID,
+        root_invocation_id=_ROOT_INV,
+        expected_entrypoint=_ENTRYPOINT,
+    )
+    assert binding.assurance_invocation_id == fixture.assurance_inv
+
+
 def test_recover_layer_inputs_api_applicable(tmp_path: Path) -> None:
     fixture = _build_fixture(tmp_path)
     binding = bind_replay_definitions(

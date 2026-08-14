@@ -45,3 +45,18 @@ Generate performance tests under `tests/perf/**`, shared builders under `tests/t
 ## Boundaries
 
 Write only authorized test/testdata paths plus the summary and manifest. Do not modify product source.
+
+## Mapping Rules
+
+- Consume Task Mapping as a strict one-row-per-Case-ID relation. Do not reinterpret
+  setup, cleanup, seed helpers, factories, or adapters as additional mapped test
+  entries.
+- In `performance-generated-files.json`, assign each Case ID only to its executable
+  `test_entry`. Support and `shared_builder` files must use `case_ids: []`.
+- Use `generated` only for a newly added file and `updated` only for a file whose
+  content this invocation changed. `reused` is legal only for an unchanged,
+  selected private-root `test_entry` that is itself a Task Mapping target. Never
+  list unchanged setup, cleanup, adapter, fixture, or shared-builder dependencies
+  as `reused`; omit unchanged support dependencies from the manifest.
+- If Task Mapping itself repeats a Case ID, do not try to compensate in generated
+  files; the plan is invalid and must not be represented as a different relation.

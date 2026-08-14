@@ -175,6 +175,10 @@ class PlanReviewAuthoring(BaseModel):
     def _validate_authoring_contract(self) -> "PlanReviewAuthoring":
         _validate_nonblank_finding_ids(self.findings)
         _validate_fully_qualified_capabilities(list(self.required_capabilities))
+        if self.decision == "approved":
+            raise ValueError(
+                "new plan reviews must use decision 'pass'; 'approved' is read-only compatibility"
+            )
         if self.review_type in _HUMAN_ONLY_PLAN_REVIEW_TYPES:
             if self.auto_fix_allowed:
                 raise ValueError("human-only plan review cannot authorize automatic fixes")

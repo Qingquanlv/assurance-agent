@@ -19,6 +19,7 @@ import yaml
 
 import assurance_agent.workflow.graph.finalize as finalize
 from assurance_agent.workflow.graph.finalize import (
+    _validate_case_design_approved_automation,
     _validate_case_design_source_verification,
     _validate_registry_outputs,
 )
@@ -59,6 +60,41 @@ def _write_init_config(ws: TaskWorkspace, answers: InitAnswers) -> None:
     config_path = ws.project_root / ".aa" / "config.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(build_config_yaml(answers), encoding="utf-8")
+
+
+def test_case_design_rejects_approved_layer_without_automated_case() -> None:
+    result = _validate_case_design_approved_automation(
+        {
+            "change:.qa.yaml": {"approval": {"approved_approach": "API + E2E + Fuzz + Performance"}},
+            "change:cases/system/dept/case.yaml": {
+                "added": [
+                    {"case_id": "TC_API_001", "type": "API", "automation": {"required": True}},
+                    {"case_id": "TC_E2E_001", "type": "E2E", "automation": {"required": False}},
+                ],
+                "modified": [],
+            },
+        }
+    )
+
+    assert result is not None
+    assert result.error_kind == "invalid_output"
+    assert "E2E, Fuzz, Performance" in (result.error or "")
+
+
+def test_case_design_accepts_automated_case_for_each_approved_layer() -> None:
+    entries = [
+        {"case_id": f"TC_{case_type}_001", "type": case_type, "automation": {"required": True}}
+        for case_type in ("API", "E2E", "Fuzz", "Performance")
+    ]
+    assert (
+        _validate_case_design_approved_automation(
+            {
+                "change:.qa.yaml": {"approval": {"approved_approach": "API / E2E / Fuzz / Performance"}},
+                "change:cases/system/dept/case.yaml": {"added": entries, "modified": []},
+            }
+        )
+        is None
+    )
 
 
 def test_project_candidate_document_is_validated_at_agent_boundary(tmp_path: Path) -> None:

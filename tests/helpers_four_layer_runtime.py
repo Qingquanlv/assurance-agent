@@ -83,7 +83,13 @@ _LAYER_BY_TARGET = {
     **{target: layer for layer, target in _CODEGEN_FIXER_BY_LAYER.items()},
     "skill:aa-fix-proposal": "api",
 }
-ReviewScript = Literal["pass", "needs_fix_auto", "needs_fix_human", "knowledge_gap"]
+ReviewScript = Literal[
+    "pass",
+    "needs_fix_auto",
+    "needs_fix_human",
+    "needs_fix_human_missing_capability",
+    "knowledge_gap",
+]
 NODE_CHAIN_AFTER = {
     "review": "mechanical-plan-checks",
     "mechanical-plan-checks": "review-gate",
@@ -250,12 +256,16 @@ class FourLayerDeterministicAdapter:
                 {"path": profile.plan_artifacts[0], "action": "revise", "note": "deterministic fix"}
             ]
             payload["codegen_readiness"] = "not_ready"
-        elif script == "needs_fix_human":
+        elif script in {"needs_fix_human", "needs_fix_human_missing_capability"}:
             payload["decision"] = "needs_fix"
             payload["auto_fix_allowed"] = False
             payload["human_review_required"] = True
             payload["next_action"] = "human_review"
             payload["codegen_readiness"] = "not_ready"
+            if script == "needs_fix_human_missing_capability":
+                payload["required_capabilities"] = [
+                    "capabilities.domain_factories.account.missing_fixture_only"
+                ]
         elif script == "knowledge_gap":
             payload["decision"] = "pass"
             # Must be a fully-qualified L1 leaf key (PlanReview validation) that is

@@ -946,7 +946,6 @@ def _bind_assurance_invocation(
     root_started: GraphInvocationStartedEvent,
     historical_roles: DiscoveredHistoricalAssuranceRoles,
 ) -> GraphInvocationStartedEvent:
-    root_task_id = f"{root_started.structural_path}:{historical_roles.assurance_call_node_id}"
     expected_path = (
         f"{root_started.structural_path}/"
         f"{historical_roles.assurance_call_node_id}/{historical_roles.assurance_graph_id}"
@@ -955,7 +954,8 @@ def _bind_assurance_invocation(
         events,
         root_started=root_started,
         parent_invocation_id=root_started.invocation_id,
-        parent_task_id=root_task_id,
+        parent_node_id=historical_roles.assurance_call_node_id,
+        parent_structural_path=root_started.structural_path,
         graph_id=historical_roles.assurance_graph_id,
         structural_path=expected_path,
     )
@@ -984,13 +984,13 @@ def _bind_layer_cycle_invocation(
             "ambiguous_graph_wiring", f"wired topology missing cycle identity for layer {layer}"
         )
 
-    branch_task_id = f"{assurance.structural_path}:{topology.assurance_node_id}"
     branch_path = f"{assurance.structural_path}/{topology.assurance_node_id}/{topology.branch_graph_id}"
     branch_matches = _matching_started_events(
         events,
         root_started=root_started,
         parent_invocation_id=assurance.invocation_id,
-        parent_task_id=branch_task_id,
+        parent_node_id=topology.assurance_node_id,
+        parent_structural_path=assurance.structural_path,
         graph_id=topology.branch_graph_id,
         structural_path=branch_path,
     )
@@ -1001,13 +1001,13 @@ def _bind_layer_cycle_invocation(
             f"found {len(branch_matches)}",
         )
     branch = branch_matches[0]
-    cycle_task_id = f"{branch.structural_path}:{topology.cycle_call_node_id}"
     cycle_path = f"{branch.structural_path}/{topology.cycle_call_node_id}/{topology.cycle_graph_id}"
     cycle_matches = _matching_started_events(
         events,
         root_started=root_started,
         parent_invocation_id=branch.invocation_id,
-        parent_task_id=cycle_task_id,
+        parent_node_id=topology.cycle_call_node_id,
+        parent_structural_path=branch.structural_path,
         graph_id=topology.cycle_graph_id,
         structural_path=cycle_path,
     )
@@ -1022,7 +1022,7 @@ def _bind_layer_cycle_invocation(
         layer=layer,
         invocation_id=cycle.invocation_id,
         parent_invocation_id=branch.invocation_id,
-        parent_task_id=cycle_task_id,
+        parent_task_id=cycle.parent_task_id or "",
         graph_id=topology.cycle_graph_id,
         structural_path=cycle.structural_path,
         params=dict(cycle.params),
@@ -1034,10 +1034,25 @@ def _matching_started_events(
     *,
     root_started: GraphInvocationStartedEvent,
     parent_invocation_id: str,
-    parent_task_id: str,
+    parent_node_id: str,
+    parent_structural_path: str,
     graph_id: str,
     structural_path: str,
 ) -> list[GraphInvocationStartedEvent]:
+    # Schema-v6 task IDs are content-derived hashes rather than the legacy
+    # ``<structural-path>:<node-id>`` identity. Bind the child to the task IDs
+    # actually started for the parent node. Old imported ledgers may not carry
+    # those start events, so retain the structural identity only as a fallback.
+    parent_task_ids = {
+        str(item.payload["task_id"])
+        for item in events
+        if item.payload.get("type") == "task_attempt_started"
+        and item.payload.get("invocation_id") == parent_invocation_id
+        and item.payload.get("node_id") == parent_node_id
+        and isinstance(item.payload.get("task_id"), str)
+    }
+    if not parent_task_ids:
+        parent_task_ids = {f"{parent_structural_path}:{parent_node_id}"}
     matches: list[GraphInvocationStartedEvent] = []
     structural_hits = 0
     for item in events:
@@ -1052,7 +1067,7 @@ def _matching_started_events(
             continue
         if (
             event.parent_invocation_id == parent_invocation_id
-            and event.parent_task_id == parent_task_id
+            and event.parent_task_id in parent_task_ids
             and event.graph_id == graph_id
             and event.structural_path == structural_path
         ):

@@ -47,6 +47,13 @@ Close eligible coverage gaps listed in `coverage-repair/brief.json` by adding or
 8. **Always** write `coverage-repair/apply-summary.json` with `applied`, `files_modified`, and per-item references back to `repair_items` — including when nothing was changed (`applied: false`).
 9. **Rewrite the summary on every attempt**, copying `change_id`, `attempt`, and `attempt_token` verbatim from `coverage-repair/entry-baseline.json`.
 10. Report `files_modified` completely and honestly.
+11. When adding Hypothesis properties to a function that also accepts pytest
+    fixtures, use keyword strategies (`@given(value=...)`), never positional
+    strategies. Positional strategies bind from the right and can leave the
+    intended generated parameter visible to pytest as a missing fixture.
+12. Do not hide an unresolved local import by moving it into a fixture or test
+    body. If the missing module is outside `brief.allowed_test_files`, leave the
+    item unaddressed and report it in `apply-summary.json`.
 
 ## Role boundary
 

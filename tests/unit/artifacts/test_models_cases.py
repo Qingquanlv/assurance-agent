@@ -49,6 +49,12 @@ def make_qa_yaml(**overrides: object) -> dict:
                 }
             ]
         },
+        "approval": {
+            "mode": "autonomous",
+            "approved_by": "aa-workflow",
+            "approved_approach": "API + E2E + Fuzz + Performance",
+            "approved_at": "2026-07-15T00:00:00Z",
+        },
     }
     doc.update(overrides)
     return doc
@@ -62,11 +68,51 @@ def test_case_yaml_valid_fixture_parses() -> None:
 
 
 def _performance_entry(*, scenario: dict[str, object]) -> dict:
-    return make_case_entry(
+    return _authoring_entry(
         case_id="TC_MENU_PERF_001",
         type="Performance",
-        automation={"performance": {"scenario": scenario}},
+        automation={
+            "required": True,
+            "framework": "locust",
+            "status": "planned",
+            "performance": {"scenario": scenario},
+        },
     )
+
+
+def _authoring_entry(**overrides: object) -> dict:
+    entry = make_case_entry(
+        requirement_id="REQ-1",
+        feature_name="menu-management",
+        test_condition_id="COND-1",
+        design_technique="use_case",
+        objective="verify the menu behavior",
+        summary="exercise and assert the menu behavior",
+        preconditions=[],
+        test_data=[],
+        steps=["perform the operation"],
+        assertions=["the operation succeeds"],
+        postconditions=[],
+        edge_cases=[],
+        related_cases=[],
+        risk={
+            "level": "high",
+            "likelihood": 3,
+            "impact": 4,
+            "rationale": "important administration path",
+        },
+        automation={"required": True, "framework": "pytest", "status": "planned"},
+        regression={
+            "candidate": True,
+            "tier": "smoke",
+            "rationale": "protect the administration path",
+            "selection_reason": ["critical_user_journey"],
+            "maintenance_rule": "keep_until_feature_deprecated",
+        },
+        trace={},
+    )
+    entry.update(overrides)
+    return entry
 
 
 def test_case_yaml_keeps_historical_performance_documents_compatible() -> None:
@@ -82,7 +128,7 @@ def test_case_yaml_authoring_requires_performance_execution_identity(missing: st
         "thresholds": {"p95_ms": 500},
     }
     del scenario[missing]
-    doc = make_case_yaml(added=[_performance_entry(scenario=scenario)])
+    doc = make_case_yaml(added=[_performance_entry(scenario=scenario)], modified=[])
 
     with pytest.raises(ValidationError, match=missing):
         CaseYamlAuthoring.model_validate(doc)
@@ -95,12 +141,41 @@ def test_case_yaml_authoring_accepts_complete_performance_execution_identity() -
                 scenario={
                     "capability": "menu_list_query",
                     "endpoint": "GET /api/v1/menu/list",
-                    "thresholds": {"p95_ms": 500},
+                    "thresholds": {"p95_ms": 500, "error_rate_max": 0.01},
                 }
             )
-        ]
+        ],
+        modified=[],
     )
     assert CaseYamlAuthoring.model_validate(doc).added[0].case_id == "TC_MENU_PERF_001"
+
+
+def test_case_yaml_authoring_requires_automation_contract() -> None:
+    entry = _authoring_entry()
+    del entry["automation"]
+
+    with pytest.raises(ValidationError, match="automation"):
+        CaseYamlAuthoring.model_validate(make_case_yaml(added=[entry], modified=[]))
+
+
+def test_case_yaml_authoring_framework_must_match_case_type() -> None:
+    entry = _authoring_entry(type="E2E")
+
+    with pytest.raises(ValidationError, match="pytest-playwright"):
+        CaseYamlAuthoring.model_validate(make_case_yaml(added=[entry], modified=[]))
+
+
+def test_case_yaml_authoring_rejects_empty_delta() -> None:
+    with pytest.raises(ValidationError, match="add or modify at least one case"):
+        CaseYamlAuthoring.model_validate(make_case_yaml(added=[], modified=[]))
+
+
+def test_qa_yaml_requires_gate_approval_metadata() -> None:
+    doc = make_qa_yaml()
+    del doc["approval"]
+
+    with pytest.raises(ValidationError, match="approval"):
+        QaYaml.model_validate(doc)
 
 
 def test_case_yaml_hyphen_case_id_rejected() -> None:

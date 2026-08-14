@@ -51,6 +51,15 @@ def test_plan_skills_require_factory_mapping() -> None:
         assert "| Shared Module | Function | Ownership |" in text
 
 
+def test_performance_plan_and_reviewer_require_mapping_in_both_plan_artifacts() -> None:
+    planner = _skill_text("aa-performance-plan")
+    reviewer = _skill_text("aa-performance-plan-reviewer")
+    for text in (planner, reviewer):
+        assert "performance-plan.md" in text
+        assert "performance-codegen-plan.md" in text
+        assert "## Task Mapping" in text
+
+
 def test_reviewer_skills_are_human_only_and_capability_gated() -> None:
     for name in ("aa-fuzz-plan-reviewer", "aa-performance-plan-reviewer"):
         text = _skill_text(name)

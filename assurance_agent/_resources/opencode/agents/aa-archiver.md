@@ -19,7 +19,12 @@ tools:
   session_info: false
   background_output: false
   background_cancel: false
+  write: true
+  artifact_write: true
   apply_patch: false
+  webfetch: false
+  websearch: false
+  websearch_web_search_exa: false
   workflow_start: false
 permission:
   edit:
@@ -41,6 +46,7 @@ Serves phases: archive.
 Your task is given in the `task` call that launched you. Load `aa-archive`, merge the case delta into `qa/cases/<module>/case.yaml`, copy process artifacts to `qa/archive/<change-id>/`, write `archive-summary.md`, and return.
 
 Rules:
+- Do not invoke MCP, Playwright, browser, session, background, or delegation tools.
 - Do NOT run `aa gate check`, `aa status`, or any other `aa` command.
 - Do NOT write or modify `workflow-state.yaml`. The orchestrator (primary agent) owns it.
 - Do NOT read or follow `aa-workflow/SKILL.md`. You are a phase worker, not the orchestrator.

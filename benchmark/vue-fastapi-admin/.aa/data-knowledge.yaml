@@ -96,6 +96,14 @@ entities:
     notes: "Constraint key names mirror explore/advisory + case traces for negative
       and data_integrity MRC closed categories. Promote only after human / knowledge
       review; do not invent alternate spellings.\n"
+  api:
+    required_fields:
+      - path
+      - method
+      - tags
+    constraints: {}
+    notes: Proposed entity leaf for API metadata MRC closed keys; promote after
+      review.
 capabilities:
   domain_factories:
     dept:
@@ -248,6 +256,17 @@ capabilities:
           symbol: tests.e2e.adapters.menu.cleanup_menu
           entity: menu
           retry_safe: true
+        cleanup_by_name:
+          kind: http
+          symbol: tests.e2e.adapters.menu.e2e_cleanup_menu_by_name
+          create-if-missing: false
+          acquire:
+            operation: login_token
+          transport: httpx
+          cleanup_ref: cleanup.menu_delete
+          notes: On-disk E2E helper resolves menu id via GET /api/v1/menu/list
+            then DELETE; needed for UI-created menus in TC_MENU_E2E_002 where
+            factory id is unavailable.
       user:
         make_user:
           kind: isolated_worker
@@ -422,6 +441,18 @@ capabilities:
           symbol: tests.perf.adapters.system_user_seed.cleanup
           create-if-missing: true
           notes: Manifest-driven idempotent cleanup via domain cleanup_user
+      api:
+        cleanup:
+          kind: helper
+          symbol: tests.perf.adapters.api_seed.cleanup
+          create-if-missing: true
+          notes: Manifest-driven idempotent cleanup via domain cleanup_api
+        setup:
+          kind: helper
+          symbol: tests.perf.adapters.api_seed.setup
+          create-if-missing: true
+          notes: Pre-run API metadata seed for TC_APIS_PERF_001; proposed
+            because L1 has no capabilities.performance.api
   cleanup:
     dept_delete:
       symbol: tests.testdata.domain.dept.cleanup_dept

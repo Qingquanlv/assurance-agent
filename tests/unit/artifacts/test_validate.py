@@ -37,6 +37,11 @@ targets:
     - module: menus
       change_case_file: cases/menus/case.yaml
       target_case_file: qa/cases/menus/case.yaml
+approval:
+  mode: autonomous
+  approved_by: aa-workflow
+  approved_approach: API + E2E + Fuzz + Performance
+  approved_at: "2026-07-15T00:00:00Z"
 """
 
 

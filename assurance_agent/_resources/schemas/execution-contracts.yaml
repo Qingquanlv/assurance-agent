@@ -666,6 +666,8 @@ contracts:
   skill:aa-api-codegen-fixer:
     handler: agent
     reads:
+    - change:plans/api-codegen-plan.md
+    - change:cases/**/case.yaml
     - change:healing/fix-proposal.json
     - change:healing/fixer-authority.json
     - change:healing/fixer-proposal-approval.json
@@ -696,6 +698,8 @@ contracts:
   skill:aa-e2e-codegen-fixer:
     handler: agent
     reads:
+    - change:plans/e2e-codegen-plan.md
+    - change:cases/**/case.yaml
     - change:healing/fix-proposal.json
     - change:healing/fixer-authority.json
     - change:healing/fixer-proposal-approval.json

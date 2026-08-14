@@ -176,6 +176,8 @@ def _append_acceptance(
     reverse_resume_order: bool = False,
     resume_hash_layer: int = 0,
     corrupt_resume_anchor_node_layer: int | None = None,
+    source_gate_attempt_id: str | None = None,
+    source_gate_tree_id: str | None = None,
 ) -> None:
     digest = audited_digest or canonical_digest({"decision": "needs_human_review"})
     audited = audited_hashes or {"review/leaf.json": digest}
@@ -199,6 +201,14 @@ def _append_acceptance(
                     "node_id": node_id,
                     "interrupt_id": interrupt_id,
                 },
+                **(
+                    {
+                        "source_gate_attempt_id": source_gate_attempt_id,
+                        "source_gate_tree_id": source_gate_tree_id,
+                    }
+                    if source_gate_attempt_id is not None and source_gate_tree_id is not None
+                    else {}
+                ),
             }
         )
 
@@ -224,6 +234,14 @@ def _append_acceptance(
             "audited_reads_sha256": audited if index == resume_hash_layer else {},
             "anchor": anchor,
             "payload": {},
+            **(
+                {
+                    "source_gate_attempt_id": source_gate_attempt_id,
+                    "source_gate_tree_id": source_gate_tree_id,
+                }
+                if source_gate_attempt_id is not None and source_gate_tree_id is not None
+                else {}
+            ),
         }
         if parent_anchor_ref is not None:
             event["parent_anchor_ref"] = (
@@ -601,9 +619,9 @@ def test_packaged_codegen_precondition_accepts_exact_risk_without_dropping_hard_
     review_rel: str,
     include_api_checks: bool,
 ) -> None:
-    # Packaged four-layer precondition gates (MERGE_HEAD) require applicable
-    # plan-assurance evidence + a succeeded review-cycle, in addition to the
-    # nested review-gate verdict that accept_risk elevates to pass.
+    # Packaged four-layer precondition gates require applicable plan-assurance
+    # evidence, present capabilities, and a succeeded review-cycle in addition
+    # to the exact nested review-gate acceptance.
     from tests.unit.verification.test_gate_state import _EMPTY_DK, _applicable_checks, _review_for
 
     layer = "api" if include_api_checks else "e2e"
@@ -648,11 +666,26 @@ def test_packaged_codegen_precondition_accepts_exact_risk_without_dropping_hard_
     for rel in audited_paths:
         path = data_knowledge if rel.startswith("repo:") else change_dir / rel
         audited_hashes[rel] = sha256(path.read_bytes()).hexdigest()
+    append_event_strict(
+        change_dir,
+        {
+            "source": "graph",
+            "type": "task_attempt_succeeded",
+            "invocation_id": "review-inv",
+            "checkpoint_ns": f"root/{layer}/{layer}-inv/review/review-inv",
+            "superstep_id": "review-step",
+            "task_id": "review-gate-task",
+            "attempt_id": "review-gate-a1",
+            "gate_report": {"gate_id": review_gate},
+        },
+    )
     _append_acceptance(
         change_dir,
-        full_ns="root/review/review-inv",
+        full_ns=f"root/{layer}/{layer}-inv/review/review-inv",
         checkpoint=review_gate,
         audited_hashes=audited_hashes,
+        source_gate_attempt_id="review-gate-a1",
+        source_gate_tree_id="tree-1",
     )
     context = GateEvaluationContext(
         project_root=project,
@@ -663,7 +696,10 @@ def test_packaged_codegen_precondition_accepts_exact_risk_without_dropping_hard_
         state_values={},
         node_results={"review-cycle": {"status": "succeeded"}},
         audit_events_dir=change_dir,
-        checkpoint_ns="root/codegen/codegen-inv",
+        checkpoint_ns=f"root/{layer}/{layer}-inv",
+        invocation_id=f"{layer}-inv",
+        event_schema_version=5,
+        committed_tree_id="tree-1",
     )
     gates = load_workflow_v2(Path.cwd()).gates
 

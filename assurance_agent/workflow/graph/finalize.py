@@ -504,6 +504,70 @@ def _validate_registry_outputs(
         )
         if coverage_invalid is not None:
             return coverage_invalid
+    approved_automation_invalid = _validate_case_design_approved_automation(authored)
+    if approved_automation_invalid is not None:
+        return approved_automation_invalid
+    return None
+
+
+def _validate_case_design_approved_automation(
+    authored: Mapping[str, object],
+) -> TaskResult | None:
+    """Reject case-design output that silently drops an approved test layer.
+
+    Layer applicability intentionally treats a missing/false
+    ``automation.required`` as manual-only.  Without this cross-artifact check,
+    an author could promise API/E2E/Fuzz/Performance in ``.qa.yaml`` yet hand in
+    cases that make those branches deterministically skip.
+    """
+    qa = authored.get("change:.qa.yaml")
+    if not isinstance(qa, Mapping):
+        return None
+    approval = qa.get("approval")
+    approach = approval.get("approved_approach") if isinstance(approval, Mapping) else None
+    if not isinstance(approach, str):
+        return None
+    layer_case_types = {
+        "api": "API",
+        "e2e": "E2E",
+        "fuzz": "Fuzz",
+        "performance": "Performance",
+    }
+    selected = {
+        case_type
+        for token, case_type in layer_case_types.items()
+        if re.search(rf"(?i)(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])", approach)
+    }
+    if not selected:
+        return None
+
+    automated: set[str] = set()
+    for logical, document in authored.items():
+        if not (
+            logical.startswith("change:cases/")
+            and logical.endswith(("/case.yaml", "/case.yml", "/case.json"))
+            and isinstance(document, Mapping)
+        ):
+            continue
+        for bucket in ("added", "modified"):
+            entries = document.get(bucket)
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, Mapping):
+                    continue
+                automation = entry.get("automation")
+                if isinstance(automation, Mapping) and automation.get("required") is True:
+                    case_type = entry.get("type")
+                    if isinstance(case_type, str):
+                        automated.add(case_type)
+    missing = sorted(selected - automated)
+    if missing:
+        return task_failure(
+            "invalid_output",
+            ".qa.yaml approval selected automated layers without an "
+            f"automation.required=true case: {', '.join(missing)}",
+        )
     return None
 
 

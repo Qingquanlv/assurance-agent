@@ -8,6 +8,12 @@ from pydantic import BaseModel, ConfigDict
 
 MAX_SYMBOL_BYTES = 64 * 1024
 MAX_TASK_AGGREGATE_BYTES = 256 * 1024
+_SYMBOL_BYTE_LIMITS = {
+    # One record per failed case plus evidence excerpts makes the authoritative
+    # inspect artifact legitimately larger than the generic scalar/document
+    # ceiling. It remains schema-validated and bounded by the task aggregate.
+    "change:inspect/failure-analysis.json": MAX_TASK_AGGREGATE_BYTES,
+}
 
 
 class FrozenOutput(BaseModel):
@@ -52,8 +58,9 @@ def enforce_size_limits(outputs: dict[str, FrozenOutput]) -> None:
     total = 0
     for symbol, fo in outputs.items():
         size = len(fo.canonical_value_bytes())
-        if size > MAX_SYMBOL_BYTES:
-            raise ValueError(f"frozen output '{symbol}' exceeds {MAX_SYMBOL_BYTES} bytes")
+        limit = _SYMBOL_BYTE_LIMITS.get(fo.source_path, MAX_SYMBOL_BYTES)
+        if size > limit:
+            raise ValueError(f"frozen output '{symbol}' exceeds {limit} bytes")
         total += size
     if total > MAX_TASK_AGGREGATE_BYTES:
         raise ValueError(f"task frozen_outputs aggregate exceeds {MAX_TASK_AGGREGATE_BYTES} bytes")

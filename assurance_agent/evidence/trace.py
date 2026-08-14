@@ -56,6 +56,7 @@ _PERF_VERDICT_TO_STATUS: dict[str, Literal["passed", "failed", "skipped"]] = {
     "FAIL": "failed",
     "SKIPPED": "skipped",
 }
+_NON_EXECUTION_RUN_DIRS = frozenset({"nightly"})
 
 
 @dataclass(frozen=True)
@@ -409,6 +410,8 @@ def _load_batch_executions(
             if not batch_dir.is_dir():
                 continue
             batch_id = batch_dir.name
+            if batch_id in _NON_EXECUTION_RUN_DIRS:
+                continue
             if current_input is not None and batch_id == current_input.batch_id:
                 continue
             batch = _load_batch_from_disk(

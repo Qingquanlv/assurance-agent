@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import re
 from collections.abc import Iterable, Mapping
@@ -37,7 +38,7 @@ class TreeScanResult:
 
 
 def _is_ignored(path: Path) -> bool:
-    return "__pycache__" in path.parts or path.suffix == ".pyc"
+    return "__pycache__" in path.parts or path.suffix == ".pyc" or path.name == ".DS_Store"
 
 
 def _strip_comment(line: str) -> str:
@@ -70,6 +71,43 @@ def _capability_literals(lines: Iterable[str]) -> list[str]:
     ]
 
 
+def _capability_constant_references(source: str) -> list[str]:
+    """Resolve Locust ``name=CONSTANT`` references without executing test code."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+
+    constants: dict[str, str] = {}
+    for node in tree.body:
+        targets: list[ast.expr] = []
+        value: ast.expr | None = None
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+            value = node.value
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+            value = node.value
+        names = [target.id for target in targets if isinstance(target, ast.Name)]
+        for name in names:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                constants[name] = value.value
+            else:
+                constants.pop(name, None)
+
+    capabilities: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg != "name" or not isinstance(keyword.value, ast.Name):
+                continue
+            capability = constants.get(keyword.value.id)
+            if capability is not None:
+                capabilities.append(capability)
+    return capabilities
+
+
 def _is_locustfile(path: Path, tests_root: Path) -> bool:
     return path.parent == tests_root / _PERF_DIR and path.name.startswith(_LOCUSTFILE_PREFIX)
 
@@ -96,7 +134,8 @@ def scan_test_tree(project_root: Path) -> TreeScanResult:
         file_sha256[rel] = hashlib.sha256(content).hexdigest()
         if path.suffix != ".py":
             continue
-        lines = content.decode("utf-8", errors="replace").splitlines()
+        source = content.decode("utf-8", errors="replace")
+        lines = source.splitlines()
         for name in _test_function_names(lines):
             ref = TraceTestRef(file=rel, test_name=name)
             functions.append(ref)
@@ -105,6 +144,7 @@ def scan_test_tree(project_root: Path) -> TreeScanResult:
                 covering.setdefault(case_id, []).append(ref)
         if _is_locustfile(path, tests_root):
             capabilities.update(_capability_literals(lines))
+            capabilities.update(_capability_constant_references(source))
 
     covering_tests = {
         case_id: tuple(sorted(refs, key=_ref_key)) for case_id, refs in sorted(covering.items())

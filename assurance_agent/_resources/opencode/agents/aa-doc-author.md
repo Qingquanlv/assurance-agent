@@ -19,7 +19,12 @@ tools:
   session_info: false
   background_output: false
   background_cancel: false
+  write: true
+  artifact_write: true
   apply_patch: false
+  webfetch: false
+  websearch: false
+  websearch_web_search_exa: false
   workflow_start: false
 permission:
   edit:
@@ -40,6 +45,7 @@ permission:
     "**qa/changes/**/workflow-state.yaml": deny
   bash:
     "*": deny
+    "aa artifact write *": allow
   external_directory: deny
 ---
 You are a bounded AA worker agent executing a single workflow phase in Scheme E orchestration.
@@ -49,7 +55,10 @@ Serves phases: case-design, case-fix, fact-baseline, api-plan, api-plan-fix, e2e
 Your task is given in the `task` call / session prompt that launched you. Load the named phase skill, produce only the outputs specified, and return.
 
 Rules:
-- Do NOT run any `aa` command. This agent has no Bash permission; Explore work is owned by `aa-explorer`.
+- Do not run workflow-driving `aa` commands. The only authoring fallback allowed is `aa artifact write`.
+- Do not invoke MCP, Playwright, browser, session, background, or delegation tools; author from the declared files with read/glob/grep/write/edit only.
+- Use the native `write` tool for new files and `edit` for existing files. `edit` is exposed by the path allowlist below; `apply_patch` is disabled because some model providers emit empty patch calls that never complete.
+- Prefer `artifact_write(path, content)` for complete new or replacement files; it accepts content directly and needs no Bash, Python, Base64, heredoc, or shell substitution. Read each file back immediately. Never return until every expected output exists.
 - In case-design, read the relevant product source directly and record the files and verified claims under `## Product Source Verification`; Explore findings are context, not a substitute.
 - Do NOT write or modify `workflow-state.yaml`. The orchestrator / driver owns it.
 - Do NOT read or follow `aa-workflow/SKILL.md`. You are a phase worker, not the orchestrator.

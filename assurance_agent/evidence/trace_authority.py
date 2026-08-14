@@ -391,6 +391,8 @@ def _validate_candidates(
     path = change_dir / CANDIDATES_SOURCE
     _record_path(recorder, CANDIDATES_SOURCE, path)
     raw = _read_json_object(path, CANDIDATES_SOURCE)
+    if not isinstance(raw, Mapping):
+        raise AuthorityValidationError(CANDIDATES_SOURCE, "malformed")
     try:
         candidates = IssueCandidateDocument.model_validate(raw)
     except ValidationError as exc:
@@ -401,7 +403,12 @@ def _validate_candidates(
         raise AuthorityValidationError(CANDIDATES_SOURCE, "batch_id_mismatch")
     if candidates.evidence_bundle_digest != manifest_digest:
         raise AuthorityValidationError(CANDIDATES_SOURCE, "evidence_digest_mismatch")
-    return candidates, candidate_document_digest(candidates)
+    # The analyzer binds its status to the authored JSON document.  Re-dumping
+    # the validated model materializes omitted optional fields (for example
+    # ``fingerprint_inputs.qualifiers: null``) and changes that wire digest.
+    # Validate through the model, but preserve the authored representation for
+    # the authority comparison.
+    return candidates, candidate_document_digest(raw)
 
 
 def _observation_payload_map(observations: ObservationDocument) -> dict[str, bytes]:

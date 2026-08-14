@@ -26,10 +26,20 @@ Do not rely on prior conversation context.
 **After completing work:**
 
 1. Write `qa/changes/<change-id>/explore/advisory.json`
-2. Do **not** write `qa/changes/<change-id>/explore/advisory.md`
-3. Run `aa risk validate-advisory --change <change-id> --project-dir <project-root>`
-4. On validation failure → report state delta `phases.explore.status = failed` with `validation_errors`
-5. On success → report state delta `phases.explore.status = done` with counts and outputs (see Step 7). Inline mode: apply the delta to `workflow-state.yaml` directly; dispatched subagent: never write `workflow-state.yaml` — report the values in your final message and the orchestrator applies them.
+2. Immediately read `qa/changes/<change-id>/explore/advisory.json` back. This is a hard completion condition: if the read reports missing/error, continue writing and do not validate or return. Prefer the native `write` tool. When `write` is unavailable in the provider runtime, base64-encode the complete UTF-8 JSON and use the bounded structured CLI fallback:
+
+   ```bash
+   aa risk write-advisory \
+     --change <change-id> \
+     --project-dir <project-root> \
+     --payload-base64 <base64-of-complete-advisory-json>
+   ```
+
+   Never use Python, `tee`, a heredoc, `ast_grep_replace`, or a shell command suffix to create this artifact.
+3. Do **not** write `qa/changes/<change-id>/explore/advisory.md`
+4. Run `aa risk validate-advisory --change <change-id> --project-dir <project-root>` only after the read-back succeeds.
+5. On validation failure → report state delta `phases.explore.status = failed` with `validation_errors`
+6. On success → report state delta `phases.explore.status = done` with counts and outputs (see Step 7). Inline mode: apply the delta to `workflow-state.yaml` directly; dispatched subagent: never write `workflow-state.yaml` — report the values in your final message and the orchestrator applies them.
 
 ---
 

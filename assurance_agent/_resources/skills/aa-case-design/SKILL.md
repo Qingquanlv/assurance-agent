@@ -138,7 +138,15 @@ Maintain a visible checklist for each item, or use the available task/todo tool 
        approved_at: <ISO timestamp>
      ```
    `aa status` enforces this through `case-design-gate`; `cases/` existing on disk is not enough for case-design to be `done`.
-9. **Write `proposal.md`** — must include `## Explore Input` when advisory `done`; `_skipped` placeholder otherwise; plus `## Test Types Considered` (all four layers, selected/declined + reason) and `## Layer Rationale`; include `generation_mode: autonomous` when no user approval was requested.
+9. **Write `proposal.md`** — must include `## Explore Input` when advisory `done`; `_skipped` placeholder otherwise; plus `## Test Types Considered` (all four layers, selected/declined + reason) and `## Layer Rationale`; include `generation_mode: autonomous` when no user approval was requested. It must also contain exactly one product-source attestation section in this form:
+   ```markdown
+   ## Product Source Verification
+
+   - independently_read: true
+   - reviewed_source_files:
+     - `project/relative/product/source.py`
+   ```
+   List only product source files read directly during this invocation. Do not cite requirements, Explore artifacts, QA cases, tests, plans, generated files, or documentation as product source. Omitting the section, repeating it, setting `independently_read` to false, or providing an empty/non-product path list makes the proposal invalid.
 10. **Write case delta YAML** — to `qa/changes/<change-id>/cases/<module>/case.yaml`
 11. **Self-review case delta YAML** — validate schema; **case.yaml MUST NOT contain advisory metadata** (see below)
 12. **Hand off** — report completion; orchestrator invokes `aa-case-reviewer`
@@ -443,6 +451,11 @@ For a delta, set `based_on_l1_version` to the current L1 `version`. For a bootst
 proposal, set it to `null` and set `mode: bootstrap`. Validate the entire document
 against `DataKnowledgeProposal`; do not emit only `discovered_candidates` or an inner
 entity fragment.
+
+Keep every entity entry structurally meaningful: an `entities.<name>` mapping must
+contain at least one non-empty `constraints` or `required_fields` entry. If no such
+source-backed fact exists, omit that entity entirely and leave `entities: {}`; never
+emit placeholders such as `entities: {role: {constraints: {}}}`.
 
 Self-review must fail if any `data_integrity` / `negative` / journey MRC key was invented without a corresponding knowledge proposal.
 

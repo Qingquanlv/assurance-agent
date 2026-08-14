@@ -88,6 +88,11 @@ def _intent_wire(intent: DurableEffectIntentV1) -> dict[str, object]:
     return intent.model_dump(mode="json")
 
 
+def _effect_producer_attempt_id(task: ExecutableTask, context: RuntimeContext) -> str:
+    """Return the scheduler attempt identity used by durable-effect validation."""
+    return context.task_attempt_id or f"{task.task_id}-a1"
+
+
 def operation_fixer_authority_ready(
     task: ExecutableTask, workspace: TaskWorkspace, context: RuntimeContext
 ) -> TaskResult:
@@ -114,6 +119,18 @@ def operation_fixer_authority_ready(
                     authority=authority,
                     change_dir=context.change_dir,
                 ),
+            },
+        )
+    outside = _proposal_paths_outside_authority(
+        authority=authority,
+        proposal_path=workspace.change_dir / "healing" / "fix-proposal.json",
+    )
+    if outside:
+        return TaskResult(
+            status="succeeded",
+            value={
+                "route": "stop",
+                "reason": "proposal_paths_outside_fixer_authority:" + ",".join(outside),
             },
         )
     return TaskResult(status="succeeded", value={"route": "pass"})
@@ -150,7 +167,7 @@ def operation_record_fixer_approval(
         payload=effect,
         invocation_id=task.invocation_id,
         task_id=task.task_id,
-        attempt_id=str(params.get("attempt_id") or f"{task.task_id}:1"),
+        attempt_id=_effect_producer_attempt_id(task, context),
     )
     return TaskResult(
         status="succeeded",
@@ -188,13 +205,22 @@ def operation_record_codegen_fix_apply(
     task: ExecutableTask, workspace: TaskWorkspace, context: RuntimeContext
 ) -> TaskResult:
     """Record one target's apply summary + safety fragment and emit heal_record_apply/v2."""
-    params = task_with(task)
+    explicit_params = task_with(task)
+    params = dict(explicit_params)
     target = params.get("target")
     if target not in {"api", "e2e"}:
         return task_failure(
             "invalid_input",
             "record-codegen-fix-apply requires with.target in {api,e2e}",
         )
+    discovered = _discover_fixer_candidate_inputs(
+        change_dir=context.change_dir,
+        store=TreeStore(context.change_dir),
+        invocation_id=task.invocation_id,
+        target=str(target),
+        change_id=context.change_id,
+    )
+    params = {**discovered, **explicit_params}
     intent_rel = f"healing/{target}-apply-intent.json"
     intent_path = workspace.change_dir / intent_rel
     if not intent_path.is_file():
@@ -280,7 +306,7 @@ def operation_record_codegen_fix_apply(
         payload=effect,
         invocation_id=task.invocation_id,
         task_id=task.task_id,
-        attempt_id=str(params.get("attempt_id") or f"{task.task_id}:1"),
+        attempt_id=_effect_producer_attempt_id(task, context),
     )
     return TaskResult(
         status="succeeded",
@@ -462,7 +488,7 @@ def enhance_allocate_result_with_authority(
                     payload=effect,
                     invocation_id=task.invocation_id,
                     task_id=task.task_id,
-                    attempt_id=attempt_id,
+                    attempt_id=_effect_producer_attempt_id(task, context),
                 )
             ),
         )
@@ -554,6 +580,147 @@ def _verify_fixer_candidate_receipt(
     except (CandidateValidationError, WorkspaceError, KeyError, TypeError, ValueError) as exc:
         return task_failure("invalid_input", f"candidate receipt verify failed: {exc}")
     return None
+
+
+def _discover_fixer_candidate_inputs(
+    *,
+    change_dir: Path,
+    store: TreeStore,
+    invocation_id: str,
+    target: str,
+    change_id: str,
+) -> dict[str, object]:
+    """Recover the committed fixer candidate identity consumed by ``record-*``.
+
+    Packaged healing nodes can only declare the static target in ``with``.  The
+    write-set and receipt identities are scheduler-owned outputs, so bind them
+    from the directly preceding committed fixer success in the same invocation.
+    """
+    expected_target = f"skill:aa-{target}-codegen-fixer"
+    expected_node = f"fix-{target}"
+    starts: dict[str, Mapping[str, object]] = {}
+    successes: dict[str, Mapping[str, object]] = {}
+    committed_tasks: set[str] = set()
+    committed_write_sets: set[str] = set()
+    invocation_start: Mapping[str, object] | None = None
+
+    for event in read_events(change_dir):
+        if event.get("source") != "graph" or event.get("invocation_id") != invocation_id:
+            continue
+        event_type = event.get("type")
+        if event_type == "graph_invocation_started":
+            invocation_start = event
+        elif event_type == "task_attempt_started":
+            task_id = event.get("task_id")
+            if (
+                isinstance(task_id, str)
+                and event.get("node_id") == expected_node
+                and event.get("target") == expected_target
+                and event.get("precommit_validator") == CODEGEN_FIX_CANDIDATE_V1
+            ):
+                starts[task_id] = event
+        elif event_type == "task_attempt_succeeded":
+            task_id = event.get("task_id")
+            if isinstance(task_id, str) and task_id in starts:
+                successes[task_id] = event
+        elif event_type == "superstep_committed":
+            raw_task_ids = event.get("committed_task_ids")
+            if isinstance(raw_task_ids, list):
+                committed_tasks.update(task_id for task_id in raw_task_ids if isinstance(task_id, str))
+            raw_write_set_ids = event.get("write_set_ids")
+            if isinstance(raw_write_set_ids, list):
+                committed_write_sets.update(
+                    write_set_id for write_set_id in raw_write_set_ids if isinstance(write_set_id, str)
+                )
+
+    if invocation_start is None:
+        return {}
+    candidates: list[tuple[int, str, Mapping[str, object], Mapping[str, object]]] = []
+    for task_id, success in successes.items():
+        start = starts[task_id]
+        write_set_id = success.get("write_set_id")
+        receipt_id = success.get("candidate_validation_receipt_id")
+        if not isinstance(write_set_id, str) or not write_set_id:
+            continue
+        if not isinstance(receipt_id, str) or not receipt_id:
+            continue
+        if task_id not in committed_tasks and write_set_id not in committed_write_sets:
+            continue
+        seq = success.get("seq")
+        candidates.append((seq if isinstance(seq, int) else -1, task_id, start, success))
+    if not candidates:
+        return {}
+
+    _seq, fixer_task_id, started, success = max(candidates, key=lambda item: item[0])
+    write_set_id = str(success["write_set_id"])
+    fixer_attempt_id = str(success.get("attempt_id") or started.get("attempt_id") or "")
+    input_snapshot_id = str(success.get("input_snapshot_id") or started.get("input_snapshot_id") or "")
+    receipt_id = str(success["candidate_validation_receipt_id"])
+    if not fixer_attempt_id or not input_snapshot_id:
+        return {}
+
+    try:
+        write_set = store.load_write_set(write_set_id)
+    except (WorkspaceError, OSError, ValueError):
+        return {}
+    policy_digest = str(invocation_start.get("policy_digest") or "0" * 64)
+    contract_digest = str(started.get("contract_digest") or "")
+    graph_digest = str(invocation_start.get("graph_digest") or "")
+    if not contract_digest or not graph_digest:
+        return {}
+    definition_semantics = {
+        "assurance_profile_digest": str(invocation_start.get("assurance_profile_digest") or "unbound"),
+        "commit_safety_semantics_digest": str(
+            invocation_start.get("commit_safety_semantics_digest") or "unbound"
+        ),
+        "commit_safety_semantics_object_id": str(
+            invocation_start.get("commit_safety_semantics_object_id") or "unbound"
+        ),
+        "contract_digest": contract_digest,
+        "gate_semantics_digest": str(invocation_start.get("gate_semantics_digest") or "unbound"),
+        "gate_semantics_object_id": str(invocation_start.get("gate_semantics_object_id") or "unbound"),
+        "graph_digest": graph_digest,
+        "topology_safety_semantics_digest": str(
+            invocation_start.get("topology_safety_semantics_digest") or "unbound"
+        ),
+        "topology_safety_semantics_object_id": str(
+            invocation_start.get("topology_safety_semantics_object_id") or "unbound"
+        ),
+    }
+    precommit_context = PrecommitValidationContext(
+        root_invocation_id=str(invocation_start.get("parent_invocation_id") or invocation_id),
+        invocation_id=invocation_id,
+        task_id=fixer_task_id,
+        attempt_id=fixer_attempt_id,
+        target=expected_target,
+        base_tree_id=write_set.base_tree_id,
+        current_tree_id=write_set.base_tree_id,
+        input_snapshot_id=input_snapshot_id,
+        contract_digest=contract_digest,
+        policy_object_id=policy_digest.removeprefix("sha256:"),
+        policy_digest=(policy_digest if policy_digest.startswith("sha256:") else f"sha256:{policy_digest}"),
+        gate_attempt_id=None,
+        interrupt_id=None,
+        output_digests=dict(sorted(write_set.outputs_sha256.items())),
+        write_set_id=write_set_id,
+        definition_semantics=definition_semantics,
+    )
+    roots = write_set.base_tree_roots or {}
+    current_change_repo_path = roots.get("change") or f"qa/changes/{change_id}"
+    return {
+        "write_set_id": write_set_id,
+        "fixer_attempt_id": fixer_attempt_id,
+        "fixer_task_id": fixer_task_id,
+        "fixer_invocation_id": invocation_id,
+        "input_snapshot_id": input_snapshot_id,
+        "candidate_validation_receipt_id": receipt_id,
+        "candidate_receipt_verify": {
+            "context": precommit_context.model_dump(mode="json"),
+            "plan_text": "",
+            "cases": [],
+            "current_change_repo_path": current_change_repo_path,
+        },
+    }
 
 
 def _repo_path_from_write_logical(logical_path: str) -> str | None:
@@ -826,6 +993,37 @@ def _unverified_authority_stop_reason(
     return "unverified_fixer_authority"
 
 
+def _proposal_paths_outside_authority(
+    *,
+    authority: FixerAuthorityV1,
+    proposal_path: Path,
+) -> list[str]:
+    """Return eligible proposal paths that no ready target authorizes."""
+    try:
+        proposal = json.loads(proposal_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    proposals = proposal.get("proposals") if isinstance(proposal, Mapping) else None
+    if not isinstance(proposals, list):
+        return []
+    allowed = {
+        target.target: {path.repo_path for path in target.paths}
+        for target in authority.targets
+        if target.status == "ready"
+    }
+    outside: set[str] = set()
+    for item in proposals:
+        if not isinstance(item, Mapping) or item.get("eligible") is not True:
+            continue
+        target = item.get("target")
+        files = item.get("files_to_modify")
+        if target not in {"api", "e2e"} or not isinstance(files, list):
+            continue
+        target_allowed = allowed.get(str(target), set())
+        outside.update(path for path in files if isinstance(path, str) and path not in target_allowed)
+    return sorted(outside)
+
+
 def allocate_authority_bindings_from_artifacts(
     *,
     workspace: TaskWorkspace,
@@ -896,6 +1094,7 @@ def allocate_authority_bindings_from_artifacts(
             write_set=write_set,
             private_root=contract.private_test_root,
             snapshot_entries=snapshot_entries,
+            repo_root=workspace.repo_root,
         )
         if path_bindings is None:
             bindings[target] = {"status": "unverified", "paths": []}
@@ -922,6 +1121,7 @@ def _authority_paths_from_manifest_and_write_set(
     write_set: WriteSet,
     private_root: str,
     snapshot_entries: list[Mapping[str, object]] | None,
+    repo_root: Path,
 ) -> list[FixerAuthorityPathV1] | None:
     writes = _write_after_by_repo_path(write_set)
     paths: list[FixerAuthorityPathV1] = []
@@ -935,11 +1135,18 @@ def _authority_paths_from_manifest_and_write_set(
                 return None
             if f"sha256:{after}" != entry.content_sha256:
                 return None
+            current_path = repo_root / entry.repo_path
+            if not current_path.is_file():
+                return None
             paths.append(
                 FixerAuthorityPathV1(
                     repo_path=entry.repo_path,
                     disposition=entry.disposition,
-                    content_sha256=entry.content_sha256,
+                    # Keep the original codegen write-set/manifest checks above as
+                    # provenance, but bind this healing attempt to its current
+                    # committed baseline. Earlier healing attempts may already
+                    # have changed the same generated test.
+                    content_sha256=sha256_bytes(current_path.read_bytes()),
                 )
             )
         elif entry.disposition == "reused":
@@ -954,11 +1161,14 @@ def _authority_paths_from_manifest_and_write_set(
             digest = _snapshot_digest_for_repo_path(snapshot_entries, entry.repo_path)
             if digest is None or digest != entry.content_sha256:
                 return None
+            current_path = repo_root / entry.repo_path
+            if not current_path.is_file():
+                return None
             paths.append(
                 FixerAuthorityPathV1(
                     repo_path=entry.repo_path,
                     disposition="reused",
-                    content_sha256=digest,
+                    content_sha256=sha256_bytes(current_path.read_bytes()),
                 )
             )
     return paths
