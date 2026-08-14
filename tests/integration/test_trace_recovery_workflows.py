@@ -24,10 +24,7 @@ from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult, 
 from assurance_agent.workflow.graph.checkpoint import CheckpointStore, project_invocation
 from assurance_agent.workflow.graph.compiler import compile_packaged_workflow, compile_workflow
 from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog, load_execution_contracts
-from assurance_agent.workflow.graph.definition_pinning import (
-    load_pinned_execution_definition,
-    request_for_compiled,
-)
+from assurance_agent.workflow.graph.definition_pinning import request_for_compiled
 from assurance_agent.workflow.graph.handlers.agent import AgentHandler
 from assurance_agent.workflow.graph.handlers.gate import GateHandler
 from assurance_agent.workflow.graph.handlers.interrupt import InterruptHandler
@@ -1345,7 +1342,7 @@ def _build_pinning_aware_runtime(
     ops: dict[str, OperationFn],
     stub_assurance_subgraphs: bool = False,
 ) -> tuple[GraphRuntime, list[Any]]:
-    """Resolver mirrors ``build_graph_runtime``: live hit or ``load_pinned_execution_definition``."""
+    """Resolver mirrors ``build_graph_runtime``: live hit or ``GraphDefinitionChanged``."""
     change = project / "qa" / "changes" / CHANGE_ID
     store = TreeStore(change)
     checkpoints = CheckpointStore(change)
@@ -1410,21 +1407,10 @@ def _build_pinning_aware_runtime(
             )
             cache[request] = bundle
             return bundle
-        pinned = load_pinned_execution_definition(change, request)
-        pinned_loads.append(request)
-        pinned_models = validate_ingest_model_map(pinned.ingest_catalog)
-        pinned_runner, pinned_scheduler = services_for(pinned.compiled, pinned.contracts)
-        bundle = ResolvedExecutionBundle(
-            request=request,
-            compiled=pinned.compiled,
-            contracts=pinned.contracts,
-            ingest_catalog=pinned.ingest_catalog,
-            model_map=pinned_models,
-            node_runner=pinned_runner,
-            scheduler=pinned_scheduler,
+        raise GraphDefinitionChanged(
+            "graph_definition_changed: live compiled identity does not match "
+            "the invocation pin; start a new invocation"
         )
-        cache[request] = bundle
-        return bundle
 
     runtime = GraphRuntime(
         checkpoint_store=checkpoints,
@@ -1508,10 +1494,10 @@ def _start_issue_analyze_pending_commit(
 
 
 @pytest.mark.parametrize("drift_kind", ["graph", "contract", "catalog"])
-def test_identity_drift_triad_resumes_via_load_pinned(
+def test_identity_drift_triad_fails_closed(
     tmp_path: Path, drift_kind: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Live packaged digests ≠ pinned; resume continues via exact pinned snapshots."""
+    """Live packaged digests ≠ pinned; resume fails closed without pin reload."""
     project = tmp_path / "proj"
     change = _seed_b0_completed(project)
     _advance_inputs_to_b1(change, seed_completed_analysis=False)
@@ -1584,34 +1570,11 @@ def test_identity_drift_triad_resumes_via_load_pinned(
         analyzer=resume_analyzer,
         ops={},
     )
-    result = runtime.resume(invocation_id)
-    assert result.exit_code == 0, result.reason
-    assert pinned_loads, "resume must load committed snapshots when live identities drifted"
-    req = pinned_loads[0]
-    assert req.graph_digest == projection.graph_digest
-    assert req.ingest_catalog_digest == projection.ingest_catalog_digest
-    assert dict(req.contract_digests) == dict(projection.contract_digests)
-
-    resolved = runtime._definition_resolver(req)  # noqa: SLF001
-    assert resolved.compiled.digest == projection.graph_digest
-    assert resolved.compiled.ingest_catalog_digest == projection.ingest_catalog_digest
-    assert dict(resolved.compiled.contract_digests) == dict(projection.contract_digests)
-
-    final = project_invocation(change, invocation_id)
-    assert final.terminal == "completed"
-    if drift_kind == "graph":
-        # Pre-Task13 pinned topology: resume must not inject a materializer node.
-        assert (
-            "materialize-trace-projection"
-            not in resolved.compiled.schema.graphs["issue-analyze-workflow"].nodes
-        )
-        assert _materializer_success_count(change, invocation_id) == 0
-    else:
-        # Contract/catalog-only drift may retain the post-Task13 materializer node; do not
-        # claim identity drift suppresses its later legitimate execution under current handlers.
-        assert (
-            "materialize-trace-projection" in resolved.compiled.schema.graphs["issue-analyze-workflow"].nodes
-        )
+    with pytest.raises(GraphDefinitionChanged, match="graph_definition_changed"):
+        runtime.resume(invocation_id)
+    assert pinned_loads == []
+    assert project_invocation(change, invocation_id).terminal is None
+    assert not any(e.get("type") == "superstep_committed" for e in read_events_strict(change))
 
 
 def test_pre_task13_resume_does_not_upgrade_v1_or_inject_materializer(
@@ -1662,11 +1625,11 @@ def test_pre_task13_resume_does_not_upgrade_v1_or_inject_materializer(
         analyzer=ScriptedAnalyzer(succeed_on_attempt=None),
         ops={},
     )
-    result = runtime.resume(invocation_id)
-    assert result.exit_code == 0, result.reason
-    assert pinned_loads
+    with pytest.raises(GraphDefinitionChanged, match="graph_definition_changed"):
+        runtime.resume(invocation_id)
+    assert pinned_loads == []
     final = project_invocation(change, invocation_id)
-    assert final.terminal == "completed"
+    assert final.terminal is None
     assert _materializer_success_count(change, invocation_id) == 0
     assert not any(t.node_id == "materialize-trace-projection" for t in final.tasks.values())
     assert (change / "inspect" / "trace-projection.json").read_bytes() == v1_before
