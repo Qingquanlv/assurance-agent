@@ -1514,6 +1514,14 @@ def project_workflow_state(projection: GraphProjection) -> WorkflowStateProjecti
     )
 
 
+def derive_graph_state(
+    invocation_id: str,
+    events: list[dict[str, object]],
+) -> WorkflowStateProjection:
+    """Graph-visible state is a pure projection of ledger events."""
+    return project_workflow_state(fold_invocation_events(invocation_id, events))
+
+
 def render_workflow_state_yaml(projection: GraphProjection) -> bytes:
     """把兼容视图渲染成 ``workflow-state.yaml`` 字节（供 projection staging 落盘）。"""
     view = project_workflow_state(projection)
@@ -1635,6 +1643,7 @@ __all__ = [
     "CheckpointStore",
     "ValidatedImport",
     "checkpoint_snapshot_relpath",
+    "derive_graph_state",
     "dump_checkpoint_snapshot",
     "fold_invocation_events",
     "latest_root_invocation_id",
