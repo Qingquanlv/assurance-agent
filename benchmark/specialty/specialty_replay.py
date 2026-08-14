@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from assurance_agent.artifacts.models.assurance import CASE_TYPES, LAYER_NAMES, PLAN_CHECK_IDS
-from assurance_agent.eval.specialty_models import (
+from benchmark.specialty.specialty_models import (
     CapabilitiesSummary,
     CapabilityPolicyReplayV2,
     CheckSummary,

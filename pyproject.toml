@@ -46,9 +46,10 @@ addopts = ["--import-mode=importlib"]
 [tool.ruff]
 line-length = 110
 target-version = "py311"
-extend-exclude = ["benchmark", ".worktrees", ".history"]
+extend-exclude = ["benchmark/vue-fastapi-admin", ".worktrees", ".history"]
 
 [tool.pyright]
-include = ["assurance_agent", "tests"]
+include = ["assurance_agent", "tests", "benchmark/specialty"]
+extraPaths = ["."]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"

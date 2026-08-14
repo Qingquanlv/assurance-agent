@@ -21,7 +21,7 @@ from assurance_agent.artifacts.models import CoverageThreshold, SelectedTargets
 from assurance_agent.artifacts.models.assurance import LAYER_NAMES
 from assurance_agent.artifacts.models.trace import TraceProjectionV2, load_trace_projection_document
 from assurance_agent.artifacts.policy import load_policy_bytes, policy_digest
-from assurance_agent.eval.specialty_models import (
+from benchmark.specialty.specialty_models import (
     CompleteTraceabilityEvidenceV3,
     IncompleteTraceabilityEvidenceV3,
     LegacySpecialtyReportV1,
@@ -33,8 +33,8 @@ from assurance_agent.eval.specialty_models import (
     load_specialty_report,
     load_specialty_report_document,
 )
-from assurance_agent.eval.specialty_render import render_specialty_sections
-from assurance_agent.eval.specialty_replay import collect_capability_policy_replay
+from benchmark.specialty.specialty_render import render_specialty_sections
+from benchmark.specialty.specialty_replay import collect_capability_policy_replay
 from assurance_agent.evidence.current_projection import load_current_reconciled_projection
 from assurance_agent.evidence.layer_summary import join_layer_sufficiency, summarize_projection_by_layer
 from assurance_agent.evidence.sufficiency import build_evidence_coverage_evaluation, evaluate_sufficiency
@@ -1803,7 +1803,7 @@ def test_complete_collection_path_reachable_from_main() -> None:
     [
         ("load_current_reconciled_projection", "assurance_agent.evidence.current_projection"),
         ("validate_trace_phase_pair", "assurance_agent.evidence.layer_summary"),
-        ("summarize_projection_by_layer", "assurance_agent.eval.specialty_models"),
+        ("summarize_projection_by_layer", "benchmark.specialty.specialty_models"),
         ("join_layer_sufficiency", "assurance_agent.evidence.layer_summary"),
         ("load_quality_gate_result_document", "assurance_agent.artifacts.models.inspect"),
     ],
@@ -1879,7 +1879,7 @@ def test_complete_collection_uses_shared_seams(
         monkeypatch.setattr(reporter, attr, wrapper)
     if attr == "summarize_projection_by_layer":
         monkeypatch.setattr(
-            "assurance_agent.eval.specialty_models.summarize_projection_by_layer",
+            "benchmark.specialty.specialty_models.summarize_projection_by_layer",
             wrapper,
         )
     if attr == "join_layer_sufficiency" and hasattr(reporter, "join_layer_sufficiency"):

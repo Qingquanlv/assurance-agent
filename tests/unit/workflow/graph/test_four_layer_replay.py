@@ -11,12 +11,12 @@ import pytest
 from pydantic import ValidationError
 
 from assurance_agent.artifacts.models.assurance import LAYER_NAMES, PLAN_CHECK_IDS
-from assurance_agent.eval.specialty_models import (
+from benchmark.specialty.specialty_models import (
     CapabilityPolicyReplayV2,
     CompleteLayerRow,
     build_capability_replay_v2,
 )
-from assurance_agent.eval.specialty_replay import collect_capability_policy_replay, replay_wired_layer
+from benchmark.specialty.specialty_replay import collect_capability_policy_replay, replay_wired_layer
 from assurance_agent.verification.profiles import get_layer_assurance_profile
 from assurance_agent.workflow.graph.replay_binding import (
     FrozenDefinitionBinding,
@@ -770,15 +770,15 @@ def test_synthetic_frozen_binding_builds_complete_specialty_row(
     synthetic = _synthetic_wired_specialty_binding(binding, layer=layer)
 
     monkeypatch.setattr(
-        "assurance_agent.eval.specialty_replay.recover_layer_inputs",
+        "benchmark.specialty.specialty_replay.recover_layer_inputs",
         lambda _binding, *, layer, change_dir, store=None: api_inputs,
     )
     monkeypatch.setattr(
-        "assurance_agent.eval.specialty_replay.get_layer_assurance_profile",
+        "benchmark.specialty.specialty_replay.get_layer_assurance_profile",
         lambda layer: api_profile,
     )
     monkeypatch.setattr(
-        "assurance_agent.eval.specialty_replay.replay_plan_check_policy",
+        "benchmark.specialty.specialty_replay.replay_plan_check_policy",
         lambda **_kwargs: api_replay,
     )
 

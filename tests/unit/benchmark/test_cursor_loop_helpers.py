@@ -1792,7 +1792,7 @@ def test_parse_evidence_row_rejects_unknown_reason_and_zero_substituted_incomple
 ) -> None:
     from typing import get_args
 
-    from assurance_agent.eval.specialty_models import TraceCollectionFailureReason
+    from benchmark.specialty.specialty_models import TraceCollectionFailureReason
 
     for reason in get_args(TraceCollectionFailureReason):
         ok = _run_helper(
@@ -1835,7 +1835,7 @@ def test_finalize_and_reuse_register_nothing_for_pending_or_mismatched_receipt(
     import hashlib
     import json
 
-    from assurance_agent.eval.specialty_models import SpecialtyReportV3
+    from benchmark.specialty.specialty_models import SpecialtyReportV3
 
     reporter = (
         _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "benchmark_specialty_report.py"
@@ -1986,7 +1986,7 @@ def test_finalize_and_reuse_register_nothing_for_pending_or_mismatched_receipt(
 
 def test_evidence_row_cli_ten_columns_for_v3_and_legacy_without_schema_root(tmp_path: Path) -> None:
     """evidence-row emits the frozen ten-column contract; reporter has no --schema-root."""
-    from assurance_agent.eval.specialty_models import SpecialtyReportV3, load_specialty_report
+    from benchmark.specialty.specialty_models import SpecialtyReportV3, load_specialty_report
     from tests.unit.benchmark.test_specialty_report import (
         _legacy_v1_report,
         _synthetic_v2_report,
