@@ -47,7 +47,7 @@ _EXCLUDED_DIRS = frozenset(
         ".graph-runtime",
         ".worktrees",
         ".venv",
-        # Agent skill install roots often symlink outside the SUT (legacy aws-* /
+        # Agent skill install roots often symlink outside the SUT (legacy /
         # opencode layouts). Real aa skills live under skills/ and are captured.
         ".opencode",
         # Eval harness outputs under the SUT (eval/out/…) are huge and not
@@ -368,6 +368,14 @@ def _same_file_content(left: _Entry | None, right: _Entry | None) -> bool:
         and right.kind == "file"
         and left.sha256 == right.sha256
     )
+
+
+def _entry_identity(entry: _Entry | None) -> str:
+    """Compact, content-safe identity for actionable drift diagnostics."""
+    if entry is None:
+        return "missing"
+    mode = "x" if entry.executable else "-"
+    return f"{entry.kind}:{entry.sha256}:{mode}"
 
 
 def _path_matches_entry(path: Path, entry: _Entry) -> bool:
@@ -1470,7 +1478,11 @@ class TreeStore:
                     if restore_change_drift and before is not None and _under_change(rel):
                         writes.append((rel, before))
                         continue
-                    raise WorkspaceError(f"canonical workspace drift at {rel}")
+                    raise WorkspaceError(
+                        f"canonical workspace drift at {rel} "
+                        f"(root={project_root}; actual={_entry_identity(actual)}; "
+                        f"base={_entry_identity(before)}; target={_entry_identity(wanted)})"
+                    )
                 continue
             if actual == wanted:
                 continue  # 已物化（重放/幂等）
@@ -1489,7 +1501,11 @@ class TreeStore:
                             raise WorkspaceError(f"cannot materialize non-file entry: {rel}")
                         writes.append((rel, wanted))
                     continue
-                raise WorkspaceError(f"canonical workspace drift at {rel}")
+                raise WorkspaceError(
+                    f"canonical workspace drift at {rel} "
+                    f"(root={project_root}; actual={_entry_identity(actual)}; "
+                    f"base={_entry_identity(before)}; target={_entry_identity(wanted)})"
+                )
             if wanted is None:
                 deletes.append(rel)
             else:

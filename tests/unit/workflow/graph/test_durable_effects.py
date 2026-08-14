@@ -190,7 +190,7 @@ def test_strict_intent_and_ack_round_trip(tmp_path: Path) -> None:
         task_id="task-a",
         attempt_id="att-1",
         target="operation:test-marker",
-        output_digests={},
+        output_digests={"change:healing/fix.json": "a" * 64},
         write_set_id=None,
     )
     change = tmp_path / "change"
@@ -207,6 +207,27 @@ def test_strict_intent_and_ack_round_trip(tmp_path: Path) -> None:
     # Exact duplicate reconcile is idempotent.
     again = reconcile_effect(intent, context, runtime, registry=registry)
     assert again.model_dump(mode="json") == ack.model_dump(mode="json")
+
+
+@pytest.mark.parametrize(
+    "digest",
+    [
+        "sha256:" + ("a" * 64),
+        "a" * 63,
+        "A" * 64,
+        "not-a-digest",
+    ],
+)
+def test_durable_effect_context_rejects_noncanonical_output_digest(digest: str) -> None:
+    with pytest.raises(ValidationError, match="bare lowercase sha256"):
+        DurableEffectContext(
+            root_invocation_id="inv-1",
+            invocation_id="inv-1",
+            task_id="task-a",
+            attempt_id="att-1",
+            target="operation:test-marker",
+            output_digests={"change:healing/fix.json": digest},
+        )
 
 
 def test_reject_opaque_and_malformed_payload() -> None:

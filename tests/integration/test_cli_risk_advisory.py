@@ -1,3 +1,4 @@
+import base64
 import json
 from pathlib import Path
 
@@ -43,6 +44,36 @@ def seed_explore(change_id: str, advisory: dict) -> Path:
     (explore / "context.json").write_text(json.dumps(CONTEXT), encoding="utf-8")
     (explore / "advisory.json").write_text(json.dumps(advisory), encoding="utf-8")
     return explore
+
+
+def test_write_advisory_materializes_valid_matching_json() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        payload = {"schema_version": "1.0", "change_id": "CH-1", "watchlist": []}
+        encoded = base64.b64encode(json.dumps(payload).encode()).decode()
+
+        result = runner.invoke(
+            main,
+            ["risk", "write-advisory", "--change", "CH-1", "--payload-base64", encoded],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(Path("qa/changes/CH-1/explore/advisory.json").read_text()) == payload
+
+
+def test_write_advisory_rejects_mismatched_change_id() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        encoded = base64.b64encode(json.dumps({"change_id": "OTHER"}).encode()).decode()
+
+        result = runner.invoke(
+            main,
+            ["risk", "write-advisory", "--change", "CH-1", "--payload-base64", encoded],
+        )
+
+        assert result.exit_code == 1
+        assert "must match" in result.output
+        assert not Path("qa/changes/CH-1/explore/advisory.json").exists()
 
 
 def test_validate_advisory_missing_context_exits_1() -> None:

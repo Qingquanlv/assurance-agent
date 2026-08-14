@@ -15,7 +15,7 @@ from assurance_agent.artifacts.models.data_knowledge import (
     CleanupLeaf,
     DataKnowledge,
     DataKnowledgeProposal,
-    EntityLeaf,
+    PersistedEntityLeaf,
     assert_list_auth_routes_contract,
 )
 
@@ -41,7 +41,12 @@ def is_leaf_present(dk: dict, dotted: str) -> bool:
         elif dotted.startswith("accounts."):
             AccountLeaf.model_validate(value)
         elif dotted.startswith("entities."):
-            EntityLeaf.model_validate(value)
+            # Capability checks consume canonical persisted L1. Historical L1
+            # entity leaves may still carry legacy boolean max-length flags,
+            # which PersistedEntityLeaf deliberately preserves. EntityLeaf is
+            # the stricter authoring shape for new proposals and would falsely
+            # report those existing leaves as missing.
+            PersistedEntityLeaf.model_validate(value)
         elif dotted.startswith("auth_matrix."):
             AuthMatrixCell.model_validate(value)
         elif dotted.startswith("capabilities.cleanup."):

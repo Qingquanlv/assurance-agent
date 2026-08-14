@@ -6,6 +6,7 @@ implemented. Packaged contracts still select neither until Task 15.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
@@ -99,6 +100,26 @@ COMMIT_SAFETY_INVENTORY: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "assurance_agent.workflow.graph.precommit._validate_generated_files_candidate",
+        "helper",
+        GENERATED_FILES_CANDIDATE_V1,
+    ),
+    (
+        "assurance_agent.workflow.graph.precommit._validate_generated_python_local_imports",
+        "helper",
+        GENERATED_FILES_CANDIDATE_V1,
+    ),
+    (
+        "assurance_agent.workflow.graph.precommit._assigned_local_module_names",
+        "helper",
+        GENERATED_FILES_CANDIDATE_V1,
+    ),
+    (
+        "assurance_agent.workflow.graph.precommit._top_level_import_collisions",
+        "helper",
+        GENERATED_FILES_CANDIDATE_V1,
+    ),
+    (
+        "assurance_agent.workflow.graph.precommit._is_positional_hypothesis_given",
         "helper",
         GENERATED_FILES_CANDIDATE_V1,
     ),
@@ -457,7 +478,9 @@ def infer_assurance_layer(target: str, task_input: Mapping[str, object] | None =
                 return layer.strip()
     mapping = {
         "skill:aa-api-codegen": "api",
+        "skill:aa-api-codegen-fixer": "api",
         "skill:aa-e2e-codegen": "e2e",
+        "skill:aa-e2e-codegen-fixer": "e2e",
         "skill:aa-fuzz-codegen": "fuzz",
         "skill:aa-performance-codegen": "performance",
     }
@@ -575,6 +598,9 @@ _SEMANTICS_RULES: dict[str, list[str]] = {
         "require_summary_and_manifest_outputs",
         "reconcile_manifest_to_write_set_and_snapshot",
         "reject_support_shared_builder_selected_credit",
+        "reject_positional_hypothesis_given",
+        "reject_conflicting_top_level_import_bindings",
+        "reject_unresolved_generated_python_local_imports",
         "resolve_evidence_path_for_every_write",
     ],
     CODEGEN_FIX_CANDIDATE_V1: [
@@ -1041,6 +1067,13 @@ def _validate_generated_files_candidate(
         else:
             raise CandidateValidationError(f"unknown disposition: {entry.disposition}")
 
+    _validate_generated_python_local_imports(
+        store=store,
+        base_tree_id=write_set.base_tree_id,
+        write_by_repo=write_by_repo,
+        input_snapshot=input_snapshot,
+    )
+
     return {
         "change_id": change_id,
         "files": [entry.model_dump(mode="json") for entry in manifest.files],
@@ -1060,6 +1093,150 @@ def _validate_generated_files_candidate(
         "write_bindings": write_bindings,
         "write_set_id": write_set.write_set_id,
     }
+
+
+def _validate_generated_python_local_imports(
+    *,
+    store: TreeStore,
+    base_tree_id: str,
+    write_by_repo: Mapping[str, Mapping[str, object]],
+    input_snapshot: TaskInputSnapshotV1,
+) -> None:
+    """Reject generated Python that imports absent ``tests.*`` modules.
+
+    Codegen runs in an isolated candidate tree. A local import that is absent
+    from its base tree, frozen inputs, and candidate writes cannot become
+    resolvable during execution, so fail before committing the candidate and
+    let the bounded codegen retry repair all missing support modules together.
+    """
+    try:
+        available_paths = set(store._load_tree(base_tree_id).entries)
+    except WorkspaceError as exc:
+        raise CandidateValidationError(f"candidate base tree is unreadable: {base_tree_id}") from exc
+    available_paths.update(
+        entry.repo_relpath
+        for entry in input_snapshot.entries
+        if entry.kind == "file" and entry.repo_relpath is not None
+    )
+    available_paths.update(write_by_repo)
+
+    unresolved: list[str] = []
+    for repo_path, binding in sorted(write_by_repo.items()):
+        if not repo_path.endswith(".py"):
+            continue
+        after_sha256 = binding.get("after_sha256")
+        if not isinstance(after_sha256, str) or not after_sha256:
+            continue
+        try:
+            source = store.read_object(after_sha256).decode("utf-8")
+            tree = ast.parse(source, filename=repo_path)
+        except (WorkspaceError, UnicodeDecodeError, SyntaxError) as exc:
+            raise CandidateValidationError(f"generated Python is not parseable: {repo_path}: {exc}") from exc
+
+        import_collisions = _top_level_import_collisions(tree)
+        if import_collisions:
+            raise CandidateValidationError(
+                "generated Python has conflicting imported bindings: "
+                + ", ".join(
+                    f"{repo_path}:{binding} ({', '.join(origins)})" for binding, origins in import_collisions
+                )
+            )
+
+        positional_given = [
+            node.name
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and any(_is_positional_hypothesis_given(item) for item in node.decorator_list)
+        ]
+        if positional_given:
+            raise CandidateValidationError(
+                "Hypothesis @given must use keyword strategies: "
+                + ", ".join(f"{repo_path}:{name}" for name in sorted(positional_given))
+            )
+
+        for node in tree.body:
+            modules: list[str] = []
+            if isinstance(node, ast.Import):
+                modules.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                modules.append(node.module)
+            modules.extend(_assigned_local_module_names(node))
+            for module in modules:
+                if module != "tests" and not module.startswith("tests."):
+                    continue
+                if _local_module_is_available(module, available_paths):
+                    continue
+                if isinstance(node, ast.ImportFrom) and all(
+                    alias.name != "*"
+                    and _local_module_is_available(f"{module}.{alias.name}", available_paths)
+                    for alias in node.names
+                ):
+                    continue
+                unresolved.append(f"{repo_path} -> {module}")
+
+    if unresolved:
+        raise CandidateValidationError("unresolved local imports: " + ", ".join(sorted(set(unresolved))))
+
+
+def _assigned_local_module_names(node: ast.stmt) -> list[str]:
+    """Return dynamic ``tests.*`` module names assigned to ``*_MODULE`` constants."""
+    targets: list[ast.expr] = []
+    value: ast.expr | None = None
+    if isinstance(node, ast.Assign):
+        targets = list(node.targets)
+        value = node.value
+    elif isinstance(node, ast.AnnAssign):
+        targets = [node.target]
+        value = node.value
+    if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+        return []
+    if not any(isinstance(target, ast.Name) and target.id.endswith("_MODULE") for target in targets):
+        return []
+    module = value.value
+    if module != "tests" and not module.startswith("tests."):
+        return []
+    return [module]
+
+
+def _top_level_import_collisions(tree: ast.Module) -> list[tuple[str, tuple[str, ...]]]:
+    """Return imported names rebound to different origins at module scope."""
+    origins_by_binding: dict[str, set[str]] = {}
+    for node in tree.body:
+        bindings: list[tuple[str, str]] = []
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    bindings.append((alias.asname, alias.name))
+                else:
+                    package = alias.name.split(".", 1)[0]
+                    bindings.append((package, package))
+        elif isinstance(node, ast.ImportFrom):
+            module = "." * node.level + (node.module or "")
+            bindings.extend(
+                (alias.asname or alias.name, f"{module}.{alias.name}")
+                for alias in node.names
+                if alias.name != "*"
+            )
+        for binding, origin in bindings:
+            origins_by_binding.setdefault(binding, set()).add(origin)
+    return [
+        (binding, tuple(sorted(origins)))
+        for binding, origins in sorted(origins_by_binding.items())
+        if len(origins) > 1
+    ]
+
+
+def _is_positional_hypothesis_given(node: ast.expr) -> bool:
+    if not isinstance(node, ast.Call) or not node.args:
+        return False
+    if isinstance(node.func, ast.Name):
+        return node.func.id == "given"
+    return isinstance(node.func, ast.Attribute) and node.func.attr == "given"
+
+
+def _local_module_is_available(module: str, available_paths: set[str]) -> bool:
+    module_path = module.replace(".", "/")
+    return f"{module_path}.py" in available_paths or f"{module_path}/__init__.py" in available_paths
 
 
 def _is_test_or_testdata(repo_path: str) -> bool:

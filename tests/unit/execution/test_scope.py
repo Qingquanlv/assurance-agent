@@ -38,6 +38,23 @@ def test_extracts_unique_paths_from_mapping_table(tmp_path: Path) -> None:
     assert paths == ["tests/api/test_dept_api.py"]
 
 
+def test_extracts_plain_markdown_paths_from_mapping_table(tmp_path: Path) -> None:
+    _write_plan(
+        tmp_path,
+        "api",
+        """# API Codegen Plan
+
+## Test Function Mapping
+
+| Case ID | Test Function | Target File |
+|---------|---------------|-------------|
+| TC_USER_API_001 | test_tc_user_api_001__create | tests/api/test_user_api.py |
+""",
+    )
+
+    assert resolve_test_paths(tmp_path, "api") == ["tests/api/test_user_api.py"]
+
+
 def test_ignores_paths_outside_mapping_section(tmp_path: Path) -> None:
     _write_plan(tmp_path, "api", _PLAN)
     paths = resolve_test_paths(tmp_path, "api")
@@ -50,9 +67,9 @@ def test_returns_empty_when_plan_missing(tmp_path: Path) -> None:
     assert resolve_test_paths(tmp_path, "api") is None
 
 
-def test_returns_empty_when_no_mapping_section(tmp_path: Path) -> None:
+def test_plan_without_mapping_section_fails_closed(tmp_path: Path) -> None:
     _write_plan(tmp_path, "e2e", "# E2E Codegen Plan\n\nNo mapping table here.\n")
-    assert resolve_test_paths(tmp_path, "e2e") is None
+    assert resolve_test_paths(tmp_path, "e2e") == []
 
 
 def test_multiple_target_files_sorted_and_deduped(tmp_path: Path) -> None:
@@ -109,6 +126,60 @@ def test_fuzz_paths_come_from_target_files_and_exclude_support_modules(tmp_path:
     _write_plan(tmp_path, "fuzz", text)
 
     assert resolve_test_paths(tmp_path, "fuzz") == ["tests/fuzz/test_dept_fuzz.py"]
+
+
+def test_fuzz_paths_fall_back_to_test_function_mapping(tmp_path: Path) -> None:
+    _write_plan(
+        tmp_path,
+        "fuzz",
+        """# Fuzz Codegen Plan
+
+## Implementation Target
+
+Extend `tests/fuzz/test_menu_fuzz.py` for the approved fuzz case only.
+
+## Test Function Mapping
+
+| Case ID | Test Function | Target File |
+|---|---|---|
+| TC_MENU_FUZZ_002 | `test_tc_menu_fuzz_002` | `tests/fuzz/test_menu_fuzz.py` |
+
+## Reused Fixtures and Helpers
+
+| Symbol | Location |
+|---|---|
+| helper | `tests/fuzz/test_unrelated_fuzz.py` |
+""",
+    )
+
+    assert resolve_test_paths(tmp_path, "fuzz") == ["tests/fuzz/test_menu_fuzz.py"]
+
+
+def test_performance_paths_fall_back_to_task_mapping(tmp_path: Path) -> None:
+    _write_plan(
+        tmp_path,
+        "performance",
+        """# Performance Codegen Plan
+
+## Generated Artifact Target
+
+Update `tests/perf/locustfile_menu.py` for this change.
+
+## Task Mapping
+
+| Case ID | Task Method | Target File |
+|---|---|---|
+| TC_MENU_PERF_002 | MenuTask.list | tests/perf/locustfile_menu.py |
+
+## Factory Mapping
+
+| Shared Module | Function |
+|---|---|
+| tests/perf/locustfile_unrelated.py | helper |
+""",
+    )
+
+    assert resolve_test_paths(tmp_path, "performance") == ["tests/perf/locustfile_menu.py"]
 
 
 def test_fuzz_paths_include_deeper_target_file_subheadings_until_same_level_heading(

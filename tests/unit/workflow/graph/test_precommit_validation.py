@@ -50,6 +50,7 @@ from assurance_agent.workflow.graph.precommit import (
     load_candidate_receipt,
     load_case_documents_from_snapshot,
     load_plan_text_from_snapshot,
+    infer_assurance_layer,
     validate_candidate,
     validate_precommit_validator_id,
     validator_semantics_digest,
@@ -70,6 +71,21 @@ _INV = "inv-precommit-1"
 _DIGEST = "d" * 64
 _CONTRACT_DIGEST = "sha256:" + "c" * 64
 _CLAIMS_DIGEST = "sha256:" + "e" * 64
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("skill:aa-api-codegen", "api"),
+        ("skill:aa-api-codegen-fixer", "api"),
+        ("skill:aa-e2e-codegen", "e2e"),
+        ("skill:aa-e2e-codegen-fixer", "e2e"),
+        ("skill:aa-fuzz-codegen", "fuzz"),
+        ("skill:aa-performance-codegen", "performance"),
+    ],
+)
+def test_infer_assurance_layer_supports_codegen_and_healing_targets(target: str, expected: str) -> None:
+    assert infer_assurance_layer(target) == expected
 
 
 def _context_payload(**overrides: object) -> dict[str, object]:
@@ -336,6 +352,10 @@ def _freeze_valid_api_candidate(
     omit_manifest_entry: bool = False,
     wrong_case_ids: bool = False,
     summary_only: bool = False,
+    unresolved_local_import: bool = False,
+    unresolved_dynamic_module: bool = False,
+    positional_hypothesis_given: bool = False,
+    conflicting_import_bindings: bool = False,
 ) -> tuple[Path, TreeStore, str, str, PrecommitValidationContext, str]:
     project = _make_project(tmp_path)
     change = project / "qa" / "changes" / "CH-1"
@@ -370,7 +390,29 @@ def _freeze_valid_api_candidate(
         claims=claims,
         declared_reads_only=False,
     )
-    test_body = b"def test_api_001():\n    assert True\n"
+    if conflicting_import_bindings:
+        test_body = (
+            b"from hypothesis import settings\n"
+            b"from tests.config import settings\n\n"
+            b"def test_api_001():\n    assert settings\n"
+        )
+    elif unresolved_local_import:
+        test_body = (
+            b"from tests.testdata.domain.user import make_user\n\ndef test_api_001():\n    assert make_user\n"
+        )
+    elif unresolved_dynamic_module:
+        test_body = (
+            b'WORKER_MODULE = "tests.api.adapters._worker_main"\n\n'
+            b"def test_api_001():\n    assert WORKER_MODULE\n"
+        )
+    elif positional_hypothesis_given:
+        test_body = (
+            b"from hypothesis import given, strategies as st\n\n"
+            b"@given(st.integers())\n"
+            b"def test_api_001(value):\n    assert value is not None\n"
+        )
+    else:
+        test_body = b"def test_api_001():\n    assert True\n"
     test_path = workspace.project_root / "tests" / "api" / "test_new.py"
     test_path.parent.mkdir(parents=True, exist_ok=True)
     test_path.write_bytes(test_body)
@@ -506,6 +548,106 @@ def test_generated_files_candidate_rejects_wrong_case_ids(tmp_path: Path) -> Non
     write_set = store.load_write_set(write_set_id)
     snapshot = load_task_input_snapshot(store, context.input_snapshot_id)
     with pytest.raises(CandidateValidationError, match="case_ids mismatch"):
+        validate_candidate(
+            GENERATED_FILES_CANDIDATE_V1,
+            context,
+            store=store,
+            write_set=write_set,
+            input_snapshot=snapshot,
+            plan_text=_api_plan_text(),
+            cases=_api_cases(),
+            change_id="CH-1",
+            layer="api",
+            current_change_repo_path="qa/changes/CH-1",
+        )
+
+
+def test_generated_files_candidate_rejects_unresolved_local_import(tmp_path: Path) -> None:
+    _project, store, _sid, write_set_id, context, _tree = _freeze_valid_api_candidate(
+        tmp_path, unresolved_local_import=True
+    )
+    write_set = store.load_write_set(write_set_id)
+    snapshot = load_task_input_snapshot(store, context.input_snapshot_id)
+
+    with pytest.raises(
+        CandidateValidationError,
+        match=r"unresolved local imports: .*tests\.testdata\.domain\.user",
+    ):
+        validate_candidate(
+            GENERATED_FILES_CANDIDATE_V1,
+            context,
+            store=store,
+            write_set=write_set,
+            input_snapshot=snapshot,
+            plan_text=_api_plan_text(),
+            cases=_api_cases(),
+            change_id="CH-1",
+            layer="api",
+            current_change_repo_path="qa/changes/CH-1",
+        )
+
+
+def test_generated_files_candidate_rejects_unresolved_dynamic_module(tmp_path: Path) -> None:
+    _project, store, _sid, write_set_id, context, _tree = _freeze_valid_api_candidate(
+        tmp_path, unresolved_dynamic_module=True
+    )
+    write_set = store.load_write_set(write_set_id)
+    snapshot = load_task_input_snapshot(store, context.input_snapshot_id)
+
+    with pytest.raises(
+        CandidateValidationError,
+        match=r"unresolved local imports: .*tests\.api\.adapters\._worker_main",
+    ):
+        validate_candidate(
+            GENERATED_FILES_CANDIDATE_V1,
+            context,
+            store=store,
+            write_set=write_set,
+            input_snapshot=snapshot,
+            plan_text=_api_plan_text(),
+            cases=_api_cases(),
+            change_id="CH-1",
+            layer="api",
+            current_change_repo_path="qa/changes/CH-1",
+        )
+
+
+def test_generated_files_candidate_rejects_positional_hypothesis_given(tmp_path: Path) -> None:
+    _project, store, _sid, write_set_id, context, _tree = _freeze_valid_api_candidate(
+        tmp_path, positional_hypothesis_given=True
+    )
+    write_set = store.load_write_set(write_set_id)
+    snapshot = load_task_input_snapshot(store, context.input_snapshot_id)
+
+    with pytest.raises(
+        CandidateValidationError,
+        match=r"Hypothesis @given must use keyword strategies: .*test_api_001",
+    ):
+        validate_candidate(
+            GENERATED_FILES_CANDIDATE_V1,
+            context,
+            store=store,
+            write_set=write_set,
+            input_snapshot=snapshot,
+            plan_text=_api_plan_text(),
+            cases=_api_cases(),
+            change_id="CH-1",
+            layer="api",
+            current_change_repo_path="qa/changes/CH-1",
+        )
+
+
+def test_generated_files_candidate_rejects_conflicting_import_bindings(tmp_path: Path) -> None:
+    _project, store, _sid, write_set_id, context, _tree = _freeze_valid_api_candidate(
+        tmp_path, conflicting_import_bindings=True
+    )
+    write_set = store.load_write_set(write_set_id)
+    snapshot = load_task_input_snapshot(store, context.input_snapshot_id)
+
+    with pytest.raises(
+        CandidateValidationError,
+        match=r"conflicting imported bindings: .*settings .*hypothesis\.settings.*tests\.config\.settings",
+    ):
         validate_candidate(
             GENERATED_FILES_CANDIDATE_V1,
             context,

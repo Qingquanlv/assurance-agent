@@ -299,6 +299,88 @@ def test_bounded_agent_rejects_filesystem_tool_path_outside_session_root(
     assert "AA sandbox boundary" in completed.stderr
 
 
+def test_bounded_agent_allows_apply_patch_when_every_path_is_in_session_root(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "task"
+    root.mkdir()
+    (root / "existing.txt").write_text("before\n", encoding="utf-8")
+
+    completed = _run_hook(
+        root=root,
+        tool="apply_patch",
+        args={
+            "patchText": (
+                "*** Begin Patch\n"
+                "*** Update File: existing.txt\n"
+                "*** Move to: moved.txt\n"
+                "@@\n"
+                "-before\n"
+                "+after\n"
+                "*** Add File: added.txt\n"
+                "+added\n"
+                "*** End Patch"
+            ),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "ALLOW\n"
+
+
+@pytest.mark.parametrize(
+    "path_header",
+    ["Add File", "Update File", "Delete File", "Move to"],
+)
+def test_bounded_agent_rejects_apply_patch_path_outside_session_root(
+    tmp_path: Path,
+    path_header: str,
+) -> None:
+    root = tmp_path / "task"
+    root.mkdir()
+
+    completed = _run_hook(
+        root=root,
+        tool="apply_patch",
+        args={
+            "patchText": (
+                "*** Begin Patch\n"
+                + ("*** Update File: inside.txt\n" if path_header == "Move to" else "")
+                + f"*** {path_header}: ../outside.txt\n"
+                + "*** End Patch"
+            ),
+        },
+    )
+
+    assert completed.returncode == 23
+    assert "path escapes the session directory" in completed.stderr
+
+
+@pytest.mark.parametrize(
+    "patch_text",
+    [
+        "*** Begin Patch\n*** End Patch",
+        "*** Update File: inside.txt",
+        "*** Begin Patch\n*** Update File:\n*** End Patch",
+    ],
+)
+def test_bounded_agent_rejects_apply_patch_without_a_valid_file_envelope(
+    tmp_path: Path,
+    patch_text: str,
+) -> None:
+    root = tmp_path / "task"
+    root.mkdir()
+
+    completed = _run_hook(
+        root=root,
+        tool="apply_patch",
+        args={"patchText": patch_text},
+    )
+
+    assert completed.returncode == 23
+    assert "AA sandbox boundary" in completed.stderr
+
+
 def test_bounded_agent_rejects_symlink_that_resolves_outside_session_root(tmp_path: Path) -> None:
     root = tmp_path / "task"
     outside = tmp_path / "framework"
@@ -731,6 +813,137 @@ def test_explorer_allows_structured_risk_command_bound_to_session_root(tmp_path:
     assert str(root / "qa/changes/CH-1/explore") in rewritten
 
 
+def test_doc_author_allows_structured_artifact_write_to_its_change_surface(tmp_path: Path) -> None:
+    root = tmp_path / "task root"
+    (root / "qa/changes/CH-1/cases").mkdir(parents=True)
+    command = (
+        "aa artifact write --path qa/changes/CH-1/cases/case.yaml "
+        f"--project-dir '{root}' --payload-base64 Y2FzZXM6IFtdCg=="
+    )
+
+    completed = _run_hook(
+        root=root,
+        tool="bash",
+        args={"command": command},
+        agent="aa-doc-author",
+        echo_args=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    rewritten = json.loads(completed.stdout)["command"]
+    assert str(root / "qa/changes/CH-1/cases/case.yaml") in rewritten
+
+
+def test_doc_author_allows_native_artifact_write_to_its_change_surface(tmp_path: Path) -> None:
+    root = tmp_path / "task root"
+    (root / "qa/changes/CH-1/review").mkdir(parents=True)
+
+    completed = _run_hook(
+        root=root,
+        tool="artifact_write",
+        args={"path": "qa/changes/CH-1/review/result.json", "content": "{}\n"},
+        agent="aa-doc-author",
+        echo_args=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    rewritten = json.loads(completed.stdout)
+    assert rewritten["path"] == str(root / "qa/changes/CH-1/review/result.json")
+
+
+def test_native_artifact_write_rejects_agent_forbidden_path(tmp_path: Path) -> None:
+    root = tmp_path / "task"
+    root.mkdir()
+
+    completed = _run_hook(
+        root=root,
+        tool="artifact_write",
+        args={"path": "src/product.py", "content": "forged\n"},
+        agent="aa-doc-author",
+    )
+
+    assert completed.returncode == 23
+    assert "artifact path is not allowed" in completed.stderr
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "qa/changes/CH-1/workflow-state.yaml",
+        "qa/changes/CH-1/report/quality-report.md",
+        "src/product.py",
+        "../outside.md",
+    ],
+)
+def test_doc_author_rejects_structured_artifact_write_outside_its_surface(
+    tmp_path: Path,
+    target: str,
+) -> None:
+    root = tmp_path / "task"
+    root.mkdir()
+    command = f"aa artifact write --path {target} --project-dir '{root}' --payload-base64 eAo="
+
+    completed = _run_hook(
+        root=root,
+        tool="bash",
+        args={"command": command},
+        agent="aa-doc-author",
+    )
+
+    assert completed.returncode == 23
+    assert "AA sandbox boundary" in completed.stderr
+
+
+def test_explorer_allows_exact_advisory_json_heredoc_bound_to_session_root(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "task root"
+    (root / "qa/changes/CH-1/explore").mkdir(parents=True)
+    payload = json.dumps({"change_id": "CH-1", "value": "$(not executed)"}, indent=2)
+    command = f"tee qa/changes/CH-1/explore/advisory.json >/dev/null <<'JSON'\n{payload}\nJSON"
+
+    completed = _run_hook(
+        root=root,
+        tool="bash",
+        args={"command": command},
+        agent="aa-explorer",
+        echo_args=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    rewritten = json.loads(completed.stdout)["command"]
+    assert str(root / "qa/changes/CH-1/explore/advisory.json") in rewritten
+    assert "<<'JSON'" in rewritten
+    assert "$(not executed)" in rewritten
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "tee qa/changes/CH-1/context.json >/dev/null <<'JSON'\n{}\nJSON",
+        "tee qa/changes/CH-1/explore/advisory.json >/dev/null <<'JSON'\nnot-json\nJSON",
+        ('tee qa/changes/CH-1/explore/advisory.json >/dev/null <<\'JSON\'\n{"change_id":"OTHER"}\nJSON'),
+        (
+            "tee qa/changes/CH-1/explore/advisory.json >/dev/null <<'JSON'\n"
+            '{"change_id":"CH-1","value":"safe"}\nJSON\ncat /etc/passwd'
+        ),
+    ],
+)
+def test_explorer_rejects_unsafe_advisory_heredoc(tmp_path: Path, command: str) -> None:
+    root = tmp_path / "task"
+    (root / "qa/changes/CH-1/explore").mkdir(parents=True)
+
+    completed = _run_hook(
+        root=root,
+        tool="bash",
+        args={"command": command},
+        agent="aa-explorer",
+    )
+
+    assert completed.returncode == 23
+    assert "AA sandbox boundary" in completed.stderr
+
+
 def test_archiver_allows_structured_copy_with_contained_source_and_destination(
     tmp_path: Path,
 ) -> None:
@@ -813,6 +1026,11 @@ def test_explorer_rejects_risk_output_outside_declared_explore_tree(tmp_path: Pa
         (
             "aa-intake-host",
             "aa risk validate-advisory --change CH-1 --project-dir '{root}'",
+        ),
+        (
+            "aa-explorer",
+            "aa risk write-advisory --change CH-1 --project-dir '{root}' "
+            "--payload-base64 eyJjaGFuZ2VfaWQiOiJDSE0xIn0=",
         ),
     ],
 )

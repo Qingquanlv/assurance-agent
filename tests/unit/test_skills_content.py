@@ -238,7 +238,12 @@ def test_bounded_agents_disable_sandbox_escape_plugin_tools() -> None:
             "session_info": False,
             "background_output": False,
             "background_cancel": False,
+            "write": True,
+            "artifact_write": True,
             "apply_patch": False,
+            "webfetch": False,
+            "websearch": False,
+            "websearch_web_search_exa": False,
         }
         if name != "aa-intake-host.md":
             expected["workflow_start"] = False
@@ -272,6 +277,14 @@ def test_case_design_requires_performance_execution_identity() -> None:
 
     assert "automation.performance.scenario.capability" in skill
     assert "automation.performance.scenario.endpoint" in skill
+
+
+def test_codegen_skills_explain_strict_manifest_role_and_reuse_rules() -> None:
+    for layer in ("api", "e2e", "fuzz", "performance"):
+        skill = resources.read_text("skills", f"aa-{layer}-codegen", "SKILL.md")
+        assert "case_ids: []" in skill
+        assert "selected private-root `test_entry`" in skill
+        assert "unchanged support dependencies" in skill
 
 
 def test_case_design_forbids_inventing_mrc_keys_without_knowledge_proposal() -> None:

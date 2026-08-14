@@ -185,25 +185,6 @@ def _project_lock_tokens_for_wave(wave: Sequence[ExecutableTask]) -> tuple[str, 
     )
 
 
-def _sync_capture_project_root(context: RuntimeContext) -> Path:
-    """Return the live project root used for synchronized overlay capture.
-
-    Nested ``run_child`` drives rewrite ``RuntimeContext.project_root`` to the
-    parent task sandbox so writes stay isolated. Synchronized overlays must
-    still read sibling Change/archive trees from the canonical SUT root —
-    otherwise deferred child capture after an empty outer preview materializes
-    a sandbox that never saw those immutable siblings.
-    """
-    project = context.project_root.resolve()
-    change = context.change_dir.resolve()
-    tasks_root = change / ".graph-runtime" / "tasks"
-    try:
-        project.relative_to(tasks_root)
-    except ValueError:
-        return context.project_root
-    return change.parent.parent.parent
-
-
 @dataclass
 class _PreparedAttempt:
     task: ExecutableTask
@@ -325,9 +306,13 @@ class Scheduler:
             tree_overlays = {tree_id: tree_id for tree_id in tree_ids}
             capture_sealed = False
 
-        for preview_wave in iter_selected_waves(selected_wave):
-            projection = self._checkpoints.project(preview_wave.invocation_id)
-            self._repair_ordinary_materialization(projection, context, tree_overlays)
+        # Only this scheduler invocation owns ``context.project_root``. Each
+        # selected descendant is repaired by its own ``GraphRuntime._drive``
+        # after the graph wrapper enters that descendant's private task
+        # workspace. Repairing descendants here applies their trees to the
+        # outer root and leaks uncommitted outputs across the graph boundary.
+        projection = self._checkpoints.project(selected_wave.invocation_id)
+        self._repair_ordinary_materialization(projection, context, tree_overlays)
 
         verified = self._verify_selected_wave_tree(
             selected_wave,
@@ -553,12 +538,52 @@ class Scheduler:
         context: RuntimeContext,
         tree_overlays: Mapping[str, str],
     ) -> None:
+        # A resolved nested interrupt may pin a descendant gate tree that is
+        # newer than the still-uncommitted parent superstep.  Runtime recovery
+        # validates that tree before scheduling; preserve the same invariant in
+        # selected-wave verification instead of replaying the stale parent edge
+        # over legitimate child outputs.
+        for interrupt in reversed(tuple(projection.interrupts.values())):
+            if interrupt.resolved_action is None or interrupt.source_gate_tree_id is None:
+                continue
+            # A bubbled interrupt repeats the leaf's gate tree on every parent
+            # invocation. Only the leaf owns that tree/workspace. Applying it
+            # while repairing a parent would publish descendant outputs across
+            # the graph isolation boundary (at the root, into canonical).
+            if interrupt.checkpoint_ns.rsplit("/", 1)[-1] != projection.invocation_id:
+                continue
+            self._objects.apply_tree(
+                context.project_root,
+                interrupt.source_gate_tree_id,
+                base_tree_id=interrupt.source_gate_tree_id,
+                restore_change_drift=True,
+            )
+            return
         prev, target, publication_id, write_set_ids = self._last_committed_tree_edge(projection)
         if target is None or publication_id is None:
             return
         if write_set_ids:
             write_sets = [self._objects.load_write_set(write_set_id) for write_set_id in write_set_ids]
             if any(write_set.synchronized_paths for write_set in write_sets):
+                if projection.parent_task_id is None:
+                    return
+                # A nested wrapper can aggregate ordinary repo outputs together
+                # with a synchronized path (for example generated tests plus a
+                # data-knowledge proposal). Publication replay restores only the
+                # synchronized prefixes; the wrapper's ordinary outputs still
+                # have to be rehydrated before a later child is resumed.
+                committed_targets = self._committed_tree_targets(projection)
+                source_base = tree_overlays.get(projection.root_tree_id, projection.root_tree_id)
+                overlaid_target = tree_overlays.get(target, target)
+                self._objects.apply_tree_delta(
+                    context.project_root,
+                    overlaid_target,
+                    source_base_tree_id=source_base,
+                    destination_base_tree_id=source_base,
+                    acceptable_live_tree_ids=tuple(
+                        tree_overlays.get(tree_id, tree_id) for tree_id in committed_targets[:-1]
+                    ),
+                )
                 return
         try:
             current = self._objects.capture(context.project_root, repo_root=context.repo_root)
@@ -575,6 +600,18 @@ class Scheduler:
             base_tree_id=overlaid_base,
             restore_change_drift=True,
         )
+
+    def _committed_tree_targets(self, projection: GraphProjection) -> tuple[str, ...]:
+        targets: list[str] = []
+        for raw in read_events_strict(self._checkpoints._change_dir):  # noqa: SLF001
+            if raw.get("source") != "graph" or raw.get("invocation_id") != projection.invocation_id:
+                continue
+            if raw.get("type") != "superstep_committed":
+                continue
+            target = raw.get("target_tree_id")
+            if isinstance(target, str):
+                targets.append(target)
+        return tuple(targets)
 
     def _last_committed_tree_edge(
         self,
@@ -1190,7 +1227,7 @@ class Scheduler:
         if task.target.startswith("graph:") and task.resources.synchronized:
             effective_base = self._objects.overlay_synchronized_paths(
                 effective_base,
-                _sync_capture_project_root(context),
+                context.project_root,
                 tuple(
                     sorted(
                         task.resources.synchronized,
@@ -1388,7 +1425,11 @@ class Scheduler:
                 heartbeat_seconds=heartbeat_seconds,
                 lease_extension_seconds=lease_extension,
             ):
-                result = self._runner.execute(task, workspace, context)
+                result = self._runner.execute(
+                    task,
+                    workspace,
+                    context.with_task_attempt_id(prepared.attempt_id),
+                )
             return self._persist_result(
                 prepared=prepared,
                 plan=plan,

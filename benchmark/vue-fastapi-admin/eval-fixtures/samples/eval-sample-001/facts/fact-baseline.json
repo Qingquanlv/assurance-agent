@@ -30,6 +30,6 @@
     "seed creates only superuser admin; no pre-seeded non-admin user account for E2E negative cases",
     "init_superuser does not bind admin user to 管理员 role (superuser bypasses DependPermission)",
     "token is sent as raw JWT in header 'token', not Authorization: Bearer",
-    "db_probe not configured in .aws/config.yaml; facts collected from seed file only"
+    "db_probe not configured in .aa/config.yaml; facts collected from seed file only"
   ]
 }

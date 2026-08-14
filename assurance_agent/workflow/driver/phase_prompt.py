@@ -1,7 +1,7 @@
 """Scheme E phase prompt contract — driver-owned constant.
 
-Clean-room port of the TS buildPhasePrompt (src/workflow/driver/phase_prompt.ts):
-aws->aa renames, same behavioral contract. The prompt pins the change scope and
+Clean-room port of the TS buildPhasePrompt (src/workflow/driver/phase_prompt.ts)
+with the same behavioral contract. The prompt pins the change scope and
 forbids the phase agent from touching gate/status/workflow-state — those are the
 CLI's exclusive responsibility.
 

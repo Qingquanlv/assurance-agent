@@ -218,6 +218,23 @@ def test_allocate_binds_generated_after_digest_from_write_set(tmp_path: Path) ->
     assert dumped["targets"][0]["paths"][0]["content_sha256"] == f"sha256:{after}"
     assert sha256_bytes(canonical_json_bytes(dumped)).startswith("sha256:")
 
+    # A later healing iteration retains the codegen artifacts as provenance but
+    # must authorize from the test's newly committed baseline.
+    healed_body = b"def test_login():\n    assert 1 == 1\n"
+    out.write_bytes(healed_body)
+    rebound = allocate_authority_bindings_from_artifacts(
+        workspace=workspace,
+        context=_context(project),
+        active_targets=["api"],
+        params={
+            "codegen_write_set_ids": {"api": write_set.write_set_id},
+            "codegen_attempt_ids": {"api": "cg-api-1"},
+            "execution_batch_id": "batch-2",
+        },
+    )
+    assert rebound["api"]["status"] == "ready"
+    assert rebound["api"]["paths"][0].content_sha256 == sha256_bytes(healed_body)
+
 
 def _seed_reused_only_workspace(
     tmp_path: Path,
@@ -681,3 +698,56 @@ def test_imported_codegen_stop_reason_remains_distinct(tmp_path: Path) -> None:
     (workspace.change_dir / AUTHORITY_REL).write_bytes(canonical_json_bytes(authority) + b"\n")
     ready = operation_fixer_authority_ready(_task({}), workspace, _context(tmp_path))
     assert ready.value == {"route": "stop", "reason": "unverified_imported_codegen"}
+
+
+def test_ready_authority_stops_before_fixer_when_proposal_path_is_outside(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
+    change = tmp_path / "qa" / "changes" / "CH-1"
+    change.mkdir(parents=True)
+    store = TreeStore(change)
+    workspace = WorkspaceBackend(change).create(
+        task_id="t1",
+        base_tree_id=store.capture(tmp_path),
+        store=store,
+    )
+    authority = FixerAuthorityV1(
+        schema_version="1",
+        change_id="CH-1",
+        targets=[
+            FixerAuthorityTargetV1(
+                target="api",
+                status="ready",
+                codegen_attempt_id="cg-1",
+                generated_files_sha256="sha256:" + "a" * 64,
+                summary_sha256="sha256:" + "b" * 64,
+                write_set_id="ws-1",
+                execution_batch_id="batch-1",
+                paths=[],
+            )
+        ],
+    )
+    healing = workspace.change_dir / "healing"
+    healing.mkdir(parents=True, exist_ok=True)
+    (healing / "fixer-authority.json").write_bytes(canonical_json_bytes(authority) + b"\n")
+    (healing / "fix-proposal.json").write_text(
+        json.dumps(
+            {
+                "proposals": [
+                    {
+                        "proposal_id": "FIX-001",
+                        "target": "api",
+                        "eligible": True,
+                        "files_to_modify": ["tests/testdata/domain/api.py"],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    ready = operation_fixer_authority_ready(_task({}), workspace, _context(tmp_path))
+
+    assert ready.value == {
+        "route": "stop",
+        "reason": "proposal_paths_outside_fixer_authority:tests/testdata/domain/api.py",
+    }

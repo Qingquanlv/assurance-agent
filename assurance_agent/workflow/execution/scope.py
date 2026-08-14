@@ -2,28 +2,35 @@
 
 Each `qa/changes/<change-id>/plans/<target>-codegen-plan.md` documents the
 concrete test file(s) generated for that change. API/E2E use the
-"Test Function Mapping" section; Fuzz and Performance use "Target Files".
-`aa run` must execute only those files — never the whole shared
-`tests/<target>/` tree, which also contains every other change's tests.
+"Test Function Mapping" section. Fuzz and Performance prefer "Target Files"
+but also accept their generated plan variants, "Test Function Mapping" and
+"Task Mapping" respectively. `aa run` must execute only those files — never
+the whole shared `tests/<target>/` tree, which also contains every other
+change's tests.
 
-If a plan is absent or has no parseable mapping table, callers may fall back to
-running the full `test_dir` for legacy changes. A parseable section with no
-executable target is different: it is an explicitly scoped empty result and
-must fail closed rather than widening to the shared test tree.
+If a plan is absent, callers may fall back to running the full `test_dir` for
+legacy changes. Once a plan exists, an unreadable plan, an unknown mapping
+shape, or a mapping without an executable target is an explicitly scoped empty
+result and must fail closed rather than widening to the shared test tree.
 """
 
 import re
 from pathlib import Path
 
 _HEADING_RE = re.compile(r"^(#{1,6})(?:[ \t]+(.*?))?[ \t]*$")
-_BACKTICK_PATH_RE = re.compile(r"`(tests/[^`]+\.py)`")
+_TEST_PATH_RE = re.compile(
+    r"`(?P<quoted>tests/[^`\r\n|]+\.py)`"
+    r"|(?<![`A-Za-z0-9_./-])(?P<plain>tests/[A-Za-z0-9_./-]+\.py)"
+    r"(?![`A-Za-z0-9_./-])"
+)
 
 
 def resolve_test_paths(change_dir: Path, target: str) -> list[str] | None:
     """Return the sorted, deduped test file paths mapped to `target` for this change.
 
-    ``None`` means a legacy plan has no usable scoping contract. An empty list
-    means a current, parseable contract declared no executable test target.
+    ``None`` means a legacy change has no plan and therefore no scoping
+    contract. An empty list means a current plan cannot declare an executable
+    test target safely.
     """
     plan_path = change_dir / "plans" / f"{target}-codegen-plan.md"
     if not plan_path.is_file():
@@ -31,14 +38,22 @@ def resolve_test_paths(change_dir: Path, target: str) -> list[str] | None:
     try:
         text = plan_path.read_text(encoding="utf-8")
     except OSError:
-        return None
-    section = _extract_section(
-        text,
-        "Target Files" if target in {"fuzz", "performance"} else "Test Function Mapping",
+        return []
+    headings = {
+        "fuzz": ("Target Files", "Test Function Mapping"),
+        "performance": ("Target Files", "Task Mapping"),
+    }.get(target, ("Test Function Mapping",))
+    section = next(
+        (section for heading in headings if (section := _extract_section(text, heading)) is not None),
+        None,
     )
     if section is None:
-        return None
-    paths = {m.group(1) for m in _BACKTICK_PATH_RE.finditer(section)}
+        return []
+    paths: set[str] = set()
+    for match in _TEST_PATH_RE.finditer(section):
+        path = match.group("quoted") or match.group("plain")
+        if path:
+            paths.add(path)
     if target == "fuzz":
         fuzz_root = Path("tests/fuzz")
         paths = {

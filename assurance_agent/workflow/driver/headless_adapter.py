@@ -42,9 +42,18 @@ _TRANSPORT_FAILURE = re.compile(
     r")"
 )
 
+_AUTO_MODEL_REQUIRED = re.compile(r"(?is)Named models unavailable.*Free plans can only use Auto")
+
 
 def _classify_nonzero_exit(detail: str) -> Literal["transport", "internal"]:
     return "transport" if _TRANSPORT_FAILURE.search(detail or "") else "internal"
+
+
+def _requires_auto_model_fallback(result: ProcessResult) -> bool:
+    if result.exit_code == 0:
+        return False
+    detail = f"{result.stderr}\n{result.stdout}"
+    return bool(_AUTO_MODEL_REQUIRED.search(detail))
 
 
 def _with_workspace(prefix: list[str], workspace_root: Path) -> list[str]:
@@ -172,8 +181,18 @@ class HeadlessAdapter:
             stdin_text = None
         return self._runner.run(argv, cwd, timeout=timeout, stdin_text=stdin_text)
 
+    def _run_with_auto_fallback(
+        self, prompt: str, cwd: Path, timeout: float | None, *, argv_prefix: list[str] | None = None
+    ) -> ProcessResult:
+        prefix = list(self._prefix if argv_prefix is None else argv_prefix)
+        result = self._run(prompt, cwd, timeout, argv_prefix=prefix)
+        auto_prefix = _with_model(prefix, "auto")
+        if _requires_auto_model_fallback(result) and auto_prefix != prefix:
+            return self._run(prompt, cwd, timeout, argv_prefix=auto_prefix)
+        return result
+
     def run_phase(self, request: PhaseRequest) -> PhaseResult:
-        result = self._run(request.prompt, self._cwd, self._timeout)
+        result = self._run_with_auto_fallback(request.prompt, self._cwd, self._timeout)
 
         if result.timed_out:
             return PhaseResult(
@@ -194,7 +213,7 @@ class HeadlessAdapter:
         """graph AgentInvoker：在 task 私有 workspace root 中运行 agent 进程。"""
         workspace_root = Path(request.workspace_root)
         try:
-            result = self._run(
+            result = self._run_with_auto_fallback(
                 request.prompt,
                 workspace_root,
                 request.timeout_seconds,

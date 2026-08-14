@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import cast
 
@@ -351,6 +352,108 @@ def test_api_only_record_and_combine_via_operation_handlers(tmp_path: Path) -> N
     assert combine.status == "succeeded"
     assert (workspace.change_dir / "healing" / "fixer-safety-check.json").is_file()
     assert not (workspace.change_dir / "healing" / "e2e-fixer-safety-check.json").exists()
+
+
+def test_record_discovers_committed_fixer_receipt_from_same_invocation(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
+    project = tmp_path
+    change = project / "qa" / "changes" / "CH-1"
+    change.mkdir(parents=True)
+    test_file = project / "tests" / "api" / "test_login.py"
+    test_file.parent.mkdir(parents=True)
+    test_file.write_text("def test_login():\n    assert True\n", encoding="utf-8")
+    workspace, store = _workspace(project)
+    context = _context(project)
+    authority = FixerAuthorityV1(
+        schema_version="1",
+        change_id="CH-1",
+        targets=[
+            FixerAuthorityTargetV1(
+                target="api",
+                status="ready",
+                codegen_attempt_id="cg-1",
+                generated_files_sha256="sha256:" + "a" * 64,
+                summary_sha256="sha256:" + "b" * 64,
+                write_set_id="ws-1",
+                execution_batch_id="batch-1",
+                paths=[
+                    FixerAuthorityPathV1(
+                        repo_path="tests/api/test_login.py",
+                        disposition="generated",
+                        content_sha256="sha256:" + hashlib.sha256(test_file.read_bytes()).hexdigest(),
+                    )
+                ],
+            )
+        ],
+    )
+    intent = ApiCodegenFixApplyIntentV1(
+        schema_version="1",
+        target="api",
+        outcome="no_op",
+        proposal_ids=[],
+        reason="nothing to change",
+        claimed_modified_paths=[],
+    )
+    receipt_id, write_set_id, precommit, _verify_bundle = _seed_noop_candidate_receipt(
+        workspace, store, authority=authority, intent=intent
+    )
+    events = [
+        {
+            "seq": 1,
+            "source": "graph",
+            "type": "graph_invocation_started",
+            "invocation_id": "inv-heal-1",
+            "graph_digest": precommit.definition_semantics["graph_digest"],
+            "policy_digest": precommit.policy_digest.removeprefix("sha256:"),
+            "gate_semantics_digest": precommit.definition_semantics["gate_semantics_digest"],
+            "assurance_profile_digest": precommit.definition_semantics["assurance_profile_digest"],
+            "parent_invocation_id": precommit.root_invocation_id,
+        },
+        {
+            "seq": 2,
+            "source": "graph",
+            "type": "task_attempt_started",
+            "invocation_id": "inv-heal-1",
+            "task_id": "fixer-api",
+            "attempt_id": "fix-api-1",
+            "node_id": "fix-api",
+            "target": "skill:aa-api-codegen-fixer",
+            "precommit_validator": CODEGEN_FIX_CANDIDATE_V1,
+            "contract_digest": _CONTRACT_DIGEST,
+            "input_snapshot_id": precommit.input_snapshot_id,
+        },
+        {
+            "seq": 3,
+            "source": "graph",
+            "type": "task_attempt_succeeded",
+            "invocation_id": "inv-heal-1",
+            "task_id": "fixer-api",
+            "attempt_id": "fix-api-1",
+            "write_set_id": write_set_id,
+            "input_snapshot_id": precommit.input_snapshot_id,
+            "candidate_validation_receipt_id": receipt_id,
+        },
+        {
+            "seq": 4,
+            "source": "graph",
+            "type": "superstep_committed",
+            "invocation_id": "inv-heal-1",
+            "committed_task_ids": ["fixer-api"],
+            "write_set_ids": [write_set_id],
+        },
+    ]
+    (change / "events.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
+    )
+
+    record = default_operations()["operation:record-codegen-fix-apply"](
+        _task("operation:record-codegen-fix-apply", with_params={"target": "api"}),
+        workspace,
+        context,
+    )
+
+    assert record.status == "succeeded", record
+    assert (workspace.change_dir / "healing" / "api-apply-summary.json").is_file()
 
 
 def test_production_registry_and_dark_ship_contracts() -> None:

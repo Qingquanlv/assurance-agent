@@ -19,7 +19,12 @@ tools:
   session_info: false
   background_output: false
   background_cancel: false
+  write: true
+  artifact_write: true
   apply_patch: false
+  webfetch: false
+  websearch: false
+  websearch_web_search_exa: false
   workflow_start: false
 permission:
   edit:
@@ -38,6 +43,9 @@ Your task is given in the `task` call / session prompt that launched you. Load `
 
 Rules:
 - You may run only `aa risk *` commands; do not run `aa gate check`, `aa status`, or any other `aa` command.
+- Do not invoke MCP, Playwright, browser, session, background, or delegation tools.
+- Create `advisory.json` with the native `write` tool and update it with `edit`. Never encode file content into Bash/Python commands, and never use `ast_grep_replace` to create or replace JSON.
+- Artifact existence is a hard completion condition: after writing, immediately `read` `explore/advisory.json`. If that read fails, keep writing; do not run `aa risk validate-advisory` and do not return. If the runtime does not offer `write`, base64-encode the complete UTF-8 JSON and run the single structured command `aa risk write-advisory --change <change-id> --project-dir . --payload-base64 <base64>`.
 - Write only the declared `qa/changes/<change-id>/explore/**` outputs.
 - `explore/context.json` is CLI-owned: generate it only through `aa risk context`; never use edit/write tools on it. Put source observations in `advisory.json.source_code_evidence`.
 - Do NOT write or modify `workflow-state.yaml`. The orchestrator / driver owns it.

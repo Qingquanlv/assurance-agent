@@ -96,6 +96,45 @@ def test_headless_adapter_pins_model_in_argv(tmp_path: Path) -> None:
     assert capture.argv[capture.argv.index("--model") + 1] == "cursor-grok-4.5-high-fast"
 
 
+def test_headless_adapter_falls_back_to_auto_when_named_models_are_unavailable(
+    tmp_path: Path,
+) -> None:
+    from assurance_agent.workflow.driver.process_runner import ProcessResult
+
+    class _FreePlan:
+        def __init__(self) -> None:
+            self.argvs: list[list[str]] = []
+
+        def run(self, argv, cwd, timeout=None, stdin_text=None):  # noqa: ANN001
+            self.argvs.append(list(argv))
+            if argv[argv.index("--model") + 1] != "auto":
+                return ProcessResult(
+                    exit_code=1,
+                    stdout="",
+                    stderr=(
+                        "ActionRequiredError: Named models unavailable\n"
+                        "Free plans can only use Auto. Switch to Auto or upgrade plans to continue."
+                    ),
+                    timed_out=False,
+                )
+            return ProcessResult(exit_code=0, stdout="ok", stderr="", timed_out=False)
+
+    runner = _FreePlan()
+    adapter = HeadlessAdapter(
+        agent_cmd="cursor-agent --print --trust",
+        cwd=tmp_path,
+        model="cursor-grok-4.5-high-fast",
+        runner=runner,  # type: ignore[arg-type]
+    )
+
+    result = adapter.run_phase(_request())
+
+    assert result.ok is True
+    assert len(runner.argvs) == 2
+    assert runner.argvs[0][runner.argvs[0].index("--model") + 1] == "cursor-grok-4.5-high-fast"
+    assert runner.argvs[1][runner.argvs[1].index("--model") + 1] == "auto"
+
+
 def test_invoke_rewrites_workspace_flag(tmp_path: Path) -> None:
     from assurance_agent.workflow.driver.headless_adapter import _with_workspace
     from assurance_agent.workflow.graph.agent_api import AgentRequest

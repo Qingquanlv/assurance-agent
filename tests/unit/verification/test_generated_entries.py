@@ -101,6 +101,62 @@ def test_fuzz_requires_schema_acquisition_alignment() -> None:
         extract_layer_mapping(layer="fuzz", plan_text=bad, cases=_cases("FUZZ_001", case_type="Fuzz"))
 
 
+def test_fuzz_mapping_accepts_parenthetical_section_qualifiers() -> None:
+    plan = """# Fuzz
+
+## Test Function Mapping (codegen binding)
+
+| Case ID | Test Function | Target File |
+|---------|---------------|-------------|
+| FUZZ_001 | `test_fuzz_001` | `tests/fuzz/test_a.py` |
+
+## Schema Acquisition Procedure (codegen must follow)
+
+| Case ID | Strategy | Import Path |
+|---------|----------|-------------|
+| FUZZ_001 | `from_asgi` | `app:app` |
+"""
+
+    relation = extract_layer_mapping(
+        layer="fuzz",
+        plan_text=plan,
+        cases=_cases("FUZZ_001", case_type="Fuzz"),
+    )
+
+    assert relation.entries == (
+        MappedTestEntry(
+            case_id="FUZZ_001",
+            symbol="test_fuzz_001",
+            target_file="tests/fuzz/test_a.py",
+        ),
+    )
+    assert relation.schema_case_ids == ("FUZZ_001",)
+
+
+def test_fuzz_mapping_accepts_inline_schema_acquisition_column() -> None:
+    plan = """# Fuzz
+
+## Test Function Mapping (codegen binding)
+
+| Case ID | Test Function | Target File | Schema Acquisition | Endpoint |
+|---------|---------------|-------------|--------------------|----------|
+| FUZZ_001 | `test_fuzz_001` | `tests/fuzz/test_a.py` | Load app OpenAPI or use `app:app` | `POST /x` |
+
+## Schema Acquisition Procedure (codegen must follow)
+
+1. Prefer runtime OpenAPI from the FastAPI app.
+2. Fall back to the documented OpenAPI URL.
+"""
+
+    relation = extract_layer_mapping(
+        layer="fuzz",
+        plan_text=plan,
+        cases=_cases("FUZZ_001", case_type="Fuzz"),
+    )
+
+    assert relation.schema_case_ids == ("FUZZ_001",)
+
+
 @pytest.mark.parametrize(
     ("plan", "code"),
     [

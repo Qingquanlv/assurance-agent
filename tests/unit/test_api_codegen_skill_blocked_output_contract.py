@@ -1,29 +1,14 @@
-"""Executable blocked-gate contract embedded in the API codegen skill."""
-
-import json
-import re
+"""Executable graph-authority contract embedded in the API codegen skill."""
 
 from assurance_agent import resources
 
 
-def test_api_codegen_blocked_gate_emits_empty_manifest_evidence() -> None:
-    """Catch STOP guidance that lets agents omit mandatory node evidence."""
+def test_api_codegen_defers_progression_to_graph_gate() -> None:
+    """Accepted-risk review facts must not make codegen emit an empty manifest."""
     skill = resources.read_text("skills", "aa-api-codegen", "SKILL.md")
-    match = re.search(
-        r"### Blocked gate output\s+(.*?)\s+```json\s+(.*?)\s+```",
-        skill,
-        re.DOTALL,
-    )
 
-    assert match is not None, "aa-api-codegen must define blocked gate output"
-    guidance, example = match.groups()
-    manifest = json.loads(example)
-
-    assert "api-codegen-summary.md" in guidance
-    assert "must not modify" in guidance.lower()
-    assert manifest == {
-        "schema_version": "1",
-        "change_id": "<change-id>",
-        "layer": "api",
-        "files": [],
-    }
+    assert "The graph gate is the progression authority" in skill
+    assert "Do not independently block codegen" in skill
+    assert "an empty `files` array" in skill
+    assert "invalid" in skill
+    assert "### Blocked gate output" not in skill

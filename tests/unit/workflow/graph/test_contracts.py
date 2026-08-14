@@ -155,6 +155,14 @@ def test_run_tests_contract_reads_traceability_inputs() -> None:
     assert "project:.aa/policy.yaml" in contract.reads
 
 
+@pytest.mark.parametrize("layer", ["api", "e2e"])
+def test_codegen_fixer_contract_reads_its_codegen_plan(layer: str) -> None:
+    catalog = load_execution_contracts(Path.cwd())
+    contract = catalog.contracts[f"skill:aa-{layer}-codegen-fixer"]
+    assert f"change:plans/{layer}-codegen-plan.md" in contract.reads
+    assert "change:cases/**/case.yaml" in contract.reads
+
+
 def test_derive_plan_layer_applicability_contract_reads_only_cases() -> None:
     catalog = load_execution_contracts(Path.cwd())
     contract = catalog.contracts["operation:derive-plan-layer-applicability"]

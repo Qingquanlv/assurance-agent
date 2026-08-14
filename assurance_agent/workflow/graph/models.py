@@ -89,6 +89,7 @@ class RuntimeContext(BaseModel):
     _prepared_wave_lease_owner: object | None = PrivateAttr(default=None)
     _prepared_wave_lease_nonce: object | None = PrivateAttr(default=None)
     _prepared_wave_lease: object | None = PrivateAttr(default=None)
+    _task_attempt_id: str | None = PrivateAttr(default=None)
 
     project_root: Path
     repo_root: Path
@@ -96,6 +97,19 @@ class RuntimeContext(BaseModel):
     change_id: str
     params: dict[str, object] = Field(default_factory=dict)
     parent_session_id: str | None = None
+
+    @property
+    def task_attempt_id(self) -> str | None:
+        """Scheduler-owned attempt identity for the currently executing task."""
+        return self._task_attempt_id
+
+    def with_task_attempt_id(self, attempt_id: str) -> Self:
+        """Bind an execution-only attempt ID without changing persisted task input."""
+        if not attempt_id.strip():
+            raise ValueError("task attempt_id must be non-empty")
+        attempted = self.model_copy()
+        attempted._task_attempt_id = attempt_id
+        return attempted
 
     def inherited_project_lock_scope(
         self,

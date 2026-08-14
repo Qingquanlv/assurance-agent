@@ -37,6 +37,7 @@ from assurance_agent.workflow.graph.contracts import (
     ResourcePath,
 )
 from assurance_agent.workflow.graph.model_routing import ModelRouteContext, ModelRouter
+from assurance_agent.workflow.graph.plan_output_validation import validate_fuzz_plan_outputs
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
@@ -275,6 +276,8 @@ class AgentHandler:
             complete_issue_analyzer_outputs(workspace.change_dir, outputs)
             complete_signal_outputs(workspace.project_root, outputs)
             complete_candidate_outputs(workspace.project_root, outputs)
+            if skill == "aa-fuzz-plan":
+                validate_fuzz_plan_outputs(workspace.change_dir)
             if skill == "aa-improvement-reviewer":
                 review_id = str(context.params.get("review_id", ""))
                 improvement_id = str(context.params.get("improvement_id", ""))

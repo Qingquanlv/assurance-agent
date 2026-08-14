@@ -210,6 +210,36 @@ def test_runtime_context_rejects_forged_project_lock_tokens(tmp_path: Path) -> N
         )
 
 
+def test_scheduler_binds_current_attempt_id_into_runtime_context(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    change = project / "qa" / "changes" / "CH-1"
+    store = TreeStore(change)
+    tree_id = store.capture(project)
+    _seed_invocation(change, tree_id)
+    seen: list[str | None] = []
+
+    def handler(_task, _workspace, context: RuntimeContext) -> TaskResult:
+        seen.append(context.task_attempt_id)
+        return TaskResult(status="succeeded")
+
+    task = _task("task-a")
+    scheduler = Scheduler(
+        checkpoints=CheckpointStore(change),
+        object_store=store,
+        workspace_backend=WorkspaceBackend(change),
+        node_runner=_ScriptedRunner({"task-a": handler}),
+    )
+
+    result = scheduler.execute(
+        _plan(task),
+        _projection(change, tree_id),
+        _context(project),
+    )
+
+    assert result.succeeded == ("task-a",)
+    assert seen == ["task-a-a1"]
+
+
 def test_expired_inherited_project_lock_context_reacquires(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     change = project / "qa/changes/CH-1"

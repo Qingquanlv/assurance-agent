@@ -1154,6 +1154,98 @@ def test_nested_drive_run_child_single_synchronized_capture(tmp_path: Path) -> N
     assert (project / ".aa/data-knowledge.yaml").read_text() == "written from nested leaf\n"
 
 
+def test_nested_synchronized_publication_survives_later_sibling_subgraph(
+    tmp_path: Path,
+) -> None:
+    """A nested publication belongs to the canonical SUT, not its parent sandbox."""
+    workflow = _NESTED_SYNC_WORKFLOW.replace(
+        "uses: graph:leaf\n        retry: never",
+        "uses: graph:outer\n        retry: never",
+        1,
+    ).replace(
+        "  leaf:\n    max_supersteps: 8",
+        "  outer:\n"
+        "    max_supersteps: 8\n"
+        "    nodes:\n"
+        "      publish:\n"
+        "        uses: graph:leaf\n"
+        "        retry: never\n"
+        "        timeout: local\n"
+        "      later:\n"
+        "        uses: graph:maybe-sync\n"
+        "        retry: never\n"
+        "        timeout: local\n"
+        "    edges:\n"
+        "      - {from: START, to: publish}\n"
+        "      - {from: publish, to: later}\n"
+        "      - {from: later, to: END}\n"
+        "  maybe-sync:\n"
+        "    max_supersteps: 8\n"
+        "    nodes:\n"
+        "      plain:\n"
+        "        uses: operation:plain\n"
+        "        when: params.run_mode == 'full'\n"
+        "        retry: never\n"
+        "        timeout: local\n"
+        "      sync-unused:\n"
+        "        uses: operation:sync-knowledge\n"
+        "        when: params.run_mode != 'full'\n"
+        "        outputs: [project:.aa/data-knowledge.yaml]\n"
+        "        retry: never\n"
+        "        timeout: local\n"
+        "    edges:\n"
+        "      - {from: START, to: plain}\n"
+        "      - {from: START, to: sync-unused}\n"
+        "      - {from: plain, to: END}\n"
+        "      - {from: sync-unused, to: END}\n"
+        "  leaf:\n"
+        "    max_supersteps: 8",
+        1,
+    )
+    contracts = parse_execution_contracts(_NESTED_SYNC_CONTRACTS)
+    compiled = compile_workflow(parse_workflow_v2(workflow), contracts)
+    project, store = _nested_sync_project(tmp_path)
+    ops = default_operations()
+
+    def sync_knowledge(task: ExecutableTask, workspace, context: RuntimeContext) -> TaskResult:
+        path = workspace.project_root / ".aa/data-knowledge.yaml"
+        path.write_text("written from nested leaf\n", encoding="utf-8")
+        return TaskResult(status="succeeded")
+
+    def plain(task: ExecutableTask, workspace, context: RuntimeContext) -> TaskResult:
+        return TaskResult(status="succeeded")
+
+    ops["operation:sync-knowledge"] = sync_knowledge
+    ops["operation:plain"] = plain
+    change = project / "qa/changes/CH-1"
+
+    def build_node_runner(object_store, run_child):  # type: ignore[no-untyped-def]
+        from assurance_agent.workflow.graph.handlers.subgraph import SubgraphHandler
+
+        operation = OperationHandler(ops)
+        return HandlerNodeRunner(
+            {target: operation for target in ops},
+            namespace_handlers={"graph": SubgraphHandler(run_child)},
+            compiled=compiled,
+            object_store=object_store,
+        )
+
+    runtime = assemble_graph_runtime(
+        project_root=project,
+        change_dir=change,
+        compiled=compiled,
+        contracts=contracts,
+        object_store=store,
+        build_node_runner=build_node_runner,
+        clock=SystemClock(),
+    )
+    result = runtime.run(compiled, "full", _context(project))
+
+    assert result.exit_code == 0, result.reason
+    assert result.status.status == "completed"
+    assert (project / ".aa/data-knowledge.yaml").read_text() == "written from nested leaf\n"
+
+
 # ---------------------------------------------------------------------------
 # Task 14 Step 4/5 — publication seams + incompatible epoch fail-closed
 # ---------------------------------------------------------------------------

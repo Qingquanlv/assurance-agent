@@ -66,6 +66,15 @@ def test_openai_loop_pins_routing_after_loading_benchmark_env() -> None:
     assert source.index("export AA_MODEL_ROUTING_FILE", pin_routing) > pin_routing
 
 
+def test_openai_loop_pins_max_reasoning_variant() -> None:
+    source = OPENAI_LOOP.read_text(encoding="utf-8")
+
+    source_env = source.index('[ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"')
+    pin_variant = source.index('readonly AA_OPENCODE_VARIANT="max"')
+    assert source_env < pin_variant
+    assert source.index("export AA_OPENCODE_VARIANT", pin_variant) > pin_variant
+
+
 def test_openai_loop_never_cleans_shared_qa_artifacts() -> None:
     source = OPENAI_LOOP.read_text(encoding="utf-8")
 

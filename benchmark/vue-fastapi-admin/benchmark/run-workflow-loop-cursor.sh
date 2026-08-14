@@ -10,7 +10,7 @@
 #   1. Seed intake inputs for each item (.qa.yaml + proposal.md).
 #   2. `aa workflow run --entrypoint full|… --adapter headless --agent-cmd …`
 #      drives the change to a terminal state (one cursor-agent spawn per task).
-#   3. Verify completion with deterministic `aa workflow status`.
+#   3. Verify completion with deterministic `aa status`.
 #   4. Snapshot the in-workflow coverage-repair fast loop (status, attempt
 #      budget, pre/post batch IDs, and mechanical safety) before archive moves
 #      the Change directory.
@@ -146,6 +146,9 @@ export FUZZ_SCHEMA_MODE="${FUZZ_SCHEMA_MODE:-uri}"
 
 # Default: one item only, so a first end-to-end smoke can finish before scaling up.
 # Override with e.g.:
+#   BENCHMARK_ITEMS_OVERRIDE="RET-user-management:requirements/user-management.md" \
+#     ./benchmark/run-workflow-loop-cursor.sh
+# Or configure multiple items in benchmark.env / a caller-owned sourced config:
 #   BENCHMARK_ITEMS=(
 #     "RET-dept-management:requirements/dept-management.md"
 #     "RET-user-management:requirements/user-management.md"
@@ -273,7 +276,7 @@ maybe_auto_decide() {
     log "[$change_id] knowledge proposal deferred until Batch boundary; continue without L1 mutation"
   fi
   local status_json interrupt_id action reason agent_cmd
-  status_json="$("$AA_BIN" workflow status --change "$change_id" --json 2>/dev/null || true)"
+  status_json="$("$AA_BIN" status --change "$change_id" --json 2>/dev/null || true)"
   [ -n "$status_json" ] || return 1
   interrupt_id="$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); ints=d.get("pending_interrupts") or []; print((ints[0].get("interrupt_id") or ints[0].get("id") or "") if ints else "")' "$status_json")"
   [ -n "$interrupt_id" ] || return 1
@@ -724,7 +727,7 @@ if isinstance(terminal, dict):
 elif terminal:
     print(str(terminal))
 else:
-    # Flat GraphRuntime shape from `aa status --json` / `aa workflow status --json`.
+    # Flat GraphRuntime shape from `aa status --json`.
     status = data.get("status")
     if status in ("completed", "stopped", "needs_human_review", "failed", "running"):
         print(status)
@@ -1386,12 +1389,7 @@ PY
     echo
     echo "| change_id | collection_status | reason_code | trace exit | integrity | gaps | verify exit | verdict | blocking gaps | insufficient |"
     echo "|---|---|---|---:|---|---:|---:|---|---:|---:|"
-    for row in "${EVIDENCE_ROWS[@]}"; do
-      IFS='|' read -r \
-        cid collection_status reason_code trace_exit integrity gap_count \
-        verify_exit verdict blocking insufficient <<<"$row"
-      echo "| \`$cid\` | $collection_status | $reason_code | $trace_exit | $integrity | $gap_count | $verify_exit | $verdict | $blocking | $insufficient |"
-    done
+    render_trace_verify_rows "${EVIDENCE_ROWS[@]+"${EVIDENCE_ROWS[@]}"}"
   fi
   if [ "$DO_SPECIALTY_REPORT" = "true" ]; then
     echo

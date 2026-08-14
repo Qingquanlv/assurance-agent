@@ -1334,7 +1334,11 @@ def _occurrence_and_problem_events(
     return occ_event, problem_event, occ_id, pid
 
 
-def _write_completed_with_occurrence(project_root: Path) -> Path:
+def _write_completed_with_occurrence(
+    project_root: Path,
+    *,
+    omit_optional_qualifiers: bool = False,
+) -> Path:
     """Valid completed tree: one candidate, one occurrence, matching project membership."""
     change_dir = _change_dir(project_root)
     change_dir.mkdir(parents=True)
@@ -1348,8 +1352,11 @@ def _write_completed_with_occurrence(project_root: Path) -> Path:
         evidence_bundle_digest=digest,
         candidates=[candidate],
     )
-    _write_json(change_dir / CANDIDATES_SOURCE, candidates.model_dump(mode="json"))
-    c_digest = candidate_document_digest(candidates)
+    authored_candidates = candidates.model_dump(mode="json")
+    if omit_optional_qualifiers:
+        del authored_candidates["candidates"][0]["fingerprint_inputs"]["qualifiers"]
+    _write_json(change_dir / CANDIDATES_SOURCE, authored_candidates)
+    c_digest = candidate_document_digest(authored_candidates)
     occ_event, problem_event, _occ_id, _pid = _occurrence_and_problem_events(
         candidate=candidate,
         evidence_digest=digest,
@@ -1573,6 +1580,19 @@ def test_completed_genesis_empty_candidate_batch_passes(tmp_path: Path) -> None:
         generated_at="1970-01-01T00:00:00Z",
     )
     assert completed.problem_events == ()
+
+
+def test_completed_authority_preserves_authored_candidate_digest_when_optional_field_omitted(
+    tmp_path: Path,
+) -> None:
+    project_root = _write_completed_with_occurrence(tmp_path, omit_optional_qualifiers=True)
+
+    prefix = completed_prefix(project_root)
+    completed = validate_completed_authority(prefix, project_root, CHANGE_ID, BATCH_ID)
+
+    authored = json.loads((_change_dir(project_root) / CANDIDATES_SOURCE).read_text(encoding="utf-8"))
+    assert prefix.candidate_digest == candidate_document_digest(authored)
+    assert completed.expected_occurrence_ids
 
 
 @pytest.mark.parametrize(

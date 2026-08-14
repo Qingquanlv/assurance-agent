@@ -2,12 +2,7 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 from click.testing import CliRunner
-
-from tests.helpers_aa import write_aa_config
 
 import assurance_agent.commands.workflow_cmd as wf
 from assurance_agent.cli import main
@@ -19,7 +14,6 @@ from assurance_agent.workflow.driver.loop import (
     LoopResult,
 )
 from assurance_agent.workflow.driver.workflow_start import StartResult
-from assurance_agent.workflow.graph.models import GraphStatus
 
 
 def _patch_loop(monkeypatch, result: LoopResult) -> None:
@@ -97,50 +91,6 @@ def test_workflow_run_opencode_requires_server_exit_40() -> None:
         result = CliRunner().invoke(main, ["workflow", "run", "--change", "CH-1", "--adapter", "opencode"])
         assert result.exit_code == EXIT_ERROR
         assert "--server is required" in result.output
-
-
-def test_workflow_status_alias_warns_and_matches_aa_status() -> None:
-    with CliRunner().isolated_filesystem():
-        write_aa_config(Path.cwd())
-        (Path("qa/changes/CH-1")).mkdir(parents=True)
-        alias = CliRunner().invoke(main, ["workflow", "status", "--change", "CH-1", "--json"])
-        direct = CliRunner().invoke(main, ["status", "--change", "CH-1", "--json"])
-        assert alias.exit_code == direct.exit_code == 0
-        assert alias.stdout == direct.stdout  # 逐字节等价（不含 stderr warning）
-        assert json.loads(alias.stdout) == {"status": None, "invocation_id": None}
-        assert "deprecated" in alias.stderr
-
-
-def test_workflow_status_alias_supports_next(monkeypatch) -> None:
-    from assurance_agent.commands import status_cmd
-
-    monkeypatch.setattr(
-        status_cmd,
-        "read_latest_graph_status",
-        lambda *a, **k: GraphStatus(
-            invocation_id="inv-9",
-            entrypoint="full",
-            status="completed",
-            checkpoint_id="cp-9",
-            event_seq=4,
-            superstep=2,
-            running_tasks=(),
-            pending_tasks=(),
-            pending_write_sets=(),
-            pending_interrupts=(),
-            next_retry_at=None,
-            budgets={},
-            terminal_reason="done",
-        ),
-    )
-    with CliRunner().isolated_filesystem():
-        write_aa_config(Path.cwd())
-        (Path("qa/changes/CH-1")).mkdir(parents=True)
-        alias = CliRunner().invoke(main, ["workflow", "status", "--change", "CH-1", "--next", "--json"])
-        direct = CliRunner().invoke(main, ["status", "--change", "CH-1", "--next", "--json"])
-        assert alias.exit_code == direct.exit_code == 0
-        assert alias.stdout == direct.stdout
-        assert "deprecated" in alias.stderr
 
 
 def test_workflow_run_detach_success_exit_0(monkeypatch) -> None:

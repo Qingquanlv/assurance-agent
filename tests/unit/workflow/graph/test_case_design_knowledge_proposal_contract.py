@@ -126,3 +126,11 @@ def test_case_design_canonical_missing_key_proposal_matches_runtime_schema() -> 
             "evidence": "app/api/v1/user/user.py:reset_password",
         }
     ]
+
+
+def test_case_design_rejects_empty_entity_placeholders_in_instructions() -> None:
+    skill = resources.read_text("skills", "aa-case-design", "SKILL.md")
+
+    assert "contain at least one non-empty `constraints` or `required_fields`" in skill
+    assert "leave `entities: {}`" in skill
+    assert "never\nemit placeholders" in skill

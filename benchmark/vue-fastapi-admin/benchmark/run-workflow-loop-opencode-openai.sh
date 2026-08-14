@@ -10,7 +10,7 @@
 #   1. Seed intake inputs for each item (.qa.yaml + proposal.md).
 #   2. `aa workflow run --entrypoint full|… --adapter opencode --server …`
 #      drives the change to a terminal state through bounded OpenCode agents.
-#   3. Verify completion with deterministic `aa workflow status`.
+#   3. Verify completion with deterministic `aa status`.
 #   4. Archive via GraphRuntime: `aa workflow run --entrypoint archive`
 #      (skill:aa-archive + archive-gate; not a free-form agent prompt).
 #   5. After every invocation reaches a persisted terminal, run one explicit
@@ -66,6 +66,8 @@ CONFIG_FILE="${BENCHMARK_ENV:-$SCRIPT_DIR/benchmark.env}"
 [ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
 readonly AA_MODEL_ROUTING_FILE="$SCRIPT_DIR/opencode-openai-model-routing.yaml"
 export AA_MODEL_ROUTING_FILE
+readonly AA_OPENCODE_VARIANT="max"
+export AA_OPENCODE_VARIANT
 
 RUN_MODE="${RUN_MODE:-full}"
 RUN_TESTS="${RUN_TESTS:-true}"
@@ -266,7 +268,7 @@ maybe_auto_decide() {
     log "[$change_id] knowledge proposal deferred until Batch boundary; stop current invocation"
   fi
   local status_json interrupt_id action reason
-  status_json="$("$AA_BIN" workflow status --change "$change_id" --json 2>/dev/null || true)"
+  status_json="$("$AA_BIN" status --change "$change_id" --json 2>/dev/null || true)"
   [ -n "$status_json" ] || return 1
   interrupt_id="$("$AA_PYTHON" -c 'import json,sys; d=json.loads(sys.argv[1]); ints=d.get("pending_interrupts") or []; print((ints[0].get("interrupt_id") or ints[0].get("id") or "") if ints else "")' "$status_json")"
   [ -n "$interrupt_id" ] || return 1
@@ -547,7 +549,7 @@ run_driver() {
   [ -n "$OPENCODE_MODEL" ] && adapter_args+=(--model "$OPENCODE_MODEL")
   params="$(driver_params_json)"
   local has_invocation="false"
-  if "$AA_BIN" workflow status --change "$change_id" --json 2>/dev/null | "$AA_PYTHON" -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("status") else 1)'; then
+  if "$AA_BIN" status --change "$change_id" --json 2>/dev/null | "$AA_PYTHON" -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("status") else 1)'; then
     has_invocation="true"
   fi
   if [ "$has_invocation" = "true" ]; then
@@ -725,7 +727,7 @@ if isinstance(terminal, dict):
 elif terminal:
     print(str(terminal))
 else:
-    # Flat GraphRuntime shape from `aa status --json` / `aa workflow status --json`.
+    # Flat GraphRuntime shape from `aa status --json`.
     status = data.get("status")
     if status in ("completed", "stopped", "needs_human_review", "failed", "running"):
         print(status)

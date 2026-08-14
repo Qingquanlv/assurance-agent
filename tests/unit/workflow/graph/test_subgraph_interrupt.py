@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import textwrap
 from datetime import datetime, timedelta, timezone
@@ -53,6 +54,14 @@ contracts:
     authorization_writes: ["project:tests/api/**", "change:review/**"]
     synchronized: ["project:tests/api/**"]
     exclusive: ["project:test-registry"]
+    retryable_errors: []
+  operation:write-knowledge:
+    handler: operation
+    side_effect_free: false
+    writes: ["project:.aa/data-knowledge.yaml"]
+    authorization_writes: ["project:.aa/data-knowledge.yaml"]
+    synchronized: ["project:.aa/data-knowledge.yaml"]
+    exclusive: ["project:data-knowledge"]
     retryable_errors: []
   operation:write-review:
     handler: operation
@@ -232,6 +241,11 @@ def _ops() -> dict[str, OperationFn]:
         )
         return TaskResult(status="succeeded")
 
+    def write_knowledge(task: ExecutableTask, workspace, context: RuntimeContext) -> TaskResult:
+        knowledge = workspace.project_root / ".aa" / "data-knowledge.yaml"
+        knowledge.write_text("schema_version: '1'\ncapabilities: {}\n", encoding="utf-8")
+        return TaskResult(status="succeeded")
+
     def write_child_a(task: ExecutableTask, workspace, context: RuntimeContext) -> TaskResult:
         path = workspace.change_dir / "branch-a" / "out.txt"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -255,6 +269,7 @@ def _ops() -> dict[str, OperationFn]:
 
     ops["operation:write-marker"] = write_marker
     ops["operation:write-marker-and-review"] = write_marker_and_review
+    ops["operation:write-knowledge"] = write_knowledge
     ops["operation:write-review"] = write_review
     ops["operation:write-child-a"] = write_child_a
     ops["operation:write-child-b"] = write_child_b
@@ -508,6 +523,255 @@ def test_interrupt_publishes_view_and_pending_sibling_write_set(tmp_path: Path) 
     assert not (view_file.stat().st_mode & 0o222)
     # Child wrote review into its private lineage; parent canonical workspace has no commit.
     assert not (change / "review" / "case-review.json").exists()
+
+
+def test_resume_rehydrates_all_prior_nested_commits_not_only_last_edge(tmp_path: Path) -> None:
+    body = """
+main:
+  max_supersteps: 8
+  nodes:
+    nested:
+      uses: graph:child
+      outputs: [repo:tests/api/marker.py, change:review/case-review.json]
+      retry: never
+      timeout: local
+  edges:
+    - {from: START, to: nested}
+    - {from: nested, to: END}
+child:
+  max_supersteps: 8
+  nodes:
+    marker:
+      uses: operation:write-marker
+      outputs: [repo:tests/api/marker.py]
+      retry: never
+      timeout: local
+    review:
+      uses: operation:write-review
+      outputs: [change:review/case-review.json]
+      retry: never
+      timeout: local
+    human:
+      uses: builtin:interrupt
+      interrupt:
+        reason: needs a human
+        checkpoint: case-review-gate
+        bind: audited_gate_read
+        actions: [accept_risk, stop]
+      retry: never
+      timeout: local
+  edges:
+    - {from: START, to: marker}
+    - {from: marker, to: review}
+    - {from: review, to: human}
+  routes:
+    - from: human
+      select: "resume.action"
+      cases:
+        accept_risk: END
+        stop: STOP
+      default: STOP
+"""
+    project = _make_project(tmp_path)
+    compiled, contracts = _compile(body)
+    runtime = _build_runtime(project, compiled, contracts, ops=_ops())
+
+    interrupted = runtime.run(compiled, "full", _context(project))
+    assert interrupted.exit_code == 30
+    # The child commits live only in its parent-task workspace until the graph
+    # wrapper completes, so the canonical root remains unchanged at interrupt.
+    assert not (project / "tests" / "api" / "marker.py").exists()
+
+    pending = interrupted.status.pending_interrupts[0]
+    done = runtime.resume(
+        interrupted.invocation_id,
+        ResumeCommand(
+            interrupt_id=pending.interrupt_id,
+            action="accept_risk",
+            reason="continue after review",
+            who="reviewer",
+        ),
+    )
+
+    assert done.exit_code == 0
+    assert (project / "tests" / "api" / "marker.py").read_text(encoding="utf-8") == "marker\n"
+
+
+def test_three_level_resume_keeps_codegen_in_parent_workspace_until_wrapper_commit(
+    tmp_path: Path,
+) -> None:
+    body = """
+main:
+  max_supersteps: 8
+  nodes:
+    assurance:
+      uses: graph:assurance
+      retry: never
+      timeout: local
+  edges:
+    - {from: START, to: assurance}
+    - {from: assurance, to: END}
+assurance:
+  max_supersteps: 12
+  nodes:
+    fuzz:
+      uses: graph:fuzz
+      retry: never
+      timeout: local
+    after:
+      uses: operation:no-op
+      retry: never
+      timeout: local
+  edges:
+    - {from: START, to: fuzz}
+    - {from: fuzz, to: after}
+    - {from: after, to: END}
+fuzz:
+  max_supersteps: 10
+  nodes:
+    review:
+      uses: operation:write-review
+      outputs: [change:review/case-review.json]
+      retry: never
+      timeout: local
+    human:
+      uses: builtin:interrupt
+      interrupt:
+        reason: needs a human
+        checkpoint: case-review-gate
+        bind: audited_gate_read
+        actions: [accept_risk, stop]
+      retry: never
+      timeout: local
+    codegen:
+      uses: operation:write-marker
+      outputs: [repo:tests/api/marker.py]
+      retry: never
+      timeout: local
+  edges:
+    - {from: START, to: review}
+    - {from: review, to: human}
+    - {from: codegen, to: END}
+  routes:
+    - from: human
+      select: "resume.action"
+      cases:
+        accept_risk: codegen
+        stop: STOP
+      default: STOP
+"""
+    project = _make_project(tmp_path)
+    marker = project / "tests/api/marker.py"
+    marker.write_text("previous\n", encoding="utf-8")
+    compiled, contracts = _compile(body)
+    runtime = _build_runtime(project, compiled, contracts, ops=_ops())
+
+    interrupted = runtime.run(compiled, "full", _context(project))
+    assert interrupted.exit_code == 30
+    assert marker.read_text(encoding="utf-8") == "previous\n"
+
+    pending = interrupted.status.pending_interrupts[0]
+    done = runtime.resume(
+        interrupted.invocation_id,
+        ResumeCommand(
+            interrupt_id=pending.interrupt_id,
+            action="accept_risk",
+            reason="continue to codegen and the next branch",
+            who="reviewer",
+        ),
+    )
+
+    assert done.exit_code == 0
+    assert marker.read_text(encoding="utf-8") == "marker\n"
+
+
+def test_bubbled_interrupt_does_not_apply_leaf_gate_tree_to_canonical_root(
+    tmp_path: Path,
+) -> None:
+    body = """
+main:
+  max_supersteps: 8
+  nodes:
+    assurance:
+      uses: graph:assurance
+      retry: never
+      timeout: local
+  edges:
+    - {from: START, to: assurance}
+    - {from: assurance, to: END}
+assurance:
+  max_supersteps: 12
+  nodes:
+    generated:
+      uses: operation:write-marker
+      outputs: [repo:tests/api/marker.py]
+      retry: never
+      timeout: local
+    knowledge:
+      uses: operation:write-knowledge
+      outputs: [project:.aa/data-knowledge.yaml]
+      retry: never
+      timeout: local
+    review:
+      uses: graph:review
+      retry: never
+      timeout: local
+  edges:
+    - {from: START, to: generated}
+    - {from: generated, to: knowledge}
+    - {from: knowledge, to: review}
+    - {from: review, to: END}
+review:
+  max_supersteps: 8
+  nodes:
+    seed:
+      uses: operation:write-review
+      outputs: [change:review/case-review.json]
+      retry: never
+      timeout: local
+    human:
+      uses: builtin:interrupt
+      interrupt:
+        reason: needs a human
+        checkpoint: case-review-gate
+        bind: audited_gate_read
+        actions: [accept_risk, stop]
+      retry: never
+      timeout: local
+  edges:
+    - {from: START, to: seed}
+    - {from: seed, to: human}
+  routes:
+    - from: human
+      select: "resume.action"
+      cases:
+        accept_risk: END
+        stop: STOP
+      default: STOP
+"""
+    project = _make_project(tmp_path)
+    marker = project / "tests/api/marker.py"
+    marker.write_text("previous\n", encoding="utf-8")
+    compiled, contracts = _compile(body)
+    runtime = _build_runtime(project, compiled, contracts, ops=_ops())
+
+    interrupted = runtime.run(compiled, "full", _context(project))
+    assert interrupted.exit_code == 30
+    assert marker.read_text(encoding="utf-8") == "previous\n"
+
+    pending = interrupted.status.pending_interrupts[0]
+    done = runtime.resume(
+        interrupted.invocation_id,
+        ResumeCommand(
+            interrupt_id=pending.interrupt_id,
+            action="accept_risk",
+            reason="approve after generated sibling",
+            who="reviewer",
+        ),
+    )
+
+    assert done.exit_code == 0
+    assert marker.read_text(encoding="utf-8") == "marker\n"
 
 
 _PARALLEL_INTERRUPT_SUBGRAPHS = """
@@ -940,6 +1204,125 @@ bad_child:
     assert json.loads(review_file.read_text(encoding="utf-8"))["decision"] == "needs_human_review"
 
 
+def test_resume_rehydrates_synchronized_repo_sibling_before_interrupted_branch(
+    tmp_path: Path,
+) -> None:
+    body = """
+main:
+  max_supersteps: 5
+  nodes:
+    assurance:
+      uses: graph:assurance
+      outputs: [project:tests/api/marker.py, project:.aa/data-knowledge.yaml, change:review/case-review.json]
+      retry: never
+      timeout: local
+  edges:
+    - {from: START, to: assurance}
+    - {from: assurance, to: END}
+assurance:
+  max_supersteps: 10
+  nodes:
+    ok:
+      uses: graph:ok_child
+      outputs: [project:tests/api/marker.py, project:.aa/data-knowledge.yaml]
+      retry: never
+      timeout: local
+    bad:
+      uses: graph:bad_child
+      retry: never
+      timeout: local
+  edges:
+    - {from: START, to: ok}
+    - {from: ok, to: bad}
+    - {from: bad, to: END}
+ok_child:
+  max_supersteps: 8
+  nodes:
+    marker:
+      uses: operation:write-marker
+      outputs: [project:tests/api/marker.py]
+      retry: never
+      timeout: local
+    knowledge:
+      uses: operation:write-knowledge
+      outputs: [project:.aa/data-knowledge.yaml]
+      retry: never
+      timeout: local
+  edges:
+    - {from: START, to: marker}
+    - {from: marker, to: knowledge}
+    - {from: knowledge, to: END}
+bad_child:
+  max_supersteps: 5
+  nodes:
+    seed:
+      uses: operation:write-review
+      outputs: [change:review/case-review.json]
+      retry: never
+      timeout: local
+    human:
+      uses: builtin:interrupt
+      interrupt:
+        reason: needs a human
+        checkpoint: case-review-gate
+        bind: audited_gate_read
+        actions: [accept_risk, stop]
+      retry: never
+      timeout: local
+  edges:
+    - {from: START, to: seed}
+    - {from: seed, to: human}
+  routes:
+    - from: human
+      select: "resume.action"
+      cases:
+        accept_risk: END
+        stop: STOP
+      default: STOP
+"""
+    project = _make_project(tmp_path)
+    marker = project / "tests" / "api" / "marker.py"
+    marker.write_text("previous benchmark item\n", encoding="utf-8")
+    compiled, contracts = _compile(body)
+    runtime = _build_runtime(project, compiled, contracts, ops=_ops())
+
+    interrupted = runtime.run(compiled, "full", _context(project))
+    assert interrupted.exit_code == 30
+    assert marker.read_text(encoding="utf-8") == "previous benchmark item\n"
+
+    assurance_started = next(
+        event
+        for event in read_events_strict(_context(project).change_dir)
+        if event.get("type") == "graph_invocation_started" and event.get("graph_id") == "assurance"
+    )
+    assurance_projection = runtime._checkpoints.project(  # noqa: SLF001
+        str(assurance_started["invocation_id"])
+    )
+    runtime._scheduler_for(assurance_projection)._repair_ordinary_materialization(  # noqa: SLF001
+        assurance_projection,
+        _context(project),
+        {},
+    )
+    assert marker.read_text(encoding="utf-8") == "marker\n"
+
+    del runtime
+    gc.collect()
+    runtime = _build_runtime(project, compiled, contracts, ops=_ops())
+    interrupt = interrupted.status.pending_interrupts[0]
+    done = runtime.resume(
+        interrupted.invocation_id,
+        ResumeCommand(
+            interrupt_id=interrupt.interrupt_id,
+            action="accept_risk",
+            reason="continue interrupted sibling",
+            who="reviewer",
+        ),
+    )
+
+    assert done.exit_code == 0
+    assert marker.read_text(encoding="utf-8") == "marker\n"
+
+
 def test_resume_rehydrates_all_child_commits_before_replaying_latest_synchronized_write(
     tmp_path: Path,
 ) -> None:
@@ -1044,6 +1427,72 @@ child:
     assert (project / "tests" / "api" / "marker.py").read_text(encoding="utf-8") == (
         "marker after second child commit\n"
     )
+
+
+def test_resume_allows_downstream_child_commit_after_resolved_interrupt(tmp_path: Path) -> None:
+    body = """
+main:
+  max_supersteps: 8
+  nodes:
+    child: {uses: graph:child, retry: never, timeout: local}
+  edges:
+    - {from: START, to: child}
+    - {from: child, to: END}
+child:
+  max_supersteps: 8
+  nodes:
+    seed:
+      uses: operation:write-review
+      outputs: [change:review/case-review.json]
+      retry: never
+      timeout: local
+    human:
+      uses: builtin:interrupt
+      interrupt:
+        reason: needs a human
+        checkpoint: case-review-gate
+        bind: audited_gate_read
+        actions: [accept_risk, stop]
+      retry: never
+      timeout: local
+    codegen:
+      uses: operation:write-marker
+      outputs: [repo:tests/api/marker.py]
+      retry: never
+      timeout: local
+  edges:
+    - {from: START, to: seed}
+    - {from: seed, to: human}
+    - {from: codegen, to: END}
+  routes:
+    - from: human
+      select: "resume.action"
+      cases:
+        accept_risk: codegen
+        stop: STOP
+      default: STOP
+"""
+    project = _make_project(tmp_path)
+    compiled, contracts = _compile(body)
+    runtime = _build_runtime(project, compiled, contracts, ops=_ops())
+
+    interrupted = runtime.run(compiled, "full", _context(project))
+    assert interrupted.exit_code == 30
+    assert not (project / "tests/api/marker.py").exists()
+
+    interrupt = interrupted.status.pending_interrupts[0]
+    done = runtime.resume(
+        interrupted.invocation_id,
+        ResumeCommand(
+            interrupt_id=interrupt.interrupt_id,
+            action="accept_risk",
+            reason="continue to codegen",
+            who="reviewer",
+        ),
+    )
+
+    assert done.exit_code == 0
+    assert (project / "tests/api/marker.py").read_text(encoding="utf-8") == "marker\n"
 
 
 def test_resume_does_not_rehydrate_external_drift_for_root_synchronized_write(
@@ -1213,6 +1662,113 @@ def test_accept_risk_through_three_level_nest_completes(tmp_path: Path) -> None:
 
     assert_v3_resume_anchor_chain(events, interrupt.checkpoint_ns)
     assert_no_revision_resume_fields(events)
+    leaf_invocation_id = interrupt.checkpoint_ns.split("/")[-1]
+    leaf_interrupted = next(
+        event
+        for event in events
+        if event.get("type") == "graph_interrupted" and event.get("invocation_id") == leaf_invocation_id
+    )
+    leaf_resumed = next(event for event in resumed if event.get("invocation_id") == leaf_invocation_id)
+    assert leaf_resumed["anchor"]["node_id"] == leaf_interrupted["node_id"]  # type: ignore[index]
+
+
+def test_accept_risk_through_synchronized_four_level_nest_completes(tmp_path: Path) -> None:
+    """Prepared resume must include descendant projections in its selected-wave identity."""
+    body = (
+        _THREE_LEVEL_INTERRUPT.replace(
+            "mid:\n"
+            "  max_supersteps: 10\n"
+            "  nodes:\n"
+            "    leaf:\n"
+            "      uses: graph:leaf\n"
+            "      retry: never\n"
+            "      timeout: local\n"
+            "  edges:\n"
+            "    - {from: START, to: leaf}\n"
+            "    - {from: leaf, to: END}\n"
+            "leaf:",
+            "mid:\n"
+            "  max_supersteps: 10\n"
+            "  nodes:\n"
+            "    branch:\n"
+            "      uses: graph:branch\n"
+            "      retry: never\n"
+            "      timeout: local\n"
+            "  edges:\n"
+            "    - {from: START, to: branch}\n"
+            "    - {from: branch, to: END}\n"
+            "branch:\n"
+            "  max_supersteps: 10\n"
+            "  nodes:\n"
+            "    leaf:\n"
+            "      uses: graph:leaf\n"
+            "      retry: never\n"
+            "      timeout: local\n"
+            "  edges:\n"
+            "    - {from: START, to: leaf}\n"
+            "    - {from: leaf, to: END}\n"
+            "leaf:",
+        )
+        .replace(
+            "uses: operation:write-review\n      outputs: [change:review/case-review.json]",
+            "uses: operation:write-marker-and-review\n"
+            "      outputs: [repo:tests/api/marker.py, change:review/case-review.json]",
+        )
+        .replace(
+            "    human:\n"
+            "      uses: builtin:interrupt\n"
+            "      interrupt:\n"
+            "        reason: needs a human\n"
+            "        checkpoint: case-review-gate\n"
+            "        bind: audited_gate_read\n"
+            "        actions: [fix_and_proceed, accept_risk, stop]\n"
+            "      retry: never\n"
+            "      timeout: local\n"
+            "  edges:",
+            "    human:\n"
+            "      uses: builtin:interrupt\n"
+            "      interrupt:\n"
+            "        reason: needs a human\n"
+            "        checkpoint: case-review-gate\n"
+            "        bind: audited_gate_read\n"
+            "        actions: [fix_and_proceed, accept_risk, stop]\n"
+            "      retry: never\n"
+            "      timeout: local\n"
+            "    after:\n"
+            "      uses: operation:no-op\n"
+            "      retry: never\n"
+            "      timeout: local\n"
+            "  edges:",
+        )
+        .replace(
+            "    - {from: seed, to: human}\n  routes:",
+            "    - {from: seed, to: human}\n    - {from: after, to: END}\n  routes:",
+        )
+        .replace(
+            "        accept_risk: END\n        stop: STOP",
+            "        accept_risk: after\n        stop: STOP",
+        )
+    )
+    project = _make_project(tmp_path)
+    compiled, contracts = _compile(body)
+    assert "project:test-registry" in compiled.graphs["main"].resource_footprint.exclusive
+    runtime = _build_runtime(project, compiled, contracts, ops=_ops())
+    interrupted = runtime.run(compiled, "full", _context(project))
+    assert interrupted.exit_code == 30
+    interrupt = interrupted.status.pending_interrupts[0]
+
+    done = runtime.resume(
+        interrupted.invocation_id,
+        ResumeCommand(
+            interrupt_id=interrupt.interrupt_id,
+            action="accept_risk",
+            reason="accept synchronized four-level path",
+            who="reviewer",
+        ),
+    )
+
+    assert done.exit_code == 0, done.reason
+    assert done.status.status == "completed"
 
 
 def test_build_graph_interrupted_event_carries_revision_lineage_fields() -> None:

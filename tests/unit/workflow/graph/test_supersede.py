@@ -49,8 +49,8 @@ from assurance_agent.workflow.graph.supersede import (
 )
 from assurance_agent.workflow.graph.status import supersede_audit_id
 
-# Pinned before Task 13 supersede caller landed (byte-identical across new caller).
-_PINNED_COMMIT_SAFETY_DIGEST = "525e03c82036d7298693c966ce4c438b671d8c5d7cf6f1e3fb4da86431495e04"
+# Pinned after leaf-aware resume anchors joined the commit-safety semantics.
+_PINNED_COMMIT_SAFETY_DIGEST = "1ba77a6e59880f97a05b2883b085d781bf139fca08cdc1f7ee39d06d9c003f3e"
 
 
 def _projection(

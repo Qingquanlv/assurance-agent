@@ -218,8 +218,8 @@ class DurableEffectContext(StrictWireModel):
         if keys != sorted(keys):
             raise ValueError("output_digests keys must be sorted")
         for digest in self.output_digests.values():
-            if not isinstance(digest, str) or not digest.startswith("sha256:"):
-                raise ValueError("output_digests values must be sha256: digests")
+            if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+                raise ValueError("output_digests values must be bare lowercase sha256 digests")
         return self
 
 

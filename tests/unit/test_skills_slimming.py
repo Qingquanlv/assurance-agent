@@ -275,3 +275,16 @@ def test_e2e_fixer_repairs_factory_mapping_only_on_authorized_findings() -> None
     assert "Do not edit" in text
     assert ".aa/data-knowledge.yaml" in text
     assert "Never promote proposal content into L1" in text
+
+
+def test_fuzz_plan_binds_codegen_plan_to_precommit_mapping_contract() -> None:
+    planner = resources.read_text("skills", "aa-fuzz-plan", "SKILL.md")
+    reviewer = resources.read_text("skills", "aa-fuzz-plan-reviewer", "SKILL.md")
+
+    for text in (planner, reviewer):
+        assert "fuzz-codegen-plan.md" in text
+        assert "exact `## Test Function Mapping` heading" in text
+        assert "Case ID | Test Function | Target File" in text
+        assert "Schema Acquisition" in text
+    assert "fails closed" in planner
+    assert "Independently inspect both" in reviewer

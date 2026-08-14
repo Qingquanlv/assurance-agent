@@ -30,6 +30,8 @@ def _packaged_agent_entry(name: str) -> dict[str, Any]:
     for tool, enabled in tools.items():
         if enabled is False:
             permissions.append({"permission": tool, "pattern": "*", "action": "deny"})
+        elif enabled is True:
+            permissions.append({"permission": tool, "pattern": "*", "action": "allow"})
     declared_permissions = metadata.get("permission")
     assert isinstance(declared_permissions, dict)
     for permission, policy in declared_permissions.items():
@@ -312,6 +314,16 @@ def test_dispatch_uses_prompt_async_with_directory_model_agent_and_auth() -> Non
     dispatch_body = json.loads(dispatch.content)
     assert dispatch_body["model"] == {"providerID": "anthropic", "modelID": "claude"}
     assert dispatch_body["agent"] == "aa-doc-author"
+    assert dispatch_body["tools"] == {
+        "artifact_write": True,
+        "write": True,
+        "edit": True,
+        "apply_patch": False,
+        "ast_grep_replace": False,
+        "webfetch": False,
+        "websearch": False,
+        "websearch_web_search_exa": False,
+    }
     dispatched_text = dispatch_body["parts"][0]["text"]
     assert dispatched_text.startswith("<system-reminder>\n")
     assert dispatched_text.endswith("\n</system-reminder>")
@@ -328,6 +340,25 @@ def test_dispatch_keeps_non_bounded_agent_prompt_unchanged() -> None:
 
     dispatch_body = json.loads(script.seen[0].content)
     assert dispatch_body["parts"] == [{"type": "text", "text": "search for a file"}]
+    assert "tools" not in dispatch_body
+
+
+def test_dispatch_uses_opencode_variant_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AA_OPENCODE_VARIANT", "max")
+    script = _StatusScript(["idle"])
+    adapter = OpenCodeAdapter("http://host", "/sut", client=_client(script), **_fast())
+
+    adapter._dispatch_prompt(
+        "ses_1",
+        "p",
+        agent="aa-doc-author",
+        model={"providerID": "openai", "modelID": "gpt-5.6-luna"},
+    )
+
+    dispatch_body = json.loads(script.seen[0].content)
+    assert dispatch_body["variant"] == "max"
 
 
 def test_invoke_uses_request_local_model_instead_of_constructor_fallback(
@@ -974,6 +1005,14 @@ def test_bounded_agent_catalog_accepts_tools_migrated_to_permission_denies() -> 
     catalog = [_packaged_agent_entry("aa-doc-author")]
 
     validate_bounded_agent_catalog(catalog, ("aa-doc-author",))
+
+
+def test_bounded_agent_catalog_rejects_runtime_missing_required_doc_author_tool() -> None:
+    agent = _packaged_agent_entry("aa-doc-author")
+    agent["permission"] = [rule for rule in agent["permission"] if rule.get("permission") != "write"]
+
+    with pytest.raises(DriverError, match="missing required tools.*write.*restart OpenCode"):
+        validate_bounded_agent_catalog([agent], ("aa-doc-author",))
 
 
 def test_bounded_agent_catalog_accepts_live_block_scalar_description() -> None:

@@ -69,7 +69,7 @@ def test_capture_is_deterministic_and_excludes_runtime_dirs(tmp_path: Path) -> N
         ".graph-runtime/objects/sha256/ab/cd",
         ".worktrees/wt/file.txt",
         ".venv/lib/python.py",
-        ".opencode/skills/aws-run",
+        ".opencode/skills/aa-run",
         "eval/out/runs/x/report.json",
         "benchmark/runs/x.status.json",
         "node_modules/pkg/index.js",

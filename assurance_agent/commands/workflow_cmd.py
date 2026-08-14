@@ -1,4 +1,4 @@
-"""`aa workflow run|status|resume|import-checkpoint|start|supersede` — GraphRuntime CLI."""
+"""`aa workflow run|resume|import-checkpoint|start|supersede` — GraphRuntime CLI."""
 
 from __future__ import annotations
 
@@ -105,7 +105,7 @@ def _validate_root_invocation(
 
 @click.group("workflow")
 def workflow_group() -> None:
-    """Graph workflow driver (run / status / resume / import-checkpoint / supersede)."""
+    """Graph workflow driver (run / resume / import-checkpoint / supersede)."""
 
 
 def _parse_json_object(raw: str | None, option_name: str) -> dict[str, object]:
@@ -528,24 +528,6 @@ def workflow_resume(
     }.get(result.exit_code, "red")
     click.secho(result.reason, fg=color)
     raise SystemExit(result.exit_code)
-
-
-@workflow_group.command("status", hidden=True)
-@click.option("--change", "change_id", required=True, help="Change ID under qa/changes/.")
-@click.option("--next", "next_only", is_flag=True, help="Print only pending work.")
-@click.option("--json", "as_json", is_flag=True, help="Machine-readable JSON output.")
-def workflow_status(change_id: str, next_only: bool, as_json: bool) -> None:
-    """Deprecated alias of `aa status` (kept for one release)."""
-    click.secho(
-        "warning: `aa workflow status` is deprecated; use `aa status --change <id> [--next] [--json]`. "
-        "Behavior changes: exit codes mirror graph state (0/20/30/40), and the no-invocation "
-        'payload is unified to {"status": null, "invocation_id": null}.',
-        fg="yellow",
-        err=True,
-    )
-    from assurance_agent.commands.status_cmd import _run_status
-
-    raise SystemExit(_run_status(change_id, next_only=next_only, as_json=as_json))
 
 
 @workflow_group.command("supersede")

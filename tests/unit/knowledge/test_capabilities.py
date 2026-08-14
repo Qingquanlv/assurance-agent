@@ -62,6 +62,20 @@ def test_container_path_counts_as_missing() -> None:
     assert compute_missing_capabilities(review, L1) == ["capabilities.adapters.api.user"]
 
 
+def test_persisted_entity_leaf_with_legacy_max_length_flag_counts_as_present() -> None:
+    persisted_l1 = yaml.safe_load(yaml.safe_dump(L1))
+    persisted_l1["entities"]["dept"] = {
+        "required_fields": ["name"],
+        "constraints": {"name_has_max_length": True},
+    }
+
+    assert is_leaf_present(persisted_l1, "entities.dept") is True
+    assert (
+        compute_missing_capabilities({**REVIEW, "required_capabilities": ["entities.dept"]}, persisted_l1)
+        == []
+    )
+
+
 def test_capabilities_present_true_when_all_leaves_exist() -> None:
     review = {**REVIEW, "required_capabilities": ["auth.api_admin_token"]}
     assert capabilities_present(review, L1) is True
