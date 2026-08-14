@@ -971,6 +971,7 @@ def test_default_operations_registry_has_exact_keys() -> None:
         "operation:compute-baseline-drift",
         "operation:aggregate-nightly-metrics",
         "operation:evaluate-retrospective-shortboards",
+        "operation:run-nightly-metrics-pipeline",
         # Adversarial discovery yield + flaky quarantine (metrics M3 Tasks 2/4)
         "operation:collect-adversarial-yield",
         "operation:materialize-quarantine-projection",

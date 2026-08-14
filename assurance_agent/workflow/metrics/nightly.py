@@ -255,6 +255,20 @@ def run_metrics_nightly_graph(
     return results
 
 
+def run_nightly_metrics_pipeline_operation(
+    task: ExecutableTask,
+    workspace: TaskWorkspace,
+    context: RuntimeContext,
+) -> TaskResult:
+    del task
+    results = run_metrics_nightly_graph(workspace, context)
+    failed = next((result for result in results if result.status != "succeeded"), None)
+    if failed is not None:
+        return failed
+    last = results[-1]
+    return TaskResult(status="succeeded", value=last.value)
+
+
 def load_latest_pr_metrics_operation(
     task: ExecutableTask,
     workspace: TaskWorkspace,

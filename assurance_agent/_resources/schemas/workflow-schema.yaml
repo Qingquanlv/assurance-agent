@@ -2494,68 +2494,16 @@ graphs:
   metrics-nightly-workflow:
     max_supersteps: 14
     nodes:
-      load-latest-pr-metrics:
-        uses: operation:load-latest-pr-metrics
+      run-nightly-metrics-pipeline:
+        uses: operation:run-nightly-metrics-pipeline
         retry: never
         timeout: local-operation
-
-      run-mutation-sample:
-        uses: operation:run-mutation-sample
-        retry: never
-        timeout: local-operation
-
-      compute-assertion-strength:
-        uses: operation:compute-assertion-strength
-        retry: never
-        timeout: local-operation
-
-      compute-baseline-drift:
-        uses: operation:compute-baseline-drift
-        retry: never
-        timeout: local-operation
-
-      collect-adversarial-yield:
-        uses: operation:collect-adversarial-yield
-        retry: never
-        timeout: local-operation
-
-      materialize-quarantine-projection:
-        uses: operation:materialize-quarantine-projection
-        outputs:
-          - change:inspect/quarantine-projection.json
-        retry: never
-        timeout: local-operation
-
-      materialize-c-layer-metrics:
-        uses: operation:materialize-c-layer-metrics
-        outputs:
-          - change:inspect/metrics-c-layer.json
-        retry: never
-        timeout: local-operation
-
-      aggregate-nightly-metrics:
-        uses: operation:aggregate-nightly-metrics
         outputs:
           - change:inspect/metrics-nightly.json
-        retry: never
-        timeout: local-operation
-
-      evaluate-retrospective-shortboards:
-        uses: operation:evaluate-retrospective-shortboards
-        retry: never
-        timeout: local-operation
-
+          - change:inspect/metrics-nightly-shortboards.json
     edges:
-      - {from: START, to: load-latest-pr-metrics}
-      - {from: load-latest-pr-metrics, to: run-mutation-sample}
-      - {from: run-mutation-sample, to: compute-assertion-strength}
-      - {from: compute-assertion-strength, to: compute-baseline-drift}
-      - {from: compute-baseline-drift, to: collect-adversarial-yield}
-      - {from: collect-adversarial-yield, to: materialize-quarantine-projection}
-      - {from: materialize-quarantine-projection, to: materialize-c-layer-metrics}
-      - {from: materialize-c-layer-metrics, to: aggregate-nightly-metrics}
-      - {from: aggregate-nightly-metrics, to: evaluate-retrospective-shortboards}
-      - {from: evaluate-retrospective-shortboards, to: END}
+      - {from: START, to: run-nightly-metrics-pipeline}
+      - {from: run-nightly-metrics-pipeline, to: END}
 
 gates:
   registry-gate:

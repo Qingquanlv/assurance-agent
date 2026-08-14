@@ -1761,6 +1761,55 @@ contracts:
     authorization_writes:
     - change:inspect/metrics-nightly-shortboards.json
     retryable_errors: []
+  operation:run-nightly-metrics-pipeline:
+    handler: operation
+    reads:
+    - change:inspect/metrics.json
+    - change:inspect/metrics-nightly-source.json
+    - change:inspect/metrics-nightly.json
+    - change:inspect/quarantine-projection.json
+    - change:inspect/coverage-gaps.json
+    - change:inspect/metrics-c-layer.json
+    - change:execution/**
+    - change:execution/runs/**
+    - change:cases/**
+    - change:discovery/**
+    - change:issues/snapshot.json
+    - repo:**
+    - repo:tests/**
+    - repo:.aa/policy.yaml
+    - project:.aa/cache/mutation/**
+    - project:.aa/baseline/performance/**
+    - project:qa/issues/problems.json
+    writes:
+    - change:inspect/metrics-nightly-source.json
+    - change:inspect/metrics-nightly.json
+    - change:inspect/metrics-nightly-shortboards.json
+    - change:inspect/quarantine-projection.json
+    - change:inspect/metrics-c-layer.json
+    - change:execution/runs/*/mutation.json
+    - change:execution/runs/*/assertion-strength.json
+    - change:execution/runs/*/baseline-drift.json
+    - change:execution/runs/*/adversarial-yield.json
+    - project:.aa/cache/mutation/**
+    - project:.aa/baseline/performance/**
+    authorization_writes:
+    - change:inspect/metrics-nightly-source.json
+    - change:inspect/metrics-nightly.json
+    - change:inspect/metrics-nightly-shortboards.json
+    - change:inspect/quarantine-projection.json
+    - change:inspect/metrics-c-layer.json
+    - change:execution/runs/*/mutation.json
+    - change:execution/runs/*/assertion-strength.json
+    - change:execution/runs/*/baseline-drift.json
+    - change:execution/runs/*/adversarial-yield.json
+    - project:.aa/cache/mutation/**
+    - project:.aa/baseline/performance/**
+    synchronized:
+    - project:.aa/baseline/performance/**
+    exclusive:
+    - project:performance-baseline
+    retryable_errors: []
   operation:materialize-empty-retro-analysis:
     handler: operation
     reads:

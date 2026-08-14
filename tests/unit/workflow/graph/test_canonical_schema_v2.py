@@ -172,6 +172,7 @@ EXPECTED_CONTRACTS = {
     "operation:collect-adversarial-yield",
     "operation:aggregate-nightly-metrics",
     "operation:evaluate-retrospective-shortboards",
+    "operation:run-nightly-metrics-pipeline",
     # Issue review (Task 12)
     "operation:load-problem-review-context",
     "operation:apply-problem-review",

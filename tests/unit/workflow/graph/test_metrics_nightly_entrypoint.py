@@ -25,6 +25,7 @@ from assurance_agent.workflow.metrics.nightly import (
     evaluate_retrospective_shortboards_operation,
     load_latest_pr_metrics_operation,
     run_mutation_sample_operation,
+    run_nightly_metrics_pipeline_operation,
 )
 from assurance_agent.workflow.metrics.quarantine import materialize_quarantine_projection_operation
 
@@ -40,19 +41,11 @@ NIGHTLY_OPS = {
     "operation:materialize-c-layer-metrics": materialize_c_layer_metrics_operation,
     "operation:aggregate-nightly-metrics": aggregate_nightly_metrics_operation,
     "operation:evaluate-retrospective-shortboards": evaluate_retrospective_shortboards_operation,
+    "operation:run-nightly-metrics-pipeline": run_nightly_metrics_pipeline_operation,
 }
 
-GRAPH_NODE_ORDER = (
-    "load-latest-pr-metrics",
-    "run-mutation-sample",
-    "compute-assertion-strength",
-    "compute-baseline-drift",
-    "collect-adversarial-yield",
-    "materialize-quarantine-projection",
-    "materialize-c-layer-metrics",
-    "aggregate-nightly-metrics",
-    "evaluate-retrospective-shortboards",
-)
+COMPOSITE_NODE = "run-nightly-metrics-pipeline"
+COMPOSITE_USES = "operation:run-nightly-metrics-pipeline"
 
 
 def _compiled():
@@ -99,37 +92,14 @@ def test_workflow_cli_choice_includes_metrics_nightly() -> None:
     assert "metrics-nightly" in set(_ENTRYPOINT_CHOICE.choices)
 
 
-def test_metrics_nightly_graph_order_is_load_collect_aggregate_retro() -> None:
+def test_metrics_nightly_graph_is_a_single_pipeline_host() -> None:
     schema, _ = _compiled()
     graph = schema.graphs["metrics-nightly-workflow"]
-    assert set(GRAPH_NODE_ORDER) <= set(graph.nodes)
-
+    op_nodes = {name: node for name, node in graph.nodes.items() if node.uses.startswith("operation:")}
+    assert set(op_nodes) == {COMPOSITE_NODE}
+    assert op_nodes[COMPOSITE_NODE].uses == COMPOSITE_USES
     edges = {(edge.from_, edge.to) for edge in graph.edges}
-    assert ("START", "load-latest-pr-metrics") in edges
-    assert ("load-latest-pr-metrics", "run-mutation-sample") in edges
-    assert ("run-mutation-sample", "compute-assertion-strength") in edges
-    assert ("compute-assertion-strength", "compute-baseline-drift") in edges
-    assert ("compute-baseline-drift", "collect-adversarial-yield") in edges
-    assert ("collect-adversarial-yield", "materialize-quarantine-projection") in edges
-    assert ("materialize-quarantine-projection", "materialize-c-layer-metrics") in edges
-    assert ("materialize-c-layer-metrics", "aggregate-nightly-metrics") in edges
-    assert ("aggregate-nightly-metrics", "evaluate-retrospective-shortboards") in edges
-    assert ("evaluate-retrospective-shortboards", "END") in edges
-
-    assert graph.nodes["load-latest-pr-metrics"].uses == "operation:load-latest-pr-metrics"
-    assert graph.nodes["run-mutation-sample"].uses == "operation:run-mutation-sample"
-    assert graph.nodes["compute-assertion-strength"].uses == "operation:compute-assertion-strength"
-    assert graph.nodes["compute-baseline-drift"].uses == "operation:compute-baseline-drift"
-    assert graph.nodes["collect-adversarial-yield"].uses == "operation:collect-adversarial-yield"
-    assert (
-        graph.nodes["materialize-quarantine-projection"].uses == "operation:materialize-quarantine-projection"
-    )
-    assert graph.nodes["materialize-c-layer-metrics"].uses == "operation:materialize-c-layer-metrics"
-    assert graph.nodes["aggregate-nightly-metrics"].uses == "operation:aggregate-nightly-metrics"
-    assert (
-        graph.nodes["evaluate-retrospective-shortboards"].uses
-        == "operation:evaluate-retrospective-shortboards"
-    )
+    assert edges == {("START", COMPOSITE_NODE), (COMPOSITE_NODE, "END")}
 
 
 def test_nightly_operations_registered_under_exact_keys() -> None:
@@ -162,14 +132,10 @@ def test_nightly_contracts_cover_real_surfaces_and_never_write_pr_metrics() -> N
     assert baseline_history in {str(path) for path in baseline.authorization_writes}
     assert baseline_history in {str(path) for path in baseline.synchronized}
 
-
-def test_nightly_graph_wires_adversarial_yield_collector_before_aggregate() -> None:
-    """M3: B3 collector is pinned before aggregate-nightly-metrics."""
-    schema, _ = _compiled()
-    graph = schema.graphs["metrics-nightly-workflow"]
-    uses = {node.uses for node in graph.nodes.values()}
-    assert "operation:collect-adversarial-yield" in uses
-    edges = {(edge.from_, edge.to) for edge in graph.edges}
-    assert ("collect-adversarial-yield", "materialize-quarantine-projection") in edges
-    assert ("materialize-quarantine-projection", "materialize-c-layer-metrics") in edges
-    assert ("materialize-c-layer-metrics", "aggregate-nightly-metrics") in edges
+    composite = contracts[COMPOSITE_USES]
+    composite_writes = {str(path) for path in composite.writes}
+    composite_auth = {str(path) for path in composite.authorization_writes}
+    assert "change:inspect/metrics-nightly.json" in composite_writes
+    assert "change:inspect/metrics-nightly-shortboards.json" in composite_writes
+    assert "change:inspect/metrics.json" not in composite_writes
+    assert "change:inspect/metrics.json" not in composite_auth

@@ -83,6 +83,7 @@ from assurance_agent.workflow.metrics.nightly import (
     evaluate_retrospective_shortboards_operation,
     load_latest_pr_metrics_operation,
     run_mutation_sample_operation,
+    run_nightly_metrics_pipeline_operation,
 )
 from assurance_agent.workflow.metrics.pr_metrics import (
     collect_pr_metrics_batch_operation,
@@ -166,6 +167,7 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:collect-adversarial-yield": collect_adversarial_yield_operation,
         "operation:aggregate-nightly-metrics": aggregate_nightly_metrics_operation,
         "operation:evaluate-retrospective-shortboards": evaluate_retrospective_shortboards_operation,
+        "operation:run-nightly-metrics-pipeline": run_nightly_metrics_pipeline_operation,
         "operation:reconcile-improvements": reconcile_improvements,
         "operation:load-review-subject": load_review_subject,
         "operation:validate-improvement-review-assessment": validate_improvement_review_assessment,
