@@ -66,6 +66,7 @@ GATE_NODE = "trace-sufficiency"
 INTERRUPT_NODE = "trace-sufficiency-review"
 GATE_ID = "trace-sufficiency-gate"
 TARGET = "operation:materialize-trace-projection"
+COMPOSITE_TARGET = "operation:materialize-trace-and-coverage-gaps"
 FACTS_REL = "inspect/trace-sufficiency.json"
 TERMINALS = frozenset({"END", "STOP", "FAIL"})
 
@@ -90,15 +91,18 @@ def _assurance() -> GraphDef:
 def test_the_materialize_node_publishes_both_documents() -> None:
     node = _inspect().nodes[MATERIALIZE]
 
-    assert node.uses == TARGET
+    assert node.uses == COMPOSITE_TARGET
     assert node.outputs == [
         "change:inspect/trace-projection.json",
         f"change:{FACTS_REL}",
+        "change:inspect/coverage-gaps.json",
     ]
 
 
 def test_the_target_resolves_to_a_registered_handler() -> None:
-    assert TARGET in default_operations()
+    ops = default_operations()
+    assert TARGET in ops
+    assert COMPOSITE_TARGET in ops
 
 
 def test_the_contract_declares_every_input_the_fold_reads() -> None:
@@ -152,6 +156,8 @@ def test_the_contract_authorizes_only_the_two_trace_documents() -> None:
 def test_the_node_is_not_retried_on_its_own_failure() -> None:
     """Its inputs are on disk and its output is a pure function of them, so a
     retry can only repeat the same answer."""
+    node_target = _inspect().nodes[MATERIALIZE].uses
+    assert load_execution_contracts(Path.cwd()).contracts[node_target].retryable_errors == ()
     assert load_execution_contracts(Path.cwd()).contracts[TARGET].retryable_errors == ()
 
 
@@ -284,12 +290,9 @@ def test_materialization_follows_issue_reconciliation() -> None:
 
 
 def test_materialization_is_the_last_thing_inspection_does() -> None:
-    assert {edge.to for edge in _inspect().edges if edge.from_ == MATERIALIZE} == {
-        "build-coverage-gap-signals"
-    }
-    assert {edge.to for edge in _inspect().edges if edge.from_ == "build-coverage-gap-signals"} == {
-        "inspect-complete"
-    }
+    inspect = _inspect()
+    assert "build-coverage-gap-signals" not in inspect.nodes
+    assert {edge.to for edge in inspect.edges if edge.from_ == MATERIALIZE} == {"inspect-complete"}
 
 
 def test_no_path_completes_the_inspect_graph_without_materializing() -> None:

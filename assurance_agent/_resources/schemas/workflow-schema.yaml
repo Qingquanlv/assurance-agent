@@ -1698,16 +1698,10 @@ graphs:
       # `needs_human_review` would suspend the loop mid-attempt. The judgement
       # happens once, in `assurance`, after healing returns.
       materialize-trace-projection:
-        uses: operation:materialize-trace-projection
+        uses: operation:materialize-trace-and-coverage-gaps
         outputs:
           - change:inspect/trace-projection.json
           - change:inspect/trace-sufficiency.json
-        retry: never
-        timeout: local-operation
-
-      build-coverage-gap-signals:
-        uses: operation:build-coverage-gap-signals
-        outputs:
           - change:inspect/coverage-gaps.json
         retry: never
         timeout: local-operation
@@ -1725,8 +1719,7 @@ graphs:
       - {from: record-empty-analysis, to: reconcile-issues}
       - {from: analyze-issues, to: reconcile-issues}
       - {from: reconcile-issues, to: materialize-trace-projection}
-      - {from: materialize-trace-projection, to: build-coverage-gap-signals}
-      - {from: build-coverage-gap-signals, to: inspect-complete}
+      - {from: materialize-trace-projection, to: inspect-complete}
       - {from: inspect-complete, to: END}
 
   healing:

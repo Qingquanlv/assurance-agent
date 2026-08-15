@@ -959,6 +959,39 @@ contracts:
     - change:inspect/trace-projection.json
     - change:inspect/trace-sufficiency.json
     retryable_errors: []
+  operation:materialize-trace-and-coverage-gaps:
+    handler: operation
+    reads:
+    - change:cases/**
+    - change:execution/**
+    - change:facts/**
+    - change:review/**
+    - change:healing/**
+    - change:codegen/**
+    - change:inspect/failure-analysis.json
+    - change:inspect/issue-evidence-manifest.json
+    - change:inspect/observations.json
+    - change:inspect/issue-candidates.json
+    - change:inspect/issue-reconcile-status.json
+    - change:issues/events.jsonl
+    - change:issues/snapshot.json
+    - project:qa/issues/events.jsonl
+    - project:qa/issues/problems.json
+    - repo:tests/**
+    - change:inspect/trace-projection.json
+    - change:inspect/trace-sufficiency.json
+    - change:execution/runs/*/constraint-coverage.json
+    - change:execution/runs/*/auth-matrix.json
+    - change:execution/runs/*/journey-coverage.json
+    writes:
+    - change:inspect/trace-projection.json
+    - change:inspect/trace-sufficiency.json
+    - change:inspect/coverage-gaps.json
+    authorization_writes:
+    - change:inspect/trace-projection.json
+    - change:inspect/trace-sufficiency.json
+    - change:inspect/coverage-gaps.json
+    retryable_errors: []
   operation:load-problem-review-context:
     handler: operation
     reads:

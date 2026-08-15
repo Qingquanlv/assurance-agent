@@ -978,6 +978,7 @@ def test_default_operations_registry_has_exact_keys() -> None:
         "operation:materialize-quarantine-projection",
         # Dual-source Lane B gap signals and the report-only C-layer aggregate (M4)
         "operation:build-coverage-gap-signals",
+        "operation:materialize-trace-and-coverage-gaps",
         "operation:materialize-c-layer-metrics",
     }
 

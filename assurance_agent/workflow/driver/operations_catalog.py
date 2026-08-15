@@ -64,7 +64,10 @@ from assurance_agent.workflow.metrics.c_layer import materialize_c_layer_metrics
 from assurance_agent.workflow.metrics.constraint_coverage import (
     compute_constraint_coverage_operation,
 )
-from assurance_agent.workflow.metrics.coverage_gaps import build_coverage_gap_signals_operation
+from assurance_agent.workflow.metrics.coverage_gaps import (
+    build_coverage_gap_signals_operation,
+    materialize_trace_and_coverage_gaps,
+)
 from assurance_agent.workflow.metrics.coverage_repair import (
     allocate_coverage_repair_attempt_operation,
     compute_coverage_repair_safety_operation,
@@ -144,8 +147,8 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:record-analysis-failed": record_analysis_failed,
         "operation:materialize-empty-retro-analysis": materialize_empty_retro_analysis,
         "operation:materialize-trace-projection": materialize_trace_projection,
-        # Dual-source Lane B gap signals (graph wiring deferred; callable + contract).
         "operation:build-coverage-gap-signals": build_coverage_gap_signals_operation,
+        "operation:materialize-trace-and-coverage-gaps": materialize_trace_and_coverage_gaps,
         "operation:materialize-minimum-coverage": materialize_minimum_coverage_operation,
         "operation:collect-diff-coverage": collect_diff_coverage_operation,
         "operation:compute-constraint-coverage": compute_constraint_coverage_operation,

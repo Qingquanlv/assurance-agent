@@ -149,8 +149,9 @@ EXPECTED_CONTRACTS = {
     "operation:reconcile-issues",
     # Reconciled trace projection + the independent trace-sufficiency gate
     "operation:materialize-trace-projection",
-    # Dual-source Lane B gap signals (graph wiring deferred)
+    # Dual-source Lane B gap signals (callable + contract; inspect folds them into materialize)
     "operation:build-coverage-gap-signals",
+    "operation:materialize-trace-and-coverage-gaps",
     # Deterministic MRC × execution join (metrics M1 Task 5; graph wiring deferred)
     "operation:materialize-minimum-coverage",
     # PR cadence collectors (metrics M1 Task 6; graph wiring deferred)
@@ -1012,10 +1013,12 @@ def test_inspect_with_issues_subgraph_structure() -> None:
     assert g.nodes["analyze-issues"].uses == "skill:aa-issue-analyzer"
     assert g.nodes["record-empty-analysis"].uses == "operation:record-empty-issue-analysis"
     assert g.nodes["reconcile-issues"].uses == "operation:reconcile-issues"
-    assert g.nodes["materialize-trace-projection"].uses == "operation:materialize-trace-projection"
+    assert "build-coverage-gap-signals" not in g.nodes
+    assert g.nodes["materialize-trace-projection"].uses == "operation:materialize-trace-and-coverage-gaps"
     assert set(g.nodes["materialize-trace-projection"].outputs) == {
         "change:inspect/trace-projection.json",
         "change:inspect/trace-sufficiency.json",
+        "change:inspect/coverage-gaps.json",
     }
     assert g.nodes["record-analysis-failure"].uses == "operation:record-issue-analysis-failure"
     assert g.nodes["record-project-sync-pending"].uses == "operation:record-project-sync-pending"
@@ -1100,10 +1103,9 @@ def test_inspect_with_issues_both_analysis_paths_reach_reconcile() -> None:
     assert ("analyze-issues", "reconcile-issues") in edge_pairs
     # record-empty-analysis -> reconcile-issues
     assert ("record-empty-analysis", "reconcile-issues") in edge_pairs
-    # reconcile-issues -> the reconciled projection -> completion
+    # reconcile-issues -> the reconciled projection (plus coverage gaps) -> completion
     assert ("reconcile-issues", "materialize-trace-projection") in edge_pairs
-    assert ("materialize-trace-projection", "build-coverage-gap-signals") in edge_pairs
-    assert ("build-coverage-gap-signals", "inspect-complete") in edge_pairs
+    assert ("materialize-trace-projection", "inspect-complete") in edge_pairs
     assert ("reconcile-issues", "inspect-complete") not in edge_pairs
     # inspect-complete -> END
     assert ("inspect-complete", "END") in edge_pairs
@@ -1164,13 +1166,12 @@ def test_schema_and_contract_digests_stable_across_two_loads() -> None:
 
 EXPECTED_TRACE_TERMINALS = {
     "inspect-with-issues": {
-        # HEAD inserts coverage-gap signals between materialize and complete.
-        "ordinary": ("reconcile-issues", "materialize-trace-projection", "build-coverage-gap-signals"),
+        "ordinary": ("reconcile-issues", "materialize-trace-projection", "inspect-complete"),
         "recoveries": {
             "analyze-issues": ("record-analysis-failure", "materialize-trace-projection"),
             "reconcile-issues": ("record-project-sync-pending", "materialize-trace-projection"),
         },
-        "successor": "build-coverage-gap-signals",
+        "successor": "inspect-complete",
     },
     "issue-analyze-workflow": {
         "ordinary": ("reconcile-issues", "materialize-trace-projection", "END"),
@@ -1210,11 +1211,13 @@ def assert_trace_terminal_invariants(compiled: CompiledWorkflow) -> None:
     for graph_id, expected in EXPECTED_TRACE_TERMINALS.items():
         graph = compiled.schema.graphs[graph_id]
         materializer = graph.nodes[_MATERIALIZER]
-        assert materializer.uses == "operation:materialize-trace-projection"
         expected_outputs = {"change:inspect/trace-projection.json"}
         if graph_id == "inspect-with-issues":
-            # Feature-branch inspect path still publishes sufficiency facts here.
+            assert materializer.uses == "operation:materialize-trace-and-coverage-gaps"
             expected_outputs.add("change:inspect/trace-sufficiency.json")
+            expected_outputs.add("change:inspect/coverage-gaps.json")
+        else:
+            assert materializer.uses == "operation:materialize-trace-projection"
         assert set(materializer.outputs) == expected_outputs
 
         ordinary = expected["ordinary"]
