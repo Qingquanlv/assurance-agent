@@ -230,8 +230,10 @@ def run_metrics_nightly_graph(
 ) -> list[TaskResult]:
     """Run ``metrics-nightly`` ops in schema order; inject FakeRunner for tests.
 
-    Never writes ``inspect/metrics.json``. Production GraphRuntime uses the same
-    operation handlers; this helper is the injectable acceptance seam (M2 Task 7).
+    Never writes ``inspect/metrics.json``. Stops on the first non-succeeded
+    result so later artifacts (nightly json / shortboards) are not written.
+    Production GraphRuntime uses the same operation handlers; this helper is
+    the injectable acceptance seam (M2 Task 7).
     """
     ops: dict[str, Any] = {
         "operation:load-latest-pr-metrics": load_latest_pr_metrics_operation,
@@ -249,9 +251,12 @@ def run_metrics_nightly_graph(
         task = _nightly_task(target)
         op = ops[target]
         if target == "operation:run-mutation-sample":
-            results.append(op(task, workspace, context, runner=mutation_runner))
+            result = op(task, workspace, context, runner=mutation_runner)
         else:
-            results.append(op(task, workspace, context))
+            result = op(task, workspace, context)
+        results.append(result)
+        if result.status != "succeeded":
+            break
     return results
 
 
@@ -477,4 +482,5 @@ __all__ = [
     "load_latest_pr_metrics_operation",
     "run_metrics_nightly_graph",
     "run_mutation_sample_operation",
+    "run_nightly_metrics_pipeline_operation",
 ]

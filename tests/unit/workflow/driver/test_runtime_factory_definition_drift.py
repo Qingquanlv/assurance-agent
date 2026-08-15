@@ -47,9 +47,8 @@ def test_definition_digest_mismatch_raises_without_loading_pins(
         raise AssertionError("load_pinned_execution_definition must not run")
 
     monkeypatch.setattr(
-        "assurance_agent.workflow.driver.runtime_factory.load_pinned_execution_definition",
+        "assurance_agent.workflow.graph.definition_pinning.load_pinned_execution_definition",
         _boom,
-        raising=False,
     )
     live = request_for_compiled(compiled, event_schema_version=6)
     mismatched = replace(live, graph_digest="0" * 64)

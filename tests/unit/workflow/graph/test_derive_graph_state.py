@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import assurance_agent.workflow.graph as graph_package
 from assurance_agent.workflow.graph.checkpoint import (
     derive_graph_state,
     fold_invocation_events,
@@ -10,7 +11,7 @@ from assurance_agent.workflow.graph.checkpoint import (
 )
 
 
-GRAPH_ROOT = Path("assurance_agent/workflow/graph")
+GRAPH_ROOT = Path(graph_package.__file__).resolve().parent
 
 
 def test_derive_graph_state_matches_fold_then_project() -> None:
